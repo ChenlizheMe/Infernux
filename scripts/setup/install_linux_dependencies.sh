@@ -13,7 +13,6 @@ sudo apt-get install --yes --no-install-recommends \
     clang \
     clang-format \
     git \
-    glslang-tools \
     libasound2-dev \
     libdecor-0-dev \
     libdrm-dev \
@@ -59,7 +58,6 @@ sudo apt-get install --yes --no-install-recommends \
     mesa-vulkan-drivers \
     ninja-build \
     pkg-config \
-    libspirv-cross-c-shared-dev \
     spirv-tools \
     vulkan-validationlayers \
     vulkan-tools \

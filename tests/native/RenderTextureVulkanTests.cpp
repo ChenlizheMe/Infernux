@@ -1,3 +1,4 @@
+#include "SlangShaderFixture.h"
 #include <SDL3/SDL.h>
 #include <function/renderer/FullscreenRenderer.h>
 #include <function/renderer/SceneRenderGraph.h>
@@ -16,7 +17,6 @@
 #include <array>
 #include <cassert>
 #include <cmath>
-#include <fstream>
 #include <iostream>
 #include <vector>
 
@@ -945,14 +945,7 @@ float4 fragment_main(Vertex input) : SV_Target0 {
 static int RunTests(int argc, char **argv)
 {
     assert(argc == 2);
-    std::ifstream input(argv[1], std::ios::binary | std::ios::ate);
-    assert(input);
-    const auto bytes = static_cast<size_t>(input.tellg());
-    assert(bytes > 0 && bytes % sizeof(uint32_t) == 0);
-    std::vector<uint32_t> code(bytes / sizeof(uint32_t));
-    input.seekg(0);
-    input.read(reinterpret_cast<char *>(code.data()), bytes);
-    assert(input);
+    const auto code = infernux::test::FixtureSpirv(argv[1]);
 
     assert(SDL_Init(SDL_INIT_VIDEO));
     auto *window = SDL_CreateWindow("RenderTexture GPU regression", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);

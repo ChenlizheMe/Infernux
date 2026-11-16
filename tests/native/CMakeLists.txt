@@ -448,17 +448,13 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_compute_resource_lifetime_tests PRIVATE InfernuxRenderCore)
     add_test(NAME infernux.compute_resource_lifetime COMMAND infernux_compute_resource_lifetime_tests)
 
-    set(_compute_dispatch_limits_spirv "${CMAKE_CURRENT_BINARY_DIR}/ComputeDispatchLimits.comp.spv")
-    add_custom_command(OUTPUT "${_compute_dispatch_limits_spirv}"
-        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
-            "${CMAKE_SOURCE_DIR}/tests/native/shaders/ComputeDispatchLimits.comp"
-            -o "${_compute_dispatch_limits_spirv}"
-        DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/ComputeDispatchLimits.comp" VERBATIM)
+    set(_compute_dispatch_fixture "${CMAKE_SOURCE_DIR}/tests/native/shaders/compute_dispatch_limits.comp.slang")
     infernux_add_native_test(infernux_compute_dispatch_limits_vulkan_tests
-        tests/native/ComputeDispatchLimitsVulkanTests.cpp "${_compute_dispatch_limits_spirv}")
-    target_link_libraries(infernux_compute_dispatch_limits_vulkan_tests PRIVATE infernux_runtime_test_support)
+        tests/native/ComputeDispatchLimitsVulkanTests.cpp)
+    target_link_libraries(infernux_compute_dispatch_limits_vulkan_tests PRIVATE
+        infernux_runtime_test_support InfernuxShaderCompiler)
     add_test(NAME infernux.compute_dispatch_limits_vulkan
-        COMMAND infernux_compute_dispatch_limits_vulkan_tests "${_compute_dispatch_limits_spirv}")
+        COMMAND infernux_compute_dispatch_limits_vulkan_tests "${_compute_dispatch_fixture}")
     set_tests_properties(infernux.compute_dispatch_limits_vulkan PROPERTIES
         LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
         FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
@@ -509,18 +505,14 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
     endforeach()
 
-    set(_buffer_upload_consumer_spirv "${CMAKE_CURRENT_BINARY_DIR}/BufferUploadConsumer.comp.spv")
-    add_custom_command(OUTPUT "${_buffer_upload_consumer_spirv}"
-        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
-            "${CMAKE_SOURCE_DIR}/tests/native/shaders/BufferUploadConsumer.comp"
-            -o "${_buffer_upload_consumer_spirv}"
-        DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/BufferUploadConsumer.comp" VERBATIM)
+    set(_buffer_upload_fixture "${CMAKE_SOURCE_DIR}/tests/native/shaders/buffer_upload_consumer.comp.slang")
     infernux_add_native_test(infernux_vulkan_buffer_upload_consumer_tests
-        tests/native/VulkanBufferUploadConsumerTests.cpp "${_buffer_upload_consumer_spirv}")
-    target_link_libraries(infernux_vulkan_buffer_upload_consumer_tests PRIVATE InfernuxVulkanBackend)
+        tests/native/VulkanBufferUploadConsumerTests.cpp)
+    target_link_libraries(infernux_vulkan_buffer_upload_consumer_tests PRIVATE
+        InfernuxVulkanBackend InfernuxShaderCompiler)
     foreach(_case IN ITEMS async_graphics async_compute sync_graphics sync_compute invalid_none invalid_unknown)
         add_test(NAME infernux.buffer_upload_consumer.${_case}
-            COMMAND infernux_vulkan_buffer_upload_consumer_tests "${_buffer_upload_consumer_spirv}" ${_case})
+            COMMAND infernux_vulkan_buffer_upload_consumer_tests "${_buffer_upload_fixture}" ${_case})
         set_tests_properties(infernux.buffer_upload_consumer.${_case} PROPERTIES
             LABELS "requires_vulkan_device" TIMEOUT 45 RUN_SERIAL TRUE
             ENVIRONMENT "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
@@ -620,37 +612,9 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_particle_surface_recovery_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.particle_surface_recovery COMMAND infernux_particle_surface_recovery_tests)
 
-    set(INFERNUX_COMPUTE_INDIRECT_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/tests/shaders")
-    set(INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderGraphComputeIndirect.vert"
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderGraphComputeIndirect.frag"
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/ParticleGpuFixture.comp"
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/ParticleGpuBillboard.vert"
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/ParticleGpuBillboard.frag"
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/ParticleGpuTexturedBillboard.vert"
-        "${CMAKE_SOURCE_DIR}/tests/native/shaders/ParticleGpuTexturedBillboard.frag"
-    )
-    set(INFERNUX_COMPUTE_INDIRECT_SHADER_OUTPUTS)
-    foreach(_shader_source IN LISTS INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES)
-        get_filename_component(_shader_name "${_shader_source}" NAME)
-        set(_shader_output "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/${_shader_name}.spv")
-        add_custom_command(
-            OUTPUT "${_shader_output}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
-            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V "${_shader_source}" -o "${_shader_output}"
-            DEPENDS "${_shader_source}"
-            VERBATIM
-        )
-        list(APPEND INFERNUX_COMPUTE_INDIRECT_SHADER_OUTPUTS "${_shader_output}")
-    endforeach()
-    add_custom_target(infernux_render_graph_compute_indirect_shaders
-        DEPENDS ${INFERNUX_COMPUTE_INDIRECT_SHADER_OUTPUTS}
-    )
-
     infernux_add_native_test(infernux_render_graph_compute_indirect_tests
         tests/native/RenderGraphComputeIndirectTests.cpp
     )
-    add_dependencies(infernux_render_graph_compute_indirect_tests infernux_render_graph_compute_indirect_shaders)
     target_link_libraries(infernux_render_graph_compute_indirect_tests PRIVATE
         infernux_runtime_test_support
         InfernuxShaderCompiler
@@ -659,29 +623,19 @@ if(INFERNUX_BUILD_TESTS)
     add_test(NAME infernux.render_graph_compute_indirect
         COMMAND infernux_render_graph_compute_indirect_tests
             "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderGraphComputeIndirect.comp.slang"
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.vert.spv"
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderGraphComputeIndirect.frag.spv"
             "${CMAKE_SOURCE_DIR}/tests/native/shaders/ShaderReflectionStorage.comp.slang"
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuFixture.comp.spv"
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.vert.spv"
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuBillboard.frag.spv"
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuTexturedBillboard.vert.spv"
-            "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/ParticleGpuTexturedBillboard.frag.spv"
+            "${CMAKE_SOURCE_DIR}/tests/native/shaders/particle_gpu_fixture.comp.slang"
     )
     set_tests_properties(infernux.render_graph_compute_indirect PROPERTIES
         LABELS "requires_vulkan_device"
         TIMEOUT 180
     )
 
-    set(_render_texture_sample "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderTextureSample.comp.spv")
-    add_custom_command(OUTPUT "${_render_texture_sample}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
-        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
-            "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderTextureSample.comp" -o "${_render_texture_sample}"
-        DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderTextureSample.comp" VERBATIM)
+    set(_render_texture_sample "${CMAKE_SOURCE_DIR}/tests/native/shaders/render_texture_sample.comp.slang")
     infernux_add_native_test(infernux_render_texture_vulkan_tests
-        tests/native/RenderTextureVulkanTests.cpp "${_render_texture_sample}")
-    target_link_libraries(infernux_render_texture_vulkan_tests PRIVATE infernux_runtime_test_support)
+        tests/native/RenderTextureVulkanTests.cpp)
+    target_link_libraries(infernux_render_texture_vulkan_tests PRIVATE
+        infernux_runtime_test_support InfernuxShaderCompiler)
     add_test(NAME infernux.render_texture_vulkan COMMAND infernux_render_texture_vulkan_tests
         "${_render_texture_sample}")
     set_tests_properties(infernux.render_texture_vulkan PROPERTIES
@@ -695,7 +649,7 @@ if(INFERNUX_BUILD_TESTS)
         ENVIRONMENT "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT")
 
     infernux_add_native_test(infernux_render_graph_queue_replay_tests
-        tests/native/RenderGraphQueueReplayTests.cpp "${_render_texture_sample}")
+        tests/native/RenderGraphQueueReplayTests.cpp)
     target_link_libraries(infernux_render_graph_queue_replay_tests
         PRIVATE infernux_runtime_test_support InfernuxShaderCompiler)
     add_test(NAME infernux.render_graph_queue_replay COMMAND infernux_render_graph_queue_replay_tests

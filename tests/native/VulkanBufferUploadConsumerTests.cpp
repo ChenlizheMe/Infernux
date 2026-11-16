@@ -1,3 +1,4 @@
+#include "SlangShaderFixture.h"
 #include <SDL3/SDL.h>
 #include <function/renderer/vk/AsyncTransferContext.h>
 #include <function/renderer/vk/VkDeviceContext.h>
@@ -8,7 +9,6 @@
 
 #include <array>
 #include <cassert>
-#include <fstream>
 #include <iostream>
 #include <string>
 #ifdef _WIN32
@@ -182,14 +182,8 @@ int main(int argc, char **argv)
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
     assert(argc == 3);
-    std::ifstream file(argv[1], std::ios::binary | std::ios::ate);
-    assert(file);
-    const auto bytes = static_cast<size_t>(file.tellg());
-    assert(bytes && bytes % 4 == 0);
-    std::vector<uint32_t> spirv(bytes / 4);
-    file.seekg(0);
-    file.read(reinterpret_cast<char *>(spirv.data()), bytes);
-    assert(file && SDL_Init(SDL_INIT_VIDEO));
+    const auto spirv = infernux::test::FixtureSpirv(argv[1]);
+    assert(SDL_Init(SDL_INIT_VIDEO));
     const std::string scenario = argv[2];
     auto *window = SDL_CreateWindow("Buffer upload consumers", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
     assert(window);

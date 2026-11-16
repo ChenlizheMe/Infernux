@@ -14,7 +14,7 @@ command -v conda >/dev/null 2>&1 || {
 }
 
 missing_tools=()
-for tool in clang clang++ ld.lld ninja pkg-config glslangValidator; do
+for tool in clang clang++ ld.lld ninja pkg-config; do
     command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
 done
 

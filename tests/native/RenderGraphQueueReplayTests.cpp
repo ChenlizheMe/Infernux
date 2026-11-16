@@ -1,3 +1,4 @@
+#include "SlangShaderFixture.h"
 #include <SDL3/SDL.h>
 #include <function/renderer/CommandBuffer.h>
 #include <function/renderer/MaterialDescriptor.h>
@@ -20,7 +21,6 @@
 #include <array>
 #include <cassert>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 
 using namespace infernux;
@@ -31,19 +31,6 @@ enum class ResourceKind
     Depth,
     Buffer
 };
-
-static std::vector<uint32_t> ReadSpirv(const char *path)
-{
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    assert(input);
-    const auto bytes = static_cast<size_t>(input.tellg());
-    assert(bytes > 0 && bytes % sizeof(uint32_t) == 0);
-    std::vector<uint32_t> code(bytes / sizeof(uint32_t));
-    input.seekg(0);
-    input.read(reinterpret_cast<char *>(code.data()), static_cast<std::streamsize>(bytes));
-    assert(input);
-    return code;
-}
 
 static const ShaderEntryPointCode &Entry(const ShaderTargetCode &target, rhi::ShaderStage stage)
 {
@@ -683,7 +670,7 @@ static void CheckReplay(vk::VkDeviceContext &context, vk::VulkanQueueManager &qu
 int main(int argc, char **argv)
 {
     assert(argc == 2);
-    const auto code = ReadSpirv(argv[1]);
+    const auto code = infernux::test::FixtureSpirv(argv[1]);
     const auto rendererParameterCompute =
         CompileSlangNativeModule({"renderer_parameter_write", "RendererParameterBuffer.compute.slang", R"(
 [[vk::binding(0, 0)]] RWStructuredBuffer<float4> parameters;

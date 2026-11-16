@@ -1,3 +1,4 @@
+#include "SlangShaderFixture.h"
 #include "ParticleGraphicsFixtures.h"
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/RendererList.h>
@@ -39,7 +40,6 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -173,22 +173,6 @@ struct BufferReadback
         return mapped != nullptr;
     }
 };
-
-std::vector<uint32_t> ReadSpirv(const std::filesystem::path &path)
-{
-    std::ifstream stream(path, std::ios::binary | std::ios::ate);
-    if (!stream)
-        return {};
-
-    const auto byteCount = stream.tellg();
-    if (byteCount <= 0 || (byteCount % static_cast<std::streamoff>(sizeof(uint32_t))) != 0)
-        return {};
-
-    std::vector<uint32_t> code(static_cast<size_t>(byteCount) / sizeof(uint32_t));
-    stream.seekg(0);
-    stream.read(reinterpret_cast<char *>(code.data()), byteCount);
-    return stream ? code : std::vector<uint32_t>{};
-}
 
 std::vector<char> SpirvBytes(const std::vector<uint32_t> &words)
 {
@@ -795,11 +779,8 @@ void main() {
 #include "RenderGraphTransientBufferTests.h"
 #include "RhiBufferUpdateTests.h"
 
-bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
-         const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
-         const std::filesystem::path &particleComputePath, const std::filesystem::path &particleVertexPath,
-         const std::filesystem::path &particleFragmentPath, const std::filesystem::path &particleTexturedVertexPath,
-         const std::filesystem::path &particleTexturedFragmentPath)
+bool Run(const std::filesystem::path &computePath, const std::filesystem::path &reflectionPath,
+         const std::filesystem::path &particleComputePath)
 {
     using BufferUsage = infernux::rhi::BufferUsageFlags;
     TestResources resources;
@@ -831,28 +812,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     resources.pipelines.Initialize(device);
     resources.graph.Initialize(&resources.context);
 
-    auto compile = [](const std::filesystem::path &path) {
-        std::ifstream stream(path, std::ios::binary);
-        const std::string source((std::istreambuf_iterator<char>(stream)), {});
-        return infernux::CompileSlangNativeModule({path.stem().string(), path.generic_string(), source},
-                                                  infernux::ShaderCodeTarget::SpirV);
-    };
-    const auto computeTarget = compile(computePath);
+    const auto computeTarget = infernux::test::CompileSlangFixture(computePath);
     const auto computeCode = SpirvWords(computeTarget.entries.front().code);
-    const auto vertexCode = ReadSpirv(vertexPath);
-    const auto fragmentCode = ReadSpirv(fragmentPath);
-    const auto reflectionTarget = compile(reflectionPath);
-    const auto reflectionCode = SpirvWords(reflectionTarget.entries.front().code);
-    const auto particleComputeCode = ReadSpirv(particleComputePath);
-    const auto particleVertexCode = ReadSpirv(particleVertexPath);
-    const auto particleFragmentCode = ReadSpirv(particleFragmentPath);
-    const auto particleTexturedVertexCode = ReadSpirv(particleTexturedVertexPath);
-    const auto particleTexturedFragmentCode = ReadSpirv(particleTexturedFragmentPath);
-    if (!Require(!computeCode.empty() && !vertexCode.empty() && !fragmentCode.empty() && !reflectionCode.empty() &&
-                     !particleComputeCode.empty() && !particleVertexCode.empty() && !particleFragmentCode.empty() &&
-                     !particleTexturedVertexCode.empty() && !particleTexturedFragmentCode.empty(),
-                 "Failed to read generated SPIR-V test shaders"))
-        return false;
+    const auto reflectionTarget = infernux::test::CompileSlangFixture(reflectionPath);
+    const auto particleComputeCode = infernux::test::FixtureSpirv(particleComputePath);
 
     if (!VerifyForwardPlusTileCoverage(resources))
         return false;
@@ -2948,9 +2911,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
 
 int main(int argc, char **argv)
 {
-    if (argc != 10) {
-        std::cerr << "Expected compute, vertex, fragment, reflection, and particle SPIR-V paths\n";
+    if (argc != 4) {
+        std::cerr << "Expected compute, reflection, and particle Slang fixture paths\n";
         return 2;
     }
-    return Run(argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7], argv[8], argv[9]) ? 0 : 1;
+    return Run(argv[1], argv[2], argv[3]) ? 0 : 1;
 }

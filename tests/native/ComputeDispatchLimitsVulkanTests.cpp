@@ -1,3 +1,4 @@
+#include "SlangShaderFixture.h"
 #include <SDL3/SDL.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/vk/VkDeviceContext.h>
@@ -11,7 +12,6 @@
 #include <array>
 #include <cassert>
 #include <cstring>
-#include <fstream>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -99,14 +99,7 @@ static void Dispatch(ComputeHost &host, const std::shared_ptr<ComputeKernel> &ke
 int main(int argc, char **argv)
 {
     assert(argc == 2);
-    std::ifstream file(argv[1], std::ios::binary | std::ios::ate);
-    assert(file);
-    const auto size = static_cast<size_t>(file.tellg());
-    assert(size && size % sizeof(uint32_t) == 0);
-    std::vector<uint32_t> spirv(size / sizeof(uint32_t));
-    file.seekg(0);
-    file.read(reinterpret_cast<char *>(spirv.data()), static_cast<std::streamsize>(size));
-    assert(file);
+    const auto spirv = infernux::test::FixtureSpirv(argv[1]);
     assert(SDL_Init(SDL_INIT_VIDEO));
     auto *window = SDL_CreateWindow("Compute dispatch limits", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
     assert(window);
