@@ -22,7 +22,7 @@ class BusyProgress:
             else "InfernuxEditorProgress"
         )
         self._process = subprocess.Popen(
-            [str(executable), engine_font_path, engine_font_cjk_path, get_editor_theme(), get_locale()],
+            [str(executable), engine_font_path, engine_font_cjk_path, get_editor_theme(), get_locale(), str(os.getpid())],
             stdin=subprocess.PIPE,
             text=True,
             encoding="utf-8",

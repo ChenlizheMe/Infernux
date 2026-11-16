@@ -10,16 +10,25 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <thread>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 // A separate event loop keeps progress repainting while the Editor thread or
 // Python GIL is occupied. EOF also closes the window if the Editor exits.
 int main(int argc, char **argv)
 {
-    if (argc != 5) {
-        std::fprintf(stderr, "Usage: InfernuxEditorProgress <editor-font> <editor-cjk-font> <editor-theme> <locale>\n");
+    if (argc != 6) {
+        std::fprintf(
+            stderr,
+            "Usage: InfernuxEditorProgress <editor-font> <editor-cjk-font> <editor-theme> <locale> <editor-pid>\n");
         return 1;
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -29,7 +38,7 @@ int main(int argc, char **argv)
     const bool chinese = std::string(argv[4]) == "zh";
     const char *title = chinese ? "INFERNUX · 正在准备场景" : "INFERNUX · Preparing scene";
     SDL_Window *window = SDL_CreateWindow(title, 560, 205,
-                                          SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS | SDL_WINDOW_ALWAYS_ON_TOP |
+                                          SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS | SDL_WINDOW_UTILITY |
                                               SDL_WINDOW_NOT_FOCUSABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     SDL_Renderer *renderer = window ? SDL_CreateRenderer(window, "software") : nullptr;
     if (!renderer) {
@@ -38,6 +47,11 @@ int main(int argc, char **argv)
         SDL_Quit();
         return 1;
     }
+#ifdef _WIN32
+    const DWORD editorPid = std::strtoul(argv[5], nullptr, 10);
+    const auto progressWindow = static_cast<HWND>(
+        SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+#endif
     SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     const float dpi =
         infernux::ResolveEditorDisplayScale(SDL_GetWindowDisplayScale(window), SDL_GetWindowPixelDensity(window));
@@ -97,9 +111,23 @@ int main(int argc, char **argv)
             ImGui_ImplSDL3_ProcessEvent(&event);
         }
         const Uint64 elapsed = SDL_GetTicks() - started;
-        if (!shown && elapsed >= 400) {
-            SDL_ShowWindow(window);
-            shown = true;
+        bool showProgress = elapsed >= 400;
+#ifdef _WIN32
+        const HWND foreground = showProgress ? GetForegroundWindow() : nullptr;
+        DWORD foregroundPid = 0;
+        if (foreground)
+            GetWindowThreadProcessId(foreground, &foregroundPid);
+        showProgress = foreground && foregroundPid == editorPid;
+#endif
+        if (showProgress && !shown) {
+#ifdef _WIN32
+            // The helper runs in a separate process. Keep its window in the editor's window group.
+            SetWindowLongPtrW(progressWindow, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(foreground));
+#endif
+            shown = SDL_ShowWindow(window);
+        } else if (!showProgress && shown) {
+            SDL_HideWindow(window);
+            shown = false;
         }
         if (shown) {
             float value;
