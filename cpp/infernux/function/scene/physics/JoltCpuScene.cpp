@@ -19,13 +19,14 @@
 namespace infernux
 {
 JoltCpuExecution::JoltCpuExecution(const EngineConfig &config)
-    : m_scratch(static_cast<JPH::uint>(config.physicsTempAllocatorSize)), m_inlineJobs(config.physicsMaxJobs),
+    : m_scratch(config.physicsTempAllocatorSize), m_inlineJobs(config.physicsMaxJobs),
       m_workerJobs(config.physicsMaxJobs, config.physicsMaxBarriers, config.physicsMaxConcurrency)
 {
 }
 
 JPH::EPhysicsUpdateError JoltCpuExecution::Step(JPH::PhysicsSystem &system, float deltaTime, int collisionSteps)
 {
+    JPH_ASSERT(m_scratch.IsEmpty());
     auto &jobs = JobSystem::Get();
     JPH::EPhysicsUpdateError result;
     // Tiny rigid scenes have no useful range parallelism. Execute the same
@@ -38,6 +39,7 @@ JPH::EPhysicsUpdateError JoltCpuExecution::Step(JPH::PhysicsSystem &system, floa
     if (inlineStep) {
         jobs.RunInDomain(JobDomain::Physics,
                          [&] { result = system.Update(deltaTime, collisionSteps, &m_scratch, &m_inlineJobs); });
+        JPH_ASSERT(m_scratch.IsEmpty());
         return result;
     }
 
@@ -48,6 +50,7 @@ JPH::EPhysicsUpdateError JoltCpuExecution::Step(JPH::PhysicsSystem &system, floa
     m_workerJobs.EndFrame();
     group.Close();
     jobs.Wait(group);
+    JPH_ASSERT(m_scratch.IsEmpty());
     return result;
 }
 

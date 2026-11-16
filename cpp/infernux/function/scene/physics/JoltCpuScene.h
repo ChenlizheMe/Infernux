@@ -2,7 +2,6 @@
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/JobSystemSingleThreaded.h>
-#include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyID.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
@@ -11,6 +10,7 @@
 #include "InfernuxJoltJobSystemAdapter.h"
 #include "JoltCpuActor.h"
 #include "JoltCpuConstraints.h"
+#include "JoltCpuTempAllocator.h"
 #include "PhysicsBodyState.h"
 #include "PhysicsContactTypes.h"
 
@@ -43,7 +43,7 @@ class JoltCpuExecution final
     JPH::EPhysicsUpdateError Step(JPH::PhysicsSystem &system, float deltaTime, int collisionSteps);
 
   private:
-    JPH::TempAllocatorImpl m_scratch;
+    JoltCpuTempAllocator m_scratch;
     JPH::JobSystemSingleThreaded m_inlineJobs;
     InfernuxJoltJobSystemAdapter m_workerJobs;
 };
