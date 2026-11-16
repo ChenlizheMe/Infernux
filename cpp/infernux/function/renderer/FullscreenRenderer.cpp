@@ -65,9 +65,7 @@ void PrepareInputs(FullscreenPipelineEntry &entry, const std::string &schemaText
         if (resource.binding.type == rhi::BindingType::SampledTexture ||
             resource.binding.type == rhi::BindingType::Sampler ||
             resource.binding.type == rhi::BindingType::StorageBuffer) {
-            const auto end = resource.name.find('.');
-            const auto name = resource.name.substr(4, end - 4); // Generated inx_<logical port>.
-            const auto input = std::find(entry.inputNames.begin(), entry.inputNames.end(), name);
+            const auto input = std::find(entry.inputNames.begin(), entry.inputNames.end(), resource.name);
             if (input == entry.inputNames.end())
                 throw std::logic_error("Compiled fullscreen resource has no logical input: " + resource.name);
             entry.resourceInputs.push_back(static_cast<int32_t>(input - entry.inputNames.begin()));

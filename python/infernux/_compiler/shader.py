@@ -37,7 +37,10 @@ class ShaderDefinition:
         return _Infernux._compile_shader_program(
             self.generated_source, self.source_path, self.module_name, self.libraries, targets,
             source_ranges=self.source_ranges,
-            input_kinds=tuple((field.name, field.kind) for field in self.inputs),
+            input_kinds=(
+                tuple((field.name, field.kind) for field in self.inputs)
+                + tuple((field.name, field.kind) for field in self.parameters if field.kind == "texture_2d")
+            ),
             root_constants=self.domain in {"screen_ui", "world_ui"},
         )
 

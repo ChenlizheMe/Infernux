@@ -64,7 +64,6 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
             property.defaultValue = "\"\"";
             property.textureDefault = parameter.at("default");
             property.textureSlot = textureSlot++;
-            property.resourcePath = "inx_" + property.name;
         } else {
             if (uniform == target->resources.end())
                 throw std::logic_error("Mesh author parameters have no compiler layout");

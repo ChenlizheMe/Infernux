@@ -69,7 +69,8 @@ struct ShaderValueLayout
 
 struct ShaderResourceLayout
 {
-    /// Qualified logical resource path, e.g. inx_scene.texture.
+    /// Author field name, shared by its image/sampler descriptors. Engine and
+    /// raw native programs retain their qualified resource paths.
     std::string name;
     uint32_t set = 0;
     rhi::BindingLayoutEntry binding;

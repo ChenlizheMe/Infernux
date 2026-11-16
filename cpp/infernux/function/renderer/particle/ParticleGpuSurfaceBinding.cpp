@@ -69,11 +69,13 @@ bool ParticleGpuSurfaceBinding::Create(rhi::Device &device, std::shared_ptr<cons
             continue;
         const auto image =
             std::find_if(m_target->resources.begin(), m_target->resources.end(), [&](const auto &resource) {
-                return resource.set == 0 && resource.name == property.resourcePath + ".texture";
+                return resource.set == 0 && resource.name == property.name &&
+                       resource.binding.type == rhi::BindingType::SampledTexture;
             });
         const auto sampler =
             std::find_if(m_target->resources.begin(), m_target->resources.end(), [&](const auto &resource) {
-                return resource.set == 0 && resource.name == property.resourcePath + ".sampler";
+                return resource.set == 0 && resource.name == property.name &&
+                       resource.binding.type == rhi::BindingType::Sampler;
             });
         if (image == m_target->resources.end() || sampler == m_target->resources.end())
             throw std::logic_error("Particle texture is absent from the compiled target: " + property.name);

@@ -235,7 +235,7 @@ bool VkShaderCache::PrepareProgramArtifact(const ShaderProgramArtifact &artifact
     ShaderProgramPublication forwardProgram =
         m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv,
                                           {artifact.domain, forward->vertexEntryPoint, forward->fragmentEntryPoint,
-                                           *forward->vertexTarget, *forward->fragmentTarget, &artifact.properties});
+                                           *forward->vertexTarget, *forward->fragmentTarget});
     if (!forwardProgram || !forwardProgram->IsValid()) {
         INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", forwardKey.ToString(), "'");
         (void)m_programCache.TakePrograms(artifact.key);
@@ -301,8 +301,8 @@ VkShaderCache::MaterializeProgramVariant(const std::shared_ptr<const ShaderProgr
     }
     const ShaderProgramVariantKey key{artifact->key, target,
                                       forwardLayoutOwner ? forwardLayoutOwner->GetVariantKey().deviceContract : 0};
-    ShaderProgramMetadata metadata{artifact->domain,       variant->vertexEntryPoint, variant->fragmentEntryPoint,
-                                   *variant->vertexTarget, *variant->fragmentTarget,  &artifact->properties};
+    ShaderProgramMetadata metadata{artifact->domain, variant->vertexEntryPoint, variant->fragmentEntryPoint,
+                                   *variant->vertexTarget, *variant->fragmentTarget};
     if (borrowsForward)
         metadata.materialLayoutOwner = forwardLayoutOwner;
     ShaderProgramPublication program =

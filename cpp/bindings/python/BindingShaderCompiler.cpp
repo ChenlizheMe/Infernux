@@ -252,7 +252,7 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                     rootConstants
                         ? compiler.CompileRootProgram(module, modules, targets, precise, SourceRanges(sourceRanges))
                         : compiler.Compile(module, modules, targets, precise, SourceRanges(sourceRanges));
-                ApplyShaderAuthorInputs(compiled, inputKinds);
+                ApplyShaderAuthorResources(compiled, inputKinds);
             }
             py::dict result;
             result["diagnostics"] = ShaderDiagnosticsToPython(compiled.diagnostics);

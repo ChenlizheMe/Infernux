@@ -192,17 +192,6 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     m_vertReflection.LoadTargetLayout(metadata.vertexTarget, metadata.vertexEntryPoint);
     m_fragReflection.LoadTargetLayout(metadata.fragmentTarget, metadata.fragmentEntryPoint);
 
-    if (metadata.properties) {
-        for (auto &binding : m_descriptorBindings) {
-            for (const auto &property : *metadata.properties) {
-                if (!property.resourcePath.empty() &&
-                    binding.name.compare(0, property.resourcePath.size() + 1, property.resourcePath + ".") == 0) {
-                    binding.name = property.name;
-                    break;
-                }
-            }
-        }
-    }
     const bool hasReflectedBindlessTextureABI =
         std::any_of(m_descriptorBindings.begin(), m_descriptorBindings.end(), [](const auto &binding) {
             return binding.set == BindlessTextureSet && binding.binding == BindlessTextureBinding &&

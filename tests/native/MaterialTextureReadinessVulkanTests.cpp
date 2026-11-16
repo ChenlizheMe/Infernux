@@ -22,8 +22,8 @@ using namespace infernux;
 
 static constexpr const char *Source = R"(
 struct SampledImage { Texture2D<float4> image; SamplerState sampler; };
-[[vk::binding(0, 0)]] SampledImage source_image;
-[[vk::binding(2, 0)]] SampledImage detail_image;
+[[vk::binding(3, 0)]] SampledImage inx_albedo_map;
+[[vk::binding(11, 0)]] SampledImage inx_detailTex;
 [shader("vertex")]
 float4 vertex_main(uint id : SV_VulkanVertexID) : SV_Position
 {
@@ -32,8 +32,8 @@ float4 vertex_main(uint id : SV_VulkanVertexID) : SV_Position
 [shader("fragment")]
 float4 fragment_main() : SV_Target0
 {
-    return source_image.image.Sample(source_image.sampler, float2(0.5)) *
-           detail_image.image.Sample(detail_image.sampler, float2(0.5));
+    return inx_albedo_map.image.Sample(inx_albedo_map.sampler, float2(0.5)) *
+           inx_detailTex.image.Sample(inx_detailTex.sampler, float2(0.5));
 })";
 
 int main()
@@ -52,18 +52,25 @@ int main()
     key.program.stages = {"Tests/texture_readiness.vert.py", "Tests/texture_readiness.frag.py"};
     key.program.revision = 1;
     key.target = ShaderCompileTarget::Forward;
-    const auto compilation = SlangCompiler::Get().Compile({"texture_readiness", "<texture readiness>", Source}, {},
-                                                          {ShaderCodeTarget::SpirV});
+    ShaderAuthorSource author;
+    author.source = {"texture_readiness", "<texture readiness>", Source};
+    author.schema = R"({"domain":"mesh","inputs":[],"parameters":[
+        {"name":"detailTex","kind":"texture_2d"}, {"name":"albedo_map","kind":"texture_2d"}]})";
+    const auto compilation = SlangCompiler::Get().CompileAuthorProgram(author);
+    for (const auto &code : compilation.targets) {
+        assert(code.resources.size() == 4);
+        for (const auto &resource : code.resources) {
+            const auto imageBinding = resource.name == "albedo_map" ? 3u : 11u;
+            assert(resource.name == "albedo_map" || resource.name == "detailTex");
+            assert(resource.binding.binding ==
+                   imageBinding + (resource.binding.type == rhi::BindingType::Sampler ? 1u : 0u));
+        }
+    }
     const auto &target = compilation.targets.front();
     const auto &vertex = target.entries[0];
     const auto &fragment = target.entries[1];
-    std::vector<ShaderProgramPropertyBinding> properties(2);
-    properties[0].name = "albedo_map";
-    properties[0].resourcePath = "source_image";
-    properties[1].name = "detailTex";
-    properties[1].resourcePath = "detail_image";
     assert(program.Create(context.GetDevice(), vertex.code, fragment.code, key,
-                          {ShaderProgramDomain::Mesh, vertex.name, fragment.name, &target, &target, &properties}));
+                          {ShaderProgramDomain::Mesh, vertex.name, fragment.name, target, target}));
     std::unordered_map<std::string, uint32_t> slots;
     for (const auto &binding : program.GetDescriptorBindings())
         if (binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)

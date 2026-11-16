@@ -500,7 +500,7 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
         auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
             material, forward->vertexSpirv, forward->fragmentSpirv, artifact->key, artifact,
             {artifact->domain, forward->vertexEntryPoint, forward->fragmentEntryPoint, *forward->vertexTarget,
-             *forward->fragmentTarget, &artifact->properties});
+             *forward->fragmentTarget});
 
         bool forwardOk = renderData && renderData->isValid;
         if (forwardOk)

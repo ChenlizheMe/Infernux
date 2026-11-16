@@ -242,10 +242,13 @@ ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &
     auto result = domain == "screen_ui" || domain == "world_ui"
                       ? CompileRootProgram(source.source, source.libraries, targets, false, source.sourceRanges)
                       : Compile(source.source, source.libraries, targets, false, source.sourceRanges);
-    std::vector<std::pair<std::string, std::string>> inputs;
+    std::vector<std::pair<std::string, std::string>> fields;
     for (const auto &input : schema.at("inputs"))
-        inputs.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
-    ApplyShaderAuthorInputs(result, inputs);
+        fields.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
+    for (const auto &parameter : schema.at("parameters"))
+        if (parameter.at("kind") == "texture_2d")
+            fields.emplace_back(parameter.at("name").get<std::string>(), "texture_2d");
+    ApplyShaderAuthorResources(result, fields);
     return result;
 }
 

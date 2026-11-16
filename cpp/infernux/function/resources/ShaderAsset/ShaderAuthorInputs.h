@@ -22,25 +22,31 @@ inline rhi::ComputeBufferDesc ShaderBufferElementLayout(std::string_view element
     return {1, scalars.at(element.substr(0, element.size() - (lanes > 1))), lanes};
 }
 
-// Logical image contracts complement target reflection. Raw depth is sampled
-// without filtering so the same program accepts depth planes and R32 resolves.
-inline void ApplyShaderAuthorInputs(ShaderCompilation &compilation,
-                                    const std::vector<std::pair<std::string, std::string>> &inputs)
+// Resolve generated names once at publication. Every backend binds an author
+// field by its logical name and uses reflection for its physical descriptor.
+// Image and sampler descriptors share a name, but retain distinct types/slots.
+inline void ApplyShaderAuthorResources(ShaderCompilation &compilation,
+                                       const std::vector<std::pair<std::string, std::string>> &fields)
 {
-    for (const auto &[name, kind] : inputs) {
-        if (kind != "Depth2D" && kind != "Depth2DMS" && kind != "Color2DMS")
-            continue;
-        const auto image = "inx_" + name + ".texture";
-        const auto sampler = "inx_" + name + ".sampler";
-        for (auto &target : compilation.targets)
-            for (auto &resource : target.resources) {
-                if (resource.name == image) {
+    std::unordered_map<std::string, const std::pair<std::string, std::string> *> roots;
+    for (const auto &field : fields)
+        roots.emplace("inx_" + field.first, &field);
+    for (auto &target : compilation.targets)
+        for (auto &resource : target.resources) {
+            const auto field = roots.find(resource.name.substr(0, resource.name.find('.')));
+            if (field == roots.end())
+                continue; // Engine-owned resources retain their native names.
+            const auto &[name, kind] = *field->second;
+            resource.name = name;
+            // Raw depth uses non-filtering reads on both depth planes and R32 resolves.
+            if (kind == "Depth2D" || kind == "Depth2DMS" || kind == "Color2DMS") {
+                if (resource.binding.type == rhi::BindingType::SampledTexture) {
                     resource.binding.depthRead = false;
                     resource.binding.sampleType = rhi::TextureSampleType::UnfilterableFloat;
-                } else if (resource.name == sampler)
+                } else if (resource.binding.type == rhi::BindingType::Sampler)
                     resource.binding.samplerType = rhi::SamplerBindingType::NonFiltering;
             }
-    }
+        }
 }
 
 } // namespace infernux

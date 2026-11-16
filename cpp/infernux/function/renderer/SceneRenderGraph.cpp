@@ -4996,7 +4996,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     const bool storage = input.at("kind") == "Buffer";
                     const auto &resources = authorProgram->code->resources;
                     const auto resource = std::find_if(resources.begin(), resources.end(), [&](const auto &item) {
-                        return item.name == "inx_" + name + (storage ? "" : ".texture");
+                        return item.name == name && item.binding.type == (storage ? rhi::BindingType::StorageBuffer
+                                                                                  : rhi::BindingType::SampledTexture);
                     });
                     if (resource == resources.end())
                         throw std::logic_error("Fullscreen author input has no target resource: " + name);

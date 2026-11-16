@@ -82,11 +82,16 @@ float4 evaluate(InxParticleInput input) {
     if (textured)
         parameters.push_back(
             {{"name", "albedo_map"}, {"kind", "texture_2d"}, {"default", "white"}, {"stages", {"fragment"}}});
-    const json schema{
-        {"domain", "particle"}, {"surface", false}, {"parameters", parameters}, {"info", {{"cast_shadows", true}}}};
-    const auto compilation = std::make_shared<const ShaderCompilation>(
-        SlangCompiler::Get().Compile({"particle_test_surface", "Tests/ParticleSurface.slang", source}, {},
-                                     {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}));
+    const json schema{{"domain", "particle"},
+                      {"surface", false},
+                      {"parameters", parameters},
+                      {"inputs", json::array()},
+                      {"info", {{"cast_shadows", true}}}};
+    ShaderAuthorSource author;
+    author.source = {"particle_test_surface", "Tests/ParticleSurface.slang", source};
+    author.schema = schema.dump();
+    const auto compilation =
+        std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(author));
     return std::make_shared<const ShaderProgramArtifact>(
         CreateShaderAuthorMaterial("Tests/ParticleSurface", compilation, schema.dump(), ""));
 }

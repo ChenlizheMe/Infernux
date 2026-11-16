@@ -148,8 +148,8 @@ class Grid(shader.frag):
         fields = locations[0, 0]["value"]["fields"]
         assert [field["name"] for field in fields] == ["tint", "scale", "_alpha_clip_threshold"]
         assert [(locations[0, index]["name"], locations[0, index]["type"]) for index in range(1, 5)] == [
-            ("inx_image.texture", 2), ("inx_image.sampler", 4),
-            ("inx_detail.texture", 2), ("inx_detail.sampler", 4),
+            ("image", 2), ("image", 4),
+            ("detail", 2), ("detail", 4),
         ]
     texture_only = '''import infernux.shader as shader
 class Sample(shader.frag):
@@ -205,8 +205,7 @@ class Temporal(shader.fullscreen):
         assert parameters["value"]["byte_size"] == 16
         assert [(field["name"], field["offset"]) for field in parameters["value"]["fields"]] == [
             ("gain", 0), ("_inx_history_valid_first", 4), ("_inx_history_valid_second", 8)]
-        assert [resource["name"] for resource in resources if ".texture" in resource["name"]] == [
-            "inx_first.texture", "inx_second.texture"]
+        assert [resource["name"] for resource in resources if resource["type"] == 2] == ["first", "second"]
     with pytest.raises(SyntaxError, match="reserved for engine state"):
         parse_shader(source.replace("gain =", "_inx_history_valid_first ="),
                      str(tmp_path / "invalid.frag.py"), "invalid")
@@ -395,12 +394,12 @@ class ReadBuffers(shader.fullscreen):
         return shader.vec4(z, float(identity.x), float(size.x), 1.0)
 '''
     for target in parse_shader(source, "场景缓冲.frag.py", "read_buffers").compile()["targets"]:
-        images = {resource["name"]: resource for resource in target["resources"]}
-        assert not images["inx_depth.texture"]["depth"]
-        assert images["inx_depth.texture"]["sample_type"] == 1  # Raw D32 and R32 both bind as unfilterable float.
-        assert images["inx_depth.sampler"]["sampler_type"] == 1  # Nearest sampling on every backend.
-        assert images["inx_identity.texture"]["sample_type"] == 3  # Uint, never a filtered float image.
-        assert "inx_identity.sampler" not in images
+        images = {(resource["name"], resource["type"]): resource for resource in target["resources"]}
+        assert not images["depth", 2]["depth"]
+        assert images["depth", 2]["sample_type"] == 1  # Raw D32 and R32 both bind as unfilterable float.
+        assert images["depth", 4]["sampler_type"] == 1  # Nearest sampling on every backend.
+        assert images["identity", 2]["sample_type"] == 3  # Uint, never a filtered float image.
+        assert ("identity", 4) not in images
     with pytest.raises(SyntaxError, match="pixel coordinates"):
         parse_shader(source.replace("shader.load(self.identity, pixel, 0)", "shader.sample(self.identity, ctx.uv)"),
                      "场景缓冲.frag.py", "read_buffers")
@@ -744,8 +743,7 @@ class Grayscale(shader.fullscreen):
         assert not vertex["bindings"]
         assert len(fragment["bindings"]) == 3  # image, sampler, parameter block
         image, sampler, parameters = target["resources"]
-        assert image["name"] == "inx_image.texture"
-        assert sampler["name"] == "inx_image.sampler"
+        assert image["name"] == sampler["name"] == "image"
         assert image["binding"] != sampler["binding"]
         offset, strength = parameters["value"]["fields"]
         assert (offset["name"], offset["columns"], offset["offset"]) == ("offset", 2, 0)
@@ -778,7 +776,7 @@ class BufferView(shader.fullscreen):
     assert port.element in definition.generated_source
     for target in definition.compile()["targets"]:
         resources = {resource["name"]: resource for resource in target["resources"]}
-        assert resources["inx_values"]["read_only"]
+        assert resources["values"]["read_only"]
         fields = resources["inx_parameters"]["value"]["fields"]
         assert [(field["name"], field["offset"]) for field in fields] == [
             ("_inx_buffer_offset_values", 0), ("_inx_buffer_count_values", 4),
@@ -797,7 +795,7 @@ class Volume(shader.fullscreen):
     definition = parse_shader(source, "volume.frag.py", "volume")
     assert "uint3 size;" in definition.generated_source
     for target in definition.compile()["targets"]:
-        image = next(item for item in target["resources"] if item["name"] == "inx_image.texture")
+        image = next(item for item in target["resources"] if item["name"] == "image" and item["type"] == 2)
         assert image["dimension"] == 4  # Shared RHI Texture3D view dimension.
         assert not image["multisampled"]
         assert all(not entry["sample_rate_shading"] for entry in target["entries"])
@@ -816,7 +814,7 @@ class Samples(shader.fullscreen):
 '''
     for target in parse_shader(source, "samples.frag.py", "samples").compile()["targets"]:
         image, = target["resources"]
-        assert image["multisampled"] and image["name"] == "inx_image.texture"
+        assert image["multisampled"] and image["name"] == "image"
         assert image["sample_type"] == (3 if kind == "UInt2DMS" else 1)
         assert next(entry for entry in target["entries"] if entry["name"] == "fragment_main")["sample_rate_shading"]
     with pytest.raises(SyntaxError, match="pixel coordinates"):

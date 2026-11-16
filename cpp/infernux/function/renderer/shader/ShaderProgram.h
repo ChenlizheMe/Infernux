@@ -51,7 +51,6 @@ struct ShaderProgramMetadata
     std::string_view fragmentEntryPoint = "main";
     const ShaderTargetCode &vertexTarget;
     const ShaderTargetCode &fragmentTarget;
-    const std::vector<ShaderProgramPropertyBinding> *properties = nullptr;
     /// Semantic passes borrow the Forward publication's material layout.
     std::shared_ptr<const ShaderProgram> materialLayoutOwner;
 };

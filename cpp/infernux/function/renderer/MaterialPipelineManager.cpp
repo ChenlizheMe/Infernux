@@ -571,7 +571,6 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
         const auto *forwardVariant = shaderArtifact->FindVariant(ShaderCompileTarget::Forward);
         if (shaderArtifact->key != programKey || !forwardVariant || forwardVariant->vertexSpirv != vertShaderCode ||
             forwardVariant->fragmentSpirv != fragShaderCode || metadata.domain != shaderArtifact->domain ||
-            metadata.properties != &shaderArtifact->properties ||
             metadata.vertexEntryPoint != forwardVariant->vertexEntryPoint ||
             metadata.fragmentEntryPoint != forwardVariant->fragmentEntryPoint ||
             &metadata.vertexTarget != forwardVariant->vertexTarget.get() ||
