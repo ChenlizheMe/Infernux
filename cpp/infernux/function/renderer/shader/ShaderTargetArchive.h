@@ -213,9 +213,8 @@ inline ShaderEntryPointCode ReadEntry(Reader &in)
     entry.stage = ReadEnum(in, StageMask);
     for (auto &size : entry.workgroupSize)
         size = in.ReadU32();
-    entry.bindings = ReadVector<std::array<uint32_t, 2>>(in, [](Reader &bytes) {
-        return std::array<uint32_t, 2>{bytes.ReadU32(), bytes.ReadU32()};
-    });
+    entry.bindings = ReadVector<std::array<uint32_t, 2>>(
+        in, [](Reader &bytes) { return std::array<uint32_t, 2>{bytes.ReadU32(), bytes.ReadU32()}; });
     const auto code = in.ReadString();
     entry.code.assign(code.begin(), code.end());
     entry.inputs = ReadVector<ShaderStageVariable>(in, ReadVariable);
