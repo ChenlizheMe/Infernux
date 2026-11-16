@@ -377,6 +377,10 @@ void Run()
     graphicsDesc.raster.cullMode = rhi::CullMode::None;
     graphicsDesc.colorTargetCount = 2;
     graphicsDesc.colorTargets[0].format = formats[0];
+    graphicsDesc.colorTargets[0].blendEnabled = true;
+    graphicsDesc.colorTargets[0].colorBlend = {rhi::BlendFactor::One, rhi::BlendFactor::One, rhi::BlendOperation::Add};
+    graphicsDesc.colorTargets[0].alphaBlend = {rhi::BlendFactor::One, rhi::BlendFactor::One,
+                                               rhi::BlendOperation::Subtract};
     graphicsDesc.colorTargets[1].format = formats[1];
     graphicsDesc.vertexInput.bufferCount = 3;
     graphicsDesc.vertexInput.buffers[0] = {16, rhi::VertexStepMode::Vertex};
@@ -434,6 +438,7 @@ void Run()
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1,
                          &vertexReady, 0, nullptr, 0, nullptr);
     std::array<VkClearValue, 2> clears{};
+    clears[0].color = {{0.125f, 0.125f, 0.125f, 0.25f}};
     VkRenderPassBeginInfo render{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     render.renderPass = fixture.renderPass;
     render.framebuffer = fixture.framebuffer;
@@ -499,19 +504,22 @@ void Run()
                 for (size_t source = 0; source < 3; ++source)
                     value += channelTransform[channel * 3 + source] * input[source];
                 constexpr std::array<float, 3> varyingBias{0.06f, 0.08f, 0.009f};
-                const auto expected = std::lround((value * weights[1] + varyingBias[channel]) * 255.0f);
+                const auto expected = std::lround((value * weights[1] + varyingBias[channel]) * 255.0f) + 32;
                 Require(std::abs(int(colorBytes[y * 256 + x * 4 + channel]) - expected) <= 1,
                         "sRGB sampling/varying/color mismatch");
             }
+            Require(std::abs(int(colorBytes[y * 256 + x * 4 + 3]) - 191) <= 1,
+                    "Independent alpha blend operation was ignored");
             uint32_t identity[2];
             std::memcpy(identity, idBytes.data() + y * 256 + x * 8, sizeof(identity));
             Require(identity[0] == objectId + 7 && identity[1] == 0xfedcba98u,
                     "Integer MRT or absolute first-instance index was changed");
         }
     }
-    std::cout << "Slang indexed mesh, sparse attributes, nested matrix/array varying, reflected "
-                 "uniform/texture/sampler, UNORM-storage+sRGB-sampled view, "
-                 "integer MRT, padded transfer and Compute-to-Vertex sharing passed\n";
+    std::cout
+        << "Slang indexed mesh, sparse attributes, nested matrix/array varying, reflected "
+           "uniform/texture/sampler, UNORM-storage+sRGB-sampled view, "
+           "independent color/alpha blending, integer MRT, padded transfer and Compute-to-Vertex sharing passed\n";
 }
 } // namespace
 

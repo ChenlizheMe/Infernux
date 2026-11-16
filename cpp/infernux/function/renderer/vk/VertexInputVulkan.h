@@ -1,6 +1,6 @@
 #pragma once
 
-#include <function/renderer/InxRenderStruct.h>
+#include <function/renderer/MeshVertexLayout.h>
 #include <vulkan/vulkan.h>
 
 #include <array>
@@ -21,16 +21,28 @@ namespace infernux::vk
 [[nodiscard]] inline std::array<VkVertexInputAttributeDescription, 8> GetVertexAttributeDescriptions() noexcept
 {
     std::array<VkVertexInputAttributeDescription, 8> descriptions{};
-    descriptions[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)};
-    descriptions[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
-    descriptions[2] = {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)};
-    descriptions[3] = {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, color)};
-    descriptions[4] = {4, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)};
-    descriptions[5] = {5, 0, VK_FORMAT_R32G32B32A32_UINT, offsetof(Vertex, boneIndices)};
-    descriptions[6] = {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, boneWeights)};
-    // Keep the established skinning locations stable. Secondary/lightmap UV
-    // was added later and deliberately occupies the next free location.
-    descriptions[7] = {7, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord1)};
+    for (size_t index = 0; index < MeshVertexAttributes.size(); ++index) {
+        const auto &attribute = MeshVertexAttributes[index];
+        VkFormat format;
+        switch (attribute.format) {
+        case rhi::VertexFormat::Float32x2:
+            format = VK_FORMAT_R32G32_SFLOAT;
+            break;
+        case rhi::VertexFormat::Float32x3:
+            format = VK_FORMAT_R32G32B32_SFLOAT;
+            break;
+        case rhi::VertexFormat::Float32x4:
+            format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            break;
+        case rhi::VertexFormat::Uint32x4:
+            format = VK_FORMAT_R32G32B32A32_UINT;
+            break;
+        default:
+            format = VK_FORMAT_UNDEFINED;
+            break;
+        }
+        descriptions[index] = {attribute.location, attribute.bufferSlot, format, attribute.offset};
+    }
     return descriptions;
 }
 

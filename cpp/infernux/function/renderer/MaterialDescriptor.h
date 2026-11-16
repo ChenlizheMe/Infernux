@@ -4,8 +4,8 @@
 #include "rhi/GpuRetirementQueue.h"
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiTexture.h"
+#include "shader/MaterialUniformLayout.h"
 #include "shader/ShaderProgram.h"
-#include "shader/ShaderValueCopy.h"
 #include "vk/VkDescriptorManager.h"
 #include <array>
 #include <atomic>
@@ -105,9 +105,8 @@ class MaterialUBO
     uint32_t m_size = 0;
 
     MaterialUBOLayout m_layout;
-    std::unordered_map<std::string, ShaderValueCopy> m_memberCopies;
+    MaterialUniformLayout m_uniformLayout;
     void WriteValue(const std::string &name, const void *value);
-    void WriteProperty(const std::string &name, MaterialPropertyType type, const MaterialPropertyValue &value);
 };
 
 /**

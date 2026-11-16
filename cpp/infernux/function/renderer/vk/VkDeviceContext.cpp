@@ -855,6 +855,7 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     deviceFeatures.depthBiasClamp = supportedFeatures.depthBiasClamp;     // Optional shadow bias clamping
     deviceFeatures.wideLines = supportedFeatures.wideLines;               // For debug lines (when available)
     deviceFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
+    deviceFeatures.independentBlend = supportedFeatures.independentBlend;
 
     const vk::VulkanFeatureState enabledCapabilityState = featureChain.GetEnabledState();
     m_vulkanFeatures = {};

@@ -37,8 +37,8 @@ class RasterPipeline(RenderPipelineCallback):
         graph.set_output(color)
         self.description=graph.build()
 
-    def render(self, context, camera):
-        context.render_with_graph(camera, self.description)
+    def render(self, context, view):
+        context.render_with_graph(self.description)
 
 
 def main():

@@ -1,5 +1,4 @@
 #include "MaterialDescriptor.h"
-#include "shader/MaterialValueCopy.h"
 #include <algorithm>
 #include <core/log/InxLog.h>
 #include <cstring>
@@ -122,8 +121,7 @@ bool MaterialUBO::Create(VmaAllocator allocator, VkDevice device, const Material
     m_device = device;
     m_layout = layout;
     m_size = layout.size;
-    for (const auto &member : layout.members)
-        m_memberCopies.emplace(member.name, ShaderValueCopy(member, ShaderMatrixOrder::ColumnMajor));
+    m_uniformLayout = MaterialUniformLayout(layout.members);
 
     if (m_size == 0) {
         INXLOG_WARN("Creating MaterialUBO with size 0");
@@ -168,7 +166,7 @@ void MaterialUBO::Destroy()
 
     m_allocator = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
-    m_memberCopies.clear();
+    m_uniformLayout = {};
 }
 
 void MaterialUBO::Update(const InxMaterial &material)
@@ -177,26 +175,12 @@ void MaterialUBO::Update(const InxMaterial &material)
         return;
     }
 
-    for (const auto &[name, property] : material.GetAllProperties())
-        WriteProperty(name, property.type, property.value);
+    m_uniformLayout.Write(m_mappedData, material);
 }
 
 void MaterialUBO::Apply(const InxMaterial &material, const RendererParameterBlock &parameters)
 {
-    for (const auto &[name, property] : parameters.properties) {
-        const auto *declared = material.GetProperty(name);
-        // An immutable block can outlive the shader layout it was recorded for.
-        if (!declared || !MaterialPropertyOverrideCompatible(*declared, property))
-            continue;
-        WriteProperty(name, declared->type, property.value);
-    }
-}
-
-void MaterialUBO::WriteProperty(const std::string &name, MaterialPropertyType type, const MaterialPropertyValue &value)
-{
-    const auto copy = m_memberCopies.find(name);
-    if (copy != m_memberCopies.end())
-        WriteMaterialValue(copy->second, m_mappedData, type, value, name);
+    m_uniformLayout.Apply(m_mappedData, material, parameters);
 }
 
 void MaterialUBO::UpdateTextureIndices(const std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> &indices)
@@ -214,10 +198,7 @@ void MaterialUBO::UpdateTextureIndex(std::string_view name, uint32_t index)
 
 void MaterialUBO::WriteValue(const std::string &name, const void *value)
 {
-    const auto copy = m_memberCopies.find(name);
-    if (copy == m_memberCopies.end())
-        return;
-    copy->second.Write(m_mappedData, value);
+    m_uniformLayout.WriteValue(m_mappedData, name, value);
 }
 
 // ============================================================================

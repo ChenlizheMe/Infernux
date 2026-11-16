@@ -1,4 +1,5 @@
 #include "VulkanRhiDevice.h"
+#include "GraphicsPipelineStateVulkan.h"
 #include "VulkanCommandUploads.h"
 #include <core/types/ShaderBuildStatistics.h>
 
@@ -174,37 +175,6 @@ VkDescriptorType ToVkDescriptorType(rhi::BindingType type)
         return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
     return VK_DESCRIPTOR_TYPE_MAX_ENUM;
-}
-
-VkPrimitiveTopology ToVkTopology(rhi::PrimitiveTopology topology)
-{
-    switch (topology) {
-    case rhi::PrimitiveTopology::TriangleList:
-        return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    case rhi::PrimitiveTopology::TriangleStrip:
-        return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-    case rhi::PrimitiveTopology::LineList:
-        return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-    }
-    return VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
-}
-
-VkCullModeFlags ToVkCullMode(rhi::CullMode mode)
-{
-    switch (mode) {
-    case rhi::CullMode::None:
-        return VK_CULL_MODE_NONE;
-    case rhi::CullMode::Front:
-        return VK_CULL_MODE_FRONT_BIT;
-    case rhi::CullMode::Back:
-        return VK_CULL_MODE_BACK_BIT;
-    }
-    return VK_CULL_MODE_FLAG_BITS_MAX_ENUM;
-}
-
-VkFrontFace ToVkFrontFace(rhi::FrontFace face)
-{
-    return face == rhi::FrontFace::Clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
 }
 
 VkCompareOp ToVkCompareOp(rhi::CompareFunction function)
@@ -2126,29 +2096,20 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
     vertexInput.pVertexAttributeDescriptions = vertexAttributes.data();
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = ToVkTopology(desc.topology);
+    inputAssembly.topology = GraphicsTopology(desc.topology);
 
     VkPipelineViewportStateCreateInfo viewport{};
     viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     viewport.viewportCount = 1;
     viewport.scissorCount = 1;
 
-    VkPipelineRasterizationStateCreateInfo raster{};
-    raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    raster.polygonMode = desc.raster.wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
-    raster.cullMode = ToVkCullMode(desc.raster.cullMode);
-    raster.frontFace = ToVkFrontFace(desc.raster.frontFace);
-    raster.lineWidth = 1.0f;
+    const auto raster = GraphicsRasterState(desc.raster);
 
     VkPipelineMultisampleStateCreateInfo multisample{};
     multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples = rhi::ToVkSampleCount(desc.samples);
 
-    VkPipelineDepthStencilStateCreateInfo depth{};
-    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    depth.depthTestEnable = desc.depth.testEnabled ? VK_TRUE : VK_FALSE;
-    depth.depthWriteEnable = desc.depth.writeEnabled ? VK_TRUE : VK_FALSE;
-    depth.depthCompareOp = ToVkCompareOp(desc.depth.compare);
+    const auto depth = GraphicsDepthStencilState(desc.depth, desc.stencil);
 
     std::array<VkPipelineColorBlendAttachmentState, rhi::GraphicsPipelineDesc::MaxColorTargets> attachments{};
     for (uint32_t index = 0; index < desc.colorTargetCount; ++index) {
@@ -2157,15 +2118,7 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
             vkDestroyPipelineLayout(m_device, layout, nullptr);
             return {};
         }
-        auto &attachment = attachments[index];
-        attachment.blendEnable = target.blendEnabled ? VK_TRUE : VK_FALSE;
-        attachment.srcColorBlendFactor = target.premultipliedAlpha ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_SRC_ALPHA;
-        attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        attachment.colorBlendOp = VK_BLEND_OP_ADD;
-        attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        attachment.alphaBlendOp = VK_BLEND_OP_ADD;
-        attachment.colorWriteMask = target.writeMask;
+        attachments[index] = GraphicsColorState(target);
     }
     VkPipelineColorBlendStateCreateInfo blend{};
     blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ShaderProgramCode.h"
+#include <core/types/ShaderProgramArtifact.h>
 #include <function/renderer/rhi/RenderCoreApi.h>
 
 #include <memory>
@@ -18,6 +19,11 @@ struct ShaderStageSelection
     const ShaderTargetCode &program;
     uint32_t entry;
 };
+
+/// Select a material pass from its retained multi-target publication. No
+/// compiler work or built-in shader-name dispatch belongs to device creation.
+[[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<ShaderStageSelection>
+SelectMaterialShaderEntries(const ShaderProgramArtifact &program, ShaderCompileTarget pass, ShaderCodeTarget target);
 
 /// A concrete selection of entry points, with only their used bindings.
 /// Device publication owns modules and layouts; it never invokes a compiler

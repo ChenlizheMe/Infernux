@@ -127,7 +127,8 @@ rhi::GraphicsPipelineHandle ParticleGpuGraphicsProgram::Get(const MaterialPassPi
     for (uint32_t index = 0; index < descriptor.colorTargetCount; ++index) {
         descriptor.colorTargets[index].format = pass.colorFormats[index];
         descriptor.colorTargets[index].blendEnabled = state.blendEnabled;
-        descriptor.colorTargets[index].premultipliedAlpha = state.premultipliedAlpha;
+        descriptor.colorTargets[index].colorBlend.source =
+            state.premultipliedAlpha ? rhi::BlendFactor::One : rhi::BlendFactor::SourceAlpha;
     }
     const auto pipeline = m_device.CreateGraphicsPipeline(descriptor);
     if (!pipeline.IsValid())

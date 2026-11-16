@@ -1,6 +1,6 @@
 #pragma once
 
-#include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMaterial/MaterialRenderState.h>
 #include <vulkan/vulkan.h>
 
 namespace infernux::vk

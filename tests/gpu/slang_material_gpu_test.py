@@ -148,7 +148,7 @@ class Fill(shader.fullscreen):
             try:
                 inx.Material.from_shader(str(post))
             except ValueError as error:
-                assert "mesh shader author" in str(error)
+                assert "graphics fragment author" in str(error)
             else:
                 raise AssertionError("A fullscreen author was accepted as a mesh material")
             # Runtime rejection and automatic diagnostic resolution are exercised

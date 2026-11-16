@@ -55,6 +55,31 @@ std::vector<ShaderStageSelection> SelectEntries(const ShaderTargetCode &program,
 }
 } // namespace
 
+std::vector<ShaderStageSelection> SelectMaterialShaderEntries(const ShaderProgramArtifact &program,
+                                                              ShaderCompileTarget pass, ShaderCodeTarget target)
+{
+    const auto *variant = program.FindVariant(pass);
+    if (!variant || !program.compilation)
+        throw std::invalid_argument("Material has no compiled pass: " + program.key.ToString());
+    const auto &targets = program.compilation->targets;
+    const auto code =
+        std::find_if(targets.begin(), targets.end(), [target](const auto &value) { return value.target == target; });
+    if (code == targets.end())
+        throw std::invalid_argument("Material publication has no code for this device: " + program.key.ToString());
+    std::vector<ShaderStageSelection> result;
+    for (const auto stage : {rhi::ShaderStage::Vertex, rhi::ShaderStage::Fragment}) {
+        const auto &name = stage == rhi::ShaderStage::Vertex ? variant->vertexEntryPoint : variant->fragmentEntryPoint;
+        if (name.empty())
+            continue; // Producer-owned geometry, such as particles, supplies its own vertex entry.
+        const auto entry = std::find_if(code->entries.begin(), code->entries.end(),
+                                        [&](const auto &value) { return value.stage == stage && value.name == name; });
+        if (entry == code->entries.end())
+            throw std::invalid_argument("Material publication is missing entry: " + name);
+        result.push_back({*code, static_cast<uint32_t>(entry - code->entries.begin())});
+    }
+    return result;
+}
+
 DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const ShaderTargetCode &code,
                                          const std::vector<uint32_t> &entries,
                                          const std::vector<rhi::BindingLayoutHandle> &sharedLayouts)

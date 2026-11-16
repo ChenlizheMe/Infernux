@@ -4,7 +4,6 @@
 #include "shader/ShaderReflection.h"
 #include "vk/VertexInputVulkan.h"
 
-#include <unordered_set>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -17,25 +16,11 @@ inline std::vector<VkVertexInputAttributeDescription>
 FilterVertexAttributesForReflection(const ShaderReflection &vertexReflection)
 {
     const auto allAttributes = vk::GetVertexAttributeDescriptions();
-    const auto &shaderInputs = vertexReflection.GetInputs();
-
-    if (shaderInputs.empty()) {
-        return {allAttributes.begin(), allAttributes.end()};
-    }
-
-    std::unordered_set<uint32_t> consumedLocations;
-    consumedLocations.reserve(shaderInputs.size());
-    for (const auto &input : shaderInputs) {
-        consumedLocations.insert(input.location);
-    }
-
+    const auto layout = MeshVertexLayout(vertexReflection.GetInputs());
     std::vector<VkVertexInputAttributeDescription> filtered;
-    filtered.reserve(allAttributes.size());
-    for (const auto &attribute : allAttributes) {
-        if (consumedLocations.find(attribute.location) != consumedLocations.end()) {
-            filtered.push_back(attribute);
-        }
-    }
+    filtered.reserve(layout.attributeCount);
+    for (uint32_t index = 0; index < layout.attributeCount; ++index)
+        filtered.push_back(allAttributes[layout.attributes[index].location]);
     return filtered;
 }
 

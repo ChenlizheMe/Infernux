@@ -46,6 +46,8 @@ enum class PrimitiveTopology : uint8_t
     TriangleList,
     TriangleStrip,
     LineList,
+    PointList,
+    LineStrip,
 };
 
 enum class CullMode : uint8_t
@@ -53,6 +55,7 @@ enum class CullMode : uint8_t
     None,
     Front,
     Back,
+    FrontAndBack,
 };
 
 enum class FrontFace : uint8_t
@@ -409,11 +412,83 @@ struct BindGroupDesc
     uint32_t textureCount = 0;
 };
 
+enum class PolygonMode : uint8_t
+{
+    Fill,
+    Line,
+    Point
+};
+enum class BlendFactor : uint8_t
+{
+    Zero,
+    One,
+    SourceColor,
+    OneMinusSourceColor,
+    DestinationColor,
+    OneMinusDestinationColor,
+    SourceAlpha,
+    OneMinusSourceAlpha,
+    DestinationAlpha,
+    OneMinusDestinationAlpha,
+    ConstantColor,
+    OneMinusConstantColor,
+    ConstantAlpha,
+    OneMinusConstantAlpha,
+    SourceAlphaSaturate,
+};
+enum class BlendOperation : uint8_t
+{
+    Add,
+    Subtract,
+    ReverseSubtract,
+    Minimum,
+    Maximum
+};
+enum class StencilOperation : uint8_t
+{
+    Keep,
+    Zero,
+    Replace,
+    IncrementAndClamp,
+    DecrementAndClamp,
+    Invert,
+    IncrementAndWrap,
+    DecrementAndWrap,
+};
+
+struct BlendComponent
+{
+    BlendFactor source = BlendFactor::One;
+    BlendFactor destination = BlendFactor::OneMinusSourceAlpha;
+    BlendOperation operation = BlendOperation::Add;
+};
+
+struct StencilFaceState
+{
+    StencilOperation fail = StencilOperation::Keep;
+    StencilOperation pass = StencilOperation::Keep;
+    StencilOperation depthFail = StencilOperation::Keep;
+    CompareFunction compare = CompareFunction::Always;
+    uint32_t readMask = 0xff;
+    uint32_t writeMask = 0xff;
+    uint32_t reference = 0;
+};
+
+struct StencilState
+{
+    bool enabled = false;
+    StencilFaceState front, back;
+};
+
 struct RasterState
 {
     CullMode cullMode = CullMode::Back;
     FrontFace frontFace = FrontFace::CounterClockwise;
-    bool wireframe = false;
+    PolygonMode polygonMode = PolygonMode::Fill;
+    float lineWidth = 1.0f;
+    float depthBias = 0.0f;
+    float depthBiasSlope = 0.0f;
+    float depthBiasClamp = 0.0f;
 };
 
 struct DepthState
@@ -427,7 +502,8 @@ struct ColorTargetState
 {
     PixelFormat format = PixelFormat::Undefined;
     bool blendEnabled = false;
-    bool premultipliedAlpha = false;
+    BlendComponent colorBlend{BlendFactor::SourceAlpha, BlendFactor::OneMinusSourceAlpha, BlendOperation::Add};
+    BlendComponent alphaBlend{};
     uint8_t writeMask = 0x0f;
 };
 
@@ -589,6 +665,7 @@ struct GraphicsPipelineDesc
     VertexInputLayout vertexInput;
     RasterState raster;
     DepthState depth;
+    StencilState stencil;
     SampleCount samples = SampleCount::One;
     std::array<ColorTargetState, MaxColorTargets> colorTargets{};
     uint32_t colorTargetCount = 0;
