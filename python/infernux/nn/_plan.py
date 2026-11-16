@@ -72,7 +72,7 @@ def _image_facts(layer):
 
 def _parameter_facts(layer, parameters):
     if layer.kind == "linear":
-        return dict(_B=layer.input_shape[0], _K=layer.input_shape[1], _M=layer.output_shape[1])
+        return dict(_B=math.prod(layer.input_shape[:-1]), _K=layer.input_shape[-1], _M=layer.output_shape[-1])
     facts = _image_facts(layer)
     sh, sw, dh, dw, groups = layer.options
     _, cig, kh, kw = parameters[layer.weight].shape
@@ -561,9 +561,9 @@ class _Definition:
                 if type(layer.weight) is not int or not 0 <= layer.weight < len(self.parameters):
                     raise ValueError("Linear requires a valid canonical weight slot")
                 weight = self.parameters[layer.weight].shape
-                if len(before) != 2 or len(weight) != 2 or before[1] != weight[1]:
+                if not before or len(weight) != 2 or before[-1] != weight[1]:
                     raise ValueError("fixed Linear input/weight shapes differ")
-                expected = before[0], weight[0]
+                expected = (*before[:-1], weight[0])
                 if layer.bias is not None and (type(layer.bias) is not int or not 0 <= layer.bias < len(self.parameters)
                                                or self.parameters[layer.bias].shape != (weight[0],)):
                     raise ValueError("fixed Linear bias shape/slot differs")
@@ -869,8 +869,8 @@ class _Capture:
         return self._append((value,), _Layer("constant", value.shape, shape, options=(float(fill),), dtype=dtype.name))
 
     def linear(self, module, x):
-        if not isinstance(x, _Symbol) or len(x.shape) != 2 or x.shape[1] != module.in_features:
-            raise ValueError("Linear input must have the exact fixed (batch, in_features) shape")
+        if not isinstance(x, _Symbol) or not x.shape or x.shape[-1] != module.in_features:
+            raise ValueError("Linear input's last dimension must match in_features")
         if module.weight.shape != (module.out_features, module.in_features):
             raise ValueError("Linear weight must have shape (out_features, in_features)")
         if module.bias is not None and module.bias.shape != (module.out_features,):
@@ -884,7 +884,7 @@ class _Capture:
             if slot is None:
                 raise ValueError("a Parameter must belong to the captured model")
             slots.append(slot)
-        return self._append((x,), _Layer("linear", x.shape, (x.shape[0], module.out_features), *slots))
+        return self._append((x,), _Layer("linear", x.shape, (*x.shape[:-1], module.out_features), *slots))
 
     def conv2d(self, module, x):
         if not isinstance(x, _Symbol) or len(x.shape) != 4 or x.shape[1] != module.in_channels:
@@ -1369,14 +1369,14 @@ class Plan:
                 output = empty(layer.output_shape)
                 dx = empty(before.shape)
                 if layer.kind in _PARAMETER_OPS:
-                    m = layer.output_shape[1]
                     weight = state[layer.weight]
                     facts = _parameter_facts(layer, self.definition.parameters)
                     _, pull_dx, pull_dw, pull_db = _PARAMETER_OPS[layer.kind]
                     operations.append((
                         prepare(pull_dx, (weight, output, dx), **facts),
                         prepare(pull_dw, (before, output, empty(weight.shape)), **facts),
-                        prepare(pull_db, (output, empty((m,))), **facts) if layer.bias is not None else None))
+                        prepare(pull_db, (output, empty(self.definition.parameters[layer.bias].shape)), **facts)
+                        if layer.bias is not None else None))
                 elif self.device == "gpu" and _UNARY[layer.kind].local_ad:
                     declaration = self.operations[index][0]
                     previous = set(declaration._executables)

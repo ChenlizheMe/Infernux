@@ -419,6 +419,66 @@ def check_functional_call(device):
     print("Functional calls reuse Work and isolate model state on", device, flush=True)
 
 
+def check_linear_batches(device):
+    from infernux.nn import _plan
+
+    rng = np.random.default_rng(24)
+    model = nn.Sequential(nn.Linear(3, 4, device=device), nn.Tanh(), nn.Linear(4, 2, device=device))
+    w1, b1, w2, b2 = (rng.uniform(-.6, .6, shape).astype(np.float32)
+                      for shape in ((4, 3), (4,), (2, 4), (2,)))
+    names = ("0.weight", "0.bias", "2.weight", "2.bias")
+    model.load_state_dict({name: nn.tensor(value) for name, value in zip(names, (w1, b1, w2, b2), strict=True)})
+    alternative = model.state_dict()
+    new_weight = -.75 * w2
+    alternative["2.weight"] = nn.tensor(new_weight, device=device)
+    owner, method = (inx.compute, "_execute_work_instance") if device == "gpu" else (_plan, "_execute_work")
+    execute = getattr(owner, method)
+
+    for shape in ((3,), (5, 7, 3), (3, 5, 17, 3)):
+        xs = rng.uniform(-1., 1., shape).astype(np.float32)
+        x = nn.tensor(xs, device=device)
+        hidden = np.tanh(xs @ w1.T + b1)
+        expected = hidden @ w2.T + b2
+        with nn.no_grad(), patch.object(model, "_capture_definition", wraps=model._capture_definition) as capture, \
+             patch.object(owner, method, wraps=execute) as work, \
+             patch.object(inx.compute.Buffer, "get_data", side_effect=AssertionError("forward read back a buffer")):
+            y = model(x)
+            replaced = nn.functional_call(model, alternative, x)
+            assert capture.call_count == 1 and work.call_count == 2
+            if device == "gpu":
+                assert model._plan._native_forward.work._native.dispatch_count == 3
+            else:
+                assert all(len(call.args[0].operations) == 3 for call in work.call_args_list)
+        assert y.device == replaced.device == device and y.shape == replaced.shape == (*shape[:-1], 2)
+        np.testing.assert_allclose(y.cpu().numpy(), expected, rtol=3e-5, atol=3e-6)
+        np.testing.assert_allclose(replaced.cpu().numpy(), hidden @ new_weight.T + b2, rtol=3e-5, atol=3e-6)
+
+        x.requires_grad = True
+        seeds = rng.uniform(-.3, .6, expected.shape).astype(np.float32)
+        actual = nn.autograd.grad(model(x), (x, *model.parameters()), nn.tensor(seeds, device=device))
+        dz = seeds @ w2 * (1. - hidden ** 2)
+        flat_dz, flat_seeds = dz.reshape(-1, w1.shape[0]), seeds.reshape(-1, w2.shape[0])
+        expected_vjp = (dz @ w1, flat_dz.T @ xs.reshape(-1, w1.shape[1]), flat_dz.sum(axis=0),
+                        flat_seeds.T @ hidden.reshape(-1, w2.shape[1]), flat_seeds.sum(axis=0))
+        for gradient, reference in zip(actual, expected_vjp, strict=True):
+            assert gradient.device == device and gradient.shape == reference.shape
+            np.testing.assert_allclose(gradient.cpu().numpy(), reference, rtol=5e-5, atol=5e-6)
+
+        directions = rng.uniform(-.5, .7, shape).astype(np.float32)
+        _, tangent = nn.autograd.jvp(model, x, nn.tensor(directions, device=device))
+        reference = (directions @ w1.T * (1. - hidden ** 2)) @ w2.T
+        np.testing.assert_allclose(tangent.cpu().numpy(), reference, rtol=3e-5, atol=3e-6)
+        np.testing.assert_allclose((tangent.cpu().numpy() * seeds).sum(),
+                                   (actual[0].cpu().numpy() * directions).sum(), rtol=3e-5, atol=3e-6)
+
+    with np.testing.assert_raises_regex(ValueError, "empty tensors"):
+        nn.tensor(np.empty((0, 3), dtype=np.float32), device=device)
+    with np.testing.assert_raises_regex(ValueError, "in_features"):
+        model(nn.tensor(np.zeros((2, 1, 4), dtype=np.float32), device=device))
+    print("Linear batches preserve every prefix axis in one Work, with analytic input and parameter gradients on",
+          device, flush=True)
+
+
 def main():
     workspace = tempfile.TemporaryDirectory(prefix="infernux-slang-network-")
     project = Path(workspace.name)
@@ -480,6 +540,8 @@ def main():
         check_composed_optimizers("gpu")
         check_functional_call("cpu")
         check_functional_call("gpu")
+        check_linear_batches("cpu")
+        check_linear_batches("gpu")
     finally:
         inx.compute._release_engine_resources()
         native.cleanup()

@@ -16,7 +16,7 @@
 | `Tensor.as_buffer()` | 取得同一存储的只读平坦视图 | 不读回 GPU，不复制显存内容 |
 | `nn.Module` | 通过 `forward(self, observation, actions, ...)` 定义静态模型 | 一个或多个张量输入，返回单个张量或一组有序张量 `tuple`。输入的形状、类型、设备和梯度签名共同确定固定图，同一模型的图共享参数与优化器状态 |
 | `model(*inputs)`、`model.forward(*inputs)` | 执行已捕获模型 | 普通调用可直接接收同一设备及计算宿主上的模型输出，例如 `head(encoder(x))`。反向沿各次调用传播，并按叶张量和参数身份累积梯度。 |
-| `nn.Linear(in_features, out_features, bias=True, device=None, dtype=None)` | 仿射层 | float32 二维输入 `[batch, in_features]`；带偏置或不带偏置；整数特征先显式 `.float()` |
+| `nn.Linear(in_features, out_features, bias=True, device=None, dtype=None)` | 仿射层 | float32 输入 `[..., in_features]`，包括单向量。输出保留前缀轴并替换末轴。整数特征先显式 `.float()`。 |
 | `nn.Conv2d(in_channels, out_channels, kernel_size, ...)` | 固定 NCHW 卷积与输入/权重/偏置反向 | 正整数 stride/dilation/groups、可选 bias、零填充；padding 支持整数/二元组、valid、单位 stride 下的 same（含非对称边界） |
 | `nn.PixelShuffle(upscale_factor)`、`nn.functional.pixel_shuffle` | 通道重排放大与反向 | 固定 NCHW，通道数须整除放大倍率的平方；无重采样近似 |
 | `nn.Sigmoid()` | 稳定 sigmoid 与反向 | 正负输入分别处理指数；CPU 原语与 GPU 局部 AD 共用图上的梯度约定 |
@@ -39,6 +39,8 @@
 | `nn.ones_like/zeros_like` | 创建同形、默认同类型的值 | 编译区域生成原生常量填充节点；普通调用创建独立叶存储；支持显式 dtype，默认不继承输入梯度 |
 
 捕获允许由 Python 常量决定结构；张量数值不能决定 Python 分支或循环。离线调用遇到新输入签名会捕获对应图，重复签名直接复用；帧内受管请求只使用事先准备好的图，不在调度时编译。模型结构改变后调用 `recompile()` 清空图缓存；参数拓扑改变时应创建新模型。模式切换和设备迁移也会清理相关图，不创建参数副本来模拟多种批量大小。
+
+`Linear` 对每个前缀位置应用同一组权重。例如 `[world, agent, in_features]` 输入得到 `[world, agent, out_features]`，所有位置在该层的同一个 Work 操作内计算。反向将所有前缀位置的贡献归约到同一组权重和偏置梯度。`functional_call` 可以为整批绑定另一份固定参数。现有 Tensor 布局要求各维长度为正，零批量输入会在创建空 Tensor 时被拒绝。
 
 图像重采样按轴分解，共享普通值图和 VJP；反向的归约仍由编译器生成合法内切点，可以随训练预算跨帧续行。没有为图像另建一个执行器。工作项中的 `float(...)` 表示显式 float32 转换，CPU 与 Vulkan 使用相同数值契约。
 
