@@ -147,6 +147,10 @@ class MetadataQueue final : public ComputeQueue
     {
         return 0;
     }
+    SubmissionTicket GetCapacityPredecessor() const noexcept override
+    {
+        return {}; // This test queue has no bounded submission pool.
+    }
 };
 
 inline bool Run()

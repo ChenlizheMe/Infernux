@@ -818,7 +818,8 @@ class JoltGpuScene::Impl
         QueueLayout(domain, capacity);
     }
 
-    BodyAllocation Reserve(RuntimeWorld &world, uint32_t id, PhysicsActorHandle actor, OwnerIdentity owner)
+    BodyAllocation Reserve(RuntimeWorld &world, uint32_t id, PhysicsActorHandle actor, OwnerIdentity owner,
+                           bool initialResident)
     {
         auto &domain = Domain(world);
         if (domain.closed || !actors.IsValid(actor) || id == InvalidBodyId || byId.count(id))
@@ -846,6 +847,7 @@ class JoltGpuScene::Impl
         slots[record].bodyId = id;
         slots[record].actor = actor;
         slots[record].owner = std::move(owner);
+        slots[record].desiredResident = initialResident;
         domain.freeLocals.pop_back();
         domain.records[local] = record;
         ++domain.liveCount;
@@ -1986,9 +1988,9 @@ bool JoltGpuScene::RegisterPartition(RuntimeWorld &world, uint32_t capacity)
     return true;
 }
 JoltGpuScene::BodyAllocation JoltGpuScene::Reserve(RuntimeWorld &world, uint32_t id, PhysicsActorHandle actor,
-                                                   OwnerIdentity owner)
+                                                   OwnerIdentity owner, bool initialResident)
 {
-    return m_impl->Reserve(world, id, actor, std::move(owner));
+    return m_impl->Reserve(world, id, actor, std::move(owner), initialResident);
 }
 void JoltGpuScene::ReserveCapacity(RuntimeWorld &world, uint32_t count)
 {

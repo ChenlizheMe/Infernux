@@ -452,8 +452,12 @@ void PhysicsECSStore::RegisterActor(ActorHandle handle)
         }
     } else if (actor.bodyInBroadphase) {
         world.DestroyConstraintsForBody(actor.bodyId);
-        if (!CancelBroadphaseAdd(*actor.runtimeWorld, actor.bodyId))
+        if (CancelBroadphaseAdd(*actor.runtimeWorld, actor.bodyId)) {
+            // Revoke a staged first residency without resetting pending-add velocity.
+            world.RemoveBodyFromBroadphase(actor.bodyId, true);
+        } else {
             QueueBroadphaseRemove(*actor.runtimeWorld, actor.bodyId);
+        }
         actor.bodyInBroadphase = false;
     }
     UpdateJointEndpointReadiness(actor);

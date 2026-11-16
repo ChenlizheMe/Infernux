@@ -187,8 +187,9 @@ class JoltGpuScene final
     [[nodiscard]] bool RegisterPartition(RuntimeWorld &world, uint32_t initialCapacity);
     /// publicBodyId has already been reserved by PhysicsECSStore for actor.
     /// This backend only installs its address; it never allocates public IDs.
+    /// initialResident belongs to this new identity, before its first StageActor.
     [[nodiscard]] BodyAllocation Reserve(RuntimeWorld &world, uint32_t publicBodyId, PhysicsActorHandle actor,
-                                         OwnerIdentity owner);
+                                         OwnerIdentity owner, bool initialResident);
     void ReserveCapacity(RuntimeWorld &world, uint32_t capacity);
     void StageActor(uint32_t bodyId, PreparedGpuActor actor);
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);

@@ -44,6 +44,7 @@ class VulkanComputeQueue final : public rhi::ComputeQueue
     {
         return m_executor.GetRetainedUploadBytes();
     }
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::SubmissionTicket GetCapacityPredecessor() const noexcept override;
     /// Snapshot of the latest successful submission. Timeline handles are
     /// borrowed from the device's queue manager.
     [[nodiscard]] VulkanSubmissionExecutor::ExecuteResult LastSubmission() const noexcept

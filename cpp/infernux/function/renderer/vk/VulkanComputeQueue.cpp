@@ -246,6 +246,13 @@ uint64_t VulkanComputeQueue::GetPendingSubmissionCount() const noexcept
         std::count_if(m_slots.begin(), m_slots.end(), [](const Slot &slot) { return slot.ticket.IsValid(); }));
 }
 
+rhi::SubmissionTicket VulkanComputeQueue::GetCapacityPredecessor() const noexcept
+{
+    if (!m_context || m_slots.empty() || FindFreeSlot() != UINT32_MAX)
+        return {};
+    return m_slots[m_next].ticket; // Same accepted slot as blocking Submit.
+}
+
 rhi::SubmissionTicket VulkanComputeQueue::Submit(const Recorder &record, rhi::ComputeSubmissionResources resources)
 {
     if (!m_context || !record)

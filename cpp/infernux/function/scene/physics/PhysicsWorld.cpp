@@ -101,7 +101,10 @@ PhysicsBodyMotionState DecodeMotion(const JoltGpuScene::Publication &publication
     result.centerOfMass = Vector(record.centerOfMass);
     result.linearVelocity = Vector(record.linearVelocity);
     result.angularVelocity = Vector(record.angularVelocity);
-    result.inverseMass = glm::vec3(record.positionInverseMass.w);
+    const auto frozenTranslation = record.meta.w;
+    const float inverseMass = record.positionInverseMass.w;
+    result.inverseMass = {frozenTranslation & 1u ? 0.0f : inverseMass, frozenTranslation & 2u ? 0.0f : inverseMass,
+                          frozenTranslation & 4u ? 0.0f : inverseMass};
     result.inverseInertia = {Vector(record.inverseInertia0), Vector(record.inverseInertia1),
                              Vector(record.inverseInertia2)};
     result.inertia = {Vector(record.inertia0), Vector(record.inertia1), Vector(record.inertia2)};
@@ -1444,9 +1447,11 @@ uint32_t PhysicsWorld::CreateBody(PhysicsActorData &actor)
         store.QueueBodyCreation(handle);
         return UINT32_MAX;
     }
+    // RegisterActor creates only an active actor. Install its first model as resident;
+    // the later broadphase add still flushes pending forces through the same source.
     const auto allocation =
         m_gpuScene->Reserve(domain.owner, store.AllocateBodyIdentity(), handle,
-                            {PhysicsTargetReference(actor.owner->GetTransform()), actor.owner->GetID()});
+                            {PhysicsTargetReference(actor.owner->GetTransform()), actor.owner->GetID()}, true);
     actor.bodyId = allocation.bodyId;
     try {
         m_gpuScene->StageActor(allocation.bodyId, std::move(*prepared));

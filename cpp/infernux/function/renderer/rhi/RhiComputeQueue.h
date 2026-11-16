@@ -98,6 +98,10 @@ class ComputeQueue
     /// Retained command upload pages. Completed pages return to the device pool.
     /// Pure observation; no collection, reset, allocation or driver calls.
     [[nodiscard]] virtual uint64_t GetRetainedUploadBytes() const noexcept = 0;
+    /// Only when the bounded submission pool is full, return its actual accepted
+    /// slot predecessor. Otherwise invalid; allocation refusal creates no ticket.
+    /// Pure observation: no collection, allocation, submission or wait.
+    [[nodiscard]] virtual SubmissionTicket GetCapacityPredecessor() const noexcept = 0;
 
     [[nodiscard]] ComputeQueueStatistics GetStatistics() const noexcept
     {

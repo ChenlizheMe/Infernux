@@ -210,6 +210,8 @@ class JoltGpuTick::Impl
     FrameWorkWaitResult WaitForProgress(uint64_t maxWaitNanoseconds)
     {
         if (receipts.empty()) {
+            if (lane->prepared && lane->prepared->peer == this && lane->prepared->owner != this)
+                return lane->prepared->owner->WaitForProgress(maxWaitNanoseconds);
             for (const auto &stage : sharedStages) {
                 if (!stage->completion)
                     continue;
@@ -221,8 +223,22 @@ class JoltGpuTick::Impl
                                                     : FrameWorkWaitResult::Waiting;
             }
         }
-        if (receipts.empty())
-            return FrameWorkWaitResult::Blocked;
+        if (receipts.empty()) {
+            // A refused prepared packet may need a slot held by another
+            // accepted user of this same queue, outside this Tick source.
+            const auto dependency =
+                submissionBusy && Submission() ? host.Queue().GetCapacityPredecessor() : rhi::SubmissionTicket{};
+            if (!dependency.IsValid())
+                return FrameWorkWaitResult::Blocked;
+            try {
+                const bool completed = host.Queue().WaitFor(dependency, maxWaitNanoseconds);
+                lane->Poll();
+                return completed ? FrameWorkWaitResult::Progress : FrameWorkWaitResult::Waiting;
+            } catch (...) {
+                Fail();
+                throw;
+            }
+        }
         const auto count = receipts.size();
         try {
             const bool completed =
@@ -2099,7 +2115,7 @@ bool JoltGpuTick::Impl::Lane::Advance(bool gpu)
 {
     if (members[0]->pressureActive || members[0]->PressureRequested())
         return members[0]->Advance(gpu);
-    if (!gpu && !focus) {
+    if (!focus) {
         try {
             if (PrepareShared())
                 return true;

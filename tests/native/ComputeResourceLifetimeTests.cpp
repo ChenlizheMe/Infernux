@@ -254,6 +254,10 @@ class TestQueue final : public ComputeQueue
     {
         return 0;
     }
+    SubmissionTicket GetCapacityPredecessor() const noexcept override
+    {
+        return {}; // This test queue has no bounded submission pool.
+    }
 
   private:
     void CompleteThrough(uint64_t serial)

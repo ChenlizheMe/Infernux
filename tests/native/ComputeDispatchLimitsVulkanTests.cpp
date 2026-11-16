@@ -73,6 +73,10 @@ class PreparationQueue final : public ComputeQueue
     {
         return 0;
     }
+    SubmissionTicket GetCapacityPredecessor() const noexcept override
+    {
+        return {}; // This test queue has no bounded submission pool.
+    }
 };
 
 static void Dispatch(ComputeHost &host, const std::shared_ptr<ComputeKernel> &kernel,
