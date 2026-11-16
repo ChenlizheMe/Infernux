@@ -30,14 +30,17 @@ void RefreshPhysicsLayers(uint32_t affectedLayers)
     auto &world = PhysicsWorld::Instance();
     if (!world.IsInitialized())
         return;
+    const auto layerChanged = [affectedLayers](const GameObject &object) {
+        return (affectedLayers & TagLayerManager::LayerToMask(object.GetLayer())) != 0;
+    };
     PhysicsECSStore::Instance().ForEachAliveActor([&](const PhysicsActorData &actor) {
         if (actor.bodyId == UINT32_MAX)
             return;
-        // A child collider contributes the actual collision leaf's layer.
-        // Empty actors use their Rigidbody owner's layer instead.
-        const auto *surface = actor.primaryCollider;
-        const auto *object = surface ? surface->GetGameObject() : actor.owner;
-        if (affectedLayers & TagLayerManager::LayerToMask(object->GetLayer()))
+        // Every member can contribute a collision layer. Empty actors use the owner's layer.
+        const bool colliderLayerChanged =
+            std::any_of(actor.colliders.begin(), actor.colliders.end(),
+                        [&](const Collider *collider) { return layerChanged(*collider->GetGameObject()); });
+        if (colliderLayerChanged || (!actor.primaryCollider && layerChanged(*actor.owner)))
             world.RefreshBodyLayers(actor.bodyId);
     });
 }
