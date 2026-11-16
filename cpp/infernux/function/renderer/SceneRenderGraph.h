@@ -265,13 +265,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     void SetScreenUISnapshot(InxScreenUIRenderer::Snapshot snapshot, InxScreenUIRenderer::Snapshot world = {})
     {
-        if (m_screenUISnapshot != snapshot || m_worldUISnapshot != world) {
-            m_screenUISnapshot = std::move(snapshot);
-            m_worldUISnapshot = std::move(world);
-            // Selective occlusion runs and texture dependencies are values in
-            // this UI publication, not merely in the author's graph topology.
-            m_needsRebuild = true;
-        }
+        // EnsureGraphBuilt tracks the sampled texture generations and selective
+        // depth runs. An ordinary UI command update only replaces draw values.
+        m_screenUISnapshot = std::move(snapshot);
+        m_worldUISnapshot = std::move(world);
     }
 
     /// Attach the Scene-only editor outline renderer. The graph topology only
