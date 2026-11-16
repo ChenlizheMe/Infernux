@@ -271,7 +271,6 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
 {
     enum class Phase
     {
-        Initialize,
         RoundWindow,
         Assemble,
         TopologyReady,
@@ -385,7 +384,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         // recipe is emitted; seed/finalize see precisely the frozen layout.
         config.references.z = FinalBank(jointSort, j);
         config.references.w = FinalBank(patchSort, p);
-        BuildInitialization();
+        BuildRoundWindow();
     }
 
     void ValidateInput(const std::shared_ptr<rhi::ComputeBuffer> &buffer) const
@@ -516,22 +515,23 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         cursor = {};
         planBank = oldBank;
     }
-    void BuildInitialization()
-    {
-        ResetPlan(Phase::Initialize);
-        Add(InitWords, config.limits.x);
-        Add(Seed, 1u);
-        Add(BuildJointRefs, config.counts.y);
-        Add(BuildPatchRefs, config.counts.z);
-        Add(InitLabels, config.counts.x);
-    }
     void BuildRoundWindow()
     {
         ResetPlan(Phase::RoundWindow);
+        const bool firstWindow = scheduledRounds == 0u;
         const uint32_t remaining = config.counts.x - scheduledRounds;
-        windowCount = std::min(scheduledRounds == 0u ? 1u : ConstraintRoundWindow, remaining);
+        windowCount = std::min(firstWindow ? 1u : ConstraintRoundWindow, remaining);
         if (!windowCount)
             throw std::runtime_error("GPU constraint CC exhausted its proven body-slot bound");
+        if (firstWindow) {
+            // The first round can consume the initialization writes in queue
+            // order. Only the convergence record needs a host receipt.
+            Add(InitWords, config.limits.x);
+            Add(Seed, 1u);
+            Add(BuildJointRefs, config.counts.y);
+            Add(BuildPatchRefs, config.counts.z);
+            Add(InitLabels, config.counts.x);
+        }
         for (uint32_t round = 0; round < windowCount; ++round) {
             Add(ShortcutLabels, config.counts.x);
             Kind(PropagateEdges, ConstraintJoint);
@@ -713,16 +713,16 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         auto callback = std::move(completed);
         callback(std::move(value));
     }
-    JoltGpuControlWork Next()
+    JoltGpuControlWork Next(size_t dispatchLimit = MaxDispatchesPerPacket)
     {
         if (phase == Phase::Done || phase == Phase::TopologyReady)
             return {};
         if (!Capacity())
-            return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+            return {nullptr, [self = shared_from_this(), dispatchLimit] { return self->Next(dispatchLimit); }};
         Cursor next = cursor;
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
-        while (next.operation < plan.size() && dispatches.size() < MaxDispatchesPerPacket) {
+        while (next.operation < plan.size() && dispatches.size() < dispatchLimit) {
             const auto &op = plan[next.operation];
             const uint32_t limit = Collective(op.entry) ? ConstraintBlockLimit
                                    : Summary(op.entry)  ? 1u
@@ -737,39 +737,41 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             }
         }
         if (dispatches.empty())
-            return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+            return {nullptr, [self = shared_from_this(), dispatchLimit] { return self->Next(dispatchLimit); }};
+        const bool canContract = dispatches.size() > 1;
         const bool boundary = next.operation == plan.size();
         const auto submittedPhase = phase;
         std::vector<rhi::ComputeBufferRead> reads;
-        if (boundary && phase == Phase::RoundWindow)
-            reads.push_back({schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
-        if (boundary && phase == Phase::Assemble)
-            reads.push_back({schedule, uint64_t(config.layout.x) * WordBytes, 2u * WordBytes});
-        // Partial plans and the Initialize -> RoundWindow host transition read
-        // no GPU values. CC summaries and schedule installation still wait.
-        const auto resumeAfter = !boundary || submittedPhase == Phase::Initialize
-                                     ? JoltGpuControlWork::ResumeAfter::Acceptance
-                                     : JoltGpuControlWork::ResumeAfter::Completion;
+        if (boundary) {
+            if (submittedPhase == Phase::RoundWindow)
+                reads.push_back({schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
+            else
+                reads.push_back({schedule, uint64_t(config.layout.x) * WordBytes, 2u * WordBytes});
+        }
+        const auto resumeAfter =
+            boundary ? JoltGpuControlWork::ResumeAfter::Completion : JoltGpuControlWork::ResumeAfter::Acceptance;
         auto packet =
             rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), std::move(reads));
-        return {packet,
-                [self = shared_from_this(), packet, next, boundary, submittedPhase]() -> JoltGpuControlWork {
-                    // This cursor advances once after acceptance; numerical
-                    // readback transitions below additionally require completion.
-                    self->cursor = next;
-                    if (boundary) {
-                        if (submittedPhase == Phase::Initialize)
-                            self->BuildRoundWindow();
-                        else if (submittedPhase == Phase::RoundWindow)
-                            self->DecodeRound(packet);
-                        else if (submittedPhase == Phase::Assemble) {
-                            self->Install(packet);
-                            return {};
-                        }
+        JoltGpuControlWork result{
+            packet,
+            [self = shared_from_this(), packet, next, boundary, submittedPhase]() -> JoltGpuControlWork {
+                // This cursor advances once after acceptance; numerical
+                // readback transitions below additionally require completion.
+                self->cursor = next;
+                if (boundary) {
+                    if (submittedPhase == Phase::RoundWindow)
+                        self->DecodeRound(packet);
+                    else {
+                        self->Install(packet);
+                        return {};
                     }
-                    return self->Next();
-                },
-                resumeAfter};
+                }
+                return self->Next();
+            },
+            resumeAfter};
+        if (canContract)
+            result.prepareMinimum = [self = shared_from_this()] { return self->Next(1); };
+        return result;
     }
 
     std::shared_ptr<Impl> implementation;
@@ -785,7 +787,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     std::vector<ScanLevel> hierarchy;
     std::vector<Operation> plan;
     Cursor cursor;
-    Phase phase = Phase::Initialize;
+    Phase phase = Phase::RoundWindow;
     uint32_t oldBank = 0u, planBank = 0u, scheduledRounds = 0u, windowCount = 0u;
 };
 

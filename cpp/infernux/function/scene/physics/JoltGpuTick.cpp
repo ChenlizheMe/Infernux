@@ -1849,6 +1849,20 @@ class JoltGpuTick::Impl
                                 : batchKind == PacketKind::Commands ? commandCursor->TrySubmit()
                                                                     : packet->TrySubmit();
             if (!ticket) {
+                // Slot-free admission can refuse a packet whose own temporary
+                // allocations leave no room for its staging. Drop the old
+                // unaccepted prefix before preparing its minimum on the host.
+                const bool adjustable = batchKind == PacketKind::NumericalWork || batchKind == PacketKind::Pressure;
+                if (adjustable && !preservation && workMinimum && !host.Queue().GetCapacityPredecessor().IsValid()) {
+                    batch->Cancel();
+                    batch.reset();
+                    workContinuation = std::exchange(workMinimum, {});
+                    continuationKind = batchKind;
+                    continuationResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
+                    batchNumericalKey.clear();
+                    submissionBusy = false;
+                    return true;
+                }
                 // Retained retry state, not a second execution queue. Retry
                 // only after a receipt, peer progress, pressure change or a
                 // new host opportunity can have released the blocked resource.
