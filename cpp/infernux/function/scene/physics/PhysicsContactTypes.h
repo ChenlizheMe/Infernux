@@ -4,13 +4,19 @@
 
 #include <glm/glm.hpp>
 
+#include <array>
 #include <cstdint>
+#include <vector>
 
 namespace infernux
 {
 
 class Collider;
 class GameObject;
+
+// Canonical Collider ID/generation pairs, independent of solver/device indices.
+using PhysicsColliderPair = std::array<uint64_t, 4>;
+using PhysicsColliderPairs = std::vector<PhysicsColliderPair>;
 
 // ============================================================================
 // Collision — Unity-style collision data passed to callbacks

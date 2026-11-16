@@ -1,6 +1,8 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Body/MotionProperties.h>
+#include <Jolt/Physics/Collision/Shape/CompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 
 #include "../Collider.h"
 #include "../GameObject.h"
@@ -101,7 +103,24 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
 
 JPH::BodyID JoltCpuScene::CreateBody(uint32_t bodyId, const PreparedCpuActor &actor)
 {
-    const auto native = CreateBody(bodyId, actor.settings);
+    BodyRecord record;
+    record.shape = actor.settings.GetShape();
+    if (actor.members.size() > 1) {
+        const auto *root = record.shape.GetPtr();
+        if (root->GetSubType() == JPH::EShapeSubType::OffsetCenterOfMass)
+            root = static_cast<const JPH::OffsetCenterOfMassShape *>(root)->GetInnerShape();
+        record.memberCompound = static_cast<const JPH::CompoundShape *>(root);
+    }
+    record.surfaces.reserve(actor.members.size());
+    for (const auto *collider : actor.members) {
+        const auto layer = collider->GetGameObject()->GetLayer();
+        record.surfaces.push_back({PhysicsTargetReference(collider), collider->GetComponentID(),
+                                   collider->GetLifetimeGeneration(), static_cast<uint32_t>(layer),
+                                   TagLayerManager::Instance().GetLayerCollisionMask(layer), collider->GetFriction(),
+                                   collider->GetBounciness(), collider->GetFrictionCombine(),
+                                   collider->GetBounceCombine(), collider->IsTrigger()});
+    }
+    const auto native = CreateBody(bodyId, actor.settings, std::move(record));
     if (actor.mass && (uint32_t(actor.settings.mAllowedDOFs) & 0x38u) != 0) {
         // Native creation initializes mass/DOFs. Install the shared validated
         // eigensystem before broadphase publication: Jolt's generic tensor

@@ -4,6 +4,7 @@
 #include <Jolt/GPU/PhysicsStages.h>
 #include <Jolt/GPU/SleepTypes.h>
 #include "JoltGpuJointLayout.h"
+#include "PhysicsContactTypes.h"
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
 
@@ -20,11 +21,6 @@ class JoltGpuSleep;
 class JoltGpuArticulations;
 struct JoltGpuArticulationState;
 struct JoltGpuGeometryLease;
-// Native-only lifetime identity: (Collider A ID/generation, B ID/generation).
-// Canonical endpoint order is unsigned component ID, then generation.
-using PhysicsColliderPair = std::array<uint64_t, 4>;
-using PhysicsColliderPairs = std::vector<PhysicsColliderPair>;
-
 // One accepted policy prefix, including every endpoint's full ID/generation.
 // Old and new generations of one ID may coexist while a Scene is retained.
 struct JoltGpuColliderPairs
