@@ -5,6 +5,7 @@
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Physics/Body/BodyID.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
+#include <Jolt/Physics/Collision/SimShapeFilter.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include "InfernuxJoltJobSystemAdapter.h"
 #include "JoltCpuActor.h"
@@ -40,7 +41,7 @@ class JoltCpuExecution final
 /// Native state owned by one logical World. Public identities are supplied by
 /// the common actor store; Jolt indices/sequence numbers never escape this
 /// backend. The shared layer filters outlive the scene; contact policy is owned here.
-class JoltCpuScene final : private JPH::ContactListener
+class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFilter
 {
   public:
     JoltCpuScene(const EngineConfig &config, const JPH::BroadPhaseLayerInterface &layers,
@@ -51,6 +52,11 @@ class JoltCpuScene final : private JPH::ContactListener
     /// Creation does not enter broadphase. The common actor lifecycle publishes
     /// the body through Jolt's normal single/batch add operations.
     JPH::BodyID CreateBody(uint32_t bodyId, const PreparedCpuActor &actor);
+    /// Install a complete author update between steps without resetting pose,
+    /// velocity or pending dynamic forces. The owner notifies connected joints
+    /// with the returned local COM delta. Adding motion storage to an original
+    /// static allocation goes through the owner's body/constraint replacement.
+    JPH::Vec3 UpdateBody(uint32_t bodyId, const PreparedCpuActor &actor);
     /// Caller has detached this body's constraints before destruction.
     void DestroyBody(uint32_t bodyId);
     [[nodiscard]] JPH::BodyID NativeBody(uint32_t bodyId) const;
@@ -82,7 +88,11 @@ class JoltCpuScene final : private JPH::ContactListener
         const JPH::CompoundShape *memberCompound = nullptr;
         std::vector<Surface> surfaces;
         int collisionDetectionMode = 0;
+        bool authoredDynamic = false;
     };
+    static BodyRecord CaptureBodyRecord(const PreparedCpuActor &actor);
+    void WakeBodiesInBounds(JPH::AABox bounds);
+    bool SurfacesCollide(const Surface &a, const Surface &b) const;
     JPH::BodyID CreateBody(uint32_t bodyId, const JPH::BodyCreationSettings &settings, BodyRecord record);
     JPH::ValidateResult OnContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg,
                                           const JPH::CollideShapeResult &hit) override;
@@ -92,6 +102,8 @@ class JoltCpuScene final : private JPH::ContactListener
                         JPH::ContactSettings &settings) override;
     void OnContactPersisted(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &manifold,
                             JPH::ContactSettings &settings) override;
+    bool ShouldCollide(const JPH::Body &a, const JPH::Shape *shapeA, const JPH::SubShapeID &subshapeA,
+                       const JPH::Body &b, const JPH::Shape *shapeB, const JPH::SubShapeID &subshapeB) const override;
     JPH::PhysicsSystem m_system;
     std::unordered_map<uint32_t, BodyRecord> m_bodies;
     std::shared_ptr<const PhysicsColliderPairs> m_ignoredPairs;

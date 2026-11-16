@@ -13,7 +13,6 @@
 #include <cstring>
 #include <function/scene/Collider.h>
 #include <function/scene/GameObject.h>
-#include <function/scene/MeshCollider.h>
 #include <function/scene/Rigidbody.h>
 #include <function/scene/RuntimeWorld.h>
 #include <function/scene/SceneManager.h>
@@ -220,16 +219,7 @@ class JoltGpuScene::Impl
         BodySleepAuthor sleep;
         std::vector<ShapeModel> leaves;
         BodyState initialState;
-        PhysicsECSStore::RigidbodyHandle initialRigidbody;
-        bool hasInitialLinearVelocity = false;
-        bool hasInitialAngularVelocity = false;
-        std::vector<PreparedGpuActor::ColliderCenter> colliderCenters;
-        struct MeshPublication
-        {
-            PhysicsECSStore::ColliderHandle collider;
-            std::shared_ptr<const CookedGeometry> geometry;
-        };
-        std::vector<MeshPublication> meshPublications;
+        PhysicsActorPublication publication;
         std::shared_ptr<PublishedActor> identity;
         bool creation = false;
         bool initializesRigidbody = false;
@@ -865,37 +855,9 @@ class JoltGpuScene::Impl
         auto &slot = slots[change->slot];
         slot.accepted = change->identity;
         publicationDirectory.reset();
-        if (!actors.IsValid(change->identity->actor))
-            return;
-        auto &actor = actors.GetActor(change->identity->actor);
-        if (actor.bodyId != change->bodyId)
-            return;
-        actor.shapeRevision = change->identity->shapeRevision;
-        for (const auto &center : change->colliderCenters)
-            if (actors.IsValid(center.collider)) {
-                auto &collider = actors.GetCollider(center.collider);
-                if (collider.actorHandle == change->identity->actor)
-                    collider.publishedRigidCenter = center.center;
-            }
-        for (const auto &publication : change->meshPublications)
-            if (actors.IsValid(publication.collider)) {
-                auto &collider = actors.GetCollider(publication.collider);
-                if (collider.actorHandle == change->identity->actor)
-                    static_cast<MeshCollider *>(collider.owner)->PublishCookedGeometry(publication.geometry);
-            }
-        if (change->initializesRigidbody && actors.IsValid(change->initialRigidbody)) {
-            auto &body = actors.GetRigidbody(change->initialRigidbody);
-            if (body.actorHandle != change->identity->actor)
-                return;
-            const auto &linear = change->initialState.linearVelocity;
-            const auto &angular = change->initialState.angularVelocity;
-            if (change->hasInitialLinearVelocity && body.hasLinearVelocity && body.linearVelocity.x == linear.x &&
-                body.linearVelocity.y == linear.y && body.linearVelocity.z == linear.z)
-                body.hasLinearVelocity = false;
-            if (change->hasInitialAngularVelocity && body.hasAngularVelocity && body.angularVelocity.x == angular.x &&
-                body.angularVelocity.y == angular.y && body.angularVelocity.z == angular.z)
-                body.hasAngularVelocity = false;
-        }
+        change->publication.AcceptGeometry(change->identity->actor, change->bodyId, change->identity->shapeRevision);
+        if (change->initializesRigidbody)
+            change->publication.ConsumeInitialVelocities(change->identity->actor, change->bodyId);
     }
 
     JoltGpuModel RepackModel(uint32_t changedSlot, BodyModel changedBody,
@@ -951,12 +913,11 @@ class JoltGpuScene::Impl
         identity->acceptedMotionType = actor.body.meta.z & ~MotionNotResident;
         identity->physicalModel = actor.body;
         identity->actor = slot.actor;
-        identity->rigidbody = actor.initialRigidbody;
-        identity->rigidbodyComponentId = actor.rigidbodyComponentId;
-        auto &identityStore = PhysicsECSStore::Instance();
-        if (identityStore.IsValid(actor.initialRigidbody)) {
-            const auto *body = identityStore.GetRigidbody(actor.initialRigidbody).owner;
-            if (body && body->GetComponentID() == actor.rigidbodyComponentId)
+        identity->rigidbody = actor.publication.rigidbody;
+        identity->rigidbodyComponentId = actor.publication.rigidbodyComponentId;
+        if (actors.IsValid(identity->rigidbody)) {
+            const auto *body = actors.GetRigidbody(identity->rigidbody).owner;
+            if (body && body->GetComponentID() == identity->rigidbodyComponentId)
                 identity->bodyTarget = PhysicsTargetReference(body);
         }
         identity->owner = slot.owner;
@@ -983,12 +944,6 @@ class JoltGpuScene::Impl
             identity->leaves.push_back(std::move(publishedLeaf));
         }
         auto change = std::make_shared<ActorChange>();
-        for (const auto *member : actor.members)
-            if (const auto *mesh = dynamic_cast<const MeshCollider *>(member))
-                change->meshPublications.push_back({mesh->GetECSHandle(), mesh->CaptureCookedGeometry()});
-        // No component pointer escapes this capture boundary. Each mesh payload
-        // belongs to this model prefix, independent of later author recooks.
-        actor.members.clear();
         change->slot = index;
         change->bodyId = id;
         change->model = actor.body;
@@ -1012,15 +967,12 @@ class JoltGpuScene::Impl
         }
         change->initialState = actor.initialState;
         change->sleep = actor.sleep;
-        change->initialRigidbody = actor.initialRigidbody;
-        change->hasInitialLinearVelocity = actor.hasInitialLinearVelocity;
-        change->hasInitialAngularVelocity = actor.hasInitialAngularVelocity;
-        change->colliderCenters = std::move(actor.colliderCenters);
+        change->publication = std::move(actor.publication);
         change->identity = std::move(identity);
         const auto motion = change->identity->acceptedMotionType;
         const bool motionChanged = !firstOwnership && slot.authored->acceptedMotionType != motion;
         change->initializesRigidbody =
-            motion != MotionStatic && (firstOwnership || slot.initialRigidbody != change->initialRigidbody);
+            motion != MotionStatic && (firstOwnership || slot.initialRigidbody != change->publication.rigidbody);
         // Reserve before transferring the command group, so subsequent source
         // cancellation cannot fail after this group has acquired ownership.
         pendingCompletions.reserve(pendingCompletions.size() + 2);
@@ -1095,13 +1047,13 @@ class JoltGpuScene::Impl
             // A new slot clamps its initial values. A new Rigidbody attached
             // to an existing actor applies only that component's captured
             // pending inputs, preserving the resident numerical pose/state.
-            if (firstOwnership || (change->initializesRigidbody && change->hasInitialLinearVelocity)) {
+            if (firstOwnership || (change->initializesRigidbody && change->publication.linearVelocity)) {
                 BodyCommand linear{};
                 linear.meta = {id, CommandSetLinearVelocity, 0, 0};
                 linear.value = change->initialState.linearVelocity;
                 group.commands.push_back(linear);
             }
-            if (firstOwnership || (change->initializesRigidbody && change->hasInitialAngularVelocity)) {
+            if (firstOwnership || (change->initializesRigidbody && change->publication.angularVelocity)) {
                 BodyCommand angular{};
                 angular.meta = {id, CommandSetAngularVelocity, 0, 0};
                 angular.value = change->initialState.angularVelocity;
@@ -1116,12 +1068,12 @@ class JoltGpuScene::Impl
         }
         pending.push_back(std::move(group));
         QueueBoundsAfter(domain, std::move(oldBounds), index, id, true);
-        if (motionChanged || (motion != MotionStatic && (firstOwnership || (change->initializesRigidbody &&
-                                                                            (change->hasInitialLinearVelocity ||
-                                                                             change->hasInitialAngularVelocity)))))
+        const bool setsInitialVelocity =
+            change->initializesRigidbody && (change->publication.linearVelocity || change->publication.angularVelocity);
+        if (motionChanged || (motion != MotionStatic && firstOwnership) || setsInitialVelocity)
             CancelTarget(slot.queuedTarget, pendingCompletions);
         if (motion != MotionStatic)
-            slot.initialRigidbody = change->initialRigidbody;
+            slot.initialRigidbody = change->publication.rigidbody;
         slot.authored = change->identity;
         RefreshJointBody(id, *change->identity);
     }

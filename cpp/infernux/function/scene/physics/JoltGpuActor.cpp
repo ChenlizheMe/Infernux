@@ -53,6 +53,7 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
     if (members.size() > std::numeric_limits<uint32_t>::max())
         throw std::length_error("Jolt GPU actor exceeds its member index range");
     PreparedGpuActor prepared{};
+    prepared.publication = PhysicsActorPublication::Capture(actor, members, rigidbody);
     prepared.geometry = PrepareJoltGpuShape(*shape, static_cast<uint32_t>(members.size()));
     if (prepared.geometry.leaves.size() > std::numeric_limits<uint32_t>::max())
         throw std::length_error("Jolt GPU actor exceeds its leaf index range");
@@ -80,30 +81,23 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
     prepared.body.inertiaRotation = {0.0f, 0.0f, 0.0f, 1.0f};
     if (rigidbody) {
         const auto &properties = rigidbody->GetAuthoredMassProperties();
-        const auto mass = PrepareBodyMass(shape.GetPtr(), rigidbody->GetMass(), properties ? &*properties : nullptr,
-                                          transform->GetWorldScale());
-        prepared.body.mass.x = 1.0f / mass.mass;
+        if (!rigidbody->IsKinematic() || properties || !shape->MustBeStatic()) {
+            const auto mass = PrepareBodyMass(shape.GetPtr(), rigidbody->GetMass(), properties ? &*properties : nullptr,
+                                              transform->GetWorldScale());
+            prepared.body.mass.x = 1.0f / mass.mass;
+            prepared.body.invInertiaDiagonal = {mass.inverse.GetX(), mass.inverse.GetY(), mass.inverse.GetZ(), 0.0f};
+            prepared.body.inertiaRotation = {mass.axes.GetX(), mass.axes.GetY(), mass.axes.GetZ(), mass.axes.GetW()};
+        }
         prepared.body.mass.y = float((rigidbody->GetConstraints() >> 1) & 7);
         prepared.body.mass.z = float((rigidbody->GetConstraints() >> 4) & 7);
         prepared.body.mass.w = rigidbody->GetUseGravity() ? 1.0f : 0.0f;
-        prepared.body.invInertiaDiagonal = {mass.inverse.GetX(), mass.inverse.GetY(), mass.inverse.GetZ(), 0.0f};
-        prepared.body.inertiaRotation = {mass.axes.GetX(), mass.axes.GetY(), mass.axes.GetZ(), mass.axes.GetW()};
         prepared.body.damping = {rigidbody->GetDrag(), rigidbody->GetAngularDrag(), rigidbody->GetMaxLinearVelocity(),
                                  rigidbody->GetMaxAngularVelocity()};
 
-        prepared.initialRigidbody = rigidbody->GetECSHandle();
-        prepared.rigidbodyComponentId = rigidbody->GetComponentID();
-        const auto &data = PhysicsECSStore::Instance().GetRigidbody(prepared.initialRigidbody);
-        prepared.hasInitialLinearVelocity = data.hasLinearVelocity;
-        prepared.hasInitialAngularVelocity = data.hasAngularVelocity;
-        if (data.hasLinearVelocity) {
-            const auto velocity = data.linearVelocity;
-            prepared.initialState.linearVelocity = {velocity.x, velocity.y, velocity.z, 0.0f};
-        }
-        if (data.hasAngularVelocity) {
-            const auto velocity = data.angularVelocity;
-            prepared.initialState.angularVelocity = {velocity.x, velocity.y, velocity.z, 0.0f};
-        }
+        if (const auto &linear = prepared.publication.linearVelocity)
+            prepared.initialState.linearVelocity = {linear->x, linear->y, linear->z, 0.0f};
+        if (const auto &angular = prepared.publication.angularVelocity)
+            prepared.initialState.angularVelocity = {angular->x, angular->y, angular->z, 0.0f};
     }
     for (auto &leaf : prepared.geometry.leaves) {
         const auto *collider = members[leaf.memberIndex];
@@ -114,9 +108,6 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
         leaf.model.source.y = static_cast<uint32_t>(id >> 32);
     }
     prepared.members = std::move(members);
-    prepared.colliderCenters.reserve(actor.colliders.size());
-    for (const auto *collider : actor.colliders)
-        prepared.colliderCenters.push_back({collider->GetECSHandle(), collider->GetCenterInRigidSpace()});
     prepared.authoredShape = std::move(shape);
     return prepared;
 }

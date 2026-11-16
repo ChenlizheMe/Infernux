@@ -485,7 +485,7 @@ void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool us
 void PhysicsWorld::DestroyConstraintsForBody(uint32_t bodyId)
 {
     RequireOwnerThread();
-    if (m_gpuScene && bodyId != UINT32_MAX)
+    if (m_gpuScene && m_gpuScene->FindBody(bodyId).bodyId != UINT32_MAX)
         m_gpuScene->DestroyJointsForBody(bodyId);
 }
 

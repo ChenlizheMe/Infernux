@@ -77,7 +77,7 @@ class MeshCollider : public Collider
 
   private:
     friend class PhysicsWorld;
-    friend class JoltGpuScene;
+    friend struct PhysicsActorPublication;
 
     void CaptureMeshGeometry() const;
     bool CollectMeshGeometry(std::vector<glm::vec3> &outVertices, std::vector<uint32_t> &outIndices) const;

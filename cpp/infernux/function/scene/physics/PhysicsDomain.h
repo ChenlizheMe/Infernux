@@ -1,5 +1,6 @@
 #pragma once
 
+#include "JoltGpuContactPublication.h"
 #include "JoltGpuRenderBindings.h"
 #include "JoltGpuRenderPoses.h"
 #include "PhysicsContactPublication.h"
@@ -65,6 +66,7 @@ struct PhysicsDomain final
     PhysicsColliderPairs initialColliderPairs;
     bool contactEventStreamEnabled = false, contactImpulseStreamEnabled = false, contactIncludeTriggers = true;
     PhysicsContactPublication contacts;
+    JoltGpuContactPublication gpuContacts;
     struct RenderState
     {
         using Keys = std::array<uint64_t, 3>;

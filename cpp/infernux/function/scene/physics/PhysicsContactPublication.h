@@ -1,17 +1,18 @@
 #pragma once
-#include "JoltGpuContactReports.h"
 #include "PhysicsContactTypes.h"
 #include <algorithm>
+#include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <tuple>
 #include <utility>
 
 namespace infernux
 {
+struct PhysicsActorData;
 class RuntimeWorld;
-/// CPU notification state only. Geometry, overlap and impulses always originate
-/// in the GPU report; this class neither tests overlap nor solves contacts.
+/// Publishes events, impulses and callbacks from a completed Fixed step.
 class PhysicsContactPublication final
 {
   public:
@@ -32,16 +33,9 @@ class PhysicsContactPublication final
         {
             return events || impulses || !receivers.empty();
         }
-        [[nodiscard]] uint32_t Flags() const
-        {
-            return (events ? 1u : 0u) | (events && triggers ? 2u : 0u) | (impulses ? 4u : 0u);
-        }
-        [[nodiscard]] std::vector<uint32_t> LeafInterest(const JoltGpuScene::Publication &) const;
-    };
-    struct Pending
-    {
-        Policy policy;
-        std::shared_ptr<JoltGpuContactReportResult> report;
+        void CaptureActor(const RuntimeWorld &, const PhysicsActorData &);
+        [[nodiscard]] uint8_t Interest(Surface) const;
+        [[nodiscard]] bool Observes(Surface a, Surface b, bool trigger) const;
     };
     struct Endpoint
     {
@@ -57,15 +51,34 @@ class PhysicsContactPublication final
             return {collider, generation};
         }
     };
+    struct Point
+    {
+        // Normal points from A to B, relative velocity is B minus A, and
+        // impulse is the one applied to B.
+        glm::vec3 position{0.0f}, normal{0.0f}, relativeVelocity{0.0f}, impulse{0.0f};
+        uint32_t feature = 0;
+    };
+    struct Manifold
+    {
+        Endpoint a, b;
+        bool trigger = false;
+        size_t pointOffset = 0;
+        uint32_t pointCount = 0;
+    };
+    struct Frame
+    {
+        std::vector<Manifold> manifolds;
+        // Each manifold's range stores its points in solver order.
+        std::vector<Point> points;
+    };
+    using ReadFrame = std::function<Frame(uint32_t substep)>;
     struct Pair
     {
         Endpoint a, b;
         bool trigger = false;
-        JPH::GPU::ContactReportPatch record{};
-        PairKey Key() const
-        {
-            return std::make_tuple(a.Key(), b.Key(), trigger);
-        }
+        // The first solver point supplies stream events and callbacks.
+        glm::vec3 position, normal, relativeVelocity;
+        uint32_t feature;
         CallbackPairKey CallbackKey() const
         {
             return std::make_tuple(std::min(a.SurfaceKey(), b.SurfaceKey()), std::max(a.SurfaceKey(), b.SurfaceKey()),
@@ -75,23 +88,23 @@ class PhysicsContactPublication final
     struct Delivery
     {
         Receiver receiver;
-        Pair pair;
+        Endpoint other;
+        glm::vec3 position, normal, relativeVelocity;
         ContactEventType type;
-        bool sideB = false;
     };
     struct Batch
     {
-        std::shared_ptr<const JoltGpuScene::Publication> publication;
+        ContactStreamIdentity identity;
         std::vector<ContactEvent> events;
         std::vector<ContactImpulse> impulses;
         std::vector<Delivery> deliveries;
     };
-    std::shared_ptr<Pending> pending;
     std::shared_ptr<const Batch> batch;
     bool dispatching = false;
-    [[nodiscard]] static Policy Capture(RuntimeWorld &, const JoltGpuScene &, bool events, bool triggers,
-                                        bool impulses);
-    void Publish(const std::shared_ptr<const JoltGpuScene::Publication> &);
+    /// Reads each completed substep synchronously in order. The result is
+    /// visible only after every frame is accepted.
+    void Publish(ContactStreamIdentity, const Policy &, uint32_t substeps, const ReadFrame &);
+    void PublishEmpty(ContactStreamIdentity);
     [[nodiscard]] size_t Dispatch(RuntimeWorld &);
     void Invalidate(uint32_t body)
     {

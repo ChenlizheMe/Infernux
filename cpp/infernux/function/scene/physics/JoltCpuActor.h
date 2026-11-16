@@ -2,8 +2,8 @@
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
-#include "PhysicsECSStore.h"
 #include "PhysicsMass.h"
+#include "PhysicsShapeAuthoring.h"
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 
 #include <optional>
@@ -30,9 +30,9 @@ struct PreparedCpuActor
     std::optional<PreparedBodyMass> mass;
     std::vector<Surface> surfaces;
     int collisionDetectionMode = 0;
-    PhysicsECSStore::RigidbodyHandle initialRigidbody;
-    bool hasInitialLinearVelocity = false;
-    bool hasInitialAngularVelocity = false;
+    bool frozen = false;
+    bool authoredDynamic = false;
+    PhysicsActorPublication publication;
 };
 
 /// Null means a complete collider cook is still pending. No body or backend

@@ -3,7 +3,7 @@
 #include <Jolt/GPU/SleepTypes.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include "JoltGpuShape.h"
-#include "PhysicsECSStore.h"
+#include "PhysicsShapeAuthoring.h"
 
 #include <optional>
 
@@ -23,20 +23,7 @@ struct PreparedGpuActor
     PreparedGpuShape geometry;
     JPH::GPU::BodyState initialState;
     JPH::GPU::Float4 rootScale{1, 1, 1, 0};
-    // Creation inputs belong to this exact component generation, even when a
-    // different Rigidbody is attached to the actor before GPU acceptance.
-    PhysicsECSStore::RigidbodyHandle initialRigidbody;
-    /// Full component identity captured with initialRigidbody; zero without
-    /// an enabled Rigidbody contributing to this authored model.
-    uint64_t rigidbodyComponentId = 0;
-    bool hasInitialLinearVelocity = false;
-    bool hasInitialAngularVelocity = false;
-    struct ColliderCenter
-    {
-        PhysicsECSStore::ColliderHandle collider;
-        glm::vec3 center;
-    };
-    std::vector<ColliderCenter> colliderCenters;
+    PhysicsActorPublication publication;
     JPH::RefConst<JPH::Shape> authoredShape;
     /// Exact contributing members, captured immediately by Scene into safe
     /// per-leaf identities. Ordinals come from the authored outer compound.

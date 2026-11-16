@@ -67,11 +67,13 @@ JoltCpuScene::JoltCpuScene(const EngineConfig &config, const JPH::BroadPhaseLaye
     const auto gravity = config.physicsGravity;
     m_system.SetGravity(JPH::Vec3(gravity.x, gravity.y, gravity.z));
     m_system.SetContactListener(this);
+    m_system.SetSimShapeFilter(this);
 }
 
 JoltCpuScene::~JoltCpuScene()
 {
     m_system.SetContactListener(nullptr);
+    m_system.SetSimShapeFilter(nullptr);
 }
 
 JPH::BodyID JoltCpuScene::CreateBody(uint32_t bodyId, const JPH::BodyCreationSettings &settings, BodyRecord record)
@@ -93,10 +95,24 @@ void JoltCpuScene::DestroyBody(uint32_t bodyId)
 {
     const auto native = NativeBody(bodyId);
     auto &bodies = m_system.GetBodyInterface();
-    if (bodies.IsAdded(native))
+    const bool added = bodies.IsAdded(native);
+    JPH::AABox oldBounds;
+    if (added) {
+        JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), native);
+        oldBounds = lock.GetBody().GetWorldSpaceBounds();
+    }
+    if (added)
         bodies.RemoveBody(native);
     bodies.DestroyBody(native);
     m_bodies.erase(bodyId);
+    if (added)
+        WakeBodiesInBounds(oldBounds);
+}
+
+void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds)
+{
+    bounds.ExpandBy(JPH::Vec3::sReplicate(m_system.GetPhysicsSettings().mSpeculativeContactDistance));
+    m_system.GetBodyInterface().ActivateBodiesInAABox(bounds, JPH::BroadPhaseLayerFilter{}, JPH::ObjectLayerFilter{});
 }
 
 JPH::BodyID JoltCpuScene::NativeBody(uint32_t bodyId) const
@@ -141,8 +157,14 @@ void JoltCpuScene::SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> p
         });
         if (affected) {
             bodies.InvalidateContactCache(record.native);
-            if (bodies.IsAdded(record.native))
-                bodies.ActivateBody(record.native);
+            if (bodies.IsAdded(record.native)) {
+                JPH::AABox bounds;
+                {
+                    JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), record.native);
+                    bounds = lock.GetBody().GetWorldSpaceBounds();
+                }
+                WakeBodiesInBounds(bounds);
+            }
         }
     }
 }
@@ -152,21 +174,44 @@ JPH::ValidateResult JoltCpuScene::OnContactValidate(const JPH::Body &a, const JP
 {
     const auto &surfaceA = GetSurface(static_cast<uint32_t>(a.GetUserData()), hit.mSubShapeID1);
     const auto &surfaceB = GetSurface(static_cast<uint32_t>(b.GetUserData()), hit.mSubShapeID2);
-    if ((surfaceA.collisionMask & (1u << surfaceB.layer)) == 0 ||
-        (surfaceB.collisionMask & (1u << surfaceA.layer)) == 0)
-        return JPH::ValidateResult::RejectContact;
+    // Acceptance is per leaf: accepting the whole body pair bypasses filters
+    // on the other Colliders of a compound.
+    return SurfacesCollide(surfaceA, surfaceB) ? JPH::ValidateResult::AcceptContact
+                                               : JPH::ValidateResult::RejectContact;
+}
+
+bool JoltCpuScene::SurfacesCollide(const Surface &a, const Surface &b) const
+{
+    if ((a.collisionMask & (1u << b.layer)) == 0 || (b.collisionMask & (1u << a.layer)) == 0)
+        return false;
     if (m_ignoredPairs) {
-        std::array<uint64_t, 2> first{surfaceA.colliderId, surfaceA.generation},
-            second{surfaceB.colliderId, surfaceB.generation};
+        std::array<uint64_t, 2> first{a.colliderId, a.generation}, second{b.colliderId, b.generation};
         if (second < first)
             std::swap(first, second);
         const PhysicsColliderPair key{first[0], first[1], second[0], second[1]};
         if (std::binary_search(m_ignoredPairs->begin(), m_ignoredPairs->end(), key))
-            return JPH::ValidateResult::RejectContact;
+            return false;
     }
-    // Acceptance is per leaf: accepting the whole body pair bypasses filters
-    // on the other Colliders of a compound.
-    return JPH::ValidateResult::AcceptContact;
+    return true;
+}
+
+bool JoltCpuScene::ShouldCollide(const JPH::Body &a, const JPH::Shape *shapeA, const JPH::SubShapeID &subshapeA,
+                                 const JPH::Body &b, const JPH::Shape *shapeB, const JPH::SubShapeID &subshapeB) const
+{
+    if (shapeA->GetSubType() == JPH::EShapeSubType::Empty || shapeB->GetSubType() == JPH::EShapeSubType::Empty)
+        return false;
+    const auto idA = static_cast<uint32_t>(a.GetUserData()), idB = static_cast<uint32_t>(b.GetUserData());
+    const auto container = [](const JPH::Shape &shape) {
+        return shape.GetType() == JPH::EShapeType::Compound || shape.GetType() == JPH::EShapeType::Decorated;
+    };
+    if (container(*shapeA) || container(*shapeB))
+        return true;
+    // Match the common component contract before native narrowphase dispatch:
+    // two prescribed/static solid surfaces do not create response or events.
+    const auto &surfaceA = GetSurface(idA, subshapeA), &surfaceB = GetSurface(idB, subshapeB);
+    return (m_bodies.at(idA).authoredDynamic || m_bodies.at(idB).authoredDynamic || surfaceA.sensor ||
+            surfaceB.sensor) &&
+           SurfacesCollide(surfaceA, surfaceB);
 }
 
 JPH::ValidateResult JoltCpuScene::OnCCDContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg origin,

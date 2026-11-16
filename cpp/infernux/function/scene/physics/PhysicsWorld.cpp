@@ -485,6 +485,7 @@ void PhysicsWorld::Shutdown()
         domain->rendering.pending.reset();
         domain->rendering.ready.reset();
         domain->contacts.Close();
+        domain->gpuContacts.Close();
         domain->lastPublication.reset();
         domain->queuedColliderPairs.reset();
         domain->requestedMotion.clear();
@@ -536,18 +537,9 @@ PhysicsWorld::PrepareContactObserver(PhysicsDomain &domain,
                                      const std::shared_ptr<const JoltGpuScene::Publication> &publication) const
 {
     const WorldExecutionScope ownerScope(&domain.owner);
-    auto policy = PhysicsContactPublication::Capture(domain.owner, *m_gpuScene, domain.contactEventStreamEnabled,
-                                                     domain.contactIncludeTriggers, domain.contactImpulseStreamEnabled);
-    if (!policy.Requested())
-        return {}; // No report job, endpoint, upload or numerical readback.
-    auto pending = std::make_shared<PhysicsContactPublication::Pending>();
-    pending->policy = std::move(policy);
-    auto capture = m_gpuContactReports->Prepare(
-        publication, domain.admittedParameters->Get().solve.y, pending->policy.Flags(),
-        [pending](const JoltGpuScene::Publication &accepted) { return pending->policy.LeafInterest(accepted); });
-    pending->report = capture.result;
-    domain.contacts.pending = std::move(pending);
-    return {std::move(capture.phase), std::move(capture.finish)};
+    return domain.gpuContacts.Prepare(
+        *m_gpuContactReports, *m_gpuScene, domain.owner, publication, domain.admittedParameters->Get().solve.y,
+        {domain.contactEventStreamEnabled, domain.contactIncludeTriggers, domain.contactImpulseStreamEnabled, {}});
 }
 void PhysicsWorld::ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const
 {
@@ -556,7 +548,7 @@ void PhysicsWorld::ObserveGpuPublication(PhysicsDomain &domain, bool numericalCh
     if (p && p.get() != domain.lastPublication.get()) {
         domain.lastPublication = p;
         if (p->isFixedStep)
-            domain.contacts.Publish(p);
+            domain.gpuContacts.Publish(domain.contacts, p);
         if (numericalChange) {
             domain.queryGeneration.fetch_add(1, std::memory_order_release);
             domain.requestedMotion.clear();
@@ -654,7 +646,7 @@ void PhysicsWorld::RequireHealthyStep(PhysicsDomain &domain) const
 }
 void PhysicsWorld::FailStep(PhysicsDomain &domain) noexcept
 {
-    domain.contacts.pending.reset();
+    domain.gpuContacts.CancelPending();
     domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Failed;
     domain.stepCompleted = false;
     if (m_gpuScene)
@@ -1163,6 +1155,7 @@ void PhysicsWorld::CancelPendingStep() noexcept
     auto &domain = CurrentDomain();
     SuspendRagdolls(domain);
     domain.contacts.Close();
+    domain.gpuContacts.Close();
     domain.presentationPoseReads.reset();
     auto &world = domain.owner;
     if (m_gpuRenderProgram) {
@@ -1178,7 +1171,9 @@ void PhysicsWorld::CancelPendingStep() noexcept
             store.ForEachAliveActor([&](PhysicsActorData &actor) {
                 if (actor.runtimeWorld != &world || actor.bodyId == UINT32_MAX)
                     return;
-                const auto handle = m_gpuScene->FindActor(actor.bodyId);
+                // A failed numerical step may already have closed its GPU
+                // partition. Public ownership survives until this boundary.
+                const auto handle = FindBodyActor(actor.bodyId);
                 if (!store.IsValid(handle) || &store.GetActor(handle) != &actor)
                     return;
                 store.CancelBroadphaseAdd(world, actor.bodyId);
@@ -1241,14 +1236,15 @@ void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consume
     if (domain.contacts.dispatching) {
         // User commands stay in the next author FIFO. Queries observe exactly
         // the complete publication responsible for this callback batch.
-        const auto batch = domain.contacts.batch;
-        if (!batch || batch->publication->simulationEpoch != domain.owner.simulation.simulationEpoch)
+        const auto publication = domain.gpuContacts.GetPublication();
+        if (!domain.contacts.batch || !publication ||
+            publication->simulationEpoch != domain.owner.simulation.simulationEpoch)
             throw std::logic_error("Contact query has no current completed publication");
         if (publicationRead)
-            observe(batch->publication);
+            observe(publication);
         else {
             FrameWorkOwner::Scope preparation(*m_gpuWork);
-            RunPreparedWork(domain, consumer ? consumer(batch->publication) : JoltGpuControlWork{});
+            RunPreparedWork(domain, consumer ? consumer(publication) : JoltGpuControlWork{});
         }
         return;
     }
@@ -1464,7 +1460,10 @@ void PhysicsWorld::DestroyBody(uint32_t id)
     if (!PhysicsECSStore::Instance().IsValid(FindBodyActor(id)))
         return;
     auto &domain = DomainForBody(id);
-    m_gpuScene->StageRetire(id);
+    // Closed partitions retire their numerical records as a batch. Only an
+    // open body can accept another per-body retirement command.
+    if (m_gpuScene->FindBody(id).bodyId != UINT32_MAX)
+        m_gpuScene->StageRetire(id);
     m_bodyActors.erase(id);
     if (m_gpuRenderProgram)
         domain.rendering.bindings.RetireBody(id);
@@ -1671,7 +1670,7 @@ void PhysicsWorld::ValidateBodyMassProperties(const Rigidbody &body, float mass,
     if (!store.IsValid(handle))
         return;
     auto shape = BuildActorShape(store.GetActor(handle));
-    if (shape)
+    if (shape && !(body.IsKinematic() && shape->MustBeStatic()))
         (void)PrepareBodyMass(shape.GetPtr(), mass, nullptr, scale);
 }
 void PhysicsWorld::SetBodyLinearVelocity(uint32_t id, const glm::vec3 &v)
@@ -2494,16 +2493,19 @@ ContactStreamIdentity PhysicsWorld::GetContactStreamIdentity() const
 {
     RequireOwnerThread();
     const auto &batch = CurrentDomain().contacts.batch;
-    if (!batch)
-        return {};
-    const auto &p = *batch->publication;
-    return {p.worldId, p.simulationEpoch, p.fixedStepIndex};
+    return batch ? batch->identity : ContactStreamIdentity{};
 }
 size_t PhysicsWorld::DispatchContactEvents()
 {
     RequireOwnerThread();
     auto &domain = CurrentDomain();
-    return domain.contacts.Dispatch(domain.owner);
+    const auto &batch = domain.contacts.batch;
+    const bool stale = batch && (batch->identity.worldId != domain.owner.id ||
+                                 batch->identity.simulationEpoch != domain.owner.simulation.simulationEpoch);
+    const auto delivered = domain.contacts.Dispatch(domain.owner);
+    if (stale)
+        domain.gpuContacts.Close();
+    return delivered;
 }
 void PhysicsWorld::RefreshBodyTriggerState(uint32_t id)
 {

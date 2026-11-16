@@ -6,6 +6,7 @@
 
 #include "../Collider.h"
 #include "../GameObject.h"
+#include "../MeshCollider.h"
 #include "../Rigidbody.h"
 #include "../Transform.h"
 #include "PhysicsECSStore.h"
@@ -15,6 +16,75 @@
 
 namespace infernux
 {
+namespace
+{
+PhysicsActorData *FindActorBinding(PhysicsECSStore &store, PhysicsActorHandle handle, uint32_t bodyId) noexcept
+{
+    if (bodyId == UINT32_MAX || !store.IsValid(handle))
+        return nullptr;
+    auto &actor = store.GetActor(handle);
+    return actor.bodyId == bodyId ? &actor : nullptr;
+}
+} // namespace
+
+PhysicsActorPublication PhysicsActorPublication::Capture(const PhysicsActorData &actor,
+                                                         const std::vector<Collider *> &members, const Rigidbody *body)
+{
+    PhysicsActorPublication result;
+    result.colliderCenters.reserve(actor.colliders.size());
+    for (const auto *collider : actor.colliders)
+        if (collider)
+            result.colliderCenters.push_back({collider->GetECSHandle(), collider->GetCenterInRigidSpace()});
+    for (const auto *member : members)
+        if (const auto *mesh = dynamic_cast<const MeshCollider *>(member))
+            result.meshPublications.push_back({mesh->GetECSHandle(), mesh->CaptureCookedGeometry()});
+    if (body) {
+        result.rigidbody = body->GetECSHandle();
+        result.rigidbodyComponentId = body->GetComponentID();
+        const auto &data = PhysicsECSStore::Instance().GetRigidbody(result.rigidbody);
+        if (data.hasLinearVelocity)
+            result.linearVelocity = data.linearVelocity;
+        if (data.hasAngularVelocity)
+            result.angularVelocity = data.angularVelocity;
+    }
+    return result;
+}
+
+void PhysicsActorPublication::AcceptGeometry(PhysicsActorHandle handle, uint32_t bodyId,
+                                             uint64_t shapeRevision) const noexcept
+{
+    auto &store = PhysicsECSStore::Instance();
+    auto *actor = FindActorBinding(store, handle, bodyId);
+    if (!actor)
+        return;
+    actor->shapeRevision = shapeRevision;
+    for (const auto &center : colliderCenters)
+        if (store.IsValid(center.collider)) {
+            auto &collider = store.GetCollider(center.collider);
+            if (collider.actorHandle == handle)
+                collider.publishedRigidCenter = center.center;
+        }
+    for (const auto &publication : meshPublications)
+        if (store.IsValid(publication.collider)) {
+            auto &collider = store.GetCollider(publication.collider);
+            if (collider.actorHandle == handle)
+                static_cast<MeshCollider *>(collider.owner)->PublishCookedGeometry(publication.geometry);
+        }
+}
+
+void PhysicsActorPublication::ConsumeInitialVelocities(PhysicsActorHandle handle, uint32_t bodyId) const noexcept
+{
+    auto &store = PhysicsECSStore::Instance();
+    if (!FindActorBinding(store, handle, bodyId) || !store.IsValid(rigidbody))
+        return;
+    auto &data = store.GetRigidbody(rigidbody);
+    if (data.actorHandle != handle)
+        return;
+    if (linearVelocity && data.hasLinearVelocity && data.linearVelocity == *linearVelocity)
+        data.hasLinearVelocity = false;
+    if (angularVelocity && data.hasAngularVelocity && data.angularVelocity == *angularVelocity)
+        data.hasAngularVelocity = false;
+}
 
 JPH::RefConst<JPH::Shape> BuildActorShape(const PhysicsActorData &actor, const Collider *exclude, size_t *outShapeCount,
                                           std::vector<Collider *> *outMembers)
