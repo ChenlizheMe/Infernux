@@ -169,7 +169,7 @@ class Module:
         return (self._root_owner or self)._parameter_version
 
     def __call__(self, *inputs):
-        from ._plan import Plan, _capture
+        from ._plan import _capture
 
         capture = _capture.get()
         if capture is not None:
@@ -184,14 +184,21 @@ class Module:
         if not inputs or any(not isinstance(x, Tensor) or isinstance(x, Parameter) for x in inputs):
             raise TypeError("model inputs must be nn.Tensor values")
         with root._lock:
-            if root._dirty:
-                raise RuntimeError("model structure changed; call recompile() before execution")
-            plan = self._prepared_plan(inputs)
-            if plan is None:
-                plan = Plan.capture(self, inputs)
-                root._plans[plan.key] = plan
+            plan = self._plan_for_call(inputs)
             self._plan = plan
             return plan.forward(inputs)
+
+    def _plan_for_call(self, inputs):
+        from ._plan import Plan
+
+        root = self._root_owner
+        if root._dirty:
+            raise RuntimeError("model structure changed; call recompile() before execution")
+        plan = self._prepared_plan(inputs)
+        if plan is None:
+            plan = Plan.capture(self, inputs)
+            root._plans[plan.key] = plan
+        return plan
 
     def forward(self, *inputs):
         from ._plan import _capture

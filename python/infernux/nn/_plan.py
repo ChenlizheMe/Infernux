@@ -1115,6 +1115,7 @@ class _ResultSpec:
     dtype: str
     backward_values: frozenset
     grad_parameters: tuple
+    input_grad: bool
     requires_grad: bool
 
     @property
@@ -1174,9 +1175,11 @@ class Plan:
                           for slot in (op.weight, op.bias) if slot is not None}
             grads = tuple(index in parameters and parameter.requires_grad
                           for index, (_, parameter) in enumerate(root._named))
-            requires_grad = layer.dtype == "float32" and (
-                any(spec.requires_grad and index in backward for index, spec in enumerate(self.inputs)) or any(grads))
-            self.result_specs[result] = _ResultSpec(result, layer.output_shape, layer.dtype, backward, grads, requires_grad)
+            input_grad = layer.dtype == "float32" and any(
+                spec.requires_grad and index in backward for index, spec in enumerate(self.inputs))
+            requires_grad = input_grad or (layer.dtype == "float32" and any(grads))
+            self.result_specs[result] = _ResultSpec(result, layer.output_shape, layer.dtype, backward, grads,
+                                                    input_grad, requires_grad)
         self.backward_values = frozenset().union(*(spec.backward_values for spec in self.result_specs.values()
                                                    if spec.requires_grad))
         self.programs, self.operations = (), []
@@ -1555,7 +1558,8 @@ class Plan:
             raise ValueError("managed model inputs require leaf or detached Tensors")
         _check_storage((*(x._data for x in inputs), *(self.root._state if state is None else state)))
 
-    def _bind_forward(self, inputs, *, state, retain_for_backward=True, managed=False, reuse_scratch=False):
+    def _bind_forward(self, inputs, *, state, retain_for_backward=True, managed=False,
+                      reuse_scratch=False, explicit_state=False):
         self._check_forward_inputs(inputs, state=state, managed=managed)
         if retain_for_backward and any(x.requires_grad and x._loss is not None for x in inputs):
             raise NotImplementedError("loss-valued inputs require detach(); use nn.autograd.grad for multiple loss outputs")
@@ -1578,7 +1582,7 @@ class Plan:
         values = tuple(x._data if reuse_scratch and x._data.readonly else x._data.view(readonly=True)
                        for x in inputs)
         return _Run(self, state, inputs, (*values, *outputs),
-                    retain_for_backward=retain_for_backward, managed=managed,
+                    retain_for_backward=retain_for_backward, managed=managed, explicit_state=explicit_state,
                     borrowed=(*self._forward_scratch.values(), *shared_inputs) if reuse_scratch else ())
 
     def _forward_operation(self, run, index):
@@ -1610,7 +1614,7 @@ class Plan:
         state = tuple(empty(value.shape) for value in self.root._state)
         values = (*(empty(spec.shape, spec.dtype) for spec in self.inputs),
                   *(empty(layer.output_shape, layer.dtype) for layer in self.layers))
-        run = SimpleNamespace(plan=self, state=state, values=values,
+        run = SimpleNamespace(plan=self, state=state, values=values, explicit_state=False,
                               random_keys={index:(0, 0, 0, 0) for index, _ in self.random_layers},
                               inputs=tuple(SimpleNamespace(shape=spec.shape, requires_grad=spec.requires_grad, _data=values[index])
                                            for index, spec in enumerate(self.inputs)))
@@ -1641,15 +1645,20 @@ class Plan:
         return tuple(operations)
 
     @_automatic_cost
-    def forward(self, inputs):
+    def forward(self, inputs, *, state=None):
+        explicit_state = state is not None
+        state = self.root._state if state is None else state
         gradients = is_grad_enabled()
-        track = gradients and any(spec.requires_grad for spec in self.result_specs.values())
+        def requires_grad(result):
+            return gradients and (result.input_grad if explicit_state else result.requires_grad)
+        track = any(requires_grad(result) for result in self.result_specs.values())
         if self.device == "gpu" and not track:
-            self._check_forward_inputs(inputs)
+            self._check_forward_inputs(inputs, state=state)
             if self._gpu_forward_executables is None:
                 self._prepare_gpu_forward()
-            return self._prepare_native_forward(inputs).forward(inputs)
-        run = self._bind_forward(inputs, state=self.root._state, retain_for_backward=track, reuse_scratch=not track)
+            return self._prepare_native_forward(inputs).forward(inputs, state=state)
+        run = self._bind_forward(inputs, state=state, retain_for_backward=track,
+                                 reuse_scratch=not track, explicit_state=explicit_state)
         try:
             if self.device == "gpu" and self._gpu_forward_executables is None:
                 self._prepare_gpu_forward()
@@ -1659,9 +1668,9 @@ class Plan:
                 _execute_work(run.cursor, self.device, self.programs)
             def tensor(index):
                 result = self.result_specs[index]
-                requires_grad = gradients and result.requires_grad
-                return Tensor._from_buffer(run.values[index], result.shape, requires_grad=requires_grad,
-                                           run=run if requires_grad else None, value_plan=self, value_index=index)
+                track_result = requires_grad(result)
+                return Tensor._from_buffer(run.values[index], result.shape, requires_grad=track_result,
+                                           run=run if track_result else None, value_plan=self, value_index=index)
             return _map_result(self.result, tensor)
         except BaseException:
             p.retire(run.owned_values)
@@ -1722,7 +1731,7 @@ def _gradient_updates(contributions, previous, add, empty, operations):
 def _pullback_work(run, cotangents, requested, empty, operations):
     """Bind one Plan's VJP and return contributions at its input and parameter ports."""
     plan, gradients = run.plan, {}
-    parameters = tuple(parameter for _, parameter in plan.root._named)
+    parameters = () if run.explicit_state else tuple(parameter for _, parameter in plan.root._named)
     requested_slots = tuple(slot for slot, parameter in enumerate(parameters) if id(parameter) in requested)
 
     adjoints, grad_parameters = {}, set()
@@ -1821,9 +1830,10 @@ def _invocation_graph(sources, *, scope=None):
             else:
                 producers[producer] = None
                 pending.append((producer, value._value_index))
-        for (_, parameter), tracked in zip(plan.root._named, result.grad_parameters):
-            if tracked:
-                leaves[id(parameter)] = parameter
+        if not run.explicit_state:
+            for (_, parameter), tracked in zip(plan.root._named, result.grad_parameters):
+                if tracked:
+                    leaves[id(parameter)] = parameter
     order = tuple(TopologicalSorter(dependencies).static_order())
     return order, outputs, leaves
 
@@ -1831,7 +1841,7 @@ def _invocation_graph(sources, *, scope=None):
 def _check_gradient_run(run, action="backward"):
     plan = run.plan
     plan._check_current()
-    if (run.consumed or plan.root._state is not run.state
+    if (run.consumed or (not run.explicit_state and plan.root._state is not run.state)
             or any(value.requires_grad != spec.requires_grad for value, spec in zip(run.inputs, plan.inputs))):
         raise RuntimeError(f"{action} execution is already consumed or its parameter state has changed")
 
@@ -1968,8 +1978,10 @@ class _BackwardBindings:
 
 class _Run:
     """One execution's storage and operation cursor, never an executor or queue."""
-    def __init__(self, plan, state, inputs, values, *, retain_for_backward, managed, borrowed=()):
+    def __init__(self, plan, state, inputs, values, *, retain_for_backward, managed,
+                 borrowed=(), explicit_state=False):
         self.plan, self.state, self.inputs, self.values = plan, state, inputs, values
+        self.explicit_state = explicit_state
         # Runs from outside the transformed callable are captured constants.
         self.jvp_scope = _jvp_scope.get()
         self._borrowed = frozenset(id(value) for value in borrowed)

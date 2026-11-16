@@ -10,7 +10,7 @@ from numpy import float32, int32, uint32, int64
 
 from ._tensor import Tensor, Parameter, tensor, as_tensor
 from .modules import Module, Linear, Conv2d, PixelShuffle, Sigmoid, ReLU, SiLU, ELU, Tanh, Softmax, LogSoftmax, Flatten, Sequential
-from .functional import cat, stack, reshape, flatten, transpose, permute, sum, mean, sin, cos, square, exp, log, sqrt, argmax
+from .functional import functional_call, cat, stack, reshape, flatten, transpose, permute, sum, mean, sin, cos, square, exp, log, sqrt, argmax
 from .functional import squeeze, unsqueeze, ones_like, zeros_like
 from .functional import clamp, minimum, maximum
 from ._grad import no_grad, is_grad_enabled
@@ -25,7 +25,7 @@ from infernux.runtime_services import Signal
 __all__ = ["float32", "int32", "uint32", "int64", "Tensor", "Parameter", "tensor", "as_tensor", "Module", "Linear", "Conv2d", "PixelShuffle", "Sigmoid", "ReLU", "SiLU", "ELU", "Tanh", "Softmax", "LogSoftmax",
            "Flatten", "cat", "stack", "reshape", "flatten", "transpose", "permute", "sum", "mean", "sin", "cos", "square", "exp", "log", "sqrt", "argmax",
            "squeeze", "unsqueeze", "ones_like", "zeros_like", "no_grad", "is_grad_enabled",
-           "clamp", "minimum", "maximum",
+           "clamp", "minimum", "maximum", "functional_call",
            "rand", "manual_seed", "get_rng_state", "set_rng_state",
            "Sequential", "autograd", "functional", "optim", "distributions", "utils", "program", "Program", "Budget", "Channel", "Clock", "Signal",
            "bake", "export", "load", "save_checkpoint", "load_checkpoint"]

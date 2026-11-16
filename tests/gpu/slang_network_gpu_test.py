@@ -328,6 +328,97 @@ def check_composed_optimizers(device):
         print(f"Composed-model {kind.__name__} updates and failed-publication isolation passed on {device}", flush=True)
 
 
+def check_functional_call(device):
+    from infernux.nn import _plan
+
+    class Tied(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.first = nn.Linear(2, 2, bias=False, device=device)
+            self.second = nn.Linear(2, 2, bias=False, device=device)
+            self.second.weight = self.first.weight
+
+        def forward(self, value, residual):
+            return self.second(self.first(value)) + residual
+
+    model = Tied()
+    root_weight = np.array([[.25, .5], [-.2, .6]], dtype=np.float32)
+    first_weight = np.array([[1.5, -.3], [.4, -.25]], dtype=np.float32)
+    second_weight = np.array([[0., -.75], [.6, 1.15]], dtype=np.float32)
+    xs = np.array([[.75, -.4], [-.6, 1.25]], dtype=np.float32)
+    rs = np.array([[.2, -.1], [.8, -.6]], dtype=np.float32)
+    x, residual = (nn.tensor(value, device=device) for value in (xs, rs))
+    model.load_state_dict({"first.weight": nn.tensor(root_weight)})
+    param, = model.parameters()
+    assert param is model.first.weight is model.second.weight
+    param.grad = initial_grad = nn.ones_like(param)
+    model.prepare(x, residual)
+    first = {"first.weight": nn.tensor(first_weight, device=device)}
+    second = {"first.weight": nn.tensor(second_weight, device=device)}
+    original_state, original_version, plan = model._state, model.parameter_version, model._plan
+    native_work = None if device == "cpu" else plan._native_forward.work
+    owner, method = (inx.compute, "_execute_work_instance") if device == "gpu" else (_plan, "_execute_work")
+    execute = getattr(owner, method)
+
+    def evaluate(weight):
+        return (xs @ weight.T) @ weight.T + rs
+
+    with patch.object(owner, method, wraps=execute) as work, \
+         patch.object(inx.compute.Buffer, "get_data", side_effect=AssertionError("forward read back a buffer")):
+        left = nn.functional_call(model, first, (x, residual))
+        right = nn.functional_call(model, second, (x, residual))
+        assert work.call_count == 2
+    for value, weight in ((left, first_weight), (right, second_weight)):
+        assert value.device == device and not value.requires_grad
+        np.testing.assert_allclose(value.cpu().numpy(), evaluate(weight), rtol=3e-5, atol=3e-6)
+    assert model._plan is plan and len(model._plans) == 1
+    if native_work is not None:
+        assert plan._native_forward.work is native_work
+
+    with np.testing.assert_raises_regex(ValueError, "named_parameters"):
+        nn.functional_call(model, {}, (x, residual))
+    with np.testing.assert_raises_regex(ValueError, "shape and dtype"):
+        nn.functional_call(model, {"first.weight": x.sum()}, (x, residual))
+    with np.testing.assert_raises_regex(ValueError, "detached Tensor"):
+        nn.functional_call(model, dict(model.named_parameters()), (x, residual))
+
+    def fail_after_work(*args, **kwargs):
+        execute(*args, **kwargs)
+        raise RuntimeError("test forward failure")
+
+    with patch.object(owner, method, side_effect=fail_after_work), \
+         np.testing.assert_raises_regex(RuntimeError, "test forward failure"):
+        nn.functional_call(model, first, (x, residual))
+    assert model._state is original_state and model.parameter_version == original_version
+    assert param.grad is initial_grad
+    with nn.no_grad():
+        np.testing.assert_allclose(model(x, residual).cpu().numpy(), evaluate(root_weight), rtol=3e-5, atol=3e-6)
+        retry = nn.functional_call(model, first, (x, residual))
+        np.testing.assert_allclose(retry.cpu().numpy(), evaluate(first_weight), rtol=3e-5, atol=3e-6)
+
+    x.requires_grad = residual.requires_grad = True
+    bound = nn.functional_call(model, second, (x, residual))
+    projection = np.array([[.8, -.45]], dtype=np.float32)
+    head = nn.Linear(2, 1, bias=False, device=device)
+    head.load_state_dict({"weight": nn.tensor(projection)})
+    prediction = head(bound)
+    model.load_state_dict({"first.weight": nn.tensor(root_weight + 1.)})
+    cotangent = np.array([[.6], [-1.25]], dtype=np.float32)
+    seed = nn.tensor(cotangent, device=device)
+    dx, dr, untouched, dw = nn.autograd.grad(prediction, (x, residual, param, head.weight), seed, allow_unused=True)
+    upstream = cotangent @ projection
+    np.testing.assert_allclose(dx.cpu().numpy(), upstream @ second_weight @ second_weight, rtol=3e-5, atol=3e-6)
+    np.testing.assert_allclose(dr.cpu().numpy(), upstream, rtol=3e-5, atol=3e-6)
+    np.testing.assert_allclose(dw.cpu().numpy(), cotangent.T @ evaluate(second_weight), rtol=3e-5, atol=3e-6)
+    assert untouched is None and param.grad is initial_grad
+
+    direction = np.array([[-.3, .5], [.8, .15]], dtype=np.float32)
+    _, jvp = nn.autograd.jvp(lambda values: nn.functional_call(model, first, (values, residual)),
+                             x, nn.tensor(direction, device=device))
+    np.testing.assert_allclose(jvp.cpu().numpy(), direction @ first_weight.T @ first_weight.T, rtol=3e-5, atol=3e-6)
+    print("Functional calls reuse Work and isolate model state on", device, flush=True)
+
+
 def main():
     workspace = tempfile.TemporaryDirectory(prefix="infernux-slang-network-")
     project = Path(workspace.name)
@@ -387,6 +478,8 @@ def main():
         check_jvp("gpu")
         check_composed_optimizers("cpu")
         check_composed_optimizers("gpu")
+        check_functional_call("cpu")
+        check_functional_call("gpu")
     finally:
         inx.compute._release_engine_resources()
         native.cleanup()

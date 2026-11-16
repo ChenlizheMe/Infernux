@@ -1,9 +1,55 @@
 """Functional operators in the engine's shared static value graph."""
+from collections.abc import Mapping
 import math
 
 import numpy as np
 
-from ._tensor import Tensor
+from ._tensor import Parameter, Tensor, _check_storage
+
+
+def functional_call(module, parameters, args):
+    """Call a root Module with detached values for all its named parameters.
+
+    Parameter names and layouts match ``module.named_parameters()``. Shared
+    parameters take one value at their canonical name. ``args`` is a Tensor or
+    a tuple of Tensors. Gradients are available for the inputs.
+    """
+    from ._plan import _capture
+    from .modules import Module
+    from .program import _capture_program
+
+    if _capture.get() is not None or _capture_program.get() is not None:
+        raise NotImplementedError("functional_call requires an ordinary call outside model or program capture")
+    if not isinstance(module, Module) or not isinstance(parameters, Mapping):
+        raise TypeError("functional_call requires a Module and a parameter mapping")
+    inputs = (args,) if isinstance(args, Tensor) else args
+    if (not isinstance(inputs, tuple) or not inputs
+            or any(not isinstance(value, Tensor) or isinstance(value, Parameter) for value in inputs)):
+        raise TypeError("functional_call inputs must be a Tensor or a nonempty tuple of Tensors")
+    if module._root_owner is not None and module._root_owner is not module:
+        raise ValueError("functional_call requires a root Module")
+
+    with module._lock:
+        named = module._tree()[0] if module._state is None else module._named
+        if set(parameters) != {name for name, _ in named}:
+            raise ValueError("functional_call requires exactly the names returned by module.named_parameters()")
+        state = []
+        for name, parameter in named:
+            value = parameters[name]
+            if not isinstance(value, Tensor) or value.shape != parameter.shape or value.dtype != parameter.dtype:
+                raise ValueError(f"functional_call parameter {name!r} must match its Tensor shape and dtype")
+            if isinstance(value, Parameter) or value.requires_grad or value._run is not None or value._loss is not None:
+                raise ValueError(f"functional_call parameter {name!r} requires a detached Tensor")
+            state.append(value._data)
+        original = tuple(parameter._data for _, parameter in named)
+        _check_storage((*(value._data for value in inputs), *original, *state))
+        if inputs[0].device == "gpu":
+            from ._gpu_forward import GpuForward
+            if GpuForward.storage_layout(state) != GpuForward.storage_layout(original):
+                raise ValueError("functional_call parameters must match the model's GPU buffer layouts")
+        if module._bind() is not module:
+            raise ValueError("functional_call requires a root Module")
+        return module._plan_for_call(inputs).forward(inputs, state=tuple(state))
 
 
 def _activation(input, kind, dim=None):

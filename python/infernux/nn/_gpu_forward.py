@@ -59,8 +59,11 @@ class GpuForward:
 
     @staticmethod
     def input_layout(inputs):
-        return tuple((value._data._native.element_count, value._data._native.lanes, value._data._byte_offset)
-                     for value in inputs)
+        return GpuForward.storage_layout(value._data for value in inputs)
+
+    @staticmethod
+    def storage_layout(values):
+        return tuple((value._native.element_count, value._native.lanes, value._byte_offset) for value in values)
 
     def close(self):
         if self.work is not None:
@@ -106,12 +109,12 @@ class GpuForward:
             bindings.clear()
             instance = None
 
-    def forward(self, inputs):
+    def forward(self, inputs, *, state):
         from ._plan import _map_result
 
         instance = None
         try:
-            instance = self._execute(self._bindings(tuple(value._data for value in inputs), self.plan.root._state))
+            instance = self._execute(self._bindings(tuple(value._data for value in inputs), state))
             def tensor(index):
                 slot, offset, _ = self.outputs[index]
                 result = self.plan.result_specs[index]

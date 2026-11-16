@@ -75,11 +75,22 @@ value, directional_derivative = nn.autograd.jvp(
 | `loss.backward()`、`output.backward(gradient)` | 反向传播并累积参数梯度 | MSE/交叉熵使用默认种子；普通输出可传同形、同设备的 detached 梯度，单元素可省略；不支持高阶梯度和保留反向图 |
 | `nn.autograd.grad(outputs, inputs, grad_outputs=None, allow_unused=...)` | 返回指定叶张量和参数的梯度，保留已有 `.grad` | 多次普通调用的输出或损失可在同一设备与计算宿主上共同反传。共享前向只反传一次，贡献按叶张量和参数身份累积。输入顺序决定返回顺序。非标量输出需要匹配的 detached 种子，MSE 和交叉熵使用单位种子。调用消耗所用的反向记录。未用输入默认报错，`allow_unused=True` 返回 `None`，`materialize_grads=True` 返回零张量。 |
 | `nn.autograd.jvp(func, primals, tangents)` | 一次求出函数值及输入方向导数 | 输入与切向为同形、同设备、同计算宿主的 float32 Tensor，单个 Tensor 或成组传入。输出为一对 detached 结果，保留 `func` 返回的单 Tensor 或 Tensor 元组结构。 |
+| `nn.functional_call(model, parameters, args)` | 用显式参数快照运行一个根模型 | `parameters` 提供完整命名参数的 detached Tensor，`args` 为一个 Tensor 或 Tensor 元组。输入可求导。 |
 | `nn.optim.SGD(model.parameters(), lr=...)` | 普通 SGD | 一个或多个完整模型参数树，每棵树最多一个存活优化器；当前不支持动量、权重衰减、参数子组或 closure |
 | `nn.optim.Adam(model.parameters(), lr=..., betas=(.9,.999), eps=1e-8, weight_decay=0)` | Adam 与耦合 L2 衰减 | 参数、两组动量和逐参数计数一起提交；None 梯度跳过，零梯度正常更新；暂不支持 AMSGrad、foreach、fused 或 AdamW |
 | `optimizer.zero_grad(set_to_none=True)` | 清除或置零梯度 | `True` 释放梯度，`False` 执行已编译置零操作 |
 | `nn.utils.clip_grad_norm_(parameters, max_norm, norm_type=2.0, error_if_nonfinite=False, foreach=None)` | 按全部参与梯度的 L2 范数统一缩放，返回裁前范数 | float32、单设备、同一模型域；当前只支持 L2、非有限值传播和 foreach=None/False。忽略 None 梯度；零梯度保留 |
 | `optimizer.step()` | 完整更新后一次发布参数 | 离线调用同步完成；执行中间结果不会作为半套新参数暴露 |
+
+```python
+parameters = encoder.state_dict()
+parameters["0.weight"] = alternative_weight.detach()
+prediction = head(nn.functional_call(encoder, parameters, batch))
+```
+
+普通 `functional_call` 复用模型按输入签名准备的 Plan，并把映射值绑定到该次 Work 的参数端口。模型结构和 Python 控制流以常规捕获为准。完整键名来自 `named_parameters()`，共享参数使用一个规范键。参数的形状、dtype、设备和计算宿主与模型匹配，GPU 参数还需匹配原生 buffer 布局。模型注册的 `Parameter`、参数版本和梯度槽保持原值，连续调用可使用不同的参数快照。
+
+普通调用间可组合输入的反向传播和现有 `nn.autograd.jvp`。输入梯度使用调用时的参数快照。当前显式参数是常量，梯度范围为模型输入。受管 `nn.program` 和捕获中的 `Module.forward` 使用现有模型调用接口。
 
 ```python
 from itertools import chain
