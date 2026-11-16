@@ -449,27 +449,33 @@ JoltGpuControlWork JoltGpuSleep::PrepareInitialize(const JoltGpuStorage &s, cons
 JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                              const JoltGpuConstraintTopology &topology, std::function<void()> done)
 {
+    const auto &selected = inputs.GetParameters();
+    const auto &contacts = inputs.GetContacts();
+    auto p = Selection(storage, selected);
+    if (!topology.schedule || !topology.rootVotes || topology.bodySlots != storage.GetBodyCount() || !contacts)
+        throw std::logic_error("GPU sleep wake requires its accepted substep topology");
+    if (selected.selectedCounts.z == 0 && contacts->patchCount == 0) {
+        // Without edges, validated Dynamic roots are their own bodies. An
+        // awake body votes only for itself, and an asleep body gets no vote.
+        done();
+        return {};
+    }
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(storage);
-    auto p = Selection(storage, inputs.GetParameters());
-    if (!topology.schedule || !topology.rootVotes || topology.bodySlots != storage.GetBodyCount() ||
-        !inputs.GetContacts())
-        throw std::logic_error("GPU sleep wake requires its accepted substep topology");
     e->buffers[Schedule] = topology.schedule;
     e->buffers[Roots] = topology.rootVotes;
     e->statusIndex = p.selected.w;
     p.layout = {topology.bodyRootFirst, p.selected.w, 0u, 0u};
     e->initializeStatus = false;
     e->buffers[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
-    e->buffers[Patches] = inputs.GetContacts()->patches;
+    e->buffers[Patches] = contacts->patches;
     e->Add(Clear, p.selected.y, p.selected.z, p);
     e->Add(SeedBodies, p.selected.y, p.selected.z, p);
-    const auto &selected = inputs.GetParameters();
     p.layout.z = selected.selection.w;
     p.layout.w = selected.selectedCounts.z;
     e->Add(SeedJoints, p.layout.z, p.layout.w, p);
     p.layout.z = 0u;
-    p.layout.w = inputs.GetContacts()->patchCount;
+    p.layout.w = contacts->patchCount;
     e->Add(SeedPatches, 0u, p.layout.w, p);
     e->Add(Wake, p.selected.y, p.selected.z, p);
     e->completed = [done = std::move(done)](auto &) { done(); };
