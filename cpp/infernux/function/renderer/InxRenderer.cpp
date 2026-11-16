@@ -297,105 +297,33 @@ std::shared_ptr<rhi::RenderTexture> InxRenderer::CreateRenderTexture(const rhi::
 {
     if (!m_vkCore || !m_vkCore->GetDeviceContext().IsValid())
         throw std::runtime_error("RenderTexture requires an initialized graphical engine");
-    const bool relative = description.sizeMode == rhi::RenderTextureSizeMode::Relative;
     const auto worldId = SceneManager::Instance().CurrentWorld().id;
     const auto reference = m_gameScreenOutputs ? m_gameScreenOutputs->Config(worldId) : m_defaultGameOutput;
-    static std::atomic<uint64_t> nextIdentity{1};
-    auto texture = std::make_shared<rhi::RenderTexture>(
-        m_vkCore->GetDeviceContext().GetRhiDevice(),
-        "runtime/render-texture/" + std::to_string(nextIdentity.fetch_add(1, std::memory_order_relaxed)), description,
-        relative ? reference.width : 0, relative ? reference.height : 0, assetGuid);
-    if (relative) {
-        m_relativeRenderTextures.erase(std::remove_if(m_relativeRenderTextures.begin(), m_relativeRenderTextures.end(),
-                                                      [](const auto &entry) { return entry.texture.expired(); }),
-                                       m_relativeRenderTextures.end());
-        m_relativeRenderTextures.push_back({worldId, texture});
-    }
-    return texture;
+    return m_renderTextures.Create(m_vkCore->GetDeviceContext().GetRhiDevice(), description, worldId, reference.width,
+                                   reference.height, assetGuid);
 }
-
-struct InxRenderer::ImportedRenderTexture
-{
-    std::shared_ptr<rhi::RenderTextureDesc> description;
-    std::shared_ptr<rhi::RenderTexture> texture;
-};
 
 std::shared_ptr<rhi::RenderTexture> InxRenderer::LoadRenderTexture(const std::string &guid)
 {
     auto description = AssetRegistry::Instance().LoadAsset<rhi::RenderTextureDesc>(guid, ResourceType::RenderTexture);
     if (!description)
         throw std::invalid_argument("RenderTexture requires an imported asset GUID: " + guid);
-    auto existing = m_assetRenderTextures.find(guid);
-    if (existing != m_assetRenderTextures.end()) {
-        if (auto owner = existing->second.lock()) {
-            if (owner->description != description) {
-                // Explicit unload or delete/Undo can replace the CPU registry
-                // entry while a graphics lease still holds this same identity.
-                ReconfigureImportedRenderTexture(guid, *description);
-                owner->description = std::move(description);
-            }
-            return {owner, owner->texture.get()};
-        }
-    }
-    auto texture = CreateRenderTexture(*description, guid);
-    // One CPU identity in AssetRegistry and one GPU owner for all consumers.
-    // The alias retains the registry payload while any graphics consumer lives,
-    // so residency eviction cannot disconnect it from subsequent reimports.
-    auto owner = std::make_shared<ImportedRenderTexture>(ImportedRenderTexture{std::move(description), texture});
-    for (auto it = m_assetRenderTextures.begin(); it != m_assetRenderTextures.end();) {
-        if (it->second.expired())
-            it = m_assetRenderTextures.erase(it);
-        else
-            ++it;
-    }
-    m_assetRenderTextures[guid] = owner;
-    return {owner, texture.get()};
+    const auto worldId = SceneManager::Instance().CurrentWorld().id;
+    const auto reference = m_gameScreenOutputs ? m_gameScreenOutputs->Config(worldId) : m_defaultGameOutput;
+    return m_renderTextures.Load(m_vkCore->GetDeviceContext().GetRhiDevice(), guid, std::move(description), worldId,
+                                 reference.width, reference.height);
 }
 
 void InxRenderer::ReconfigureImportedRenderTexture(const std::string &guid, const rhi::RenderTextureDesc &description)
 {
-    auto entry = m_assetRenderTextures.find(guid);
-    if (entry == m_assetRenderTextures.end())
-        return; // Importing an unused description must not allocate a GPU target.
-    auto owner = entry->second.lock();
-    if (!owner) {
-        m_assetRenderTextures.erase(entry);
-        return;
-    }
-    const auto &target = owner->texture;
-    const bool relative = description.sizeMode == rhi::RenderTextureSizeMode::Relative;
     const auto worldId = SceneManager::Instance().CurrentWorld().id;
     const auto reference = m_gameScreenOutputs ? m_gameScreenOutputs->Config(worldId) : m_defaultGameOutput;
-    if (relative)
-        m_relativeRenderTextures.reserve(m_relativeRenderTextures.size() + 1);
-    target->Reconfigure(description, relative ? reference.width : 0, relative ? reference.height : 0);
-    // Publish tracking only after the whole allocation succeeded. No allocation
-    // or per-frame polling is needed to switch between absolute/relative sizing.
-    m_relativeRenderTextures.erase(std::remove_if(m_relativeRenderTextures.begin(), m_relativeRenderTextures.end(),
-                                                  [&target](const auto &weak) {
-                                                      auto live = weak.texture.lock();
-                                                      return !live || live == target;
-                                                  }),
-                                   m_relativeRenderTextures.end());
-    if (relative)
-        m_relativeRenderTextures.push_back({worldId, target});
+    m_renderTextures.Reconfigure(guid, description, worldId, reference.width, reference.height);
 }
 
 void InxRenderer::ResizeRelativeRenderTextures(uint64_t worldId, uint32_t width, uint32_t height)
 {
-    std::vector<std::shared_ptr<rhi::RenderTexture>> live;
-    live.reserve(m_relativeRenderTextures.size());
-    m_relativeRenderTextures.erase(std::remove_if(m_relativeRenderTextures.begin(), m_relativeRenderTextures.end(),
-                                                  [&live, worldId](const auto &entry) {
-                                                      if (auto target = entry.texture.lock()) {
-                                                          if (entry.worldId == worldId)
-                                                              live.push_back(std::move(target));
-                                                          return false;
-                                                      }
-                                                      return true;
-                                                  }),
-                                   m_relativeRenderTextures.end());
-    rhi::RenderTexture::ReconfigureReferenceSize(live, width, height);
+    m_renderTextures.Resize(worldId, width, height);
 }
 
 InxRenderer::InxRenderer(vk::VulkanBackendContext &backend)
@@ -2987,10 +2915,8 @@ std::array<uint64_t, 3> InxRenderer::GetRenderTexturePreview(const std::shared_p
 
 std::array<uint64_t, 3> InxRenderer::GetImportedRenderTexturePreview(const std::string &guid)
 {
-    const auto found = m_assetRenderTextures.find(guid);
-    if (found != m_assetRenderTextures.end())
-        if (const auto owner = found->second.lock())
-            return GetRenderTexturePreview(owner->texture);
+    if (const auto texture = m_renderTextures.Find(guid))
+        return GetRenderTexturePreview(texture);
     return {};
 }
 
@@ -4923,26 +4849,8 @@ std::shared_ptr<rhi::RenderTexture> InxRenderer::GetCameraOutputTexture(Camera &
             camera.SetTargetTexture(LoadRenderTexture(guid));
         return camera.GetOutputTexture();
     }
-    auto &texture = camera.m_memoryOutputTexture;
-    const auto size = camera.GetMemoryOutputSize();
-    if (!texture) {
-        rhi::RenderTextureDesc description;
-        description.width = size.x;
-        description.height = size.y;
-        description.colorFormat = rhi::PixelFormat::RGBA32SFloat;
-        description.depthFormat = rhi::PixelFormat::D32SFloat;
-        description.sampledDepth = true;
-        texture = CreateRenderTexture(description);
-    } else {
-        const auto generation = texture->Acquire();
-        if (generation->width != size.x || generation->height != size.y) {
-            auto description = generation->description;
-            description.width = size.x;
-            description.height = size.y;
-            texture->Reconfigure(description);
-        }
-    }
-    return texture;
+    camera.PrepareMemoryOutput(m_vkCore->GetDeviceContext().GetRhiDevice());
+    return camera.GetOutputTexture();
 }
 
 void InxRenderer::RequestCameraRender(Camera &camera)

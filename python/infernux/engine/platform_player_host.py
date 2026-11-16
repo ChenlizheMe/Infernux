@@ -5,10 +5,11 @@ from .runtime_world_host import RuntimeWorldHost
 
 class PlatformPlayerHost(RuntimeWorldHost):
     def __init__(self, *, asset_database, frame_work, compute_host, initial_world_count=1,
-                 process_input):
+                 process_input, native_services):
         from .player_runtime import PlayerRuntimeSession
 
         self._closing = False
+        self._native_services = native_services
         self._asset_database = asset_database
         self._process_input = process_input
         self._infernux_compute_host = compute_host
@@ -25,7 +26,7 @@ class PlatformPlayerHost(RuntimeWorldHost):
 
     def get_native_engine(self):
         """The platform owns its device and event loop outside the desktop application."""
-        return None
+        return self._native_services
 
     def get_player_runtime(self):
         return self._player_runtime

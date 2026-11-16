@@ -12,8 +12,9 @@ namespace infernux
 {
 namespace rhi
 {
+class Device;
 class RenderTexture;
-}
+} // namespace rhi
 
 /**
  * @brief Camera projection mode
@@ -299,6 +300,8 @@ class Camera : public Component
             return {};
         return HasTargetTexture() ? m_targetTexture : m_memoryOutputTexture;
     }
+    /// Renderer-owned allocation; both devices use the same camera target policy.
+    void PrepareMemoryOutput(rhi::Device &device);
 
     // ========================================================================
     // Clear flags & background color

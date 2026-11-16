@@ -2,13 +2,16 @@
 #include <SDL3/SDL.h>
 #include <function/renderer/FullscreenRenderer.h>
 #include <function/renderer/SceneRenderGraph.h>
+#include <function/renderer/rhi/RenderTextureRegistry.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
+#include <nlohmann/json.hpp>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -24,6 +27,31 @@ using namespace infernux;
 
 static void CheckDepthSamplingDeclaration(vk::VkDeviceContext &context)
 {
+    {
+        rhi::RenderTextureRegistry registry;
+        auto description = std::make_shared<rhi::RenderTextureDesc>();
+        description->sizeMode = rhi::RenderTextureSizeMode::Relative;
+        description->widthScale = description->heightScale = 0.5f;
+        auto first = registry.Load(context.GetRhiDevice(), "shared-target", description, 1, 32, 24);
+        auto second = registry.Load(context.GetRhiDevice(), "shared-target", description, 1, 32, 24);
+        assert(first == second && first->Acquire()->width == 16 && first->Acquire()->height == 12);
+        const auto previous = first->Acquire();
+        registry.Resize(2, 128, 128);
+        assert(first->Acquire() == previous);
+        registry.Resize(1, 64, 48);
+        assert(first->Acquire() != previous && first->Acquire()->width == 32 && previous->color->IsValid());
+        auto replacement = std::make_shared<rhi::RenderTextureDesc>();
+        replacement->width = 8;
+        replacement->height = 4;
+        assert(registry.Load(context.GetRhiDevice(), "shared-target", replacement, 1, 64, 48) == first);
+        assert(first->Acquire()->width == 8 && first->Acquire()->height == 4);
+        registry.Resize(1, 128, 128);
+        assert(first->Acquire()->width == 8);
+        first.reset();
+        second.reset();
+        assert(!registry.Find("shared-target"));
+        assert(previous->color->IsValid());
+    }
     for (const auto samples : {rhi::SampleCount::One, rhi::SampleCount::Four}) {
         for (const bool sampled : {false, true}) {
             rhi::RenderTextureDesc desc;
@@ -232,6 +260,11 @@ Vertex vertex_main(uint id : SV_VulkanVertexID) {
 )slang";
     auto compiled = SlangCompiler::Get().Compile({"fullscreen_test", "<test/fullscreen>", vertex + fragment}, {},
                                                  {ShaderCodeTarget::SpirV});
+    std::vector<std::pair<std::string, std::string>> inputs;
+    const auto author = nlohmann::json::parse(schema);
+    for (const auto &input : author.at("inputs"))
+        inputs.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
+    ApplyShaderAuthorResources(compiled, inputs);
     auto program = std::make_shared<FullscreenProgram>();
     program->code = std::make_shared<ShaderTargetCode>(std::move(compiled.targets.front()));
     program->schema = schema;

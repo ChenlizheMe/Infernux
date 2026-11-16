@@ -938,6 +938,21 @@ std::pair<glm::vec3, glm::vec3> Camera::ScreenPointToRay(const glm::vec2 &screen
             glm::normalize(glm::mat3(cameraToWorld) * glm::vec3(direction))};
 }
 
+void Camera::PrepareMemoryOutput(rhi::Device &device)
+{
+    rhi::RenderTextureDesc description;
+    description.width = m_memoryOutputSize.x;
+    description.height = m_memoryOutputSize.y;
+    description.colorFormat = rhi::PixelFormat::RGBA32SFloat;
+    description.depthFormat = rhi::PixelFormat::D32SFloat;
+    description.sampledDepth = true;
+    if (!m_memoryOutputTexture)
+        m_memoryOutputTexture = std::make_shared<rhi::RenderTexture>(
+            device, "camera/memory/" + std::to_string(GetComponentID()), description);
+    else
+        m_memoryOutputTexture->Reconfigure(description);
+}
+
 void Camera::SetTargetTexture(std::shared_ptr<rhi::RenderTexture> target)
 {
     const std::string guid = target ? target->GetAssetGuid() : std::string{};

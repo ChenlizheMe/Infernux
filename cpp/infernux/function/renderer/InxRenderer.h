@@ -12,6 +12,7 @@
 #include "RenderViewSchedule.h"
 #include "ScenePickingTypes.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
+#include "rhi/RenderTextureRegistry.h"
 #include "rhi/RhiDescriptors.h"
 #include <array>
 #include <chrono>
@@ -908,16 +909,7 @@ class InxRenderer
     void RetireUnrequestedScreenGraphs(uint64_t worldId);
     void RefreshPrimaryScreenAliases();
     [[nodiscard]] GameImageGeneration CurrentGameImageGeneration() const;
-    // Relative targets follow Game render pixels, never editor zoom/DPI or the
-    // last Camera drawn. Registration must not extend the resource lifetime.
-    struct RelativeRenderTexture
-    {
-        uint64_t worldId = 0;
-        std::weak_ptr<rhi::RenderTexture> texture;
-    };
-    std::vector<RelativeRenderTexture> m_relativeRenderTextures;
-    struct ImportedRenderTexture;
-    std::unordered_map<std::string, std::weak_ptr<ImportedRenderTexture>> m_assetRenderTextures;
+    rhi::RenderTextureRegistry m_renderTextures;
     void ResizeRelativeRenderTextures(uint64_t worldId, uint32_t width, uint32_t height);
     std::unordered_map<uint64_t, std::unique_ptr<SceneRenderGraph>> m_gameRenderGraphs;
     SceneRenderGraph *m_gameRenderGraph = nullptr; ///< Representative graph for legacy single-view queries.
