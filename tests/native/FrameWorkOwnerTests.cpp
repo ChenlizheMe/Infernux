@@ -616,6 +616,55 @@ static void ForegroundBeforeBackgroundWithNoReserve()
     owner.EndOpportunity();
 }
 
+static void BackgroundGpuTurnSurvivesInteractiveSelection()
+{
+    uint64_t now = 0;
+    FrameWorkOwner owner([&] { return now; });
+    owner.Configure(100, 0);
+    unsigned hostSteps = 0, gpuSteps = 0;
+
+    FrameWorkSource host;
+    host.describe = [] {
+        FrameWorkFacts facts;
+        facts.host = {0, 100, true};
+        return facts;
+    };
+    host.advance = [&](bool gpu, uint64_t) {
+        assert(!gpu);
+        ++hostSteps;
+        now += 100;
+        return true;
+    };
+    owner.AddSource(std::move(host));
+
+    FrameWorkSource compute;
+    compute.describe = [&] {
+        FrameWorkFacts facts;
+        facts.gpu = {0, 1, gpuSteps == 0};
+        return facts;
+    };
+    compute.advance = [&](bool gpu, uint64_t) {
+        assert(gpu);
+        ++gpuSteps;
+        ++now;
+        return true;
+    };
+    owner.AddSource(std::move(compute));
+
+    const auto ready = [] { return FrameGpuAvailability::Ready; };
+    owner.BeginOpportunity();
+    assert(owner.AdvanceEarly());
+    assert(owner.AdvanceLate(ready));
+    assert(hostSteps == 1 && gpuSteps == 0 && owner.Remaining() == 0);
+    owner.EndOpportunity();
+
+    owner.BeginOpportunity();
+    assert(owner.AdvanceEarly());
+    assert(owner.AdvanceLate(ready));
+    assert(hostSteps == 1 && gpuSteps == 1 && owner.Remaining() == 99);
+    owner.EndOpportunity();
+}
+
 static void EarlyPrerequisitesAndGpuPreference()
 {
     uint64_t now = 0;
@@ -929,6 +978,7 @@ int main()
     SynchronousWaitAndDiagnostics();
     SynchronousDependenciesAndReentry();
     ForegroundBeforeBackgroundWithNoReserve();
+    BackgroundGpuTurnSurvivesInteractiveSelection();
     EarlyPrerequisitesAndGpuPreference();
     EarlyObservationAndSameHostLateIo();
     LateDependencySharesBackgroundCredit();

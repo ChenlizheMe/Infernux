@@ -535,7 +535,8 @@ bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu, bool interac
             return true;
         candidate.ready = false;
     }
-    if (gpu)
+    // Preserve the next background turn across an empty interactive pass.
+    if (gpu && !interactive)
         m_preferGpu = false;
     return false;
 }
