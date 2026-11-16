@@ -183,7 +183,7 @@ class CompilerArtifact:
             if self.gradient_parameters:
                 native = value._native
                 if native is None or value._host is None or value._host.identity != owner_identity:
-                    raise ValueError("Local VJP primal and gradient buffers must belong to the executable's host")
+                    raise ValueError("Local differentiation buffers must belong to the executable's host")
                 resources.append(((native.resource_index, native.resource_generation), offset, end))
             return offset
 
@@ -206,7 +206,8 @@ class CompilerArtifact:
                     gradient = gradients[index]
                     if not isinstance(gradient, Buffer) or gradient.shape != value.shape or gradient._dtype != value._dtype:
                         raise ValueError("Gradient buffers must match their primal buffer shape and dtype")
-                    gradient._require_writable()
+                    if self.autodiff_mode != "forward":
+                        gradient._require_writable()
                     struct.pack_into("<I", payload, int(layout["grad_byte_offset_offset"]), buffer_offset(gradient))
             elif kind == "int32":
                 struct.pack_into("<i", payload, int(layout["offset"]), int(value))
@@ -214,13 +215,13 @@ class CompilerArtifact:
                 struct.pack_into("<f", payload, int(layout["offset"]), float(value))
             else:
                 raise RuntimeError(f"Unsupported GPU compiler argument layout kind: {kind}")
-        if self.autodiff_mode == "reverse":
+        if self.autodiff_mode != "none":
             if any(value.shape != params[self.domain_parameter].shape for value in params):
-                raise ValueError("Local VJP buffers must have the same one-dimensional domain")
+                raise ValueError("Local differentiation buffers must have the same one-dimensional domain")
             for position, (storage, begin, end) in enumerate(resources):
                 if any(storage == other and begin < other_end and other_begin < end
                        for other, other_begin, other_end in resources[:position]):
-                    raise ValueError("Local VJP primal and gradient buffer ranges must not overlap")
+                    raise ValueError("Local differentiation requires disjoint primal and derivative buffer ranges")
         return bytes(payload)
 
 def _specialization_identity(params, *, target="spirv", autodiff_mode="none", gradient_parameters=()) -> str:
@@ -231,20 +232,22 @@ def _specialization_identity(params, *, target="spirv", autodiff_mode="none", gr
 def _compilation_request(params, autodiff_mode, gradient_parameters):
     from infernux.compute import Buffer
 
-    if autodiff_mode not in {"none", "reverse"}:
-        raise ValueError("GPU compiler autodiff_mode must be 'none' or 'reverse'")
+    if autodiff_mode not in {"none", "forward", "reverse"}:
+        raise ValueError("GPU compiler autodiff_mode must be 'none', 'forward' or 'reverse'")
     indices = tuple(gradient_parameters)
     if any(type(index) is not int or index < 0 or index >= len(params) for index in indices) or len(set(indices)) != len(indices):
         raise ValueError("Gradient parameters must be unique valid positional buffer indices")
     indices = tuple(sorted(indices))
     if autodiff_mode == "reverse" and not indices:
         raise ValueError("Local VJP requires explicit input-gradient and output-seed parameters")
-    checked = range(len(params)) if autodiff_mode == "reverse" else indices
+    if autodiff_mode == "forward" and not indices:
+        raise ValueError("Local JVP requires explicit tangent parameters")
+    checked = range(len(params)) if autodiff_mode != "none" else indices
     for index in checked:
         value = params[index]
         if (not isinstance(value, Buffer) or value.device != "gpu" or len(value.shape) != 1
                 or value._dtype.scalar != np.dtype(np.float32) or value._dtype.lanes != 1):
-            raise TypeError("Local VJP parameters must be one-dimensional float32 GPU buffers")
+            raise TypeError("Local differentiation parameters must be one-dimensional float32 GPU buffers")
     return indices
 
 class ArtifactAbiMismatchError(RuntimeError):

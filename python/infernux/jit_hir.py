@@ -1611,29 +1611,9 @@ class _Analyzer:
         return defined
 
     def _row_output_coverage(self, loop, writes):
-        """Must-write facts at normal row exits, using the existing path walk."""
         index = AffineExpr.variable(loop.target.id)
         direct = {access.buffer for access in writes if access.index == index and len(access.axes) == 1}
-        tag, exits = object(), []
-
-        def output_facts(defined):
-            return {value[1] for value in defined if isinstance(value, tuple)
-                    and len(value) == 2 and value[0] is tag}
-
-        def write(target, defined):
-            if (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
-                    and target.value.id in direct and len(_access_axes(target, self.imports)) == 1
-                    and _affine(_index_node(target), known_calls=self.imports) == index):
-                defined.add((tag, target.value.id))
-
-        def row_exit(statement, defined):
-            exits.append(output_facts(defined) if isinstance(statement, ast.Continue) else set())
-
-        fallthrough = self._scalar_flow(loop.body, set(), lambda *_: None,
-                                        on_write=write, on_exit=row_exit)
-        if fallthrough is not None:
-            exits.append(output_facts(fallthrough))
-        return tuple(sorted(set.intersection(*exits))) if exits else ()
+        return _definite_row_writes(loop.body, loop.target.id, direct, known_calls=self.imports)
 
     def _scalar_dependencies(self, node: ast.For, loop_id: str, reductions: Sequence[Reduction]) -> None:
         assigned = {child.id for statement in node.body for child in ast.walk(statement)
@@ -1931,6 +1911,30 @@ def _find_function(tree: ast.Module, function_name: str | None) -> ast.FunctionD
     if not functions:
         raise LookupError(f"{DiagnosticCode.FUNCTION_NOT_FOUND.value}: no top-level function")
     return functions[0]
+
+
+def _definite_row_writes(statements, index_name, outputs, *, known_calls=None):
+    """Find the output rows written on every exit from a logical work item."""
+    index = AffineExpr.variable(index_name)
+    tag, exits = object(), []
+
+    def output_facts(defined):
+        return {value[1] for value in defined if isinstance(value, tuple)
+                and len(value) == 2 and value[0] is tag}
+
+    def write(target, defined):
+        if (isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name)
+                and target.value.id in outputs and len(_access_axes(target, known_calls)) == 1
+                and _affine(_index_node(target), known_calls=known_calls) == index):
+            defined.add((tag, target.value.id))
+
+    def row_exit(statement, defined):
+        exits.append(output_facts(defined) if isinstance(statement, ast.Continue) else set())
+
+    fallthrough = _Analyzer._scalar_flow(statements, set(), lambda *_: None, on_write=write, on_exit=row_exit)
+    if fallthrough is not None:
+        exits.append(output_facts(fallthrough))
+    return tuple(sorted(set.intersection(*exits))) if exits else ()
 
 
 def build_hir(source: str, function_name: str | None = None, *,

@@ -63,7 +63,8 @@ def _continuation_contract(work_item, params, *, autodiff_mode, gradient_paramet
     if work_item.library_calls:
         diagnostics.append("ShaderLib calls require a proven operation bound for continuation")
     if autodiff_mode != "none" or gradient_parameters:
-        diagnostics.append("local VJP parameters do not have a proven range ABI")
+        role = "JVP" if autodiff_mode == "forward" else "VJP"
+        diagnostics.append(f"local {role} parameters do not have a proven range ABI")
     inner = proof.inner_range
     if inner is not None:
         inner.validate(params[inner.begin_parameter], params[inner.end_parameter])
@@ -170,7 +171,7 @@ def _link_libraries(item, autodiff_mode):
                 owner.error(node, f"ShaderLib {reference.module!r} has no export {export!r}",
                             code="author.reference")
             functions[name] = module.functions[export]
-    if autodiff_mode == "reverse":
+    if autodiff_mode != "none":
         graph.prepare_derivatives(functions.values())
     return graph, functions
 
@@ -339,7 +340,7 @@ class _KernelEmitter(_NumericalEmitter):
             return "inx_args." + name
         return super().visit_Name(node)
 
-    def _address(self, name, indices):
+    def _address(self, name, indices, *, derivative=False):
         _, value = self.buffers[name]
         indices = indices.elts if isinstance(indices, ast.Tuple) else [indices]
         linear = "0"
@@ -347,7 +348,8 @@ class _KernelEmitter(_NumericalEmitter):
             if self.infer(index) not in {"int", "uint", "int64_t"}:
                 self.error(index, "GPU buffer indices must be integers")
             linear = f"(({linear}) * inx_args.{name}_shape_{axis} + ({self.visit(index)}))"
-        return f"(inx_args.{name}_byte_offset + uint({linear}) * {value.itemsize}u)"
+        field = name + ("_grad_byte_offset" if derivative else "_byte_offset")
+        return f"(inx_args.{field} + uint({linear}) * {value.itemsize}u)"
 
     def visit_Subscript(self, node):
         if isinstance(node.value, ast.Name) and node.value.id in self.buffers:
@@ -415,7 +417,7 @@ class _KernelEmitter(_NumericalEmitter):
                 result = common_type(result, kind)
             name = function.name + "_" + str(len(self.helper_sources))
             parameters = ", ".join(kind + " " + arg.arg for arg, kind in signature)
-            attributes = ["[Differentiable]"] if self.plan.autodiff_mode == "reverse" else []
+            attributes = ["[Differentiable]"] if self.plan.autodiff_mode != "none" else []
             self.helper_sources[key] = "\n".join([*attributes, emitter.source_directive(function),
                                                   f"{result} {name}({parameters}) {{", *emitter.lines, "}"])
             self.helper_return_types[key] = name, result
@@ -488,24 +490,48 @@ class _LocalEmitter(_KernelEmitter):
     def visit_Subscript(self, node):
         if isinstance(node.value, ast.Name) and node.value.id in self.buffers:
             if not isinstance(node.slice, ast.Name) or node.slice.id != self.plan.work_item.index_name:
-                self.error(node, "Local VJP reads the current row; use an explicit tensor derivative for gathered work")
+                self.error(node, "Local differentiation reads the current row", code="author.derivative")
             return "inx_local_" + node.value.id
         return super().visit_Subscript(node)
 
     def assign(self, target, value):
         if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and target.value.id in self.buffers:
             if not isinstance(target.slice, ast.Name) or target.slice.id != self.plan.work_item.index_name:
-                self.error(target, "Local VJP writes the current row")
+                self.error(target, "Local differentiation writes the current row", code="author.derivative")
             self.line("inx_local_" + target.value.id + " = " + value + ";")
         else:
+            base = target
+            while isinstance(base, (ast.Subscript, ast.Attribute)):
+                base = base.value
+            if isinstance(base, ast.Name) and base.id in self.buffers:
+                self.error(target, "Local differentiation writes complete buffer rows", code="author.derivative")
             super().assign(target, value)
 
 
-def _reverse_source(plan, params, primal):
+def _local_derivative_source(plan, params, primal):
     inputs = [name for name in primal.names if primal.accesses.get(name, 0) & 1]
     outputs = [name for name in primal.names if primal.accesses.get(name, 0) & 2]
+    index = plan.work_item.index_name
+    selected = {primal.names[position] for position in plan.gradient_parameters}
+    forward = plan.autodiff_mode == "forward"
     if set(inputs) & set(outputs) or not outputs:
-        raise TypeError("Local VJP requires separate input and output buffers")
+        primal.error(plan.definition, "Local differentiation requires separate input and output buffers",
+                     code="author.derivative")
+    if forward:
+        from infernux.jit_hir import _definite_row_writes
+
+        if not selected.intersection(outputs):
+            primal.error(plan.definition, "Local JVP requires an output tangent buffer", code="author.derivative")
+        if selected.difference(inputs, outputs):
+            primal.error(plan.definition, "Local JVP tangent buffers require a corresponding row input or output",
+                         code="author.derivative")
+        complete = _definite_row_writes(plan.definition.body, index, outputs)
+        if missing := sorted(set(outputs).difference(complete)):
+            primal.error(plan.definition, "Local JVP requires every row to write " + ", ".join(missing),
+                         code="author.derivative")
+    for node in ast.walk(plan.definition):
+        if isinstance(node, ast.Name) and node.id == index and isinstance(node.ctx, ast.Store):
+            primal.error(node, "Local differentiation keeps the execution-domain index fixed", code="author.derivative")
     local = _LocalEmitter(plan, params, primal.path, plan.work_item.origin.source)
     local.line_offset = primal.line_offset
     local.declare_locals(plan.definition.body)
@@ -517,16 +543,11 @@ def _reverse_source(plan, params, primal):
     for name in outputs:
         local.line("result." + name + " = inx_local_" + name + ";")
     local.line("return result;")
-    index = plan.work_item.index_name
     # The row index is discrete; the scalar inputs and outputs carry tangents.
     parameters = [f"no_diff int {index}"]
-    differentiated = []
     for name in inputs:
-        position = primal.names.index(name)
-        qualifier = "" if position in plan.gradient_parameters else "no_diff "
+        qualifier = "" if name in selected else "no_diff "
         parameters.append(qualifier + "float inx_local_" + name)
-        if not qualifier:
-            differentiated.append(name)
     fields = " ".join("float " + name + ";" for name in outputs)
     local_function = "struct LocalOutputs : IDifferentiable { " + fields + " };\n[Differentiable]\nLocalOutputs inx_primal(" + ", ".join(parameters) + ") {\n" + "\n".join(local.lines) + "\n}"
     primal.lines.clear()
@@ -537,25 +558,41 @@ def _reverse_source(plan, params, primal):
     for name in inputs:
         address = primal._address(name, index_node)
         primal.accesses[name] = 1
-        if name in differentiated:
-            primal.line(f"DifferentialPair<float> inx_pair_{name} = diffPair({name}.Load<float>({address}), 0.0);")
+        if name in selected:
+            tangent = "0.0"
+            if forward:
+                tangent_address = primal._address(name, index_node, derivative=True)
+                tangent = f"inx_grad_{name}.Load<float>({tangent_address})"
+                primal.gradient_accesses[name] = 1
+            primal.line(f"DifferentialPair<float> inx_pair_{name} = diffPair({name}.Load<float>({address}), {tangent});")
             arguments.append("inx_pair_" + name)
         else:
             arguments.append(f"{name}.Load<float>({address})")
-    primal.line("LocalOutputs.Differential seed;")
-    for name in outputs:
-        position = primal.names.index(name)
-        seed = "0.0"
-        if position in plan.gradient_parameters:
-            address = primal._address(name, index_node).replace("_byte_offset", "_grad_byte_offset")
-            primal.gradient_accesses[name] = 1
-            seed = f"inx_grad_{name}.Load<float>({address})"
-        primal.line(f"seed.{name} = {seed};")
-    primal.line("bwd_diff(inx_primal)(" + ", ".join([*arguments, "seed"]) + ");")
-    for name in differentiated:
-        address = primal._address(name, index_node).replace("_byte_offset", "_grad_byte_offset")
-        primal.gradient_accesses[name] = 3
-        primal.line(f"inx_grad_{name}.Store<float>({address}, inx_grad_{name}.Load<float>({address}) + inx_pair_{name}.d);")
+    if forward:
+        primal.line("let inx_result = fwd_diff(inx_primal)(" + ", ".join(arguments) + ");")
+        for name in outputs:
+            address = primal._address(name, index_node)
+            primal.accesses[name] = 2
+            primal.line(f"{name}.Store<float>({address}, inx_result.p.{name});")
+            if name in selected:
+                tangent_address = primal._address(name, index_node, derivative=True)
+                primal.gradient_accesses[name] = 2
+                primal.line(f"inx_grad_{name}.Store<float>({tangent_address}, inx_result.d.{name});")
+    else:
+        primal.line("LocalOutputs.Differential seed;")
+        for name in outputs:
+            seed = "0.0"
+            if name in selected:
+                address = primal._address(name, index_node, derivative=True)
+                primal.gradient_accesses[name] = 1
+                seed = f"inx_grad_{name}.Load<float>({address})"
+            primal.line(f"seed.{name} = {seed};")
+        primal.line("bwd_diff(inx_primal)(" + ", ".join([*arguments, "seed"]) + ");")
+        for name in inputs:
+            if name in selected:
+                address = primal._address(name, index_node, derivative=True)
+                primal.gradient_accesses[name] = 3
+                primal.line(f"inx_grad_{name}.Store<float>({address}, inx_grad_{name}.Load<float>({address}) + inx_pair_{name}.d);")
     primal.helper_sources.update(local.helper_sources)
     primal.source_ranges.extend(local.source_ranges)
     return local_function
@@ -610,7 +647,7 @@ def _source(plan, params):
     emitter.declare_locals(plan.definition.body)
     emitter.local_declarations()
     emitter.block(plan.definition.body)
-    derivative = _reverse_source(plan, params, emitter) if plan.autodiff_mode == "reverse" else ""
+    derivative = _local_derivative_source(plan, params, emitter) if plan.autodiff_mode != "none" else ""
     index = plan.work_item.index_name
     domain = plan.work_item.domain_name
     first = "inx_args.inx_range_begin" if plan.continuation.eligible else "0"

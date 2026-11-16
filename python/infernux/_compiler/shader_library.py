@@ -201,7 +201,7 @@ class ShaderEmitter(SlangEmitter):
         if self.stage not in {None, "fragment"} and effects:
             self.error(node, qualified(node.func) + " requires the fragment stage (" + ", ".join(effects) + ")",
                        code="author.stage")
-        if intrinsic and operation == "vec4":
+        if intrinsic and operation == "vec4" and self.stage != "compute":
             # Each argument is evaluated once. Scalar lanes remain separable
             # when an auxiliary pass needs alpha but not color.
             value = super().visit_Call(node)
@@ -394,7 +394,7 @@ class LibraryGraph:
         self.lighting_registry: Module | None = None
         self.reader = reader or (lambda path: Path(path).read_text(encoding="utf-8-sig"))
         self.compute_autodiff = compute_autodiff
-        self._reverse_sources: list[_LibrarySource] = []
+        self._derivative_sources: list[_LibrarySource] = []
 
     def reference(self, call, owner, *, stage, suffix):
         if (not isinstance(call, ast.Call) or owner.qualified(call.func) != owner.alias + ".ref"
@@ -494,8 +494,8 @@ class LibraryGraph:
         code.extend("import " + name + ";" for name in dependencies)
         code.append("namespace " + module.name + " {")
         library = _LibrarySource(module, source, alias, body, functions, code)
-        if self.compute_autodiff == "reverse":
-            self._reverse_sources.append(library)
+        if self.compute_autodiff not in {None, "none"}:
+            self._derivative_sources.append(library)
         else:
             library.emit(emitter_type)
         self.loading.remove(path)
@@ -505,7 +505,7 @@ class LibraryGraph:
     def prepare_derivatives(self, roots):
         """Emit Slang derivatives for the resolved helper call closure."""
         calls = {}
-        for library in self._reverse_sources:
+        for library in self._derivative_sources:
             for definition in library.definitions:
                 symbol = library.module.functions[definition.name].symbol
                 calls[symbol] = tuple(library.functions[name].symbol for name in _function_calls(definition)
@@ -517,9 +517,9 @@ class LibraryGraph:
             if symbol not in differentiable:
                 differentiable.add(symbol)
                 pending.extend(calls[symbol])
-        for library in self._reverse_sources:
+        for library in self._derivative_sources:
             library.emit(_ComputeLibraryEmitter, differentiable=differentiable)
-        self._reverse_sources.clear()
+        self._derivative_sources.clear()
 
     def sources(self):
         builtins = () if self.compute_autodiff is not None else (RESOURCE_MODULE,)

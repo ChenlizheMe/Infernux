@@ -2848,7 +2848,7 @@ class Kernel:
         gradient_parameters = tuple(gradient_parameters)
         differentiated = autodiff_mode != "none" or bool(gradient_parameters)
         if differentiated and receiver_fields is not None:
-            raise KernelCompilationError("Local VJP requires a module-level or static kernel, without a bound receiver")
+            raise KernelCompilationError("Local differentiation requires a module-level or static kernel")
         gradient_parameters = _compilation_request(params, autodiff_mode, gradient_parameters)
 
         buffers = [value for value in params if isinstance(value, Buffer)]
@@ -3125,8 +3125,9 @@ def prepare(declaration: Kernel, params, *, autodiff_mode="none", gradient_param
     first gameplay interaction must not pay compiler or pipeline creation
     cost. Argument values are not uploaded and authored kernel code is not
     executed; the following :func:`launch` remains the first data operation.
-    Local VJP preparation uses ``autodiff_mode='reverse'`` and positional
-    ``gradient_parameters``; it neither initializes gradients nor consumes seeds.
+    For local differentiation, use ``autodiff_mode='forward'`` or
+    ``autodiff_mode='reverse'`` and list the positions with derivative buffers
+    in ``gradient_parameters``.
     """
     if not isinstance(declaration, Kernel):
         raise TypeError("inx.compute.prepare requires an @inx.compute.kernel declaration")
@@ -3655,12 +3656,13 @@ def _enable_automatic_mesh_attributes(
 def launch(declaration: Kernel, params, *, autodiff_mode="none", gradients=None) -> None:
     """Compile if needed and record a GPU kernel in the existing host FIFO.
 
-    For a supported local VJP, pass ``autodiff_mode='reverse'`` and a mapping
-    from positional parameter indices to GPU gradient buffers. Input gradients
-    accumulate; output gradients are upstream seeds consumed and cleared by
-    the generated reverse kernel. Initialize them explicitly with buffer writes.
-    The primal values must still describe that forward evaluation. No tape,
-    host fallback or cross-frame range splitting is implied by this call.
+    For local differentiation, ``gradients`` maps positional parameter indices
+    to derivative buffers. ``autodiff_mode='forward'`` reads the supplied input
+    tangents, evaluates the primal outputs, and writes the selected output
+    tangents. Inputs without tangents are held constant.
+
+    ``autodiff_mode='reverse'`` reads output seeds and accumulates input
+    gradients. Use the primal inputs from the corresponding forward evaluation.
     """
     if not isinstance(declaration, Kernel):
         raise TypeError("inx.compute.launch requires an @inx.compute.kernel declaration")
