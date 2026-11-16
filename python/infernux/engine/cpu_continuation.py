@@ -2590,7 +2590,10 @@ class CpuWorkOwner:
         if host is None:
             return None
         from infernux.compute import _command_streams
-        stream = _command_streams().get(int(host.identity))
+        streams = _command_streams()
+        if not streams:
+            return None
+        stream = streams.get(int(host.identity))
         return stream if stream is not None and stream["failure"] is None and stream["pending"] else None
 
     def _gpu_pressure_state(self, pressure):
@@ -2850,6 +2853,12 @@ class CpuWorkOwner:
         return _native._FrameWorkCandidate(id(request), max(0, int(estimate or 0)) if reserved else 0, True, reserved)
 
     def _describe(self):
+        if not self.requests:
+            # Receipts/ordinary commands still use the original observation path;
+            # an empty request set has no numerical service calendar to plan.
+            return _native._FrameWorkFacts(pending=self._has_work(),
+                gpu_busy=self._background_completion is not None and not self._background_completion.done,
+                reservation=self._reserved_service())
         for request in tuple(self.requests):
             self._execution_active(request, self._frame.opportunity)
         if self._plan_dirty or self.requests and self._frame.progress_serial != self._planned_progress:
