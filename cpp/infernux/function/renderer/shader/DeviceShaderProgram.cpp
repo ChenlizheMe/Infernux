@@ -40,8 +40,8 @@ namespace
 {
 auto ResourceBindingKey(const rhi::BindingLayoutEntry &value)
 {
-    return std::tie(value.binding, value.type, value.count, value.depthRead, value.readOnlyStorage, value.viewDimension,
-                    value.sampleType, value.multisampled, value.storageFormat, value.storageAccess, value.samplerType,
+    return std::tie(value.binding, value.type, value.count, value.depthRead, value.viewDimension, value.sampleType,
+                    value.multisampled, value.storageFormat, value.storageAccess, value.samplerType,
                     value.minBufferBindingSize);
 }
 
@@ -54,6 +54,65 @@ std::vector<ShaderStageSelection> SelectEntries(const ShaderTargetCode &program,
     return result;
 }
 } // namespace
+
+ShaderStageLayout LinkShaderStages(const std::vector<ShaderStageSelection> &entries)
+{
+    ShaderStageLayout result;
+    const ShaderEntryPointCode *vertex = nullptr;
+    const ShaderEntryPointCode *fragment = nullptr;
+    for (const auto &selection : entries) {
+        const auto &code = selection.program;
+        const auto &entry = code.entries.at(selection.entry);
+        if (entry.stage == rhi::ShaderStage::Vertex)
+            vertex = &entry;
+        if (entry.stage == rhi::ShaderStage::Fragment)
+            fragment = &entry;
+        if (entry.rootConstants) {
+            if (result.rootConstants && !(*result.rootConstants == *entry.rootConstants))
+                throw std::invalid_argument("Shader stages disagree on per-execution values: " + entry.name);
+            result.rootConstants = entry.rootConstants;
+        }
+        for (const auto &resource : code.resources) {
+            const std::array<uint32_t, 2> key{resource.set, resource.binding.binding};
+            if (std::find(entry.bindings.begin(), entry.bindings.end(), key) == entry.bindings.end())
+                continue;
+            const auto existing =
+                std::find_if(result.resources.begin(), result.resources.end(), [&](const auto &value) {
+                    return value.set == resource.set && value.binding.binding == resource.binding.binding;
+                });
+            if (existing == result.resources.end()) {
+                result.resources.push_back(resource);
+                result.resources.back().binding.visibility = entry.stage;
+                continue;
+            }
+            if (ResourceBindingKey(existing->binding) != ResourceBindingKey(resource.binding) ||
+                existing->name != resource.name ||
+                (resource.binding.type == rhi::BindingType::UniformBuffer && !(existing->value == resource.value)))
+                throw std::invalid_argument("Shader stages disagree on resource binding " +
+                                            std::to_string(resource.set) + "/" +
+                                            std::to_string(resource.binding.binding) + ": " + resource.name);
+            existing->binding.visibility = existing->binding.visibility | entry.stage;
+            existing->binding.readOnlyStorage &= resource.binding.readOnlyStorage;
+        }
+    }
+    if (vertex && fragment) {
+        for (const auto &input : fragment->inputs) {
+            const auto output = std::find_if(vertex->outputs.begin(), vertex->outputs.end(),
+                                             [&](const auto &value) { return value.location == input.location; });
+            const auto context = "Fragment input '" + input.name + "' at location " + std::to_string(input.location);
+            if (output == vertex->outputs.end())
+                throw std::invalid_argument(context + " has no matching vertex output (" + vertex->name + " -> " +
+                                            fragment->name + ")");
+            if (output->scalar != input.scalar || output->components != input.components)
+                throw std::invalid_argument(context + " does not match vertex output '" + output->name +
+                                            "': scalar type or component count differs");
+        }
+    }
+    std::sort(result.resources.begin(), result.resources.end(), [](const auto &first, const auto &second) {
+        return std::tie(first.set, first.binding.binding) < std::tie(second.set, second.binding.binding);
+    });
+    return result;
+}
 
 std::vector<ShaderStageSelection> SelectMaterialShaderEntries(const ShaderProgramArtifact &program,
                                                               ShaderCompileTarget pass, ShaderCodeTarget target)
@@ -91,7 +150,9 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const std::vector<
                                          const std::vector<rhi::BindingLayoutHandle> &sharedLayouts)
     : m_impl(std::make_unique<Impl>(device))
 {
-    const ShaderValueLayout *rootLayout = nullptr;
+    auto linked = LinkShaderStages(entries);
+    m_impl->resources = std::move(linked.resources);
+    m_impl->rootConstantBytes = linked.rootConstants ? static_cast<uint32_t>(linked.rootConstants->byteSize) : 0;
     for (const auto &selection : entries) {
         const auto &code = selection.program;
         const auto &entry = code.entries.at(selection.entry);
@@ -102,39 +163,8 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const std::vector<
         const auto module = device.CreateShaderModule({language, entry.code.data(), entry.code.size()});
         if (!module.IsValid())
             throw std::runtime_error("Device shader module creation failed: " + entry.name);
-        const auto rootBytes = entry.rootConstants ? static_cast<uint32_t>(entry.rootConstants->byteSize) : 0;
         m_impl->entries.push_back({entry.name, entry.stage, module});
-        if (entry.rootConstants) {
-            if (rootLayout && !(*rootLayout == *entry.rootConstants))
-                throw std::invalid_argument("Shader stages disagree on per-execution values: " + entry.name);
-            rootLayout = &*entry.rootConstants;
-        }
-        m_impl->rootConstantBytes = std::max(m_impl->rootConstantBytes, rootBytes);
-
-        for (const auto &resource : code.resources) {
-            const std::array<uint32_t, 2> key{resource.set, resource.binding.binding};
-            if (std::find(entry.bindings.begin(), entry.bindings.end(), key) == entry.bindings.end())
-                continue;
-            const auto existing =
-                std::find_if(m_impl->resources.begin(), m_impl->resources.end(), [&](const auto &value) {
-                    return value.set == resource.set && value.binding.binding == resource.binding.binding;
-                });
-            if (existing == m_impl->resources.end()) {
-                m_impl->resources.push_back(resource);
-                m_impl->resources.back().binding.visibility = entry.stage;
-                continue;
-            }
-            if (ResourceBindingKey(existing->binding) != ResourceBindingKey(resource.binding) ||
-                (resource.binding.type == rhi::BindingType::UniformBuffer && !(existing->value == resource.value)))
-                throw std::invalid_argument("Shader stages disagree on resource binding " +
-                                            std::to_string(resource.set) + "/" +
-                                            std::to_string(resource.binding.binding) + ": " + resource.name);
-            existing->binding.visibility = existing->binding.visibility | entry.stage;
-        }
     }
-    std::sort(m_impl->resources.begin(), m_impl->resources.end(), [](const auto &first, const auto &second) {
-        return std::tie(first.set, first.binding.binding) < std::tie(second.set, second.binding.binding);
-    });
     std::vector<rhi::BindingLayoutDesc> descriptions;
     for (const auto &resource : m_impl->resources) {
         if (resource.set >= rhi::GraphicsPipelineDesc::MaxBindingLayouts)

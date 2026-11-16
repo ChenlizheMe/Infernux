@@ -20,6 +20,17 @@ struct ShaderStageSelection
     uint32_t entry;
 };
 
+/// Linked target contract, prepared before creating device objects. Material,
+/// fullscreen and compute programs share resource and stage-interface rules.
+struct ShaderStageLayout
+{
+    std::vector<ShaderResourceLayout> resources;
+    std::optional<ShaderValueLayout> rootConstants;
+};
+
+[[nodiscard]] INFERNUX_RENDER_CORE_API ShaderStageLayout
+LinkShaderStages(const std::vector<ShaderStageSelection> &entries);
+
 /// Select a material pass from its retained multi-target publication. No
 /// compiler work or built-in shader-name dispatch belongs to device creation.
 [[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<ShaderStageSelection>

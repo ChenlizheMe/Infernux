@@ -1,6 +1,8 @@
 #include "ShaderProgram.h"
+#include "DeviceShaderProgram.h"
 #include <algorithm>
 #include <core/log/InxLog.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <platform/filesystem/InxPath.h>
 #include <stdexcept>
 
@@ -154,6 +156,24 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     m_domain = metadata.domain;
     m_materialLayoutOwner = metadata.materialLayoutOwner;
 
+    const auto select = [](const ShaderTargetCode &code, std::string_view name) -> ShaderStageSelection {
+        const auto entry = std::find_if(code.entries.begin(), code.entries.end(),
+                                        [&](const auto &value) { return value.name == name; });
+        if (entry == code.entries.end())
+            throw std::invalid_argument("Graphics program entry is absent from its compiler layout: " +
+                                        std::string(name));
+        return {code, static_cast<uint32_t>(entry - code.entries.begin())};
+    };
+    ShaderStageLayout linked;
+    try {
+        linked = LinkShaderStages({select(metadata.vertexTarget, metadata.vertexEntryPoint),
+                                   select(metadata.fragmentTarget, metadata.fragmentEntryPoint)});
+    } catch (const std::invalid_argument &error) {
+        INXLOG_ERROR("Shader program '", variantKey.program.stages.ToString(), "': ", error.what());
+        return false; // The publication cache records this failed revision once.
+    }
+    MergeBindings(linked.resources);
+
     // Create shader modules
     m_vertModule = CreateShaderModule(vertSpirv);
     if (m_vertModule == VK_NULL_HANDLE) {
@@ -172,8 +192,6 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
     m_vertReflection.LoadTargetLayout(metadata.vertexTarget, metadata.vertexEntryPoint);
     m_fragReflection.LoadTargetLayout(metadata.fragmentTarget, metadata.fragmentEntryPoint);
 
-    // Merge reflection data
-    MergeReflectionData();
     if (metadata.properties) {
         for (auto &binding : m_descriptorBindings) {
             for (const auto &property : *metadata.properties) {
@@ -199,14 +217,6 @@ bool ShaderProgram::Create(VkDevice device, const std::vector<char> &vertSpirv, 
         return false;
     }
     m_usesBindlessTextureABI = hasReflectedBindlessTextureABI;
-
-    // Validate vertex→fragment stage interface
-    if (!ValidateStageInterface()) {
-        INXLOG_ERROR("Shader interface validation failed for program: ", variantKey.program.stages.ToString(),
-                     ". Vertex outputs and fragment inputs are incompatible.");
-        Destroy();
-        return false;
-    }
 
     // Extract material UBO layout
     ExtractMaterialUBOLayout();
@@ -292,144 +302,23 @@ VkShaderModule ShaderProgram::CreateShaderModule(const std::vector<char> &code)
     return module;
 }
 
-void ShaderProgram::MergeReflectionData()
+void ShaderProgram::MergeBindings(const std::vector<ShaderResourceLayout> &resources)
 {
     m_descriptorBindings.clear();
-
-    // Helper to add or merge a binding
-    auto addBinding = [this](uint32_t binding, uint32_t set, VkDescriptorType type, uint32_t count,
-                             VkShaderStageFlags stage, const std::string &name, bool readOnly = false) {
-        // Check if binding already exists
-        for (auto &existing : m_descriptorBindings) {
-            if (existing.binding == binding && existing.set == set) {
-                if (existing.type != type || existing.descriptorCount != count || existing.name != name)
-                    throw std::runtime_error("Shader reflection descriptor ABI mismatch at set " + std::to_string(set) +
-                                             ", binding " + std::to_string(binding));
-                // Merge stage flags
-                existing.stageFlags |= stage;
-                existing.readOnly = existing.readOnly && readOnly;
-                return;
-            }
-        }
-
-        // Add new binding
-        MergedDescriptorBinding merged;
-        merged.binding = binding;
-        merged.set = set;
-        merged.type = type;
-        merged.descriptorCount = count;
-        merged.stageFlags = stage;
-        merged.name = name;
-        merged.readOnly = readOnly;
-        m_descriptorBindings.push_back(merged);
-    };
-
-    // Process vertex shader UBOs
-    for (const auto &ubo : m_vertReflection.GetUniformBuffers()) {
-        addBinding(ubo.binding, ubo.set, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, ubo.name);
+    m_descriptorBindings.reserve(resources.size());
+    constexpr std::array types{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                               VK_DESCRIPTOR_TYPE_SAMPLER,        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
+    for (const auto &resource : resources) {
+        const auto &binding = resource.binding;
+        const bool readOnly = binding.type == rhi::BindingType::StorageBuffer
+                                  ? binding.readOnlyStorage
+                                  : binding.type == rhi::BindingType::StorageTexture &&
+                                        binding.storageAccess == rhi::StorageTextureAccess::ReadOnly;
+        m_descriptorBindings.push_back({binding.binding, resource.set, types[static_cast<size_t>(binding.type)],
+                                        binding.count, rhi::ToVkShaderStages(binding.visibility), resource.name,
+                                        readOnly});
     }
-
-    // Process vertex shader samplers
-    for (const auto &sampler : m_vertReflection.GetSampledImages()) {
-        addBinding(sampler.binding, sampler.set, sampler.descriptorType, sampler.arraySize, VK_SHADER_STAGE_VERTEX_BIT,
-                   sampler.name);
-    }
-    for (const auto &buffer : m_vertReflection.GetStorageBuffers()) {
-        addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
-                   VK_SHADER_STAGE_VERTEX_BIT, buffer.name, buffer.readOnly);
-    }
-    for (const auto &image : m_vertReflection.GetStorageImages())
-        addBinding(image.binding, image.set, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image.arraySize,
-                   VK_SHADER_STAGE_VERTEX_BIT, image.name, image.readOnly);
-
-    // Process fragment shader UBOs
-    for (const auto &ubo : m_fragReflection.GetUniformBuffers()) {
-        addBinding(ubo.binding, ubo.set, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, ubo.name);
-    }
-
-    // Process fragment shader samplers
-    for (const auto &sampler : m_fragReflection.GetSampledImages()) {
-        addBinding(sampler.binding, sampler.set, sampler.descriptorType, sampler.arraySize,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, sampler.name);
-    }
-    for (const auto &buffer : m_fragReflection.GetStorageBuffers()) {
-        addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, buffer.name, buffer.readOnly);
-    }
-    for (const auto &image : m_fragReflection.GetStorageImages())
-        addBinding(image.binding, image.set, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image.arraySize,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, image.name, image.readOnly);
-
-    // Sort by set, then by binding
-    std::sort(m_descriptorBindings.begin(), m_descriptorBindings.end(),
-              [](const MergedDescriptorBinding &a, const MergedDescriptorBinding &b) {
-                  if (a.set != b.set)
-                      return a.set < b.set;
-                  return a.binding < b.binding;
-              });
-}
-
-// Helper: human-readable name for VkFormat
-static const char *VkFormatName(VkFormat fmt)
-{
-    switch (fmt) {
-    case VK_FORMAT_R32_SFLOAT:
-        return "float";
-    case VK_FORMAT_R32G32_SFLOAT:
-        return "vec2";
-    case VK_FORMAT_R32G32B32_SFLOAT:
-        return "vec3";
-    case VK_FORMAT_R32G32B32A32_SFLOAT:
-        return "vec4";
-    case VK_FORMAT_R32_SINT:
-        return "int";
-    case VK_FORMAT_R32G32_SINT:
-        return "ivec2";
-    case VK_FORMAT_R32G32B32_SINT:
-        return "ivec3";
-    case VK_FORMAT_R32G32B32A32_SINT:
-        return "ivec4";
-    default:
-        return "unknown";
-    }
-}
-
-bool ShaderProgram::ValidateStageInterface() const
-{
-    const auto &vertOutputs = m_vertReflection.GetOutputs();
-    const auto &fragInputs = m_fragReflection.GetInputs();
-    bool valid = true;
-
-    for (const auto &fragIn : fragInputs) {
-        // Find the matching vertex output at the same location
-        const ShaderIOVariable *matchedOutput = nullptr;
-        for (const auto &vertOut : vertOutputs) {
-            if (vertOut.location == fragIn.location) {
-                matchedOutput = &vertOut;
-                break;
-            }
-        }
-
-        if (!matchedOutput) {
-            INXLOG_ERROR("Shader interface mismatch in '", m_variantKey.program.stages.ToString(),
-                         "': fragment input '", fragIn.name, "' (location ", fragIn.location, ", type ",
-                         VkFormatName(fragIn.format),
-                         ") has no matching vertex output. "
-                         "The fragment shader will receive undefined values.");
-            valid = false;
-            continue;
-        }
-
-        if (matchedOutput->format != fragIn.format) {
-            INXLOG_ERROR("Shader interface mismatch in '", m_variantKey.program.stages.ToString(), "': vertex output '",
-                         matchedOutput->name, "' is ", VkFormatName(matchedOutput->format), " but fragment input '",
-                         fragIn.name, "' expects ", VkFormatName(fragIn.format), " at location ", fragIn.location,
-                         ". This will cause a Vulkan validation error and potential GPU crash.");
-            valid = false;
-        }
-    }
-
-    return valid;
 }
 
 void ShaderProgram::ExtractMaterialUBOLayout()

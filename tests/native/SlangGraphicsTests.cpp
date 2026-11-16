@@ -157,6 +157,28 @@ void Run()
     const std::vector<ShaderStageSelection> stages{{program, 1}, {separate.targets[0], 2}};
     DeviceShaderProgram graphicsProgram(device, stages);
 
+    // A separately selected fragment may compile on its own but disagree with
+    // the vertex author. Reject that pair identically on both device targets.
+    std::string varyingSource = kProgram;
+    const std::string varyingDeclaration = "float2 uv : TEXCOORD0;";
+    const auto varyingPosition = varyingSource.find(varyingDeclaration, varyingSource.find("struct Varyings"));
+    varyingSource.replace(varyingPosition, varyingDeclaration.size(), "float3 uv : TEXCOORD0;");
+    varyingSource.replace(varyingSource.find("result.uv = input.uv;"), std::strlen("result.uv = input.uv;"),
+                          "result.uv = float3(input.uv, 0.0);");
+    for (size_t position = 0; (position = varyingSource.find(", input.uv)", position)) != std::string::npos;)
+        varyingSource.replace(position, std::strlen(", input.uv)"), ", input.uv.xy)");
+    const auto varying = SlangCompiler::Get().Compile({"varying_fragment", "varying_fragment.frag.py", varyingSource},
+                                                      {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+    for (size_t target = 0; target < compiled.targets.size(); ++target) {
+        bool varyingRejected = false;
+        try {
+            (void)LinkShaderStages({{compiled.targets[target], 1}, {varying.targets[target], 2}});
+        } catch (const std::invalid_argument &error) {
+            varyingRejected = std::string(error.what()).find("does not match vertex output") != std::string::npos;
+        }
+        Require(varyingRejected, "Mismatched vertex/fragment varying reached device creation");
+    }
+
     // The same binding number and byte size do not make two uniform types compatible.
     std::string conflictingSource = kProgram;
     conflictingSource.replace(conflictingSource.find("float exposure;"), std::strlen("float exposure;"),

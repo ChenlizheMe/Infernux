@@ -310,10 +310,8 @@ class ShaderProgram
      */
     VkShaderModule CreateShaderModule(const std::vector<char> &code);
 
-    /**
-     * @brief Merge reflection data from both stages
-     */
-    void MergeReflectionData();
+    /// Translate the shared linked resource contract into Vulkan bindings.
+    void MergeBindings(const std::vector<ShaderResourceLayout> &resources);
 
     /**
      * @brief Create descriptor set layouts from merged bindings
@@ -329,12 +327,6 @@ class ShaderProgram
      * @brief Extract the canonical MaterialProperties UBO layout.
      */
     void ExtractMaterialUBOLayout();
-
-    /**
-     * @brief Validate vertex output / fragment input interface compatibility
-     * @return true if interfaces are compatible, false if there is a type mismatch
-     */
-    bool ValidateStageInterface() const;
 };
 
 /// Immutable, revision-carrying GPU shader publication. ShaderProgram is
