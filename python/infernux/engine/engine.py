@@ -5,11 +5,10 @@ import weakref
 from typing import TYPE_CHECKING
 
 from infernux.lib import Infernux, InxGUIRenderable, LogLevel, RuntimeMode, lib_dir
-from infernux.engine.work_runtime import WorkRuntime
+from infernux.engine.runtime_world_host import RuntimeWorldHost
 from infernux.engine.project_context import set_project_root
 from infernux.engine.path_utils import safe_path as _safe_path
 from infernux.debug import Debug
-from infernux.engine.runtime_change_journal import RuntimeChangeDomain, RuntimeFrameBarrier
 
 if TYPE_CHECKING:
     from infernux.engine.play_mode import PlayModeManager
@@ -31,7 +30,7 @@ def _runtime_acceptance_services():
     return _RUNTIME_ACCEPTANCE_TYPE, _APPLICATION_TYPE
 
 
-class Engine(WorkRuntime):
+class Engine(RuntimeWorldHost):
     def __init__(self, engine_log_level=LogLevel.Info, mode=RuntimeMode.Graphical):
         from infernux.engine.runtime_dispatch import bind_runtime_dispatch_owner
 
@@ -55,19 +54,7 @@ class Engine(WorkRuntime):
         # SceneManager consumes its revision/count summary and owns phase order;
         # Python retains arbitrary user callables and publishes a new immutable
         # snapshot only when component structure changes.
-        from infernux.components._component_lifecycle import RuntimeExecutionScheduler
-        from infernux.lib import SceneManager
-        SceneManager.instance()._ensure_authoring_world()
-        self._world_runtimes = {}
-        self._runtime_world_session = None
-        from infernux.runtime_services import _author_update_callbacks
-        self._authoring_scheduler = RuntimeExecutionScheduler(
-            name=self._application_role,
-            native_bridge=True,
-            runtime_updates=_author_update_callbacks,
-        )
-        self._runtime_scene_manager = None
-        self._last_native_transform_serial = None
+        self._initialize_world_runtime(self._application_role)
         self._render_pipeline = None  # prevents GC of pybind11 trampoline
         self._gizmos_collector = None  # lazy-init GizmosCollector
         self._scene_view_visible = self._mode == RuntimeMode.Graphical and not _PLAYER_MODE
@@ -298,8 +285,6 @@ class Engine(WorkRuntime):
         Python traversal.
         """
         from infernux.lib import SceneManager, _Infernux
-        from infernux.engine.runtime_worlds import current_world_runtime
-        from infernux.execution import simulation_state
         from infernux.runtime_services import _update_snapshot, _dispatch_updates
 
         engine_ref = weakref.ref(self)
@@ -374,17 +359,7 @@ class Engine(WorkRuntime):
                 from infernux.core.assets import AssetManager
 
                 AssetManager.flush_model_instance_sync()
-            manager = SceneManager.instance()
-            identities = manager._runtime_world_ids
-            author_only = not identities and engine._runtime_world_session is None
-            if author_only:
-                with _Infernux._RuntimeWorldScope(manager._authoring_runtime_world_id):
-                    engine._authoring_scheduler.prepare_frame()
-            for identity in identities:
-                scheduler = engine._world_runtimes[int(identity)].scheduler
-                with _Infernux._RuntimeWorldScope(identity):
-                    scheduler.prepare_frame()
-            if identities or author_only:
+            if engine._prepare_runtime_world_schedulers():
                 # A paused Step is intentionally executed outside the
                 # authoring transaction above.  This is the single owner
                 # safe point where the runtime journal may be consumed.
@@ -394,165 +369,14 @@ class Engine(WorkRuntime):
 
         self._engine._set_runtime_frame_callbacks(_pre_scene_tick, _prepare_runtime_frame)
 
-        from infernux.lib import SceneManager
-        from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+        self._install_runtime_world_callbacks()
 
-        scene_manager = SceneManager.instance()
-        self._runtime_scene_manager = scene_manager
-        def _begin_retire_world(identity):
-            engine = engine_ref()
-            if engine is None:
-                return
-            domain = engine._world_runtimes.get(int(identity))
-            if domain is not None:
-                domain.begin_retirement()
-            for consumer in tuple(engine._result_consumers):
-                if consumer._world_id == int(identity):
-                    consumer.cancel()
+    def _runtime_is_closing(self):
+        return self._engine.exit_requested
 
-        def _retire_world(identity):
-            engine = engine_ref()
-            if engine is None:
-                return
-            if engine._screen_ui_submission is not None:
-                engine._screen_ui_submission.retire_world(identity)
-            if int(identity) == int(scene_manager._authoring_runtime_world_id):
-                from infernux.core.assets import AssetManager
-                AssetManager.release_engine(engine)
-                from .script_source import clear_module_codes
-                clear_module_codes()
-                return
-            domain = engine._world_runtimes.get(int(identity))
-            if domain is not None:
-                domain.close()
-                del engine._world_runtimes[int(identity)]
-        scene_manager._set_runtime_world_retirement_callbacks(_begin_retire_world, _retire_world)
-        self._last_native_transform_serial = int(
-            scene_manager.get_global_transform_serial()
-        )
-        def _begin_native_frame():
-            engine = engine_ref()
-            if engine is None:
-                return
-            engine._runtime_scheduler.begin_native_frame()
-            if engine is None or not scene_manager._is_executing_step():
-                return
-            from infernux.execution import step_execution, capture_step_permission
-            with step_execution():
-                for consumer in tuple(engine._result_consumers):
-                    if (consumer._world_id == int(scene_manager._current_runtime_world_id)
-                            and consumer.boundary != 'physics' and (consumer.required or consumer.request.done)
-                            and consumer._current(scene_manager)
-                            and consumer._scope is not None and consumer._scope.state == 'stepping'):
-                        consumer.request._owner()._permit_step(consumer.request, capture_step_permission())
-                        scene_manager._retain_step_frame()
-
-        def _dispatch_runtime_input():
-            engine = engine_ref()
-            if engine is not None:
-                engine._dispatch_runtime_input()
-
-        scene_manager.set_runtime_input_callback(_dispatch_runtime_input)
-
-        def _execute_native_phase(phase, delta):
-            engine = engine_ref()
-            if engine is not None:
-                engine._runtime_scheduler.execute_native_phase(phase, delta)
-
-        def _execute_editor_phase(delta):
-            engine = engine_ref()
-            if engine is not None:
-                engine._runtime_scheduler.execute_native_editor_update(delta)
-
-        def _end_native_frame():
-            engine = engine_ref()
-            if engine is not None:
-                engine._runtime_scheduler.end_native_frame()
-
-        scene_manager.set_runtime_lifecycle_callbacks(
-            _begin_native_frame,
-            lambda delta: _execute_native_phase("fixed_update", delta),
-            lambda delta: _execute_native_phase("update", delta),
-            lambda delta: _execute_native_phase("late_update", delta),
-            _execute_editor_phase,
-            _end_native_frame,
-        )
-        def _consume_native_barrier(barrier):
-            engine = engine_ref()
-            if engine is None:
-                return None
-            return engine._consume_runtime_frame_barrier(RuntimeFrameBarrier.from_native(barrier))
-
-        scene_manager.set_runtime_frame_barrier_callback(_consume_native_barrier)
-        def _consume_results(barrier):
-            engine = engine_ref()
-            if engine is None:
-                return True
-            domain = current_world_runtime()
-            scheduler = domain.scheduler if domain is not None else engine._authoring_scheduler
-            world = scheduler.world_id
-            if (domain is not None and domain.physics_preparations and barrier.name in {
-                    'FIXED_SCRIPT', 'PHYSICS_SIMULATION', 'PHYSICS_POST_SCRIPT',
-                    'UPDATE_SCRIPT', 'LATE_SCRIPT', 'ANIMATION_EVALUATION'}):
-                # Keep this logical interval/cursor; the ordinary Host still
-                # drives preparation, IO and receipts outside Scene callbacks.
-                return False
-            if not scheduler.resume_native_result_boundary(barrier):
-                return False
-            boundary = {'PHYSICS_SIMULATION': 'physics', 'RENDER_EXTRACTION': 'render'}.get(barrier.name)
-            if boundary is None or not engine._result_consumers:
-                return True
-            state = simulation_state()
-            ready = True
-            blocked = set()
-            waiting = set()
-            suspended = set()
-            index = 0
-            while index < len(engine._result_consumers):
-                consumer = engine._result_consumers[index]
-                index += 1
-                if consumer._world_id != world:
-                    continue
-                if consumer.boundary == 'render_input' and boundary == 'render':
-                    resolution = consumer._resolve(scene_manager)
-                    if resolution is not None:
-                        consumer._consume(scene_manager, resolution[1])
-                    continue
-                if consumer.boundary != boundary:
-                    continue
-                resolution = consumer._resolve(
-                    scene_manager,
-                    require_body_ready=boundary == 'physics' and (consumer.required or consumer.request.done),
-                    collect=consumer.request.status == 'published',
-                )
-                if resolution is None:
-                    continue
-                targets_ready, targets = resolution
-                if not consumer.required and not consumer.request.done:
-                    waiting.update(consumer._target_keys)
-                    continue
-                if boundary == 'physics' and consumer._step > scene_manager.fixed_step_index:
-                    continue
-                # The control phase publishes newly created bodies after this
-                # gate. Preserve target order without waiting on that phase.
-                if consumer._suspended() or not targets_ready:
-                    (suspended if consumer.required else waiting).update(consumer._target_keys)
-                    continue
-                if suspended.intersection(consumer._target_keys):
-                    suspended.update(consumer._target_keys)
-                    continue
-                if not consumer.required and waiting.intersection(consumer._target_keys):
-                    waiting.update(consumer._target_keys)
-                    continue
-                if blocked.intersection(consumer._target_keys) or not consumer._consume(scene_manager, targets):
-                    blocked.update(consumer._target_keys)
-                    ready = False
-                if state != simulation_state():
-                    return False
-            return ready
-        scene_manager.set_runtime_result_consumer_callback(_consume_results)
-        scene_manager._set_result_consumers_present(bool(self._result_consumers))
-        self._authoring_scheduler.bind_native_bridge(scene_manager)
+    def _retire_world_presentation(self, identity):
+        if self._screen_ui_submission is not None:
+            self._screen_ui_submission.retire_world(identity)
 
     def _track_runtime_input_view(self, view):
         views = self.__dict__.setdefault("_runtime_input_views", [])
@@ -605,91 +429,27 @@ class Engine(WorkRuntime):
         if view is not None:
             view.process_runtime_input()
 
-    def _consume_runtime_frame_barrier(self, barrier):
-        if not isinstance(barrier, RuntimeFrameBarrier):
-            barrier = RuntimeFrameBarrier(barrier)
-        if barrier in (RuntimeFrameBarrier.RENDER_SUBMITTED, RuntimeFrameBarrier.RENDER_PRESENTED):
-            from infernux.runtime_services import _dispatch_updates
-            changes = None
-            if barrier == RuntimeFrameBarrier.RENDER_SUBMITTED:
-                changes = self._runtime_scheduler.consume_runtime_changes(barrier)
-                if self._graph_event_signals is not None:
-                    from infernux.rendergraph.events import _dispatch_graph_events
-                    _dispatch_graph_events(self)
-            callbacks = self._clock_callbacks[barrier.value]
-            if callbacks:
-                _dispatch_updates(callbacks, self._clock_delta, self._clock_delta, gameplay_phase=False)
-            return changes
-        scheduler = self._runtime_scheduler
-        if barrier == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
-            scene_manager = getattr(self, "_runtime_scene_manager", None)
-            getter = getattr(scene_manager, "get_global_transform_serial", None)
-            if callable(getter):
-                current_serial = int(getter())
-                previous_serial = getattr(
-                    self,
-                    "_last_native_transform_serial",
-                    None,
-                )
-                self._last_native_transform_serial = current_serial
-                if previous_serial is not None and current_serial != previous_serial:
-                    journal = scheduler.change_journal
-                    journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, broad=True)
-                    journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, broad=True)
-        changes = scheduler.consume_native_barrier(barrier)
-        if barrier == RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
-            if changes is not None:
-                scheduler.execute_native_phase(
-                    "physics_pre_step",
-                    float(self._runtime_scene_manager.get_fixed_time_step()),
-                )
-        elif barrier == RuntimeFrameBarrier.ANIMATION_EVALUATION:
-            if changes is not None:
-                scheduler.execute_native_phase(
-                    "animation_update", self._runtime_scene_manager.get_frame_delta_time(),
-                )
-        elif barrier == RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
-            if changes is not None:
-                scheduler.execute_native_phase(
-                    "physics_post_step",
-                    float(self._runtime_scene_manager.get_fixed_time_step()),
-                )
-            # Simulation-owned pose anchors join the same authoritative
-            # physics-to-Transform publication point as native rigidbodies.
-            # The Transform frame cache is still active here, so publication
-            # is applied atomically before Update/LateUpdate and rendering.
-            from infernux.compute import _poll_transform_bindings
-            _poll_transform_bindings()
-        if barrier == RuntimeFrameBarrier.RENDER_EXTRACTION:
-            scene_manager = getattr(self, "_runtime_scene_manager", None)
-            if scene_manager is not None and (
-                not scene_manager.is_playing() or scene_manager.is_paused()
-            ):
-                # Edit mode and paused Play have no physics barrier. Keep the
-                # same Transform-anchor authority exchange alive immediately
-                # before their render extraction so W/E/R remains interactive.
-                from infernux.compute import _poll_transform_bindings
-                _poll_transform_bindings()
-            # Gizmos describe the exact world which is about to render.  This
-            # barrier is after FixedUpdate/physics/Update/LateUpdate and after
-            # their compute submissions, but before render-list extraction.
-            if (
-                getattr(self, "_scene_view_visible", False)
-                and getattr(self, "_show_gizmos", True)
-            ):
-                now = self._runtime_scene_manager.get_realtime_since_startup()
-                is_playing = bool(scene_manager and scene_manager.is_playing())
-                interval = (
-                    self._gizmo_collect_interval_play
-                    if is_playing
-                    else self._gizmo_collect_interval_edit
-                )
-                if interval <= 0.0 or now >= self._next_gizmo_collect_time:
-                    self._tick_gizmos()
-                    self._next_gizmo_collect_time = now + interval
-            else:
-                self._clear_uploaded_gizmos()
-        return changes
+    def _on_render_extraction(self):
+        scene_manager = self._runtime_scene_manager
+        # Gizmos describe the exact world which is about to render.  This
+        # barrier is after FixedUpdate/physics/Update/LateUpdate and after
+        # their compute submissions, but before render-list extraction.
+        if (
+            getattr(self, "_scene_view_visible", False)
+            and getattr(self, "_show_gizmos", True)
+        ):
+            now = self._runtime_scene_manager.get_realtime_since_startup()
+            is_playing = bool(scene_manager and scene_manager.is_playing())
+            interval = (
+                self._gizmo_collect_interval_play
+                if is_playing
+                else self._gizmo_collect_interval_edit
+            )
+            if interval <= 0.0 or now >= self._next_gizmo_collect_time:
+                self._tick_gizmos()
+                self._next_gizmo_collect_time = now + interval
+        else:
+            self._clear_uploaded_gizmos()
 
     @staticmethod
     def _apply_project_settings(project_path):
@@ -1070,27 +830,6 @@ class Engine(WorkRuntime):
     def get_player_runtime(self):
         """Get the standalone Player runtime session, if active."""
         return self._player_runtime
-
-    @property
-    def _runtime_scheduler(self):
-        manager = self._runtime_scene_manager
-        if manager is None:
-            return self._authoring_scheduler
-        identity = int(manager._current_runtime_world_id)
-        domain = self._world_runtimes.get(identity)
-        if domain is not None:
-            return domain.scheduler
-        if identity != int(manager._authoring_runtime_world_id):
-            raise KeyError(identity)
-        return self._authoring_scheduler
-
-    def get_runtime_execution_scheduler(self):
-        """Get the shared phase-plan service for diagnostics and profiling."""
-        return self._runtime_scheduler
-
-    def get_runtime_change_journal(self):
-        """Return the typed invalidation stream shared by Editor and Player."""
-        return self._runtime_scheduler.change_journal
 
     def set_before_exit_callback(self, callback):
         """Register a callback invoked right before native engine cleanup."""

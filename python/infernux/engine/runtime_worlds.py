@@ -410,7 +410,7 @@ class RuntimeWorldSession:
         """Check the captured owner after a user lifecycle callback returns."""
         if (self.closed or self.engine._runtime_world_session is not self
                 or handle.state != 'ready' or handle.destroy_requested
-                or self.engine.get_native_engine().exit_requested):
+                or self.engine._runtime_is_closing()):
             return False
         if started:
             from infernux.lib import SceneManager, _Infernux

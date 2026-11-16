@@ -46,6 +46,7 @@ def player_runtime(engine, tmp_path, monkeypatch, runtime_scheduler):
     host._reload_poll_interval = 1.0 / 60.0
     host._scene_view_visible = False
     host._gizmos_uploaded = False
+    host._screen_ui_submission = None
     host._world_runtimes = {}
     host._runtime_world_session = None
     host._initialize_work_runtime(engine.frame_work, accepting=True)
@@ -114,6 +115,15 @@ def _configure_player_contract(session, catalog):
     session.configure_runtime_contract(manifest, catalog)
 
 
+def _activate_player(player_runtime):
+    session = player_runtime.session
+    assert session.activate()
+    deadline = time.monotonic() + 10.0
+    while session.state == "starting" and time.monotonic() < deadline:
+        player_runtime.host.get_native_engine().tick(1.0 / 60.0)
+    assert session.is_playing, session.last_scene_error
+
+
 @pytest.fixture
 def player_worlds(scene, player_runtime, tmp_path, monkeypatch):
     native = NativeSceneManager.instance()
@@ -147,7 +157,7 @@ def player_worlds(scene, player_runtime, tmp_path, monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", reject_editor)
     assert session.load_scene("guid-First")
-    assert session.activate()
+    _activate_player(player_runtime)
     identity = session._runtime_world_id
     domain = player_runtime.host._world_runtimes[identity]
     service = domain.scene_loads._runtime_scene_service
@@ -286,7 +296,7 @@ def test_player_shutdown_retires_scenes_before_asset_resolvers(scene, player_run
     scene.create_game_object("ShutdownWitness").add_py_component(ShutdownWitness())
     authoring_scene_count = native.scene_count
     _configure_player_contract(session, catalog)
-    assert session.activate()
+    _activate_player(player_runtime)
     identity = session._runtime_world_id
     handle = native._get_runtime_world_handle(identity)
     with _Infernux._RuntimeWorldScope(identity):
