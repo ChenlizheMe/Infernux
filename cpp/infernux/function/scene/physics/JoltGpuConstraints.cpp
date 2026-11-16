@@ -359,6 +359,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         config.limits.y = storage.GetShapeCount();
         config.limits.z = Checked(4ull * p);
         config.select.z = topologyOnly ? 0u : 1u;
+        // The completed broadphase and accepted selected joint range prove an empty numerical domain.
+        config.select.w = topologyOnly && parameters.selectedCounts.z == 0u && p == 0u ? 1u : 0u;
         uint64_t words = 0;
         const auto reserve = [&](uint64_t n) {
             const auto base = Checked(words);
@@ -768,10 +770,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         else
             BuildRoundWindow();
     }
-    static void ValidateTopologyHeader(const UInt4 &counts, const UInt4 &items)
+    void ValidateTopologyHeader(const UInt4 &counts, const UInt4 &items, bool finalized) const
     {
-        if (counts.w != ConstraintNotReady || counts.x || counts.y || counts.z || items.x || items.y || items.z ||
-            items.w)
+        const uint32_t expectedStatus = finalized && config.select.w != 0u ? 0u : ConstraintNotReady;
+        if (counts.w != expectedStatus || counts.x || counts.y || counts.z || items.x || items.y || items.z || items.w)
             throw std::runtime_error("GPU sleep topology failed its independent CC acceptance");
     }
     void DecodeGatedRound(const std::shared_ptr<rhi::PreparedComputeBatch> &packet)
@@ -782,9 +784,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             throw std::logic_error("GPU CC topology needs its completed source receipt");
         read->ReadInto(result.data(), sizeof(result));
         const auto &control = result.back();
-        // AcceptComponents preserves x/y and only ORs z. Its w=1 distinguishes
-        // the accepted tail from the identical seeded topology header.
-        ValidateTopologyHeader(result[0], result[1]);
+        // AcceptComponents preserves x/y and ORs status. Its w=1 distinguishes
+        // a completed validation tail from the still-seeded header.
+        ValidateTopologyHeader(result[0], result[1], control.x == 0u && control.w == 1u);
         AcceptRoundControl(control, true);
         if (control.x)
             BuildRoundWindow();
@@ -809,7 +811,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     void Install(const UInt4 &counts, const UInt4 &items)
     {
         if (topologyOnly) {
-            ValidateTopologyHeader(counts, items);
+            ValidateTopologyHeader(counts, items, true);
             PublishTopology();
             return;
         }
@@ -959,6 +961,15 @@ JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const Jo
     if (execution->implementation != m_impl || execution->phase != Impl::Execution::Phase::TopologyReady ||
         execution->contactLease != inputs.GetContacts() || storage.GetBodyCount() != topology->bodySlots)
         throw std::logic_error("GPU numerical plan crosses its source/topology generation");
+    if (execution->config.select.w != 0u) {
+        // The completed topology receipt already validated the numerical empty
+        // header. Retain its real body roots and mutable votes for sleep.
+        execution->topologyOnly = false;
+        execution->completed = std::move(completed);
+        topology->execution.reset();
+        execution->Install({}, {});
+        return {};
+    }
     // Setup has completed its real accepted writes. Observe this writer's live
     // directory/activity flags; history retirement does not change those flags.
     execution->frozen[Joints] = storage.Get(JPH::GPU::Resource::Joints);
