@@ -1,4 +1,5 @@
 #include <function/renderer/shader/ShaderReflection.h>
+#include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/renderer/shader/ShaderValueCopy.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
@@ -11,6 +12,7 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <tuple>
 
 using namespace infernux;
 
@@ -33,6 +35,59 @@ bool HasSpirvEntry(const std::vector<char> &code, const std::string &name)
             return true;
     }
     return false;
+}
+
+bool SameStageVariables(const std::vector<ShaderStageVariable> &a, const std::vector<ShaderStageVariable> &b)
+{
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](const auto &left, const auto &right) {
+        return std::tie(left.name, left.location, left.scalar, left.components) ==
+               std::tie(right.name, right.location, right.scalar, right.components);
+    });
+}
+
+auto BindingFields(const rhi::BindingLayoutEntry &binding)
+{
+    return std::tie(binding.binding, binding.type, binding.visibility, binding.count, binding.depthRead,
+                    binding.readOnlyStorage, binding.viewDimension, binding.sampleType, binding.multisampled,
+                    binding.storageFormat, binding.storageAccess, binding.samplerType, binding.minBufferBindingSize);
+}
+
+void CheckTargetArchive(const ShaderTargetCode &expected)
+{
+    const auto bytes = EncodeShaderTarget(expected);
+    const auto decoded = DecodeShaderTarget(bytes);
+    Require(decoded.target == expected.target && decoded.reflection == expected.reflection &&
+                decoded.entries.size() == expected.entries.size() && decoded.resources.size() == expected.resources.size(),
+            "Shader archive changed target reflection or layout counts");
+    for (size_t i = 0; i < expected.entries.size(); ++i) {
+        const auto &entry = expected.entries[i];
+        const auto &current = decoded.entries[i];
+        Require(current.name == entry.name && current.stage == entry.stage && current.workgroupSize == entry.workgroupSize &&
+                    current.bindings == entry.bindings && current.code == entry.code &&
+                    current.sampleRateShading == entry.sampleRateShading && current.rootConstants == entry.rootConstants,
+                "Shader archive changed entry code, bindings, or execution layouts");
+        Require(SameStageVariables(current.inputs, entry.inputs) && SameStageVariables(current.outputs, entry.outputs),
+                "Shader archive changed stage input or output locations");
+    }
+    for (size_t i = 0; i < expected.resources.size(); ++i) {
+        const auto &resource = expected.resources[i];
+        const auto &current = decoded.resources[i];
+        Require(current.name == resource.name && current.set == resource.set &&
+                    BindingFields(current.binding) == BindingFields(resource.binding) &&
+                    current.elementStride == resource.elementStride && current.value == resource.value,
+                "Shader archive changed resource bindings or value layout");
+    }
+    Require(EncodeShaderTarget(decoded) == bytes, "Shader archive round-trip changed the encoded bytes");
+}
+
+void RequireInvalidTargetArchive(std::string_view bytes)
+{
+    try {
+        (void)DecodeShaderTarget(bytes);
+    } catch (const std::invalid_argument &) {
+        return;
+    }
+    throw std::runtime_error("Invalid shader archive was accepted");
 }
 } // namespace
 
@@ -214,6 +269,7 @@ void fill(uint id : SV_DispatchThreadID) { unrelated_output[id] = id; }
 )"},
                                                    {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
         for (const auto &target : stageProgram.targets) {
+            CheckTargetArchive(target);
             for (const auto &entry : target.entries) {
                 if (entry.stage == rhi::ShaderStage::Vertex) {
                     Require(entry.inputs.size() == 2 && entry.inputs[0].location == 0 &&
@@ -249,6 +305,7 @@ float4 shadow(float2 uv : TEXCOORD0) : SV_Target0
 )"},
                                                    {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
         for (const auto &target : depthProgram.targets) {
+            CheckTargetArchive(target);
             Require(target.resources.size() == 2 && target.resources[0].binding.depthRead &&
                         target.resources[1].binding.samplerType == rhi::SamplerBindingType::Comparison,
                     "Depth texture and comparison sampler lost their target binding types");
@@ -450,6 +507,12 @@ INX_ROOT_CONSTANTS ConstantBuffer<Arguments> pc;
 void main(uint id : SV_DispatchThreadID) { output[id] = pc.weights[0] + pc.weights[1]; }
 )slang"},
                                                          target);
+            CheckTargetArchive(native);
+            auto archive = EncodeShaderTarget(native);
+            RequireInvalidTargetArchive(std::string_view(archive).substr(0, archive.size() - 1));
+            RequireInvalidTargetArchive(archive + 'x');
+            archive[0] = 'x';
+            RequireInvalidTargetArchive(archive);
             Require(native.entries.front().rootConstants.has_value(), "Native root values lost their target layout");
             Require(native.resources.size() == 1 && native.resources[0].binding.binding == 3,
                     "Native root values must not enter user descriptor groups");
