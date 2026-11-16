@@ -2226,6 +2226,15 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         // ========================================================================
         // Scene Render Target API - for offscreen scene rendering to ImGui
         // ========================================================================
+        .def("_begin_editor_play_presentation", [](Infernux &self) {
+            RequireRenderer(self).BeginEditorPlayPresentation();
+        })
+        .def("_end_editor_play_presentation", [](Infernux &self) {
+            RequireRenderer(self).EndEditorPlayPresentation();
+        })
+        .def("_editor_scene_presentation", [](Infernux &self) {
+            return RequireRenderer(self).GetEditorScenePresentation();
+        })
         .def(
             "get_scene_texture_id",
             [](Infernux &self) -> uint64_t {

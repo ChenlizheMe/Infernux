@@ -134,6 +134,7 @@ class SceneViewPanel(
         
         # Mouse button state tracking for detecting press/release
         self._was_left_down = False
+        self._scene_viewport_presented = False
         self._was_right_down = False
         self._was_middle_down = False
         
@@ -401,6 +402,8 @@ class SceneViewPanel(
         # Get content region for scene viewport
         avail_width = ctx.get_content_region_avail_width()
         avail_height = ctx.get_content_region_avail_height()
+        self._scene_viewport_presented = bool(
+            self._content_presented_this_frame and avail_width > 0 and avail_height > 0)
         
         scene_width = max(int(avail_width), 64)
         scene_height = max(int(avail_height), 64)
@@ -416,11 +419,23 @@ class SceneViewPanel(
         
         # Get and display scene texture
         scene_texture_id = 0
+        scene_interactive = False
         if self._engine:
-            scene_texture_id = self._engine.get_scene_texture_id()
+            scene_texture_id, _pixel_world, scene_interactive, _ready_world = self._engine.get_native_engine()._editor_scene_presentation()
         
         if scene_texture_id != 0:
             ctx.image(scene_texture_id, float(scene_width), float(scene_height), 0.0, 0.0, 1.0, 1.0)
+            if not scene_interactive:
+                # This image still belongs to the author World. The requested
+                # runtime World must not receive picks or gizmo gestures from it.
+                ctx.set_cursor_pos_x(cursor_start_x)
+                ctx.set_cursor_pos_y(cursor_start_y)
+                ctx.set_next_item_allow_overlap()
+                ctx.invisible_button("##ScenePreparation", float(scene_width), float(scene_height))
+                vp = capture_viewport_info(ctx)
+                self._draw_world_controls(ctx, vp, cursor_start_x, cursor_start_y, scene_height)
+                ctx.dummy(0.0, 0.0)  # Finish layout after the overlay restores the cursor.
+                return
 
             # Give the rendered image a real interaction item. This keeps
             # human clicks and MCP synthetic SDL input on the same surface.
@@ -465,6 +480,7 @@ class SceneViewPanel(
             ctx.set_cursor_pos_y(cursor_start_y + 8)
             ctx.label(t("scene_view.loading" if self.viewed_world_id else "game_view.no_worlds"))
             self._draw_world_controls(ctx, vp, cursor_start_x, cursor_start_y, scene_height)
+            ctx.dummy(0.0, 0.0)
 
     # ------------------------------------------------------------------
     # Orientation Gizmo  (Unity-style axis widget)

@@ -141,6 +141,10 @@ class GameViewPanel(EditorPanel):
         self._captured_world_id = 0
         self._screen_consumers = {}
         self._screen_samples = {}
+        self._play_presentation_samples = None
+        self._play_preparing = False
+        self._play_ready_worlds = None
+        self._game_viewport_presented = False
         self._last_screen_routes = {}
 
         # Sample the renderer's real frame serial once per second. UI rendering
@@ -163,6 +167,10 @@ class GameViewPanel(EditorPanel):
                 self._engine._release_game_screen(consumer)
         self._screen_consumers.clear()
         self._screen_samples.clear()
+        if self._play_presentation_samples is not None:
+            self._play_presentation_samples = ()  # Release images while retaining the preparation phase.
+        self._play_ready_worlds = None
+        self._game_viewport_presented = False
         self._last_screen_routes.clear()
         self._captured_world_id = 0
         Input.set_game_focused(False)
@@ -763,8 +771,64 @@ class GameViewPanel(EditorPanel):
         """Scene-owned viewing identity, independent of the primary World."""
         return self._world_view.world_id
 
+    def _begin_play_presentation(self):
+        ordinals = self._world_view.ordinals
+        self._play_presentation_samples = tuple(
+            (world, ordinals[world], sample) for world in self._screen_samples
+            if (self._world_view.layout != 0 or world == self._world_view.world_id)
+            and (sample := self._engine._acquire_game_screen(world)) is not None)
+        self._play_preparing = True
+
+    def _end_play_preparation(self):
+        self._play_preparing = False
+
+    def _finish_play_presentation(self):
+        self._play_presentation_samples = None
+        self._play_ready_worlds = None
+
+    def _viewport_cells(self, ctx, count, width, height):
+        from math import ceil, sqrt
+
+        gap = 8.0 * ctx.get_dpi_scale()
+        label = 22.0 * ctx.get_dpi_scale() if self._world_view.layout != 0 and count > 1 else 0.0
+        columns = max(1, min(count, ceil(sqrt(count * width / height))))
+        rows = ceil(count / columns)
+        return ((width - gap * (columns - 1)) / columns,
+                (height - gap * (rows - 1)) / rows - label, gap, label, columns)
+
+    def _screen_extent(self, cell_w, cell_h, target_w, target_h):
+        if self._selected_resolution_idx != self._AUTO_RESOLUTION_INDEX:
+            return target_w, target_h
+        screen = _NativeInputManager.instance().screen_state
+        return (round(cell_w * screen.framebuffer_width / screen.logical_width),
+                round(cell_h * screen.framebuffer_height / screen.logical_height))
+
+    def _request_screen(self, world, width, height, requested):
+        consumer = f'{self.window_id}/world/{world}'
+        self._engine._request_game_screen(consumer, world, int(width), int(height),
+                                         nearest=self._render_output['filter'] == 'nearest')
+        self._screen_consumers[world] = consumer
+        requested.add(world)
+
+    def _draw_play_presentation(self, ctx, samples, width, height, start_x, start_y):
+        if width <= 0 or height <= 0:
+            return
+        cell_w, cell_h, gap, label, columns = self._viewport_cells(ctx, len(samples), width, height)
+        for index, (_world, ordinal, sample) in enumerate(samples):
+            x = start_x + index % columns * (cell_w + gap)
+            y = start_y + index // columns * (cell_h + label + gap)
+            ctx.set_cursor_pos_x(x)
+            ctx.set_cursor_pos_y(y)
+            if label:
+                ctx.label(f'World {ordinal}')
+            draw_w, draw_h = self._fit_into_region(sample.width, sample.height, cell_w, cell_h,
+                                                 point_filter=self._render_output['filter'] == 'nearest')
+            ctx.set_cursor_pos_x(x + (cell_w - draw_w) * .5)
+            ctx.set_cursor_pos_y(y + label + (cell_h - draw_h) * .5)
+            # Freeze the acquired sample, not a live descriptor retargeted to a new World.
+            ctx.image(self._engine._game_screen_image(sample), float(draw_w), float(draw_h), 0., 0., 1., 1.)
+
     def _render_game_viewport(self, ctx, target_w, target_h, fit_scale, *, world_rows):
-        import math
         all_rows = world_rows
         ordinals = self._world_view.ordinals
         rows = tuple(row for row in all_rows if row[3] and row[1] in ('ready','preparing'))
@@ -776,24 +840,53 @@ class GameViewPanel(EditorPanel):
         clicked = False
         native = _NativeInputManager.instance()
         held = any(native.get_mouse_button(button) for button in range(3))
+        self._game_viewport_presented = False
         if not ctx.begin_child('##GameViewportRegion',0,0,False):
             ctx.end_child()
             self._release_game_screens()
             return
         avail_w = float(ctx.get_content_region_avail_width())
         avail_h = float(ctx.get_content_region_avail_height())
+        cells = self._viewport_cells(ctx, len(rows), avail_w, avail_h) if rows and avail_w > 0 and avail_h > 0 else None
+        extent = self._screen_extent(cells[0], cells[1], target_w, target_h) if cells is not None else None
+        self._game_viewport_presented = bool(cells is not None and cells[0] > 0 and cells[1] > 0
+                                             and extent[0] > 0 and extent[1] > 0)
         start_x,start_y = ctx.get_cursor_pos_x(),ctx.get_cursor_pos_y()
-        if not rows:
+        retained = self._play_presentation_samples
+        if retained is not None:
+            # Request the new outputs even while old pixels are displayed. The
+            # first runtime image must not depend on dismissing this preview.
+            pending = self._play_preparing
+            ready_worlds = tuple(row[0] for row in rows)
+            self._play_ready_worlds = None
+            if rows and (avail_w <= 0 or avail_h <= 0):
+                pending = True
+            if rows and avail_w > 0 and avail_h > 0:
+                cell_w, image_h, _gap, _label_h, _columns = cells
+                for world, state, _error, _display in rows:
+                    if state != 'ready':
+                        pending = True
+                        continue
+                    width, height = extent
+                    if width <= 0 or height <= 0:
+                        pending = True
+                        continue
+                    self._request_screen(world, width, height, requested)
+                    status = self._engine._game_screen_status(world)
+                    if self._engine._acquire_game_screen(world) is None and not (status['no_camera'] or status['error']):
+                        pending = True
+            if not pending:
+                self._play_ready_worlds = ready_worlds
+            if retained:
+                self._draw_play_presentation(ctx, retained, avail_w, avail_h, start_x, start_y)
+            else:
+                ctx.label(t('game_view.waiting_image'))
+            rows = ()
+        if not rows and retained is None:
             ctx.label(t('game_view.no_worlds'))
-        elif avail_w > 0 and avail_h > 0:
-            gap = 8.0*ctx.get_dpi_scale()
-            show_tile_labels = self._world_view.layout != 0 and len(rows) > 1
-            label_h = 22.0*ctx.get_dpi_scale() if show_tile_labels else 0.0
-            columns = max(1,min(len(rows),math.ceil(math.sqrt(len(rows)*avail_w/avail_h))))
-            row_count = math.ceil(len(rows)/columns)
-            cell_w = (avail_w-gap*(columns-1))/columns
-            image_h = (avail_h-gap*(row_count-1))/row_count-label_h
-            screen = native.screen_state
+        elif rows and avail_w > 0 and avail_h > 0:
+            cell_w, image_h, gap, label_h, columns = cells
+            show_tile_labels = label_h > 0
             for index,(world,state,error,_display) in enumerate(rows):
                 x = start_x+(index%columns)*(cell_w+gap)
                 y = start_y+(index//columns)*(image_h+label_h+gap)
@@ -806,17 +899,11 @@ class GameViewPanel(EditorPanel):
                     ctx.label(error)
                 if state != 'ready' or cell_w <= 0 or image_h <= 0:
                     continue
-                width,height = target_w,target_h
-                if self._selected_resolution_idx == self._AUTO_RESOLUTION_INDEX:
-                    width = round(cell_w*screen.framebuffer_width/screen.logical_width)
-                    height = round(image_h*screen.framebuffer_height/screen.logical_height)
+                width, height = extent
                 if width <= 0 or height <= 0:
                     continue
-                consumer = f'{self.window_id}/world/{world}'
-                self._engine._request_game_screen(consumer,world,int(width),int(height),
-                    nearest=self._render_output['filter'] == 'nearest')
-                self._screen_consumers[world] = consumer
-                requested.add(world)
+                if world not in requested:
+                    self._request_screen(world, width, height, requested)
                 sample = self._engine._acquire_game_screen(world)
                 status = self._engine._game_screen_status(world)
                 if sample is None:

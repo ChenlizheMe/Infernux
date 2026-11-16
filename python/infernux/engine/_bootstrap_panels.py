@@ -574,6 +574,32 @@ class BootstrapPanelsMixin:
         self.game_view.prepare_render_target()
 
         bootstrap_ref = weakref.ref(self)
+        play_handoff = [False]
+
+        def play_presentation(event):
+            from infernux.engine.play_mode import PlayModeState
+
+            bootstrap = bootstrap_ref()
+            if bootstrap is None:
+                return
+            native = bootstrap.engine.get_native_engine()
+            if event.new_state is PlayModeState.ENTERING:
+                play_handoff[0] = True
+                scene = bootstrap.scene_view
+                scene._interrupt_gizmo_drag(commit=True)
+                scene._cancel_custom_handle_capture()
+                scene._end_camera_capture(restore_cursor=False)
+                scene._force_camera_input_release()
+                scene._was_left_down = False
+                scene._particle_preview_resize_drag = False
+                native._begin_editor_play_presentation()
+                bootstrap.game_view._begin_play_presentation()
+            elif event.new_state is PlayModeState.PLAYING and event.old_state is PlayModeState.ENTERING:
+                bootstrap.game_view._end_play_preparation()
+            elif event.new_state is PlayModeState.EDIT:
+                bootstrap.game_view._end_play_preparation()
+
+        self.engine.get_play_mode_manager().add_state_change_listener(play_presentation)
         viewed_world = [None]
 
         def editor_view_world(prepare):
@@ -597,6 +623,26 @@ class BootstrapPanelsMixin:
                 if selection.snapshot.domain in (SelectionDomain.SCENE_OBJECT, SelectionDomain.COMPONENT):
                     selection.clear(reason="editor_view_world_changed", record_history=False)
                 viewed_world[0] = world_id
+            if not prepare and play_handoff[0]:
+                from infernux.engine.play_mode import PlayModeState
+
+                if manager.state in (PlayModeState.PLAYING, PlayModeState.PAUSED, PlayModeState.EDIT):
+                    native = bootstrap.engine.get_native_engine()
+                    scene = bootstrap.scene_view
+                    game = bootstrap.game_view
+                    scene_ready = (not scene._content_presented_this_frame or not scene._scene_viewport_presented or not world_id
+                                   or native._editor_scene_presentation()[3] == world_id)
+                    expected = tuple(world for world, state, _error, display in view.rows
+                                     if display and state in ('ready', 'preparing')
+                                     and (view.layout != 0 or world == world_id))
+                    game_ready = (not game._content_presented_this_frame or not game._game_viewport_presented
+                                  or game._play_ready_worlds == expected)
+                    if scene_ready and game_ready:
+                        # Both visible views switch on the next GUI build. Cached
+                        # draw data still owns the old image leases until then.
+                        native._end_editor_play_presentation()
+                        game._finish_play_presentation()
+                        play_handoff[0] = False
             return world_id
 
         engine.get_native_engine()._set_editor_view_world_provider(editor_view_world)

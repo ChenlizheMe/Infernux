@@ -463,6 +463,7 @@ InxRenderer::~InxRenderer()
     m_gameRenderTarget = nullptr;
     m_gameScreenOutputs.reset();
     m_sceneRenderTarget.reset();
+    m_editorPlayPresentationTarget.reset();
     m_replacedViewTargets.clear();
 
     m_outlineRenderer.reset();
@@ -3318,6 +3319,42 @@ uint64_t InxRenderer::GetSceneTextureId() const
     return 0;
 }
 
+void InxRenderer::BeginEditorPlayPresentation()
+{
+    m_editorPlayPresentationPending = true;
+    if (m_guiPlayerMode || !m_sceneViewVisible || m_editorPlayPresentationTarget || !GetSceneTextureId())
+        return;
+    const uint64_t world = m_sceneRenderedWorldId;
+    // Detach the displayed allocation before runtime graphs can write to it.
+    // The regular target replacement path owns barriers and descriptor retirement.
+    auto retained = ReplaceSceneRenderTarget(m_sceneRenderTarget->GetWidth(), m_sceneRenderTarget->GetHeight());
+    if (retained) {
+        m_editorPlayPresentationTarget = std::move(retained);
+        m_editorPlayPresentationWorld = world;
+    }
+}
+
+void InxRenderer::EndEditorPlayPresentation()
+{
+    m_editorPlayPresentationPending = false;
+    if (m_editorPlayPresentationTarget)
+        m_replacedViewTargets.push_back(std::move(m_editorPlayPresentationTarget));
+    m_editorPlayPresentationWorld = 0;
+    if (m_gui)
+        m_gui->RequestFrame();
+}
+
+std::array<uint64_t, 4> InxRenderer::GetEditorScenePresentation()
+{
+    const uint64_t current = GetSceneTextureId();
+    const uint64_t readyWorld = current ? m_sceneRenderedWorldId : 0;
+    if (m_editorPlayPresentationTarget)
+        return {m_editorPlayPresentationTarget->GetImGuiTextureId(), m_editorPlayPresentationWorld, 0, readyWorld};
+    if (m_editorPlayPresentationPending)
+        return {0, 0, 0, readyWorld};
+    return {current, current ? m_sceneRenderedWorldId : 0, current ? 1ULL : 0ULL, readyWorld};
+}
+
 static std::shared_ptr<vk::ImageReadbackTicket>
 BeginTargetReadback(vk::VkResourceManager &resources, const SceneRenderTarget &target, vk::ImageReadbackOutput output)
 {
@@ -3977,60 +4014,64 @@ void InxRenderer::ResizeSceneRenderTarget(uint32_t width, uint32_t height)
 {
     if (m_sceneRenderTarget && width > 0 && height > 0 &&
         (width != m_sceneRenderTarget->GetWidth() || height != m_sceneRenderTarget->GetHeight())) {
-        auto replacementTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
-        replacementTarget->SetMsaaSampleCount(m_sceneRenderTarget->GetMsaaSampleCount());
-        if (!replacementTarget->Initialize(width, height)) {
-            INXLOG_ERROR("Failed to prepare replacement Scene render target for resize to ", width, "x", height,
-                         "; keeping the current generation.");
-            return;
-        }
-
-        std::unique_ptr<OutlineRenderer> replacementOutline;
-        if (m_outlineRenderer) {
-            replacementOutline = std::make_unique<OutlineRenderer>();
-            if (m_outlineRenderer->IsReady() &&
-                !replacementOutline->Initialize(m_vkCore.get(), replacementTarget.get())) {
-                const rhi::SubmissionSerial failedCandidateEpoch =
-                    m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
-                replacementTarget->RetireResourcesAfter(m_vkCore->GetRetirementQueue(), failedCandidateEpoch);
-                INXLOG_ERROR("Failed to prepare replacement Outline generation for Scene resize to ", width, "x",
-                             height, "; keeping the current generation.");
-                return;
-            }
-        }
-
-        const rhi::SubmissionSerial cutoverEpoch =
-            m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
-        if (m_sceneRenderGraph)
-            m_sceneRenderGraph->InvalidateBeforeTargetReplacement();
-
-        std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_sceneRenderTarget);
-        std::unique_ptr<OutlineRenderer> retiredOutline = std::move(m_outlineRenderer);
-        m_sceneRenderTarget = std::move(replacementTarget);
-        m_outlineRenderer = std::move(replacementOutline);
-        if (m_sceneRenderGraph)
-            m_sceneRenderGraph->ReplaceSceneTarget(m_sceneRenderTarget.get());
-
-        auto &retirementQueue = m_vkCore->GetRetirementQueue();
-        if (retiredOutline) {
-            std::shared_ptr<OutlineRenderer> retired(retiredOutline.release());
-            retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] { retired->Cleanup(false); });
-        }
-        m_replacedViewTargets.push_back(std::move(retiredTarget));
-
-        ++m_sceneRenderTargetGeneration;
-        if (m_captureService)
-            m_captureService->InvalidateSource(CaptureSource::Scene, m_sceneRenderTargetGeneration);
-        // Update aspect ratio for projection matrix calculation
-        if (m_vkCore) {
-            m_vkCore->SetSceneRenderTargetSize(width, height);
-        }
-
-        // Update scene camera aspect ratio
-        SceneRenderBridge::Instance().OnWindowResize(width, height);
-        if (m_gui)
-            m_gui->RequestFrame();
+        if (auto retired = ReplaceSceneRenderTarget(width, height))
+            m_replacedViewTargets.push_back(std::move(retired));
     }
+}
+
+std::unique_ptr<SceneRenderTarget> InxRenderer::ReplaceSceneRenderTarget(uint32_t width, uint32_t height)
+{
+    auto replacementTarget = std::make_unique<SceneRenderTarget>(m_vkCore.get());
+    replacementTarget->SetMsaaSampleCount(m_sceneRenderTarget->GetMsaaSampleCount());
+    if (!replacementTarget->Initialize(width, height)) {
+        INXLOG_ERROR("Failed to prepare replacement Scene render target for resize to ", width, "x", height,
+                     "; keeping the current generation.");
+        return {};
+    }
+
+    std::unique_ptr<OutlineRenderer> replacementOutline;
+    if (m_outlineRenderer) {
+        replacementOutline = std::make_unique<OutlineRenderer>();
+        if (m_outlineRenderer->IsReady() && !replacementOutline->Initialize(m_vkCore.get(), replacementTarget.get())) {
+            const rhi::SubmissionSerial failedCandidateEpoch =
+                m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+            replacementTarget->RetireResourcesAfter(m_vkCore->GetRetirementQueue(), failedCandidateEpoch);
+            INXLOG_ERROR("Failed to prepare replacement Outline generation for Scene resize to ", width, "x", height,
+                         "; keeping the current generation.");
+            return {};
+        }
+    }
+
+    const rhi::SubmissionSerial cutoverEpoch = m_vkCore->GetBackendContext().Queues().GetLastReservedCompletionEpoch();
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->InvalidateBeforeTargetReplacement();
+
+    std::unique_ptr<SceneRenderTarget> retiredTarget = std::move(m_sceneRenderTarget);
+    std::unique_ptr<OutlineRenderer> retiredOutline = std::move(m_outlineRenderer);
+    m_sceneRenderTarget = std::move(replacementTarget);
+    m_outlineRenderer = std::move(replacementOutline);
+    if (m_sceneRenderGraph)
+        m_sceneRenderGraph->ReplaceSceneTarget(m_sceneRenderTarget.get());
+
+    auto &retirementQueue = m_vkCore->GetRetirementQueue();
+    if (retiredOutline) {
+        std::shared_ptr<OutlineRenderer> retired(retiredOutline.release());
+        retirementQueue.RetireAfter(cutoverEpoch, [retired = std::move(retired)] { retired->Cleanup(false); });
+    }
+
+    ++m_sceneRenderTargetGeneration;
+    if (m_captureService)
+        m_captureService->InvalidateSource(CaptureSource::Scene, m_sceneRenderTargetGeneration);
+    // Update aspect ratio for projection matrix calculation
+    if (m_vkCore) {
+        m_vkCore->SetSceneRenderTargetSize(width, height);
+    }
+
+    // Update scene camera aspect ratio
+    SceneRenderBridge::Instance().OnWindowResize(width, height);
+    if (m_gui)
+        m_gui->RequestFrame();
+    return retiredTarget;
 }
 
 void InxRenderer::SetShowGrid(bool show)

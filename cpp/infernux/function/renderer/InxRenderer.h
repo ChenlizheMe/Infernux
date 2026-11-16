@@ -504,6 +504,10 @@ class InxRenderer
     // Scene render target for offscreen rendering. Replacements publish all
     // resources at one device completion epoch shared with their framebuffers.
     uint64_t GetSceneTextureId() const;
+    void BeginEditorPlayPresentation();
+    void EndEditorPlayPresentation();
+    /// Texture, pixel World, input enabled, and the newly rendered World (or zero).
+    std::array<uint64_t, 4> GetEditorScenePresentation();
     void ResizeSceneRenderTarget(uint32_t width, uint32_t height);
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> RequestRenderTargetReadback(bool gameView);
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> RequestImGuiTextureReadback(const std::string &name);
@@ -825,6 +829,10 @@ class InxRenderer
     bool m_guiPlayerMode = false;
     uint64_t m_lastSemanticSyntheticInputSequence = 0;
     std::unique_ptr<SceneRenderTarget> m_sceneRenderTarget;
+    std::unique_ptr<SceneRenderTarget> m_editorPlayPresentationTarget;
+    uint64_t m_editorPlayPresentationWorld = 0;
+    bool m_editorPlayPresentationPending = false;
+    std::unique_ptr<SceneRenderTarget> ReplaceSceneRenderTarget(uint32_t width, uint32_t height);
     std::unique_ptr<SceneRenderGraph> m_sceneRenderGraph;
     std::unique_ptr<SceneRenderGraph> m_sceneCameraPreviewGraph;
     std::unique_ptr<RenderGraphDescription> m_sceneCameraPreviewDescription;
