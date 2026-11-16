@@ -194,7 +194,7 @@ std::shared_ptr<const RenderTextureGeneration> RenderTexture::PrepareGeneration(
     if (description.depthFormat != PixelFormat::Undefined) {
         auto depthFeatures =
             FormatFeature::DepthStencilAttachment | FormatFeature::TransferSource | FormatFeature::TransferDestination;
-        if (description.sampledDepth)
+        if (description.sampledDepth || !caps.features.partialDepthTextureCopies)
             depthFeatures |= FormatFeature::Sampled;
         RequireFormat(caps, description.depthFormat, depthFeatures, description.samples);
     }
@@ -225,7 +225,9 @@ std::shared_ptr<const RenderTextureGeneration> RenderTexture::PrepareGeneration(
         image.samples = description.samples;
         image.usage = TextureUsageFlags::DepthStencilAttachment | TextureUsageFlags::TransferSource |
                       TextureUsageFlags::TransferDestination;
-        if (description.sampledDepth)
+        // A backend without depth-region transfer records the same operation
+        // through a depth-writing shader. Public sampled-depth remains opt-in.
+        if (description.sampledDepth || !caps.features.partialDepthTextureCopies)
             image.usage = image.usage | TextureUsageFlags::Sampled;
         next->depth = CreateAttachment(*m_device, image, description.filter);
     }

@@ -270,6 +270,8 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
                     else if (value->getScalarType() == slang::TypeReflection::UInt32)
                         resource.binding.sampleType = rhi::TextureSampleType::Uint;
                 }
+                if (resource.binding.multisampled && resource.binding.sampleType == rhi::TextureSampleType::Float)
+                    resource.binding.sampleType = rhi::TextureSampleType::UnfilterableFloat;
                 if (resource.binding.type == rhi::BindingType::StorageTexture) {
                     resource.binding.storageFormat = ImageFormat(layout->getBindingRangeImageFormat(index));
                     resource.binding.storageAccess = type->getResourceAccess() == SLANG_RESOURCE_ACCESS_WRITE

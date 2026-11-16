@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <function/renderer/FullscreenRenderer.h>
 #include <function/renderer/SceneRenderGraph.h>
+#include <function/renderer/TextureRegionRenderer.h>
 #include <function/renderer/rhi/RenderTextureRegistry.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/vk/RenderGraph.h>
@@ -577,11 +578,22 @@ float4 fragment_main(Vertex input, uint sample : SV_SampleIndex) : SV_Target0 {
     desc.depthFormat = rhi::PixelFormat::D32SFloat;
     desc.sampledDepth = true;
     auto owners = std::make_shared<rhi::RenderTexture>(device, "sample-identities", desc);
+    auto copied = std::make_shared<rhi::RenderTexture>(device, "sample-region-copy", desc);
+    const auto colorCode = SlangCompiler::Get().Compile(
+        {"region_color", "<test/region-color>", TextureRegionRenderer::ShaderSource(false, true)}, {},
+        {ShaderCodeTarget::SpirV});
+    const auto depthCode = SlangCompiler::Get().Compile(
+        {"region_depth", "<test/region-depth>", TextureRegionRenderer::ShaderSource(true, true)}, {},
+        {ShaderCodeTarget::SpirV});
+    TextureRegionRenderer colorCopy(device, colorCode.targets[0], desc.colorFormat, desc.samples);
+    TextureRegionRenderer depthCopy(device, depthCode.targets[0], desc.depthFormat, desc.samples);
     desc.colorFormat = rhi::PixelFormat::RGBA8UNorm;
     auto result = std::make_shared<rhi::RenderTexture>(device, "sample-colors", desc);
     vk::RenderGraph graph;
     graph.Initialize(&context);
     const auto source = graph.ImportRenderTexture("owners", owners->Acquire());
+    const auto copyTarget = graph.ImportRenderTexture("copied", copied->Acquire());
+    auto copiedColor = copyTarget.color, copiedDepth = copyTarget.depth;
     const auto destination = graph.ImportRenderTexture("result", result->Acquire());
     auto color = source.color, depth = source.depth, resolved = destination.resolve;
     FullscreenPipelineKey key;
@@ -605,6 +617,25 @@ float4 fragment_main(Vertex input, uint sample : SV_SampleIndex) : SV_Target0 {
             writer.DrawProgram(ctx.GetGraphicsCommandEncoder(), writePipeline, nullptr, {});
         };
     });
+    graph.AddPass("copy-color-samples", [&](vk::PassBuilder &builder) {
+        builder.Read(color);
+        copiedColor = builder.WriteColor(copiedColor);
+        builder.SetRenderArea(desc.width, desc.height);
+        return [&](vk::RenderContext &ctx) {
+            colorCopy.Record(ctx.GetGraphicsCommandEncoder(), owners->Acquire()->multisampleColor, 0, 0, 0, 0);
+        };
+    });
+    graph.AddPass("copy-depth-samples", [&](vk::PassBuilder &builder) {
+        builder.ReadSampledDepth(depth);
+        copiedDepth = builder.WriteDepth(copiedDepth);
+        builder.SetDepthTest(true);
+        builder.SetRenderArea(desc.width, desc.height);
+        return [&](vk::RenderContext &ctx) {
+            depthCopy.Record(ctx.GetGraphicsCommandEncoder(), owners->Acquire()->depth, 0, 0, 0, 0);
+        };
+    });
+    color = copiedColor;
+    depth = copiedDepth;
     key.shaderName = "sample-read";
     key.program = readProgram;
     key.colorFormat = desc.colorFormat;

@@ -83,6 +83,7 @@ set(INFERNUX_RENDER_CORE_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/FullscreenRenderer.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/shader/DeviceShaderProgram.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/SceneDepthResolver.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/TextureRegionRenderer.cpp"
 )
 
 set(INFERNUX_RENDERER_RUNTIME_SOURCES

@@ -168,6 +168,7 @@ struct DeviceFeatures
     bool independentComputeQueue = false;
     bool dedicatedTransferQueue = false;
     bool multisampleTextureCopies = false;
+    bool partialDepthTextureCopies = false;
     bool sampleRateShading = false;
 };
 

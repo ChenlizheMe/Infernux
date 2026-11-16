@@ -995,6 +995,7 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.features.independentComputeQueue = m_hasIndependentComputeQueue;
     capabilities.features.dedicatedTransferQueue = m_hasDedicatedTransferQueue;
     capabilities.features.multisampleTextureCopies = true;
+    capabilities.features.partialDepthTextureCopies = true;
     capabilities.features.sampleRateShading = m_deviceFeatures.sampleRateShading == VK_TRUE;
     m_vulkanFeatures.PublishShaderCapabilities(capabilities.portable);
     capabilities.portable.shaderFloat32Preserve = vulkan12Properties.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
