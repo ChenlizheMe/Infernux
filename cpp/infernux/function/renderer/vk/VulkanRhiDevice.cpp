@@ -1,5 +1,6 @@
 #include "VulkanRhiDevice.h"
 #include "VulkanCommandUploads.h"
+#include <core/types/ShaderBuildStatistics.h>
 
 #include "DescriptorBindTrace.h"
 #include "RhiVulkanTypes.h"
@@ -2024,6 +2025,7 @@ rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::Com
     pipelineInfo.layout = layout;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
+    infernux::RecordComputePipelineCreationAttempt();
     if (vkCreateComputePipelines(m_device, m_pipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
         vkDestroyPipelineLayout(m_device, layout, nullptr);
         return {};
@@ -2194,6 +2196,7 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
     pipelineInfo.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
+    infernux::RecordGraphicsPipelineCreationAttempt();
     if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
         vkDestroyPipelineLayout(m_device, layout, nullptr);
         return {};

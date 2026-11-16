@@ -2,6 +2,7 @@
 #include "ShaderAuthorInputs.h"
 #include "SlangLayout.h"
 #include "SlangModuleFiles.h"
+#include <core/types/ShaderBuildStatistics.h>
 
 #include <nlohmann/json.hpp>
 #include <slang-com-ptr.h>
@@ -253,6 +254,7 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
                                          const std::vector<ShaderCodeTarget> &targets, bool precise,
                                          const std::vector<ShaderAuthorRange> &sourceRanges)
 try {
+    RecordShaderCompilationAttempt();
     std::lock_guard lock(impl->mutex);
 
     std::vector<slang::TargetDesc> targetDescriptions;

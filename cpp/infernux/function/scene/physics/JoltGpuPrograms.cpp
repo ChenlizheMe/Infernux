@@ -334,8 +334,12 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                 throw std::invalid_argument("Jolt GPU body has invalid mass, inertia or damping");
             for (uint32_t leaf = record.meta.x; leaf < bodyLeafEnd + record.meta.y; ++leaf) {
                 const auto &shape = ModelRecord(model.shapes, shapeChanges, leaf);
-                if (shape.meta.y != body || (shape.meta.w & ~ShapeSensor) || shape.surface.x >= 32 ||
-                    shape.surface.z > MaterialCombineMaximum || shape.surface.w > MaterialCombineMaximum)
+                const bool triangle = (shape.meta.w & ShapeOneSidedTriangle) != 0u;
+                const uint32_t triangleFlags = ShapeOneSidedTriangle | (7u << ShapeTriangleActiveEdgeShift);
+                if (shape.meta.y != body || (shape.meta.w & ~(ShapeSensor | triangleFlags)) ||
+                    (!triangle && (shape.meta.w & triangleFlags)) || (triangle && shape.meta.x != ShapeConvexHull) ||
+                    shape.surface.x >= 32 || shape.surface.z > MaterialCombineMaximum ||
+                    shape.surface.w > MaterialCombineMaximum)
                     throw std::invalid_argument("Jolt GPU leaf identity, flags or material mode is invalid");
                 if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 ||
                     !Normalized(shape.localRotation) || !Finite4(shape.material) || shape.material.x < 0 ||
@@ -369,8 +373,11 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                         throw std::invalid_argument("Jolt GPU cylinder final dimensions/convex radius are invalid");
                     break;
                 case ShapeConvexHull:
-                    if (!Finite4(geometry) || geometry.x < 0 || geometry.y || geometry.z || geometry.w ||
-                        geometry.x != cold->record->convexRadius)
+                    if (!Finite4(geometry) || geometry.x < 0 || geometry.x != cold->record->convexRadius ||
+                        (triangle ? geometry.x != 0 || cold->record->words[0].z != 3u ||
+                                        std::abs(geometry.y * geometry.y + geometry.z * geometry.z +
+                                                 geometry.w * geometry.w - 1.0f) > 1e-4f
+                                  : geometry.y || geometry.z || geometry.w))
                         throw std::invalid_argument("Jolt GPU hull convex radius or padding is invalid");
                     break;
                 default:

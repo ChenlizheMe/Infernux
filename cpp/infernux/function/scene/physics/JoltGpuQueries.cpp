@@ -192,8 +192,13 @@ bool Finite(const Float4 &value)
 }
 
 void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotation, const UInt4 &reference,
-                      const std::shared_ptr<const JoltGpuGeometryLease> &lease)
+                      const std::shared_ptr<const JoltGpuGeometryLease> &lease, uint32_t flags = 0)
 {
+    const uint32_t triangleFlags = ShapeOneSidedTriangle | (7u << ShapeTriangleActiveEdgeShift);
+    const bool triangle = (flags & ShapeOneSidedTriangle) != 0u;
+    if ((flags & ~(ShapeSensor | triangleFlags)) || (!triangle && (flags & triangleFlags)) ||
+        (triangle && type != ShapeConvexHull))
+        throw JoltGpuQueryRequestError("Jolt GPU query primitive has invalid shape flags");
     if (!Finite(geometry) || !Finite(rotation))
         throw JoltGpuQueryRequestError("Jolt GPU query geometry and rotation must be finite");
     const double length = double(rotation.x) * rotation.x + double(rotation.y) * rotation.y +
@@ -201,9 +206,20 @@ void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotat
     if (std::abs(length - 1.0) > 1.0e-3)
         throw JoltGpuQueryRequestError("Jolt GPU query rotation must be a unit quaternion");
     if (type == ShapeConvexHull) {
-        if (geometry.x < 0 || geometry.y || geometry.z || geometry.w || !reference.x || reference.y < 5 || !lease ||
-            !lease->Contains(reference))
+        if (geometry.x < 0 || (!triangle && (geometry.y || geometry.z || geometry.w)) || !reference.x ||
+            reference.y < 5 || !lease || !lease->Contains(reference))
             throw JoltGpuQueryRequestError("Jolt GPU Hull requires its exact retained geometry range");
+        if (triangle) {
+            const auto entry = std::find_if(lease->records.begin(), lease->records.end(), [&](const auto &value) {
+                return value && value->reference.x == reference.x && value->reference.y == reference.y;
+            });
+            const auto *record = entry == lease->records.end() ? nullptr : (*entry)->record.get();
+            if (geometry.x != 0 || !record || record->convexRadius != 0 || record->words.size() < 5 ||
+                record->words[0].z != 3u || record->words[0].w != 2u ||
+                std::abs(geometry.y * geometry.y + geometry.z * geometry.z + geometry.w * geometry.w - 1.0f) > 1e-4f)
+                throw JoltGpuQueryRequestError(
+                    "Jolt GPU triangle requires its exact planar three-point hull and CCW unit normal");
+        }
         return;
     }
     if (reference.x || reference.y || reference.z || reference.w)
@@ -651,11 +667,10 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
             frozen(Shapes, CheckedBytes(totalLeaves, sizeof(ShapeModel)));
     }
     for (const auto &primitive : primitives) {
-        if (primitive.meta.y || primitive.meta.z || primitive.meta.w || !Finite(primitive.position) ||
-            primitive.position.w)
+        if (primitive.meta.z || primitive.meta.w || !Finite(primitive.position) || primitive.position.w)
             throw std::invalid_argument("Jolt GPU explicit query primitive has invalid pose or padding");
         ValidateGeometry(primitive.meta.x, primitive.geometry, primitive.rotation, primitive.geometryReference,
-                         result->geometry);
+                         result->geometry, primitive.meta.y);
     }
     const uint32_t format = queries.empty() ? QueryOutputHit : OutputFormat(queries.front());
     const uint32_t recordBytes = RecordBytes(format);

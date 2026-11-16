@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <core/log/InxLog.h>
+#include <core/types/ShaderBuildStatistics.h>
 #include <platform/filesystem/InxPath.h>
 #include <stdexcept>
 
@@ -876,6 +877,7 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
     VkPipeline pipeline;
+    infernux::RecordGraphicsPipelineCreationAttempt();
     if (vkCreateGraphicsPipelines(m_device, m_vkPipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
         INXLOG_ERROR("Failed to create graphics pipeline with shader program");
         return VK_NULL_HANDLE;

@@ -15,7 +15,8 @@
 #include "rhi/RhiDescriptors.h"
 #include <array>
 #include <chrono>
-#include <core/log/InxLog.h>           // LogLevel enum (used in SetLogLevel)
+#include <core/log/InxLog.h> // LogLevel enum (used in SetLogLevel)
+#include <core/threading/FrameWorkProfile.h>
 #include <core/types/InxApplication.h> // InxAppMetadata value type (public methods)
 #include <cstdint>
 #include <functional>
@@ -93,6 +94,9 @@ class ImageReadbackTicket;
 struct RendererFrameTelemetrySnapshot
 {
     uint64_t frame = 0;
+    uint64_t shaderCompileAttemptCount = 0;
+    uint64_t graphicsPipelineCreateAttemptCount = 0;
+    uint64_t computePipelineCreateAttemptCount = 0;
     bool sceneViewVisible = false;
     bool sceneTargetReady = false;
     bool gameCameraEnabled = false;
@@ -271,6 +275,7 @@ struct RendererFramePerformanceSnapshot
     UIPerformanceMetricStats input, callbacks, gpuWait, draw;
     std::array<UIPerformanceMetricStats, 6> drawPhases;
     std::vector<RendererFramePerformanceSample> slowestFrames;
+    std::vector<FrameWorkSourceProfile> workSources;
 };
 
 /// A foreground fact for the Engine's shared execution owner, not a neural

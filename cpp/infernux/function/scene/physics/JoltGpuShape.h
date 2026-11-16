@@ -36,8 +36,11 @@ struct PreparedGpuShape
 };
 
 /// Resolve decorators and compound child user data through the authored root.
-/// Sphere, Box, Capsule, Cylinder and ConvexHull leaves use baked unit scale; other geometry
-/// throws before any model is staged.
+/// Sphere, Box, Capsule, Cylinder and ConvexHull leaves use baked unit scale.
+/// Mesh leaves expand their exact native triangles into zero-margin planar hulls,
+/// retaining the real SubShapeID, original CCW normal and remapped active edges.
+/// Triangle flags require the matching GPU one-sided/edge semantics; unsupported
+/// geometry still throws before any model is staged.
 /// memberCount is the actual contributing Collider count, not a leaf count.
 [[nodiscard]] PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCount);
 

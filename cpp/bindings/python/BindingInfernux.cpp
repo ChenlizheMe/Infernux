@@ -1402,6 +1402,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                        renderer ? renderer->GetFrameTelemetrySnapshot() : RendererFrameTelemetrySnapshot{};
                                    py::dict result;
                                    result["frame"] = snapshot.frame;
+                                   result["shader_compile_attempt_count"] = snapshot.shaderCompileAttemptCount;
+                                   result["graphics_pipeline_create_attempt_count"] = snapshot.graphicsPipelineCreateAttemptCount;
+                                   result["compute_pipeline_create_attempt_count"] = snapshot.computePipelineCreateAttemptCount;
                                    result["scene_view_visible"] = snapshot.sceneViewVisible;
                                    result["scene_target_ready"] = snapshot.sceneTargetReady;
                                    result["game_camera_enabled"] = snapshot.gameCameraEnabled;
@@ -1601,6 +1604,22 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 result["target_sample_count"] = snapshot.targetSampleCount;
                 result["active"] = snapshot.active;
                 result["timings"] = std::move(timings);
+                constexpr const char *sourcePhaseNames[] = {
+                    "observe", "refresh", "describe", "advance_host", "advance_gpu"};
+                py::list workSources;
+                for (const auto &source : snapshot.workSources) {
+                    py::dict item, phases;
+                    item["source_id"] = source.sourceId;
+                    for (size_t index = 0; index < source.phases.size(); ++index) {
+                        py::dict metric;
+                        metric["calls"] = source.phases[index].calls;
+                        metric["total_ms"] = source.phases[index].nanoseconds / 1e6;
+                        phases[sourcePhaseNames[index]] = std::move(metric);
+                    }
+                    item["phases"] = std::move(phases);
+                    workSources.append(std::move(item));
+                }
+                result["work_sources"] = std::move(workSources);
                 py::list slowestFrames;
                 for (const auto &sample : snapshot.slowestFrames) {
                     py::dict frame;

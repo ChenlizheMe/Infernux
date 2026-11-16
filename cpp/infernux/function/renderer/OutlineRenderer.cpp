@@ -1,3 +1,4 @@
+#include <core/types/ShaderBuildStatistics.h>
 /**
  * @file OutlineRenderer.cpp
  * @brief Post-process selection outline renderer implementation
@@ -5,10 +6,10 @@
  * Extracted from InxVkCoreModular.cpp during editor/renderer separation.
  */
 
-#include "OutlineRenderer.h"
 #include "InxVkCoreModular.h"
 #include "MaterialDescriptor.h"
 #include "MaterialPipelineManager.h"
+#include "OutlineRenderer.h"
 #include "SceneRenderTarget.h"
 #include "VertexInputFilter.h"
 #include "shader/ShaderProgram.h"
@@ -538,6 +539,7 @@ VkPipeline OutlineRenderer::CreateMaskPipeline(const VkPipelineShaderStageCreate
     pipelineInfo.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
+    infernux::RecordGraphicsPipelineCreationAttempt();
     vkCreateGraphicsPipelines(m_core->GetDevice(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
     return pipeline;
 }

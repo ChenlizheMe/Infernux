@@ -1,3 +1,4 @@
+#include <core/types/ShaderBuildStatistics.h>
 /**
  * @file VkCoreMaterial.cpp
  * @brief InxVkCoreModular — Material system, lighting, and buffer accessors
@@ -881,6 +882,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
 
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
     VkPipelineCache pipelineCache = m_materialPipelineManager.GetVkPipelineCache();
+    infernux::RecordGraphicsPipelineCreationAttempt();
     if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
         INXLOG_WARN("Failed to create linked shadow pipeline for '", material->GetName(), "' (program='",
                     stagePair.ToString(), "')");

@@ -1,3 +1,4 @@
+#include <core/types/ShaderBuildStatistics.h>
 /**
  * @file VkPipelineManager.cpp
  * @brief Implementation of Vulkan pipeline management
@@ -540,6 +541,7 @@ PipelineResult VkPipelineManager::CreateGraphicsPipeline(const PipelineConfig &c
     pipelineInfo.subpass = config.subpass;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
+    infernux::RecordGraphicsPipelineCreationAttempt();
     VkResult vkResult =
         vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &result.pipeline);
 

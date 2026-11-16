@@ -2,6 +2,7 @@
 #include "CaptureService.h"
 #include "gui/PreviewImage.h"
 #include <core/math/DepthConvention.h>
+#include <core/types/ShaderBuildStatistics.h>
 // Explicit includes for all subsystem types that were forward-declared in
 // InxRenderer.h. These are required here so that unique_ptr destructors,
 // make_unique calls, and member-function calls all have complete types.
@@ -3360,6 +3361,10 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
                                                  [](const DrawCall &drawCall) { return drawCall.castsShadows; }));
     };
     snapshot.frame = m_frameCount;
+    const auto builds = GetShaderBuildStatistics();
+    snapshot.shaderCompileAttemptCount = builds.compilationAttempts;
+    snapshot.graphicsPipelineCreateAttemptCount = builds.graphicsPipelineCreationAttempts;
+    snapshot.computePipelineCreateAttemptCount = builds.computePipelineCreationAttempts;
     snapshot.sceneTemporalDiscontinuityRevision = m_observedSceneTemporalDiscontinuityRevision;
     snapshot.temporalHistoryInvalidationCount = m_temporalHistoryInvalidationCount;
     snapshot.sceneViewVisible = m_sceneViewVisible;
@@ -3525,6 +3530,8 @@ uint64_t InxRenderer::BeginFramePerformanceWindow(size_t sampleCount)
     m_framePerformanceHistory.clear();
     m_framePerformanceSampleLimit = sampleCount;
     m_framePerformanceWindowActive = true;
+    if (m_frameWorkOwner)
+        m_frameWorkOwner->BeginSourceProfile();
     return m_frameCount + 1;
 }
 
@@ -3538,8 +3545,11 @@ void InxRenderer::RecordFramePerformanceSample(RendererFramePerformanceSample sa
     sample.prepareMs = m_prepareFrameMs;
     m_framePerformanceHistory.push_back(sample);
 
-    if (m_framePerformanceHistory.size() == m_framePerformanceSampleLimit)
+    if (m_framePerformanceHistory.size() == m_framePerformanceSampleLimit) {
         m_framePerformanceWindowActive = false;
+        if (m_frameWorkOwner)
+            m_frameWorkOwner->EndSourceProfile();
+    }
 }
 
 RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
@@ -3549,6 +3559,8 @@ RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
     snapshot.sampleCount = count;
     snapshot.targetSampleCount = m_framePerformanceSampleLimit;
     snapshot.active = m_framePerformanceWindowActive;
+    if (m_frameWorkOwner)
+        snapshot.workSources = m_frameWorkOwner->GetSourceProfile();
     if (count == 0)
         return snapshot;
 

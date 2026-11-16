@@ -25,15 +25,28 @@ FrameWorkOwner::QuantumScope::~QuantumScope()
     m_owner.m_quantumAdmissions = m_previousAdmissions;
 }
 
-FrameWorkOwner::CallbackScope::CallbackScope(FrameWorkOwner &owner, SourceId id) : m_owner(owner), m_quantum(owner)
+FrameWorkOwner::CallbackScope::CallbackScope(FrameWorkOwner &owner, const Source &source, FrameWorkSourcePhase phase)
+    : m_owner(owner), m_quantum(owner)
 {
+    const auto id = source.id;
     if (std::find(owner.m_callbackSources.begin(), owner.m_callbackSources.end(), id) != owner.m_callbackSources.end())
         throw std::logic_error("Frame work source callback dependency cycle at source " + std::to_string(id));
     owner.m_callbackSources.push_back(id);
+    if (owner.m_sourceProfileActive) {
+        m_profileSequence = owner.m_sourceProfileSequence;
+        m_profileStarted = owner.Now();
+        m_profileIndex = source.profileIndex;
+        m_profilePhase = phase;
+    }
 }
 
 FrameWorkOwner::CallbackScope::~CallbackScope()
 {
+    if (m_profileSequence && m_owner.m_sourceProfileActive && m_profileSequence == m_owner.m_sourceProfileSequence) {
+        auto &profile = m_owner.m_sourceProfile[m_profileIndex].phases[static_cast<size_t>(m_profilePhase)];
+        ++profile.calls;
+        profile.nanoseconds += m_owner.Now() - m_profileStarted;
+    }
     m_owner.m_callbackSources.pop_back();
 }
 
@@ -138,12 +151,38 @@ std::shared_ptr<FrameCpuStorageClaim> FrameWorkOwner::SplitCpuStorage(FrameCpuSt
     return part;
 }
 
+void FrameWorkOwner::BeginSourceProfile()
+{
+    ++m_sourceProfileSequence;
+    m_sourceProfile.clear();
+    m_sourceProfile.reserve(m_sources.size());
+    for (const auto &source : m_sources) {
+        source->profileIndex = m_sourceProfile.size();
+        m_sourceProfile.push_back({source->id});
+    }
+    m_sourceProfileActive = true;
+}
+
+void FrameWorkOwner::EndSourceProfile() noexcept
+{
+    m_sourceProfileActive = false;
+}
+
+std::vector<FrameWorkSourceProfile> FrameWorkOwner::GetSourceProfile() const
+{
+    return m_sourceProfile;
+}
+
 FrameWorkOwner::SourceId FrameWorkOwner::AddSource(FrameWorkSource source)
 {
     if (!source.describe || !source.advance)
         throw std::invalid_argument("A frame work source requires describe and advance callbacks");
     const auto id = m_nextSource++;
     m_sources.push_back(std::make_shared<Source>(Source{id, std::move(source)}));
+    if (m_sourceProfileActive) {
+        m_sources.back()->profileIndex = m_sourceProfile.size();
+        m_sourceProfile.push_back({id});
+    }
     return id;
 }
 
@@ -344,7 +383,7 @@ void FrameWorkOwner::ObserveSource(const std::shared_ptr<Source> &source)
     source->observedOpportunity = m_opportunity;
     if (source->callbacks.observe) {
         Scope scope(*this);
-        CallbackScope callback(*this, source->id);
+        CallbackScope callback(*this, *source, FrameWorkSourcePhase::Observe);
         source->callbacks.observe();
     }
 }
@@ -373,7 +412,7 @@ std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_p
         return std::nullopt;
     Scope scope(*this);
     ServiceScope service(*this, interactive);
-    CallbackScope callback(*this, source->id);
+    CallbackScope callback(*this, *source, FrameWorkSourcePhase::Describe);
     auto facts = source->callbacks.describe();
     if (!source->awake)
         return std::nullopt; // Removed during the callback.
@@ -387,7 +426,7 @@ void FrameWorkOwner::RefreshSources()
         if (!source->awake || source->observedOpportunity != m_opportunity || !source->callbacks.refresh)
             continue;
         Scope scope(*this);
-        CallbackScope callback(*this, source->id);
+        CallbackScope callback(*this, *source, FrameWorkSourcePhase::Refresh);
         source->callbacks.refresh();
     }
 }
@@ -428,7 +467,8 @@ bool FrameWorkOwner::AdvanceChoice(Choice &choice, bool gpu, bool interactive)
         return false;
     Scope scope(*this);
     ServiceScope service(*this, interactive);
-    CallbackScope callback(*this, choice.source->id);
+    CallbackScope callback(*this, *choice.source,
+                           gpu ? FrameWorkSourcePhase::AdvanceGpu : FrameWorkSourcePhase::AdvanceHost);
     const auto progressSerial = m_progressSerial;
     const auto &candidate = gpu ? choice.facts.gpu : choice.facts.host;
     const bool ownProgress = choice.source->callbacks.advance(gpu, candidate.token);
@@ -663,7 +703,7 @@ bool FrameWorkOwner::DriveRequired(SourceId id, ServiceKind kind,
         const auto roundProgress = m_progressSerial;
         m_gpuAvailability = gpuAvailability();
         if (source->awake && source->callbacks.refresh) {
-            CallbackScope callback(*this, source->id);
+            CallbackScope callback(*this, *source, FrameWorkSourcePhase::Refresh);
             source->callbacks.refresh();
         }
         const auto description = DescribeSource(source, false);

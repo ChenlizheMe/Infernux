@@ -30,7 +30,7 @@ void RefreshGpuActorSurface(JPH::GPU::ShapeModel &leaf, const Collider &collider
     leaf.surface = {static_cast<uint32_t>(layer), TagLayerManager::Instance().GetLayerCollisionMask(layer),
                     static_cast<uint32_t>(collider.GetFrictionCombine()),
                     static_cast<uint32_t>(collider.GetBounceCombine())};
-    leaf.meta.w = collider.IsTrigger() ? JPH::GPU::ShapeSensor : 0;
+    leaf.meta.w = (leaf.meta.w & ~JPH::GPU::ShapeSensor) | (collider.IsTrigger() ? JPH::GPU::ShapeSensor : 0u);
 }
 
 std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &actor, uint32_t bodySlot,

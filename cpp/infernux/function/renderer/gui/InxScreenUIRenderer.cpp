@@ -1,3 +1,4 @@
+#include <core/types/ShaderBuildStatistics.h>
 /**
  * @file InxScreenUIRenderer.cpp
  * @brief Implementation of GPU-based 2D screen-space UI renderer
@@ -17,8 +18,8 @@
  * pass.
  */
 
-#include "InxScreenUIRenderer.h"
 #include "ImageFillDraw.h"
+#include "InxScreenUIRenderer.h"
 #include "InxTextGeometry.h"
 #include "InxTextLayout.h"
 #include <algorithm>
@@ -2025,6 +2026,7 @@ bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderMo
     pipeInfo.renderPass = VK_NULL_HANDLE;
     pipeInfo.subpass = 0;
 
+    infernux::RecordGraphicsPipelineCreationAttempt();
     return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &pipeline) == VK_SUCCESS;
 }
 
@@ -2134,6 +2136,7 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
     pipeline.pColorBlendState = &blend;
     pipeline.pDynamicState = &dynamic;
     pipeline.layout = m_worldPipelineLayout;
+    infernux::RecordGraphicsPipelineCreationAttempt();
     return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &result) == VK_SUCCESS;
 }
 

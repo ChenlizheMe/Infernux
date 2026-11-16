@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FrameWorkProfile.h"
 #include "core/FoundationApi.h"
 
 #include <array>
@@ -159,6 +160,11 @@ class FrameWorkOwner
       private:
         FrameWorkOwner &m_owner;
     };
+
+    /// Opt-in diagnostics for the renderer's existing finite performance window.
+    INFERNUX_FOUNDATION_API void BeginSourceProfile();
+    INFERNUX_FOUNDATION_API void EndSourceProfile() noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API std::vector<FrameWorkSourceProfile> GetSourceProfile() const;
 
     INFERNUX_FOUNDATION_API SourceId AddSource(FrameWorkSource source);
     INFERNUX_FOUNDATION_API void RemoveSource(SourceId id);
@@ -357,15 +363,20 @@ class FrameWorkOwner
         uint64_t m_previousStart;
         uint32_t m_previousAdmissions;
     };
+    struct Source;
     class CallbackScope
     {
       public:
-        CallbackScope(FrameWorkOwner &owner, SourceId id);
+        CallbackScope(FrameWorkOwner &owner, const Source &source, FrameWorkSourcePhase phase);
         ~CallbackScope();
 
       private:
         FrameWorkOwner &m_owner;
         QuantumScope m_quantum;
+        uint64_t m_profileSequence = 0;
+        uint64_t m_profileStarted;
+        size_t m_profileIndex;
+        FrameWorkSourcePhase m_profilePhase;
     };
     class RequiredScope
     {
@@ -391,6 +402,7 @@ class FrameWorkOwner
         uint64_t observedOpportunity = UINT64_MAX;
         bool awake = true;
         uint64_t lastIoService = 0;
+        size_t profileIndex = 0;
     };
     struct Choice
     {
@@ -415,6 +427,9 @@ class FrameWorkOwner
     uint64_t Now() const;
 
     std::vector<std::shared_ptr<Source>> m_sources;
+    std::vector<FrameWorkSourceProfile> m_sourceProfile;
+    uint64_t m_sourceProfileSequence = 0;
+    bool m_sourceProfileActive = false;
     SourceId m_nextSource = 1;
     SourceId m_nextHostSource = 0;
     SourceId m_nextGpuSource = 0;

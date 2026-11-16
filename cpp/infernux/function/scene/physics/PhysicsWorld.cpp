@@ -214,7 +214,7 @@ std::optional<CookedQueryOperand> CookColliderQueryPrimitive(const Collider &col
                                                       prepared.centerOfMass.GetZ()) +
                                             Vector(leaf.localPositionCOM));
     return CookedQueryOperand{
-        QueryPrimitive{{leaf.meta.x, 0, 0, 0}, leaf.geometry, Vector(center), Rotation(world * local), {}},
+        QueryPrimitive{{leaf.meta.x, leaf.meta.w, 0, 0}, leaf.geometry, Vector(center), Rotation(world * local), {}},
         prepared.leaves.front().geometryRecord, shape};
 }
 struct AdmissionScope
@@ -2819,6 +2819,11 @@ std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const C
     auto second = CookColliderQueryPrimitive(b, positionB, rotationB);
     if (!first || !second)
         return std::nullopt;
+    // The mesh surface policy belongs to the target operand. Preserve it when
+    // the caller supplies the triangle first, then restore the caller's order.
+    const bool reverseOperands = (first->primitive.meta.y & ShapeOneSidedTriangle) != 0u;
+    if (reverseOperands)
+        std::swap(first, second);
     RequireGpu(domain);
     JoltGpuQueryGeometry geometry;
     geometry.store = m_gpuScene->GetGeometryStore();
@@ -2835,6 +2840,8 @@ std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const C
     request.positionMaximum = first->primitive.position;
     request.rotation = first->primitive.rotation;
     request.geometry = first->primitive.geometry;
+    if (first->primitive.meta.y & ShapeOneSidedTriangle)
+        request.geometry = {request.geometry.x, 0, 0, 0}; // Request support has no target-side surface policy.
     request.geometryReference = first->primitive.geometryReference;
     auto result = RunGeometryQuery(domain, request, second->primitive, std::move(geometry));
     FrameWorkOwner::Scope materialize(*m_gpuWork);
@@ -2842,6 +2849,9 @@ std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const C
     if (records.empty() || !records.front().meta.y)
         return std::nullopt;
     const auto &hit = records.front();
+    if (reverseOperands)
+        return PhysicsPenetrationResult{-Vector(hit.normalFraction), hit.pointADepth.w, Vector(hit.positionDistance),
+                                        Vector(hit.pointADepth)};
     return PhysicsPenetrationResult{Vector(hit.normalFraction), hit.pointADepth.w, Vector(hit.pointADepth),
                                     Vector(hit.positionDistance)};
 }
@@ -2991,6 +3001,8 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
     request.meta.z = primitive->primitive.meta.x;
     request.meta.w = QuerySweepPolicy;
     request.geometry = primitive->primitive.geometry;
+    if (primitive->primitive.meta.y & ShapeOneSidedTriangle)
+        request.geometry = {request.geometry.x, 0, 0, 0};
     request.rotation = primitive->primitive.rotation;
     QueryRayInput(request, Vector(primitive->primitive.position), displacement, static_cast<float>(distance));
     request.source.z = static_cast<uint32_t>(objectId);
