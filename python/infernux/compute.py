@@ -2837,10 +2837,10 @@ class Kernel:
         return declaration
 
     @classmethod
-    def _from_slang(cls, path, entry_point, domain, libraries):
+    def _from_slang(cls, path, entry_point, domain, libraries, constants):
         declaration = object.__new__(cls)
         declaration._init_runtime()
-        declaration._slang_source = (path, entry_point, domain, libraries)
+        declaration._slang_source = (path, entry_point, domain, libraries, constants)
         declaration.__name__ = entry_point
         declaration.__qualname__ = f"{path}::{entry_point}"
         return declaration
@@ -3075,7 +3075,7 @@ def _release_engine_resources() -> None:
         engine._infernux_compute_host = None
 
 
-def kernel(function, *, entry_point=None, domain=None, libraries=None) -> Kernel:
+def kernel(function, *, entry_point=None, domain=None, libraries=None, constants=None) -> Kernel:
     """Declare a Python work item or a compute entry in a project Slang asset.
 
     For Slang, pass an ``Assets/.../file.slang`` path, an ``entry_point`` and the
@@ -3087,6 +3087,11 @@ def kernel(function, *, entry_point=None, domain=None, libraries=None) -> Kernel
     ``libraries`` maps Slang import names to project asset paths for the import
     closure. Preparation reads their source through the project asset catalog.
     Create a new declaration to prepare a new source revision.
+
+    ``constants`` maps names declared as ``extern static const int`` to signed
+    32-bit values, fixed for this declaration. Import ``inx_specialization``
+    from Slang to link these definitions. For example, ``constants={"tile": 8}``
+    can select ``[numthreads(tile, 1, 1)]`` in the project source.
     """
     if isinstance(function, (str, PathLike)):
         from infernux.engine.path_utils import portable_relative_path
@@ -3102,10 +3107,18 @@ def kernel(function, *, entry_point=None, domain=None, libraries=None) -> Kernel
         sources = dict(libraries) if libraries is not None else {}
         if any(not isinstance(name, str) or not name.isidentifier() for name in sources):
             raise ValueError("Slang compute library names must be module identifiers")
+        values = dict(constants) if constants is not None else {}
+        for name, value in values.items():
+            if not isinstance(name, str) or not name.isidentifier():
+                raise ValueError(f"Slang link constant name {name!r} must be an identifier")
+            if type(value) is not int:
+                raise TypeError(f"Slang link constant '{name}' requires a Python int")
+            if not -(1 << 31) <= value < (1 << 31):
+                raise ValueError(f"Slang link constant '{name}' must fit a signed 32-bit int")
         modules = tuple((name, asset_path(value)) for name, value in sorted(sources.items()))
-        return Kernel._from_slang(asset_path(function), entry_point, domain, modules)
-    if entry_point is not None or domain is not None or libraries is not None:
-        raise TypeError("entry_point, domain and libraries describe a project Slang kernel")
+        return Kernel._from_slang(asset_path(function), entry_point, domain, modules, tuple(sorted(values.items())))
+    if entry_point is not None or domain is not None or libraries is not None or constants is not None:
+        raise TypeError("entry_point, domain, libraries and constants describe a project Slang kernel")
     if isinstance(function, staticmethod):
         raise TypeError(
             "@inx.compute.kernel received a staticmethod descriptor; put "

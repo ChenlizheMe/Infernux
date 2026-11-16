@@ -74,6 +74,25 @@ def prepare_work(values, sums):
     return compute.prepare_work(((Run.reduce, (values, sums)),), private_buffers=(sums,),
                                 inputs={{"seed": sums}}, outputs={{"result": sums}})
 '''
+TILED_REDUCTION = (
+    'import inx_specialization;\nextern static const int tile;\n'
+    + REDUCTION.replace('partials[4];', 'partials[tile];')
+    .replace('numthreads(4,', 'numthreads(tile,')
+    .replace('uint step = 2;', 'uint step = uint(tile) >> 1;')
+)
+TILED_WORK_SOURCE = f'''from infernux import compute
+
+class Run:
+    narrow = compute.kernel({SOURCE_PATH!r}, entry_point="reduceRows", domain="values", libraries={LIBRARIES!r},
+                            constants={{"tile": 4}})
+    wide = compute.kernel({SOURCE_PATH!r}, entry_point="reduceRows", domain="values", libraries={LIBRARIES!r},
+                          constants={{"tile": 8}})
+
+def prepare_work(values, narrow, wide):
+    return compute.prepare_work(((Run.narrow, (values, narrow)), (Run.wide, (values, wide))),
+                                private_buffers=(narrow, wide), inputs={{"narrow_seed": narrow, "wide_seed": wide}},
+                                outputs={{"narrow": narrow, "wide": wide}})
+'''
 
 
 @compute.kernel
@@ -101,8 +120,9 @@ def project(tmp_path):
     return tmp_path
 
 
-def _declaration(*, entry_point='reduceRows', domain='values'):
-    return compute.kernel(Path(SOURCE_PATH), entry_point=entry_point, domain=domain, libraries=LIBRARIES)
+def _declaration(*, entry_point='reduceRows', domain='values', constants=None):
+    return compute.kernel(Path(SOURCE_PATH), entry_point=entry_point, domain=domain, libraries=LIBRARIES,
+                          constants=constants)
 
 
 @pytest.mark.parametrize('target', ['spirv', 'wgsl'])
@@ -180,11 +200,11 @@ def test_native_slang_kernel_launch_and_work_share_gpu_resources(project, engine
             compute.prepare_continuation(kernel, params)
 
 
-def _freeze_work_sources(project, data):
+def _freeze_work_sources(project, data, *, work_source=WORK_SOURCE, slang_source=RUNTIME_ENTRY):
     work = project / 'Assets/Scripts/Work.py'
     work.parent.mkdir(parents=True)
-    work.write_text(WORK_SOURCE, encoding='utf-8')
-    (project / SOURCE_PATH).write_text(RUNTIME_ENTRY, encoding='utf-8')
+    work.write_text(work_source, encoding='utf-8')
+    (project / SOURCE_PATH).write_text(slang_source, encoding='utf-8')
     for relative in (SOURCE_PATH, *LIBRARIES.values()):
         destination = data / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -298,3 +318,81 @@ def test_player_launches_the_prepared_slang_work_and_compiles_a_new_entry(projec
             finally:
                 set_runtime_asset_resolver(None)
                 set_runtime_asset_query(None)
+
+
+def test_native_slang_link_constants_report_the_extern_and_validate_declarations(project):
+    (project / SOURCE_PATH).write_text(TILED_REDUCTION, encoding='utf-8')
+    with pytest.raises(TypeError, match="'tile' requires a Python int"):
+        _declaration(constants={'tile': True})
+    with pytest.raises(ValueError, match="'tile' must fit a signed 32-bit int"):
+        _declaration(constants={'tile': 1 << 31})
+    params = (_gpu_buffer_descriptor((67,), np.float32), _gpu_buffer_descriptor((17,), np.float32))
+    with using_project_root(project), pytest.raises(compute.KernelCompilationError) as failure:
+        _declaration(constants={'other': 4})._compile_artifact(params, None, 'none', (), 'spirv')
+    assert any(row['path'].endswith(SOURCE_PATH) and row['line'] == 2 and "'tile'" in row['message']
+               for row in failure.value.diagnostics), failure.value.diagnostics
+
+
+def test_native_slang_link_constants_are_frozen_across_work_launches_and_player_cook(project, engine, monkeypatch):
+    data = project / 'build/Data'
+    script = _freeze_work_sources(project, data, work_source=TILED_WORK_SOURCE, slang_source=TILED_REDUCTION)
+    author = ModuleType('Scripts.Work')
+    exec(compile(TILED_WORK_SOURCE, str(script), 'exec'), vars(author))
+    options = {'tile': 4}
+    same_tile = _declaration(constants=options)
+    options['tile'] = 8
+
+    compile_program = _Infernux._compile_shader_program
+    calls = []
+
+    def record_compile(source, path, *args, **kwargs):
+        if path == SOURCE_PATH:
+            calls.append(kwargs['targets'][0])
+        return compile_program(source, path, *args, **kwargs)
+
+    monkeypatch.setattr(_Infernux, '_compile_shader_program', record_compile)
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    values = np.arange(67, dtype=np.float32) - 18
+    with using_project_root(project), ExitStack() as resources:
+        resources.callback(host._release_lease)
+        for declaration in (author.Run.narrow, author.Run.wide, same_tile):
+            resources.callback(declaration._release_engine_resources)
+        source = resources.enter_context(compute.buffer(shape=67, dtype=np.float32, device='gpu', data=values))
+        new_source = resources.enter_context(compute.buffer(shape=65, dtype=np.float32, device='gpu', data=-values[:65]))
+        narrow = resources.enter_context(compute.buffer(shape=17, dtype=np.float32, device='gpu'))
+        wide = resources.enter_context(compute.buffer(shape=9, dtype=np.float32, device='gpu'))
+        prepared = author.prepare_work(source, narrow, wide)
+        resources.callback(prepared.close)
+        assert prepared._native.dispatch_count == 2
+        narrow_code = author.Run.narrow._executable((source, narrow)).artifact
+        wide_code = author.Run.wide._executable((source, wide)).artifact
+        assert narrow_code.identity != wide_code.identity and narrow_code.tasks != wide_code.tasks
+        assert [code.task_metadata[0]['threads_per_group'] for code in (narrow_code, wide_code)] == [4, 8]
+        assert calls == ['spirv', 'spirv']
+
+        def launch_and_check(declaration, inputs, output, expected, width):
+            compute.launch(declaration, (inputs, output))
+            with output.get_data() as actual:
+                np.testing.assert_array_equal(actual.numpy(), np.add.reduceat(2 * expected, np.arange(0, len(expected), width)))
+
+        launch_and_check(author.Run.narrow, source, narrow, values, 4)
+        launch_and_check(author.Run.wide, source, wide, values, 8)
+        source.set_data(3 * values)
+        launch_and_check(author.Run.narrow, source, narrow, 3 * values, 4)
+        launch_and_check(same_tile, new_source, narrow, -values[:65], 4)
+        assert same_tile._executable((new_source, narrow)).artifact.identity == narrow_code.identity
+        assert calls == ['spirv', 'spirv']
+
+    cache = data / 'Library/Artifacts/Compute'
+    for player, target in (('Player/Windows', 'spirv'), ('Web/Player', 'wgsl')):
+        result = stage_compute_artifacts(project, (script,), data, target=player)
+        assert result.kernel_count == 2 and result.artifact_count == 5
+        rows = json.loads((cache / 'AotManifest.json').read_text(encoding='utf-8'))['artifacts']
+        tiles = {row['function']: _read_artifact(cache / row['artifact'])[1] for row in rows
+                 if row['function'].startswith('Scripts.Work.Run.')}
+        for name, width in (('narrow', 4), ('wide', 8)):
+            artifact = tiles[f'Scripts.Work.Run.{name}']
+            assert artifact.target == target and artifact.task_metadata[0]['threads_per_group'] == width
+        assert len({artifact.identity for artifact in tiles.values()}) == 2
+    assert calls == ['spirv', 'spirv', 'wgsl', 'wgsl']
