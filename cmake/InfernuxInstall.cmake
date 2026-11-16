@@ -189,8 +189,6 @@ install(
     PATTERN "*.so" EXCLUDE
     PATTERN "*.dylib" EXCLUDE
     PATTERN "*.meta" EXCLUDE
-    PATTERN "*.glsl" EXCLUDE
-    PATTERN "*.shadingmodel" EXCLUDE
     PATTERN "*.inxpkg" EXCLUDE
     PATTERN "_runtime_packs" EXCLUDE
     PATTERN "_runtime_modules" EXCLUDE

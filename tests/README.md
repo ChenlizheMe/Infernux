@@ -10,12 +10,10 @@ CMake presets from `.github/workflows/ci.yml`; do not mix a source checkout with
 an unrelated installed native module.
 
 ```sh
-python -m pytest tests/python/test_shader_declaration_discovery.py -q -ra
-python -m pytest tests/python tests/isolated --ignore=tests/python/test_shader_declaration_discovery.py -q -ra
+python -m pytest tests/python tests/isolated -q -ra
 ```
 
-Shader declaration discovery runs in its own process because it changes global
-builtin shader declarations. `tests/python` shares a native Editor/renderer;
+`tests/python` shares a native Editor/renderer.
 `tests/isolated` gives each lifetime or crash scenario its own native process.
 Both require the current native runtime. Missing native binaries are setup errors.
 

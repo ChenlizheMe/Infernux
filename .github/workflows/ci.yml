@@ -253,18 +253,6 @@ jobs:
           cmake --build --preset windows-msvc-install-wheel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run project shader declaration tests
-        id: shader-declarations
-        shell: pwsh
-        run: |
-          conda activate infernux
-          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
-          # Builtin-name overrides affect the entire project. Give these tests
-          # a fresh native project before other scenarios author missing references.
-          python -m pytest -o pythonpath= tests/python/test_shader_declaration_discovery.py -q --durations=10 --junitxml out/test-results/pytest-shader-declarations-windows.xml
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       - name: Run native Python tests
         id: native-python
         shell: pwsh
@@ -279,7 +267,6 @@ jobs:
           $parallelXml = "out\test-results\pytest-windows-parallel.xml"
           python -m pytest -n 2 --dist loadfile --max-worker-restart=0 -o pythonpath= `
             tests\python tests\isolated `
-            --ignore=tests\python\test_shader_declaration_discovery.py `
             --ignore=tests\python\test_engine_play_mode.py `
             --ignore=tests\python\test_ui_shader_dependency_runtime.py `
             --ignore=tests\python\test_model_refresh_subassets.py `
@@ -412,20 +399,12 @@ jobs:
           conda activate infernux
           cmake --build --preset linux-clang-install-wheel
 
-      - name: Run project shader declaration tests
-        id: shader-declarations
-        run: |
-          conda activate infernux
-          unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
-          # Builtin-name overrides require their own native project.
-          xvfb-run --auto-servernum python -m pytest -o pythonpath= tests/python/test_shader_declaration_discovery.py -q --durations=10 --junitxml out/test-results/pytest-shader-declarations-linux.xml
-
       - name: Run native Python tests
         id: native-python
         run: |
           conda activate infernux
           unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
-          xvfb-run --auto-servernum python -m pytest -o pythonpath= tests/python tests/isolated --ignore=tests/python/test_shader_declaration_discovery.py -q --durations=20 --junitxml out/test-results/pytest-linux.xml
+          xvfb-run --auto-servernum python -m pytest -o pythonpath= tests/python tests/isolated -q --durations=20 --junitxml out/test-results/pytest-linux.xml
 
       - name: Run Linux headless physics profile gate
         run: |

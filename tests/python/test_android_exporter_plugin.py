@@ -575,12 +575,12 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     bootstrap.write_text("def run_platform_player(): pass\n", encoding="utf-8")
     public_api = package / "__init__.py"
     public_api.write_text("__version__ = '0.4.1'\n", encoding="utf-8")
-    shader = package / "resources/shaders/standard.vert"
+    shader = package / "resources/shaders/standard.vert.py"
     shader.parent.mkdir(parents=True)
-    shader.write_text("void main() {}\n", encoding="utf-8")
-    shader_template = package / "resources/shaders/_templates/surface_main.glsl"
-    shader_template.parent.mkdir()
-    shader_template.write_text("void main() {}\n", encoding="utf-8")
+    shader.write_text("import infernux.shader as shader\n", encoding="utf-8")
+    shader_library = package / "resources/shaders/lib/surface.shaderlib.py"
+    shader_library.parent.mkdir()
+    shader_library.write_text("import infernux.shader as shader\n", encoding="utf-8")
     component_source = package / "components/_component_native.py"
     component_source.parent.mkdir()
     component_source.write_text("class ComponentNativeMixin: pass\n", encoding="utf-8")
@@ -615,8 +615,8 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     assert (destination / "__init__.py").read_text(encoding="utf-8") == public_api.read_text(encoding="utf-8")
     assert (destination / "engine/platform_player_bootstrap.py").is_file()
     assert Path(importlib.util.cache_from_source(str(destination / "engine/platform_player_bootstrap.py"))).is_file()
-    assert (destination / "resources/shaders/standard.vert").is_file()
-    assert (destination / "resources/shaders/_templates/surface_main.glsl").is_file()
+    for resource in (shader, shader_library):
+        assert (destination / resource.relative_to(package)).read_bytes() == resource.read_bytes()
     assert (destination / "components/_component_native.py").read_text(
         encoding="utf-8"
     ) == component_source.read_text(encoding="utf-8")

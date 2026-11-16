@@ -141,19 +141,6 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
     assert second._write_depth is None
     assert second._clear_color is None
 
-    from pathlib import Path
-
-    template = Path("python/infernux/resources/shaders/_templates/surface_main_normal.glsl").read_text(encoding="utf-8")
-    packed_template = Path("python/infernux/resources/shaders/_templates/default_gbuffer_evaluate.glsl").read_text(
-        encoding="utf-8"
-    )
-    deferred_lighting = Path("python/infernux/resources/shaders/deferred_lighting.frag").read_text(encoding="utf-8")
-    assert "s.alpha < material._alpha_clip_threshold) discard;" in template
-    assert "outNormal = vec4(normalWS * 0.5 + 0.5, 1.0);" in template
-    assert "gbuf1 = vec4(normalize(s.normalWS) * 0.5 + 0.5, s.smoothness);" in packed_template
-    assert "surfaceData.smoothness = normalData.a;" in deferred_lighting
-
-
 @pytest.mark.parametrize("pipeline_type", [DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline])
 def test_light_list_is_a_view_owned_read_only_buffer(pipeline_type):
     graph = RenderGraph(f"{pipeline_type.__name__} light list")

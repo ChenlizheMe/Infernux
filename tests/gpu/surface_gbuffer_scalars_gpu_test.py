@@ -8,25 +8,48 @@ from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeli
 from infernux.renderstack.pipeline_compiler import compile_pipeline_definition
 from infernux.renderstack.pipeline_dsl import Path as RenderPath, PipelineBuilder
 
-SURFACE='''#version 450
-ShaderInfo { Name "Tutorial Surface Scalar Contract" ShadingModel PBR CastShadows Off ReceiveShadows Off
- Properties { Float scalar0=0.375 Float scalar1=0.625 } }
-void surface(out SurfaceData s) { s=InitSurfaceData(); s.shadingParam0=material.scalar0; s.shadingParam1=material.scalar1; }
-'''
-CONSUMER='''#version 450
-ShaderInfo { Name "Tutorial Scalar GBuffer Consumer" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D albedoTex Texture2D materialTex Texture2D emissionTex }
- Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() {
- ivec2 p=ivec2(gl_FragCoord.xy);
- if(texelFetch(albedoTex,p,0).a<0.9) { outColor=vec4(0,0,0,1);return; }
- vec2 v=vec2(texelFetch(materialTex,p,0).a,texelFetch(emissionTex,p,0).a);
- if(all(equal(v,vec2(0.375,0.625)))) outColor=vec4(0,1,0,1);
- else if(all(equal(v,vec2(-2.25,4.5)))) outColor=vec4(1,0,0,1);
- else if(all(equal(v,vec2(0,0)))) outColor=vec4(0,0,1,1);
- else outColor=vec4(1,0,1,1);
-}
-'''
+SURFACE = """import infernux.shader as shader
+
+
+class ScalarSurface(shader.surface):
+    shader_id = "tests/gbuffer/scalar_surface"
+    cast_shadows = False
+    receive_shadows = False
+    scalar0 = shader.material.float(default=0.375)
+    scalar1 = shader.material.float(default=0.625)
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(
+            normal_ws=ctx.normal_ws, shading_param0=self.scalar0, shading_param1=self.scalar1,
+        )
+"""
+
+CONSUMER = """import infernux.shader as shader
+
+
+class ScalarConsumer(shader.fullscreen):
+    shader_id = "tests/gbuffer/scalar_consumer"
+    hidden = True
+    albedo_tex = shader.input("gbuffer_albedo", shader.Color2D)
+    material_tex = shader.input("gbuffer_material", shader.Color2D)
+    emission_tex = shader.input("gbuffer_emission", shader.Color2D)
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        pixel = shader.ivec2(ctx.position.xy)
+        if shader.load(self.albedo_tex, pixel, 0).a < 0.9:
+            return shader.vec4(0, 0, 0, 1)
+        scalar0 = shader.load(self.material_tex, pixel, 0).a
+        scalar1 = shader.load(self.emission_tex, pixel, 0).a
+        if scalar0 == 0.375 and scalar1 == 0.625:
+            return shader.vec4(0, 1, 0, 1)
+        if scalar0 == -2.25 and scalar1 == 4.5:
+            return shader.vec4(1, 0, 0, 1)
+        if scalar0 == 0.0 and scalar1 == 0.0:
+            return shader.vec4(0, 0, 1, 1)
+        return shader.vec4(1, 0, 1, 1)
+"""
+
+
 class ScalarPipeline(DefaultDeferredPipeline):
     name='Tutorial Canonical GBuffer Scalars'
     def __init__(self, route):
@@ -50,8 +73,8 @@ class ScalarPipeline(DefaultDeferredPipeline):
             emission = g.get_texture(lighting._input_bindings['emission_tex'])
         target = g.get_texture('color')
         p=g.add_pass('CheckScalarStorage').write_color(target)
-        for key,texture in [('albedoTex',albedo),('materialTex',material),('emissionTex',emission)]:p.set_texture(key,texture)
-        p.fullscreen_quad('Tutorial Scalar GBuffer Consumer')
+        for key,texture in [('albedo_tex', albedo), ('material_tex', material), ('emission_tex', emission)]:p.set_texture(key,texture)
+        p.fullscreen_quad('tests/gbuffer/scalar_consumer')
         g.set_output(target)
 
 parser = argparse.ArgumentParser()
@@ -60,7 +83,7 @@ args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='infernux-gbuffer-scalar-contract-') as folder:
     project=Path(folder)
     for name in ('Assets','Packages','ProjectSettings'):(project/name).mkdir()
-    for name,text in [('Surface.frag',SURFACE),('Consumer.frag',CONSUMER)]: (project/'Assets'/name).write_text(text,encoding='ascii')
+    for name,text in [('scalar_surface.frag.py',SURFACE),('scalar_consumer.frag.py',CONSUMER)]: (project/'Assets'/name).write_text(text,encoding='ascii')
     mesh=project/'Assets/Quad.obj'
     mesh.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvn 0 0 -1\nf 1//1 3//1 2//1\nf 1//1 4//1 3//1\n',encoding='ascii')
     frontend=inx.Engine();native=frontend.get_native_engine();console=ConsolePanel();pipeline=ScalarPipeline(args.path);pipeline.builds=0;pipeline.shadow_resolution=256
@@ -69,14 +92,14 @@ with tempfile.TemporaryDirectory(prefix='infernux-gbuffer-scalar-contract-') as 
         frontend.init_renderer(160,120,str(project));frontend.resize_game_render_target(160,120)
         native.set_scene_view_visible(False);native.set_editor_fps_cap(240);native.set_editor_idle_fps(0)
         database=frontend.get_asset_database()
-        for path in (mesh,project/'Assets/Surface.frag',project/'Assets/Consumer.frag'):
+        for path in (mesh,project/'Assets/scalar_surface.frag.py',project/'Assets/scalar_consumer.frag.py'):
             imported=AssetManager.import_asset(str(path),database=database);assert imported,imported.error
             if path==mesh:mesh_guid=imported.guid
         scene=SceneManager.instance().get_active_scene()
         for obj in scene.get_root_objects():scene.destroy_game_object(obj)
         camera=scene.create_game_object('Scalar Camera');camera.transform.position=Vector3(0,0,-5);camera.add_component('Camera')
         obj=scene.create_game_object('Scalar Quad');renderer=obj.add_component('MeshRenderer');renderer.set_mesh_asset_guid(mesh_guid)
-        material=InxMaterial.create_default_lit();material.vert_shader_name='Standard';material.frag_shader_name='Tutorial Surface Scalar Contract';renderer.set_material(0,material)
+        material=InxMaterial.create_default_lit();material.vert_shader_name='infernux/standard';material.frag_shader_name='tests/gbuffer/scalar_surface';renderer.set_material(0,material)
         frontend.set_render_pipeline(pipeline);native.set_game_camera_enabled(True)
         frame=0;changed=0;phase=0;ticket=None;initial=None
         def after_draw():
