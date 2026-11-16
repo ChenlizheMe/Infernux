@@ -764,6 +764,7 @@ class PhysicsWorld
     friend class Ragdoll;
     friend class Joint;
     friend class PhysicsECSStore;
+    friend class Rigidbody;
     friend class HingeJoint;
     friend class SwingTwistJoint;
     friend class SixDOFJoint;
@@ -862,6 +863,8 @@ class PhysicsWorld
     [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &domain,
                                                          const JPH::GPU::QueryInput &request) const;
     [[nodiscard]] RaycastHit DecodeQueryHit(const JoltGpuQueryResult &result, const JPH::GPU::QueryHit &record) const;
+    [[nodiscard]] bool CanQueueRigidbodyCommand(uint32_t bodyId, const Rigidbody &) const;
+    void StageUpdatedGpuActor(const PhysicsActorData &actor, PreparedGpuActor prepared);
     void RefreshGpuActor(PhysicsDomain &domain, uint32_t bodyId,
                          const std::function<void(PreparedGpuActor &)> &edit = {});
     [[nodiscard]] std::vector<std::pair<Transform *, Rigidbody *>>

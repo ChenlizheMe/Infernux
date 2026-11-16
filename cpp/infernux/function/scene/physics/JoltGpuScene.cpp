@@ -2096,6 +2096,15 @@ PhysicsActorHandle JoltGpuScene::FindActor(uint32_t id) const noexcept
     return found == m_impl->byId.end() || FindBody(id).bodyId == InvalidBodyId ? PhysicsActorHandle{}
                                                                                : m_impl->slots[found->second].actor;
 }
+bool JoltGpuScene::HasStagedRigidbody(uint32_t id, PhysicsECSStore::RigidbodyHandle rigidbody) const noexcept
+{
+    const auto found = m_impl->byId.find(id);
+    if (found == m_impl->byId.end() || !rigidbody.IsValid())
+        return false;
+    const auto &slot = m_impl->slots[found->second];
+    return !slot.retiring && !slot.partition->closed && slot.authored &&
+           slot.authored->acceptedMotionType != JPH::GPU::MotionStatic && slot.authored->rigidbody == rigidbody;
+}
 void JoltGpuScene::VisitActorHandles(const RuntimeWorld &world,
                                      const std::function<void(PhysicsActorHandle)> &visitor) const
 {

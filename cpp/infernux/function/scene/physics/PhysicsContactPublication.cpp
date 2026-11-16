@@ -204,9 +204,11 @@ void State::Publish(ContactStreamIdentity identity, const Policy &policy, uint32
                             first.feature};
             if (policy.impulses && !manifold.trigger)
                 for (uint32_t i = 0; i < manifold.pointCount; ++i) {
+                    const auto &point = frame.points[offset + i];
+                    if (!point.hasSolvedImpulse)
+                        continue;
                     ContactImpulse impulse;
                     Identity(impulse, pair, identity, substep);
-                    const auto &point = frame.points[offset + i];
                     impulse.feature = point.feature;
                     impulse.pointIndex = i;
                     impulse.contactPoint = point.position;

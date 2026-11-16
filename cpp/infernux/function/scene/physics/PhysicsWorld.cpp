@@ -1469,6 +1469,17 @@ void PhysicsWorld::DestroyBody(uint32_t id)
         domain.rendering.bindings.RetireBody(id);
     domain.requestedMotion.erase(id);
 }
+bool PhysicsWorld::CanQueueRigidbodyCommand(uint32_t id, const Rigidbody &body) const
+{
+    RequireOwnerThread();
+    return m_gpuScene && m_gpuScene->HasStagedRigidbody(id, body.GetECSHandle());
+}
+void PhysicsWorld::StageUpdatedGpuActor(const PhysicsActorData &actor, PreparedGpuActor prepared)
+{
+    m_gpuScene->StageActor(actor.bodyId, std::move(prepared));
+    if (auto *body = actor.rigidbody)
+        body->FlushPendingBodyCommands();
+}
 void PhysicsWorld::RefreshGpuActor(PhysicsDomain &domain, uint32_t id,
                                    const std::function<void(PreparedGpuActor &)> &edit)
 {
@@ -1480,7 +1491,7 @@ void PhysicsWorld::RefreshGpuActor(PhysicsDomain &domain, uint32_t id,
         return;
     if (edit)
         edit(*prepared);
-    m_gpuScene->StageActor(id, std::move(*prepared));
+    StageUpdatedGpuActor(actor, std::move(*prepared));
 }
 void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
 {
@@ -1505,7 +1516,7 @@ void PhysicsWorld::UpdateBodyShape(PhysicsActorData &actor, const Collider *excl
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     auto prepared = PrepareJoltGpuActor(author, m_gpuScene->FindBody(actor.bodyId).slot, 0);
     if (prepared)
-        m_gpuScene->StageActor(actor.bodyId, std::move(*prepared));
+        StageUpdatedGpuActor(actor, std::move(*prepared));
 }
 void PhysicsWorld::SetBodyPosition(uint32_t id, const glm::vec3 &position, const glm::quat &rotation,
                                    bool cancelKinematicMove)
@@ -1563,7 +1574,7 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<uint32_t> &bodies)
         m_gpuScene->SetResident(id, true);
     for (const auto id : bodies)
         if (auto *body = FindRigidbodyByBodyId(id))
-            body->FlushPendingForceCommands();
+            body->FlushPendingBodyCommands();
 }
 void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t id, bool preserveVelocity)
 {

@@ -312,9 +312,8 @@ class Rigidbody : public Component
     /// configuration is captured once by PrepareJoltGpuActor, never replayed.
     void CaptureAuthorPoseCache();
 
-    /// @brief Submit forces queued before deferred body creation.
-    ///        Called after the body has entered the Jolt broadphase.
-    void FlushPendingForceCommands();
+    /// Submit commands waiting for this Rigidbody's model or broadphase add.
+    void FlushPendingBodyCommands();
 
     // ====================================================================
     // Type info
@@ -336,23 +335,30 @@ class Rigidbody : public Component
 
   private:
     friend class Ragdoll;
-    enum class ForceCommandKind : uint8_t
+    enum class BodyCommandKind : uint8_t
     {
         Force,
         Torque,
         ForceAtPosition,
+        SetLinearVelocity,
+        SetAngularVelocity,
     };
 
-    struct ForceCommand
+    struct BodyCommand
     {
-        ForceCommandKind kind = ForceCommandKind::Force;
-        glm::vec3 value{0.0f};
+        BodyCommandKind kind;
+        glm::vec3 value;
         glm::vec3 position{0.0f};
         ForceMode mode = ForceMode::Force;
+
+        [[nodiscard]] bool RequiresResidency() const
+        {
+            return kind <= BodyCommandKind::ForceAtPosition;
+        }
     };
 
-    void SubmitForceCommand(ForceCommand command);
-    void ApplyForceCommand(class PhysicsWorld &world, uint32_t bodyId, const ForceCommand &command);
+    void SubmitBodyCommand(BodyCommand command);
+    void ApplyBodyCommand(class PhysicsWorld &world, uint32_t bodyId, const BodyCommand &command);
 
     /// Notify all sibling Colliders to rebuild their Jolt body type.
     void NotifyCollidersBodyTypeChanged();
@@ -402,7 +408,7 @@ class Rigidbody : public Component
     uint64_t m_resultEpoch = 0;
     std::optional<RigidbodyMassProperties> PrepareMass(float mass) const;
     std::optional<RigidbodyMassProperties> m_massProperties;
-    std::vector<ForceCommand> m_pendingForceCommands;
+    std::vector<BodyCommand> m_pendingBodyCommands;
 };
 
 } // namespace infernux

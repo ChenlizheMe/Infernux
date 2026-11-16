@@ -487,7 +487,7 @@ void Rigidbody::SetVelocity(const glm::vec3 &vel)
         throw std::invalid_argument("velocity must contain finite values");
     const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF) {
-        PhysicsWorld::Instance().SetBodyLinearVelocity(bodyId, vel);
+        SubmitBodyCommand({BodyCommandKind::SetLinearVelocity, vel});
     } else {
         auto &data = DataMut();
         data.linearVelocity = vel;
@@ -508,7 +508,7 @@ void Rigidbody::SetAngularVelocity(const glm::vec3 &vel)
         throw std::invalid_argument("angular velocity must contain finite values");
     const uint32_t bodyId = GetBodyId();
     if (bodyId != 0xFFFFFFFF) {
-        PhysicsWorld::Instance().SetBodyAngularVelocity(bodyId, vel);
+        SubmitBodyCommand({BodyCommandKind::SetAngularVelocity, vel});
     } else {
         auto &data = DataMut();
         data.angularVelocity = vel;
@@ -526,7 +526,7 @@ void Rigidbody::AddForce(const glm::vec3 &force, ForceMode mode)
     if (!IsFinite(force))
         throw std::invalid_argument("force must contain finite values");
     ValidateForceMode(mode);
-    SubmitForceCommand(ForceCommand{ForceCommandKind::Force, force, glm::vec3(0.0f), mode});
+    SubmitBodyCommand({BodyCommandKind::Force, force, glm::vec3(0.0f), mode});
 }
 
 void Rigidbody::AddTorque(const glm::vec3 &torque, ForceMode mode)
@@ -534,7 +534,7 @@ void Rigidbody::AddTorque(const glm::vec3 &torque, ForceMode mode)
     if (!IsFinite(torque))
         throw std::invalid_argument("torque must contain finite values");
     ValidateForceMode(mode);
-    SubmitForceCommand(ForceCommand{ForceCommandKind::Torque, torque, glm::vec3(0.0f), mode});
+    SubmitBodyCommand({BodyCommandKind::Torque, torque, glm::vec3(0.0f), mode});
 }
 
 // ============================================================================
@@ -546,42 +546,57 @@ void Rigidbody::AddForceAtPosition(const glm::vec3 &force, const glm::vec3 &posi
     if (!IsFinite(force) || !IsFinite(position))
         throw std::invalid_argument("force and position must contain finite values");
     ValidateForceMode(mode);
-    SubmitForceCommand(ForceCommand{ForceCommandKind::ForceAtPosition, force, position, mode});
+    SubmitBodyCommand({BodyCommandKind::ForceAtPosition, force, position, mode});
 }
 
-void Rigidbody::SubmitForceCommand(ForceCommand command)
+void Rigidbody::SubmitBodyCommand(BodyCommand command)
 {
-    if (command.value == glm::vec3(0.0f))
+    if (command.RequiresResidency() && command.value == glm::vec3(0.0f))
         return;
-    const uint32_t bodyId = GetParticipatingBodyId();
+    const uint32_t bodyId = command.RequiresResidency() ? GetParticipatingBodyId() : GetBodyId();
     auto &world = PhysicsWorld::Instance();
-    if (bodyId == 0xFFFFFFFF) {
-        m_pendingForceCommands.push_back(std::move(command));
-        return;
+    if (bodyId != UINT32_MAX && world.CanQueueRigidbodyCommand(bodyId, *this)) {
+        FlushPendingBodyCommands();
+        if (m_pendingBodyCommands.empty()) {
+            ApplyBodyCommand(world, bodyId, command);
+            return;
+        }
     }
-    FlushPendingForceCommands();
-    ApplyForceCommand(world, bodyId, command);
+    m_pendingBodyCommands.push_back(std::move(command));
 }
 
-void Rigidbody::ApplyForceCommand(PhysicsWorld &world, uint32_t bodyId, const ForceCommand &command)
+void Rigidbody::ApplyBodyCommand(PhysicsWorld &world, uint32_t bodyId, const BodyCommand &command)
 {
-    world.QueueBodyForce(bodyId, static_cast<int>(command.kind), static_cast<int>(command.mode), command.value,
-                         command.position);
+    if (command.kind == BodyCommandKind::SetLinearVelocity)
+        world.SetBodyLinearVelocity(bodyId, command.value);
+    else if (command.kind == BodyCommandKind::SetAngularVelocity)
+        world.SetBodyAngularVelocity(bodyId, command.value);
+    else
+        world.QueueBodyForce(bodyId, static_cast<int>(command.kind), static_cast<int>(command.mode), command.value,
+                             command.position);
 }
 
-void Rigidbody::FlushPendingForceCommands()
+void Rigidbody::FlushPendingBodyCommands()
 {
-    if (m_pendingForceCommands.empty())
+    if (m_pendingBodyCommands.empty())
         return;
-    const uint32_t bodyId = GetParticipatingBodyId();
-    if (bodyId == 0xFFFFFFFF)
+    const uint32_t bodyId = GetBodyId();
+    if (bodyId == UINT32_MAX)
         return;
-
     auto &world = PhysicsWorld::Instance();
-    auto commands = std::move(m_pendingForceCommands);
-    m_pendingForceCommands.clear();
-    for (const auto &command : commands)
-        ApplyForceCommand(world, bodyId, command);
+    if (!world.CanQueueRigidbodyCommand(bodyId, *this))
+        return;
+
+    const bool resident = GetParticipatingBodyId() == bodyId;
+    auto next = m_pendingBodyCommands.begin();
+    try {
+        for (; next != m_pendingBodyCommands.end() && (resident || !next->RequiresResidency()); ++next)
+            ApplyBodyCommand(world, bodyId, *next);
+    } catch (...) {
+        m_pendingBodyCommands.erase(m_pendingBodyCommands.begin(), next);
+        throw;
+    }
+    m_pendingBodyCommands.erase(m_pendingBodyCommands.begin(), next);
 }
 
 // ============================================================================
@@ -697,7 +712,7 @@ void Rigidbody::ResetMotionStates(const std::vector<Rigidbody *> &bodies, std::v
         auto &data = bodies[i]->DataMut();
         const auto &state = states[i];
         ++bodies[i]->m_resultEpoch;
-        bodies[i]->m_pendingForceCommands.clear();
+        bodies[i]->m_pendingBodyCommands.clear();
         data.linearVelocity = state.linearVelocity;
         data.angularVelocity = state.angularVelocity;
         data.hasLinearVelocity = data.hasAngularVelocity = false;

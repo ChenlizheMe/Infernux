@@ -57,6 +57,7 @@ class PhysicsContactPublication final
         // impulse is the one applied to B.
         glm::vec3 position{0.0f}, normal{0.0f}, relativeVelocity{0.0f}, impulse{0.0f};
         uint32_t feature = 0;
+        bool hasSolvedImpulse = true;
     };
     struct Manifold
     {

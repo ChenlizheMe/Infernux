@@ -52,6 +52,7 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
     }
 
     const auto *body = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
+    prepared.bodyTarget = PhysicsTargetReference(body);
     prepared.publication = PhysicsActorPublication::Capture(actor, members, body);
     const auto *transform = actor.owner->GetTransform();
     const auto position = transform->GetPosition();
@@ -125,6 +126,7 @@ JoltCpuScene::BodyRecord JoltCpuScene::CaptureBodyRecord(const PreparedCpuActor 
         record.memberCompound = static_cast<const JPH::CompoundShape *>(root);
     }
     record.surfaces = actor.surfaces;
+    record.bodyTarget = actor.bodyTarget;
     record.mass = actor.mass;
     record.collisionDetectionMode = actor.collisionDetectionMode;
     record.authoredDynamic = actor.authoredDynamic;

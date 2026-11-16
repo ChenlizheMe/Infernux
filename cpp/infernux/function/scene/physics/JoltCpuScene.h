@@ -105,12 +105,14 @@ class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFi
     }
 
   private:
+    friend class JoltCpuContactPublication;
     struct BodyRecord
     {
         JPH::BodyID native;
         JPH::RefConst<JPH::Shape> shape;
         const JPH::CompoundShape *memberCompound = nullptr;
         std::vector<Surface> surfaces;
+        PhysicsTargetReference bodyTarget;
         std::optional<PreparedBodyMass> mass;
         int collisionDetectionMode = 0;
         bool authoredDynamic = false;

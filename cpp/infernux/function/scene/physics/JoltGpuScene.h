@@ -217,6 +217,8 @@ class JoltGpuScene final
     [[nodiscard]] const PublishedJoint &GetAuthoredJoint(uint64_t id) const;
     [[nodiscard]] BodyAllocation FindBody(uint32_t bodyId) const noexcept;
     [[nodiscard]] PhysicsActorHandle FindActor(uint32_t bodyId) const noexcept;
+    /// Matches the generation in the ordered author FIFO, including an unaccepted model.
+    [[nodiscard]] bool HasStagedRigidbody(uint32_t bodyId, PhysicsECSStore::RigidbodyHandle) const noexcept;
     /// Synchronous author metadata at writer admission, including reserved
     /// actors whose first model is still pending. The visitor must not mutate
     /// membership, drive this scene or retain references into its slot table.

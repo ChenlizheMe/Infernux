@@ -32,6 +32,7 @@ struct PreparedCpuActor
     int collisionDetectionMode = 0;
     bool frozen = false;
     bool authoredDynamic = false;
+    PhysicsTargetReference bodyTarget;
     PhysicsActorPublication publication;
 };
 
