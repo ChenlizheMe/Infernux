@@ -51,6 +51,7 @@ enum Entry : uint8_t
     PrescribedCapture,
     PrescribedWake,
     Initialize,
+    NewBoundsWake,
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> Names{"sleep_clear_votes",
@@ -68,7 +69,8 @@ constexpr std::array<std::string_view, EntryCount> Names{"sleep_clear_votes",
                                                          "query_sleep_status",
                                                          "sleep_capture_prescribed_bounds",
                                                          "sleep_wake_prescribed_bounds",
-                                                         "sleep_initialize_history"};
+                                                         "sleep_initialize_history",
+                                                         "sleep_wake_new_bounds"};
 constexpr uint32_t Bit(Port p)
 {
     return 1u << p;
@@ -89,7 +91,8 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | R | Bit(Snapshot) | Bit(Requests) | Bit(Results),
                                                  P | W | B | S | R | Bit(States) | Bit(Bounds) | Bit(Requests),
                                                  P | W | B | S | R | Bit(States) | Bit(Bounds) | Bit(Requests),
-                                                 P | W | B | S | Bit(States)};
+                                                 P | W | B | S | Bit(States),
+                                                 P | W | B | S | R | Bit(States)};
 struct Layout
 {
     std::string_view name;
@@ -338,9 +341,9 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
                     (port == Roots && op.entry == Clear);
                 const bool writer =
                     port == Roots ||
-                    (port == Sleeps &&
-                     (op.entry == Wake || op.entry == ForceWake || op.entry == Update || op.entry == Commit ||
-                      op.entry == BoundsWake || op.entry == PrescribedWake || op.entry == Initialize)) ||
+                    (port == Sleeps && (op.entry == Wake || op.entry == ForceWake || op.entry == Update ||
+                                        op.entry == Commit || op.entry == BoundsWake || op.entry == PrescribedWake ||
+                                        op.entry == Initialize || op.entry == NewBoundsWake)) ||
                     (port == Forces && op.entry == Update) || (port == States && op.entry == Commit) ||
                     (port == Joints && op.entry == RetireHinge);
                 dispatch.bufferAccesses.push_back(complete ? rhi::ComputeBufferAccess::Write
@@ -628,10 +631,9 @@ JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, cons
     p.operation.y = (old ? 1u : 0u) | (source == UINT32_MAX ? 0u : 2u);
     if (requirePoseChange)
         p.operation.y |= 4u;
-    // New-only insertion never reads the old-bound operand. Bind the already
-    // initialized state allocation; no per-insertion dummy allocation/upload.
-    e->buffers[Bounds] = old ? std::move(old) : s.Get(Resource::BodyStates);
-    e->Add(BoundsWake, p.selected.y, p.selected.z, p);
+    const auto entry = old ? BoundsWake : NewBoundsWake;
+    e->buffers[Bounds] = std::move(old);
+    e->Add(entry, p.selected.y, p.selected.z, p);
     e->completed = [done = std::move(done)](auto &) { done(); };
     return e->Next();
 }
