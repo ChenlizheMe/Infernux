@@ -17,6 +17,33 @@ namespace infernux
 {
 namespace
 {
+// A compiled graph can retain an entry after its cache slot is evicted.
+// Alias the existing program pointer so that entry copies own both objects.
+struct FullscreenPipelineOwner
+{
+    rhi::Device &device;
+    std::shared_ptr<rhi::DeviceLifetime> lifetime;
+    std::shared_ptr<DeviceShaderProgram> program;
+    rhi::GraphicsPipelineHandle pipeline;
+
+    FullscreenPipelineOwner(rhi::Device &device, std::shared_ptr<DeviceShaderProgram> program,
+                            rhi::GraphicsPipelineHandle pipeline)
+        : device(device), lifetime(device.GetLifetime()), program(std::move(program)), pipeline(pipeline)
+    {
+    }
+
+    ~FullscreenPipelineOwner()
+    {
+        if (lifetime) {
+            std::shared_lock lock(lifetime->gate);
+            if (lifetime->alive.load(std::memory_order_acquire))
+                device.Release(pipeline);
+        } else {
+            device.Release(pipeline);
+        }
+    }
+};
+
 void StoreParameter(char *destination, ShaderScalarKind scalar, double value)
 {
     switch (scalar) {
@@ -128,9 +155,6 @@ struct FullscreenPipelineCache::Impl
 
     void DestroyPipeline(PipelineEntry &entry)
     {
-        if (device) {
-            device->Release(entry.rhi.pipeline);
-        }
         entry = {};
     }
 
@@ -180,6 +204,8 @@ struct FullscreenPipelineCache::Impl
         entry.rhi.pipeline = device->CreateGraphicsPipeline(desc);
         if (!entry.rhi.pipeline.IsValid())
             throw std::runtime_error("Fullscreen pipeline creation failed: " + key.shaderName);
+        auto owner = std::make_shared<FullscreenPipelineOwner>(*device, entry.rhi.program, entry.rhi.pipeline);
+        entry.rhi.program = std::shared_ptr<DeviceShaderProgram>(owner, owner->program.get());
         return entry;
     }
 };

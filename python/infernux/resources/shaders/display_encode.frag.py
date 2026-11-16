@@ -17,7 +17,8 @@ class DisplayEncode(shader.fullscreen):
 
     def main(self, fragment: shader.fragment_input) -> shader.vec4:
         view = shader.view()
-        source = shader.load(self.source_tex, shader.ivec2(fragment.position.xy), 0)
+        source_pixel = shader.ivec2(fragment.uv * shader.vec2(shader.dimensions(self.source_tex, 0)))
+        source = shader.load(self.source_tex, source_pixel, 0)
         if view.stop_nans and (shader.any(shader.isnan(source)) or shader.any(shader.isinf(source))):
             source = shader.vec4(0.0, 0.0, 0.0, 1.0)
         encoded = linear_to_srgb(shader.clamp(source.rgb, 0.0, 1.0))
