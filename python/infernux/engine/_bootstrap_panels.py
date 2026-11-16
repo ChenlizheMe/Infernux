@@ -583,7 +583,9 @@ class BootstrapPanelsMixin:
             if bootstrap is None:
                 return
             native = bootstrap.engine.get_native_engine()
-            if event.new_state is PlayModeState.ENTERING:
+            if event.new_state in (PlayModeState.ENTERING, PlayModeState.RESTORING):
+                if play_handoff[0]:
+                    return
                 play_handoff[0] = True
                 scene = bootstrap.scene_view
                 scene._interrupt_gizmo_drag(commit=True)

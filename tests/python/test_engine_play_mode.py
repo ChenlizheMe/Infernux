@@ -445,7 +445,8 @@ class TestPlayModeManager:
         assert files.current_scene_path is None
         assert (document.revision, document.saved_revision, document.state) == authored_state
         assert files.is_dirty is True
-        assert notifications == [(PlayModeState.PLAYING, PlayModeState.EDIT)]
+        assert notifications == [(PlayModeState.PLAYING, PlayModeState.RESTORING),
+                                 (PlayModeState.RESTORING, PlayModeState.EDIT)]
 
     def test_deleted_script_becomes_missing_and_recovers_with_identity(self, tmp_path, monkeypatch):
         script_guid = "1" * 32

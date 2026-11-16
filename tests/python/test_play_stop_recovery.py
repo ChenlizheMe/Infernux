@@ -17,6 +17,14 @@ from infernux.lib import SceneManager, _Infernux
 from infernux.renderstack.render_effect import RenderEffect
 
 
+def finish_play_preparation(host, runner):
+    deadline = time.monotonic() + 10.0
+    while runner.is_busy:
+        assert time.monotonic() < deadline, "Play preparation did not complete"
+        runner.tick()
+        host.tick(0.0)
+
+
 @pytest.fixture
 def playing_author(engine, scene, tmp_path, monkeypatch, play_host):
     from infernux.components import script_loader
@@ -55,7 +63,7 @@ def playing_author(engine, scene, tmp_path, monkeypatch, play_host):
     native = SceneManager.instance()
     try:
         assert manager.enter_play_mode()
-        runner.tick()
+        finish_play_preparation(play_host, runner)
         assert manager.state is PlayModeState.PLAYING and native.is_playing()
         identities = tuple(native._runtime_world_ids)
         assert len(identities) == 1
@@ -194,7 +202,7 @@ def test_stop_preserves_selection_across_loaded_scenes(selection_author):
     peer_id = peer.create_game_object('AuthorDoor').id
     state.files.register_loaded_scene(peer, '', dirty=True)
     assert state.manager.enter_play_mode()
-    state.runner.tick()
+    finish_play_preparation(state.host, state.runner)
     selected_ids = [peer_id, state.object_id, state.second_id]
     state.selection.replace_scene_objects(selected_ids, owner_id='hierarchy',
         primary_object_id=peer_id, anchor_object_id=state.second_id, record_history=False)
@@ -248,6 +256,34 @@ def test_stop_keeps_authoring_locked_until_restore_finishes(playing_author, paus
     assert state.scene.find_by_id(state.object_id) is state.author_object
     assert state.scene.find_by_id(state.object_id).name == "AuthorDoor"
     assert not Material._suppress_auto_save and not RenderEffect._suppress_auto_save
+
+
+@pytest.mark.parametrize("paused", [False, True])
+def test_stop_notifies_presentation_before_retiring_runtime_world(playing_author, paused):
+    state = playing_author
+    if paused:
+        assert state.manager.pause()
+    observed = []
+
+    def observe(event):
+        observed.append((event.old_state, event.new_state))
+        if event.new_state is PlayModeState.RESTORING:
+            assert state.manager.state is PlayModeState.RESTORING
+            assert state.runtime_world_id in state.native._runtime_world_ids
+            assert state.runtime_scene.find_by_id(state.runtime_object_id) is not None
+            assert Material._suppress_auto_save and RenderEffect._suppress_auto_save
+        elif event.new_state is PlayModeState.EDIT:
+            assert not state.native._runtime_world_ids
+            assert state.scene.find_by_id(state.object_id) is state.author_object
+
+    state.manager.add_state_change_listener(observe)
+    initial = state.manager.state
+    assert state.manager.exit_play_mode()
+    assert observed == [(initial, PlayModeState.RESTORING)]
+    assert not state.native.is_playing()
+    state.runner.tick()
+    assert observed == [(initial, PlayModeState.RESTORING),
+                        (PlayModeState.RESTORING, PlayModeState.EDIT)]
 
 
 @pytest.mark.parametrize("failure", ["rejected", "raised", "notification"])
@@ -339,7 +375,7 @@ def test_editor_scene_replacement_cannot_retire_play_document(playing_author, pa
         assert (document.revision, document.saved_revision) == revisions
         assert state.path.read_bytes() == state.original_bytes
         assert state.manager.enter_play_mode()
-        state.runner.tick()
+        finish_play_preparation(state.host, state.runner)
         assert state.manager.is_playing
 
 
@@ -352,7 +388,7 @@ def test_pending_play_request_locks_editor_scene_replacement(playing_author):
     assert not state.files.open_scene(str(state.path))
     state.files.new_scene()
     assert not state.files.is_loading
-    state.runner.tick()
+    finish_play_preparation(state.host, state.runner)
     assert state.manager.is_playing
     assert state.manager.exit_play_mode()
     state.runner.tick()
@@ -375,7 +411,7 @@ def test_pending_editor_scene_load_blocks_play_snapshot(playing_author):
         time.sleep(0.005)
     assert not state.files.is_loading
     assert state.manager.enter_play_mode()
-    state.runner.tick()
+    finish_play_preparation(state.host, state.runner)
     assert state.manager.is_playing
     assert state.manager.exit_play_mode()
     state.runner.tick()

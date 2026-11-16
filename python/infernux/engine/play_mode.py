@@ -969,6 +969,18 @@ class PlayModeManager(PlayModeSerializationMixin):
             )
             return False
 
+        # Freeze displayed images before retiring their runtime World. The
+        # presentation listeners retain pixels until authored outputs are ready.
+        old_state = self._state
+        self._state = PlayModeState.RESTORING
+        self._pending_step_requests = 0
+        self._step_completion = None
+        from infernux.core.material import Material
+        from infernux.renderstack.render_effect import RenderEffect
+        Material._suppress_auto_save = True
+        RenderEffect._suppress_auto_save = True
+        self._notify_state_change(old_state, PlayModeState.RESTORING)
+
         # ── Immediate actions (same frame as button click) ───────────
         # 1. Stop C++ gameplay loop immediately so no further Update /
         #    FixedUpdate / LateUpdate runs on the play-mode scene.
@@ -976,7 +988,6 @@ class PlayModeManager(PlayModeSerializationMixin):
         #    click and the deferred restore, eliminating a class of bugs
         #    where user scripts modify state after the user expected
         #    simulation to end.
-        old_state = self._state
         scene_manager = self._get_scene_manager()
         if scene_manager and old_state in (
             PlayModeState.PLAYING, PlayModeState.PAUSED, PlayModeState.RECOVERY_REQUIRED,
@@ -989,16 +1000,6 @@ class PlayModeManager(PlayModeSerializationMixin):
         Input.set_game_focused(False)
         Input.set_cursor_locked(False)
         _NativeInputManager.instance().set_editor_cursor_capture_allowed(False)
-
-        # Keep saves disabled until runtime retirement and author-view rebinding
-        # finish at the deferred editor boundary.
-        self._state = PlayModeState.RESTORING
-        self._pending_step_requests = 0
-        self._step_completion = None
-        from infernux.core.material import Material
-        from infernux.renderstack.render_effect import RenderEffect
-        Material._suppress_auto_save = True
-        RenderEffect._suppress_auto_save = True
 
         # Discard runtime scene loads queued during the last play frame.
         self._cancel_runtime_scene_loads()
@@ -1028,7 +1029,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             # A second dirty-baseline write would discard that revision data.
             notify_started = time.perf_counter()
             self._state = PlayModeState.EDIT
-            self._notify_state_change(old_state, PlayModeState.EDIT)
+            self._notify_state_change(PlayModeState.RESTORING, PlayModeState.EDIT)
             Material._suppress_auto_save = False
             RenderEffect._suppress_auto_save = False
             notify_ms = (time.perf_counter() - notify_started) * 1000.0
