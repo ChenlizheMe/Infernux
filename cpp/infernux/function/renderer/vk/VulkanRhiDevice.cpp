@@ -2464,6 +2464,62 @@ void VulkanRhiDevice::DestroyOwnedResources() noexcept
     SaveAndDestroyPipelineCache();
 }
 
+void VulkanRhiDevice::PrepareRasterPass(const rhi::RasterPassDescription &description, VulkanRasterPass &result) const
+{
+    if (description.colorCount > description.colors.size())
+        throw std::invalid_argument("Raster pass exceeds the color attachment limit");
+    result = {};
+    for (uint32_t i = 0; i < description.colorCount; ++i) {
+        const auto &source = description.colors[i];
+        auto &attachment = result.colors[i];
+        attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        attachment.imageView = Resolve(source.view);
+        attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.loadOp =
+            source.load == rhi::AttachmentLoad::Clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachment.storeOp = source.store == rhi::AttachmentStore::Store ? VK_ATTACHMENT_STORE_OP_STORE
+                                                                         : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        for (size_t channel = 0; channel < source.clear.size(); ++channel) {
+            if (rhi::IsIntegerFormat(source.format))
+                attachment.clearValue.color.uint32[channel] =
+                    static_cast<uint32_t>(std::clamp(double{source.clear[channel]}, 0.0, double{UINT32_MAX}));
+            else
+                attachment.clearValue.color.float32[channel] = source.clear[channel];
+        }
+        if (source.resolve.IsValid()) {
+            attachment.resolveImageView = Resolve(source.resolve);
+            attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            attachment.resolveMode =
+                rhi::IsIntegerFormat(source.format) ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT : VK_RESOLVE_MODE_AVERAGE_BIT;
+        }
+    }
+    auto &rendering = result.info;
+    rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    rendering.renderArea.extent = {description.width, description.height};
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = description.colorCount;
+    rendering.pColorAttachments = description.colorCount ? result.colors.data() : nullptr;
+    const auto &depth = description.depth;
+    if (depth.view.IsValid()) {
+        auto &attachment = result.depth;
+        attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        attachment.imageView = Resolve(depth.view);
+        attachment.imageLayout = depth.readOnly ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+                                                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        attachment.loadOp = !depth.readOnly && depth.load == rhi::AttachmentLoad::Clear ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                                                                                        : VK_ATTACHMENT_LOAD_OP_LOAD;
+        // Even STORE is a write. Read-only passes preserve the image without
+        // a store access, matching the graph's dependency and barrier contract.
+        attachment.storeOp = depth.readOnly                               ? VK_ATTACHMENT_STORE_OP_NONE
+                             : depth.store == rhi::AttachmentStore::Store ? VK_ATTACHMENT_STORE_OP_STORE
+                                                                          : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachment.clearValue.depthStencil = {depth.clear, depth.clearStencil};
+        rendering.pDepthAttachment = &attachment;
+        if (rhi::IsStencilFormat(depth.format))
+            rendering.pStencilAttachment = &attachment;
+    }
+}
+
 rhi::GraphicsCommandEncoder VulkanRhiDevice::MakeGraphicsCommandEncoder(VulkanGraphicsCommandContext &context,
                                                                         VkCommandBuffer commandBuffer) noexcept
 {

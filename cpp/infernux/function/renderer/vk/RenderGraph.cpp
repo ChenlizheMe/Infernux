@@ -1699,13 +1699,13 @@ void RenderGraph::RefreshImportedAttachmentViews(uint32_t resourceId)
         auto &pass = m_passes[binding.passId];
         switch (binding.kind) {
         case ResourceData::AttachmentBinding::Kind::Color:
-            pass.cachedRenderingColorAttachments[binding.colorIndex].imageView = resource.externalView;
+            pass.rasterPass.colors[binding.colorIndex].imageView = resource.externalView;
             break;
         case ResourceData::AttachmentBinding::Kind::Resolve:
-            pass.cachedRenderingColorAttachments[binding.colorIndex].resolveImageView = resource.externalView;
+            pass.rasterPass.colors[binding.colorIndex].resolveImageView = resource.externalView;
             break;
         case ResourceData::AttachmentBinding::Kind::Depth:
-            pass.cachedRenderingDepthAttachment.imageView = resource.externalView;
+            pass.rasterPass.depth.imageView = resource.externalView;
             break;
         }
     }
@@ -1855,8 +1855,8 @@ bool RenderGraph::UpdatePassClearColor(const std::string &passName, float r, flo
             pass.clearColor = {{r, g, b, a}};
             size_t index = 0;
             for (const auto output : pass.colorOutputs) {
-                if (output.IsValid() && index < pass.cachedRenderingColorAttachments.size())
-                    pass.cachedRenderingColorAttachments[index++].clearValue.color =
+                if (output.IsValid() && index < pass.rasterPass.colors.size())
+                    pass.rasterPass.colors[index++].clearValue.color =
                         EncodeClearColor(pass.clearColor, m_resources[output.id].textureDesc.format);
             }
             return true;
@@ -1870,8 +1870,8 @@ bool RenderGraph::UpdatePassClearDepth(const std::string &passName, float depth,
     for (auto &pass : m_passes) {
         if (pass.name == passName) {
             pass.clearDepth = {depth, stencil};
-            if (pass.cachedRenderingDepthAttachment.imageView != VK_NULL_HANDLE) {
-                pass.cachedRenderingDepthAttachment.clearValue.depthStencil = pass.clearDepth;
+            if (pass.rasterPass.depth.imageView != VK_NULL_HANDLE) {
+                pass.rasterPass.depth.clearValue.depthStencil = pass.clearDepth;
             }
             return true;
         }
@@ -2366,7 +2366,7 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 #if INFERNUX_FRAME_PROFILE
             stageStart = Clock::now();
 #endif
-            m_cmdBeginRendering(commandBuffer, &pass.cachedRenderingInfo);
+            m_cmdBeginRendering(commandBuffer, &pass.rasterPass.info);
             context.SetViewport(pass.cachedViewport);
             context.SetScissor(pass.cachedScissor);
 #if INFERNUX_FRAME_PROFILE

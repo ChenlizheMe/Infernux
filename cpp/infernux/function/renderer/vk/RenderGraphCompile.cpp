@@ -1082,73 +1082,42 @@ void RenderGraph::PrecomputeExecuteData()
         pass.cachedScissor.offset = {0, 0};
         pass.cachedScissor.extent = pass.renderArea;
 
-        uint32_t colorCount = 0;
+        rhi::RasterPassDescription description;
+        description.width = pass.renderArea.width;
+        description.height = pass.renderArea.height;
         for (const ResourceHandle output : pass.colorOutputs) {
-            if (!output.IsValid() || output.id >= m_resources.size() ||
-                colorCount >= pass.cachedRenderingColorAttachments.size())
+            if (!output.IsValid())
                 continue;
             auto &resource = m_resources[output.id];
-            VkRenderingAttachmentInfo &attachment = pass.cachedRenderingColorAttachments[colorCount++];
-            attachment = {};
-            attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            attachment.imageView = resource.isExternal ? resource.externalView : m_rhiDevice->Resolve(resource.rhiView);
+            const auto slot = description.colorCount++;
+            auto &attachment = description.colors.at(slot);
+            attachment.view = resource.rhiView;
+            attachment.format = rhi::FromVkFormat(resource.textureDesc.format);
+            attachment.load = pass.clearColorEnabled ? rhi::AttachmentLoad::Clear : rhi::AttachmentLoad::Load;
+            std::copy_n(pass.clearColor.float32, 4, attachment.clear.begin());
             if (resource.isExternal)
-                resource.attachmentBindings.push_back(
-                    {pass.id, colorCount - 1, ResourceData::AttachmentBinding::Kind::Color});
-            attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            attachment.loadOp = pass.clearColorEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            attachment.clearValue.color = EncodeClearColor(pass.clearColor, resource.textureDesc.format);
-            if (colorCount == 1 && pass.hasResolveAttachment && pass.resolveOutput.IsValid() &&
-                pass.resolveOutput.id < m_resources.size()) {
+                resource.attachmentBindings.push_back({pass.id, slot, ResourceData::AttachmentBinding::Kind::Color});
+            if (slot == 0 && pass.hasResolveAttachment) {
                 auto &resolve = m_resources[pass.resolveOutput.id];
-                attachment.resolveMode = rhi::IsIntegerFormat(rhi::FromVkFormat(resource.textureDesc.format))
-                                             ? VK_RESOLVE_MODE_SAMPLE_ZERO_BIT
-                                             : VK_RESOLVE_MODE_AVERAGE_BIT;
-                attachment.resolveImageView =
-                    resolve.isExternal ? resolve.externalView : m_rhiDevice->Resolve(resolve.rhiView);
+                attachment.resolve = resolve.rhiView;
                 if (resolve.isExternal)
                     resolve.attachmentBindings.push_back(
-                        {pass.id, colorCount - 1, ResourceData::AttachmentBinding::Kind::Resolve});
-                attachment.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                        {pass.id, slot, ResourceData::AttachmentBinding::Kind::Resolve});
             }
         }
-
-        pass.cachedRenderingDepthAttachment = {};
         const ResourceHandle depth = GetEffectiveDepth(pass);
-        if (depth.IsValid() && depth.id < m_resources.size()) {
+        if (depth.IsValid()) {
             auto &resource = m_resources[depth.id];
-            auto &attachment = pass.cachedRenderingDepthAttachment;
-            attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            attachment.imageView = resource.isExternal ? resource.externalView : m_rhiDevice->Resolve(resource.rhiView);
+            description.depth.view = resource.rhiView;
+            description.depth.format = rhi::FromVkFormat(resource.textureDesc.format);
+            description.depth.readOnly = !pass.depthOutput.IsValid();
+            description.depth.load = pass.clearDepthEnabled ? rhi::AttachmentLoad::Clear : rhi::AttachmentLoad::Load;
+            description.depth.clear = pass.clearDepth.depth;
+            description.depth.clearStencil = pass.clearDepth.stencil;
             if (resource.isExternal)
                 resource.attachmentBindings.push_back({pass.id, 0, ResourceData::AttachmentBinding::Kind::Depth});
-            const bool writableDepth = pass.depthOutput.IsValid();
-            attachment.imageLayout = writableDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-                                                   : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-            attachment.loadOp =
-                writableDepth && pass.clearDepthEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-            // STORE is a depth write even with a read-only depth layout.
-            // NONE preserves the contents without a store access, matching
-            // ReadDepth's read-only contract and subsequent barriers.
-            attachment.storeOp = writableDepth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_NONE;
-            attachment.clearValue.depthStencil = pass.clearDepth;
         }
-
-        auto &rendering = pass.cachedRenderingInfo;
-        rendering = {};
-        rendering.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        rendering.renderArea = {{0, 0}, pass.renderArea};
-        rendering.layerCount = 1;
-        rendering.colorAttachmentCount = colorCount;
-        rendering.pColorAttachments = colorCount > 0 ? pass.cachedRenderingColorAttachments.data() : nullptr;
-        rendering.pDepthAttachment = pass.cachedRenderingDepthAttachment.imageView != VK_NULL_HANDLE
-                                         ? &pass.cachedRenderingDepthAttachment
-                                         : nullptr;
-        rendering.pStencilAttachment =
-            rendering.pDepthAttachment && rhi::IsStencilFormat(pass.renderingSignature.stencilFormat)
-                ? &pass.cachedRenderingDepthAttachment
-                : nullptr;
+        m_rhiDevice->PrepareRasterPass(description, pass.rasterPass);
     }
 }
 

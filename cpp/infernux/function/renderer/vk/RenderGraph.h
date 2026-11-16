@@ -593,9 +593,7 @@ struct RenderPassData
     // Pre-computed execution data (populated at end of Compile, used in Execute).
     // Eliminates per-frame struct construction for beginInfo, clear values,
     // viewport, and scissor.
-    std::array<VkRenderingAttachmentInfo, 10> cachedRenderingColorAttachments{};
-    VkRenderingAttachmentInfo cachedRenderingDepthAttachment{};
-    VkRenderingInfo cachedRenderingInfo{};
+    VulkanRasterPass rasterPass;
     VkViewport cachedViewport{};
     VkRect2D cachedScissor{};
 };

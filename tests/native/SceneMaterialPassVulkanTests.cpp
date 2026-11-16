@@ -117,17 +117,15 @@ struct Parameters { float4 signal; };
             Barrier(commands, device.Resolve(images[frame]), VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
-            VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-            attachment.imageView = device.Resolve(views[frame]);
-            attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-            rendering.renderArea.extent = {size, size};
-            rendering.layerCount = 1;
-            rendering.colorAttachmentCount = 1;
-            rendering.pColorAttachments = &attachment;
-            vkCmdBeginRendering(commands, &rendering);
+            rhi::RasterPassDescription raster;
+            raster.width = raster.height = size;
+            raster.colorCount = 1;
+            raster.colors[0].view = views[frame];
+            raster.colors[0].format = image.format;
+            raster.colors[0].load = rhi::AttachmentLoad::Clear;
+            vk::VulkanRasterPass prepared;
+            device.PrepareRasterPass(raster, prepared);
+            vkCmdBeginRendering(commands, &prepared.info);
             const VkViewport viewport{0, 0, float(size), float(size), 0, 1};
             const VkRect2D scissor{{0, 0}, {size, size}};
             vkCmdSetViewport(commands, 0, 1, &viewport);

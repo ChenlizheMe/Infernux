@@ -7,6 +7,7 @@
 #include <function/renderer/rhi/RhiCapabilities.h>
 #include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
+#include <function/renderer/rhi/RhiRasterPass.h>
 
 #include "VkDescriptorManager.h"
 #include "VkHandle.h"
@@ -28,6 +29,15 @@ namespace infernux::vk
 {
 
 class VulkanRhiDevice;
+
+/// Prepared native storage. PrepareRasterPass binds pointers to this instance;
+/// re-prepare after moving the storage, never while recording a frame.
+struct VulkanRasterPass
+{
+    std::array<VkRenderingAttachmentInfo, rhi::RasterPassDescription::MaxColorTargets> colors{};
+    VkRenderingAttachmentInfo depth{};
+    VkRenderingInfo info{};
+};
 
 struct VulkanGraphicsCommandContext
 {
@@ -448,6 +458,8 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkDescriptorSet Resolve(rhi::BindGroupHandle handle) const noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API VkRenderPass Resolve(rhi::RenderTargetLayoutHandle handle) const noexcept;
 
+    INFERNUX_VULKAN_BACKEND_API void PrepareRasterPass(const rhi::RasterPassDescription &description,
+                                                       VulkanRasterPass &result) const;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::GraphicsCommandEncoder
     MakeGraphicsCommandEncoder(VulkanGraphicsCommandContext &context, VkCommandBuffer commandBuffer) noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ComputeCommandEncoder
