@@ -1563,6 +1563,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 };
                 py::dict timings;
                 timings["frame"] = encodeStats(snapshot.frame);
+                timings["host_opportunity"] = encodeStats(snapshot.host);
+                timings["late_work"] = encodeStats(snapshot.lateWork);
                 timings["game_only"] = encodeStats(snapshot.gameOnly);
                 timings["render"] = encodeStats(snapshot.render);
                 timings["scene"] = encodeStats(snapshot.scene);
@@ -1589,6 +1591,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 result["dropped_sample_count"] = snapshot.droppedSampleCount;
                 result["target_sample_count"] = snapshot.targetSampleCount;
                 result["active"] = snapshot.active;
+                result["submitted_frames"] = snapshot.submittedFrames;
+                result["presented_frames"] = snapshot.presentedFrames;
+                result["unavailable_gpu_frames"] = snapshot.unavailableGpuFrames;
                 result["timings"] = std::move(timings);
                 py::dict inputCounts;
                 inputCounts["queued_events"] = snapshot.queuedInputEvents;
@@ -1617,6 +1622,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     frame["frame"] = sample.frame;
                     frame["opportunity"] = sample.opportunity;
                     frame["frame_ms"] = sample.frameMs;
+                    frame["host_ms"] = sample.hostMs;
+                    frame["late_work_ms"] = sample.lateWorkMs;
+                    frame["submitted"] = sample.submitted;
+                    frame["presented"] = sample.presented;
+                    frame["gpu_slot_unavailable"] = sample.gpuSlotUnavailable;
                     frame["game_only_ms"] = sample.gameOnlyMs;
                     frame["render_ms"] = sample.renderMs;
                     frame["scene_ms"] = sample.sceneMs;

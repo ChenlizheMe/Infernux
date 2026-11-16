@@ -1,6 +1,7 @@
 #include "BindingSceneInternal.h"
 #include "ComponentBindingRegistry.h"
 #include "JsonPyBridge.h"
+#include "PythonCallback.h"
 #include "function/resources/InxMaterial/InxMaterial.h"
 #include "function/scene/Camera.h"
 #include "function/scene/ComponentFactory.h"
@@ -19,6 +20,7 @@
 #include <pybind11/functional.h>
 #include <stdexcept>
 #include <tuple>
+#include <type_traits>
 #include <variant>
 
 namespace py = pybind11;
@@ -28,6 +30,23 @@ namespace infernux::scene_binding
 
 namespace
 {
+
+template <typename Result, typename... Arguments>
+std::function<Result(Arguments...)> BindFrameCallback(py::object value)
+{
+    if (value.is_none())
+        return {};
+    auto callback = std::make_shared<PythonCallback>(py::cast<py::function>(value));
+    // An in-flight owner may retain the callback while Python replaces it.
+    // Copies only retain the shared holder; enter Python once on invocation.
+    return [callback = std::move(callback)](Arguments... arguments) -> Result {
+        py::gil_scoped_acquire acquire;
+        if constexpr (std::is_void_v<Result>)
+            callback->function(arguments...);
+        else
+            return callback->function(arguments...).template cast<Result>();
+    };
+}
 
 class PythonWorldScope final
 {
@@ -551,18 +570,41 @@ void BindSceneManager(py::module_ &m)
              py::arg("destination"), "Move a root GameObject hierarchy to another loaded Scene")
         .def_property_readonly("scene_count", &SceneManager::GetSceneCount, "Number of currently loaded scenes")
         .def("is_playing", &SceneManager::IsPlaying, "Check if in play mode")
-        .def("set_runtime_input_callback", &SceneManager::SetRuntimeInputCallback, py::arg("callback"))
+        .def(
+            "set_runtime_input_callback",
+            [](SceneManager &manager, py::object callback) {
+                manager.SetRuntimeInputCallback(BindFrameCallback<void>(std::move(callback)));
+            },
+            py::arg("callback"))
         .def("_can_continue_runtime_frame", &SceneManager::CanContinueRuntimeFrame)
         .def("_report_runtime_frame_progress", &SceneManager::ReportRuntimeFrameProgress)
         .def_property_readonly("_runtime_frame_generation",
                                [](const SceneManager &manager) { return std::get<3>(manager.GetSimulationState()); })
-        .def("set_runtime_lifecycle_callbacks", &SceneManager::SetRuntimeLifecycleCallbacks, py::arg("begin_frame"),
-             py::arg("fixed_update"), py::arg("update"), py::arg("late_update"), py::arg("editor_update"),
-             py::arg("end_frame"), "Install the shared Editor/Player runtime lifecycle bridge")
-        .def("set_runtime_frame_barrier_callback", &SceneManager::SetRuntimeFrameBarrierCallback, py::arg("callback"),
-             "Install the native runtime frame barrier bridge")
-        .def("set_runtime_result_consumer_callback", &SceneManager::SetRuntimeResultConsumerCallback,
-             py::arg("callback"))
+        .def(
+            "set_runtime_lifecycle_callbacks",
+            [](SceneManager &manager, py::object begin, py::object fixed, py::object update, py::object late,
+               py::object editor, py::object end) {
+                manager.SetRuntimeLifecycleCallbacks(
+                    BindFrameCallback<void>(std::move(begin)), BindFrameCallback<void, float>(std::move(fixed)),
+                    BindFrameCallback<void, float>(std::move(update)), BindFrameCallback<void, float>(std::move(late)),
+                    BindFrameCallback<void, float>(std::move(editor)), BindFrameCallback<void>(std::move(end)));
+            },
+            py::arg("begin_frame"), py::arg("fixed_update"), py::arg("update"), py::arg("late_update"),
+            py::arg("editor_update"), py::arg("end_frame"), "Install the shared Editor/Player runtime lifecycle bridge")
+        .def(
+            "set_runtime_frame_barrier_callback",
+            [](SceneManager &manager, py::object callback) {
+                manager.SetRuntimeFrameBarrierCallback(
+                    BindFrameCallback<void, SceneManager::RuntimeFrameBarrier>(std::move(callback)));
+            },
+            py::arg("callback"), "Install the native runtime frame barrier bridge")
+        .def(
+            "set_runtime_result_consumer_callback",
+            [](SceneManager &manager, py::object callback) {
+                manager.SetRuntimeResultConsumerCallback(
+                    BindFrameCallback<bool, SceneManager::RuntimeFrameBarrier>(std::move(callback)));
+            },
+            py::arg("callback"))
         .def("_set_result_consumers_present", &SceneManager::SetRuntimeResultConsumersPresent)
         .def("set_runtime_lifecycle_plan", &SceneManager::SetRuntimeLifecyclePlan, py::arg("revision"),
              py::arg("fixed_update_count"), py::arg("update_count"), py::arg("animation_update_count"),

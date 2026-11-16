@@ -114,6 +114,7 @@ class VulkanSubmissionExecutor
     VulkanQueueManager *m_queues = nullptr;
     VkDevice m_device = VK_NULL_HANDLE;
     // Borrowed device-owned timelines; executors own command pools, not queue identity.
+    std::array<uint32_t, static_cast<size_t>(rhi::QueueRole::Count)> m_roleLanes{};
     std::vector<VkSemaphore> m_laneTimelines;
     std::vector<FrameState> m_frames;
 };

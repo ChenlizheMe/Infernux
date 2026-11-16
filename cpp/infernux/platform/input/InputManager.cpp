@@ -344,8 +344,13 @@ InputFrameLease InputManager::CaptureFrame()
     sample->sampleIdentity = ++m_sampleIdentity;
     sample->sourceSampleIdentity = sample->sampleIdentity;
     sample->keys = m_keys;
-    for (size_t i = 0; i < sample->keyDown.size(); ++i) {
-        sample->gameKeyOwned[i] = IsGameKeyOwned(static_cast<int>(i));
+    // This is the live Host state, already outside any World read scope.
+    // Copy ownership arrays in bulk instead of resolving the scope per key.
+    if (m_editorCursorCaptureManaged) {
+        for (size_t i = 0; i < sample->gameKeyOwned.size(); ++i)
+            sample->gameKeyOwned[i] = (m_gameKeyOwnership[i] | m_syntheticKeys[i] | m_syntheticKeyDown[i]) != 0;
+    } else {
+        sample->gameKeyOwned.fill(1);
     }
     sample->mouseButtons = m_mouseButtons;
     for (size_t i = 0; i < sample->gameMouseOwned.size(); ++i) {

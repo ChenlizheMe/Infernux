@@ -192,18 +192,7 @@ SubmissionPlanStatistics AnalyzeSubmissionPlan(const SubmissionPlan &plan)
     SubmissionPlanStatistics result;
     result.batchCount = static_cast<uint32_t>(plan.batches.size());
     const size_t count = plan.batches.size();
-    std::vector<std::vector<bool>> ancestors(count, std::vector<bool>(count, false));
-
-    const auto inherit = [&](size_t batchIndex, uint32_t predecessor) {
-        if (predecessor >= batchIndex || predecessor >= count)
-            return;
-        ancestors[batchIndex][predecessor] = true;
-        for (size_t ancestor = 0; ancestor < count; ++ancestor)
-            ancestors[batchIndex][ancestor] = ancestors[batchIndex][ancestor] || ancestors[predecessor][ancestor];
-    };
-
-    for (size_t index = 0; index < count; ++index) {
-        const SubmissionBatch &batch = plan.batches[index];
+    for (const auto &batch : plan.batches) {
         switch (batch.queue) {
         case QueueRole::Graphics:
             ++result.graphicsBatchCount;
@@ -217,8 +206,22 @@ SubmissionPlanStatistics AnalyzeSubmissionPlan(const SubmissionPlan &plan)
         default:
             break;
         }
-        inherit(index, batch.queuePredecessor);
         result.crossQueueDependencyCount += static_cast<uint32_t>(batch.waitsFor.size());
+    }
+    if (!result.computeBatchCount || !result.graphicsBatchCount)
+        return result;
+
+    std::vector<std::vector<bool>> ancestors(count, std::vector<bool>(count, false));
+    const auto inherit = [&](size_t batchIndex, uint32_t predecessor) {
+        if (predecessor >= batchIndex)
+            return;
+        ancestors[batchIndex][predecessor] = true;
+        for (size_t ancestor = 0; ancestor < predecessor; ++ancestor)
+            ancestors[batchIndex][ancestor] = ancestors[batchIndex][ancestor] || ancestors[predecessor][ancestor];
+    };
+    for (size_t index = 0; index < count; ++index) {
+        const auto &batch = plan.batches[index];
+        inherit(index, batch.queuePredecessor);
         for (const SubmissionBatchDependency &dependency : batch.waitsFor)
             inherit(index, dependency.sourceBatch);
     }

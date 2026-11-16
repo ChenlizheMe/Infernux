@@ -627,7 +627,10 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureWorldCommands(std::sha
     data.screens = m_screenElementSpans;
     for (int index = 0; index < 3; ++index) {
         const auto list = index == 0 ? ScreenUIList::Camera : index == 1 ? ScreenUIList::Overlay : ScreenUIList::World;
-        data.lists[index] = GetDrawList(list)->CloneOutput();
+        const auto *drawList = GetDrawList(list);
+        if (drawList->IdxBuffer.empty())
+            continue;
+        data.lists[index] = drawList->CloneOutput();
         for (auto &command : data.lists[index]->CmdBuffer) {
             command.TexRef = ImTextureRef(command.GetTexID());
             const auto retained = data.textures.find(static_cast<uint64_t>(command.GetTexID()));

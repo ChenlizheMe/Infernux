@@ -87,13 +87,16 @@ class GameScreenOutputs final
         return m_samples;
     }
 
-    void Request(const std::string &consumer, uint64_t worldId, const GameScreenOutputConfig &config,
+    bool Request(const std::string &consumer, uint64_t worldId, const GameScreenOutputConfig &config,
                  GameScreenConsumerKind kind = GameScreenConsumerKind::Presentation)
     {
         if (consumer.empty() || !worldId || !config.width || !config.height)
             throw std::invalid_argument(
                 "Game screen request needs a stable consumer, actual World and positive extent");
         auto output = Ensure(worldId);
+        const auto existing = output->consumers.find(consumer);
+        if (existing != output->consumers.end() && existing->second.config == config && existing->second.kind == kind)
+            return false;
         // One logical screen output has one raster domain. Multiple consumers
         // may choose independent display zoom; conflicting raster sizes are a
         // configuration error, not implicit duplicate camera executions.
@@ -103,12 +106,11 @@ class GameScreenOutputs final
                 throw std::invalid_argument("Consumers of one World screen output requested different raster sizes");
         const bool first = output->consumers.empty() && !output->requiredBufferWork;
         output->consumers[consumer] = {config, kind};
-        if (kind == GameScreenConsumerKind::Required && !first)
-            return;
-        if (!(output->config == config)) {
+        if ((kind != GameScreenConsumerKind::Required || first) && !(output->config == config)) {
             output->config = config;
             Reconfigure(*output);
         }
+        return true;
     }
 
     std::vector<uint64_t> Release(const std::string &consumer, uint64_t keepWorld = 0)

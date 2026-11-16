@@ -246,6 +246,11 @@ struct RendererFramePerformanceSample
     uint64_t frame = 0;
     uint64_t opportunity = 0;
     double frameMs = 0.0;
+    double hostMs = 0.0;
+    double lateWorkMs = 0.0;
+    bool submitted = false;
+    bool presented = false;
+    bool gpuSlotUnavailable = false;
     double gameOnlyMs = 0.0;
     double renderMs = 0.0;
     double sceneMs = 0.0;
@@ -272,6 +277,8 @@ struct RendererFramePerformanceSnapshot
     size_t targetSampleCount = 0;
     bool active = false;
     UIPerformanceMetricStats frame;
+    UIPerformanceMetricStats host;
+    UIPerformanceMetricStats lateWork;
     UIPerformanceMetricStats gameOnly;
     UIPerformanceMetricStats render;
     UIPerformanceMetricStats scene;
@@ -284,6 +291,9 @@ struct RendererFramePerformanceSnapshot
     uint64_t rawMouseMotions = 0;
     uint64_t dispatchedMouseMotions = 0;
     uint64_t idleFrames = 0;
+    size_t submittedFrames = 0;
+    size_t presentedFrames = 0;
+    size_t unavailableGpuFrames = 0;
     std::vector<RendererFramePerformanceSample> slowestFrames;
     std::vector<RendererFramePerformanceSample> slowestInputFrames;
     std::vector<FrameWorkSourceProfile> workSources;
@@ -395,6 +405,12 @@ class InxRenderer
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
     [[nodiscard]] uint64_t BeginFramePerformanceWindow(size_t sampleCount = 240);
     [[nodiscard]] RendererFramePerformanceSnapshot GetFramePerformanceWindow() const;
+    [[nodiscard]] bool HasFramePerformanceSample() const
+    {
+        return m_framePerformanceStart != FrameClock::time_point{};
+    }
+    void RecordFramePerformanceSample(const RenderFrameResult &result, std::chrono::steady_clock::time_point drawEnd,
+                                      double lateWorkMs);
     [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId,
                                                              uint64_t cameraComponentId = 0);
     [[nodiscard]] particle::GpuParticleViewDiagnosticSnapshot
@@ -956,9 +972,11 @@ class InxRenderer
     double m_gameOnlyFrameMs = 0.0;  ///< Sum of game-only phases (ms)
 
     std::vector<RendererFramePerformanceSample> m_framePerformanceHistory;
+    using FrameClock = std::chrono::steady_clock;
+    FrameClock::time_point m_framePerformanceStart;
+    RendererFramePerformanceSample m_framePerformanceSample;
     bool m_framePerformanceWindowActive = false;
     size_t m_framePerformanceSampleLimit = 0;
-    void RecordFramePerformanceSample(RendererFramePerformanceSample sample);
 
     static constexpr size_t UI_PERFORMANCE_HISTORY_SIZE = 240;
     struct UIMetricHistory

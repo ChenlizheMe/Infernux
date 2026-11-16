@@ -791,11 +791,13 @@ class RuntimeScreenUISubmission:
         if renderer is None:
             return False
         scenes = runtime_ui_scenes(scene_manager)
-        canvas_token = runtime_canvas_snapshot_token(*scenes)
-        if canvas_token != self._canvas_snapshot_token:
-            self._canvas_snapshot = tuple(collect_sorted_runtime_canvas_snapshot(*scenes))
-            self._canvas_snapshot_token = canvas_token
-        canvases = () if world_only else self._canvas_snapshot
+        canvases = ()
+        if not world_only:
+            canvas_token = runtime_canvas_snapshot_token(*scenes)
+            if canvas_token != self._canvas_snapshot_token:
+                self._canvas_snapshot = tuple(collect_sorted_runtime_canvas_snapshot(*scenes))
+                self._canvas_snapshot_token = canvas_token
+            canvases = self._canvas_snapshot
         world_elements = _collect_world_ui_elements(*scenes) if include_world else ()
         if not canvases and not world_elements:
             # An empty command list has no layout, texture or material dependencies.

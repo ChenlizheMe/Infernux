@@ -29,7 +29,6 @@ class RuntimeWorldHost(WorkRuntime):
         self._clock_delta = 0.0
 
     def _install_runtime_world_callbacks(self):
-        from infernux.engine.runtime_worlds import current_world_runtime
         from infernux.execution import simulation_state
         engine_ref = weakref.ref(self)
         from infernux.lib import SceneManager
@@ -124,7 +123,9 @@ class RuntimeWorldHost(WorkRuntime):
             engine = engine_ref()
             if engine is None:
                 return True
-            domain = current_world_runtime()
+            identity = int(scene_manager._current_runtime_world_id)
+            domain = (None if identity == int(scene_manager._authoring_runtime_world_id)
+                      else engine._world_runtimes[identity])
             scheduler = domain.scheduler if domain is not None else engine._authoring_scheduler
             world = scheduler.world_id
             if (domain is not None and domain.physics_preparations and barrier.name in {

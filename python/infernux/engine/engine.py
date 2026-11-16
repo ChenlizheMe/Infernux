@@ -292,7 +292,6 @@ class Engine(RuntimeWorldHost):
         def _pre_scene_tick(delta_time):
             engine = engine_ref()
             if engine is not None:
-                engine._retire_runtime_input_views()
                 engine._retire_result_consumers()
                 # Reload, queued scene work, and deserialization share the
                 # owner-thread safe point. Typed changes merge here and become
@@ -377,23 +376,18 @@ class Engine(RuntimeWorldHost):
     def _retire_world_presentation(self, identity):
         if self._screen_ui_submission is not None:
             self._screen_ui_submission.retire_world(identity)
+        from infernux.engine.runtime_input_state import discard_world_pointer_state
+
+        for view in tuple(vars(self).get("_runtime_input_views", ())):
+            discard_world_pointer_state(view, identity)
+        pending = vars(self).get("_runtime_input_cancellations")
+        if pending:
+            for _view, worlds in pending:
+                worlds.discard(identity)
+            pending[:] = [entry for entry in pending if entry[1]]
 
     def _track_runtime_input_view(self, view):
-        views = self.__dict__.setdefault("_runtime_input_views", [])
-        if not any(reference() is view for reference in views):
-            views.append(weakref.ref(view))
-
-    def _retire_runtime_input_views(self):
-        from infernux.engine.runtime_input_state import discard_retired_pointer_states
-        views = self.__dict__.setdefault("_runtime_input_views", [])
-        views[:] = [reference for reference in views if reference() is not None]
-        for reference in views:
-            discard_retired_pointer_states(reference())
-        pending = self.__dict__.setdefault("_runtime_input_cancellations", [])
-        for view, worlds in pending:
-            discard_retired_pointer_states(view)
-            worlds.intersection_update(getattr(view, "_world_pointer_states", {}))
-        pending[:] = [entry for entry in pending if entry[1]]
+        self.__dict__.setdefault("_runtime_input_views", weakref.WeakSet()).add(view)
 
     def _defer_runtime_input_cancel(self, view):
         """Retain only an engine view-close event until each affected World runs."""
@@ -409,16 +403,15 @@ class Engine(RuntimeWorldHost):
 
     def _dispatch_runtime_input(self):
         """Called once by native WorldFrame.Input with its owner/sample active."""
-        from infernux.lib import InputManager
-        world = int(InputManager.instance()._read_world_id)
-        pending = self.__dict__.setdefault("_runtime_input_cancellations", [])
-        for old_view, worlds in tuple(pending):
-            states = getattr(old_view, "_world_pointer_states", {})
-            worlds.intersection_update(identity for identity, (owner, _state) in states.items() if not owner.retired)
-            if world in worlds:
-                worlds.remove(world)  # Settle before author callbacks; failures cannot replay it.
-                old_view.cancel_runtime_input()
-        pending[:] = [entry for entry in pending if entry[1]]
+        pending = self.__dict__.get("_runtime_input_cancellations")
+        if pending:
+            from infernux.lib import InputManager
+            world = int(InputManager.instance()._read_world_id)
+            for old_view, worlds in tuple(pending):
+                if world in worlds:
+                    worlds.remove(world)  # Settle before author callbacks; failures cannot replay it.
+                    old_view.cancel_runtime_input()
+            pending[:] = [entry for entry in pending if entry[1]]
         if _PLAYER_MODE:
             reference = getattr(self, "_runtime_input_view", None)
             view = reference() if reference is not None else None
@@ -493,7 +486,6 @@ class Engine(RuntimeWorldHost):
                 from infernux.engine.ui.window_manager import WindowManager
 
                 DeferredTaskRunner.instance().tick()
-                self._retire_runtime_input_views()
                 manager = WindowManager.instance()
                 if manager is not None:
                     manager.process_pending_actions()
@@ -543,7 +535,6 @@ class Engine(RuntimeWorldHost):
             # Drain them only after native GUI drawing and present have
             # released the current renderable traversal.
             _drain_runtime_events()
-            self._retire_runtime_input_views()
             if _plugin_install_progress is not None:
                 _plugin_install_progress.post_present_tick()
             if _plugin_reload_progress is not None:

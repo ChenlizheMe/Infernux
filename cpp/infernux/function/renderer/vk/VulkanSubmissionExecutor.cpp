@@ -71,19 +71,19 @@ bool VulkanSubmissionExecutor::Initialize(VkDeviceContext &device, VulkanQueueMa
         }
     }
 
+    constexpr std::array roles{rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer,
+                               rhi::QueueRole::Present};
+    uint32_t maxLane = 0;
+    for (const auto role : roles) {
+        const auto lane = queues.GetSnapshot(role).nativeLane;
+        m_roleLanes[RoleIndex(role)] = lane;
+        if (lane != UINT32_MAX)
+            maxLane = (std::max)(maxLane, lane);
+    }
     if (device.IsTimelineSemaphoreEnabled()) {
-        uint32_t maxLane = 0;
-        for (const rhi::QueueRole role :
-             {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer, rhi::QueueRole::Present}) {
-            const uint32_t lane = queues.GetSnapshot(role).nativeLane;
-            if (lane != UINT32_MAX)
-                maxLane = (std::max)(maxLane, lane);
-        }
         m_laneTimelines.resize(static_cast<size_t>(maxLane) + 1);
-
-        for (const auto role :
-             {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer, rhi::QueueRole::Present}) {
-            const auto lane = queues.GetSnapshot(role).nativeLane;
+        for (const auto role : roles) {
+            const auto lane = m_roleLanes[RoleIndex(role)];
             if (lane < m_laneTimelines.size())
                 m_laneTimelines[lane] = queues.GetDependencyTimeline(role);
         }
@@ -198,38 +198,34 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     }
 
     const auto joinRole = hasGraphics ? rhi::QueueRole::Graphics : plan.batches.back().queue;
-    const uint32_t joinLane = m_queues->GetSnapshot(joinRole).nativeLane;
+    const auto laneFor = [this](rhi::QueueRole role) { return m_roleLanes[RoleIndex(role)]; };
+    const uint32_t joinLane = laneFor(joinRole);
     std::vector<bool> coveredByTerminal(plan.batches.size(), false);
-    const auto markCovered = [&](auto &&self, uint32_t batchIndex) -> void {
-        if (batchIndex >= plan.batches.size() || coveredByTerminal[batchIndex])
-            return;
-        coveredByTerminal[batchIndex] = true;
+    coveredByTerminal.back() = true;
+    std::array<bool, static_cast<size_t>(rhi::QueueRole::Count)> coveredLanes{};
+    bool needsTerminalJoin = false;
+    // A covered batch covers earlier work on its native lane, including
+    // logical roles that alias that VkQueue. Propagate only earlier edges.
+    for (size_t batchIndex = plan.batches.size(); batchIndex-- > 0;) {
         const auto &batch = plan.batches[batchIndex];
-        if (batch.queuePredecessor != rhi::InvalidSubmissionBatchIndex)
-            self(self, batch.queuePredecessor);
-        for (const auto &dependency : batch.waitsFor)
-            self(self, dependency.sourceBatch);
-
-        // Submission order is also execution order for logical roles that
-        // alias one native VkQueue.
-        const uint32_t lane = m_queues->GetSnapshot(batch.queue).nativeLane;
-        for (uint32_t previous = 0; previous < batchIndex; ++previous) {
-            if (m_queues->GetSnapshot(plan.batches[previous].queue).nativeLane == lane)
-                self(self, previous);
+        const auto lane = laneFor(batch.queue);
+        if (!coveredByTerminal[batchIndex] && !coveredLanes[lane]) {
+            needsTerminalJoin = true;
+            continue;
         }
-    };
-    markCovered(markCovered, static_cast<uint32_t>(plan.batches.size() - 1));
-    const bool needsTerminalJoin =
-        std::any_of(coveredByTerminal.begin(), coveredByTerminal.end(), [](bool covered) { return !covered; });
-    const uint32_t terminalLane =
-        needsTerminalJoin ? joinLane : m_queues->GetSnapshot(plan.batches.back().queue).nativeLane;
+        coveredLanes[lane] = true;
+        for (const auto &dependency : batch.waitsFor)
+            if (dependency.sourceBatch < batchIndex)
+                coveredByTerminal[dependency.sourceBatch] = true;
+    }
+    const uint32_t terminalLane = needsTerminalJoin ? joinLane : laneFor(plan.batches.back().queue);
     bool hasCrossQueueDependency = false;
     for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
         const auto &batch = plan.batches[batchIndex];
-        const uint32_t targetLane = m_queues->GetSnapshot(batch.queue).nativeLane;
+        const uint32_t targetLane = laneFor(batch.queue);
         for (const auto &dependency : batch.waitsFor) {
             if (dependency.sourceBatch < plan.batches.size() &&
-                m_queues->GetSnapshot(plan.batches[dependency.sourceBatch].queue).nativeLane != targetLane) {
+                laneFor(plan.batches[dependency.sourceBatch].queue) != targetLane) {
                 hasCrossQueueDependency = true;
                 break;
             }
@@ -246,9 +242,9 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
 
     frame.submittedTickets.reserve(plan.batches.size() + (needsTerminalJoin ? 1u : 0u));
     for (RolePool &role : frame.roles) {
-        role.cursor = 0;
-        if (role.pool != VK_NULL_HANDLE && vkResetCommandPool(m_device, role.pool, 0) != VK_SUCCESS)
+        if (role.cursor && vkResetCommandPool(m_device, role.pool, 0) != VK_SUCCESS)
             return output;
+        role.cursor = 0;
     }
 
     std::vector<rhi::SubmissionTicket> tickets;
@@ -370,13 +366,13 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         }
     }
     const size_t previousFrameWaitBatch = (sync.previousFrameWaitAtFirstBatch || !hasGraphics) ? 0 : firstGraphicsBatch;
-    std::vector<bool> laneSubmitted((std::max)(m_laneTimelines.size(), static_cast<size_t>(4)), false);
+    std::array<bool, static_cast<size_t>(rhi::QueueRole::Count)> laneSubmitted{};
     std::array<bool, static_cast<size_t>(rhi::QueueRole::Count)> roleSubmitted{};
 
     std::vector<VkSubmitInfo> submits(plan.batches.size());
     for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
         const rhi::SubmissionBatch &batch = plan.batches[batchIndex];
-        const uint32_t targetLane = m_queues->GetSnapshot(batch.queue).nativeLane;
+        const uint32_t targetLane = laneFor(batch.queue);
         auto &storage = batchSync[batchIndex];
         auto &waits = storage.dependencies.semaphores;
         auto &waitStages = storage.dependencies.stages;
@@ -393,7 +389,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             sync.previousFrameTimelineValue != 0) {
             addWait(sync.previousFrameTimeline, sync.previousFrameTimelineValue, sync.previousFrameStages);
         }
-        const bool firstOnLane = targetLane < laneSubmitted.size() && !laneSubmitted[targetLane];
+        const bool firstOnLane = !laneSubmitted[targetLane];
         for (const auto &producer : sync.producers) {
             const bool firstConsumer = producer.consumer == rhi::QueueRole::Count
                                            ? firstOnLane
@@ -402,12 +398,12 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
                 addWait(producer.timeline, producer.value, producer.stages);
         }
 
-        std::vector<uint64_t> laneWaitValues(m_laneTimelines.size(), 0);
-        std::vector<VkPipelineStageFlags> laneWaitStages(m_laneTimelines.size(), 0);
+        std::array<uint64_t, static_cast<size_t>(rhi::QueueRole::Count)> laneWaitValues{};
+        std::array<VkPipelineStageFlags, static_cast<size_t>(rhi::QueueRole::Count)> laneWaitStages{};
         const auto addLaneWait = [&](uint32_t sourceBatch, VkPipelineStageFlags stages) {
             if (sourceBatch >= batchIndex || sourceBatch >= plan.batches.size())
                 return false;
-            const uint32_t sourceLane = m_queues->GetSnapshot(plan.batches[sourceBatch].queue).nativeLane;
+            const uint32_t sourceLane = laneFor(plan.batches[sourceBatch].queue);
             if (sourceLane == targetLane)
                 return true;
             if (sourceLane >= m_laneTimelines.size() || signalValues[sourceBatch] == 0)
@@ -433,7 +429,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             }
         }
 
-        for (size_t lane = 0; lane < laneWaitValues.size(); ++lane) {
+        for (size_t lane = 0; lane < m_laneTimelines.size(); ++lane) {
             if (laneWaitValues[lane] == 0)
                 continue;
             addWait(m_laneTimelines[lane], laneWaitValues[lane],
@@ -468,8 +464,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         submitInfo.pSignalSemaphores = signals.data();
 
         // The first consumer on each lane carries its external dependencies.
-        if (targetLane < laneSubmitted.size())
-            laneSubmitted[targetLane] = true;
+        laneSubmitted[targetLane] = true;
         roleSubmitted[RoleIndex(batch.queue)] = true;
     }
 
@@ -480,7 +475,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     if (needsTerminalJoin) {
         std::vector<uint64_t> joinedLaneValues(m_laneTimelines.size(), 0);
         for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
-            const uint32_t lane = m_queues->GetSnapshot(plan.batches[batchIndex].queue).nativeLane;
+            const uint32_t lane = laneFor(plan.batches[batchIndex].queue);
             if (lane == joinLane || lane >= joinedLaneValues.size())
                 continue;
             joinedLaneValues[lane] = (std::max)(joinedLaneValues[lane], signalValues[batchIndex]);

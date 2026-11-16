@@ -882,6 +882,12 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 {
     if (m_drawingFrame)
         throw std::logic_error("DrawFrame cannot reenter an active frame");
+    const bool samplePerformanceFrame = m_framePerformanceWindowActive;
+    auto &performanceSample = m_framePerformanceSample;
+    if (samplePerformanceFrame) {
+        m_framePerformanceStart = FrameClock::now();
+        performanceSample = {};
+    }
     struct FrameScope
     {
         bool &active;
@@ -910,11 +916,6 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     SyncPrimaryScreenRequest();
     if (m_gameScreenOutputs)
         m_gameScreenOutputs->Poll();
-    const bool samplePerformanceFrame = m_framePerformanceWindowActive;
-    RendererFramePerformanceSample performanceSample;
-    const auto performanceWindowFrameStart =
-        samplePerformanceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-
     // Calculate delta time
     auto currentTime = std::chrono::steady_clock::now();
     m_deltaTime = std::chrono::duration<float>(currentTime - m_lastFrameTime).count();
@@ -1009,15 +1010,11 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // The value from the previous frame is the correct one for display.
 
     // Window events
+    const auto inputStart = samplePerformanceFrame ? FrameClock::now() : FrameClock::time_point{};
     m_view->ProcessEvent(pace, samplePerformanceFrame || INFERNUX_FRAME_PROFILE);
-    if (finishStoppedFrame())
-        return {};
     if (samplePerformanceFrame) {
-        performanceSample.inputMs =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - performanceWindowFrameStart)
-                .count();
+        performanceSample.inputMs = std::chrono::duration<double, std::milli>(FrameClock::now() - inputStart).count();
         const auto &pacing = m_view->GetLastPacingSample();
-        performanceSample.opportunity = m_frameWorkOwner->Opportunity();
         performanceSample.inputPhases = {pacing.inputBeginFrameMs,      pacing.inputSdlPollMs,
                                          pacing.inputQueuedDispatchMs,  pacing.inputImGuiDispatchMs,
                                          pacing.inputManagerDispatchMs, pacing.inputSyntheticDispatchMs,
@@ -1027,6 +1024,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         performanceSample.dispatchedMouseMotionCount = pacing.dispatchedMouseMotionCount;
         performanceSample.inputIdle = pacing.idleMode;
     }
+    if (finishStoppedFrame())
+        return {};
     // Surface capabilities may leave the extent to the application (Wayland,
     // Retina). Publish the current pixel extent, never the requested initial
     // window size, before surface/swapchain recreation consumes it.
@@ -1135,9 +1134,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 #if INFERNUX_FRAME_PROFILE
         const auto start = std::chrono::high_resolution_clock::now();
 #endif
-        if (m_vkCore) {
-            if (!m_vkCore->TryPrepareCurrentFrame(timeoutNanoseconds))
-                return false;
+        const bool ready = !m_vkCore || m_vkCore->TryPrepareCurrentFrame(timeoutNanoseconds);
+        if (m_vkCore && ready) {
             if (collectRetired)
                 m_vkCore->CollectRetiredGpuResources();
             // Commit SDL pixel-size changes before recording the frame.
@@ -1151,7 +1149,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         gpuPrepareMs =
             std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start).count();
 #endif
-        return true;
+        return ready;
     };
 
     // Input capture belongs to the host frame. Its draw data can be rebuilt
@@ -1224,6 +1222,11 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // opportunity leaves the camera's resident texture available as-is.
     frameScope.CloseCameraRequests();
     if (!slotReady) {
+        if (samplePerformanceFrame) {
+            performanceSample.gpuSlotUnavailable = true;
+            performanceSample.sceneMs = m_sceneUpdateMs;
+            performanceSample.guiMs = m_guiBuildMs;
+        }
         sceneManager.FinishStepPresentation(false);
         runDeferredTasks();
         RequestFullSpeedFrame();
@@ -1543,10 +1546,11 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     runDeferredTasks();
 
     if (samplePerformanceFrame) {
-        performanceSample.frameMs =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - performanceWindowFrameStart)
-                .count();
-        RecordFramePerformanceSample(performanceSample);
+        performanceSample.gameOnlyMs = m_gameOnlyFrameMs;
+        performanceSample.renderMs = m_lastGameRenderMs;
+        performanceSample.sceneMs = m_sceneUpdateMs;
+        performanceSample.guiMs = m_guiBuildMs;
+        performanceSample.prepareMs = m_prepareFrameMs;
     }
 
     // ========================================================================
@@ -3497,19 +3501,24 @@ uint64_t InxRenderer::BeginFramePerformanceWindow(size_t sampleCount)
     m_framePerformanceHistory.clear();
     m_framePerformanceSampleLimit = sampleCount;
     m_framePerformanceWindowActive = true;
+    m_framePerformanceStart = {};
     if (m_frameWorkOwner)
         m_frameWorkOwner->BeginSourceProfile();
     return m_frameCount + 1;
 }
 
-void InxRenderer::RecordFramePerformanceSample(RendererFramePerformanceSample sample)
+void InxRenderer::RecordFramePerformanceSample(const RenderFrameResult &result, FrameClock::time_point drawEnd,
+                                               double lateWorkMs)
 {
+    auto &sample = m_framePerformanceSample;
     sample.frame = m_frameCount;
-    sample.gameOnlyMs = m_gameOnlyFrameMs;
-    sample.renderMs = m_lastGameRenderMs;
-    sample.sceneMs = m_sceneUpdateMs;
-    sample.guiMs = m_guiBuildMs;
-    sample.prepareMs = m_prepareFrameMs;
+    sample.opportunity = m_frameWorkOwner->Opportunity();
+    sample.frameMs = std::chrono::duration<double, std::milli>(drawEnd - m_framePerformanceStart).count();
+    sample.hostMs = std::chrono::duration<double, std::milli>(FrameClock::now() - m_framePerformanceStart).count();
+    sample.lateWorkMs = lateWorkMs;
+    sample.submitted = result.submitted;
+    sample.presented = result.presentationAcceptedNs != 0;
+    m_framePerformanceStart = {};
     m_framePerformanceHistory.push_back(sample);
 
     if (m_framePerformanceHistory.size() == m_framePerformanceSampleLimit) {
@@ -3542,13 +3551,16 @@ RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
                                });
         return samples;
     };
-    snapshot.slowestFrames = slowest([](const auto &sample) { return sample.frameMs; });
+    snapshot.slowestFrames = slowest([](const auto &sample) { return sample.hostMs; });
     snapshot.slowestInputFrames = slowest([](const auto &sample) { return sample.inputMs - sample.inputPhases[7]; });
     for (const auto &sample : m_framePerformanceHistory) {
         snapshot.queuedInputEvents += sample.inputEventCount;
         snapshot.rawMouseMotions += sample.rawMouseMotionCount;
         snapshot.dispatchedMouseMotions += sample.dispatchedMouseMotionCount;
         snapshot.idleFrames += sample.inputIdle;
+        snapshot.submittedFrames += sample.submitted;
+        snapshot.presentedFrames += sample.presented;
+        snapshot.unavailableGpuFrames += sample.gpuSlotUnavailable;
     }
 
     const auto summarize = [](std::vector<double> values) {
@@ -3584,6 +3596,8 @@ RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
         return summarize(std::move(values));
     };
     snapshot.frame = metric([](const auto &sample) { return sample.frameMs; });
+    snapshot.host = metric([](const auto &sample) { return sample.hostMs; });
+    snapshot.lateWork = metric([](const auto &sample) { return sample.lateWorkMs; });
     snapshot.gameOnly = metric([](const auto &sample) { return sample.gameOnlyMs; });
     snapshot.render = metric([](const auto &sample) { return sample.renderMs; });
     snapshot.scene = metric([](const auto &sample) { return sample.sceneMs; });
@@ -4581,9 +4595,6 @@ bool InxRenderer::CaptureRuntimeViewPlans(RenderWorldPublication &publication, c
         if (view.editorView || publication.plans.count(view.cameraId) ||
             publication.viewParticipation.count(view.cameraId))
             continue;
-        const auto existing = m_gameRenderGraphs.find(view.cameraId);
-        auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
-        ScriptableRenderContext selection(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true, true);
         std::optional<bool> participates;
         if (previous) {
             const auto retained = previous->plans.find(view.cameraId);
@@ -4595,10 +4606,18 @@ bool InxRenderer::CaptureRuntimeViewPlans(RenderWorldPublication &publication, c
                     participates = selected->second;
             }
         }
-        if (!participates.has_value())
-            participates = m_renderPipeline->ShouldRenderView(selection.GetView());
+        if (!participates.has_value()) {
+            auto *source = SceneManager::Instance().FindRuntimeWorld(view.worldId);
+            if (!source)
+                throw std::logic_error("View participation requires its live source World");
+            const WorldExecutionScope owner(source);
+            participates = m_renderPipeline->ShouldRenderView(view);
+        }
         publication.viewParticipation.emplace(view.cameraId, *participates);
         if (!*participates) {
+            const auto existing = m_gameRenderGraphs.find(view.cameraId);
+            auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
+            ScriptableRenderContext selection(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true, true);
             selection.SkipView();
             publication.plans.emplace(view.cameraId, selection.CapturePlan());
         }
@@ -5120,9 +5139,11 @@ void InxRenderer::RequestGameScreenOutput(const std::string &consumer, uint64_t 
         worldId == manager.AuthoringWorld().id ? &manager.AuthoringWorld() : manager.FindRuntimeWorld(worldId);
     if (!world)
         throw std::invalid_argument("Game screen request refers to an unknown World");
-    const auto previous = GameScreens().Config(worldId);
-    GameScreens().Request(consumer, worldId, config, kind);
-    const auto desired = GameScreens().Config(worldId);
+    auto &screens = GameScreens();
+    const auto previous = screens.Config(worldId);
+    if (!screens.Request(consumer, worldId, config, kind))
+        return;
+    const auto desired = screens.Config(worldId);
     if (!(previous == desired))
         ResizeRelativeRenderTextures(worldId, desired.width, desired.height);
     m_gameCameraCacheValid = false;

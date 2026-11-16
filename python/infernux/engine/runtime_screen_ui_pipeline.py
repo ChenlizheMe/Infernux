@@ -56,9 +56,9 @@ class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
         if not context._has_screen_ui_snapshot and not context._uses_shared_scene_ui:
             self._submission.submit(
                 force=completed,
-                world_id=context.view.world_id,
-                target_size=(context.view.output_width, context.view.output_height),
-                camera_size=(context.view.pixel_width, context.view.pixel_height),
+                world_id=camera.world_id,
+                target_size=(camera.output_width, camera.output_height),
+                camera_size=(camera.pixel_width, camera.pixel_height),
                 include_world=not published_world_ui,
             )
             if completed and not self._submission.capture_completed(context):

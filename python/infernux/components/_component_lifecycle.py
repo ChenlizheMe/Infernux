@@ -24,6 +24,14 @@ _MISSING = object()
 _runtime_phase_presence_fn = None
 _structure_change_domains = None
 _runtime_change_types = None
+_NATIVE_RESULT_PHASES = {
+    'FIXED_SCRIPT': 'fixed_update',
+    'PHYSICS_SIMULATION': 'physics_pre_step',
+    'PHYSICS_POST_SCRIPT': 'physics_post_step',
+    'UPDATE_SCRIPT': 'update',
+    'ANIMATION_EVALUATION': 'animation_update',
+    'LATE_SCRIPT': 'late_update',
+}
 
 
 def _runtime_phase_presence(component_type: type) -> tuple[bool, ...]:
@@ -979,14 +987,7 @@ class RuntimeExecutionScheduler:
         self._counters["native_phase_dispatches"] += 1
 
     def resume_native_result_boundary(self, barrier):
-        phase = {
-            'FIXED_SCRIPT': 'fixed_update',
-            'PHYSICS_SIMULATION': 'physics_pre_step',
-            'PHYSICS_POST_SCRIPT': 'physics_post_step',
-            'UPDATE_SCRIPT': 'update',
-            'ANIMATION_EVALUATION': 'animation_update',
-            'LATE_SCRIPT': 'late_update',
-        }.get(barrier.name)
+        phase = _NATIVE_RESULT_PHASES.get(barrier.name)
         return phase is None or self._resume_native_phase(phase)
 
     def _resume_native_phase(self, phase):

@@ -694,6 +694,9 @@ void Infernux::SetEndFrameCallback(std::function<void(bool)> callback)
 
 void Infernux::FinishFrame(const RenderFrameResult &result)
 {
+    using Clock = std::chrono::steady_clock;
+    const bool samplePerformanceFrame = m_renderer && m_renderer->HasFramePerformanceSample();
+    const auto drawEnd = samplePerformanceFrame ? Clock::now() : Clock::time_point{};
     // Run() is outside Tick's guard, and Renderer has already returned. Keep
     // this owner callback inside the same no-reentry/no-cleanup frame boundary.
     ActiveFrameScope frameScope(m_tickActive);
@@ -707,12 +710,18 @@ void Infernux::FinishFrame(const RenderFrameResult &result)
         SceneManager::Instance().EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderPresented);
     }
     const bool foregroundReady = result.foregroundReady;
+    const auto lateStart = samplePerformanceFrame ? Clock::now() : Clock::time_point{};
     if (m_frameWork.AdvanceLate([this, foregroundReady] { return BackgroundGpuAvailability(foregroundReady); }))
         if (m_renderer)
             m_renderer->RequestFullSpeedFrame();
+    const double lateWorkMs =
+        samplePerformanceFrame ? std::chrono::duration<double, std::milli>(Clock::now() - lateStart).count() : 0.0;
     if (auto callback = m_endFrameCallback)
         callback(foregroundReady && !m_exitRequested.load(std::memory_order_acquire));
     m_frameWork.EndOpportunity();
+    // Callbacks can reset the measurement window. Start that window on the next DrawFrame.
+    if (samplePerformanceFrame && m_renderer->HasFramePerformanceSample())
+        m_renderer->RecordFramePerformanceSample(result, drawEnd, lateWorkMs);
 }
 
 void Infernux::SetPreSceneUpdateCallback(std::function<void(float)> callback)
