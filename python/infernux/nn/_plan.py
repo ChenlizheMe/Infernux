@@ -19,6 +19,7 @@ from infernux._work import _Operation, _ValueLayout, _WorkRange, _WorkCursor, _b
 from infernux._compiler.dataflow import Access, Dataflow
 
 _capture = ContextVar("infernux_nn_capture", default=None)
+_jvp_scope = ContextVar("infernux_nn_jvp_scope", default=None)
 
 
 @dataclass(frozen=True)
@@ -275,6 +276,10 @@ def _value_forward(layer):
     return p.concatenate, dict(_WIDTH=width, _STRIDE=stride, _LEFT=left, _RIGHT=width - left)
 
 
+def _binary_pull(layer, inputs, seed, output, side):
+    return p.binary_vjp, (*inputs, seed, output), dict(_BINARY_OP=_BINARY[layer.kind], _SIDE=side)
+
+
 def _value_pulls(layer, inputs, gradient, empty):
     """The same VJP bindings prepare programs, execute and describe demand."""
     if layer.kind == "grid_sample":
@@ -305,7 +310,7 @@ def _value_pulls(layer, inputs, gradient, empty):
             function = p.pad2d_vjp if layer.kind == "pad2d" else p.pixel_shuffle_vjp
             yield function, (gradient, output), facts
         elif layer.kind in _BINARY:
-            yield p.binary_vjp, (*inputs, gradient, output), dict(_BINARY_OP=_BINARY[layer.kind], _SIDE=side)
+            yield _binary_pull(layer, inputs, gradient, output, side)
         elif layer.kind == "affine":
             yield p.affine_vjp, (gradient, output), dict(_SCALE=layer.options[0])
         elif layer.kind == "reshape":
@@ -1211,6 +1216,7 @@ class Plan:
             forward = None
             raise
         self.loss_programs = {}
+        self._tangent_programs = {}
         self.scalar_storage_bytes = (max((4 * (len(program.parameter_kinds)-len(program.array_parameters))
                                          for program in self.programs), default=0) if self.device == "cpu" else 0)
         self.add = self.zero = None
@@ -1790,9 +1796,9 @@ def _backward_work(run, cotangents, facts, empty, *, clear_grad=False):
     return operations, updates
 
 
-def _reverse_graph(sources):
+def _invocation_graph(sources, *, scope=None):
     """Identify the producer runs and leaf destinations reachable from these outputs."""
-    pending = [(run, cotangent.output_index) for run, cotangent in sources]
+    pending = list(sources)
     outputs, dependencies, leaves = {}, {}, {}
     while pending:
         run, output_index = pending.pop()
@@ -1809,36 +1815,38 @@ def _reverse_graph(sources):
         for index, (value, spec) in enumerate(zip(operands, plan.inputs)):
             if not spec.requires_grad or index not in result.backward_values:
                 continue
-            if value._run is None:
+            producer = value._run
+            if producer is None or (scope is not None and producer.jvp_scope is not scope):
                 leaves[id(value)] = value
             else:
-                producers[value._run] = None
-                pending.append((value._run, value._value_index))
+                producers[producer] = None
+                pending.append((producer, value._value_index))
         for (_, parameter), tracked in zip(plan.root._named, result.grad_parameters):
             if tracked:
                 leaves[id(parameter)] = parameter
-    order = tuple(reversed(tuple(TopologicalSorter(dependencies).static_order())))
+    order = tuple(TopologicalSorter(dependencies).static_order())
     return order, outputs, leaves
 
 
-def _check_reverse_run(run):
+def _check_gradient_run(run, action="backward"):
     plan = run.plan
     plan._check_current()
     if (run.consumed or plan.root._state is not run.state
             or any(value.requires_grad != spec.requires_grad for value, spec in zip(run.inputs, plan.inputs))):
-        raise RuntimeError("backward execution is already consumed or its parameter state has changed")
+        raise RuntimeError(f"{action} execution is already consumed or its parameter state has changed")
 
 
 def _reverse_runs(sources, *, inputs=None, allow_unused=False):
     """Collect cotangents at each invocation and submit their VJPs as one Work cursor."""
     sources = tuple(sources)
-    order, outputs, leaves = _reverse_graph(sources)
+    forward_order, outputs, leaves = _invocation_graph((run, cotangent.output_index) for run, cotangent in sources)
+    order = forward_order[::-1]
     roots = {id(run.plan.root): run.plan.root for run in order}
     with ExitStack() as locks:
         for identity in sorted(roots):
             locks.enter_context(roots[identity]._lock)
         for run in order:
-            _check_reverse_run(run)
+            _check_gradient_run(run)
         _check_storage(tuple(run.values[index] for run, indices in outputs.items() for index in indices))
         if inputs is None:
             facts = _grad_facts(leaves.values())
@@ -1891,7 +1899,7 @@ def _reverse_runs(sources, *, inputs=None, allow_unused=False):
             _execute_work(cursor, device, programs)
             if inputs is None:
                 for run in order:
-                    _check_reverse_run(run)
+                    _check_gradient_run(run)
                 if not _grads_current(facts):
                     raise RuntimeError("backward gradient bindings changed before publication")
                 for destination, value in updates.values():
@@ -1962,6 +1970,8 @@ class _Run:
     """One execution's storage and operation cursor, never an executor or queue."""
     def __init__(self, plan, state, inputs, values, *, retain_for_backward, managed, borrowed=()):
         self.plan, self.state, self.inputs, self.values = plan, state, inputs, values
+        # Runs from outside the transformed callable are captured constants.
+        self.jvp_scope = _jvp_scope.get()
         self._borrowed = frozenset(id(value) for value in borrowed)
         self.managed = managed
         self.output_index = None

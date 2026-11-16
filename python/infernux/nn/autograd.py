@@ -1,6 +1,7 @@
 """First-order differentiation of NN values."""
 
 from ._tensor import Tensor
+from ._jvp import jvp
 
 
 def grad(outputs, inputs, grad_outputs=None, retain_graph=None, create_graph=False,

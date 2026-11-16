@@ -147,6 +147,76 @@ def check_composition(device):
     print("Composed-model and shared-invocation VJPs passed on", device, flush=True)
 
 
+def check_jvp(device):
+    from infernux.nn import _jvp
+
+    class Mix(nn.Module):
+        def forward(self, left, right, gain):
+            mixed = left + right
+            return ((mixed * gain * 1.5 + .25).sum(),
+                    mixed.sigmoid().transpose(0, 1)[1:, :].reshape(2))
+
+    encoder = nn.Sequential(nn.Linear(2, 2, device=device), nn.Tanh())
+    head = nn.Linear(2, 2, device=device)
+    mix = Mix()
+    weight = np.array([[.5, -.75], [-.25, 1.25]], dtype=np.float32)
+    projection = np.array([[1., .5], [-1., .25]], dtype=np.float32)
+    bias, offset = np.array([.25, -.4], dtype=np.float32), np.array([.1, -.2], dtype=np.float32)
+    encoder.load_state_dict({"0.weight": nn.tensor(weight), "0.bias": nn.tensor(bias)})
+    head.load_state_dict({"weight": nn.tensor(projection), "bias": nn.tensor(offset)})
+    xs, gs = np.array([[-.6, .25], [.5, -.75]], dtype=np.float32), np.array([[.8]], dtype=np.float32)
+    vs = (np.array([[.2, -.3], [-.75, .5]], dtype=np.float32),
+          np.array([[-.1, .6], [.5, -.8]], dtype=np.float32), np.array([[-.25]], dtype=np.float32))
+    x, gain = (nn.tensor(value, device=device, requires_grad=True) for value in (xs, gs))
+    tangents = tuple(nn.tensor(value, device=device) for value in vs)
+    x.grad = old_grad = nn.ones_like(x)
+    old = head(x)
+    calls = []
+
+    def model(first, second, scale):
+        calls.append(True)
+        left, right = head(encoder(first)), head(encoder(second))
+        return (*mix(left, right, scale), old, second, left.detach())
+
+    with nn.no_grad(), patch.object(_jvp, "_execute_work", wraps=_jvp._execute_work) as execute:
+        values, directions = nn.autograd.jvp(model, (x, x, gain), tangents)
+        assert calls == [True] and execute.call_count == 1
+        assert not nn.is_grad_enabled()
+
+    hidden = np.tanh(xs @ weight.T + bias)
+    raw = hidden @ projection.T + offset
+    d_mixed = ((vs[0] + vs[1]) @ weight.T * (1. - hidden ** 2)) @ projection.T
+    sigmoid = 1. / (1. + np.exp(-2. * raw))
+    expected = (((2. * raw * gs) * 1.5 + .25).sum(), sigmoid[:, 1], xs @ projection.T + offset, xs, raw)
+    derivatives = ((1.5 * (d_mixed * gs + 2. * raw * vs[2])).sum(),
+                   (sigmoid * (1. - sigmoid) * d_mixed)[:, 1], np.zeros_like(xs), vs[1], np.zeros_like(xs))
+    for actual, wanted in zip((*values, *directions), (*expected, *derivatives), strict=True):
+        assert actual.device == device and not actual.requires_grad
+        np.testing.assert_allclose(actual.cpu().numpy(), wanted, rtol=3e-5, atol=3e-6)
+
+    inputs = tuple(nn.tensor(value, device=device, requires_grad=True) for value in (xs, xs, gs))
+    seeds = (np.array(.6, dtype=np.float32), np.array([-.75, .25], dtype=np.float32))
+    vjp = nn.autograd.grad(model(*inputs)[:2], inputs, tuple(nn.tensor(seed, device=device) for seed in seeds))
+    left_dot = sum((value.cpu().numpy() * seed).sum() for value, seed in zip(directions[:2], seeds))
+    right_dot = sum((value.cpu().numpy() * seed).sum() for value, seed in zip(vjp, vs))
+    np.testing.assert_allclose(left_dot, right_dot, rtol=3e-5, atol=3e-6)
+    assert x.grad is old_grad and head.weight.grad is None
+    assert nn.autograd.grad(old.sum(), x)[0] is not None
+
+    detached = x.detach()
+    squared, squared_direction = nn.autograd.jvp(F.square, detached, tangents[0])
+    assert not detached.requires_grad
+    np.testing.assert_allclose(squared.cpu().numpy(), xs * xs, rtol=3e-5, atol=3e-6)
+    np.testing.assert_allclose(squared_direction.cpu().numpy(), 2. * xs * vs[0], rtol=3e-5, atol=3e-6)
+
+    # Consuming the earlier reverse tape leaves its primal usable as a constant.
+    _, captured_direction = nn.autograd.jvp(lambda value: mix(value, old, gain)[0], detached, tangents[0])
+    np.testing.assert_allclose(captured_direction.item(), (1.5 * vs[0] * gs).sum(), rtol=3e-5, atol=3e-6)
+    with np.testing.assert_raises_regex(NotImplementedError, "log_softmax"):
+        nn.autograd.jvp(lambda value: F.log_softmax(value, dim=1), x, tangents[0])
+    print("Composed-model directional derivatives and JVP/VJP duality passed on", device, flush=True)
+
+
 def main():
     workspace = tempfile.TemporaryDirectory(prefix="infernux-slang-network-")
     project = Path(workspace.name)
@@ -202,6 +272,8 @@ def main():
         check_grad("gpu")
         check_composition("cpu")
         check_composition("gpu")
+        check_jvp("cpu")
+        check_jvp("gpu")
     finally:
         inx.compute._release_engine_resources()
         native.cleanup()

@@ -52,6 +52,16 @@ grid_sample 前向使用真实的邻点 gather。动态浮点地址只在显式�
 
 `with nn.no_grad():` 和 `@nn.no_grad()` 暂停梯度记录。外部推理不保留反向激活；它不会把同签名的后续训练永久变成无梯度调用。模型 forward 内部的 no_grad 和 `value.detach()` 捕获为真正停止反向依赖的节点，保存到 INM 后依然成立。未使用参数保持 None 梯度，Adam 不为它们推进动量和计数。无梯度输出仍可计算 MSE/稠密交叉熵损失值；同设备模型输出复用其已准备或烘焙的目标程序，跨设备复制后不携带原设备的程序来源。
 
+```python
+value, directional_derivative = nn.autograd.jvp(
+    lambda inputs: head(encoder(inputs)).sum(), x, direction
+)
+```
+
+`jvp` 在 CPU 或 Vulkan 上调用 `func` 一次，复用该次前向保存的张量，再用一个 Work 游标沿调用顺序传播切向。闭包捕获的张量和模型参数视为常量，调用保留已有 `.grad`。同一个张量传入两个位置时可指定不同的输入方向。`func` 内部的 `detach()` 和 `no_grad()` 停止切向传播，断开的输出返回零切向。
+
+当前切向规则覆盖 `Linear`、标量逐元素函数和算术、广播展开、变形、转置、切片及 `sum`。逐元素切向复用现有解析反向规则，Vulkan 上编译为 Slang kernel。带活动切向的其他算子会报出算子名。`jvp` 目前用于有源码的普通 NN 调用，范围为一阶输入导数。MSE/交叉熵专用损失、受管 Program、烘焙模型和用户声明的 compute 自定义函数仍使用各自现有接口。
+
 | API | 当前行为 | 支持范围 |
 | --- | --- | --- |
 | `parameters()`、`named_parameters()` | 按注册顺序枚举参数 | 递归、去重枚举；不支持关闭递归或关闭去重 |
@@ -64,6 +74,7 @@ grid_sample 前向使用真实的邻点 gather。动态浮点地址只在显式�
 | `nn.functional.cross_entropy(input, target, ignore_index=-100, reduction="mean")` | 稳定交叉熵与反向 | 支持 float32 概率目标或 int64 类别目标，mean/sum；类别轴为第 1 轴，单向量为第 0 轴；整数目标支持完整 int64 ignore_index；暂不支持 weight、reduction="none" 或平滑 |
 | `loss.backward()`、`output.backward(gradient)` | 反向传播并累积参数梯度 | MSE/交叉熵使用默认种子；普通输出可传同形、同设备的 detached 梯度，单元素可省略；不支持高阶梯度和保留反向图 |
 | `nn.autograd.grad(outputs, inputs, grad_outputs=None, allow_unused=...)` | 返回指定叶张量和参数的梯度，保留已有 `.grad` | 多次普通调用的输出或损失可在同一设备与计算宿主上共同反传。共享前向只反传一次，贡献按叶张量和参数身份累积。输入顺序决定返回顺序。非标量输出需要匹配的 detached 种子，MSE 和交叉熵使用单位种子。调用消耗所用的反向记录。未用输入默认报错，`allow_unused=True` 返回 `None`，`materialize_grads=True` 返回零张量。 |
+| `nn.autograd.jvp(func, primals, tangents)` | 一次求出函数值及输入方向导数 | 输入与切向为同形、同设备、同计算宿主的 float32 Tensor，单个 Tensor 或成组传入。输出为一对 detached 结果，保留 `func` 返回的单 Tensor 或 Tensor 元组结构。 |
 | `nn.optim.SGD(model.parameters(), lr=...)` | 普通 SGD | 一个完整模型参数域、一个存活优化器；当前不支持动量、权重衰减、参数子组或 closure |
 | `nn.optim.Adam(model.parameters(), lr=..., betas=(.9,.999), eps=1e-8, weight_decay=0)` | Adam 与耦合 L2 衰减 | 参数、两组动量和逐参数计数一起提交；None 梯度跳过，零梯度正常更新；暂不支持 AMSGrad、foreach、fused 或 AdamW |
 | `optimizer.zero_grad(set_to_none=True)` | 清除或置零梯度 | `True` 释放梯度，`False` 执行已编译置零操作 |
