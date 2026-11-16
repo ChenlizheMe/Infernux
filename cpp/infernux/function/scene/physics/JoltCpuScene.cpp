@@ -1,4 +1,5 @@
 #include "JoltCpuScene.h"
+#include "../Rigidbody.h"
 
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
@@ -166,6 +167,22 @@ JPH::ValidateResult JoltCpuScene::OnContactValidate(const JPH::Body &a, const JP
     // Acceptance is per leaf: accepting the whole body pair bypasses filters
     // on the other Colliders of a compound.
     return JPH::ValidateResult::AcceptContact;
+}
+
+JPH::ValidateResult JoltCpuScene::OnCCDContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg origin,
+                                                       const JPH::CollideShapeResult &hit)
+{
+    if (a.IsDynamic() && b.IsDynamic() &&
+        m_bodies.at(static_cast<uint32_t>(a.GetUserData())).collisionDetectionMode !=
+            static_cast<int>(CollisionDetectionMode::ContinuousDynamic) &&
+        m_bodies.at(static_cast<uint32_t>(b.GetUserData())).collisionDetectionMode !=
+            static_cast<int>(CollisionDetectionMode::ContinuousDynamic))
+        return JPH::ValidateResult::RejectContact;
+    const auto &surfaceA = GetSurface(static_cast<uint32_t>(a.GetUserData()), hit.mSubShapeID1);
+    const auto &surfaceB = GetSurface(static_cast<uint32_t>(b.GetUserData()), hit.mSubShapeID2);
+    if (surfaceA.sensor || surfaceB.sensor)
+        return JPH::ValidateResult::RejectContact;
+    return OnContactValidate(a, b, origin, hit);
 }
 
 namespace

@@ -40,21 +40,13 @@ static JPH::Mat44 ScaledAuthoredInertia(const RigidbodyMassProperties &propertie
 
 static PreparedBodyMass PrepareMassConfiguration(const JPH::MassProperties &properties)
 {
-    const auto diagonal = properties.mInertia.GetDiagonal3();
-    const float magnitude = std::max({diagonal.GetX(), diagonal.GetY(), diagonal.GetZ()});
-    if (!std::isfinite(magnitude) || magnitude <= 0.0f)
-        throw std::invalid_argument("rigidbody inertia is not finite positive at the current scale");
-    auto normalized = properties;
-    for (int column = 0; column < 3; ++column)
-        for (int row = 0; row < 3; ++row)
-            normalized.mInertia(row, column) = float(double(properties.mInertia(row, column)) / magnitude);
     JPH::Mat44 axes;
     JPH::Vec3 moments;
-    if (!normalized.DecomposePrincipalMomentsOfInertia(axes, moments))
+    if (!properties.DecomposePrincipalMomentsOfInertia(axes, moments))
         throw std::invalid_argument("rigidbody inertia cannot be decomposed at the current scale");
     JPH::Vec3 inverse = JPH::Vec3::sZero();
     for (int i = 0; i < 3; ++i) {
-        const double moment = double(moments[i]) * magnitude;
+        const double moment = moments[i];
         const float value = float(1.0 / moment);
         if (moment <= 0.0 || !std::isfinite(value) || value <= 0.0f)
             throw std::invalid_argument("rigidbody inverse inertia is not representable at the current scale");

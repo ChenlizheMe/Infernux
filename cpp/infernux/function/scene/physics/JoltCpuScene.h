@@ -7,8 +7,8 @@
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include "InfernuxJoltJobSystemAdapter.h"
+#include "JoltCpuActor.h"
 #include "PhysicsContactTypes.h"
-#include <function/resources/PhysicMaterial/PhysicMaterial.h>
 
 #include <cstdint>
 #include <unordered_map>
@@ -21,7 +21,6 @@ class CompoundShape;
 namespace infernux
 {
 struct EngineConfig;
-struct PreparedCpuActor;
 
 /// Shared scratch and worker access, not another pool for each RuntimeWorld.
 /// The owner advances CPU worlds serially; Jolt may parallelize a world's step
@@ -60,15 +59,7 @@ class JoltCpuScene final : private JPH::ContactListener
 
     // Captured author values are immutable throughout Update. Jolt workers do
     // not call live Components or resolve their targets while solving contacts.
-    struct Surface
-    {
-        PhysicsTargetReference target;
-        uint64_t colliderId, generation;
-        uint32_t layer, collisionMask;
-        float friction, restitution;
-        PhysicsMaterialCombine frictionCombine, bounceCombine;
-        bool sensor;
-    };
+    using Surface = PreparedCpuActor::Surface;
     [[nodiscard]] const Surface &GetSurface(uint32_t bodyId, JPH::SubShapeID subshape) const;
     [[nodiscard]] size_t GetBodyCount() const noexcept
     {
@@ -90,10 +81,13 @@ class JoltCpuScene final : private JPH::ContactListener
         JPH::RefConst<JPH::Shape> shape;
         const JPH::CompoundShape *memberCompound = nullptr;
         std::vector<Surface> surfaces;
+        int collisionDetectionMode = 0;
     };
     JPH::BodyID CreateBody(uint32_t bodyId, const JPH::BodyCreationSettings &settings, BodyRecord record);
     JPH::ValidateResult OnContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg,
                                           const JPH::CollideShapeResult &hit) override;
+    JPH::ValidateResult OnCCDContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg origin,
+                                             const JPH::CollideShapeResult &hit) override;
     void OnContactAdded(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &manifold,
                         JPH::ContactSettings &settings) override;
     void OnContactPersisted(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &manifold,

@@ -4,6 +4,7 @@
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include "PhysicsECSStore.h"
 #include "PhysicsMass.h"
+#include <function/resources/PhysicMaterial/PhysicMaterial.h>
 
 #include <optional>
 #include <vector>
@@ -16,9 +17,19 @@ namespace infernux
 /// Initial velocities are consumed by the owner only after creation succeeds.
 struct PreparedCpuActor
 {
+    struct Surface
+    {
+        PhysicsTargetReference target;
+        uint64_t colliderId, generation;
+        uint32_t layer, collisionMask;
+        float friction, restitution;
+        PhysicsMaterialCombine frictionCombine, bounceCombine;
+        bool sensor;
+    };
     JPH::BodyCreationSettings settings;
     std::optional<PreparedBodyMass> mass;
-    std::vector<Collider *> members;
+    std::vector<Surface> surfaces;
+    int collisionDetectionMode = 0;
     PhysicsECSStore::RigidbodyHandle initialRigidbody;
     bool hasInitialLinearVelocity = false;
     bool hasInitialAngularVelocity = false;

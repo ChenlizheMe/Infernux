@@ -36,9 +36,19 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
 {
     TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
     PreparedCpuActor prepared;
-    auto shape = BuildActorShape(actor, nullptr, nullptr, &prepared.members);
+    std::vector<Collider *> members;
+    auto shape = BuildActorShape(actor, nullptr, nullptr, &members);
     if (!shape)
         return std::nullopt;
+    prepared.surfaces.reserve(members.size());
+    for (const auto *collider : members) {
+        const auto layer = collider->GetGameObject()->GetLayer();
+        prepared.surfaces.push_back({PhysicsTargetReference(collider), collider->GetComponentID(),
+                                     collider->GetLifetimeGeneration(), static_cast<uint32_t>(layer),
+                                     TagLayerManager::Instance().GetLayerCollisionMask(layer), collider->GetFriction(),
+                                     collider->GetBounciness(), collider->GetFrictionCombine(),
+                                     collider->GetBounceCombine(), collider->IsTrigger()});
+    }
 
     const auto *body = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
     const auto *transform = actor.owner->GetTransform();
@@ -54,18 +64,17 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
     auto &settings = prepared.settings;
     settings = JPH::BodyCreationSettings(shape, JPH::RVec3(position.x, position.y, position.z),
                                          JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w), motion,
-                                         BodyLayer(actor, prepared.members, body != nullptr));
+                                         BodyLayer(actor, members, body != nullptr));
     settings.mAllowDynamicOrKinematic = body != nullptr;
     settings.mApplyGyroscopicForce = true;
-    settings.mIsSensor =
-        !prepared.members.empty() && std::all_of(prepared.members.begin(), prepared.members.end(),
-                                                 [](const Collider *member) { return member->IsTrigger(); });
+    settings.mIsSensor = !prepared.surfaces.empty() && std::all_of(prepared.surfaces.begin(), prepared.surfaces.end(),
+                                                                   [](const auto &surface) { return surface.sensor; });
     // Preserve per-Collider material/filter/trigger identity in compounds.
-    settings.mUseManifoldReduction = prepared.members.size() <= 1;
+    settings.mUseManifoldReduction = members.size() <= 1;
     settings.mCollideKinematicVsNonDynamic = true;
-    if (!prepared.members.empty()) {
-        settings.mFriction = prepared.members.front()->GetFriction();
-        settings.mRestitution = prepared.members.front()->GetBounciness();
+    if (!prepared.surfaces.empty()) {
+        settings.mFriction = prepared.surfaces.front().friction;
+        settings.mRestitution = prepared.surfaces.front().restitution;
     }
     if (body) {
         const auto &properties = body->GetAuthoredMassProperties();
@@ -79,9 +88,11 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
             axes * JPH::Mat44::sScale(mass.inverse.Reciprocal()) * axes.Transposed3x3();
         settings.mAllowedDOFs =
             frozen ? JPH::EAllowedDOFs::All : static_cast<JPH::EAllowedDOFs>((~(body->GetConstraints() >> 1)) & 0x3f);
-        settings.mMotionQuality = motion == JPH::EMotionType::Dynamic && body->GetCollisionDetectionMode() != 0
-                                      ? JPH::EMotionQuality::LinearCast
-                                      : JPH::EMotionQuality::Discrete;
+        prepared.collisionDetectionMode = body->GetCollisionDetectionMode();
+        settings.mMotionQuality =
+            motion == JPH::EMotionType::Dynamic && !members.empty() && prepared.collisionDetectionMode != 0
+                ? JPH::EMotionQuality::LinearCast
+                : JPH::EMotionQuality::Discrete;
         settings.mLinearDamping = body->GetDrag();
         settings.mAngularDamping = body->GetAngularDrag();
         settings.mMaxLinearVelocity = body->GetMaxLinearVelocity();
@@ -105,29 +116,25 @@ JPH::BodyID JoltCpuScene::CreateBody(uint32_t bodyId, const PreparedCpuActor &ac
 {
     BodyRecord record;
     record.shape = actor.settings.GetShape();
-    if (actor.members.size() > 1) {
+    if (actor.surfaces.size() > 1) {
         const auto *root = record.shape.GetPtr();
         if (root->GetSubType() == JPH::EShapeSubType::OffsetCenterOfMass)
             root = static_cast<const JPH::OffsetCenterOfMassShape *>(root)->GetInnerShape();
         record.memberCompound = static_cast<const JPH::CompoundShape *>(root);
     }
-    record.surfaces.reserve(actor.members.size());
-    for (const auto *collider : actor.members) {
-        const auto layer = collider->GetGameObject()->GetLayer();
-        record.surfaces.push_back({PhysicsTargetReference(collider), collider->GetComponentID(),
-                                   collider->GetLifetimeGeneration(), static_cast<uint32_t>(layer),
-                                   TagLayerManager::Instance().GetLayerCollisionMask(layer), collider->GetFriction(),
-                                   collider->GetBounciness(), collider->GetFrictionCombine(),
-                                   collider->GetBounceCombine(), collider->IsTrigger()});
-    }
-    const auto native = CreateBody(bodyId, actor.settings, std::move(record));
-    if (actor.mass && (uint32_t(actor.settings.mAllowedDOFs) & 0x38u) != 0) {
-        // Native creation initializes mass/DOFs. Install the shared validated
-        // eigensystem before broadphase publication: Jolt's generic tensor
-        // decomposition uses an absolute near-zero test unsuitable for tiny
-        // authored robot links. Do not substitute a sphere's inertia.
+    record.surfaces = actor.surfaces;
+    record.collisionDetectionMode = actor.collisionDetectionMode;
+    auto settings = actor.settings;
+    // Body creation's raw setters require already-clamped velocities. Install
+    // authored velocities through the same native constrained/clamped path as
+    // later commands, before the body is exposed to broadphase.
+    settings.mLinearVelocity = settings.mAngularVelocity = JPH::Vec3::sZero();
+    const auto native = CreateBody(bodyId, settings, std::move(record));
+    if (actor.mass) {
         JPH::BodyLockWrite lock(m_system.GetBodyLockInterfaceNoLock(), native);
-        lock.GetBody().GetMotionProperties()->SetInverseInertia(actor.mass->inverse, actor.mass->axes);
+        auto &motion = *lock.GetBody().GetMotionProperties();
+        motion.SetLinearVelocityClamped(actor.settings.mLinearVelocity);
+        motion.SetAngularVelocityClamped(actor.settings.mAngularVelocity);
     }
     return native;
 }
