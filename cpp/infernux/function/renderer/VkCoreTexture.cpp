@@ -1,5 +1,6 @@
 #include "InxError.h"
 #include "InxVkCoreModular.h"
+#include "MaterialSamplerState.h"
 #include "TextureUploadBuilder.h"
 #include "vk/RhiVulkanTypes.h"
 #include <algorithm>
@@ -384,56 +385,13 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
     // Simulation volumes use point or linear interpolation at a single position.
     const int anisoLevel = filterOverride ? 1 : infTex->GetAnisoLevel();
     rhi::SamplerDesc sampler;
-    sampler.maxLod = static_cast<float>(infTex->GetMipCount() - 1);
-    const auto &capabilities = m_backend.Device().GetCapabilities();
-    const float deviceMaxAnisotropy =
-        capabilities.features.samplerAnisotropy ? (std::max)(1.0f, capabilities.limits.maxSamplerAnisotropy) : 1.0f;
-    const float requestedAnisotropy = anisoLevel < 0 ? deviceMaxAnisotropy : static_cast<float>(anisoLevel);
-    sampler.maxAnisotropy = (std::min)((std::max)(1.0f, requestedAnisotropy), deviceMaxAnisotropy);
-    if (filterMode == "point") {
-        sampler.minFilter = rhi::FilterMode::Nearest;
-        sampler.magFilter = rhi::FilterMode::Nearest;
-        sampler.mipFilter = rhi::FilterMode::Nearest;
-        sampler.maxAnisotropy = 1.0f;
-    } else if (filterMode == "trilinear") {
-        sampler.mipFilter = rhi::FilterMode::Linear;
-    } else if (filterMode == "linear" || filterMode == "bilinear") {
-        sampler.mipFilter = rhi::FilterMode::Nearest;
-    } else {
-        INXLOG_ERROR("TextureResolver: unsupported filter mode '", filterMode, "' for texture ", textureGuid);
+    try {
+        sampler = MaterialSamplerDescription(filterMode, wrapMode, anisoLevel, infTex->GetMipCount(),
+                                             m_backend.Device().GetCapabilities(),
+                                             samplerOverride ? *samplerOverride : MaterialTextureSampler{});
+    } catch (const std::invalid_argument &error) {
+        INXLOG_ERROR("TextureResolver: ", error.what(), ": ", textureGuid);
         return {TextureResolveStatus::Failed, {}};
-    }
-
-    if (wrapMode == "clamp")
-        sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::ClampToEdge;
-    else if (wrapMode == "mirror")
-        sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::MirroredRepeat;
-
-    if (samplerOverride) {
-        const auto filter = [](MaterialSamplerFilter value, rhi::FilterMode inherited) {
-            if (value == MaterialSamplerFilter::Nearest)
-                return rhi::FilterMode::Nearest;
-            if (value == MaterialSamplerFilter::Linear)
-                return rhi::FilterMode::Linear;
-            return inherited;
-        };
-        const auto address = [](MaterialSamplerAddress value, rhi::AddressMode inherited) {
-            if (value == MaterialSamplerAddress::Repeat)
-                return rhi::AddressMode::Repeat;
-            if (value == MaterialSamplerAddress::Clamp)
-                return rhi::AddressMode::ClampToEdge;
-            if (value == MaterialSamplerAddress::Mirror)
-                return rhi::AddressMode::MirroredRepeat;
-            return inherited;
-        };
-        sampler.minFilter = filter(samplerOverride->minFilter, sampler.minFilter);
-        sampler.magFilter = filter(samplerOverride->magFilter, sampler.magFilter);
-        sampler.mipFilter = filter(samplerOverride->mipFilter, sampler.mipFilter);
-        sampler.addressU = address(samplerOverride->addressU, sampler.addressU);
-        sampler.addressV = address(samplerOverride->addressV, sampler.addressV);
-        sampler.addressW = address(samplerOverride->addressW, sampler.addressW);
-        if (sampler.minFilter == rhi::FilterMode::Nearest && sampler.magFilter == rhi::FilterMode::Nearest)
-            sampler.maxAnisotropy = 1.0f;
     }
 
     // Cache key uses GUID so that a renamed file still shares its cache entry

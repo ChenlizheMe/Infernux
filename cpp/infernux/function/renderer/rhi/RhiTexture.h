@@ -232,6 +232,44 @@ class TextureGpuView final
     mutable ResourceIndex m_bindlessIndex{};
 };
 
+/// A material sampler override retains the same image publication. It never
+/// duplicates or reuploads the texture, and retires its sampler with consumers.
+[[nodiscard]] inline std::shared_ptr<const TextureGpuView>
+WithTextureSampler(Device &device, std::shared_ptr<const TextureGpuView> source, const SamplerDesc &desc)
+{
+    struct Owner
+    {
+        Device &device;
+        std::shared_ptr<DeviceLifetime> lifetime;
+        std::shared_ptr<const TextureGpuView> source;
+        SamplerHandle sampler;
+
+        Owner(Device &ownerDevice, std::shared_ptr<const TextureGpuView> ownerSource)
+            : device(ownerDevice), lifetime(ownerDevice.GetLifetime()), source(std::move(ownerSource))
+        {
+        }
+        ~Owner()
+        {
+            if (lifetime) {
+                std::shared_lock lock(lifetime->gate);
+                if (lifetime->alive.load(std::memory_order_acquire))
+                    device.Release(sampler);
+            } else {
+                device.Release(sampler);
+            }
+        }
+    };
+    auto owner = std::make_shared<Owner>(device, source);
+    owner->sampler = device.CreateSampler(desc);
+    if (!owner->sampler.IsValid())
+        return {};
+    const auto sampler = owner->sampler;
+    return std::make_shared<const TextureGpuView>(source->GetSourceId(), source->GetRevision(), source->GetTexture(),
+                                                  source->GetView(), sampler, source->GetResidentBytes(),
+                                                  std::move(owner), source->GetFormat(), source->GetViewDesc(),
+                                                  source->GetUploadSubmission());
+}
+
 /// Stable indirection owned by the residency cache and consumers. Asset reload
 /// publishes a complete TextureGpuView atomically; readers never query an
 /// unrelated version source and never observe handles from different revisions.

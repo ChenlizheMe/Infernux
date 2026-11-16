@@ -1,3 +1,4 @@
+#include <function/renderer/MaterialSamplerState.h>
 #include <function/renderer/shader/DeviceShaderProgram.h>
 #include <function/renderer/shader/MaterialValueCopy.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
@@ -284,9 +285,7 @@ void Run()
     sourceViewDesc.usage = rhi::TextureUsageFlags::Sampled;
     const auto sourceView = device.CreateTextureView(sourceViewDesc);
     Require(source.IsValid() && sourceView.IsValid(), "UNORM storage + sampled sRGB view failed");
-    rhi::SamplerDesc samplerDesc;
-    samplerDesc.magFilter = samplerDesc.minFilter = rhi::FilterMode::Nearest;
-    samplerDesc.addressU = samplerDesc.addressV = rhi::AddressMode::ClampToEdge;
+    const auto samplerDesc = MaterialSamplerDescription("point", "clamp", 1, 1, device.GetCapabilities());
     const auto sampler = device.CreateSampler(samplerDesc);
     rhi::TextureDesc generatedDesc;
     generatedDesc.width = generatedDesc.height = 2;
