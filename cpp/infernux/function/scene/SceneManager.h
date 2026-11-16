@@ -670,7 +670,8 @@ class SceneManager
     void ReleaseSkeletonBones(SkeletonInstance *skeleton, const std::vector<Transform *> &bones);
     void QueueSkeletonPose(SkeletonInstance *skeleton);
     void PublishSkeletonPoses();
-    void CollectPresentationPoseTransforms(std::vector<Transform *> &world, std::vector<Transform *> &local) const;
+    void CollectPresentationWorldTransforms(std::vector<Transform *> &world) const;
+    void CollectPendingSkeletonTransforms(std::vector<Transform *> &bones) const;
 
     /// Publish procedural vertex/bounds changes without rebuilding the
     /// renderer registry. Camera caches must recull these updates even when
@@ -703,6 +704,7 @@ class SceneManager
 
   private:
     friend class SceneCommitToken;
+    friend class PhysicsWorld;
 
     SceneManager();
     ~SceneManager() = default;
@@ -714,6 +716,7 @@ class SceneManager
     FrameWorkFacts DescribeRuntimeFrames();
     bool AdvanceRuntimeFrame(bool gpu, uint64_t worldId);
     bool ServicePausedAuthorPresentation();
+    void NotifyPhysicsPresentation();
     void UnbindRuntimeFrameWork() noexcept;
     void PauseCurrentWorld();
     void PlayCurrentWorld();

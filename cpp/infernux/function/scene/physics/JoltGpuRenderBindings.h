@@ -2,7 +2,9 @@
 
 #include "JoltGpuScene.h"
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace JPH::GPU
@@ -12,12 +14,25 @@ struct PoseNode;
 
 namespace infernux
 {
+class Rigidbody;
 
 class JoltGpuRenderBindings final
 {
   public:
     struct Snapshot;
     using SnapshotPtr = std::shared_ptr<const Snapshot>;
+    struct PhysicsPose
+    {
+        glm::vec3 position;
+        glm::quat rotation;
+        uint8_t channels;
+
+        bool operator!=(const PhysicsPose &other) const noexcept
+        {
+            return channels != other.channels || position != other.position || rotation != other.rotation;
+        }
+    };
+    using MixedPose = std::function<std::optional<PhysicsPose>(uint32_t bodyId, bool cpu)>;
 
     struct Prepared
     {
@@ -44,8 +59,11 @@ class JoltGpuRenderBindings final
     /// Capture at the logical job's author boundary. Ordinary local channels
     /// come directly from CPU storage; physics frame-cache world channels are
     /// resolved through cached local getters without acquiring GPU samples.
-    [[nodiscard]] SnapshotPtr Capture(RuntimeWorld &world) const;
+    [[nodiscard]] SnapshotPtr Capture(RuntimeWorld &world, bool captureCpuConsumers = false) const;
     [[nodiscard]] bool NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const;
+    [[nodiscard]] bool HasMixedHierarchy(const Snapshot &) const;
+    [[nodiscard]] std::vector<Rigidbody *> MixedGpuAncestors(const Snapshot &) const;
+    [[nodiscard]] SnapshotPtr ResolveMixedAnchors(SnapshotPtr snapshot, const MixedPose &pose) const;
 
     /// Resolves accepted actor identities and COMs against the captured author
     /// hierarchy. Never reads newer Transform values while preparing GPU work.
@@ -57,7 +75,7 @@ class JoltGpuRenderBindings final
     /// metadata no longer matches. Manual and retired targets leave this set.
     [[nodiscard]] bool Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
                                const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration,
-                               bool validateCpuAnchors = false);
+                               const std::function<void()> &commitTransforms = {});
     /// World calls this for teleport/reset, independently of ordinary ticks.
     void MarkDiscontinuity(uint32_t bodyId);
     void RetireBody(uint32_t bodyId) noexcept;

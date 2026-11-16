@@ -1510,6 +1510,8 @@ class JoltGpuScene::Impl
     {
         Service();
         if (domain.cursor && domain.status == JoltGpuTick::Status::Running) {
+            if (writer == &domain && writerKind == WriterKind::Work)
+                return false;
             if (domain.memberEpoch != epoch || domain.memberStep != step)
                 throw std::logic_error("GPU member retry changed its fixed identity");
             return true;
@@ -2142,7 +2144,8 @@ bool JoltGpuScene::HasPendingControl(const RuntimeWorld &world) const
     if (!m_impl->domains.count(world.id))
         return false;
     const auto &domain = m_impl->Domain(world);
-    return !domain.pending.empty() || (domain.cursor && !domain.cursor->AreControlInputsAccepted());
+    const bool observing = m_impl->writer == &domain && m_impl->writerKind == Impl::WriterKind::Work;
+    return !domain.pending.empty() || (domain.cursor && !observing && !domain.cursor->AreControlInputsAccepted());
 }
 bool JoltGpuScene::TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
                                 const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer,

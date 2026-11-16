@@ -961,6 +961,45 @@ bool Rigidbody::RebaseCpuPhysicsPose()
     return d.hasPhysicsPose && PublishPhysicsPose(d.lastSyncedPosition, d.lastSyncedRotation);
 }
 
+namespace
+{
+PhysicsBodyPoseUpdate InterpolatedPose(const glm::vec3 &previousPosition, const glm::quat &previousRotation,
+                                       const glm::vec3 &position, const glm::quat &rotation, float alpha)
+{
+    const float t = std::clamp(alpha, 0.0f, 1.0f);
+    PhysicsBodyPoseUpdate pose;
+    pose.position = glm::mix(previousPosition, position, t);
+    pose.rotation = glm::normalize(glm::slerp(glm::normalize(previousRotation), glm::normalize(rotation), t));
+    return pose;
+}
+} // namespace
+
+std::optional<PhysicsBodyPoseUpdate> Rigidbody::PreviewCpuPresentationPose(const PhysicsBodyPoseUpdate *update,
+                                                                           bool sleeping, bool fixed, bool interpolated,
+                                                                           float alpha) const
+{
+    const auto &d = Data();
+    if (update) {
+        if (sleeping && d.wasSleeping && d.hasPhysicsPose && update->position == d.currentPhysicsPosition &&
+            !RotationChanged(update->rotation, d.currentPhysicsRotation))
+            return PhysicsBodyPoseUpdate{update->bodyId, d.lastSyncedPosition, d.lastSyncedRotation};
+        if (!fixed || sleeping || !d.hasPhysicsPose ||
+            d.interpolation == static_cast<int>(RigidbodyInterpolation::None))
+            return *update;
+        return InterpolatedPose(d.currentPhysicsPosition, d.currentPhysicsRotation, update->position, update->rotation,
+                                alpha);
+    }
+    if (!d.hasPhysicsPose)
+        return std::nullopt;
+    if (interpolated) {
+        if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None))
+            return PhysicsBodyPoseUpdate{UINT32_MAX, d.currentPhysicsPosition, d.currentPhysicsRotation};
+        return InterpolatedPose(d.previousPhysicsPosition, d.previousPhysicsRotation, d.currentPhysicsPosition,
+                                d.currentPhysicsRotation, alpha);
+    }
+    return PhysicsBodyPoseUpdate{UINT32_MAX, d.lastSyncedPosition, d.lastSyncedRotation};
+}
+
 bool Rigidbody::ApplyInterpolatedTransform(float alpha)
 {
     auto &d = DataMut();
@@ -977,11 +1016,9 @@ bool Rigidbody::ApplyInterpolatedTransform(float alpha)
         return PublishPhysicsPose(d.currentPhysicsPosition, d.currentPhysicsRotation);
     }
 
-    const float t = std::clamp(alpha, 0.0f, 1.0f);
-    const glm::vec3 presentedPos = glm::mix(d.previousPhysicsPosition, d.currentPhysicsPosition, t);
-    const glm::quat presentedRot = glm::normalize(
-        glm::slerp(glm::normalize(d.previousPhysicsRotation), glm::normalize(d.currentPhysicsRotation), t));
-    return PublishPhysicsPose(presentedPos, presentedRot);
+    const auto pose = InterpolatedPose(d.previousPhysicsPosition, d.previousPhysicsRotation, d.currentPhysicsPosition,
+                                       d.currentPhysicsRotation, alpha);
+    return PublishPhysicsPose(pose.position, pose.rotation);
 }
 
 void Rigidbody::CacheCpuPhysicsPose(const glm::vec3 &position, const glm::quat &rotation, bool positionApplied,
@@ -1048,28 +1085,38 @@ void Rigidbody::CompletePhysicsTarget(const PhysicsTargetSource &source, uint8_t
             sources[channel] = {};
 }
 
+uint8_t Rigidbody::WritablePhysicsPoseChannels(bool gpuRead) const
+{
+    const auto &d = Data();
+    const auto *tf = GetGameObject() ? GetGameObject()->GetTransform() : nullptr;
+    if (!tf)
+        return 0;
+    const auto &physics = PhysicsECSStore::Instance();
+    const auto authored = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
+    if (physics.IsValid(d.actorHandle)) {
+        const auto &actor = physics.GetActor(d.actorHandle);
+        if ((!gpuRead && actor.centerTransformDirty) ||
+            (gpuRead && (actor.centerTransformDirty || actor.shapeTransformDirty) &&
+             authored == d.lastAuthoredPoseRevision))
+            return 0;
+    }
+    constexpr auto position = static_cast<uint8_t>(PhysicsTargetChannels::Position);
+    constexpr auto rotation = static_cast<uint8_t>(PhysicsTargetChannels::Rotation);
+    const bool applyPosition = authored[0] == d.lastAuthoredPoseRevision[0] && !HasPendingPhysicsTarget(position);
+    const bool applyRotation = authored[1] == d.lastAuthoredPoseRevision[1] && !HasPendingPhysicsTarget(rotation);
+    return (applyPosition ? position : 0) | (applyRotation ? rotation : 0);
+}
+
 bool Rigidbody::PublishPhysicsPose(const glm::vec3 &presentedPos, const glm::quat &presentedRot)
 {
+    const auto channels = WritablePhysicsPoseChannels();
+    if (!channels)
+        return false;
+    const bool applyPosition = channels & static_cast<uint8_t>(PhysicsTargetChannels::Position);
+    const bool applyRotation = channels & static_cast<uint8_t>(PhysicsTargetChannels::Rotation);
     auto &d = DataMut();
-    auto *go = GetGameObject();
-    if (!go)
-        return false;
-
-    Transform *tf = go->GetTransform();
-    if (!tf)
-        return false;
+    auto *tf = GetGameObject()->GetTransform();
     TransformECSStore::PhysicsPoseReadScope applying(TransformECSStore::Instance());
-
-    const auto &physics = PhysicsECSStore::Instance();
-    if (physics.IsValid(d.actorHandle) && physics.GetActor(d.actorHandle).centerTransformDirty)
-        return false;
-    const auto authored = TransformECSStore::Instance().GetAuthoredPoseRevision(tf->GetECSHandle());
-    const bool applyPosition = authored[0] == d.lastAuthoredPoseRevision[0] &&
-                               !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Position));
-    const bool applyRotation = authored[1] == d.lastAuthoredPoseRevision[1] &&
-                               !HasPendingPhysicsTarget(static_cast<uint8_t>(PhysicsTargetChannels::Rotation));
-    if (!applyPosition && !applyRotation)
-        return false;
     const auto worldPosition = tf->GetWorldPosition();
     const auto worldRotation = tf->GetWorldRotation();
     const bool moved = (applyPosition && presentedPos != worldPosition) ||

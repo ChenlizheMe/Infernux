@@ -289,6 +289,7 @@ class PhysicsWorld
     [[nodiscard]] bool ServicePausedAuthorPresentation();
     [[nodiscard]] bool ServicePresentationPoseReads(const std::vector<Transform *> &world,
                                                     const std::vector<Transform *> &local);
+    [[nodiscard]] bool ServiceMixedRenderPoses();
     /// Continue an existing managed control within this host's shared budget.
     /// Does not capture author input, admit a solver or wait synchronously.
     void ServiceGpuWork();
@@ -840,7 +841,12 @@ class PhysicsWorld
     void CaptureCpuPoses(PhysicsDomain &domain, bool fixed) const;
     [[nodiscard]] Rigidbody *FindCpuPoseBody(const PhysicsDomain &domain, uint32_t id) const;
     void RebaseCpuPoseDescendants(const GameObject &parent) const;
-    [[nodiscard]] bool PublishCpuPoses(PhysicsDomain &domain) const;
+    [[nodiscard]] bool PublishCpuPoses(PhysicsDomain &domain, float alpha,
+                                       const std::vector<Rigidbody *> &gpuAncestors = {}) const;
+    void CheckMixedRenderHierarchy(PhysicsDomain &domain) const;
+    [[nodiscard]] bool
+    ServicePresentationPoseReads(PhysicsDomain &domain, const std::vector<Rigidbody *> &bodies,
+                                 const std::shared_ptr<const JoltGpuScene::Publication> &publication);
     bool EnsureStaticBoundary(PhysicsDomain &domain, uint32_t bodyId, Backend consumer);
     void QueueStaticFixedMoves(PhysicsDomain &domain);
     void SealStaticFixedMoves(PhysicsDomain &domain);

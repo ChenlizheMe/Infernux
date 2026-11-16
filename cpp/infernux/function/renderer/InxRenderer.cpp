@@ -4520,7 +4520,8 @@ bool InxRenderer::PublishRuntimeRenderFrame(RuntimeWorld &world, bool pausedAuth
     if (pausedAuthor) {
         auto &manager = SceneManager::Instance();
         std::vector<Transform *> transforms, localTransforms;
-        manager.CollectPresentationPoseTransforms(transforms, localTransforms);
+        manager.CollectPresentationWorldTransforms(transforms);
+        manager.CollectPendingSkeletonTransforms(localTransforms);
         const auto objects = m_renderPipeline->CollectPresentationPoseObjects();
         const auto append = [&world](const auto &objects, auto &transforms) {
             for (auto *object : objects) {

@@ -398,7 +398,14 @@ void SkeletonInstance::MarkPoseDirty()
 
 std::vector<Transform *> SkeletonInstance::GetPresentationPoseDependencies() const
 {
-    return m_poseDirty && !m_renderers.empty() && m_bindingError.empty() ? GetBones() : std::vector<Transform *>{};
+    if (!m_poseDirty || m_renderers.empty())
+        return {};
+    const auto *root = GetGameObject();
+    const auto *scene = root ? root->GetScene() : nullptr;
+    if (!scene || scene->IsPendingDestroy(root))
+        return {};
+    RefreshBindings();
+    return m_bindingError.empty() ? m_registeredBones : std::vector<Transform *>{};
 }
 
 void SkeletonInstance::PublishRenderPoses()

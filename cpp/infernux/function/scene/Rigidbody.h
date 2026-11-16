@@ -10,6 +10,7 @@
 
 #include "PhysicsBody.h"
 #include "RigidbodyMassProperties.h"
+#include "physics/PhysicsBodyState.h"
 #include "physics/PhysicsECSStore.h"
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -281,6 +282,10 @@ class Rigidbody : public PhysicsBody
     /// physics owner supplies the state once; this does not query a backend.
     bool SyncPhysicsToTransform(const PhysicsBodyMotionState &state, bool sleeping, bool snap = false);
     bool RebaseCpuPhysicsPose();
+    [[nodiscard]] std::optional<PhysicsBodyPoseUpdate> PreviewCpuPresentationPose(const PhysicsBodyPoseUpdate *update,
+                                                                                  bool sleeping, bool fixed,
+                                                                                  bool interpolated, float alpha) const;
+    [[nodiscard]] uint8_t WritablePhysicsPoseChannels(bool gpuRead = false) const;
     /// Cache only a pose explicitly requested by a CPU consumer, after that
     /// consumer applied its author-channel protection to the Transform.
     /// The latest requested sample is retained; no fixed-step history is read.

@@ -624,8 +624,12 @@ void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
 
 void SceneManager::PublishPhysicsStateToRenderer()
 {
-    if (!PhysicsWorld::Instance().PublishRenderPoses())
-        return;
+    if (PhysicsWorld::Instance().PublishRenderPoses())
+        NotifyPhysicsPresentation();
+}
+
+void SceneManager::NotifyPhysicsPresentation()
+{
     InvalidatePhysicsSkeletonPoses();
     PublishPhysicsTransformsToRenderer();
 }
@@ -1259,6 +1263,8 @@ bool SceneManager::ServicePausedAuthorPresentation()
         return false;
     if (physics.IsFixedPublicationHeld(*world.physics))
         return true; // Resume the held Fixed before consuming this author request.
+    if (!physics.ServiceMixedRenderPoses())
+        return false;
     const auto serial = world.pausedAuthor.requested;
     const auto epoch = world.simulation.simulationEpoch;
     const auto publish = m_pausedAuthorPublication;
@@ -1278,7 +1284,11 @@ bool SceneManager::TryPublishRuntimeFrame()
     auto &world = CurrentWorld();
     if (world.frame.phase != RuntimeWorld::FramePhase::Publish || !CanContinueRuntimeFrame())
         return false;
+    if (!PhysicsWorld::Instance().ServiceMixedRenderPoses())
+        return false;
     const auto admittedState = GetSimulationState();
+    // A completed mixed pose can make a palette dirty after FinalizeRuntimeTransforms.
+    PublishSkeletonPoses();
     const auto publish = m_runtimeFramePublication;
     if (publish && !publish(world))
         return false;
@@ -2684,6 +2694,8 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
         if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsToTransform) || !validWorld())
             return false;
         if (world.simulation.fixedHasPhysics) {
+            if (!PhysicsWorld::Instance().ServiceMixedRenderPoses())
+                return false;
             const auto phaseStart = ProfileClock::now();
             // The world published one completed GPU generation. Invalidating
             // consumers here does not read every body back into Transform.
@@ -3027,8 +3039,7 @@ void SceneManager::QueueSkeletonPose(SkeletonInstance *skeleton)
     CurrentWorld().render.pendingSkeletonPoses.push_back(skeleton);
 }
 
-void SceneManager::CollectPresentationPoseTransforms(std::vector<Transform *> &result,
-                                                     std::vector<Transform *> &local) const
+void SceneManager::CollectPresentationWorldTransforms(std::vector<Transform *> &result) const
 {
     const auto &world = CurrentWorld();
     const auto append = [&result](const Component *component) {
@@ -3054,8 +3065,13 @@ void SceneManager::CollectPresentationPoseTransforms(std::vector<Transform *> &r
                 append(skinned->GetSkeletonInstance());
         }
     }
-    // Only skeletons whose render palette is actually due contribute local bone consumers.
-    for (const auto *skeleton : world.render.pendingSkeletonPoses) {
+}
+
+void SceneManager::CollectPendingSkeletonTransforms(std::vector<Transform *> &local) const
+{
+    // Rebinding a dirty skeleton can replace its entry in the owner's queue.
+    const auto pending = CurrentWorld().render.pendingSkeletonPoses;
+    for (const auto *skeleton : pending) {
         const auto bones = skeleton->GetPresentationPoseDependencies();
         local.insert(local.end(), bones.begin(), bones.end());
     }

@@ -108,16 +108,29 @@ struct PhysicsDomain final
         using Keys = std::array<uint64_t, 3>;
         struct Job
         {
+            struct PoseInput
+            {
+                uint32_t bodyId;
+                bool cpu;
+                std::optional<JoltGpuRenderBindings::PhysicsPose> pose;
+            };
             JoltGpuRenderBindings::SnapshotPtr snapshot;
             Keys keys{};
             uint64_t numericalGeneration = 0;
             std::optional<JoltGpuRenderBindings::Prepared> bindings;
             JoltGpuRenderPoseBatch output;
-            const JoltGpuScene::Publication *publication = nullptr;
+            std::shared_ptr<const JoltGpuScene::Publication> publication;
+            float alpha = 1.0f;
+            std::vector<PoseInput> inputs;
         };
         JoltGpuRenderBindings bindings;
         std::shared_ptr<Job> pending, ready;
         std::optional<Keys> checkedKeys;
+        JoltGpuRenderBindings::SnapshotPtr mixedHierarchy;
+        std::optional<Keys> hierarchyKeys;
+        std::shared_ptr<Job> mixedPending;
+        uint64_t mixedGeneration = 0;
+        float mixedAlpha = 1.0f;
     };
     RenderState rendering;
     struct PresentationPoseReads

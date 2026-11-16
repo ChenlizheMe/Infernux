@@ -524,6 +524,16 @@ PhysicsDomain::RenderState::Keys CaptureRenderKeys()
     const auto &manager = SceneManager::Instance();
     return {manager.GetRenderTransformRevision(), manager.GetMeshRendererVersion(), manager.GetRenderContentRevision()};
 }
+constexpr auto PresentationPoseFields = static_cast<PhysicsStateFields>(
+    static_cast<uint32_t>(PhysicsStateFields::Position) | static_cast<uint32_t>(PhysicsStateFields::Rotation));
+
+float CpuPresentationAlpha(const PhysicsDomain &domain)
+{
+    const auto &simulation = domain.owner.simulation;
+    return !simulation.isPaused && domain.admittedDeltaTime > 0.0f
+               ? std::clamp(simulation.fixedTimeAccumulator / domain.admittedDeltaTime, 0.0f, 1.0f)
+               : 1.0f;
+}
 JoltGpuTickOutput CompactOutput(const JoltGpuScene::Publication &p)
 {
     return {p.worldRow,   p.bodyBase,    p.bodyCount,   p.leafBase,      p.leafCount, p.jointBase,         p.jointCount,
@@ -666,6 +676,11 @@ void PhysicsWorld::Shutdown()
         domain->rendering.bindings.Clear();
         domain->rendering.pending.reset();
         domain->rendering.ready.reset();
+        domain->rendering.mixedPending.reset();
+        domain->rendering.mixedHierarchy.reset();
+        domain->rendering.hierarchyKeys.reset();
+        domain->rendering.mixedGeneration = 0;
+        domain->presentationPoseReads.reset();
         domain->contacts.Close();
         domain->gpuContacts.Close();
         domain->cpuContacts.Close();
@@ -840,7 +855,7 @@ void PhysicsWorld::ObserveGpuPublication(PhysicsDomain &domain, bool numericalCh
             FrameWorkOwner::Scope publication(*m_gpuWork);
             auto &rendering = domain.rendering;
             const auto &job = rendering.pending;
-            if (job && job->bindings && job->publication == p.get()) {
+            if (job && job->bindings && job->publication == p) {
                 // Preserve this complete value before another Prepare reuses
                 // the live output endpoints, even while the fixed gate waits.
                 if (job->output.models)
@@ -908,9 +923,10 @@ void PhysicsWorld::RebaseCpuPoseDescendants(const GameObject &parent) const
         rebase(rebase, *child);
 }
 
-bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain) const
+bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain, float alpha,
+                                   const std::vector<Rigidbody *> &gpuAncestors) const
 {
-    if (domain.cpuPoses.empty() && domain.cpuInterpolated.empty())
+    if (domain.cpuPoses.empty() && domain.cpuInterpolated.empty() && gpuAncestors.empty())
         return false;
 
     auto &store = PhysicsECSStore::Instance();
@@ -942,10 +958,11 @@ bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain) const
             it = domain.cpuInterpolated.erase(it);
         }
     }
-    const auto &simulation = domain.owner.simulation;
-    const float alpha = !simulation.isPaused && domain.admittedDeltaTime > 0.0f
-                            ? std::clamp(simulation.fixedTimeAccumulator / domain.admittedDeltaTime, 0.0f, 1.0f)
-                            : 1.0f;
+    std::unordered_set<uint32_t> gpuIds;
+    for (const auto *body : gpuAncestors) {
+        gpuIds.insert(body->GetBodyId());
+        collect(*body);
+    }
     bool published = false;
     std::unordered_set<GameObject *> visited;
     visited.reserve(domain.cpuPoses.size() + domain.cpuInterpolated.size());
@@ -978,6 +995,27 @@ bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain) const
                 }
                 if (ancestorMoved)
                     moved |= body->RebaseCpuPhysicsPose();
+            } else if (gpuIds.count(id)) {
+                auto *body = store.GetActor(handle).rigidbody;
+                auto *transform = object->GetTransform();
+                const auto *sample = FindCachedMotionState(domain, id, PresentationPoseFields);
+                const auto channels = body->WritablePhysicsPoseChannels(true);
+                const bool position = channels & static_cast<uint8_t>(PhysicsTargetChannels::Position);
+                const bool rotation = channels & static_cast<uint8_t>(PhysicsTargetChannels::Rotation);
+                if (sample && channels) {
+                    const auto oldPosition = transform->GetWorldPosition();
+                    const auto oldRotation = transform->GetWorldRotation();
+                    const auto newPosition = position ? sample->position : oldPosition;
+                    const auto newRotation = rotation ? sample->rotation : oldRotation;
+                    moved = oldPosition != newPosition || oldRotation != newRotation;
+                    if (moved)
+                        transform->ApplyWorldPoseFromPhysics(newPosition, newRotation, rotation);
+                    body->CacheCpuPhysicsPose(transform->GetWorldPosition(), transform->GetWorldRotation(), position,
+                                              rotation);
+                }
+                transform->m_cpuPhysicsPoseGeneration = domain.presentationPoseReadGeneration;
+                transform->m_cpuPhysicsPoseBodyId = id;
+                transform->m_cpuPhysicsPoseEpoch = domain.owner.simulation.simulationEpoch;
             }
         }
         published |= moved;
@@ -992,6 +1030,24 @@ bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain) const
     return published;
 }
 
+void PhysicsWorld::CheckMixedRenderHierarchy(PhysicsDomain &domain) const
+{
+    auto &rendering = domain.rendering;
+    if (!domain.cpuScene || !domain.gpuRegistered || !m_gpuRenderProgram || domain.gpuCancelled)
+        return;
+    const auto keys = CaptureRenderKeys();
+    if (rendering.hierarchyKeys == keys)
+        return;
+    auto snapshot = rendering.bindings.Capture(domain.owner, true);
+    // A Fixed admitted with a mixed hierarchy has no inline export. If an
+    // author detached its last CPU anchor, finish that export at the same
+    // boundary before returning subsequent frames to the ordinary path.
+    if (rendering.mixedHierarchy || rendering.bindings.HasMixedHierarchy(*snapshot))
+        rendering.mixedHierarchy = std::move(snapshot);
+    rendering.hierarchyKeys = keys;
+    rendering.mixedGeneration = 0;
+}
+
 bool PhysicsWorld::PublishRenderPoses() const
 {
     auto &domain = CurrentDomain();
@@ -999,18 +1055,19 @@ bool PhysicsWorld::PublishRenderPoses() const
     if (!m_initialized || domain.retiring || domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
         return false;
     try {
-        const bool cpuPublished = PublishCpuPoses(domain);
+        auto &rendering = domain.rendering;
+        CheckMixedRenderHierarchy(domain);
+        if (rendering.mixedHierarchy)
+            return false;
+        const bool cpuPublished = PublishCpuPoses(domain, CpuPresentationAlpha(domain));
         if (!domain.gpuRegistered || !m_gpuRenderProgram || domain.gpuCancelled)
             return cpuPublished;
-        auto &rendering = domain.rendering;
         const auto &job = rendering.ready;
         if (!job)
             return cpuPublished;
         FrameWorkOwner::Scope publication(*m_gpuWork);
-        const bool fixedExport = domain.lastPublication && domain.lastPublication.get() == job->publication &&
-                                 domain.lastPublication->isFixedStep;
         const bool gpuPublished = rendering.bindings.Publish(*job->bindings, job->output.models, job->output.bounds,
-                                                             job->numericalGeneration, fixedExport);
+                                                             job->numericalGeneration);
         if (gpuPublished)
             rendering.checkedKeys = job->keys;
         else
@@ -1034,7 +1091,18 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
         rendering.pending.reset();
         return {};
     }
-    auto snapshot = rendering.bindings.Capture(domain.owner);
+    auto snapshot = rendering.bindings.Capture(domain.owner, domain.cpuScene != nullptr);
+    if (domain.cpuScene) {
+        rendering.hierarchyKeys = keys;
+        if (rendering.bindings.HasMixedHierarchy(*snapshot)) {
+            rendering.mixedHierarchy = std::move(snapshot);
+            rendering.pending.reset();
+            rendering.ready.reset();
+            rendering.checkedKeys = keys;
+            return {};
+        }
+        rendering.mixedHierarchy.reset();
+    }
     if (!rendering.bindings.NeedsExport(*snapshot, generation)) {
         rendering.pending.reset();
         rendering.checkedKeys = keys;
@@ -1049,7 +1117,7 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
         job->bindings = state.bindings.Prepare(job->snapshot, *publication);
         job->output =
             m_gpuRenderProgram->Prepare(CompactOutput(*publication), job->bindings->nodes, job->bindings->bindings);
-        job->publication = publication.get();
+        job->publication = publication;
         return AfterWork(job->output.batch, [job] {
             if (job->output.models)
                 job->output.models = job->output.models->Freeze();
@@ -1638,6 +1706,10 @@ void PhysicsWorld::CancelPendingStep() noexcept
         domain.rendering.pending.reset();
         domain.rendering.ready.reset();
         domain.rendering.checkedKeys.reset();
+        domain.rendering.mixedPending.reset();
+        domain.rendering.mixedHierarchy.reset();
+        domain.rendering.hierarchyKeys.reset();
+        domain.rendering.mixedGeneration = 0;
     }
     auto &store = PhysicsECSStore::Instance();
     store.ForEachAliveActor([&](PhysicsActorData &actor) {
@@ -3283,11 +3355,24 @@ bool PhysicsWorld::ServicePresentationPoseReads(const std::vector<Transform *> &
     dependencies.insert(dependencies.end(), localDependencies.begin(), localDependencies.end());
     if (dependencies.empty())
         return true;
+    if ((domain.stepPending && !domain.stepCompleted) || HasDomainControl(domain))
+        return false;
+    std::vector<Rigidbody *> bodies;
+    bodies.reserve(dependencies.size());
+    for (const auto &entry : dependencies)
+        bodies.push_back(entry.second);
+    return ServicePresentationPoseReads(domain, bodies, m_gpuScene->GetPublished(domain.owner));
+}
+
+bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std::vector<Rigidbody *> &bodies,
+                                                const std::shared_ptr<const JoltGpuScene::Publication> &publication)
+{
+    if (bodies.empty())
+        return true;
     if (domain.gpuCancelled || domain.retiring || !m_gpuWork->IsActive() || !m_gpuWork->IsAccepting() ||
         m_gpuWork->ServiceRemaining() <= 0 || !m_gpuWork->ResourceRemaining(FrameWorkResource::Cpu))
         return false;
-    constexpr auto fields = static_cast<PhysicsStateFields>(static_cast<uint32_t>(PhysicsStateFields::Position) |
-                                                            static_cast<uint32_t>(PhysicsStateFields::Rotation));
+    constexpr auto fields = PresentationPoseFields;
     // Pure Work never changes the published numerical owner, contacts or Fixed receipt.
     if (const auto job = domain.presentationPoseReads) {
         if (!AdvanceGpuJob(domain, false))
@@ -3295,24 +3380,21 @@ bool PhysicsWorld::ServicePresentationPoseReads(const std::vector<Transform *> &
         domain.presentationPoseReads.reset();
         if (job->error)
             std::rethrow_exception(job->error);
-        if (job->publication != m_gpuScene->GetPublished(domain.owner) ||
+        if (job->publication != publication ||
             job->generation != domain.queryGeneration.load(std::memory_order_acquire))
             return false;
         MaterializeStateBatch(domain, job->batch, job->motion, job->shapes, true, fields);
     }
-    if ((domain.stepPending && !domain.stepCompleted) || HasDomainControl(domain))
-        return false;
     std::vector<Rigidbody *> missing;
     std::unordered_set<Rigidbody *> selected;
-    for (const auto &entry : dependencies) {
-        if (&DomainForComponent(*entry.second) != &domain)
+    for (auto *body : bodies) {
+        if (&DomainForComponent(*body) != &domain)
             throw std::logic_error("Presentation pose dependencies must belong to the selected World");
-        if (selected.insert(entry.second).second && !FindCachedMotionState(domain, entry.second->GetBodyId(), fields))
-            missing.push_back(entry.second);
+        if (selected.insert(body).second && !FindCachedMotionState(domain, body->GetBodyId(), fields))
+            missing.push_back(body);
     }
     if (missing.empty())
         return true;
-    const auto publication = m_gpuScene->GetPublished(domain.owner);
     if (!publication)
         return false;
     auto job = std::make_shared<PhysicsDomain::PresentationPoseReads>();
@@ -3330,6 +3412,169 @@ bool PhysicsWorld::ServicePresentationPoseReads(const std::vector<Transform *> &
         return false;
     domain.presentationPoseReads = std::move(job);
     return false;
+}
+
+bool PhysicsWorld::ServiceMixedRenderPoses()
+{
+    RequireOwnerThread();
+    auto &domain = CurrentDomain();
+    if (!m_initialized || !domain.gpuRegistered || !domain.cpuScene || !m_gpuRenderProgram || domain.gpuCancelled ||
+        domain.retiring)
+        return true;
+    RequireHealthyStep(domain);
+    CheckMixedRenderHierarchy(domain);
+    auto &rendering = domain.rendering;
+    if (!rendering.mixedHierarchy)
+        return true;
+    if (domain.stepPending && !domain.stepCompleted)
+        return false;
+
+    try {
+        const auto generation = domain.queryGeneration.load(std::memory_order_acquire);
+        const float alpha = CpuPresentationAlpha(domain);
+        if (!domain.controlPending && !rendering.mixedPending && rendering.mixedGeneration == generation &&
+            domain.cpuPoses.empty() && (domain.cpuInterpolated.empty() || rendering.mixedAlpha == alpha))
+            return true;
+        if (!m_gpuWork->IsActive() || !m_gpuWork->IsAccepting() || m_gpuWork->ServiceRemaining() <= 0 ||
+            !m_gpuWork->ResourceRemaining(FrameWorkResource::Cpu))
+            return false;
+        if (!AdvanceGpuControl(domain, false))
+            return false;
+        const auto publication =
+            IsFixedPublicationHeld(domain) ? domain.gpuContacts.GetPublication() : domain.lastPublication;
+        if (!publication) {
+            // A logical frame may publish before the first Fixed. Admit the
+            // initial GPU state through the ordinary control boundary.
+            if (BeginGpuControl(domain, false, {}, true))
+                (void)AdvanceGpuControl(domain, false);
+            return false;
+        }
+        const auto numericalGeneration = domain.queryGeneration.load(std::memory_order_acquire);
+        auto job = rendering.mixedPending;
+        if (job) {
+            if (job->output.batch && !AdvanceGpuJob(domain, false))
+                return false;
+            if (job->publication != publication || job->numericalGeneration != numericalGeneration ||
+                job->keys != CaptureRenderKeys()) {
+                rendering.mixedPending.reset();
+                return false;
+            }
+        }
+        auto ancestors = rendering.bindings.MixedGpuAncestors(*rendering.mixedHierarchy);
+        ancestors.erase(std::remove_if(ancestors.begin(), ancestors.end(),
+                                       [&](const Rigidbody *body) {
+                                           const auto slot = publication->directory->FindBodySlot(body->GetBodyId());
+                                           if (slot < publication->bodyBase ||
+                                               slot - publication->bodyBase >= publication->bodyCount ||
+                                               !body->IsEnabled() || body->IsDestroyed() || !body->GetGameObject() ||
+                                               body->GetGameObject()->IsDestroying())
+                                               return true;
+                                           const auto &accepted = publication->directory->actors[slot];
+                                           return !accepted ||
+                                                  accepted->rigidbodyComponentId != body->GetComponentID() ||
+                                                  accepted->rigidbody != body->GetECSHandle();
+                                       }),
+                        ancestors.end());
+        PhysicsPresentationPoseReadScope presentation;
+        if (!ServicePresentationPoseReads(domain, ancestors, publication))
+            return false;
+        FrameWorkOwner::Scope preparation(*m_gpuWork);
+        std::unordered_map<uint32_t, const Rigidbody *> acceptedAncestors;
+        acceptedAncestors.reserve(ancestors.size());
+        for (const auto *body : ancestors)
+            acceptedAncestors.emplace(body->GetBodyId(), body);
+        const float presentedAlpha = job ? job->alpha : alpha;
+        const auto sample = [&](uint32_t id, bool cpu) -> std::optional<JoltGpuRenderBindings::PhysicsPose> {
+            if (cpu) {
+                const auto *body = FindCpuPoseBody(domain, id);
+                if (!body)
+                    return std::nullopt;
+                const auto index = m_bodyActors.at(id).cpuPoseIndex;
+                const auto *pending = index < domain.cpuPoses.size() && domain.cpuPoses[index].pose.bodyId == id
+                                          ? &domain.cpuPoses[index]
+                                          : nullptr;
+                if (const auto pose = body->PreviewCpuPresentationPose(
+                        pending ? &pending->pose : nullptr, pending && pending->sleeping, pending && pending->fixed,
+                        domain.cpuInterpolated.count(id) != 0, presentedAlpha))
+                    return JoltGpuRenderBindings::PhysicsPose{pose->position, pose->rotation,
+                                                              body->WritablePhysicsPoseChannels()};
+                return std::nullopt;
+            }
+            if (const auto found = acceptedAncestors.find(id); found != acceptedAncestors.end()) {
+                if (const auto *state = FindCachedMotionState(domain, id, PresentationPoseFields))
+                    return JoltGpuRenderBindings::PhysicsPose{state->position, state->rotation,
+                                                              found->second->WritablePhysicsPoseChannels(true)};
+            }
+            return std::nullopt;
+        };
+        if (job) {
+            const auto acceptedCount =
+                std::count_if(job->inputs.begin(), job->inputs.end(), [](const auto &input) { return !input.cpu; });
+            if (static_cast<size_t>(acceptedCount) != ancestors.size() ||
+                std::any_of(job->inputs.begin(), job->inputs.end(), [&](const auto &input) {
+                    return (!input.cpu && acceptedAncestors.count(input.bodyId) == 0) ||
+                           sample(input.bodyId, input.cpu) != input.pose;
+                })) {
+                rendering.mixedPending.reset();
+                return false;
+            }
+        } else {
+            job = std::make_shared<PhysicsDomain::RenderState::Job>();
+            job->keys = CaptureRenderKeys();
+            job->publication = publication;
+            job->numericalGeneration = numericalGeneration;
+            job->alpha = alpha;
+            job->snapshot =
+                rendering.bindings.ResolveMixedAnchors(rendering.mixedHierarchy, [&](uint32_t id, bool cpu) {
+                    const auto pose = sample(id, cpu);
+                    if (cpu || acceptedAncestors.count(id) != 0)
+                        job->inputs.push_back({id, cpu, pose});
+                    return pose;
+                });
+            if (rendering.bindings.NeedsExport(*job->snapshot, numericalGeneration)) {
+                job->bindings = rendering.bindings.Prepare(job->snapshot, *publication);
+                job->output = m_gpuRenderProgram->Prepare(CompactOutput(*publication), job->bindings->nodes,
+                                                          job->bindings->bindings);
+            }
+            if (job->output.batch) {
+                auto work = AfterWork(job->output.batch, [job] {
+                    if (job->output.models)
+                        job->output.models = job->output.models->Freeze();
+                    if (job->output.bounds)
+                        job->output.bounds = job->output.bounds->Freeze();
+                    job->output.batch.reset();
+                    return JoltGpuControlWork{};
+                });
+                AdmissionScope admission(*m_gpuScene, domain.owner);
+                if (!m_gpuScene->TryBeginWork(domain.owner, work, false))
+                    return false;
+                rendering.mixedPending = job;
+                return false;
+            }
+        }
+        bool cpuChanged = false;
+        const auto commit = [&] { cpuChanged = PublishCpuPoses(domain, job->alpha, ancestors); };
+        rendering.mixedPending.reset();
+        if (job->bindings && !rendering.bindings.Publish(*job->bindings, job->output.models, job->output.bounds,
+                                                         numericalGeneration, commit)) {
+            rendering.hierarchyKeys.reset();
+            return false;
+        }
+        if (!job->bindings)
+            commit();
+        if (job->bindings || cpuChanged)
+            SceneManager::Instance().NotifyPhysicsPresentation();
+        if (!rendering.bindings.HasMixedHierarchy(*job->snapshot))
+            rendering.mixedHierarchy.reset();
+        rendering.mixedGeneration = numericalGeneration;
+        rendering.mixedAlpha = job->alpha;
+        rendering.hierarchyKeys = CaptureRenderKeys();
+        rendering.checkedKeys = rendering.hierarchyKeys;
+        return true;
+    } catch (...) {
+        FailStep(domain);
+        throw;
+    }
 }
 
 void PhysicsWorld::PrepareCpuPoseReads(const std::vector<Transform *> &requested, bool worldSpace)
