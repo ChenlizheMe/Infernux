@@ -40,6 +40,8 @@ def _compile_shader_program(
     targets: Sequence[Literal["spirv", "wgsl"]] = ("spirv", "wgsl"), precise: bool = False,
     source_ranges: Sequence[tuple[str, int, int, int, int]] = (),
     input_kinds: Sequence[tuple[str, str]] = (),
+    root_constants: bool = False,
+    entry_point: str | None = None,
 ) -> dict[str, Any]: ...
 
 
