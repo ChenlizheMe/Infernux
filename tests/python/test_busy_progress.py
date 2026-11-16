@@ -1,5 +1,6 @@
 """The progress helper is a presentation boundary, not a Play prerequisite."""
 
+import os
 import subprocess
 
 import pytest
@@ -49,7 +50,7 @@ def test_missing_executable_surfaces_as_oserror(monkeypatch):
         BusyProgress()
 
 
-def test_helper_uses_the_editor_font_and_active_theme(monkeypatch):
+def test_helper_uses_the_editor_font_theme_and_process(monkeypatch):
     from infernux import lib, resources
     from infernux.engine.i18n import get_locale
 
@@ -57,5 +58,11 @@ def test_helper_uses_the_editor_font_and_active_theme(monkeypatch):
     monkeypatch.setattr(lib, "get_editor_theme", lambda: "amber")
     monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: commands.append(command))
     progress = BusyProgress()
-    assert commands[0][1:] == [resources.engine_font_path, resources.engine_font_cjk_path, "amber", get_locale()]
+    assert commands[0][1:] == [
+        resources.engine_font_path,
+        resources.engine_font_cjk_path,
+        "amber",
+        get_locale(),
+        str(os.getpid()),
+    ]
     progress.close()
