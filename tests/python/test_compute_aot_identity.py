@@ -236,6 +236,70 @@ def test_imported_helper_edit_is_read_from_current_private_closure(tmp_path, mon
     assert selected.tasks == compiled.tasks != original.tasks
 
 
+def test_player_keeps_distinct_same_name_helper_definitions(tmp_path, engine, monkeypatch):
+    from infernux.engine.candidate_import import CandidateImportTransaction
+
+    path = tmp_path / 'Assets/Scripts/Work.py'
+    library = path.with_name('Math.py')
+    source = ('import infernux.compute as gpu\nimport Scripts.Math as math\n'
+              '@gpu.kernel\ndef solve(values):\n'
+              '    i = gpu.index(values)\n    values[i] = math.combine(values[i])\n')
+    helpers = ('import infernux as inx\n'
+               '@(\n    inx.compute.function\n)\ndef gain(value):\n    return value + 2\n'
+               'first = gain\n'
+               '@inx.compute.function\ndef gain(value):\n    return value + 9\n'
+               '@inx.compute.function\ndef combine(value):\n    return first(value) * 10 + gain(value)\n')
+    path.parent.mkdir(parents=True)
+    sources = [('Scripts.Work', path, source), ('Scripts.Math', library, helpers)]
+    for _, file, text in sources:
+        file.write_text(text, encoding='utf-8')
+    with using_project_root(tmp_path):
+        live = CandidateImportTransaction()
+        try:
+            for name, file, text in sources:
+                live.register(name, str(file), source=text)
+            artifact = warm(tmp_path, live.load('Scripts.Work').solve)
+        finally:
+            live.rollback()
+    assert [(row['function'], row['line']) for row in artifact.diagnostic_locations] == [
+        ('Scripts.Work.solve', 4), ('Scripts.Math.gain', 5),
+        ('Scripts.Math.gain', 9), ('Scripts.Math.combine', 12),
+    ]
+
+    data = tmp_path / 'build/Data'
+    stage_compute_artifacts(tmp_path, (path, library), data)
+    record, = project_records(data)
+    assert record['function'] == 'Scripts.Work.solve'
+    cooked = CandidateImportTransaction()
+    for name, file, text in sources:
+        cooked.register(name, str(file), code=compile(embed_compute_sources(text), str(file), 'exec'))
+        file.unlink()
+    linecache.clearcache()
+    monkeypatch.setattr(Application, 'is_player', staticmethod(lambda: True))
+    monkeypatch.setattr(_Infernux, '_compile_shader_program',
+                        lambda *args, **kwargs: pytest.fail('Player should reuse the warmed helper closure'))
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    values = compute.buffer(shape=4, dtype=np.int32, device='gpu', data=[10, 20, 30, 40])
+    declaration = None
+    try:
+        with using_project_root(data):
+            declaration = cooked.load('Scripts.Work').solve
+            compute.prepare(declaration, (values,))
+            compute.launch(declaration, (values,))
+        readback = values.get_data()
+        try:
+            np.testing.assert_array_equal(readback.numpy(), [139, 249, 359, 469])
+        finally:
+            readback.close()
+    finally:
+        if declaration is not None:
+            declaration._release_engine_resources()
+        values.close()
+        host._release_lease()
+        cooked.rollback()
+
+
 def test_nested_closure_free_kernel_preserves_qualified_source_in_player(tmp_path, monkeypatch):
     source = ("import infernux.compute as gpu\nimport infernux as inx\n"
               "def factory():\n    @gpu.kernel\n    def solve(values):\n"

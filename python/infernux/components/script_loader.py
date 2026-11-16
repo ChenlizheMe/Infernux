@@ -1910,7 +1910,7 @@ def _load_script_module(
                         source = stream.read()
             accepted_code = prepare_module_code(module_name, file_path, source=source, code=code)
             code = accepted_code.code
-            exec(code, module.__dict__)
+            accepted_code.execute(module.__dict__)
             # First loads and reload candidates share the same data identity
             # ownership boundary. Failed source prefixes cannot replace the
             # published data catalog. Ordinary component declarations retain

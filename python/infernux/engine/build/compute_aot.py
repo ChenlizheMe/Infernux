@@ -288,7 +288,7 @@ def _artifact_record(path: Path) -> tuple[tuple[str, ...], str]:
         functions = tuple(
             str(item["function"])
             for item in artifact.diagnostic_locations
-            if isinstance(item, dict) and str(item.get("function", ""))
+            if item.get("role", "entry") == "entry" and item.get("function")
         )
         if not functions:
             raise ValueError("missing kernel identity")
@@ -337,7 +337,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
     """
     from infernux._compiler import slang as frontend
     from infernux._compiler.gpu_artifact import ArtifactAbiMismatchError, _specialization_identity
-    from infernux._compiler.work_item import _parse_function_source
+    from infernux._compiler.work_item import _parse_function_source, capture_function_source
     from infernux.engine.candidate_import import CandidateImportTransaction
     from infernux.components._component_registration import candidate_component_registration_scope
     from infernux.engine.project_context import using_project_root
@@ -398,17 +398,20 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
             for module_name, names in owners.items():
                 path = modules[module_name]
                 module = broker.load(module_name)
-                sources = module.__dict__.get("__infernux_compute_sources__", {})
+                sources = {name: record for (name, _), record in
+                           module.__dict__.get("__infernux_compute_sources__", {}).items()}
                 for name in names:
                     qualified = name[len(module_name) + 1:]
-                    if qualified not in sources:
+                    record = sources.get(qualified)
+                    if record is None:
                         raise ComputeAotBuildError(f"GPU AOT source is missing: {name}", missing=(name,))
-                    definition = _parse_function_source(sources[qualified][0])
+                    definition = _parse_function_source(record[0])
                     if definition.args.defaults or any(value is not None for value in definition.args.kw_defaults):
                         raise ComputeAotBuildError(f"GPU kernel requires parameters without defaults: {name}")
                     fields = receiver_field_names(definition) if implicit_receiver_name(definition, in_class=True) else None
                     definition.decorator_list = []
                     namespace = dict(module.__dict__)
+                    namespace.pop("__infernux_compute_sources__", None)
                     # Rebuild the declaration without instantiating components or
                     # calling factories. Closure captures cannot have warm artifacts.
                     tree = ast.Module(body=[definition], type_ignores=[])
@@ -416,6 +419,7 @@ def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: 
                                  dont_inherit=True), namespace)
                     function = namespace[definition.name]
                     function.__qualname__ = qualified
+                    capture_function_source(function, record=record)
                     matched = False
                     for specialization in sorted(specializations[name]):
                         params, request = _specialization_parameters(specialization)

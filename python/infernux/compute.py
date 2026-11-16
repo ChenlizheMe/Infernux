@@ -55,6 +55,10 @@ class ComputeCompilerError(RuntimeError):
 class KernelCompilationError(TypeError):
     """Authored GPU kernel source cannot be lowered for the current contract."""
 
+    def __init__(self, *args, diagnostics=()):
+        super().__init__(*args)
+        self.diagnostics = tuple(diagnostics)
+
 
 class ComputeExecutionError(RuntimeError):
     """A valid, compiled compute command failed during device execution."""
@@ -2791,6 +2795,9 @@ class Kernel:
     def __init__(self, function) -> None:
         if not callable(function):
             raise TypeError("inx.compute.kernel requires a callable")
+        from infernux._compiler.work_item import capture_function_source
+
+        capture_function_source(function)
         self._init_runtime()
         self.function = function
         for attribute in ("__name__", "__qualname__", "__module__", "__doc__"):
@@ -2895,10 +2902,14 @@ class Kernel:
         except SyntaxError as exception:
             raise KernelCompilationError(
                 f"GPU kernel '{self.__qualname__}' at {exception.filename}:{exception.lineno}:{exception.offset}: "
-                f"{exception.msg}\n{exception.text}"
+                f"{exception.msg}\n{exception.text}",
+                diagnostics=getattr(exception, "diagnostics", ()),
             ) from exception
         except Exception as exception:
-            raise KernelCompilationError(f"GPU kernel '{self.__qualname__}' compilation failed: {exception}") from exception
+            raise KernelCompilationError(
+                f"GPU kernel '{self.__qualname__}' compilation failed: {exception}",
+                diagnostics=getattr(exception, "diagnostics", ()),
+            ) from exception
 
     def _get_receiver_field_names(self):
         if self._receiver_field_names is None:
@@ -2992,6 +3003,9 @@ class Function:
     def __init__(self, value) -> None:
         if not callable(value):
             raise TypeError("inx.compute.function requires a callable")
+        from infernux._compiler.work_item import capture_function_source
+
+        capture_function_source(value)
         self.function = value
         for attribute in ("__name__", "__qualname__", "__module__", "__doc__"):
             setattr(self, attribute, getattr(value, attribute, None))

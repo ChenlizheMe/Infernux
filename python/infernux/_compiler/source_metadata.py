@@ -1,4 +1,4 @@
-"""Build-time source metadata for source-less GPU kernel modules."""
+"""Authored GPU source records for accepted scripts and cooked Player modules."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def compute_decorator_names(
 
 @lru_cache(maxsize=32)
 def function_source_spans(source: str):
-    """Shared immutable source index for live declarations and cooked modules."""
+    """Return qualified name, code start, source start and end, and GPU decorator per declaration."""
     tree = ast.parse(source)
     decorator_names = compute_decorator_names(tree, include_local=True)
     spans = []
@@ -67,13 +67,13 @@ def function_source_spans(source: str):
                 in decorator_names
                 for item in node.decorator_list
             )
-            first = node.lineno
+            code_line = first = node.lineno
             if node.decorator_list:
-                first = min(decorator.lineno for decorator in node.decorator_list)
+                code_line = first = min(decorator.lineno for decorator in node.decorator_list)
                 # A parenthesized decorator may start before its expression.
                 while not lines[first - 1].lstrip().startswith('@'):
                     first -= 1
-            spans.append((".".join((*self.scope, node.name)), first, node.end_lineno, gpu))
+            spans.append((".".join((*self.scope, node.name)), code_line, first, node.end_lineno, gpu))
             self.scope.extend((node.name, "<locals>"))
             self.generic_visit(node)
             del self.scope[-2:]
@@ -84,13 +84,21 @@ def function_source_spans(source: str):
     return tuple(spans)
 
 
+def compute_source_records(source: str) -> dict[tuple[str, int], tuple[str, int]]:
+    """Index GPU declarations by qualified name and Python's code start line."""
+    source = source.split(_MARKER, 1)[0]
+    if "kernel" not in source and "function" not in source:
+        return {}
+    lines = source.splitlines(keepends=True)
+    return {(name, code_line): (''.join(lines[first - 1:last]), first)
+            for name, code_line, first, last, gpu in function_source_spans(source) if gpu}
+
+
 def embed_compute_sources(source: str) -> str:
     """Embed only decorated GPU functions for a source-less Player module."""
     had_marker = _MARKER in source
     base = source.split(_MARKER, 1)[0].rstrip() + "\n"
-    lines = base.splitlines(keepends=True)
-    records = {name: (''.join(lines[first - 1:last]), first)
-               for name, first, last, gpu in function_source_spans(base) if gpu}
+    records = compute_source_records(base)
     if not records:
         return base if had_marker else source
     ordered = {name: records[name] for name in sorted(records)}

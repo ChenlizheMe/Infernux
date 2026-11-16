@@ -35,6 +35,7 @@ class KernelCompilationPlan:
     fast_math: bool = WORK_ITEM_FAST_MATH
     generated_source: str = ""
     lowering: object = None
+    source_locations: tuple[dict, ...] = ()
 
 
 def _work_item_proof(work_item, params):
@@ -88,17 +89,28 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
                                           proof=None if _lowered is None else _lowered.continuation)
     plan = KernelCompilationPlan("", copy.deepcopy(item.definition), copy.deepcopy(item.helpers), dict(item.globals_map),
                                  item.domain_parameter, autodiff_mode, gradients, item, continuation, target)
-    plan.generated_source, plan.lowering = _source(plan, params, function)
+    entry = _source_location(item.origin, item.definition, role="entry")
+    if continuation.inner_range is not None:
+        entry["function"] += "#" + continuation.inner_range.kind
+    plan.source_locations = (entry, *(_source_location(item.helper_origins[helper.name], helper, role="helper")
+                                     for helper in item.helpers))
+    plan.generated_source, plan.lowering = _source(plan, params)
     # Cache the exact compiler input, including its generated ABI and work
     # proof. Runtime scalar values and buffer identities are not specializations.
     identity = {
         "abi": _CACHE_ABI, "compiler": _Infernux._slang_version(), "source": plan.generated_source, "target": target,
+        "declarations": plan.source_locations,
         "parameters": parameter_key(params), "continuation": asdict(continuation),
         "autodiff": autodiff_mode, "gradients": gradients, "precise": True,
     }
     plan.artifact_key = hashlib.blake2b(json.dumps(identity, sort_keys=True).encode(), digest_size=16).hexdigest()
     plan.lowering.plan = None
     return plan
+
+
+def _source_location(origin, definition, *, role):
+    return {"function": origin.function, "path": origin.path, "role": role,
+            "line": origin.line_offset + definition.lineno, "column": definition.col_offset + 1}
 
 
 _SCALAR_TYPES = SCALAR_STORAGE_TYPES
@@ -166,9 +178,13 @@ class _NumericalEmitter(SlangEmitter):
 
 class _KernelEmitter(_NumericalEmitter):
     def __init__(self, plan, params, path, source):
-        module_aliases = tuple(name for name, value in plan.globals_map.items()
-                              if isinstance(value, ModuleType) and value.__name__ in
-                              {"math", "infernux.shader", "infernux.compute"})
+        module_aliases = []
+        for name, value in plan.globals_map.items():
+            if isinstance(value, ModuleType):
+                if value.__name__ in {"math", "infernux.shader", "infernux.compute"}:
+                    module_aliases.append(name)
+                elif value.__name__ == "infernux":
+                    module_aliases.extend((name + ".shader", name + ".compute"))
         super().__init__(source, path, aliases=("math", "shader", "inx.compute", "compute", "infernux.compute",
                                                *module_aliases),
                          math_aliases=tuple(name for name, value in plan.globals_map.items()
@@ -328,9 +344,9 @@ class _KernelEmitter(_NumericalEmitter):
                 result = common_type(result, kind)
             name = function.name + "_" + str(len(self.helper_sources))
             parameters = ", ".join(kind + " " + arg.arg for arg, kind in signature)
-            self.helper_sources[key] = f"{result} {name}({parameters}) {{\n" + "\n".join(emitter.lines) + "\n}"
-            if self.plan.autodiff_mode == "reverse":
-                self.helper_sources[key] = "[Differentiable]\n" + self.helper_sources[key]
+            attributes = ["[Differentiable]"] if self.plan.autodiff_mode == "reverse" else []
+            self.helper_sources[key] = "\n".join([*attributes, emitter.source_directive(function),
+                                                  f"{result} {name}({parameters}) {{", *emitter.lines, "}"])
             self.helper_return_types[key] = name, result
             self.source_ranges.extend(emitter.source_ranges)
         return (*self.helper_return_types[key], arguments)
@@ -413,7 +429,7 @@ class _LocalEmitter(_KernelEmitter):
             super().assign(target, value)
 
 
-def _reverse_source(plan, params, function, primal):
+def _reverse_source(plan, params, primal):
     inputs = [name for name in primal.names if primal.accesses.get(name, 0) & 1]
     outputs = [name for name in primal.names if primal.accesses.get(name, 0) & 2]
     if set(inputs) & set(outputs) or not outputs:
@@ -469,6 +485,7 @@ def _reverse_source(plan, params, function, primal):
         primal.gradient_accesses[name] = 3
         primal.line(f"inx_grad_{name}.Store<float>({address}, inx_grad_{name}.Load<float>({address}) + inx_pair_{name}.d);")
     primal.helper_sources.update(local.helper_sources)
+    primal.source_ranges.extend(local.source_ranges)
     return local_function
 
 
@@ -514,19 +531,20 @@ float inx_atomic_add(RWStructuredBuffer<Atomic<uint>> buffer, uint address, floa
 """
 
 
-def _source(plan, params, function):
+def _source(plan, params):
     origin = plan.work_item.origin
     emitter = _KernelEmitter(plan, params, origin.path, origin.source)
     emitter.line_offset = origin.line_offset
     emitter.declare_locals(plan.definition.body)
     emitter.local_declarations()
     emitter.block(plan.definition.body)
-    derivative = _reverse_source(plan, params, function, emitter) if plan.autodiff_mode == "reverse" else ""
+    derivative = _reverse_source(plan, params, emitter) if plan.autodiff_mode == "reverse" else ""
     index = plan.work_item.index_name
     domain = plan.work_item.domain_name
     first = "inx_args.inx_range_begin" if plan.continuation.eligible else "0"
     last = "inx_args.inx_range_end" if plan.continuation.eligible else f"inx_args.{domain}_shape_0"
-    entry = f'''[shader("compute")]
+    entry = f'''{emitter.source_directive(plan.definition)}
+[shader("compute")]
 [numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {{
     if (tid.x >= uint(({last}) - ({first}))) return;
@@ -536,7 +554,7 @@ void main(uint3 tid : SV_DispatchThreadID) {{
     return code, emitter
 
 
-def _artifact(compiled, emitter, plan, params, function):
+def _artifact(compiled, emitter, plan, params):
     from infernux.compute import Buffer
 
     resources = {item["name"]: item for item in compiled["resources"]}
@@ -566,9 +584,7 @@ def _artifact(compiled, emitter, plan, params, function):
     metadata = {"entry_point": entry["name"], "threads_per_group": entry["workgroup_size"][0], "buffer_bindings": bindings,
                 "task_type": "range_for", "range": {"begin_source": "constant", "begin": 0, "const_begin": True,
                                                        "const_end": False, "end_source": "arguments"}}
-    identity = f"{function.__module__}.{function.__qualname__}"
-    if plan.continuation.inner_range is not None:
-        identity += "#" + plan.continuation.inner_range.kind
+    locations = tuple({**location, "entry_point": entry["name"]} for location in plan.source_locations)
     return CompilerArtifact(target=compiled["target"], tasks=(entry["code"],), task_metadata=(metadata,), domain_parameter=plan.domain_parameter,
         argument_layout={"size": arguments["byte_size"], "parameters": layouts},
         # SPIR-V carries SignedZeroInfNanPreserve execution modes. WGSL uses
@@ -577,9 +593,7 @@ def _artifact(compiled, emitter, plan, params, function):
             "shader_int64": any(isinstance(value, Buffer) and value._dtype.scalar.name == "int64" for value in params),
             "shader_float32_preserve": compiled["target"] == "spirv",
         },
-        diagnostic_locations=({"entry_point": entry["name"], "path": plan.work_item.origin.path,
-                               "line": plan.work_item.origin.line_offset + 1, "column": 0,
-                               "function": identity},),
+        diagnostic_locations=locations,
         continuation=plan.continuation, fast_math=WORK_ITEM_FAST_MATH, autodiff_mode=plan.autodiff_mode,
         gradient_parameters=plan.gradient_parameters, identity=plan.artifact_key)
 
@@ -597,7 +611,7 @@ def compile_kernel(function, params, *, target="spirv", receiver_fields=None, au
         return cached
     compiled = _Infernux._compile_shader_program(plan.generated_source, plan.work_item.origin.path, "inx_kernel",
                                                 targets=[target], precise=True, source_ranges=plan.lowering.source_ranges)
-    artifact = _artifact(compiled["targets"][0], plan.lowering, plan, params, function)
+    artifact = _artifact(compiled["targets"][0], plan.lowering, plan, params)
     root.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
     temporary.write_bytes(_encode_artifact(artifact, specialization))

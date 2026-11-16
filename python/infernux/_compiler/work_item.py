@@ -10,10 +10,11 @@ from dataclasses import dataclass, field, replace
 import inspect
 import os
 import symtable
+from types import FunctionType
 
 import numpy as np
 
-from .kernel_contract import (execution_domain, implicit_receiver_attribute,
+from .kernel_contract import (_INDEX_NAMES, execution_domain, implicit_receiver_attribute,
     implicit_receiver_name, receiver_field_names, receiver_issue, ARRAY_DTYPES)
 from .compile_inputs import _snapshot, snapshot_compilation_values
 
@@ -136,6 +137,7 @@ class SourceOrigin:
     path: str
     source: str
     line_offset: int
+    function: str
 
 
 def _parse_function_source(source):
@@ -161,25 +163,62 @@ def _function_definition(value, *, kind: str):
 
 
 def _function_origin(value) -> SourceOrigin:
+    code = value.__code__
     records = value.__globals__.get("__infernux_compute_sources__", {})
-    embedded = records.get(value.__qualname__) if isinstance(records, dict) else None
+    embedded = records.get((value.__qualname__, code.co_firstlineno)) if isinstance(records, dict) else None
     if embedded is None:
+        captured = getattr(value, "_infernux_compute_source_origin", None)
+        if captured is not None:
+            return captured
         from .source_metadata import function_source_spans
 
         lines, _ = inspect.findsource(value)
         span = next((row for row in function_source_spans(''.join(lines))
-                     if row[0] == value.__qualname__ and row[1] <= value.__code__.co_firstlineno <= row[2]), None)
+                     if row[:2] == (value.__qualname__, code.co_firstlineno)), None)
         if span is None:
             raise OSError(f"Cannot locate compute source for {_kernel_qualified_name(value)}")
-        _, first, last, _ = span
+        _, _, first, last, _ = span
         source = ''.join(lines[first - 1:last])
     else:
         source, first = embedded
-    return SourceOrigin(str(value.__code__.co_filename), source, first - 1)
+    return _source_origin(value, source, first)
+
+
+def _source_origin(value, source, first) -> SourceOrigin:
+    module = value.__globals__.get("__infernux_source_name__") or value.__module__ or "<module>"
+    return SourceOrigin(str(value.__code__.co_filename), source, first - 1, f"{module}.{value.__qualname__}")
+
+
+def capture_function_source(value, *, record=None) -> None:
+    """Pin the declaration's source without making source recovery an import-time error."""
+    if not isinstance(value, FunctionType) or hasattr(value, "_infernux_compute_source_origin"):
+        return
+    try:
+        origin = _function_origin(value) if record is None else _source_origin(value, *record)
+    except (OSError, SyntaxError):
+        # Source-less Player modules install their compiled source records at
+        # the end of module execution. Preparation reports unavailable source.
+        return
+    value._infernux_compute_source_origin = origin
 
 
 def _function_source(value) -> str:
     return _function_origin(value).source
+
+
+def _index_names(globals_map: dict) -> set[str]:
+    import infernux as inx
+
+    compute = inx.compute
+    names = set(_INDEX_NAMES)
+    for name, value in globals_map.items():
+        if value is compute.index:
+            names.add(name)
+        elif value is compute:
+            names.add(name + ".index")
+        elif value is inx:
+            names.add(name + ".compute.index")
+    return names
 
 
 def receiver_fields(function) -> tuple[str, ...]:
@@ -501,7 +540,8 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
         raise TypeError(f"compute kernel recursion is not supported: {function.__name__}")
     if any(isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom, ast.Await)) for node in ast.walk(definition)):
         raise TypeError("compute kernels write output buffer values in place and cannot return or yield")
-    position, index_name, domain_name, domain_parameter = execution_domain(definition)
+    globals_map = dict(function.__globals__)
+    position, index_name, domain_name, domain_parameter = execution_domain(definition, _index_names(globals_map))
     body = list(definition.body)
     if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
             and isinstance(body[0].value.value, str):
@@ -509,7 +549,6 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
         position -= 1
     body.pop(position)
     definition.body = body
-    globals_map = dict(function.__globals__)
     helpers, helper_origins, compile_values = _helper_definitions(definition, globals_map)
     compile_values.update(snapshot_compilation_values([definition], globals_map))
     # Retained source plans own only actual dependencies, never an old snapshot

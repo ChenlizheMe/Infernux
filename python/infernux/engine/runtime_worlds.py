@@ -209,7 +209,7 @@ class ProjectModules:
             if code is not None:
                 from infernux.components.value_ownership import value_world
                 with value_world(self.identity):
-                    exec(code, vars(module))
+                    accepted_code.execute(vars(module))
                 if any(path.is_relative_to(root) for root in self.roots):
                     from infernux.components.script_loader import (
                         _class_literal_defaults, _declared_class_literals, _remember_module_literals,

@@ -580,6 +580,7 @@ class CandidateImportTransaction:
         module.__builtins__ = self._builtins_for(module)
         try:
             code = spec.code
+            source = None
             if code is None and spec.source is not None:
                 if not spec.file_path.endswith(".py"):
                     raise CandidateImportError("source candidate must point to a .py file")
@@ -606,6 +607,9 @@ class CandidateImportTransaction:
                 if loaded_code is None:
                     raise CandidateImportError(f"candidate loader returned no code: {spec.file_path}")
                 code = loaded_code
+            from .script_source import prepare_module_code
+            accepted_source = spec.source if spec.source is not None else source
+            accepted_code = prepare_module_code(spec.name, spec.file_path, source=accepted_source, code=code)
             from infernux.components.serializable_object import _candidate_serializable_scope
             from infernux.renderstack.render_effect_compiler import _capture_source_effect_features
 
@@ -616,10 +620,8 @@ class CandidateImportTransaction:
             with execution, _candidate_serializable_scope(self._serializable_types, spec.name), _capture_source_effect_features(
                 spec.file_path, self._effect_features, self._effect_module_sources,
             ):
-                exec(code, module.__dict__)
-            from .script_source import prepare_module_code
-            module.__infernux_accepted_code__ = prepare_module_code(
-                spec.name, spec.file_path, source=spec.source, code=code)
+                accepted_code.execute(module.__dict__)
+            module.__infernux_accepted_code__ = accepted_code
             from infernux.components.script_loader import _remember_module_literals
             from infernux.engine.script_closure_reload import remember_closure_code
 

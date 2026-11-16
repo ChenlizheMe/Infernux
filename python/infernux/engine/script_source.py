@@ -16,6 +16,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from types import CodeType
 
+from infernux._compiler.source_metadata import compute_source_records
 from infernux.engine.path_utils import is_path_within, path_key
 
 
@@ -27,6 +28,12 @@ _executing_sources = ContextVar("infernux_executing_sources", default=())
 class ModuleCode:
     code: CodeType
     source_sha256: str | None
+    compute_sources: tuple[tuple[tuple[str, int], tuple[str, int]], ...] = ()
+
+    def execute(self, namespace: dict) -> None:
+        if self.compute_sources:
+            namespace["__infernux_compute_sources__"] = dict(self.compute_sources)
+        exec(self.code, namespace)
 
 
 _accepted_module_codes = {}
@@ -43,8 +50,11 @@ def prepare_module_code(name, path, *, source=None, code=None):
         if source is None:
             source = importlib.machinery.SourceFileLoader(name, path).get_data(path)
         code = compile(source, path, 'exec', dont_inherit=True)
+    if source is None:
+        return ModuleCode(code, None)
     raw = source.encode('utf8') if isinstance(source, str) else source
-    return ModuleCode(code, hashlib.sha256(raw).hexdigest() if raw is not None else None)
+    text = source if isinstance(source, str) else importlib.util.decode_source(source)
+    return ModuleCode(code, hashlib.sha256(raw).hexdigest(), tuple(compute_source_records(text).items()))
 
 
 def publish_module_code(path, value):
@@ -149,7 +159,7 @@ class SourceFileLoader(importlib.machinery.SourceFileLoader):
             source_module = shared or (catalog is _AUTHOR_SERIALIZABLE_REGISTRY
                 and any(is_path_within(self.path, root, allow_root=False) for root in _import_roots.get()))
             with (value_world(None) if source_module else nullcontext()), _candidate_serializable_scope(types, module.__name__):
-                exec(code, namespace)
+                self.prepared_code.execute(namespace)
         finally:
             _executing_sources.reset(token)
         _publish_serializable_types(types, {module.__name__})
