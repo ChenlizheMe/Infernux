@@ -151,17 +151,17 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
     assert(ValidateRenderGraphDescription(incoming, rhi::RenderViewContext{}));
     // Implicit material/UI reads obey the same local producer contract. An
     // MSAA consumer reads resolve, never the multisampled color attachment.
-    const SceneRenderGraph::MaterialTextureRead implicitRead{"reader", target, generation};
-    assert(!SceneRenderGraph::HasLocalTextureProducer(incoming, implicitRead));
+    const MaterialTextureRead implicitRead{"reader", target, generation};
+    assert(!HasLocalGraphTextureProducer(incoming, implicitRead));
     auto local = description;
     GraphPassDesc implicitPass;
     implicitPass.name = "reader";
     local.passes.push_back(implicitPass);
-    assert(SceneRenderGraph::HasLocalTextureProducer(local, implicitRead));
+    assert(HasLocalGraphTextureProducer(local, implicitRead));
     const auto rejectImplicit = [&](const RenderGraphDescription &candidate) {
         bool rejected = false;
         try {
-            (void)SceneRenderGraph::HasLocalTextureProducer(candidate, implicitRead);
+            (void)HasLocalGraphTextureProducer(candidate, implicitRead);
         } catch (const std::invalid_argument &) {
             rejected = true;
         }
@@ -176,7 +176,7 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
     auto rewritten = local.passes.front();
     rewritten.name = "rewrite";
     local.passes.push_back(rewritten);
-    assert(SceneRenderGraph::HasLocalTextureProducer(local, implicitRead));
+    assert(HasLocalGraphTextureProducer(local, implicitRead));
     // Names are aliases, not independent resources.
     auto alias = local.textures[generation->multisampleColor ? 1 : 0];
     alias.name = "sample_alias";
@@ -190,7 +190,7 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
         local.passes[1].writeColors.clear();
         local.passes[0].writeColors = {{0, alias.name}};
         local.passes.pop_back();
-        assert(SceneRenderGraph::HasLocalTextureProducer(local, implicitRead));
+        assert(HasLocalGraphTextureProducer(local, implicitRead));
     }
     // A depth-only writer cannot supply sampled color from the same owner.
     local = incoming;
@@ -198,7 +198,7 @@ static void CheckPersistentGraphContract(const std::shared_ptr<rhi::RenderTextur
     depthOnly.writeColors.clear();
     depthOnly.resolveColor.clear();
     local.passes.insert(local.passes.begin(), depthOnly);
-    assert(!SceneRenderGraph::HasLocalTextureProducer(local, implicitRead));
+    assert(!HasLocalGraphTextureProducer(local, implicitRead));
     // A transfer producer is a writer too: no clear is needed for a complete
     // copy, but reading the destination before the copy remains invalid.
     RenderGraphDescription copied;

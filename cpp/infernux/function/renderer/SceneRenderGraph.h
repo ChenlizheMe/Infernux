@@ -25,6 +25,8 @@
 #include "InxRenderStruct.h"
 #include "MaterialPassPipeline.h"
 #include "RenderGraphDescription.h"
+#include "RenderGraphTemporalHistory.h"
+#include "RenderGraphWork.h"
 #include "RenderInstanceHistory.h"
 #include "RendererList.h"
 #include "SceneDepthResolver.h"
@@ -56,26 +58,6 @@ namespace infernux
 {
 struct RenderViewPlan;
 struct GameScreenAdmission;
-class GraphFramePublication
-{
-  public:
-    struct Write
-    {
-        std::shared_ptr<rhi::ComputeBufferAllocation> allocation;
-        intervals::Set initialized, written;
-    };
-    struct Capture
-    {
-        std::shared_ptr<GraphBufferCapture> request;
-        std::shared_ptr<rhi::ComputeBuffer> value;
-    };
-    std::vector<Write> writes;
-    std::vector<Capture> captures;
-    GraphEventQueue events;
-    ~GraphFramePublication();
-    void Accept(rhi::SubmissionTicket completion, GraphEventQueue &acceptedEvents) noexcept;
-};
-
 class InxVkCoreModular;
 class InxMaterial;
 class InxScreenUIRenderer;
@@ -466,17 +448,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_hasCachedDrawCalls = true;
     }
 
-    struct MaterialTextureRead
-    {
-        std::string passName;
-        std::shared_ptr<rhi::RenderTexture> texture;
-        std::shared_ptr<const rhi::RenderTextureGeneration> generation;
-        bool operator==(const MaterialTextureRead &other) const
-        {
-            return passName == other.passName && texture == other.texture && generation == other.generation;
-        }
-    };
-
     struct MaterialBufferRead
     {
         std::string passName;
@@ -498,10 +469,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     [[nodiscard]] std::shared_ptr<GraphBufferCapture> CaptureBuffer(const std::string &name);
     [[nodiscard]] bool HasPendingBufferCaptures() const
     {
-        return std::any_of(m_bufferCaptures.begin(), m_bufferCaptures.end(), [](const auto &weak) {
-            const auto capture = weak.lock();
-            return capture && capture->status == GraphBufferCapture::Status::Pending;
-        });
+        return m_graphResults.HasPendingCaptures();
     }
     void SetScreenAdmission(std::shared_ptr<const GameScreenAdmission> admission)
     {
@@ -512,7 +480,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// Classify an implicit material/UI sample against explicit same-graph
     /// writers. Sampling before a local producer or in its writing pass is
     /// invalid; false means the frame schedule must supply an external producer.
-    static bool HasLocalTextureProducer(const RenderGraphDescription &description, const MaterialTextureRead &read);
 
     [[nodiscard]] bool CanReuseCachedSubmission(uint64_t signature, uint64_t objectBufferRevision) const noexcept
     {
@@ -702,8 +669,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// VkImage handles are not used in barrier insertion.
     void ClearCachedFrameState()
     {
-        CancelBufferCaptures("render view scene was reset");
-        ++m_bufferGeneration;
+        m_graphResults.Reset("render view scene was reset");
         ClearCachedViewSubmission();
         InvalidateParticleViews();
         RetireWorkInstances();
@@ -842,9 +808,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
     bool PrepareGraphBuffers();
     [[nodiscard]] bool CanRetainEventBuffers(const GraphEventInterests &interests) const;
     void PublishGraphBuffers();
-    void CancelBufferCaptures(const std::string &reason);
-    [[nodiscard]] const GraphBufferDesc &FindBufferExport(const std::string &name) const;
-    [[nodiscard]] std::shared_ptr<GraphBufferCapture> MakeBufferCapture(const GraphBufferDesc &buffer) const;
     [[nodiscard]] rhi::ComputeBufferBindings CaptureComputeBufferReads() const;
     bool RefreshComputeBufferBindings(bool &prepared);
     void RetireComputeBufferBindings();
@@ -938,24 +901,21 @@ class SceneRenderGraph : public NativeLifetimeOwner
     // Python graph description (stored for BuildRenderGraph)
     RenderGraphDescription m_pythonGraphDesc;
     std::unordered_set<std::string> m_authorShaderGuids;
-    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeWorkInstance>> m_workInstances;
-    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_graphBufferOwners;
+    RenderGraphWorkStorage m_graphWork;
     std::vector<std::pair<vk::ResourceHandle, size_t>> m_graphBufferImports;
     std::vector<std::pair<vk::ResourceHandle, const rhi::ComputeBuffer *>> m_materialBufferImports;
     GraphBufferContents m_graphBufferContents;
     std::unordered_set<std::string> m_graphBufferWrites;
-    std::vector<std::weak_ptr<GraphBufferCapture>> m_bufferCaptures;
+    RenderGraphResults m_graphResults;
     struct AuthorPass
     {
         size_t index;
         std::optional<size_t> dispatch;
     };
     std::unordered_map<uint32_t, AuthorPass> m_authorPassIndices;
-    std::vector<size_t> m_executedEventPasses;
+    std::vector<uint32_t> m_executedEventPasses;
     // Validated readers of the current description survive a deferred rebuild.
-    std::vector<GraphBufferInput *> m_liveBufferInputs;
-    uint64_t m_bufferOccurrence = 0;
-    uint64_t m_bufferGeneration = 0;
+    std::vector<const GraphBufferDesc *> m_liveBufferInputs;
     uint64_t m_historyEpoch = 0;
     bool m_historyResetPending = false;
     uint64_t m_requestedDraw = 0;
@@ -1011,18 +971,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
     vk::ResourceHandle m_visibleRendererList;
     vk::ResourceHandle m_shadowRendererList;
 
-    struct TemporalHistoryResource
+    struct TemporalHistoryResource : GraphTemporalHistory
     {
-        std::array<std::shared_ptr<rhi::RenderTexture>, 2> targets{};
         vk::ResourceHandle readHandle;
         vk::ResourceHandle writeHandle;
-        std::string readName;
-        std::string writeName;
-        rhi::PixelFormat format = rhi::PixelFormat::Undefined;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        uint32_t readIndex = 0;
-        bool valid = false;
     };
     std::unordered_map<std::string, TemporalHistoryResource> m_temporalHistories;
     struct ImportedTextureBinding

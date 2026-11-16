@@ -79,10 +79,12 @@ bool ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 
 void ScriptableRenderContext::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
 {
-    if (m_recordedPlan)
-        m_recordedPlan->parameters = updates;
-    else
+    if (m_recordedPlan) {
+        auto &parameters = m_recordedPlan->parameters;
+        parameters.insert(parameters.end(), updates.begin(), updates.end());
+    } else {
         m_execution->update(*this, updates);
+    }
 }
 
 void ScriptableRenderContext::SubmitCulling(CullingResults &culling)

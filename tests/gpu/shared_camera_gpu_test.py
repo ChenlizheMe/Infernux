@@ -7,15 +7,20 @@ from infernux.core.assets import AssetManager
 from infernux.lib import CameraClearFlags,ConsolePanel,SceneManager,Vector3,vec4f
 
 
-MONITOR='''#version 450
-ShaderInfo { Name "Tutorial Shared View Monitor" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D leftTex Texture2D rightTex }
- Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() {
- outColor=inUV.x<0.5 ? texture(leftTex,vec2(inUV.x*2,inUV.y))
-                    : texture(rightTex,vec2(inUV.x*2-1,inUV.y));
-}
+MONITOR='''import infernux.shader as shader
+
+class SharedViewMonitor(shader.fullscreen):
+    shader_id = "tests/shared_view/monitor"
+    hidden = True
+    left = shader.input("Left", shader.Color2D)
+    right = shader.input("Right", shader.Color2D)
+
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        if uv.x < 0.5:
+            return shader.sample_level(self.left, shader.vec2(uv.x * 2.0, uv.y), 0.0)
+        return shader.sample_level(self.right, shader.vec2(uv.x * 2.0 - 1.0, uv.y), 0.0)
 '''
+
 
 class Monitor(inx.renderstack.RenderPipeline):
     name='Tutorial Shared Topology Monitor'
@@ -23,17 +28,17 @@ class Monitor(inx.renderstack.RenderPipeline):
         self.builds+=1;g.set_msaa_samples(1)
         a=g.import_texture('left',self.targets[0]);b=g.import_texture('right',self.targets[1])
         color=g.create_texture('color',camera_target=True)
-        g.add_pass('CompareViews').write_color(color).set_texture('leftTex',a).set_texture('rightTex',b).fullscreen_quad('Tutorial Shared View Monitor')
+        g.add_pass('CompareViews').write_color(color).set_texture('left',a).set_texture('right',b).fullscreen_quad('tests/shared_view/monitor')
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
-    def render_camera(self,context,camera,culling):
+    def render_view(self,context,camera,culling):
         self.native_id=int(context.graph_instance_id)
         assert culling.visible_object_count==0
-        super().render_camera(context,camera,culling)
+        super().render_view(context,camera,culling)
 
 class Router(inx.renderstack.RenderPipeline):
     name='Tutorial Shared Topology Router'
     def render(self,context,camera):
-        (self.monitor if camera.component_id==self.monitor_id else self.shared).render(context,camera)
+        (self.monitor if camera.camera_id==self.monitor_id else self.shared).render(context,camera)
     def dispose(self):
         self.shared.dispose();self.monitor.dispose();super().dispose()
 
@@ -44,14 +49,14 @@ def main():
         name='Tutorial Shared Views '+args.pipeline
         def define_topology(self,g):
             self.builds+=1;super().define_topology(g)
-        def render_camera(self,context,camera,culling):
-            self.views[camera.component_id]={'native_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'visible':int(culling.visible_object_count),'output_samples':int(context.output_samples)}
-            super().render_camera(context,camera,culling)
+        def render_view(self,context,camera,culling):
+            self.views[camera.camera_id]={'native_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'visible':int(culling.visible_object_count),'output_samples':int(context.output_samples)}
+            super().render_view(context,camera,culling)
     with tempfile.TemporaryDirectory(prefix='infernux-shared-camera-') as folder:
         project=Path(folder)
         for name in ('Assets','Packages','ProjectSettings'):(project/name).mkdir()
         mesh=project/'Assets/Quad.obj';mesh.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvn 0 0 -1\nf 1//1 3//1 2//1\nf 1//1 4//1 3//1\n',encoding='ascii')
-        shader=project/'Assets/Monitor.frag';shader.write_text(MONITOR,encoding='ascii')
+        shader=project/'Assets/monitor.frag.py';shader.write_text(MONITOR,encoding='ascii')
         frontend=inx.Engine();native=frontend.get_native_engine();console=ConsolePanel();router=Router()
         router.shared=Shared();router.shared.builds=0;router.shared.views={};router.shared.msaa_samples=1;router.shared.shadow_resolution=256
         router.monitor=Monitor();router.monitor.builds=0

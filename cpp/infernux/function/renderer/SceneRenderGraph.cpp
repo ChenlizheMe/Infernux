@@ -12,6 +12,8 @@
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
+#include "RenderGraphTransfer.h"
+#include "RenderViewHistory.h"
 #include "RendererSelection.h"
 #include "SceneRenderGraph.h"
 #include "SceneRenderTarget.h"
@@ -53,182 +55,26 @@
 namespace infernux
 {
 
-GraphFramePublication::~GraphFramePublication()
-{
-    for (const auto &capture : captures)
-        capture.request->Cancel("graph submission did not succeed");
-}
-
-void GraphFramePublication::Accept(rhi::SubmissionTicket completion, GraphEventQueue &acceptedEvents) noexcept
-{
-    for (auto &write : writes)
-        write.allocation->PublishGraphValue(completion, rhi::QueueRole::Graphics, std::move(write.initialized),
-                                            std::move(write.written));
-    for (auto &capture : captures)
-        if (capture.request->status == GraphBufferCapture::Status::Pending) {
-            capture.request->value = std::move(capture.value);
-            capture.request->status = GraphBufferCapture::Status::Accepted;
-        }
-    captures.clear();
-    for (auto &event : events)
-        event.submission = completion;
-    acceptedEvents.splice(acceptedEvents.end(), events);
-}
-
-void SceneRenderGraph::CancelBufferCaptures(const std::string &reason)
-{
-    for (const auto &weak : m_bufferCaptures)
-        if (const auto capture = weak.lock())
-            capture->Cancel(reason);
-    m_bufferCaptures.clear();
-}
-
-const GraphBufferDesc &SceneRenderGraph::FindBufferExport(const std::string &name) const
-{
-    const auto buffer =
-        std::find_if(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
-                     [&](const auto &item) { return item.name == name && item.exportLayout.has_value(); });
-    if (!m_hasPythonGraph || !m_pythonGraphValid || buffer == m_pythonGraphDesc.buffers.end())
-        throw std::invalid_argument("No exported buffer in this view: " + name);
-    return *buffer;
-}
-
-std::shared_ptr<GraphBufferCapture> SceneRenderGraph::MakeBufferCapture(const GraphBufferDesc &buffer) const
-{
-    auto capture = std::make_shared<GraphBufferCapture>();
-    capture->name = buffer.name;
-    capture->shape = buffer.exportShape;
-    capture->scalarType = buffer.exportLayout->scalarType;
-    capture->byteOffset = buffer.byteOffset;
-    capture->storageByteSize = buffer.exportLayout->GetByteSize();
-    capture->view = m_renderView.id;
-    capture->generation = m_bufferGeneration;
-    capture->occurrence = m_bufferOccurrence + 1;
-    return capture;
-}
-
 std::shared_ptr<GraphBufferCapture> SceneRenderGraph::CaptureBuffer(const std::string &name)
 {
-    const auto &buffer = FindBufferExport(name);
-    auto capture = MakeBufferCapture(buffer);
-    const auto &storage = ResolveGraphBufferStorage(m_pythonGraphDesc, buffer);
-    auto imported = storage.computeBuffer;
-    if (!storage.workBinding.empty()) {
-        const auto *work = FindGraphWorkBinding(m_pythonGraphDesc, storage.workBinding);
-        imported = work->recipe->GetSlots()[storage.workSlot].external;
-        capture->storageClaim = "work:" + work->name + "/" + std::to_string(storage.workSlot);
-    }
-    if (storage.input) {
-        capture->storageClaim = "input:" + std::to_string(reinterpret_cast<uintptr_t>(storage.input.get()));
-    } else if (imported && imported->IsFrozen()) {
-        capture->storageBuffer = imported;
-        const auto handle = imported->GetBuffer();
-        capture->storageClaim = "frozen:" + std::to_string(handle.index) + ":" + std::to_string(handle.generation);
-    } else if (imported)
-        capture->storageClaim = "import:" + std::to_string(reinterpret_cast<uintptr_t>(imported.get()));
-    else if (capture->storageClaim.empty())
-        capture->storageClaim = "buffer:" + storage.name;
-    m_bufferCaptures.push_back(capture);
-    return capture;
-}
-
-static std::shared_ptr<GraphEventInterest> FindActiveEventInterest(const GraphEventInterests &interests,
-                                                                   const std::string &label)
-{
-    const auto found = interests.find(label);
-    if (found == interests.end())
-        return {};
-    auto interest = found->second.lock();
-    return interest && interest->active ? interest : nullptr;
+    if (!m_hasPythonGraph || !m_pythonGraphValid)
+        throw std::invalid_argument("No exported buffer in this view: " + name);
+    return m_graphResults.CaptureBuffer(m_pythonGraphDesc, m_renderView.id, name);
 }
 
 std::shared_ptr<GraphFramePublication> SceneRenderGraph::PreparePublication(const GraphEventInterests &interests)
 {
-    if (m_graphBufferOwners.empty() && m_executedEventPasses.empty())
-        return {};
-    std::shared_ptr<GraphFramePublication> publication;
-    const auto prepare = [&]() -> GraphFramePublication & {
-        if (!publication)
-            publication = std::make_shared<GraphFramePublication>();
-        return *publication;
-    };
-    std::unordered_set<const rhi::ComputeBufferAllocation *> graphWriters;
-    for (const auto &name : m_graphBufferWrites) {
-        const auto owner = m_graphBufferOwners.find(name);
-        if (owner != m_graphBufferOwners.end())
-            graphWriters.insert(owner->second->GetAllocation().get());
-    }
-    std::unordered_set<const rhi::ComputeBufferAllocation *> written;
-    for (const auto &buffer : m_pythonGraphDesc.buffers) {
-        if (!buffer.exportLayout)
-            continue;
-        const auto &allocation = m_computeBufferReads.at(m_graphBufferOwners.at(buffer.name).get());
-        if (graphWriters.count(allocation.get()) && written.insert(allocation.get()).second) {
-            const auto &known = m_graphBufferContents.at(buffer.name);
-            prepare().writes.push_back({allocation, known, known});
-        }
-    }
-    ++m_bufferOccurrence;
-    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> frozen;
-    const auto prepareCapture = [&](const std::shared_ptr<GraphBufferCapture> &capture) {
-        auto [entry, inserted] = frozen.try_emplace(capture->name);
-        if (inserted) {
-            const auto &owner = m_graphBufferOwners.at(capture->name);
-            // Keep the allocation used by this execution's descriptors and commands.
-            if (owner->GetAllocation() != m_computeBufferReads.at(owner.get()))
-                throw std::logic_error("Graph output changed after actual resource capture");
-            entry->second = owner->FreezeScalars();
-        }
-        prepare().captures.push_back({capture, entry->second});
-        capture->occurrence = m_bufferOccurrence;
-        capture->screenAdmission = m_screenAdmission;
-        capture->selected = true;
-    };
-    auto output = m_bufferCaptures.begin();
-    for (auto it = m_bufferCaptures.begin(); it != m_bufferCaptures.end(); ++it) {
-        const auto capture = it->lock();
-        if (!capture || capture->status != GraphBufferCapture::Status::Pending)
-            continue;
-        *output++ = *it;
-        if (!capture->selected)
-            prepareCapture(capture);
-    }
-    m_bufferCaptures.erase(output, m_bufferCaptures.end());
-    std::shared_ptr<GraphEventViewSample> viewSample;
-    for (size_t index : m_executedEventPasses) {
-        const auto &pass = m_pythonGraphDesc.passes[index];
-        for (size_t ordinal = 0; ordinal < pass.events.size(); ++ordinal) {
-            const auto &declaration = pass.events[ordinal];
-            const auto interest = FindActiveEventInterest(interests, declaration.label);
-            if (!interest)
-                continue;
-            if (!viewSample && m_hasCachedCameraVP && m_cameraMatricesStaged) {
-                viewSample = std::make_shared<GraphEventViewSample>(GraphEventViewSample{
-                    m_width, m_height, m_temporalJitterNdc, m_cachedView, m_cachedProj, m_cachedUnjitteredProj,
-                    m_cameraHistoryValid ? std::optional{m_previousViewProj} : std::nullopt});
-            }
-            decltype(GraphEventRecord::sources) sources;
-            sources.reserve(declaration.buffers.size());
-            for (const auto &[name, resource] : declaration.buffers) {
-                auto capture = MakeBufferCapture(FindBufferExport(resource));
-                prepareCapture(capture);
-                sources.emplace_back(name, std::move(capture));
-            }
-            prepare().events.push_back({declaration.label,
-                                        declaration.metadata,
-                                        interest,
-                                        pass.name,
-                                        ordinal,
-                                        m_renderView.id,
-                                        m_bufferGeneration,
-                                        m_bufferOccurrence,
-                                        m_historyEpoch,
-                                        {},
-                                        viewSample,
-                                        std::move(sources)});
-        }
-    }
-    return publication;
+    return m_graphResults.Prepare(
+        m_pythonGraphDesc, m_graphWork, m_graphBufferContents, m_graphBufferWrites, m_executedEventPasses, interests,
+        m_renderView.id, m_historyEpoch,
+        [this]() -> std::shared_ptr<GraphEventViewSample> {
+            if (!m_hasCachedCameraVP || !m_cameraMatricesStaged)
+                return {};
+            return std::make_shared<GraphEventViewSample>(GraphEventViewSample{
+                m_width, m_height, m_temporalJitterNdc, m_cachedView, m_cachedProj, m_cachedUnjitteredProj,
+                m_cameraHistoryValid ? std::optional{m_previousViewProj} : std::nullopt});
+        },
+        m_screenAdmission, &m_computeBufferReads);
 }
 
 namespace
@@ -493,7 +339,7 @@ void SceneRenderGraph::InvalidateBeforeTargetReplacement()
         return; // A screen resize does not replace this camera's allocation.
     m_graphBuilt = false;
     m_needsCompile = true;
-    if (!m_workInstances.empty()) {
+    if (!m_graphWork.instances.empty()) {
         RetireWorkInstances();
         m_needsRebuild = true;
     }
@@ -551,35 +397,6 @@ bool SceneRenderGraph::SetCameraViewport(const RenderViewData &view)
     return !m_viewport.IsEmpty();
 }
 
-bool SceneRenderGraph::HasLocalTextureProducer(const RenderGraphDescription &description,
-                                               const MaterialTextureRead &read)
-{
-    bool reachedReader = false, hasWriter = false, priorWriter = false;
-    for (const auto &pass : description.passes) {
-        const bool writes =
-            std::any_of(description.textures.begin(), description.textures.end(), [&](const GraphTextureDesc &texture) {
-                return texture.role == GraphTextureRole::Persistent && texture.renderTexture == read.texture &&
-                       ResolveGraphTextureAttachment(*read.generation, texture.attachment) ==
-                           read.generation->color.get() &&
-                       pass.WritesTexture(texture.name);
-            });
-        if (pass.name == read.passName) {
-            if (writes)
-                throw std::invalid_argument("RenderTexture sampled and written by the same pass: " + read.passName);
-            reachedReader = true;
-        }
-        if (writes) {
-            hasWriter = true;
-            priorWriter |= !reachedReader;
-        }
-    }
-    if (!reachedReader)
-        throw std::invalid_argument("RenderTexture reader pass is not in this graph: " + read.passName);
-    if (hasWriter && !priorWriter)
-        throw std::invalid_argument("RenderTexture sampled before its local producer completes: " + read.passName);
-    return hasWriter;
-}
-
 RenderViewAccess SceneRenderGraph::GetResourceAccess() const
 {
     RenderViewAccess access;
@@ -594,11 +411,7 @@ RenderViewAccess SceneRenderGraph::GetResourceAccess() const
         else
             found->requiresProducer |= requiresProducer;
     };
-    for (auto *input : m_liveBufferInputs)
-        if (input->IsWaitingForResult())
-            for (const auto &source : input->GetResultSources())
-                if (source->status == GraphBufferCapture::Status::Pending)
-                    access.pendingResults.push_back({input, source->view});
+    (void)AppendPendingGraphBufferResults(access, m_liveBufferInputs);
     if (!m_outputGeneration)
         access.writes.push_back(m_screenTarget);
     const auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
@@ -646,7 +459,7 @@ RenderViewAccess SceneRenderGraph::GetResourceAccess() const
     }
     if (m_graphBuilt)
         for (const auto &read : m_materialTextureReads)
-            if (!HasLocalTextureProducer(m_pythonGraphDesc, read))
+            if (!HasLocalGraphTextureProducer(m_pythonGraphDesc, read))
                 addRead(read.generation->color.get(), false);
     return access;
 }
@@ -658,8 +471,8 @@ bool SceneRenderGraph::HasPendingBufferInputs(bool forStep) const
     // must not withhold this view. Retry the retained plan after uploads finish
     // rather than publishing a clear-only image as the completed World frame.
     return (m_hasCachedDrawCalls && m_cachedObjectBufferRevision == 0) ||
-           std::any_of(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), [forStep](const auto *input) {
-               return input->IsWaitingForResult() && (!forStep || input->HoldsStep());
+           std::any_of(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), [forStep](const auto *buffer) {
+               return buffer->input->IsWaitingForResult() && (!forStep || buffer->input->HoldsStep());
            });
 }
 
@@ -667,11 +480,11 @@ void SceneRenderGraph::CacheLiveAuthorPasses()
 {
     m_executedEventPasses.clear();
     m_liveBufferInputs.clear();
-    std::unordered_map<std::string_view, GraphBufferInput *> inputs;
+    std::unordered_map<std::string_view, const GraphBufferDesc *> inputs;
     for (const auto &buffer : m_pythonGraphDesc.buffers) {
         const auto &storage = ResolveGraphBufferStorage(m_pythonGraphDesc, buffer);
         if (storage.input)
-            inputs.emplace(buffer.name, storage.input.get());
+            inputs.emplace(buffer.name, &storage);
     }
     const auto read = [&](std::string_view name) {
         const auto input = inputs.find(name);
@@ -698,7 +511,7 @@ void SceneRenderGraph::CacheLiveAuthorPasses()
         const auto &pass = m_pythonGraphDesc.passes[record.index];
         const bool firstLivePart = seen.insert(record.index).second;
         if (firstLivePart && !pass.events.empty())
-            m_executedEventPasses.push_back(record.index);
+            m_executedEventPasses.push_back(static_cast<uint32_t>(record.index));
         if (inputs.empty())
             continue;
         if (record.dispatch) {
@@ -816,8 +629,7 @@ void SceneRenderGraph::InvalidateTemporalHistory()
     UpdateTemporalProjection();
     for (auto &[key, history] : m_temporalHistories) {
         (void)key;
-        history.valid = false;
-        history.readIndex = 0;
+        history.Invalidate();
     }
 }
 
@@ -898,21 +710,17 @@ void SceneRenderGraph::RetireWorkInstances()
         RetireComputeBufferBindings();
     else
         m_computeBufferReads.clear();
-    auto instances = std::move(m_workInstances);
-    auto owners = std::move(m_graphBufferOwners);
-    if (published && m_vkCore && (!instances.empty() || !owners.empty()))
-        m_vkCore->GetRetirementQueue().Retire([instances = std::move(instances), owners = std::move(owners)]() mutable {
-            instances.clear();
-            owners.clear();
-        });
+    auto retired = std::exchange(m_graphWork, {});
+    if (published && m_vkCore && (!retired.instances.empty() || !retired.buffers.empty()))
+        m_vkCore->GetRetirementQueue().Retire([retired = std::move(retired)]() mutable { retired = {}; });
 }
 
 std::shared_ptr<rhi::ComputeBuffer> SceneRenderGraph::ResolveGraphBufferOwner(const GraphBufferDesc &buffer) const
 {
     if (buffer.computeBuffer)
         return buffer.computeBuffer;
-    const auto found = m_graphBufferOwners.find(buffer.name);
-    return found == m_graphBufferOwners.end() ? nullptr : found->second;
+    const auto found = m_graphWork.buffers.find(buffer.name);
+    return found == m_graphWork.buffers.end() ? nullptr : found->second;
 }
 
 bool SceneRenderGraph::ProveGraphBufferContents()
@@ -948,65 +756,13 @@ bool SceneRenderGraph::PrepareGraphBuffers()
     }
     try {
         rhi::ComputeHost current(m_vkCore->GetDeviceContext().GetRhiDevice(), m_vkCore->PrepareComputeQueue());
-        // A cached graph description may outlive its original Engine. Compare
-        // captured service facts before dereferencing any old device or queue.
-        for (const auto &binding : m_pythonGraphDesc.workBindings) {
-            if (!binding.recipe->GetHost().SharesServicesWith(current))
-                throw std::invalid_argument("Graph work belongs to an expired or different compute host");
-        }
-        decltype(m_graphBufferOwners) owners;
-        for (const auto &buffer : m_pythonGraphDesc.buffers) {
-            if (buffer.computeBuffer) {
-                owners.emplace(buffer.name, buffer.computeBuffer);
-            } else if (buffer.workBinding.empty() && buffer.exportLayout) {
-                const auto old = m_graphBufferOwners.find(buffer.name);
-                auto layout = *buffer.exportLayout;
-                layout.usage = static_cast<rhi::BufferUsageFlags>(buffer.usage);
-                std::shared_ptr<rhi::ComputeBuffer> owner;
-                if (old != m_graphBufferOwners.end() && old->second->GetHost().SharesServicesWith(current)) {
-                    const auto &previous = old->second->GetDesc();
-                    if (previous.elementCount == layout.elementCount && previous.scalarType == layout.scalarType &&
-                        previous.lanes == layout.lanes && rhi::HasBufferUsage(previous.usage, layout.usage) &&
-                        !old->second->GetAllocation()->IsReadProtected())
-                        owner = old->second;
-                }
-                if (!owner)
-                    owner = rhi::ComputeBuffer::TryCreateGraphBuffer(current, layout);
-                if (!owner) {
-                    m_graphStorageDeferred = true;
-                    return false;
-                }
-                owners.emplace(buffer.name, std::move(owner));
-            }
-        }
-        std::unordered_map<std::string, std::shared_ptr<rhi::ComputeWorkInstance>> instances;
-        for (const auto &binding : m_pythonGraphDesc.workBindings) {
-            std::vector<rhi::ComputeWorkInput> inputs;
-            for (const auto &[port, resource] : binding.inputBindings) {
-                const auto owner = owners.find(resource);
-                if (owner == owners.end())
-                    throw std::invalid_argument("Work input has no earlier typed graph allocation owner");
-                inputs.push_back({port, owner->second});
-            }
-            const auto previous = m_workInstances.find(binding.name);
-            auto instance = previous != m_workInstances.end() && &previous->second->GetRecipe() == binding.recipe.get()
-                                ? previous->second->Rebind(std::move(inputs), binding.externalInputs)
-                                : binding.recipe->Instantiate(std::move(inputs), binding.externalInputs);
-            if (!instance) {
-                m_graphStorageDeferred = true;
-                return false;
-            }
-            for (const auto &buffer : m_pythonGraphDesc.buffers)
-                if (buffer.workBinding == binding.name)
-                    owners[buffer.name] = instance->GetBuffers().at(buffer.workSlot);
-            // A resource-only rebind can keep the compiled passes. Prepare its
-            // immutable graphics bindings here, before any recording callback.
-            (void)instance->GetDispatches();
-            instances.emplace(binding.name, std::move(instance));
+        auto storage = PrepareRenderGraphWork(current, m_pythonGraphDesc, m_graphWork);
+        if (!storage) {
+            m_graphStorageDeferred = true;
+            return false;
         }
         RetireWorkInstances();
-        m_workInstances = std::move(instances);
-        m_graphBufferOwners = std::move(owners);
+        m_graphWork = std::move(*storage);
         m_computeBufferReads = CaptureComputeBufferReads();
         return true;
     } catch (const std::exception &error) {
@@ -1022,10 +778,10 @@ bool SceneRenderGraph::CanRetainEventBuffers(const GraphEventInterests &interest
     std::unordered_set<rhi::BufferHandle, rhi::HandleHash<rhi::BufferTag>> captured;
     for (size_t index : m_executedEventPasses) {
         for (const auto &event : m_pythonGraphDesc.passes[index].events) {
-            if (!FindActiveEventInterest(interests, event.label))
+            if (!FindActiveGraphEventInterest(interests, event.label))
                 continue;
             for (const auto &[name, resource] : event.buffers)
-                captured.insert(m_graphBufferOwners.at(resource)->GetBuffer());
+                captured.insert(m_graphWork.buffers.at(resource)->GetBuffer());
         }
     }
     if (captured.empty())
@@ -1036,8 +792,8 @@ bool SceneRenderGraph::CanRetainEventBuffers(const GraphEventInterests &interest
     std::vector<rhi::BufferHandle> retained;
     retained.reserve(captured.size());
     for (const auto &name : m_graphBufferWrites) {
-        const auto owner = m_graphBufferOwners.find(name);
-        if (owner == m_graphBufferOwners.end())
+        const auto owner = m_graphWork.buffers.find(name);
+        if (owner == m_graphWork.buffers.end())
             continue;
         const auto handle = owner->second->GetBuffer();
         if (captured.erase(handle))
@@ -1063,15 +819,7 @@ bool SceneRenderGraph::AdmitGraphEvents(const GraphEventInterests &interests)
 
 void SceneRenderGraph::PublishGraphBuffers()
 {
-    const auto publish = [](const auto &owner) {
-        if (owner->GetAllocation()->IsGraphWritable())
-            owner->PublishStorage();
-    };
-    for (const auto &[name, owner] : m_graphBufferOwners)
-        publish(owner);
-    for (const auto &[name, instance] : m_workInstances)
-        for (const auto &owner : instance->GetBuffers())
-            publish(owner);
+    m_graphWork.Publish();
     m_graphBuffersPublished = true;
 }
 
@@ -1121,7 +869,7 @@ void SceneRenderGraph::ReleaseViewGpuResources() noexcept
 
 void SceneRenderGraph::Destroy()
 {
-    CancelBufferCaptures("render view was destroyed");
+    m_graphResults.Cancel("render view was destroyed");
     ReleaseParticleViewBindings();
     if (m_particleViewDiagnosticState) {
         std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
@@ -1393,33 +1141,7 @@ void SceneRenderGraph::SetCachedCameraView(const RenderViewData &camera)
 {
     const auto &view = camera.view;
     const auto &proj = camera.projection;
-    bool cameraCut = m_hasCachedCameraVP &&
-                     (camera.cameraId != m_cachedCameraView.cameraId || camera.worldId != m_cachedCameraView.worldId ||
-                      camera.simulationEpoch != m_cachedCameraView.simulationEpoch ||
-                      camera.temporalHistoryRevision != m_cachedCameraView.temporalHistoryRevision);
-    if (m_hasCachedCameraVP && !cameraCut) {
-        const glm::mat4 previousInverseView = glm::inverse(m_cachedView);
-        const glm::mat4 currentInverseView = glm::inverse(view);
-        const glm::vec3 previousPosition = glm::vec3(previousInverseView[3]);
-        const glm::vec3 currentPosition = glm::vec3(currentInverseView[3]);
-        const glm::vec3 previousForward = -glm::normalize(glm::vec3(previousInverseView[2]));
-        const glm::vec3 currentForward = -glm::normalize(glm::vec3(currentInverseView[2]));
-
-        float projectionDelta = 0.0f;
-        for (glm::length_t column = 0; column < 4; ++column) {
-            for (glm::length_t row = 0; row < 4; ++row) {
-                projectionDelta =
-                    std::max(projectionDelta, std::abs(proj[column][row] - m_cachedUnjitteredProj[column][row]));
-            }
-        }
-
-        constexpr float kCameraCutDistance = 10.0f;
-        constexpr float kCameraCutDirectionCosine = 0.70710678f;
-        const glm::vec3 cameraDelta = currentPosition - previousPosition;
-        cameraCut = glm::dot(cameraDelta, cameraDelta) > kCameraCutDistance * kCameraCutDistance ||
-                    glm::dot(previousForward, currentForward) < kCameraCutDirectionCosine || projectionDelta > 1e-3f;
-    }
-    if (cameraCut)
+    if (m_hasCachedCameraVP && IsRenderViewCut(m_cachedCameraView, camera))
         InvalidateTemporalHistory();
 
     m_cachedCameraView = camera;
@@ -1440,33 +1162,12 @@ void SceneRenderGraph::UpdateTemporalProjection()
 
 glm::vec2 SceneRenderGraph::ComputeTemporalJitterNdc(uint32_t sampleIndex, uint32_t width, uint32_t height)
 {
-    if (width == 0 || height == 0)
-        return glm::vec2(0.0f);
-
-    const auto halton = [](uint32_t index, uint32_t base) {
-        float value = 0.0f;
-        float fraction = 1.0f;
-        while (index > 0) {
-            fraction /= static_cast<float>(base);
-            value += fraction * static_cast<float>(index % base);
-            index /= base;
-        }
-        return value;
-    };
-
-    const uint32_t sequenceIndex = sampleIndex % kTemporalJitterSampleCount + 1u;
-    const glm::vec2 pixelOffset{halton(sequenceIndex, 2u) - 0.5f, halton(sequenceIndex, 3u) - 0.5f};
-    return {2.0f * pixelOffset.x / static_cast<float>(width), 2.0f * pixelOffset.y / static_cast<float>(height)};
+    return RenderViewJitterNdc(sampleIndex, width, height);
 }
 
 glm::mat4 SceneRenderGraph::ApplyTemporalJitter(const glm::mat4 &projection, const glm::vec2 &jitterNdc)
 {
-    glm::mat4 result = projection;
-    for (glm::length_t column = 0; column < 4; ++column) {
-        result[column][0] += jitterNdc.x * projection[column][3];
-        result[column][1] += jitterNdc.y * projection[column][3];
-    }
-    return result;
+    return JitterRenderViewProjection(projection, jitterNdc);
 }
 
 glm::mat4 SceneRenderGraph::ProjectionForPass(const glm::mat4 &projection, const glm::vec2 &jitterNdc,
@@ -1666,7 +1367,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     }
 
     const auto rejectGraph = [&](RenderGraphDescription attempted) {
-        CancelBufferCaptures("render graph was rejected");
+        m_graphResults.Cancel("render graph was rejected");
         RetireWorkInstances();
         if (m_renderGraph)
             m_renderGraph->Reset();
@@ -1734,8 +1435,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         return rejectGraph(std::move(normalizedDesc));
     if (topologyChanged || callbackContractChanged ||
         (desc.sourceRevision != 0 && desc.sourceRevision != m_pythonGraphSourceRevision)) {
-        CancelBufferCaptures("render graph definition changed");
-        ++m_bufferGeneration;
+        m_graphResults.Reset("render graph definition changed");
     }
     if (!topologyChanged && !callbackContractChanged) {
         // Logical topology is unchanged. Completed-World resource values
@@ -2266,7 +1966,7 @@ rhi::ComputeBufferBindings SceneRenderGraph::CaptureComputeBufferReads() const
         include(read.buffer);
     for (const auto &buffer : m_pythonGraphDesc.buffers)
         include(buffer.computeBuffer);
-    for (const auto &[name, owner] : m_graphBufferOwners)
+    for (const auto &[name, owner] : m_graphWork.buffers)
         include(owner);
     for (const auto &binding : m_pythonGraphDesc.workBindings)
         for (const auto &buffer : binding.externalInputs)
@@ -2305,8 +2005,8 @@ bool SceneRenderGraph::RefreshComputeBufferBindings(bool &prepared)
 
     const bool writesPinned =
         std::any_of(m_graphBufferWrites.begin(), m_graphBufferWrites.end(), [this](const auto &name) {
-            const auto owner = m_graphBufferOwners.find(name);
-            return owner != m_graphBufferOwners.end() && owner->second->GetAllocation()->IsReadProtected();
+            const auto owner = m_graphWork.buffers.find(name);
+            return owner != m_graphWork.buffers.end() && owner->second->GetAllocation()->IsReadProtected();
         });
     if (m_graphBuilt && !inputChanged && !writesPinned && CaptureComputeBufferReads() == m_computeBufferReads)
         return true;
@@ -2352,7 +2052,7 @@ std::shared_ptr<void> SceneRenderGraph::AcquireComputeReadValues() const
     for (const auto &buffer : m_pythonGraphDesc.buffers)
         if (buffer.computeBuffer)
             include(buffer.computeBuffer);
-    for (const auto &[name, instance] : m_workInstances) {
+    for (const auto &[name, instance] : m_graphWork.instances) {
         const auto &slots = instance->GetRecipe().GetSlots();
         for (size_t index = 0; index < slots.size(); ++index)
             if (slots[index].external)
@@ -3199,55 +2899,11 @@ void SceneRenderGraph::ImportViewportDestination()
 
 void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::string, vk::ResourceHandle> &handles)
 {
-    struct RequestedHistory
-    {
-        const GraphTextureDesc *read = nullptr;
-        const GraphTextureDesc *write = nullptr;
-    };
-    std::unordered_map<std::string, RequestedHistory> requested;
-    for (const auto &texture : m_pythonGraphDesc.textures) {
-        if (texture.role == GraphTextureRole::TemporalRead)
-            requested[texture.temporalKey].read = &texture;
-        else if (texture.role == GraphTextureRole::TemporalWrite)
-            requested[texture.temporalKey].write = &texture;
-    }
-
-    // Owners use the same allocation and in-flight retirement as public
-    // RenderTextures. No second raw-image allocation/teardown implementation.
-    for (auto it = m_temporalHistories.begin(); it != m_temporalHistories.end();) {
-        if (requested.find(it->first) == requested.end())
-            it = m_temporalHistories.erase(it);
-        else
-            ++it;
-    }
     auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
-    for (const auto &requestEntry : requested) {
-        const auto &key = requestEntry.first;
-        const auto &request = requestEntry.second;
-        const auto &desc = *request.read; // Pair validated when the graph is published.
-        const auto [width, height] = desc.ResolveExtent(m_width, m_height);
-        auto &history = m_temporalHistories[key];
-        if (!history.targets[0] || history.width != width || history.height != height ||
-            history.format != desc.format) {
-            rhi::RenderTextureDesc allocation;
-            allocation.width = width;
-            allocation.height = height;
-            allocation.colorFormat = desc.format;
-            std::array<std::shared_ptr<rhi::RenderTexture>, 2> targets;
-            for (uint32_t index = 0; index < 2; ++index)
-                targets[index] = std::make_shared<rhi::RenderTexture>(
-                    device, "History/" + key + "/" + std::to_string(index), allocation);
-            history.targets = std::move(targets);
-            history.width = width;
-            history.height = height;
-            history.format = desc.format;
-            history.valid = false;
-            history.readIndex = 0;
-        }
-        history.readName = request.read->name;
-        history.writeName = request.write->name;
-        const auto read = history.targets[history.readIndex]->Acquire();
-        const auto write = history.targets[history.readIndex ^ 1u]->Acquire();
+    PrepareGraphTemporalHistory(m_temporalHistories, device, m_pythonGraphDesc, m_width, m_height);
+    for (auto &[key, history] : m_temporalHistories) {
+        const auto read = history.Read();
+        const auto write = history.Write();
         history.readHandle = m_renderGraph->ImportRenderTexture(history.readName, read).color;
         history.writeHandle = m_renderGraph->ImportRenderTexture(history.writeName, write).color;
 
@@ -3279,8 +2935,8 @@ void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::st
 void SceneRenderGraph::BindTemporalHistoryResources()
 {
     for (auto &[key, history] : m_temporalHistories) {
-        const auto read = history.targets[history.readIndex]->Acquire();
-        const auto write = history.targets[history.readIndex ^ 1u]->Acquire();
+        const auto read = history.Read();
+        const auto write = history.Write();
         m_renderGraph->UpdateImportedRenderTextureColor(history.readHandle, read);
         m_renderGraph->UpdateImportedRenderTextureColor(history.writeHandle, write);
     }
@@ -3290,8 +2946,7 @@ void SceneRenderGraph::CommitTemporalHistory()
 {
     for (auto &[key, history] : m_temporalHistories) {
         (void)key;
-        history.valid = true;
-        history.readIndex ^= 1u;
+        history.Accept();
     }
 }
 
@@ -4480,15 +4135,10 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     return custom->second;
                 return {};
             };
-            auto textureExtent = [&](const std::string &name) -> VkExtent3D {
-                const auto texture = texDescMap.find(name);
-                if (texture == texDescMap.end())
-                    return {0, 0, 1};
-                const auto [resourceWidth, resourceHeight] = texture->second->ResolveExtent(width, height);
-                return {resourceWidth, resourceHeight, 1};
-            };
-
             if (passDesc.type == GraphPassType::Copy && command) {
+                auto transferView = m_renderView;
+                transferView.width = width;
+                transferView.height = height;
                 if (command->type == GraphCommandType::CopyBuffer) {
                     auto source = bufferHandles.find(command->sourceResource);
                     auto destination = bufferHandles.find(command->destinationResource);
@@ -4500,15 +4150,12 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     const auto destinationDesc = std::find_if(
                         m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
                         [&](const GraphBufferDesc &buffer) { return buffer.name == command->destinationResource; });
-                    const VkDeviceSize copyBytes = command->copyBytes > 0
-                                                       ? command->copyBytes
-                                                       : std::min(sourceDesc->byteSize, destinationDesc->byteSize);
+                    const auto region = GraphBufferCopyRegion(*command, *sourceDesc, *destinationDesc);
                     vk::ResourceHandle written;
                     const auto sourceHandle = source->second;
                     const auto destinationHandle = destination->second;
-                    const auto sourceOffset = sourceDesc->byteOffset;
-                    const auto destinationOffset = destinationDesc->byteOffset;
-                    const bool partialCopy = destinationOffset != 0 || copyBytes != destinationDesc->byteSize;
+                    const bool partialCopy =
+                        region.destinationOffset != 0 || region.byteSize != destinationDesc->byteSize;
                     const auto pass = m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
                         // Public scene-graph copies sit between dependent raster
                         // passes, like MSAA resolves; keep them on Graphics instead
@@ -4517,11 +4164,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         builder.TransferRead(sourceHandle);
                         written = builder.TransferWrite(destinationHandle, partialCopy);
                         builder.SetSideEffect(passDesc.sideEffect);
-                        return [sourceHandle, written, copyBytes, sourceOffset,
-                                destinationOffset](vk::RenderContext &ctx) {
+                        return [sourceHandle, written, region](vk::RenderContext &ctx) {
                             ctx.GetTransferCommandEncoder().CopyBuffer(ctx.GetBufferHandle(sourceHandle),
-                                                                       ctx.GetBufferHandle(written),
-                                                                       {sourceOffset, destinationOffset, copyBytes});
+                                                                       ctx.GetBufferHandle(written), region);
                         };
                     });
                     trackAuthorPass(pass);
@@ -4541,13 +4186,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                      [&](const auto &desc) { return desc.name == bufferName; });
                     const auto &image = *texDescMap.at(textureName);
                     const auto format = image.EffectiveFormat(m_renderView);
-                    const auto extent = textureExtent(textureName);
-                    const rhi::TextureBufferCopyRegion region{rhi::TextureBufferCopyRegion::AspectFor(format),
-                                                              0,
-                                                              0,
-                                                              toBuffer ? command->copyWidth : extent.width,
-                                                              toBuffer ? command->copyHeight : extent.height,
-                                                              bufferDesc->byteOffset + command->copyBufferOffset};
+                    const auto region = GraphTextureBufferCopyRegion(*command, image, *bufferDesc, transferView);
                     const bool partialBufferWrite =
                         toBuffer && (command->copyBufferOffset != 0 ||
                                      rhi::TextureBufferCopyRegion::ByteSize(format, region.width, region.height) !=
@@ -4581,25 +4220,20 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     const auto destinationHandle = resolveTextureHandle(command->destinationResource);
                     if (!sourceHandle.IsValid() || !destinationHandle.IsValid())
                         continue;
-                    const auto sourceDesc = texDescMap.at(command->sourceResource);
-                    const VkExtent3D sourceExtent = textureExtent(command->sourceResource);
-                    const VkExtent3D destinationExtent = textureExtent(command->destinationResource);
-                    const VkExtent3D copyExtent{std::min(sourceExtent.width, destinationExtent.width),
-                                                std::min(sourceExtent.height, destinationExtent.height), 1};
-                    const bool partialCopy =
-                        copyExtent.width < destinationExtent.width || copyExtent.height < destinationExtent.height;
-                    const rhi::TextureAspect aspect =
-                        sourceDesc->IsDepth() ? rhi::TextureAspect::Depth : rhi::TextureAspect::Color;
+                    const auto &from = *texDescMap.at(command->sourceResource);
+                    const auto &to = *texDescMap.at(command->destinationResource);
+                    const auto region = GraphTextureCopyRegion(from, to, transferView);
+                    const auto [targetWidth, targetHeight] = to.ResolveExtent(width, height);
+                    const bool partialCopy = region.width < targetWidth || region.height < targetHeight;
                     vk::ResourceHandle written;
                     const auto pass = m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
                         builder.SetQueueRole(rhi::QueueRole::Graphics);
                         builder.TransferRead(sourceHandle);
                         written = builder.TransferWrite(destinationHandle, partialCopy);
                         builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
-                        return [sourceHandle, written, copyExtent, aspect](vk::RenderContext &ctx) {
-                            ctx.GetTransferCommandEncoder().CopyTexture(
-                                ctx.GetTextureHandle(sourceHandle), ctx.GetTextureHandle(written),
-                                {aspect, 0, 0, 0, 0, copyExtent.width, copyExtent.height, copyExtent.depth});
+                        return [sourceHandle, written, region](vk::RenderContext &ctx) {
+                            ctx.GetTransferCommandEncoder().CopyTexture(ctx.GetTextureHandle(sourceHandle),
+                                                                        ctx.GetTextureHandle(written), region);
                         };
                     });
                     trackAuthorPass(pass);
@@ -4609,14 +4243,10 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             }
 
             if (passDesc.type == GraphPassType::Compute && command) {
-                const auto instance = m_workInstances.at(command->workBinding);
+                const auto instance = m_graphWork.instances.at(command->workBinding);
                 const auto &recipe = instance->GetRecipe();
-                std::vector<std::string> slotNames(recipe.GetSlots().size());
-                for (const auto &buffer : m_pythonGraphDesc.buffers) {
-                    if (buffer.workBinding == command->workBinding && buffer.byteOffset == 0 &&
-                        buffer.byteSize == recipe.GetSlots()[buffer.workSlot].allocation.GetByteSize())
-                        slotNames[buffer.workSlot] = buffer.name;
-                }
+                const auto slotNames = GraphWorkSlotNames(
+                    m_pythonGraphDesc, *FindGraphWorkBinding(m_pythonGraphDesc, command->workBinding));
                 for (size_t index = 0; index < instance->GetDispatches().size(); ++index) {
                     const auto &work = instance->GetDispatches()[index];
                     const auto &operation = recipe.GetDispatches()[index];
@@ -4663,7 +4293,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                     bufferHandles.at(slotNames[operation.indirectArguments->slot]));
                             builder.SetSideEffect(passDesc.sideEffect);
                             return [this, workName = command->workBinding, index](vk::RenderContext &ctx) {
-                                const auto &current = *m_workInstances.at(workName);
+                                const auto &current = *m_graphWork.instances.at(workName);
                                 if (!current.GetDispatches()[index].RecordOne(ctx.GetComputeCommandEncoder()))
                                     throw std::runtime_error("Prepared common graph work could not record");
                                 const auto &dispatch = current.GetRecipe().GetDispatches()[index];
@@ -4733,20 +4363,13 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             // This creates proper DAG edges and Vulkan barriers for
             // color texture dependencies between passes.
             std::vector<vk::ResourceHandle> colorReadHandles;
-            bool readsDepth = false;
-            vk::ResourceHandle declaredReadOnlyDepth;
+            const auto *readOnlyDepth = ResolveGraphReadOnlyDepth(m_pythonGraphDesc, passDesc);
+            const auto declaredReadOnlyDepth =
+                readOnlyDepth ? resolveTextureHandle(readOnlyDepth->name) : vk::ResourceHandle{};
             for (const auto &readTex : passDesc.readTextures) {
                 auto texIt = texDescMap.find(readTex);
                 if (texIt != texDescMap.end()) {
-                    if (texIt->second->IsDepth()) {
-                        const bool sampledInput = command && command->BindsResource(readTex);
-                        if (!sampledInput) {
-                            readsDepth = true;
-                            const auto depthIt = customRTHandles.find(readTex);
-                            if (depthIt != customRTHandles.end())
-                                declaredReadOnlyDepth = depthIt->second;
-                        }
-                    } else if (!texIt->second->IsViewColor()) {
+                    if (!texIt->second->IsDepth() && !texIt->second->IsViewColor()) {
                         // Non-depth, non-backbuffer read: look up custom RT handle
                         auto rtIt = customRTHandles.find(readTex);
                         if (rtIt != customRTHandles.end()) {
@@ -4817,7 +4440,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             // is updated between iterations so we capture the CURRENT value)
             vk::ResourceHandle depthForThisPass = declaredReadOnlyDepth.IsValid() ? declaredReadOnlyDepth : sharedDepth;
             bool needsCreateDepth = writesDepth && !sharedDepth.IsValid();
-            bool passReadsDepth = readsDepth && !writesDepth;
+            const bool passReadsDepth = readOnlyDepth != nullptr;
             vk::ResourceHandle particleSceneDepth;
             bool particleSceneDepthIsDepth = true;
             const bool hasSoftParticleOutputs =

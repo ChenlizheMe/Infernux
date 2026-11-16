@@ -89,8 +89,8 @@ class History(inx.renderstack.RenderPipeline):
         g.add_pass('CheckPreviousView').write_color(color).set_texture('history_tex',old).set_texture('current_tex',raw).bind_parameter_block('expected',{'old_red':0.,'old_blue':0.,'expected_valid':False}).fullscreen_quad('tests/history/check')
         g.add_copy_pass('CommitMarker').copy_texture(raw,new).set_side_effect()
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
-    def render_camera(self,context,camera,culling):
-        key=camera.component_id
+    def render_view(self,context,camera,culling):
+        key=camera.camera_id
         if not context.is_graph_revision_current(self._standalone_desc.source_revision):
             context.apply_graph(self._standalone_desc)
         count=self.counts.get(key,0)+1;self.counts[key]=count

@@ -433,11 +433,26 @@ std::string ResolveGraphShadowTexture(const RenderGraphDescription &graph);
 bool GraphUsesForwardPlus(const RenderGraphDescription &graph);
 std::pair<uint32_t, uint32_t> ResolveGraphPassExtent(const RenderGraphDescription &graph, const GraphPassDesc &pass,
                                                      uint32_t viewWidth, uint32_t viewHeight);
+const GraphTextureDesc *ResolveGraphReadOnlyDepth(const RenderGraphDescription &graph, const GraphPassDesc &pass);
 const rhi::TextureResource *ResolveGraphTextureAttachment(const rhi::RenderTextureGeneration &generation,
                                                           GraphTextureAttachment attachment) noexcept;
 rhi::TextureHandle ResolveGraphTextureImport(const GraphTextureDesc &texture);
 const GraphTextureDesc *FindGraphOutputTextureAlias(const RenderGraphDescription &graph,
                                                     const rhi::RenderTextureGeneration &output);
+struct MaterialTextureRead
+{
+    std::string passName;
+    std::shared_ptr<rhi::RenderTexture> texture;
+    std::shared_ptr<const rhi::RenderTextureGeneration> generation;
+
+    bool operator==(const MaterialTextureRead &other) const
+    {
+        return passName == other.passName && texture == other.texture && generation == other.generation;
+    }
+};
+/// A material can sample a persistent texture written by an earlier graph pass.
+/// Feedback or a local writer declared after its reader is an invalid graph.
+bool HasLocalGraphTextureProducer(const RenderGraphDescription &graph, const MaterialTextureRead &read);
 const GraphWorkBindingDesc *FindGraphWorkBinding(const RenderGraphDescription &graph, const std::string &name);
 /// Actual command writes plus explicit access declarations, including every Work alias.
 std::unordered_set<std::string> FindGraphBufferWrites(const RenderGraphDescription &graph);

@@ -412,6 +412,22 @@ std::pair<uint32_t, uint32_t> ResolveGraphPassExtent(const RenderGraphDescriptio
                                          : found->ResolveExtent(viewWidth, viewHeight);
 }
 
+const GraphTextureDesc *ResolveGraphReadOnlyDepth(const RenderGraphDescription &graph, const GraphPassDesc &pass)
+{
+    if (!pass.writeDepth.empty())
+        return nullptr;
+    const auto *command = pass.PrimaryCommand();
+    for (const auto &name : pass.readTextures) {
+        if (command && command->BindsResource(name))
+            continue;
+        const auto found = std::find_if(graph.textures.begin(), graph.textures.end(),
+                                        [&](const auto &texture) { return texture.name == name; });
+        if (found != graph.textures.end() && found->IsDepth())
+            return &*found;
+    }
+    return nullptr;
+}
+
 const rhi::TextureResource *ResolveGraphTextureAttachment(const rhi::RenderTextureGeneration &generation,
                                                           GraphTextureAttachment attachment) noexcept
 {
@@ -478,6 +494,36 @@ bool RenderGraphTopologyEquals(const RenderGraphDescription &a, const RenderGrap
     }
 
     return true;
+}
+
+bool HasLocalGraphTextureProducer(const RenderGraphDescription &description, const MaterialTextureRead &read)
+{
+    bool reachedReader = false, hasWriter = false, priorWriter = false;
+    for (const auto &pass : description.passes) {
+        const bool writes =
+            std::any_of(description.textures.begin(), description.textures.end(), [&](const GraphTextureDesc &texture) {
+                if (texture.role != GraphTextureRole::Persistent || texture.renderTexture != read.texture ||
+                    !pass.WritesTexture(texture.name))
+                    return false;
+                const auto generation = texture.AcquireRenderTextureGeneration();
+                return generation == read.generation &&
+                       ResolveGraphTextureAttachment(*generation, texture.attachment) == generation->color.get();
+            });
+        if (pass.name == read.passName) {
+            if (writes)
+                throw std::invalid_argument("RenderTexture sampled and written by the same pass: " + read.passName);
+            reachedReader = true;
+        }
+        if (writes) {
+            hasWriter = true;
+            priorWriter |= !reachedReader;
+        }
+    }
+    if (!reachedReader)
+        throw std::invalid_argument("RenderTexture reader pass is not in this graph: " + read.passName);
+    if (hasWriter && !priorWriter)
+        throw std::invalid_argument("RenderTexture sampled before its local producer completes: " + read.passName);
+    return hasWriter;
 }
 
 const GraphWorkBindingDesc *FindGraphWorkBinding(const RenderGraphDescription &graph, const std::string &name)
@@ -622,17 +668,9 @@ MaterialPassPipelineDescriptor ResolveMaterialPass(const RenderGraphDescription 
     };
     if (!pass.writeDepth.empty()) {
         setDepth(texture(pass.writeDepth));
-    } else {
-        for (const auto &name : pass.readTextures) {
-            if (command && command->BindsResource(name))
-                continue;
-            const auto &item = texture(name);
-            if (item.IsDepth()) {
-                setDepth(item);
-                result.depthReadOnly = true;
-                break;
-            }
-        }
+    } else if (const auto *depth = ResolveGraphReadOnlyDepth(graph, pass)) {
+        setDepth(*depth);
+        result.depthReadOnly = true;
     }
     return result;
 }
