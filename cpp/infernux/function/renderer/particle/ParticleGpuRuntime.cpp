@@ -1,10 +1,13 @@
 #include "ParticleGpuRuntime.h"
 
+#include <function/renderer/shader/DeviceShaderProgram.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iterator>
 #include <limits>
+#include <stdexcept>
 #include <unordered_set>
 
 #include <glm/glm.hpp>
@@ -169,6 +172,30 @@ struct ParticleGpuRuntime::VectorFieldState
     uint32_t interfaceStrideWords = 0;
 };
 
+struct ParticleGpuRuntime::ReflectedStages
+{
+    struct Stage
+    {
+        std::unique_ptr<DeviceShaderProgram> shader;
+        std::vector<rhi::BindGroupHandle> groups;
+        uint32_t rootConstantBytes = 0;
+    };
+
+    explicit ReflectedStages(rhi::Device &owner) : device(owner)
+    {
+    }
+
+    ~ReflectedStages()
+    {
+        for (const auto &stage : stages)
+            for (const auto group : stage.groups)
+                device.Release(group);
+    }
+
+    rhi::Device &device;
+    std::array<Stage, static_cast<size_t>(GpuKernelStage::Count)> stages;
+};
+
 ParticleGpuRuntime::ParticleGpuRuntime() = default;
 
 ParticleGpuRuntime::~ParticleGpuRuntime()
@@ -213,6 +240,7 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_collisionSceneGroup, replacement.m_collisionSceneGroup);
     std::swap(m_collisionSceneBuffers, replacement.m_collisionSceneBuffers);
     std::swap(m_pipelines, replacement.m_pipelines);
+    std::swap(m_reflectedStages, replacement.m_reflectedStages);
     std::swap(m_supportsFusedUpdateRendering, replacement.m_supportsFusedUpdateRendering);
     std::swap(m_continuation, replacement.m_continuation);
     std::swap(m_contacts, replacement.m_contacts);
@@ -236,16 +264,22 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         !CheckedBufferSize(desc.capacity, RenderInstanceStride, instanceBytes) ||
         !CheckedBufferSize(desc.capacity, VisibilityInstanceStride, visibilityBytes))
         return false;
-    const bool fusedUpdateRendering = desc.supportsFusedUpdateRendering && !desc.collisionEnabled &&
-                                      desc.continuation.capacity == 0 && desc.meshInterfaces.empty() &&
-                                      desc.vectorFields.vectorFields.empty() &&
-                                      desc.vectorFields.textureParameters.empty();
+    const bool bufferOnly = !desc.collisionEnabled && desc.continuation.capacity == 0 && desc.meshInterfaces.empty() &&
+                            desc.vectorFields.vectorFields.empty() && desc.vectorFields.textureParameters.empty();
+    if (desc.reflectedKernels && !bufferOnly)
+        return false;
+    const bool fusedUpdateRendering = desc.supportsFusedUpdateRendering && bufferOnly;
     for (size_t index = 0; index < desc.kernels.size(); ++index) {
         if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused && !fusedUpdateRendering)
             continue;
-        const auto &kernel = desc.kernels[index];
-        if (!kernel.IsValid())
+        if (desc.reflectedKernels) {
+            const auto &entries = (*desc.reflectedKernels)[index].entries;
+            if (entries.size() != 1 || entries.front().stage != rhi::ShaderStage::Compute ||
+                entries.front().code.empty())
+                return false;
+        } else if (!desc.kernels[index].IsValid()) {
             return false;
+        }
     }
     m_device = &device;
     m_capacity = desc.capacity;
@@ -316,6 +350,28 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         }
     }
 
+    rhi::BindGroupDesc groupDesc;
+    const std::array<rhi::BufferHandle, 12> coreBuffers = {
+        StateBuffer(),       FreeListBuffer(),      CounterBuffer(),      InstanceBuffer(),
+        IndirectBuffer(),    TransformBuffer(),     RenderIndexBuffer(),  AliveIndexBuffer(0),
+        AliveIndexBuffer(1), AliveDispatchBuffer(), AliveControlBuffer(), VisibilityBuffer()};
+    for (uint32_t binding = 0; binding < coreBuffers.size(); ++binding) {
+        auto &entry = groupDesc.buffers[groupDesc.bufferCount++];
+        entry = {binding, binding == 5 ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer,
+                 coreBuffers[binding]};
+    }
+    groupDesc.buffers[groupDesc.bufferCount++] = {15, rhi::BindingType::StorageBuffer, SimulationControlBuffer()};
+    if (desc.reflectedKernels) {
+        try {
+            PrepareReflectedStages(desc,
+                                   {groupDesc.buffers.begin(), groupDesc.buffers.begin() + groupDesc.bufferCount});
+        } catch (...) {
+            Destroy();
+            throw;
+        }
+        return true;
+    }
+
     rhi::BindingLayoutDesc layoutDesc;
     if (desc.collisionEnabled &&
         (!desc.collisionSceneHeader.IsValid() || !desc.collisionSceneColliders.IsValid() ||
@@ -341,18 +397,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         return false;
     }
 
-    rhi::BindGroupDesc groupDesc;
     groupDesc.layout = m_layout;
-    const std::array<rhi::BufferHandle, 12> coreBuffers = {
-        StateBuffer(),       FreeListBuffer(),      CounterBuffer(),      InstanceBuffer(),
-        IndirectBuffer(),    TransformBuffer(),     RenderIndexBuffer(),  AliveIndexBuffer(0),
-        AliveIndexBuffer(1), AliveDispatchBuffer(), AliveControlBuffer(), VisibilityBuffer()};
-    for (uint32_t binding = 0; binding < coreBuffers.size(); ++binding) {
-        auto &entry = groupDesc.buffers[groupDesc.bufferCount++];
-        entry = {binding, binding == 5 ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer,
-                 coreBuffers[binding]};
-    }
-    groupDesc.buffers[groupDesc.bufferCount++] = {15, rhi::BindingType::StorageBuffer, SimulationControlBuffer()};
     m_group = device.CreateBindGroup(groupDesc);
     if (!m_group.IsValid()) {
         Destroy();
@@ -720,6 +765,59 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
     return true;
 }
 
+void ParticleGpuRuntime::PrepareReflectedStages(const GpuEmitterDesc &desc, const std::vector<rhi::BufferBinding> &core)
+{
+    m_reflectedStages = std::make_unique<ReflectedStages>(*m_device);
+    const auto storageLimit = m_device->GetCapabilities().limits.maxStorageBuffersPerStage;
+    for (size_t index = 0; index < m_pipelines.size(); ++index) {
+        if (static_cast<GpuKernelStage>(index) == GpuKernelStage::UpdateRenderingFused &&
+            !m_supportsFusedUpdateRendering)
+            continue;
+        const auto &code = (*desc.reflectedKernels)[index];
+        const auto &name = code.entries.front().name;
+        auto &stage = m_reflectedStages->stages[index];
+        stage.shader = std::make_unique<DeviceShaderProgram>(*m_device, code, std::vector<uint32_t>{0});
+        const auto &layouts = stage.shader->GetBindingLayouts();
+        std::vector<rhi::BindGroupDesc> groups(layouts.size());
+        uint32_t storageCount = 0;
+        for (const auto &resource : stage.shader->GetResources()) {
+            if (resource.set != 0 && resource.set != 3)
+                throw std::runtime_error("Unsupported particle buffer set for " + name + ": " + resource.name);
+            const auto &source = resource.set == 0 ? core : desc.reflectedSpawnBindings;
+            const auto &binding = resource.binding;
+            const auto buffer = std::find_if(source.begin(), source.end(), [&](const rhi::BufferBinding &candidate) {
+                return candidate.binding == binding.binding && candidate.type == binding.type;
+            });
+            if (buffer == source.end() || !buffer->buffer.IsValid() || binding.count != 1)
+                throw std::runtime_error("Missing reflected particle buffer for " + name + ": " + resource.name);
+            auto &group = groups[resource.set];
+            group.buffers.at(group.bufferCount++) = *buffer;
+            if (binding.type == rhi::BindingType::StorageBuffer)
+                ++storageCount;
+        }
+        if (storageLimit != 0 && storageCount > storageLimit)
+            throw std::runtime_error("Particle stage " + name + " requires " + std::to_string(storageCount) +
+                                     " storage buffers, device supports " + std::to_string(storageLimit));
+        stage.groups.reserve(groups.size());
+        for (size_t set = 0; set < groups.size(); ++set) {
+            groups[set].layout = layouts[set];
+            const auto group = m_device->CreateBindGroup(groups[set]);
+            if (!group.IsValid())
+                throw std::runtime_error("Reflected particle buffer binding failed for " + name);
+            stage.groups.push_back(group);
+        }
+
+        rhi::ComputePipelineDesc pipeline;
+        stage.shader->Apply(pipeline);
+        if (pipeline.pushConstantBytes > sizeof(GpuParticlePushConstants))
+            throw std::runtime_error("Unexpected reflected particle stage constants for " + name);
+        stage.rootConstantBytes = pipeline.pushConstantBytes;
+        m_pipelines[index] = m_device->CreateComputePipeline(pipeline);
+        if (!m_pipelines[index].IsValid())
+            throw std::runtime_error("Reflected particle compute pipeline creation failed for " + name);
+    }
+}
+
 void ParticleGpuRuntime::Destroy() noexcept
 {
     m_continuation.reset();
@@ -735,6 +833,7 @@ void ParticleGpuRuntime::Destroy() noexcept
         m_device->Release(m_collisionSceneGroup);
         m_device->Release(m_collisionSceneLayout);
     }
+    m_reflectedStages.reset();
     m_dataInterfaces.reset();
     m_vectorFields.reset();
     m_residentState.reset();
@@ -764,8 +863,10 @@ void ParticleGpuRuntime::Destroy() noexcept
 bool ParticleGpuRuntime::IsValid() const noexcept
 {
     if (!m_device || !m_residentState || m_capacity == 0 || !InstanceBuffer().IsValid() ||
-        !VisibilityBuffer().IsValid() || !m_group.IsValid() || !m_emptyDataInterfaceLayout.IsValid() ||
-        !m_emptyDataInterfaceGroup.IsValid() || !m_graphSpawnLayout.IsValid())
+        !VisibilityBuffer().IsValid())
+        return false;
+    if (!m_reflectedStages && (!m_group.IsValid() || !m_emptyDataInterfaceLayout.IsValid() ||
+                               !m_emptyDataInterfaceGroup.IsValid() || !m_graphSpawnLayout.IsValid()))
         return false;
     if (m_dataInterfaces && (!m_dataInterfaces->layout.IsValid() || !m_dataInterfaces->group.IsValid() ||
                              !m_dataInterfaces->metadataBuffer.IsValid()))
@@ -1345,25 +1446,33 @@ bool ParticleGpuRuntime::Record(const rhi::ComputeCommandEncoder &encoder, GpuKe
                                 rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle indirectArguments,
                                 uint64_t indirectOffset) const
 {
-    if (!IsValid() || !encoder.IsValid() || invocationCount == 0 || !graphSpawnGroup.IsValid())
+    if (!IsValid() || !encoder.IsValid() || invocationCount == 0 || (!m_reflectedStages && !graphSpawnGroup.IsValid()))
         return false;
     const auto pipeline = m_pipelines[StageIndex(stage)];
     if (!pipeline.IsValid())
         return false;
     encoder.BindPipeline(pipeline);
-    encoder.BindGroup(pipeline, 0, m_group);
-    encoder.BindGroup(pipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);
-    encoder.BindGroup(pipeline, 2, m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup);
-    encoder.BindGroup(pipeline, 3, graphSpawnGroup);
-    if (BindingLayoutCount() > 4) {
-        encoder.BindGroup(pipeline, 4, m_emptyDataInterfaceGroup);
-        encoder.BindGroup(pipeline, 5, m_continuation ? m_continuation->Group() : m_emptyDataInterfaceGroup);
-        if (BindingLayoutCount() > 6)
-            encoder.BindGroup(pipeline, 6, m_collisionEnabled ? m_collisionSceneGroup : m_emptyDataInterfaceGroup);
-        if (m_contacts)
-            encoder.BindGroup(pipeline, 7, m_contacts->Group());
+    if (m_reflectedStages) {
+        const auto &reflected = m_reflectedStages->stages[StageIndex(stage)];
+        for (uint32_t set = 0; set < reflected.groups.size(); ++set)
+            encoder.BindGroup(pipeline, set, reflected.groups[set]);
+        if (reflected.rootConstantBytes != 0)
+            encoder.PushConstants(pipeline, reflected.rootConstantBytes, &constants);
+    } else {
+        encoder.BindGroup(pipeline, 0, m_group);
+        encoder.BindGroup(pipeline, 1, m_dataInterfaces ? m_dataInterfaces->group : m_emptyDataInterfaceGroup);
+        encoder.BindGroup(pipeline, 2, m_vectorFields ? m_vectorFields->group : m_emptyDataInterfaceGroup);
+        encoder.BindGroup(pipeline, 3, graphSpawnGroup);
+        if (BindingLayoutCount() > 4) {
+            encoder.BindGroup(pipeline, 4, m_emptyDataInterfaceGroup);
+            encoder.BindGroup(pipeline, 5, m_continuation ? m_continuation->Group() : m_emptyDataInterfaceGroup);
+            if (BindingLayoutCount() > 6)
+                encoder.BindGroup(pipeline, 6, m_collisionEnabled ? m_collisionSceneGroup : m_emptyDataInterfaceGroup);
+            if (m_contacts)
+                encoder.BindGroup(pipeline, 7, m_contacts->Group());
+        }
+        encoder.PushConstants(pipeline, sizeof(constants), &constants);
     }
-    encoder.PushConstants(pipeline, sizeof(constants), &constants);
     if (indirectArguments.IsValid())
         encoder.DispatchIndirect(indirectArguments, indirectOffset);
     else

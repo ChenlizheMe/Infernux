@@ -13,10 +13,12 @@ class ParticleUnlit(shader.particle):
 
     def main(self, ctx: shader.ParticleContext) -> shader.vec4:
         uv = ctx.uv0 * self.albedo_map_st.xy + self.albedo_map_st.zw
+        next_uv = ctx.next_uv * self.albedo_map_st.xy + self.albedo_map_st.zw
+        next_dx = shader.ddx(next_uv)
+        next_dy = shader.ddy(next_uv)
         base = shader.sample(self.albedo_map, uv)
         if ctx.frame_blend > 0.0:
-            next_uv = ctx.next_uv * self.albedo_map_st.xy + self.albedo_map_st.zw
-            base = shader.lerp(base, shader.sample(self.albedo_map, next_uv), ctx.frame_blend)
+            base = shader.lerp(base, shader.sample_grad(self.albedo_map, next_uv, next_dx, next_dy), ctx.frame_blend)
         rgb = base.rgb * ctx.color * self.base_color.rgb
         k = shader.abs(shader.frac(shader.vec3(ctx.uv0.x) + shader.vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0)
         hue = shader.lerp(shader.saturate(k - 1.0), shader.vec3(1.0), 0.05)

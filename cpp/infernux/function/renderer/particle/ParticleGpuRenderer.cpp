@@ -106,7 +106,11 @@ bool ParticleGpuRenderer::Create(rhi::Device &device, const GpuParticleRendererD
                         Destroy();
                         return false;
                     }
-                    softLayout.entries.at(softLayout.entryCount++) = resource->binding;
+                    auto &depthBinding = softLayout.entries.at(softLayout.entryCount++);
+                    depthBinding = resource->binding;
+                    // The color-depth variant loads resolved R32Float texels.
+                    if (index == 1)
+                        depthBinding.sampleType = rhi::TextureSampleType::UnfilterableFloat;
                     m_depthReads[index] = true;
                     m_depthBindings[index] = resource->binding.binding;
                 }

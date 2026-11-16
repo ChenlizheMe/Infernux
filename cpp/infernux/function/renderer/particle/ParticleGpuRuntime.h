@@ -226,6 +226,9 @@ struct GpuEmitterDesc
     /// Zero capacity means that the compiled emitter contains no suspension
     /// points and therefore pays no continuation resource cost.
     GpuParticleContinuationDesc continuation;
+    // Buffer-only stages pass reflected code and graph-spawn resources during Create.
+    const std::array<ShaderTargetCode, static_cast<size_t>(GpuKernelStage::Count)> *reflectedKernels = nullptr;
+    std::vector<rhi::BufferBinding> reflectedSpawnBindings;
 };
 
 struct alignas(16) GpuParticleTransforms
@@ -423,11 +426,13 @@ class ParticleGpuRuntime
     struct ResidentState;
     struct DataInterfaceState;
     struct VectorFieldState;
+    struct ReflectedStages;
 
     [[nodiscard]] bool CreateInternal(rhi::Device &device, const GpuEmitterDesc &desc,
                                       std::shared_ptr<ResidentState> residentState,
                                       const ParticleGpuContinuationRuntime *previousContinuation,
                                       const ParticleGpuContactRuntime *previousContacts);
+    void PrepareReflectedStages(const GpuEmitterDesc &desc, const std::vector<rhi::BufferBinding> &core);
     [[nodiscard]] bool UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms);
     [[nodiscard]] bool UpdateMeshInterfaceMetadata(const GpuParticleTransforms &transforms);
     void PrepareUpload(rhi::BufferHandle buffer, const void *data, size_t byteSize);
@@ -461,6 +466,7 @@ class ParticleGpuRuntime
     rhi::BindGroupHandle m_collisionSceneGroup;
     std::array<rhi::BufferHandle, 7> m_collisionSceneBuffers{};
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
+    std::unique_ptr<ReflectedStages> m_reflectedStages;
     GpuParticleTransforms m_cachedTransforms{};
     bool m_hasCachedTransforms = false;
     struct PendingUpload
