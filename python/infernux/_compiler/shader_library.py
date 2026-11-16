@@ -78,11 +78,14 @@ def typed_function_call(owner, node, function, *, lighting_mode="false"):
     return function.symbol + specialization + "(" + ", ".join(owner.visit(arg) for arg in node.args) + ")"
 
 
+def _function_calls(definition):
+    return tuple(qualified(node.func) for node in ast.walk(definition) if isinstance(node, ast.Call))
+
+
 def function_effects(definitions, functions, owner, *, method=False):
     """Propagate effects through local and already-resolved imported calls."""
     definitions = {("self." if method else "") + definition.name: definition for definition in definitions}
-    calls = {name: tuple(qualified(node.func) for node in ast.walk(definition) if isinstance(node, ast.Call))
-             for name, definition in definitions.items()}
+    calls = {name: _function_calls(definition) for name, definition in definitions.items()}
     direct = {name: {_FRAGMENT_EFFECTS[owner.symbol(call)] for call in targets
                      if owner.symbol(call) != call and owner.symbol(call) in _FRAGMENT_EFFECTS}
               for name, targets in calls.items()}
@@ -105,6 +108,29 @@ class Module:
     source: str
     functions: dict[str, Function]
     source_ranges: tuple = ()
+
+
+@dataclass(slots=True)
+class _LibrarySource:
+    module: Module
+    text: str
+    alias: str
+    definitions: list[ast.FunctionDef]
+    functions: dict[str, Function]
+    header: list[str]
+
+    def emit(self, emitter_type, *, differentiable=()):
+        code = list(self.header)
+        ranges = []
+        for definition in self.definitions:
+            function = self.module.functions[definition.name]
+            emitter = emitter_type(self.text, self.module.path, aliases=(self.alias,), functions=self.functions)
+            code.extend(emitter.emit_function(definition, function, public=True,
+                                              differentiable=function.symbol in differentiable))
+            ranges.extend(emitter.source_ranges)
+        code.append("}")
+        self.module.source = "\n".join(code)
+        self.module.source_ranges = tuple(ranges)
 
 
 class ShaderEmitter(SlangEmitter):
@@ -300,7 +326,7 @@ class ShaderEmitter(SlangEmitter):
                         tuple(self.annotation(field.annotation) for field in fields),
                         source_signature=signature, documentation=ast.get_docstring(definition) or "")
 
-    def emit_function(self, definition, function, *, method=False, public=False):
+    def emit_function(self, definition, function, *, method=False, public=False, differentiable=False):
         if function.lighting_specialization:
             self.lighting_mode = "tiled_lighting"
         fields = definition.args.args[1:] if method else definition.args.args
@@ -310,8 +336,9 @@ class ShaderEmitter(SlangEmitter):
         self.block(definition.body)
         parameters = ", ".join(kind + " " + field.arg for field, kind in zip(fields, function.arguments))
         specialization = "<let tiled_lighting : bool>" if function.lighting_specialization else ""
+        derivative = ["[Differentiable]"] if differentiable else []
         inline = ["[ForceInline]"] if function.result in {"float4", "InxFragmentOutput"} else []
-        return [self.source_directive(definition), *inline,
+        return [*derivative, self.source_directive(definition), *inline,
                 f'{"public " if public else ""}{function.result} {definition.name}{specialization}({parameters})',
                 "{", *self.lines, "}"]
 
@@ -360,13 +387,14 @@ def declarations(source, path):
 
 
 class LibraryGraph:
-    def __init__(self, reader=None, *, numeric_only=False):
+    def __init__(self, reader=None, *, compute_autodiff=None):
         self.modules: dict[Path, Module] = {}
         self.ordered: list[Module] = []
         self.loading: set[Path] = set()
         self.lighting_registry: Module | None = None
         self.reader = reader or (lambda path: Path(path).read_text(encoding="utf-8-sig"))
-        self.numeric_only = numeric_only
+        self.compute_autodiff = compute_autodiff
+        self._reverse_sources: list[_LibrarySource] = []
 
     def reference(self, call, owner, *, stage, suffix):
         if (not isinstance(call, ast.Call) or owner.qualified(call.func) != owner.alias + ".ref"
@@ -443,7 +471,8 @@ class LibraryGraph:
             owner.error(location, "ShaderLib source does not exist: " + str(path))
         source = source.removeprefix("\ufeff")
         alias, imports, body = declarations(source, str(path))
-        emitter_type = _ComputeLibraryEmitter if self.numeric_only else ShaderEmitter
+        numeric_only = self.compute_autodiff is not None
+        emitter_type = _ComputeLibraryEmitter if numeric_only else ShaderEmitter
         emitter = emitter_type(source, str(path), aliases=(alias,))
         module = Module("inx_library_" + str(len(self.modules)), str(path), "", {})
         self.modules[path] = module
@@ -460,24 +489,40 @@ class LibraryGraph:
             module.functions[definition.name] = functions[definition.name] = function
         functions = function_effects(body, functions, emitter)
         module.functions = {definition.name: functions[definition.name] for definition in body}
-        code = ["import inx_geometry;"] if self.numeric_only else [
+        code = ["import inx_geometry;"] if numeric_only else [
             "import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *engine_imports(body, alias, graph=self, owner=emitter)]
         code.extend("import " + name + ";" for name in dependencies)
         code.append("namespace " + module.name + " {")
-        ranges = []
-        for definition in body:
-            function_emitter = emitter_type(source, str(path), aliases=(alias,), functions=functions)
-            code.extend(function_emitter.emit_function(definition, module.functions[definition.name], public=True))
-            ranges.extend(function_emitter.source_ranges)
-        code.append("}")
-        module.source = "\n".join(code)
-        module.source_ranges = tuple(ranges)
+        library = _LibrarySource(module, source, alias, body, functions, code)
+        if self.compute_autodiff == "reverse":
+            self._reverse_sources.append(library)
+        else:
+            library.emit(emitter_type)
         self.loading.remove(path)
         self.ordered.append(module)
         return module
 
+    def prepare_derivatives(self, roots):
+        """Emit Slang derivatives for the resolved helper call closure."""
+        calls = {}
+        for library in self._reverse_sources:
+            for definition in library.definitions:
+                symbol = library.module.functions[definition.name].symbol
+                calls[symbol] = tuple(library.functions[name].symbol for name in _function_calls(definition)
+                                      if name in library.functions)
+        pending = [function.symbol for function in roots]
+        differentiable = set()
+        while pending:
+            symbol = pending.pop()
+            if symbol not in differentiable:
+                differentiable.add(symbol)
+                pending.extend(calls[symbol])
+        for library in self._reverse_sources:
+            library.emit(_ComputeLibraryEmitter, differentiable=differentiable)
+        self._reverse_sources.clear()
+
     def sources(self):
-        builtins = () if self.numeric_only else (RESOURCE_MODULE,)
+        builtins = () if self.compute_autodiff is not None else (RESOURCE_MODULE,)
         return (*builtins, *((module.name, module.path, module.source) for module in self.ordered))
 
     def ranges(self):

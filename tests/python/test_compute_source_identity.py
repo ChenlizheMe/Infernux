@@ -124,6 +124,37 @@ def test_first_preparation_uses_retained_source_after_disk_edit(tmp_path, accept
     assert first.artifact_key != second.artifact_key
 
 
+def test_gpu_continuation_preparation_preserves_frozen_source(tmp_path, engine, monkeypatch):
+    path = tmp_path / 'Assets' / 'Scripts' / 'Work.py'
+    source = ('import infernux as inx\n@inx.compute.kernel\ndef solve(values, output):\n'
+              '    i = inx.compute.index(values)\n    output[i] = values[i] * 2.0\n')
+    retained = load_author(path, source).solve
+    path.write_text(source.replace('2.0', '5.0'), encoding='utf-8')
+    linecache.clearcache()
+
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    values = compute.buffer(shape=4, dtype=np.float32, device='gpu', data=[1, 2, 3, 4])
+    output = compute.buffer(shape=4, dtype=np.float32, device='gpu')
+    continuation = None
+    try:
+        with using_project_root(tmp_path):
+            continuation = compute.prepare_continuation(retained, (values, output))
+            assert continuation.inputs == ('values',) and continuation.outputs == ('output',)
+            compute.launch(continuation.program, (values, output))
+        snapshot = output.get_data()
+        try:
+            np.testing.assert_array_equal(snapshot.numpy(), [2, 4, 6, 8])
+        finally:
+            snapshot.close()
+    finally:
+        if continuation is not None:
+            continuation.program._release_engine_resources()
+        output.close()
+        values.close()
+        host._release_lease()
+
+
 def test_identical_code_retains_frozen_helper_module_identity(tmp_path):
     source = ('import infernux as inx\n'
               '@inx.compute.function\ndef apply(value):\n    return value + 2\n'

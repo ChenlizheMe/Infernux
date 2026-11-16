@@ -146,7 +146,7 @@ def _read_library_source(path):
 def _link_libraries(item, autodiff_mode):
     from infernux.engine.project_context import get_project_root
 
-    graph = LibraryGraph(_read_library_source, numeric_only=True)
+    graph = LibraryGraph(_read_library_source, compute_autodiff=autodiff_mode)
     functions = {}
     project_root = get_project_root()
     definitions = ((item.definition, item.origin),
@@ -160,9 +160,6 @@ def _link_libraries(item, autodiff_mode):
             name = qualified(node.func)
             if name in functions or name not in item.library_calls:
                 continue
-            if autodiff_mode != "none":
-                owner.error(node, "ShaderLib calls are unavailable in local reverse-mode kernels",
-                            code="author.derivative")
             reference, export = item.library_calls[name]
             declaring_path = Path(reference.declaring_path)
             if project_root and not declaring_path.is_absolute():
@@ -173,6 +170,8 @@ def _link_libraries(item, autodiff_mode):
                 owner.error(node, f"ShaderLib {reference.module!r} has no export {export!r}",
                             code="author.reference")
             functions[name] = module.functions[export]
+    if autodiff_mode == "reverse":
+        graph.prepare_derivatives(functions.values())
     return graph, functions
 
 

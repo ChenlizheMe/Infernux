@@ -135,6 +135,51 @@ def scale(value: float) -> float:
                for row in failure.value.diagnostics), failure.value.diagnostics
 
 
+def test_reverse_kernel_differentiates_transitive_shaderlib_calls(project, engine, monkeypatch):
+    root, scripts = project
+    leaf = scripts / 'physical.shaderlib.py'
+    source = leaf.read_text(encoding='utf-8').replace('value * 2.0', 'value * value')
+    leaf.write_text(source + '\ndef cell(value: float) -> float:\n    return shader.floor(value)\n', encoding='utf-8')
+    work = scripts / 'Work.py'
+    work.write_text(KERNEL.replace('solve(values):', 'solve(values, output):')
+                    .replace('values[i] = adjust', 'output[i] = adjust'), encoding='utf-8')
+    declaration = load_kernel(work)
+    values = np.linspace(-2.0, 2.0, 67, dtype=np.float32)
+    seeds = np.resize(np.array([0.0, 0.5, -1.25], dtype=np.float32), values.size)
+    initial_gradients = np.full_like(values, 0.25)
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    inputs = compute.buffer(shape=values.size, dtype=np.float32, device='gpu', data=values)
+    outputs = compute.buffer(shape=values.size, dtype=np.float32, device='gpu')
+    gradients = compute.buffer(shape=values.size, dtype=np.float32, device='gpu', data=initial_gradients)
+    output_seeds = compute.buffer(shape=values.size, dtype=np.float32, device='gpu', data=seeds)
+    try:
+        with using_project_root(root):
+            params = inputs, outputs
+            wgsl = frontend.compile_kernel(declaration.function, params, target='wgsl',
+                                           autodiff_mode='reverse', gradient_parameters=(0, 1))
+            assert b'@compute' in wgsl.tasks[0] and wgsl.gradient_parameters == (0, 1)
+            compute.prepare(declaration, params, autodiff_mode='reverse', gradient_parameters=(0, 1))
+            compute.launch(declaration, params)
+            for _ in range(2):
+                compute.launch(declaration, params, autodiff_mode='reverse', gradients={0: gradients, 1: output_seeds})
+        for buffer, expected in (
+            (outputs, values * values + values + 1.0),
+            (gradients, initial_gradients + 2 * seeds * (2 * values + 1.0)),
+            (output_seeds, seeds),
+        ):
+            snapshot = buffer.get_data()
+            try:
+                np.testing.assert_allclose(snapshot.numpy(), expected, rtol=2e-6, atol=2e-6)
+            finally:
+                snapshot.close()
+    finally:
+        declaration._release_engine_resources()
+        for buffer in (inputs, outputs, gradients, output_seeds):
+            buffer.close()
+        host._release_lease()
+
+
 def test_cooked_project_shaderlib_resolves_through_player_assets(project, tmp_path, engine, monkeypatch):
     root, scripts = project
     data = tmp_path / 'Player' / 'Data'

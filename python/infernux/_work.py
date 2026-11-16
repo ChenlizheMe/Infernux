@@ -18,6 +18,8 @@ def prepare(function, params, **facts):
     """Cold compile one shared row proof and its ordered reduction family."""
     bound = types.FunctionType(function.__code__, {**function.__globals__, **facts}, function.__name__,
                                function.__defaults__, function.__closure__)
+    if (origin := getattr(function, "_infernux_compute_source_origin", None)) is not None:
+        bound._infernux_compute_source_origin = origin
     buffers = tuple(value for value in params if isinstance(value, inx.compute.Buffer))
     device = buffers[0].device
     if any(value.device != device for value in buffers):
