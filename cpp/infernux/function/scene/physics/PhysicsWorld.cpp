@@ -401,24 +401,16 @@ FrameGpuAvailability Availability(const rhi::ComputeHost &host)
     return host.GetQueuePressure().recordingFrames ? FrameGpuAvailability::ForegroundRecording
                                                    : FrameGpuAvailability::Ready;
 }
-ShaderTargetCode CompileProgram(rhi::ComputeHost &host, JoltGpuProgram program)
+ShaderCodeTarget PhysicsShaderTarget(const rhi::ComputeHost &host)
 {
-    ShaderCodeTarget target;
     switch (host.device.GetShaderSourceLanguage()) {
     case rhi::ShaderSourceLanguage::SpirV:
-        target = ShaderCodeTarget::SpirV;
-        break;
+        return ShaderCodeTarget::SpirV;
     case rhi::ShaderSourceLanguage::Wgsl:
-        target = ShaderCodeTarget::Wgsl;
-        break;
+        return ShaderCodeTarget::Wgsl;
     default:
         throw std::runtime_error("Unsupported physics shader target");
     }
-    auto compiled =
-        SlangCompiler::Get().Compile(GetJoltGpuProgramSource(program), GetJoltGpuProgramLibraries(), {target}, true);
-    if (compiled.targets.size() != 1 || compiled.targets.front().target != target)
-        throw std::runtime_error("Common compiler did not provide the requested GPU physics target");
-    return std::move(compiled.targets.front());
 }
 Rigidbody &KinematicBody(const PhysicsActorData &actor)
 {
@@ -615,17 +607,18 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
     }
     if (!m_gpuScene) {
         auto &host = *m_gpuHost;
-        const auto compile = [&](JoltGpuProgram program) { return CompileProgram(host, program); };
-        auto queries = std::make_unique<JoltGpuQueries>(host, compile(JoltGpuProgram::Queries));
-        auto joints = std::make_unique<JoltGpuJoints>(host, compile(JoltGpuProgram::Joints));
-        auto rendering = std::make_unique<JoltGpuRenderPoses>(host, compile(JoltGpuProgram::RenderPoses));
-        auto reports = std::make_unique<JoltGpuContactReports>(host, compile(JoltGpuProgram::ContactReports));
-        const auto articulationCapture = compile(JoltGpuProgram::ArticulationCapture);
-        const auto articulationDynamics = compile(JoltGpuProgram::ArticulationDynamics);
+        const auto target = PhysicsShaderTarget(host);
+        const auto load = [target](JoltGpuProgram program) { return LoadJoltGpuProgram(program, target); };
+        auto queries = std::make_unique<JoltGpuQueries>(host, load(JoltGpuProgram::Queries));
+        auto joints = std::make_unique<JoltGpuJoints>(host, load(JoltGpuProgram::Joints));
+        auto rendering = std::make_unique<JoltGpuRenderPoses>(host, load(JoltGpuProgram::RenderPoses));
+        auto reports = std::make_unique<JoltGpuContactReports>(host, load(JoltGpuProgram::ContactReports));
+        const auto articulationCapture = load(JoltGpuProgram::ArticulationCapture);
+        const auto articulationDynamics = load(JoltGpuProgram::ArticulationDynamics);
         auto scene = std::make_unique<JoltGpuScene>(
-            host, *m_gpuWork, compile(JoltGpuProgram::Step), compile(JoltGpuProgram::BodyMutations),
-            compile(JoltGpuProgram::BodyCommands), compile(JoltGpuProgram::Broadphase),
-            compile(JoltGpuProgram::Narrowphase), compile(JoltGpuProgram::Constraints), *joints,
+            host, *m_gpuWork, load(JoltGpuProgram::Step), load(JoltGpuProgram::BodyMutations),
+            load(JoltGpuProgram::BodyCommands), load(JoltGpuProgram::Broadphase), load(JoltGpuProgram::Narrowphase),
+            load(JoltGpuProgram::Constraints), *joints,
             [this](RuntimeWorld &world) noexcept {
                 // A shared source can fail outside Step and outside this World's
                 // execution scope. Mark only the actual retained writer.
@@ -766,10 +759,18 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
             return false;
     }
     domain.admittedContactPolicy = std::move(policy);
-    domain.admittedColliderPairs = pairs;
     domain.cpuFixedAdmitted = bool(domain.cpuControl);
-    if (domain.cpuFixedAdmitted)
+    if (domain.cpuFixedAdmitted) {
+        // Apply the accepted CPU prefix before either numerical domain advances.
+        // Boundary readers then see authored motion for this Fixed, including kinematic drives.
         domain.cpuControl->SealFixed();
+        domain.cpuControl->ApplyFixed([this](uint32_t, const auto &ids) { RetireCpuJointRoutes(ids); });
+        const auto &gravity = domain.admittedParameters->Get().gravityDt;
+        auto &system = domain.cpuScene->System();
+        system.SetGravity(JPH::Vec3(gravity.x, gravity.y, gravity.z));
+        system.SetPhysicsSettings(*domain.admittedCpuSettings);
+        domain.cpuScene->SetIgnoredPairs(pairs);
+    }
     SealStaticFixedMoves(domain);
     return true;
 }
@@ -777,14 +778,8 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
 void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
 {
     const ContactStreamIdentity identity{domain.owner.id, domain.stepEpoch, domain.stepIndex};
-    const auto &parameters = domain.admittedParameters->Get();
-    const auto substeps = parameters.solve.y;
+    const auto substeps = domain.admittedParameters->Get().solve.y;
     if (domain.cpuFixedAdmitted) {
-        domain.cpuControl->ApplyFixed([this](uint32_t, const auto &ids) { RetireCpuJointRoutes(ids); });
-        auto &system = domain.cpuScene->System();
-        system.SetGravity(JPH::Vec3(parameters.gravityDt.x, parameters.gravityDt.y, parameters.gravityDt.z));
-        system.SetPhysicsSettings(*domain.admittedCpuSettings);
-        domain.cpuScene->SetIgnoredPairs(domain.admittedColliderPairs);
         const auto error = domain.cpuContacts.Step(m_cpuServices->execution, *domain.cpuScene, domain.admittedDeltaTime,
                                                    substeps, identity, domain.admittedContactPolicy);
         if (error != JPH::EPhysicsUpdateError::None)

@@ -79,7 +79,6 @@ struct PhysicsDomain final
     std::optional<JoltGpuStepParameters> admittedParameters;
     std::optional<JPH::PhysicsSettings> admittedCpuSettings;
     PhysicsContactPublication::Policy admittedContactPolicy;
-    std::shared_ptr<const PhysicsColliderPairs> admittedColliderPairs;
     uint64_t stepEpoch = 0, stepIndex = 0;
     bool flushingAuthoring = false, synchronousRead = false;
     std::atomic<uint64_t> queryGeneration{1};

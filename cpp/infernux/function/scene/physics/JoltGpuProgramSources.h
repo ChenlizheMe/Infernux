@@ -1,6 +1,8 @@
 #pragma once
 
-#include <function/resources/ShaderAsset/SlangCompiler.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
+
+#include <memory>
 
 namespace infernux
 {
@@ -25,17 +27,11 @@ enum class JoltGpuProgram
     Constraints,
     ContactReports,
     ArticulationCapture,
-    ArticulationDynamics
+    ArticulationDynamics,
+    Count
 };
 
-/// Builtin native programs, embedded from the pinned Jolt fork at build time.
-/// Names/virtual paths stay stable in compiler diagnostics; loading does not
-/// access the engine source tree or the current project directory.
-[[nodiscard]] ShaderSourceModule GetJoltGpuProgramSource(JoltGpuProgram program);
-
-/// Complete frozen include closure for these programs. Pass it unchanged to
-/// the shared SlangCompiler; no physics-specific compiler or cache is needed.
-[[nodiscard]] std::vector<ShaderSourceModule> GetJoltGpuProgramLibraries();
+[[nodiscard]] ShaderTargetCode LoadJoltGpuProgram(JoltGpuProgram program, ShaderCodeTarget target);
 
 /// Validate the same artifact at load while allocating a device pipeline only
 /// when the selected physics stage first prepares a dispatch.

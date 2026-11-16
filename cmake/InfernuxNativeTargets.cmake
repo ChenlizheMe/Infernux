@@ -20,8 +20,8 @@ endif()
 
 # The composition layer is private to its final executable or extension.
 add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
-include("${CMAKE_CURRENT_LIST_DIR}/InfernuxPhysicsSources.cmake")
-infernux_embed_physics_sources(InfernuxRuntime)
+include("${CMAKE_CURRENT_LIST_DIR}/InfernuxPhysicsCook.cmake")
+infernux_cook_jolt_gpu_programs(InfernuxRuntime spirv)
 set_target_properties(InfernuxRuntime PROPERTIES
     C_VISIBILITY_PRESET hidden
     CXX_VISIBILITY_PRESET hidden
