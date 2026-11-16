@@ -808,6 +808,44 @@ def test_destroyed_element_packets_do_not_survive_membership_change(ui):
     assert sum(name == "add_text" for name, _, _ in commands) == 2
 
 
+def test_empty_ui_capture_does_not_wait_for_removed_texture(ui):
+    from infernux.core.asset_ref import TextureRef
+    from infernux.ui import UICanvas, UIImage
+
+    captures = []
+    ui.renderer._set_prepared_pose_reads = lambda _enabled: False
+    context = SimpleNamespace(
+        _has_screen_ui_snapshot=False,
+        _ui_author_revision=0,
+        _ui_world_only=False,
+        view=SimpleNamespace(paused_author_presentation=False),
+        capture_screen_ui=lambda renderer: captures.append(tuple(renderer.commands)) or True,
+    )
+    image = ui.add(UIImage)
+    image.texture = TextureRef(guid="pending-image")
+    ui.published_textures["pending-image"] = (0, True)
+    ui.frame()
+    assert ui.submission.capture_completed(context) is False
+    assert captures == []
+
+    ui.scene.destroy_game_object(ui.root)
+    ui.scene.process_pending_destroys()
+    assert ui.frame() == (True, [])
+    assert ui.submission.capture_completed(context) is True
+    assert captures == [()]
+    assert ui.frame() == (False, [])
+
+    replacement = ui.scene.create_game_object("Replacement root")
+    if not ui.world:
+        replacement.add_py_component(UICanvas())
+    ui.add(parent=replacement).text = "Ready"
+    rebuilt, commands = ui.frame()
+    assert rebuilt
+    assert [args[5] for name, args, _ in commands if name == "add_text"] == ["Ready"]
+    assert ui.submission.capture_completed(context) is True
+    assert captures[-1] == tuple(commands)
+
+
 @pytest.mark.parametrize("ui", [False], indirect=True, ids=["screen"])
 def test_registered_renderer_replacement_invalidates_warm_packets(ui):
     from infernux.ui import ui_render_dispatch as dispatch

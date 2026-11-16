@@ -730,6 +730,7 @@ class RuntimeScreenUISubmission:
         self._last_submission_frame = -1
         self._command_packets = UICommandPackets(_get_tex_cache())
         self._presentation_packets = {}
+        self._submitted_packets = None
 
     @property
     def target_size(self) -> tuple[int, int]:
@@ -796,6 +797,18 @@ class RuntimeScreenUISubmission:
             self._canvas_snapshot_token = canvas_token
         canvases = () if world_only else self._canvas_snapshot
         world_elements = _collect_world_ui_elements(*scenes) if include_world else ()
+        if not canvases and not world_elements:
+            # An empty command list has no layout, texture or material dependencies.
+            # Each capture still seals it against its actual completed World.
+            self._submitted_packets = None
+            if capture_key is not None:
+                self._presentation_packets.pop((capture_key[0], capture_key[-1]), None)
+            if force:
+                renderer.begin_frame(width, height)
+                return True
+            self._last_submission_frame = frame_token
+            return not renderer.begin_frame_cached(width, height, 0)
+
         self._prepare_native_layouts(canvases, world_elements, renderer, width, height, camera_size)
 
         packets = self._command_packets
@@ -817,6 +830,7 @@ class RuntimeScreenUISubmission:
                          _runtime_command_epoch(packets.dependencies)), font_epoch=font_epoch,
                         texture_engine=engine if force else None,
                         prepared_pose_reads=prepared_pose_reads)
+        self._submitted_packets = packets
         if force or packets.has_pending_textures:
             renderer.begin_frame(width, height)
         else:
@@ -824,11 +838,6 @@ class RuntimeScreenUISubmission:
                 if not force:
                     self._last_submission_frame = frame_token
                 return False
-
-        if not canvases and not world_elements:
-            if not force:
-                self._last_submission_frame = frame_token
-            return True
 
         get_texture_id = texture_cache.get_bound(engine)
         self._submit_prepared_elements(world_elements, canvases, renderer, get_texture_id,
@@ -862,13 +871,8 @@ class RuntimeScreenUISubmission:
 
     def capture_completed(self, context) -> bool:
         """Prepare this view's resources before running authored render work."""
-        packets = self._command_packets
-        view = None if context._ui_world_only else context.view
-        if context._ui_world_only or view.paused_author_presentation:
-            entry = self._presentation_packets.get((context._ui_world_id, 0 if view is None else view.camera_id))
-            if entry is not None:
-                packets = entry[1]
-        if not context._has_screen_ui_snapshot and packets.selected_textures_pending:
+        packets = self._submitted_packets
+        if not context._has_screen_ui_snapshot and packets is not None and packets.selected_textures_pending:
             return False
         engine = self._engine_ref()
         if engine is not None:
