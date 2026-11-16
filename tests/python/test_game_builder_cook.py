@@ -394,12 +394,20 @@ def test_player_cook_uses_asset_index_snapshot_after_live_index_invalidation(tmp
     assert builder._asset_index_entries() == expected
 
 
-def test_player_stages_project_shader_as_packed_runtime_glsl(tmp_path):
+def test_player_cooks_project_shader_as_guid_program_source(tmp_path):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
-    shader = project / "Assets" / "Shaders" / "Surface.frag"
+    shader = project / "Assets" / "Shaders" / "surface.frag.py"
     shader.parent.mkdir(parents=True, exist_ok=True)
-    shader.write_text('ShaderInfo { Name "Test/Surface" Type Fragment }\n', encoding="utf-8")
+    shader.write_text("""import infernux.shader as shader
+
+
+class PackageFragment(shader.fullscreen):
+    shader_id = "tests/package/fragment"
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        return shader.vec4(1.0)
+""", encoding="utf-8")
     entry = _asset_index_entry(project, shader, "shader-guid", "", "Shader")
     entry["metadata"]["metadata"]["type"] = {"value": "fragment"}
     builder._cooked_asset_entries = {"shader-guid": entry}
@@ -410,11 +418,11 @@ def test_player_stages_project_shader_as_packed_runtime_glsl(tmp_path):
     _stage_document_inputs(builder, data_dir)
     builder._stage_library_runtime_documents(str(data_dir))
 
-    artifact = data_dir / "Library" / "Artifacts" / "Blob" / "shader-guid.frag"
+    artifact = data_dir / "Library" / "Artifacts" / "Blob" / "shader-guid.frag.py"
     assert artifact.read_bytes() == shader.read_bytes()
     assert (
-        builder._runtime_artifact_bindings["Library/Artifacts/Blob/shader-guid.frag"]["source_path"]
-        == "Assets/Shaders/Surface.frag"
+        builder._runtime_artifact_bindings["Library/Artifacts/Blob/shader-guid.frag.py"]["source_path"]
+        == "Assets/Shaders/surface.frag.py"
     )
 
 
@@ -768,9 +776,10 @@ def test_platform_cook_packages_reachable_builtin_resources_in_content(tmp_path)
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
     scene = project / "Assets" / "Main.scene"
-    shader = project / "Library" / "Resources" / "shaders" / "standard.vert"
+    shader = project / "Library" / "Resources" / "shaders" / "standard.vert.py"
     shader.parent.mkdir(parents=True, exist_ok=True)
-    shader.write_text("void main() {}\n", encoding="utf-8")
+    program = Path(game_builder_module._resources.get_package_resources_path()) / "shaders" / shader.name
+    shader.write_bytes(program.read_bytes())
     scene.write_text(json.dumps({"shader": "builtin-shader-guid"}), encoding="utf-8")
     scene_entry = _asset_index_entry(project, scene, "scene-guid", "", "Scene")
     shader_entry = _asset_index_entry(
@@ -790,8 +799,8 @@ def test_platform_cook_packages_reachable_builtin_resources_in_content(tmp_path)
         package_builtin_resources=True,
     )
 
-    packaged_shader = data_dir / "infernux/resources/shaders/standard.vert"
-    assert packaged_shader.read_text(encoding="utf-8") == "void main() {}\n"
+    packaged_shader = data_dir / "infernux/resources/shaders/standard.vert.py"
+    assert packaged_shader.read_bytes() == shader.read_bytes()
 
     builder._cooked_asset_entries = {"builtin-shader-guid": shader_entry}
     builder._runtime_artifact_bindings = {}
@@ -804,9 +813,9 @@ def test_platform_cook_packages_reachable_builtin_resources_in_content(tmp_path)
     assert shader_record["runtime_artifacts"] == [
         {
             "package": "Content.inxpkg",
-            "runtime_path": "infernux/resources/shaders/standard.vert",
+            "runtime_path": "infernux/resources/shaders/standard.vert.py",
             "runtime_artifact_id": game_builder_module.runtime_artifact_id(
-                "Content.inxpkg", "infernux/resources/shaders/standard.vert"
+                "Content.inxpkg", "infernux/resources/shaders/standard.vert.py"
             ),
         }
     ]
@@ -821,7 +830,7 @@ def test_platform_cook_packages_reachable_builtin_resources_in_content(tmp_path)
         package_builtin_resources=True,
     )
     manifest = read_manifest(data_root / "Content.inxpkg")
-    assert "infernux/resources/shaders/standard.vert" in {entry["path"] for entry in manifest["files"]}
+    assert "infernux/resources/shaders/standard.vert.py" in {entry["path"] for entry in manifest["files"]}
 
 
 def test_package_resource_shader_keeps_guid_identity_in_headless_build(tmp_path, monkeypatch):
@@ -829,9 +838,10 @@ def test_package_resource_shader_keeps_guid_identity_in_headless_build(tmp_path,
     project = Path(builder.project_path)
     scene = project / "Assets" / "Main.scene"
     package_resources = tmp_path / "installed-engine" / "infernux" / "resources"
-    shader = package_resources / "shaders" / "particle_sprite.vert"
+    shader = package_resources / "shaders" / "skybox.vert.py"
     shader.parent.mkdir(parents=True, exist_ok=True)
-    shader.write_text("void main() {}\n", encoding="utf-8")
+    program = Path(game_builder_module._resources.get_package_resources_path()) / "shaders" / shader.name
+    shader.write_bytes(program.read_bytes())
     scene.write_text(json.dumps({"shader": "particle-shader-guid"}), encoding="utf-8")
     scene_entry = _asset_index_entry(project, scene, "scene-guid", "", "Scene")
     shader_entry = _asset_index_entry(
@@ -844,7 +854,7 @@ def test_package_resource_shader_keeps_guid_identity_in_headless_build(tmp_path,
     shader_entry["read_only"] = True
     shader_entry["metadata"]["metadata"]["shader_id"] = {
         "type": "string",
-        "value": "Particle Sprite",
+        "value": "infernux/skybox",
     }
     monkeypatch.setattr(
         game_builder_module._resources,
@@ -868,13 +878,13 @@ def test_package_resource_shader_keeps_guid_identity_in_headless_build(tmp_path,
     assert set(selected) == {"scene-guid", "particle-shader-guid"}
     builder._copy_cooked_assets(str(tmp_path / "copy" / "Data"))
     assert (tmp_path / "copy" / "Data" / "Assets" / "Main.scene").is_file()
-    assert not (tmp_path / "copy" / "Data" / "Library" / "Resources" / "shaders" / "particle_sprite.vert").exists()
+    assert not (tmp_path / "copy" / "Data" / "Library" / "Resources" / "shaders" / "skybox.vert.py").exists()
     builder._cooked_asset_entries = {"particle-shader-guid": selected["particle-shader-guid"]}
     builder._runtime_artifact_bindings = {}
     final_dir = tmp_path / "dist"
     builder._write_runtime_asset_records(str(final_dir))
     records = json.loads((final_dir / "Data" / "Library" / "RuntimeAssetRecords.json").read_text(encoding="utf-8"))
     shader_record = next(item for item in records["entries"] if item["guid"] == "particle-shader-guid")
-    assert shader_record["runtime_path"] == ("Library/Resources/shaders/particle_sprite.vert")
-    assert shader_record["runtime_artifacts"][0]["runtime_path"] == ("infernux/resources/shaders/particle_sprite.vert")
-    assert shader_record["metadata"]["metadata"]["shader_id"]["value"] == ("Particle Sprite")
+    assert shader_record["runtime_path"] == ("Library/Resources/shaders/skybox.vert.py")
+    assert shader_record["runtime_artifacts"][0]["runtime_path"] == ("infernux/resources/shaders/skybox.vert.py")
+    assert shader_record["metadata"]["metadata"]["shader_id"]["value"] == ("infernux/skybox")

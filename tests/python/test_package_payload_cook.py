@@ -11,7 +11,27 @@ from infernux.engine.runtime_artifact_catalog import build_catalog
 from test_game_builder_asset_closure import _entry, _write_asset_index
 
 
-@pytest.mark.parametrize("suffix", [".vert", ".frag", ".json", ".txt", ".bin"])
+VERTEX = """import infernux.shader as shader
+
+
+class PackageVertex(shader.vert):
+    shader_id = "tests/package/vertex"
+
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        return vertex
+"""
+FRAGMENT = """import infernux.shader as shader
+
+
+class PackageFragment(shader.fullscreen):
+    shader_id = "tests/package/fragment"
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        return shader.vec4(1.0)
+"""
+
+
+@pytest.mark.parametrize("suffix", [".vert.py", ".frag.py", ".json", ".txt", ".bin"])
 def test_package_payload_is_guid_addressed_in_sealed_content(tmp_path, suffix):
     project = tmp_path / "Project"
     scene = project / "Assets/Main.scene"
@@ -23,9 +43,10 @@ def test_package_payload_is_guid_addressed_in_sealed_content(tmp_path, suffix):
     (source.parents[1] / "inx_package.json").write_text(
         '{"reference": "team/content", "name": "Content"}', encoding="utf-8"
     )
-    payload = b"#version 450\nvoid main() {}\n" if suffix in (".vert", ".frag") else b'{ "value": 7 }\n'
+    programs = {".vert.py": VERTEX, ".frag.py": FRAGMENT}
+    payload = programs.get(suffix, '{ "value": 7 }\n').encode("utf-8")
     source.write_bytes(payload)
-    source.with_suffix(suffix + ".meta").write_text(json.dumps({
+    source.with_name(source.name + ".meta").write_text(json.dumps({
         "metadata": {"guid": {"type": "string", "value": "package-payload"}},
     }), encoding="utf-8")
     settings = project / "ProjectSettings"
@@ -45,7 +66,7 @@ def test_package_payload_is_guid_addressed_in_sealed_content(tmp_path, suffix):
     builder._write_runtime_asset_records(str(output))
     data = output / "PackageCook_Data"
     (output / "Data").rename(data)
-    shader = suffix in (".vert", ".frag")
+    shader = suffix in programs
     runtime_path = (f"Library/Artifacts/Blob/package-payload{suffix}" if shader
                     else source.relative_to(project).as_posix())
     assert (data / runtime_path).read_bytes() == payload

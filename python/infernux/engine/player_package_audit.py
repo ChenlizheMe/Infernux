@@ -21,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 
-from infernux._source_kinds import is_host_python_source
+from infernux._source_kinds import is_static_program_source
 from ..core.asset_types import MESH_EXTENSIONS
 
 from .path_utils import resolved_path
@@ -162,9 +162,6 @@ def _is_raw_model_source_path(path: str) -> bool:
     return Path(path).suffix.casefold() in RAW_MODEL_SOURCE_SUFFIXES
 # The resident compiler consumes static GPU programs as text. Host Python
 # remains bytecode; static programs stay in the controlled runtime asset roots.
-RUNTIME_BUILTIN_SHADER_SUFFIXES = frozenset(
-    {".glsl", ".vert", ".frag", ".shadingmodel"}
-)
 RUNTIME_BUILTIN_SHADER_PREFIX = "infernux/resources/shaders/"
 # Authoring documents with these suffixes are forbidden as direct Player
 # payloads. Cooked copies may retain the suffix only under the GUID-addressed
@@ -354,34 +351,28 @@ def _is_safe_native_entry_path(entry_name: str) -> bool:
     return all(part not in {"", ".", ".."} for part in parts)
 
 
-def _is_runtime_program_source(path: str) -> bool:
-    return Path(path).suffix.casefold() in RUNTIME_BUILTIN_SHADER_SUFFIXES or (
-        path.casefold().endswith(".py") and not is_host_python_source(path)
-    )
-
-
 def _is_builtin_runtime_shader_entry(relative_archive: str, entry_name: str) -> bool:
     """Return whether an entry is the explicitly controlled built-in shader path."""
 
     return (
-        relative_archive.endswith("/Runtime.inxrt")
+        relative_archive.endswith(("/Runtime.inxrt", "/Content.inxpkg"))
         and _is_builtin_runtime_shader_path(entry_name)
     )
 
 
 def _is_builtin_runtime_shader_path(path: str) -> bool:
-    return path.startswith(RUNTIME_BUILTIN_SHADER_PREFIX) and _is_runtime_program_source(path)
+    return path.startswith(RUNTIME_BUILTIN_SHADER_PREFIX) and is_static_program_source(path)
 
 
 def _is_project_runtime_shader_entry(relative_archive: str, entry_name: str) -> bool:
     """Keep packed program inputs available to the resident compiler."""
 
     normalized = entry_name.replace("\\", "/")
-    return (
-        relative_archive.endswith("/Content.inxpkg")
-        and normalized.casefold().startswith("library/artifacts/blob/")
-        and _is_runtime_program_source(normalized)
-    )
+    return relative_archive.endswith("/Content.inxpkg") and _is_project_runtime_shader_path(normalized)
+
+
+def _is_project_runtime_shader_path(path: str) -> bool:
+    return path.casefold().startswith("library/artifacts/blob/") and is_static_program_source(path)
 
 
 def _has_player_host_identity(executable_path: Path) -> bool:

@@ -51,6 +51,7 @@ def test_player_path_audit_distinguishes_model_names_from_absolute_paths():
 @pytest.mark.parametrize("archive_name,prefix,programs_allowed", [
     ("Runtime.inxrt", "infernux/resources/shaders/", True),
     ("Content.inxpkg", "Library/Artifacts/Blob/", True),
+    ("Content.inxpkg", "infernux/resources/shaders/", True),
     ("Parallel.inxmod", "infernux/resources/shaders/", False),
     ("Content.inxpkg", "Assets/Shaders/", False),
 ])
@@ -62,7 +63,7 @@ def test_player_audit_retains_static_program_inputs_and_rejects_host_sources(
     from infernux.engine.player_package_audit import _archive_entry_records
 
     programs = {"program" + suffix for suffix in (*GPU_SOURCE_SUFFIXES, ".particle.py")}
-    host_sources = {"component.py", "api.pyi", "native.pyx"}
+    host_sources = {"component.py", "api.pyi", "native.pyx", "obsolete.frag"}
     files = []
     for name in sorted(programs | host_sources):
         source = tmp_path / name
@@ -466,8 +467,8 @@ def test_cooked_catalog_keeps_ui_material_shader_and_texture_guids():
                 },
             }
         ).encode("utf-8"),
-        f"Library/Artifacts/Document/{vertex_guid}.vert": b"#version 450\n",
-        f"Library/Artifacts/Document/{fragment_guid}.frag": b"#version 450\n",
+        f"Library/Artifacts/Blob/{vertex_guid}.vert.py": b"import infernux.shader as shader\n",
+        f"Library/Artifacts/Blob/{fragment_guid}.frag.py": b"import infernux.shader as shader\n",
         f"Library/Artifacts/Textures/{texture_guid}.inxtex": b"texture artifact",
     }
     catalog = build_catalog(
@@ -478,7 +479,7 @@ def test_cooked_catalog_keeps_ui_material_shader_and_texture_guids():
                 "bytes": len(payload),
                 "payload": payload,
                 "asset_binding": {
-                    "source_guid": Path(path).stem,
+                    "source_guid": Path(path).name.split(".", 1)[0],
                     "source_path": f"Assets/{Path(path).name}",
                     "dependencies": [],
                 },

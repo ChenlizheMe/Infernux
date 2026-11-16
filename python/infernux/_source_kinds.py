@@ -23,6 +23,10 @@ def is_gpu_source(path) -> bool:
     return fspath(path).casefold().endswith(GPU_SOURCE_SUFFIXES)
 
 
+def is_static_program_source(path) -> bool:
+    return fspath(path).casefold().endswith(_STATIC_AUTHOR_SUFFIXES)
+
+
 def is_host_python_source(path) -> bool:
     name = fspath(path).casefold()
     return name.endswith(".py") and not name.endswith(_STATIC_AUTHOR_SUFFIXES)

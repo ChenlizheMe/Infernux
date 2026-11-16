@@ -16,6 +16,7 @@ from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable
 
+from .._source_kinds import is_static_program_source
 from ..core.asset_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, MESH_EXTENSIONS
 
 from .path_utils import relative_path, resolved_path
@@ -526,11 +527,9 @@ def logical_type_for_path(path: str) -> str:
     # Package runtime data is an explicit directory API (package_path), so
     # opaque files retain their relative layout. Shader sources are compiler
     # inputs and must enter the same GUID cook path as project shaders.
-    if lower.startswith("packages/") and suffix in {
-        ".vert", ".frag", ".glsl", ".comp", ".geom", ".tesc", ".tese", ".hlsl", ".shader",
-    }:
-        return "project_runtime_blob"
-    if lower.startswith("assets/"):
+    if lower.startswith("assets/") or (
+        lower.startswith("packages/") and is_static_program_source(normalized)
+    ):
         return "project_runtime_blob"
     return "runtime_binary"
 

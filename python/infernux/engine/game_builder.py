@@ -3895,6 +3895,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         cancel_event: Optional[threading.Event] = None,
     ) -> None:
         """Write project data as the native Content.inxpkg container."""
+        from infernux.engine.player_package_audit import (
+            AUTHOR_SOURCE_SUFFIXES, _is_builtin_runtime_shader_path, _is_project_runtime_shader_path,
+        )
 
         data_root = os.path.join(final_dir, f"{self.project_name}_Data")
         if not os.path.isdir(data_root):
@@ -3943,50 +3946,9 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     forbidden_model_sources.append(relative)
                 if suffix == ".meta":
                     continue
-                packed_runtime_shader = (
-                    suffix
-                    in {
-                        ".glsl",
-                        ".vert",
-                        ".frag",
-                        ".comp",
-                        ".geom",
-                        ".tesc",
-                        ".tese",
-                        ".hlsl",
-                        ".shader",
-                    }
-                    and portable_relative.casefold().startswith(
-                        "library/artifacts/blob/"
-                    )
-                )
-                packed_platform_builtin_shader = (
-                    package_builtin_resources
-                    and suffix
-                    in {
-                        ".glsl",
-                        ".vert",
-                        ".frag",
-                        ".comp",
-                        ".geom",
-                        ".tesc",
-                        ".tese",
-                        ".hlsl",
-                        ".shader",
-                    }
-                    and portable_relative.casefold().startswith(
-                        "infernux/resources/"
-                    )
-                )
-                if (
-                    not packed_runtime_shader
-                    and not packed_platform_builtin_shader
-                    and suffix in {
-                        ".py", ".pyi", ".pyx", ".lua", ".cpp", ".c", ".cc",
-                        ".h", ".hpp", ".glsl", ".vert", ".frag", ".comp", ".geom",
-                        ".tesc", ".tese", ".hlsl", ".shader",
-                    }
-                ):
+                packed_runtime_shader = _is_project_runtime_shader_path(portable_relative)
+                packed_builtin_shader = package_builtin_resources and _is_builtin_runtime_shader_path(portable_relative)
+                if suffix in AUTHOR_SOURCE_SUFFIXES and not (packed_runtime_shader or packed_builtin_shader):
                     forbidden_plaintext.append(relative)
                 logical_type = logical_type_for_path(portable_relative)
                 if payload_kind_for(logical_type) in RUNTIME_DOCUMENT_PAYLOAD_KINDS:
