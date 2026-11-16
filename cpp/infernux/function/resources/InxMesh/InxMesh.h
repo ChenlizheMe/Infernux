@@ -31,7 +31,7 @@ struct SubMesh
 {
     uint32_t indexStart = 0;  ///< First index in the parent index array
     uint32_t indexCount = 0;  ///< Number of indices (must be a multiple of 3)
-    uint32_t vertexStart = 0; ///< First vertex in the parent vertex array (base-vertex offset)
+    uint32_t vertexStart = 0; ///< First vertex in the submesh's range; indices already address the parent array
     uint32_t vertexCount = 0; ///< Number of vertices referenced by this submesh
 
     uint32_t materialSlot = 0; ///< Material slot index (0-based, maps to MeshRenderer.materials[])

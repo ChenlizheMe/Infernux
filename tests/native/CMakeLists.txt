@@ -54,6 +54,13 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_render_graph_schedule_tests PRIVATE InfernuxRenderCore)
     add_test(NAME infernux.render_graph_schedule COMMAND infernux_render_graph_schedule_tests)
 
+    infernux_add_native_test(infernux_ray_geometry_tests
+        tests/native/RayGeometryTests.cpp
+        cpp/infernux/function/renderer/raytracing/RayBvh.cpp
+        cpp/infernux/function/renderer/raytracing/RayGeometry.cpp)
+    target_link_libraries(infernux_ray_geometry_tests PRIVATE glm::glm)
+    add_test(NAME infernux.ray_geometry COMMAND infernux_ray_geometry_tests)
+
     infernux_add_native_test(infernux_path_tests
         tests/native/PathTests.cpp
     )

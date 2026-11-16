@@ -255,7 +255,6 @@ RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
                 const auto &submesh = params.geometry->subMeshes.at(static_cast<size_t>(params.submeshIndex));
                 draw.indexStart = submesh.indexStart;
                 draw.indexCount = submesh.indexCount;
-                draw.vertexStart = static_cast<int32_t>(submesh.vertexStart);
             }
             draw.worldMatrix = params.worldMatrix;
             draw.material = params.material;
