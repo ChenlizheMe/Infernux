@@ -3,14 +3,10 @@
 #include "InxVkCoreModular.h"
 #include "vk/VulkanRhiDevice.h"
 
-#include <algorithm>
+#include <function/resources/ShaderAsset/FullscreenProgramAsset.h>
+
 #include <core/error/InxError.h>
-#include <function/resources/AssetDatabase/AssetDatabase.h>
-#include <function/resources/AssetFormatRegistry.h>
-#include <function/resources/AssetRegistry/AssetRegistry.h>
-#include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <memory>
-#include <stdexcept>
 #include <string>
 
 namespace infernux
@@ -18,34 +14,7 @@ namespace infernux
 
 std::shared_ptr<const FullscreenProgram> InxVkCoreModular::AcquireFullscreenProgram(const std::string &name)
 {
-    auto &registry = AssetRegistry::Instance();
-    auto *database = registry.GetAssetDatabase();
-    auto path = database->GetPathFromGuid(name);
-    std::string guid = path.empty() ? std::string{} : name;
-    if (path.empty()) {
-        if (asset_formats::FindShaderSourceKind(name)) {
-            path = name;
-            guid = database->GetGuidFromPath(path);
-        } else {
-            guid = database->FindShaderGuidById(name, "fragment");
-            path = database->GetPathFromGuid(guid);
-        }
-    }
-    if (!asset_formats::FindShaderSourceKind(path))
-        return {};
-    const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-    if (!asset || !asset->program)
-        throw std::runtime_error("Fullscreen author program is unavailable: " + path);
-    const auto target = std::find_if(asset->program->targets.begin(), asset->program->targets.end(),
-                                     [](const auto &code) { return code.target == ShaderCodeTarget::SpirV; });
-    if (target == asset->program->targets.end())
-        throw std::logic_error("Vulkan shader asset has no SPIR-V target: " + path);
-    auto result = std::make_shared<FullscreenProgram>();
-    result->assetGuid = std::move(guid);
-    result->shaderId = asset->shaderId;
-    result->code = std::shared_ptr<const ShaderTargetCode>(asset->program, &*target);
-    result->schema = asset->authoringSchema;
-    return result;
+    return LoadFullscreenProgram(name, ShaderCodeTarget::SpirV);
 }
 
 namespace

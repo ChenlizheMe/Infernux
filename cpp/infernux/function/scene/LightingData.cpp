@@ -4,7 +4,7 @@
 #include "Light.h"
 #include "Scene.h"
 #include "SceneManager.h"
-#include "SceneRenderBridge.h"
+#include "SceneRenderExtractor.h"
 #include "Transform.h"
 #include <algorithm>
 #include <array>
@@ -281,8 +281,6 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
         m_shadowFrame = {};
         return;
     }
-    if (!camera)
-        camera = SceneRenderBridge::Instance().GetEditorCamera();
     RenderLightingSource source;
     source.lights = CaptureRenderLights();
     RenderViewData view = camera ? SceneRenderExtractor::CaptureCameraView(*camera) : RenderViewData{};

@@ -376,12 +376,12 @@ class SceneLightCollector
      * @param scene         Active scene context (nullptr clears shadow views)
      * @param cameraPos     Camera world position
      * @param shadowMapResolution  Shadow atlas resolution (e.g. 4096)
-     * @param camera        Camera whose frustum drives cascade fitting (nullptr = active camera)
+     * @param camera        Explicit view camera; nullptr uses the default view frustum
      * @param
      * visibleDepthRange Camera-space depth occupied by this camera's visible renderers
      */
-    void ComputeShadowVP(Scene *scene, const glm::vec3 &cameraPos, float shadowMapResolution,
-                         const Camera *camera = nullptr, const lighting::ShadowDepthRange &visibleDepthRange = {});
+    void ComputeShadowVP(Scene *scene, const glm::vec3 &cameraPos, float shadowMapResolution, const Camera *camera,
+                         const lighting::ShadowDepthRange &visibleDepthRange = {});
     void ComputeShadowVP(const RenderLightingSource &source, const RenderViewData &view, float shadowMapResolution,
                          const lighting::ShadowDepthRange &visibleDepthRange = {});
 
