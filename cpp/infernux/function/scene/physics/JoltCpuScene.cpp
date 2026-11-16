@@ -51,12 +51,8 @@ JPH::EPhysicsUpdateError JoltCpuExecution::Step(JPH::PhysicsSystem &system, floa
     return result;
 }
 
-JoltCpuScene::JoltCpuScene(const EngineConfig &config, const JPH::BroadPhaseLayerInterface &layers,
-                           const JPH::ObjectVsBroadPhaseLayerFilter &broadphaseFilter,
-                           const JPH::ObjectLayerPairFilter &pairFilter)
+JPH::PhysicsSettings JoltCpuScene::CaptureSettings(const EngineConfig &config)
 {
-    m_system.Init(config.physicsMaxBodies, 0, config.physicsMaxBodyPairs, config.physicsMaxContactConstraints, layers,
-                  broadphaseFilter, pairFilter);
     JPH::PhysicsSettings settings;
     settings.mNumVelocitySteps = config.physicsVelocitySteps;
     settings.mNumPositionSteps = config.physicsPositionSteps;
@@ -69,15 +65,26 @@ JoltCpuScene::JoltCpuScene(const EngineConfig &config, const JPH::BroadPhaseLaye
     settings.mMinVelocityForRestitution = config.physicsMinVelocityForRestitution;
     settings.mTimeBeforeSleep = config.physicsTimeBeforeSleep;
     settings.mPointVelocitySleepThreshold = config.physicsPointVelocitySleepThreshold;
-    m_system.SetPhysicsSettings(settings);
+    return settings;
+}
+
+JoltCpuScene::JoltCpuScene(const EngineConfig &config, const JPH::BroadPhaseLayerInterface &layers,
+                           const JPH::ObjectVsBroadPhaseLayerFilter &broadphaseFilter,
+                           const JPH::ObjectLayerPairFilter &pairFilter)
+{
+    m_system.Init(config.physicsMaxBodies, 0, config.physicsMaxBodyPairs, config.physicsMaxContactConstraints, layers,
+                  broadphaseFilter, pairFilter);
+    m_system.SetPhysicsSettings(CaptureSettings(config));
     const auto gravity = config.physicsGravity;
     m_system.SetGravity(JPH::Vec3(gravity.x, gravity.y, gravity.z));
+    m_system.SetBodyActivationListener(this);
     m_system.SetContactListener(this);
     m_system.SetSimShapeFilter(this);
 }
 
 JoltCpuScene::~JoltCpuScene()
 {
+    m_system.SetBodyActivationListener(nullptr);
     m_system.SetContactListener(nullptr);
     m_system.SetSimShapeFilter(nullptr);
 }
@@ -94,6 +101,7 @@ JPH::BodyID JoltCpuScene::CreateBody(uint32_t bodyId, const JPH::BodyCreationSet
     }
     body->SetUserData(bodyId);
     entry->second.native = body->GetID();
+    MarkPoseUpdate(bodyId, entry->second);
     return entry->second.native;
 }
 
@@ -127,6 +135,7 @@ void JoltCpuScene::AddBodiesBatch(const std::vector<uint32_t> &bodyIds)
             id = static_cast<uint32_t>(body.GetUserData());
             bounds = body.GetWorldSpaceBounds();
         }
+        MarkPoseUpdate(id, m_bodies.at(id));
         m_constraints.OnBodyResidenceChanged(id);
         WakeBodiesInBounds(bounds, native);
     }
@@ -175,7 +184,8 @@ void JoltCpuScene::DestroyBody(uint32_t bodyId)
 {
     if (m_constraints.HasBodyConstraints(bodyId))
         throw std::logic_error("Retire the CPU body's constraints before destroying it");
-    const auto native = NativeBody(bodyId);
+    const auto &record = m_bodies.at(bodyId);
+    const auto native = record.native;
     auto &bodies = m_system.GetBodyInterface();
     const bool added = bodies.IsAdded(native);
     JPH::AABox oldBounds;
@@ -186,6 +196,12 @@ void JoltCpuScene::DestroyBody(uint32_t bodyId)
     if (added)
         bodies.RemoveBody(native);
     bodies.DestroyBody(native);
+    if (record.poseUpdateIndex != UINT32_MAX) {
+        const auto tail = m_poseUpdates.back();
+        m_poseUpdates[record.poseUpdateIndex] = tail;
+        m_bodies.at(tail).poseUpdateIndex = record.poseUpdateIndex;
+        m_poseUpdates.pop_back();
+    }
     m_bodies.erase(bodyId);
     if (added)
         WakeBodiesInBounds(oldBounds);
@@ -203,7 +219,12 @@ void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude)
                                   if (native == exclude || !lock.SucceededAndIsInBroadPhase())
                                       return true;
                                   const auto id = static_cast<uint32_t>(lock.GetBody().GetUserData());
-                                  return !m_bodies.at(id).authoredDynamic;
+                                  auto &record = m_bodies.at(id);
+                                  if (!record.authoredDynamic)
+                                      return true;
+                                  if (!lock.GetBody().IsActive())
+                                      MarkPoseUpdate(id, record);
+                                  return false;
                               }),
                hits.end());
     m_system.GetBodyInterface().ActivateBodies(hits.data(), static_cast<int>(hits.size()));
@@ -214,6 +235,19 @@ JPH::BodyID JoltCpuScene::NativeBody(uint32_t bodyId) const
     return m_bodies.at(bodyId).native;
 }
 
+bool JoltCpuScene::HasBody(uint32_t bodyId) const noexcept
+{
+    return m_bodies.find(bodyId) != m_bodies.end();
+}
+
+const PreparedBodyMass &JoltCpuScene::GetAcceptedMass(uint32_t bodyId) const
+{
+    const auto &mass = m_bodies.at(bodyId).mass;
+    if (!mass)
+        throw std::logic_error("Rigidbody has no accepted principal inertia");
+    return *mass;
+}
+
 bool JoltCpuScene::AcceptedAwake(const BodyRecord &record, const JPH::Body &body)
 {
     return !body.IsStatic() && (body.IsInBroadPhase() ? body.IsActive() : record.awakeWhenDetached);
@@ -222,7 +256,10 @@ bool JoltCpuScene::AcceptedAwake(const BodyRecord &record, const JPH::Body &body
 void JoltCpuScene::WakeBody(BodyRecord &record, JPH::Body &body)
 {
     if (body.IsInBroadPhase()) {
+        const bool wasActive = body.IsActive();
         m_system.GetBodyInterfaceNoLock().ActivateBody(record.native);
+        if (!wasActive && body.IsActive())
+            MarkPoseUpdate(static_cast<uint32_t>(body.GetUserData()), record);
     } else {
         record.awakeWhenDetached = true;
         body.ResetSleepTimer();
@@ -233,7 +270,12 @@ PhysicsBodyMotionState JoltCpuScene::ReadMotionState(uint32_t bodyId, PhysicsSta
 {
     const auto &record = m_bodies.at(bodyId);
     JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), record.native);
-    const auto &body = lock.GetBody();
+    return SampleMotionState(bodyId, record, lock.GetBody(), fields, sleeping);
+}
+
+PhysicsBodyMotionState JoltCpuScene::SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,
+                                                       PhysicsStateFields fields, bool *sleeping)
+{
     const auto vector = [](const auto &value) {
         return glm::vec3(float(value.GetX()), float(value.GetY()), float(value.GetZ()));
     };
@@ -323,7 +365,8 @@ void JoltCpuScene::ApplyBodyForce(uint32_t bodyId, ForceKind kind, ForceMode mod
 void JoltCpuScene::SetBodyOriginPose(uint32_t bodyId, const std::optional<JPH::RVec3> &position,
                                      const std::optional<JPH::Quat> &rotation)
 {
-    const auto native = NativeBody(bodyId);
+    auto &record = m_bodies.at(bodyId);
+    const auto native = record.native;
     auto &bodies = m_system.GetBodyInterface();
     JPH::RVec3 origin;
     JPH::Quat orientation;
@@ -343,6 +386,7 @@ void JoltCpuScene::SetBodyOriginPose(uint32_t bodyId, const std::optional<JPH::R
     // Jolt sets the body origin and applies the currently accepted local COM.
     bodies.SetPositionAndRotation(native, origin, orientation, JPH::EActivation::Activate);
     bodies.InvalidateContactCache(native);
+    MarkPoseUpdate(bodyId, record);
     if (added) {
         JPH::AABox newBounds;
         {
@@ -471,22 +515,25 @@ void JoltCpuScene::StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position, 
         m_system.GetBodyInterface().ActivateBody(record.native);
 }
 
+uint32_t JoltCpuScene::BodyRecord::MemberIndex(JPH::SubShapeID subshape) const
+{
+    if (!memberCompound)
+        return 0;
+    JPH::SubShapeID remainder;
+    const auto index = memberCompound->GetSubShapeIndexFromID(subshape, remainder);
+    return memberCompound->GetCompoundUserData(index);
+}
+
 const JoltCpuScene::Surface &JoltCpuScene::GetSurface(uint32_t bodyId, JPH::SubShapeID subshape) const
 {
     const auto &record = m_bodies.at(bodyId);
-    uint32_t member = 0;
-    if (record.memberCompound) {
-        JPH::SubShapeID remainder;
-        const auto index = record.memberCompound->GetSubShapeIndexFromID(subshape, remainder);
-        member = record.memberCompound->GetCompoundUserData(index);
-    }
-    return record.surfaces[member];
+    return record.surfaces[record.MemberIndex(subshape)];
 }
 
-void JoltCpuScene::SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> pairs)
+bool JoltCpuScene::SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> pairs)
 {
-    if (pairs == m_ignoredPairs)
-        return;
+    if (UsesIgnoredPairs(pairs))
+        return false;
     static const PhysicsColliderPairs empty;
     const auto &before = m_ignoredPairs ? *m_ignoredPairs : empty;
     const auto &after = pairs ? *pairs : empty;
@@ -500,7 +547,7 @@ void JoltCpuScene::SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> p
     }
     m_ignoredPairs = std::move(pairs);
     if (changed.empty())
-        return;
+        return false;
     auto &bodies = m_system.GetBodyInterface();
     for (const auto &[id, record] : m_bodies) {
         const bool affected = std::any_of(record.surfaces.begin(), record.surfaces.end(), [&](const Surface &surface) {
@@ -518,6 +565,79 @@ void JoltCpuScene::SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> p
             }
         }
     }
+    return true;
+}
+
+void JoltCpuScene::MarkPoseUpdate(uint32_t bodyId, BodyRecord &record)
+{
+    if (record.poseUpdateIndex != UINT32_MAX)
+        return;
+    m_poseUpdates.push_back(bodyId);
+    record.poseUpdateIndex = static_cast<uint32_t>(m_poseUpdates.size() - 1);
+}
+
+void JoltCpuScene::MarkActivePoseUpdates()
+{
+    // The owner calls this outside Update, when the active array and body
+    // directory are stable. Public retire/replacement cannot race this loop.
+    const auto *active = m_system.GetActiveBodiesUnsafe(JPH::EBodyType::RigidBody);
+    const auto count = m_system.GetNumActiveBodies(JPH::EBodyType::RigidBody);
+    const auto &bodies = m_system.GetBodyLockInterfaceNoLock();
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto native = active[i];
+        const auto *body = bodies.TryGetBody(native);
+        const auto id = static_cast<uint32_t>(body->GetUserData());
+        const auto found = m_bodies.find(id);
+        if (found != m_bodies.end() && found->second.native == native)
+            MarkPoseUpdate(id, found->second);
+    }
+}
+
+void JoltCpuScene::OnBodyDeactivated(const JPH::BodyID &native, JPH::uint64 userData) noexcept
+{
+    // Jolt can invoke this while holding body locks on a worker. Only record
+    // identities here. The owner resolves them after the native update.
+    const std::lock_guard lock(m_deactivatedPoseMutex);
+    if (m_deactivatedPoseError)
+        return;
+    try {
+        m_deactivatedPoses.push_back({static_cast<uint32_t>(userData), native});
+    } catch (...) {
+        m_deactivatedPoseError = std::current_exception();
+    }
+}
+
+std::vector<JoltCpuScene::PoseUpdate> JoltCpuScene::TakePoseUpdates()
+{
+    const auto &bodies = m_system.GetBodyLockInterfaceNoLock();
+    {
+        const std::lock_guard lock(m_deactivatedPoseMutex);
+        if (m_deactivatedPoseError)
+            std::rethrow_exception(m_deactivatedPoseError);
+        for (const auto &event : m_deactivatedPoses) {
+            const auto found = m_bodies.find(event.bodyId);
+            // Removal from broadphase also invokes Jolt's deactivation
+            // listener. A detached body only publishes actual pose changes.
+            if (found != m_bodies.end() && found->second.native == event.native &&
+                bodies.TryGetBody(event.native)->IsInBroadPhase())
+                MarkPoseUpdate(event.bodyId, found->second);
+        }
+        m_deactivatedPoses.clear();
+    }
+
+    constexpr auto fields = static_cast<PhysicsStateFields>(static_cast<uint32_t>(PhysicsStateFields::Position) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::Rotation));
+    std::vector<PoseUpdate> updates;
+    updates.reserve(m_poseUpdates.size());
+    for (const auto id : m_poseUpdates) {
+        auto &record = m_bodies.at(id);
+        bool sleeping;
+        const auto state = SampleMotionState(id, record, *bodies.TryGetBody(record.native), fields, &sleeping);
+        updates.push_back({{id, state.position, state.rotation}, sleeping});
+        record.poseUpdateIndex = UINT32_MAX;
+    }
+    m_poseUpdates.clear();
+    return updates;
 }
 
 JPH::ValidateResult JoltCpuScene::OnContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg,

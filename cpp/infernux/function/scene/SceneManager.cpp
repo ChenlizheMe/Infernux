@@ -1542,10 +1542,10 @@ void SceneManager::EnsurePhysicsQueriesCurrent()
     if (world.scenes.loaded.empty() && !world.scenes.persistent)
         return;
     FlushPendingBroadphase();
-    // Outside play mode nothing steps the simulation, so moved bodies must be
-    // teleported (dt = 0): the kinematic-velocity paths would otherwise leave
-    // bodies with a velocity that is never integrated nor settled.
-    SyncCollidersToPhysics(world.simulation.isPlaying ? GetFixedTimeStep() : 0.0f);
+    // Outside an advancing Play, author moves are zero-dt teleports.
+    const auto &simulation = world.simulation;
+    const bool advancing = simulation.isPlaying && (!simulation.isPaused || simulation.isStepping);
+    SyncCollidersToPhysics(advancing ? GetFixedTimeStep() : 0.0f);
 }
 
 void SceneManager::ContinueRuntimeLateUpdate()
@@ -1639,6 +1639,8 @@ void SceneManager::FinalizeRuntimeTransforms(bool completed)
             TransformECSStore::Instance().SyncSceneWorldMatrices(world.scenes.persistent.get());
     }
     PublishAuthoredTransformsToPhysics();
+    if (completed && world.physics->cpuScene)
+        PublishSkeletonPoses();
     if (completed || !world.simulation.isPlaying) {
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::FinalTransformResolve);
         if (GetSimulationState() == admittedState)
@@ -2714,7 +2716,7 @@ void SceneManager::FlushPendingBroadphase()
     if (!pw.IsInitialized())
         return;
 
-    // Register deferred GPU actors before removing and adding broadphase membership.
+    // Bind deferred actors before removing and adding broadphase membership.
     auto pendingBodies = store.ConsumePendingBodyCreations(world);
     if (pendingBodies.empty() && !store.HasPendingBroadphaseAdds(world) && !store.HasPendingBroadphaseRemoves(world)) {
         store.DrainPendingJoints(world);
@@ -2722,13 +2724,14 @@ void SceneManager::FlushPendingBroadphase()
     }
 
     for (auto handle : pendingBodies) {
-        if (store.IsValid(handle) && store.GetActor(handle).bodyId == 0xFFFFFFFF)
+        if (store.IsValid(handle) &&
+            (store.GetActor(handle).bodyId == UINT32_MAX || pw.NeedsBodyBindingChange(store.GetActor(handle))))
             store.RegisterActor(handle);
     }
 
     // ── Remove before add ──
     // Gameplay callbacks may toggle Collider.enabled. Keep those removals
-    // before additions in the ordered GPU author command prefix.
+    // before additions in the owning backend's ordered author prefix.
     for (const uint32_t bodyId : store.ConsumePendingBroadphaseRemoves(world)) {
         pw.RemoveBodyFromBroadphase(bodyId);
     }

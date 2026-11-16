@@ -190,15 +190,8 @@ void Collider::SetIsTrigger(bool trigger)
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
 
     const uint32_t bodyId = GetBodyId();
-    if (bodyId != 0xFFFFFFFF) {
-        auto &physics = PhysicsWorld::Instance();
-        physics.RefreshBodyTriggerState(bodyId);
-
-        // Clear stale contact-pair tracking so the listener produces fresh
-        // Enter events (Trigger or Collision) on the next physics step
-        // instead of suppressing them as wake-from-sleep duplicates.
-        physics.InvalidateContactPairsForBody(bodyId);
-    }
+    if (bodyId != UINT32_MAX)
+        PhysicsWorld::Instance().RefreshBodyTriggerState(bodyId);
 }
 
 void Collider::SetCenter(const glm::vec3 &center)

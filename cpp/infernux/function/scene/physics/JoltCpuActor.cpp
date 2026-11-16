@@ -32,6 +32,14 @@ JPH::ObjectLayer BodyLayer(const PhysicsActorData &actor, const std::vector<Coll
             return moving ? PhysicsObjectLayers::MIXED_MOVING : PhysicsObjectLayers::MIXED_NON_MOVING;
     return PhysicsObjectLayers::Encode(layer, moving);
 }
+JPH::ObjectLayer StaticDriveLayer(JPH::ObjectLayer layer, bool moving)
+{
+    using namespace PhysicsObjectLayers;
+    if (IsMixed(layer))
+        return moving ? MIXED_MOVING : MIXED_NON_MOVING;
+    return Encode(DecodeGameLayer(layer), moving);
+}
+
 JPH::BodyCreationSettings CreationSettings(const PreparedCpuActor &actor)
 {
     auto settings = actor.settings;
@@ -89,11 +97,11 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
     prepared.surfaces.reserve(members.size());
     for (const auto *collider : members) {
         const auto layer = collider->GetGameObject()->GetLayer();
-        prepared.surfaces.push_back({PhysicsTargetReference(collider), collider->GetComponentID(),
-                                     collider->GetLifetimeGeneration(), static_cast<uint32_t>(layer),
-                                     TagLayerManager::Instance().GetLayerCollisionMask(layer), collider->GetFriction(),
-                                     collider->GetBounciness(), collider->GetFrictionCombine(),
-                                     collider->GetBounceCombine(), collider->IsTrigger()});
+        prepared.surfaces.push_back(
+            {PhysicsTargetReference(collider), collider->GetComponentID(), collider->GetLifetimeGeneration(),
+             static_cast<uint32_t>(layer), TagLayerManager::Instance().GetLayerCollisionMask(layer),
+             collider->GetFriction(), collider->GetBounciness(), collider->GetFrictionCombine(),
+             collider->GetBounceCombine(), collider->IsTrigger(), collider->GetGameObject()->GetID()});
     }
 
     const auto *body = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
@@ -165,6 +173,7 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
 JoltCpuScene::BodyRecord JoltCpuScene::CaptureBodyRecord(const PreparedCpuActor &actor)
 {
     BodyRecord record;
+    record.shapeRevision = actor.publication.sharedGeometryRevision.value_or(0);
     record.shape = actor.settings.GetShape();
     const auto scale = actor.rootScale;
     if (!std::isfinite(scale.GetX()) || !std::isfinite(scale.GetY()) || !std::isfinite(scale.GetZ()))
@@ -214,6 +223,7 @@ JPH::BodyID JoltCpuScene::ReplaceBody(uint32_t bodyId, const PreparedCpuActor &a
     if (settings.mMotionType == JPH::EMotionType::Static)
         throw std::logic_error("CPU body replacement requires a complete Rigidbody model");
     auto next = CaptureBodyRecord(actor);
+    next.ReuseQueryGeometry(current);
     const auto previousId = current.native;
     std::optional<JPH::AABox> previousBounds;
     {
@@ -243,10 +253,12 @@ JPH::BodyID JoltCpuScene::ReplaceBody(uint32_t bodyId, const PreparedCpuActor &a
     (void)assigned;
     next.native = replacement->GetID();
     next.awakeWhenDetached = true;
-    next.shapeRevision = current.shapeRevision + 1;
+    next.shapeRevision = actor.publication.sharedGeometryRevision.value_or(current.shapeRevision + 1);
+    next.poseUpdateIndex = current.poseUpdateIndex;
     const auto native = next.native;
     current = std::move(next);
     bodies.DestroyBodyWithoutID(previous);
+    MarkPoseUpdate(bodyId, current);
     if (previousBounds) {
         bodies.AddBody(native, JPH::EActivation::Activate);
         WakeBodiesInBounds(*previousBounds, native);
@@ -256,10 +268,94 @@ JPH::BodyID JoltCpuScene::ReplaceBody(uint32_t bodyId, const PreparedCpuActor &a
     return native;
 }
 
+void JoltCpuScene::StartTemporaryStaticDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation,
+                                             float duration, float maxSpeed)
+{
+    if (!std::isfinite(duration) || duration <= 0.0f || !std::isfinite(maxSpeed) || maxSpeed < 0.0f)
+        throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");
+    auto &record = m_bodies.at(bodyId);
+    if (!record.temporaryStaticDrive) {
+        auto &bodies = m_system.GetBodyInterface();
+        const auto native = record.native;
+        std::optional<JPH::BodyCreationSettings> replacementSettings;
+        JPH::ObjectLayer movingLayer;
+        {
+            JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), native);
+            const auto &body = lock.GetBody();
+            if (!body.IsStatic() || !body.IsInBroadPhase() || record.authoredDynamic)
+                throw std::logic_error("A temporary static drive requires a resident static body");
+            if (position == body.GetPosition() && (rotation == body.GetRotation() || rotation == -body.GetRotation()))
+                return;
+            movingLayer = StaticDriveLayer(body.GetObjectLayer(), true);
+            if (!body.CanBeKinematicOrDynamic())
+                replacementSettings = body.GetBodyCreationSettings();
+        }
+
+        if (replacementSettings) {
+            if (m_constraints.HasBodyConstraints(bodyId))
+                throw std::logic_error("A collider-only CPU allocation cannot upgrade with attached constraints");
+            auto &settings = *replacementSettings;
+            const JPH::BodyCreationSettings defaults;
+            settings.mMotionType = JPH::EMotionType::Kinematic;
+            settings.mObjectLayer = movingLayer;
+            // The native constructor initializes a prescribed body with
+            // zero inverse mass and inertia through its None-DOF path.
+            settings.mAllowedDOFs = JPH::EAllowedDOFs::None;
+            settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateMassAndInertia;
+            settings.mMaxLinearVelocity = defaults.mMaxLinearVelocity;
+            settings.mMaxAngularVelocity = defaults.mMaxAngularVelocity;
+
+            auto *replacement = bodies.CreateBodyWithoutID(settings);
+            replacement->SetUserData(bodyId);
+            replacement->GetMotionProperties()->SetKinematicDOFs(JPH::EAllowedDOFs::All);
+            // Reuse the released ID slot even when the scene is full. The
+            // shape, surfaces and published revision stay in the same record.
+            bodies.RemoveBody(native);
+            auto *previous = bodies.UnassignBodyID(native);
+            const bool assigned = bodies.AssignBodyID(replacement);
+            JPH_ASSERT(assigned);
+            (void)assigned;
+            record.native = replacement->GetID();
+            bodies.DestroyBodyWithoutID(previous);
+            bodies.AddBody(record.native, JPH::EActivation::DontActivate);
+        } else {
+            bodies.SetMotionType(native, JPH::EMotionType::Kinematic, JPH::EActivation::DontActivate);
+            bodies.SetObjectLayer(native, movingLayer);
+            {
+                JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), native);
+                lock.GetBody().GetMotionProperties()->SetKinematicDOFs(JPH::EAllowedDOFs::All);
+            }
+            bodies.InvalidateContactCache(native);
+        }
+        record.temporaryStaticDrive = true;
+    }
+
+    StartKinematicDrive(bodyId, position, rotation, duration, maxSpeed);
+}
+
+void JoltCpuScene::StopTemporaryStaticDrive(uint32_t bodyId)
+{
+    auto &record = m_bodies.at(bodyId);
+    if (!record.temporaryStaticDrive)
+        return;
+
+    auto &bodies = m_system.GetBodyInterface();
+    const auto native = record.native;
+    const auto layer = StaticDriveLayer(bodies.GetObjectLayer(native), false);
+    // Native demotion deactivates the body and clears both drive velocities.
+    bodies.SetMotionType(native, JPH::EMotionType::Static, JPH::EActivation::DontActivate);
+    bodies.SetObjectLayer(native, layer);
+    bodies.InvalidateContactCache(native);
+    record.temporaryStaticDrive = false;
+    record.awakeWhenDetached = false;
+    MarkPoseUpdate(bodyId, record);
+}
+
 JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &actor)
 {
     auto next = CaptureBodyRecord(actor);
     auto &record = m_bodies.at(bodyId);
+    next.ReuseQueryGeometry(record);
     const auto native = record.native;
     const auto &settings = actor.settings;
     const auto deltaCOM = next.shape->GetCenterOfMass() - record.shape->GetCenterOfMass();
@@ -268,7 +364,8 @@ JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &acto
     const bool retainLoads = record.authoredDynamic && actor.authoredDynamic;
     const bool hasJoints = m_constraints.HasBodyConstraints(bodyId);
     BodyMobility oldMobility{JPH::EMotionType::Static};
-    bool mobilityChanged = false;
+    bool mobilityChanged = false, poseChanged = false, wasActive = false;
+    JPH::RVec3 oldOrigin;
     JPH::AABox oldBounds, newBounds;
     JPH::Vec3 force = JPH::Vec3::sZero(), torque = JPH::Vec3::sZero();
     {
@@ -277,6 +374,8 @@ JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &acto
         if (settings.HasMassProperties() && !body.CanBeKinematicOrDynamic())
             throw std::logic_error("Adding a Rigidbody to a CPU static actor requires body allocation");
         oldBounds = body.GetWorldSpaceBounds();
+        oldOrigin = body.GetPosition();
+        wasActive = body.IsActive();
         if (hasJoints)
             oldMobility = ReadMobility(body);
         if (retainLoads) {
@@ -287,8 +386,11 @@ JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &acto
     // SetShape retains the current body-origin pose while updating its COM and
     // broadphase bounds. Configuration edits never teleport to a stale author pose.
     bodies.SetShape(native, next.shape, false, JPH::EActivation::DontActivate);
-    bodies.SetObjectLayer(native, settings.mObjectLayer);
-    bodies.SetMotionType(native, settings.mMotionType, JPH::EActivation::DontActivate);
+    next.temporaryStaticDrive = record.temporaryStaticDrive && settings.mMotionType == JPH::EMotionType::Static;
+    bodies.SetObjectLayer(native, next.temporaryStaticDrive ? StaticDriveLayer(settings.mObjectLayer, true)
+                                                            : settings.mObjectLayer);
+    const auto motionType = next.temporaryStaticDrive ? JPH::EMotionType::Kinematic : settings.mMotionType;
+    bodies.SetMotionType(native, motionType, JPH::EActivation::DontActivate);
     {
         JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), native);
         auto &body = lock.GetBody();
@@ -319,14 +421,20 @@ JPH::Vec3 JoltCpuScene::UpdateBody(uint32_t bodyId, const PreparedCpuActor &acto
             motion.SetAccumulatedForceAndTorque(force, torque);
         }
         newBounds = body.GetWorldSpaceBounds();
+        poseChanged = body.GetPosition() != oldOrigin || (wasActive && !body.IsActive());
         mobilityChanged = hasJoints && !(oldMobility == ReadMobility(body));
     }
     if (settings.HasMassProperties())
         bodies.SetMotionQuality(native, settings.mMotionQuality);
     next.native = native;
-    next.shapeRevision = record.shapeRevision + 1;
+    next.shapeRevision = actor.publication.sharedGeometryRevision.value_or(record.shapeRevision + 1);
     const bool scaleChanged = next.rootScale != record.rootScale;
+    next.poseUpdateIndex = record.poseUpdateIndex;
     record = std::move(next);
+    // COM/scale edits normally preserve the body origin and leave the
+    // Transform's authored scale alone. Track actual origin or sleep changes.
+    if (poseChanged)
+        MarkPoseUpdate(bodyId, record);
     m_constraints.NotifyBodyShapeChanged(bodyId, deltaCOM, scaleChanged);
     if (mobilityChanged)
         m_constraints.ResetBodyWarmStart(bodyId);

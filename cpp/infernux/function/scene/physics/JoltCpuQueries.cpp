@@ -5,6 +5,7 @@
 #include <Jolt/Geometry/GJKClosestPoint.h>
 #include <Jolt/Physics/Body/BodyFilter.h>
 #include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Body/BodyLockMulti.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/CollidePointResult.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
@@ -15,6 +16,7 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
+#include <Jolt/Physics/Collision/ShapeFilter.h>
 #include <Jolt/Physics/Collision/TransformedShape.h>
 #include "JoltCpuScene.h"
 #include "PhysicsLayers.h"
@@ -24,15 +26,36 @@
 #include <function/scene/BoxCollider.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/MeshCollider.h>
+#include <function/scene/Rigidbody.h>
 #include <function/scene/TransformECSStore.h>
 #include <limits>
 #include <map>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 
 namespace infernux
 {
+struct JoltCpuShapeLeaves
+{
+    struct Triangle
+    {
+        JPH::Vec3 centroid;
+        PhysicsShapeGeometry geometry;
+    };
+
+    struct Leaf
+    {
+        JPH::TransformedShape native;
+        uint32_t memberIndex;
+        mutable std::shared_ptr<const PhysicsShapeGeometry> geometry;
+        mutable std::shared_ptr<const std::vector<Triangle>> mesh;
+    };
+
+    std::vector<Leaf> entries;
+};
+
 namespace
 {
 bool Finite(const glm::vec3 &value)
@@ -128,6 +151,11 @@ template <typename Vec> glm::vec3 Vector(const Vec &value)
     return {float(value.GetX()), float(value.GetY()), float(value.GetZ())};
 }
 
+glm::quat Quaternion(JPH::QuatArg value)
+{
+    return {value.GetW(), value.GetX(), value.GetY(), value.GetZ()};
+}
+
 JPH::TransformedShape UnwrapDecorated(JPH::TransformedShape shape)
 {
     while (shape.mShape->GetType() == JPH::EShapeType::Decorated) {
@@ -186,6 +214,29 @@ class QueryLayerFilter final : public JPH::ObjectLayerFilter
 
   private:
     uint32_t m_layers;
+};
+
+class QueryBodyFilter final : public JPH::BodyFilter
+{
+  public:
+    explicit QueryBodyFilter(const JoltCpuQueries::Filter &filter, JPH::BodyID exclude = {})
+        : m_filter(filter), m_exclude(exclude)
+    {
+    }
+
+    bool ShouldCollide(const JPH::BodyID &body) const override
+    {
+        return body != m_exclude;
+    }
+
+    bool ShouldCollideLocked(const JPH::Body &body) const override
+    {
+        return !m_filter.excludeBody || !m_filter.excludeBody(static_cast<uint32_t>(body.GetUserData()));
+    }
+
+  private:
+    const JoltCpuQueries::Filter &m_filter;
+    JPH::BodyID m_exclude;
 };
 
 template <typename Collector> class SurfaceCollector : public Collector
@@ -376,7 +427,8 @@ CastCollector<JPH::CastRayCollector> CastRay(const JoltCpuScene &scene, const JP
 {
     CastCollector<JPH::CastRayCollector> collector(scene, filter, ray, maximum, all);
     if (filter.layers != 0)
-        scene.System().GetNarrowPhaseQuery().CastRay(ray, {}, collector, {}, QueryLayerFilter(filter.layers));
+        scene.System().GetNarrowPhaseQuery().CastRay(ray, {}, collector, {}, QueryLayerFilter(filter.layers),
+                                                     QueryBodyFilter(filter));
     return collector;
 }
 
@@ -394,7 +446,7 @@ CastCollector<JPH::CastShapeCollector> CastShape(const JoltCpuScene &scene, cons
                                                      sweep);
     if (filter.layers != 0) {
         const auto cast = JPH::RShapeCast::sFromWorldTransform(&native, JPH::Vec3::sOne(), pose, displacement);
-        const JPH::IgnoreSingleBodyFilter bodyFilter(sweep ? sweep->excludeBody : JPH::BodyID());
+        const QueryBodyFilter bodyFilter(filter, sweep ? sweep->excludeBody : JPH::BodyID());
         scene.System().GetNarrowPhaseQuery().CastShape(cast, settings, ray.mOrigin, collector, {},
                                                        QueryLayerFilter(filter.layers), bodyFilter);
     }
@@ -420,7 +472,7 @@ bool JoltCpuQueries::Raycast(const glm::vec3 &origin, const glm::vec3 &direction
 }
 
 void JoltCpuQueries::RaycastBatch(const float *origins, const float *directions, size_t count, float maximum,
-                                  RaycastHit *hits, uint8_t *mask, const Filter &filter) const
+                                  RaycastHit *hits, uint8_t *mask, const Filter &filter, bool merge) const
 {
     if (count == 0)
         return;
@@ -432,12 +484,25 @@ void JoltCpuQueries::RaycastBatch(const float *origins, const float *directions,
         const auto *p = origins + i * 3, *d = directions + i * 3;
         rays.emplace_back(Position({p[0], p[1], p[2]}), CastDisplacement({d[0], d[1], d[2]}, maximum));
     }
-    for (size_t i = 0; i < count; ++i)
-        mask[i] = CastRay(m_scene, rays[i], maximum, filter, false).ClosestHit(hits[i]) ? 1 : 0;
+    for (size_t i = 0; i < count; ++i) {
+        auto collector = CastRay(m_scene, rays[i], maximum, filter, false);
+        if (!merge) {
+            mask[i] = collector.ClosestHit(hits[i]) ? 1 : 0;
+            continue;
+        }
+        RaycastHit candidate;
+        if (collector.ClosestHit(candidate) &&
+            (!mask[i] || std::tie(candidate.distance, candidate.bodyId, candidate.subShapeId) <
+                             std::tie(hits[i].distance, hits[i].bodyId, hits[i].subShapeId))) {
+            hits[i] = std::move(candidate);
+            mask[i] = 1;
+        }
+    }
 }
 
 bool JoltCpuQueries::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
-                              const glm::vec3 &displacement, RaycastHit &hit) const
+                              const glm::vec3 &displacement, RaycastHit &hit, const BodyExclusion &exclude,
+                              const JPH::Shape *capturedShape) const
 {
     const auto pose = JPH::RMat44::sRotationTranslation(Rotation(rotation), Position(position));
     if (!Finite(displacement))
@@ -450,13 +515,13 @@ bool JoltCpuQueries::SweepBox(const BoxCollider &box, const glm::vec3 &position,
     if (distance > std::numeric_limits<float>::max())
         throw std::invalid_argument("BoxCollider sweep displacement exceeds native coordinates");
     const TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
-    const auto shape = box.CreateJoltShape();
+    const auto shape = capturedShape ? JPH::RefConst<JPH::Shape>(capturedShape) : box.CreateJoltShape();
     if (!shape)
         throw std::runtime_error("Collider geometry is not ready for an explicit geometry query");
     if (shape->GetSubType() == JPH::EShapeSubType::Empty)
         return false;
 
-    const Filter filter{TagLayerManager::Instance().GetLayerCollisionMask(object->GetLayer()), false};
+    const Filter filter{TagLayerManager::Instance().GetLayerCollisionMask(object->GetLayer()), false, {}, exclude};
     SweepPolicy sweep{JPH::BodyID(),
                       object->GetID(),
                       {box.GetComponentID(), box.GetLifetimeGeneration()},
@@ -485,9 +550,9 @@ std::vector<Collider *> JoltCpuQueries::Overlap(const Shape &shape, const Filter
         OverlapCollector collector(m_scene, filter);
         if (filter.layers != 0) {
             const auto com = pose.PreTranslated(native.GetCenterOfMass());
-            m_scene.System().GetNarrowPhaseQuery().CollideShape(&native, JPH::Vec3::sOne(), com, {},
-                                                                com.GetTranslation(), collector, {},
-                                                                QueryLayerFilter(filter.layers));
+            m_scene.System().GetNarrowPhaseQuery().CollideShape(
+                &native, JPH::Vec3::sOne(), com, {}, com.GetTranslation(), collector, {},
+                QueryLayerFilter(filter.layers), QueryBodyFilter(filter));
         }
         return collector.Colliders();
     });
@@ -568,5 +633,294 @@ JoltCpuQueries::ComputePenetration(const Collider &a, const glm::vec3 &positionA
     const auto &hit = hits.mHit;
     return PhysicsPenetrationResult{Vector(-hit.mPenetrationAxis.Normalized()), hit.mPenetrationDepth,
                                     Vector(originA + hit.mContactPointOn1), Vector(originA + hit.mContactPointOn2)};
+}
+
+const JoltCpuShapeLeaves &JoltCpuScene::BodyRecord::QueryLeaves() const
+{
+    if (!queryLeaves) {
+        auto catalog = std::make_shared<JoltCpuShapeLeaves>();
+        if (!surfaces.empty()) {
+            JPH::AllHitCollisionCollector<JPH::TransformedShapeCollector> collector;
+            shape->CollectTransformedShapes(JPH::AABox::sBiggest(), JPH::Vec3::sZero(), JPH::Quat::sIdentity(),
+                                            JPH::Vec3::sOne(), JPH::SubShapeIDCreator(), collector, JPH::ShapeFilter());
+            catalog->entries.reserve(collector.mHits.size());
+            for (const auto &leaf : collector.mHits) {
+                if (leaf.mShape->GetSubType() == JPH::EShapeSubType::Empty)
+                    continue;
+                if (leaf.GetShapeScale() != JPH::Vec3::sOne())
+                    throw std::logic_error("Accepted collider geometry must have its scale baked into the leaf");
+                const auto member = MemberIndex(leaf.mSubShapeIDCreator.GetID());
+                catalog->entries.push_back({leaf, member, {}, {}});
+            }
+        }
+        queryLeaves = std::move(catalog);
+    }
+    return *queryLeaves;
+}
+
+void JoltCpuScene::BodyRecord::ReuseQueryGeometry(const BodyRecord &previous)
+{
+    if (!previous.queryLeaves)
+        return;
+    if (shape.GetPtr() == previous.shape.GetPtr()) {
+        queryLeaves = previous.queryLeaves;
+        return;
+    }
+
+    // Rebuilding a compound/decorator can leave the accepted leaf shapes intact.
+    std::unordered_map<const JPH::Shape *, const JoltCpuShapeLeaves::Leaf *> cached;
+    for (const auto &leaf : previous.queryLeaves->entries)
+        if (leaf.geometry || leaf.mesh)
+            cached.emplace(leaf.native.mShape.GetPtr(), &leaf);
+    if (cached.empty())
+        return;
+    for (const auto &leaf : QueryLeaves().entries) {
+        if (const auto found = cached.find(leaf.native.mShape.GetPtr()); found != cached.end()) {
+            leaf.geometry = found->second->geometry;
+            leaf.mesh = found->second->mesh;
+        }
+    }
+}
+
+std::shared_ptr<const PhysicsShapeGeometry> JoltCpuQueries::ResolveGeometry(const JPH::Shape &shape)
+{
+    auto geometry = std::make_shared<PhysicsShapeGeometry>();
+    auto owner = std::make_shared<JPH::RefConst<JPH::Shape>>(&shape);
+    geometry->shape = std::shared_ptr<const JPH::Shape>(std::move(owner), &shape);
+    geometry->identity = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&shape));
+    geometry->convex = shape.GetType() == JPH::EShapeType::Convex;
+    const auto bounds = shape.GetLocalBounds();
+    geometry->boundsMin = Vector(bounds.mMin);
+    geometry->boundsMax = Vector(bounds.mMax);
+    switch (shape.GetSubType()) {
+    case JPH::EShapeSubType::Box: {
+        const auto &box = static_cast<const JPH::BoxShape &>(shape);
+        geometry->type = PhysicsShapeType::Box;
+        geometry->dimensions = glm::vec4(2.0f * Vector(box.GetHalfExtent()), box.GetConvexRadius());
+        break;
+    }
+    case JPH::EShapeSubType::Sphere:
+        geometry->type = PhysicsShapeType::Sphere;
+        geometry->dimensions.x = static_cast<const JPH::SphereShape &>(shape).GetRadius();
+        break;
+    case JPH::EShapeSubType::Capsule: {
+        const auto &capsule = static_cast<const JPH::CapsuleShape &>(shape);
+        const float radius = capsule.GetRadius();
+        geometry->type = PhysicsShapeType::Capsule;
+        geometry->dimensions = {radius, 2.0f * (capsule.GetHalfHeightOfCylinder() + radius), 1.0f, 0.0f};
+        break;
+    }
+    default:
+        // Cylinders and convex hulls expose their
+        // immutable surface through GetTriangles.
+        geometry->type = PhysicsShapeType::Mesh;
+        break;
+    }
+    return geometry;
+}
+
+void JoltCpuQueries::CacheMeshGeometry(const JoltCpuShapeLeaves &leaves, size_t index)
+{
+    const auto &leaf = leaves.entries[index];
+    if (leaf.mesh)
+        return;
+    const auto &mesh = static_cast<const JPH::MeshShape &>(*leaf.native.mShape);
+    JPH::Array<JPH::MeshShape::TriangleData> triangles;
+    mesh.GetTriangleData(triangles);
+    auto view = std::make_shared<std::vector<JoltCpuShapeLeaves::Triangle>>(triangles.size());
+    for (size_t i = 0; i < triangles.size(); ++i) {
+        const auto &source = triangles[i];
+        auto &triangle = (*view)[i];
+        triangle.centroid = (source.mV0 + source.mV1 + source.mV2) / 3.0f;
+        const auto a = source.mV0 - triangle.centroid;
+        const auto b = source.mV1 - triangle.centroid;
+        const auto c = source.mV2 - triangle.centroid;
+        auto &geometry = triangle.geometry;
+        geometry.identity = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&geometry));
+        geometry.type = PhysicsShapeType::Mesh;
+        geometry.convex = true;
+        geometry.boundsMin = Vector(JPH::Vec3::sMin(a, JPH::Vec3::sMin(b, c)));
+        geometry.boundsMax = Vector(JPH::Vec3::sMax(a, JPH::Vec3::sMax(b, c)));
+        geometry.triangle = std::array{Vector(a), Vector(b), Vector(c)};
+    }
+    leaf.mesh = std::move(view);
+}
+
+namespace
+{
+template <typename Append>
+void VisitBodyBoxes(const JPH::Body &body, const JoltCpuShapeLeaves &leaves,
+                    const std::vector<PreparedCpuActor::Surface> &surfaces, bool triggers, Append &&append)
+{
+    const auto position = body.GetCenterOfMassPosition();
+    const auto rotation = body.GetRotation();
+    for (const auto &leaf : leaves.entries) {
+        if (leaf.native.mShape->GetSubType() != JPH::EShapeSubType::Box)
+            continue;
+        const auto &surface = surfaces.at(leaf.memberIndex);
+        if (surface.sensor && !triggers)
+            continue;
+        const auto &box = static_cast<const JPH::BoxShape &>(*leaf.native.mShape);
+        const auto center = position + rotation * JPH::Vec3(leaf.native.mShapePositionCOM);
+        const auto orientation = (rotation * leaf.native.mShapeRotation).Normalized();
+        append(PhysicsBoxShapeState{leaf.memberIndex, Vector(center), Quaternion(orientation),
+                                    Vector(box.GetHalfExtent()), surface.friction, surface.restitution});
+    }
+}
+} // namespace
+
+std::vector<Rigidbody *> JoltCpuQueries::QueryRigidbodiesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum,
+                                                                  const Filter &filter) const
+{
+    const auto low = Position(minimum), high = Position(maximum);
+    if (glm::any(glm::greaterThan(minimum, maximum)))
+        throw std::invalid_argument("Physics query bounds require minimum <= maximum");
+    if (!filter.layers)
+        return {};
+    const JPH::AABox bounds{JPH::Vec3(low), JPH::Vec3(high)};
+    JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector> hits;
+    m_scene.System().GetBroadPhaseQuery().CollideAABox(bounds, hits, {}, QueryLayerFilter(filter.layers));
+    std::vector<Rigidbody *> bodies;
+    bodies.reserve(hits.mHits.size());
+    for (const auto nativeId : hits.mHits) {
+        const JPH::BodyLockRead lock(m_scene.System().GetBodyLockInterface(), nativeId);
+        if (!lock.SucceededAndIsInBroadPhase())
+            continue;
+        const auto &body = lock.GetBody();
+        const auto id = static_cast<uint32_t>(body.GetUserData());
+        const auto &record = m_scene.m_bodies.at(id);
+        auto *rigidbody = static_cast<Rigidbody *>(record.bodyTarget.GetComponent());
+        if (!rigidbody || !bounds.Overlaps(body.GetWorldSpaceBounds()) ||
+            (filter.excludeBody && filter.excludeBody(id)))
+            continue;
+        if (std::any_of(record.surfaces.begin(), record.surfaces.end(), [&](const auto &surface) {
+                return IncludeLayer(filter.layers, surface.layer) && (filter.triggers || !surface.sensor);
+            }))
+            bodies.push_back(rigidbody);
+    }
+    return bodies;
+}
+
+std::vector<PhysicsBoxShapeState> JoltCpuQueries::GatherBodyBoxes(uint32_t bodyId, bool triggers) const
+{
+    const auto found = m_scene.m_bodies.find(bodyId);
+    if (found == m_scene.m_bodies.end())
+        throw std::invalid_argument("CPU box states require an accepted body identity");
+    const JPH::BodyLockRead lock(m_scene.System().GetBodyLockInterface(), found->second.native);
+    std::vector<PhysicsBoxShapeState> result;
+    const auto &record = found->second;
+    if (lock.SucceededAndIsInBroadPhase())
+        VisitBodyBoxes(lock.GetBody(), record.QueryLeaves(), record.surfaces, triggers,
+                       [&](PhysicsBoxShapeState shape) { result.push_back(std::move(shape)); });
+    return result;
+}
+
+PhysicsRigidbodyStateBatch JoltCpuQueries::GatherRigidbodyStates(const std::vector<BodyRequest> &requests,
+                                                                 PhysicsStateFields fields, bool includeBoxes,
+                                                                 bool triggers) const
+{
+    PhysicsRigidbodyStateBatch batch;
+    if (requests.empty())
+        return batch;
+    if (requests.size() > size_t(std::numeric_limits<int>::max()))
+        throw std::length_error("CPU rigidbody state batch exceeds native lock capacity");
+
+    batch.bodies.reserve(requests.size());
+    batch.states.reserve(requests.size());
+    std::vector<const JoltCpuScene::BodyRecord *> records;
+    std::vector<JPH::BodyID> nativeIds;
+    records.reserve(requests.size());
+    nativeIds.reserve(requests.size());
+    for (const auto &request : requests) {
+        const auto found = m_scene.m_bodies.find(request.bodyId);
+        if (!request.rigidbody || found == m_scene.m_bodies.end() ||
+            found->second.bodyTarget.GetComponent() != request.rigidbody)
+            throw std::invalid_argument("CPU state batch requires the accepted Rigidbody identity");
+        batch.bodies.push_back(request.rigidbody);
+        records.push_back(&found->second);
+        nativeIds.push_back(found->second.native);
+    }
+
+    const auto &interface = m_scene.System().GetBodyLockInterface();
+    const JPH::BodyLockMultiRead lock(interface, nativeIds.data(), static_cast<int>(nativeIds.size()));
+    for (uint32_t row = 0; row < requests.size(); ++row) {
+        const auto &record = *records[row];
+        const auto *body = lock.GetBody(static_cast<int>(row));
+        if (!body)
+            throw std::logic_error("CPU state batch lost an accepted body");
+        batch.states.push_back(JoltCpuScene::SampleMotionState(requests[row].bodyId, record, *body, fields));
+        if (includeBoxes && body->IsInBroadPhase())
+            VisitBodyBoxes(*body, record.QueryLeaves(), record.surfaces, triggers,
+                           [&](PhysicsBoxShapeState shape) { batch.boxes.push_back({row, std::move(shape)}); });
+    }
+    batch.boxCount = batch.boxes.size();
+    return batch;
+}
+
+std::vector<PhysicsShapeState> JoltCpuQueries::GatherBodyShapes(uint32_t bodyId, bool triggers) const
+{
+    const auto found = m_scene.m_bodies.find(bodyId);
+    if (found == m_scene.m_bodies.end())
+        throw std::invalid_argument("CPU shape states require an accepted body identity");
+    const auto &record = found->second;
+    const JPH::BodyLockRead lock(m_scene.System().GetBodyLockInterface(), record.native);
+    if (!lock.SucceededAndIsInBroadPhase())
+        return {};
+
+    const auto &body = lock.GetBody();
+    const auto position = body.GetCenterOfMassPosition();
+    const auto rotation = body.GetRotation();
+    const auto linear = Vector(body.GetLinearVelocity()), angular = Vector(body.GetAngularVelocity());
+    const auto &leaves = record.QueryLeaves();
+    size_t rowCount = 0;
+    for (size_t index = 0; index < leaves.entries.size(); ++index) {
+        const auto &leaf = leaves.entries[index];
+        if (record.surfaces.at(leaf.memberIndex).sensor && !triggers)
+            continue;
+        if (leaf.native.mShape->GetSubType() == JPH::EShapeSubType::Mesh) {
+            CacheMeshGeometry(leaves, index);
+            rowCount += leaf.mesh->size();
+        } else {
+            ++rowCount;
+        }
+    }
+
+    std::vector<PhysicsShapeState> result;
+    result.reserve(rowCount);
+    for (const auto &leaf : leaves.entries) {
+        const auto &surface = record.surfaces.at(leaf.memberIndex);
+        if (surface.sensor && !triggers)
+            continue;
+        PhysicsShapeState state;
+        state.collider = surface.target.GetCollider();
+        state.memberIndex = leaf.memberIndex;
+        state.layerBit = 1u << surface.layer;
+        state.trigger = surface.sensor;
+        state.moving = !body.IsStatic();
+        const auto center = position + rotation * JPH::Vec3(leaf.native.mShapePositionCOM);
+        const auto orientation = (rotation * leaf.native.mShapeRotation).Normalized();
+        state.rotation = Quaternion(orientation);
+        state.bodyCenterOfMass = Vector(position);
+        state.linearVelocity = linear;
+        state.angularVelocity = angular;
+        state.friction = surface.friction;
+        state.bounciness = surface.restitution;
+        state.frictionCombine = static_cast<uint32_t>(surface.frictionCombine);
+        state.bounceCombine = static_cast<uint32_t>(surface.bounceCombine);
+        if (leaf.mesh) {
+            for (const auto &triangle : *leaf.mesh) {
+                state.center = Vector(center + orientation * triangle.centroid);
+                state.geometry = std::shared_ptr<const PhysicsShapeGeometry>(leaf.mesh, &triangle.geometry);
+                result.push_back(state);
+            }
+        } else {
+            if (!leaf.geometry)
+                leaf.geometry = ResolveGeometry(*leaf.native.mShape);
+            state.geometry = leaf.geometry;
+            state.center = Vector(center);
+            result.push_back(std::move(state));
+        }
+    }
+    return result;
 }
 } // namespace infernux

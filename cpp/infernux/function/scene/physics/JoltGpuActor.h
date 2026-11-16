@@ -4,6 +4,7 @@
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include "JoltGpuShape.h"
 #include "PhysicsShapeAuthoring.h"
+#include "PhysicsTargetReference.h"
 
 #include <optional>
 
@@ -13,6 +14,7 @@ namespace infernux
 class Collider;
 class GameObject;
 struct PhysicsActorData;
+struct PreparedCpuActor;
 
 /// Owner-thread creation data. Only initialState is an initial condition;
 /// subsequent authored model changes must retain the resident GPU state.
@@ -25,9 +27,13 @@ struct PreparedGpuActor
     JPH::GPU::Float4 rootScale{1, 1, 1, 0};
     PhysicsActorPublication publication;
     JPH::RefConst<JPH::Shape> authoredShape;
-    /// Exact contributing members, captured immediately by Scene into safe
-    /// per-leaf identities. Ordinals come from the authored outer compound.
-    std::vector<Collider *> members;
+    struct Member
+    {
+        PhysicsTargetReference target;
+        uint64_t colliderId, generation, gameObjectId;
+    };
+    // Ordinals come from the authored outer compound.
+    std::vector<Member> members;
 };
 
 /// Capture ordinary component authoring without creating or reading a CPU Body.
@@ -37,6 +43,9 @@ struct PreparedGpuActor
 /// packet is accepted, retaining any following velocity commands in FIFO order.
 [[nodiscard]] std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &actor, uint32_t bodySlot,
                                                                   uint32_t worldIndex);
+
+/// Encode the shared static shape and author values for a GPU replica.
+[[nodiscard]] PreparedGpuActor PrepareJoltGpuStaticActor(const PreparedCpuActor &);
 
 /// Refresh only material/filter fields, preserving mass, motion and GPU state.
 /// Collider is the actual contributing leaf source. The Scene captures its

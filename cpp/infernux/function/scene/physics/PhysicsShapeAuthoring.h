@@ -24,6 +24,8 @@ struct PhysicsActorPublication
 {
     PhysicsECSStore::RigidbodyHandle rigidbody;
     uint64_t rigidbodyComponentId = 0;
+    // Static replicas of the same authored shape publish one collider revision.
+    std::optional<uint64_t> sharedGeometryRevision;
     std::optional<glm::vec3> linearVelocity, angularVelocity;
 
     /// Capture inside the author's pose scope, after all contributing shapes are ready.

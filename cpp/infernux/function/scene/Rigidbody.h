@@ -117,6 +117,14 @@ class Rigidbody : public Component
     // Properties (Unity-style)
     // ====================================================================
 
+    /// Device selection belongs to this component; worlds have no default backend.
+    [[nodiscard]] bool IsGpuEnabled() const
+    {
+        return Data().gpu;
+    }
+    void SetGpuEnabled(bool gpu);
+    void ValidateGpuSelection(bool gpu) const;
+
     /// @brief Mass in kilograms (Unity: Rigidbody.mass). Default 1.
     [[nodiscard]] float GetMass() const
     {
@@ -279,7 +287,8 @@ class Rigidbody : public Component
 
     /// Publish a completed body-origin sample in parent-first order. The
     /// physics owner supplies the state once; this does not query a backend.
-    void SyncPhysicsToTransform(const PhysicsBodyMotionState &state, bool sleeping);
+    bool SyncPhysicsToTransform(const PhysicsBodyMotionState &state, bool sleeping, bool snap = false);
+    bool RebaseCpuPhysicsPose();
     /// Cache only a pose explicitly requested by a CPU consumer, after that
     /// consumer applied its author-channel protection to the Transform.
     /// The latest requested sample is retained; no fixed-step history is read.
@@ -293,7 +302,7 @@ class Rigidbody : public Component
     void CompletePhysicsTarget(const PhysicsTargetSource &source, uint8_t channels);
 
     /// @brief Apply render interpolation between previous and current physics poses.
-    void ApplyInterpolatedTransform(float alpha);
+    bool ApplyInterpolatedTransform(float alpha);
 
     /// @brief Publish an authored Transform pose to the physics body.
     ///
@@ -357,13 +366,14 @@ class Rigidbody : public Component
         }
     };
 
+    [[nodiscard]] glm::vec3 GetPendingVelocity(BodyCommandKind kind, const glm::vec3 &initial) const;
     void SubmitBodyCommand(BodyCommand command);
     void ApplyBodyCommand(class PhysicsWorld &world, uint32_t bodyId, const BodyCommand &command);
 
     /// Notify all sibling Colliders to rebuild their Jolt body type.
     void NotifyCollidersBodyTypeChanged();
     void CacheActorPose(const glm::vec3 &position, const glm::quat &rotation);
-    void PublishPhysicsPose(const glm::vec3 &position, const glm::quat &rotation);
+    bool PublishPhysicsPose(const glm::vec3 &position, const glm::quat &rotation);
 
     /// Apply drag damping (called via Jolt motion properties).
     void ApplyDragSettings();

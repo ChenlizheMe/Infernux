@@ -1298,6 +1298,8 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def_property("drag", &Rigidbody::GetDrag, &Rigidbody::SetDrag, "Linear drag (default 0)")
         .def_property("angular_drag", &Rigidbody::GetAngularDrag, &Rigidbody::SetAngularDrag,
                       "Angular drag (default 0.05)")
+        .def_property("gpu", &Rigidbody::IsGpuEnabled, &Rigidbody::SetGpuEnabled,
+                      "Use GPU physics for this body. Defaults to CPU (False).")
         .def_property("use_gravity", &Rigidbody::GetUseGravity, &Rigidbody::SetUseGravity,
                       "Use gravity? (default true)")
         .def_property("is_kinematic", &Rigidbody::IsKinematic, &Rigidbody::SetIsKinematic,

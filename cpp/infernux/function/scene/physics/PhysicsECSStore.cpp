@@ -94,6 +94,13 @@ uint32_t PhysicsECSStore::AllocateBodyIdentity()
     return m_nextBodyIdentity++;
 }
 
+uint64_t PhysicsECSStore::AllocateJointIdentity()
+{
+    if (m_nextJointIdentity == 0)
+        throw std::overflow_error("Physics joint identity space exhausted");
+    return m_nextJointIdentity++;
+}
+
 void PhysicsECSStore::RegisterRuntimeWorld(RuntimeWorld &world)
 {
     auto [it, inserted] = m_worldQueues.try_emplace(world.id);
@@ -410,8 +417,9 @@ void PhysicsECSStore::RegisterActor(ActorHandle handle)
     const bool active = actor.owner->IsActiveInHierarchy() && (dynamicOwner || actor.primaryCollider);
     if (dynamicOwner)
         actor.rigidbody->CaptureAuthorPoseCache();
-    if (actor.bodyId == 0xFFFFFFFF) {
-        if (!active)
+    const bool replace = world.NeedsBodyBindingChange(actor);
+    if (actor.bodyId == 0xFFFFFFFF || replace) {
+        if (!active && !replace)
             return;
         auto *transform = actor.owner->GetTransform();
         glm::vec3 position, scale;
@@ -422,9 +430,12 @@ void PhysicsECSStore::RegisterActor(ActorHandle handle)
             rotation = transform->GetWorldRotation();
             scale = transform->GetWorldScale();
         }
-        actor.bodyId = world.CreateBody(actor);
-        if (actor.bodyId == 0xFFFFFFFF)
-            return; // A mesh member is still being cooked.
+        if (replace) {
+            if (!world.RebindBody(actor))
+                return;
+        } else if (world.CreateBody(actor) == UINT32_MAX) {
+            return; // A required native model is pending.
+        }
         actor.lastSyncedPos = position;
         actor.lastSyncedRot = rotation;
         actor.lastScale = scale;

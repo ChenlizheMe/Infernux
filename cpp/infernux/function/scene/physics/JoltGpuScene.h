@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 namespace infernux
@@ -117,6 +118,13 @@ class JoltGpuScene final
     {
         std::vector<std::shared_ptr<const PublishedActor>> actors;
         std::vector<uint8_t> residentBodies;
+        std::unordered_map<uint32_t, uint32_t> bodySlots;
+
+        [[nodiscard]] uint32_t FindBodySlot(uint32_t bodyId) const noexcept
+        {
+            const auto found = bodySlots.find(bodyId);
+            return found == bodySlots.end() ? UINT32_MAX : found->second;
+        }
         std::vector<LeafAddress> leaves;
         std::vector<std::vector<PublishedJoint>> worldJoints;
     };
@@ -189,9 +197,10 @@ class JoltGpuScene final
     /// This backend only installs its address; it never allocates public IDs.
     /// initialResident belongs to this new identity, before its first StageActor.
     [[nodiscard]] BodyAllocation Reserve(RuntimeWorld &world, uint32_t publicBodyId, PhysicsActorHandle actor,
-                                         OwnerIdentity owner, bool initialResident);
+                                         OwnerIdentity owner, bool initialResident,
+                                         uint32_t expectedAuthorBodyId = UINT32_MAX);
     void ReserveCapacity(RuntimeWorld &world, uint32_t capacity);
-    void StageActor(uint32_t bodyId, PreparedGpuActor actor);
+    void StageActor(uint32_t bodyId, PreparedGpuActor actor, bool resetMotion = false);
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);
     PhysicsTargetSource QueueCommand(uint32_t bodyId, JPH::GPU::BodyCommand command,
                                      const PhysicsTargetAuthor *author = nullptr);

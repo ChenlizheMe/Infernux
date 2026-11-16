@@ -141,8 +141,11 @@ void Joint::ReleaseConstraint()
 {
     m_retryOnRetire = false;
     PhysicsECSStore::Instance().CancelPendingJoint(*this);
-    if (m_constraintId && PhysicsWorld::Instance().IsInitialized())
+    if (m_constraintId && PhysicsWorld::Instance().IsInitialized()) {
         PhysicsWorld::Instance().DestroyConstraint(m_constraintId);
+        if (!m_constraintId)
+            return;
+    }
     OnPhysicsConstraintDestroyed();
 }
 

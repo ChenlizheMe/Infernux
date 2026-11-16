@@ -107,17 +107,12 @@ class PhysicsContactPublication final
     void Publish(ContactStreamIdentity, const Policy &, uint32_t substeps, const ReadFrame &);
     void PublishEmpty(ContactStreamIdentity);
     [[nodiscard]] size_t Dispatch(RuntimeWorld &);
-    void Invalidate(uint32_t body)
-    {
-        invalidated.insert(body);
-    }
     void Close() noexcept;
     [[nodiscard]] const std::vector<ContactEvent> &Events() const;
     [[nodiscard]] const std::vector<ContactImpulse> &Impulses() const;
 
   private:
     std::map<PairKey, Pair> pairs;
-    std::set<uint32_t> invalidated;
     size_t receiverCursor = 0;
 };
 } // namespace infernux

@@ -549,9 +549,7 @@ class JoltGpuScene::Impl
             throw std::invalid_argument("GPU Joint endpoints belong to different RuntimeWorld owners");
         if (ownerBody == connectedBody || !slots[a].authored || (b != InvalidQueryBodySlot && !slots[b].authored))
             throw std::invalid_argument("A GPU joint requires distinct authored body endpoints");
-        if (!nextJointId)
-            throw std::overflow_error("GPU joint identity space is exhausted");
-        const auto id = nextJointId++;
+        const auto id = actors.AllocateJointIdentity();
         author.bodies.x = b;
         author.bodies.y = a;
         author.identity = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), slots[a].partition->row, 0};
@@ -809,13 +807,13 @@ class JoltGpuScene::Impl
     }
 
     BodyAllocation Reserve(RuntimeWorld &world, uint32_t id, PhysicsActorHandle actor, OwnerIdentity owner,
-                           bool initialResident)
+                           bool initialResident, uint32_t expectedAuthorBodyId)
     {
         auto &domain = Domain(world);
         if (domain.closed || !actors.IsValid(actor) || id == InvalidBodyId || byId.count(id))
             throw std::invalid_argument("GPU body reservation requires a new live author identity");
         const auto &author = actors.GetActor(actor);
-        if (author.runtimeWorld != &world || author.bodyId != InvalidBodyId || !author.owner ||
+        if (author.runtimeWorld != &world || author.bodyId != expectedAuthorBodyId || !author.owner ||
             owner.gameObjectId != author.owner->GetID() || owner.target.GetGameObject() != author.owner)
             throw std::invalid_argument("GPU body ID / RuntimeWorld / owner do not match the actor registry");
         if (domain.freeLocals.empty())
@@ -895,7 +893,7 @@ class JoltGpuScene::Impl
         return replacement;
     }
 
-    void StageActor(uint32_t id, PreparedGpuActor actor)
+    void StageActor(uint32_t id, PreparedGpuActor actor, bool resetMotion)
     {
         auto &domain = BodyDomain(id);
         auto &pending = domain.pending;
@@ -926,15 +924,14 @@ class JoltGpuScene::Impl
         identity->authoredShape = std::move(actor.authoredShape);
         identity->leaves.reserve(actor.geometry.leaves.size());
         for (const auto &leaf : actor.geometry.leaves) {
-            if (leaf.memberIndex >= actor.members.size() || !actor.members[leaf.memberIndex])
+            if (leaf.memberIndex >= actor.members.size())
                 throw std::invalid_argument("Jolt GPU leaf has no contributing Collider identity");
-            const auto *surface = actor.members[leaf.memberIndex];
+            const auto &surface = actor.members[leaf.memberIndex];
             PublishedLeaf publishedLeaf;
-            publishedLeaf.surfaceTarget = PhysicsTargetReference(surface);
-            publishedLeaf.colliderId = surface->GetComponentID();
-            publishedLeaf.colliderGeneration = surface->GetLifetimeGeneration();
-            if (auto *object = surface->GetGameObject())
-                publishedLeaf.surfaceGameObjectId = object->GetID();
+            publishedLeaf.surfaceTarget = surface.target;
+            publishedLeaf.colliderId = surface.colliderId;
+            publishedLeaf.colliderGeneration = surface.generation;
+            publishedLeaf.surfaceGameObjectId = surface.gameObjectId;
             publishedLeaf.subShapeId = leaf.subShapeID.GetValue();
             publishedLeaf.subShapeBits = leaf.subShapeBits;
             publishedLeaf.memberIndex = leaf.memberIndex;
@@ -990,7 +987,8 @@ class JoltGpuScene::Impl
                 leaf.meta.y = packed;
             const auto &previous = slots[change->slot].accepted;
             change->creation = !previous;
-            change->identity->shapeRevision = previous ? previous->shapeRevision + 1 : 0;
+            change->identity->shapeRevision =
+                change->publication.sharedGeometryRevision.value_or(previous ? previous->shapeRevision + 1 : 0);
             std::vector<BodyInitialization> initial;
             std::vector<CenterOfMassUpdate> rebases;
             if (change->creation) {
@@ -1033,6 +1031,11 @@ class JoltGpuScene::Impl
                                                 rebases, std::move(warm.updates), std::move(warm.dispatches));
         };
         group.modelAccepted = [this, change]() noexcept { CommitActor(change); };
+        if (resetMotion && !firstOwnership) {
+            BodyCommand reset{};
+            reset.meta = {id, CommandResetMotion, 0, 0};
+            group.commands.push_back(reset);
+        }
         if (motionChanged) {
             BodyCommand boundary{};
             boundary.meta = {id, CommandMotionBoundary, MotionBoundaryTypeChange | CarryFlags(slot.queuedTarget), 0};
@@ -1070,7 +1073,7 @@ class JoltGpuScene::Impl
         QueueBoundsAfter(domain, std::move(oldBounds), index, id, true);
         const bool setsInitialVelocity =
             change->initializesRigidbody && (change->publication.linearVelocity || change->publication.angularVelocity);
-        if (motionChanged || (motion != MotionStatic && firstOwnership) || setsInitialVelocity)
+        if (resetMotion || motionChanged || (motion != MotionStatic && firstOwnership) || setsInitialVelocity)
             CancelTarget(slot.queuedTarget, pendingCompletions);
         if (motion != MotionStatic)
             slot.initialRigidbody = change->publication.rigidbody;
@@ -1242,6 +1245,7 @@ class JoltGpuScene::Impl
             return publicationDirectory;
         auto directory = std::make_shared<PublicationDirectory>();
         directory->actors.resize(storage.GetBodyCount());
+        directory->bodySlots.reserve(byId.size());
         directory->residentBodies.resize(storage.GetBodyCount());
         directory->leaves.resize(storage.GetShapeCount());
         directory->worldJoints.resize(storage.GetWorldCount());
@@ -1251,6 +1255,7 @@ class JoltGpuScene::Impl
                 continue;
             const auto packed = Packed(index);
             directory->actors[packed] = slot.accepted;
+            directory->bodySlots.emplace(id, packed);
             const auto &model = storage.GetModel().bodies[packed];
             directory->residentBodies[packed] = (model.meta.z & MotionNotResident) == 0u;
             if (slot.accepted->leaves.size() != model.meta.y)
@@ -1871,7 +1876,7 @@ class JoltGpuScene::Impl
     JoltGpuJoints &joints;
     std::map<uint64_t, JointRecord> authoredJoints;
     std::vector<PublishedJoint> acceptedJoints;
-    uint64_t nextJointId = 1, layoutGeneration = 0;
+    uint64_t layoutGeneration = 0;
     std::shared_ptr<const PublicationDirectory> publicationDirectory;
     std::vector<Slot> slots;
     std::vector<uint32_t> freeRecords;
@@ -1940,17 +1945,18 @@ bool JoltGpuScene::RegisterPartition(RuntimeWorld &world, uint32_t capacity)
     return true;
 }
 JoltGpuScene::BodyAllocation JoltGpuScene::Reserve(RuntimeWorld &world, uint32_t id, PhysicsActorHandle actor,
-                                                   OwnerIdentity owner, bool initialResident)
+                                                   OwnerIdentity owner, bool initialResident,
+                                                   uint32_t expectedAuthorBodyId)
 {
-    return m_impl->Reserve(world, id, actor, std::move(owner), initialResident);
+    return m_impl->Reserve(world, id, actor, std::move(owner), initialResident, expectedAuthorBodyId);
 }
 void JoltGpuScene::ReserveCapacity(RuntimeWorld &world, uint32_t count)
 {
     m_impl->ReserveCapacity(world, count);
 }
-void JoltGpuScene::StageActor(uint32_t id, PreparedGpuActor actor)
+void JoltGpuScene::StageActor(uint32_t id, PreparedGpuActor actor, bool resetMotion)
 {
-    m_impl->StageActor(id, std::move(actor));
+    m_impl->StageActor(id, std::move(actor), resetMotion);
 }
 void JoltGpuScene::SetResident(uint32_t id, bool value, bool preserve)
 {

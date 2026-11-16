@@ -109,7 +109,6 @@ void State::PublishEmpty(ContactStreamIdentity identity)
     auto empty = std::make_shared<Batch>();
     empty->identity = identity;
     pairs.clear();
-    invalidated.clear();
     batch = std::move(empty);
     receiverCursor = 0;
 }
@@ -163,18 +162,6 @@ void State::Publish(ContactStreamIdentity identity, const Policy &policy, uint32
                 Receivers(*output, policy, *pair, Type(pair->trigger, 1));
         }
     };
-    if (!invalidated.empty()) {
-        auto retained = previous;
-        for (auto it = retained.begin(); it != retained.end();) {
-            if (invalidated.count(it->second.a.body) || invalidated.count(it->second.b.body)) {
-                stream(it->second, 2, 0);
-                it = retained.erase(it);
-            } else
-                ++it;
-        }
-        callbacks(previous, retained, false);
-        previous = std::move(retained);
-    }
     std::set<PairKey> rawStayed;
     for (uint32_t substep = 0; substep < substeps; ++substep) {
         auto frame = readFrame(substep);
@@ -232,7 +219,6 @@ void State::Publish(ContactStreamIdentity identity, const Policy &policy, uint32
         previous = std::move(current);
     }
     pairs = std::move(previous);
-    invalidated.clear();
     batch = std::move(output);
     receiverCursor = 0;
 }
@@ -310,7 +296,6 @@ void State::Close() noexcept
 {
     batch.reset();
     pairs.clear();
-    invalidated.clear();
     receiverCursor = 0;
 }
 const std::vector<ContactEvent> &State::Events() const

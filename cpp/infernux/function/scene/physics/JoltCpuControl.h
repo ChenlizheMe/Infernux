@@ -11,6 +11,8 @@
 
 namespace infernux
 {
+class PhysicsConstraintOwner;
+
 /// One RuntimeWorld's ordered CPU authoring. Calls run on the world owner.
 class JoltCpuControl final
 {
@@ -60,12 +62,40 @@ class JoltCpuControl final
 
     /// A new public identity can be staged before it owns a native allocation.
     /// An invalid actor handle denotes a static replica; the owner commits the shared author metadata.
-    void StageActor(uint32_t bodyId, PhysicsActorHandle actor, PreparedCpuActor prepared);
+    void StageActor(uint32_t bodyId, PhysicsActorHandle actor, PreparedCpuActor prepared, bool resetMotion = false);
     [[nodiscard]] bool HasStagedRigidbody(uint32_t bodyId, PhysicsECSStore::RigidbodyHandle rigidbody) const;
     void AddBodies(std::vector<uint32_t> bodyIds);
     void RetireActor(uint32_t bodyId);
     void Queue(uint32_t bodyId, Command command);
     PhysicsTargetSource QueueMove(uint32_t bodyId, KinematicMove command, const PhysicsTargetAuthor *author = nullptr);
+    void QueueTemporaryStaticMove(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
+                                  float maxSpeed);
+    struct AuthoredJoint
+    {
+        JoltCpuConstraints::Binding binding;
+        JoltCpuConstraints::Settings settings;
+        bool enableCollision;
+    };
+    struct JointUpdate
+    {
+        uint64_t id;
+        JoltCpuConstraints::Settings settings;
+        bool enableCollision;
+        bool clearPoseDrive = false;
+    };
+    struct JointPoseDrive
+    {
+        uint64_t id;
+        std::optional<JPH::Quat> relative; // Empty restores the accepted authored target.
+    };
+
+    void CreateJoint(uint64_t id, PhysicsConstraintOwner &, AuthoredJoint);
+    [[nodiscard]] const AuthoredJoint *FindJoint(uint64_t id) const noexcept;
+    void UpdateJoints(std::vector<JointUpdate> updates);
+    void QueueJointPoseDrives(std::vector<JointPoseDrive> drives);
+    void DestroyJoint(uint64_t id);
+    [[nodiscard]] std::vector<uint64_t> DestroyJointsForBody(uint32_t bodyId);
+
     [[nodiscard]] bool HasPending() const noexcept;
 
     /// The shared Fixed admission boundary takes the old FIFO. Later writes stay pending.

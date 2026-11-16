@@ -10,6 +10,8 @@
 #include "TransformECSStore.h"
 #include "core/math/TransformMatrix.h"
 #include "core/math/TransformVectorMath.h"
+#include "physics/JoltCpuScene.h"
+#include "physics/PhysicsDomain.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
 #include <algorithm>
@@ -158,6 +160,11 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
     const auto bodyHandle = body->GetECSHandle();
     const auto bodyId = physics.GetActor(actorHandle).bodyId;
     auto *target = object->GetTransform();
+    const auto *entry = world.FindBodyRegistration(bodyId);
+    const bool nativeCpu = entry && entry->backend == PhysicsWorld::Backend::Cpu;
+    auto &domain = world.CurrentDomain();
+    if (nativeCpu && !release && !domain.gpuRegistered)
+        return;
     // Independent physical children retain their world pose. Resolve only
     // their physical ancestors needed for world-to-local conversion.
     if (auto *parent = target->GetParentTransformSafe()) {
@@ -165,6 +172,22 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
             parent->ResolveCpuPhysicsPose(world, true);
         else
             parent->EnsureCpuPhysicsPose();
+    }
+
+    if (!entry || entry->rigidbody != bodyHandle)
+        return;
+    if (nativeCpu && !release) {
+        if (target->GetParentTransformSafe())
+            body->RebaseCpuPhysicsPose();
+        return;
+    }
+    if (nativeCpu) {
+        // A detach can precede Transform publication. Sample the accepted
+        // pose after any sealed Fixed, without admitting the next CPU prefix.
+        if (domain.stepPending && domain.solverStarted && !domain.stepCompleted)
+            world.CompleteDomainStep(domain);
+        if (!domain.cpuScene || !domain.cpuScene->HasBody(bodyId))
+            return;
     }
 
     const auto generation = world.GetQueryGeneration();
@@ -189,6 +212,8 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
                                                             static_cast<uint32_t>(PhysicsStateFields::Rotation));
     const auto sample = [&] {
         TransformECSStore::PhysicsPoseReadScope reading(transforms);
+        if (nativeCpu)
+            return domain.cpuScene->ReadMotionState(bodyId, fields);
         return world.GetBodyMotionState(bodyId, fields);
     }();
     // Completing the query may also publish an authored parent boundary.
@@ -220,8 +245,12 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
     const auto position = applyPosition ? sample.position : target->GetWorldPosition();
     const auto rotation = applyRotation ? sample.rotation : target->GetWorldRotation();
     if (applyPosition || applyRotation) {
+        const bool ancestorMoved = (applyPosition && position != target->GetWorldPosition()) ||
+                                   (applyRotation && rotation != target->GetWorldRotation());
         target->ApplyWorldPoseFromPhysics(position, rotation, applyRotation);
         body->CacheCpuPhysicsPose(target->GetWorldPosition(), target->GetWorldRotation(), applyPosition, applyRotation);
+        if (ancestorMoved)
+            world.RebaseCpuPoseDescendants(*object);
     }
     if (release && (hierarchyPending || pendingPosition || pendingRotation || (positionAuthored && !applyPosition) ||
                     (rotationAuthored && !applyRotation))) {

@@ -77,6 +77,7 @@ class Rigidbody(BuiltinComponent):
 
     # ---- Serialized properties (displayed in Inspector) ----
 
+    gpu = CppProperty.from_native("Rigidbody", "gpu")
     mass = CppProperty.from_native("Rigidbody", "mass")
     drag = CppProperty.from_native("Rigidbody", "drag")
     angular_drag = CppProperty.from_native("Rigidbody", "angular_drag")

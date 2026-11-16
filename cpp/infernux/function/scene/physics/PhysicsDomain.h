@@ -1,5 +1,8 @@
 #pragma once
 
+#include <Jolt/Jolt.h>
+
+#include <Jolt/Physics/PhysicsSettings.h>
 #include "JoltCpuContactPublication.h"
 #include "JoltGpuContactPublication.h"
 #include "JoltGpuRenderBindings.h"
@@ -28,6 +31,15 @@ struct PhysicsDomain final
     std::unique_ptr<JoltCpuScene> cpuScene;
     std::unique_ptr<JoltCpuControl> cpuControl;
     JoltCpuContactPublication cpuContacts;
+    ContactStreamIdentity cpuPublication;
+    struct CpuPose
+    {
+        PhysicsBodyPoseUpdate pose;
+        bool sleeping, fixed;
+    };
+    std::vector<CpuPose> cpuPoses;
+    std::unordered_set<uint32_t> cpuInterpolated;
+    bool cpuFixedAdmitted = false;
     bool gpuRegistered = false;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::weak_ptr<PhysicsParticipant> participantPreparing;
@@ -37,7 +49,18 @@ struct PhysicsDomain final
     bool gpuCancelled = false;
     Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
     bool reconcilingRagdolls = false;
-    size_t registeredBodyCount = 0;
+    std::unordered_set<uint32_t> bodyIds;
+    std::unordered_set<uint32_t> pendingStaticCpu, pendingStaticGpu;
+    struct StaticMove
+    {
+        glm::vec3 position;
+        glm::quat rotation;
+        std::weak_ptr<PhysicsStaticBoundaryModel> model;
+        uint64_t positionRevision = 0, rotationRevision = 0;
+        bool cpuQueued = false, gpuQueued = false;
+    };
+    std::unordered_map<uint32_t, StaticMove> pendingStaticMoves;
+    std::vector<std::pair<uint32_t, StaticMove>> admittedStaticMoves;
     std::vector<PhysicsActorHandle> recreateActors;
     uint64_t surfaceRevision = 0;
     bool stepPending = false, stepCompleted = false, solverStarted = false;
@@ -54,6 +77,9 @@ struct PhysicsDomain final
     bool controlPending = false, controlNumericalChange = false;
     float admittedDeltaTime = 0;
     std::optional<JoltGpuStepParameters> admittedParameters;
+    std::optional<JPH::PhysicsSettings> admittedCpuSettings;
+    PhysicsContactPublication::Policy admittedContactPolicy;
+    std::shared_ptr<const PhysicsColliderPairs> admittedColliderPairs;
     uint64_t stepEpoch = 0, stepIndex = 0;
     bool flushingAuthoring = false, synchronousRead = false;
     std::atomic<uint64_t> queryGeneration{1};

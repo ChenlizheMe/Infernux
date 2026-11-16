@@ -3,6 +3,7 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/Core/JobSystemSingleThreaded.h>
 #include <Jolt/Core/TempAllocator.h>
+#include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyID.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/SimShapeFilter.h>
@@ -14,8 +15,12 @@
 #include "PhysicsContactTypes.h"
 
 #include <cstdint>
+#include <exception>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <vector>
 
 namespace JPH
 {
@@ -25,6 +30,7 @@ class CompoundShape;
 namespace infernux
 {
 struct EngineConfig;
+struct JoltCpuShapeLeaves;
 enum class ForceMode;
 
 /// Shared scratch and worker access, not another pool for each RuntimeWorld.
@@ -45,13 +51,16 @@ class JoltCpuExecution final
 /// Native state owned by one logical World. Public identities are supplied by
 /// the common actor store; Jolt indices/sequence numbers never escape this
 /// backend. The shared layer filters outlive the scene; contact policy is owned here.
-class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFilter
+class JoltCpuScene final : private JPH::ContactListener,
+                           private JPH::SimShapeFilter,
+                           private JPH::BodyActivationListener
 {
   public:
     JoltCpuScene(const EngineConfig &config, const JPH::BroadPhaseLayerInterface &layers,
                  const JPH::ObjectVsBroadPhaseLayerFilter &broadphaseFilter,
                  const JPH::ObjectLayerPairFilter &pairFilter);
     ~JoltCpuScene() override;
+    [[nodiscard]] static JPH::PhysicsSettings CaptureSettings(const EngineConfig &config);
 
     /// Creation does not enter broadphase. The common actor lifecycle publishes
     /// the body through Jolt's normal single/batch add operations.
@@ -72,6 +81,8 @@ class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFi
     /// Caller has detached this body's constraints before destruction.
     void DestroyBody(uint32_t bodyId);
     [[nodiscard]] JPH::BodyID NativeBody(uint32_t bodyId) const;
+    [[nodiscard]] bool HasBody(uint32_t bodyId) const noexcept;
+    [[nodiscard]] const PreparedBodyMass &GetAcceptedMass(uint32_t bodyId) const;
     /// One accepted native sample, read between updates. No device query or
     /// live component access is needed, including for a sleeping body.
     [[nodiscard]] PhysicsBodyMotionState ReadMotionState(uint32_t bodyId,
@@ -99,8 +110,25 @@ class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFi
     void StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
                              float maxSpeed);
 
+    /// A collider-only actor temporarily supplies contact velocity for one Fixed.
+    void StartTemporaryStaticDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
+                                   float maxSpeed);
+    void StopTemporaryStaticDrive(uint32_t bodyId);
+
+    struct PoseUpdate
+    {
+        PhysicsBodyPoseUpdate pose;
+        bool sleeping;
+    };
+    /// Consume the dirty poses at a completed owner publication boundary.
+    [[nodiscard]] std::vector<PoseUpdate> TakePoseUpdates();
+
     /// Immutable, sorted canonical pairs from the common world policy.
-    void SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> pairs);
+    bool SetIgnoredPairs(std::shared_ptr<const PhysicsColliderPairs> pairs);
+    [[nodiscard]] bool UsesIgnoredPairs(const std::shared_ptr<const PhysicsColliderPairs> &pairs) const noexcept
+    {
+        return m_ignoredPairs == pairs;
+    }
 
     // Captured author values are immutable throughout Update. Jolt workers do
     // not call live Components or resolve their targets while solving contacts.
@@ -146,11 +174,26 @@ class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFi
         int collisionDetectionMode = 0;
         bool authoredDynamic = false;
         bool awakeWhenDetached = false;
+        bool temporaryStaticDrive = false;
+        uint32_t poseUpdateIndex = UINT32_MAX;
+        mutable std::shared_ptr<JoltCpuShapeLeaves> queryLeaves;
+
+        uint32_t MemberIndex(JPH::SubShapeID subshape) const;
+        const JoltCpuShapeLeaves &QueryLeaves() const;
+        void ReuseQueryGeometry(const BodyRecord &previous);
     };
     static BodyRecord CaptureBodyRecord(const PreparedCpuActor &actor);
+    static PhysicsBodyMotionState SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,
+                                                    PhysicsStateFields fields, bool *sleeping = nullptr);
     static bool AcceptedAwake(const BodyRecord &record, const JPH::Body &body);
     void WakeBody(BodyRecord &record, JPH::Body &body);
     void WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude = {});
+    void MarkPoseUpdate(uint32_t bodyId, BodyRecord &record);
+    void MarkActivePoseUpdates();
+    void OnBodyActivated(const JPH::BodyID &, JPH::uint64) noexcept override
+    {
+    }
+    void OnBodyDeactivated(const JPH::BodyID &native, JPH::uint64 userData) noexcept override;
     bool SurfacesCollide(const Surface &a, const Surface &b) const;
     JPH::BodyID CreateBody(uint32_t bodyId, const JPH::BodyCreationSettings &settings, BodyRecord record);
     JPH::ValidateResult OnContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg,
@@ -165,6 +208,15 @@ class JoltCpuScene final : private JPH::ContactListener, private JPH::SimShapeFi
                        const JPH::Body &b, const JPH::Shape *shapeB, const JPH::SubShapeID &subshapeB) const override;
     JPH::PhysicsSystem m_system;
     std::unordered_map<uint32_t, BodyRecord> m_bodies;
+    std::vector<uint32_t> m_poseUpdates;
+    struct DeactivatedPose
+    {
+        uint32_t bodyId;
+        JPH::BodyID native;
+    };
+    std::mutex m_deactivatedPoseMutex;
+    std::vector<DeactivatedPose> m_deactivatedPoses;
+    std::exception_ptr m_deactivatedPoseError;
     std::shared_ptr<const PhysicsColliderPairs> m_ignoredPairs;
     JoltCpuConstraints m_constraints{*this};
 };

@@ -2,6 +2,8 @@
 
 #include "../Rigidbody.h"
 #include "PhysicsBodyState.h"
+#include "PhysicsConstraintOwner.h"
+#include <cmath>
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
@@ -21,6 +23,7 @@ struct JoltCpuControl::State
     {
         PhysicsECSStore::RigidbodyHandle staged, initialized;
         bool kinematic = false;
+        bool staticBody = false;
         bool retiring = false;
     };
     struct Model
@@ -28,6 +31,7 @@ struct JoltCpuControl::State
         PhysicsActorHandle actor;
         std::unique_ptr<PreparedCpuActor> prepared;
         bool create;
+        bool resetMotion;
     };
     struct Add
     {
@@ -40,11 +44,35 @@ struct JoltCpuControl::State
     {
         KinematicMove pose;
         PhysicsTargetSource source;
+        bool temporaryStatic = false;
     };
+    struct JointRecord
+    {
+        AuthoredJoint value;
+        PhysicsConstraintOwner *owner;
+    };
+    struct JointCreate
+    {
+        uint64_t id;
+        std::unique_ptr<AuthoredJoint> value;
+    };
+    struct JointUpdates
+    {
+        std::vector<JointUpdate> updates;
+    };
+    struct JointPoseDrives
+    {
+        std::vector<JointPoseDrive> drives;
+    };
+    struct JointRetire
+    {
+        std::vector<uint64_t> ids;
+    };
+
     struct Entry
     {
         uint32_t body;
-        std::variant<Model, Add, Retire, Command, Move> data;
+        std::variant<Model, Add, Retire, Command, Move, JointCreate, JointUpdates, JointPoseDrives, JointRetire> data;
     };
     struct Fixed
     {
@@ -60,6 +88,7 @@ struct JoltCpuControl::State
         PhysicsTargetSource positionSource, rotationSource;
         bool pending = false;
         bool ownsVelocity = false;
+        bool temporaryStatic = false;
     };
     struct Completion
     {
@@ -84,6 +113,12 @@ struct JoltCpuControl::State
             completions.push_back({std::exchange(source, {}), channel});
     }
 
+    bool HasTemporaryStaticDrive(uint32_t body) const
+    {
+        const auto found = drives.find(body);
+        return found != drives.end() && found->second.temporaryStatic;
+    }
+
     void CancelDrive(uint32_t body, bool stopVelocity)
     {
         const auto found = drives.find(body);
@@ -92,7 +127,9 @@ struct JoltCpuControl::State
         auto &drive = found->second;
         Complete(drive.positionSource, Position);
         Complete(drive.rotationSource, Rotation);
-        if (stopVelocity && drive.ownsVelocity)
+        if (drive.temporaryStatic && drive.ownsVelocity)
+            scene.StopTemporaryStaticDrive(body);
+        else if (stopVelocity && drive.ownsVelocity)
             scene.SetBodyVelocity(body, JPH::Vec3::sZero(), JPH::Vec3::sZero());
         drives.erase(found);
     }
@@ -116,8 +153,11 @@ struct JoltCpuControl::State
     void RetireBodyConstraints(uint32_t body, const RetiredJoints &retired)
     {
         const auto joints = scene.Constraints().RetireBody(body);
-        if (!joints.empty())
+        if (!joints.empty()) {
             retired(body, joints);
+            for (const auto id : joints)
+                NotifyJointDestroyed(id);
+        }
     }
 
     void Apply(uint32_t body, const Model &model, const RetiredJoints &retired)
@@ -130,9 +170,15 @@ struct JoltCpuControl::State
         if (model.create) {
             scene.CreateBody(body, prepared);
         } else {
+            if (model.resetMotion) {
+                CancelDrive(body, false);
+                scene.ResetBodyMotion(body);
+            }
             const bool kinematic =
                 prepared.settings.mMotionType == JPH::EMotionType::Kinematic && !prepared.authoredDynamic;
-            if (!kinematic)
+            const bool preserveStaticDrive =
+                prepared.settings.mMotionType == JPH::EMotionType::Static && HasTemporaryStaticDrive(body);
+            if (!kinematic && !preserveStaticDrive)
                 CarryAuthorPoseAndCancel(body);
             else if (initialize)
                 CancelDrive(body, true);
@@ -188,6 +234,8 @@ struct JoltCpuControl::State
 
     void Apply(uint32_t body, const Velocity &velocity)
     {
+        if (HasTemporaryStaticDrive(body))
+            return; // A velocity command has no effect on an authored static body.
         CancelDrive(body, false);
         scene.SetBodyVelocity(body, velocity.linear, velocity.angular);
     }
@@ -201,7 +249,8 @@ struct JoltCpuControl::State
     {
         if (!awake.awake)
             CancelDrive(body, false);
-        scene.SetBodyAwake(body, awake.awake);
+        if (!HasTemporaryStaticDrive(body))
+            scene.SetBodyAwake(body, awake.awake);
     }
 
     void Apply(uint32_t body, ResetMotion)
@@ -234,7 +283,54 @@ struct JoltCpuControl::State
         }
         drive.duration = move.pose.duration;
         drive.maxSpeed = move.pose.maxSpeed;
+        drive.temporaryStatic = move.temporaryStatic;
         drive.pending = true;
+    }
+
+    void NotifyJointDestroyed(uint64_t id) noexcept
+    {
+        const auto found = joints.find(id);
+        if (found == joints.end())
+            return;
+        auto *owner = found->second.owner;
+        joints.erase(found);
+        owner->OnPhysicsConstraintDestroyed();
+    }
+
+    void QueueJointRetirement(const std::vector<uint64_t> &ids)
+    {
+        if (ids.empty())
+            return;
+        pending.push_back({UINT32_MAX, JointRetire{ids}});
+        for (const auto id : ids)
+            NotifyJointDestroyed(id);
+    }
+
+    void Apply(uint32_t, const JointCreate &create, const RetiredJoints &)
+    {
+        const auto &joint = *create.value;
+        scene.Constraints().Create(create.id, joint.binding, joint.settings, joint.enableCollision);
+    }
+
+    void Apply(uint32_t, const JointUpdates &update, const RetiredJoints &)
+    {
+        for (const auto &joint : update.updates)
+            // A native body replacement earlier in the FIFO can retire this joint.
+            if (scene.Constraints().HasJoint(joint.id))
+                scene.Constraints().Update(joint.id, joint.settings, joint.enableCollision, joint.clearPoseDrive);
+    }
+
+    void Apply(uint32_t, const JointPoseDrives &group, const RetiredJoints &)
+    {
+        for (const auto &drive : group.drives)
+            if (scene.Constraints().HasJoint(drive.id))
+                scene.Constraints().SetPoseDrive(drive.id, drive.relative);
+    }
+
+    void Apply(uint32_t, const JointRetire &retire, const RetiredJoints &)
+    {
+        for (const auto id : retire.ids)
+            scene.Constraints().Retire(id);
     }
 
     void Apply(const std::vector<Entry> &entries, const RetiredJoints &retired)
@@ -248,12 +344,19 @@ struct JoltCpuControl::State
         for (auto it = drives.begin(); it != drives.end();) {
             auto &[body, drive] = *it;
             if (!drive.pending) {
-                scene.SetBodyVelocity(body, JPH::Vec3::sZero(), JPH::Vec3::sZero());
+                if (drive.temporaryStatic)
+                    scene.StopTemporaryStaticDrive(body);
+                else
+                    scene.SetBodyVelocity(body, JPH::Vec3::sZero(), JPH::Vec3::sZero());
                 it = drives.erase(it);
                 continue;
             }
             if (scene.IsBodyInBroadphase(body)) {
-                scene.StartKinematicDrive(body, drive.position, drive.rotation, drive.duration, drive.maxSpeed);
+                if (drive.temporaryStatic)
+                    scene.StartTemporaryStaticDrive(body, drive.position, drive.rotation, drive.duration,
+                                                    drive.maxSpeed);
+                else
+                    scene.StartKinematicDrive(body, drive.position, drive.rotation, drive.duration, drive.maxSpeed);
                 Complete(drive.positionSource, Position);
                 Complete(drive.rotationSource, Rotation);
                 drive.pending = false;
@@ -265,6 +368,7 @@ struct JoltCpuControl::State
 
     JoltCpuScene &scene;
     std::unordered_map<uint32_t, Binding> bindings;
+    std::unordered_map<uint64_t, JointRecord> joints;
     std::vector<Entry> pending;
     std::optional<Fixed> fixed;
     std::map<uint32_t, Drive> drives;
@@ -275,19 +379,23 @@ JoltCpuControl::JoltCpuControl(JoltCpuScene &scene) : m_state(std::make_unique<S
 {
 }
 
-JoltCpuControl::~JoltCpuControl() = default;
+JoltCpuControl::~JoltCpuControl()
+{
+    Close();
+}
 
-void JoltCpuControl::StageActor(uint32_t bodyId, PhysicsActorHandle actor, PreparedCpuActor prepared)
+void JoltCpuControl::StageActor(uint32_t bodyId, PhysicsActorHandle actor, PreparedCpuActor prepared, bool resetMotion)
 {
     auto &state = *m_state;
     const auto rigidbody = prepared.publication.rigidbody;
     const bool kinematic = prepared.settings.mMotionType == JPH::EMotionType::Kinematic && !prepared.authoredDynamic;
+    const bool staticBody = prepared.settings.mMotionType == JPH::EMotionType::Static;
     auto model = std::make_unique<PreparedCpuActor>(std::move(prepared));
     const auto [binding, create] = state.bindings.try_emplace(bodyId);
     if (binding->second.retiring)
         throw std::logic_error("A retiring CPU body identity cannot admit a new model");
     try {
-        state.pending.push_back({bodyId, State::Model{actor, std::move(model), create}});
+        state.pending.push_back({bodyId, State::Model{actor, std::move(model), create, resetMotion}});
     } catch (...) {
         if (create)
             state.bindings.erase(binding);
@@ -295,6 +403,7 @@ void JoltCpuControl::StageActor(uint32_t bodyId, PhysicsActorHandle actor, Prepa
     }
     binding->second.staged = rigidbody;
     binding->second.kinematic = kinematic;
+    binding->second.staticBody = staticBody;
 }
 
 bool JoltCpuControl::HasStagedRigidbody(uint32_t bodyId, PhysicsECSStore::RigidbodyHandle rigidbody) const
@@ -347,6 +456,96 @@ PhysicsTargetSource JoltCpuControl::QueueMove(uint32_t bodyId, KinematicMove com
     }
     state.pending.push_back({bodyId, State::Move{std::move(command), source}});
     return source;
+}
+
+void JoltCpuControl::QueueTemporaryStaticMove(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation,
+                                              float duration, float maxSpeed)
+{
+    auto &state = *m_state;
+    state.RequireStaged(bodyId);
+    if (!state.bindings.at(bodyId).staticBody)
+        throw std::invalid_argument("CPU temporary movement requires an authored static body");
+    if (!std::isfinite(position.GetX()) || !std::isfinite(position.GetY()) || !std::isfinite(position.GetZ()) ||
+        !rotation.IsNormalized() || !std::isfinite(duration) || duration <= 0.0f || !std::isfinite(maxSpeed) ||
+        maxSpeed < 0.0f)
+        throw std::invalid_argument("Invalid CPU temporary static pose, duration or speed limit");
+    state.pending.push_back({bodyId, State::Move{{position, rotation, duration, maxSpeed}, {}, true}});
+}
+
+void JoltCpuControl::CreateJoint(uint64_t id, PhysicsConstraintOwner &owner, AuthoredJoint joint)
+{
+    auto &state = *m_state;
+    state.RequireStaged(joint.binding.ownerBody);
+    if (joint.binding.connectedBody != JoltCpuConstraints::WorldBody)
+        state.RequireStaged(joint.binding.connectedBody);
+    JoltCpuConstraints::ValidateAuthor(joint.binding, joint.settings);
+    auto captured = std::make_unique<AuthoredJoint>(joint);
+    const auto [entry, inserted] = state.joints.emplace(id, State::JointRecord{std::move(joint), &owner});
+    if (!inserted)
+        throw std::logic_error("CPU joint already owns its public identity");
+    try {
+        state.pending.push_back({UINT32_MAX, State::JointCreate{id, std::move(captured)}});
+    } catch (...) {
+        state.joints.erase(entry);
+        throw;
+    }
+}
+
+const JoltCpuControl::AuthoredJoint *JoltCpuControl::FindJoint(uint64_t id) const noexcept
+{
+    const auto &joints = m_state->joints;
+    const auto entry = joints.find(id);
+    return entry != joints.end() ? &entry->second.value : nullptr;
+}
+
+void JoltCpuControl::UpdateJoints(std::vector<JointUpdate> updates)
+{
+    if (updates.empty())
+        return;
+    auto &state = *m_state;
+    for (const auto &update : updates) {
+        const auto &joint = state.joints.at(update.id).value;
+        JoltCpuConstraints::ValidateAuthorUpdate(joint.settings, update.settings);
+    }
+    state.pending.push_back({UINT32_MAX, State::JointUpdates{std::move(updates)}});
+    for (const auto &update : std::get<State::JointUpdates>(state.pending.back().data).updates) {
+        auto &joint = state.joints.at(update.id).value;
+        joint.settings = update.settings;
+        joint.enableCollision = update.enableCollision;
+    }
+}
+
+void JoltCpuControl::QueueJointPoseDrives(std::vector<JointPoseDrive> drives)
+{
+    if (drives.empty())
+        return;
+    auto &state = *m_state;
+    for (const auto &drive : drives) {
+        const auto *joint = FindJoint(drive.id);
+        if (!joint || !JoltCpuConstraints::SupportsPoseDrive(joint->settings) ||
+            (drive.relative && !drive.relative->IsNormalized()))
+            throw std::invalid_argument("CPU pose drive does not match an authored angular joint");
+    }
+    state.pending.push_back({UINT32_MAX, State::JointPoseDrives{std::move(drives)}});
+}
+
+void JoltCpuControl::DestroyJoint(uint64_t id)
+{
+    if (FindJoint(id))
+        m_state->QueueJointRetirement({id});
+}
+
+std::vector<uint64_t> JoltCpuControl::DestroyJointsForBody(uint32_t bodyId)
+{
+    auto &state = *m_state;
+    std::vector<uint64_t> ids;
+    for (const auto &[id, entry] : state.joints) {
+        const auto &binding = entry.value.binding;
+        if (binding.ownerBody == bodyId || binding.connectedBody == bodyId)
+            ids.push_back(id);
+    }
+    state.QueueJointRetirement(ids);
+    return ids;
 }
 
 bool JoltCpuControl::HasPending() const noexcept
@@ -403,5 +602,7 @@ void JoltCpuControl::Close() noexcept
     state.drives.clear();
     state.completions.clear();
     state.bindings.clear();
+    while (!state.joints.empty())
+        state.NotifyJointDestroyed(state.joints.begin()->first);
 }
 } // namespace infernux

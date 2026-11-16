@@ -90,6 +90,7 @@ struct RigidbodyECSData
     PhysicsActorHandle actorHandle;
 
     // ---- Serialized properties ----
+    bool gpu = false;
     float mass = 1.0f;
     float drag = 0.0f;
     float angularDrag = 0.05f;
@@ -144,6 +145,7 @@ class PhysicsECSStore
     void RetireRuntimeWorld(RuntimeWorld &world);
     /// Process-wide public body identity; never reused by a later World or Play session.
     [[nodiscard]] uint32_t AllocateBodyIdentity();
+    [[nodiscard]] uint64_t AllocateJointIdentity();
     void ValidateHierarchyWorld(const GameObject *root, const RuntimeWorld *destination) const;
     void PublishHierarchyOwnership(GameObject *root);
 
@@ -316,6 +318,7 @@ class PhysicsECSStore
     const DomainAuthorQueues *FindQueues(const RuntimeWorld &world) const noexcept;
     std::unordered_map<uint64_t, DomainAuthorQueues> m_worldQueues;
     uint32_t m_nextBodyIdentity = 0;
+    uint64_t m_nextJointIdentity = 1;
     uint64_t m_collisionSceneRevision = 1;
 };
 

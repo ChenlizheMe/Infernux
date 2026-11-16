@@ -4,6 +4,7 @@
 #include <Jolt/Physics/Constraints/TwoBodyConstraint.h>
 #include "JointSettings.h"
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -61,7 +62,8 @@ class JoltCpuConstraints final
     /// Both bodies must exist. The native joint only solves while both endpoints are resident.
     /// ID allocation and component lifetime stay with the owner.
     void Create(uint64_t id, const Binding &binding, const Settings &settings, bool enableCollision);
-    void Update(uint64_t id, const Settings &settings, bool enableCollision);
+    void Update(uint64_t id, const Settings &settings, bool enableCollision, bool clearPoseDrive = false);
+    void SetPoseDrive(uint64_t id, const std::optional<JPH::Quat> &relative);
     void SetCollisionEnabled(uint64_t id, bool enabled);
     bool Retire(uint64_t id);
     /// The owner completes retirement for these public IDs before destroying the body.
@@ -81,6 +83,15 @@ class JoltCpuConstraints final
     [[nodiscard]] bool SuppressesCollision(uint32_t bodyA, uint32_t bodyB) const;
 
   private:
+    friend class JoltCpuControl;
+    static void ValidateAuthor(const Binding &, const Settings &);
+    static void ValidateAuthorUpdate(const Settings &from, const Settings &to);
+    static bool SupportsPoseDrive(const Settings &) noexcept;
+    [[nodiscard]] bool HasJoint(uint64_t id) const noexcept
+    {
+        return m_joints.count(id) != 0;
+    }
+
     struct CapturedAnchor
     {
         JPH::Vec3 unscaled = JPH::Vec3::sZero();
@@ -101,8 +112,10 @@ class JoltCpuConstraints final
         bool autoDistance;
         JointSwingType swingType;
         Settings acceptedSettings;
+        std::optional<JPH::Quat> poseDriveRelative;
     };
 
+    static void ApplyPoseDrive(Record &joint);
     void EraseBodyIndex(uint32_t bodyId, uint64_t id);
     bool ChangeCollision(Record &joint, bool enabled);
     void WakeEndpoints(const Record &joint, bool invalidateContacts);

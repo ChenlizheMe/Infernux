@@ -5126,6 +5126,7 @@ class Rigidbody(Component):
     drag: float
     angular_drag: float
     use_gravity: bool
+    gpu: bool
     is_kinematic: bool
     constraints: int
     freeze_rotation: bool

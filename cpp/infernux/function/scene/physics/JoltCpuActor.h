@@ -25,6 +25,7 @@ struct PreparedCpuActor
         float friction, restitution;
         PhysicsMaterialCombine frictionCombine, bounceCombine;
         bool sensor;
+        uint64_t gameObjectId = 0;
     };
     JPH::BodyCreationSettings settings;
     JPH::Vec3 rootScale = JPH::Vec3::sOne();

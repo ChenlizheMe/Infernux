@@ -57,7 +57,9 @@ void PhysicsActorPublication::AcceptGeometry(PhysicsActorHandle handle, uint32_t
     auto *actor = FindActorBinding(store, handle, bodyId);
     if (!actor)
         return;
-    actor->shapeRevision = shapeRevision;
+    if (sharedGeometryRevision && *sharedGeometryRevision < actor->shapeRevision)
+        return;
+    actor->shapeRevision = sharedGeometryRevision.value_or(shapeRevision);
     for (const auto &center : colliderCenters)
         if (store.IsValid(center.collider)) {
             auto &collider = store.GetCollider(center.collider);

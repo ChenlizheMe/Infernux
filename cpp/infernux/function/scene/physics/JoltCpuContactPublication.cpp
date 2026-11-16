@@ -622,6 +622,7 @@ JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execu
 {
     m_ready.reset();
     m_observing = policy.Requested();
+    scene.MarkActivePoseUpdates();
     JPH::EPhysicsUpdateError result;
     if (m_observing) {
         if (!m_capture)
@@ -638,8 +639,10 @@ JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execu
     } else {
         result = execution.Step(scene.System(), deltaTime, static_cast<int>(substeps));
     }
-    if (result == JPH::EPhysicsUpdateError::None)
+    if (result == JPH::EPhysicsUpdateError::None) {
+        scene.MarkActivePoseUpdates();
         m_ready = identity;
+    }
     return result;
 }
 

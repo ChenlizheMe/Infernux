@@ -258,6 +258,12 @@ JPH::Ref<Native> CreateNative(const SixDOFJointSettings &, const Frames &f, JPH:
     return settings.Create(connected, owner);
 }
 
+float HingeTarget(const Constraints::Hinge &s)
+{
+    return s.useLimits ? std::clamp(s.targetAngle, s.minimum, s.maximum)
+                       : std::remainder(s.targetAngle, 2.0f * JPH::JPH_PI);
+}
+
 void Apply(Native &native, const Constraints::Hinge &s)
 {
     auto &joint = static_cast<JPH::HingeConstraint &>(native);
@@ -266,9 +272,7 @@ void Apply(Native &native, const Constraints::Hinge &s)
     auto &motor = joint.GetMotorSettings();
     motor.mSpringSettings = Spring(s.stiffness, s.damping);
     motor.SetTorqueLimit(s.maxTorque);
-    const float target = s.useLimits ? std::clamp(s.targetAngle, s.minimum, s.maximum)
-                                     : std::remainder(s.targetAngle, 2.0f * JPH::JPH_PI);
-    joint.SetTargetAngle(target);
+    joint.SetTargetAngle(HingeTarget(s));
     const auto state = s.motorEnabled ? JPH::EMotorState::Position : JPH::EMotorState::Off;
     if (joint.GetMotorState() != state) {
         joint.SetMotorState(state);
@@ -442,6 +446,30 @@ template <class T> const T &As(const Native &constraint, SubType type)
 }
 } // namespace
 
+void JoltCpuConstraints::ValidateAuthor(const Binding &binding, const Settings &settings)
+{
+    if (binding.ownerBody == WorldBody || binding.ownerBody == binding.connectedBody)
+        throw std::invalid_argument("CPU joint requires a real owner and distinct endpoints");
+    (void)Vector(binding.ownerAnchor);
+    (void)Vector(binding.ownerLocalAnchor);
+    (void)Vector(binding.connectedAnchor);
+    (void)Vector(binding.connectedLocalAnchor);
+    (void)std::visit([](const auto &s) { return Validate(s); }, settings);
+}
+
+void JoltCpuConstraints::ValidateAuthorUpdate(const Settings &from, const Settings &to)
+{
+    if (from.index() != to.index())
+        throw std::logic_error("CPU joint changes kind only when rebound");
+    const auto axes = [](const auto &value) { return std::visit([](const auto &s) { return Validate(s); }, value); };
+    const auto before = axes(from), after = axes(to);
+    if (!before.primary.IsClose(after.primary) || !before.secondary.IsClose(after.secondary))
+        throw std::logic_error("CPU joint frame changes require rebinding");
+    if (const auto *distance = std::get_if<Distance>(&to);
+        distance && distance->autoDistance != std::get<Distance>(from).autoDistance)
+        throw std::logic_error("Changing Distance auto mode requires rebinding");
+}
+
 JoltCpuConstraints::~JoltCpuConstraints()
 {
     for (const auto &[id, joint] : m_joints)
@@ -515,10 +543,18 @@ void JoltCpuConstraints::Create(uint64_t id, const Binding &binding, const Setti
     }
     const auto *swing = std::get_if<SwingTwistJointSettings>(&settings);
     const auto entry = m_joints
-                           .try_emplace(id, Record{native, binding.ownerBody, binding.connectedBody, ownerAnchorCapture,
-                                                   connectedAnchorCapture, axes.primary, axes.secondary, true,
+                           .try_emplace(id, Record{native,
+                                                   binding.ownerBody,
+                                                   binding.connectedBody,
+                                                   ownerAnchorCapture,
+                                                   connectedAnchorCapture,
+                                                   axes.primary,
+                                                   axes.secondary,
+                                                   true,
                                                    distance && distance->autoDistance,
-                                                   swing ? swing->swingType : JointSwingType::Cone, settings})
+                                                   swing ? swing->swingType : JointSwingType::Cone,
+                                                   settings,
+                                                   {}})
                            .first;
     bool changed = false;
     try {
@@ -537,11 +573,59 @@ void JoltCpuConstraints::Create(uint64_t id, const Binding &binding, const Setti
     WakeEndpoints(entry->second, changed);
 }
 
-void JoltCpuConstraints::Update(uint64_t id, const Settings &settings, bool enableCollision)
+bool JoltCpuConstraints::SupportsPoseDrive(const Settings &settings) noexcept
+{
+    return std::holds_alternative<Hinge>(settings) || std::holds_alternative<SwingTwistJointSettings>(settings) ||
+           std::holds_alternative<SixDOFJointSettings>(settings);
+}
+
+void JoltCpuConstraints::ApplyPoseDrive(Record &joint)
+{
+    const auto &relative = joint.poseDriveRelative;
+    // Native body 1 is the connected parent and 2 is the owner child. The
+    // native conversion includes the original constraint frames on both bodies.
+    if (const auto *hinge = std::get_if<Hinge>(&joint.acceptedSettings)) {
+        auto &native = static_cast<JPH::HingeConstraint &>(*joint.native.GetPtr());
+        if (relative)
+            native.SetTargetOrientationBS(*relative);
+        else
+            native.SetTargetAngle(HingeTarget(*hinge));
+    } else if (const auto *swing = std::get_if<SwingTwistJointSettings>(&joint.acceptedSettings)) {
+        auto &native = static_cast<JPH::SwingTwistConstraint &>(*joint.native.GetPtr());
+        if (relative)
+            native.SetTargetOrientationBS(*relative);
+        else
+            native.SetTargetOrientationCS(Orientation(swing->targetOrientation));
+    } else if (const auto *six = std::get_if<SixDOFJointSettings>(&joint.acceptedSettings)) {
+        auto &native = static_cast<JPH::SixDOFConstraint &>(*joint.native.GetPtr());
+        if (relative)
+            native.SetTargetOrientationBS(*relative);
+        else
+            native.SetTargetOrientationCS(Orientation(six->targetOrientation));
+    }
+}
+
+void JoltCpuConstraints::SetPoseDrive(uint64_t id, const std::optional<JPH::Quat> &relative)
 {
     auto &joint = m_joints.at(id);
-    if (joint.collisionEnabled == enableCollision && SameSettings(joint.acceptedSettings, settings))
+    if (!SupportsPoseDrive(joint.acceptedSettings) || (relative && !relative->IsNormalized()))
+        throw std::invalid_argument("CPU joint pose drive requires an angular joint and normalized target");
+    const auto &previous = joint.poseDriveRelative;
+    if ((!previous && !relative) || (previous && relative && (*previous == *relative || *previous == -*relative)))
         return;
+    joint.poseDriveRelative = relative;
+    ApplyPoseDrive(joint);
+    WakeEndpoints(joint, false);
+}
+
+void JoltCpuConstraints::Update(uint64_t id, const Settings &settings, bool enableCollision, bool clearPoseDrive)
+{
+    auto &joint = m_joints.at(id);
+    if (joint.collisionEnabled == enableCollision && SameSettings(joint.acceptedSettings, settings)) {
+        if (clearPoseDrive && joint.poseDriveRelative)
+            SetPoseDrive(id, std::nullopt);
+        return;
+    }
     if (joint.native->GetSubType() != Type(settings))
         throw std::logic_error("CPU joint changes kind only when rebound");
     const auto axes = std::visit([](const auto &s) { return Validate(s); }, settings);
@@ -584,6 +668,10 @@ void JoltCpuConstraints::Update(uint64_t id, const Settings &settings, bool enab
         std::visit([&](const auto &s) { Apply(*joint.native.GetPtr(), s); }, settings);
     }
     joint.acceptedSettings = settings;
+    if (clearPoseDrive)
+        joint.poseDriveRelative.reset();
+    if (joint.poseDriveRelative)
+        ApplyPoseDrive(joint);
     WakeEndpoints(joint, changed);
 }
 

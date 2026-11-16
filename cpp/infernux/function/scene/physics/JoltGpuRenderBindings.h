@@ -56,7 +56,8 @@ class JoltGpuRenderBindings final
     /// False retains the previous automatic generation when live author
     /// metadata no longer matches. Manual and retired targets leave this set.
     [[nodiscard]] bool Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
-                               const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration);
+                               const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration,
+                               bool validateCpuAnchors = false);
     /// World calls this for teleport/reset, independently of ordinary ticks.
     void MarkDiscontinuity(uint32_t bodyId);
     void RetireBody(uint32_t bodyId) noexcept;

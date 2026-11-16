@@ -1,4 +1,5 @@
 #include "JoltGpuRenderBindings.h"
+#include "PhysicsWorld.h"
 
 #include "../GameObject.h"
 #include "../MeshRenderer.h"
@@ -107,6 +108,12 @@ struct JoltGpuRenderBindings::Snapshot
         glm::vec3 boundsMin{};
         glm::vec3 boundsMax{};
     };
+    struct CpuAnchor
+    {
+        glm::mat4 world, inverse;
+        glm::quat rotation;
+    };
+    std::unordered_map<uint32_t, CpuAnchor> cpuAnchors;
     std::vector<TransformValue> transforms;
     std::vector<RendererValue> renderers;
     std::unordered_map<uint32_t, uint64_t> continuity;
@@ -120,8 +127,14 @@ using Snapshot = JoltGpuRenderBindings::Snapshot;
 bool SameSnapshot(const Snapshot &a, const Snapshot &b)
 {
     if (a.transforms.size() != b.transforms.size() || a.renderers.size() != b.renderers.size() ||
-        a.continuity != b.continuity)
+        a.continuity != b.continuity || a.cpuAnchors.size() != b.cpuAnchors.size())
         return false;
+    for (const auto &[index, anchor] : a.cpuAnchors) {
+        const auto next = b.cpuAnchors.find(index);
+        if (next == b.cpuAnchors.end() || next->second.world != anchor.world ||
+            next->second.inverse != anchor.inverse || next->second.rotation != anchor.rotation)
+            return false;
+    }
     for (size_t i = 0; i < a.transforms.size(); ++i) {
         const auto &x = a.transforms[i];
         const auto &y = b.transforms[i];
@@ -263,7 +276,7 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
         Transform *parent = nullptr;
         PhysicsActorHandle actor;
         uint32_t bodyId = UINT32_MAX;
-        bool hasActor = false;
+        bool hasActor = false, cpuAnchor = false;
     };
     std::unordered_map<const Transform *, Ancestry> ancestry;
     std::unordered_map<const Transform *, uint32_t> indices;
@@ -286,9 +299,12 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
             value.parent = current->GetParent();
             value.actor = physics.FindActor(current->GetGameObject());
             const bool ownActor = physics.IsValid(value.actor);
-            if (ownActor)
+            if (ownActor) {
                 value.bodyId = physics.GetActor(value.actor).bodyId;
-            value.hasActor = ownActor || (value.parent && ancestry.at(value.parent).hasActor);
+                const auto *entry = PhysicsWorld::Instance().FindBodyRegistration(value.bodyId);
+                value.cpuAnchor = entry && entry->backend == PhysicsWorld::Backend::Cpu;
+            }
+            value.hasActor = !value.cpuAnchor && (ownActor || (value.parent && ancestry.at(value.parent).hasActor));
             ancestry.emplace(current, value);
         }
         return ancestry.at(transform).hasActor;
@@ -329,6 +345,12 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
             }
             value.authored = transforms.GetAuthoredPoseRevision(handle);
             parentIndex = static_cast<uint32_t>(snapshot->transforms.size());
+            if (capturedAncestry.cpuAnchor) {
+                TransformECSStore::PhysicsPoseReadScope capture(transforms);
+                snapshot->cpuAnchors.emplace(parentIndex, Snapshot::CpuAnchor{current->GetWorldMatrix(),
+                                                                              current->GetWorldToLocalMatrix(),
+                                                                              current->GetWorldRotation()});
+            }
             snapshot->transforms.push_back(std::move(value));
             indices.emplace(current, parentIndex);
         }
@@ -385,9 +407,13 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
             actorByHandle.emplace(actor->actor, actor);
     }
     std::vector<std::shared_ptr<const JoltGpuScene::PublishedActor>> actors(captured.transforms.size());
-    for (size_t i = 0; i < captured.transforms.size(); ++i)
+    for (size_t i = 0; i < captured.transforms.size(); ++i) {
+        // A CPU anchor may retain a parked GPU allocation under the same ID.
+        if (captured.cpuAnchors.count(static_cast<uint32_t>(i)))
+            continue;
         if (const auto found = actorByHandle.find(captured.transforms[i].actor); found != actorByHandle.end())
             actors[i] = found->second;
+    }
     std::vector<uint32_t> nodeIndices(captured.transforms.size(), NoNode);
     for (size_t i = 0; i < actors.size(); ++i)
         if (actors[i]) {
@@ -410,7 +436,12 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
         const auto &transform = captured.transforms[i];
         const auto &parent = transform.parent == NoNode ? noParent : chains[transform.parent];
         auto &chain = chains[i];
-        if (actors[i]) {
+        if (const auto anchor = captured.cpuAnchors.find(static_cast<uint32_t>(i));
+            anchor != captured.cpuAnchors.end()) {
+            chain.affine = anchor->second.world;
+            chain.inverse = anchor->second.inverse;
+            chain.rotation = anchor->second.rotation;
+        } else if (actors[i]) {
             auto &node = prepared.nodes[nodeIndices[i]];
             node.bodyParent = {actors[i]->slot, parent.root == NoNode ? NoNode : nodeIndices[parent.root], 0, 0};
             node.rootCOM = actors[i]->rootCenterOfMass;
@@ -454,11 +485,25 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
 }
 
 bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
-                                    const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration)
+                                    const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration,
+                                    bool validateCpuAnchors)
 {
     const auto &snapshot = *prepared.snapshot;
     if (snapshot.lifetime != m_impl->lifetime)
         return false; // A completed old job cannot reacquire bindings after Stop.
+    if (validateCpuAnchors && !snapshot.cpuAnchors.empty()) {
+        // A mixed Fixed can export before CPU integration changes the parent
+        // affine. Keep the previous complete bindings for the render refresh.
+        TransformECSStore::PhysicsPoseReadScope stored(TransformECSStore::Instance());
+        for (const auto &[index, anchor] : snapshot.cpuAnchors) {
+            const auto &source = snapshot.transforms[index];
+            if (source.reference.GetComponent() != source.identity ||
+                source.identity->GetWorldMatrix() != anchor.world ||
+                source.identity->GetWorldToLocalMatrix() != anchor.inverse ||
+                source.identity->GetWorldRotation() != anchor.rotation)
+                return false;
+        }
+    }
     auto &physics = PhysicsECSStore::Instance();
     const auto currentHierarchy = CurrentHierarchy(snapshot);
     ActiveHierarchy active;
