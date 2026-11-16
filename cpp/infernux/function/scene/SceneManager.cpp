@@ -36,6 +36,21 @@ namespace
 {
 using ProfileClock = std::chrono::high_resolution_clock;
 
+struct FixedSimulationExecutionScope
+{
+    bool &active;
+    explicit FixedSimulationExecutionScope(bool &executing) : active(executing)
+    {
+        if (active)
+            throw std::logic_error("a fixed simulation step cannot be reentered");
+        active = true;
+    }
+    ~FixedSimulationExecutionScope()
+    {
+        active = false;
+    }
+};
+
 // The host may leave before EndRuntimeFrame when preparation throws. Own the
 // same CPU author-cache/lifecycle closure at every real frame/retirement entry.
 // This does not publish a frame, advance physics, or replay a callback.
@@ -1628,6 +1643,30 @@ void SceneManager::FinalizeRuntimeTransforms(bool completed)
     }
 }
 
+bool SceneManager::IsRuntimeFrameWaitingForPhysics(const RuntimeWorld &world) const
+{
+    const auto &physics = *world.physics;
+    if (!world.simulation.isPlaying || world.simulation.isPaused || world.pausedAuthor.Pending() ||
+        world.lifecycle.runtimeLifecycleFrameOpen || TransformECSStore::Instance().IsFrameCacheActive() ||
+        world.frame.phase != RuntimeWorld::FramePhase::Fixed ||
+        world.simulation.fixedPhase != RuntimeWorld::FixedPhase::Integration || !physics.stepPending ||
+        physics.stepCompleted || !physics.solverStarted ||
+        physics.fixedGpuPhase != PhysicsDomain::FixedGpuPhase::Solver ||
+        physics.stepEpoch != world.simulation.simulationEpoch || physics.stepIndex != world.simulation.fixedStepIndex ||
+        !world.scenes.pendingPersistentRootIds.empty())
+        return false;
+    const auto maintenance = [](const Scene *scene) {
+        return scene && (!scene->m_pendingStartComponentIds.empty() || !scene->m_pendingDestroy.empty() ||
+                         scene->HasPendingPyComponents());
+    };
+    if (maintenance(world.scenes.persistent.get()) ||
+        std::any_of(world.scenes.loaded.begin(), world.scenes.loaded.end(),
+                    [&](const auto &scene) { return maintenance(scene.get()); }))
+        return false;
+    const auto &owner = PhysicsWorld::Instance();
+    return owner.m_gpuScene && !owner.HasDomainControl(*world.physics) && owner.m_gpuScene->HasRunningFixedTick(world);
+}
+
 bool SceneManager::ServiceCurrentWorldFrame()
 {
     auto &world = CurrentWorld();
@@ -1635,6 +1674,32 @@ bool SceneManager::ServiceCurrentWorldFrame()
         return false;
     if (world.simulation.isPaused && !world.simulation.pausedStepPending)
         return false;
+    if (IsRuntimeFrameWaitingForPhysics(world)) {
+        const auto admittedState = GetSimulationState();
+        const InputReadScope inputScope(world.frame.input, world.id);
+        auto &physics = PhysicsWorld::Instance();
+        bool complete = false;
+        const auto phaseStart = ProfileClock::now();
+        try {
+            FixedSimulationExecutionScope executionScope(world.simulation.fixedExecuting);
+            // Preserve the original source-specific dependency service and
+            // resource admission; defer only the CPU lifecycle/cache opening.
+            complete = physics.AdvanceGpuJob(*world.physics, false);
+        } catch (...) {
+            physics.FailStep(*world.physics);
+            world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Failed;
+            world.simulation.pausedStepPending = false;
+            Pause();
+            throw;
+        }
+        m_lastFrameProfile.physicsStepMs += ProfileMsSince(phaseStart);
+        if (GetSimulationState() != admittedState || !CanContinueRuntimeFrame())
+            return false;
+        // Dependency preparation may have queued real scene/author work.
+        // Recheck before omitting its ordinary maintenance scope.
+        if (!complete && IsRuntimeFrameWaitingForPhysics(world))
+            return false;
+    }
     RuntimeLifecycleScopeEnd lifecycleEnd{world, m_runtimeLifecycleEnd};
     TransformECSStore::Instance().BeginFrameCache();
     if (world.simulation.pausedStepPending && world.simulation.isPaused) {
@@ -2497,17 +2562,7 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     auto &world = CurrentWorld();
     if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed)
         throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
-    if (world.simulation.fixedExecuting)
-        throw std::logic_error("a fixed simulation step cannot be reentered");
-    world.simulation.fixedExecuting = true;
-    struct ExecutionScope
-    {
-        bool &active;
-        ~ExecutionScope()
-        {
-            active = false;
-        }
-    } executionScope{world.simulation.fixedExecuting};
+    FixedSimulationExecutionScope executionScope(world.simulation.fixedExecuting);
     const auto validWorld = [&] {
         return world.simulation.simulationEpoch == std::get<0>(admittedState) && world.simulation.isPlaying &&
                world.simulation.fixedPhase != RuntimeWorld::FixedPhase::Idle;

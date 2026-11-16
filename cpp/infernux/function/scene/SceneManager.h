@@ -710,6 +710,7 @@ class SceneManager
     void UpdateHostFrame(float deltaTime);
     void UpdateCurrentWorld(float deltaTime);
     bool ServiceCurrentWorldFrame();
+    bool IsRuntimeFrameWaitingForPhysics(const RuntimeWorld &world) const;
     FrameWorkFacts DescribeRuntimeFrames();
     bool AdvanceRuntimeFrame(bool gpu, uint64_t worldId);
     bool ServicePausedAuthorPresentation();

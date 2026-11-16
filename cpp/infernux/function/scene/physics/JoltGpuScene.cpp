@@ -2334,6 +2334,18 @@ JoltGpuControlWork JoltGpuScene::PrepareSleepQuery(const std::shared_ptr<const P
     return m_impl->programs.GetSleep().PrepareQuery(publication->sleepStatus, publication->bodyCount,
                                                     std::move(relativeBodies), std::move(completed));
 }
+bool JoltGpuScene::HasRunningFixedTick(const RuntimeWorld &world) const noexcept
+{
+    // Unlike GetTickStatus, this does not Service/publish any Scene owner.
+    const auto found = m_impl->domains.find(world.id);
+    if (found == m_impl->domains.end())
+        return false;
+    const auto &domain = *found->second;
+    return domain.cursor && domain.candidate && domain.candidate->isFixedStep &&
+           domain.candidate->simulationEpoch == world.simulation.simulationEpoch &&
+           domain.candidate->fixedStepIndex == world.simulation.fixedStepIndex &&
+           domain.cursor->GetStatus() == JoltGpuTick::Status::Running;
+}
 JoltGpuTick::Status JoltGpuScene::GetTickStatus(const RuntimeWorld &world)
 {
     m_impl->Service();
