@@ -7,11 +7,12 @@ standard pass assembly stay in one place.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from infernux.lib import EngineConfig
-    from infernux.rendergraph.graph import RenderGraph, RenderPassBuilder
+    from infernux.rendergraph.graph import RenderGraph, RenderPassBuilder, TextureHandle
 
 
 COLOR_TEXTURE = "color"
@@ -25,22 +26,15 @@ NORMAL_MSAA_TEXTURE = "_normal_msaa"
 BEFORE_POST_PROCESS_POINT = "before_post_process"
 AFTER_POST_PROCESS_POINT = "after_post_process"
 
-GBUFFER_ALBEDO_TEXTURE = "gbuffer_albedo"
-GBUFFER_NORMAL_TEXTURE = "gbuffer_normal"
-GBUFFER_MATERIAL_TEXTURE = "gbuffer_material"
-GBUFFER_EMISSION_TEXTURE = "gbuffer_emission"
-GBUFFER_OBJECT_TEXTURE = "gbuffer_object"
+_GBUFFER_ATTACHMENTS = (
+    ("base_color", "gbuffer_albedo", "albedo_tex"),
+    ("surface_frame", "gbuffer_normal", "normal_tex"),
+    ("material", "gbuffer_material", "material_tex"),
+    ("emission", "gbuffer_emission", "emission_tex"),
+    ("object", "gbuffer_object", "object_tex"),
+)
 
 POST_PROCESS_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE, NORMAL_TEXTURE}
-GBUFFER_RESOURCES = {
-    GBUFFER_ALBEDO_TEXTURE,
-    GBUFFER_NORMAL_TEXTURE,
-    GBUFFER_MATERIAL_TEXTURE,
-    GBUFFER_EMISSION_TEXTURE,
-    GBUFFER_OBJECT_TEXTURE,
-    DEPTH_TEXTURE,
-    MOTION_TEXTURE,
-}
 
 FORWARD_CLEAR_COLOR = (0.1, 0.1, 0.1, 1.0)
 DEFERRED_GBUFFER_CLEAR_COLOR = (0.0, 0.0, 0.0, 0.0)
@@ -102,27 +96,28 @@ def create_main_scene_targets(
     )
 
 
-def create_deferred_gbuffer(graph: "RenderGraph") -> None:
+def create_deferred_gbuffer(graph: RenderGraph) -> dict[str, TextureHandle]:
     from infernux.rendergraph.graph import Format
 
-    graph.create_texture(GBUFFER_ALBEDO_TEXTURE, format=Format.RGBA16_SFLOAT)
-    graph.create_texture(GBUFFER_NORMAL_TEXTURE, format=Format.RGBA16_SFLOAT)
-    # The model-defined alpha channel is a signed float, like emission.a.
-    graph.create_texture(GBUFFER_MATERIAL_TEXTURE, format=Format.RGBA16_SFLOAT)
-    graph.create_texture(GBUFFER_EMISSION_TEXTURE, format=Format.RGBA16_SFLOAT)
-    graph.create_texture(GBUFFER_OBJECT_TEXTURE, format=Format.RGBA32_UINT)
+    return {
+        semantic: graph.create_texture(
+            name, format=Format.RGBA32_UINT if semantic == "object" else Format.RGBA16_SFLOAT, samples=1,
+        )
+        for semantic, name, _ in _GBUFFER_ATTACHMENTS
+    }
+
+
+def write_deferred_gbuffer(render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle]) -> None:
+    for slot, (semantic, _, _) in enumerate(_GBUFFER_ATTACHMENTS):
+        render_pass.write_color(buffers[semantic], slot=slot)
 
 
 def draw_deferred_lighting(
-    render_pass: RenderPassBuilder, *, albedo, normal, material, emission, object_data, depth,
+    render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle],
 ) -> None:
     render_pass.set_textures({
-        "albedo_tex": albedo,
-        "normal_tex": normal,
-        "material_tex": material,
-        "emission_tex": emission,
-        "object_tex": object_data,
-        "depth_tex": depth,
+        **{port: buffers[semantic] for semantic, _, port in _GBUFFER_ATTACHMENTS},
+        "depth_tex": buffers[DEPTH_TEXTURE],
     })
     render_pass.fullscreen_quad("infernux/internal/deferred_lighting")
 

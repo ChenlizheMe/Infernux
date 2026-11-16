@@ -16,7 +16,11 @@ from infernux.renderstack.pipeline_dsl import (
     compile_queue_segments,
 )
 from infernux.renderstack.route_policy import RoutePolicy
-from infernux.renderstack._pipeline_common import draw_deferred_lighting
+from infernux.renderstack._pipeline_common import (
+    create_deferred_gbuffer,
+    draw_deferred_lighting,
+    write_deferred_gbuffer,
+)
 
 
 _CLEAR_TRANSPARENT = (0.0, 0.0, 0.0, 0.0)
@@ -674,8 +678,6 @@ def _draw_deferred_route(
     shadow_map,
 ):
     """Rasterize one opaque route into the canonical GBuffer and light it."""
-    from infernux.rendergraph.graph import Format
-
     if route.domain != "opaque":
         raise ValueError(
             f"deferred route {route.route_id!r} belongs to {route.domain!r}; "
@@ -683,30 +685,18 @@ def _draw_deferred_route(
         )
 
     with graph.name_scope(f"route/{route.route_id}/deferred"):
-        albedo = graph.create_texture("albedo", format=Format.RGBA16_SFLOAT)
-        normal = graph.create_texture("normal", format=Format.RGBA16_SFLOAT)
-        material = graph.create_texture("material", format=Format.RGBA16_SFLOAT)
-        emission = graph.create_texture("emission", format=Format.RGBA16_SFLOAT)
-        object_data = graph.create_texture("object", format=Format.RGBA32_UINT)
+        surface = create_deferred_gbuffer(graph)
         lit = graph.create_texture("lit", format=color_format)
 
         with graph.add_pass("Clear") as clear_pass:
-            clear_pass.write_color(albedo, slot=0)
-            clear_pass.write_color(normal, slot=1)
-            clear_pass.write_color(material, slot=2)
-            clear_pass.write_color(emission, slot=3)
-            clear_pass.write_color(object_data, slot=4)
+            write_deferred_gbuffer(clear_pass, surface)
             clear_pass.set_clear(color=_CLEAR_TRANSPARENT)
 
         for index, selector in enumerate(selectors):
             with graph.add_pass(
                 f"Geometry_{index:02d}_{selector.minimum}_{selector.maximum}"
             ) as geometry_pass:
-                geometry_pass.write_color(albedo, slot=0)
-                geometry_pass.write_color(normal, slot=1)
-                geometry_pass.write_color(material, slot=2)
-                geometry_pass.write_color(emission, slot=3)
-                geometry_pass.write_color(object_data, slot=4)
+                write_deferred_gbuffer(geometry_pass, surface)
                 geometry_pass.write_depth(depth)
                 if shadow_map is not None:
                     # Publish the View's shadow image for the per-view lighting
@@ -735,8 +725,7 @@ def _draw_deferred_route(
         with graph.add_pass("Lighting") as lighting_pass:
             lighting_pass.write_color(lit)
             lighting_pass.set_clear(color=_CLEAR_TRANSPARENT)
-            draw_deferred_lighting(lighting_pass, albedo=albedo, normal=normal, material=material,
-                                   emission=emission, object_data=object_data, depth=depth)
+            draw_deferred_lighting(lighting_pass, {**surface, "depth": depth})
 
     return lit
 

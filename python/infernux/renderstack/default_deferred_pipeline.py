@@ -57,11 +57,6 @@ from infernux.renderstack._pipeline_common import (
     DEPTH_TEXTURE,
     DEFERRED_GBUFFER_CLEAR_COLOR,
     DEFERRED_LIGHTING_CLEAR_COLOR,
-    GBUFFER_ALBEDO_TEXTURE,
-    GBUFFER_EMISSION_TEXTURE,
-    GBUFFER_MATERIAL_TEXTURE,
-    GBUFFER_NORMAL_TEXTURE,
-    GBUFFER_OBJECT_TEXTURE,
     NORMAL_TEXTURE,
     SHADOW_MAP_TEXTURE,
     add_normal_buffer_pass,
@@ -74,6 +69,7 @@ from infernux.renderstack._pipeline_common import (
     draw_deferred_lighting,
     opaque_queue_range,
     result_resources,
+    write_deferred_gbuffer,
 )
 
 if TYPE_CHECKING:
@@ -157,18 +153,14 @@ class DefaultDeferredPipeline(RenderPipeline):
             shadow_resolution=shadow_res,
             msaa_samples=1,
         )
-        create_deferred_gbuffer(graph)
+        surface = create_deferred_gbuffer(graph)
 
         # ---- Pass 0: Shadow casters ----
         add_shadow_caster_pass(graph)
 
         # ---- Pass 1: GBuffer (opaque geometry → MRT) ----
         with graph.add_pass("GBufferPass") as p:
-            p.write_color(GBUFFER_ALBEDO_TEXTURE, slot=0)
-            p.write_color(GBUFFER_NORMAL_TEXTURE, slot=1)
-            p.write_color(GBUFFER_MATERIAL_TEXTURE, slot=2)
-            p.write_color(GBUFFER_EMISSION_TEXTURE, slot=3)
-            p.write_color(GBUFFER_OBJECT_TEXTURE, slot=4)
+            write_deferred_gbuffer(p, surface)
             p.write_depth(DEPTH_TEXTURE)
             p.set_clear(
                 color=DEFERRED_GBUFFER_CLEAR_COLOR,
@@ -182,13 +174,10 @@ class DefaultDeferredPipeline(RenderPipeline):
             )
 
         geometry_buffers = {
+            **surface,
             "color": graph.get_texture(COLOR_TEXTURE),
-            "base_color": graph.get_texture(GBUFFER_ALBEDO_TEXTURE),
             "depth": graph.get_texture(DEPTH_TEXTURE),
             "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
-            "material": graph.get_texture(GBUFFER_MATERIAL_TEXTURE),
-            "emission": graph.get_texture(GBUFFER_EMISSION_TEXTURE),
-            "object": graph.get_texture(GBUFFER_OBJECT_TEXTURE),
         }
         if LIGHT_LIST_BUFFER in self._required_geometry_buffers(graph):
             geometry_buffers[LIGHT_LIST_BUFFER] = graph.create_view_light_list()
@@ -214,11 +203,7 @@ class DefaultDeferredPipeline(RenderPipeline):
         with graph.add_pass("DeferredLightingPass") as p:
             p.write_color(COLOR_TEXTURE)
             p.set_clear(color=DEFERRED_LIGHTING_CLEAR_COLOR)
-            draw_deferred_lighting(
-                p, albedo=GBUFFER_ALBEDO_TEXTURE, normal=GBUFFER_NORMAL_TEXTURE,
-                material=GBUFFER_MATERIAL_TEXTURE, emission=GBUFFER_EMISSION_TEXTURE,
-                object_data=GBUFFER_OBJECT_TEXTURE, depth=DEPTH_TEXTURE,
-            )
+            draw_deferred_lighting(p, current.snapshot)
 
         # Opaque shading models are Deferred-compatible by default. Models
         # that explicitly declare Unsupported [Deferred] skip the GBuffer and

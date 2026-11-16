@@ -84,9 +84,10 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
     graph = RenderGraph("Deferred normal coverage")
     graph.set_geometry_buffer_requirements({"normal"})
     authored_normal = None
+    authored_base_color = None
 
     def replace_gbuffer_normal(stage):
-        nonlocal authored_normal
+        nonlocal authored_normal, authored_base_color
         if stage.stable_id != "after_gbuffer":
             return
         current = graph.current_pass_result
@@ -95,7 +96,12 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
             render_pass.set_texture("source_tex", current.sample("normal"))
             render_pass.write_color(authored_normal)
             render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
-        graph.replace_current_pass_result(graph.write_buffer("effect:normal", current, "normal", authored_normal))
+        authored_base_color = graph.create_texture("authored_base_color", format=Format.RGBA16_SFLOAT)
+        with graph.add_copy_pass("AuthorBaseColor") as copy_pass:
+            copy_pass.copy_texture(current.sample("base_color"), authored_base_color)
+        graph.replace_current_pass_result(graph.derive_pass_result(
+            "effect:surface", current, {"normal": authored_normal, "base_color": authored_base_color},
+        ))
 
     graph._effect_stage_callback = replace_gbuffer_normal
     DefaultDeferredPipeline().define_topology(graph)
@@ -103,7 +109,10 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
 
     gbuffer = graph.get_pass_result("gbuffer")
     opaque = graph.get_pass_result("opaque_lighting")
-    packed = graph.get_texture("gbuffer_normal")
+    packed = gbuffer.sample("surface_frame")
+    assert packed is graph.get_texture("gbuffer_normal")
+    assert gbuffer.sample("base_color") is graph.get_texture("gbuffer_albedo")
+    assert opaque.sample("base_color") is authored_base_color
     public_gbuffer = gbuffer.sample("normal")
     public_opaque = opaque.sample("normal")
     assert packed is not public_gbuffer
@@ -123,6 +132,9 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
         < names.index("opaque_lighting/Normal")
     )
     assert names.index("opaque_lighting/Normal") < names.index("SkyboxPass")
+    lighting = passes["DeferredLightingPass"]
+    assert lighting._input_bindings["normal_tex"] == packed.name
+    assert lighting._input_bindings["albedo_tex"] == authored_base_color.name
 
     first = passes["gbuffer/Normal"]
     assert first._material_filter == "deferred_compatible"
