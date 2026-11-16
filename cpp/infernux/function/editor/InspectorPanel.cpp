@@ -1375,22 +1375,17 @@ void InspectorPanel::RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hi
                                     scaleSemanticId);
     }
 
-    bool changed = false;
-    changed |= std::abs(pos[0] - td.px) > 1e-6f;
-    changed |= std::abs(pos[1] - td.py) > 1e-6f;
-    changed |= std::abs(pos[2] - td.pz) > 1e-6f;
-    changed |= std::abs(rot[0] - td.rx) > 1e-6f;
-    changed |= std::abs(rot[1] - td.ry) > 1e-6f;
-    changed |= std::abs(rot[2] - td.rz) > 1e-6f;
-    changed |= std::abs(scl[0] - td.sx) > 1e-6f;
-    changed |= std::abs(scl[1] - td.sy) > 1e-6f;
-    changed |= std::abs(scl[2] - td.sz) > 1e-6f;
+    const bool positionChanged =
+        (positionLifecycle & InxGUIContext::EditChanged) != 0u &&
+        (std::abs(pos[0] - td.px) > 1e-6f || std::abs(pos[1] - td.py) > 1e-6f || std::abs(pos[2] - td.pz) > 1e-6f);
+    const bool rotationChanged =
+        (rotationLifecycle & InxGUIContext::EditChanged) != 0u &&
+        (std::abs(rot[0] - td.rx) > 1e-6f || std::abs(rot[1] - td.ry) > 1e-6f || std::abs(rot[2] - td.rz) > 1e-6f);
+    const bool scaleChanged =
+        (scaleLifecycle & InxGUIContext::EditChanged) != 0u &&
+        (std::abs(scl[0] - td.sx) > 1e-6f || std::abs(scl[1] - td.sy) > 1e-6f || std::abs(scl[2] - td.sz) > 1e-6f);
 
-    if (changed) {
-        const bool positionChanged =
-            std::abs(pos[0] - td.px) > 1e-6f || std::abs(pos[1] - td.py) > 1e-6f || std::abs(pos[2] - td.pz) > 1e-6f;
-        const bool rotationChanged =
-            std::abs(rot[0] - td.rx) > 1e-6f || std::abs(rot[1] - td.ry) > 1e-6f || std::abs(rot[2] - td.rz) > 1e-6f;
+    if (positionChanged || rotationChanged || scaleChanged) {
         const std::string &gestureId = positionChanged   ? positionGesture
                                        : rotationChanged ? rotationGesture
                                                          : scaleGesture;
@@ -1465,9 +1460,10 @@ void InspectorPanel::RenderMultiTransform(InxGUIContext *ctx, const std::vector<
                 }
             } else {
                 const bool edited =
-                    ImGui::DragFloat("##value", &values[axisIndex], speed, -1000000.0f, 1000000.0f, "%.3f");
+                    ctx->DragFloat("##value", &values[axisIndex], speed, -1000000.0f, 1000000.0f, "%.3f");
                 rowLifecycle[baseIndex / 3] |= CaptureInspectorEditLifecycle(edited);
-                axisChanged[baseIndex + axisIndex] = std::abs(values[axisIndex] - originalValues[axisIndex]) > 1e-6f;
+                axisChanged[baseIndex + axisIndex] =
+                    edited && std::abs(values[axisIndex] - originalValues[axisIndex]) > 1e-6f;
             }
             ImGui::PopID();
         }

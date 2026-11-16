@@ -304,6 +304,37 @@ std::string WindowSemanticId(const std::string &name)
     return name.substr(separator + 3);
 }
 
+// Live author values may change while a numeric text editor retains its own
+// buffer. ImGui reapplies that buffer even without a text edit; do not publish
+// that replay as another author write. Dragging still uses ImGui's normal result.
+bool DrawLiveDragFloat(const char *label, float *value, float speed, float min = 0.0f, float max = 0.0f,
+                       const char *format = "%.3f", ImGuiSliderFlags flags = ImGuiSliderFlags_None)
+{
+    ImGuiContext &g = *GImGui;
+    const ImGuiID id = ImGui::GetCurrentWindow()->GetID(label);
+    const float incoming = *value;
+    const bool wasTextInput = ImGui::TempInputIsActive(id);
+    const ImGuiID previousActiveId = g.ActiveId;
+    const bool editedBefore = g.ActiveIdHasBeenEditedBefore;
+    const bool editedThisFrame = g.ActiveIdHasBeenEditedThisFrame;
+    const bool changed = ImGui::DragFloat(label, value, speed, min, max, format, flags);
+    if (!changed || (!wasTextInput && !ImGui::TempInputIsActive(id)) || g.InputTextState.ID != id ||
+        g.InputTextState.Edited)
+        return changed;
+
+    *value = incoming;
+    g.LastItemData.StatusFlags &= ~ImGuiItemStatusFlags_Edited;
+    // Undo only the edit bookkeeping that TempInputScalar just set. Genuine
+    // earlier edits retain their deactivation/undo gesture history.
+    if (g.ActiveId == id || (g.ActiveId == 0 && previousActiveId == id)) {
+        g.ActiveIdHasBeenEditedBefore = previousActiveId == id && editedBefore;
+        g.ActiveIdHasBeenEditedThisFrame = previousActiveId == id && editedThisFrame;
+        if (g.DeactivatedItemData.ID == id)
+            g.DeactivatedItemData.HasBeenEditedBefore = previousActiveId == id && editedBefore;
+    }
+    return false;
+}
+
 bool DrawInspectorSliderScalar(const char *id, ImGuiDataType dataType, void *data, const void *minimum,
                                const void *maximum, float dpi)
 {
@@ -680,7 +711,7 @@ bool InxGUIContext::DragFloat(const std::string &label, float *value, float spee
     bool changed = false;
     {
         MonoValueFontScope mono(label.c_str());
-        changed = ImGui::DragFloat(label.c_str(), value, speed, min, max, fmt, flags);
+        changed = DrawLiveDragFloat(label.c_str(), value, speed, min, max, fmt, flags);
     }
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("drag_float", label, true, semanticId, std::nullopt, static_cast<double>(*value));
@@ -888,11 +919,12 @@ static uint32_t LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *
 
     const bool captureSemantics = InxGUISemantics::IsCaptureEnabled();
     uint32_t lifecycle = 0;
-    if (captureSemantics && components >= 2 && components <= 4 && !axisSemanticBase.empty()) {
-        // Match ImGui::DragFloatN's layout so each actual field has a stable,
-        // focusable semantic target instead of exposing only the aggregate row.
-        static constexpr const char *kAxisNames[] = {"x", "y", "z", "w"};
-        static constexpr const char *kAxisLabels[] = {"X", "Y", "Z", "W"};
+    const bool captureAxes = captureSemantics && components >= 2 && components <= 4 && !axisSemanticBase.empty();
+    static constexpr const char *kAxisNames[] = {"x", "y", "z", "w"};
+    static constexpr const char *kAxisLabels[] = {"X", "Y", "Z", "W"};
+    if (components >= 2 && components <= 4) {
+        // Observation must not change widget identity while text input is active.
+        // Capture each scalar before EndGroup replaces the last item's data.
         ImGui::BeginGroup();
         ImGui::PushID(hiddenLabel.c_str());
         ImGui::PushMultiItemsWidths(components, ImGui::CalcItemWidth());
@@ -900,34 +932,19 @@ static uint32_t LabeledDragFloatN(InxGUIContext &ctx, const char *label, float *
             ImGui::PushID(axis);
             if (axis > 0)
                 ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-            // Keep the editor ID below the per-axis PushID scope. An empty
-            // label aliases the current ID-stack seed and can collide when
-            // DragFloat temporarily swaps to its text-input representation.
-            const bool changed = ImGui::DragFloat("##axis_value", &value[axis], speed);
+            const bool changed = DrawLiveDragFloat("##axis_value", &value[axis], speed);
             lifecycle |= CaptureEditLifecycle(changed);
-            ctx.RecordSemanticItem("vector_axis", kAxisLabels[axis], true, axisSemanticBase + "." + kAxisNames[axis],
-                                   std::nullopt, static_cast<double>(value[axis]));
+            if (captureAxes)
+                ctx.RecordSemanticItem("vector_axis", kAxisLabels[axis], true,
+                                       axisSemanticBase + "." + kAxisNames[axis], std::nullopt,
+                                       static_cast<double>(value[axis]));
             ImGui::PopID();
             ImGui::PopItemWidth();
         }
         ImGui::PopID();
         ImGui::EndGroup();
     } else {
-        bool changed = false;
-        switch (components) {
-        case 2:
-            changed = ImGui::DragFloat2(hiddenLabel.c_str(), value, speed);
-            break;
-        case 3:
-            changed = ImGui::DragFloat3(hiddenLabel.c_str(), value, speed);
-            break;
-        case 4:
-            changed = ImGui::DragFloat4(hiddenLabel.c_str(), value, speed);
-            break;
-        default:
-            changed = ImGui::DragFloat(hiddenLabel.c_str(), value, speed);
-            break;
-        }
+        const bool changed = DrawLiveDragFloat(hiddenLabel.c_str(), value, speed);
         lifecycle = CaptureEditLifecycle(changed);
     }
     if (captureSemantics)
@@ -3059,8 +3076,8 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
                 else {
                     const ImGuiSliderFlags flags = d.hasRange ? ImGuiSliderFlags_AlwaysClamp : ImGuiSliderFlags_None;
                     MonoValueFontScope mono(d.widgetId.c_str());
-                    ImGui::DragFloat(d.widgetId.c_str(), &val, d.speed, d.hasRange ? d.rangeMin : 0.0f,
-                                     d.hasRange ? d.rangeMax : 0.0f, "%.3f", flags);
+                    DrawLiveDragFloat(d.widgetId.c_str(), &val, d.speed, d.hasRange ? d.rangeMin : 0.0f,
+                                      d.hasRange ? d.rangeMax : 0.0f, "%.3f", flags);
                 }
                 if (captureSemantics)
                     RecordSemanticItem(d.slider ? "float_slider" : "drag_float", d.label, true, semanticId,
