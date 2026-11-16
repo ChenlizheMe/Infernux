@@ -1,5 +1,6 @@
 #include "RenderGraphDescription.h"
 #include "MaterialPassPipeline.h"
+#include "FullscreenRenderer.h"
 #include "MsaaPolicy.h"
 #include "RendererSelection.h"
 #include "rhi/RenderViewContext.h"
@@ -7,12 +8,66 @@
 #include "rhi/RhiComputeKernel.h"
 #include "rhi/RhiRenderTexture.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/scene/Camera.h>
 
 #include <algorithm>
 #include <stdexcept>
 
 namespace infernux
 {
+bool GraphUsesForwardPlus(const RenderGraphDescription &graph)
+{
+    for (const auto &pass : graph.passes)
+        for (const auto &command : pass.commands) {
+            if (command.type == GraphCommandType::DrawRenderers &&
+                command.shaderTarget == ShaderCompileTarget::ForwardPlus)
+                return true;
+            const auto &program = command.fullscreenProgram;
+            if (program && (program->UsesViewBinding(2) || program->UsesViewBinding(3)))
+                return true;
+        }
+    return false;
+}
+
+std::string ResolveGraphShadowTexture(const RenderGraphDescription &graph)
+{
+    for (const auto &pass : graph.passes)
+        for (const auto &command : pass.commands)
+            for (const auto &[name, resource] : command.inputBindings)
+                if (name == "shadowMap")
+                    return resource;
+    return {};
+}
+
+std::optional<GraphPassDesc> ResolveGraphCameraClear(const RenderGraphDescription &graph, CameraClearFlags flags,
+                                                     const glm::vec4 &linearBackground, bool preview)
+{
+    const auto persistent = [&](const std::string &name) {
+        return std::any_of(graph.textures.begin(), graph.textures.end(), [&](const auto &texture) {
+            return texture.name == name && texture.role == GraphTextureRole::Persistent;
+        });
+    };
+    if (preview && (flags == CameraClearFlags::DepthOnly || flags == CameraClearFlags::DontClear))
+        flags = CameraClearFlags::SolidColor;
+    for (const auto &pass : graph.passes) {
+        if (!pass.clearColor || persistent(pass.writeDepth) || persistent(pass.resolveColor) ||
+            std::any_of(pass.writeColors.begin(), pass.writeColors.end(),
+                        [&](const auto &output) { return persistent(output.second); }))
+            continue;
+        auto result = pass;
+        result.clearDepth = !pass.writeDepth.empty() && flags != CameraClearFlags::DontClear;
+        result.clearColor = flags == CameraClearFlags::SolidColor || flags == CameraClearFlags::Skybox;
+        if (flags == CameraClearFlags::SolidColor) {
+            result.clearColorR = linearBackground.r;
+            result.clearColorG = linearBackground.g;
+            result.clearColorB = linearBackground.b;
+            result.clearColorA = linearBackground.a;
+        }
+        return result;
+    }
+    return std::nullopt;
+}
+
 namespace
 {
 GraphTextureDesc::RenderTextureLayout AttachmentLayout(const rhi::RenderTextureGeneration &generation) noexcept

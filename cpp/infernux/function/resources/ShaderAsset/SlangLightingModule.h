@@ -158,10 +158,7 @@ float calculate_attenuation(float3 atten_params, float distance) {
     float factor = saturate(1.0 - ratio2 * ratio2);
     return (factor * factor) / (d2 + 1.0);
 }
-float geometric_specular_aa(float3 world_normal, float roughness) {
-    float3 du = ddx(world_normal);
-    float3 dv = ddy(world_normal);
-    float variance = 0.25 * (dot(du, du) + dot(dv, dv));
+float geometric_specular_aa(float variance, float roughness) {
     float kernel_roughness = min(variance, 0.18);
     return max(roughness, sqrt(roughness * roughness + kernel_roughness));
 }
@@ -627,7 +624,7 @@ float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx) 
     float roughness = perceptual_roughness * perceptual_roughness;
     float ao = clamp(s.occlusion, 0.0, 1.0);
     float3 N = normalize(s.normal_ws);
-    roughness = geometric_specular_aa(N, roughness);
+    roughness = geometric_specular_aa(ctx.normal_variance, roughness);
     perceptual_roughness = max(perceptual_roughness, sqrt(roughness));
     float3 V = normalize(lighting.camera_pos.xyz - ctx.position_ws);
     float3  F0    = lerp(float3(0.04), albedo, metallic);

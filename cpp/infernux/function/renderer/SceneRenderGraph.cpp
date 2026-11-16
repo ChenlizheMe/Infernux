@@ -2632,22 +2632,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
 
 bool SceneRenderGraph::UsesForwardPlus() const
 {
-    if (!m_pythonGraphValid)
-        return false;
-    for (const auto &pass : m_pythonGraphDesc.passes) {
-        for (const auto &command : pass.commands) {
-            if (command.type == GraphCommandType::DrawRenderers &&
-                command.shaderTarget == ShaderCompileTarget::ForwardPlus) {
-                return true;
-            }
-            if (command.type == GraphCommandType::FullscreenQuad) {
-                const auto &program = command.fullscreenProgram;
-                if (program && (program->UsesViewBinding(2) || program->UsesViewBinding(3)))
-                    return true;
-            }
-        }
-    }
-    return false;
+    return m_pythonGraphValid && GraphUsesForwardPlus(m_pythonGraphDesc);
 }
 
 void SceneRenderGraph::RefreshForwardPlusParticleRequirement()
@@ -3331,48 +3316,8 @@ std::optional<GraphPassDesc> SceneRenderGraph::ResolveCameraClearOverride() cons
 {
     if (!m_hasCameraClearOverride)
         return std::nullopt;
-    const auto persistent = [&](const std::string &name) {
-        return std::any_of(
-            m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
-            [&](const auto &texture) { return texture.name == name && texture.role == GraphTextureRole::Persistent; });
-    };
-    for (const auto &pass : m_pythonGraphDesc.passes) {
-        if (!pass.clearColor || persistent(pass.writeDepth) || persistent(pass.resolveColor) ||
-            std::any_of(pass.writeColors.begin(), pass.writeColors.end(),
-                        [&](const auto &output) { return persistent(output.second); }))
-            continue;
-        auto effective = pass;
-        const bool writesDepth = !pass.writeDepth.empty();
-        const auto clearFlags =
-            m_renderView.kind == rhi::RenderViewKind::Preview && (m_cameraClearFlags == CameraClearFlags::DepthOnly ||
-                                                                  m_cameraClearFlags == CameraClearFlags::DontClear)
-                ? CameraClearFlags::SolidColor
-                : m_cameraClearFlags;
-        switch (clearFlags) {
-        case CameraClearFlags::Skybox:
-            effective.clearColor = true;
-            effective.clearDepth = writesDepth;
-            break;
-        case CameraClearFlags::SolidColor:
-            effective.clearColor = true;
-            effective.clearDepth = writesDepth;
-            effective.clearColorR = m_cameraBgColor.r;
-            effective.clearColorG = m_cameraBgColor.g;
-            effective.clearColorB = m_cameraBgColor.b;
-            effective.clearColorA = m_cameraBgColor.a;
-            break;
-        case CameraClearFlags::DepthOnly:
-            effective.clearColor = false;
-            effective.clearDepth = writesDepth;
-            break;
-        case CameraClearFlags::DontClear:
-            effective.clearColor = false;
-            effective.clearDepth = false;
-            break;
-        }
-        return effective;
-    }
-    return std::nullopt;
+    return ResolveGraphCameraClear(m_pythonGraphDesc, m_cameraClearFlags, m_cameraBgColor,
+                                   m_renderView.kind == rhi::RenderViewKind::Preview);
 }
 
 // ---------------------------------------------------------------------------
@@ -4418,19 +4363,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
         // through the per-view descriptor set rather than their explicit
         // set-0 texture list. Discover that graph resource up front so those
         // passes still participate in dependency and layout tracking.
-        std::string perViewShadowTextureName;
-        for (const auto &candidatePass : sortedPasses) {
-            const GraphCommandDesc *candidateCommand = candidatePass.PrimaryCommand();
-            if (!candidateCommand)
-                continue;
-            const auto shadowBinding =
-                std::find_if(candidateCommand->inputBindings.begin(), candidateCommand->inputBindings.end(),
-                             [](const auto &binding) { return binding.first == "shadowMap"; });
-            if (shadowBinding != candidateCommand->inputBindings.end()) {
-                perViewShadowTextureName = shadowBinding->second;
-                break;
-            }
-        }
+        const auto perViewShadowTextureName = ResolveGraphShadowTexture(m_pythonGraphDesc);
         bool fullscreenShadowDependencyDeclared = false;
         // Camera clear settings remain active across frames. Consumption is
         // local to this graph build so only the first color-clearing pass is

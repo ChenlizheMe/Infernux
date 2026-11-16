@@ -349,6 +349,7 @@ _SURFACE_LIGHTING = """
 float4 inx_shade_surface<let tiled_lighting : bool>(InxSurfaceData surface, InxMeshInput input)
 {
     InxShadingContext context = inx_shading_context(input);
+    context.normal_variance = inx_normal_variance(surface.normal_ws);
     context.receives_shadows = context.receives_shadows && INX_RECEIVE_SHADOWS;
     return float4(inx_shading_model::shade<tiled_lighting>(surface, context), surface.alpha);
 }

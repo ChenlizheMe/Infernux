@@ -16,9 +16,6 @@ class DeferredLighting(shader.fullscreen):
         pixel = shader.ivec2(ctx.position.xy)
         depth = shader.load(self.depth_tex, pixel, 0)
         objects = shader.load(self.object_tex, pixel, 0)
-        if depth <= 0.0 or objects.y == 0:
-            return shader.vec4(0.0)
-
         base = shader.load(self.albedo_tex, pixel, 0)
         normals = shader.load(self.normal_tex, pixel, 0)
         material = shader.load(self.material_tex, pixel, 0)
@@ -38,4 +35,7 @@ class DeferredLighting(shader.fullscreen):
             view_depth=view_depth, pixel_position=ctx.position.xy,
             layer_mask=objects.x, receives_shadows=objects.z != 0,
         )
+        # Derivatives belong to the full pixel quad, before coverage and model selection.
+        if depth <= 0.0 or objects.y == 0:
+            return shader.vec4(0.0)
         return shader.vec4(shader.lighting.shade(surface, context, objects.y), base.a)

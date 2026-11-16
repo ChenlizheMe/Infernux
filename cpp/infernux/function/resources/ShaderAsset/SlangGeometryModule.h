@@ -121,7 +121,15 @@ public struct InxShadingContext
     public uint layer_mask;
     public bool receives_shadows;
     public uint light_domain;
+    public float normal_variance;
 };
+public float inx_normal_variance(float3 normal_ws)
+{
+    float3 n = normalize(normal_ws);
+    float3 du = ddx(n);
+    float3 dv = ddy(n);
+    return 0.25 * (dot(du, du) + dot(dv, dv));
+}
 public InxShadingContext inx_shading_context(float3 position_ws, float3 geometric_normal_ws,
                                             float view_depth, float2 pixel_position,
                                             uint layer_mask, bool receives_shadows)
@@ -134,6 +142,7 @@ public InxShadingContext inx_shading_context(float3 position_ws, float3 geometri
     result.pixel_position = pixel_position;
     result.layer_mask = layer_mask;
     result.receives_shadows = receives_shadows;
+    result.normal_variance = inx_normal_variance(geometric_normal_ws);
     return result;
 }
 public struct InxLight
@@ -153,6 +162,7 @@ public InxShadingContext inx_shading_context(InxMeshInput input)
     result.pixel_position = input.position.xy;
     result.layer_mask = input.layer_mask;
     result.receives_shadows = (input.object_flags & 2u) == 0u;
+    result.normal_variance = inx_normal_variance(input.normal_ws);
     return result;
 }
 public InxSurfaceData inx_surface_data(float3 albedo, float3 normal_ws, float metallic, float smoothness,

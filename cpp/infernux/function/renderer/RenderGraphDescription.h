@@ -48,6 +48,7 @@ class RendererSelection;
 class InxMaterial;
 struct FullscreenProgram;
 struct MaterialPassPipelineDescriptor;
+enum class CameraClearFlags;
 
 /**
  * @brief Backend-neutral command recorded by a graph pass.
@@ -425,6 +426,11 @@ bool RequiresGraphBufferOwners(const RenderGraphDescription &desc);
 bool RequiresGraphBufferProof(const RenderGraphDescription &desc);
 bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rhi::RenderViewContext &view,
                                     GraphBufferContents *contents = nullptr);
+std::optional<GraphPassDesc> ResolveGraphCameraClear(const RenderGraphDescription &graph, CameraClearFlags flags,
+                                                     const glm::vec4 &linearBackground, bool preview = false);
+/// The view lighting set consumes this graph image outside material set 0.
+std::string ResolveGraphShadowTexture(const RenderGraphDescription &graph);
+bool GraphUsesForwardPlus(const RenderGraphDescription &graph);
 std::pair<uint32_t, uint32_t> ResolveGraphPassExtent(const RenderGraphDescription &graph, const GraphPassDesc &pass,
                                                      uint32_t viewWidth, uint32_t viewHeight);
 const rhi::TextureResource *ResolveGraphTextureAttachment(const rhi::RenderTextureGeneration &generation,

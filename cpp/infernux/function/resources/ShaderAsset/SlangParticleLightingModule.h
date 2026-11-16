@@ -27,6 +27,7 @@ public float3 inx_particle_pbr<let tiled_lighting : bool>(InxSurfaceData surface
     if (inx_particle_draw().lighting_control.w < 0.5)
         return surface.albedo + surface.emission;
     InxShadingContext context = particle_shading_context(input);
+    context.normal_variance = inx_normal_variance(surface.normal_ws);
     return inx_shade_pbr<tiled_lighting>(surface, context);
 }
 

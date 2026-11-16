@@ -69,6 +69,7 @@ struct FullscreenViewResources
 {
     rhi::BufferBinding globals;
     rhi::BindGroupHandle perView;
+    rhi::BufferBinding canonicalLights;
 };
 
 class FullscreenRendererHost
