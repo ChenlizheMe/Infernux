@@ -759,7 +759,7 @@ class _SlangKernelSource:
         from infernux.lib import _Infernux
 
         result = _Infernux._compile_shader_program(self.source, self.path, "inx_kernel", libraries=self._linked_modules,
-                                                  targets=[target], precise=True)["targets"][0]
+                                                  targets=[target], precise=True, entry_point=self.entry_point)["targets"][0]
         return _slang_dispatch_artifact(result, self.path, self.entry_point, self.domain, self.modules, key)
 
 
@@ -783,8 +783,8 @@ def compile_slang_kernel(path, entry_point, domain, libraries, constants, params
 
 
 def _slang_dispatch_artifact(compiled, path, entry_point, domain, modules, key):
-    entry = next((item for item in compiled["entries"] if item["name"] == entry_point), None)
-    if entry is None or entry["stage"] != "compute":
+    entry, = compiled["entries"]
+    if entry["stage"] != "compute":
         raise ValueError(f"Entry '{entry_point}' must be declared with [shader(\"compute\")]")
     width, height, depth = entry["workgroup_size"]
     if width <= 0 or height != 1 or depth != 1:
@@ -820,7 +820,7 @@ def _slang_dispatch_artifact(compiled, path, entry_point, domain, modules, key):
     # indexing. Reflect its accesses and require complete incoming contents.
     contract = RangeContract(None, None, tuple(range(len(layouts))), tuple(writes), 0,
         (f"Slang entry '{entry_point}' executes as a whole dispatch",), ())
-    metadata = {"entry_point": entry_point, "threads_per_group": width,
+    metadata = {"entry_point": entry["name"], "threads_per_group": width,
                 "buffer_bindings": bindings, "task_type": "native_dispatch"}
     locations = ({"role": "entry", "path": path, "function": entry_point, "entry_point": entry_point, "line": 1, "column": 1},
                  *({"role": "library", "path": asset, "line": 1, "column": 1} for _, asset, _ in modules))

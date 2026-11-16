@@ -93,6 +93,63 @@ def prepare_work(values, narrow, wide):
                                 private_buffers=(narrow, wide), inputs={{"narrow_seed": narrow, "wide_seed": wide}},
                                 outputs={{"narrow": narrow, "wide": wide}})
 '''
+CALIBRATION_PATH = 'Assets/Kernels/calibration.slang'
+CALIBRATION = '''import calibration_math;
+
+[vk::binding(0, 0)] StructuredBuffer<float> realValues;
+[vk::binding(1, 0)] RWStructuredBuffer<float> realResult;
+[vk::binding(2, 0)] StructuredBuffer<int> integerValues;
+[vk::binding(3, 0)] RWStructuredBuffer<int> integerResult;
+
+[shader("compute")]
+[numthreads(4, 1, 1)]
+void calibrateFloat(uint3 thread : SV_DispatchThreadID)
+{
+    uint count, stride;
+    realValues.GetDimensions(count, stride);
+    if (thread.x < count)
+        realResult[thread.x] = calibrate<float>(realValues[thread.x], 0.5, 1.25);
+}
+
+[shader("compute")]
+[numthreads(4, 1, 1)]
+void calibrateInt(uint3 thread : SV_DispatchThreadID)
+{
+    uint count, stride;
+    integerValues.GetDimensions(count, stride);
+    if (thread.x < count)
+        integerResult[thread.x] = calibrate<int>(integerValues[thread.x], 3, 2);
+}
+'''
+CALIBRATION_MODULES = (
+    ('calibration_math', 'Assets/Kernels/calibration_math.slang', '''import scalar_math;
+public T calibrate<T : IArithmetic>(T value, T scale, T bias)
+{
+    return multiplyAndAdd<T>(value, scale, bias);
+}
+'''),
+    ('scalar_math', 'Assets/Kernels/scalar_math.slang', '''public T multiplyAndAdd<T : IArithmetic>(T value, T scale, T bias)
+{
+    return value * scale + bias;
+}
+'''),
+)
+CALIBRATION_LIBRARIES = {name: path for name, path, _ in CALIBRATION_MODULES}
+CALIBRATION_WORK_SOURCE = f'''from infernux import compute
+
+class Calibration:
+    real = compute.kernel({CALIBRATION_PATH!r}, entry_point="calibrateFloat", domain="realValues",
+                          libraries={CALIBRATION_LIBRARIES!r})
+    integer = compute.kernel({CALIBRATION_PATH!r}, entry_point="calibrateInt", domain="integerValues",
+                             libraries={CALIBRATION_LIBRARIES!r})
+
+def prepare_work(real, real_result, integer, integer_result):
+    return compute.prepare_work(((Calibration.real, (real, real_result)),
+                                 (Calibration.integer, (integer, integer_result))),
+                                private_buffers=(real_result, integer_result),
+                                inputs={{"real_seed": real_result, "integer_seed": integer_result}},
+                                outputs={{"real": real_result, "integer": integer_result}})
+'''
 
 
 @compute.kernel
@@ -396,3 +453,96 @@ def test_native_slang_link_constants_are_frozen_across_work_launches_and_player_
             assert artifact.target == target and artifact.task_metadata[0]['threads_per_group'] == width
         assert len({artifact.identity for artifact in tiles.values()}) == 2
     assert calls == ['spirv', 'spirv', 'wgsl', 'wgsl']
+
+
+def _write_calibration_project(project):
+    work = 'Assets/Scripts/Work.py'
+    for path, text in ((work, CALIBRATION_WORK_SOURCE), (CALIBRATION_PATH, CALIBRATION),
+                       *((path, text) for _, path, text in CALIBRATION_MODULES)):
+        destination = project / path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(text, encoding='utf-8')
+    return project / work
+
+
+def test_selected_slang_entry_reuses_only_the_same_frontend_snapshot():
+    def compile_entry(entry_point, *, path='Assets/Cache/first.slang', libraries=CALIBRATION_MODULES,
+                      targets=('spirv',), precise=True):
+        result = _Infernux._compile_shader_program(CALIBRATION, path, 'inx_kernel', libraries=libraries,
+                                                  targets=targets, precise=precise, entry_point=entry_point)
+        assert [target['target'] for target in result['targets']] == list(targets)
+        assert all([entry['name'] for entry in target['entries']] == [entry_point] for target in result['targets'])
+        return result['frontend_reused'], result['targets'][0]['entries'][0]['code']
+
+    reused, code = compile_entry('calibrateFloat')
+    assert not reused
+    assert compile_entry('calibrateInt')[0]
+    ordinary = _Infernux._compile_shader_program(CALIBRATION, 'Assets/Cache/first.slang', 'inx_kernel',
+                                                libraries=CALIBRATION_MODULES, targets=['spirv'], precise=True)
+    assert 'frontend_reused' not in ordinary
+    assert [entry['name'] for entry in ordinary['targets'][0]['entries']] == ['calibrateFloat', 'calibrateInt']
+    assert compile_entry('calibrateFloat') == (True, code)
+
+    assert not compile_entry('calibrateFloat', path='Assets/Cache/second.slang')[0]
+    assert not compile_entry('calibrateFloat')[0]  # The resident slot retains one snapshot.
+    leaf_name, leaf_path, leaf_source = CALIBRATION_MODULES[-1]
+    revised = (*CALIBRATION_MODULES[:-1], (leaf_name, leaf_path, leaf_source.replace('value * scale', 'value + scale')))
+    reused, revised_code = compile_entry('calibrateFloat', libraries=revised)
+    assert not reused and revised_code != code
+    assert compile_entry('calibrateInt', libraries=revised)[0]
+    assert not compile_entry('calibrateFloat', libraries=revised, precise=False)[0]
+    assert not compile_entry('calibrateInt', libraries=revised, precise=False, targets=('spirv', 'wgsl'))[0]
+    assert compile_entry('calibrateFloat', libraries=revised, precise=False, targets=('spirv', 'wgsl'))[0]
+
+
+def test_native_slang_generic_module_prepares_typed_work_and_cooks_both_entries(project, engine, monkeypatch):
+    work_script = _write_calibration_project(project)
+    data = project / 'build/Data'
+    _write_calibration_project(data)
+    author = ModuleType('Scripts.Work')
+    exec(compile(CALIBRATION_WORK_SOURCE, str(work_script), 'exec'), vars(author))
+    compile_program = _Infernux._compile_shader_program
+    compilations = []
+
+    def track(source, path, *args, **kwargs):
+        result = compile_program(source, path, *args, **kwargs)
+        if path == CALIBRATION_PATH:
+            entry, = result['targets'][0]['entries']
+            compilations.append((kwargs['targets'][0], entry['name'], result['frontend_reused']))
+        return result
+
+    monkeypatch.setattr(_Infernux, '_compile_shader_program', track)
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    real_values = np.arange(67, dtype=np.float32) - 17.5
+    int_values = np.arange(67, dtype=np.int32) - 28
+    with using_project_root(project), ExitStack() as resources:
+        resources.callback(host._release_lease)
+        resources.callback(author.Calibration.real._release_engine_resources)
+        resources.callback(author.Calibration.integer._release_engine_resources)
+        real = resources.enter_context(compute.buffer(shape=67, dtype=np.float32, device='gpu', data=real_values))
+        integer = resources.enter_context(compute.buffer(shape=67, dtype=np.int32, device='gpu', data=int_values))
+        real_result = resources.enter_context(compute.buffer(shape=67, dtype=np.float32, device='gpu'))
+        int_result = resources.enter_context(compute.buffer(shape=67, dtype=np.int32, device='gpu'))
+        recipe = author.prepare_work(real, real_result, integer, int_result)
+        resources.callback(recipe.close)
+        assert recipe._native.dispatch_count == 2
+        assert compilations == [('spirv', 'calibrateFloat', False), ('spirv', 'calibrateInt', True)]
+        compute.launch(author.Calibration.real, (real, real_result))
+        compute.launch(author.Calibration.integer, (integer, int_result))
+        with real_result.get_data() as real_data, int_result.get_data() as int_data:
+            np.testing.assert_array_equal(real_data.numpy(), real_values * 0.5 + 1.25)
+            np.testing.assert_array_equal(int_data.numpy(), int_values * 3 + 2)
+
+    result = stage_compute_artifacts(project, (work_script,), data, target='Web/Player')
+    assert result.kernel_count == 2 and result.artifact_count == 5
+    assert compilations[2:] == [('wgsl', 'calibrateInt', False), ('wgsl', 'calibrateFloat', True)]
+    cache = data / 'Library/Artifacts/Compute'
+    rows = json.loads((cache / 'AotManifest.json').read_text(encoding='utf-8'))['artifacts']
+    artifacts = {row['function']: _read_artifact(cache / row['artifact'])[1] for row in rows
+                 if row['function'].startswith('Scripts.Work.Calibration.')}
+    for name, dtype, binding in (('real', 'float32', 0), ('integer', 'int32', 2)):
+        artifact = artifacts[f'Scripts.Work.Calibration.{name}']
+        assert artifact.target == 'wgsl'
+        assert [item['dtype'] for item in artifact.argument_layout['parameters']] == [dtype, dtype]
+        assert [item['binding'] for item in artifact.task_metadata[0]['buffer_bindings']] == [binding, binding + 1]

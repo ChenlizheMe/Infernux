@@ -85,6 +85,13 @@ class SlangCompiler
                                                            bool precise = false,
                                                            const std::vector<ShaderAuthorRange> &sourceRanges = {});
 
+    /// Select one entry in a project compute module. The most recent exact
+    /// source/target snapshot retains its parsed modules for sibling entries.
+    INFERNUX_SHADER_COMPILER_API ShaderCompilation
+    CompileComputeEntry(const ShaderSourceModule &source, const std::vector<ShaderSourceModule> &libraries,
+                        const std::vector<ShaderCodeTarget> &targets, const std::string &entryPoint, bool precise,
+                        const std::vector<ShaderAuthorRange> &sourceRanges, bool &frontendReused);
+
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API const std::string &GetVersion() const noexcept;
 
     SlangCompiler(const SlangCompiler &) = delete;
@@ -93,6 +100,11 @@ class SlangCompiler
   private:
     SlangCompiler();
     ~SlangCompiler();
+
+    ShaderCompilation CompileProgram(const ShaderSourceModule &source, const std::vector<ShaderSourceModule> &libraries,
+                                     const std::vector<ShaderCodeTarget> &targets, bool precise,
+                                     const std::vector<ShaderAuthorRange> &sourceRanges, const std::string *entryPoint,
+                                     bool *frontendReused);
 
     struct Impl;
     std::unique_ptr<Impl> impl;

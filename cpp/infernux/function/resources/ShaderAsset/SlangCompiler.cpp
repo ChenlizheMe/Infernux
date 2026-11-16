@@ -158,6 +158,98 @@ void PreserveNumericalFloat32(std::vector<char> &code)
     std::memcpy(code.data(), words.data(), code.size());
 }
 
+struct LoadedModule
+{
+    Slang::ComPtr<slang::ISession> session;
+    slang::IModule *module = nullptr;
+    std::vector<ShaderDiagnostic> diagnostics;
+};
+
+LoadedModule LoadModule(slang::IGlobalSession *global, const ShaderSourceModule &source,
+                        const std::vector<ShaderSourceModule> &libraries, const std::vector<ShaderCodeTarget> &targets,
+                        bool precise)
+{
+    std::vector<slang::TargetDesc> targetDescriptions;
+    targetDescriptions.reserve(targets.size());
+    for (const auto target : targets) {
+        slang::TargetDesc description;
+        description.floatingPointMode = precise ? SLANG_FLOATING_POINT_MODE_PRECISE : SLANG_FLOATING_POINT_MODE_DEFAULT;
+        description.format = target == ShaderCodeTarget::SpirV ? SLANG_SPIRV : SLANG_WGSL;
+        if (target == ShaderCodeTarget::SpirV)
+            description.profile = global->findProfile("spirv_1_5");
+        targetDescriptions.push_back(description);
+    }
+
+    slang::CompilerOptionEntry options[5]{};
+    options[0].name = slang::CompilerOptionName::EmitSpirvMethod;
+    options[0].value.intValue0 = SLANG_EMIT_SPIRV_DIRECTLY;
+    options[1].name = slang::CompilerOptionName::VulkanUseEntryPointName;
+    options[1].value.intValue0 = 1;
+    // Author clip space is Y-up on every target. Vulkan's positive-height
+    // viewport needs the opposite position Y; WGSL retains the author value.
+    options[2].name = slang::CompilerOptionName::VulkanInvertY;
+    options[2].value.intValue0 = 1;
+    options[3].name = slang::CompilerOptionName::EnableMachineReadableDiagnostics;
+    options[3].value.intValue0 = 1;
+    options[4].name = slang::CompilerOptionName::EnableRichDiagnostics;
+    options[4].value.intValue0 = 1;
+
+    slang::SessionDesc description;
+    description.targets = targetDescriptions.data();
+    description.targetCount = static_cast<SlangInt>(targetDescriptions.size());
+    description.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
+    description.compilerOptionEntries = options;
+    description.compilerOptionEntryCount = 5;
+    const std::array searchPaths{SlangModuleFiles::Mount};
+    description.searchPaths = searchPaths.data();
+    description.searchPathCount = searchPaths.size();
+    Slang::ComPtr<ISlangFileSystem> files(new SlangModuleFiles(source, libraries));
+    description.fileSystem = files;
+
+    LoadedModule result;
+    CheckCompilation(global->createSession(description, result.session.writeRef()), "create_session", nullptr,
+                     source.path);
+    Slang::ComPtr<slang::IBlob> diagnostics;
+    result.module = result.session->loadModuleFromSourceString(source.name.c_str(), source.path.c_str(),
+                                                               source.source.c_str(), diagnostics.writeRef());
+    if (!result.module)
+        throw ShaderCompilationError(FailureDiagnostics("compile", source.path, diagnostics));
+    result.diagnostics = ReadDiagnostics(diagnostics, "compile");
+    return result;
+}
+
+bool SameSource(const ShaderSourceModule &left, const ShaderSourceModule &right)
+{
+    return left.name == right.name && left.path == right.path && left.source == right.source;
+}
+
+struct ComputeModule
+{
+    // The Slang file system borrows the snapshot, so the module and session
+    // must be destroyed before the source strings and import closure.
+    const ShaderSourceModule source;
+    const std::vector<ShaderSourceModule> libraries;
+    const std::vector<ShaderCodeTarget> targets;
+    const bool precise;
+    const LoadedModule frontend;
+
+    ComputeModule(slang::IGlobalSession *global, const ShaderSourceModule &source,
+                  const std::vector<ShaderSourceModule> &libraries, const std::vector<ShaderCodeTarget> &targets,
+                  bool precise)
+        : source(source), libraries(libraries), targets(targets), precise(precise),
+          frontend(LoadModule(global, this->source, this->libraries, this->targets, precise))
+    {
+    }
+
+    bool Matches(const ShaderSourceModule &requestedSource, const std::vector<ShaderSourceModule> &requestedLibraries,
+                 const std::vector<ShaderCodeTarget> &requestedTargets, bool requestedPrecision) const
+    {
+        return precise == requestedPrecision && targets == requestedTargets && SameSource(source, requestedSource) &&
+               std::equal(libraries.begin(), libraries.end(), requestedLibraries.begin(), requestedLibraries.end(),
+                          SameSource);
+    }
+};
+
 } // namespace
 
 struct SlangCompiler::Impl
@@ -168,6 +260,7 @@ struct SlangCompiler::Impl
     // Slang sessions that share a global session must be used serially. The
     // Python caller releases the GIL before entering this compilation owner.
     std::mutex mutex;
+    std::unique_ptr<ComputeModule> recentComputeModule;
 
     Impl()
     {
@@ -256,72 +349,71 @@ ShaderCompilation SlangCompiler::Compile(const ShaderSourceModule &source,
                                          const std::vector<ShaderSourceModule> &libraries,
                                          const std::vector<ShaderCodeTarget> &targets, bool precise,
                                          const std::vector<ShaderAuthorRange> &sourceRanges)
+{
+    return CompileProgram(source, libraries, targets, precise, sourceRanges, nullptr, nullptr);
+}
+
+ShaderCompilation SlangCompiler::CompileComputeEntry(const ShaderSourceModule &source,
+                                                     const std::vector<ShaderSourceModule> &libraries,
+                                                     const std::vector<ShaderCodeTarget> &targets,
+                                                     const std::string &entryPoint, bool precise,
+                                                     const std::vector<ShaderAuthorRange> &sourceRanges,
+                                                     bool &frontendReused)
+{
+    return CompileProgram(source, libraries, targets, precise, sourceRanges, &entryPoint, &frontendReused);
+}
+
+ShaderCompilation SlangCompiler::CompileProgram(const ShaderSourceModule &source,
+                                                const std::vector<ShaderSourceModule> &libraries,
+                                                const std::vector<ShaderCodeTarget> &targets, bool precise,
+                                                const std::vector<ShaderAuthorRange> &sourceRanges,
+                                                const std::string *entryPoint, bool *frontendReused)
 try {
     RecordShaderCompilationAttempt();
     std::lock_guard lock(impl->mutex);
 
-    std::vector<slang::TargetDesc> targetDescriptions;
-    targetDescriptions.reserve(targets.size());
-    for (const auto target : targets) {
-        slang::TargetDesc description;
-        description.floatingPointMode = precise ? SLANG_FLOATING_POINT_MODE_PRECISE : SLANG_FLOATING_POINT_MODE_DEFAULT;
-        description.format = target == ShaderCodeTarget::SpirV ? SLANG_SPIRV : SLANG_WGSL;
-        if (target == ShaderCodeTarget::SpirV)
-            description.profile = impl->global->findProfile("spirv_1_5");
-        targetDescriptions.push_back(description);
+    LoadedModule uncached;
+    const LoadedModule *frontend = &uncached;
+    if (entryPoint) {
+        auto &retained = impl->recentComputeModule;
+        *frontendReused = retained && retained->Matches(source, libraries, targets, precise);
+        if (!*frontendReused)
+            retained = std::make_unique<ComputeModule>(impl->global.get(), source, libraries, targets, precise);
+        frontend = &retained->frontend;
+    } else {
+        uncached = LoadModule(impl->global.get(), source, libraries, targets, precise);
     }
-
-    slang::CompilerOptionEntry options[5]{};
-    options[0].name = slang::CompilerOptionName::EmitSpirvMethod;
-    options[0].value.intValue0 = SLANG_EMIT_SPIRV_DIRECTLY;
-    options[1].name = slang::CompilerOptionName::VulkanUseEntryPointName;
-    options[1].value.intValue0 = 1;
-    // Author clip space is Y-up on every target. Vulkan's positive-height
-    // viewport needs the opposite position Y; WGSL retains the author value.
-    options[2].name = slang::CompilerOptionName::VulkanInvertY;
-    options[2].value.intValue0 = 1;
-    options[3].name = slang::CompilerOptionName::EnableMachineReadableDiagnostics;
-    options[3].value.intValue0 = 1;
-    options[4].name = slang::CompilerOptionName::EnableRichDiagnostics;
-    options[4].value.intValue0 = 1;
-
-    slang::SessionDesc description;
-    description.targets = targetDescriptions.data();
-    description.targetCount = static_cast<SlangInt>(targetDescriptions.size());
-    description.defaultMatrixLayoutMode = SLANG_MATRIX_LAYOUT_ROW_MAJOR;
-    description.compilerOptionEntries = options;
-    description.compilerOptionEntryCount = 5;
-    const std::array searchPaths{SlangModuleFiles::Mount};
-    description.searchPaths = searchPaths.data();
-    description.searchPathCount = searchPaths.size();
-    Slang::ComPtr<ISlangFileSystem> files(new SlangModuleFiles(source, libraries));
-    description.fileSystem = files;
-
-    Slang::ComPtr<slang::ISession> session;
-    CheckCompilation(impl->global->createSession(description, session.writeRef()), "create_session", nullptr,
-                     source.path);
 
     ShaderCompilation result;
+    result.diagnostics = frontend->diagnostics;
     Slang::ComPtr<slang::IBlob> diagnostics;
-    auto *module = session->loadModuleFromSourceString(source.name.c_str(), source.path.c_str(), source.source.c_str(),
-                                                       diagnostics.writeRef());
-    if (!module)
-        throw ShaderCompilationError(FailureDiagnostics("compile", source.path, diagnostics));
-    AppendDiagnostics(result, diagnostics, "compile");
-
-    const auto entryCount = module->getDefinedEntryPointCount();
+    auto *module = frontend->module;
+    const auto entryCount = entryPoint ? 1 : module->getDefinedEntryPointCount();
     std::vector<Slang::ComPtr<slang::IEntryPoint>> entries(static_cast<size_t>(entryCount));
-    std::vector<slang::IComponentType *> components{module};
-    for (SlangInt32 index = 0; index < entryCount; ++index) {
-        CheckCompilation(module->getDefinedEntryPoint(index, entries[index].writeRef()), "find_entry", nullptr,
-                         source.path);
-        components.push_back(entries[index].get());
+    if (entryPoint) {
+        if (SLANG_FAILED(module->findEntryPointByName(entryPoint->c_str(), entries.front().writeRef())))
+            throw ShaderCompilationError({{"compiler.missing_entry",
+                                           "error",
+                                           source.path,
+                                           0,
+                                           0,
+                                           0,
+                                           0,
+                                           "Entry '" + *entryPoint + "' must be a declared compute entry",
+                                           "find_entry",
+                                           {}}});
+    } else {
+        for (SlangInt32 index = 0; index < entryCount; ++index)
+            CheckCompilation(module->getDefinedEntryPoint(index, entries[index].writeRef()), "find_entry", nullptr,
+                             source.path);
     }
+    std::vector<slang::IComponentType *> components{module};
+    for (const auto &entry : entries)
+        components.push_back(entry.get());
 
     Slang::ComPtr<slang::IComponentType> composed;
-    diagnostics.setNull();
-    auto status = session->createCompositeComponentType(components.data(), static_cast<SlangInt>(components.size()),
-                                                        composed.writeRef(), diagnostics.writeRef());
+    auto status = frontend->session->createCompositeComponentType(
+        components.data(), static_cast<SlangInt>(components.size()), composed.writeRef(), diagnostics.writeRef());
     CheckCompilation(status, "compose", diagnostics, source.path);
     AppendDiagnostics(result, diagnostics, "compose");
 

@@ -10,6 +10,7 @@
 #include <function/resources/ShaderAsset/SlangUIModule.h>
 
 #include <pybind11/stl.h>
+#include <optional>
 #include <stdexcept>
 #include <tuple>
 
@@ -227,7 +228,8 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         [](const std::string &source, const std::string &sourcePath, const std::string &moduleName,
            const std::vector<std::tuple<std::string, std::string, std::string>> &libraries,
            const std::vector<std::string> &targetNames, bool precise, const std::vector<SourceRangeTuple> &sourceRanges,
-           const std::vector<std::pair<std::string, std::string>> &inputKinds, bool rootConstants) {
+           const std::vector<std::pair<std::string, std::string>> &inputKinds, bool rootConstants,
+           const std::optional<std::string> &entryPoint) {
             std::vector<ShaderSourceModule> modules;
             for (const auto &[name, path, text] : libraries)
                 modules.push_back({name, path, text});
@@ -244,18 +246,25 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                 throw std::invalid_argument("A shader program needs at least one target");
 
             ShaderCompilation compiled;
+            bool frontendReused = false;
             {
                 py::gil_scoped_release release;
                 const ShaderSourceModule module{moduleName, sourcePath, source};
                 auto &compiler = SlangCompiler::Get();
-                compiled =
-                    rootConstants
-                        ? compiler.CompileRootProgram(module, modules, targets, precise, SourceRanges(sourceRanges))
-                        : compiler.Compile(module, modules, targets, precise, SourceRanges(sourceRanges));
+                const auto ranges = SourceRanges(sourceRanges);
+                if (entryPoint)
+                    compiled = compiler.CompileComputeEntry(module, modules, targets, *entryPoint, precise, ranges,
+                                                            frontendReused);
+                else if (rootConstants)
+                    compiled = compiler.CompileRootProgram(module, modules, targets, precise, ranges);
+                else
+                    compiled = compiler.Compile(module, modules, targets, precise, ranges);
                 ApplyShaderAuthorResources(compiled, inputKinds);
             }
             py::dict result;
             result["diagnostics"] = ShaderDiagnosticsToPython(compiled.diagnostics);
+            if (entryPoint)
+                result["frontend_reused"] = frontendReused;
             py::list targetPrograms;
             for (const auto &target : compiled.targets) {
                 py::dict program;
@@ -331,7 +340,8 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         py::arg("libraries") = std::vector<std::tuple<std::string, std::string, std::string>>{},
         py::arg("targets") = std::vector<std::string>{"spirv", "wgsl"}, py::arg("precise") = false,
         py::arg("source_ranges") = std::vector<SourceRangeTuple>{},
-        py::arg("input_kinds") = std::vector<std::pair<std::string, std::string>>{}, py::arg("root_constants") = false);
+        py::arg("input_kinds") = std::vector<std::pair<std::string, std::string>>{}, py::arg("root_constants") = false,
+        py::arg("entry_point") = py::none());
 }
 
 } // namespace infernux
