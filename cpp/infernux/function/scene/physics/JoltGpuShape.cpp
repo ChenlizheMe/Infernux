@@ -121,7 +121,7 @@ std::shared_ptr<const MeshTriangleGeometry> EncodeMeshTriangles(const JPH::MeshS
         const auto &hull = static_cast<const JPH::ConvexHullShape &>(*cooked.Get());
         const auto edges = HullTriangleEdges(hull, vertices, triangle.mActiveEdges);
         result->triangles.push_back(
-            {triangle.mSubShapeID, cross / std::sqrt(areaSquared), edges, EncodeJoltGpuGeometry(hull)});
+            {triangle.mSubShapeID, cross / std::sqrt(areaSquared), edges, EncodeJoltGpuGeometry(hull, &vertices)});
     }
     {
         std::lock_guard lock(memo->mutex);
@@ -210,7 +210,10 @@ PreparedGpuShape PrepareJoltGpuShape(const JPH::Shape &shape, uint32_t memberCou
                 item.shape = triangle.geometry->shape;
                 const auto position = leaf.mShapePositionCOM + leaf.mShapeRotation * item.shape->GetCenterOfMass();
                 item.model.localPositionCOM = {float(position.GetX()), float(position.GetY()), float(position.GetZ()),
-                                               0};
+                                               output.model.localPositionCOM.x};
+                // Capture the common mesh origin before adding the triangle COM.
+                item.model.material.z = output.model.localPositionCOM.y;
+                item.model.material.w = output.model.localPositionCOM.z;
                 // Keep the complete immutable mesh recipe through existing
                 // geometry-record owners, without a new publication field.
                 item.geometryRecord = std::shared_ptr<const JoltGpuGeometryRecord>(geometry, triangle.geometry.get());

@@ -115,12 +115,15 @@ JPH::Vec3 CorePoint(const JPH::ConvexHullShape &hull, uint32_t vertex, const std
 }
 } // namespace
 
-std::shared_ptr<const JoltGpuGeometryRecord> EncodeJoltGpuGeometry(const JPH::Shape &shape)
+std::shared_ptr<const JoltGpuGeometryRecord> EncodeJoltGpuGeometry(const JPH::Shape &shape,
+                                                                   const std::array<JPH::Vec3, 3> *meshRayVertices)
 {
     if (shape.GetSubType() != JPH::EShapeSubType::ConvexHull)
         return {};
-    auto memo = RecordMemo();
-    {
+    // Mesh recipes are already memoized by MeshShape. Their uncentered vertices
+    // are separate input, so a hull-only memo cannot identify this record.
+    auto memo = meshRayVertices ? nullptr : RecordMemo();
+    if (memo) {
         std::lock_guard lock(memo->mutex);
         if (const auto found = memo->records.find(&shape); found != memo->records.end())
             if (auto existing = found->second.lock())
@@ -150,7 +153,10 @@ std::shared_ptr<const JoltGpuGeometryRecord> EncodeJoltGpuGeometry(const JPH::Sh
     const uint64_t plane = full + vertices + (hasCore ? vertices : 0);
     const uint64_t directory = plane + faces;
     const uint64_t indices = directory + faces;
-    const uint64_t total = indices + (indexCount + 3) / 4;
+    const uint64_t loopEnd = indices + (indexCount + 3) / 4;
+    if (meshRayVertices && (vertices != 3 || faces != 2 || hasCore))
+        throw std::invalid_argument("Mesh ray vertices require an exact zero-margin planar triangle");
+    const uint64_t total = loopEnd + (meshRayVertices ? 3 : 0);
     if (total > UINT32_MAX || indexCount > UINT32_MAX || total > SIZE_MAX / sizeof(UInt4))
         throw std::length_error("Convex geometry record exceeds typed word address range");
     const std::weak_ptr<GeometryMemo> weak = memo;
@@ -171,7 +177,11 @@ std::shared_ptr<const JoltGpuGeometryRecord> EncodeJoltGpuGeometry(const JPH::Sh
     words[0] = {ShapeConvexHull, static_cast<uint32_t>(total), vertices, faces};
     words[1] = {static_cast<uint32_t>(full), static_cast<uint32_t>(core), static_cast<uint32_t>(plane),
                 static_cast<uint32_t>(directory)};
-    words[2] = {static_cast<uint32_t>(indices), static_cast<uint32_t>(indexCount), 0, 0};
+    words[2] = {static_cast<uint32_t>(indices), static_cast<uint32_t>(indexCount),
+                meshRayVertices ? static_cast<uint32_t>(loopEnd) : 0u, 0};
+    if (meshRayVertices)
+        for (size_t i = 0; i < meshRayVertices->size(); ++i)
+            words[loopEnd + i] = Word((*meshRayVertices)[i]);
     const auto bounds = hull.GetLocalBounds();
     words[3] = Word(bounds.mMin);
     words[4] = Word(bounds.mMax);
@@ -192,7 +202,7 @@ std::shared_ptr<const JoltGpuGeometryRecord> EncodeJoltGpuGeometry(const JPH::Sh
         }
     }
     ValidateJoltGpuGeometry(*record);
-    {
+    if (memo) {
         std::lock_guard lock(memo->mutex);
         auto &entry = memo->records[&shape];
         if (auto existing = entry.lock())
@@ -214,11 +224,14 @@ void ValidateJoltGpuGeometry(const JoltGpuGeometryRecord &record)
         throw std::invalid_argument("Convex geometry margin differs from final native hull");
     const bool hasCore = hull.GetConvexRadius() != 0;
     const uint64_t plane = uint64_t(ConvexGeometryHeaderWords) + count.z * uint64_t(hasCore ? 2 : 1);
+    const uint64_t loopEnd = uint64_t(loops.x) + (uint64_t(loops.y) + 3) / 4;
+    const bool hasMeshRay = loops.z != 0;
     if (count.x != ShapeConvexHull || count.y != w.size() || count.z != hull.GetNumPoints() ||
         count.w != hull.GetNumFaces() || offsets.x != ConvexGeometryHeaderWords ||
         offsets.y != (hasCore ? offsets.x + count.z : offsets.x) || offsets.z != plane ||
-        offsets.w != plane + count.w || loops.x != plane + uint64_t(count.w) * 2 || loops.z || loops.w ||
-        uint64_t(loops.x) + (uint64_t(loops.y) + 3) / 4 != w.size())
+        offsets.w != plane + count.w || loops.x != plane + uint64_t(count.w) * 2 || loops.w ||
+        loopEnd + (hasMeshRay ? 3u : 0u) != w.size() ||
+        (hasMeshRay && (loops.z != loopEnd || hasCore || count.z != 3 || count.w != 2)))
         throw std::invalid_argument("Convex geometry regions do not match final native counts");
     for (uint32_t vertex = 0; vertex < count.z; ++vertex) {
         const auto expected = Word(hull.GetPoint(vertex));
@@ -261,7 +274,21 @@ void ValidateJoltGpuGeometry(const JoltGpuGeometryRecord &record)
         throw std::invalid_argument("Convex loops do not cover the declared index region");
     if (loops.y % 4)
         for (uint32_t i = loops.y % 4; i < 4; ++i)
-            if (Lane(w.back(), i))
+            if (Lane(w[loopEnd - 1], i))
                 throw std::invalid_argument("Convex packed-index padding is not zero");
+    if (hasMeshRay) {
+        uint32_t matched = 0;
+        for (uint32_t i = 0; i < 3; ++i) {
+            const auto vertex = Value(w[loops.z + i]);
+            if (!Finite(vertex) || vertex.w != 0)
+                throw std::invalid_argument("Mesh ray vertex is not finite with zero padding");
+            const auto centered = JPH::Vec3(vertex.x, vertex.y, vertex.z) - hull.GetCenterOfMass();
+            for (uint32_t v = 0; v < 3; ++v)
+                if (centered == hull.GetPoint(v))
+                    matched |= 1u << v;
+        }
+        if (matched != 7)
+            throw std::invalid_argument("Mesh ray vertices do not match the native triangle hull");
+    }
 }
 } // namespace infernux

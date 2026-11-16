@@ -345,9 +345,9 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                     shape.surface.x >= 32 || shape.surface.z > MaterialCombineMaximum ||
                     shape.surface.w > MaterialCombineMaximum)
                     throw std::invalid_argument("Jolt GPU leaf identity, flags or material mode is invalid");
-                if (!Finite4(shape.localPositionCOM) || shape.localPositionCOM.w != 0 ||
-                    !Normalized(shape.localRotation) || !Finite4(shape.material) || shape.material.x < 0 ||
-                    shape.material.y < 0 || shape.material.y > 1 || shape.material.z != 0 || shape.material.w != 0)
+                if (!Finite4(shape.localPositionCOM) || !Normalized(shape.localRotation) || !Finite4(shape.material) ||
+                    shape.material.x < 0 || shape.material.y < 0 || shape.material.y > 1 ||
+                    (!triangle && (shape.localPositionCOM.w != 0 || shape.material.z != 0 || shape.material.w != 0)))
                     throw std::invalid_argument("Jolt GPU leaf pose or material is invalid");
                 const auto geometry = shape.geometry;
                 const auto reference = shape.geometryReference;
@@ -378,6 +378,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                     break;
                 case ShapeConvexHull:
                     if (!Finite4(geometry) || geometry.x < 0 || geometry.x != cold->record->convexRadius ||
+                        triangle != (cold->record->words[2].z != 0) ||
                         (triangle ? geometry.x != 0 || cold->record->words[0].z != 3u ||
                                         std::abs(geometry.y * geometry.y + geometry.z * geometry.z +
                                                  geometry.w * geometry.w - 1.0f) > 1e-4f

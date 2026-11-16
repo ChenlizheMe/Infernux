@@ -26,7 +26,8 @@ static_assert(static_cast<uint32_t>(PhysicsMaterialCombine::Average) == JPH::GPU
 void RefreshGpuActorSurface(JPH::GPU::ShapeModel &leaf, const Collider &collider)
 {
     const int layer = collider.GetGameObject()->GetLayer();
-    leaf.material = {collider.GetFriction(), collider.GetBounciness(), 0.0f, 0.0f};
+    leaf.material.x = collider.GetFriction();
+    leaf.material.y = collider.GetBounciness();
     leaf.surface = {static_cast<uint32_t>(layer), TagLayerManager::Instance().GetLayerCollisionMask(layer),
                     static_cast<uint32_t>(collider.GetFrictionCombine()),
                     static_cast<uint32_t>(collider.GetBounceCombine())};

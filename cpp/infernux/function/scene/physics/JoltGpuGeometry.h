@@ -3,6 +3,7 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/GPU/ConvexGeometryTypes.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
+#include <array>
 #include <memory>
 #include <vector>
 
@@ -19,7 +20,9 @@ struct JoltGpuGeometryRecord
 
 /// Encode a native final ConvexHull, including its exact native shrunken core.
 /// Analytic shapes have inline geometry and do not allocate a cold record.
-[[nodiscard]] std::shared_ptr<const JoltGpuGeometryRecord> EncodeJoltGpuGeometry(const JPH::Shape &shape);
+/// Mesh triangles may append their three original mesh-local ray vertices.
+[[nodiscard]] std::shared_ptr<const JoltGpuGeometryRecord>
+EncodeJoltGpuGeometry(const JPH::Shape &shape, const std::array<JPH::Vec3, 3> *meshRayVertices = nullptr);
 /// Validate the complete typed record, all topology and initialized padding.
 void ValidateJoltGpuGeometry(const JoltGpuGeometryRecord &record);
 } // namespace infernux
