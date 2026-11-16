@@ -123,6 +123,10 @@ inline std::string_view GetSlangParticleGeometrySource()
     return R"slang(import inx_particle;
 import inx_camera;
 import inx_geometry;
+// Match GpuParticleViewConstants::objectData.w.
+static const uint INX_PARTICLE_MOTION_USE_CURRENT_POSITION = 1u;
+static const uint INX_PARTICLE_MOTION_RESET = 2u;
+
 float3 particle_axis(float3 value, float3 fallback) {
     float squared = dot(value, value);
     return squared > 1e-10 ? value * rsqrt(squared) : fallback;
@@ -149,8 +153,10 @@ InxParticleInput particle_output(InxParticleInstance point, float3 position, flo
     output.alpha = color.a;
     output.layer_mask = inx_particle_draw().object_data.z;
     output.motion_vector = float2(0.0);
-    if (motion) {
-        float3 previous = point.previous_position_history.xyz + position - point.position_size.xyz;
+    uint motion_flags = inx_particle_draw().object_data.w;
+    if (motion && (motion_flags & INX_PARTICLE_MOTION_RESET) == 0u) {
+        float3 previous = (motion_flags & INX_PARTICLE_MOTION_USE_CURRENT_POSITION) != 0u
+            ? position : point.previous_position_history.xyz + position - point.position_size.xyz;
         float4 previous_clip = inx_particle_previous_clip(previous);
         output.motion_vector = (clip.xy / max(abs(clip.w), 1e-6) -
             previous_clip.xy / max(abs(previous_clip.w), 1e-6)) * float2(0.5, -0.5);
@@ -390,10 +396,12 @@ InxParticleInput particle_ribbon_vertex(uint vertex, uint instance, bool motion)
     InxParticleInput output = particle_output(point, frame.position, normalize(cross(frame.side, frame.tangent)),
         float4(frame.tangent, 1.0), point.color, uv, local_uv, local_uv, 0.0, false);
     if (!segment.connected) output.alpha = 0.0;
-    if (motion) {
-        RibbonFrame previous = ribbon_frame(segment, true);
+    uint motion_flags = inx_particle_draw().object_data.w;
+    if (motion && (motion_flags & INX_PARTICLE_MOTION_RESET) == 0u) {
+        float3 previous = (motion_flags & INX_PARTICLE_MOTION_USE_CURRENT_POSITION) != 0u
+            ? frame.position : ribbon_frame(segment, true).position;
         float4 current_clip = inx_particle_clip(frame.position);
-        float4 previous_clip = inx_particle_previous_clip(previous.position);
+        float4 previous_clip = inx_particle_previous_clip(previous);
         output.motion_vector = (current_clip.xy / max(abs(current_clip.w), 1e-6) -
             previous_clip.xy / max(abs(previous_clip.w), 1e-6)) * float2(0.5, -0.5);
     }

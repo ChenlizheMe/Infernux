@@ -36,8 +36,12 @@ enum class ParticleRibbonUvMode : uint8_t
 /// camera/light binding, including picking, motion and depth passes.
 struct alignas(16) GpuParticleViewConstants
 {
+    static constexpr uint32_t MotionUseCurrentPosition = 1u;
+    static constexpr uint32_t MotionReset = 2u;
+
     std::array<float, 4> cameraRight{};
     std::array<float, 4> cameraUp{};
+    // xy is the picking owner, z is the layer mask, and w is motion control.
     std::array<uint32_t, 4> objectData{};
     std::array<float, 4> depthReconstruct{};
     std::array<float, 4> lightingControl{};
