@@ -74,6 +74,10 @@ enum class RenderViewPlanState : uint8_t
 
 struct RenderViewPlan
 {
+    // Keep the captured camera and its World alive independently of capture
+    // order. Hosts can schedule several views before recording any of them.
+    std::shared_ptr<const RenderWorldFrame> world;
+    std::shared_ptr<const RenderViewData> view;
     std::shared_ptr<const RenderGraphDescription> graph;
     std::vector<GraphParameterBlockUpdate> parameters;
     CullingResults culling;

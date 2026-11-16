@@ -43,6 +43,8 @@ void ScriptableRenderContext::InitializeView(std::shared_ptr<const RenderWorldFr
         m_scene = source->scenes.active;
         m_gizmoCtx.activeScene = source->scenes.active;
         m_recordedPlan = std::make_shared<RenderViewPlan>();
+        m_recordedPlan->world = m_renderWorldOwner;
+        m_recordedPlan->view = m_cachedCameraView;
     }
     m_captureCompletedWorld = completedWorld;
     if (completedWorld && (!capture || view.editorView))
@@ -120,6 +122,7 @@ ScriptableRenderContext::ScriptableRenderContext(std::shared_ptr<const RenderWor
     m_captureWorldScope = std::make_unique<WorldExecutionScope>(source);
     m_scene = source->scenes.active;
     m_recordedPlan = std::make_shared<RenderViewPlan>();
+    m_recordedPlan->world = m_renderWorldOwner;
 }
 
 void ScriptableRenderContext::SetWorldUISnapshot(CompletedUIFrame snapshot)
