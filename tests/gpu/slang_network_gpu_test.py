@@ -1,5 +1,6 @@
 """A real Slang MLP retains training, model IO and the public NN syntax."""
 
+from itertools import chain
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -217,6 +218,116 @@ def check_jvp(device):
     print("Composed-model directional derivatives and JVP/VJP duality passed on", device, flush=True)
 
 
+def check_composed_optimizers(device):
+    from infernux.nn import optim
+
+    for kind in (optim.SGD, optim.Adam):
+        expected = np.array([2., .4, -1.5, .7], dtype=np.float32)
+        encoder, head = nn.Linear(1, 1, device=device), nn.Linear(1, 1, device=device)
+        encoder.load_state_dict({"weight": nn.tensor([[expected[0]]]), "bias": nn.tensor([expected[1]])})
+        head.load_state_dict({"weight": nn.tensor([[expected[2]]]), "bias": nn.tensor([expected[3]])})
+        parameters = tuple(chain(encoder.parameters(), head.parameters()))
+        rate, beta1, beta2, epsilon, decay = .04, .5, .75, 1e-5, .02
+        order = (0, 1, 2, 3) if kind is optim.SGD else (2, 1, 3, 0)
+        settings = {} if kind is optim.SGD else dict(betas=(beta1, beta2), eps=epsilon, weight_decay=decay)
+        optimizer = kind((parameters[index] for index in order), lr=rate, **settings)
+        with np.testing.assert_raises_regex(ValueError, "one live optimizer"):
+            optim.SGD(head.parameters())
+
+        xs, targets = np.array([.25, -.75], np.float32), np.array([.3, .4], np.float32)
+        x, target = (nn.tensor(values.reshape(-1, 1), device=device) for values in (xs, targets))
+        first, second = np.zeros_like(expected), np.zeros_like(expected)
+        counts = np.zeros(len(parameters), dtype=np.int32)
+        versions = [encoder.parameter_version, head.parameter_version]
+        execute_work = optim._execute_work
+
+        def assert_not_published(states, moments, steps):
+            assert encoder._state is states[0] and head._state is states[1]
+            assert optimizer._state is moments and optimizer._committed_steps == steps
+            assert (encoder.parameter_version, head.parameter_version) == tuple(versions)
+
+        def fail_after_candidates(cursor, *args):
+            execute_work(cursor, *args)
+            raise RuntimeError("update failed after executing private candidates")
+
+        def replace_gradient(cursor, *args):
+            execute_work(cursor, *args)
+            head.bias.grad = nn.ones_like(head.bias)
+
+        for step in (1, 2):
+            optimizer.zero_grad()
+            hidden = encoder(x)
+            prediction = head(hidden if step == 1 else hidden.detach())
+            F.mse_loss(prediction, target).backward()
+            latent = xs * expected[0] + expected[1]
+            upstream = 2. * (latent * expected[2] + expected[3] - targets) / len(xs)
+            gradients = np.array([(upstream * expected[2] * xs).sum(), (upstream * expected[2]).sum(),
+                                  (upstream * latent).sum(), upstream.sum()], dtype=np.float32)
+            active = np.array([True, True, True, True] if step == 1 else [False, False, True, True])
+            for i, parameter in enumerate(parameters):
+                if active[i]:
+                    np.testing.assert_allclose(parameter.grad.item(), gradients[i], rtol=3e-5, atol=3e-6)
+                else:
+                    assert parameter.grad is None
+
+            states, moments = (encoder._state, head._state), optimizer._state
+            old_gradients = tuple(parameter.grad for parameter in parameters)
+            with patch.object(optim, "_execute_work", side_effect=fail_after_candidates), \
+                 np.testing.assert_raises_regex(RuntimeError, "private candidates"):
+                optimizer.step()
+            assert_not_published(states, moments, step - 1)
+            assert all(parameter.grad is old for parameter, old in zip(parameters, old_gradients))
+
+            if step == 1:
+                with patch.object(optim, "_execute_work", side_effect=replace_gradient), \
+                     np.testing.assert_raises_regex(RuntimeError, "changed before publication"):
+                    optimizer.step()
+                assert_not_published(states, moments, step - 1)
+                head.bias.grad = old_gradients[3]
+
+            with patch.object(optim, "_execute_work", wraps=execute_work) as execute:
+                optimizer.step()
+                assert execute.call_count == 1
+                assert len(execute.call_args.args[0].operations) == active.sum() * (1 if kind is optim.SGD else 3)
+            assert tuple(chain(encoder.parameters(), head.parameters())) == parameters
+            assert all(parameter.grad is old for parameter, old in zip(parameters, old_gradients))
+            versions[0] += int(step == 1)
+            versions[1] += 1
+            assert (encoder.parameter_version, head.parameter_version) == tuple(versions)
+            if step == 2:
+                assert encoder._state is states[0]
+
+            counts[active] += 1
+            if kind is optim.SGD:
+                expected[active] -= rate * gradients[active]
+            else:
+                adjusted = gradients[active] + decay * expected[active]
+                first[active] = beta1 * first[active] + (1. - beta1) * adjusted
+                second[active] = beta2 * second[active] + (1. - beta2) * adjusted ** 2
+                corrected_first = first[active] / (1. - beta1 ** counts[active])
+                corrected_second = second[active] / (1. - beta2 ** counts[active])
+                expected[active] -= rate * corrected_first / (np.sqrt(corrected_second) + epsilon)
+            np.testing.assert_allclose([parameter.item() for parameter in parameters], expected, rtol=3e-5, atol=3e-6)
+            snapshot = optimizer.state_dict()
+            assert snapshot["committed_steps"] == step
+            if kind is optim.Adam:
+                for index, slot in enumerate(order):
+                    entry = snapshot["state"][index]
+                    assert entry["step"] == counts[slot]
+                    np.testing.assert_allclose([entry["exp_avg"].item(), entry["exp_avg_sq"].item()],
+                                               [first[slot], second[slot]], rtol=3e-5, atol=3e-6)
+            if step == 1:
+                optimizer.load_state_dict(snapshot)
+
+        optimizer.zero_grad(set_to_none=False)
+        assert encoder.weight.grad is None and head.weight.grad.item() == 0.
+        optimizer.zero_grad()
+        states, moments = (encoder._state, head._state), optimizer._state
+        optimizer.step()
+        assert_not_published(states, moments, 2)
+        print(f"Composed-model {kind.__name__} updates and failed-publication isolation passed on {device}", flush=True)
+
+
 def main():
     workspace = tempfile.TemporaryDirectory(prefix="infernux-slang-network-")
     project = Path(workspace.name)
@@ -274,6 +385,8 @@ def main():
         check_composition("gpu")
         check_jvp("cpu")
         check_jvp("gpu")
+        check_composed_optimizers("cpu")
+        check_composed_optimizers("gpu")
     finally:
         inx.compute._release_engine_resources()
         native.cleanup()

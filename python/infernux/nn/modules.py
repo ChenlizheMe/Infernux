@@ -376,6 +376,9 @@ class Module:
                 return self
             if all(value.device == device for value in root._state):
                 return self
+            optimizer = None if root._optimizer is None else root._optimizer()
+            if optimizer is not None and optimizer._root is None:
+                raise ValueError("move models to their target device before creating a multi-model optimizer")
             from . import _primitives as p
             candidates, gradients, storage, moved = [], [], (), None
             try:
@@ -384,7 +387,6 @@ class Module:
                 present = [parameter.grad for _, parameter in root._named if parameter.grad is not None]
                 moved = iter(_to_device_batch(present, device))
                 gradients = [None if parameter.grad is None else next(moved) for _, parameter in root._named]
-                optimizer = None if root._optimizer is None else root._optimizer()
                 optimizer_state = None if optimizer is None else optimizer._copy_state(device)
                 root._state = tuple(candidates)
                 for (_, parameter), gradient in zip(root._named, gradients):

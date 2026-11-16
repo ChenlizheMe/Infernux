@@ -2060,7 +2060,7 @@ class _Run:
             self.grad_facts = _grad_facts(self.optimizer._params)
             p.retire((*self.values, None if self.target is None else self.target._data), flush=False)
             self.values, self.target = (), None
-        self.step_bindings = self.optimizer._bind_step(self.state, self.grad_facts, self.update_spec,
+        self.step_bindings = self.optimizer._bind_step((self.state,), self.grad_facts, self.update_spec,
                                                        managed=self.managed)
         backward.retire(flush=False)
         self.backward_bindings = None

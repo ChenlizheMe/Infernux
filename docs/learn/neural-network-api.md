@@ -75,11 +75,25 @@ value, directional_derivative = nn.autograd.jvp(
 | `loss.backward()`、`output.backward(gradient)` | 反向传播并累积参数梯度 | MSE/交叉熵使用默认种子；普通输出可传同形、同设备的 detached 梯度，单元素可省略；不支持高阶梯度和保留反向图 |
 | `nn.autograd.grad(outputs, inputs, grad_outputs=None, allow_unused=...)` | 返回指定叶张量和参数的梯度，保留已有 `.grad` | 多次普通调用的输出或损失可在同一设备与计算宿主上共同反传。共享前向只反传一次，贡献按叶张量和参数身份累积。输入顺序决定返回顺序。非标量输出需要匹配的 detached 种子，MSE 和交叉熵使用单位种子。调用消耗所用的反向记录。未用输入默认报错，`allow_unused=True` 返回 `None`，`materialize_grads=True` 返回零张量。 |
 | `nn.autograd.jvp(func, primals, tangents)` | 一次求出函数值及输入方向导数 | 输入与切向为同形、同设备、同计算宿主的 float32 Tensor，单个 Tensor 或成组传入。输出为一对 detached 结果，保留 `func` 返回的单 Tensor 或 Tensor 元组结构。 |
-| `nn.optim.SGD(model.parameters(), lr=...)` | 普通 SGD | 一个完整模型参数域、一个存活优化器；当前不支持动量、权重衰减、参数子组或 closure |
+| `nn.optim.SGD(model.parameters(), lr=...)` | 普通 SGD | 一个或多个完整模型参数树，每棵树最多一个存活优化器；当前不支持动量、权重衰减、参数子组或 closure |
 | `nn.optim.Adam(model.parameters(), lr=..., betas=(.9,.999), eps=1e-8, weight_decay=0)` | Adam 与耦合 L2 衰减 | 参数、两组动量和逐参数计数一起提交；None 梯度跳过，零梯度正常更新；暂不支持 AMSGrad、foreach、fused 或 AdamW |
 | `optimizer.zero_grad(set_to_none=True)` | 清除或置零梯度 | `True` 释放梯度，`False` 执行已编译置零操作 |
 | `nn.utils.clip_grad_norm_(parameters, max_norm, norm_type=2.0, error_if_nonfinite=False, foreach=None)` | 按全部参与梯度的 L2 范数统一缩放，返回裁前范数 | float32、单设备、同一模型域；当前只支持 L2、非有限值传播和 foreach=None/False。忽略 None 梯度；零梯度保留 |
 | `optimizer.step()` | 完整更新后一次发布参数 | 离线调用同步完成；执行中间结果不会作为半套新参数暴露 |
+
+```python
+from itertools import chain
+
+optimizer = nn.optim.Adam(chain(encoder.parameters(), head.parameters()), lr=0.001)
+optimizer.zero_grad()
+prediction = head(encoder(batch))
+nn.functional.mse_loss(prediction, target).backward()
+optimizer.step()
+```
+
+普通 `SGD` 和 `Adam` 可更新多个独立源码模型。参数来自同一设备和计算宿主的完整模型树，每个 `Parameter` 传入一次。`step()` 在同一个 Work 游标中计算所有候选值，完成后验证参数、梯度和优化器状态，再一起发布各模型的参数和 Adam 状态。更新执行失败或绑定已过期时，已有参数、版本和优化器状态保留。缺少梯度的参数跳过更新，只有实际更新的模型递增 `parameter_version`。
+
+先把各模型移动到目标设备，再构造组合优化器。组合优化器的 `state_dict()` 和 `load_state_dict()` 按传入参数顺序保存和恢复内存状态。受管 `nn.program` 和 INM 模型 checkpoint 接受单根模型的优化器。
 
 Categorical 已交付；桌面 NNNP1 项目中的一步 actor-critic 使用普通图组合损失，没有专用 RL 执行器。它已验证单动作/多关节动作的 TD0、停止梯度、参数发布与终止/截断数学；Microduck 物理学习场景及连续策略另行验收。卷积当前是可续行的直接求和实现；尚未做专门的分块、融合或卷积库加速。不能把首版图像算子称为完整超分或插帧算法。
 

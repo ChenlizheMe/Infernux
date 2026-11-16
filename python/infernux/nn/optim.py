@@ -1,10 +1,12 @@
 """Optimizer recipes share one cursor and one parameter/state publication."""
-from infernux._work import _Operation
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
 import weakref
 
 import numpy as np
+
+from infernux._work import _Operation
 
 from . import _primitives as p
 from ._tensor import Parameter, Tensor, _empty, _check_options, _check_storage, _copy_storage_batch
@@ -17,6 +19,7 @@ _FLOAT32_MAX = float(np.finfo(np.float32).max)
 class _StepSpec:
     settings: tuple
     state: tuple
+    committed_steps: int
     max_norm: float | None = None
 
     @property
@@ -85,10 +88,11 @@ def _sgd_work(optimizer, state, facts, spec, empty, prepare, borrow):
 
 class _StepBindings:
     """Private parameter and optimizer candidates, published together."""
-    def __init__(self, optimizer, state, facts, spec, *, managed):
-        self.optimizer, self.state, self.facts, self.spec = optimizer, state, facts, spec
+    def __init__(self, optimizer, root_states, values, facts, spec, *, managed):
+        self.optimizer, self.values, self.facts, self.spec = optimizer, values, facts, spec
+        self.root_states = root_states
         self.managed = managed
-        self.candidates, self.pending, self.changed = list(state), [], []
+        self.candidates, self.pending, self.changed = list(values), [], []
         self.next_state = ()
         self.gradients = []
         self.published = False
@@ -100,7 +104,7 @@ class _StepBindings:
         def prepare(program, *params):
             return program
         try:
-            work = _step_work(optimizer, state, facts, spec, empty, prepare)
+            work = _step_work(optimizer, values, facts, spec, empty, prepare)
             operations, self.candidates, self.changed = work.operations, work.parameters, work.changed
             self.gradients = [(parameter, Tensor._from_buffer(value, parameter.shape))
                               for parameter, value in work.gradients]
@@ -117,32 +121,39 @@ class _StepBindings:
             raise
 
     def commit(self):
-        root = self.optimizer._root
-        with root._lock:
-            self.optimizer._check_domain()
-            if (root._state is not self.state or self.optimizer._state is not self.spec.state
+        optimizer = self.optimizer
+        with optimizer._lock_roots():
+            optimizer._check_domain()
+            if (any(root._state is not state for root, state in zip(optimizer._roots, self.root_states, strict=True))
+                    or optimizer._state is not self.spec.state
+                    or optimizer._committed_steps != self.spec.committed_steps
                     or not _grads_current(self.facts)):
                 raise RuntimeError("optimizer parameter/gradient/state bindings changed before publication")
+            changed = set(self.changed)
+            publications = tuple((root, tuple(self.candidates[index] for index in indices), root._parameter_version + 1)
+                                 for root, indices in zip(optimizer._roots, optimizer._root_indices, strict=True)
+                                 if not changed.isdisjoint(indices))
+            next_step = self.spec.committed_steps + 1
+            clipped = {id(parameter): gradient for parameter, gradient in self.gradients}
+            next_facts = tuple((parameter, clipped.get(id(parameter), gradient)) for parameter, gradient in self.facts)
             if self.managed:
                 for value in (*(self.candidates[index] for index in self.changed),
-                              *self.optimizer._state_values(self.next_state),
+                              *optimizer._state_values(self.next_state),
                               *(gradient._data for _, gradient in self.gradients)):
                     value._publish_storage()
-            if self.changed:
-                state = tuple(self.candidates)
-                step = self.optimizer._committed_steps + 1
-                root._state = state
-                root._parameter_version += 1
-                self.optimizer._state = self.next_state
-                self.optimizer._committed_steps = step
+            if changed:
+                for root, state, version in publications:
+                    object.__setattr__(root, "_state", state)
+                    object.__setattr__(root, "_parameter_version", version)
+                optimizer._state, optimizer._committed_steps = self.next_state, next_step
             for parameter, gradient in self.gradients:
                 parameter._grad = gradient
-            self.facts = _grad_facts(self.optimizer._params)
+            self.facts = next_facts
             self.published = True
-            return root._state
+            return None if optimizer._root is None else optimizer._root._state
 
     def live_values(self):
-        return (*self.state, *self.optimizer._state_values(self.spec.state),
+        return (*self.values, *self.optimizer._state_values(self.spec.state),
                 *(gradient._data for _, gradient in self.facts if gradient is not None), *self.pending)
 
     def retire(self, *, flush=True):
@@ -150,12 +161,12 @@ class _StepBindings:
         if not self.published:
             p.retire((gradient._data for _, gradient in self.gradients), flush=flush)
             p.retire((self.candidates[index] for index in self.changed
-                      if self.candidates[index] is not self.state[index]), flush=flush)
+                      if self.candidates[index] is not self.values[index]), flush=flush)
             p.retire(self.optimizer._state_values(self.next_state), flush=flush)
         self.pending.clear()
         self.candidates.clear()
         self.gradients.clear()
-        self.cursor = self.state = self.facts = None
+        self.cursor = self.root_states = self.values = self.facts = None
         self.next_state = self.spec = None
 
 
@@ -165,25 +176,69 @@ class Optimizer:
         params = tuple(params)
         if not params or any(not isinstance(value, Parameter) for value in params):
             raise TypeError("optimizer requires the complete model.parameters() iterable")
-        root = params[0]._owner
-        if root is None or params != tuple(value for _, value in root._named):
-            raise ValueError("optimizer requires exactly one complete model parameter tree")
-        if root._optimizer is not None and root._optimizer() is not None:
-            raise ValueError("a model supports one live optimizer")
-        self._root, self._params = root, params
+        slots = {id(parameter): index for index, parameter in enumerate(params)}
+        if len(slots) != len(params):
+            raise ValueError("optimizer requires distinct Parameters")
+        roots = {id(parameter._owner): parameter._owner for parameter in params}
+        if any(root is None for root in roots.values()):
+            raise ValueError("optimizer requires complete bound model parameter trees")
+        self._roots = tuple(roots[identity] for identity in sorted(roots))
+        self._root = self._roots[0] if len(self._roots) == 1 else None
+        self._params = params
         self._committed_steps = 0
         self.param_groups = [{"params": list(params), **defaults}]
         self._group_fields = frozenset(defaults)
         self._state = ()
         self._settings()
         self._update = self._zero = self._clip = None
-        root._optimizer = weakref.ref(self)
+        with self._lock_roots():
+            indices = []
+            for root in self._roots:
+                root._bind()
+                if root._optimizer is not None and root._optimizer() is not None:
+                    raise ValueError("a model supports one live optimizer")
+                if any(id(value) not in slots for _, value in root._named):
+                    raise ValueError("optimizer requires complete model parameter trees")
+                indices.append(tuple(slots[id(value)] for _, value in root._named))
+            if (sum(map(len, indices)) != len(params)
+                    or (self._root is not None and indices[0] != tuple(range(len(params))))):
+                raise ValueError("optimizer requires the complete model parameter tree in order")
+            if self._root is None:
+                _check_storage(tuple(parameter._data for parameter in params))
+                if any(root._program_source is not None for root in self._roots):
+                    raise NotImplementedError("multi-model optimizers require source-backed models")
+            self._root_indices = tuple(indices)
+            owner = weakref.ref(self)
+            for root in self._roots:
+                object.__setattr__(root, "_optimizer", owner)
+
+    @contextmanager
+    def _lock_roots(self):
+        with ExitStack() as locks:
+            for root in self._roots:
+                locks.enter_context(root._lock)
+            yield
+
+    @property
+    def _program_source(self):
+        return None if self._root is None else self._root._program_source
+
+    def _parameter_values(self, states):
+        if self._root is not None:
+            return states[0]
+        values = [None] * len(self._params)
+        for indices, state in zip(self._root_indices, states, strict=True):
+            for index, value in zip(indices, state, strict=True):
+                values[index] = value
+        return tuple(values)
 
     def _check_domain(self):
         if len(self.param_groups) != 1 or tuple(self.param_groups[0]["params"]) != self._params:
             raise ValueError("optimizer parameter groups cannot replace the model's publication domain")
-        if self._root._optimizer() is not self or tuple(value for _, value in self._root._named) != self._params:
-            raise ValueError("optimizer requires its original model parameter domain")
+        for root, indices in zip(self._roots, self._root_indices, strict=True):
+            if (root._optimizer is None or root._optimizer() is not self
+                    or tuple(value for _, value in root._named) != tuple(self._params[index] for index in indices)):
+                raise ValueError("optimizer requires its original model parameter domain")
 
     def _learning_rate(self, group=None):
         # Construction validates groups before registering the weak optimizer owner.
@@ -201,7 +256,7 @@ class Optimizer:
         return (self._learning_rate(group),)
 
     def _step_spec(self, max_norm=None):
-        return _StepSpec(self._settings(), self._state, max_norm)
+        return _StepSpec(self._settings(), self._state, self._committed_steps, max_norm)
 
     @staticmethod
     def _state_values(state):
@@ -219,7 +274,7 @@ class Optimizer:
 
         engine = Application._current_engine()
         owner = None if engine is None else engine._cpu_work_owner
-        if owner is not None and owner._training_writer(self._root) is not None:
+        if owner is not None and any(owner._training_writer(root) is not None for root in self._roots):
             raise RuntimeError("finish the model's training request before transferring optimizer state")
 
     def state_dict(self):
@@ -228,7 +283,7 @@ class Optimizer:
         Tensor values retain their immutable storage. The dictionary is an
         in-memory value; checkpoint files continue to use the existing INM codec.
         """
-        with self._root._lock:
+        with self._lock_roots():
             self._check_domain()
             self._require_idle()
             record = self._record()
@@ -247,7 +302,7 @@ class Optimizer:
         This explicit cold boundary copies through the ordinary CPU/Vulkan
         transfer path. It publishes only after every state tensor is ready.
         """
-        with self._root._lock:
+        with self._lock_roots():
             self._check_domain()
             self._require_idle()
             if state_dict["kind"] != self._kind or len(state_dict["param_groups"]) != 1:
@@ -306,7 +361,7 @@ class Optimizer:
     def _prepare_update(self, current, gradient, output, lr, *, native_entry=False):
         if self._update is None:
             update = p.prepare(p.sgd, (current, gradient, output, lr), own_deferred_samples=True,
-                               source=self._root._program_source)
+                               source=self._program_source)
             try:
                 if native_entry:
                     update._native_entry()
@@ -328,6 +383,8 @@ class Optimizer:
         if not inputs or any(not isinstance(x, Tensor) or x.requires_grad for x in inputs):
             raise ValueError("training continuation requires non-differentiable Tensor inputs")
         root = self._root
+        if root is None:
+            raise ValueError("managed training requires one root model's optimizer")
         with root._lock:
             self._check_domain()
             root.prepare(*inputs)
@@ -382,14 +439,16 @@ class Optimizer:
                                   *self._update_programs),
                                  reverse_programs=plan._gpu_reverse_programs, required=required)
 
-    def _bind_step(self, state, facts, spec, *, managed=False):
+    def _bind_step(self, root_states, facts, spec, *, managed=False):
         self._check_domain()
-        _check_storage((*state, *self._state_values(spec.state), *(gradient._data for _, gradient in facts if gradient is not None)))
-        return _StepBindings(self, state, facts, spec, managed=managed)
+        values = self._parameter_values(root_states)
+        _check_storage((*values, *self._state_values(spec.state),
+                        *(gradient._data for _, gradient in facts if gradient is not None)))
+        return _StepBindings(self, root_states, values, facts, spec, managed=managed)
 
     def _prepare_zero(self, data):
         if self._zero is None:
-            self._zero = p.prepare(p.zero, (data,), source=self._root._program_source)
+            self._zero = p.prepare(p.zero, (data,), source=self._program_source)
 
     def zero_grad(self, set_to_none=True):
         if type(set_to_none) is not bool:
@@ -397,7 +456,8 @@ class Optimizer:
         from .program import _capture_program
         if (capture := _capture_program.get()) is not None:
             return capture.zero_grad(self, set_to_none)
-        with self._root._lock:
+        with self._lock_roots():
+            self._check_domain()
             device = self._params[0].device
             _check_options(None, device)
             if set_to_none:
@@ -436,24 +496,27 @@ class Optimizer:
         from .program import _capture_program
         if (capture := _capture_program.get()) is not None:
             return capture.step(self)
-        root = self._root
-        with root._lock:
-            root._bind()
+        with self._lock_roots():
+            for root in self._roots:
+                root._bind()
+            self._check_domain()
             spec = self._step_spec()
             device = self._params[0].device
             _check_options(None, device)
-            _check_storage((*root._state, *(parameter.grad._data for parameter in self._params if parameter.grad is not None)))
+            states = tuple(root._state for root in self._roots)
+            facts = _grad_facts(self._params)
+            _check_storage((*(value for state in states for value in state),
+                            *(gradient._data for _, gradient in facts if gradient is not None)))
             bindings = None
             try:
-                facts = _grad_facts(self._params)
                 if self._update is None and any(gradient is not None for _, gradient in facts):
-                    current = root._state[0]
+                    current = self._params[0]._data
                     scratch = _empty(current.shape, device)
                     try:
                         self._prepare_update(current, current, scratch, spec.lr)
                     finally:
                         scratch.close()
-                bindings = self._bind_step(root._state, facts, spec)
+                bindings = self._bind_step(states, facts, spec)
                 _execute_work(bindings.cursor, device, self._update_programs)
                 bindings.commit()
             finally:
@@ -514,11 +577,11 @@ class Adam(Optimizer):
             settings = self._settings()
             self._moments = tuple(p.prepare(p.adam_moment,
                 (current, gradient, current, output, np.float32(beta), np.float32(1-beta), settings[4], np.float32(1)),
-                _MOMENT_POWER=power, own_deferred_samples=True, source=self._root._program_source)
+                _MOMENT_POWER=power, own_deferred_samples=True, source=self._program_source)
                 for power, beta in enumerate(settings[1:3], 1))
             self._update = p.prepare(p.adam_update,
                 (current, current, current, output, lr, np.float32(1), np.float32(1), settings[3]),
-                own_deferred_samples=True, source=self._root._program_source)
+                own_deferred_samples=True, source=self._program_source)
         if native_entry:
             for program in self._update_programs:
                 for variant in p.program_family(program):
