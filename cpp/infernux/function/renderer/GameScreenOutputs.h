@@ -270,10 +270,9 @@ class GameScreenOutputs final
             if (image->width != raster.config.width || image->height != raster.config.height ||
                 image->description.samples != raster.samples || image->description.filter != raster.config.filter)
                 continue;
-            const bool guiUsesPixels =
-                std::any_of(slot->pixels->guiDescriptors.begin(), slot->pixels->guiDescriptors.end(),
-                            [this](uint64_t id) { return m_gui.IsTextureReferencedByCurrentDrawData(id); });
-            if (slot->pixels.use_count() == 1 && !guiUsesPixels) {
+            if (slot->pixels.use_count() == 1 &&
+                std::none_of(slot->pixels->guiDescriptors.begin(), slot->pixels->guiDescriptors.end(),
+                             [this](uint64_t id) { return m_gui.IsTextureReferencedByCurrentDrawData(id); })) {
                 admit(slot);
                 output->workWithheld = false;
                 output->allocationDiagnostic.Reset();

@@ -334,6 +334,8 @@ class InxGUI
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
     bool m_hasDrawData = false;
+    std::vector<uint64_t> m_drawTextureIds;
+    std::vector<const ImTextureData *> m_drawManagedTextures;
     bool m_presentationGeometryMismatch = false;
     bool m_recordingFrameImages = false;
     struct LiveImageBinding
@@ -354,6 +356,7 @@ class InxGUI
     EditorGuiInputRearmBudget m_syntheticInputRearm;
     EditorGuiFrameScheduler m_editorFrameScheduler;
 
+    void IndexDrawDataTextures();
     void ApplyPendingDockTabSelections();
     void PromoteActiveModal();
     void DeferTextureRelease(ImGuiTextureResource resource);

@@ -923,6 +923,7 @@ void InxGUI::BuildScheduledFrame(bool canCollectRetiredFonts)
         activeModal->Flags = activeModalFlags;
     const ImDrawData *drawData = ImGui::GetDrawData();
     m_hasDrawData = drawData != nullptr && drawData->Valid;
+    IndexDrawDataTextures();
 
     for (auto it = m_liveImageBindings.begin(); it != m_liveImageBindings.end();) {
         if (it->second.lastUsedFrame != m_guiFrameCounter) {
@@ -1680,31 +1681,48 @@ bool InxGUI::TouchImGuiTextureId(uint64_t textureId)
     return true;
 }
 
+void InxGUI::IndexDrawDataTextures()
+{
+    m_drawTextureIds.clear();
+    m_drawManagedTextures.clear();
+    if (!m_hasDrawData)
+        return;
+
+    for (const ImGuiViewport *viewport : ImGui::GetPlatformIO().Viewports) {
+        if (!viewport || !viewport->DrawData || !viewport->DrawData->Valid)
+            continue;
+        for (const ImDrawList *list : viewport->DrawData->CmdLists) {
+            if (!list)
+                continue;
+            for (const auto &command : list->CmdBuffer) {
+                const auto &texture = command.TexRef;
+                // The backend can assign an atlas descriptor after ImGui::Render.
+                if (texture._TexData)
+                    m_drawManagedTextures.push_back(texture._TexData);
+                else
+                    m_drawTextureIds.push_back(static_cast<uint64_t>(texture._TexID));
+            }
+        }
+    }
+    const auto makeIndex = [](auto &values) {
+        std::sort(values.begin(), values.end());
+        values.erase(std::unique(values.begin(), values.end()), values.end());
+    };
+    makeIndex(m_drawTextureIds);
+    makeIndex(m_drawManagedTextures);
+}
+
 bool InxGUI::IsTextureReferencedByCurrentDrawData(uint64_t textureId) const
 {
     if (textureId == 0 || !m_hasDrawData || m_imguiContext_ptr == nullptr)
         return false;
 
-    const auto referencesTexture = [textureId](const ImDrawData *drawData) {
-        if (drawData == nullptr || !drawData->Valid)
-            return false;
-        for (const ImDrawList *drawList : drawData->CmdLists) {
-            if (drawList == nullptr)
-                continue;
-            for (const ImDrawCmd &command : drawList->CmdBuffer) {
-                if (static_cast<uint64_t>(command.GetTexID()) == textureId)
-                    return true;
-            }
-        }
-        return false;
-    };
-
-    const ImGuiPlatformIO &platform = ImGui::GetPlatformIO();
-    for (const ImGuiViewport *viewport : platform.Viewports) {
-        if (viewport != nullptr && referencesTexture(viewport->DrawData))
-            return true;
-    }
-    return false;
+    return std::binary_search(m_drawTextureIds.begin(), m_drawTextureIds.end(), textureId) ||
+           std::any_of(
+               m_drawManagedTextures.begin(), m_drawManagedTextures.end(),
+               [textureId](const auto *texture) { return static_cast<uint64_t>(texture->TexID) == textureId; }) ||
+           std::any_of(m_resolvedFrameImages.begin(), m_resolvedFrameImages.end(),
+                       [textureId](const auto &image) { return image.second.textureId == textureId; });
 }
 
 uint64_t InxGUI::GetImGuiTextureVersion(const std::string &name) const
