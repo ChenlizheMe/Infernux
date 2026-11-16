@@ -13,6 +13,7 @@
 namespace infernux
 {
 struct EngineConfig;
+struct PreparedCpuActor;
 
 /// Shared scratch and worker access, not another pool for each RuntimeWorld.
 /// The owner advances CPU worlds serially; Jolt may parallelize a world's step
@@ -42,6 +43,7 @@ class JoltCpuScene final
     /// Creation does not enter broadphase. The common actor lifecycle publishes
     /// the body through Jolt's normal single/batch add operations.
     JPH::BodyID CreateBody(uint32_t bodyId, const JPH::BodyCreationSettings &settings);
+    JPH::BodyID CreateBody(uint32_t bodyId, const PreparedCpuActor &actor);
     /// Caller has detached this body's constraints before destruction.
     void DestroyBody(uint32_t bodyId);
     [[nodiscard]] JPH::BodyID NativeBody(uint32_t bodyId) const;
