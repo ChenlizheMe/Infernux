@@ -242,7 +242,9 @@ struct RendererUIPerformanceSnapshot
 
 struct RendererFramePerformanceSample
 {
+    static constexpr size_t InputPhaseCount = 8;
     uint64_t frame = 0;
+    uint64_t opportunity = 0;
     double frameMs = 0.0;
     double gameOnlyMs = 0.0;
     double renderMs = 0.0;
@@ -250,9 +252,11 @@ struct RendererFramePerformanceSample
     double guiMs = 0.0;
     double prepareMs = 0.0;
     double inputMs = 0.0;
-    std::array<double, 6> inputPhases{};
+    std::array<double, InputPhaseCount> inputPhases{};
     uint32_t inputEventCount = 0;
+    uint32_t rawMouseMotionCount = 0;
     uint32_t dispatchedMouseMotionCount = 0;
+    bool inputIdle = false;
     double callbacksMs = 0.0;
     double gpuWaitMs = 0.0;
     double drawMs = 0.0;
@@ -274,8 +278,14 @@ struct RendererFramePerformanceSnapshot
     UIPerformanceMetricStats gui;
     UIPerformanceMetricStats prepare;
     UIPerformanceMetricStats input, callbacks, gpuWait, draw;
+    std::array<UIPerformanceMetricStats, RendererFramePerformanceSample::InputPhaseCount> inputPhases;
     std::array<UIPerformanceMetricStats, 6> drawPhases;
+    uint64_t queuedInputEvents = 0;
+    uint64_t rawMouseMotions = 0;
+    uint64_t dispatchedMouseMotions = 0;
+    uint64_t idleFrames = 0;
     std::vector<RendererFramePerformanceSample> slowestFrames;
+    std::vector<RendererFramePerformanceSample> slowestInputFrames;
     std::vector<FrameWorkSourceProfile> workSources;
 };
 

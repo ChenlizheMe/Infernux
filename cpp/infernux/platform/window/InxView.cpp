@@ -300,12 +300,18 @@ void InxView::RequestExternalWake() noexcept
     SDL_PushEvent(&event);
 }
 
-void InxView::ProcessEvent(bool pace)
+void InxView::ProcessEvent(bool pace, bool profileInput)
 {
-    const auto inputFrameStart = std::chrono::steady_clock::now();
+    using Clock = std::chrono::steady_clock;
+    m_profileInput = profileInput;
+    const auto stamp = [profileInput] { return profileInput ? Clock::now() : Clock::time_point{}; };
+    const auto milliseconds = [](auto begin, auto end) {
+        return std::chrono::duration<double, std::milli>(end - begin).count();
+    };
+    const auto inputFrameStart = stamp();
     // Begin a new input frame: clear transition edges and per-frame deltas.
     InputManager::Instance().BeginFrame();
-    const auto inputFrameReady = std::chrono::steady_clock::now();
+    const auto inputFrameReady = stamp();
     m_needsImmediateGuiRefresh = false;
     m_currentImGuiEventDispatchMs = 0.0;
     m_currentInputManagerDispatchMs = 0.0;
@@ -437,7 +443,8 @@ void InxView::ProcessEvent(bool pace)
         hadInputEvent = ProcessOneEvent(queuedEvent) || hadInputEvent;
     };
 
-    // Process the event captured by SDL_WaitEventTimeout (if any)
+    // Process the event captured by SDL_WaitEventTimeout (if any).
+    const auto queuedStart = stamp();
     if (gotFirstEvent) {
         switch (firstEvent.type) {
         case SDL_EVENT_MOUSE_MOTION:
@@ -471,13 +478,20 @@ void InxView::ProcessEvent(bool pace)
 
     // Preserve SDL's complete native event semantics. Only adjacent motion
     // events are coalesced after SDL has translated them.
-    const auto pollStart = std::chrono::steady_clock::now();
+    const auto nextEvent = [&](SDL_Event &event) {
+        if (!profileInput)
+            return SDL_PollEvent(&event);
+        const auto before = Clock::now();
+        const bool available = SDL_PollEvent(&event);
+        pacing.inputSdlPollMs += milliseconds(before, Clock::now());
+        return available;
+    };
     SDL_Event event{};
-    while (SDL_PollEvent(&event)) {
+    while (nextEvent(event)) {
         processQueuedEvent(event);
     }
     flushMouseMotion();
-    const auto pollEnd = std::chrono::steady_clock::now();
+    const auto queuedEnd = stamp();
 
     // Automation events remain distinct from SDL's OS queue, but they are
     // translated into SDL_Event instances and sent through ProcessOneEvent.
@@ -485,9 +499,9 @@ void InxView::ProcessEvent(bool pace)
     // A close request is only an intercepted state until Python confirms or
     // cancels it. Keep draining here so an Editor-owned Save/Discard/Cancel
     // modal remains operable by remote validation input.
-    const auto syntheticStart = std::chrono::steady_clock::now();
+    const auto syntheticStart = stamp();
     DrainSyntheticInputEvents(hadInputEvent);
-    const auto syntheticEnd = std::chrono::steady_clock::now();
+    const auto syntheticEnd = stamp();
 
     // Reset idle cooldown when user interacted
     if (hadInputEvent) {
@@ -498,16 +512,12 @@ void InxView::ProcessEvent(bool pace)
     pacing.cooldownRemainingMs = static_cast<int>(std::max<int64_t>(
         0, std::chrono::duration_cast<std::chrono::milliseconds>(m_activeUntil - std::chrono::steady_clock::now())
                .count()));
-    const auto windowQueryStart = std::chrono::steady_clock::now();
+    const auto windowQueryStart = stamp();
     SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
     SDL_GetWindowSizeInPixels(m_window, &m_framebufferWidth, &m_framebufferHeight);
-    const auto windowQueryEnd = std::chrono::steady_clock::now();
-    const auto milliseconds = [](auto begin, auto end) {
-        return std::chrono::duration<double, std::milli>(end - begin).count();
-    };
+    const auto windowQueryEnd = stamp();
     pacing.inputBeginFrameMs = milliseconds(inputFrameStart, inputFrameReady);
-    pacing.inputPumpEventsMs = 0.0;
-    pacing.inputPeepEventsMs = milliseconds(pollStart, pollEnd);
+    pacing.inputQueuedDispatchMs = milliseconds(queuedStart, queuedEnd) - pacing.inputSdlPollMs;
     pacing.inputImGuiDispatchMs = m_currentImGuiEventDispatchMs;
     pacing.inputManagerDispatchMs = m_currentInputManagerDispatchMs;
     pacing.inputSyntheticDispatchMs = milliseconds(syntheticStart, syntheticEnd);
@@ -595,16 +605,20 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
             imguiEvent.motion.x -= static_cast<float>(windowX);
             imguiEvent.motion.y -= static_cast<float>(windowY);
         }
-        const auto imguiStart = std::chrono::steady_clock::now();
+        const auto imguiStart =
+            m_profileInput ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         ImGui_ImplSDL3_ProcessEvent(&imguiEvent);
-        m_currentImGuiEventDispatchMs +=
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - imguiStart).count();
+        if (m_profileInput)
+            m_currentImGuiEventDispatchMs +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - imguiStart).count();
     }
 
-    const auto inputManagerStart = std::chrono::steady_clock::now();
+    const auto inputManagerStart =
+        m_profileInput ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     input.ProcessSDLEvent(event, gameInput);
-    m_currentInputManagerDispatchMs +=
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inputManagerStart).count();
+    if (m_profileInput)
+        m_currentInputManagerDispatchMs +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inputManagerStart).count();
 
     switch (event.type) {
     case SDL_EVENT_MOUSE_MOTION:

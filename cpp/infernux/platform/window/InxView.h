@@ -59,8 +59,8 @@ struct FramePacingSample
     uint32_t mouseMotionEventCount = 0;
     uint32_t dispatchedMouseMotionCount = 0;
     double inputBeginFrameMs = 0.0;
-    double inputPumpEventsMs = 0.0;
-    double inputPeepEventsMs = 0.0;
+    double inputSdlPollMs = 0.0;
+    double inputQueuedDispatchMs = 0.0;
     double inputImGuiDispatchMs = 0.0;
     double inputManagerDispatchMs = 0.0;
     double inputSyntheticDispatchMs = 0.0;
@@ -82,7 +82,7 @@ class InxView
     const char *const *GetVkExtensions(uint32_t *count);
 
     void Init(int width, int height);
-    void ProcessEvent(bool pace);
+    void ProcessEvent(bool pace, bool profileInput);
     void Quit();
 
     // Synthetic input is intentionally consumed through ProcessEvent(), so
@@ -278,6 +278,7 @@ class InxView
     std::deque<SyntheticInputEvent> m_syntheticInputEvents;
     uint64_t m_nextSyntheticInputSequence = 1;
     std::atomic<uint64_t> m_lastProcessedSyntheticInputSequence{0};
+    bool m_profileInput = false;
     double m_currentImGuiEventDispatchMs = 0.0;
     double m_currentInputManagerDispatchMs = 0.0;
     // A synthetic mouse release is held until InxRenderer confirms that a

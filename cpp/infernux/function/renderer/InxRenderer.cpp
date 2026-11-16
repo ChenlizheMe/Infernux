@@ -989,8 +989,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         uint64_t mouseMotionEvents = 0;
         uint64_t dispatchedMouseMotions = 0;
         double inputBeginFrameMs = 0.0;
-        double inputPumpEventsMs = 0.0;
-        double inputPeepEventsMs = 0.0;
+        double inputSdlPollMs = 0.0;
+        double inputQueuedDispatchMs = 0.0;
         double inputImGuiDispatchMs = 0.0;
         double inputManagerDispatchMs = 0.0;
         double inputSyntheticDispatchMs = 0.0;
@@ -1009,7 +1009,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // The value from the previous frame is the correct one for display.
 
     // Window events
-    m_view->ProcessEvent(pace);
+    m_view->ProcessEvent(pace, samplePerformanceFrame || INFERNUX_FRAME_PROFILE);
     if (finishStoppedFrame())
         return {};
     if (samplePerformanceFrame) {
@@ -1017,11 +1017,15 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - performanceWindowFrameStart)
                 .count();
         const auto &pacing = m_view->GetLastPacingSample();
-        performanceSample.inputPhases = {pacing.inputBeginFrameMs,        pacing.inputPeepEventsMs,
-                                         pacing.inputImGuiDispatchMs,     pacing.inputManagerDispatchMs,
-                                         pacing.inputSyntheticDispatchMs, pacing.inputWindowQueryMs};
+        performanceSample.opportunity = m_frameWorkOwner->Opportunity();
+        performanceSample.inputPhases = {pacing.inputBeginFrameMs,      pacing.inputSdlPollMs,
+                                         pacing.inputQueuedDispatchMs,  pacing.inputImGuiDispatchMs,
+                                         pacing.inputManagerDispatchMs, pacing.inputSyntheticDispatchMs,
+                                         pacing.inputWindowQueryMs,     pacing.actualSleepMs};
         performanceSample.inputEventCount = pacing.queuedEventCount;
+        performanceSample.rawMouseMotionCount = pacing.mouseMotionEventCount;
         performanceSample.dispatchedMouseMotionCount = pacing.dispatchedMouseMotionCount;
+        performanceSample.inputIdle = pacing.idleMode;
     }
     // Surface capabilities may leave the extent to the application (Wayland,
     // Retina). Publish the current pixel extent, never the requested initial
@@ -1070,8 +1074,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         _pacingAccum.mouseMotionEvents += pacing.mouseMotionEventCount;
         _pacingAccum.dispatchedMouseMotions += pacing.dispatchedMouseMotionCount;
         _pacingAccum.inputBeginFrameMs += pacing.inputBeginFrameMs;
-        _pacingAccum.inputPumpEventsMs += pacing.inputPumpEventsMs;
-        _pacingAccum.inputPeepEventsMs += pacing.inputPeepEventsMs;
+        _pacingAccum.inputSdlPollMs += pacing.inputSdlPollMs;
+        _pacingAccum.inputQueuedDispatchMs += pacing.inputQueuedDispatchMs;
         _pacingAccum.inputImGuiDispatchMs += pacing.inputImGuiDispatchMs;
         _pacingAccum.inputManagerDispatchMs += pacing.inputManagerDispatchMs;
         _pacingAccum.inputSyntheticDispatchMs += pacing.inputSyntheticDispatchMs;
@@ -1862,8 +1866,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                 << " motion/frame=" << (static_cast<double>(_pacingAccum.mouseMotionEvents) / kWindow)
                 << " motionDispatch/frame=" << (static_cast<double>(_pacingAccum.dispatchedMouseMotions) / kWindow);
             oss << "\n    InputDetail: begin=" << (_pacingAccum.inputBeginFrameMs / kWindow)
-                << "ms pump=" << (_pacingAccum.inputPumpEventsMs / kWindow)
-                << "ms peep+dispatch=" << (_pacingAccum.inputPeepEventsMs / kWindow)
+                << "ms sdlPoll=" << (_pacingAccum.inputSdlPollMs / kWindow)
+                << "ms queuedDispatch=" << (_pacingAccum.inputQueuedDispatchMs / kWindow)
                 << "ms imgui=" << (_pacingAccum.inputImGuiDispatchMs / kWindow)
                 << "ms manager=" << (_pacingAccum.inputManagerDispatchMs / kWindow)
                 << "ms synthetic=" << (_pacingAccum.inputSyntheticDispatchMs / kWindow)
@@ -3529,12 +3533,23 @@ RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
 
     snapshot.firstFrame = m_framePerformanceHistory.front().frame;
     snapshot.lastFrame = m_framePerformanceHistory.back().frame;
-    snapshot.slowestFrames.resize((std::min)(count, size_t{16}));
-    std::partial_sort_copy(
-        m_framePerformanceHistory.begin(), m_framePerformanceHistory.end(), snapshot.slowestFrames.begin(),
-        snapshot.slowestFrames.end(), [](const auto &left, const auto &right) {
-            return left.frameMs > right.frameMs || (left.frameMs == right.frameMs && left.frame < right.frame);
-        });
+    const auto slowest = [&](auto duration) {
+        std::vector<RendererFramePerformanceSample> samples((std::min)(count, size_t{16}));
+        std::partial_sort_copy(m_framePerformanceHistory.begin(), m_framePerformanceHistory.end(), samples.begin(),
+                               samples.end(), [&](const auto &left, const auto &right) {
+                                   const auto a = duration(left), b = duration(right);
+                                   return a > b || (a == b && left.opportunity < right.opportunity);
+                               });
+        return samples;
+    };
+    snapshot.slowestFrames = slowest([](const auto &sample) { return sample.frameMs; });
+    snapshot.slowestInputFrames = slowest([](const auto &sample) { return sample.inputMs - sample.inputPhases[7]; });
+    for (const auto &sample : m_framePerformanceHistory) {
+        snapshot.queuedInputEvents += sample.inputEventCount;
+        snapshot.rawMouseMotions += sample.rawMouseMotionCount;
+        snapshot.dispatchedMouseMotions += sample.dispatchedMouseMotionCount;
+        snapshot.idleFrames += sample.inputIdle;
+    }
 
     const auto summarize = [](std::vector<double> values) {
         UIPerformanceMetricStats stats;
@@ -3578,6 +3593,8 @@ RendererFramePerformanceSnapshot InxRenderer::GetFramePerformanceWindow() const
     snapshot.callbacks = metric([](const auto &sample) { return sample.callbacksMs; });
     snapshot.gpuWait = metric([](const auto &sample) { return sample.gpuWaitMs; });
     snapshot.draw = metric([](const auto &sample) { return sample.drawMs; });
+    for (size_t index = 0; index < snapshot.inputPhases.size(); ++index)
+        snapshot.inputPhases[index] = metric([index](const auto &sample) { return sample.inputPhases[index]; });
     for (size_t index = 0; index < snapshot.drawPhases.size(); ++index)
         snapshot.drawPhases[index] = metric([index](const auto &sample) { return sample.drawPhases[index]; });
     return snapshot;

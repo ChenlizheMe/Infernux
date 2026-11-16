@@ -1572,6 +1572,12 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 timings["callbacks"] = encodeStats(snapshot.callbacks);
                 timings["gpu_wait"] = encodeStats(snapshot.gpuWait);
                 timings["draw"] = encodeStats(snapshot.draw);
+                constexpr const char *inputPhaseNames[] = {
+                    "input_begin", "input_sdl_poll", "input_queued_dispatch", "input_imgui", "input_dispatch",
+                    "input_synthetic", "input_window_query", "input_wait"};
+                static_assert(std::size(inputPhaseNames) == RendererFramePerformanceSample::InputPhaseCount);
+                for (size_t index = 0; index < snapshot.inputPhases.size(); ++index)
+                    timings[inputPhaseNames[index]] = encodeStats(snapshot.inputPhases[index]);
                 constexpr const char *drawPhaseNames[] = {"acquire", "record_submit", "present", "command_prepare",
                                                          "command_record", "queue_submit"};
                 for (size_t index = 0; index < snapshot.drawPhases.size(); ++index)
@@ -1584,6 +1590,12 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 result["target_sample_count"] = snapshot.targetSampleCount;
                 result["active"] = snapshot.active;
                 result["timings"] = std::move(timings);
+                py::dict inputCounts;
+                inputCounts["queued_events"] = snapshot.queuedInputEvents;
+                inputCounts["raw_mouse_motions"] = snapshot.rawMouseMotions;
+                inputCounts["dispatched_mouse_motions"] = snapshot.dispatchedMouseMotions;
+                inputCounts["idle_frames"] = snapshot.idleFrames;
+                result["input_counts"] = std::move(inputCounts);
                 constexpr const char *sourcePhaseNames[] = {
                     "observe", "refresh", "describe", "advance_host", "advance_gpu"};
                 py::list workSources;
@@ -1600,10 +1612,10 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     workSources.append(std::move(item));
                 }
                 result["work_sources"] = std::move(workSources);
-                py::list slowestFrames;
-                for (const auto &sample : snapshot.slowestFrames) {
+                const auto encodeFrame = [&](const RendererFramePerformanceSample &sample) {
                     py::dict frame;
                     frame["frame"] = sample.frame;
+                    frame["opportunity"] = sample.opportunity;
                     frame["frame_ms"] = sample.frameMs;
                     frame["game_only_ms"] = sample.gameOnlyMs;
                     frame["render_ms"] = sample.renderMs;
@@ -1611,14 +1623,12 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     frame["gui_ms"] = sample.guiMs;
                     frame["prepare_ms"] = sample.prepareMs;
                     frame["input_ms"] = sample.inputMs;
-                    frame["input_begin_ms"] = sample.inputPhases[0];
-                    frame["input_poll_ms"] = sample.inputPhases[1];
-                    frame["input_imgui_ms"] = sample.inputPhases[2];
-                    frame["input_dispatch_ms"] = sample.inputPhases[3];
-                    frame["input_synthetic_ms"] = sample.inputPhases[4];
-                    frame["input_window_query_ms"] = sample.inputPhases[5];
+                    for (size_t index = 0; index < sample.inputPhases.size(); ++index)
+                        frame[py::str(std::string(inputPhaseNames[index]) + "_ms")] = sample.inputPhases[index];
                     frame["input_event_count"] = sample.inputEventCount;
+                    frame["input_raw_mouse_motion_count"] = sample.rawMouseMotionCount;
                     frame["input_mouse_motion_count"] = sample.dispatchedMouseMotionCount;
+                    frame["input_idle"] = sample.inputIdle;
                     frame["callbacks_ms"] = sample.callbacksMs;
                     frame["gpu_wait_ms"] = sample.gpuWaitMs;
                     frame["draw_ms"] = sample.drawMs;
@@ -1628,9 +1638,16 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     frame["command_prepare_ms"] = sample.drawPhases[3];
                     frame["command_record_ms"] = sample.drawPhases[4];
                     frame["queue_submit_ms"] = sample.drawPhases[5];
-                    slowestFrames.append(std::move(frame));
-                }
+                    return frame;
+                };
+                py::list slowestFrames;
+                for (const auto &sample : snapshot.slowestFrames)
+                    slowestFrames.append(encodeFrame(sample));
                 result["slowest_frames"] = std::move(slowestFrames);
+                py::list slowestInputFrames;
+                for (const auto &sample : snapshot.slowestInputFrames)
+                    slowestInputFrames.append(encodeFrame(sample));
+                result["slowest_input_frames"] = std::move(slowestInputFrames);
                 return result;
             },
             "Read the immutable aggregated native frame performance window")
