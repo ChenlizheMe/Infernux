@@ -212,10 +212,11 @@ def test_host_input_hits_nonactive_canvas_and_observes_sort_order(scene, monkeyp
         assert visits == ["canvas iteration"] * 2
         assert overlays == [first_button, second_button, decoration]
     key = (PointerType.Mouse, -1)
+    processor = panel._pointer_state.ui
     clear()
     try:
         panel._process_ui_events(1920, 1080)
-        assert panel._ui_event_processor._pointers[key].hover_target is second_button
+        assert processor._pointers[key].hover_target is second_button
         mouse[4:7] = [True, True, False]
         if host == "game_view":
             input_frame.frame_index += 1
@@ -223,11 +224,11 @@ def test_host_input_hits_nonactive_canvas_and_observes_sort_order(scene, monkeyp
             panel._is_paused = lambda: False
             monkeypatch.setattr(game_view.ClosablePanel, "get_active_view_id", lambda: panel.window_id)
             panel.process_runtime_input()
-            queued = panel._ui_event_processor._queued_callback_count
+            queued = processor._queued_callback_count
         panel._process_ui_events(1920, 1080)
         if host == "game_view":
-            assert panel._ui_event_processor._queued_callback_count == queued
-        assert panel._ui_event_processor._pointers[key].press_target is second_button
+            assert processor._queued_callback_count == queued
+        assert processor._pointers[key].press_target is second_button
         mouse[4:7] = [False, False, True]
         if host == "game_view":
             input_frame.frame_index += 1
@@ -239,9 +240,9 @@ def test_host_input_hits_nonactive_canvas_and_observes_sort_order(scene, monkeyp
         if host == "game_view":
             input_frame.frame_index += 1
         panel._process_ui_events(1920, 1080)
-        assert panel._ui_event_processor._pointers[key].hover_target is first_button
+        assert processor._pointers[key].hover_target is first_button
     finally:
-        panel._ui_event_processor.discard()
+        processor.discard()
         clear()
 
 

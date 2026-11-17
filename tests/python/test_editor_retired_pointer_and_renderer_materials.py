@@ -32,9 +32,10 @@ def test_game_view_cancellation_discards_retired_pointer_targets(scene, replacem
     canvas = owner.add_component(UICanvas)
     panel = GameViewPanel()
     panel._synchronize_input_scene(scene)
-    panel._mouse_event_dispatcher._hover_object = owner
-    panel._mouse_event_dispatcher._pressed_object = owner
-    panel._ui_event_processor._pointers[(PointerType.Mouse, -1)] = _PointerState(
+    pointer = panel._pointer_state
+    pointer.mouse._hover_object = owner
+    pointer.mouse._pressed_object = owner
+    pointer.ui._pointers[(PointerType.Mouse, -1)] = _PointerState(
         pointer_type=PointerType.Mouse,
         hover_canvas=canvas,
     )
@@ -46,9 +47,9 @@ def test_game_view_cancellation_discards_retired_pointer_targets(scene, replacem
         manager.set_active_scene(fresh)
         manager.unload_scene(scene)
     panel._reset_pointer_input()
-    assert panel._mouse_event_dispatcher._hover_object is None
-    assert panel._mouse_event_dispatcher._pressed_object is None
-    assert not panel._ui_event_processor._pointers
+    assert pointer.mouse._hover_object is None
+    assert pointer.mouse._pressed_object is None
+    assert not pointer.ui._pointers
 
 
 def test_runtime_material_preview_does_not_create_an_asset_identity(tmp_path, monkeypatch):

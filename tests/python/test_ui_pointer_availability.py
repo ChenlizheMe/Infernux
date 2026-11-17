@@ -299,41 +299,43 @@ def test_gui_queued_click_rechecks_availability_after_first_callback(scene, engi
 @pytest.mark.parametrize("cancel", [False, True])
 def test_logical_ui_hooks_finish_after_traversal_before_fixed_with_owner_state(scene, monkeypatch, cancel):
     from types import SimpleNamespace
-    import infernux.lib as native_module
     import infernux.engine.runtime_input_state as state_module
-    from infernux.engine.runtime_input_state import world_pointer_state
+    from infernux.engine.runtime_input_state import RuntimePointerState, world_pointer_state
 
     native = SimpleNamespace(_read_world_id=7, frame_index=101,
                              _read_owner=SimpleNamespace(retired=False))
     provider = SimpleNamespace(instance=lambda: native)
-    monkeypatch.setattr(native_module, "InputManager", provider)
     monkeypatch.setattr(state_module, "InputManager", provider)
     root, canvas = make_canvas(scene)
     control = make_control(scene, root, TrackedButton)
-    host_processor = UIEventProcessor()
-    view = SimpleNamespace(_ui_event_processor=host_processor)
+    host = RuntimePointerState()
+    view = SimpleNamespace(_pointer_state=host, _active_pointer_world=None, _world_pointer_states={})
     host_callbacks, clicks = [], []
     runtime_event_queue.enqueue(lambda: host_callbacks.append("host"))
 
     def clicked():
         assert view._active_pointer_world == 7
-        assert view._ui_event_processor is processor
+        assert view._pointer_state is first_world
         assert native.frame_index == 102
         clicks.append("click")
     control.on_click.add_listener(clicked)
-    factories = {"_ui_event_processor": UIEventProcessor}
-    with world_pointer_state(view, factories):
-        processor = view._ui_event_processor
-        processor.process_pointers([canvas], [pointer(1, down=True)], 0.016)
+    with world_pointer_state(view) as first_world:
+        first_world.ui.process_pointers([canvas], [pointer(1, down=True)], 0.016)
         assert control.events == [], "callback ran before pointer traversal returned"
     # This is the logical Fixed boundary: native scope is still F, view is Host.
     assert any(event[0] == "down" for event in control.events)
-    assert view._ui_event_processor is host_processor
+    assert view._pointer_state is host
     assert host_callbacks == []
+    native._read_world_id = 8
+    with world_pointer_state(view) as second_world:
+        assert second_world is not first_world
+        assert not second_world.ui._pointers
+    native._read_world_id = 7
     native.frame_index = 102
-    with world_pointer_state(view, factories):
+    with world_pointer_state(view) as resumed_world:
+        assert resumed_world is first_world
         before = len(control.events)
-        processor.process_pointers([canvas], [pointer(1, up=not cancel, canceled=cancel)], 0.016)
+        resumed_world.ui.process_pointers([canvas], [pointer(1, up=not cancel, canceled=cancel)], 0.016)
         assert len(control.events) == before
     assert ("up", 1, PointerButton.Left, cancel) in control.events
     assert clicks == ([] if cancel else ["click"])
@@ -342,14 +344,12 @@ def test_logical_ui_hooks_finish_after_traversal_before_fixed_with_owner_state(s
     assert host_callbacks == ["host"]
 
 
-def test_logical_ui_drag_and_terminal_cancel_apply_before_fixed(scene, monkeypatch):
+def test_logical_ui_drag_and_terminal_cancel_apply_before_fixed(scene):
     from types import SimpleNamespace
-    import infernux.lib as native_module
     from infernux.ui.ui_event_system import logical_ui_callback_batch
 
     native = SimpleNamespace(_read_world_id=11, frame_index=201,
                              _read_owner=SimpleNamespace(retired=False))
-    monkeypatch.setattr(native_module, "InputManager", SimpleNamespace(instance=lambda: native))
     root, canvas = make_canvas(scene)
     slider = make_control(scene, root, TrackedSlider)
     processor = UIEventProcessor()
@@ -359,7 +359,7 @@ def test_logical_ui_drag_and_terminal_cancel_apply_before_fixed(scene, monkeypat
                                    pointer(1, 170, canceled=True)), 201):
         native.frame_index = index
         before = len(samples)
-        with logical_ui_callback_batch():
+        with logical_ui_callback_batch(native, native._read_world_id):
             processor.process_pointers([canvas], [frame], 0.016)
             assert len(samples) == before
         # Fixed reads the value written by the actual UI callback this F.

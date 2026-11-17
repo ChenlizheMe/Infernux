@@ -29,13 +29,9 @@ _logical_ui_callbacks = ContextVar("infernux_logical_ui_callbacks", default=None
 
 
 @contextmanager
-def logical_ui_callback_batch():
+def logical_ui_callback_batch(native, world_id):
     """Finish gameplay UI after traversal, before leaving its logical Input phase."""
-    from infernux.lib import InputManager
-    native = InputManager.instance()
-    identity = (int(native._read_world_id), int(native.frame_index))
-    if not identity[0]:
-        raise RuntimeError("Logical UI dispatch requires an admitted World input sample")
+    identity = (world_id, int(native.frame_index))
     active = _logical_ui_callbacks.get()
     if active is not None:
         if active[0] != identity:

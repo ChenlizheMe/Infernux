@@ -27,10 +27,10 @@ from infernux.engine.project_view_settings import (
 )
 from infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
-from infernux.ui.ui_event_system import UIEventProcessor, _mouse_pointer_frames
+from infernux.ui.ui_event_system import _mouse_pointer_frames
 from infernux.ui.ui_button import UIButton
 from infernux.ui.ui_canvas_utils import runtime_ui_scenes
-from infernux.engine.runtime_mouse_events import MouseEventDispatcher
+from infernux.engine.runtime_input_state import RuntimePointerState, world_pointer_state
 from infernux.ui.inx_ui_screen_component import clear_rect_cache
 from .game_input_policy import should_process_game_ui_events, should_route_game_input
 from .runtime_canvas_snapshot import (
@@ -52,6 +52,14 @@ _GAME_UI_BUTTON_SEMANTIC_PREFIX = "game_view.ui_button."
 
 def _canvas_sort_order(canvas):
     return getattr(canvas, "sort_order", 0)
+
+
+class _GameViewPointerState(RuntimePointerState):
+    __slots__ = ("time",)
+
+    def __init__(self):
+        super().__init__()
+        self.time: float | None = None
 
 
 @editor_panel(
@@ -93,6 +101,9 @@ class GameViewPanel(EditorPanel):
     def __init__(self, title: str = "Game", engine=None, play_mode_manager: Optional[PlayModeManager] = None, *, world_view=None):
         super().__init__(title, window_id="game_view")
         self._engine = engine
+        self._pointer_state = _GameViewPointerState()
+        self._world_pointer_states = {}
+        self._active_pointer_world = None
         if engine is not None:
             engine._track_runtime_input_view(self)
         self._play_mode_manager = play_mode_manager
@@ -121,14 +132,6 @@ class GameViewPanel(EditorPanel):
         # Focus tracking for view-owned interactions
         self._was_focused: bool = False
         self._on_focus_gained = None   # callback() when panel gains focus
-
-        # UI event processor — dispatches pointer events to UI elements
-        self._ui_event_processor = UIEventProcessor()
-        self._mouse_event_dispatcher = MouseEventDispatcher()
-        self._input_scene_token = None
-        self._ui_input_frame = -1
-        self._ui_pointer_position = None
-        self._ui_input_time = None
 
         # Game resolution selection (Unity-like)
         self._selected_resolution_idx = 0
@@ -394,7 +397,7 @@ class GameViewPanel(EditorPanel):
                     mouse[0]["game"][axis] * pixel_scale[axis] for axis in range(2)
                 ] if pixel_scale is not None else None,
             },
-            "last_ui_transition": self._ui_event_processor.debug_state(),
+            "last_ui_transition": self._pointer_state.ui.debug_state(),
         }
 
     def prepare_render_target(self):
@@ -463,9 +466,9 @@ class GameViewPanel(EditorPanel):
         self._reset_pointer_input()
 
     def _reset_pointer_input(self):
+        pointer = self._pointer_state
         if _NativeInputManager.instance()._read_world_id == 0:
-            self._ui_event_processor.discard()
-            self._mouse_event_dispatcher.discard()
+            pointer.discard()
             if self._engine is not None:
                 self._engine._defer_runtime_input_cancel(self)
             return
@@ -475,22 +478,14 @@ class GameViewPanel(EditorPanel):
         # Both consumers must release capture, even if an author's UI exit
         # callback raises. Preserve the error; never replay the interaction.
         try:
-            self._ui_event_processor.reset()
+            pointer.ui.reset()
         finally:
-            self._mouse_event_dispatcher.reset()
+            pointer.mouse.reset()
 
     def _synchronize_input_scene(self, scene) -> None:
-        scene_token = (
-            int(scene.world_id),
-            int(scene.temporal_discontinuity_revision),
-        ) if scene is not None else None
-        if scene_token == getattr(self, "_input_scene_token", None):
-            return
-        self._ui_event_processor.discard()
-        self._mouse_event_dispatcher.discard()
-        self._input_scene_token = scene_token
-        self._ui_pointer_position = None
-        self._ui_input_time = None
+        pointer = self._pointer_state
+        if pointer.synchronize_scene(scene):
+            pointer.time = None
 
     def _on_not_visible(self, ctx):
         self._commit_pending_view_edits()
@@ -1114,30 +1109,12 @@ class GameViewPanel(EditorPanel):
 
     def cancel_runtime_input(self):
         """Settle a Host view close/focus loss at this World's input boundary."""
-        from infernux.engine.runtime_input_state import world_pointer_state
-        factories = {
-            "_ui_event_processor": UIEventProcessor,
-            "_mouse_event_dispatcher": MouseEventDispatcher,
-            "_input_scene_token": lambda: None,
-            "_ui_input_frame": lambda: -1,
-            "_ui_pointer_position": lambda: None,
-            "_ui_input_time": lambda: None,
-        }
-        with world_pointer_state(self, factories):
+        with world_pointer_state(self):
             self._reset_pointer_input()
 
     def process_runtime_input(self):
         """Consume one World's admitted external input sample once."""
-        from infernux.engine.runtime_input_state import world_pointer_state
-        factories = {
-            "_ui_event_processor": UIEventProcessor,
-            "_mouse_event_dispatcher": MouseEventDispatcher,
-            "_input_scene_token": lambda: None,
-            "_ui_input_frame": lambda: -1,
-            "_ui_pointer_position": lambda: None,
-            "_ui_input_time": lambda: None,
-        }
-        with world_pointer_state(self, factories):
+        with world_pointer_state(self):
             if not Input.is_game_focused():
                 self._reset_pointer_input()
                 return
@@ -1147,13 +1124,14 @@ class GameViewPanel(EditorPanel):
 
     def _process_ui_events(self, game_w: int, game_h: int, *, mouse_frames=None):
         """Convert Input mouse state to per-canvas pointer events."""
+        pointer = self._pointer_state
         frame = Input.frame_index
-        if frame == self._ui_input_frame:
+        if frame == pointer.frame:
             return
         viewport_w, viewport_h = Input.game_viewport_size
         if game_w <= 0 or game_h <= 0 or viewport_w <= 0 or viewport_h <= 0:
             return
-        self._ui_input_frame = frame
+        pointer.frame = frame
         from infernux.lib import SceneManager
         scene_manager = SceneManager.instance()
         scene = scene_manager.get_active_scene()
@@ -1169,13 +1147,13 @@ class GameViewPanel(EditorPanel):
             # 3D mouse callbacks must still run in scenes without any UI
             # surface. Reset only the UI path and continue to the shared
             # collider raycast below.
-            self._ui_event_processor.reset()
+            pointer.ui.reset()
 
-        dispatcher = self._mouse_event_dispatcher
+        dispatcher = pointer.mouse
         route_scene_input = Input.is_game_focused()
         pick_scene = route_scene_input and dispatcher.needs_scene_hit()
         if not surfaces and not pick_scene:
-            self._ui_input_time = None
+            pointer.time = None
             dispatcher.discard()
             return
 
@@ -1183,7 +1161,6 @@ class GameViewPanel(EditorPanel):
         if mouse_frames is None:
             mouse_frames = tuple(Input.get_game_mouse_frame_state(button) for button in range(3))
         vp_x, vp_y, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = mouse_frames[0]
-        self._ui_pointer_position = (vp_x, vp_y)
         # Convert viewport pixels → game-resolution pixels
         game_px = vp_x * game_w / viewport_w
         game_py = vp_y * game_h / viewport_h
@@ -1203,10 +1180,10 @@ class GameViewPanel(EditorPanel):
 
         from infernux.timing import Time
         now = Time.unscaled_time
-        dt = Time.unscaled_delta_time if self._ui_input_time is None else now - self._ui_input_time
-        self._ui_input_time = now
+        dt = Time.unscaled_delta_time if pointer.time is None else now - pointer.time
+        pointer.time = now
 
-        self._ui_event_processor.process_pointers(
+        pointer.ui.process_pointers(
             surfaces,
             _mouse_pointer_frames(
                 canvas_positions,

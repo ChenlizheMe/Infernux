@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 from infernux.debug import Debug
@@ -24,13 +25,13 @@ from infernux.input import Input, TouchPhase
 from infernux.engine.ui.viewport_utils import capture_viewport_info
 from infernux.engine.build_settings import BUILD_SETTINGS_DEFAULTS, normalize_render_output
 from infernux.ui.ui_event_data import PointerType
-from infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame, _mouse_pointer_frames
+from infernux.ui.ui_event_system import UIPointerFrame, _mouse_pointer_frames
 from infernux.engine.runtime_screen_ui import (
     collect_runtime_ui_input_surfaces,
     map_runtime_ui_pointer,
     map_runtime_ui_pointers,
 )
-from infernux.engine.runtime_mouse_events import MouseEventDispatcher
+from infernux.engine.runtime_input_state import RuntimePointerState, world_pointer_state
 from infernux.ui.ui_canvas_utils import runtime_ui_scenes
 
 
@@ -111,9 +112,17 @@ class _FrameProfileWindow:
         return result
 
 
+@dataclass(slots=True)
+class _PlayerPointerState(RuntimePointerState):
+    touch_viewport: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
+    touch_frame: tuple | None = None
+    touch_hit: object | None = None
+    touch_query_shared: bool = False
+    mouse_query_shared: bool = False
+
+
 class PlayerGUI(InxGUIRenderable):
     """Renders the game camera output fullscreen with screen-space UI overlay."""
-    _touch_viewport = (0.0, 0.0, 1.0, 1.0)
     _render_output = BUILD_SETTINGS_DEFAULTS["render_output"]
 
     def __init__(self, engine, *,
@@ -124,6 +133,9 @@ class PlayerGUI(InxGUIRenderable):
                  render_output: Optional[dict] = None):
         super().__init__()
         self._engine = engine
+        self._pointer_state = _PlayerPointerState()
+        self._world_pointer_states = {}
+        self._active_pointer_world = None
         from weakref import ref
         engine._runtime_input_view = ref(self)
         engine._track_runtime_input_view(self)
@@ -133,13 +145,6 @@ class PlayerGUI(InxGUIRenderable):
         self._render_output = normalize_render_output(
             BUILD_SETTINGS_DEFAULTS["render_output"] if render_output is None else render_output,
         )
-        self._ui_event_processor = UIEventProcessor()
-        self._mouse_event_dispatcher = MouseEventDispatcher()
-        self._input_scene_token = None
-        self._has_shared_scene_query = False
-        self._touch_scene_frame = None
-        self._touch_scene_hit = None
-        self._touch_scene_query_shared = False
         self._last_frame_time = time.time()
         self._control = control_channel
         self._activate_play = activate_play
@@ -320,7 +325,7 @@ class PlayerGUI(InxGUIRenderable):
                 scale = float(int(scale))
             display_w, display_h = target_w * scale, target_h * scale
         pad_x, pad_y = (vp_w - display_w) * 0.5, (vp_h - display_h) * 0.5
-        self._touch_viewport = (pad_x / vp_w, pad_y / vp_h, display_w / vp_w, display_h / vp_h)
+        touch_viewport = (pad_x / vp_w, pad_y / vp_h, display_w / vp_w, display_h / vp_h)
         Input.set_game_viewport_size(float(display_w), float(display_h))
 
         game_tex = self._engine.get_game_texture_id()
@@ -338,32 +343,21 @@ class PlayerGUI(InxGUIRenderable):
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
 
-        InputManager.instance()._set_game_view_output(float(target_w), float(target_h), self._touch_viewport)
+        InputManager.instance()._set_game_view_output(float(target_w), float(target_h), touch_viewport)
 
     def process_runtime_input(self):
         """Dispatch gameplay mouse/touch only in the admitted World Input phase."""
-        from infernux.engine.runtime_input_state import world_pointer_state
-        factories = {
-            "_ui_event_processor": UIEventProcessor,
-            "_mouse_event_dispatcher": MouseEventDispatcher,
-            "_input_scene_token": lambda: None,
-            "_has_shared_scene_query": lambda: False,
-            "_touch_scene_frame": lambda: None,
-            "_touch_scene_hit": lambda: None,
-            "_touch_scene_query_shared": lambda: False,
-            "_touch_viewport": lambda: (0.0, 0.0, 1.0, 1.0),
-            "_ui_input_frame": lambda: -1,
-        }
-        with world_pointer_state(self, factories):
-            if self._ui_input_frame == Input.frame_index:
-                return
-            self._ui_input_frame = Input.frame_index
+        with world_pointer_state(self) as pointer:
             native = InputManager.instance()
+            frame = native.frame_index
+            if pointer.frame == frame:
+                return
+            pointer.frame = frame
             target_w, target_h = native._sampled_game_render_size
             display_w, display_h = Input.game_viewport_size
             if min(target_w, target_h, display_w, display_h) <= 0:
                 return
-            self._touch_viewport = tuple(native._sampled_touch_viewport)
+            pointer.touch_viewport = tuple(native._sampled_touch_viewport)
             frame = Input.get_game_mouse_frame_state(0)
             mouse_frame = (frame[0] * target_w / display_w, frame[1] * target_h / display_h, *frame[2:])
             scene_hit = self._process_ui_events(int(target_w), int(target_h), mouse_frame=mouse_frame)
@@ -371,37 +365,28 @@ class PlayerGUI(InxGUIRenderable):
 
     def pointer_debug_state(self) -> dict:
         """Return the last runtime UI pointer transition for Player diagnostics."""
-        return self._ui_event_processor.debug_state()
+        return self._pointer_state.ui.debug_state()
 
     def _synchronize_input_scene(self, scene) -> None:
-        scene_token = (
-            int(scene.world_id),
-            int(scene.temporal_discontinuity_revision),
-        ) if scene is not None else None
-        if scene_token == getattr(self, "_input_scene_token", None):
-            return
-        self._ui_event_processor.discard()
-        self._mouse_event_dispatcher.discard()
-        self._has_shared_scene_query = False
-        self._input_scene_token = scene_token
+        pointer = self._pointer_state
+        if pointer.synchronize_scene(scene):
+            pointer.mouse_query_shared = False
 
     def _process_mouse_events(self, game_w: int, game_h: int, *, scene_hit=None, mouse_frame=None) -> None:
-        dispatcher = getattr(self, "_mouse_event_dispatcher", None)
-        if dispatcher is None:
-            return
+        pointer = self._pointer_state
+        dispatcher = pointer.mouse
         from infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
         camera = _get_native_game_camera(scene) if scene is not None else None
         if camera is None:
             dispatcher.reset()
             return
-        touch_frame = getattr(self, "_touch_scene_frame", None)
-        if touch_frame is not None:
-            x, y, held, down, up, canceled = touch_frame
-            if getattr(self, "_touch_scene_query_shared", False):
+        if pointer.touch_frame is not None:
+            x, y, held, down, up, canceled = pointer.touch_frame
+            if pointer.touch_query_shared:
                 dispatcher.process(
                     camera, (x, y), (float(game_w), float(game_h)),
-                    hit=getattr(self, "_touch_scene_hit", None),
+                    hit=pointer.touch_hit,
                     button_state=(held, down, up), canceled=canceled,
                 )
             else:
@@ -411,7 +396,7 @@ class PlayerGUI(InxGUIRenderable):
                 )
             return
         x, y, _sx, _sy, held, down, up = Input.get_game_mouse_frame_state(0) if mouse_frame is None else mouse_frame
-        if scene_hit is None and not self._has_shared_scene_query:
+        if scene_hit is None and not pointer.mouse_query_shared:
             dispatcher.process(camera, (x, y), (float(game_w), float(game_h)), button_state=(held, down, up))
         else:
             dispatcher.process(camera, (x, y), (float(game_w), float(game_h)), hit=scene_hit,
@@ -421,18 +406,19 @@ class PlayerGUI(InxGUIRenderable):
         """Convert mouse and every active touch to independent UI pointers."""
         from infernux.lib import SceneManager
 
+        pointer = self._pointer_state
         scene = SceneManager.instance().get_active_scene()
         self._synchronize_input_scene(scene)
         touches = tuple(Input.touches)
-        self._touch_scene_frame = self._primary_touch_scene_frame(touches, game_w, game_h, self._touch_viewport)
-        self._touch_scene_hit = None
-        self._touch_scene_query_shared = False
+        pointer.touch_frame = self._primary_touch_scene_frame(touches, game_w, game_h, pointer.touch_viewport)
+        pointer.touch_hit = None
+        pointer.touch_query_shared = False
         surfaces = collect_runtime_ui_input_surfaces(*runtime_ui_scenes(SceneManager.instance()))
         if not surfaces:
-            self._ui_event_processor.reset()
+            pointer.ui.reset()
             # With no world UI there is no second consumer to share a ray
             # with; the dispatcher keeps its direct closest-hit path.
-            self._has_shared_scene_query = False
+            pointer.mouse_query_shared = False
             return None
 
         camera = _get_native_game_camera(scene) if scene is not None else None
@@ -445,7 +431,7 @@ class PlayerGUI(InxGUIRenderable):
             surfaces, camera, gx, gy, game_w, game_h,
             include_scene_hit=True,
         )
-        self._has_shared_scene_query = True
+        pointer.mouse_query_shared = True
 
         pointers = _mouse_pointer_frames(
             mouse_positions,
@@ -454,7 +440,7 @@ class PlayerGUI(InxGUIRenderable):
             (scroll_x, scroll_y),
         )
         touch_points = tuple(
-            self._touch_pixels(touch.normalized_position, game_w, game_h, self._touch_viewport)
+            self._touch_pixels(touch.normalized_position, game_w, game_h, pointer.touch_viewport)
             for touch in touches
         )
         primary_index = next(
@@ -462,23 +448,23 @@ class PlayerGUI(InxGUIRenderable):
             0 if touches else None,
         )
         if len(touches) == 1:
-            positions, self._touch_scene_hit = map_runtime_ui_pointer(
+            positions, pointer.touch_hit = map_runtime_ui_pointer(
                 surfaces, camera, touch_points[0][0], touch_points[0][1],
                 game_w, game_h, include_scene_hit=True,
             )
             touch_positions = (positions,)
-            self._touch_scene_query_shared = True
+            pointer.touch_query_shared = True
         else:
             touch_positions = map_runtime_ui_pointers(
                 surfaces, camera, touch_points, game_w, game_h
             )
             if primary_index is not None:
-                _positions, self._touch_scene_hit = map_runtime_ui_pointer(
+                _positions, pointer.touch_hit = map_runtime_ui_pointer(
                     surfaces, camera,
                     touch_points[primary_index][0], touch_points[primary_index][1],
                     game_w, game_h, include_scene_hit=True,
                 )
-                self._touch_scene_query_shared = True
+                pointer.touch_query_shared = True
         same_frame_terminal = tuple(
             touch.began_this_frame and touch.phase in (TouchPhase.ENDED, TouchPhase.CANCELED)
             for touch in touches
@@ -486,7 +472,7 @@ class PlayerGUI(InxGUIRenderable):
         begin_positions = ()
         if any(same_frame_terminal):
             begin_points = tuple(
-                self._touch_pixels(touch.begin_normalized_position, game_w, game_h, self._touch_viewport)
+                self._touch_pixels(touch.begin_normalized_position, game_w, game_h, pointer.touch_viewport)
                 for touch in touches
             )
             begin_positions = map_runtime_ui_pointers(
@@ -514,7 +500,7 @@ class PlayerGUI(InxGUIRenderable):
         from infernux.timing import Time
         dt = Time.unscaled_delta_time
 
-        self._ui_event_processor.process_pointers(surfaces, pointers, dt)
+        pointer.ui.process_pointers(surfaces, pointers, dt)
         return scene_hit
 
     @staticmethod

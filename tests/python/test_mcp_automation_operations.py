@@ -135,7 +135,8 @@ def test_ui_input_query_distinguishes_filtered_clicks_without_dispatch(editor_pr
     panel = game_view_panel.GameViewPanel()
     panel._last_game_width, panel._last_game_height = 480, 270
     panel._display_scale = 2.0
-    panel._ui_event_processor._last_pointer_debug = {"down": True, "hit_object": "Start"}
+    pointer = panel._pointer_state
+    pointer.ui._last_pointer_debug = {"down": True, "hit_object": "Start"}
     native = SimpleNamespace(
         frame_index=125, is_cursor_locked=False, is_editor_cursor_capture_allowed=False,
         has_synthetic_gameplay_input=False,
@@ -166,8 +167,8 @@ def test_ui_input_query_distinguishes_filtered_clicks_without_dispatch(editor_pr
     assert state["viewport"]["raw_position_in_render_target"] == [160.0, 50.0]
     assert state["viewport"]["game_position_in_render_target"] == [-50.0, -25.0]
     state["last_ui_transition"]["down"] = False
-    assert panel._ui_event_processor.debug_state() == {"down": True, "hit_object": "Start"}
-    assert not panel._ui_event_processor._pointers
+    assert pointer.ui.debug_state() == {"down": True, "hit_object": "Start"}
+    assert not pointer.ui._pointers
     assert input_module.Input.is_game_focused() is False
 
 

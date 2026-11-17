@@ -8,7 +8,7 @@ import pytest
 from infernux.engine import player_control
 from infernux.engine import player_gui as player_gui_module
 from infernux.engine.player_control import PlayerControlChannel
-from infernux.engine.player_gui import PlayerGUI
+from infernux.engine.player_gui import PlayerGUI, _PlayerPointerState
 from infernux.input import Input, TouchPhase
 from infernux.lib import InputManager
 
@@ -154,6 +154,9 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
 
     player = PlayerGUI.__new__(PlayerGUI)
     player._engine = _PlayerEngine()
+    player._pointer_state = _PlayerPointerState()
+    player._world_pointer_states = {}
+    player._active_pointer_world = None
     player._last_w = 0
     player._last_h = 0
     player._render_scale = 1.0
@@ -229,7 +232,7 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
     expected = (16.0, 24.0, *mouse_frame[2:]) if fixed else mouse_frame
     assert routed == [expected] * 4
     assert routed[0] is routed[1] and routed[2] is routed[3]
-    assert player._touch_pixels((0.5, 0.5), player._last_w, player._last_h, player._touch_viewport) == (
+    assert player._touch_pixels((0.5, 0.5), player._last_w, player._last_h, native_input._sampled_touch_viewport) == (
         player._last_w / 2, player._last_h / 2,
     )
 
@@ -272,10 +275,13 @@ def test_player_same_frame_tap_publishes_one_complete_gameplay_click():
 def test_scene_publication_discards_retired_player_input_state_once():
     discarded = []
     player = PlayerGUI.__new__(PlayerGUI)
-    player._ui_event_processor = type("_UIProcessor", (), {"discard": lambda self: discarded.append("ui")})()
-    player._mouse_event_dispatcher = type("_MouseProcessor", (), {"discard": lambda self: discarded.append("mouse")})()
-    player._input_scene_token = (7, 2)
-    player._has_shared_scene_query = True
+    pointer = _PlayerPointerState(
+        ui=SimpleNamespace(discard=lambda: discarded.append("ui")),
+        mouse=SimpleNamespace(discard=lambda: discarded.append("mouse")),
+        scene_token=(7, 2),
+        mouse_query_shared=True,
+    )
+    player._pointer_state = pointer
     scene = type(
         "_Scene",
         (),
@@ -289,8 +295,8 @@ def test_scene_publication_discards_retired_player_input_state_once():
     player._synchronize_input_scene(scene)
 
     assert discarded == ["ui", "mouse"]
-    assert player._input_scene_token == (7, 3)
-    assert player._has_shared_scene_query is False
+    assert pointer.scene_token == (7, 3)
+    assert pointer.mouse_query_shared is False
 
 
 def _player_gui_for_play_gate(session):
