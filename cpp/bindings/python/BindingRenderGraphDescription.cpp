@@ -178,6 +178,7 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .value("VIEW_LIGHTS", GraphFrameBuffer::ViewLights)
         .value("WORLD_SURFACES", GraphFrameBuffer::WorldSurfaces)
         .value("WORLD_RAY_GEOMETRY", GraphFrameBuffer::WorldRayGeometry)
+        .value("WORLD_RAY_MESHES", GraphFrameBuffer::WorldRayMeshes)
         .value("WORLD_RAY_LIT_MATERIALS", GraphFrameBuffer::WorldRayLitMaterials)
         .value("WORLD_RAY_TEXTURE_DESCRIPTORS", GraphFrameBuffer::WorldRayTextureDescriptors);
 

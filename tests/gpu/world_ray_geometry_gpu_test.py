@@ -1,4 +1,4 @@
-"""Consume the actual native World ray page through a fullscreen graph input."""
+"""Consume the native World ray buffers through a fullscreen graph pass."""
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -18,20 +18,21 @@ SHADER = '''import infernux.shader as shader
 class WorldRayPage(shader.fullscreen):
     shader_id = "tests/world_ray_geometry"
     page = shader.input("world_ray_geometry", shader.Buffer[shader.uvec4])
+    meshes = shader.input("world_ray_meshes", shader.Buffer[shader.uvec4])
 
     def main(self, uv: shader.vec2) -> shader.vec4:
-        info = self.page[1]
         geometry = self.page[0]
-        points = geometry.w - geometry.z
-        if info.y != 1 or info.z != info.x + 8 or len(self.page) != info.z + 4 * points:
+        mesh = self.meshes[0]
+        points = mesh.z - mesh.y
+        if geometry.w != 1 or geometry.x != 0 or len(self.page) != geometry.z + 8:
             return shader.vec4(0.0, 0.0, 1.0, 1.0)
-        if self.page[len(self.page) - 1].w != 1065353216:
+        if len(self.meshes) != mesh.w + 4 * points or self.meshes[len(self.meshes) - 1].w != 1065353216:
             return shader.vec4(1.0, 0.0, 0.0, 1.0)
-        first = self.page[info.x + 3]
-        second = self.page[info.x + 7]
+        first = self.page[geometry.z + 3]
+        second = self.page[geometry.z + 7]
         if first.x == second.x and first.y > 0 and second.y > 0 and first.y != second.y:
-            a = self.page[info.x].w & 2147483647
-            b = self.page[info.x + 4].w & 2147483647
+            a = self.page[geometry.z].w & 2147483647
+            b = self.page[geometry.z + 4].w & 2147483647
             position = shader.min(a, b)
             if position == 1090519040:
                 return shader.vec4(0.0, 1.0, 1.0, 1.0)
@@ -49,9 +50,12 @@ class RayGeometryGraph(RenderPipeline):
         graph.set_msaa_samples(1)
         color = graph.create_texture("color", camera_target=True)
         page = graph._create_world_ray_geometry()
+        meshes = graph._create_world_ray_meshes()
         assert graph._create_world_ray_geometry() is page
+        assert graph._create_world_ray_meshes() is meshes
         with graph.add_pass("ReadWorldRayGeometry") as render_pass:
             render_pass.set_buffer("page", page)
+            render_pass.set_buffer("meshes", meshes)
             render_pass.write_color(color)
             render_pass.fullscreen_quad("tests/world_ray_geometry")
         graph.set_output(color)

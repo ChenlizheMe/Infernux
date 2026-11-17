@@ -23,6 +23,7 @@ class RayWorldGeometryBuild;
 struct RayWorldGeometryBinding
 {
     std::shared_ptr<const rhi::BufferResource> buffer;
+    std::shared_ptr<const rhi::BufferResource> meshes;
     bool pending = false;
 };
 
@@ -49,7 +50,7 @@ class RayWorldGeometry final
     FrameWorkOwner::SourceId m_source = 0;
     std::vector<std::weak_ptr<RayWorldGeometryPublication>> m_publications;
     std::shared_ptr<RayWorldGeometryBuild> m_active;
-    std::shared_ptr<const rhi::BufferResource> m_pendingBuffer, m_unavailableBuffer;
+    std::shared_ptr<const rhi::BufferResource> m_unavailableBuffer, m_emptyMeshBuffer;
     JobHandle m_job;
     FrameWorkResource m_workResource = FrameWorkResource::Cpu;
     uint64_t m_submittedOpportunity = 0;

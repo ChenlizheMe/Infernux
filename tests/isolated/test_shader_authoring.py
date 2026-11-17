@@ -658,7 +658,8 @@ class Reflection(shader.fullscreen):
     assert len({module for module, _, _ in libraries}) == len(libraries)
     assert [Path(path).name for module, path, _ in libraries if module == "inx_ray_lit"] == ["lit.frag.py"]
     assert any(Path(span[0]).name == "lit.frag.py" for span in ranges)
-    buffer_strides = {"world_ray_geometry": 16, "ray_lit_materials": 272, "ray_texture_descriptors": 8}
+    buffer_strides = {"world_ray_geometry": 16, "world_ray_meshes": 16,
+                      "ray_lit_materials": 272, "ray_texture_descriptors": 8}
     array_names = {"ray_color_pages", "ray_data_pages"}
     samplers = {"ray_color_sampler", "ray_data_sampler"}
     inputs = {field["name"]: field["kind"] for field in json.loads(schema_text)["inputs"]}

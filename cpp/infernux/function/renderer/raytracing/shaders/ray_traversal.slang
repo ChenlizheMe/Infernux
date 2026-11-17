@@ -1,27 +1,31 @@
-// Storage layout follows Bvh.h and EncodeRayGeometryPage on both graphics backends.
+// Both buffers use uint4 word offsets. TLAS nodes and instances live in the
+// geometry page. Mesh nodes, positions, triangles and attributes live in the
+// mesh page, so instance roots index the mesh node array.
 static const uint ray_leaf_bit = 0x80000000u;
 static const uint ray_invalid_index = 0xffffffffu;
 static const uint ray_stack_capacity = 48u;
 static const uint ray_page_ready = 1u;
 
 StructuredBuffer<uint4> world_ray_geometry;
+StructuredBuffer<uint4> world_ray_meshes;
 
 struct RayPage
 {
     uint root;
-    uint nodes;
-    uint positions;
-    uint triangles;
+    uint top_nodes;
     uint instances;
     uint status;
+    uint mesh_nodes;
+    uint positions;
+    uint triangles;
     uint attributes;
 };
 
 RayPage ray_page()
 {
     uint4 geometry = world_ray_geometry[0];
-    uint3 instances = world_ray_geometry[1].xyz;
-    return {geometry.x, geometry.y, geometry.z, geometry.w, instances.x, instances.y, instances.z};
+    uint4 meshes = world_ray_meshes[0];
+    return {geometry.x, geometry.y, geometry.z, geometry.w, meshes.x, meshes.y, meshes.z, meshes.w};
 }
 
 struct RayNode
@@ -43,11 +47,20 @@ struct RayInstance
     float orientation;
 };
 
-RayNode ray_node(RayPage page, uint index)
+RayNode ray_node<let MeshNodes : bool>(uint nodes, uint index)
 {
-    uint offset = page.nodes + 2u * index;
-    uint4 low = world_ray_geometry[offset];
-    uint4 high = world_ray_geometry[offset + 1u];
+    uint offset = nodes + 2u * index;
+    uint4 low, high;
+    if (MeshNodes)
+    {
+        low = world_ray_meshes[offset];
+        high = world_ray_meshes[offset + 1u];
+    }
+    else
+    {
+        low = world_ray_geometry[offset];
+        high = world_ray_geometry[offset + 1u];
+    }
     return {asfloat(low.xyz), low.w, asfloat(high.xyz), high.w};
 }
 
@@ -120,12 +133,12 @@ bool ray_box_entry(TraceRay ray, RayNode node, float maximum, out float entry)
     return true;
 }
 
-void ray_begin(RayPage page, out RayCursor cursor, TraceRay ray, uint root, float maximum)
+void ray_begin<let MeshNodes : bool>(uint nodes, out RayCursor cursor, TraceRay ray, uint root, float maximum)
 {
     cursor.count = 0u;
     float entry = ray.minimum;
     cursor.current = uint2(ray_invalid_index, asuint(entry));
-    if (root != ray_invalid_index && ray_box_entry(ray, ray_node(page, root), maximum, entry))
+    if (root != ray_invalid_index && ray_box_entry(ray, ray_node<MeshNodes>(nodes, root), maximum, entry))
         cursor.current = uint2(root, asuint(entry));
 }
 
@@ -137,13 +150,13 @@ uint2 ray_continue(inout RayCursor cursor)
     return cursor.pending[cursor.count];
 }
 
-uint2 ray_next_leaf(RayPage page, inout RayCursor cursor, TraceRay ray, float maximum)
+uint2 ray_next_leaf<let MeshNodes : bool>(uint nodes, inout RayCursor cursor, TraceRay ray, float maximum)
 {
     while (cursor.current.x != ray_invalid_index)
     {
         if (asfloat(cursor.current.y) <= maximum)
         {
-            RayNode node = ray_node(page, cursor.current.x);
+            RayNode node = ray_node<MeshNodes>(nodes, cursor.current.x);
             if ((node.second & ray_leaf_bit) != 0u)
             {
                 cursor.current = ray_continue(cursor);
@@ -151,8 +164,8 @@ uint2 ray_next_leaf(RayPage page, inout RayCursor cursor, TraceRay ray, float ma
             }
 
             float left_entry, right_entry;
-            bool left = ray_box_entry(ray, ray_node(page, node.first), maximum, left_entry);
-            bool right = ray_box_entry(ray, ray_node(page, node.second), maximum, right_entry);
+            bool left = ray_box_entry(ray, ray_node<MeshNodes>(nodes, node.first), maximum, left_entry);
+            bool right = ray_box_entry(ray, ray_node<MeshNodes>(nodes, node.second), maximum, right_entry);
             uint2 left_record = uint2(node.first, asuint(left_entry));
             uint2 right_record = uint2(node.second, asuint(right_entry));
             if (left && right)
@@ -215,9 +228,9 @@ float ray_edge(float2 a, float2 b)
 bool ray_intersect_triangle(RayPage page, TraceRay ray, RayProjection projection, uint3 corners, float maximum,
                             out float distance, out float2 weights)
 {
-    float3 a = ray_project_point(asfloat(world_ray_geometry[page.positions + corners.x].xyz) - ray.origin, projection);
-    float3 b = ray_project_point(asfloat(world_ray_geometry[page.positions + corners.y].xyz) - ray.origin, projection);
-    float3 c = ray_project_point(asfloat(world_ray_geometry[page.positions + corners.z].xyz) - ray.origin, projection);
+    float3 a = ray_project_point(asfloat(world_ray_meshes[page.positions + corners.x].xyz) - ray.origin, projection);
+    float3 b = ray_project_point(asfloat(world_ray_meshes[page.positions + corners.y].xyz) - ray.origin, projection);
+    float3 c = ray_project_point(asfloat(world_ray_meshes[page.positions + corners.z].xyz) - ray.origin, projection);
     float3 edge = float3(ray_edge(b.xy, c.xy), ray_edge(c.xy, a.xy), ray_edge(a.xy, b.xy));
     float det = edge.x + edge.y + edge.z;
     distance = maximum;
@@ -254,10 +267,10 @@ RayHit trace_ray<Policy : RayHitPolicy>(RayPage page, TraceRay world_ray, uint l
     hit.surface_id = ray_invalid_index;
 
     RayCursor world;
-    ray_begin(page, world, world_ray, page.root, hit.distance);
+    ray_begin<false>(page.top_nodes, world, world_ray, page.root, hit.distance);
     for (;;)
     {
-        uint2 leaf = ray_next_leaf(page, world, world_ray, hit.distance);
+        uint2 leaf = ray_next_leaf<false>(page.top_nodes, world, world_ray, hit.distance);
         if (leaf.y == 0u)
             return hit;
         for (uint index = leaf.x; index < leaf.x + leaf.y; ++index)
@@ -269,15 +282,15 @@ RayHit trace_ray<Policy : RayHitPolicy>(RayPage page, TraceRay world_ray, uint l
             TraceRay local_ray = ray_to_object(world_ray, instance);
             RayProjection projection = ray_projection(local_ray.direction);
             RayCursor local;
-            ray_begin(page, local, local_ray, instance.root, hit.distance);
+            ray_begin<true>(page.mesh_nodes, local, local_ray, instance.root, hit.distance);
             for (;;)
             {
-                uint2 span = ray_next_leaf(page, local, local_ray, hit.distance);
+                uint2 span = ray_next_leaf<true>(page.mesh_nodes, local, local_ray, hit.distance);
                 if (span.y == 0u)
                     break;
                 for (uint primitive = span.x; primitive < span.x + span.y; ++primitive)
                 {
-                    uint4 face = world_ray_geometry[page.triangles + primitive];
+                    uint4 face = world_ray_meshes[page.triangles + primitive];
                     float distance;
                     float2 weights;
                     if (!ray_intersect_triangle(page, local_ray, projection, face.xyz, hit.distance, distance, weights))
@@ -348,9 +361,9 @@ struct RaySurfaceHit
 float4 ray_interpolate_attribute(RayPage page, uint3 vertices, uint field, float3 weights)
 {
     uint3 offset = page.attributes + 4u * vertices + field;
-    return asfloat(world_ray_geometry[offset.x]) * weights.x +
-           asfloat(world_ray_geometry[offset.y]) * weights.y +
-           asfloat(world_ray_geometry[offset.z]) * weights.z;
+    return asfloat(world_ray_meshes[offset.x]) * weights.x +
+           asfloat(world_ray_meshes[offset.y]) * weights.y +
+           asfloat(world_ray_meshes[offset.z]) * weights.z;
 }
 
 float3 ray_world_normal(float3 local_normal, RayInstance instance)
@@ -373,7 +386,7 @@ float3 ray_transform_columns(float3 v, float3 column0, float3 column1, float3 co
 
 float3 ray_corner_direction(uint offset, float3 r0, float3 r1, float3 r2, float3 fallback)
 {
-    float3 v = asfloat(world_ray_geometry[offset].xyz);
+    float3 v = asfloat(world_ray_meshes[offset].xyz);
     return ray_surface_normalize(ray_transform_columns(v, r0, r1, r2), fallback);
 }
 
@@ -389,11 +402,11 @@ float3 ray_interpolate_direction(uint3 offsets, float3 weights, float3 r0, float
 RaySurfaceHit ray_surface_at_hit(RayPage page, TraceRay ray, RayHit hit)
 {
     RayInstance instance = ray_instance(page, hit.instance_index);
-    uint3 vertices = world_ray_geometry[page.triangles + hit.triangle_index].xyz;
+    uint3 vertices = world_ray_meshes[page.triangles + hit.triangle_index].xyz;
     float3 weights = float3(1.0f - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics);
-    float3 a = asfloat(world_ray_geometry[page.positions + vertices.x].xyz);
-    float3 b = asfloat(world_ray_geometry[page.positions + vertices.y].xyz);
-    float3 c = asfloat(world_ray_geometry[page.positions + vertices.z].xyz);
+    float3 a = asfloat(world_ray_meshes[page.positions + vertices.x].xyz);
+    float3 b = asfloat(world_ray_meshes[page.positions + vertices.y].xyz);
+    float3 c = asfloat(world_ray_meshes[page.positions + vertices.z].xyz);
     float3 geometric = normalize(ray_world_normal(cross(b - a, c - a), instance) * instance.orientation);
     float3 r0 = instance.world_to_object_x.xyz;
     float3 r1 = instance.world_to_object_y.xyz;
@@ -412,13 +425,13 @@ RaySurfaceHit ray_surface_at_hit(RayPage page, TraceRay ray, RayHit hit)
     float3 tangent_ws = ray_interpolate_direction(attributes + 2u, weights,
         c0 * instance.orientation, c1 * instance.orientation, c2 * instance.orientation, fallback);
     uint3 tangent_offsets = attributes + 2u;
-    float3 signs = float3(asfloat(world_ray_geometry[tangent_offsets.x].w),
-                          asfloat(world_ray_geometry[tangent_offsets.y].w),
-                          asfloat(world_ray_geometry[tangent_offsets.z].w));
+    float3 signs = float3(asfloat(world_ray_meshes[tangent_offsets.x].w),
+                          asfloat(world_ray_meshes[tangent_offsets.y].w),
+                          asfloat(world_ray_meshes[tangent_offsets.z].w));
     float sign = dot(weights, signs) * instance.orientation;
-    float4 uv_a = asfloat(world_ray_geometry[attributes.x]);
-    float4 uv_b = asfloat(world_ray_geometry[attributes.y]);
-    float4 uv_c = asfloat(world_ray_geometry[attributes.z]);
+    float4 uv_a = asfloat(world_ray_meshes[attributes.x]);
+    float4 uv_b = asfloat(world_ray_meshes[attributes.y]);
+    float4 uv_c = asfloat(world_ray_meshes[attributes.z]);
     float4 uv = uv_a * weights.x + uv_b * weights.y + uv_c * weights.z;
     float inverse_det = 1.0f / dot(r0, c0);
 

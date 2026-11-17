@@ -109,37 +109,61 @@ int main()
     mirrored[0].x = -2.0f;
     mirrored[1].y = 4.0f;
     mirrored[3] = {4.0f, 8.0f, 12.0f, 1.0f};
-    const auto page = BuildRayGeometryPage({{mesh, glm::mat4(1.0f), 1u, 2u}, {mesh, mirrored, 2u, 4u}});
-    assert(page.root == mesh.nodes.size() && page.nodes.size() == mesh.nodes.size() + 1);
-    assert(page.instances.size() == 2 && page.positions.size() == 4 && page.triangles.size() == 2);
+    const std::vector<RayMesh> meshes{mesh, {}, basedMesh};
+    RayMeshPageBuild pack(meshes);
+    while (!pack.Advance(1u)) {
+    }
+    const auto meshPage = pack.Take();
+    assert(meshPage.placements[0].root == 0u);
+    assert(meshPage.placements[1].root == kInvalidRayIndex);
+    assert(meshPage.placements[2].root == mesh.nodes.size());
+    assert(meshPage.nodes.size() == mesh.nodes.size() + basedMesh.nodes.size());
+    assert(meshPage.positions.size() == 8u && meshPage.attributes.size() == 8u);
+    assert(meshPage.triangles.size() == 4u && meshPage.triangles[2].a >= 4u);
+
+    std::vector<RayMeshInstance> instances{{meshPage.placements[0], glm::mat4(1.0f), 1u, 2u},
+                                           {meshPage.placements[0], mirrored, 2u, 4u}};
+    RayInstancePageBuild top(instances);
+    while (!top.Advance(1u)) {
+    }
+    const auto page = top.Take();
+    assert(page.nodes.size() == 1u && page.instances.size() == 2u);
     assert(page.instances[0].root == page.instances[1].root);
     assert(page.instances[1].worldToObjectX[0] == -0.5f && page.instances[1].worldToObjectX[3] == 2.0f);
     assert(page.instances[1].worldToObjectY[1] == 0.25f && page.instances[1].worldToObjectY[3] == -2.0f);
     assert(page.instances[1].surfaceId == 2u && page.instances[1].layerMask == 4u);
     assert(page.instances[0].orientation == 1.0f && page.instances[1].orientation == -1.0f);
-    assert(BuildRayGeometryPage({}).root == kInvalidRayIndex);
 
-    const auto packed = EncodeRayGeometryPage(page, RayGeometryStatus::Ready);
-    assert(packed[0][0] == page.root && packed[1][0] + 8 == packed[1][2]);
-    assert(page.attributes.size() == page.positions.size() &&
-           packed[1][2] + 4 * page.attributes.size() == packed.size());
-    assert(packed[packed[1][0] + 3][1] == 1u);
-    assert(packed[packed[1][0] + 7][1] == 2u);
+    const RayPageUpload meshUpload(meshPage);
+    const RayPageUpload instanceUpload(page, RayGeometryStatus::Ready);
+    const auto header = [](const RayPageUpload &upload) {
+        return *static_cast<const RayGeometryWord *>(upload.Section(0).data);
+    };
+    assert(header(meshUpload)[0] == 1u);
+    assert(header(meshUpload)[3] + 4 * meshPage.attributes.size() == meshUpload.bytes / sizeof(RayGeometryWord));
+    assert((header(instanceUpload) == RayGeometryWord{0u, 1u, 3u, 1u}));
+    assert(instanceUpload.bytes == 16u + sizeof(BvhNode) + 2 * sizeof(RayInstance));
+
+    instances[1].objectToWorld[3].z += 7.0f;
+    RayInstancePageBuild moving(instances);
+    while (!moving.Advance(1u)) {
+    }
+    const auto movedPage = moving.Take();
+    assert(movedPage.instances[1].root == page.instances[1].root);
+    assert(movedPage.nodes[0].maximum[2] > page.nodes[0].maximum[2]);
+    assert(movedPage.instances[1].worldToObjectZ[3] != page.instances[1].worldToObjectZ[3]);
 
     const std::vector<uint32_t> indices{0, 1, 2, 3, 4, 5, 4, 6, 5};
     RayMeshBuild meshBuild(source, indices, 3, 6, 0);
-    while (!meshBuild.Advance(1)) {
+    while (!meshBuild.Advance(1u)) {
     }
     const auto resumedMesh = meshBuild.Take();
-    const std::vector<RayMeshInstance> instances{{resumedMesh, glm::mat4(1.0f), 1u, 2u},
-                                                 {resumedMesh, mirrored, 2u, 4u}};
-    RayGeometryPageBuild pageBuild(instances);
-    while (!pageBuild.Advance(1)) {
-    }
-    assert(EncodeRayGeometryPage(pageBuild.Take(), RayGeometryStatus::Ready) == packed);
+    assert(resumedMesh.positions.size() == mesh.positions.size());
+    assert(std::memcmp(resumedMesh.triangles.data(), mesh.triangles.data(), 2 * sizeof(RayTriangle)) == 0);
 
-    const auto unavailable = EncodeRayGeometryPage({}, RayGeometryStatus::Unavailable);
-    const auto empty = EncodeRayGeometryPage({}, RayGeometryStatus::Ready);
-    assert(unavailable[1][1] == static_cast<uint32_t>(RayGeometryStatus::Unavailable));
-    assert(empty != unavailable);
+    const RayInstancePage empty;
+    const RayPageUpload unavailable(empty, RayGeometryStatus::Unavailable);
+    const RayPageUpload emptyReady(empty, RayGeometryStatus::Ready);
+    assert((header(unavailable) == RayGeometryWord{kInvalidRayIndex, 1u, 1u, 2u}));
+    assert(header(emptyReady)[3] == 1u);
 }

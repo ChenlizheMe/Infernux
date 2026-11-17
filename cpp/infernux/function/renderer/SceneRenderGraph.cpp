@@ -1418,14 +1418,20 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
             m_needsRebuild = true;
         }
     }
-    auto &next = binding.buffer;
-    if (next == m_worldRayBuffer)
+    if (binding.pending)
         return;
-    const bool rebound =
-        m_graphBuilt && !m_needsRebuild && m_worldRayHandle.IsValid() && m_worldRayBuffer &&
-        m_worldRayBuffer->GetByteSize() == next->GetByteSize() &&
-        m_renderGraph->RebindImportedBuffers({{m_worldRayHandle, next->GetBuffer(), rhi::QueueRole::Graphics, false}});
-    m_worldRayBuffer = std::move(next);
+    auto next = std::array{std::move(binding.buffer), std::move(binding.meshes)};
+    if (next == m_worldRayBuffers)
+        return;
+    bool rebound = false;
+    if (m_graphBuilt && !m_needsRebuild) {
+        std::vector<vk::RenderGraph::ImportedBufferBinding> replacements;
+        for (size_t i = 0; i < next.size(); ++i)
+            if (next[i] != m_worldRayBuffers[i] && m_worldRayHandles[i].IsValid())
+                replacements.push_back({m_worldRayHandles[i], next[i]->GetBuffer(), rhi::QueueRole::Graphics, false});
+        rebound = replacements.empty() || m_renderGraph->RebindImportedBuffers(replacements);
+    }
+    m_worldRayBuffers = std::move(next);
     m_needsRebuild |= !rebound;
 }
 
@@ -1459,9 +1465,9 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         m_pythonGraphDesc = std::move(attempted);
         m_worldRayRequested = false;
         m_worldRayPending = false;
-        m_worldRayHandle = {};
+        m_worldRayHandles = {};
         m_worldRayPublication.reset();
-        m_worldRayBuffer.reset();
+        m_worldRayBuffers = {};
         SetRayLitProgram({});
         m_hasPythonGraph = true;
         m_pythonGraphValid = false;
@@ -1758,13 +1764,15 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     }
     m_pythonGraphDesc = std::move(normalizedDesc);
     m_worldRayRequested =
-        std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
-                    [](const auto &buffer) { return buffer.frameBuffer == GraphFrameBuffer::WorldRayGeometry; });
+        std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(), [](const auto &buffer) {
+            return buffer.frameBuffer == GraphFrameBuffer::WorldRayGeometry ||
+                   buffer.frameBuffer == GraphFrameBuffer::WorldRayMeshes;
+        });
     if (!m_worldRayRequested) {
         m_worldRayPending = false;
-        m_worldRayHandle = {};
+        m_worldRayHandles = {};
         m_worldRayPublication.reset();
-        m_worldRayBuffer.reset();
+        m_worldRayBuffers = {};
     }
     m_hasPythonGraph = true;
     m_pythonGraphValid = true;
@@ -3651,7 +3659,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
         };
         m_worldSurfaceBuffer.reset();
         m_worldSurfaceHandle = {};
-        m_worldRayHandle = {};
+        m_worldRayHandles = {};
         for (const auto &description : m_pythonGraphDesc.buffers) {
             if (!description.HasFrameBuffer())
                 continue;
@@ -3662,12 +3670,14 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     importFrameBuffer(binding, frameIndex, "View/LightList/Frame" + std::to_string(frameIndex),
                                       lights.buffer, lights.capacityBytes);
                 }
-            } else if (description.frameBuffer == GraphFrameBuffer::WorldRayGeometry) {
-                if (!m_worldRayBuffer)
+            } else if (description.frameBuffer == GraphFrameBuffer::WorldRayGeometry ||
+                       description.frameBuffer == GraphFrameBuffer::WorldRayMeshes) {
+                const auto index = description.frameBuffer == GraphFrameBuffer::WorldRayMeshes ? 1u : 0u;
+                const auto &page = m_worldRayBuffers[index];
+                if (!page)
                     throw std::logic_error("A World ray geometry view must bind its frozen input before graph build");
-                importFrameBuffer(binding, 0, "World/RayGeometry", m_worldRayBuffer->GetBuffer(),
-                                  m_worldRayBuffer->GetByteSize());
-                m_worldRayHandle = binding.handles[0];
+                importFrameBuffer(binding, 0, description.name, page->GetBuffer(), page->GetByteSize());
+                m_worldRayHandles[index] = binding.handles[0];
             } else if (description.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials ||
                        description.frameBuffer == GraphFrameBuffer::WorldRayTextureDescriptors) {
                 const auto &table = description.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials

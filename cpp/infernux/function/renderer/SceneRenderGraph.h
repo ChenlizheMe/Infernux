@@ -697,8 +697,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_worldSurfaceBuffer.reset();
         m_worldSurfaceHandle = {};
         m_worldRayPublication.reset();
-        m_worldRayBuffer.reset();
-        m_worldRayHandle = {};
+        m_worldRayBuffers = {};
+        m_worldRayHandles = {};
         m_worldRayPending = false;
         m_worldRayMaterialRequest.reset();
         m_worldRayMaterial.reset();
@@ -1067,8 +1067,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
     std::shared_ptr<const rhi::BufferResource> m_worldSurfaceBuffer;
     vk::ResourceHandle m_worldSurfaceHandle;
     std::shared_ptr<const raytracing::RayWorldGeometryPublication> m_worldRayPublication;
-    std::shared_ptr<const rhi::BufferResource> m_worldRayBuffer;
-    vk::ResourceHandle m_worldRayHandle;
+    std::array<std::shared_ptr<const rhi::BufferResource>, 2> m_worldRayBuffers;
+    std::array<vk::ResourceHandle, 2> m_worldRayHandles;
     std::shared_ptr<const ShaderTargetCode> m_worldRayLitProgram;
     std::shared_ptr<const raytracing::RayLitMaterialLayout> m_worldRayLitLayout;
     std::shared_ptr<const raytracing::RayWorldMaterialRequest> m_worldRayMaterialRequest;

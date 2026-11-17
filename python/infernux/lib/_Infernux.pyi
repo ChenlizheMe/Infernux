@@ -2994,6 +2994,10 @@ class _GraphFrameBuffer(IntEnum):
     NONE = 0
     VIEW_LIGHTS = 1
     WORLD_SURFACES = 2
+    WORLD_RAY_GEOMETRY = 3
+    WORLD_RAY_MESHES = 4
+    WORLD_RAY_LIT_MATERIALS = 5
+    WORLD_RAY_TEXTURE_DESCRIPTORS = 6
 
 
 def _gbuffer_formats() -> list[PixelFormat]: ...

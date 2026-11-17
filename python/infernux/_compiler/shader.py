@@ -18,6 +18,7 @@ from .vertex import read_vertex
 _RAY_LIT_MODULE = "inx_ray_lit"
 _WORLD_RAY_INPUTS = tuple(ShaderInput(name, name, kind) for name, kind in (
     ("world_ray_geometry", "WorldBuffer"),
+    ("world_ray_meshes", "WorldBuffer"),
     ("ray_lit_materials", "WorldBuffer"),
     ("ray_texture_descriptors", "WorldBuffer"),
     ("ray_color_pages", "Color2DArray"),

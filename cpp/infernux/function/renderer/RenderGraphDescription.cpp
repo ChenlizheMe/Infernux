@@ -43,6 +43,7 @@ std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGr
         return {};
     constexpr std::array bufferPorts{
         std::pair{"world_ray_geometry", GraphFrameBuffer::WorldRayGeometry},
+        std::pair{"world_ray_meshes", GraphFrameBuffer::WorldRayMeshes},
         std::pair{"ray_lit_materials", GraphFrameBuffer::WorldRayLitMaterials},
         std::pair{"ray_texture_descriptors", GraphFrameBuffer::WorldRayTextureDescriptors},
     };

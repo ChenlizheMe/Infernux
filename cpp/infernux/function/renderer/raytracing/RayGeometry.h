@@ -60,23 +60,34 @@ struct RayMesh
     std::vector<RayTriangle> triangles;
 };
 
+struct RayMeshPlacement
+{
+    spatial::Bounds bounds;
+    uint32_t root = kInvalidRayIndex;
+};
+
 struct RayMeshInstance
 {
-    const RayMesh &mesh;
+    RayMeshPlacement mesh;
     glm::mat4 objectToWorld;
     uint32_t surfaceId;
     uint32_t layerMask;
 };
 
-/// All references in a page are page-relative. BLASes shared by instances occur once.
-struct RayGeometryPage
+/// Object-space slices live in this page independently of the instance transforms.
+struct RayMeshPage
 {
     std::vector<spatial::BvhNode> nodes;
     std::vector<RayPosition> positions;
     std::vector<RayTriangle> triangles;
-    std::vector<RayInstance> instances;
     std::vector<RayVertexAttributes> attributes;
-    uint32_t root = kInvalidRayIndex;
+    std::vector<RayMeshPlacement> placements;
+};
+
+struct RayInstancePage
+{
+    std::vector<spatial::BvhNode> nodes;
+    std::vector<RayInstance> instances;
 };
 
 /// The draw's streams remain alive and unchanged until the last continuation.
@@ -94,14 +105,27 @@ class RayMeshBuild
     std::unique_ptr<State> m_state;
 };
 
-/// The instance descriptions and their finished meshes remain alive through the build.
-class RayGeometryPageBuild
+/// Packs each independent BLAS once. Source meshes remain alive through the build.
+class RayMeshPageBuild
 {
   public:
-    explicit RayGeometryPageBuild(const std::vector<RayMeshInstance> &instances);
-    ~RayGeometryPageBuild();
+    explicit RayMeshPageBuild(const std::vector<RayMesh> &meshes);
+    ~RayMeshPageBuild();
     [[nodiscard]] bool Advance(uint32_t budget);
-    [[nodiscard]] RayGeometryPage Take();
+    [[nodiscard]] RayMeshPage Take();
+
+  private:
+    struct State;
+    std::unique_ptr<State> m_state;
+};
+
+class RayInstancePageBuild
+{
+  public:
+    explicit RayInstancePageBuild(const std::vector<RayMeshInstance> &instances);
+    ~RayInstancePageBuild();
+    [[nodiscard]] bool Advance(uint32_t budget);
+    [[nodiscard]] RayInstancePage Take();
 
   private:
     struct State;
@@ -110,7 +134,6 @@ class RayGeometryPageBuild
 
 [[nodiscard]] RayMesh BuildRayMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
                                    uint32_t indexStart, uint32_t indexCount, int32_t vertexStart);
-[[nodiscard]] RayGeometryPage BuildRayGeometryPage(const std::vector<RayMeshInstance> &instances);
 
 enum class RayGeometryStatus : uint32_t
 {
@@ -127,25 +150,19 @@ struct RayGeometryBytes
     size_t bytes;
 };
 
-/// Contiguous page layout expressed as sections, so the renderer can upload
-/// ranges without allocating a second, packed copy of the whole scene.
-struct RayGeometryPageLayout
+/// A page lives at its final offsets through the bounded upload, without a second packed copy.
+struct RayPageUpload
 {
-    explicit RayGeometryPageLayout(const RayGeometryPage &page, RayGeometryStatus status);
-    [[nodiscard]] std::array<RayGeometryBytes, 6> Sections() const;
-
-    std::array<RayGeometryWord, 2> header;
+    RayPageUpload(const RayMeshPage &page);
+    RayPageUpload(const RayInstancePage &page, RayGeometryStatus status);
+    [[nodiscard]] RayGeometryBytes Section(size_t index) const noexcept;
+    static constexpr size_t sectionCount = 5;
     uint64_t bytes = 0;
 
   private:
-    const RayGeometryPage &m_page;
+    RayGeometryWord m_header{};
+    std::array<RayGeometryBytes, sectionCount - 1> m_sections{};
 };
-
-/// Two uvec4 header words followed by page-relative storage arrays.
-/// Header 0: TLAS root, node offset, position offset, triangle offset.
-/// Header 1: instance offset, RayGeometryStatus, vertex attribute offset, reserved.
-/// All offsets address uvec4 words. Node and instance indices remain array-relative.
-[[nodiscard]] std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, RayGeometryStatus status);
 
 } // namespace raytracing
 } // namespace infernux

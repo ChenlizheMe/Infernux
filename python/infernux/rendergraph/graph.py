@@ -1555,8 +1555,12 @@ class RenderGraph:
         """
         return self._create_world_buffer("world_ray_geometry", _GraphFrameBuffer.WORLD_RAY_GEOMETRY)
 
+    def _create_world_ray_meshes(self) -> BufferHandle:
+        return self._create_world_buffer("world_ray_meshes", _GraphFrameBuffer.WORLD_RAY_MESHES)
+
     def _create_world_ray_lit(self) -> dict[str, BufferHandle | TextureHandle]:
-        inputs = {"world_ray_geometry": self._create_world_ray_geometry()}
+        inputs = {"world_ray_geometry": self._create_world_ray_geometry(),
+                  "world_ray_meshes": self._create_world_ray_meshes()}
         for name, source in (
             ("ray_lit_materials", _GraphFrameBuffer.WORLD_RAY_LIT_MATERIALS),
             ("ray_texture_descriptors", _GraphFrameBuffer.WORLD_RAY_TEXTURE_DESCRIPTORS),

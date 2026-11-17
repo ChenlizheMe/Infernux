@@ -636,11 +636,12 @@ void trace_main(uint3 id : SV_DispatchThreadID)
 )"},
                                                 {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
         for (const auto &target : worldRays.targets) {
-            const auto geometry = std::find_if(target.resources.begin(), target.resources.end(),
-                                               [](const auto &value) { return value.name == "world_ray_geometry"; });
-            Require(geometry != target.resources.end() && geometry->binding.readOnlyStorage &&
-                        geometry->elementStride == 16,
-                    "Resident ray module did not retain its shared geometry layout");
+            for (const auto *name : {"world_ray_geometry", "world_ray_meshes"}) {
+                const auto page = std::find_if(target.resources.begin(), target.resources.end(),
+                                               [name](const auto &value) { return value.name == name; });
+                Require(page != target.resources.end() && page->binding.readOnlyStorage && page->elementStride == 16,
+                        "Resident ray module did not retain both read-only word buffers");
+            }
         }
 
         bool diagnosed = false;

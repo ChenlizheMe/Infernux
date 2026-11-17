@@ -309,6 +309,7 @@ enum class GraphFrameBuffer : uint8_t
     ViewLights,
     WorldSurfaces,
     WorldRayGeometry,
+    WorldRayMeshes,
     WorldRayLitMaterials,
     WorldRayTextureDescriptors,
     Count,

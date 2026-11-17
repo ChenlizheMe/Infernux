@@ -5,15 +5,19 @@ namespace infernux
 
 inline const ShaderSourceModule &GetSlangRayTraversalModule()
 {
-    static const ShaderSourceModule module{"inx_ray_traversal", "<infernux/shader/ray_traversal>", R"inxslang(
-@_ray_traversal_source@)inxslang"};
+    static const ShaderSourceModule module{"inx_ray_traversal", "<infernux/shader/ray_traversal>", [] {
+            std::string source;
+@_ray_traversal_source@            return source;
+        }()};
     return module;
 }
 
 inline const ShaderSourceModule &GetSlangRayBsdfModule()
 {
-    static const ShaderSourceModule module{"inx_ray_bsdf", "<infernux/shader/ray_bsdf>", R"inxslang(
-@_ray_bsdf_source@)inxslang"};
+    static const ShaderSourceModule module{"inx_ray_bsdf", "<infernux/shader/ray_bsdf>", [] {
+            std::string source;
+@_ray_bsdf_source@            return source;
+        }()};
     return module;
 }
 
