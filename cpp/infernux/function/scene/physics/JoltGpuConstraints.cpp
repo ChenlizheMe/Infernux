@@ -31,8 +31,8 @@ enum Port : uint8_t
     Joints,
     Patches,
     Contacts,
-    LabelsOld,
-    LabelsNext,
+    Parents,
+    RootVotes,
     Schedule,
     Sleeps,
     TopologyArguments,
@@ -44,11 +44,11 @@ enum Entry : uint8_t
     Seed,
     BuildJointRefs,
     BuildPatchRefs,
-    InitLabels,
-    ShortcutLabels,
-    PropagateEdges,
-    CheckRound,
-    CommitRound,
+    InitParents,
+    ResetConnectivity,
+    JoinEdges,
+    FlattenParents,
+    GateValidation,
     ValidateLabels,
     ValidateEdges,
     AcceptComponents,
@@ -64,8 +64,6 @@ enum Entry : uint8_t
     WriteIslands,
     Finalize,
     WriteBodyRoots,
-    FinalizeTopology,
-    CommitRoundAndGateTopology,
     InitializeIsolatedTopology,
     EntryCount
 };
@@ -73,11 +71,11 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"constraint_init_w
                                                               "constraint_seed",
                                                               "constraint_build_joint_refs",
                                                               "constraint_build_patch_refs",
-                                                              "constraint_init_labels",
-                                                              "constraint_shortcut_labels",
-                                                              "constraint_propagate_edges",
-                                                              "constraint_check_round",
-                                                              "constraint_commit_round",
+                                                              "constraint_init_parents",
+                                                              "constraint_reset_connectivity",
+                                                              "constraint_join_edges",
+                                                              "constraint_flatten_parents",
+                                                              "constraint_gate_validation",
                                                               "constraint_validate_labels",
                                                               "constraint_validate_edges",
                                                               "constraint_accept_components",
@@ -93,43 +91,39 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"constraint_init_w
                                                               "constraint_write_islands",
                                                               "constraint_finalize",
                                                               "constraint_write_body_roots",
-                                                              "constraint_finalize_topology",
-                                                              "constraint_commit_round_and_gate_topology",
                                                               "constraint_initialize_isolated_topology"};
 constexpr uint32_t Bit(Port port)
 {
     return 1u << port;
 }
-constexpr uint32_t P = Bit(Params), K = Bit(Work), S = Bit(Schedule), B = Bit(Bodies), O = Bit(LabelsOld),
-                   N = Bit(LabelsNext);
+constexpr uint32_t P = Bit(Params), K = Bit(Work), S = Bit(Schedule), B = Bit(Bodies), C = Bit(Parents),
+                   V = Bit(RootVotes);
 constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | S,
                                                       P | K | S | B | Bit(Joints) | Bit(Sleeps),
                                                       P | K | S | B | Bit(Shapes) | Bit(Patches) | Bit(Contacts) |
                                                           Bit(Sleeps),
-                                                      P | K | B | O | N,
-                                                      P | K | S | B | O | N,
-                                                      P | K | S | B | O | N,
-                                                      P | K | S | B | O | N,
+                                                      P | K | B | C,
+                                                      P | V,
+                                                      P | K | S | C | V,
+                                                      P | K | C | V,
+                                                      P | S | V | Bit(TopologyArguments),
+                                                      P | K | S | B | C,
+                                                      P | K | S | B | C,
                                                       P | S,
-                                                      P | K | S | B | O,
-                                                      P | K | S | B | O,
-                                                      P | S,
                                                       P | K | S,
                                                       P | K | S,
                                                       P | K | S,
-                                                      P | K | S | O,
+                                                      P | K | S | C,
                                                       P | K | S,
-                                                      P | K | N,
-                                                      P | K | S | O | N,
-                                                      P | K | S | O | N,
+                                                      P | K | V,
+                                                      P | K | S | C | V,
+                                                      P | K | S | C | V,
                                                       P | K | S,
                                                       P | K | S,
                                                       P | S,
-                                                      P | K | S | O,
-                                                      P | S,
-                                                      P | K | S | Bit(TopologyArguments),
-                                                      P | K | S | B | N};
+                                                      P | K | S | C,
+                                                      P | K | S | B | V};
 
 struct PortLayout
 {
@@ -143,8 +137,8 @@ constexpr PortLayout Ports[] = {
     {"constraint_params",
      sizeof(ConstraintParams),
      {"counts", "limits", "layout", "references", "sources", "islands", "scan", "scanParent", "merge", "select",
-      "summary", "round", "selection"},
-     0x1fffu,
+      "summary", "selection"},
+     0xfffu,
      true},
     {"stage_work", sizeof(StageWork), {"range"}, 1u, true},
     {"body_models", sizeof(BodyModel), {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"}, 1u, true},
@@ -156,16 +150,16 @@ constexpr PortLayout Ports[] = {
     {"joint_stream", sizeof(QueryRecordWord), {"value"}, 1u, true},
     {"contact_patches", sizeof(ContactPatch), {"leaves"}, 1u, true},
     {"contacts", sizeof(Contact), {"meta", "normalDepth", "localAnchorA", "localAnchorB", "impulse"}, 1u, true},
-    {"labels_old", sizeof(uint32_t), {}, 0u, false},
-    {"labels_next", sizeof(uint32_t), {}, 0u, false},
+    {"component_parents", sizeof(uint32_t), {}, 0u, false},
+    {"root_votes", sizeof(uint32_t), {}, 0u, false},
     {"constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1u, false},
     {"body_sleep", sizeof(BodySleepRecord), {"author", "runtime"}, 0u, true},
     {"topology_arguments", sizeof(ConstraintScheduleWord), {"value"}, 1u, false}};
 static_assert(std::size(Ports) == PortCount);
 constexpr uint32_t MaxDispatchesPerPacket = 16u;
-constexpr uint32_t MaxTopologyArguments = 15u;
 constexpr uint64_t WordBytes = sizeof(ConstraintScheduleWord);
-static_assert(MaxDispatchesPerPacket - 1u == MaxTopologyArguments);
+constexpr uint64_t TopologyArgumentBytes = ConstraintBlockLimit * WordBytes;
+static_assert(ConstraintItemLimit == ConstraintBlockSize * ConstraintBlockLimit);
 
 uint32_t Checked(uint64_t n)
 {
@@ -175,7 +169,7 @@ uint32_t Checked(uint64_t n)
 }
 uint32_t Blocks(uint32_t n)
 {
-    return n / 64u + uint32_t(n % 64u != 0u);
+    return n / ConstraintBlockSize + uint32_t(n % ConstraintBlockSize != 0u);
 }
 bool Collective(Entry e)
 {
@@ -183,8 +177,7 @@ bool Collective(Entry e)
 }
 bool Summary(Entry e)
 {
-    return e == Seed || e == CommitRound || e == AcceptComponents || e == Finalize || e == FinalizeTopology ||
-           e == CommitRoundAndGateTopology;
+    return e == Seed || e == ResetConnectivity || e == AcceptComponents || e == Finalize;
 }
 template <class T> std::vector<uint8_t> Bytes(const T &v)
 {
@@ -209,7 +202,7 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
         (uniform ? value.byteSize : resource.elementStride) != expected.stride ||
         (!uniform && resource.binding.readOnlyStorage != expected.readOnly))
         throw std::invalid_argument("GPU constraint binding differs from shared POD");
-    if (port == LabelsOld || port == LabelsNext) {
+    if (port == Parents || port == RootVotes) {
         // Scalar uint atomics require this layout, not a UInt4 struct field.
         if (value.kind != ShaderValueKind::Scalar || value.scalar != ShaderScalarKind::UInt32 || value.byteSize != 4u ||
             value.rows != 1u || value.columns != 1u || !value.fields.empty())
@@ -281,7 +274,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
 {
     enum class Phase
     {
-        RoundWindow,
+        Connectivity,
         Assemble,
         TopologyReady,
         Done
@@ -289,7 +282,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     struct Operation
     {
         Entry entry;
-        uint32_t length, oldBank;
+        uint32_t length;
         ConstraintParams config;
     };
     struct Cursor
@@ -307,14 +300,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     };
 
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-              const StepParams &parameters,
-              std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> callback, bool onlyTopology = false,
-              std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> topologyCallback = {})
-        : implementation(std::move(owner)), contactLease(inputs.GetContacts()), completed(std::move(callback)),
-          completedTopology(std::move(topologyCallback)), topologyOnly(onlyTopology)
+              const StepParams &parameters, std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> callback)
+        : implementation(std::move(owner)), contactLease(inputs.GetContacts()), completedTopology(std::move(callback))
     {
-        if (!implementation->host.SharesServicesWith(storage.GetHost()) || (!completed && !completedTopology) ||
-            !contactLease)
+        if (!implementation->host.SharesServicesWith(storage.GetHost()) || !completedTopology || !contactLease)
             throw std::invalid_argument("GPU constraints require the accepted tick host/contact workset");
         const uint32_t world = parameters.selection.x;
         const auto &range = storage.GetModel().worlds.at(world);
@@ -359,9 +348,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         config.selection = {world, range.bodies.x, range.leaves.x, range.leaves.z};
         config.limits.y = range.leaves.y;
         config.limits.z = Checked(4ull * p);
-        config.select.z = topologyOnly ? 0u : 1u;
         // The completed broadphase and accepted selected joint range prove an empty numerical domain.
-        isolatedTopology = topologyOnly && j == 0u && p == 0u;
+        isolatedTopology = j == 0u && p == 0u;
         if (isolatedTopology) {
             config.limits.w = ConstraintScheduleHeaderWords;
             config.limits.x = Checked(uint64_t(config.limits.w) + b);
@@ -387,7 +375,6 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         config.sources = {reserve(j), reserve(p), reserve(b), reserve(b)};
         config.islands = {reserve(2ull * b), reserve(b), reserve(b), reserve(b)};
         config.summary = {reserve(1u), reserve(1u), reserve(1u), reserve(1u)};
-        config.round.x = reserve(1u);
         config.limits.w = reserve(b);
         // One reusable hierarchy. Persistent summaries above never alias it.
         uint32_t count = std::max(b, allRefs);
@@ -402,7 +389,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             count = blocks;
         } while (true);
         config.limits.x = Checked(words);
-        BuildRoundWindow();
+        BuildConnectivity();
     }
 
     void ValidateInput(const std::shared_ptr<rhi::ComputeBuffer> &buffer) const
@@ -433,40 +420,36 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     bool Capacity()
     {
         const uint64_t voteBytes = (uint64_t(config.counts.x) + 1u) * sizeof(uint32_t);
-        return Endpoint(schedule, uint64_t(config.limits.x) * WordBytes) && Endpoint(labels[1], voteBytes) &&
-               (isolatedTopology || Endpoint(labels[0], voteBytes));
+        if (!Endpoint(schedule, uint64_t(config.limits.x) * WordBytes) || !Endpoint(rootVotes, voteBytes))
+            return false;
+        if (isolatedTopology || phase != Phase::Connectivity)
+            return true;
+        if (!topologyArguments)
+            topologyArguments =
+                Allocate(TopologyArgumentBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
+        return topologyArguments && Endpoint(parents, voteBytes - sizeof(uint32_t));
     }
 
-    void Append(std::vector<Operation> &operations, Entry entry, uint32_t length, const ConstraintParams &value,
-                uint32_t bank)
+    void Add(Entry entry, uint32_t length, const ConstraintParams &value)
     {
         if (length)
-            operations.push_back({entry, length, bank, value});
-    }
-    void Add(Entry entry, uint32_t length, const ConstraintParams &value, uint32_t bank)
-    {
-        Append(plan, entry, length, value, bank);
+            plan.push_back({entry, length, value});
     }
     void Add(Entry entry, uint32_t length)
     {
-        Add(entry, length, config, planBank);
-    }
-    void AppendKind(std::vector<Operation> &operations, Entry entry, uint32_t kind)
-    {
-        auto value = config;
-        value.select.x = kind;
-        Append(operations, entry, kind == ConstraintJoint ? config.counts.y : config.counts.z, value, planBank);
+        Add(entry, length, config);
     }
     void Kind(Entry entry, uint32_t kind)
     {
-        AppendKind(plan, entry, kind);
+        auto value = config;
+        value.select.x = kind;
+        Add(entry, kind == ConstraintJoint ? config.counts.y : config.counts.z, value);
     }
 
     // Only logarithmically many operation descriptors are materialized. A large
     // domain is sliced by the packet cursor; no CPU arrays of labels/refs/ranges.
     // Empty input leaves its distinct, already initialized total word zero.
-    void AppendReduction(std::vector<Operation> &operations, uint32_t input, uint32_t count, uint32_t mode,
-                         uint32_t destination)
+    void Reduce(uint32_t input, uint32_t count, uint32_t mode, uint32_t destination)
     {
         if (!count)
             return;
@@ -477,17 +460,13 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             const uint32_t total = blocks == 1u ? destination : hierarchy[level].totals;
             value.scan = {input, 0u, total, count};
             value.scanParent.y = mode;
-            Append(operations, ReduceBlocks, blocks, value, planBank);
+            Add(ReduceBlocks, blocks, value);
             if (blocks == 1u)
                 return;
             input = total;
             count = blocks;
             ++level;
         }
-    }
-    void Reduce(uint32_t input, uint32_t count, uint32_t mode, uint32_t destination)
-    {
-        AppendReduction(plan, input, count, mode, destination);
     }
     void ExclusiveScan(uint32_t input, uint32_t count, uint32_t prefix, uint32_t destination)
     {
@@ -512,25 +491,25 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             auto value = config;
             value.scan = {l.input, l.prefix, l.total, l.count};
             value.scanParent.y = 0u;
-            Add(ScanBlocks, Blocks(l.count), value, planBank);
+            Add(ScanBlocks, Blocks(l.count), value);
         }
         for (size_t i = scan.size() - 1u; i != 0u; --i) {
             const auto &child = scan[i - 1u];
             auto value = config;
             value.scan = {child.input, child.prefix, child.total, child.count};
             value.scanParent = {scan[i].prefix, 0u, 0u, 0u};
-            Add(AddOffsets, child.count, value, planBank);
+            Add(AddOffsets, child.count, value);
         }
     }
     uint32_t Sort(uint32_t kind, std::array<uint32_t, 2> banks, uint32_t count)
     {
         auto value = config;
         value.select = {kind, banks[0], 0u, 0u};
-        Add(SeedSort, count, value, planBank);
+        Add(SeedSort, count, value);
         uint32_t source = 0;
         for (uint64_t width = ConstraintBlockSize; width < count; width *= 2u) {
             value.merge = {banks[source], banks[source ^ 1u], count, Checked(width)};
-            Add(MergeItems, count, value, planBank);
+            Add(MergeItems, count, value);
             source ^= 1u;
         }
         return banks[source];
@@ -540,60 +519,46 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         phase = next;
         plan.clear();
         cursor = {};
-        planBank = oldBank;
     }
-    void BuildRoundWindow()
+    void BuildConnectivity(bool linkEdges = true)
     {
-        ResetPlan(Phase::RoundWindow);
-        const bool firstWindow = scheduledRounds == 0u;
-        const uint32_t remaining = config.counts.x - scheduledRounds;
-        windowCount = std::min(firstWindow ? 1u : ConstraintRoundWindow, remaining);
-        if (!windowCount)
-            throw std::runtime_error("GPU constraint CC exhausted its proven body-slot bound");
-        if (firstWindow) {
-            // The first round can consume the initialization writes in queue
-            // order. Only the convergence record needs a host receipt.
+        ResetPlan(Phase::Connectivity);
+        if (!connectivityPass) {
             Add(InitWords, config.limits.x);
             Add(Seed, 1u);
             Add(BuildJointRefs, config.counts.y);
             Add(BuildPatchRefs, config.counts.z);
-            Add(InitLabels, config.counts.x);
+            Add(InitParents, config.counts.x);
         }
-        for (uint32_t round = 0; round < windowCount; ++round) {
-            Add(ShortcutLabels, config.counts.x);
-            Kind(PropagateEdges, ConstraintJoint);
-            Kind(PropagateEdges, ConstraintPatch);
-            Add(CheckRound, config.counts.x);
-            Reduce(config.layout.z, config.counts.x, 0u, config.round.x);
-            Add(CommitRound, 1u);
-            // This records the binding parity for subsequent operations only.
-            // Committed CC parity changes only after the completed summary.
-            planBank ^= 1u;
+        Add(ResetConnectivity, 1u);
+        if (linkEdges) {
+            Kind(JoinEdges, ConstraintJoint);
+            Kind(JoinEdges, ConstraintPatch);
         }
+        Add(FlattenParents, config.counts.x);
+        Add(GateValidation, 1u);
+        validationStart = plan.size();
+        Add(ValidateLabels, config.counts.x);
+        Reduce(config.layout.z, config.counts.x, 0u, config.summary.w);
+        ValidateReferences();
+        Add(WriteBodyRoots, config.counts.x);
     }
-    void AppendComponentValidation(std::vector<Operation> &operations)
+    void ValidateReferences()
     {
-        Append(operations, ValidateLabels, config.counts.x, config, planBank);
-        AppendReduction(operations, config.layout.z, config.counts.x, 0u, config.summary.w);
-        AppendKind(operations, ValidateEdges, ConstraintJoint);
-        AppendKind(operations, ValidateEdges, ConstraintPatch);
+        Kind(ValidateEdges, ConstraintJoint);
+        Kind(ValidateEdges, ConstraintPatch);
         const uint32_t refs = Checked(uint64_t(config.counts.y) + config.counts.z);
-        AppendReduction(operations, config.layout.w, refs, 0u, config.summary.z);
-        Append(operations, AcceptComponents, 1u, config, planBank);
-        Append(operations, WriteBodyRoots, config.counts.x, config, planBank);
-        if (topologyOnly)
-            Append(operations, FinalizeTopology, 1u, config, planBank);
+        Reduce(config.layout.w, refs, 0u, config.summary.z);
+        Add(AcceptComponents, 1u);
     }
     void BuildAssembly()
     {
         ResetPlan(Phase::Assemble);
-        if (resumingNumerical) {
-            Add(BuildJointRefs, config.counts.y);
-            Add(BuildPatchRefs, config.counts.z);
-        }
-        AppendComponentValidation(plan);
-        if (topologyOnly)
-            return;
+        Add(BuildJointRefs, config.counts.y);
+        Add(BuildPatchRefs, config.counts.z);
+        // Wake changes the active reference subset. The parent forest and
+        // its published body roots are still the accepted substep's inputs.
+        ValidateReferences();
         config.references.z = Sort(ConstraintJoint, jointSort, config.counts.y);
         config.references.w = Sort(ConstraintPatch, patchSort, config.counts.z);
         Add(ClearRootFlags, config.counts.x);
@@ -614,11 +579,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     }
 
     bool Emit(const Operation &op, uint32_t first, uint32_t count, Uniforms &uniforms,
-              std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches,
-              const std::shared_ptr<rhi::ComputeBuffer> &arguments = {})
+              std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
         const bool collective = Collective(op.entry);
-        // The block limit is <=64; each packet uses at most 32 blocks.
+        // Each dispatch covers at most ConstraintBlockLimit workgroups.
         const uint32_t limit = ChunkLimit(op.entry);
         if (!count || count > limit || first >= op.length || count > op.length - first)
             throw std::logic_error("GPU constraints emitted an invalid bounded chunk");
@@ -628,12 +592,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             ((EntryPorts[op.entry] & K) && !Endpoint(uniforms.work, sizeof(StageWork))))
             return false;
         uploads.push_back({uniforms.parameters, 0u, Bytes(op.config)});
-        StageWork work{{first, count, 0u, 0u}};
-        if (arguments)
-            work.range = {scheduledRounds, static_cast<uint32_t>(arguments->GetByteSize() / WordBytes),
-                          scheduledRounds + windowCount, 0u};
         if (EntryPorts[op.entry] & K)
-            uploads.push_back({uniforms.work, 0u, Bytes(work)});
+            uploads.push_back({uniforms.work, 0u, Bytes(StageWork{{first, count, 0u, 0u}})});
         rhi::ComputeDispatchDesc dispatch;
         const auto &program = implementation->programs[op.entry];
         dispatch.kernel = program.kernel;
@@ -645,15 +605,15 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             const auto &buffer = port == Params              ? uniforms.parameters
                                  : port == Work              ? uniforms.work
                                  : port == Schedule          ? schedule
-                                 : port == LabelsOld         ? labels[op.oldBank]
-                                 : port == LabelsNext        ? labels[op.oldBank ^ 1u]
-                                 : port == TopologyArguments ? arguments
+                                 : port == Parents           ? parents
+                                 : port == RootVotes         ? rootVotes
+                                 : port == TopologyArguments ? topologyArguments
                                                              : frozen[port];
             if (!buffer)
                 throw std::logic_error("GPU constraint dispatch has an absent endpoint");
             const uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffer);
-            if (op.entry == InitializeIsolatedTopology && (port == Schedule || port == LabelsNext)) {
+            if (op.entry == InitializeIsolatedTopology && (port == Schedule || port == RootVotes)) {
                 dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
                 if (port == Schedule) {
                     const uint64_t rootFirst = config.limits.w;
@@ -667,28 +627,29 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                 continue;
             }
             const bool initSchedule = op.entry == InitWords && port == Schedule;
-            const bool initLabel = op.entry == InitLabels && (port == LabelsOld || port == LabelsNext);
-            const bool uniqueLabel = port == LabelsNext && (op.entry == ShortcutLabels || op.entry == ClearRootFlags);
-            const bool writes = initSchedule || initLabel || uniqueLabel;
-            // After full label initialization the read/write version is live
-            // throughout CC. Reads never Freeze it, so ping-pong is not COW.
-            const bool labelReadOnly = port == LabelsOld && op.entry != InitLabels;
-            const bool nextReadOnly = port == LabelsNext && (op.entry == CheckRound || op.entry == BuildRootRows);
-            const bool scheduleReadOnly =
-                port == Schedule && (op.entry == ShortcutLabels || op.entry == PropagateEdges || op.entry == MarkRoots);
-            const bool mutablePort =
-                port == Schedule || port == LabelsOld || port == LabelsNext || port == TopologyArguments;
-            dispatch.bufferAccesses.push_back(writes ? rhi::ComputeBufferAccess::Write
-                                              : !mutablePort || labelReadOnly || nextReadOnly || scheduleReadOnly
-                                                  ? rhi::ComputeBufferAccess::Read
-                                                  : rhi::ComputeBufferAccess::ReadWrite);
-            if (writes) {
+            const bool initParent = op.entry == InitParents && port == Parents;
+            const bool initVotes = op.entry == ClearRootFlags && port == RootVotes;
+            const bool statusOnly = port == RootVotes && (op.entry == ResetConnectivity || op.entry == JoinEdges ||
+                                                          op.entry == FlattenParents || op.entry == GateValidation);
+            const uint64_t voteStatusOffset = uint64_t(config.counts.x) * sizeof(uint32_t);
+            if (initSchedule || initParent || initVotes) {
                 const uint64_t stride = port == Schedule ? WordBytes : 4u;
+                dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
                 proof.writes.push_back({binding, uint64_t(first) * stride, uint64_t(count) * stride});
-            } else
-                proof.reads.push_back(
-                    {binding, 0u,
-                     port == LabelsOld || port == LabelsNext ? uint64_t(config.counts.x) * 4u : buffer->GetByteSize()});
+            } else if (port == TopologyArguments || (statusOnly && op.entry == ResetConnectivity)) {
+                dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
+                proof.writes.push_back({binding, statusOnly ? voteStatusOffset : 0u,
+                                        statusOnly ? sizeof(uint32_t) : TopologyArgumentBytes});
+            } else {
+                const bool mayWrite = (port == Schedule && op.entry != MarkRoots) ||
+                                      (port == Parents && (op.entry == JoinEdges || op.entry == FlattenParents)) ||
+                                      (port == RootVotes && op.entry != BuildRootRows && op.entry != GateValidation);
+                dispatch.bufferAccesses.push_back(mayWrite ? rhi::ComputeBufferAccess::ReadWrite
+                                                           : rhi::ComputeBufferAccess::Read);
+                const uint64_t bytes =
+                    port == RootVotes ? (statusOnly ? sizeof(uint32_t) : voteStatusOffset) : buffer->GetByteSize();
+                proof.reads.push_back({binding, statusOnly ? voteStatusOffset : 0u, bytes});
+            }
         }
         dispatch.proof = std::move(proof);
         dispatches.push_back(std::move(dispatch));
@@ -696,113 +657,27 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         return true;
     }
 
-    bool TryAppendTopologyTail(const Operation &commit, size_t dispatchLimit,
-                               std::vector<rhi::ComputeBufferUpdate> &uploads,
-                               std::vector<rhi::ComputeDispatchDesc> &dispatches)
-    {
-        if (!topologyOnly || dispatches.size() + 1u >= dispatchLimit)
-            return false;
-        std::vector<Operation> tail;
-        AppendComponentValidation(tail);
-        struct Chunk
-        {
-            const Operation *operation;
-            uint32_t first, count;
-        };
-        std::array<Chunk, MaxTopologyArguments> chunks;
-        const size_t available = std::min(chunks.size(), dispatchLimit - 1u - dispatches.size());
-        size_t argumentCount = 0;
-        for (const auto &op : tail) {
-            const uint32_t limit = ChunkLimit(op.entry);
-            for (uint32_t first = 0u; first < op.length;) {
-                if (argumentCount == available)
-                    return false;
-                const uint32_t count = std::min(limit, op.length - first);
-                chunks[argumentCount++] = {&op, first, count};
-                first += count;
-            }
-        }
-        const auto arguments =
-            Allocate(argumentCount * WordBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
-        if (!arguments)
-            return false;
-
-        // Allocation refusal leaves the ordinary commit and its exact cursor
-        // available. Only append after the entire optional suffix is ready.
-        Uniforms uniforms;
-        std::vector<rhi::ComputeBufferUpdate> tailUploads;
-        std::vector<rhi::ComputeDispatchDesc> tailDispatches;
-        if (!Emit({CommitRoundAndGateTopology, commit.length, commit.oldBank, commit.config}, 0u, 1u, uniforms,
-                  tailUploads, tailDispatches, arguments))
-            return false;
-        std::vector<uint8_t> bytes(argumentCount * WordBytes);
-        for (size_t i = 0; i < argumentCount; ++i) {
-            const auto &chunk = chunks[i];
-            if (!Emit(*chunk.operation, chunk.first, chunk.count, uniforms, tailUploads, tailDispatches))
-                return false;
-            auto &unit = tailDispatches.back();
-            const auto offset = i * WordBytes;
-            unit.indirectArguments = rhi::ComputeIndirectArguments{arguments, offset};
-            // Only the GPU gate can turn on the bounded group count.
-            const UInt4 record{0u, 1u, 1u, unit.groupCountX};
-            std::memcpy(bytes.data() + offset, &record, sizeof(record));
-        }
-        tailUploads.push_back({arguments, 0u, std::move(bytes)});
-        uploads.insert(uploads.end(), std::make_move_iterator(tailUploads.begin()),
-                       std::make_move_iterator(tailUploads.end()));
-        dispatches.insert(dispatches.end(), std::make_move_iterator(tailDispatches.begin()),
-                          std::make_move_iterator(tailDispatches.end()));
-        return true;
-    }
-
-    void AcceptRoundControl(const UInt4 &control, bool gated = false)
-    {
-        const uint32_t proposed = scheduledRounds + windowCount;
-        const bool topologyAccepted = gated && control.x == 0u && control.w == 1u;
-        if (control.z || control.w != uint32_t(topologyAccepted) || control.x > config.counts.x ||
-            control.y > proposed || control.y <= scheduledRounds || (control.x && control.y != proposed))
-            throw std::runtime_error("GPU constraint CC failed its monotone convergence/status contract (status " +
-                                     std::to_string(control.z) + ")");
-        if (gated && control.x == 0u && !topologyAccepted)
-            throw std::runtime_error("GPU sleep topology failed its independent CC acceptance");
-        scheduledRounds = proposed;
-        oldBank = planBank;
-    }
-    void DecodeRound(const std::shared_ptr<rhi::PreparedComputeBatch> &packet)
+    void DecodeConnectivity(const std::shared_ptr<rhi::PreparedComputeBatch> &packet)
     {
         UInt4 control{};
-        auto read = packet->Readback(0u);
-        if (!read || !read->IsComplete())
-            throw std::logic_error("GPU CC control needs its completed source receipt");
-        read->ReadInto(&control, sizeof(control));
-        AcceptRoundControl(control);
-        if (control.x == 0u)
-            BuildAssembly();
-        else
-            BuildRoundWindow();
-    }
-    static void ValidateTopologyHeader(const UInt4 &counts, const UInt4 &items)
-    {
-        if (counts.w != ConstraintNotReady || counts.x || counts.y || counts.z || items.x || items.y || items.z ||
-            items.w)
-            throw std::runtime_error("GPU sleep topology failed its independent CC acceptance");
-    }
-    void DecodeGatedRound(const std::shared_ptr<rhi::PreparedComputeBatch> &packet)
-    {
-        std::array<UInt4, ConstraintScheduleHeaderWords + 1u> result{};
-        auto read = packet->Readback(0u);
-        if (!read || !read->IsComplete())
-            throw std::logic_error("GPU CC topology needs its completed source receipt");
-        read->ReadInto(result.data(), sizeof(result));
-        const auto &control = result.back();
-        // AcceptComponents preserves x/y and ORs status. Its w=1 distinguishes
-        // a completed validation tail from the still-seeded header.
-        ValidateTopologyHeader(result[0], result[1]);
-        AcceptRoundControl(control, true);
-        if (control.x)
-            BuildRoundWindow();
-        else
+        packet->Readback(0u)->ReadInto(&control, sizeof(control));
+        const bool ready = control.x == 0u;
+        if (control.y != ++connectivityPass || control.z ||
+            (control.x & ~(ConstraintLinksPending | ConstraintRootsPending)) || control.w != uint32_t(ready))
+            throw std::runtime_error("GPU constraint topology did not validate (status " + std::to_string(control.z) +
+                                     ")");
+        if (ready) {
             PublishTopology();
+            return;
+        }
+        // An edge can descend at most 2*(B-1) links, and flattening needs
+        // at most B parent reads per body across the remaining passes.
+        const auto quanta = [](uint64_t links) {
+            return (links + ConstraintConnectivityQuantum - 1u) / ConstraintConnectivityQuantum;
+        };
+        if (connectivityPass >= quanta(2ull * (config.counts.x - 1u)) + quanta(config.counts.x))
+            throw std::runtime_error("GPU constraint topology did not converge within its parent-chain bound");
+        BuildConnectivity((control.x & ConstraintLinksPending) != 0u);
     }
     void PublishTopology()
     {
@@ -811,8 +686,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->bodyFirst = config.selection.y;
         value->bodyCount = config.counts.x;
         value->schedule = schedule;
-        value->rootVotes = labels[oldBank ^ 1u];
+        value->rootVotes = rootVotes;
         value->execution = shared_from_this();
+        topologyArguments.reset();
         // Setup must write/read its actual new generations.
         frozen[Joints].reset();
         frozen[Contacts].reset();
@@ -822,11 +698,6 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     }
     void Install(const UInt4 &counts, const UInt4 &items)
     {
-        if (topologyOnly) {
-            ValidateTopologyHeader(counts, items);
-            PublishTopology();
-            return;
-        }
         if (counts.w || counts.x > config.counts.x || counts.y > counts.x || counts.z > counts.x ||
             items.x > config.counts.y || items.y > config.counts.z || items.z > items.x || items.w > items.y ||
             (counts.y == 0u) != (items.x == 0u) || (counts.z == 0u) != (items.y == 0u) || counts.y > items.x ||
@@ -849,7 +720,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->jointRefCount = config.counts.y;
         value->patchRefFirst = config.references.y;
         value->patchRefCount = config.counts.z;
-        value->rootVotes = labels[oldBank ^ 1u];
+        value->rootVotes = rootVotes;
         frozen[Joints].reset();
         frozen[Contacts].reset();
         frozen[Sleeps].reset();
@@ -875,18 +746,16 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Cursor next = cursor;
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
-        bool gated = false;
         while (next.operation < plan.size() && dispatches.size() < dispatchLimit) {
             const auto &op = plan[next.operation];
-            if (op.entry == CommitRound && next.operation + 1u == plan.size() &&
-                TryAppendTopologyTail(op, dispatchLimit, uploads, dispatches)) {
-                gated = true;
-                next = {plan.size(), 0u};
-                break;
-            }
             const uint32_t count = std::min(ChunkLimit(op.entry), op.length - next.first);
             if (!Emit(op, next.first, count, pendingUniforms, uploads, dispatches))
                 break;
+            if (phase == Phase::Connectivity && next.operation >= validationStart) {
+                auto &unit = dispatches.back();
+                unit.indirectArguments =
+                    rhi::ComputeIndirectArguments{topologyArguments, (unit.groupCountX - 1u) * WordBytes};
+            }
             next.first += count;
             if (next.first == op.length) {
                 next.first = 0u;
@@ -900,10 +769,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         const auto submittedPhase = phase;
         std::vector<rhi::ComputeBufferRead> reads;
         if (boundary && !isolatedTopology) {
-            if (gated)
-                reads.push_back({schedule, uint64_t(config.layout.x) * WordBytes,
-                                 (ConstraintScheduleHeaderWords + 1ull) * WordBytes});
-            else if (submittedPhase == Phase::RoundWindow)
+            if (submittedPhase == Phase::Connectivity)
                 reads.push_back({schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
             else
                 reads.push_back({schedule, uint64_t(config.layout.x) * WordBytes, 2u * WordBytes});
@@ -914,7 +780,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), std::move(reads));
         JoltGpuControlWork work{
             packet,
-            [self = shared_from_this(), packet, next, boundary, submittedPhase, gated]() -> JoltGpuControlWork {
+            [self = shared_from_this(), packet, next, boundary, submittedPhase]() -> JoltGpuControlWork {
                 // Cursor changes follow acceptance. Boundary decode also needs completion.
                 self->cursor = next;
                 if (boundary) {
@@ -922,10 +788,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                         self->PublishTopology();
                         return {};
                     }
-                    if (gated)
-                        self->DecodeGatedRound(packet);
-                    else if (submittedPhase == Phase::RoundWindow)
-                        self->DecodeRound(packet);
+                    if (submittedPhase == Phase::Connectivity)
+                        self->DecodeConnectivity(packet);
                     else {
                         self->DecodeAssembly(packet);
                         return {};
@@ -942,19 +806,19 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     std::shared_ptr<Impl> implementation;
     std::shared_ptr<const JoltGpuContactWorkset> contactLease;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> frozen;
-    std::shared_ptr<rhi::ComputeBuffer> schedule;
+    std::shared_ptr<rhi::ComputeBuffer> schedule, parents, rootVotes, topologyArguments;
     Uniforms pendingUniforms;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, 2> labels;
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed;
     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completedTopology;
-    bool topologyOnly = false, isolatedTopology = false, resumingNumerical = false;
+    bool isolatedTopology = false;
     ConstraintParams config{};
     std::array<uint32_t, 2> jointSort{}, patchSort{};
     std::vector<ScanLevel> hierarchy;
     std::vector<Operation> plan;
     Cursor cursor;
-    Phase phase = Phase::RoundWindow;
-    uint32_t oldBank = 0u, planBank = 0u, scheduledRounds = 0u, windowCount = 0u;
+    Phase phase = Phase::Connectivity;
+    size_t validationStart = 0u;
+    uint32_t connectivityPass = 0u;
 };
 
 JoltGpuConstraints::JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTargetCode &target)
@@ -966,10 +830,7 @@ JoltGpuConstraints::PrepareTopology(const JoltGpuStorage &storage, const JoltGpu
                                     const JPH::GPU::StepParams &parameters,
                                     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completed)
 {
-    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, parameters,
-                                             std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)>{},
-                                             true, std::move(completed))
-        ->Next();
+    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, parameters, std::move(completed))->Next();
 }
 JoltGpuControlWork
 JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
@@ -987,7 +848,6 @@ JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const Jo
     if (execution->isolatedTopology) {
         // The accepted broadphase and joint range prove that no numerical rows
         // exist. Keep the queued root write as the sleep pass's dependency.
-        execution->topologyOnly = false;
         execution->completed = std::move(completed);
         topology->execution.reset();
         execution->Install({}, {});
@@ -1003,8 +863,6 @@ JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const Jo
     execution->ValidateInput(execution->frozen[Contacts]);
     execution->ValidateInput(execution->frozen[Sleeps]);
     execution->config.select.z = 1u;
-    execution->topologyOnly = false;
-    execution->resumingNumerical = true;
     execution->completed = std::move(completed);
     topology->execution.reset();
     execution->BuildAssembly();
