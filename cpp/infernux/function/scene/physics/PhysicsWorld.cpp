@@ -22,6 +22,7 @@
 #include "JoltGpuQueries.h"
 #include "JoltGpuRenderBindings.h"
 #include "JoltGpuRenderPoses.h"
+#include "JoltMixedConstraintSolver.h"
 #include "JoltMixedContacts.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsDomain.h"
@@ -651,7 +652,6 @@ void PhysicsWorld::RequireGpu(PhysicsDomain &domain) const
 void PhysicsWorld::Shutdown()
 {
     for (auto *domain : m_domains) {
-        RetireRagdolls(*domain);
         if (domain->gpuRegistered)
             m_gpuScene->Cancel(domain->owner);
         domain->rendering.bindings.Clear();
@@ -665,6 +665,7 @@ void PhysicsWorld::Shutdown()
         domain->contacts.Close();
         domain->gpuContacts.Close();
         domain->cpuContacts.Close();
+        RetireRagdolls(*domain);
         domain->mixedContacts.reset();
         RetireCpuJointRoutes(*domain);
         domain->cpuControl.reset();
@@ -693,6 +694,7 @@ void PhysicsWorld::Shutdown()
     }
     m_gpuContactReports.reset();
     m_gpuMixedContacts.reset();
+    m_mixedConstraintSolver.reset();
     m_gpuRenderProgram.reset();
     m_gpuQueries.reset();
     m_gpuJoints.reset();
@@ -748,26 +750,36 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     // admission must not consume CPU commands or install a new contact policy.
     auto policy = CaptureContactPolicy(domain);
     const auto pairs = CaptureColliderPairs(domain);
-    std::vector<uint32_t> cpuEndpoints;
-    bool mixedTriggers = false;
-    if (domain.cpuControl && domain.gpuRegistered && policy.WantsTriggers()) {
-        bool gpuBody = false, sensor = false;
+    std::vector<JoltMixedContactStep::CpuEndpoint> cpuEndpoints;
+    std::vector<uint32_t> respondingGpu;
+    bool mixedTriggers = false, coupled = false;
+    if (domain.cpuControl && domain.gpuRegistered) {
+        bool gpuBody = false, sensor = false, respondingCpu = false;
+        const bool observeTriggers = policy.WantsTriggers();
         const auto &store = PhysicsECSStore::Instance();
         for (const auto id : domain.bodyIds) {
             const auto *entry = FindBodyRegistration(id);
             if (!entry || entry->backend == Backend::StaticBoundary)
                 continue;
-            if (entry->backend == Backend::Cpu)
-                cpuEndpoints.push_back(id);
-            else
-                gpuBody = true;
             const auto &actor = store.GetActor(entry->actor);
-            sensor |= std::any_of(actor.colliders.begin(), actor.colliders.end(),
-                                  [](const auto *c) { return c && c->IsEnabled() && c->IsTrigger(); });
+            const bool respond =
+                actor.rigidbody && actor.rigidbody->IsEnabled() && actor.rigidbody->AllowsCrossBackendInteraction();
+            if (entry->backend == Backend::Cpu) {
+                cpuEndpoints.push_back({id, respond});
+                respondingCpu |= respond;
+            } else {
+                gpuBody = true;
+                if (respond)
+                    respondingGpu.push_back(id);
+            }
+            if (observeTriggers && !sensor)
+                sensor = std::any_of(actor.colliders.begin(), actor.colliders.end(),
+                                     [](const auto *c) { return c && c->IsEnabled() && c->IsTrigger(); });
         }
         mixedTriggers = gpuBody && sensor && !cpuEndpoints.empty();
+        coupled = respondingCpu && !respondingGpu.empty();
     }
-    if (mixedTriggers) {
+    if (mixedTriggers || coupled) {
         if (!m_gpuMixedContacts) {
             const auto target = PhysicsShaderTarget(*m_gpuHost);
             m_gpuMixedContacts = std::make_unique<JoltGpuMixedContacts>(
@@ -775,6 +787,11 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         }
         if (!domain.mixedContacts)
             domain.mixedContacts = std::make_unique<JoltMixedContactStep>();
+        if (coupled && !m_mixedConstraintSolver) {
+            const auto target = PhysicsShaderTarget(*m_gpuHost);
+            m_mixedConstraintSolver = std::make_unique<JoltMixedConstraintSolver>(
+                *m_gpuHost, LoadJoltGpuProgram(JoltGpuProgram::CrossDomainVelocity, target));
+        }
     }
     if (domain.gpuRegistered) {
         QueueColliderPairs(domain);
@@ -782,10 +799,15 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         if (!m_gpuScene->TryBeginTick(
                 domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime, *domain.admittedParameters,
                 [this, &domain] { return PrepareRenderConsumer(domain, true); },
-                [this, &domain, policy, mixedTriggers](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
+                [this, &domain, policy, mixedTriggers,
+                 coupled](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
                     auto observer = domain.gpuContacts.Prepare(*m_gpuContactReports, p,
                                                                domain.admittedParameters->Get().solve.y, policy);
-                    if (mixedTriggers) {
+                    if (coupled) {
+                        observer.couple =
+                            m_mixedConstraintSolver->Prepare(p, *m_gpuMixedContacts, *domain.mixedContacts,
+                                                             domain.cpuContacts, domain.admittedContactPolicy);
+                    } else if (mixedTriggers) {
                         auto mixed =
                             m_gpuMixedContacts->Observe(p, *domain.mixedContacts, domain.admittedContactPolicy);
                         observer.phase = [gather = std::move(mixed.phase), observe = std::move(observer.phase)](
@@ -827,9 +849,16 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         const ContactStreamIdentity identity{domain.owner.id, domain.stepEpoch, domain.stepIndex};
         const auto substeps = domain.admittedParameters->Get().solve.y;
         std::function<void(uint32_t)> capture;
+        if (mixedTriggers || coupled)
+            domain.mixedContacts->Begin(*domain.cpuScene, std::move(cpuEndpoints), std::move(respondingGpu), substeps);
+        if (coupled) {
+            domain.cpuContacts.ConfigureCoupledFixed(m_cpuServices->execution, *domain.cpuScene,
+                                                     domain.admittedDeltaTime, substeps, identity,
+                                                     domain.admittedContactPolicy);
+            return true;
+        }
         if (mixedTriggers) {
             auto &mixed = *domain.mixedContacts;
-            mixed.Begin(*domain.cpuScene, std::move(cpuEndpoints), substeps);
             capture = [&mixed](uint32_t substep) { mixed.CaptureCpuBoundary(substep + 1); };
         }
         const auto error =
@@ -1734,10 +1763,14 @@ bool PhysicsWorld::ServicePausedAuthorPresentation()
 void PhysicsWorld::CancelPendingStep() noexcept
 {
     auto &domain = CurrentDomain();
+    if (domain.gpuRegistered) {
+        m_gpuScene->Cancel(domain.owner);
+        domain.gpuCancelled = true;
+    }
+    domain.cpuContacts.Close();
     SuspendRagdolls(domain);
     domain.contacts.Close();
     domain.gpuContacts.Close();
-    domain.cpuContacts.Close();
     domain.mixedContacts.reset();
     RetireCpuJointRoutes(domain);
     domain.cpuControl.reset();
@@ -1777,10 +1810,6 @@ void PhysicsWorld::CancelPendingStep() noexcept
         actor.bodyInBroadphase = false;
         actor.jointEndpointBodyId = UINT32_MAX;
     });
-    if (domain.gpuRegistered) {
-        m_gpuScene->Cancel(domain.owner);
-        domain.gpuCancelled = true;
-    }
     store.ForEachAliveRigidbody([&](RigidbodyECSData &body) {
         if (store.IsValid(body.actorHandle) && store.GetActor(body.actorHandle).runtimeWorld == &world)
             body.physicsTargetSources = {};

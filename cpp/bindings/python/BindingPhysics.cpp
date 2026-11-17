@@ -1274,7 +1274,10 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     NativeClass<PhysicsBody, Component>(m, "PhysicsBody")
         .def_property("gpu", &PhysicsBody::IsGpuEnabled, &PhysicsBody::SetGpuEnabled,
-                      "Use GPU physics for this body. Defaults to CPU (False).");
+                      "Use GPU physics for this body. Defaults to CPU (False).")
+        .def_property("cross_backend_interaction", &PhysicsBody::AllowsCrossBackendInteraction,
+                      &PhysicsBody::SetCrossBackendInteraction,
+                      "Allow contacts with opted-in bodies on the other physics backend.");
 
     NativeClass<Rigidbody, PhysicsBody>(m, "Rigidbody")
         .def(py::init<>())

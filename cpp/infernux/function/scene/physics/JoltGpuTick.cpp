@@ -295,6 +295,7 @@ class JoltGpuTick::Impl
         ParticipantAccept,
         WakePrescribedBounds,
         BuildBounds,
+        PrepareCoupledContacts,
         Broadphase,
         CollidePairs,
         CompleteConvexContacts,
@@ -308,6 +309,7 @@ class JoltGpuTick::Impl
         WarmJoints,
         SolveJointVelocity,
         SolveVelocity,
+        ExchangeCoupledContacts,
         ReportContactsAfterVelocity,
         Integrate,
         CommitArticulationPose,
@@ -715,7 +717,8 @@ class JoltGpuTick::Impl
                phase == Phase::WakeFinalPrescribedBounds || phase == Phase::BuildConstraints ||
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
-               phase == Phase::ReportContactsAfterVelocity;
+               phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareCoupledContacts ||
+               phase == Phase::ExchangeCoupledContacts;
     }
 
     StageSpan Span(Phase phase) const
@@ -766,6 +769,8 @@ class JoltGpuTick::Impl
         case Phase::BuildConstraints:
         case Phase::ReportContactsBeforeVelocity:
         case Phase::ReportContactsAfterVelocity:
+        case Phase::PrepareCoupledContacts:
+        case Phase::ExchangeCoupledContacts:
         case Phase::Done:
             break;
         }
@@ -821,7 +826,7 @@ class JoltGpuTick::Impl
         const auto &plan = inputs.GetConstraints();
         const bool responding =
             bool(control.prepareParticipant) || (plan && (plan->jointIslandCount || plan->contactIslandCount));
-        const bool velocity = tickParameters.counts.w && responding;
+        const bool velocity = tickParameters.counts.w && (responding || control.prepareCoupledContacts);
         const bool position = tickParameters.solve.x && responding;
         next.islandBatchFirst = 0;
         next.islandBatchLanes = 0;
@@ -870,6 +875,9 @@ class JoltGpuTick::Impl
             next.phase = Phase::BuildBounds;
             break;
         case Phase::BuildBounds:
+            next.phase = control.prepareCoupledContacts ? Phase::PrepareCoupledContacts : Phase::Broadphase;
+            break;
+        case Phase::PrepareCoupledContacts:
             next.phase = Phase::Broadphase;
             break;
         case Phase::Broadphase:
@@ -917,6 +925,12 @@ class JoltGpuTick::Impl
             next.phase = Phase::SolveVelocity;
             break;
         case Phase::SolveVelocity:
+            if (control.prepareCoupledContacts) {
+                next.phase = Phase::ExchangeCoupledContacts;
+                break;
+            }
+            [[fallthrough]];
+        case Phase::ExchangeCoupledContacts:
             next.phase = ++next.iteration < tickParameters.counts.w
                              ? (control.prepareParticipant ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
                          : control.prepareContactReport ? Phase::ReportContactsAfterVelocity
@@ -1739,6 +1753,20 @@ class JoltGpuTick::Impl
                                   PacketKind::NumericalWork);
                 return true;
             }
+            if (stageCursor.phase == Phase::PrepareCoupledContacts ||
+                stageCursor.phase == Phase::ExchangeCoupledContacts) {
+                const auto phase = stageCursor.phase == Phase::PrepareCoupledContacts
+                                       ? JoltGpuCoupledContactStage::Prepare
+                                       : JoltGpuCoupledContactStage::Exchange;
+                SelectControlWork(control.prepareCoupledContacts(storage, inputs, tickParameters, stageCursor.substep,
+                                                                 stageCursor.iteration, phase,
+                                                                 [this] {
+                                                                     NextSpan(stageCursor);
+                                                                     Normalize(stageCursor);
+                                                                 }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
             if (stageCursor.phase == Phase::BuildConstraints) {
                 SelectControlWork(
                     constraints.PrepareNumericalPlan(storage, inputs, constraintTopology,
@@ -2047,7 +2075,7 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
         a->stageCursor.substep != b->stageCursor.substep || a->stageCursor.iteration != b->stageCursor.iteration ||
         a->fixedDeltaTime != b->fixedDeltaTime || a->tickParameters.counts.w != b->tickParameters.counts.w ||
         a->tickParameters.selectedCounts.z || b->tickParameters.selectedCounts.z || a->control.prepareParticipant ||
-        b->control.prepareParticipant)
+        b->control.prepareParticipant || a->control.prepareCoupledContacts || b->control.prepareCoupledContacts)
         return false;
     const auto phase = a->stageCursor.phase;
     if (phase != Phase::PrepareKinematics && phase != Phase::ApplyForces && phase != Phase::Integrate)

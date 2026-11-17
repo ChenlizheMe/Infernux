@@ -29,6 +29,7 @@ enum class JoltGpuProgram
     ArticulationCapture,
     ArticulationDynamics,
     CrossDomainCandidates,
+    CrossDomainVelocity,
     Count
 };
 

@@ -155,6 +155,7 @@ SemanticTypeDescriptor DescribeRigidbody()
     };
 
     add("gpu", "BOOL", false);
+    add("cross_backend_interaction", "BOOL", false);
     add("mass", "FLOAT", 1.0)["range"] = {0.001, 1000.0};
     add("drag", "FLOAT", 0.0)["range"] = {0.0, 100.0};
     add("angular_drag", "FLOAT", 0.05)["range"] = {0.0, 100.0};
@@ -1354,10 +1355,12 @@ void Rigidbody::ValidateSerializedDocument(const nlohmann::json &j)
                               {"mass", "drag", "angular_drag", "use_gravity", "is_kinematic", "constraints",
                                "collision_detection_mode", "interpolation", "max_angular_velocity",
                                "max_linear_velocity"},
-                              {"mass_properties", "gpu"});
+                              {"mass_properties", "gpu", "cross_backend_interaction"});
     (void)ReadMassProperties(j);
     if (j.contains("gpu"))
         RequireBoolean(j, "gpu", "Rigidbody");
+    if (j.contains("cross_backend_interaction"))
+        RequireBoolean(j, "cross_backend_interaction", "Rigidbody");
 
     const float mass = RequireFiniteFloat(j, "mass", "Rigidbody");
     const float drag = RequireFiniteFloat(j, "drag", "Rigidbody");

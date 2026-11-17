@@ -5130,6 +5130,7 @@ class PhysicsBody(Component):
     """Abstract native physics component."""
 
     gpu: bool
+    cross_backend_interaction: bool
 
 
 class Rigidbody(PhysicsBody):

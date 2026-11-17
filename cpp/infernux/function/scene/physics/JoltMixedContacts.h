@@ -3,6 +3,7 @@
 #include <Jolt/Jolt.h>
 
 #include <Jolt/Geometry/AABox.h>
+#include <Jolt/Physics/Body/BodyID.h>
 #include "JoltGpuScene.h"
 #include "PhysicsContactPublication.h"
 #include <core/math/Bvh.h>
@@ -10,6 +11,7 @@
 namespace infernux
 {
 class JoltCpuScene;
+class JoltCpuContactPublication;
 
 /// One accepted Fixed step's CPU geometry and substep positions. The CPU
 /// world still owns integration, and this capture owns no solver bodies.
@@ -18,17 +20,54 @@ class JoltMixedContactStep final
   public:
     using Policy = PhysicsContactPublication::Policy;
     using Frame = PhysicsContactPublication::Frame;
+    struct CpuEndpoint
+    {
+        uint32_t body;
+        bool allowResponse;
+    };
+
     struct Candidate
     {
-        JPH::GPU::UInt4 source; // GPU leaf index, GPU layer, GPU collision mask, reserved.
+        JPH::GPU::UInt4 source; // GPU leaf index, layer, mask, motion type and activity.
         JPH::GPU::Float4 center, rotation, linear, angular, sweepMin, sweepMax;
+        JPH::GPU::Float4 material; // Friction, restitution, combine modes as bits.
     };
-    static_assert(sizeof(Candidate) == 112);
+    static_assert(sizeof(Candidate) == 128);
 
-    void Begin(const JoltCpuScene &, std::vector<uint32_t> bodyIds, uint32_t substeps);
+    struct ResponsePoint
+    {
+        JPH::GPU::Float4 positionDepth;
+        glm::vec3 gpuVelocity;
+    };
+
+    struct ResponsePatch
+    {
+        PhysicsContactPublication::Endpoint cpu, gpu;
+        JPH::BodyID native;
+        uint32_t gpuSlot, pointCount;
+        JPH::GPU::Float4 normalFriction;
+        float restitution;
+        bool wakeGpu;
+        std::array<ResponsePoint, JPH::GPU::MaxContactPointsPerPair> points;
+    };
+
+    void Begin(const JoltCpuScene &, std::vector<CpuEndpoint>, std::vector<uint32_t> gpuResponseBodies,
+               uint32_t substeps);
     void CaptureCpuBoundary(uint32_t boundary);
-    [[nodiscard]] const std::vector<JPH::GPU::UInt4> &EncodeTree(uint32_t substep);
+    [[nodiscard]] const std::vector<JPH::GPU::UInt4> &EncodeTree(uint32_t substep, float predictedInterval);
     void Collect(uint32_t substep, const JoltGpuScene::Publication &, const Policy &, const Candidate &);
+    [[nodiscard]] std::vector<ResponsePatch> &Responses() noexcept
+    {
+        return m_responses;
+    }
+    [[nodiscard]] Frame &ContactFrame(uint32_t substep) noexcept
+    {
+        return m_frames[substep];
+    }
+    [[nodiscard]] const JoltCpuScene &Scene() const noexcept
+    {
+        return *m_scene;
+    }
     void AppendFrame(uint32_t substep, Frame &);
     void ClearStep();
 
@@ -38,7 +77,7 @@ class JoltMixedContactStep final
         uint32_t id;
         JPH::RefConst<JPH::Shape> shape;
         PhysicsTargetReference target;
-        bool sensor;
+        bool sensor, allowResponse;
     };
     struct Pose
     {
@@ -46,12 +85,15 @@ class JoltMixedContactStep final
         JPH::Quat rotation;
         JPH::Vec3 linear, angular;
         JPH::AABox bounds;
+        bool active;
     };
     const JoltCpuScene *m_scene = nullptr;
     std::vector<CpuProxy> m_proxies;
     std::vector<std::vector<Pose>> m_pose;
     std::vector<std::vector<JPH::GPU::UInt4>> m_treeWords;
     std::vector<Frame> m_frames;
+    std::vector<uint32_t> m_gpuResponseBodies;
+    std::vector<ResponsePatch> m_responses;
     std::vector<uint32_t> m_ids, m_escape;
     spatial::Bvh m_tree;
 };
@@ -64,6 +106,10 @@ class JoltGpuMixedContacts final
     JoltGpuMixedContacts(rhi::ComputeHost &, const ShaderTargetCode &);
     [[nodiscard]] JoltGpuScene::ContactObserver Observe(const std::shared_ptr<const JoltGpuScene::Publication> &,
                                                         JoltMixedContactStep &, const JoltMixedContactStep::Policy &);
+    [[nodiscard]] JoltGpuControlWork Discover(const JoltGpuStorage &, const JPH::GPU::StepParams &, uint32_t substep,
+                                              const std::shared_ptr<const JoltGpuScene::Publication> &,
+                                              JoltMixedContactStep &, const JoltMixedContactStep::Policy &,
+                                              std::function<JoltGpuControlWork()>);
 
   private:
     struct Job;

@@ -96,6 +96,12 @@ enum class JoltGpuContactReportStage
     AfterVelocity
 };
 
+enum class JoltGpuCoupledContactStage
+{
+    Prepare,
+    Exchange
+};
+
 enum class JoltGpuParticipantStage : uint32_t
 {
     Predict,
@@ -141,6 +147,10 @@ struct JoltGpuTickControl
     std::function<JoltGpuControlWork(const JoltGpuStorage &, const JoltGpuStepInputs &, const JPH::GPU::StepParams &,
                                      uint32_t, JoltGpuContactReportStage, std::function<void()>)>
         prepareContactReport;
+    // Prepare candidates before native topology, then exchange once after each local velocity round.
+    std::function<JoltGpuControlWork(const JoltGpuStorage &, const JoltGpuStepInputs &, const JPH::GPU::StepParams &,
+                                     uint32_t, uint32_t, JoltGpuCoupledContactStage, std::function<void()>)>
+        prepareCoupledContacts;
     /// Prepare exactly once after every numerical writer is accepted, including
     /// for a control-only/empty world. The input is the compact selected-world
     /// output; its states are null for a zero-body range. All packets use this source's admission and

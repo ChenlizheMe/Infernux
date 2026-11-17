@@ -615,38 +615,148 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
     bool m_streamTriggers = false, m_observeTriggers = false;
 };
 
-JoltCpuContactPublication::JoltCpuContactPublication() = default;
-JoltCpuContactPublication::~JoltCpuContactPublication() = default;
+struct JoltCpuContactPublication::CoupledStep
+{
+    CoupledStep(JoltCpuExecution &shared, JoltCpuScene &owner, float fixedDelta, uint32_t count,
+                ContactStreamIdentity stepIdentity)
+        : execution(shared), scene(owner), time(fixedDelta), substeps(count), identity(stepIdentity)
+    {
+    }
 
-JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execution, JoltCpuScene &scene,
-                                                         float deltaTime, uint32_t substeps,
-                                                         ContactStreamIdentity identity, Reports::Policy policy,
-                                                         std::function<void(uint32_t)> afterSubstep)
+    ~CoupledStep()
+    {
+        context.reset();
+        if (workspace)
+            execution.ReleaseCoupledWorkspace(std::move(workspace));
+    }
+
+    JoltCpuExecution &execution;
+    JoltCpuScene &scene;
+    float time;
+    uint32_t substeps;
+    ContactStreamIdentity identity;
+    std::unique_ptr<JoltCpuExecution::CoupledWorkspace> workspace;
+    std::optional<JPH::PhysicsUpdateContext> context;
+    std::optional<ScopedListener> listener;
+};
+
+JoltCpuContactPublication::JoltCpuContactPublication() = default;
+JoltCpuContactPublication::~JoltCpuContactPublication()
+{
+    CancelCoupled();
+}
+
+void JoltCpuContactPublication::PrepareObservation(JoltCpuScene &scene, uint32_t substeps,
+                                                   ContactStreamIdentity identity, Reports::Policy policy,
+                                                   std::function<void(uint32_t)> afterSubstep)
 {
     m_ready.reset();
     m_observing = policy.Requested() || bool(afterSubstep);
     scene.MarkActivePoseUpdates();
-    JPH::EPhysicsUpdateError result;
     if (m_observing) {
         if (!m_capture)
             m_capture = std::make_unique<Capture>();
         const bool sameEpoch = m_published && m_published->worldId == identity.worldId &&
                                m_published->simulationEpoch == identity.simulationEpoch;
         m_capture->Begin(scene, std::move(policy), substeps, sameEpoch, std::move(afterSubstep));
-        {
-            const ScopedListener listener(scene.System(), *m_capture);
-            result = execution.Step(scene.System(), deltaTime, static_cast<int>(substeps));
-        }
-        if (result == JPH::EPhysicsUpdateError::None)
-            m_capture->Finish(substeps, scene.System());
-    } else {
+    }
+}
+
+void JoltCpuContactPublication::FinishObservation(JoltCpuScene &scene, uint32_t substeps,
+                                                  ContactStreamIdentity identity)
+{
+    if (m_observing)
+        m_capture->Finish(substeps, scene.System());
+    scene.MarkActivePoseUpdates();
+    m_ready = identity;
+}
+
+JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execution, JoltCpuScene &scene,
+                                                         float deltaTime, uint32_t substeps,
+                                                         ContactStreamIdentity identity, Reports::Policy policy,
+                                                         std::function<void(uint32_t)> afterSubstep)
+{
+    PrepareObservation(scene, substeps, identity, std::move(policy), std::move(afterSubstep));
+    JPH::EPhysicsUpdateError result;
+    {
+        std::optional<ScopedListener> listener;
+        if (m_observing)
+            listener.emplace(scene.System(), *m_capture);
         result = execution.Step(scene.System(), deltaTime, static_cast<int>(substeps));
     }
-    if (result == JPH::EPhysicsUpdateError::None) {
-        scene.MarkActivePoseUpdates();
-        m_ready = identity;
-    }
+    if (result == JPH::EPhysicsUpdateError::None)
+        FinishObservation(scene, substeps, identity);
     return result;
+}
+
+void JoltCpuContactPublication::ConfigureCoupledFixed(JoltCpuExecution &execution, JoltCpuScene &scene, float deltaTime,
+                                                      uint32_t substeps, ContactStreamIdentity identity,
+                                                      Reports::Policy policy)
+{
+    PrepareObservation(scene, substeps, identity, std::move(policy), {});
+    m_coupled = std::make_unique<CoupledStep>(execution, scene, deltaTime, substeps, identity);
+    if (m_observing)
+        m_coupled->listener.emplace(scene.System(), *m_capture);
+}
+
+void JoltCpuContactPublication::BeginCoupledSubstep(uint32_t substep, const std::vector<JPH::BodyID> &endpoints)
+{
+    auto &fixed = *m_coupled;
+    auto &system = fixed.scene.System();
+    bool admitted = false;
+    if (substep == 0) {
+        fixed.workspace = fixed.execution.AcquireCoupledWorkspace();
+        auto &context = fixed.context.emplace(fixed.workspace->scratch);
+        admitted =
+            system.BeginCoupledVelocityUpdate(fixed.time, static_cast<int>(fixed.substeps), endpoints.data(),
+                                              static_cast<uint32_t>(endpoints.size()), context, fixed.workspace->jobs);
+    } else {
+        admitted =
+            system.BeginNextCoupledSubstep(*fixed.context, endpoints.data(), static_cast<uint32_t>(endpoints.size()));
+    }
+    if (!admitted)
+        throw std::logic_error("CPU coupling endpoints differ from the admitted Fixed");
+}
+
+bool JoltCpuContactPublication::AdvanceCoupled(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses)
+{
+    auto &fixed = *m_coupled;
+    auto &context = *fixed.context;
+    auto &system = fixed.scene.System();
+    const auto result =
+        system.AdvanceCoupledVelocityUpdate(context, impulses.data(), static_cast<uint32_t>(impulses.size()));
+    if (!result)
+        return context.mAwaitingCoupledEndpoints;
+    fixed.listener.reset();
+    if (*result != JPH::EPhysicsUpdateError::None)
+        throw std::runtime_error("CPU physics exceeded its configured native capacity");
+    FinishObservation(fixed.scene, fixed.substeps, fixed.identity);
+    m_coupled.reset();
+    return true;
+}
+
+JPH::PhysicsUpdateContext::CoupledFreeVelocity JoltCpuContactPublication::CoupledFreeVelocity(JPH::BodyID body) const
+{
+    const auto &context = *m_coupled->context;
+    const auto &bodies = context.mCoupledBodies;
+    const auto found = std::lower_bound(bodies.begin(), bodies.end(), body);
+    return context.mCoupledFreeVelocities[found - bodies.begin()];
+}
+
+void JoltCpuContactPublication::CancelCoupled() noexcept
+{
+    if (!m_coupled)
+        return;
+    if (m_coupled->context) {
+        auto &context = *m_coupled->context;
+        auto &system = m_coupled->scene.System();
+        while (context.mCoupledUpdate) {
+            if (context.mAwaitingCoupledEndpoints)
+                system.BeginNextCoupledSubstep(context, nullptr, 0);
+            system.AdvanceCoupledVelocityUpdate(context);
+        }
+    }
+    m_coupled.reset();
 }
 
 void JoltCpuContactPublication::ValidateCompleted(ContactStreamIdentity identity, uint32_t substeps) const
@@ -691,6 +801,7 @@ void JoltCpuContactPublication::Publish(Reports &publication)
 
 void JoltCpuContactPublication::CancelPending() noexcept
 {
+    CancelCoupled();
     m_ready.reset();
     if (m_capture)
         m_capture->DiscardFrames();
@@ -698,6 +809,7 @@ void JoltCpuContactPublication::CancelPending() noexcept
 
 void JoltCpuContactPublication::Close() noexcept
 {
+    CancelCoupled();
     m_ready.reset();
     m_published.reset();
     m_capture.reset();

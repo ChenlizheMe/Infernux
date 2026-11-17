@@ -1507,6 +1507,8 @@
   "rigidbody.tooltip.mass": "Mass used by the physics solver, in kilograms.",
   "rigidbody.gpu": "GPU",
   "rigidbody.tooltip.gpu": "Run this body's physics on the GPU. Unchecked uses the CPU.",
+  "rigidbody.cross_backend_interaction": "Cross-backend interaction",
+  "rigidbody.tooltip.cross_backend_interaction": "Respond to contacts with opted-in bodies on the other physics backend.",
   "rigidbody.tooltip.drag": "Linear velocity damping applied by the physics solver.",
   "rigidbody.tooltip.angular_drag": "Angular velocity damping applied by the physics solver.",
   "rigidbody.tooltip.use_gravity": "Apply the scene gravity to this rigidbody.",

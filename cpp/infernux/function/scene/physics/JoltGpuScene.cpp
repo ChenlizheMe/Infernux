@@ -1416,6 +1416,7 @@ class JoltGpuScene::Impl
             control.acceptedGenericGeometry = publication->hasGenericGeometry;
         }
         control.prepareContactReport = std::move(reports.phase);
+        control.prepareCoupledContacts = std::move(reports.couple);
         control.groups = std::move(domain.pending);
         domain.pendingSources.reset();
         domain.pendingCompletions.clear();

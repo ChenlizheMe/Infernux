@@ -22,6 +22,14 @@ class PhysicsBody : public Component
         return m_gpu;
     }
     void SetGpuEnabled(bool gpu);
+    [[nodiscard]] bool AllowsCrossBackendInteraction() const noexcept
+    {
+        return m_crossBackendInteraction;
+    }
+    void SetCrossBackendInteraction(bool enabled) noexcept
+    {
+        m_crossBackendInteraction = enabled;
+    }
     void OnDisable() override;
 
     [[nodiscard]] nlohmann::json SerializeDocument() const override;
@@ -45,6 +53,7 @@ class PhysicsBody : public Component
 
   private:
     bool m_gpu = false;
+    bool m_crossBackendInteraction = false;
     uint64_t m_resultEpoch = 0;
 };
 } // namespace infernux

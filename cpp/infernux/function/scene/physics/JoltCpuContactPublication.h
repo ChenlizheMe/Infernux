@@ -2,6 +2,7 @@
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/EPhysicsUpdateError.h>
+#include <Jolt/Physics/PhysicsSystem.h>
 #include "PhysicsContactPublication.h"
 
 #include <memory>
@@ -22,6 +23,12 @@ class JoltCpuContactPublication final
     JPH::EPhysicsUpdateError Step(JoltCpuExecution &, JoltCpuScene &, float deltaTime, uint32_t substeps,
                                   ContactStreamIdentity, PhysicsContactPublication::Policy,
                                   std::function<void(uint32_t)> afterSubstep = {});
+    void ConfigureCoupledFixed(JoltCpuExecution &, JoltCpuScene &, float deltaTime, uint32_t substeps,
+                               ContactStreamIdentity, PhysicsContactPublication::Policy);
+    void BeginCoupledSubstep(uint32_t substep, const std::vector<JPH::BodyID> &endpoints);
+    // Advances one native velocity round. True once this substep integrates.
+    bool AdvanceCoupled(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses = {});
+    [[nodiscard]] JPH::PhysicsUpdateContext::CoupledFreeVelocity CoupledFreeVelocity(JPH::BodyID body) const;
     /// Observe the previous prepared Fixed. Call Validate before taking frames.
     void ValidateCompleted(ContactStreamIdentity, uint32_t substeps) const;
     [[nodiscard]] PhysicsContactPublication::Frame TakeFrame(uint32_t substep);
@@ -33,7 +40,13 @@ class JoltCpuContactPublication final
 
   private:
     struct Capture;
+    struct CoupledStep;
+    void PrepareObservation(JoltCpuScene &, uint32_t substeps, ContactStreamIdentity, PhysicsContactPublication::Policy,
+                            std::function<void(uint32_t)>);
+    void FinishObservation(JoltCpuScene &, uint32_t substeps, ContactStreamIdentity);
+    void CancelCoupled() noexcept;
     std::unique_ptr<Capture> m_capture;
+    std::unique_ptr<CoupledStep> m_coupled;
     std::optional<ContactStreamIdentity> m_ready;
     std::optional<ContactStreamIdentity> m_published;
     bool m_observing = false;

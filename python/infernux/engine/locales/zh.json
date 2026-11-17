@@ -1507,6 +1507,8 @@
   "rigidbody.tooltip.mass": "物理求解器使用的质量，单位为千克。",
   "rigidbody.gpu": "GPU",
   "rigidbody.tooltip.gpu": "在 GPU 上计算此物体的物理；不勾选时使用 CPU。",
+  "rigidbody.cross_backend_interaction": "跨后端交互",
+  "rigidbody.tooltip.cross_backend_interaction": "与另一物理后端中同样启用此选项的刚体发生接触响应。",
   "rigidbody.tooltip.drag": "物理求解器施加的线速度阻尼。",
   "rigidbody.tooltip.angular_drag": "物理求解器施加的角速度阻尼。",
   "rigidbody.tooltip.use_gravity": "让该刚体受到场景重力影响。",

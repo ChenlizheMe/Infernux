@@ -19,9 +19,27 @@
 namespace infernux
 {
 JoltCpuExecution::JoltCpuExecution(const EngineConfig &config)
-    : m_scratch(config.physicsTempAllocatorSize), m_inlineJobs(config.physicsMaxJobs),
+    : m_scratchLimit(config.physicsTempAllocatorSize), m_maxJobs(config.physicsMaxJobs), m_scratch(m_scratchLimit),
+      m_inlineJobs(m_maxJobs),
       m_workerJobs(config.physicsMaxJobs, config.physicsMaxBarriers, config.physicsMaxConcurrency)
 {
+}
+
+std::unique_ptr<JoltCpuExecution::CoupledWorkspace> JoltCpuExecution::AcquireCoupledWorkspace()
+{
+    for (auto &workspace : m_coupledWorkspaces)
+        if (workspace)
+            return std::move(workspace);
+    return std::make_unique<CoupledWorkspace>(m_scratchLimit, m_maxJobs);
+}
+
+void JoltCpuExecution::ReleaseCoupledWorkspace(std::unique_ptr<CoupledWorkspace> returned) noexcept
+{
+    for (auto &workspace : m_coupledWorkspaces)
+        if (!workspace) {
+            workspace = std::move(returned);
+            return;
+        }
 }
 
 JPH::EPhysicsUpdateError JoltCpuExecution::Step(JPH::PhysicsSystem &system, float deltaTime, int collisionSteps)
@@ -709,9 +727,7 @@ JPH::ValidateResult JoltCpuScene::OnCCDContactValidate(const JPH::Body &a, const
     return OnContactValidate(a, b, origin, hit);
 }
 
-namespace
-{
-float CombineSurface(float a, float b, PhysicsMaterialCombine modeA, PhysicsMaterialCombine modeB)
+float JoltCpuScene::CombineSurface(float a, float b, PhysicsMaterialCombine modeA, PhysicsMaterialCombine modeB)
 {
     switch (std::max(modeA, modeB)) {
     case PhysicsMaterialCombine::Minimum:
@@ -725,7 +741,6 @@ float CombineSurface(float a, float b, PhysicsMaterialCombine modeA, PhysicsMate
     }
     return 0.5f * (a + b);
 }
-} // namespace
 
 void JoltCpuScene::OnContactAdded(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &manifold,
                                   JPH::ContactSettings &settings)

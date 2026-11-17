@@ -81,6 +81,7 @@ class Rigidbody(PhysicsBody):
     # ---- Serialized properties (displayed in Inspector) ----
 
     gpu = CppProperty.from_native("Rigidbody", "gpu")
+    cross_backend_interaction = CppProperty.from_native("Rigidbody", "cross_backend_interaction")
     mass = CppProperty.from_native("Rigidbody", "mass")
     drag = CppProperty.from_native("Rigidbody", "drag")
     angular_drag = CppProperty.from_native("Rigidbody", "angular_drag")

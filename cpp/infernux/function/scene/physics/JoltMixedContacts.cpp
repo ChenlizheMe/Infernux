@@ -3,6 +3,7 @@
 #include "JoltGpuProgramSources.h"
 
 #include <Jolt/Physics/Collision/CollideShape.h>
+#include <Jolt/Physics/Collision/ManifoldBetweenTwoFaces.h>
 #include <Jolt/Physics/Collision/TransformedShape.h>
 #include <algorithm>
 #include <cstring>
@@ -14,6 +15,8 @@ namespace
 {
 using namespace JPH::GPU;
 using Contact = PhysicsContactPublication;
+constexpr uint32_t ResponseProxy = 2;
+constexpr uint32_t ObservedActive = 8;
 
 template <class Vector> glm::vec3 Vector3(const Vector &v)
 {
@@ -65,17 +68,16 @@ void EscapeIndices(const spatial::Bvh &tree, std::vector<uint32_t> &indices, uin
     }
 }
 
-template <class Observe> class TriggerCollector final : public JPH::CollideShapeCollector
+template <class Observe> class CrossPairCollector final : public JPH::CollideShapeCollector
 {
   public:
-    explicit TriggerCollector(Observe observe) : m_observe(std::move(observe))
+    explicit CrossPairCollector(Observe observe) : m_observe(std::move(observe))
     {
     }
 
     void AddHit(const JPH::CollideShapeResult &hit) override
     {
-        if (hit.mPenetrationDepth >= 0.0f)
-            m_observe(hit);
+        m_observe(hit);
     }
 
   private:
@@ -83,26 +85,32 @@ template <class Observe> class TriggerCollector final : public JPH::CollideShape
 };
 } // namespace
 
-void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<uint32_t> bodyIds, uint32_t substeps)
+void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpoint> endpoints,
+                                 std::vector<uint32_t> gpuResponseBodies, uint32_t substeps)
 {
     m_scene = &scene;
     m_proxies.clear();
-    std::sort(bodyIds.begin(), bodyIds.end());
+    m_responses.clear();
+    std::sort(gpuResponseBodies.begin(), gpuResponseBodies.end());
+    m_gpuResponseBodies = std::move(gpuResponseBodies);
+    std::sort(endpoints.begin(), endpoints.end(), [](auto a, auto b) { return a.body < b.body; });
+    std::vector<uint32_t> bodyIds;
+    bodyIds.reserve(endpoints.size());
     const auto &bodies = scene.System().GetBodyLockInterfaceNoLock();
-    bodyIds.erase(std::remove_if(bodyIds.begin(), bodyIds.end(),
-                                 [&](uint32_t id) {
-                                     const auto found = scene.m_bodies.find(id);
-                                     if (found == scene.m_bodies.end() || found->second.surfaces.empty())
-                                         return true;
-                                     const auto &record = found->second;
-                                     if (!bodies.TryGetBody(record.native)->IsInBroadPhase())
-                                         return true;
-                                     const bool sensor = std::any_of(record.surfaces.begin(), record.surfaces.end(),
-                                                                     [](const auto &s) { return s.sensor; });
-                                     m_proxies.push_back({id, record.shape, record.bodyTarget, sensor});
-                                     return false;
-                                 }),
-                  bodyIds.end());
+    for (const auto &endpoint : endpoints) {
+        const auto found = scene.m_bodies.find(endpoint.body);
+        if (found == scene.m_bodies.end() || found->second.surfaces.empty())
+            continue;
+        const auto &record = found->second;
+        const auto &body = *bodies.TryGetBody(record.native);
+        if (!body.IsInBroadPhase())
+            continue;
+        const bool sensor = std::any_of(record.surfaces.begin(), record.surfaces.end(),
+                                        [](const auto &surface) { return surface.sensor; });
+        m_proxies.push_back(
+            {endpoint.body, record.shape, record.bodyTarget, sensor, endpoint.allowResponse && body.IsDynamic()});
+        bodyIds.push_back(endpoint.body);
+    }
     if (m_ids != bodyIds) {
         m_ids = std::move(bodyIds);
         m_tree = {};
@@ -128,11 +136,12 @@ void JoltMixedContactStep::CaptureCpuBoundary(uint32_t boundary)
         const auto *body = bodies.TryGetBody(m_scene->NativeBody(proxy.id));
         poses.push_back({body->GetCenterOfMassPosition(), body->GetRotation(), body->GetLinearVelocity(),
                          body->GetAngularVelocity(),
-                         proxy.shape->GetWorldSpaceBounds(body->GetCenterOfMassTransform(), JPH::Vec3::sOne())});
+                         proxy.shape->GetWorldSpaceBounds(body->GetCenterOfMassTransform(), JPH::Vec3::sOne()),
+                         body->IsActive()});
     }
 }
 
-const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t substep)
+const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t substep, float predictedInterval)
 {
     auto &words = m_treeWords[substep];
     if (m_proxies.empty())
@@ -143,15 +152,27 @@ const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t su
     bounds.reserve(m_proxies.size());
     for (size_t i = 0; i < m_proxies.size(); ++i) {
         const auto &a = start[i];
-        const auto &b = end[i];
-        auto minimum = glm::min(Vector3(a.bounds.mMin), Vector3(b.bounds.mMin));
-        auto maximum = glm::max(Vector3(a.bounds.mMax), Vector3(b.bounds.mMax));
-        if (a.rotation != b.rotation) {
-            // A sphere about the COM bounds every intermediate orientation.
-            const auto local = m_proxies[i].shape->GetLocalBounds();
-            const auto radius = glm::length(glm::max(glm::abs(Vector3(local.mMin)), glm::abs(Vector3(local.mMax))));
-            minimum = glm::min(minimum, glm::min(Vector3(a.center), Vector3(b.center)) - glm::vec3(radius));
-            maximum = glm::max(maximum, glm::max(Vector3(a.center), Vector3(b.center)) + glm::vec3(radius));
+        auto minimum = Vector3(a.bounds.mMin);
+        auto maximum = Vector3(a.bounds.mMax);
+        if (predictedInterval > 0) {
+            const auto translation = predictedInterval * Vector3(a.linear);
+            const auto center = Vector3(a.center);
+            const float radius = glm::length(glm::max(glm::abs(minimum - center), glm::abs(maximum - center)));
+            const float angular = radius * std::min(2.0f, predictedInterval * a.angular.Length());
+            const glm::vec3 margin(angular + m_scene->System().GetPhysicsSettings().mSpeculativeContactDistance);
+            minimum += glm::min(translation, glm::vec3(0)) - margin;
+            maximum += glm::max(translation, glm::vec3(0)) + margin;
+        } else {
+            const auto &b = end[i];
+            minimum = glm::min(minimum, Vector3(b.bounds.mMin));
+            maximum = glm::max(maximum, Vector3(b.bounds.mMax));
+            if (a.rotation != b.rotation) {
+                // A sphere about the COM bounds every intermediate orientation.
+                const auto local = m_proxies[i].shape->GetLocalBounds();
+                const auto radius = glm::length(glm::max(glm::abs(Vector3(local.mMin)), glm::abs(Vector3(local.mMax))));
+                minimum = glm::min(minimum, glm::min(Vector3(a.center), Vector3(b.center)) - glm::vec3(radius));
+                maximum = glm::max(maximum, glm::max(Vector3(a.center), Vector3(b.center)) + glm::vec3(radius));
+            }
         }
         bounds.push_back({minimum, maximum});
     }
@@ -173,7 +194,9 @@ const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t su
     for (size_t i = 0; i < bounds.size(); ++i) {
         const uint32_t proxy = m_tree.primitiveOrder[i];
         words[boundsBase + 2 * i] = EncodeBounds(bounds[proxy].minimum, proxy);
-        words[boundsBase + 2 * i + 1] = EncodeBounds(bounds[proxy].maximum, m_proxies[proxy].sensor ? ShapeSensor : 0u);
+        const auto &source = m_proxies[proxy];
+        const uint32_t flags = (source.sensor ? ShapeSensor : 0u) | (source.allowResponse ? ResponseProxy : 0u);
+        words[boundsBase + 2 * i + 1] = EncodeBounds(bounds[proxy].maximum, flags);
     }
     return words;
 }
@@ -189,38 +212,89 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
                                            leaf.colliderGeneration,
                                            candidate.source.y,
                                            candidate.source.z,
-                                           0.0f,
-                                           0.0f,
-                                           {},
-                                           {},
+                                           candidate.material.x,
+                                           candidate.material.y,
+                                           static_cast<PhysicsMaterialCombine>(Bits(candidate.material.z)),
+                                           static_cast<PhysicsMaterialCombine>(Bits(candidate.material.w)),
                                            leaf.sensor};
     const JPH::RVec3 center(candidate.center.x, candidate.center.y, candidate.center.z);
     const JPH::Quat rotation(candidate.rotation.x, candidate.rotation.y, candidate.rotation.z, candidate.rotation.w);
     const JPH::TransformedShape gpu(center, rotation, leaf.shape.GetPtr(), {});
     auto &frame = m_frames[substep];
+    const bool gpuActive = (candidate.source.w & ObservedActive) != 0;
+    const bool gpuResponds = !leaf.sensor && (candidate.source.w & ~ObservedActive) == MotionDynamic &&
+                             std::binary_search(m_gpuResponseBodies.begin(), m_gpuResponseBodies.end(), actor.bodyId);
+    const bool observeTriggers = policy.WantsTriggers();
+    const auto &physicsSettings = m_scene->System().GetPhysicsSettings();
     const auto collect = [&](uint32_t index) {
         const auto &proxy = m_proxies[index];
         const auto &cpu = m_pose[substep][index];
-        TriggerCollector collector([&](const JPH::CollideShapeResult &hit) {
+        const bool mayRespond = proxy.allowResponse && gpuResponds;
+        JPH::CollideShapeSettings settings;
+        if (mayRespond) {
+            settings.mCollectFacesMode = JPH::ECollectFacesMode::CollectFaces;
+            settings.mMaxSeparationDistance = physicsSettings.mSpeculativeContactDistance;
+        }
+        CrossPairCollector collector([&](const JPH::CollideShapeResult &hit) {
             const auto &surface = m_scene->GetSurface(proxy.id, hit.mSubShapeID1);
-            if (!(surface.sensor || leaf.sensor) || !m_scene->SurfacesCollide(surface, gpuSurface) ||
-                !policy.Observes({surface.colliderId, surface.generation}, {leaf.colliderId, leaf.colliderGeneration},
-                                 true))
+            const bool trigger = surface.sensor || leaf.sensor;
+            if (!m_scene->SurfacesCollide(surface, gpuSurface) ||
+                (trigger ? hit.mPenetrationDepth < 0.0f ||
+                               !policy.Observes({surface.colliderId, surface.generation},
+                                                {leaf.colliderId, leaf.colliderGeneration}, true)
+                         : !mayRespond))
                 return;
-            const auto position = cpu.center + 0.5f * (hit.mContactPointOn1 + hit.mContactPointOn2);
-            const auto va = cpu.linear + cpu.angular.Cross(JPH::Vec3(position - cpu.center));
-            const auto vb = Vector3(candidate.linear) + Vector3(candidate.angular).Cross(JPH::Vec3(position - center));
+            const auto normal = hit.mPenetrationAxis.Normalized();
+            const auto velocity = [&](JPH::RVec3Arg position) {
+                const auto va = cpu.linear + cpu.angular.Cross(JPH::Vec3(position - cpu.center));
+                const auto vb =
+                    Vector3(candidate.linear) + Vector3(candidate.angular).Cross(JPH::Vec3(position - center));
+                return Vector3(vb - va);
+            };
             const Contact::Endpoint a{proxy.id,           hit.mSubShapeID1.GetValue(),
                                       surface.colliderId, surface.generation,
                                       surface.target,     proxy.target};
             const Contact::Endpoint b{actor.bodyId,       leaf.subShapeId, leaf.colliderId, leaf.colliderGeneration,
                                       leaf.surfaceTarget, actor.bodyTarget};
-            frame.manifolds.push_back({a, b, true, frame.points.size(), 1});
-            frame.points.push_back(
-                {Vector3(position), Vector3(hit.mPenetrationAxis.Normalized()), Vector3(vb - va), {}, 0, false});
+            if (trigger || (!cpu.active && !gpuActive)) {
+                if (!trigger &&
+                    (hit.mPenetrationDepth < 0.0f || !policy.Observes(a.SurfaceKey(), b.SurfaceKey(), false)))
+                    return;
+                const auto position = cpu.center + 0.5f * (hit.mContactPointOn1 + hit.mContactPointOn2);
+                frame.manifolds.push_back({a, b, trigger, frame.points.size(), 1});
+                frame.points.push_back({Vector3(position), Vector3(normal), velocity(position), {}, 0, false});
+                return;
+            }
+
+            JPH::ContactPoints first, second;
+            JPH::ManifoldBetweenTwoFaces(hit.mContactPointOn1, hit.mContactPointOn2, hit.mPenetrationAxis,
+                                         settings.mMaxSeparationDistance + physicsSettings.mManifoldTolerance,
+                                         hit.mShape1Face, hit.mShape2Face, first,
+                                         second JPH_IF_DEBUG_RENDERER(, cpu.center));
+            if (first.size() > MaxContactPointsPerPair)
+                JPH::PruneContactPoints(normal, first, second JPH_IF_DEBUG_RENDERER(, cpu.center));
+            auto &patch = m_responses.emplace_back();
+            patch.cpu = a;
+            patch.gpu = b;
+            patch.gpuSlot = address.bodySlot;
+            patch.wakeGpu = !gpuActive;
+            patch.native = m_scene->NativeBody(proxy.id);
+            patch.pointCount = static_cast<uint32_t>(first.size());
+            const auto n = Vector3(normal);
+            patch.normalFriction = {n.x, n.y, n.z,
+                                    JoltCpuScene::CombineSurface(surface.friction, gpuSurface.friction,
+                                                                 surface.frictionCombine, gpuSurface.frictionCombine)};
+            patch.restitution = JoltCpuScene::CombineSurface(surface.restitution, gpuSurface.restitution,
+                                                             surface.bounceCombine, gpuSurface.bounceCombine);
+            for (uint32_t i = 0; i < patch.pointCount; ++i) {
+                const auto point = cpu.center + 0.5f * (first[i] + second[i]);
+                const auto p = Vector3(point);
+                const auto vb = Vector3(candidate.linear) + Vector3(candidate.angular).Cross(JPH::Vec3(point - center));
+                patch.points[i] = {{p.x, p.y, p.z, (first[i] - second[i]).Dot(normal)}, Vector3(vb)};
+            }
         });
         gpu.CollideShape(proxy.shape.GetPtr(), JPH::Vec3::sOne(),
-                         JPH::RMat44::sRotationTranslation(cpu.rotation, cpu.center), {}, cpu.center, collector);
+                         JPH::RMat44::sRotationTranslation(cpu.rotation, cpu.center), settings, cpu.center, collector);
     };
 
     const auto &tree = m_treeWords[substep];
@@ -237,7 +311,8 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
             const auto end = lower.w + (upper.w & ~spatial::kBvhLeafBit);
             for (uint32_t i = lower.w; i < end; ++i) {
                 const auto proxyMin = tree[layout.z + 2u * i], proxyMax = tree[layout.z + 2u * i + 1u];
-                if ((leaf.sensor || proxyMax.w) && Overlaps(sweep, proxyMin, proxyMax))
+                const bool trigger = observeTriggers && (leaf.sensor || (proxyMax.w & ShapeSensor));
+                if ((trigger || (gpuResponds && (proxyMax.w & ResponseProxy))) && Overlaps(sweep, proxyMin, proxyMax))
                     collect(proxyMin.w);
             }
         }
@@ -262,6 +337,8 @@ void JoltMixedContactStep::ClearStep()
 {
     m_scene = nullptr;
     m_proxies.clear();
+    m_gpuResponseBodies.clear();
+    m_responses.clear();
     for (auto &words : m_treeWords)
         words.clear();
     for (auto &frame : m_frames) {
@@ -282,7 +359,7 @@ JoltGpuMixedContacts::JoltGpuMixedContacts(rhi::ComputeHost &host, const ShaderT
         const std::array<uint32_t, 2> key{resource.set, binding.binding};
         if (std::find(entry->bindings.begin(), entry->bindings.end(), key) == entry->bindings.end())
             continue;
-        if (resource.set != 0 || binding.binding > 7)
+        if (resource.set != 0 || binding.binding > 8)
             throw std::invalid_argument("Cross-domain candidate shader uses an unknown port");
         m_ports.push_back(binding.binding);
         bindings.push_back({binding.binding, binding.type, binding.readOnlyStorage});
@@ -313,13 +390,14 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     JoltMixedContactStep &step;
     const JoltMixedContactStep::Policy &policy;
     std::shared_ptr<const JoltGpuScene::Publication> publication;
-    // Uniform, CPU BVH, GPU bounds, GPU shapes, GPU models, GPU states, counts, hits.
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, 8> buffers;
+    // Uniform, CPU BVH, GPU bounds/shapes/models/states, counts, hits, GPU sleep.
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, 9> buffers;
     std::vector<Window> windows;
     std::vector<uint32_t> counts;
     std::vector<Candidate> decoded;
     const std::vector<UInt4> *tree = nullptr;
-    std::function<void()> substepAccepted;
+    std::function<JoltGpuControlWork()> substepReady;
+    bool discovery = false;
     UInt4 range{};
     uint64_t treeOffset = 0;
     uint32_t substep = 0, leafEnd = 0, readWindow = 0, readFirst = 0;
@@ -341,32 +419,36 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     }
 
     JoltGpuControlWork Begin(const JoltGpuStorage &storage, const JPH::GPU::StepParams &params, uint32_t index,
-                             std::function<void()> done)
+                             bool response, std::function<JoltGpuControlWork()> done)
     {
-        tree = &step.EncodeTree(index);
-        const uint32_t leaves = params.selectedCounts.y;
-        if (!leaves || tree->empty()) {
-            done();
-            return {};
+        discovery = response;
+        if (discovery) {
+            step.Responses().clear();
+            step.CaptureCpuBoundary(index);
         }
+        tree = &step.EncodeTree(index, discovery ? params.gravityDt.w : 0.0f);
+        const uint32_t leaves = params.selectedCounts.y;
+        if (!leaves || tree->empty())
+            return done();
         substep = index;
-        substepAccepted = std::move(done);
+        substepReady = std::move(done);
         range = {params.selection.z, 0u, 0u, Bits(params.gravityDt.w)};
         leafEnd = range.x + leaves;
         treeOffset = 0;
         const uint64_t perSubstep = (uint64_t(leaves) + LeavesPerDispatch - 1u) / LeavesPerDispatch;
-        countBytes = perSubstep * params.solve.y * sizeof(uint32_t);
+        countBytes = perSubstep * (discovery ? 1u : params.solve.y) * sizeof(uint32_t);
         buffers[2] = storage.Get(Resource::Bounds);
         buffers[3] = publication->shapeModels;
         buffers[4] = publication->bodyModels;
         buffers[5] = storage.Get(Resource::BodyStates);
+        buffers[8] = storage.Get(Resource::SleepStates);
         return Upload();
     }
 
     JoltGpuControlWork Upload()
     {
         const uint64_t treeBytes = tree->size() * sizeof(UInt4);
-        if (!Allocate(0, sizeof(range)) || !Allocate(1, treeBytes) || !Allocate(6, countBytes))
+        if (!Allocate(0, 2 * sizeof(range)) || !Allocate(1, treeBytes) || !Allocate(6, countBytes))
             return {nullptr, [self = shared_from_this()] { return self->Upload(); }};
         const uint64_t bytes = std::min(treeBytes - treeOffset, TransferPerPacket);
         const auto *data = reinterpret_cast<const uint8_t *>(tree->data());
@@ -391,7 +473,9 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
                         return self->Gather(std::move(updates));
                     }};
         const uint32_t zero = 0;
-        updates.push_back({buffers[0], 0, Bytes(&range, sizeof(range))});
+        const uint32_t flags = (policy.WantsTriggers() ? 1u : 0u) | (discovery ? 2u : 0u);
+        const std::array<UInt4, 2> uniform{range, UInt4{flags, 0, 0, 0}};
+        updates.push_back({buffers[0], 0, Bytes(uniform.data(), sizeof(uniform))});
         updates.push_back({buffers[6], uint64_t(range.z) * sizeof(uint32_t), Bytes(&zero, sizeof(zero))});
 
         rhi::ComputeDispatchDesc dispatch;
@@ -399,9 +483,30 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
         dispatch.groupCountX = (range.y + 63u) / 64u;
         for (const auto port : owner.m_ports) {
             dispatch.buffers.push_back(buffers[port]);
-            dispatch.bufferAccesses.push_back(port < 6    ? rhi::ComputeBufferAccess::Read
-                                              : port == 6 ? rhi::ComputeBufferAccess::ReadWrite
-                                                          : rhi::ComputeBufferAccess::Write);
+            dispatch.bufferAccesses.push_back(port == 6   ? rhi::ComputeBufferAccess::ReadWrite
+                                              : port == 7 ? rhi::ComputeBufferAccess::Write
+                                                          : rhi::ComputeBufferAccess::Read);
+        }
+        if (discovery && windows.empty() && range.y <= 32u) {
+            auto packet =
+                rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {std::move(dispatch)},
+                                         {{buffers[6], uint64_t(range.z) * sizeof(uint32_t), sizeof(uint32_t)},
+                                          {buffers[7], 0, uint64_t(range.y) * sizeof(Candidate)}});
+            return {packet, [self = shared_from_this(), packet] {
+                        uint32_t count;
+                        packet->Readback(0)->ReadInto(&count, sizeof(count));
+                        if (count > self->range.y)
+                            throw std::runtime_error("Cross-domain candidate count exceeds its leaf range");
+                        if (count) {
+                            self->decoded.resize(self->range.y);
+                            packet->Readback(1)->ReadInto(self->decoded.data(),
+                                                          self->decoded.size() * sizeof(Candidate));
+                            for (uint32_t i = 0; i < count; ++i)
+                                self->step.Collect(self->substep, *self->publication, self->policy, self->decoded[i]);
+                        }
+                        auto ready = std::move(self->substepReady);
+                        return ready();
+                    }};
         }
         auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {std::move(dispatch)});
         return {packet,
@@ -410,9 +515,10 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
                     self->range.x += self->range.y;
                     if (self->range.x < self->leafEnd)
                         return self->Gather();
-                    auto done = std::move(self->substepAccepted);
-                    done();
-                    return JoltGpuControlWork{};
+                    if (self->discovery)
+                        return self->ReadCounts();
+                    auto ready = std::move(self->substepReady);
+                    return ready();
                 },
                 Boundary::Acceptance};
     }
@@ -455,8 +561,12 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
                 nextFirst = 0;
             }
         }
-        if (reads.empty())
-            return {};
+        if (reads.empty()) {
+            if (!discovery)
+                return {};
+            auto ready = std::move(substepReady);
+            return ready();
+        }
         auto packet = rhi::PrepareComputeBatch(owner.m_host, {}, {}, std::move(reads));
         return {packet, [self = shared_from_this(), packet, ranges = std::move(ranges), nextWindow, nextFirst] {
                     for (size_t i = 0; i < ranges.size(); ++i) {
@@ -481,10 +591,24 @@ JoltGpuMixedContacts::Observe(const std::shared_ptr<const JoltGpuScene::Publicat
     return {[job](const JoltGpuStorage &storage, const JoltGpuStepInputs &, const JPH::GPU::StepParams &params,
                   uint32_t substep, JoltGpuContactReportStage stage, std::function<void()> done) {
                 if (stage == JoltGpuContactReportStage::BeforeVelocity)
-                    return job->Begin(storage, params, substep, std::move(done));
+                    return job->Begin(storage, params, substep, false, [done = std::move(done)] {
+                        done();
+                        return JoltGpuControlWork{};
+                    });
                 done();
                 return JoltGpuControlWork{};
             },
             [job](const auto &) { return job->ReadCounts(); }};
+}
+
+JoltGpuControlWork JoltGpuMixedContacts::Discover(const JoltGpuStorage &storage, const JPH::GPU::StepParams &params,
+                                                  uint32_t substep,
+                                                  const std::shared_ptr<const JoltGpuScene::Publication> &publication,
+                                                  JoltMixedContactStep &step,
+                                                  const JoltMixedContactStep::Policy &policy,
+                                                  std::function<JoltGpuControlWork()> ready)
+{
+    return std::make_shared<Job>(*this, step, policy, publication)
+        ->Begin(storage, params, substep, true, std::move(ready));
 }
 } // namespace infernux
