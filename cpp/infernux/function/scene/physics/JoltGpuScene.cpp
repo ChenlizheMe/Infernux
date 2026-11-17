@@ -138,7 +138,7 @@ class JoltGpuScene::Impl
         uint64_t memberEpoch = 0, memberStep = 0;
         JoltGpuTick::Status status = JoltGpuTick::Status::Idle;
         uint64_t tickSerial = 0, controlSerial = 0, observedTick = 0, observedControl = 0;
-        bool admission = true, closed = false, cleanup = false, retiring = false, retired = false;
+        bool admission = true, closed = false, cleanup = false, retiring = false;
     };
 
     struct PairUpload : std::enable_shared_from_this<PairUpload>
@@ -389,7 +389,7 @@ class JoltGpuScene::Impl
           failureObserver(std::move(onFailure)),
           tick(budget, storage, programs, broadphase, narrowphase, constraints, [this] {
               const auto *owner = writer ? writer : pressureDomain;
-              if (owner && failureObserver)
+              if (owner && !owner->retiring && failureObserver)
                   failureObserver(*owner->world);
           })
     {
@@ -1736,7 +1736,7 @@ class JoltGpuScene::Impl
     {
         // Inactive authoring has no Play consumer. Its queued FIFO is retained, not GPU-ready maintenance.
         // Preparing/playing runtime Worlds, and every cleanup/retirement, still close clean refill.
-        return domain.cleanup || (domain.retiring && !domain.retired) ||
+        return domain.cleanup || domain.retiring ||
                (!domain.pending.empty() &&
                 (domain.world != &SceneManager::Instance().AuthoringWorld() || domain.world->simulation.isPlaying));
     }
@@ -1848,8 +1848,6 @@ class JoltGpuScene::Impl
 
     void Cancel(Partition &domain)
     {
-        if (domain.retired)
-            return;
         domain.closed = true;
         if (observationOwner == &domain)
             observationCursor->Cancel();
@@ -1948,27 +1946,16 @@ class JoltGpuScene::Impl
         publicationDirectory.reset();
     }
 
-    bool ReleaseRetiredPartition(Partition &domain) noexcept
+    void ReleasePartition(Partition &domain) noexcept
     {
-        // Ordinary Cancel is reopenable for this same RuntimeWorld. Only its
-        // final retirement may return a row to a different public World identity.
-        if (!domain.retiring || !domain.retired || domain.cleanup || writer == &domain || peerWriter == &domain ||
-            observationOwner == &domain || !domain.pending.empty() || !domain.records.empty() || domain.liveCount)
-            return false;
-        const auto &worlds = storage.GetModel().worlds;
-        if (domain.row < worlds.size()) {
-            const auto &range = worlds[domain.row];
-            if (range.bodies.y || range.leaves.y || range.leaves.w)
-                return false;
-        }
-        // Service marks retired only after cancellation/cleanup and the zero-range
-        // layout writer have completed all receipts. Retained Publications own
-        // frozen resources/immutable identities, never this Partition or its row.
+        // The selected range has been removed and all its receipts settled.
+        // Frozen publications own their resources without this row or its slots.
+        ReleaseRecords(domain);
         const auto id = domain.id;
         ordered[domain.row] = nullptr;
         freeRows.push_back(domain.row); // Capacity was reserved at registration.
         domains.erase(id);
-        return true;
+        --retiringPartitions;
     }
 
     JoltGpuControlWork PrepareLocalReset(Partition &domain)
@@ -2066,13 +2053,9 @@ class JoltGpuScene::Impl
                 writer->cursor = nullptr;
                 writer = nullptr;
             } else if (writerKind == WriterKind::Retirement) {
-                writer->retired = true;
-                writer->capacity = 0;
-                writer->records.clear();
-                writer->freeLocals.clear();
-                writer->published.reset();
-                writer->cursor = nullptr;
+                auto &retired = *writer;
                 writer = nullptr;
+                ReleasePartition(retired);
             } else
                 PublishWriter(*writer);
         }
@@ -2081,7 +2064,7 @@ class JoltGpuScene::Impl
         for (auto *domain : ordered) {
             if (!domain)
                 continue;
-            if (!domain->cleanup && (!domain->retiring || domain->retired))
+            if (!domain->cleanup && !domain->retiring)
                 continue;
             // No shared writer remains, and Cancel's accepted receipts passed
             // CanRetire above. Cleanup prevents reopen and removes every native
@@ -2093,24 +2076,20 @@ class JoltGpuScene::Impl
             const bool noNumericalRange =
                 domain->row >= worlds.size() || (!worlds[domain->row].bodies.y && !worlds[domain->row].leaves.w);
             if (noNumericalRange) {
-                ReleaseRecords(*domain);
-                // No writer remains here: any cancelled source already passed
-                // CanRetire above, including worlds with no cleanup GPU range.
-                domain->articulationCache.reset();
-                domain->cleanup = false;
-                if (domain->retiring) {
-                    domain->retired = true;
-                    domain->capacity = 0;
-                    domain->records.clear();
-                    domain->freeLocals.clear();
-                    domain->published.reset();
+                if (domain->retiring)
+                    ReleasePartition(*domain);
+                else {
+                    ReleaseRecords(*domain);
+                    domain->cleanup = false;
                 }
                 continue;
             }
-            if (domain->cleanup)
-                QueueCleanup(*domain);
-            else
+            // Reopening a cancelled partition reuses its slots. Retirement
+            // drops the range entirely, so a scrub of that range is redundant.
+            if (domain->retiring)
                 QueueLayout(*domain, 0u);
+            else
+                QueueCleanup(*domain);
             JoltGpuTickControl control;
             control.needsSnapshot = false;
             control.partitionCleanup = true;
@@ -2119,7 +2098,7 @@ class JoltGpuScene::Impl
             writer = domain;
             domain->cursor = &tick;
             domain->shareable = false;
-            writerKind = domain->cleanup ? WriterKind::Cleanup : WriterKind::Retirement;
+            writerKind = domain->retiring ? WriterKind::Retirement : WriterKind::Cleanup;
             tick.SetAdmissionEnabled(true);
             tick.BeginControl(domain->row, std::move(control));
             break;
@@ -2156,6 +2135,7 @@ class JoltGpuScene::Impl
     std::shared_ptr<const Publication> observationPublication;
     bool observationCallActive = false;
     Partition *pressureDomain = nullptr;
+    size_t retiringPartitions = 0;
     WriterKind writerKind = WriterKind::Control;
     uint64_t observedPressure = 0;
     size_t pressureCursor = 0;
@@ -2196,8 +2176,8 @@ bool JoltGpuScene::RegisterPartition(RuntimeWorld &world, uint32_t capacity)
     const auto found = m_impl->domains.find(world.id);
     if (found != m_impl->domains.end()) {
         auto &domain = m_impl->Domain(world);
-        if (domain.retiring || domain.retired)
-            throw std::logic_error("A retired RuntimeWorld partition cannot reopen");
+        if (domain.retiring)
+            return false;
         if (domain.cleanup || m_impl->writer == &domain || m_impl->peerWriter == &domain ||
             m_impl->observationOwner == &domain)
             return !domain.closed;
@@ -2657,21 +2637,22 @@ void JoltGpuScene::RetirePartition(RuntimeWorld &world)
     if (!m_impl->domains.count(world.id))
         return;
     auto &domain = m_impl->Domain(world);
+    if (domain.retiring)
+        return;
     domain.retiring = true;
-    m_impl->Cancel(domain);
+    ++m_impl->retiringPartitions;
+    if (!domain.closed)
+        m_impl->Cancel(domain);
     m_impl->Service();
+}
+void JoltGpuScene::ServiceRetirements()
+{
+    if (m_impl->retiringPartitions)
+        m_impl->Service();
 }
 bool JoltGpuScene::CanRetire(const RuntimeWorld &world)
 {
-    if (!m_impl->domains.count(world.id))
-        return true;
-    m_impl->Service();
-    auto &domain = m_impl->Domain(world);
-    if (domain.cleanup || m_impl->writer == &domain || m_impl->peerWriter == &domain ||
-        m_impl->observationOwner == &domain)
-        return false;
-    if (!domain.retiring)
-        return true; // Cancel/reopen retains the same partition, capacity and row.
-    return m_impl->ReleaseRetiredPartition(domain);
+    ServiceRetirements();
+    return !m_impl->domains.count(world.id);
 }
 } // namespace infernux

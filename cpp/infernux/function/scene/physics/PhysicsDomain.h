@@ -43,13 +43,13 @@ struct PhysicsDomain final
     std::unordered_set<uint32_t> cpuInterpolated;
     bool cpuFixedAdmitted = false;
     bool gpuRegistered = false;
+    size_t gpuBodyOwners = 0;
     std::optional<bool> startupUsesGpuBodies;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::weak_ptr<PhysicsParticipant> participantPreparing;
     bool participantOutputPending = false;
     decltype(JoltGpuTickControl::prepareParticipant) admittedParticipants;
     bool retiring = false;
-    bool gpuCancelled = false;
     Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
     bool reconcilingRagdolls = false;
     std::unordered_set<uint32_t> bodyIds;

@@ -832,6 +832,7 @@ class PhysicsWorld
     PhysicsDomain &CurrentDomain() const;
     void RegisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId, PhysicsActorHandle actor, Backend backend);
     void UnregisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId) noexcept;
+    void ChangeBodyBackend(PhysicsDomain &domain, BodyRegistration &entry, Backend backend) noexcept;
     [[nodiscard]] const BodyRegistration *FindBodyRegistration(uint32_t bodyId) const noexcept;
     [[nodiscard]] PhysicsActorHandle FindBodyActor(uint32_t bodyId) const noexcept;
     [[nodiscard]] Backend ReadBodyBackend(PhysicsDomain &domain, uint32_t bodyId) const;
@@ -847,6 +848,9 @@ class PhysicsWorld
     void EnsureCpuReady(PhysicsDomain &domain);
     JoltGpuScene &EnsureSharedGpuScene();
     bool EnsureGpuReady(PhysicsDomain &domain);
+    void RetireIdleGpuPartition(PhysicsDomain &domain);
+    void RetireGpuPartition(PhysicsDomain &domain);
+    void ServiceGpuRetirements();
     void RefreshBodySurfaces(PhysicsDomain &domain);
     void RequireHealthyStep(PhysicsDomain &domain) const;
     void FailStep(PhysicsDomain &domain) noexcept;

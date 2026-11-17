@@ -147,7 +147,7 @@ bool PhysicsWorld::HasRagdollAssembly(uint64_t id) const
             body->GetParticipatingBodyId() != member.bodyId)
             return false;
         const auto *registration = FindBodyRegistration(member.bodyId);
-        if (!registration || (registration->backend == Backend::Gpu && view.domain->gpuCancelled))
+        if (!registration || (registration->backend == Backend::Gpu && !view.domain->gpuRegistered))
             return false;
         if (member.jointId) {
             auto *joint = dynamic_cast<Joint *>(member.joint.GetComponent());
@@ -253,7 +253,7 @@ void PhysicsWorld::ReconcileRagdolls(PhysicsDomain &domain)
                             surfaces[index].push_back(collider);
                 }
                 const auto *registered = FindBodyRegistration(member.bodyId);
-                if (!registered || (registered->backend == Backend::Gpu && domain.gpuCancelled))
+                if (!registered || (registered->backend == Backend::Gpu && !domain.gpuRegistered))
                     view.ready = false;
                 auto *joint = body->GetGameObject()->GetComponent<Joint>();
                 if (!joint || !joint->IsEnabled() || joint->IsDestroyed() || joint->IsBeingDestroyed())
@@ -279,7 +279,7 @@ void PhysicsWorld::ReconcileRagdolls(PhysicsDomain &domain)
                     throw std::invalid_argument("Ragdoll joint endpoints must have the same Rigidbody backend");
                 member.gpuJoint = registered->backend == Backend::Gpu;
                 if (member.gpuJoint) {
-                    if (!domain.gpuRegistered || domain.gpuCancelled) {
+                    if (!domain.gpuRegistered) {
                         view.ready = false;
                         continue;
                     }
@@ -490,7 +490,7 @@ void PhysicsWorld::QueueRagdollPoseDrives(PhysicsDomain &domain, const std::vect
     for (const auto &drive : drives) {
         const auto value = drive.relative.value_or(glm::quat(1, 0, 0, 0));
         if (drive.gpu) {
-            if (domain.gpuRegistered && !domain.gpuCancelled)
+            if (domain.gpuRegistered)
                 gpu.push_back({drive.jointId, drive.kind, {value.x, value.y, value.z, value.w}, !drive.relative});
         } else if (domain.cpuControl && FindCpuJointDomain(drive.jointId) == &domain) {
             JoltCpuControl::JointPoseDrive intent{drive.jointId, std::nullopt};

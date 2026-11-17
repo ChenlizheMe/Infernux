@@ -1739,6 +1739,7 @@ void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTim
     if (!work.IsAccepting())
         return;
     FrameWorkOwner::Scope accounting(work);
+    PhysicsWorld::Instance().ServiceGpuRetirements();
     CollectRetiredRuntimeWorlds();
     if (!work.IsAccepting())
         return;
