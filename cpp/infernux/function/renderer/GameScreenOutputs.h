@@ -52,6 +52,7 @@ class GameScreenOutputs final
         rhi::SampleCount samples = rhi::SampleCount::One;
         bool retired = false;
         uint64_t guiRecordedSequence = 0, guiRecordingCount = 0;
+        uint64_t slotStalls = 0;
         GameScreenColorContract colorContract;
         OwnedDiagnostic colorDiagnostic;
         OwnedDiagnostic preserveColorDiagnostic;
@@ -286,6 +287,7 @@ class GameScreenOutputs final
         // local backpressure instead of unbounded image allocation.
         const size_t limit = static_cast<size_t>(m_core.GetMaxFramesInFlight()) + 2;
         if (output->slots.size() >= limit) {
+            ++output->slotStalls;
             output->workWithheld = true;
             return false;
         }
@@ -475,6 +477,7 @@ class GameScreenOutputs final
         result.hasCompletedSample = static_cast<bool>(output->front);
         result.guiRecordedSequence = output->guiRecordedSequence;
         result.guiRecordingCount = output->guiRecordingCount;
+        result.slotStalls = output->slotStalls;
         result.hasPresentationConsumer =
             std::any_of(output->consumers.begin(), output->consumers.end(),
                         [](const auto &entry) { return entry.second.kind == GameScreenConsumerKind::Presentation; });

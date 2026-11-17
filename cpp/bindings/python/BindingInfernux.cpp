@@ -1042,6 +1042,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             value["gui_recorded_sequence"] = status.guiRecordedSequence;
             value["gui_recording_count"] = status.guiRecordingCount;
             value["pending"] = status.pendingSamples;
+            value["allocated_slots"] = status.allocatedSlots;
+            value["slot_stalls"] = status.slotStalls;
             value["consumers"] = status.consumers;
             value["no_camera"] = status.sourcePublished && !status.hasScreenCamera;
             value["withheld"] = status.workWithheld;

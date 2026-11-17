@@ -140,7 +140,8 @@ class GameViewPanel(EditorPanel):
         self._world_view = world_view
         self._captured_world_id = 0
         self._screen_consumers = {}
-        self._screen_samples = {}
+        # Native GUI recording selects and pins the completed pixels for each draw.
+        self._screen_extents: dict[int, tuple[int, int]] = {}
         self._play_presentation_samples = None
         self._play_preparing = False
         self._play_ready_worlds = None
@@ -166,7 +167,7 @@ class GameViewPanel(EditorPanel):
             for consumer in self._screen_consumers.values():
                 self._engine._release_game_screen(consumer)
         self._screen_consumers.clear()
-        self._screen_samples.clear()
+        self._screen_extents.clear()
         if self._play_presentation_samples is not None:
             self._play_presentation_samples = ()  # Release images while retaining the preparation phase.
         self._play_ready_worlds = None
@@ -774,7 +775,7 @@ class GameViewPanel(EditorPanel):
     def _begin_play_presentation(self):
         ordinals = self._world_view.ordinals
         self._play_presentation_samples = tuple(
-            (world, ordinals[world], sample) for world in self._screen_samples
+            (world, ordinals[world], sample) for world in self._screen_extents
             if (self._world_view.layout != 0 or world == self._world_view.world_id)
             and (sample := self._engine._acquire_game_screen(world)) is not None)
         self._play_preparing = True
@@ -912,9 +913,10 @@ class GameViewPanel(EditorPanel):
                         message = t('game_view.no_camera' if status['no_camera'] else 'game_view.waiting_image')
                     ctx.label(message)
                     continue
-                self._screen_samples[world] = sample
+                sample_width, sample_height = sample.width, sample.height
+                self._screen_extents[world] = (sample_width, sample_height)
                 texture = self._engine._game_screen_live_image(world)
-                draw_w,draw_h = self._fit_into_region(sample.width,sample.height,cell_w,image_h,
+                draw_w,draw_h = self._fit_into_region(sample_width,sample_height,cell_w,image_h,
                     point_filter=self._render_output['filter'] == 'nearest')
                 image_x,image_y = x+(cell_w-draw_w)*.5,y+label_h+(image_h-draw_h)*.5
                 ctx.set_cursor_pos_x(image_x); ctx.set_cursor_pos_y(image_y)
@@ -938,7 +940,7 @@ class GameViewPanel(EditorPanel):
         for world in tuple(self._screen_consumers):
             if world not in requested:
                 self._engine._release_game_screen(self._screen_consumers.pop(world))
-                self._screen_samples.pop(world,None)
+                self._screen_extents.pop(world, None)
         self._last_screen_routes = routes
         if self._captured_world_id not in routes:
             self._captured_world_id = 0
@@ -966,10 +968,11 @@ class GameViewPanel(EditorPanel):
         for world,state,_error,_display in all_rows:
             if state != 'ready':
                 continue
-            sample = self._screen_samples.get(world)
-            status = self._engine._game_screen_status(world)
-            outputs.append((world,sample.width if sample is not None else status['width'],
-                                  sample.height if sample is not None else status['height']))
+            extent = self._screen_extents.get(world)
+            if extent is None:
+                status = self._engine._game_screen_status(world)
+                extent = (status['width'], status['height'])
+            outputs.append((world, *extent))
         native._set_world_game_view(self._world_view.world_id,self._world_view.input_mode == 0,outputs,
                                     [value[3] for value in routes.values()])
         if not held:

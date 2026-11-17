@@ -105,6 +105,7 @@ struct GameScreenOutputStatus
     bool sourcePublished = false, hasScreenCamera = false;
     bool hasPresentationConsumer = false, hasRequiredConsumer = false;
     uint64_t guiRecordedSequence = 0, guiRecordingCount = 0;
+    uint64_t slotStalls = 0;
     // Snapshot facts for the shared SceneManager Step owner. Desired config
     // above never changes the identity/config of these retained records.
     std::shared_ptr<const GameScreenAdmission> admitted;
