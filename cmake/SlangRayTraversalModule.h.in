@@ -1,0 +1,13 @@
+#pragma once
+
+namespace infernux
+{
+
+inline const ShaderSourceModule &GetSlangRayTraversalModule()
+{
+    static const ShaderSourceModule module{"inx_ray_traversal", "<infernux/shader/ray_traversal>", R"inxslang(
+@_ray_traversal_source@)inxslang"};
+    return module;
+}
+
+} // namespace infernux

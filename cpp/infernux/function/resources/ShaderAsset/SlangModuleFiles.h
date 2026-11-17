@@ -8,6 +8,7 @@
 #include "SlangParticleLightingModule.h"
 #include "SlangParticleModule.h"
 #include "SlangUIModule.h"
+#include <SlangRayTraversalModule.h>
 
 #include <atomic>
 #include <filesystem>
@@ -59,6 +60,7 @@ class SlangModuleFiles final : public ISlangFileSystemExt
         Add(GetSlangParticleModule());
         Add(GetSlangParticleLightingModule());
         Add(GetSlangUIContextModule());
+        Add(GetSlangRayTraversalModule());
         for (const auto &library : libraries)
             Add(library);
         Add(source);

@@ -57,14 +57,16 @@ void CheckTargetArchive(const ShaderTargetCode &expected)
     const auto bytes = EncodeShaderTarget(expected);
     const auto decoded = DecodeShaderTarget(bytes);
     Require(decoded.target == expected.target && decoded.reflection == expected.reflection &&
-                decoded.entries.size() == expected.entries.size() && decoded.resources.size() == expected.resources.size(),
+                decoded.entries.size() == expected.entries.size() &&
+                decoded.resources.size() == expected.resources.size(),
             "Shader archive changed target reflection or layout counts");
     for (size_t i = 0; i < expected.entries.size(); ++i) {
         const auto &entry = expected.entries[i];
         const auto &current = decoded.entries[i];
-        Require(current.name == entry.name && current.stage == entry.stage && current.workgroupSize == entry.workgroupSize &&
-                    current.bindings == entry.bindings && current.code == entry.code &&
-                    current.sampleRateShading == entry.sampleRateShading && current.rootConstants == entry.rootConstants,
+        Require(current.name == entry.name && current.stage == entry.stage &&
+                    current.workgroupSize == entry.workgroupSize && current.bindings == entry.bindings &&
+                    current.code == entry.code && current.sampleRateShading == entry.sampleRateShading &&
+                    current.rootConstants == entry.rootConstants,
                 "Shader archive changed entry code, bindings, or execution layouts");
         Require(SameStageVariables(current.inputs, entry.inputs) && SameStageVariables(current.outputs, entry.outputs),
                 "Shader archive changed stage input or output locations");
@@ -618,6 +620,27 @@ float4 main(float2 uv : TEXCOORD0) : SV_Target0 { return single.Sample(uv) + pai
                             resource.binding.binding == (array ? 8u : 2u) + (split ? index % 2u : 0u),
                         "Combined sampler descriptors differ from the target's scalar/array bindings");
             }
+        }
+
+        const auto worldRays = compiler.Compile({"world_rays", "world_rays.slang", R"(
+import inx_ray_traversal;
+RWStructuredBuffer<uint> results;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void trace_main(uint3 id : SV_DispatchThreadID)
+{
+    TraceRay ray = {float3(0, 0, -1), 0.0, float3(0, 0, 1), 10.0};
+    RayHit hit = trace_closest(ray_page(), ray, 1u);
+    results[id.x] = hit.surface_id;
+}
+)"},
+                                                {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        for (const auto &target : worldRays.targets) {
+            const auto geometry = std::find_if(target.resources.begin(), target.resources.end(),
+                                               [](const auto &value) { return value.name == "world_ray_geometry"; });
+            Require(geometry != target.resources.end() && geometry->binding.readOnlyStorage &&
+                        geometry->elementStride == 16,
+                    "Resident ray module did not retain its shared geometry layout");
         }
 
         bool diagnosed = false;

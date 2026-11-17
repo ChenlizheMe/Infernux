@@ -18,6 +18,7 @@ function(infernux_add_jolt_gpu_cooker)
         target_compile_definitions(InfernuxJoltGpuCook PRIVATE
             INFERNUX_FOUNDATION_EXPORTS=1 INFERNUX_SHADER_COMPILER_EXPORTS=1)
         target_link_libraries(InfernuxJoltGpuCook PRIVATE ${INFERNUX_SLANG_TARGET})
+        infernux_add_rt_slang_module(InfernuxJoltGpuCook)
     endif()
     if(MSVC)
         target_compile_options(InfernuxJoltGpuCook PRIVATE /utf-8)

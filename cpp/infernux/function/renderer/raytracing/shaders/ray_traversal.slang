@@ -77,6 +77,11 @@ struct RayHit
     uint surface_id;
 };
 
+interface RayHitPolicy
+{
+    bool accepts(RayPage page, TraceRay ray, RayHit candidate);
+}
+
 struct RayCursor
 {
     uint2 pending[ray_stack_capacity]; // Node index and its conservative entry distance.
@@ -237,7 +242,8 @@ TraceRay ray_to_object(TraceRay ray, RayInstance instance)
     return ray;
 }
 
-RayHit trace_ray(RayPage page, TraceRay world_ray, uint layer_mask, bool stop_on_first_hit)
+RayHit trace_ray<Policy : RayHitPolicy>(RayPage page, TraceRay world_ray, uint layer_mask, bool stop_on_first_hit,
+                                       Policy policy)
 {
     RayHit hit;
     hit.distance = world_ray.maximum;
@@ -280,12 +286,11 @@ RayHit trace_ray(RayPage page, TraceRay world_ray, uint layer_mask, bool stop_on
                                    (instance.surface_id == hit.surface_id && face.w < hit.primitive);
                     if (distance < hit.distance || earlier)
                     {
-                        hit.distance = distance;
-                        hit.barycentrics = weights;
-                        hit.instance_index = index;
-                        hit.triangle_index = primitive;
-                        hit.primitive = face.w;
-                        hit.surface_id = instance.surface_id;
+                        RayHit candidate = {distance, weights, index, primitive, face.w, instance.surface_id};
+                        // Only an accepted candidate can shorten traversal or block visibility.
+                        if (!policy.accepts(page, world_ray, candidate))
+                            continue;
+                        hit = candidate;
                         if (stop_on_first_hit)
                             return hit;
                     }
@@ -295,14 +300,33 @@ RayHit trace_ray(RayPage page, TraceRay world_ray, uint layer_mask, bool stop_on
     }
 }
 
+RayHit trace_closest<Policy : RayHitPolicy>(RayPage page, TraceRay ray, uint layer_mask, Policy policy)
+{
+    return trace_ray(page, ray, layer_mask, false, policy);
+}
+
+bool trace_visibility<Policy : RayHitPolicy>(RayPage page, TraceRay ray, uint layer_mask, Policy policy)
+{
+    return page.status == ray_page_ready &&
+           trace_ray(page, ray, layer_mask, true, policy).triangle_index == ray_invalid_index;
+}
+
+struct OpaqueRayHitPolicy : RayHitPolicy
+{
+    bool accepts(RayPage page, TraceRay ray, RayHit candidate)
+    {
+        return true;
+    }
+};
+
 RayHit trace_closest(RayPage page, TraceRay ray, uint layer_mask)
 {
-    return trace_ray(page, ray, layer_mask, false);
+    return trace_closest(page, ray, layer_mask, OpaqueRayHitPolicy());
 }
 
 bool trace_visibility(RayPage page, TraceRay ray, uint layer_mask)
 {
-    return page.status == ray_page_ready && trace_ray(page, ray, layer_mask, true).triangle_index == ray_invalid_index;
+    return trace_visibility(page, ray, layer_mask, OpaqueRayHitPolicy());
 }
 
 struct RaySurfaceHit
@@ -361,7 +385,7 @@ float3 ray_interpolate_direction(uint3 offsets, float3 weights, float3 r0, float
     return ray_surface_normalize(a * weights.x + b * weights.y + c * weights.z, fallback);
 }
 
-// Only called on a valid hit. Visibility traversal does not touch the attribute stream.
+// Only called on a valid hit.
 RaySurfaceHit ray_surface_at_hit(RayPage page, TraceRay ray, RayHit hit)
 {
     RayInstance instance = ray_instance(page, hit.instance_index);
