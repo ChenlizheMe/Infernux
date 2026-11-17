@@ -135,6 +135,7 @@ def _decode_raw_signals(graph, packets):
 def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history):
     previous_primary, primary = primary_history
     motion = graph.get_texture(_ray_replay_name(source))
+    geometry = graph._create_world_ray_geometry()
     signals = {}
     for name, specular in lobes:
         previous, output = graph.create_temporal_history(f"_{name}", format=Format.RGBA32_UINT)
@@ -144,6 +145,7 @@ def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history):
                 "signal": packets[name], "primary": primary, "motion": motion,
                 "previous_signal": previous, "previous_primary": previous_primary,
             })
+            render_pass.set_buffer("geometry", geometry)
             render_pass.write_color(output)
             render_pass.set_param("specular", specular)
             render_pass.fullscreen_quad("infernux/internal/ray_reconstruct")

@@ -14,6 +14,7 @@ import inx_geometry;
 public float inx_frame_time() { return inx_globals.time.x; }
 public float inx_frame_delta_time() { return inx_globals.time.w; }
 public uint inx_view_sample_index() { return inx_globals.view_options.w; }
+public uint inx_previous_ray_geometry_serial() { return inx_globals.view_options.y; }
 public struct InxViewContext
 {
     public float2 size;
@@ -35,9 +36,9 @@ public InxViewContext inx_view_context()
     result.near_clip = inx_globals.projection_params.x;
     result.far_clip = inx_globals.projection_params.y;
     result.depth_params = inx_globals.depth_params;
-    result.dithering = inx_globals.view_options.x != 0u;
-    result.stop_nans = inx_globals.view_options.y != 0u;
-    result.opaque_output = inx_globals.view_options.z != 0u;
+    result.dithering = (inx_globals.view_options.x & 1u) != 0u;
+    result.stop_nans = (inx_globals.view_options.x & 2u) != 0u;
+    result.opaque_output = (inx_globals.view_options.x & 4u) != 0u;
     return result;
 }
 )slang"};

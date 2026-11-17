@@ -12,6 +12,7 @@ class RayReconstruct(shader.fullscreen):
     motion = shader.input("motion", shader.UInt2D)
     previous_signal = shader.input("previous_signal", shader.UInt2D)
     previous_primary = shader.input("previous_primary", shader.UInt2D)
+    geometry = shader.input("world_ray_geometry", shader.Buffer[shader.uvec4])
     specular = shader.parameter.bool(default=False)
 
     def main(self, ctx: shader.fragment_input) -> shader.uvec4:
@@ -56,6 +57,19 @@ class RayReconstruct(shader.fullscreen):
         previous = unpack_ray_signal(previous_packet)
         if previous.a <= 0.0 or fresh.z != previous_packet.z:
             return fresh
+
+        # Stamps travel with the immutable TLAS. Comparing to the submitted
+        # view catches changes even when it never rendered intermediate pages.
+        visibility = self.geometry[1]
+        accepted = shader._previous_ray_geometry_serial()
+        if visibility.y != accepted:
+            if visibility.y < accepted:
+                return fresh
+            surface_id = fresh.z
+            if surface_id != 0 and surface_id != shader.uint(0xFFFFFFFF):
+                stamps = self.geometry[visibility.x + (surface_id >> 2)]
+                if stamps[surface_id & 3] > accepted:
+                    return fresh
         distance = shader.as_float(fresh.w)
         previous_distance = shader.as_float(previous_packet.w)
         relative_tolerance = 0.075 if self.specular else 0.25

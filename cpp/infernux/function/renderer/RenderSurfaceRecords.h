@@ -29,6 +29,11 @@ class RenderSurfaceRecords final
     {
     }
 
+    [[nodiscard]] const glm::uvec4 &Lighting(uint32_t surfaceId) const noexcept
+    {
+        return m_records[surfaceId].lighting;
+    }
+
     [[nodiscard]] std::shared_ptr<const rhi::BufferResource> Acquire(rhi::Device &device) const
     {
         std::lock_guard lock(m_mutex);

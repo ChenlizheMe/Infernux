@@ -148,14 +148,18 @@ int main()
     assert(page.instances[0].orientation == 1.0f && page.instances[1].orientation == -1.0f);
 
     const RayPageUpload meshUpload(meshPage);
-    const RayPageUpload instanceUpload(page, RayGeometryStatus::Ready);
+    const std::vector<RayGeometryWord> shadowStamps{{0u, 17u, 0u, 0u}};
+    const RayPageUpload instanceUpload(page, RayGeometryStatus::Ready, 17u, shadowStamps);
     const auto header = [](const RayPageUpload &upload) {
         return *static_cast<const RayGeometryWord *>(upload.Section(0).data);
     };
     assert(header(meshUpload)[0] == 1u);
     assert(header(meshUpload)[3] + 4 * meshPage.attributes.size() == meshUpload.bytes / sizeof(RayGeometryWord));
-    assert((header(instanceUpload) == RayGeometryWord{0u, 1u, 3u, 1u}));
-    assert(instanceUpload.bytes == 16u + sizeof(BvhNode) + 2 * sizeof(RayInstance));
+    assert((header(instanceUpload) == RayGeometryWord{0u, 2u, 4u, 1u}));
+    const auto *instanceHeaders = static_cast<const RayGeometryWord *>(instanceUpload.Section(0).data);
+    assert((instanceHeaders[1] == RayGeometryWord{12u, 17u, 0u, 0u}));
+    assert(instanceUpload.Section(3).data == shadowStamps.data());
+    assert(instanceUpload.bytes == 48u + sizeof(BvhNode) + 2 * sizeof(RayInstance));
 
     instances[1].objectToWorld[3].z += 7.0f;
     RayInstancePageBuild moving(instances, page.topology);
@@ -206,6 +210,6 @@ int main()
     const RayInstancePage empty;
     const RayPageUpload unavailable(empty, RayGeometryStatus::Unavailable);
     const RayPageUpload emptyReady(empty, RayGeometryStatus::Ready);
-    assert((header(unavailable) == RayGeometryWord{kInvalidRayIndex, 1u, 1u, 2u}));
+    assert((header(unavailable) == RayGeometryWord{kInvalidRayIndex, 2u, 2u, 2u}));
     assert(header(emptyReady)[3] == 1u);
 }

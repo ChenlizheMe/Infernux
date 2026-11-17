@@ -438,6 +438,7 @@ bool RayInstancePageBuild::Advance(uint32_t budget)
 
 RayInstancePage RayInstancePageBuild::Take()
 {
+    m_state->page.sourceBounds = std::move(m_state->bounds);
     return std::move(m_state->page);
 }
 
@@ -471,26 +472,31 @@ RayPageUpload::RayPageUpload(const RayMeshPage &page)
     : m_sections{MeshSection(page.nodes), MeshSection(page.positions), MeshSection(page.triangles),
                  MeshSection(page.attributes)}
 {
-    bytes = sizeof(m_header);
+    bytes = m_headerBytes;
     for (size_t index = 0; index < m_sections.size(); ++index) {
-        m_header[index] = PageWordOffset(bytes);
+        m_header[0][index] = PageWordOffset(bytes);
         bytes += m_sections[index].bytes;
     }
     (void)PageWordOffset(bytes);
 }
 
-RayPageUpload::RayPageUpload(const RayInstancePage &page, RayGeometryStatus status)
-    : m_sections{MeshSection(page.nodes), MeshSection(page.instances)}
+RayPageUpload::RayPageUpload(const RayInstancePage &page, RayGeometryStatus status, uint32_t visibilitySerial,
+                             const std::vector<RayGeometryWord> &visibility)
+    : m_headerBytes(sizeof(m_header)),
+      m_sections{MeshSection(page.nodes), MeshSection(page.instances), MeshSection(visibility)}
 {
-    m_header = {page.nodes.empty() ? kInvalidRayIndex : 0u, 1u, PageWordOffset(sizeof(m_header) + m_sections[0].bytes),
-                static_cast<uint32_t>(status)};
-    bytes = sizeof(m_header) + m_sections[0].bytes + m_sections[1].bytes;
+    const auto instances = m_headerBytes + m_sections[0].bytes;
+    const auto shadowHistory = instances + m_sections[1].bytes;
+    m_header[0] = {page.nodes.empty() ? kInvalidRayIndex : 0u, PageWordOffset(m_headerBytes), PageWordOffset(instances),
+                   static_cast<uint32_t>(status)};
+    m_header[1] = {PageWordOffset(shadowHistory), visibilitySerial, 0u, 0u};
+    bytes = shadowHistory + m_sections[2].bytes;
     (void)PageWordOffset(bytes);
 }
 
 RayGeometryBytes RayPageUpload::Section(size_t index) const noexcept
 {
-    return index ? m_sections[index - 1] : RayGeometryBytes{m_header.data(), sizeof(m_header)};
+    return index ? m_sections[index - 1] : RayGeometryBytes{m_header.data(), m_headerBytes};
 }
 
 } // namespace infernux::raytracing

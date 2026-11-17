@@ -1,8 +1,10 @@
 #include "RayWorldGeometry.h"
 
 #include "RayGeometry.h"
+#include "RayShadowChanges.h"
 
 #include <core/error/InxError.h>
+#include <function/renderer/RenderSurfaceRecords.h>
 #include <function/renderer/RenderWorld.h>
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -41,6 +43,7 @@ struct WorldRevision
 constexpr uint32_t FullBuild = UINT32_MAX;
 constexpr uint32_t InlineWorkWindow = 1024;
 constexpr uint64_t UploadWindow = 256 * 1024;
+const RenderLightingSource kNoWorldLighting;
 
 WorldRevision GetRevision(const RenderWorldFrame &world)
 {
@@ -89,6 +92,7 @@ struct RayWorldMeshPage
     std::shared_ptr<FrameCpuStorageClaim> storage;
     // The frame owner caches the latest validated TLAS topology for this mesh set.
     mutable std::shared_ptr<const spatial::BvhTopology> topology;
+    mutable RayShadowState shadowHistory;
 };
 } // namespace
 
@@ -96,14 +100,17 @@ class RayWorldGeometryPublication final
 {
   public:
     explicit RayWorldGeometryPublication(std::shared_ptr<const RenderWorldFrame> frame)
-        : revision(GetRevision(*frame)), world(std::move(frame))
+        : revision(GetRevision(*frame)), visibilityLighting(frame->Lighting() ? frame->Lighting()->generation : 0u),
+          world(std::move(frame))
     {
     }
 
     const WorldRevision revision;
+    const uint64_t visibilityLighting;
     std::shared_ptr<const RenderWorldFrame> world;
     std::shared_ptr<const rhi::BufferResource> buffer;
     std::shared_ptr<const RayWorldMeshPage> meshes;
+    uint32_t visibilitySerial = 0;
     RayGeometryStatus status = RayGeometryStatus::Pending;
 };
 
@@ -120,6 +127,7 @@ class RayWorldGeometryBuild final
         PackMeshes,
         CollectInstances,
         BuildInstances,
+        UpdateShadows,
         Upload,
     };
 
@@ -129,6 +137,10 @@ class RayWorldGeometryBuild final
     [[nodiscard]] FrameWorkResource Resource() const;
     [[nodiscard]] uint64_t UploadBytes(uint64_t remaining) const;
     [[nodiscard]] std::shared_ptr<const RayWorldMeshPage> PublishedMeshes();
+    [[nodiscard]] uint32_t VisibilitySerial() const noexcept
+    {
+        return shadowHistory.serial;
+    }
     [[nodiscard]] uint64_t DecodeWorkspace() const
     {
         return reader->WorkspaceBytes();
@@ -179,10 +191,14 @@ class RayWorldGeometryBuild final
     RayMeshPage meshPage;
     std::shared_ptr<RayWorldMeshPage> meshCandidate;
     std::vector<RayMeshInstance> rays;
+    std::vector<RayShadowInstance> shadowInstances;
+    size_t surfaceCount = 1;
     size_t nextInstanceDraw = 0;
     size_t nextPlacement = 0;
     std::unique_ptr<RayInstancePageBuild> instanceBuild;
     RayInstancePage instancePage;
+    std::unique_ptr<RayShadowChanges> shadowChanges;
+    RayShadowState shadowHistory;
     std::optional<RayPageUpload> layout;
     uint64_t uploadedBytes = 0;
     size_t uploadSection = 0;
@@ -201,6 +217,7 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
             continue;
         if (!draw.surfaceId || draw.meshVertexBuffer || draw.devicePose.HasValue() || draw.skinBoneMatrices)
             return false;
+        surfaceCount = std::max(surfaceCount, size_t{draw.surfaceId} + 1);
 
         size_t artifact = 0;
         // The frozen draw borrows process-lifetime primitive streams or owns a mesh snapshot.
@@ -232,7 +249,7 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         auto [entry, inserted] = sliceIndices.try_emplace(key, sliceIndices.size());
         const Slice slice{&draw, entry->second};
         instances.push_back(slice);
-        workspace = AddStorage(workspace, 512);
+        workspace = AddStorage(workspace, 512 + sizeof(RayShadowInstance));
         if (inserted) {
             // Covers the compact-index map, BLAS, and its contribution to the final page.
             workspace = AddStorage(workspace, uint64_t{draw.indexCount} * 352);
@@ -243,6 +260,8 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
     }
     if (nextDraw == draws.size()) {
         rays.reserve(instances.size());
+        shadowInstances.reserve(instances.size());
+        workspace = AddStorage(workspace, sizeof(uint32_t) * (surfaceCount + 3u));
         meshCandidate = std::make_shared<RayWorldMeshPage>();
         meshCandidate->draws.reserve(instances.size());
         step = recovery.empty() ? Step::BuildResident : Step::Open;
@@ -262,6 +281,7 @@ FrameWorkResource RayWorldGeometryBuild::Resource() const
     case Step::PackMeshes:
     case Step::CollectInstances:
     case Step::BuildInstances:
+    case Step::UpdateShadows:
         return FrameWorkResource::Cpu;
     case Step::Upload:
         return FrameWorkResource::Transfer;
@@ -348,8 +368,11 @@ void RayWorldGeometryBuild::Run(uint32_t window)
             [[fallthrough]];
         case Step::CollectInstances: {
             const auto &draws = world->DrawCalls().drawCalls;
-            if (!nextInstanceDraw && sharedMeshes)
+            const auto &records = world->SurfaceRecords();
+            if (!nextInstanceDraw && sharedMeshes) {
                 rays.reserve(sharedMeshes->draws.size());
+                shadowInstances.reserve(sharedMeshes->draws.size());
+            }
             const auto end = nextInstanceDraw + std::min<size_t>(window, draws.size() - nextInstanceDraw);
             for (; nextInstanceDraw != end; ++nextInstanceDraw) {
                 const auto &draw = draws[nextInstanceDraw];
@@ -366,8 +389,13 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                     meshCandidate->draws.push_back({draw.surfaceId, placement});
                 }
                 ++nextPlacement;
-                if (placement.root != kInvalidRayIndex)
+                if (placement.root != kInvalidRayIndex) {
+                    surfaceCount = std::max(surfaceCount, size_t{draw.surfaceId} + 1);
                     rays.push_back({placement, draw.worldMatrix, draw.surfaceId, draw.layerMask});
+                    const glm::uvec4 lighting = records ? records->Lighting(draw.surfaceId) : glm::uvec4(0u);
+                    shadowInstances.push_back(
+                        {draw.surfaceId, draw.layerMask, lighting.w != 0u, lighting.z != 0u, draw.worldMatrix, {}});
+                }
             }
             if (nextInstanceDraw != draws.size())
                 break;
@@ -385,12 +413,26 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                 if (instanceBuild->Advance(window)) {
                     instancePage = instanceBuild->Take();
                     instanceBuild.reset();
-                    StartUpload(meshCandidate ? RayPageUpload(meshPage)
-                                              : RayPageUpload(instancePage, RayGeometryStatus::Ready));
-                    step = Step::Upload;
+                    const auto &lighting = world->Lighting();
+                    shadowChanges = std::make_unique<RayShadowChanges>(
+                        sharedMeshes ? &sharedMeshes->shadowHistory : nullptr, std::move(shadowInstances), instancePage,
+                        lighting ? *lighting : kNoWorldLighting, surfaceCount);
+                    step = Step::UpdateShadows;
                     break;
                 }
             } while (window == FullBuild);
+            if (window != FullBuild)
+                break;
+            [[fallthrough]];
+        case Step::UpdateShadows:
+            if (shadowChanges->Advance(window)) {
+                shadowHistory = shadowChanges->Take();
+                shadowChanges.reset();
+                StartUpload(meshCandidate ? RayPageUpload(meshPage)
+                                          : RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.serial,
+                                                          shadowHistory.stamps));
+                step = Step::Upload;
+            }
             break;
         case Step::Upload:
             std::terminate();
@@ -441,7 +483,7 @@ bool RayWorldGeometryBuild::Upload(rhi::Device &device, uint64_t bytes)
     if (meshCandidate && !meshCandidate->buffer) {
         meshCandidate->buffer = std::move(buffer);
         meshPage = {};
-        StartUpload(RayPageUpload(instancePage, RayGeometryStatus::Ready));
+        StartUpload(RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.serial, shadowHistory.stamps));
         return false;
     }
     return true;
@@ -452,11 +494,15 @@ std::shared_ptr<const RayWorldMeshPage> RayWorldGeometryBuild::PublishedMeshes()
     if (meshCandidate) {
         // A binary TLAS has at most twice as many links as instance records.
         constexpr auto topologyBytesPerDraw = 2 * sizeof(spatial::BvhLink) + sizeof(uint32_t);
-        storage->ReduceTo(meshCandidate->draws.capacity() * (sizeof(DrawMeshPlacement) + topologyBytesPerDraw));
+        const auto shadowBytes = shadowHistory.instances.capacity() * sizeof(RayShadowInstance) +
+                                 shadowHistory.stamps.capacity() * sizeof(RayGeometryWord);
+        storage->ReduceTo(meshCandidate->draws.capacity() * (sizeof(DrawMeshPlacement) + topologyBytesPerDraw) +
+                          shadowBytes);
         meshCandidate->storage = std::move(storage);
         sharedMeshes = std::move(meshCandidate);
     }
     sharedMeshes->topology = std::move(instancePage.topology);
+    sharedMeshes->shadowHistory = std::move(shadowHistory);
     return std::move(sharedMeshes);
 }
 
@@ -509,7 +555,8 @@ RayWorldGeometryBinding RayWorldGeometry::Acquire(const std::shared_ptr<const Re
         }
     }
     if (publication->buffer)
-        return {publication->buffer, publication->meshes->buffer, false};
+        return {publication->buffer, publication->meshes->buffer, false, publication->visibilitySerial,
+                publication->visibilityLighting};
     if (publication->status == RayGeometryStatus::Pending)
         return {{}, {}, true};
     if (!m_unavailableBuffer) {
@@ -592,7 +639,9 @@ bool RayWorldGeometry::Advance()
             build->sharedMeshes = publication->meshes;
             if (build->sharedMeshes) {
                 build->step = RayWorldGeometryBuild::Step::CollectInstances;
-                build->workspace = AddStorage(build->workspace, build->sharedMeshes->draws.size() * uint64_t{512});
+                build->workspace = AddStorage(
+                    build->workspace, build->sharedMeshes->draws.size() * (512u + sizeof(RayShadowInstance)) +
+                                          build->sharedMeshes->shadowHistory.stamps.size() * sizeof(RayGeometryWord));
             }
             m_active = std::move(build);
         }
@@ -608,6 +657,7 @@ bool RayWorldGeometry::Advance()
             m_owner.RecordAcceptedResource(resource, bytes);
             if (done) {
                 publication->buffer = std::move(m_active->buffer);
+                publication->visibilitySerial = m_active->VisibilitySerial();
                 publication->meshes = m_active->PublishedMeshes();
                 publication->status = RayGeometryStatus::Ready;
                 m_active.reset();

@@ -25,6 +25,8 @@ struct RayWorldGeometryBinding
     std::shared_ptr<const rhi::BufferResource> buffer;
     std::shared_ptr<const rhi::BufferResource> meshes;
     bool pending = false;
+    uint32_t visibilitySerial = 0;
+    uint64_t visibilityLighting = 0;
 };
 
 /// Device-local presentation of immutable World geometry requested by a view.

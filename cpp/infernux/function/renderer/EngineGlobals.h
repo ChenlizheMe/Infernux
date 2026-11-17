@@ -55,11 +55,19 @@ struct EngineGlobalsUBO
     /// x = frame count, y = smoothDeltaTime, z = 1/deltaTime, w = previous view sample time
     alignas(16) glm::vec4 frameParams{0.0f};
 
-    /// x = dithering, y = stop NaNs, z = opaque display output, w = accepted view samples.
+    /// x = view flags, y = last presented ray geometry serial, w = accepted view samples.
     alignas(16) glm::uvec4 viewOptions{0u};
 };
 
 static_assert(sizeof(EngineGlobalsUBO) == 144, "EngineGlobalsUBO must contain nine 16-byte rows");
+
+[[nodiscard]] inline glm::uvec4 MakeViewOptions(bool dithering, bool stopNaNs, bool opaqueOutput,
+                                                uint32_t previousRayGeometry = 0, uint32_t sampleIndex = 0)
+{
+    const uint32_t flags = static_cast<uint32_t>(dithering) | (static_cast<uint32_t>(stopNaNs) << 1u) |
+                           (static_cast<uint32_t>(opaqueOutput) << 2u);
+    return {flags, previousRayGeometry, 0u, sampleIndex};
+}
 
 /// Frame time is authored once by the native host, then copied into each view.
 inline EngineGlobalsUBO BuildEngineFrameGlobals(float time, float delta, float smoothDelta, uint64_t frame)
