@@ -88,8 +88,8 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | B | S | R | C | Bit(States),
                                                  P | W | B | S | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | C | Bit(States) | Bit(Forces),
-                                                 P | W | B | R | C | Bit(Requests) | Bit(Results),
-                                                 P | W | B | R | C | Bit(Requests),
+                                                 P | W | R | C | Bit(Requests) | Bit(Results),
+                                                 P | W | R | C | Bit(Requests),
                                                  P | W | B | S | R | C | Bit(States),
                                                  P | W | B | S | R | Bit(Joints),
                                                  P | B | S | R | Bit(States) | Bit(Bounds),
@@ -340,8 +340,9 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             if (complete) {
                 uint64_t first = op.first + offset;
                 if (port == Roots) {
+                    first -= op.parameters.selected.y;
                     proof.writes.push_back({binding, first * 4u, uint64_t(count) * 4u});
-                    if (first == op.parameters.selected.y)
+                    if (first == 0u)
                         proof.writes.push_back({binding, uint64_t(statusIndex) * 4u, 4u});
                 } else if (port == Bounds) {
                     if (op.entry == PrescribedCapture)
@@ -353,13 +354,6 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
                         first -= op.parameters.selected.y;
                     proof.writes.push_back({binding, first * 16u, uint64_t(count) * 16u});
                 }
-            } else if (port == Roots) {
-                // The CC bank has B+1 scalars, but only the selected body
-                // roots and explicit status lane were initialized here.
-                if (buffer->GetByteSize() > 4u && op.parameters.selected.z)
-                    proof.reads.push_back(
-                        {binding, uint64_t(op.parameters.selected.y) * 4u, uint64_t(op.parameters.selected.z) * 4u});
-                proof.reads.push_back({binding, uint64_t(statusIndex) * 4u, 4u});
             } else
                 proof.reads.push_back({binding, 0u, buffer->GetByteSize()});
         }
@@ -493,7 +487,8 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     const auto &selected = inputs.GetParameters();
     const auto &contacts = inputs.GetContacts();
     auto p = Selection(storage, selected);
-    if (!topology.schedule || !topology.rootVotes || topology.bodySlots != storage.GetBodyCount() || !contacts)
+    if (!topology.schedule || !topology.rootVotes || topology.bodyFirst != p.selected.y ||
+        topology.bodyCount != p.selected.z || !contacts)
         throw std::logic_error("GPU sleep wake requires its accepted substep topology");
     if (selected.selectedCounts.z == 0 && contacts->patchCount == 0) {
         // Without edges, validated Dynamic roots are their own bodies. An
@@ -505,8 +500,8 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     e->Bind(storage);
     e->buffers[Schedule] = topology.schedule;
     e->buffers[Roots] = topology.rootVotes;
-    e->statusIndex = p.selected.w;
-    p.layout = {topology.bodyRootFirst, p.selected.w, 0u, 0u};
+    e->statusIndex = p.selected.z;
+    p.layout = {topology.bodyRootFirst, e->statusIndex, 0u, 0u};
     e->initializeStatus = false;
     e->buffers[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
     e->buffers[Patches] = contacts->patches;
@@ -533,13 +528,13 @@ JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, c
     e->Bind(storage);
     auto p = Selection(storage, inputs.GetParameters());
     auto plan = inputs.GetConstraints();
-    if (!plan || plan->bodySlots != storage.GetBodyCount())
+    if (!plan || plan->bodyFirst != p.selected.y || plan->bodyCount != p.selected.z)
         throw std::logic_error("GPU sleep history requires its completed numerical plan");
     e->buffers[Schedule] = plan->schedule;
     e->buffers[Roots] = plan->rootVotes;
-    e->statusIndex = p.selected.w;
+    e->statusIndex = p.selected.z;
     e->initializeStatus = false;
-    p.layout = {plan->bodyRootFirst, p.selected.w, 0u, 0u};
+    p.layout = {plan->bodyRootFirst, e->statusIndex, 0u, 0u};
     p.timing = settings.timing;
     p.operation.z = 1u;
     e->Add(Clear, p.selected.y, p.selected.z, p);

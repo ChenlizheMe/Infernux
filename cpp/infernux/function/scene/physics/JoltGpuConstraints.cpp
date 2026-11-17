@@ -28,7 +28,6 @@ enum Port : uint8_t
     Work,
     Bodies,
     Shapes,
-    Worlds,
     Joints,
     Patches,
     Contacts,
@@ -101,20 +100,20 @@ constexpr uint32_t Bit(Port port)
 {
     return 1u << port;
 }
-constexpr uint32_t P = Bit(Params), K = Bit(Work), S = Bit(Schedule), B = Bit(Bodies), W = Bit(Worlds),
-                   O = Bit(LabelsOld), N = Bit(LabelsNext);
+constexpr uint32_t P = Bit(Params), K = Bit(Work), S = Bit(Schedule), B = Bit(Bodies), O = Bit(LabelsOld),
+                   N = Bit(LabelsNext);
 constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | S,
-                                                      P | K | S | B | W | Bit(Joints) | Bit(Sleeps),
-                                                      P | K | S | B | W | Bit(Shapes) | Bit(Patches) | Bit(Contacts) |
+                                                      P | K | S | B | Bit(Joints) | Bit(Sleeps),
+                                                      P | K | S | B | Bit(Shapes) | Bit(Patches) | Bit(Contacts) |
                                                           Bit(Sleeps),
-                                                      P | K | B | W | O | N,
-                                                      P | K | S | B | W | O | N,
-                                                      P | K | S | B | W | O | N,
-                                                      P | K | S | B | W | O | N,
+                                                      P | K | B | O | N,
+                                                      P | K | S | B | O | N,
+                                                      P | K | S | B | O | N,
+                                                      P | K | S | B | O | N,
                                                       P | S,
-                                                      P | K | S | B | W | O,
-                                                      P | K | S | B | W | O,
+                                                      P | K | S | B | O,
+                                                      P | K | S | B | O,
                                                       P | S,
                                                       P | K | S,
                                                       P | K | S,
@@ -125,12 +124,12 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | K | S | O | N,
                                                       P | K | S | O | N,
                                                       P | K | S,
-                                                      P | K | S | B,
+                                                      P | K | S,
                                                       P | S,
                                                       P | K | S | O,
                                                       P | S,
                                                       P | K | S | Bit(TopologyArguments),
-                                                      P | K | S | B | W | N};
+                                                      P | K | S | B | N};
 
 struct PortLayout
 {
@@ -144,8 +143,8 @@ constexpr PortLayout Ports[] = {
     {"constraint_params",
      sizeof(ConstraintParams),
      {"counts", "limits", "layout", "references", "sources", "islands", "scan", "scanParent", "merge", "select",
-      "summary", "round", "selection", "selectedCounts"},
-     0x3fffu,
+      "summary", "round", "selection"},
+     0x1fffu,
      true},
     {"stage_work", sizeof(StageWork), {"range"}, 1u, true},
     {"body_models", sizeof(BodyModel), {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"}, 1u, true},
@@ -154,7 +153,6 @@ constexpr PortLayout Ports[] = {
      {"meta", "geometry", "localPositionCOM", "localRotation", "material", "surface", "source", "geometryReference"},
      (1u << 0) | (1u << 5) | (1u << 6) | (1u << 7),
      true},
-    {"worlds", sizeof(WorldRange), {"bodies", "leaves"}, 3u, true},
     {"joint_stream", sizeof(QueryRecordWord), {"value"}, 1u, true},
     {"contact_patches", sizeof(ContactPatch), {"leaves"}, 1u, true},
     {"contacts", sizeof(Contact), {"meta", "normalDepth", "localAnchorA", "localAnchorB", "impulse"}, 1u, true},
@@ -318,11 +316,13 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         if (!implementation->host.SharesServicesWith(storage.GetHost()) || (!completed && !completedTopology) ||
             !contactLease)
             throw std::invalid_argument("GPU constraints require the accepted tick host/contact workset");
-        const uint32_t b = storage.GetBodyCount(), j = storage.GetJointCount(), p = contactLease->patchCount,
-                       w = storage.GetWorldCount();
+        const uint32_t world = parameters.selection.x;
+        const auto &range = storage.GetModel().worlds.at(world);
+        const uint32_t b = range.bodies.y, j = range.leaves.w, p = contactLease->patchCount;
+        const uint32_t totalBodies = storage.GetBodyCount();
         // Empty scenes bypass the solver owner; a real body domain can contain
         // zero responsive constraints and still yields a validated empty schedule.
-        if (!b || !w || parameters.counts.x != b || parameters.counts.y != w ||
+        if (!b || parameters.counts.x != totalBodies || parameters.counts.y != storage.GetWorldCount() ||
             parameters.counts.z != storage.GetShapeCount())
             throw std::invalid_argument("GPU constraint parameters differ from accepted model domain");
         Checked(2ull * (uint64_t(j) + p));
@@ -332,7 +332,6 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         const uint32_t allRefs = Checked(uint64_t(j) + p);
         frozen[Bodies] = inputs.GetCaptured(Resource::BodyModels);
         frozen[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
-        frozen[Worlds] = contactLease->worlds;
         // Joint directory/activity flags stay fixed under this arena writer.
         // Warm/rotor retirement changes neither field read by the schedule.
         frozen[Joints] = storage.Get(Resource::Joints);
@@ -343,28 +342,26 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         frozen[Sleeps] = storage.Get(Resource::SleepStates);
         if (!frozen[Joints] || !implementation->host.SharesServicesWith(frozen[Joints]->GetHost()))
             throw std::invalid_argument("GPU constraints require their exclusive writer joint stream");
-        for (auto port : {Bodies, Shapes, Worlds, Patches, Contacts})
+        for (auto port : {Bodies, Shapes, Patches, Contacts})
             ValidateInput(frozen[port]);
-        RequireBytes(Bodies, uint64_t(b) * sizeof(BodyModel));
+        RequireBytes(Bodies, uint64_t(totalBodies) * sizeof(BodyModel));
         RequireBytes(Shapes, uint64_t(std::max(1u, storage.GetShapeCount())) * sizeof(ShapeModel));
-        RequireBytes(Worlds, uint64_t(w) * sizeof(WorldRange));
         RequireBytes(Joints, storage.GetJointLayout()->ByteSize());
         if (frozen[Contacts]->GetByteSize() < uint64_t(std::max(1u, Checked(4ull * p))) * sizeof(Contact) ||
             frozen[Contacts]->GetByteSize() % sizeof(Contact))
             throw std::invalid_argument("GPU constraints require initialized contact capacity covering logical 4C");
         if (!frozen[Sleeps] || !implementation->host.SharesServicesWith(frozen[Sleeps]->GetHost()))
             throw std::invalid_argument("GPU constraints require the selected sleep source");
-        RequireBytes(Sleeps, uint64_t(b) * sizeof(BodySleepRecord));
+        RequireBytes(Sleeps, uint64_t(totalBodies) * sizeof(BodySleepRecord));
         if (frozen[Patches]->GetByteSize() < WordBytes)
             throw std::invalid_argument("GPU constraints require a candidate-bank header");
-        config.counts = {b, j, p, w};
-        config.selection = parameters.selection;
-        config.selectedCounts = parameters.selectedCounts;
-        config.limits.y = storage.GetShapeCount();
+        config.counts = {b, j, p, storage.GetJointCount()};
+        config.selection = {world, range.bodies.x, range.leaves.x, range.leaves.z};
+        config.limits.y = range.leaves.y;
         config.limits.z = Checked(4ull * p);
         config.select.z = topologyOnly ? 0u : 1u;
         // The completed broadphase and accepted selected joint range prove an empty numerical domain.
-        isolatedTopology = topologyOnly && parameters.selectedCounts.z == 0u && p == 0u;
+        isolatedTopology = topologyOnly && j == 0u && p == 0u;
         if (isolatedTopology) {
             config.limits.w = ConstraintScheduleHeaderWords;
             config.limits.x = Checked(uint64_t(config.limits.w) + b);
@@ -811,7 +808,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     {
         auto value = std::make_shared<JoltGpuConstraintTopology>();
         value->bodyRootFirst = config.limits.w;
-        value->bodySlots = config.counts.x;
+        value->bodyFirst = config.selection.y;
+        value->bodyCount = config.counts.x;
         value->schedule = schedule;
         value->rootVotes = labels[oldBank ^ 1u];
         value->execution = shared_from_this();
@@ -845,7 +843,12 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->maxPatchItems = items.w;
         value->schedule = schedule->Freeze();
         value->bodyRootFirst = config.limits.w;
-        value->bodySlots = config.counts.x;
+        value->bodyFirst = config.selection.y;
+        value->bodyCount = config.counts.x;
+        value->jointRefFirst = config.references.x;
+        value->jointRefCount = config.counts.y;
+        value->patchRefFirst = config.references.y;
+        value->patchRefCount = config.counts.z;
         value->rootVotes = labels[oldBank ^ 1u];
         frozen[Joints].reset();
         frozen[Contacts].reset();
@@ -976,8 +979,10 @@ JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const Jo
     if (!topology || !topology->execution || !completed)
         throw std::invalid_argument("GPU numerical plan requires its one accepted topology continuation");
     auto execution = std::static_pointer_cast<Impl::Execution>(topology->execution);
+    const auto &parameters = inputs.GetParameters();
     if (execution->implementation != m_impl || execution->phase != Impl::Execution::Phase::TopologyReady ||
-        execution->contactLease != inputs.GetContacts() || storage.GetBodyCount() != topology->bodySlots)
+        execution->contactLease != inputs.GetContacts() || topology->bodyFirst != parameters.selection.y ||
+        topology->bodyCount != parameters.selectedCounts.x)
         throw std::logic_error("GPU numerical plan crosses its source/topology generation");
     if (execution->isolatedTopology) {
         // The accepted broadphase and joint range prove that no numerical rows

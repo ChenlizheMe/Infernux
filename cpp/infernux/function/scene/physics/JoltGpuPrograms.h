@@ -107,7 +107,7 @@ struct JoltGpuConstraintWorkset
     uint32_t islandCount = 0, jointIslandCount = 0, contactIslandCount = 0;
     uint32_t activeJoints = 0, activePatches = 0, maxJointItems = 0, maxPatchItems = 0;
     std::shared_ptr<rhi::ComputeBuffer> schedule;
-    uint32_t bodyRootFirst = 0, bodySlots = 0;
+    uint32_t bodyRootFirst = 0, bodyFirst = 0, bodyCount = 0;
     uint32_t jointRefFirst = 0, jointRefCount = 0, patchRefFirst = 0, patchRefCount = 0;
     std::shared_ptr<rhi::ComputeBuffer> rootVotes;
 };
@@ -117,7 +117,7 @@ struct JoltGpuConstraintWorkset
 // The opaque execution is the SAME CC producer resumed after setup.
 struct JoltGpuConstraintTopology
 {
-    uint32_t bodyRootFirst = 0, bodySlots = 0;
+    uint32_t bodyRootFirst = 0, bodyFirst = 0, bodyCount = 0;
     std::shared_ptr<rhi::ComputeBuffer> schedule, rootVotes;
     std::shared_ptr<void> execution;
 };
