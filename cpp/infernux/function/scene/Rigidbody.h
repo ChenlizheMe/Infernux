@@ -382,7 +382,6 @@ class Rigidbody : public PhysicsBody
     void ApplyConstraints();
 
     /// Apply motion quality to all sibling Collider bodies.
-    void ApplyMotionQuality();
 
     /// Apply velocity limits to all sibling Collider bodies.
     void ApplyVelocityLimits();

@@ -306,16 +306,12 @@ struct ModelCounts
 
 bool Sweeps(const BodyModel &body)
 {
-    return body.meta.z == MotionDynamic && body.meta.y && body.invInertiaDiagonal.w > 0.0f;
+    return body.meta.z == MotionDynamic && body.meta.y && body.invInertiaDiagonal.w != 0.0f;
 }
 
-std::vector<uint32_t> CountSweeps(const JoltGpuModel &model)
+bool SweepsDynamicPairs(const BodyModel &body)
 {
-    std::vector<uint32_t> counts(model.worlds.size());
-    for (const auto &body : model.bodies)
-        if (Sweeps(body))
-            ++counts[body.meta.w];
-    return counts;
+    return Sweeps(body) && body.invInertiaDiagonal.w < 0.0f;
 }
 
 template <class Change, class Record>
@@ -364,8 +360,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                 std::floor(record.mass.z) != record.mass.z ||
                 (nonstatic ? (!finiteMass && !prescribed) : record.mass.x != 0) || !Finite4(record.damping) ||
                 record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 || record.damping.w < 0 ||
-                !std::isfinite(record.invInertiaDiagonal.w) || record.invInertiaDiagonal.w < 0.0f ||
-                (nonstatic && !Normalized(record.inertiaRotation)))
+                !std::isfinite(record.invInertiaDiagonal.w) || (nonstatic && !Normalized(record.inertiaRotation)))
                 throw std::invalid_argument("Jolt GPU body has invalid mass, inertia or damping");
             for (uint32_t leaf = record.meta.x; leaf < bodyLeafEnd + record.meta.y; ++leaf) {
                 const auto &shape = ModelRecord(model.shapes, shapeChanges, leaf);
@@ -760,6 +755,17 @@ void JoltGpuStepParameters::SetGravityAndDeltaTime(Float4 gravityDt)
     if (!Finite4(gravityDt) || gravityDt.w <= 0.0f)
         throw std::invalid_argument("Jolt GPU gravity and substep duration must be finite with positive duration");
     m_parameters.gravityDt = gravityDt;
+}
+
+std::vector<JoltGpuStorage::SweepCounts> JoltGpuStorage::CountSweeps(const JoltGpuModel &model)
+{
+    std::vector<SweepCounts> counts(model.worlds.size());
+    for (const auto &body : model.bodies) {
+        auto &count = counts[body.meta.w];
+        count.enabled += uint32_t(Sweeps(body));
+        count.dynamicPairs += uint32_t(SweepsDynamicPairs(body));
+    }
+    return counts;
 }
 
 JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
@@ -1195,7 +1201,7 @@ JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<
       m_replacementBuffers(std::move(replacementBuffers)), m_replacementCounts(replacementCounts)
 {
     m_jointLayout = std::make_shared<JoltGpuJointLayout>(m_replacement->joints);
-    m_replacementSweepCounts = CountSweeps(*m_replacement);
+    m_replacementSweepCounts = JoltGpuStorage::CountSweeps(*m_replacement);
 }
 
 void JoltGpuModelUpdate::Commit() noexcept
@@ -1219,8 +1225,12 @@ void JoltGpuModelUpdate::Commit() noexcept
     for (const auto &change : m_bodyChanges) {
         m_storage->ClearContactHistory(change.model.meta.w);
         auto &old = m_storage->m_model.bodies[change.index];
-        m_storage->m_sweepCounts[change.model.meta.w] += uint32_t(Sweeps(change.model));
-        m_storage->m_sweepCounts[old.meta.w] -= uint32_t(Sweeps(old));
+        auto &previous = m_storage->m_sweepCounts[old.meta.w];
+        previous.enabled -= uint32_t(Sweeps(old));
+        previous.dynamicPairs -= uint32_t(SweepsDynamicPairs(old));
+        auto &next = m_storage->m_sweepCounts[change.model.meta.w];
+        next.enabled += uint32_t(Sweeps(change.model));
+        next.dynamicPairs += uint32_t(SweepsDynamicPairs(change.model));
         old = change.model;
     }
     for (const auto &change : m_shapeChanges) {

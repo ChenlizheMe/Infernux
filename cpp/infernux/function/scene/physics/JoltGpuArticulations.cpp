@@ -489,6 +489,7 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
     e->buffers[Schedule] = plan->schedule;
     const uint32_t world = inputs.GetParameters().selection.x;
     const auto &h = state->header;
+    const bool sweepsDynamicPairs = storage.HasDynamicSweeps(world);
     // Cross-device contact rows share the same maximal velocity representation as ordinary external contacts.
     std::vector<uint32_t> contactedTrees;
     for (const uint32_t slot : inputs.GetExternalContactBodies()) {
@@ -511,7 +512,9 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
         e->Add(Begin, start, end - start, world, {}, ArtRefusedContact);
         first = end;
     }
-    e->Add(Begin, first, h.maps.x - first, world);
+    // A dynamic sweep can hit a link after classification. Use the representation
+    // that accepts the swept impulse and integrates the affected rigid links.
+    e->Add(Begin, first, h.maps.x - first, world, {}, sweepsDynamicPairs ? ArtRefusedContact : 0u);
     e->Add(Bodies, h.selected.x, h.selected.y, world);
     e->Add(RuntimeJoints, h.selected.z, h.selected.w, world);
     const UInt4 refs{plan->jointRefFirst, plan->jointRefCount, plan->patchRefFirst, plan->patchRefCount};

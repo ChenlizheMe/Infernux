@@ -3354,13 +3354,6 @@ void PhysicsWorld::SetBodyAllowedDOFs(uint32_t id, int allowed, float mass)
             a.body.mass.z = float(((~allowed) >> 3) & 7);
         });
 }
-void PhysicsWorld::SetBodyMotionQuality(uint32_t id, int quality)
-{
-    (void)ActorForBody(id);
-    if (m_bodyActors.at(id).AuthorBackend() == Backend::Gpu && quality == 2)
-        Unsupported("continuous collision detection between dynamic bodies");
-    RefreshBodyLayers(id);
-}
 void PhysicsWorld::ValidateBodyMassProperties(const Rigidbody &body, float mass,
                                               const RigidbodyMassProperties *properties) const
 {

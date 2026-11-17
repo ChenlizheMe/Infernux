@@ -77,6 +77,7 @@ std::vector<ShaderSourceModule> LoadProgramLibraries(const std::filesystem::path
 {
     const auto load = [&](const char *name, const char *path) { return LoadModule(jolt, name, path); };
     return {load("jph_gpu_rigid_math", "Jolt/GPU/Shaders/rigid_math.slang"),
+            load("jph_gpu_component_union", "Jolt/GPU/Shaders/component_union.slang"),
             load("jph_gpu_key_sort", "Jolt/GPU/Shaders/key_sort.slang"),
             load("jph_gpu_joint_fields", "Jolt/GPU/JointPayloadFields.inl"),
             load("jph_gpu_physics_types", "Jolt/GPU/PhysicsTypes.h"),

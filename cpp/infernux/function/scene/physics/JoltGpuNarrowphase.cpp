@@ -41,14 +41,20 @@ enum Entry : uint8_t
     Progress,
     AdvanceSweeps,
     InitializeSweep,
+    SweepProgress,
+    FlattenRoots,
+    ReduceTimes,
+    StoreCutoffs,
     SelectPair,
     ApplyImpact,
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> EntryNames{
     "narrowphase_init_jobs", "narrowphase_advance_jobs", "narrowphase_job_progress", "sweep_advance_jobs",
-    "sweep_initialize_jobs", "sweep_select_pair",        "sweep_apply_impact"};
-constexpr std::array<uint32_t, EntryCount> EntryPorts{0x83u, 0xfdu, 0x80u, 0x6f5u, 0x483u, 0x423u, 0x737u};
+    "sweep_initialize_jobs", "sweep_job_progress",       "sweep_flatten_parents",    "sweep_reduce_times",
+    "sweep_store_cutoffs",   "sweep_select_pair",        "sweep_apply_impact"};
+constexpr std::array<uint32_t, EntryCount> EntryPorts{0x83u,  0xfdu,  0x80u,  0x7f5u, 0x483u, 0x481u,
+                                                      0x402u, 0x403u, 0x603u, 0x423u, 0x737u};
 constexpr uint32_t HeaderWords = 4u, MaxSlots = 32u, AdvancesPerPacket = 8u;
 constexpr uint32_t ResolveDispatchesPerPacket = 4u;
 constexpr uint64_t WordBytes = sizeof(UInt4);
@@ -208,7 +214,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             bodyCount = inputs.GetParameters().selectedCounts.x;
         }
         const auto &caps = this->implementation->host.device.GetCapabilities();
-        if (swept && uint64_t(bodyCount) * 2u > uint64_t(caps.limits.maxComputeWorkgroupCount[0]) * 64u)
+        if (swept && bodyCount > uint64_t(caps.limits.maxComputeWorkgroupCount[0]) * 64u)
             throw std::length_error("GPU sweep choices exceed device dispatch limits");
         const uint64_t words = std::min(caps.portable.maxStorageBufferBinding / WordBytes,
                                         uint64_t(caps.limits.maxComputeWorkgroupCount[0]) * 64u);
@@ -260,7 +266,8 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = program.kernel;
         const bool jobInit = entry == Initialize || entry == InitializeSweep;
-        dispatch.groupCountX = Groups(jobInit ? std::max(scratchWords, 2u * bodyCount) : count);
+        const uint32_t initWords = std::max(scratchWords, bodyCount);
+        dispatch.groupCountX = Groups(jobInit ? initWords : count);
         rhi::ComputeDispatchProof proof;
         for (const auto port : program.ports) {
             const auto &buffer = port == Scratch ? scratch
@@ -270,7 +277,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             dispatch.buffers.push_back(buffer);
             const bool initialize = jobInit && (port == Scratch || port == SweepChoice);
             const bool mutablePort = port == Scratch || port == Patches || port == Contacts || port == SweepChoice ||
-                                     (entry == ApplyImpact && port == SweepBodies);
+                                     ((entry == ApplyImpact || entry == StoreCutoffs) && port == SweepBodies);
             dispatch.bufferAccesses.push_back(initialize    ? rhi::ComputeBufferAccess::Write
                                               : mutablePort ? rhi::ComputeBufferAccess::ReadWrite
                                                             : rhi::ComputeBufferAccess::Read);
@@ -295,15 +302,16 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
 
     JoltGpuControlWork Resolve(uint32_t maximum = ResolveDispatchesPerPacket)
     {
-        const uint32_t length = contactLease->patchCount;
         auto entry = resolveEntry;
         auto first = resolveFirst;
+        auto parentPasses = resolveParentPasses;
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
         for (uint32_t slot = 0; slot < maximum && entry != EntryCount; ++slot) {
             auto &uniform = slot == 0u ? workUniform : resolveUniforms[slot - 1u];
             if (!Allocate(uniform, sizeof(StageWork)))
                 break;
+            const uint32_t length = entry < SelectPair ? bodyCount : contactLease->patchCount;
             const uint32_t count = std::min(length - first, WorkItemLimit(Domain::Bodies));
             const StageWork range{{first, count, 0u, 0u}};
             std::vector<uint8_t> bytes(sizeof(range));
@@ -313,19 +321,21 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             first += count;
             if (first == length) {
                 first = 0u;
-                entry = entry == SelectPair ? ApplyImpact : EntryCount;
+                if (entry != FlattenRoots || --parentPasses == 0u)
+                    entry = static_cast<Entry>(entry + 1u);
             }
         }
         const bool canSplit = dispatches.size() > 1;
         auto packet = rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches));
         auto work = Retain({packet,
-                            [self = shared_from_this(), first, entry]() -> JoltGpuControlWork {
+                            [self = shared_from_this(), first, entry, parentPasses]() -> JoltGpuControlWork {
                                 if (entry == EntryCount) {
                                     self->Finish();
                                     return {};
                                 }
                                 self->resolveFirst = first;
                                 self->resolveEntry = entry;
+                                self->resolveParentPasses = parentPasses;
                                 return self->Resolve();
                             },
                             JoltGpuControlWork::ResumeAfter::Acceptance});
@@ -345,7 +355,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             return {};
         }
         if (!Allocate(workUniform, sizeof(StageWork)) ||
-            (swept && !Allocate(frozen[SweepChoice], uint64_t(bodyCount) * 2u * sizeof(uint32_t))) ||
+            (swept && !Allocate(frozen[SweepChoice], (uint64_t(bodyCount) * 3u + 1u) * sizeof(uint32_t))) ||
             !AllocateScratch())
             return Retain({nullptr, [self = shared_from_this()] { return self->Next(); }});
         if (phase == Phase::InitializeJobs) {
@@ -374,7 +384,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
         std::vector<rhi::ComputeDispatchDesc> dispatches;
         for (uint32_t i = 0; i < count; ++i)
             dispatches.push_back(Dispatch(swept ? AdvanceSweeps : Advance));
-        dispatches.push_back(Dispatch(Progress));
+        dispatches.push_back(Dispatch(swept ? SweepProgress : Progress));
         auto packet =
             rhi::PrepareComputeBatch(implementation->host, {}, std::move(dispatches), {{scratch, 0u, WordBytes}});
         auto work = Retain(
@@ -396,6 +406,11 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                      if (self->swept) {
                          self->scratch.reset();
                          self->phase = Phase::ResolveImpacts;
+                         if (result.w) {
+                             self->resolveEntry = FlattenRoots;
+                             for (uint32_t links = self->bodyCount; links > 1u; links = 1u + (links - 1u) / 32u)
+                                 ++self->resolveParentPasses;
+                         }
                          return self->Resolve();
                      }
                      self->Finish();
@@ -423,7 +438,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
     const bool swept;
     Phase phase = Phase::InitializeJobs;
     Entry resolveEntry = SelectPair;
-    uint32_t slots = 0u, scratchWords = 0u, bodyCount = 0u, resolveFirst = 0u;
+    uint32_t slots = 0u, scratchWords = 0u, bodyCount = 0u, resolveFirst = 0u, resolveParentPasses = 0u;
 };
 
 JoltGpuNarrowphase::JoltGpuNarrowphase(rhi::ComputeHost &host, const ShaderTargetCode &target)

@@ -436,10 +436,6 @@ class PhysicsWorld
     /// Pure candidate validation before a component publishes mass properties.
     void ValidateBodyMassProperties(const Rigidbody &body, float mass, const RigidbodyMassProperties *properties) const;
 
-    /// Set collision mode: 0 = Discrete, 1 = Continuous static sweep,
-    /// 2 = ContinuousDynamic with dynamic-pair TOI subdivision.
-    void SetBodyMotionQuality(uint32_t bodyId, int quality);
-
     /// Set max angular velocity (rad/s).
     void SetBodyMaxAngularVelocity(uint32_t bodyId, float maxVel);
 

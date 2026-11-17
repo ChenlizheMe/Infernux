@@ -237,7 +237,11 @@ class JoltGpuStorage
     }
     [[nodiscard]] bool HasSweepBodies(uint32_t world) const noexcept
     {
-        return m_sweepCounts[world] != 0u;
+        return m_sweepCounts[world].enabled != 0u;
+    }
+    [[nodiscard]] bool HasDynamicSweeps(uint32_t world) const noexcept
+    {
+        return m_sweepCounts[world].dynamicPairs != 0u;
     }
     [[nodiscard]] uint32_t GetMaxLeavesPerWorld() const noexcept
     {
@@ -282,7 +286,12 @@ class JoltGpuStorage
     std::shared_ptr<const JoltGpuJointLayout> m_jointLayout;
     bool m_modelUpdatePending = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> m_buffers;
-    std::vector<uint32_t> m_sweepCounts;
+    struct SweepCounts
+    {
+        uint32_t enabled = 0u, dynamicPairs = 0u;
+    };
+    static std::vector<SweepCounts> CountSweeps(const JoltGpuModel &model);
+    std::vector<SweepCounts> m_sweepCounts;
     std::map<uint32_t, JoltGpuContactHistory> m_contactHistory;
     uint32_t m_bodyCount = 0, m_worldCount = 0, m_shapeCount = 0, m_maxBodiesPerWorld = 0, m_maxLeavesPerWorld = 0;
 };
@@ -324,7 +333,7 @@ class JoltGpuModelUpdate final
     std::vector<JoltGpuShapeModelUpdate> m_shapeChanges;
     std::vector<JoltGpuJointModelUpdate> m_jointChanges;
     std::optional<JoltGpuModel> m_replacement;
-    std::vector<uint32_t> m_replacementSweepCounts;
+    std::vector<JoltGpuStorage::SweepCounts> m_replacementSweepCounts;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> m_replacementBuffers;
     // Shapes, maximum bodies/world, maximum leaves/world.
     std::array<uint32_t, 3> m_replacementCounts{};

@@ -44,24 +44,6 @@ static bool RotationChanged(const glm::quat &current, const glm::quat &previous)
     return glm::dot(delta, delta) > componentToleranceSquared;
 }
 
-static int MapCollisionDetectionModeToMotionQuality(int mode, bool isKinematic)
-{
-    switch (mode) {
-    case static_cast<int>(CollisionDetectionMode::ContinuousDynamic):
-        // ContinuousDynamic keeps Jolt's static sweep and additionally opts
-        // into PhysicsWorld's dynamic-pair TOI subdivision.
-        return isKinematic ? 0 : 2;
-    case static_cast<int>(CollisionDetectionMode::Continuous):
-        // Jolt's LinearCast path only runs for dynamic bodies. Kinematic CCD
-        // would require a separate speculative-contact implementation.
-        return isKinematic ? 0 : 1;
-    case static_cast<int>(CollisionDetectionMode::Discrete):
-        return 0;
-    default:
-        throw std::invalid_argument("Unsupported collision detection mode");
-    }
-}
-
 static bool IsFinite(const glm::vec3 &value)
 {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
@@ -468,7 +450,7 @@ void Rigidbody::SetCollisionDetectionMode(int mode)
     if (d.collisionDetectionMode == mode)
         return;
     d.collisionDetectionMode = mode;
-    ApplyMotionQuality();
+    ForEachBody([](PhysicsWorld &world, uint32_t id) { world.RefreshBodyLayers(id); });
 }
 
 void Rigidbody::SetInterpolation(int mode)
@@ -1313,13 +1295,6 @@ void Rigidbody::ApplyConstraints()
     // Unity constraints bits start at bit 1 (FreezePositionX=2), Jolt at bit 0.
     int joltAllowed = 0x3F & ~(d.constraints >> 1);
     ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyAllowedDOFs(id, joltAllowed, d.mass); });
-}
-
-void Rigidbody::ApplyMotionQuality()
-{
-    const auto &d = Data();
-    int joltQuality = MapCollisionDetectionModeToMotionQuality(d.collisionDetectionMode, d.isKinematic);
-    ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyMotionQuality(id, joltQuality); });
 }
 
 void Rigidbody::ApplyVelocityLimits()

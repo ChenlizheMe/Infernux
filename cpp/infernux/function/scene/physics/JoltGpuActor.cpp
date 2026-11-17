@@ -101,14 +101,8 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
         return std::nullopt;
 
     const auto *rigidbody = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
-    if (rigidbody) {
-        if ((rigidbody->GetConstraints() & ~126) != 0)
-            throw std::invalid_argument("Rigidbody constraints contain unknown bits");
-        if (!rigidbody->IsKinematic() &&
-            rigidbody->GetCollisionDetectionMode() == static_cast<int>(CollisionDetectionMode::ContinuousDynamic))
-            throw std::invalid_argument(
-                "Jolt GPU actors currently support Discrete and Continuous collision detection");
-    }
+    if (rigidbody && (rigidbody->GetConstraints() & ~126) != 0)
+        throw std::invalid_argument("Rigidbody constraints contain unknown bits");
     const auto *transform = actor.owner->GetTransform();
     const auto motion = rigidbody ? (rigidbody->IsKinematic() ? JPH::GPU::MotionKinematic : JPH::GPU::MotionDynamic)
                                   : JPH::GPU::MotionStatic;
@@ -129,9 +123,12 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
         prepared.body.mass.w = rigidbody->GetUseGravity() ? 1.0f : 0.0f;
         prepared.body.damping = {rigidbody->GetDrag(), rigidbody->GetAngularDrag(), rigidbody->GetMaxLinearVelocity(),
                                  rigidbody->GetMaxAngularVelocity()};
-        if (motion == JPH::GPU::MotionDynamic &&
-            rigidbody->GetCollisionDetectionMode() == static_cast<int>(CollisionDetectionMode::Continuous))
-            prepared.body.invInertiaDiagonal.w = shape->GetInnerRadius();
+        const auto detection = static_cast<CollisionDetectionMode>(rigidbody->GetCollisionDetectionMode());
+        if (motion == JPH::GPU::MotionDynamic && detection != CollisionDetectionMode::Discrete) {
+            const float radius = shape->GetInnerRadius();
+            prepared.body.invInertiaDiagonal.w =
+                detection == CollisionDetectionMode::ContinuousDynamic ? -radius : radius;
+        }
 
         if (const auto &linear = prepared.publication.linearVelocity)
             prepared.initialState.linearVelocity = {linear->x, linear->y, linear->z, 0.0f};
