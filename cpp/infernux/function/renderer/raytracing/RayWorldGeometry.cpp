@@ -194,7 +194,7 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         workspace = AddStorage(workspace, 512);
         if (inserted) {
             // Covers the compact-index map, BLAS, and its contribution to the final page.
-            workspace = AddStorage(workspace, uint64_t{draw.indexCount} * 256);
+            workspace = AddStorage(workspace, uint64_t{draw.indexCount} * 352);
             meshes.emplace_back();
             auto &work = hasStreams ? resident : recovery[artifact - 1].slices;
             work.push_back(slice);

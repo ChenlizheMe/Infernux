@@ -91,11 +91,19 @@ int main()
     source[4].pos = {1.0f, 0.0f, 0.0f};
     source[5].pos = {0.0f, 1.0f, 0.0f};
     source[6].pos = {1.0f, 1.0f, 0.0f};
+    source[4].texCoord = {0.125f, -0.5f};
+    source[4].texCoord1 = {3.0f, 0.25f};
+    source[4].normal = {0.0f, 0.0f, 1.0f};
+    source[4].tangent = {1.0f, 0.0f, 0.0f, -1.0f};
+    source[4].color = {2.0f, 0.5f, 4.0f};
     const auto mesh = BuildRayMesh(source, {0, 1, 2, 3, 4, 5, 4, 6, 5}, 3, 6, 0);
     const auto basedMesh = BuildRayMesh(source, {0, 1, 2, 1, 3, 2}, 0, 6, 3);
     assert(mesh.positions.size() == 4 && mesh.triangles.size() == 2);
     assert(std::memcmp(mesh.triangles.data(), basedMesh.triangles.data(), 2 * sizeof(RayTriangle)) == 0);
     assert(std::memcmp(mesh.positions.data(), basedMesh.positions.data(), 4 * sizeof(RayPosition)) == 0);
+    assert(std::memcmp(mesh.attributes.data(), basedMesh.attributes.data(), 4 * sizeof(RayVertexAttributes)) == 0);
+    assert((mesh.attributes[1].uv == std::array{0.125f, -0.5f, 3.0f, 0.25f}));
+    assert(mesh.attributes[1].tangent[3] == -1.0f && mesh.attributes[1].color[2] == 4.0f);
 
     glm::mat4 mirrored{1.0f};
     mirrored[0].x = -2.0f;
@@ -108,10 +116,13 @@ int main()
     assert(page.instances[1].worldToObjectX[0] == -0.5f && page.instances[1].worldToObjectX[3] == 2.0f);
     assert(page.instances[1].worldToObjectY[1] == 0.25f && page.instances[1].worldToObjectY[3] == -2.0f);
     assert(page.instances[1].surfaceId == 2u && page.instances[1].layerMask == 4u);
+    assert(page.instances[0].orientation == 1.0f && page.instances[1].orientation == -1.0f);
     assert(BuildRayGeometryPage({}).root == kInvalidRayIndex);
 
     const auto packed = EncodeRayGeometryPage(page, RayGeometryStatus::Ready);
-    assert(packed[0][0] == page.root && packed[1][0] + 8 == packed.size());
+    assert(packed[0][0] == page.root && packed[1][0] + 8 == packed[1][2]);
+    assert(page.attributes.size() == page.positions.size() &&
+           packed[1][2] + 4 * page.attributes.size() == packed.size());
     assert(packed[packed[1][0] + 3][1] == 1u);
     assert(packed[packed[1][0] + 7][1] == 2u);
 

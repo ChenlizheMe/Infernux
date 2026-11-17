@@ -21,8 +21,12 @@ class WorldRayPage(shader.fullscreen):
 
     def main(self, uv: shader.vec2) -> shader.vec4:
         info = self.page[1]
-        if info.y != 1 or len(self.page) != info.x + 8:
+        geometry = self.page[0]
+        points = geometry.w - geometry.z
+        if info.y != 1 or info.z != info.x + 8 or len(self.page) != info.z + 4 * points:
             return shader.vec4(0.0, 0.0, 1.0, 1.0)
+        if self.page[len(self.page) - 1].w != 1065353216:
+            return shader.vec4(1.0, 0.0, 0.0, 1.0)
         first = self.page[info.x + 3]
         second = self.page[info.x + 7]
         if first.x == second.x and first.y > 0 and second.y > 0 and first.y != second.y:

@@ -57,7 +57,8 @@ RayInstance EncodeInstance(const RayMeshInstance &instance, uint32_t root)
     const glm::dmat4 model(instance.objectToWorld);
     if (model[0].w != 0.0 || model[1].w != 0.0 || model[2].w != 0.0 || model[3].w != 1.0)
         throw std::invalid_argument("Ray geometry instance requires an affine transform");
-    const glm::dmat3 inverseLinear = glm::inverse(glm::dmat3(model));
+    const glm::dmat3 linear(model);
+    const glm::dmat3 inverseLinear = glm::inverse(linear);
     const glm::dvec3 inverseTranslation = -(inverseLinear * glm::dvec3(model[3]));
     const auto row = [&](unsigned i) {
         std::array<float, 4> components{
@@ -67,7 +68,8 @@ RayInstance EncodeInstance(const RayMeshInstance &instance, uint32_t root)
             throw std::invalid_argument("Ray geometry instance requires a finite inverse transform");
         return components;
     };
-    return {row(0), row(1), row(2), root, instance.surfaceId, instance.layerMask};
+    const auto orientation = glm::determinant(linear) < 0.0 ? -1.0f : 1.0f;
+    return {row(0), row(1), row(2), root, instance.surfaceId, instance.layerMask, orientation};
 }
 
 BvhNode RelocateNode(BvhNode node, uint32_t root, uint32_t leafOffset)
@@ -102,7 +104,9 @@ struct RayMeshBuild::State
             throw std::invalid_argument("Ray mesh requires a complete indexed triangle slice");
         bounds.reserve(triangleCount);
         triangles.reserve(triangleCount);
-        mesh.positions.reserve(std::min<size_t>(vertices.size(), indexCount));
+        const auto vertexCapacity = std::min<size_t>(vertices.size(), indexCount);
+        mesh.positions.reserve(vertexCapacity);
+        mesh.attributes.reserve(vertexCapacity);
     }
 
     void Gather(uint32_t primitive)
@@ -114,7 +118,8 @@ struct RayMeshBuild::State
             const int64_t vertex = static_cast<int64_t>(indices[first + corner]) + vertexStart;
             if (vertex < 0 || static_cast<uint64_t>(vertex) >= vertices.size() || vertex > UINT32_MAX)
                 throw std::invalid_argument("Ray mesh index falls outside its vertex stream");
-            const glm::vec3 &position = vertices[static_cast<size_t>(vertex)].pos;
+            const auto &sourceVertex = vertices[static_cast<size_t>(vertex)];
+            const auto &position = sourceVertex.pos;
             const auto source = static_cast<uint32_t>(vertex);
             auto [page, inserted] = positionIndices.try_emplace(source / RemapPageSize);
             if (inserted)
@@ -125,6 +130,15 @@ struct RayMeshBuild::State
                     throw std::invalid_argument("Ray mesh requires finite vertex positions");
                 mapped = static_cast<uint32_t>(mesh.positions.size());
                 mesh.positions.push_back({position.x, position.y, position.z});
+                const auto &uv = sourceVertex.texCoord;
+                const auto &uv1 = sourceVertex.texCoord1;
+                const auto &normal = sourceVertex.normal;
+                const auto &tangent = sourceVertex.tangent;
+                const auto &color = sourceVertex.color;
+                mesh.attributes.push_back({{uv.x, uv.y, uv1.x, uv1.y},
+                                           {normal.x, normal.y, normal.z, 0.0f},
+                                           {tangent.x, tangent.y, tangent.z, tangent.w},
+                                           {color.r, color.g, color.b, 1.0f}});
             }
             corners[corner] = mapped;
             triangleBounds.Include({position, position});
@@ -256,8 +270,11 @@ struct RayGeometryPageBuild::State
                     page.nodes.push_back(RelocateNode(mesh.nodes[i], range.node, range.triangle));
                 });
             if (cursor < triangles)
-                VisitWindow(cursor, triangles, budget,
-                            [&](size_t i) { page.positions.push_back(mesh.positions[i - positions]); });
+                VisitWindow(cursor, triangles, budget, [&](size_t i) {
+                    const auto vertex = i - positions;
+                    page.positions.push_back(mesh.positions[vertex]);
+                    page.attributes.push_back(mesh.attributes[vertex]);
+                });
             if (cursor < end)
                 VisitWindow(cursor, end, budget, [&](size_t i) {
                     const auto &tri = mesh.triangles[i - triangles];
@@ -325,6 +342,7 @@ bool RayGeometryPageBuild::Advance(uint32_t budget)
         state.page.root = PageOffset(state.nodeCount, state.hierarchy.nodes.size());
         state.page.nodes.reserve(state.nodeCount + state.hierarchy.nodes.size());
         state.page.positions.reserve(state.positionCount);
+        state.page.attributes.reserve(state.positionCount);
         state.page.triangles.reserve(state.triangleCount);
         state.page.instances.reserve(state.packed.size());
         state.cursor = 0;
@@ -385,24 +403,28 @@ RayGeometryPageLayout::RayGeometryPageLayout(const RayGeometryPage &page, RayGeo
     const uint64_t positions = nodes + uint64_t{page.nodes.size()} * (sizeof(BvhNode) / sizeof(RayGeometryWord));
     const uint64_t triangles = positions + page.positions.size();
     const uint64_t instances = triangles + page.triangles.size();
-    const uint64_t size = instances + uint64_t{page.instances.size()} * (sizeof(RayInstance) / sizeof(RayGeometryWord));
+    const uint64_t attributes =
+        instances + uint64_t{page.instances.size()} * (sizeof(RayInstance) / sizeof(RayGeometryWord));
+    const uint64_t size =
+        attributes + uint64_t{page.attributes.size()} * (sizeof(RayVertexAttributes) / sizeof(RayGeometryWord));
     if (size > kInvalidRayIndex)
         throw std::length_error("Ray geometry exceeds the uvec4 address range");
     header[0] = {page.root, static_cast<uint32_t>(nodes), static_cast<uint32_t>(positions),
                  static_cast<uint32_t>(triangles)};
-    header[1] = {static_cast<uint32_t>(instances), static_cast<uint32_t>(status), 0u, 0u};
+    header[1] = {static_cast<uint32_t>(instances), static_cast<uint32_t>(status), static_cast<uint32_t>(attributes),
+                 0u};
     bytes = size * sizeof(RayGeometryWord);
 }
 
-std::array<RayGeometryBytes, 5> RayGeometryPageLayout::Sections() const
+std::array<RayGeometryBytes, 6> RayGeometryPageLayout::Sections() const
 {
     const auto section = [](const auto &values) -> RayGeometryBytes {
         using Value = typename std::decay_t<decltype(values)>::value_type;
         static_assert(sizeof(Value) % sizeof(RayGeometryWord) == 0);
         return {values.data(), values.size() * sizeof(Value)};
     };
-    return {section(header), section(m_page.nodes), section(m_page.positions), section(m_page.triangles),
-            section(m_page.instances)};
+    return {section(header),           section(m_page.nodes),     section(m_page.positions),
+            section(m_page.triangles), section(m_page.instances), section(m_page.attributes)};
 }
 
 std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, RayGeometryStatus status)

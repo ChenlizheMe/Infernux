@@ -26,6 +26,15 @@ struct alignas(16) RayTriangle
     uint32_t primitive;
 };
 
+/// Kept apart from positions so the traversal only reads shading data on a hit.
+struct alignas(16) RayVertexAttributes
+{
+    std::array<float, 4> uv;
+    std::array<float, 4> normal;
+    std::array<float, 4> tangent;
+    std::array<float, 4> color;
+};
+
 struct alignas(16) RayInstance
 {
     // World-to-object rows, including translation. The direction is transformed without normalization.
@@ -35,17 +44,19 @@ struct alignas(16) RayInstance
     uint32_t root;
     uint32_t surfaceId;
     uint32_t layerMask;
-    uint32_t reserved = 0;
+    float orientation = 1.0f;
 };
 
 static_assert(sizeof(RayPosition) == 16 && sizeof(RayTriangle) == 16 && sizeof(RayInstance) == 64);
-static_assert(offsetof(RayInstance, root) == 48);
+static_assert(sizeof(RayVertexAttributes) == 64);
+static_assert(offsetof(RayInstance, root) == 48 && offsetof(RayInstance, orientation) == 60);
 
 /// Immutable object-space data for one contiguous indexed triangle slice.
 struct RayMesh
 {
     std::vector<spatial::BvhNode> nodes;
     std::vector<RayPosition> positions;
+    std::vector<RayVertexAttributes> attributes;
     std::vector<RayTriangle> triangles;
 };
 
@@ -64,6 +75,7 @@ struct RayGeometryPage
     std::vector<RayPosition> positions;
     std::vector<RayTriangle> triangles;
     std::vector<RayInstance> instances;
+    std::vector<RayVertexAttributes> attributes;
     uint32_t root = kInvalidRayIndex;
 };
 
@@ -120,7 +132,7 @@ struct RayGeometryBytes
 struct RayGeometryPageLayout
 {
     explicit RayGeometryPageLayout(const RayGeometryPage &page, RayGeometryStatus status);
-    [[nodiscard]] std::array<RayGeometryBytes, 5> Sections() const;
+    [[nodiscard]] std::array<RayGeometryBytes, 6> Sections() const;
 
     std::array<RayGeometryWord, 2> header;
     uint64_t bytes = 0;
@@ -131,7 +143,7 @@ struct RayGeometryPageLayout
 
 /// Two uvec4 header words followed by page-relative storage arrays.
 /// Header 0: TLAS root, node offset, position offset, triangle offset.
-/// Header 1: instance offset, RayGeometryStatus, reserved, reserved.
+/// Header 1: instance offset, RayGeometryStatus, vertex attribute offset, reserved.
 /// All offsets address uvec4 words. Node and instance indices remain array-relative.
 [[nodiscard]] std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, RayGeometryStatus status);
 

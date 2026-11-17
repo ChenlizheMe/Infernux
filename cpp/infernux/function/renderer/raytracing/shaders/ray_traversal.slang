@@ -14,13 +14,14 @@ struct RayPage
     uint triangles;
     uint instances;
     uint status;
+    uint attributes;
 };
 
 RayPage ray_page()
 {
     uint4 geometry = world_ray_geometry[0];
-    uint2 instances = world_ray_geometry[1].xy;
-    return {geometry.x, geometry.y, geometry.z, geometry.w, instances.x, instances.y};
+    uint3 instances = world_ray_geometry[1].xyz;
+    return {geometry.x, geometry.y, geometry.z, geometry.w, instances.x, instances.y, instances.z};
 }
 
 struct RayNode
@@ -39,6 +40,7 @@ struct RayInstance
     uint root;
     uint surface_id;
     uint layer_mask;
+    float orientation;
 };
 
 RayNode ray_node(RayPage page, uint index)
@@ -52,9 +54,9 @@ RayNode ray_node(RayPage page, uint index)
 RayInstance ray_instance(RayPage page, uint index)
 {
     uint offset = page.instances + 4u * index;
-    uint3 record = world_ray_geometry[offset + 3u].xyz;
+    uint4 record = world_ray_geometry[offset + 3u];
     return {asfloat(world_ray_geometry[offset]), asfloat(world_ray_geometry[offset + 1u]),
-            asfloat(world_ray_geometry[offset + 2u]), record.x, record.y, record.z};
+            asfloat(world_ray_geometry[offset + 2u]), record.x, record.y, record.z, asfloat(record.w)};
 }
 
 struct TraceRay
@@ -69,6 +71,7 @@ struct RayHit
 {
     float distance;
     float2 barycentrics; // Weights of b and c. The weight of a is 1 - b - c.
+    uint instance_index; // TLAS instance order. A BLAS can have many different world transforms.
     uint triangle_index;
     uint primitive;
     uint surface_id;
@@ -239,6 +242,7 @@ RayHit trace_ray(RayPage page, TraceRay world_ray, uint layer_mask, bool stop_on
     RayHit hit;
     hit.distance = world_ray.maximum;
     hit.barycentrics = float2(0.0f);
+    hit.instance_index = ray_invalid_index;
     hit.triangle_index = ray_invalid_index;
     hit.primitive = ray_invalid_index;
     hit.surface_id = ray_invalid_index;
@@ -278,6 +282,7 @@ RayHit trace_ray(RayPage page, TraceRay world_ray, uint layer_mask, bool stop_on
                     {
                         hit.distance = distance;
                         hit.barycentrics = weights;
+                        hit.instance_index = index;
                         hit.triangle_index = primitive;
                         hit.primitive = face.w;
                         hit.surface_id = instance.surface_id;
@@ -298,4 +303,113 @@ RayHit trace_closest(RayPage page, TraceRay ray, uint layer_mask)
 bool trace_visibility(RayPage page, TraceRay ray, uint layer_mask)
 {
     return page.status == ray_page_ready && trace_ray(page, ray, layer_mask, true).triangle_index == ray_invalid_index;
+}
+
+struct RaySurfaceHit
+{
+    float3 position_ws;
+    float3 geometric_normal_ws; // Triangle winding before any face-forward rule.
+    float3 normal_ws;
+    float4 tangent_ws;
+    float4 color;
+    float2 uv0;
+    float2 uv1;
+    float3 edge_u_ws;
+    float3 edge_v_ws;
+    float2 edge_u_uv1;
+    float2 edge_v_uv1;
+    bool front_face;
+};
+
+float4 ray_interpolate_attribute(RayPage page, uint3 vertices, uint field, float3 weights)
+{
+    uint3 offset = page.attributes + 4u * vertices + field;
+    return asfloat(world_ray_geometry[offset.x]) * weights.x +
+           asfloat(world_ray_geometry[offset.y]) * weights.y +
+           asfloat(world_ray_geometry[offset.z]) * weights.z;
+}
+
+float3 ray_world_normal(float3 local_normal, RayInstance instance)
+{
+    return local_normal.x * instance.world_to_object_x.xyz +
+           local_normal.y * instance.world_to_object_y.xyz +
+           local_normal.z * instance.world_to_object_z.xyz;
+}
+
+float3 ray_surface_normalize(float3 v, float3 fallback)
+{
+    float length_squared = dot(v, v);
+    return length_squared > 0.0f ? v * rsqrt(length_squared) : fallback;
+}
+
+float3 ray_transform_columns(float3 v, float3 column0, float3 column1, float3 column2)
+{
+    return v.x * column0 + v.y * column1 + v.z * column2;
+}
+
+float3 ray_corner_direction(uint offset, float3 r0, float3 r1, float3 r2, float3 fallback)
+{
+    float3 v = asfloat(world_ray_geometry[offset].xyz);
+    return ray_surface_normalize(ray_transform_columns(v, r0, r1, r2), fallback);
+}
+
+float3 ray_interpolate_direction(uint3 offsets, float3 weights, float3 r0, float3 r1, float3 r2, float3 fallback)
+{
+    float3 a = ray_corner_direction(offsets.x, r0, r1, r2, fallback);
+    float3 b = ray_corner_direction(offsets.y, r0, r1, r2, fallback);
+    float3 c = ray_corner_direction(offsets.z, r0, r1, r2, fallback);
+    return ray_surface_normalize(a * weights.x + b * weights.y + c * weights.z, fallback);
+}
+
+// Only called on a valid hit. Visibility traversal does not touch the attribute stream.
+RaySurfaceHit ray_surface_at_hit(RayPage page, TraceRay ray, RayHit hit)
+{
+    RayInstance instance = ray_instance(page, hit.instance_index);
+    uint3 vertices = world_ray_geometry[page.triangles + hit.triangle_index].xyz;
+    float3 weights = float3(1.0f - hit.barycentrics.x - hit.barycentrics.y, hit.barycentrics);
+    float3 a = asfloat(world_ray_geometry[page.positions + vertices.x].xyz);
+    float3 b = asfloat(world_ray_geometry[page.positions + vertices.y].xyz);
+    float3 c = asfloat(world_ray_geometry[page.positions + vertices.z].xyz);
+    float3 geometric = normalize(ray_world_normal(cross(b - a, c - a), instance) * instance.orientation);
+    float3 r0 = instance.world_to_object_x.xyz;
+    float3 r1 = instance.world_to_object_y.xyz;
+    float3 r2 = instance.world_to_object_z.xyz;
+    uint3 attributes = page.attributes + 4u * vertices;
+    // Raster transforms and normalizes each corner before interpolation.
+    float3 normal = ray_interpolate_direction(attributes + 1u, weights, r0, r1, r2, geometric);
+
+    // Cofactors of the inverse transform give the forward tangent direction.
+    // Normalization cancels the magnitude of the determinant, but not its sign.
+    float3 c0 = cross(r1, r2);
+    float3 c1 = cross(r2, r0);
+    float3 c2 = cross(r0, r1);
+    float3 axis = abs(normal.x) < 0.9f ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
+    float3 fallback = normalize(cross(normal, axis));
+    float3 tangent_ws = ray_interpolate_direction(attributes + 2u, weights,
+        c0 * instance.orientation, c1 * instance.orientation, c2 * instance.orientation, fallback);
+    uint3 tangent_offsets = attributes + 2u;
+    float3 signs = float3(asfloat(world_ray_geometry[tangent_offsets.x].w),
+                          asfloat(world_ray_geometry[tangent_offsets.y].w),
+                          asfloat(world_ray_geometry[tangent_offsets.z].w));
+    float sign = dot(weights, signs) * instance.orientation;
+    float4 uv_a = asfloat(world_ray_geometry[attributes.x]);
+    float4 uv_b = asfloat(world_ray_geometry[attributes.y]);
+    float4 uv_c = asfloat(world_ray_geometry[attributes.z]);
+    float4 uv = uv_a * weights.x + uv_b * weights.y + uv_c * weights.z;
+    float inverse_det = 1.0f / dot(r0, c0);
+
+    RaySurfaceHit surface;
+    surface.position_ws = ray.origin + hit.distance * ray.direction;
+    surface.geometric_normal_ws = geometric;
+    surface.normal_ws = normal;
+    surface.tangent_ws = float4(tangent_ws, sign);
+    surface.color = ray_interpolate_attribute(page, vertices, 3u, weights);
+    surface.uv0 = uv.xy;
+    surface.uv1 = uv.zw;
+    surface.edge_u_ws = ray_transform_columns(b - a, c0, c1, c2) * inverse_det;
+    surface.edge_v_ws = ray_transform_columns(c - a, c0, c1, c2) * inverse_det;
+    surface.edge_u_uv1 = uv_b.zw - uv_a.zw;
+    surface.edge_v_uv1 = uv_c.zw - uv_a.zw;
+    surface.front_face = dot(ray.direction, geometric) < 0.0f;
+    return surface;
 }
