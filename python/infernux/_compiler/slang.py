@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import copy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
 import os
@@ -13,7 +13,7 @@ from types import ModuleType
 import numpy as np
 
 from .slang_ast import SlangEmitter, common_type, qualified
-from .shader_library import LibraryGraph, typed_function_call
+from .shader_library import Function, LibraryGraph, typed_function_call
 from .value_types import SCALAR_STORAGE_TYPES
 from .work_item import WorkItem, normalize_work_item
 from .cache import compiler_cache_root, prune_cache_files
@@ -83,7 +83,8 @@ def _continuation_contract(work_item, params, *, autodiff_mode, gradient_paramet
         inner_range=inner if not diagnostics else None)
 
 
-def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(), _lowered=None):
+def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(),
+                   _lowered=None, _scalar_slang=None):
     from infernux.compute import Buffer
     from infernux.lib import _Infernux
 
@@ -106,6 +107,8 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
         plan.libraries = graph.sources()
         plan.source_locations += tuple({"role": "library", "path": module.path, "line": 1, "column": 1}
                                        for module in graph.ordered)
+    if _scalar_slang is not None:
+        _link_scalar_row(plan, _scalar_slang)
     plan.generated_source, plan.lowering = _source(plan, params)
     # Cache the exact compiler input, including its generated ABI and work
     # proof. Runtime scalar values and buffer identities are not specializations.
@@ -117,10 +120,30 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
     }
     if plan.libraries:
         identity["libraries"] = plan.libraries
+    if item.library_calls:
         plan.lowering.source_ranges.extend(graph.ranges())
     plan.artifact_key = hashlib.blake2b(json.dumps(identity, sort_keys=True).encode(), digest_size=16).hexdigest()
     plan.lowering.plan = None
     return plan
+
+
+def _link_scalar_row(plan, definition):
+    """Substitute one value operation into the proved two-buffer copy row."""
+    entry_point, source = definition
+    (assignment,) = plan.definition.body
+    if not isinstance(assignment, ast.Assign) or not isinstance(assignment.value, ast.Subscript):
+        raise ValueError("A linked Slang scalar requires a direct row-copy wrapper")
+    module = "inx_nn_scalar"
+    path = "NN/SlangUnary.slang"
+    symbol = "_infernux_nn_scalar"
+    value = assignment.value
+    assignment.value = ast.copy_location(ast.Call(ast.Name(symbol, ast.Load()), [value], []), value)
+    plan.library_functions[symbol] = Function(f"{module}::{entry_point}", "float", ("float",))
+    plan.libraries = ((module, path, f'namespace {module} {{\n#line 1 "{path}"\n{source}\n}}'),)
+    plan.source_locations += ({"role": "library", "path": path, "function": entry_point, "line": 1, "column": 1},)
+    # The buffers still obey the row-address contract. The Slang body has no
+    # bounded service-cost estimate for managed scheduling.
+    plan.continuation = replace(plan.continuation, operation_cost=0, cost_source="authored_scalar_slang")
 
 
 def _source_location(origin, definition, *, role):
@@ -716,18 +739,26 @@ def _artifact(compiled, emitter, plan, params):
         gradient_parameters=plan.gradient_parameters, identity=plan.artifact_key)
 
 
-def compile_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(), _lowered=None):
+def compile_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(),
+                   _lowered=None, _scalar_slang=None):
     from infernux.lib import _Infernux
 
     plan = prepare_kernel(function, params, target=target, receiver_fields=receiver_fields, autodiff_mode=autodiff_mode,
-                          gradient_parameters=gradient_parameters, _lowered=_lowered)
+                          gradient_parameters=gradient_parameters, _lowered=_lowered, _scalar_slang=_scalar_slang)
     specialization = _specialization_identity(params, target=target, autodiff_mode=autodiff_mode, gradient_parameters=plan.gradient_parameters)
 
     def emit():
         compiled = _Infernux._compile_shader_program(plan.generated_source, plan.work_item.origin.path, "inx_kernel",
                                                     libraries=plan.libraries, targets=[target], precise=True,
                                                     source_ranges=plan.lowering.source_ranges)
-        return _artifact(compiled["targets"][0], plan.lowering, plan, params)
+        code = compiled["targets"][0]
+        artifact = _artifact(code, plan.lowering, plan, params)
+        if _scalar_slang is not None:
+            actual = {tuple(binding) for binding in code["entries"][0]["bindings"]}
+            expected = {(0, row["binding"]) for row in artifact.task_metadata[0]["buffer_bindings"]}
+            if actual != expected:
+                raise TypeError("NN Slang functions must be resource-free scalar operations")
+        return artifact
 
     return _cached_artifact(plan.artifact_key, specialization, emit)
 

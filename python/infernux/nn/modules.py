@@ -509,6 +509,25 @@ class Sigmoid(_Activation):
     _kind = "sigmoid"
 
 
+class SlangUnary(_Activation):
+    """Apply a pure Slang scalar function to a float32 GPU tensor.
+
+    Provide a public ``[Differentiable] float`` function with one float argument
+    in self-contained Slang source. Each element is independent and the
+    function must avoid resource access, mutable state and cross-lane work.
+    The source travels with the fixed model definition. Ordinary forward and
+    first-order backward share the existing GPU Work.
+    """
+
+    _kind = "slang_unary"
+
+    def __init__(self, source, *, entry_point="forward"):
+        from ._primitives import scalar_slang_definition
+
+        super().__init__()
+        self.options = scalar_slang_definition(entry_point, source)
+
+
 class Tanh(_Activation):
     _kind = "tanh"
 

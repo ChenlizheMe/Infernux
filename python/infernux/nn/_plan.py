@@ -33,6 +33,7 @@ class _UnaryOperation:
 
 _UNARY = {
     "sigmoid": _UnaryOperation(p.sigmoid, p.sigmoid_vjp),
+    "slang_unary": _UnaryOperation(p.copy_values, None),
     "relu": _UnaryOperation(p.relu, p.relu_vjp),
     "elu": _UnaryOperation(p.elu, p.elu_vjp, False),
     "clamp": _UnaryOperation(p.clamp, p.clamp_vjp, False),
@@ -182,6 +183,8 @@ def _class_scale(kind, target, scale, facts):
 
 
 def _unary_facts(layer):
+    if layer.kind == "slang_unary":
+        return dict(_SCALAR_SLANG=layer.options)
     if layer.kind == "elu":
         return dict(_ALPHA=layer.options[0])
     if layer.kind == "clamp":
@@ -196,9 +199,11 @@ def _unary_facts(layer):
 
 
 def _pointwise_options(kind, options):
-    count = {"elu": 1, "clamp": 2}.get(kind, 0)
+    count = {"elu": 1, "clamp": 2, "slang_unary": 2}.get(kind, 0)
     if len(options) != count:
         raise ValueError("invalid pointwise operation configuration")
+    if kind == "slang_unary":
+        return p.scalar_slang_definition(*options)
     if kind == "clamp" and all(value is None for value in options):
         raise ValueError("clamp requires at least one scalar bound")
     values = []
@@ -1155,6 +1160,7 @@ class Plan:
                                           separators=(",", ":")).encode("utf-8")
         self.service_identity = hashlib.sha256(self.definition_bytes).hexdigest()
         self.layers = layers = definition.layers
+        self._has_authored_slang = any(layer.kind == "slang_unary" for layer in layers)
         # Forward values are SSA slots: inputs/parameters are read-only and
         # every activation has its own allocation. Compile dependency/lifetime
         # structure once; binding another invocation need not rediscover it
@@ -1556,6 +1562,8 @@ class Plan:
             raise ValueError("input shape/device/gradient requirements differ from capture; call recompile()")
         if managed and any(x._run is not None or x._loss is not None for x in inputs):
             raise ValueError("managed model inputs require leaf or detached Tensors")
+        if managed and self._has_authored_slang:
+            raise NotImplementedError("SlangUnary supports ordinary GPU execution; managed execution requires a bounded cost contract")
         _check_storage((*(x._data for x in inputs), *(self.root._state if state is None else state)))
 
     def _bind_forward(self, inputs, *, state, retain_for_backward=True, managed=False,

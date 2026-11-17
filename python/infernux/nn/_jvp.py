@@ -61,7 +61,7 @@ def _pushforward(run, indices, seeds, empty, operations):
             result = contributions[0]
             if len(contributions) == 2:
                 result = prepare(p.add, (*contributions, empty(layer.output_shape)))
-        elif (spec := _UNARY.get(kind)) is not None and not spec.dimension:
+        elif (spec := _UNARY.get(kind)) is not None and spec.backward is not None and not spec.dimension:
             # Scalar pointwise Jacobians are diagonal, so the JVP and VJP use
             # the same derivative of each element and its saved primal value.
             primal = run.values[value_index if spec.output_gradient else layer.inputs[0]]

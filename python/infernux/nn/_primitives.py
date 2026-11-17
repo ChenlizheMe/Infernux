@@ -847,11 +847,40 @@ def grid_sample_dgrid(x, grid, upstream, downstream):
     downstream[i] = total
 
 
+def scalar_slang_definition(entry_point, source):
+    if (type(entry_point) is not str or not entry_point.isascii() or not entry_point.isidentifier()
+            or type(source) is not str or not source.strip() or "\0" in source):
+        raise ValueError("SlangUnary requires a Slang module source and an ASCII entry point identifier")
+    return entry_point, source
+
+
+def _prepare_scalar_slang(function, params, definition):
+    from infernux._compiler.gpu_artifact import _specialization_identity
+    from infernux._compiler.slang import compile_kernel
+
+    if params[0].device != "gpu":
+        raise inx.compute.ComputeCapabilityError("SlangUnary requires a GPU tensor; its Slang definition has no CPU implementation")
+    target = params[0]._host.shader_target
+    artifacts = {}
+    for mode, gradients in (("none", ()), ("reverse", (0, 1))):
+        specialization = _specialization_identity(params, target=target, autodiff_mode=mode,
+                                                    gradient_parameters=gradients)
+        artifacts[specialization] = compile_kernel(function, params, target=target, autodiff_mode=mode,
+                                                   gradient_parameters=gradients, _scalar_slang=definition)
+    forward = next(iter(artifacts.values()))
+    declaration = inx.compute.Kernel._from_artifacts(artifacts, "SlangUnary")
+    declaration._work_layout = forward.domain_parameter, None
+    declaration._work_access = forward.continuation.input_parameters, forward.continuation.output_parameters
+    return declaration
+
+
 def prepare(function, params, *, own_deferred_samples=False, source=None, **facts):
     """Add a model build recipe to the common numerical program contract."""
     if source is None:
         from ._programs import recipe
-        program = _prepare_work(function, params, **facts)
+        definition = facts.get("_SCALAR_SLANG")
+        program = (_prepare_work(function, params, **facts) if definition is None
+                   else _prepare_scalar_slang(function, params, definition))
         program._nn_recipe = recipe(function, params, facts)
     else:
         program = source.prepare(function, params, **facts)

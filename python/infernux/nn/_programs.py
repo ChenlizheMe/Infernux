@@ -15,9 +15,12 @@ def recipe(function, params, facts):
     constants = {name: int(value) if isinstance(value, numbers.Integral) else float(value)
                  for name, value in constants.items()}
     buffers = [value for value in params if isinstance(value, compute.Buffer)]
-    return dict(operation=function.__name__, constants=constants, device=buffers[0].device,
-                kinds=[ARRAY_KINDS[value.dtype] if isinstance(value, compute.Buffer) else
-                       "int32" if isinstance(value, numbers.Integral) else "float32" for value in params])
+    record = dict(operation=function.__name__, constants=constants, device=buffers[0].device,
+                  kinds=[ARRAY_KINDS[value.dtype] if isinstance(value, compute.Buffer) else
+                         "int32" if isinstance(value, numbers.Integral) else "float32" for value in params])
+    if (definition := facts.get("_SCALAR_SLANG")) is not None:
+        record.update(operation="slang_unary", implementation=definition)
+    return record
 
 
 def _key(value):

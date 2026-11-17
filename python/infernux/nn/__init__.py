@@ -9,7 +9,7 @@ Baked CPU/GPU models reuse built programs without importing the source compiler.
 from numpy import float32, int32, uint32, int64
 
 from ._tensor import Tensor, Parameter, tensor, as_tensor
-from .modules import Module, Linear, Conv2d, PixelShuffle, Sigmoid, ReLU, SiLU, ELU, Tanh, Softmax, LogSoftmax, Flatten, Sequential
+from .modules import Module, Linear, Conv2d, PixelShuffle, Sigmoid, SlangUnary, ReLU, SiLU, ELU, Tanh, Softmax, LogSoftmax, Flatten, Sequential
 from .functional import functional_call, cat, stack, reshape, flatten, transpose, permute, sum, mean, sin, cos, square, exp, log, sqrt, argmax
 from .functional import squeeze, unsqueeze, ones_like, zeros_like
 from .functional import clamp, minimum, maximum
@@ -22,7 +22,7 @@ from .sources import Channel
 from infernux.execution import Clock
 from infernux.runtime_services import Signal
 
-__all__ = ["float32", "int32", "uint32", "int64", "Tensor", "Parameter", "tensor", "as_tensor", "Module", "Linear", "Conv2d", "PixelShuffle", "Sigmoid", "ReLU", "SiLU", "ELU", "Tanh", "Softmax", "LogSoftmax",
+__all__ = ["float32", "int32", "uint32", "int64", "Tensor", "Parameter", "tensor", "as_tensor", "Module", "Linear", "Conv2d", "PixelShuffle", "Sigmoid", "SlangUnary", "ReLU", "SiLU", "ELU", "Tanh", "Softmax", "LogSoftmax",
            "Flatten", "cat", "stack", "reshape", "flatten", "transpose", "permute", "sum", "mean", "sin", "cos", "square", "exp", "log", "sqrt", "argmax",
            "squeeze", "unsqueeze", "ones_like", "zeros_like", "no_grad", "is_grad_enabled",
            "clamp", "minimum", "maximum", "functional_call",
