@@ -5,6 +5,7 @@ from __future__ import annotations
 import weakref
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import cache
 from types import MappingProxyType
 from typing import Any, Mapping, NamedTuple, Optional
 import sys
@@ -32,6 +33,11 @@ _NATIVE_RESULT_PHASES = {
     'ANIMATION_EVALUATION': 'animation_update',
     'LATE_SCRIPT': 'late_update',
 }
+
+
+@cache
+def _native_result_phase(barrier):
+    return _NATIVE_RESULT_PHASES.get(barrier.name)
 
 
 def _runtime_phase_presence(component_type: type) -> tuple[bool, ...]:
@@ -987,7 +993,7 @@ class RuntimeExecutionScheduler:
         self._counters["native_phase_dispatches"] += 1
 
     def resume_native_result_boundary(self, barrier):
-        phase = _NATIVE_RESULT_PHASES.get(barrier.name)
+        phase = _native_result_phase(barrier)
         return phase is None or self._resume_native_phase(phase)
 
     def _resume_native_phase(self, phase):

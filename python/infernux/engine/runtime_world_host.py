@@ -9,6 +9,9 @@ from .work_runtime import WorkRuntime
 from .runtime_change_journal import RuntimeChangeDomain, RuntimeFrameBarrier
 
 
+_RESULT_BOUNDARIES = {'PHYSICS_SIMULATION': 'physics', 'RENDER_EXTRACTION': 'render'}
+
+
 class RuntimeWorldHost(WorkRuntime):
     def _initialize_world_runtime(self, role):
         from infernux.components._component_lifecycle import RuntimeExecutionScheduler
@@ -29,6 +32,7 @@ class RuntimeWorldHost(WorkRuntime):
         self._clock_delta = 0.0
 
     def _install_runtime_world_callbacks(self):
+        from infernux.components._component_lifecycle import _native_result_phase
         from infernux.execution import simulation_state
         engine_ref = weakref.ref(self)
         from infernux.lib import SceneManager
@@ -124,20 +128,22 @@ class RuntimeWorldHost(WorkRuntime):
             if engine is None:
                 return True
             identity = int(scene_manager._current_runtime_world_id)
-            domain = (None if identity == int(scene_manager._authoring_runtime_world_id)
-                      else engine._world_runtimes[identity])
+            domain = engine._world_runtimes.get(identity)
             scheduler = domain.scheduler if domain is not None else engine._authoring_scheduler
-            world = scheduler.world_id
-            if (domain is not None and domain.physics_preparations and barrier.name in {
-                    'FIXED_SCRIPT', 'PHYSICS_SIMULATION', 'PHYSICS_POST_SCRIPT',
-                    'UPDATE_SCRIPT', 'LATE_SCRIPT', 'ANIMATION_EVALUATION'}):
-                # Keep this logical interval/cursor; the ordinary Host still
-                # drives preparation, IO and receipts outside Scene callbacks.
-                return False
-            if not scheduler.resume_native_result_boundary(barrier):
-                return False
-            boundary = {'PHYSICS_SIMULATION': 'physics', 'RENDER_EXTRACTION': 'render'}.get(barrier.name)
-            if boundary is None or not engine._result_consumers:
+            if domain is None and identity != scheduler.world_id:
+                raise KeyError(identity)
+            phase = _native_result_phase(barrier)
+            if phase is not None:
+                # Keep the admitted cursor while Host work prepares the participant.
+                if domain is not None and domain.physics_preparations:
+                    return False
+                if not scheduler._resume_native_phase(phase):
+                    return False
+            consumers = engine._result_consumers
+            if not consumers:
+                return True
+            boundary = _RESULT_BOUNDARIES.get(barrier.name)
+            if boundary is None:
                 return True
             state = simulation_state()
             ready = True
@@ -145,10 +151,10 @@ class RuntimeWorldHost(WorkRuntime):
             waiting = set()
             suspended = set()
             index = 0
-            while index < len(engine._result_consumers):
-                consumer = engine._result_consumers[index]
+            while index < len(consumers):
+                consumer = consumers[index]
                 index += 1
-                if consumer._world_id != world:
+                if consumer._world_id != identity:
                     continue
                 if consumer.boundary == 'render_input' and boundary == 'render':
                     resolution = consumer._resolve(scene_manager)
