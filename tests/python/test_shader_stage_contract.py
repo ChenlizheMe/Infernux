@@ -1,22 +1,20 @@
-"""Shader stage surface is graphics-only and rejects compute explicitly."""
+"""Registered GPU stages and generated graphics shader sources."""
 
 from __future__ import annotations
+
+import pytest
 
 from infernux.core.shader import Shader
 from infernux.engine.ui.project_file_ops import create_shader
 
 
-def test_shader_control_api_rejects_compute():
+def test_shader_control_api_rejects_unregistered_stages():
     for operation in (
-        lambda: Shader.is_loaded("parallel", "compute"),
-        lambda: Shader.reload("parallel", "compute"),
+        Shader.is_loaded,
+        Shader.reload,
     ):
-        try:
-            operation()
-        except ValueError as exc:
-            assert "shader_type must be 'vertex' or 'fragment'" in str(exc)
-        else:
-            raise AssertionError("compute shader stage was accepted")
+        with pytest.raises(ValueError, match="registered GPU source stage"):
+            operation("parallel", "invalid_stage")
 
 
 def test_shader_file_creation_accepts_graphics_stages(tmp_path):
