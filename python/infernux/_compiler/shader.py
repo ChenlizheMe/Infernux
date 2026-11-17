@@ -520,6 +520,10 @@ struct InxRayLitSampling
 
 
 _RAY_LIT_EVALUATION = """
+// Matches RayMaterialParticipation in the material table producer.
+static const uint inx_ray_material_lit = 1u;
+static const uint inx_ray_material_excluded = 2u;
+
 bool inx_evaluate_ray_lit(InxMeshInput input, bool front_facing, InxSecondarySurfaceSampling footprint,
                           out InxSurfaceData surface)
 {
@@ -552,6 +556,9 @@ struct InxRayLitHitPolicy : RayHitPolicy
 
     bool accepts(RayPage page, TraceRay ray, RayHit candidate)
     {
+        uint participation = ray_lit_materials[candidate.surface_id].participation;
+        if (participation != inx_ray_material_lit)
+            return participation != inx_ray_material_excluded;
         if (!(ray_lit_materials[candidate.surface_id].values._alpha_clip_threshold > 0.0))
             return true;
         InxSurfaceData surface;
@@ -584,6 +591,11 @@ public InxRaySurfaceHit inx_world_ray_closest(float3 origin_ws, float3 direction
     RayHit hit = inx_trace_lit_closest(page, ray, layer_mask, lod);
     if (hit.triangle_index != ray_invalid_index)
     {
+        if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+        {
+            result.available = false;
+            return result;
+        }
         result.found = true;
         result.distance = hit.distance;
         result.position_ws = ray.origin + hit.distance * ray.direction;
@@ -755,7 +767,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                 "import inx_ray_bsdf;", "import inx_camera;", "import inx_lighting;",
                 *("import " + name + ";" for name in dependencies),
                 "struct ShaderParameters {", *author.parameter_field_declarations(values), "};",
-                "struct InxRayLitMaterial {", "    ShaderParameters values;",
+                "struct InxRayLitMaterial {", "    ShaderParameters values;", "    uint participation;",
                 *("    uint " + field.name + ";" for field in textures), "};",
                 "StructuredBuffer<InxRayLitMaterial> ray_lit_materials;",
                 _SURFACE_SAMPLING, _RAY_LIT_SAMPLING, *entry, _SURFACE_COVERAGE, _RAY_LIT_EVALUATION]

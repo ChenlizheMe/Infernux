@@ -13,6 +13,14 @@ namespace infernux::raytracing
 namespace
 {
 
+// Matches the material participation values in the Slang ray evaluator.
+enum class RayMaterialParticipation : uint32_t
+{
+    Unknown = 0,
+    Lit = 1,
+    Excluded = 2,
+};
+
 const ShaderResourceLayout &Buffer(const std::vector<ShaderResourceLayout> &resources, std::string_view name)
 {
     const auto it =
@@ -53,6 +61,7 @@ struct RayLitMaterialLayout::State
     explicit State(const ShaderResourceLayout &materials, const ShaderResourceLayout &descriptors)
         : materialStride(materials.elementStride), descriptorStride(descriptors.elementStride),
           values(Field(materials.value, "values")), uniforms(values.fields),
+          participation(UIntField(Field(materials.value, "participation"))),
           pageClass(UIntField(Field(descriptors.value, "page_class"))),
           layer(UIntField(Field(descriptors.value, "layer")))
     {
@@ -60,7 +69,7 @@ struct RayLitMaterialLayout::State
             Field(values, "_alpha_clip_threshold").scalar != ShaderScalarKind::Float32)
             throw std::invalid_argument("Ray Lit needs the reflected material values block and alpha clip threshold");
         for (const auto &field : materials.value.fields)
-            if (field.name != "values")
+            if (field.name != "values" && field.name != "participation")
                 textureIndices.emplace_back(field.name, UIntField(field));
     }
 
@@ -68,6 +77,7 @@ struct RayLitMaterialLayout::State
     const uint64_t descriptorStride;
     const ShaderValueLayout values;
     const MaterialUniformLayout uniforms;
+    const ShaderValueCopy participation;
     const ShaderValueCopy pageClass;
     const ShaderValueCopy layer;
     std::vector<std::pair<std::string, ShaderValueCopy>> textureIndices;
@@ -118,17 +128,21 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
             maxSurface = std::max(maxSurface, draw.surfaceId);
     input.materials = Rows(layout.materialStride, uint64_t{maxSurface} + 1);
     for (const auto &draw : world.drawCalls) {
-        if (!draw.indexCount)
+        if (!draw.indexCount || !draw.surfaceId || !draw.material)
             continue;
-        if (!draw.surfaceId || !draw.material || draw.material->GetFragShaderName() != "infernux/lit") {
-            throw std::invalid_argument("Ray Lit requires a frozen Lit surface for every indexed draw");
-        }
         auto *row = input.materials.data() + draw.surfaceId * layout.materialStride;
-        auto *values = row + layout.values.offset;
         const auto &material = *draw.material;
         const auto &renderState = material.GetRenderState();
+        auto participation = RayMaterialParticipation::Unknown;
         if (renderState.blendEnable)
-            throw std::invalid_argument("Ray Lit requires an opaque or alpha-clipped surface: " + material.GetName());
+            participation = RayMaterialParticipation::Excluded;
+        else if (material.GetFragShaderName() == "infernux/lit")
+            participation = RayMaterialParticipation::Lit;
+        const auto kind = static_cast<uint32_t>(participation);
+        layout.participation.Write(row, &kind);
+        if (participation != RayMaterialParticipation::Lit)
+            continue;
+        auto *values = row + layout.values.offset;
         layout.uniforms.Write(values, material);
         if (draw.parameterBlock)
             layout.uniforms.Apply(values, material, *draw.parameterBlock);

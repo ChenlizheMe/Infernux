@@ -259,7 +259,9 @@ class SurfaceData:
 class RaySurfaceHit:
     """The closest accepted world ray hit and its Lit surface properties.
 
-    ``available`` is true when a ready world page was queried, including misses.
+    ``available`` is true for a resolved Lit hit or a definite miss.
+    Unprepared world data and possible hits with unavailable surface data
+    leave the query unavailable.
     """
 
     available: bool
@@ -439,14 +441,18 @@ class _RayQueries:
 
         The explicit texture LOD applies to alpha testing and surface evaluation.
         Read the surface properties, position and surface ID when ``found`` is true.
-        A miss or unavailable page keeps ``distance`` at ``max_distance``.
+        A miss or unavailable surface keeps ``distance`` at ``max_distance``.
+        Blended draws belong to the transparent pass and do not block this query.
         """
         raise RuntimeError("shader.ray.trace_closest executes in a compiled GPU program")
 
     @staticmethod
     def trace_visibility(origin_ws: vec3, direction_ws: vec3, min_distance: float, max_distance: float,
                          layer_mask: uint, lod: float) -> bool:
-        """Return true when the world geometry is ready and no Lit surface blocks the ray."""
+        """Return true for a clear path through the opaque ray geometry.
+
+        An opaque draw with unavailable surface data conservatively blocks the path.
+        """
         raise RuntimeError("shader.ray.trace_visibility executes in a compiled GPU program")
 
 
