@@ -56,9 +56,8 @@ if(INFERNUX_BUILD_TESTS)
 
     infernux_add_native_test(infernux_ray_geometry_tests
         tests/native/RayGeometryTests.cpp
-        cpp/infernux/function/renderer/raytracing/RayBvh.cpp
         cpp/infernux/function/renderer/raytracing/RayGeometry.cpp)
-    target_link_libraries(infernux_ray_geometry_tests PRIVATE glm::glm)
+    target_link_libraries(infernux_ray_geometry_tests PRIVATE InfernuxFoundation glm::glm)
     add_test(NAME infernux.ray_geometry COMMAND infernux_ray_geometry_tests)
 
     infernux_add_native_test(infernux_path_tests

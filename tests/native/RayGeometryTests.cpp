@@ -11,6 +11,7 @@
 
 using namespace infernux;
 using namespace infernux::raytracing;
+using namespace infernux::spatial;
 
 namespace
 {
@@ -38,7 +39,7 @@ Bounds Visit(const Bvh &tree, const std::vector<Bounds> &primitives, uint32_t no
 void CheckHierarchy(const std::vector<Bounds> &bounds)
 {
     const auto result = BuildBvh(bounds);
-    const auto repeat = BuildBvh(bounds);
+    auto repeat = BuildBvh(bounds);
     assert(result.primitiveOrder == repeat.primitiveOrder && result.nodes.size() == repeat.nodes.size());
     assert(std::memcmp(result.nodes.data(), repeat.nodes.data(), result.nodes.size() * sizeof(BvhNode)) == 0);
     Visit(result, bounds, 0, 0);
@@ -46,6 +47,17 @@ void CheckHierarchy(const std::vector<Bounds> &bounds)
     std::sort(order.begin(), order.end());
     for (size_t i = 0; i < order.size(); ++i)
         assert(order[i] == i);
+
+    auto moved = bounds;
+    moved.back().minimum.x -= 2.0f;
+    moved.back().maximum.y += 3.0f;
+    RefitBvh(repeat, moved);
+    assert(result.primitiveOrder == repeat.primitiveOrder);
+    for (size_t i = 0; i < result.nodes.size(); ++i) {
+        assert(result.nodes[i].first == repeat.nodes[i].first);
+        assert(result.nodes[i].second == repeat.nodes[i].second);
+    }
+    Visit(repeat, moved, 0, 0);
 }
 } // namespace
 

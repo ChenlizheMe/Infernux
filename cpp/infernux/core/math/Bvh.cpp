@@ -1,11 +1,11 @@
-#include "RayBvh.h"
+#include "Bvh.h"
 
 #include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
 
-namespace infernux::raytracing
+namespace infernux::spatial
 {
 
 void Bounds::Include(const Bounds &other) noexcept
@@ -62,7 +62,7 @@ class Builder
             for (unsigned axis = 0; axis < 3; ++axis)
                 if (!std::isfinite(bound.minimum[axis]) || !std::isfinite(bound.maximum[axis]) ||
                     bound.minimum[axis] > bound.maximum[axis])
-                    throw std::invalid_argument("Ray acceleration requires finite primitive bounds");
+                    throw std::invalid_argument("BVH requires finite, ordered primitive bounds");
             m_centers[index] = bound.Center();
         }
         m_result.primitiveOrder.resize(bounds.size());
@@ -178,8 +178,32 @@ Bvh BuildBvh(const std::vector<Bounds> &primitiveBounds)
     if (primitiveBounds.empty())
         return {};
     if (primitiveBounds.size() > (kBvhLeafBit / 2u))
-        throw std::length_error("Ray acceleration structure exceeds its node index range");
+        throw std::length_error("BVH exceeds its node index range");
     return Builder(primitiveBounds).Build();
 }
 
-} // namespace infernux::raytracing
+void RefitBvh(Bvh &tree, const std::vector<Bounds> &primitiveBounds)
+{
+    if (tree.primitiveOrder.size() != primitiveBounds.size())
+        throw std::invalid_argument("BVH refit requires the same primitive count");
+    for (auto it = tree.nodes.rbegin(); it != tree.nodes.rend(); ++it) {
+        auto &node = *it;
+        Bounds bounds;
+        if (node.second & kBvhLeafBit) {
+            const uint32_t count = node.second & ~kBvhLeafBit;
+            for (uint32_t i = 0; i < count; ++i)
+                bounds.Include(primitiveBounds[tree.primitiveOrder[node.first + i]]);
+        } else {
+            const auto &first = tree.nodes[node.first];
+            const auto &second = tree.nodes[node.second];
+            for (size_t i = 0; i < 3; ++i) {
+                bounds.minimum[i] = std::min(first.minimum[i], second.minimum[i]);
+                bounds.maximum[i] = std::max(first.maximum[i], second.maximum[i]);
+            }
+        }
+        node.minimum = {bounds.minimum.x, bounds.minimum.y, bounds.minimum.z};
+        node.maximum = {bounds.maximum.x, bounds.maximum.y, bounds.maximum.z};
+    }
+}
+
+} // namespace infernux::spatial

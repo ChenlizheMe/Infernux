@@ -12,6 +12,11 @@ namespace infernux::raytracing
 {
 namespace
 {
+using spatial::Bounds;
+using spatial::BuildBvh;
+using spatial::BvhNode;
+using spatial::kBvhLeafBit;
+
 bool IsFinite(const glm::vec3 &value) noexcept
 {
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);

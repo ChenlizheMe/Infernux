@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../FoundationApi.h"
 #include <glm/glm.hpp>
 
 #include <array>
@@ -8,7 +9,7 @@
 #include <limits>
 #include <vector>
 
-namespace infernux::raytracing
+namespace infernux::spatial
 {
 
 inline constexpr uint32_t kBvhLeafBit = 1u << 31u;
@@ -20,9 +21,9 @@ struct Bounds
     glm::vec3 minimum{std::numeric_limits<float>::infinity()};
     glm::vec3 maximum{-std::numeric_limits<float>::infinity()};
 
-    void Include(const Bounds &other) noexcept;
-    [[nodiscard]] glm::vec3 Center() const noexcept;
-    [[nodiscard]] double Area() const noexcept;
+    INFERNUX_FOUNDATION_API void Include(const Bounds &other) noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API glm::vec3 Center() const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API double Area() const noexcept;
 };
 
 /// Two GPU-aligned words. Leaves refer to consecutive entries in primitiveOrder.
@@ -43,7 +44,9 @@ struct Bvh
     std::vector<uint32_t> primitiveOrder;
 };
 
-/// Builds the same flat hierarchy for object-space triangles and world-space instances.
-[[nodiscard]] Bvh BuildBvh(const std::vector<Bounds> &primitiveBounds);
+/// Nodes are stored in depth-first order with each parent before its children.
+[[nodiscard]] INFERNUX_FOUNDATION_API Bvh BuildBvh(const std::vector<Bounds> &primitiveBounds);
+/// Update bounds for the same primitives, retaining all addresses and their ordering.
+INFERNUX_FOUNDATION_API void RefitBvh(Bvh &tree, const std::vector<Bounds> &primitiveBounds);
 
-} // namespace infernux::raytracing
+} // namespace infernux::spatial

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RayBvh.h"
+#include <core/math/Bvh.h>
 
 #include <cstdint>
 #include <vector>
@@ -43,7 +43,7 @@ static_assert(offsetof(RayInstance, root) == 48);
 /// Immutable object-space data for one contiguous indexed triangle slice.
 struct RayMesh
 {
-    std::vector<BvhNode> nodes;
+    std::vector<spatial::BvhNode> nodes;
     std::vector<RayPosition> positions;
     std::vector<RayTriangle> triangles;
 };
@@ -59,7 +59,7 @@ struct RayMeshInstance
 /// All references in a page are page-relative. BLASes shared by instances occur once.
 struct RayGeometryPage
 {
-    std::vector<BvhNode> nodes;
+    std::vector<spatial::BvhNode> nodes;
     std::vector<RayPosition> positions;
     std::vector<RayTriangle> triangles;
     std::vector<RayInstance> instances;
