@@ -9,6 +9,7 @@ import configparser
 from time import perf_counter as _pc
 from typing import Optional
 from infernux.lib import InxGUIContext, InputManager as _NativeInputManager, SceneManager as _SM
+from infernux.lib import _get_native_game_camera
 from infernux.engine.i18n import t
 from infernux.engine.interaction import (
     ContinuousEditService,
@@ -1187,7 +1188,7 @@ class GameViewPanel(EditorPanel):
         game_px = vp_x * game_w / viewport_w
         game_py = vp_y * game_h / viewport_h
 
-        camera = scene.effective_game_camera if scene is not None else None
+        camera = _get_native_game_camera(scene)
         from infernux.engine.runtime_screen_ui import map_runtime_ui_pointer
         mapped_positions = map_runtime_ui_pointer(
             surfaces, camera, game_px, game_py, game_w, game_h,

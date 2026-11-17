@@ -19,7 +19,7 @@ import time
 from typing import Callable, Dict, List, Optional
 
 from infernux.debug import Debug
-from infernux.lib import InxGUIRenderable, InxGUIContext, InputManager
+from infernux.lib import InxGUIRenderable, InxGUIContext, InputManager, _get_native_game_camera
 from infernux.input import Input, TouchPhase
 from infernux.engine.ui.viewport_utils import capture_viewport_info
 from infernux.engine.build_settings import BUILD_SETTINGS_DEFAULTS, normalize_render_output
@@ -391,7 +391,7 @@ class PlayerGUI(InxGUIRenderable):
             return
         from infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
-        camera = scene.effective_game_camera if scene is not None else None
+        camera = _get_native_game_camera(scene) if scene is not None else None
         if camera is None:
             dispatcher.reset()
             return
@@ -435,7 +435,7 @@ class PlayerGUI(InxGUIRenderable):
             self._has_shared_scene_query = False
             return None
 
-        camera = scene.effective_game_camera if scene is not None else None
+        camera = _get_native_game_camera(scene) if scene is not None else None
 
         gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = (
             Input.get_game_mouse_frame_state(0) if mouse_frame is None else mouse_frame

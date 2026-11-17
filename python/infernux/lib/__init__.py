@@ -790,7 +790,7 @@ RaycastHit.rigidbody = property(_raycast_rigidbody)
 
 
 _native_scene_main_camera = Scene.main_camera
-_native_scene_effective_game_camera = Scene.effective_game_camera
+_get_native_game_camera = Scene.effective_game_camera.fget
 _native_scene_active_game_cameras = Scene.active_game_cameras
 
 
@@ -807,7 +807,7 @@ def _scene_set_main_camera(self, camera):
 
 
 def _scene_effective_game_camera(self):
-    return _wrap_native_builtin_component(_native_scene_effective_game_camera.__get__(self))
+    return _wrap_native_builtin_component(_get_native_game_camera(self))
 
 
 def _scene_active_game_cameras(self):
