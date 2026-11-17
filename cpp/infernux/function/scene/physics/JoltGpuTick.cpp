@@ -66,7 +66,7 @@ class JoltGpuTick::Impl
         };
         source.refresh = source.observe;
         source.describe = [this] { return lane->Describe(); };
-        source.advance = [this](bool gpu, uint64_t) { return lane->Advance(gpu); };
+        source.advance = [this](bool gpu, uint64_t token) { return lane->Advance(gpu, token); };
         sourceId = work.AddSource(std::move(source));
     }
 
@@ -111,6 +111,7 @@ class JoltGpuTick::Impl
         parameters = settings ? std::make_optional(*settings) : std::nullopt;
         reuseParameters = false;
         stageCursor = {};
+        earlyFeedbackOpportunity = 0;
         reducedGuardWindow = false;
         if (parameters) {
             auto gravityDt = parameters->Get().gravityDt;
@@ -387,7 +388,7 @@ class JoltGpuTick::Impl
         Impl *focus = nullptr;
         void Poll();
         FrameWorkFacts Describe() const;
-        bool Advance(bool gpu);
+        bool Advance(bool gpu, uint64_t token);
         bool PrepareShared();
         void DropShared(Impl *member) noexcept;
         bool OtherReceipts(const Impl *member) const noexcept;
@@ -720,8 +721,7 @@ class JoltGpuTick::Impl
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
                phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareCoupledContacts ||
-               phase == Phase::WarmCoupledContacts || phase == Phase::ExchangeCoupledContacts ||
-               phase == Phase::ProjectCoupledContacts;
+               CoupledFeedbackPhase(phase);
     }
 
     StageSpan Span(Phase phase) const
@@ -1176,6 +1176,12 @@ class JoltGpuTick::Impl
                (!receipts.empty() || !sharedStages.empty());
     }
 
+    static bool CoupledFeedbackPhase(Phase phase)
+    {
+        return phase == Phase::WarmCoupledContacts || phase == Phase::ExchangeCoupledContacts ||
+               phase == Phase::ProjectCoupledContacts;
+    }
+
     void ModelAccepted()
     {
         auto &group = control.groups[groupCursor];
@@ -1282,13 +1288,22 @@ class JoltGpuTick::Impl
             facts.gpuBusy = !receipts.empty() || !sharedStages.empty();
             return facts;
         }
+        // An admitted mixed Fixed can consume its retired response before drawing.
+        // Only its next numerical packet can use an idle queue slot in that opportunity.
+        const bool early = !work.IsLate() && !controlOnly && !pressureActive;
+        const bool nextFeedbackPacket = early && earlyFeedbackOpportunity == work.Opportunity() &&
+                                        stageCursor.phase != Phase::Done &&
+                                        (!ProducerPhase(stageCursor.phase) || CoupledFeedbackPhase(stageCursor.phase));
         if ((!batch && (workContinuation || !controlAccepted || !inputAccepted || stageCursor.phase != Phase::Done ||
                         !finalPrepared)) ||
             (batch && !preservation &&
              (batch->RequiresPreparation() || batch->HasPreservationWork() || NeedsSmallerPrefix()))) {
             facts.host.ready = true;
+            facts.host.reserved =
+                nextFeedbackPacket || (early && workContinuation && CoupledFeedbackPhase(stageCursor.phase) &&
+                                       continuationResumeAfter == JoltGpuControlWork::ResumeAfter::Completion);
         } else if (!submissionBusy && CanSubmit()) {
-            facts.gpu = {0, 0, true, false};
+            facts.gpu = {0, 0, true, nextFeedbackPacket && !preservation};
         }
         // Accepted predecessors do not block this source's ready successor.
         // Its actual buffer dependencies and queue-slot admission order it.
@@ -1770,9 +1785,7 @@ class JoltGpuTick::Impl
                                   PacketKind::NumericalWork);
                 return true;
             }
-            if (stageCursor.phase == Phase::PrepareCoupledContacts || stageCursor.phase == Phase::WarmCoupledContacts ||
-                stageCursor.phase == Phase::ExchangeCoupledContacts ||
-                stageCursor.phase == Phase::ProjectCoupledContacts) {
+            if (stageCursor.phase == Phase::PrepareCoupledContacts || CoupledFeedbackPhase(stageCursor.phase)) {
                 using CoupledStage = JoltGpuCoupledContactStage;
                 const bool preparing = stageCursor.phase == Phase::PrepareCoupledContacts;
                 const bool warming = stageCursor.phase == Phase::WarmCoupledContacts;
@@ -2007,6 +2020,7 @@ class JoltGpuTick::Impl
     std::optional<size_t> sharedFallbackCursor;
     bool submissionBusy = false;
     uint64_t busyOpportunity = 0, busyProgress = 0, busySubmissions = 0;
+    uint64_t earlyFeedbackOpportunity = 0;
     std::deque<Receipt> receipts;
     std::map<CostKey, std::deque<uint64_t>> costs;
     size_t lastCommandCount = 0;
@@ -2052,7 +2066,14 @@ FrameWorkFacts JoltGpuTick::Impl::Lane::Describe() const
     if (focus)
         return prepared && prepared->peer == focus ? prepared->owner->Describe() : focus->Describe();
     FrameWorkFacts result;
-    for (const auto *member : members) {
+    const auto reserve = [this](FrameWorkCandidate &current, const FrameWorkCandidate &candidate, size_t slot,
+                                size_t next) {
+        const auto distance = [this, next](size_t index) { return (index + members.size() - next) % members.size(); };
+        if (candidate.reserved && (!current.reserved || distance(slot) < distance(current.token - 1)))
+            current = {slot + 1, candidate.hostNanoseconds, true, true};
+    };
+    for (size_t slot = 0; slot < members.size(); ++slot) {
+        const auto *member = members[slot];
         if (!member)
             continue;
         const auto facts = member->Describe();
@@ -2060,6 +2081,8 @@ FrameWorkFacts JoltGpuTick::Impl::Lane::Describe() const
         result.observe |= facts.observe;
         result.host.ready |= facts.host.ready;
         result.gpu.ready |= facts.gpu.ready;
+        reserve(result.host, facts.host, slot, nextHost);
+        reserve(result.gpu, facts.gpu, slot, nextGpu);
         result.gpuBusy |= facts.gpuBusy;
     }
     result.gpuBusy &= !result.host.ready && !result.gpu.ready;
@@ -2184,11 +2207,11 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     return true;
 }
 
-bool JoltGpuTick::Impl::Lane::Advance(bool gpu)
+bool JoltGpuTick::Impl::Lane::Advance(bool gpu, uint64_t token)
 {
     if (members[0]->pressureActive || members[0]->PressureRequested())
         return members[0]->Advance(gpu);
-    if (!focus) {
+    if (!focus && !token) {
         try {
             if (PrepareShared())
                 return true;
@@ -2200,8 +2223,9 @@ bool JoltGpuTick::Impl::Lane::Advance(bool gpu)
         }
     }
     auto &next = gpu ? nextGpu : nextHost;
-    const auto start = next;
-    for (size_t i = 0; i < members.size(); ++i) {
+    const size_t start = token ? static_cast<size_t>(token - 1) : next;
+    const size_t count = token ? 1 : members.size();
+    for (size_t i = 0; i < count; ++i) {
         const size_t index = (start + i) % members.size();
         auto *member = members[index];
         if (!member)
@@ -2210,13 +2234,25 @@ bool JoltGpuTick::Impl::Lane::Advance(bool gpu)
         if (target && member != target)
             continue;
         const auto facts = member->Describe();
-        if (!(gpu ? facts.gpu.ready : facts.host.ready))
+        const auto &candidate = gpu ? facts.gpu : facts.host;
+        if (!candidate.ready || (token && !candidate.reserved))
             continue;
+        if (token && gpu) {
+            const auto pressure = member->host.GetQueuePressure();
+            if (!pressure.frameSlots || pressure.recordingFrames || pressure.pendingFrames ||
+                pressure.computeSubmissions)
+                return false;
+        }
         next = (index + 1) % members.size();
         const auto affected = prepared && prepared->owner == member ? prepared : nullptr;
         try {
-            if (member->Advance(gpu))
+            if (token && !gpu)
+                member->earlyFeedbackOpportunity = member->work.Opportunity();
+            if (member->Advance(gpu)) {
+                if (gpu)
+                    member->earlyFeedbackOpportunity = 0;
                 return true;
+            }
         } catch (...) {
             if (affected && affected->completion)
                 affected->peer->Fail();

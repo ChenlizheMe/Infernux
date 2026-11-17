@@ -519,10 +519,7 @@ bool FrameWorkOwner::Select(std::vector<Choice> &choices, bool gpu, bool interac
         if (!choice.source->awake || choice.source->callbacks.interactive != interactive)
             continue;
         auto &candidate = gpu ? choice.facts.gpu : choice.facts.host;
-        // Early service precedes runtime/foreground continuation. Only an
-        // explicit host reservation may spend that credit speculatively;
-        // ordinary throughput uses the remaining allowance in late service.
-        // Required dependencies enter through AdvanceRequired, not this lane.
+        // Ordinary throughput uses the allowance remaining in late service.
         if (!m_late && !interactive && !candidate.reserved)
             continue;
         if (!fits(candidate) || (!interactive && !candidate.reserved && (gpu ? gpuReserved : gpuClaimsHostCredit())))
@@ -561,6 +558,7 @@ const char *FrameWorkOwner::GpuUnavailableReason() const noexcept
 bool FrameWorkOwner::Drive(const std::function<FrameGpuAvailability()> &gpuAvailability)
 {
     bool first = true;
+    bool advancedEarlyGpu = false;
     for (;;) {
         const auto roundProgress = m_progressSerial;
         ObserveSources(); // Newly registered sources get their first host observation.
@@ -586,9 +584,16 @@ bool FrameWorkOwner::Drive(const std::function<FrameGpuAvailability()> &gpuAvail
             return pending;
         }
         if (!m_late) {
-            if (!Select(choices, false))
-                return pending;
-            continue;
+            if (Select(choices, false))
+                continue;
+            if (!advancedEarlyGpu &&
+                std::any_of(choices.begin(), choices.end(),
+                            [](const auto &choice) { return choice.facts.gpu.ready && choice.facts.gpu.reserved; }) &&
+                Select(choices, true)) {
+                advancedEarlyGpu = true;
+                continue;
+            }
+            return pending;
         }
         if (m_gpuAvailability == FrameGpuAvailability::Ready &&
             std::any_of(choices.begin(), choices.end(), [](const auto &choice) { return choice.facts.gpuBusy; }))

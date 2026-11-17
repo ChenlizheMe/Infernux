@@ -226,9 +226,9 @@ class FrameWorkOwner
     TrackOwnedCpuStorage(uint64_t bytes) const;
     [[nodiscard]] std::shared_ptr<FrameCpuStorageClaim> SplitCpuStorage(FrameCpuStorageClaim &reserved, uint64_t bytes);
     INFERNUX_FOUNDATION_API uint64_t BeginOpportunity();
-    /// Observe receipts and service interactive or explicitly reserved host
-    /// prerequisites before runtime/foreground work. Ordinary background
-    /// throughput waits for AdvanceLate; explicit dependencies use AdvanceRequired.
+    /// Observe receipts and service interactive or reserved prerequisites before
+    /// foreground work. One ready, explicitly reserved GPU continuation may
+    /// use the current allowance if its source can admit it without waiting.
     INFERNUX_FOUNDATION_API bool AdvanceEarly();
     /// Advance only the source required by a pre-render consumer. Repeat calls
     /// share this opportunity's allowances; true means work remains pending.

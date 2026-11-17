@@ -670,7 +670,7 @@ static void EarlyPrerequisitesAndGpuPreference()
     uint64_t now = 0;
     FrameWorkOwner owner([&] { return now; });
     owner.Configure(100, 0);
-    unsigned reserved = 0, background = 0, gpuSteps = 0;
+    unsigned reserved = 0, background = 0, gpuSteps = 0, dependencySteps = 0;
     FrameWorkSource gpu;
     gpu.describe = [&] {
         FrameWorkFacts facts;
@@ -699,6 +699,20 @@ static void EarlyPrerequisitesAndGpuPreference()
         return true;
     };
     owner.AddSource(std::move(prerequisite));
+    FrameWorkSource dependency;
+    dependency.describe = [&] {
+        FrameWorkFacts facts;
+        facts.pending = dependencySteps < 2;
+        facts.gpu = {dependencySteps, 0, reserved == 2 && dependencySteps < 2, true};
+        return facts;
+    };
+    dependency.advance = [&](bool isGpu, uint64_t token) {
+        assert(isGpu && token == dependencySteps);
+        ++dependencySteps;
+        ++now;
+        return true;
+    };
+    owner.AddSource(std::move(dependency));
     FrameWorkSource throughput;
     throughput.describe = [&] {
         FrameWorkFacts facts;
@@ -718,15 +732,15 @@ static void EarlyPrerequisitesAndGpuPreference()
     owner.AddSource(std::move(throughput));
     owner.BeginOpportunity();
     assert(owner.AdvanceEarly());
-    assert(reserved == 2 && background == 0 && gpuSteps == 0);
+    assert(reserved == 2 && background == 0 && gpuSteps == 0 && dependencySteps == 1);
     // A real consumer can still explicitly service its GPU dependency before
     // the foreground phase; this does not open a new opportunity or drain peers.
     const auto opportunity = owner.Opportunity();
     const auto ready = [] { return FrameGpuAvailability::Ready; };
     assert(!owner.AdvanceRequired(gpuId, ready));
-    assert(gpuSteps == 1 && background == 0 && !owner.IsLate());
+    assert(gpuSteps == 1 && dependencySteps == 1 && background == 0 && !owner.IsLate());
     assert(!owner.AdvanceLate(ready));
-    assert(background == 1 && owner.Opportunity() == opportunity);
+    assert(background == 1 && dependencySteps == 2 && owner.Opportunity() == opportunity);
     owner.EndOpportunity();
 }
 
