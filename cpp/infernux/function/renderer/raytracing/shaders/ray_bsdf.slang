@@ -168,3 +168,43 @@ public RayDirectionSample ray_sample_ggx(float2 uniform, float3 shading_normal, 
     RayGgxTerms terms = ray_ggx_terms(shading_normal, geometric_normal, outgoing, direction, facet, material);
     return {direction, terms.pdf, terms.weight, terms.active, false};
 }
+
+/// A continuous proposal has no material throughput. Evaluate the full BSDF with this density.
+public struct RayDirectionProposal
+{
+    public float3 direction;
+    public float pdf;
+    public bool active;
+};
+
+/// diffuse_probability is in [0, 1]. Incoming geometry rejection does not renormalize this density.
+public float ray_continuous_pdf(float3 shading_normal, float3 geometric_normal, float3 outgoing,
+                                  float3 incoming, RayGgxMaterial material, float diffuse_probability)
+{
+    if (!(dot(shading_normal, outgoing) > 0.0 && dot(geometric_normal, outgoing) > 0.0))
+        return 0.0;
+    float cosine_pdf = max(dot(shading_normal, incoming), 0.0) * ray_bsdf_inverse_pi;
+    // Delta reflection is a separate event, never a solid-angle component.
+    if (material.alpha == 0.0)
+        return diffuse_probability > 0.0 ? cosine_pdf : 0.0;
+    float reflection_pdf = ray_evaluate_ggx(shading_normal, geometric_normal, outgoing, incoming, material).pdf;
+    return diffuse_probability * cosine_pdf + (1.0 - diffuse_probability) * reflection_pdf;
+}
+
+/// uniform.xy samples a direction; uniform.z selects its proposal with the declared probability.
+public RayDirectionProposal ray_sample_continuous(float3 uniform, float3 shading_normal, float3 geometric_normal,
+                                                    float3 outgoing, RayGgxMaterial material,
+                                                    float diffuse_probability)
+{
+    if (!(dot(shading_normal, outgoing) > 0.0 && dot(geometric_normal, outgoing) > 0.0) ||
+        (material.alpha == 0.0 && diffuse_probability == 0.0))
+        return {float3(0.0), 0.0, false};
+    RayDirectionSample sample;
+    if (material.alpha == 0.0 || uniform.z < diffuse_probability)
+        sample = ray_sample_irradiance(uniform.xy, shading_normal, geometric_normal);
+    else
+        sample = ray_sample_ggx(uniform.xy, shading_normal, geometric_normal, outgoing, material);
+    float pdf = ray_continuous_pdf(shading_normal, geometric_normal, outgoing, sample.direction, material,
+                                    diffuse_probability);
+    return {sample.direction, pdf, sample.active};
+}

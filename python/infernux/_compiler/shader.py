@@ -739,6 +739,107 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
     return radiance;
 }
 
+struct InxRayTransportTerm
+{
+    float3 radiance;
+    bool available;
+    float distance;
+};
+
+float3 inx_ray_uniform3(uint seed)
+{
+    return float3(inx_ray_sample_hash(seed) >> 8u, inx_ray_sample_hash(seed + 1u) >> 8u,
+                  inx_ray_sample_hash(seed + 2u) >> 8u) * (1.0 / 16777216.0);
+}
+
+float3 inx_ray_secondary_weight(InxSurfaceData surface, float3 geometric, float3 outgoing, uint seed,
+                                 out RayDirectionProposal proposal)
+{
+    float3 normal = normalize(surface.normal_ws);
+    RayGgxMaterial material = ray_lit_ggx(surface.albedo, surface.metallic, surface.smoothness,
+                                          0.0, surface.specular_highlights);
+    proposal = ray_sample_continuous(inx_ray_uniform3(seed), normal, geometric, outgoing, material, 0.5);
+    if (!proposal.active)
+        return float3(0.0);
+    return inx_secondary_projected_bsdf(surface, normal, outgoing, proposal.direction) / proposal.pdf;
+}
+
+// D owns analytic-light NEE and the disjoint BSDF-sampled environment/emission endpoints.
+// It contains no further reflected scattering at the endpoint.
+InxRayTransportTerm inx_ray_direct_fresh(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
+                                          uint4 metadata, InxBuffer_uint4 records, float3 outgoing,
+                                          uint seed, float maximum)
+{
+    float3 radiance = inx_ray_direct_radiance(page, attributes, surface, metadata, records, outgoing, seed);
+    float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
+    RayDirectionProposal proposal;
+    float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0xb5297a4du, proposal);
+    if (!proposal.active || max(weight.r, max(weight.g, weight.b)) <= 0.0)
+        return {radiance, true, 0.0};
+    TraceRay endpoint = {inx_ray_origin(attributes.position_ws, geometric), 0.0, proposal.direction, maximum};
+    RayHit hit = inx_trace_lit_closest(page, endpoint, 0xffffffffu, 0.0);
+    if (hit.triangle_index == ray_invalid_index)
+        return {radiance + weight * inx_environment_radiance(endpoint.direction), true, 0.0};
+    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+        return {float3(0.0), false, hit.distance};
+    InxSurfaceData terminal;
+    inx_evaluate_ray_lit_hit(ray_surface_at_hit(page, endpoint, hit), hit.surface_id, 0.0, terminal);
+    return {radiance + weight * terminal.emission, true, hit.distance};
+}
+
+// Fixed additional depth one: sample reflected D(z), excluding Le(z) and an environment miss.
+// No previous I1 value participates in this integrand.
+InxRayTransportTerm inx_ray_tail_sample(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
+                                         InxBuffer_uint4 records, float3 outgoing, uint seed, float maximum)
+{
+    float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
+    RayDirectionProposal proposal;
+    float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0x1b56c4e9u, proposal);
+    if (!proposal.active || max(weight.r, max(weight.g, weight.b)) <= 0.0)
+        return {float3(0.0), true, 0.0};
+    TraceRay ray = {inx_ray_origin(attributes.position_ws, geometric), 0.0, proposal.direction, maximum};
+    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
+    if (hit.triangle_index == ray_invalid_index)
+        return {float3(0.0), true, 0.0};
+    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+        return {float3(0.0), false, hit.distance};
+    RaySurfaceHit next_attributes = ray_surface_at_hit(page, ray, hit);
+    InxSurfaceData next_surface;
+    inx_evaluate_ray_lit_hit(next_attributes, hit.surface_id, 0.0, next_surface);
+    InxRayTransportTerm next = inx_ray_direct_fresh(page, next_attributes, next_surface,
+        inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction,
+        inx_ray_sample_hash(seed ^ 0x68e31da4u), maximum);
+    return {weight * next.radiance, next.available, hit.distance};
+}
+
+public float4 inx_ray_radiance_parts(float3 origin, float3 direction, InxBuffer_uint4 records,
+                                      uint seed, int part, float maximum)
+{
+    RayPage page = ray_page();
+    if (page.status != ray_page_ready)
+        return float4(0.0);
+    TraceRay ray = {origin, 0.0, direction, maximum};
+    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
+    if (hit.triangle_index == ray_invalid_index)
+        return float4(part == 0 ? inx_environment_radiance(direction) : float3(0.0), 1.0);
+    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+        return float4(0.0);
+    RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
+    InxSurfaceData surface;
+    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, surface);
+    if (part == 1)
+        return float4(surface.emission, 1.0);
+    if (part == 4)
+        return float4(float(hit.surface_id), float(hit.primitive), hit.distance, 1.0);
+    InxRayTransportTerm term;
+    if (part == 3)
+        term = inx_ray_tail_sample(page, attributes, surface, records, -direction, seed, maximum);
+    else
+        term = inx_ray_direct_fresh(page, attributes, surface, inx_buffer_load(records, hit.surface_id * 3u),
+                                     records, -direction, seed, maximum);
+    return float4(term.radiance + (part == 0 ? surface.emission : float3(0.0)), term.available ? 1.0 : 0.0);
+}
+
 uint4 inx_ray_signal_output(float3 signal, uint2 witness)
 {
     return uint4(packHalf2x16(signal.rg), packHalf2x16(float2(signal.b, 1.0)), witness);
@@ -754,9 +855,12 @@ uint4 inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, uint
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData secondary;
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
-    float3 radiance = secondary.emission + inx_ray_direct_radiance(
-        page, attributes, secondary, inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed);
-    return inx_ray_signal_output(radiance * weight, uint2(hit.surface_id, asuint(hit.distance)));
+    InxRayTransportTerm direct = inx_ray_direct_fresh(page, attributes, secondary,
+        inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed, ray.maximum);
+    if (!direct.available)
+        return uint4(0u);
+    return inx_ray_signal_output((secondary.emission + direct.radiance) * weight,
+                                  uint2(hit.surface_id, asuint(hit.distance)));
 }
 
 public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxBuffer_uint4 records,

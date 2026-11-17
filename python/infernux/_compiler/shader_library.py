@@ -20,6 +20,8 @@ _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceH
                   "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS),
                   "ray._thin_reflection": ("inx_ray_thin_reflection", "float4", (
                       "float3", "float3", "InxBuffer_uint4", "float2")),
+                  "ray._radiance_parts": ("inx_ray_radiance_parts", "float4", (
+                      "float3", "float3", "InxBuffer_uint4", "uint", "int", "float")),
                   "ray._indirect_signal": ("inx_ray_indirect_signal", "uint4", (
                       "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool"))}
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),

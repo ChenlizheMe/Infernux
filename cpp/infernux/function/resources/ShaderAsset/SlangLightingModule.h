@@ -245,6 +245,12 @@ public InxPbrLightResponse inx_secondary_light_response(InxSurfaceData surface, 
     return inx_pbr_light_response(scattering, N, outgoing, inx_pbr_energy_compensation(scattering.f0, brdf),
                                   surface.specular_highlights);
 }
+// Path transport uses f * cos, independently of the analytic lights' pi-scaled convention.
+public float3 inx_secondary_projected_bsdf(InxSurfaceData surface, float3 N, float3 outgoing, float3 incoming)
+{
+    InxPbrLightResponse response = inx_secondary_light_response(surface, N, outgoing);
+    return response.evaluate(inx_light_sample(incoming, float3(1.0), 1.0, 1.0)) * INV_PI;
+}
 float3 rectangle_extent(float4 axis_width) { return normalize(axis_width.xyz) * axis_width.w * 0.5; }
 float rectangle_facing(float3 direction, float3 from_light, bool two_sided)
 {
