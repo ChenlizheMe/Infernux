@@ -13,6 +13,7 @@ from infernux.lib import SceneManager, ScreenUIList
 from infernux.components import InxComponent
 from infernux.ui import UICanvas, UIFrame
 from infernux.ui.enums import RenderMode, UILayoutDirection
+from infernux.ui.ui_canvas import _canvas_metrics
 from infernux.ui._layout_driver import rebuild_world
 from infernux.engine.ui.runtime_canvas_snapshot import (
     collect_sorted_runtime_canvas_snapshot,
@@ -63,12 +64,6 @@ def reset_runtime_ui_state() -> None:
     _world_projection_geometry = None
     from infernux.ui.ui_canvas_utils import invalidate_canvas_cache
     invalidate_canvas_cache()
-
-
-def _canvas_metrics(canvas, viewport_width: float, viewport_height: float):
-    """Use the same CanvasScaler metrics for rendering and pointer projection."""
-    return (*canvas.compute_scale(viewport_width, viewport_height),
-            *canvas.compute_logical_size(viewport_width, viewport_height))
 
 
 class WorldUIElementTarget:

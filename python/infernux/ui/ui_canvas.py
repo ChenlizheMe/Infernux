@@ -30,6 +30,14 @@ from .enums import RenderMode, UIScaleMode, ScreenMatchMode
 from .ui_render_revision import is_unchanged_ui_value, mark_runtime_ui_dirty
 
 
+def _canvas_metrics(canvas, width: float, height: float) -> tuple[float, float, float, float, float]:
+    """Resolve raster scale and logical size from one CanvasScaler evaluation."""
+    scale_x, scale_y, text_scale = canvas.compute_scale(width, height)
+    logical_width = max(1.0, float(width) / max(scale_x, 1e-6))
+    logical_height = max(1.0, float(height) / max(scale_y, 1e-6))
+    return scale_x, scale_y, text_scale, logical_width, logical_height
+
+
 @disallow_multiple
 @add_component_menu("UI/Canvas")
 class UICanvas(InxUIComponent):
@@ -230,11 +238,7 @@ class UICanvas(InxUIComponent):
         not a fixed rectangle that should be centered and cropped. Anchors
         resolve against the current screen divided by that scale.
         """
-        scale_x, scale_y, _ = self.compute_scale(screen_w, screen_h)
-        return (
-            max(1.0, float(screen_w) / max(scale_x, 1e-6)),
-            max(1.0, float(screen_h) / max(scale_y, 1e-6)),
-        )
+        return _canvas_metrics(self, screen_w, screen_h)[3:]
 
     def pixel_adjust_rect(self, rect, scale_x: float, scale_y: float) -> tuple:
         """Project a logical rect to render pixels, snapping its edges when enabled.
