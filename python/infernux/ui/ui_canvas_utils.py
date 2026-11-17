@@ -45,7 +45,7 @@ def _is_uicanvas_component(component, canvas_type) -> bool:
     )
 
 
-def _has_pointer_ui_components(components) -> bool:
+def _has_ui_components(components) -> bool:
     from infernux.ui.inx_ui_screen_component import is_ui_screen_component
     from infernux.ui.ui_canvas import UICanvas
 

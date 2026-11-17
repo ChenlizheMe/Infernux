@@ -429,7 +429,7 @@ class Engine(RuntimeWorldHost):
         if (
             domain is not None
             and not domain.epoch.has_mouse_receivers
-            and not domain.scheduler.may_have_pointer_ui
+            and not domain.scheduler.may_have_ui_components
             and world_id not in vars(view).get("_world_pointer_states", ())
         ):
             return

@@ -530,7 +530,9 @@ struct CompletedUISnapshot::Data
     }
 };
 
-CompletedUISnapshot::CompletedUISnapshot() = default;
+CompletedUISnapshot::CompletedUISnapshot(std::shared_ptr<const RenderWorldFrame> world) : m_world(std::move(world))
+{
+}
 CompletedUISnapshot::~CompletedUISnapshot() = default;
 
 class InxScreenUIRenderer::SnapshotScope
@@ -605,8 +607,7 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureWorldCommands(std::sha
         throw std::logic_error("Completed UI capture requires its actual World execution owner");
     if (!m_deletionQueue || !m_descriptorManager)
         throw std::logic_error("Completed UI capture requires existing GPU resource owners");
-    auto snapshot = std::shared_ptr<CompletedSnapshot>(new CompletedSnapshot());
-    snapshot->m_world = std::move(world);
+    auto snapshot = std::shared_ptr<CompletedSnapshot>(new CompletedSnapshot(std::move(world)));
     const std::array drawLists{m_cameraDrawList, m_overlayDrawList, m_worldDrawList};
     // An empty publication carries World identity only.
     if (std::all_of(drawLists.begin(), drawLists.end(), [](const auto *list) { return list->IdxBuffer.empty(); }))
