@@ -1346,12 +1346,17 @@ def test_nuitka_failed_build_link_removes_its_temporary_parent(tmp_path, monkeyp
 
 
 def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
+    from importlib.machinery import SourcelessFileLoader
+    from types import ModuleType
+
     import infernux
+    from infernux._compiler.work_item import normalize_work_item
 
     source = tmp_path / "source" / "infernux"
     (source / "engine").mkdir(parents=True)
     (source / "lib").mkdir()
     (source / "_compiler").mkdir()
+    (source / "nn").mkdir()
     (source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
     (source / "engine" / "__init__.py").write_text("ENGINE = 1\n", encoding="utf-8")
     (source / "engine" / "runtime.py").write_text(
@@ -1361,6 +1366,10 @@ def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
     shutil.copy2(
         Path(infernux.__file__).parent / "_compiler" / "source_metadata.py",
         source / "_compiler" / "source_metadata.py",
+    )
+    shutil.copy2(
+        Path(infernux.__file__).parent / "nn" / "_primitives.py",
+        source / "nn" / "_primitives.py",
     )
     (source / "engine" / "path_utils.py").write_text(
         "def resolved_path(value): return str(value)\n",
@@ -1421,6 +1430,14 @@ def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
     assert (runtime / "engine" / "ui" / "runtime_canvas_snapshot.pyc").is_file()
     assert not (runtime / "engine" / "ui" / "editor_panel.pyc").exists()
     assert not list(runtime.rglob("*.py"))
+    primitive_path = str(runtime / "nn" / "_primitives.pyc")
+    primitives = ModuleType("cooked_nn_primitives")
+    SourcelessFileLoader(primitives.__name__, primitive_path).exec_module(primitives)
+    linear = normalize_work_item(primitives.linear, 4, target="Numerical work")
+    assert linear.domain_parameter == 3
+    assert linear.origin.path == "<infernux-runtime>/nn/_primitives.py"
+    assert "def linear(x, weight, bias, y):" in linear.origin.source
+    assert ("prepare", primitives.prepare.__code__.co_firstlineno) not in primitives.__infernux_compute_sources__
 
     fake_stdlib = tmp_path / "stdlib-source"
     fake_stdlib.mkdir()

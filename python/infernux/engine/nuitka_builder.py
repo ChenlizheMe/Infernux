@@ -3189,7 +3189,9 @@ print(json.dumps({{
                 from infernux._compiler.source_metadata import embed_compute_sources
 
                 source = source_path.read_text(encoding="utf-8")
-                cooked = embed_compute_sources(source)
+                cooked = embed_compute_sources(
+                    source, include_work_items=relative_posix == "nn/_primitives.py",
+                )
                 compile_path = source_path
                 temporary_source = None
                 if cooked != source:

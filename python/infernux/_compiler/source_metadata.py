@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from functools import lru_cache
 
-from .kernel_contract import attribute_name as _attribute_name
+from .kernel_contract import attribute_name as _attribute_name, index_declaration
 
 
 _RECORDS_PREFIX = "\n# <infernux-compute-source-metadata>\n__infernux_compute_sources__ = "
@@ -44,8 +44,8 @@ def compute_decorator_names(
 
 
 @lru_cache(maxsize=32)
-def function_source_spans(source: str):
-    """Return qualified name, code start, source start and end, and GPU decorator per declaration."""
+def function_source_spans(source: str, *, include_work_items: bool = False):
+    """Return qualified name, code start, source range, and whether to retain the declaration."""
     tree = ast.parse(source)
     decorator_names = compute_decorator_names(tree, include_local=True)
     spans = []
@@ -72,7 +72,10 @@ def function_source_spans(source: str):
                 # A parenthesized decorator may start before its expression.
                 while not lines[first - 1].lstrip().startswith('@'):
                     first -= 1
-            spans.append((".".join((*self.scope, node.name)), code_line, first, node.end_lineno, gpu))
+            work_item = include_work_items and any(
+                index_declaration(statement) is not None for statement in node.body
+            )
+            spans.append((".".join((*self.scope, node.name)), code_line, first, node.end_lineno, gpu or work_item))
             self.scope.extend((node.name, "<locals>"))
             self.generic_visit(node)
             del self.scope[-2:]
@@ -83,21 +86,22 @@ def function_source_spans(source: str):
     return tuple(spans)
 
 
-def compute_source_records(source: str) -> dict[tuple[str, int], tuple[str, int]]:
+def compute_source_records(source: str, *, include_work_items: bool = False) -> dict[tuple[str, int], tuple[str, int]]:
     """Index GPU declarations by qualified name and Python's code start line."""
     source = source.partition(_RECORDS_PREFIX)[0]
-    if "kernel" not in source and "function" not in source:
+    if "kernel" not in source and "function" not in source and not include_work_items:
         return {}
     lines = source.splitlines(keepends=True)
     return {(name, code_line): (''.join(lines[first - 1:last]), first)
-            for name, code_line, first, last, gpu in function_source_spans(source) if gpu}
+            for name, code_line, first, last, retain in function_source_spans(
+                source, include_work_items=include_work_items) if retain}
 
 
-def embed_compute_sources(source: str) -> str:
-    """Embed only decorated GPU functions for a source-less Player module."""
+def embed_compute_sources(source: str, *, include_work_items: bool = False) -> str:
+    """Embed compute definitions consumed by the resident compiler in a source-less Player."""
     base, marker, _ = source.partition(_RECORDS_PREFIX)
     base = base.rstrip() + "\n"
-    records = compute_source_records(base)
+    records = compute_source_records(base, include_work_items=include_work_items)
     if not records:
         return base if marker else source
     ordered = {name: records[name] for name in sorted(records)}
