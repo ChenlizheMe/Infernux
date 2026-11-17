@@ -244,6 +244,37 @@ def test_text_intrinsic_layout_is_derived_and_shared_with_hit_testing(scene, wor
         assert canvas.raycast(124.0, 20.0, layout_width=1920.0, layout_height=1080.0) is None
 
 
+def test_canvas_measures_only_text_that_drives_layout(scene):
+    owner = _screen_root(scene, "Text")
+    text = UIText()
+    text.width, text.height = 50, 30
+    owner.add_py_component(text)
+    rect = text.rect_transform
+    _place(text)
+    canvas = text.get_canvas()
+    measured = []
+
+    def measure(*args):
+        measured.append(args)
+        return 200, 60
+
+    canvas._prepare_native_layout(measure, 1920, 1080, 1.0)
+    assert measured == []
+    assert text.get_rect(1920, 1080)[2:] == pytest.approx((50, 30))
+
+    text.resize_mode = TextResizeMode.AutoWidth
+    canvas._prepare_native_layout(measure, 960, 540, 2.0)
+    assert len(measured) == 1
+    assert text.get_rect(960, 540)[2:] == pytest.approx((100, 30))
+    assert rect._driver == text.transform
+
+    text.resize_mode = TextResizeMode.FixedSize
+    canvas._prepare_native_layout(measure, 1920, 1080, 1.0)
+    assert len(measured) == 1
+    assert rect._driver is None
+    assert text.get_rect(1920, 1080)[2:] == pytest.approx((50, 30))
+
+
 def test_auto_height_measurement_uses_authored_wrap_width():
     text = UIText()
     text.width = 240.0

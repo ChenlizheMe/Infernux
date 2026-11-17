@@ -41,10 +41,9 @@ def release_layout(owner):
     return changed
 
 
-def _publish_groups(owner, frames, width, height):
+def _publish_groups(owner, elements, auto_sized_text, width, height):
     from .ui_frame import UIFrame
-    from .ui_text import UIText
-    active = [frame for frame in frames if isinstance(frame, UIFrame) and frame.enabled
+    active = [frame for frame in elements if isinstance(frame, UIFrame) and frame.enabled
               and frame.game_object.active_in_hierarchy and frame.layout_direction != UILayoutDirection.None_]
     wanted = {}
     for frame in active:
@@ -52,16 +51,15 @@ def _publish_groups(owner, frames, width, height):
         for child in frame._flow_children():
             wanted[child.game_object.id] = driver, child.transform, bind_rect(child)
     intrinsic = []
-    for element in frames:
-        if (isinstance(element, UIText) and element.enabled and element.game_object.active_in_hierarchy
-                and element.game_object.id not in wanted
-                and element.transform is not owner.__dict__.get('_native_viewport_driver')
-                and element.__dict__.get('_text_intrinsic_size') is not None):
-            mask = 1 if element.is_auto_width() else 2 if element.is_auto_height() else 0
-            if mask:
-                transform, layout = element.transform, bind_rect(element)
-                wanted[element.game_object.id] = transform, transform, layout
-                intrinsic.append((element, layout, mask))
+    viewport_driver = owner.__dict__.get('_native_viewport_driver')
+    for element in auto_sized_text:
+        if element.__dict__.get('_text_intrinsic_size') is None:
+            continue
+        identifier, transform = element.game_object.id, element.transform
+        if identifier not in wanted and transform is not viewport_driver:
+            layout = bind_rect(element)
+            wanted[identifier] = transform, transform, layout
+            intrinsic.append((element, transform, layout, 1 if element.is_auto_width() else 2))
     previous = owner.__dict__.get('_native_layout_targets', {})
     changed = False
     for identifier, (driver, transform, layout) in previous.items():
@@ -69,8 +67,8 @@ def _publish_groups(owner, frames, width, height):
         if current is None or current[0] is not driver:
             if bool(transform) and bool(driver):
                 changed |= layout._clear_driver(driver)
-    for element, layout, mask in intrinsic:
-        changed |= layout._drive_size(element.transform, Vector2(*element.get_resolved_size()), mask)
+    for element, transform, layout, mask in intrinsic:
+        changed |= layout._drive_size(transform, Vector2(*element.get_resolved_size()), mask)
     for frame in active:
         rect = frame.get_rect(width, height) if width is not None else frame.get_rect()
         fx, fy, fw, fh = rect
@@ -90,18 +88,21 @@ def _publish_groups(owner, frames, width, height):
 
 
 def _publish_layout(owner, elements, width, height, measure_text, text_scale):
-    changed = _publish_groups(owner, elements, width, height)
+    from .ui_text import UIText
+
+    auto_sized_text = [element for element in elements
+                       if isinstance(element, UIText) and not element.is_fixed_size()
+                       and element.enabled and element.game_object.active_in_hierarchy]
+    changed = _publish_groups(owner, elements, auto_sized_text, width, height)
     if measure_text is not None:
-        from .ui_text import UIText
         # First assign widths, then measure wrapped text against those widths.
         # The final pass publishes vertical sizes and dependent sibling poses.
         reflow = False
-        for element in elements:
-            if isinstance(element, UIText) and element.enabled and element.game_object.active_in_hierarchy:
-                reflow |= element.resolve_text_layout(measure_text, text_scale)
+        for element in auto_sized_text:
+            reflow |= element.resolve_text_layout(measure_text, text_scale)
         if reflow:
             _invalidate_rect_cache(layout=False)
-            changed |= _publish_groups(owner, elements, width, height)
+            changed |= _publish_groups(owner, elements, auto_sized_text, width, height)
     return changed
 
 
