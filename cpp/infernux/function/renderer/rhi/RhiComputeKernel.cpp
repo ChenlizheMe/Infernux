@@ -14,6 +14,81 @@ namespace infernux::rhi
 
 namespace
 {
+bool Writes(ComputeBufferAccess access) noexcept
+{
+    return (static_cast<uint8_t>(access) & static_cast<uint8_t>(ComputeBufferAccess::Write)) != 0;
+}
+
+bool Reads(ComputeBufferAccess access) noexcept
+{
+    return (static_cast<uint8_t>(access) & static_cast<uint8_t>(ComputeBufferAccess::Read)) != 0;
+}
+
+bool ReadsPrefix(const std::optional<ComputePrefixAccess> &prefix, uint32_t binding) noexcept
+{
+    return prefix && prefix->access == ComputeBufferAccess::Read && prefix->payload.binding == binding;
+}
+
+template <typename DescribeBuffer>
+void ValidatePrefixAccess(const ComputePrefixAccess &prefix, const std::vector<ComputeBufferAccess> &accesses,
+                          const std::vector<ComputeBufferAccess> &shaderAccesses, DescribeBuffer describe,
+                          std::array<uint32_t, 3> groups, bool indirect, bool hasCompleteWrites)
+{
+    const auto &[width, height, depth] = prefix.workgroupSize;
+    if (indirect || hasCompleteWrites || !width || height != 1 || depth != 1 || groups[1] != 1 || groups[2] != 1)
+        throw std::invalid_argument("Counted compute work requires a direct row dispatch with conditional writes");
+    const auto count = prefix.count.binding;
+    const auto payload = prefix.payload.binding;
+    if (count >= accesses.size() || payload >= accesses.size() || count == payload ||
+        accesses[count] != ComputeBufferAccess::Read || shaderAccesses[count] != ComputeBufferAccess::Read ||
+        (prefix.access != ComputeBufferAccess::Read && prefix.access != ComputeBufferAccess::Write) ||
+        accesses[payload] != prefix.access || Reads(prefix.access) != (shaderAccesses[payload] == ComputeBufferAccess::Read))
+        throw std::invalid_argument("Counted compute access requires separate count and payload binding roles");
+    const auto &countDesc = describe(count);
+    if (countDesc.scalarType != ComputeScalarType::UInt32 || countDesc.lanes != 1 ||
+        prefix.count.byteSize != sizeof(uint32_t) || prefix.count.offset % sizeof(uint32_t))
+        throw std::invalid_argument("Counted compute work requires one aligned uint32 count");
+    const auto stride = describe(payload).GetElementStride();
+    if (!stride || prefix.payload.offset % stride || !prefix.payload.byteSize || prefix.payload.byteSize % stride ||
+        prefix.payload.byteSize / stride > (std::numeric_limits<uint32_t>::max)())
+        throw std::invalid_argument("Counted compute payload requires aligned rows with uint32 capacity");
+    if (uint64_t{groups[0]} * width < prefix.payload.byteSize / stride)
+        throw std::invalid_argument("Counted compute invocation range does not cover the payload capacity");
+}
+
+template <typename Storage>
+struct PrefixValue
+{
+    Storage count;
+    Storage payload;
+    uint64_t countOffset;
+    uint64_t payloadOffset;
+    uint64_t capacityBytes;
+    uint32_t stride;
+
+    bool operator==(const PrefixValue &other) const noexcept
+    {
+        return count == other.count && payload == other.payload && countOffset == other.countOffset &&
+               payloadOffset == other.payloadOffset && capacityBytes == other.capacityBytes && stride == other.stride;
+    }
+};
+
+template <typename Storage>
+void RequirePrefix(const std::vector<PrefixValue<Storage>> &values, const PrefixValue<Storage> &wanted)
+{
+    if (std::find(values.begin(), values.end(), wanted) == values.end())
+        throw std::invalid_argument("Counted compute read requires a matching current count and payload writer");
+}
+
+template <typename Storage>
+void InvalidatePrefixes(std::vector<PrefixValue<Storage>> &values, Storage written)
+{
+    values.erase(std::remove_if(values.begin(), values.end(), [&](const auto &value) {
+                     return value.count == written || value.payload == written;
+                 }),
+                 values.end());
+}
+
 void ValidateIndirectRange(const ComputeBufferDesc &desc, uint64_t offset)
 {
     if (!HasBufferUsage(desc.usage, BufferUsageFlags::Indirect))
@@ -226,6 +301,15 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
         };
         validate(proof->reads, ComputeBufferAccess::Read);
         validate(proof->writes, ComputeBufferAccess::Write);
+        if (proof->prefix) {
+            const auto &prefix = *proof->prefix;
+            ValidatePrefixAccess(prefix, bufferAccesses, m_defaultBufferAccesses,
+                                 [&](uint32_t index) -> const ComputeBufferDesc & { return buffers[index]->GetDesc(); },
+                                 {groupCountX, groupCountY, groupCountZ}, indirectArguments.has_value(),
+                                 !proof->writes.empty());
+            buffers[prefix.count.binding]->ValidateRange(prefix.count.offset, prefix.count.byteSize);
+            buffers[prefix.payload.binding]->ValidateRange(prefix.payload.offset, prefix.payload.byteSize);
+        }
     }
     PreparedDispatch result;
     result.kernel = shared_from_this();
@@ -237,6 +321,19 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
             throw std::invalid_argument("A frozen compute value cannot be written");
         result.allocations.push_back(buffer->GetAllocation());
         result.states.push_back(buffer->m_state);
+    }
+    if (proof && proof->prefix) {
+        const auto &prefix = *proof->prefix;
+        const auto &count = result.allocations[prefix.count.binding];
+        const auto &payload = result.allocations[prefix.payload.binding];
+        if (count == payload)
+            throw std::invalid_argument("Counted compute count and payload require distinct allocations");
+        for (size_t index = 0; index < result.allocations.size(); ++index) {
+            if ((Writes(bufferAccesses[index]) && result.allocations[index] == count) ||
+                (index != prefix.payload.binding && result.allocations[index] == payload &&
+                 (Writes(bufferAccesses[index]) || Writes(prefix.access))))
+                throw std::invalid_argument("Counted compute bindings alias writable count or payload storage");
+        }
     }
     (void)PreparePipeline(true);
     result.pipeline = m_pipeline;
@@ -466,25 +563,46 @@ std::vector<ComputeKernel::BufferValueState> ComputeKernel::PrepareValues(const 
         intervals::Add(target, update.offset, update.offset + update.data.size());
         intervals::Add(written(update.allocation), update.offset, update.offset + update.data.size());
     }
+    using Allocation = const ComputeBufferAllocation *;
+    std::vector<PrefixValue<Allocation>> prefixes;
     for (const auto &dispatch : batch.dispatches) {
         const auto &work = dispatch.work;
-        for (size_t index = 0; index < work.allocations.size(); ++index)
-            if (static_cast<uint8_t>(work.bufferAccesses[index]) & static_cast<uint8_t>(ComputeBufferAccess::Write))
-                intervals::Add(written(work.allocations[index]), 0, work.allocations[index]->GetByteSize());
-        if (!work.proof)
-            continue; // Ordinary raw work makes no new complete-store claim.
-        for (const auto &read : work.proof->reads)
-            if (!intervals::Contains(known(work.allocations[read.binding]), read.offset, read.offset + read.byteSize))
-                throw std::invalid_argument("Compute input range lacks a prior accepted complete writer");
-        for (const auto &write : work.proof->writes) {
-            if (work.IsIndirect() && !intervals::Contains(known(work.allocations[write.binding]), write.offset,
-                                                          write.offset + write.byteSize))
-                throw std::invalid_argument("Indirect work cannot establish an unconditional complete-write range");
-            auto &target = std::find_if(values.begin(), values.end(), [&](const auto &value) {
-                               return value.allocation == work.allocations[write.binding];
-                           })->initialized;
-            intervals::Add(target, write.offset, write.offset + write.byteSize);
+        std::optional<PrefixValue<Allocation>> produced;
+        if (work.proof) {
+            for (const auto &read : work.proof->reads)
+                if (!intervals::Contains(known(work.allocations[read.binding]), read.offset, read.offset + read.byteSize))
+                    throw std::invalid_argument("Compute input range lacks a prior accepted complete writer");
+            if (work.proof->prefix) {
+                const auto &prefix = *work.proof->prefix;
+                const auto &count = work.allocations[prefix.count.binding];
+                if (!intervals::Contains(known(count), prefix.count.offset, prefix.count.offset + prefix.count.byteSize))
+                    throw std::invalid_argument("Counted compute work requires an initialized count");
+                const auto &payload = work.allocations[prefix.payload.binding];
+                const auto stride = work.states[prefix.payload.binding]->GetDesc().GetElementStride();
+                const PrefixValue<Allocation> value{count.get(), payload.get(), prefix.count.offset,
+                                                    prefix.payload.offset, prefix.payload.byteSize, stride};
+                if (prefix.access == ComputeBufferAccess::Read)
+                    RequirePrefix(prefixes, value);
+                else
+                    produced = value;
+            }
+            for (const auto &write : work.proof->writes) {
+                if (work.IsIndirect() && !intervals::Contains(known(work.allocations[write.binding]), write.offset,
+                                                              write.offset + write.byteSize))
+                    throw std::invalid_argument("Indirect work cannot establish an unconditional complete-write range");
+                auto &target = std::find_if(values.begin(), values.end(), [&](const auto &value) {
+                                   return value.allocation == work.allocations[write.binding];
+                               })->initialized;
+                intervals::Add(target, write.offset, write.offset + write.byteSize);
+            }
         }
+        for (size_t index = 0; index < work.allocations.size(); ++index)
+            if (Writes(work.bufferAccesses[index])) {
+                intervals::Add(written(work.allocations[index]), 0, work.allocations[index]->GetByteSize());
+                InvalidatePrefixes(prefixes, static_cast<Allocation>(work.allocations[index].get()));
+            }
+        if (produced)
+            prefixes.push_back(*produced);
     }
     for (const auto &copy : batch.copies) {
         const auto &region = copy.region;
@@ -1296,16 +1414,6 @@ void ComputeKernel::Destroy() noexcept
 
 namespace
 {
-bool Writes(ComputeBufferAccess access)
-{
-    return (static_cast<uint8_t>(access) & static_cast<uint8_t>(ComputeBufferAccess::Write)) != 0;
-}
-
-bool Reads(ComputeBufferAccess access)
-{
-    return (static_cast<uint8_t>(access) & static_cast<uint8_t>(ComputeBufferAccess::Read)) != 0;
-}
-
 bool SameAllocationLayout(const ComputeBufferDesc &left, const ComputeBufferDesc &right)
 {
     return left.elementCount == right.elementCount && left.scalarType == right.scalarType &&
@@ -1319,21 +1427,32 @@ bool Overlaps(const ComputeWorkRange &left, const ComputeWorkRange &right)
 
 void ValidateWorkAliases(const ComputeWorkDispatch &dispatch, const std::vector<BufferHandle> &identities)
 {
+    const auto sharesAllocation = [&](uint32_t left, uint32_t right) {
+        return left == right || (identities[left].IsValid() && identities[left] == identities[right]);
+    };
+    if (dispatch.prefix) {
+        const auto &prefix = *dispatch.prefix;
+        const auto count = dispatch.bindings[prefix.count.binding].range.slot;
+        const auto payload = dispatch.bindings[prefix.payload.binding].range.slot;
+        if (sharesAllocation(count, payload))
+            throw std::invalid_argument("Counted compute count and payload require distinct allocations");
+        for (size_t index = 0; index < dispatch.bindings.size(); ++index) {
+            const auto &binding = dispatch.bindings[index];
+            if ((Writes(binding.access) && sharesAllocation(binding.range.slot, count)) ||
+                (index != prefix.payload.binding && sharesAllocation(binding.range.slot, payload) &&
+                 (Writes(binding.access) || Writes(prefix.access))))
+                throw std::invalid_argument("Counted compute bindings alias writable count or payload storage");
+        }
+    }
     for (size_t index = 0; index < dispatch.bindings.size(); ++index) {
         const auto &left = dispatch.bindings[index];
-        if (dispatch.indirectArguments) {
-            const auto slot = dispatch.indirectArguments->slot;
-            const bool same = left.range.slot == slot || (identities[left.range.slot].IsValid() &&
-                                                          identities[left.range.slot] == identities[slot]);
-            if (same && Writes(left.access))
-                throw std::invalid_argument("Indirect arguments cannot alias writable shader storage");
-        }
+        if (dispatch.indirectArguments && sharesAllocation(left.range.slot, dispatch.indirectArguments->slot) &&
+            Writes(left.access))
+            throw std::invalid_argument("Indirect arguments cannot alias writable shader storage");
         for (size_t other = 0; other < index; ++other) {
             const auto &right = dispatch.bindings[other];
-            const bool same =
-                left.range.slot == right.range.slot ||
-                (identities[left.range.slot].IsValid() && identities[left.range.slot] == identities[right.range.slot]);
-            if (same && (Writes(left.access) || Writes(right.access)) && Overlaps(left.range, right.range))
+            if (sharesAllocation(left.range.slot, right.range.slot) && (Writes(left.access) || Writes(right.access)) &&
+                Overlaps(left.range, right.range))
                 throw std::invalid_argument("Compute work writable bindings overlap");
         }
     }
@@ -1461,6 +1580,7 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
             intervals::Add(initialized[port.range.slot], port.range.offset, port.range.offset + port.range.byteSize);
         }
     }
+    std::vector<PrefixValue<uint32_t>> prefixes;
     for (const auto &dispatch : m_dispatches) {
         if (!dispatch.kernel || !dispatch.kernel->GetHost().SharesServicesWith(m_host))
             throw std::invalid_argument("Compute work kernels must share its host");
@@ -1482,11 +1602,35 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
             ValidateIndirectRange(m_slots[arguments.slot].allocation, arguments.offset);
             requireRead(arguments);
         }
-        for (size_t index = 0; index < dispatch.bindings.size(); ++index) {
+        std::optional<PrefixValue<uint32_t>> produced;
+        if (dispatch.prefix) {
+            const auto &prefix = *dispatch.prefix;
+            const auto describe = [&](uint32_t index) -> const ComputeBufferDesc & {
+                return m_slots[dispatch.bindings[index].range.slot].allocation;
+            };
+            ValidatePrefixAccess(prefix, accesses, dispatch.kernel->m_defaultBufferAccesses, describe,
+                                 {dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ},
+                                 dispatch.indirectArguments.has_value(), !dispatch.completeWrites.empty());
+            const auto exactRange = [&](const ComputeBindingRange &fact) {
+                const auto &range = dispatch.bindings[fact.binding].range;
+                if (fact.offset != range.offset || fact.byteSize != range.byteSize)
+                    throw std::invalid_argument("Counted compute proof must describe the exact logical binding range");
+                return range;
+            };
+            const auto count = exactRange(prefix.count);
+            const auto payload = exactRange(prefix.payload);
+            const PrefixValue<uint32_t> value{count.slot, payload.slot, count.offset, payload.offset, payload.byteSize,
+                                             describe(prefix.payload.binding).GetElementStride()};
+            if (prefix.access == ComputeBufferAccess::Read)
+                RequirePrefix(prefixes, value);
+            else
+                produced = value;
+        }
+        for (uint32_t index = 0; index < dispatch.bindings.size(); ++index) {
             const auto &binding = dispatch.bindings[index];
             if (dispatch.kernel->m_bufferBindingTypes[index] == BindingType::UniformBuffer && Writes(binding.access))
                 throw std::invalid_argument("Compute work uniform bindings must be read-only");
-            if (Reads(binding.access))
+            if (Reads(binding.access) && !ReadsPrefix(dispatch.prefix, index))
                 requireRead(binding.range);
         }
         ValidateWorkAliases(dispatch, identities);
@@ -1504,6 +1648,11 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
                 throw std::invalid_argument("Indirect work cannot establish an unconditional complete-write range");
             intervals::Add(initialized[binding.slot], fact.offset, fact.offset + fact.byteSize);
         }
+        for (const auto &binding : dispatch.bindings)
+            if (Writes(binding.access))
+                InvalidatePrefixes(prefixes, binding.range.slot);
+        if (produced)
+            prefixes.push_back(*produced);
     }
     for (const auto &port : m_ports)
         if (!port.input && !intervals::Contains(initialized[port.range.slot], port.range.offset,
@@ -1633,6 +1782,7 @@ std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vec
         dispatch.groupCountZ = operation.groupCountZ;
         dispatch.proof.emplace();
         dispatch.proof->writes = operation.completeWrites;
+        dispatch.proof->prefix = operation.prefix;
         if (operation.indirectArguments)
             dispatch.indirectArguments = ComputeIndirectArguments{m_buffers[operation.indirectArguments->slot],
                                                                   operation.indirectArguments->offset};
@@ -1642,7 +1792,7 @@ std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vec
             const auto &binding = operation.bindings[index];
             dispatch.buffers.push_back(m_buffers[binding.range.slot]);
             dispatch.bufferAccesses.push_back(binding.access);
-            if (Reads(binding.access))
+            if (Reads(binding.access) && !ReadsPrefix(operation.prefix, index))
                 dispatch.proof->reads.push_back({index, binding.range.offset, binding.range.byteSize});
         }
         dispatches.push_back(std::move(dispatch));

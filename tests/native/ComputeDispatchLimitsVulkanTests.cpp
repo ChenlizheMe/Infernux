@@ -9,6 +9,7 @@
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstring>
@@ -96,10 +97,129 @@ static void Dispatch(ComputeHost &host, const std::shared_ptr<ComputeKernel> &ke
     assert(SubmitComputeBatch(host, {dispatch}).IsValid());
 }
 
+static const ShaderEntryPointCode &Entry(const ShaderTargetCode &program, const std::string &name)
+{
+    const auto found = std::find_if(program.entries.begin(), program.entries.end(),
+                                    [&](const auto &entry) { return entry.name == name; });
+    assert(found != program.entries.end());
+    return *found;
+}
+
+static std::vector<uint32_t> Words(const ShaderEntryPointCode &entry)
+{
+    assert(!entry.code.empty() && entry.code.size() % sizeof(uint32_t) == 0);
+    std::vector<uint32_t> words(entry.code.size() / sizeof(uint32_t));
+    std::memcpy(words.data(), entry.code.data(), entry.code.size());
+    return words;
+}
+
+static std::shared_ptr<ComputeKernel> ReflectedKernel(ComputeHost &host, const ShaderTargetCode &program,
+                                                       const std::string &name)
+{
+    const auto &entry = Entry(program, name);
+    std::vector<ComputeBufferBinding> layout;
+    for (const auto &resource : program.resources) {
+        const std::array location{resource.set, resource.binding.binding};
+        if (std::find(entry.bindings.begin(), entry.bindings.end(), location) != entry.bindings.end()) {
+            assert(resource.set == 0);
+            layout.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
+        }
+    }
+    std::sort(layout.begin(), layout.end(), [](const auto &left, const auto &right) { return left.slot < right.slot; });
+    const auto code = Words(entry);
+    return std::make_shared<ComputeKernel>(host, ShaderModuleDesc::FromSpirV(code.data(), code.size()), entry.name,
+                                           std::move(layout), 0);
+}
+
+static void TestDeviceCountedPayload(ComputeHost &host, const ShaderTargetCode &program)
+{
+    constexpr uint32_t capacity = 67, padding = 4, bytes = capacity * sizeof(uint32_t);
+    constexpr uint32_t sentinel = 999999;
+    constexpr auto scalar = ComputeScalarType::UInt32;
+    constexpr auto read = ComputeBufferAccess::Read, write = ComputeBufferAccess::Write;
+    const ComputeWorkRange request{0, 0, sizeof(uint32_t)}, count{1, sizeof(uint32_t), sizeof(uint32_t)};
+    const ComputeWorkRange payload{2, padding * sizeof(uint32_t), bytes}, result{3, 0, bytes};
+    const std::vector<ComputeWorkSlot> slots{
+        {{1, scalar}, {}}, {{3, scalar}, {}}, {{capacity + padding, scalar}, {}}, {{capacity, scalar}, {}}};
+    const std::vector<ComputeWorkPort> ports{{"request", request, true}, {"result", result, false}};
+    ComputeWorkDispatch makeCount, reset, makePayload, readPayload;
+    makeCount.kernel = ReflectedKernel(host, program, "make_count");
+    makeCount.bindings = {{request, read}, {count, write}};
+    makeCount.completeWrites = {{1, count.offset, count.byteSize}};
+    reset.kernel = ReflectedKernel(host, program, "reset_result");
+    reset.bindings = {{result, write}};
+    reset.completeWrites = {{0, result.offset, result.byteSize}};
+    const auto groupsFor = [&](const std::string &entry) {
+        const auto width = Entry(program, entry).workgroupSize[0];
+        assert(width != 0);
+        return (capacity + width - 1) / width;
+    };
+    reset.groupCountX = groupsFor("reset_result");
+    makePayload.kernel = ReflectedKernel(host, program, "make_payload");
+    makePayload.bindings = {{count, read}, {payload, write}};
+    makePayload.groupCountX = groupsFor("make_payload");
+    makePayload.prefix = ComputePrefixAccess{{0, count.offset, count.byteSize},
+                                             {1, payload.offset, payload.byteSize}, write,
+                                             Entry(program, "make_payload").workgroupSize};
+    readPayload.kernel = ReflectedKernel(host, program, "read_payload");
+    readPayload.bindings = {{count, read}, {payload, read}, {result, write}};
+    readPayload.groupCountX = groupsFor("read_payload");
+    readPayload.prefix = ComputePrefixAccess{{0, count.offset, count.byteSize},
+                                             {1, payload.offset, payload.byteSize}, read,
+                                             Entry(program, "read_payload").workgroupSize};
+    const std::vector<ComputeWorkDispatch> dispatches{makeCount, reset, makePayload, readPayload};
+    const auto recipe = std::make_shared<ComputeWorkRecipe>(host, slots, ports, dispatches);
+    const auto instance = recipe->Instantiate();
+    assert(instance);
+    const auto &buffers = instance->GetBuffers();
+    const auto verify = [&](const auto &output, uint32_t rows) {
+        const auto data = output->GetData(0, bytes);
+        assert(data.size() == bytes);
+        std::array<uint32_t, capacity> words;
+        std::memcpy(words.data(), data.data(), data.size());
+        for (uint32_t row = 0; row < capacity; ++row)
+            assert(words[row] == (row < rows ? (row * 3 + 7) * 2 : sentinel));
+    };
+    std::shared_ptr<ComputeBuffer> fullResult;
+    for (const auto &[selector, rows] : std::array<std::pair<uint32_t, uint32_t>, 4>{
+             {{34, capacity}, {1, 1}, {0, 0}, {35, capacity}}}) {
+        std::vector<uint8_t> value(sizeof(selector));
+        std::memcpy(value.data(), &selector, sizeof(selector));
+        const auto ticket = instance->PrepareBatch({{buffers[request.slot], request.offset, std::move(value)}})->Submit();
+        assert(ticket.IsValid() && buffers[result.slot]->GetLastWriteSubmission() == ticket);
+        assert(buffers[result.slot]->HasInitializedRange(result.offset, result.byteSize));
+        assert(!buffers[payload.slot]->HasInitializedRange(payload.offset, payload.byteSize));
+        verify(buffers[result.slot], rows);
+        if (!fullResult)
+            fullResult = buffers[result.slot]->Freeze();
+    }
+    assert(fullResult->GetBuffer() != buffers[result.slot]->GetBuffer());
+    verify(fullResult, capacity);
+
+    const auto rejected = [&](std::vector<ComputeWorkPort> badPorts, std::vector<ComputeWorkDispatch> badDispatches,
+                              const std::string &diagnostic) {
+        try {
+            ComputeWorkRecipe invalid(host, slots, std::move(badPorts), std::move(badDispatches));
+        } catch (const std::invalid_argument &error) {
+            return std::string(error.what()).find(diagnostic) != std::string::npos;
+        }
+        return false;
+    };
+    auto exported = ports;
+    exported.push_back({"payload", payload, false});
+    assert(rejected(std::move(exported), dispatches, "lacks a complete writer"));
+    assert(rejected(ports, {makeCount, reset, makePayload, makeCount, readPayload}, "matching current count"));
+    auto incomplete = dispatches;
+    --incomplete[2].groupCountX;
+    assert(rejected(ports, std::move(incomplete), "does not cover the payload capacity"));
+    std::cout << "GPU counted payload correct: full, one row, empty, clamped and retained result\n";
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
-    const auto spirv = infernux::test::FixtureSpirv(argv[1]);
+    const auto fixtures = infernux::test::CompileSlangFixture(argv[1]);
+    const auto spirv = Words(Entry(fixtures, "main"));
     assert(SDL_Init(SDL_INIT_VIDEO));
     auto *window = SDL_CreateWindow("Compute dispatch limits", 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
     assert(window);
@@ -216,6 +336,7 @@ int main(int argc, char **argv)
             }
             std::cout << "GPU readback correct: path=" << (batch ? "batch" : "direct") << " groups=4,3,2\n";
         }
+        TestDeviceCountedPayload(host, fixtures);
     }
     queue.Destroy();
     queues.Destroy();

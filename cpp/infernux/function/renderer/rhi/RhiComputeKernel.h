@@ -6,6 +6,7 @@
 #include "RhiDescriptors.h"
 #include "RhiSubmission.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -45,10 +46,23 @@ struct ComputeBindingRange
     uint64_t byteSize = 0;
 };
 
+/// A compiled direct row entry guards this payload with min(count, capacity).
+/// Count is one uint32. The payload range holds the entire logical capacity,
+/// with one element per row. The compiler supplies the reflected workgroup
+/// size and proves that the guarded entry writes every active row.
+struct ComputePrefixAccess
+{
+    ComputeBindingRange count;
+    ComputeBindingRange payload;
+    ComputeBufferAccess access = ComputeBufferAccess::Read;
+    std::array<uint32_t, 3> workgroupSize{};
+};
+
 struct ComputeDispatchProof
 {
     std::vector<ComputeBindingRange> reads;
     std::vector<ComputeBindingRange> writes;
+    std::optional<ComputePrefixAccess> prefix;
 };
 
 /// Device-produced XYZ workgroup counts; not a shader resource binding.
@@ -355,6 +369,8 @@ struct ComputeWorkDispatch
     uint32_t groupCountZ = 1;
     /// An exact twelve-byte execution input in a declared storage slot.
     std::optional<ComputeWorkRange> indirectArguments;
+    /// A conditional dataflow fact local to this recipe's prepared batch.
+    std::optional<ComputePrefixAccess> prefix;
 };
 
 struct ComputeWorkInput
