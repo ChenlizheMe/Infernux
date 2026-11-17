@@ -315,6 +315,7 @@ class JoltGpuTick::Impl
         CommitArticulationPose,
         SolveJointPosition,
         SolvePosition,
+        ProjectCoupledContacts,
         FinishJoints,
         UpdateSleep,
         WakeFinalPrescribedBounds,
@@ -718,7 +719,7 @@ class JoltGpuTick::Impl
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
                phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareCoupledContacts ||
-               phase == Phase::ExchangeCoupledContacts;
+               phase == Phase::ExchangeCoupledContacts || phase == Phase::ProjectCoupledContacts;
     }
 
     StageSpan Span(Phase phase) const
@@ -771,6 +772,7 @@ class JoltGpuTick::Impl
         case Phase::ReportContactsAfterVelocity:
         case Phase::PrepareCoupledContacts:
         case Phase::ExchangeCoupledContacts:
+        case Phase::ProjectCoupledContacts:
         case Phase::Done:
             break;
         }
@@ -827,7 +829,8 @@ class JoltGpuTick::Impl
         const bool responding =
             bool(control.prepareParticipant) || (plan && (plan->jointIslandCount || plan->contactIslandCount));
         const bool velocity = tickParameters.counts.w && (responding || control.prepareCoupledContacts);
-        const bool position = tickParameters.solve.x && responding;
+        const bool coupledPositions = control.prepareCoupledContacts && !inputs.GetExternalContactBodies().empty();
+        const bool position = tickParameters.solve.x && (responding || coupledPositions);
         next.islandBatchFirst = 0;
         next.islandBatchLanes = 0;
         next.localFirst = 0;
@@ -947,6 +950,12 @@ class JoltGpuTick::Impl
             next.phase = Phase::SolvePosition;
             break;
         case Phase::SolvePosition:
+            if (coupledPositions) {
+                next.phase = Phase::ProjectCoupledContacts;
+                break;
+            }
+            [[fallthrough]];
+        case Phase::ProjectCoupledContacts:
             next.phase = ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
             break;
         case Phase::FinishJoints:
@@ -1754,20 +1763,23 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::PrepareCoupledContacts ||
-                stageCursor.phase == Phase::ExchangeCoupledContacts) {
-                const auto phase = stageCursor.phase == Phase::PrepareCoupledContacts
-                                       ? JoltGpuCoupledContactStage::Prepare
-                                       : JoltGpuCoupledContactStage::Exchange;
+                stageCursor.phase == Phase::ExchangeCoupledContacts ||
+                stageCursor.phase == Phase::ProjectCoupledContacts) {
+                using CoupledStage = JoltGpuCoupledContactStage;
+                const bool preparing = stageCursor.phase == Phase::PrepareCoupledContacts;
+                const bool projecting = stageCursor.phase == Phase::ProjectCoupledContacts;
+                const auto phase = preparing    ? CoupledStage::Prepare
+                                   : projecting ? CoupledStage::Position
+                                                : CoupledStage::Velocity;
                 using JPH::GPU::Domain;
-                const bool canBatch = phase == JoltGpuCoupledContactStage::Exchange && !control.prepareParticipant &&
+                const bool canBatch = !preparing && !control.prepareParticipant &&
                                       IslandCount(Domain::IslandPatches) == 0 && IslandCount(Domain::IslandJoints) == 0;
-                const uint32_t maxRounds =
-                    canBatch ? std::min(tickParameters.counts.w - stageCursor.iteration, 4u) : 1u;
+                const uint32_t iterations = projecting ? tickParameters.solve.x : tickParameters.counts.w;
+                const uint32_t maxRounds = canBatch ? std::min(iterations - stageCursor.iteration, 4u) : 1u;
                 SelectControlWork(control.prepareCoupledContacts(storage, inputs, tickParameters, stageCursor.substep,
                                                                  stageCursor.iteration, phase, maxRounds,
-                                                                 [this](uint32_t rounds) {
-                                                                     if (stageCursor.phase ==
-                                                                         Phase::ExchangeCoupledContacts)
+                                                                 [this, preparing](uint32_t rounds) {
+                                                                     if (!preparing)
                                                                          stageCursor.iteration += rounds - 1;
                                                                      NextSpan(stageCursor);
                                                                      Normalize(stageCursor);

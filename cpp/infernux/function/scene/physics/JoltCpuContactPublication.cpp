@@ -707,9 +707,8 @@ void JoltCpuContactPublication::BeginCoupledSubstep(uint32_t substep, const std:
     if (substep == 0) {
         fixed.workspace = fixed.execution.AcquireCoupledWorkspace();
         auto &context = fixed.context.emplace(fixed.workspace->scratch);
-        admitted =
-            system.BeginCoupledVelocityUpdate(fixed.time, static_cast<int>(fixed.substeps), endpoints.data(),
-                                              static_cast<uint32_t>(endpoints.size()), context, fixed.workspace->jobs);
+        admitted = system.BeginCoupledUpdate(fixed.time, static_cast<int>(fixed.substeps), endpoints.data(),
+                                             static_cast<uint32_t>(endpoints.size()), context, fixed.workspace->jobs);
     } else {
         admitted =
             system.BeginNextCoupledSubstep(*fixed.context, endpoints.data(), static_cast<uint32_t>(endpoints.size()));
@@ -718,15 +717,30 @@ void JoltCpuContactPublication::BeginCoupledSubstep(uint32_t substep, const std:
         throw std::logic_error("CPU coupling endpoints differ from the admitted Fixed");
 }
 
-bool JoltCpuContactPublication::AdvanceCoupled(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses)
+bool JoltCpuContactPublication::AdvanceCoupledVelocity(
+    const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses)
 {
     auto &fixed = *m_coupled;
-    auto &context = *fixed.context;
-    auto &system = fixed.scene.System();
-    const auto result =
-        system.AdvanceCoupledVelocityUpdate(context, impulses.data(), static_cast<uint32_t>(impulses.size()));
+    const auto result = fixed.scene.System().AdvanceCoupledVelocityUpdate(*fixed.context, impulses.data(),
+                                                                          static_cast<uint32_t>(impulses.size()));
+    return AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Velocity);
+}
+
+bool JoltCpuContactPublication::AdvanceCoupledPosition(
+    const std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> &corrections, uint32_t rounds)
+{
+    auto &fixed = *m_coupled;
+    const auto result = fixed.scene.System().AdvanceCoupledPositionUpdate(
+        *fixed.context, corrections.data(), static_cast<uint32_t>(corrections.size()), rounds);
+    return AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Position);
+}
+
+bool JoltCpuContactPublication::AcceptCoupledRound(std::optional<JPH::EPhysicsUpdateError> result,
+                                                   JPH::PhysicsUpdateContext::ECoupledStage phase)
+{
+    auto &fixed = *m_coupled;
     if (!result)
-        return context.mAwaitingCoupledEndpoints;
+        return fixed.context->mCoupledStage != phase;
     fixed.listener.reset();
     if (*result != JPH::EPhysicsUpdateError::None)
         throw std::runtime_error("CPU physics exceeded its configured native capacity");
@@ -755,10 +769,14 @@ void JoltCpuContactPublication::CancelCoupled() noexcept
     if (m_coupled->context) {
         auto &context = *m_coupled->context;
         auto &system = m_coupled->scene.System();
-        while (context.mCoupledUpdate) {
-            if (context.mAwaitingCoupledEndpoints)
+        using Stage = JPH::PhysicsUpdateContext::ECoupledStage;
+        while (context.IsCoupledUpdate()) {
+            if (context.mCoupledStage == Stage::NextSubstep)
                 system.BeginNextCoupledSubstep(context, nullptr, 0);
-            system.AdvanceCoupledVelocityUpdate(context);
+            if (context.mCoupledStage == Stage::Position)
+                system.AdvanceCoupledPositionUpdate(context);
+            else
+                system.AdvanceCoupledVelocityUpdate(context);
         }
     }
     m_coupled.reset();

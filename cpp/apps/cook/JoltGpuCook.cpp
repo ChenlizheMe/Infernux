@@ -63,9 +63,9 @@ ShaderSourceModule LoadProgramSource(const std::filesystem::path &root, const st
     case JoltGpuProgram::CrossDomainCandidates:
         return {"inx_cross_domain_candidates", "Jolt/GPU/Shaders/cross_domain_candidates.slang",
                 ReadSource(root / "cpp/infernux/function/scene/physics/shaders/cross_domain_candidates.slang")};
-    case JoltGpuProgram::CrossDomainVelocity:
-        return {"inx_cross_domain_velocity", "Jolt/GPU/Shaders/cross_domain_velocity.slang",
-                ReadSource(root / "cpp/infernux/function/scene/physics/shaders/cross_domain_velocity.slang")};
+    case JoltGpuProgram::CrossDomainContactSolver:
+        return {"inx_cross_domain_contact_solver", "Jolt/GPU/Shaders/cross_domain_contact_solver.slang",
+                ReadSource(root / "cpp/infernux/function/scene/physics/shaders/cross_domain_contact_solver.slang")};
     case JoltGpuProgram::Count:
         break;
     }

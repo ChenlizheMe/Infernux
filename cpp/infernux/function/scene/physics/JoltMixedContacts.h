@@ -38,6 +38,7 @@ class JoltMixedContactStep final
     {
         JPH::GPU::Float4 positionDepth;
         glm::vec3 gpuVelocity;
+        glm::vec3 localAnchorA, localAnchorB;
     };
 
     struct ResponsePatch
@@ -55,7 +56,8 @@ class JoltMixedContactStep final
                uint32_t substeps);
     void CaptureCpuBoundary(uint32_t boundary);
     [[nodiscard]] const std::vector<JPH::GPU::UInt4> &EncodeTree(uint32_t substep, float predictedInterval);
-    void Collect(uint32_t substep, const JoltGpuScene::Publication &, const Policy &, const Candidate &);
+    void Collect(uint32_t substep, const JoltGpuScene::Publication &, const Policy &, const Candidate &,
+                 const JoltGpuModel *responseModel);
     [[nodiscard]] std::vector<ResponsePatch> &Responses() noexcept
     {
         return m_responses;

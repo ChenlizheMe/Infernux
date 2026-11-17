@@ -20,6 +20,6 @@ class JoltMixedConstraintSolver final
         std::vector<uint32_t> ports;
     };
     rhi::ComputeHost m_host;
-    Program m_exchange, m_wake;
+    Program m_velocity, m_position, m_wake;
 };
 } // namespace infernux

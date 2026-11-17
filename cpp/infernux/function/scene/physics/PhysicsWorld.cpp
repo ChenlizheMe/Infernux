@@ -790,7 +790,7 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         if (coupled && !m_mixedConstraintSolver) {
             const auto target = PhysicsShaderTarget(*m_gpuHost);
             m_mixedConstraintSolver = std::make_unique<JoltMixedConstraintSolver>(
-                *m_gpuHost, LoadJoltGpuProgram(JoltGpuProgram::CrossDomainVelocity, target));
+                *m_gpuHost, LoadJoltGpuProgram(JoltGpuProgram::CrossDomainContactSolver, target));
         }
     }
     if (domain.gpuRegistered) {

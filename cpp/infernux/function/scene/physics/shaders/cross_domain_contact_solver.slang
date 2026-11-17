@@ -2,8 +2,9 @@
 
 struct CouplingParams
 {
-    uint4 range; // First group or wake slot, count, and velocity rounds.
+    uint4 range; // First group or wake slot, count, and rounds.
     float4 gravityDt;
+    float4 contact;
 };
 struct CpuBoundary
 {
@@ -13,6 +14,14 @@ struct CpuBoundary
 struct Velocity
 {
     float4 linear, angular;
+};
+struct Pose
+{
+    float4 center, rotation;
+};
+struct PositionAnchors
+{
+    float4 localA[4], localB[4];
 };
 struct MixedPatch
 {
@@ -33,6 +42,8 @@ struct MixedPatch
 [[vk::binding(8, 0)]] RWStructuredBuffer<BodySleepRecord> gpu_sleep;
 [[vk::binding(9, 0)]] StructuredBuffer<BodyForces> gpu_forces;
 [[vk::binding(10, 0)]] StructuredBuffer<uint> wake_slots;
+[[vk::binding(11, 0)]] RWStructuredBuffer<Pose> cpu_poses;
+[[vk::binding(12, 0)]] StructuredBuffer<PositionAnchors> anchors;
 
 // A thread owns every CPU and GPU endpoint of one connected cross-domain
 // group. Local constraint solvers have completed their current velocity round.
@@ -123,6 +134,41 @@ void exchange_cross_domain_velocity(uint3 id : SV_DispatchThreadID)
     for (uint round = 0; round < params.range.z; ++round)
         for (uint i = group.x; i < group.x + group.y; ++i)
             solve_patch(i);
+}
+
+void project_patch(uint index)
+{
+    const MixedPatch patch = patches[index];
+    const PositionAnchors geometry = anchors[index];
+    const uint a = patch.endpoints.x, b = patch.endpoints.y;
+    const Pose pose = cpu_poses[a];
+    BodyState sa = {pose.center, pose.rotation, float4(0), float4(0)};
+    BodyState sb = gpu_states[b];
+    const BodyModel ma = cpu_models[a].model, mb = gpu_models[b];
+    const float4 linear = sb.linearVelocity, angular = sb.angularVelocity;
+    Contact contact = (Contact)0;
+    contact.normalDepth = patch.normalFriction;
+    for (uint i = 0; i < patch.endpoints.z; ++i)
+    {
+        contact.localAnchorA = geometry.localA[i];
+        contact.localAnchorB = geometry.localB[i];
+        jph_solve_position(ma, sa, mb, sb, contact, params.contact.y, params.contact.z, params.contact.w);
+    }
+    cpu_poses[a] = {sa.positionCOM, sa.rotation};
+    sb.linearVelocity = linear;
+    sb.angularVelocity = angular;
+    gpu_states[b] = sb;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void exchange_cross_domain_position(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= params.range.y) return;
+    const uint4 group = groups[params.range.x + id.x];
+    for (uint round = 0; round < params.range.z; ++round)
+        for (uint i = group.x; i < group.x + group.y; ++i)
+            project_patch(i);
 }
 
 [shader("compute")]

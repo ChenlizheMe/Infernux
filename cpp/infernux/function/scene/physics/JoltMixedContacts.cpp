@@ -202,7 +202,7 @@ const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t su
 }
 
 void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publication &publication, const Policy &policy,
-                                   const Candidate &candidate)
+                                   const Candidate &candidate, const JoltGpuModel *responseModel)
 {
     const auto &address = publication.directory->leaves[candidate.source.x];
     const auto &actor = *publication.directory->actors[address.bodySlot];
@@ -286,11 +286,21 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
                                                                  surface.frictionCombine, gpuSurface.frictionCombine)};
             patch.restitution = JoltCpuScene::CombineSurface(surface.restitution, gpuSurface.restitution,
                                                              surface.bounceCombine, gpuSurface.bounceCombine);
+            const auto &model = responseModel->shapes[candidate.source.x];
+            const auto &r = model.localRotation;
+            const auto &p = model.localPositionCOM;
+            const JPH::Quat gpuInverse = JPH::Quat(r.x, r.y, r.z, r.w) * rotation.Conjugated();
+            const JPH::Vec3 gpuLocalCenter(p.x, p.y, p.z);
+            const auto cpuInverse = cpu.rotation.Conjugated();
+            const JPH::Vec3 centerDifference(cpu.center - center);
             for (uint32_t i = 0; i < patch.pointCount; ++i) {
                 const auto point = cpu.center + 0.5f * (first[i] + second[i]);
-                const auto p = Vector3(point);
+                const auto midpoint = Vector3(point);
                 const auto vb = Vector3(candidate.linear) + Vector3(candidate.angular).Cross(JPH::Vec3(point - center));
-                patch.points[i] = {{p.x, p.y, p.z, (first[i] - second[i]).Dot(normal)}, Vector3(vb)};
+                patch.points[i] = {{midpoint.x, midpoint.y, midpoint.z, (first[i] - second[i]).Dot(normal)},
+                                   Vector3(vb),
+                                   Vector3(cpuInverse * first[i]),
+                                   Vector3(gpuLocalCenter + gpuInverse * (centerDifference + second[i]))};
             }
         });
         gpu.CollideShape(proxy.shape.GetPtr(), JPH::Vec3::sOne(),
@@ -396,6 +406,7 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     std::vector<uint32_t> counts;
     std::vector<Candidate> decoded;
     const std::vector<UInt4> *tree = nullptr;
+    const JoltGpuModel *responseModel = nullptr;
     std::function<JoltGpuControlWork()> substepReady;
     bool discovery = false;
     UInt4 range{};
@@ -423,6 +434,7 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     {
         discovery = response;
         if (discovery) {
+            responseModel = &storage.GetModel();
             step.Responses().clear();
             step.CaptureCpuBoundary(index);
         }
@@ -502,7 +514,8 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
                             packet->Readback(1)->ReadInto(self->decoded.data(),
                                                           self->decoded.size() * sizeof(Candidate));
                             for (uint32_t i = 0; i < count; ++i)
-                                self->step.Collect(self->substep, *self->publication, self->policy, self->decoded[i]);
+                                self->step.Collect(self->substep, *self->publication, self->policy, self->decoded[i],
+                                                   self->responseModel);
                         }
                         auto ready = std::move(self->substepReady);
                         return ready();
@@ -574,7 +587,8 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
                         self->decoded.resize(range.count);
                         packet->Readback(i)->ReadInto(self->decoded.data(), range.count * sizeof(Candidate));
                         for (const auto &candidate : self->decoded)
-                            self->step.Collect(range.substep, *self->publication, self->policy, candidate);
+                            self->step.Collect(range.substep, *self->publication, self->policy, candidate,
+                                               self->responseModel);
                     }
                     self->readWindow = nextWindow;
                     self->readFirst = nextFirst;

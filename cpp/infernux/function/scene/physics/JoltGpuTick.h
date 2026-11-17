@@ -99,7 +99,8 @@ enum class JoltGpuContactReportStage
 enum class JoltGpuCoupledContactStage
 {
     Prepare,
-    Exchange
+    Velocity,
+    Position
 };
 
 enum class JoltGpuParticipantStage : uint32_t
@@ -147,7 +148,7 @@ struct JoltGpuTickControl
     std::function<JoltGpuControlWork(const JoltGpuStorage &, const JoltGpuStepInputs &, const JPH::GPU::StepParams &,
                                      uint32_t, JoltGpuContactReportStage, std::function<void()>)>
         prepareContactReport;
-    // Prepare before native topology, then exchange after local velocity rounds.
+    // Prepare before native topology, then exchange after local velocity and position rounds.
     // With no local GPU rows, the caller may advance multiple independent rounds in one submission.
     std::function<JoltGpuControlWork(const JoltGpuStorage &, JoltGpuStepInputs &, const JPH::GPU::StepParams &,
                                      uint32_t, uint32_t, JoltGpuCoupledContactStage, uint32_t,

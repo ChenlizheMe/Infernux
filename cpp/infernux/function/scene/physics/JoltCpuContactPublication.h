@@ -26,8 +26,9 @@ class JoltCpuContactPublication final
     void ConfigureCoupledFixed(JoltCpuExecution &, JoltCpuScene &, float deltaTime, uint32_t substeps,
                                ContactStreamIdentity, PhysicsContactPublication::Policy);
     void BeginCoupledSubstep(uint32_t substep, const std::vector<JPH::BodyID> &endpoints);
-    // Advances one native velocity round. True once this substep integrates.
-    bool AdvanceCoupled(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses = {});
+    // Each returns true when its phase finishes on this substep.
+    bool AdvanceCoupledVelocity(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses = {});
+    bool AdvanceCoupledPosition(const std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> &, uint32_t rounds);
     [[nodiscard]] JPH::PhysicsUpdateContext::CoupledFreeVelocity CoupledFreeVelocity(JPH::BodyID body) const;
     [[nodiscard]] bool CoupledHasLocalVelocityRows() const noexcept;
     /// Observe the previous prepared Fixed. Call Validate before taking frames.
@@ -45,6 +46,7 @@ class JoltCpuContactPublication final
     void PrepareObservation(JoltCpuScene &, uint32_t substeps, ContactStreamIdentity, PhysicsContactPublication::Policy,
                             std::function<void(uint32_t)>);
     void FinishObservation(JoltCpuScene &, uint32_t substeps, ContactStreamIdentity);
+    bool AcceptCoupledRound(std::optional<JPH::EPhysicsUpdateError>, JPH::PhysicsUpdateContext::ECoupledStage);
     void CancelCoupled() noexcept;
     std::unique_ptr<Capture> m_capture;
     std::unique_ptr<CoupledStep> m_coupled;
