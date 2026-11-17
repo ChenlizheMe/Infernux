@@ -717,7 +717,8 @@ void InxRenderer::PreparePipeline()
                 }
                 return true;
             });
-        m_vkCore->SetFrameSubmissionBuilder([this](vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem,
+        m_vkCore->SetFrameSubmissionBuilder([this](vk::VulkanFrameSubmission &submission,
+                                                   const std::vector<uint32_t> &frameDependencies,
                                                    uint32_t particleComputeWorkItem,
                                                    std::vector<uint32_t> &presentationDependencies) {
             m_guiTargetEncodings.clear();
@@ -749,11 +750,31 @@ void InxRenderer::PreparePipeline()
                 std::vector<uint32_t> graphDependencies = predecessors;
                 if (particleComputeWorkItem != 0)
                     graphDependencies.push_back(particleComputeWorkItem);
+                const auto completeView = [this, graph, sceneView](VkCommandBuffer commandBuffer) {
+                    if (!graph->CompleteSubmissionExecution(commandBuffer))
+                        return false;
+                    if (auto *target = graph->GetOutputTarget(); target && target->GetImGuiTextureId())
+                        m_guiTargetEncodings.emplace_back(target, graph->OutputDisplayEncoded());
+                    if (sceneView && m_scenePickingService && m_scenePickingService->HasPendingRecord() &&
+                        m_sceneRenderTarget) {
+                        m_scenePickingService->Record(commandBuffer, m_sceneRenderTarget->GetWidth(),
+                                                      m_sceneRenderTarget->GetHeight(), graph->GetPerViewBindings(),
+                                                      graph->GetViewGlobalsBinding(), graph->GetCachedView());
+                    }
+                    return true;
+                };
+                const auto &batches = compiled->GetSubmissionPlan().batches;
+                const bool joinsScreenStack = earlierScreenCameras && !earlierScreenCameras->empty();
+                const bool finishWithGraph =
+                    !joinsScreenStack && batches.size() == 1 && batches.front().queue == rhi::QueueRole::Graphics;
                 auto range = submission.AppendRenderGraph(
-                    *compiled, graphDependencies, [graph, activateView](uint32_t batchIndex, VkCommandBuffer) {
+                    *compiled, graphDependencies,
+                    [graph, activateView](uint32_t batchIndex, VkCommandBuffer) {
                         activateView(graph);
                         return batchIndex != 0 || graph->PrepareSubmissionExecution();
-                    });
+                    },
+                    finishWithGraph ? vk::VulkanFrameSubmission::GraphHook(completeView)
+                                    : vk::VulkanFrameSubmission::GraphHook{});
                 if (range.Empty())
                     return false;
                 const uint64_t previewId =
@@ -762,31 +783,20 @@ void InxRenderer::PreparePipeline()
                 const auto sceneWorld = sceneView ? graph->GetCachedCameraView().worldId : 0;
                 const auto sceneTargetGeneration = m_sceneRenderTargetGeneration;
 
-                if (earlierScreenCameras)
-                    range.terminals.insert(range.terminals.end(), earlierScreenCameras->begin(),
-                                           earlierScreenCameras->end());
-                // The last camera also completes the output. Its distinct
-                // batch waits on the terminals of every camera in this stack.
-                const auto finalizeStages =
-                    earlierScreenCameras ? rhi::PipelineStage::AllCommands : rhi::PipelineStage::AllGraphics;
-                const uint32_t finalize = submission.AddWork(
-                    viewContext.device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, viewContext.id,
-                    finalizeStages, std::move(range.terminals),
-                    [this, graph, sceneView, activateView](VkCommandBuffer commandBuffer) {
-                        activateView(graph);
-                        if (!graph->CompleteSubmissionExecution(commandBuffer))
-                            return false;
-                        if (auto *target = graph->GetOutputTarget(); target && target->GetImGuiTextureId())
-                            m_guiTargetEncodings.emplace_back(target, graph->OutputDisplayEncoded());
-                        if (sceneView && m_scenePickingService && m_scenePickingService->HasPendingRecord() &&
-                            m_sceneRenderTarget) {
-                            m_scenePickingService->Record(commandBuffer, m_sceneRenderTarget->GetWidth(),
-                                                          m_sceneRenderTarget->GetHeight(), graph->GetPerViewBindings(),
-                                                          graph->GetViewGlobalsBinding(), graph->GetCachedView());
-                        }
-                        return true;
-                    },
-                    "SceneGraph/Finalize");
+                uint32_t finalize = range.workItems.back();
+                if (!finishWithGraph) {
+                    if (joinsScreenStack)
+                        range.terminals.insert(range.terminals.end(), earlierScreenCameras->begin(),
+                                               earlierScreenCameras->end());
+                    finalize = submission.AddWork(
+                        viewContext.device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, viewContext.id,
+                        rhi::PipelineStage::AllCommands, std::move(range.terminals),
+                        [graph, activateView, completeView](VkCommandBuffer commandBuffer) {
+                            activateView(graph);
+                            return completeView(commandBuffer);
+                        },
+                        "SceneGraph/Finalize");
+                }
                 submission.OnWorkAccepted(finalize, [this, graph, previewId, publication, sceneView, sceneWorld,
                                                      sceneTargetGeneration](rhi::SubmissionTicket ticket) {
                     graph->CommitSubmissionExecution();
@@ -806,8 +816,9 @@ void InxRenderer::PreparePipeline()
 
             struct ScreenStack
             {
+                uint32_t firstView = 0;
                 uint32_t finalView = 0;
-                uint32_t setup = 0;
+                uint32_t preserveWork = 0;
                 std::vector<uint32_t> earlierCameras;
             };
             std::vector<uint32_t> viewFinals(m_scheduledViews.size());
@@ -815,24 +826,29 @@ void InxRenderer::PreparePipeline()
             for (const auto index : m_viewSchedule.order) {
                 const auto *graph = m_scheduledViews[index].graph;
                 const auto &camera = graph->GetCachedCameraView();
-                if (graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture)
-                    screenStacks[camera.worldId].finalView = index;
+                if (graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture) {
+                    auto [stack, inserted] = screenStacks.try_emplace(camera.worldId);
+                    if (inserted)
+                        stack->second.firstView = index;
+                    stack->second.finalView = index;
+                }
             }
             for (const auto index : m_viewSchedule.order) {
                 const auto &view = m_scheduledViews[index];
-                std::vector<uint32_t> dependencies{frameSetupWorkItem};
+                std::vector<uint32_t> dependencies = frameDependencies;
                 const auto &camera = view.graph->GetCachedCameraView();
                 ScreenStack *stack = nullptr;
                 if (view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture) {
                     stack = &screenStacks.at(camera.worldId);
-                    if (!stack->setup) {
+                    if (stack->firstView == index) {
                         const bool partial = camera.rect != glm::vec4(0, 0, 1, 1);
                         const bool preserveColor = PreservesScreenColor(camera);
                         const bool preserveDepth = partial || camera.clearFlags == CameraClearFlags::DontClear;
-                        stack->setup = GameScreens().AppendPreserve(submission, camera.worldId, frameSetupWorkItem,
-                                                                    preserveColor, preserveDepth);
+                        stack->preserveWork = GameScreens().AppendPreserve(
+                            submission, camera.worldId, frameDependencies, preserveColor, preserveDepth);
                     }
-                    dependencies.push_back(stack->setup);
+                    if (stack->preserveWork)
+                        dependencies.push_back(stack->preserveWork);
                 }
                 for (const auto producer : m_viewSchedule.predecessors[index])
                     dependencies.push_back(viewFinals[producer]);

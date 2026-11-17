@@ -622,23 +622,19 @@ class InxVkCoreModular
     // ========================================================================
 
     /// Add Scene/Game/Preview batches and append their terminal work to presentationDependencies.
-    /// particleComputeWorkItem is the unsplit Simulation / PrimeExport batch
-    /// that exported instance buffers this frame. Scene graphs must wait on it
-    /// directly; Frame/Setup must not, or a later graphics ownership release
-    /// deadlocks against Simulation.
+    /// Pass frame prerequisites to graph roots. Scene graphs also depend on the
+    /// particle simulation or export that produced their instance buffers.
     using FrameSubmissionBuildCallback =
-        std::function<bool(vk::VulkanFrameSubmission &submission, uint32_t frameSetupWorkItem,
+        std::function<bool(vk::VulkanFrameSubmission &submission, const std::vector<uint32_t> &frameDependencies,
                            uint32_t particleComputeWorkItem, std::vector<uint32_t> &presentationDependencies)>;
     void SetFrameSubmissionBuilder(FrameSubmissionBuildCallback builder)
     {
         m_frameSubmissionBuilder = std::move(builder);
     }
 
-    /// Publish queue-family releases before Frame/Setup and before
-    /// GpuParticle/PrimeSimulation. Selecting a Game-only particle creates
-    /// exclusive cull/sort buffers whose acquire sits in Simulation; those
-    /// releases used to wait for Setup, which already waited for Simulation.
-    /// Hidden Scene/Game views must still emit last frame's releases.
+    /// Publish image initialization and queue-family releases before their
+    /// first consumers. Hidden views still emit the previous frame's releases
+    /// for exclusive particle buffers consumed by the next simulation.
     using FramePreSetupCallback =
         std::function<bool(vk::VulkanFrameSubmission &submission, std::vector<uint32_t> &extraSetupDependencies)>;
     void SetFramePreSetupBuilder(FramePreSetupCallback builder)

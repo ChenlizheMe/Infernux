@@ -367,14 +367,14 @@ class GameScreenOutputs final
     /// stacks promote owning allocations directly, without a front resolve.
     /// The previous accepted sample, not the older completed front, is the
     /// source, preserving consecutive sample semantics on the Graphics queue.
-    uint32_t AppendPreserve(vk::VulkanFrameSubmission &submission, uint64_t worldId, uint32_t setup, bool color,
-                            bool depth)
+    uint32_t AppendPreserve(vk::VulkanFrameSubmission &submission, uint64_t worldId,
+                            const std::vector<uint32_t> &frameDependencies, bool color, bool depth)
     {
         const auto output = Find(worldId);
         const auto previous = output ? output->lastAccepted : nullptr;
         if (!output || !output->work || !output->admission || !previous ||
             previous->generation != output->admission->generation || (!color && !depth))
-            return setup;
+            return 0;
         const auto source = previous->image;
         const auto destination = output->work->pixels->texture->Acquire();
         if (source == destination)
@@ -384,7 +384,7 @@ class GameScreenOutputs final
             throw std::runtime_error("Preserving a multisampled screen requires multisample texture copies");
         const auto work = submission.AddWork(
             m_core.GetDeviceContext().GetDeviceId(), rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, output->id,
-            rhi::PipelineStage::Transfer, {setup},
+            rhi::PipelineStage::AllCommands, frameDependencies,
             [this, source, destination, color, depth](VkCommandBuffer commands) {
                 const auto copy = [&](const rhi::TextureResource &from, const rhi::TextureResource &to,
                                       VkImageLayout layout, VkAccessFlags access, VkImageAspectFlags aspect) {

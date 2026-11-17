@@ -162,8 +162,8 @@ try {
         throw std::runtime_error("Failed to prepare the presentation render graph");
 
     const rhi::DeviceId device = m_backend.Device().GetDeviceId();
-    std::vector<uint32_t> setupDependencies;
-    if (m_framePreSetupBuilder && !m_framePreSetupBuilder(m_frameSubmission, setupDependencies)) {
+    std::vector<uint32_t> frameDependencies;
+    if (m_framePreSetupBuilder && !m_framePreSetupBuilder(m_frameSubmission, frameDependencies)) {
         throw std::runtime_error("Failed to publish pre-setup queue ownership releases");
     }
 
@@ -175,7 +175,7 @@ try {
         // compute acquire sat on exclusive Graphics-owned buffers.
         const uint32_t primeSimulation = m_frameSubmission.AddWork(
             device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-            rhi::PipelineStage::ComputeShader, setupDependencies,
+            rhi::PipelineStage::ComputeShader, frameDependencies,
             [this]([[maybe_unused]] VkCommandBuffer commandBuffer) {
                 return m_frameAsyncSimulationExecutor(commandBuffer);
             },
@@ -199,7 +199,7 @@ try {
         // guarantees that motivated the cross-frame guard.
         particleComputeWork = m_frameSubmission.AddWork(
             device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-            rhi::PipelineStage::ComputeShader, setupDependencies,
+            rhi::PipelineStage::ComputeShader, frameDependencies,
             [this](VkCommandBuffer commandBuffer) {
                 m_frameComputeExecutor(commandBuffer);
                 return true;
@@ -207,26 +207,26 @@ try {
             "GpuParticle/InlineSimulation");
     }
 
-    // Frame/Setup starts frame accounting. Waiting here for Simulation plus
-    // queuing OwnershipRelease after Setup deadlocks the independent
-    // compute family when a newly selected emitter first touches exclusive
-    // Graphics buffers (Game-only six-way preview).
-    const uint32_t setupWork = m_frameSubmission.AddWork(
-        device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, m_presentationView.id,
-        rhi::PipelineStage::AllGraphics, std::move(setupDependencies),
-        [this](VkCommandBuffer commandBuffer) {
 #if INFERNUX_FRAME_PROFILE
+    const uint32_t timingStart = m_frameSubmission.AddWork(
+        device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, m_presentationView.id,
+        rhi::PipelineStage::AllCommands, std::move(frameDependencies),
+        [this](VkCommandBuffer commandBuffer) {
             m_gpuTimestampQueries.BeginFrame(commandBuffer, m_currentFrame);
             m_frameTimestampRegion =
                 m_gpuTimestampQueries.BeginRegion(commandBuffer, "Frame", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
-#endif
             return true;
         },
-        "Frame/Setup");
+        "Frame/GpuTimingStart");
+    frameDependencies = {timingStart};
+    constexpr size_t timingWorkCount = 1;
+#else
+    constexpr size_t timingWorkCount = 0;
+#endif
 
-    std::vector<uint32_t> presentationDependencies{setupWork};
-    if (m_frameSubmissionBuilder &&
-        !m_frameSubmissionBuilder(m_frameSubmission, setupWork, particleComputeWork, presentationDependencies)) {
+    std::vector<uint32_t> presentationDependencies = frameDependencies;
+    if (m_frameSubmissionBuilder && !m_frameSubmissionBuilder(m_frameSubmission, frameDependencies, particleComputeWork,
+                                                              presentationDependencies)) {
         throw std::runtime_error("Failed to compose frame RenderGraph submissions");
     }
 
@@ -244,7 +244,7 @@ try {
 
     // Without a window image, skip empty plans while keeping any admitted
     // view, particle, initialization or capture work on the same frame slot.
-    if (!presenting && m_frameSubmission.WorkCount() == 1)
+    if (!presenting && m_frameSubmission.WorkCount() == timingWorkCount)
         return 0;
 
 #if INFERNUX_FRAME_PROFILE

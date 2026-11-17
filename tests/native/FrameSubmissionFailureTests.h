@@ -34,13 +34,14 @@ bool VerifyFrameSubmissionFailureIsTerminal()
                      "Frame failure fixture initialization failed"))
             return false;
         core.SetFrameComputeSubmissionCallback([&](bool submitted) { notifications.push_back(submitted); });
-        core.SetFrameSubmissionBuilder([&](vk::VulkanFrameSubmission &submission, uint32_t setup, uint32_t,
+        core.SetFrameSubmissionBuilder([&](vk::VulkanFrameSubmission &submission,
+                                           const std::vector<uint32_t> &frameDependencies, uint32_t,
                                            std::vector<uint32_t> &presentationDependencies) {
             if (mode == 2)
                 return false;
             const auto work = submission.AddWork(
                 core.GetDeviceContext().GetDeviceId(), rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame,
-                rhi::InvalidRenderViewId, rhi::PipelineStage::AllCommands, {setup},
+                rhi::InvalidRenderViewId, rhi::PipelineStage::AllCommands, frameDependencies,
                 [&](VkCommandBuffer) {
                     ++recordings;
                     if (mode == 1)
