@@ -8,8 +8,10 @@
 #include <function/renderer/RenderWorld.h>
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifactReader.h>
+#include <function/resources/ShaderAsset/ShaderAsset.h>
 
 #include <algorithm>
 #include <array>
@@ -26,6 +28,18 @@ namespace infernux::raytracing
 namespace
 {
 using MeshRevision = std::array<uint64_t, 5>;
+using MeshSlice = std::tuple<uintptr_t, uintptr_t, MeshGeometryView, uint32_t, uint32_t, int32_t>;
+
+MeshSlice GetMeshSlice(const DrawCall &draw)
+{
+    return {reinterpret_cast<uintptr_t>(draw.meshVertices),
+            reinterpret_cast<uintptr_t>(draw.meshIndices),
+            draw.meshGeometryView,
+            draw.indexStart,
+            draw.indexCount,
+            draw.vertexStart};
+}
+
 struct WorldRevision
 {
     MeshRevision meshes;
@@ -38,6 +52,12 @@ struct WorldRevision
     bool operator!=(const WorldRevision &other) const noexcept
     {
         return !(*this == other);
+    }
+
+    bool SharesDrawSlots(const WorldRevision &other) const noexcept
+    {
+        // Surface slots can be reused only within the same World, simulation epoch and structure.
+        return std::equal(meshes.begin(), meshes.begin() + 3, other.meshes.begin());
     }
 };
 constexpr uint32_t FullBuild = UINT32_MAX;
@@ -85,11 +105,20 @@ struct DrawMeshPlacement
     RayMeshPlacement placement;
 };
 
+struct RaySkinTopology
+{
+    MeshSlice source;
+    std::shared_ptr<const void> owner;
+    std::shared_ptr<const spatial::BvhTopology> tree;
+};
+
 struct RayWorldMeshPage
 {
     std::vector<DrawMeshPlacement> draws;
     std::shared_ptr<const rhi::BufferResource> buffer;
     std::shared_ptr<FrameCpuStorageClaim> storage;
+    std::map<uint32_t, RaySkinTopology> skins;
+    uint64_t skinStorage = 0;
     // The frame owner caches the latest validated TLAS topology for this mesh set.
     mutable std::shared_ptr<const spatial::BvhTopology> topology;
     mutable RayShadowState shadowHistory;
@@ -110,6 +139,7 @@ class RayWorldGeometryPublication final
     std::shared_ptr<const RenderWorldFrame> world;
     std::shared_ptr<const rhi::BufferResource> buffer;
     std::shared_ptr<const RayWorldMeshPage> meshes;
+    std::shared_ptr<const RayWorldMeshPage> skinBasis;
     uint32_t visibilitySerial = 0;
     RayGeometryStatus status = RayGeometryStatus::Pending;
 };
@@ -150,6 +180,7 @@ class RayWorldGeometryBuild final
     std::weak_ptr<RayWorldGeometryPublication> publication;
     std::shared_ptr<const RenderWorldFrame> world;
     std::shared_ptr<const RayWorldMeshPage> sharedMeshes;
+    std::shared_ptr<const RayWorldMeshPage> skinBasis;
     std::shared_ptr<FrameCpuStorageClaim> storage;
     std::shared_ptr<FrameCpuStorageClaim> decodeStorage;
     std::shared_ptr<const rhi::BufferResource> buffer;
@@ -158,7 +189,7 @@ class RayWorldGeometryBuild final
     uint64_t elapsed = 0;
 
   private:
-    using SliceKey = std::tuple<size_t, uintptr_t, uintptr_t, MeshGeometryView, uint32_t, uint32_t, int32_t>;
+    using SliceKey = std::tuple<size_t, MeshSlice, uintptr_t>;
 
     struct Slice
     {
@@ -215,7 +246,9 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         const auto &draw = draws[nextDraw];
         if (!draw.indexCount)
             continue;
-        if (!draw.surfaceId || draw.meshVertexBuffer || draw.devicePose.HasValue() || draw.skinBoneMatrices)
+        if (!draw.surfaceId || draw.meshVertexBuffer || draw.devicePose.HasValue())
+            return false;
+        if (draw.skinBoneMatrices && (!draw.material || draw.material->GetVertShaderName() != kStandardVertexShaderId))
             return false;
         surfaceCount = std::max(surfaceCount, size_t{draw.surfaceId} + 1);
 
@@ -224,7 +257,7 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         const bool hasStreams =
             draw.meshVertices && draw.meshIndices && !draw.meshVertices->empty() && !draw.meshIndices->empty();
         if (!hasStreams) {
-            if (draw.meshUsesDetachedStorage || draw.meshAssetGuid.empty())
+            if (draw.skinBoneMatrices || draw.meshUsesDetachedStorage || draw.meshAssetGuid.empty())
                 return false;
             auto [entry, inserted] =
                 artifactIndices.try_emplace({draw.meshAssetGuid, draw.meshRuntimeVersion}, recovery.size() + 1);
@@ -237,15 +270,12 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
             }
             artifact = entry->second;
         }
-        const auto *vertices = hasStreams ? draw.meshVertices : nullptr;
-        const auto *indices = hasStreams ? draw.meshIndices : nullptr;
-        const SliceKey key{artifact,
-                           reinterpret_cast<uintptr_t>(vertices),
-                           reinterpret_cast<uintptr_t>(indices),
-                           draw.meshGeometryView,
-                           draw.indexStart,
-                           draw.indexCount,
-                           draw.vertexStart};
+        auto source = GetMeshSlice(draw);
+        if (!hasStreams) {
+            std::get<0>(source) = 0;
+            std::get<1>(source) = 0;
+        }
+        const SliceKey key{artifact, source, reinterpret_cast<uintptr_t>(draw.skinBoneMatrices.get())};
         auto [entry, inserted] = sliceIndices.try_emplace(key, sliceIndices.size());
         const Slice slice{&draw, entry->second};
         instances.push_back(slice);
@@ -253,6 +283,8 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         if (inserted) {
             // Covers the compact-index map, BLAS, and its contribution to the final page.
             workspace = AddStorage(workspace, uint64_t{draw.indexCount} * 352);
+            if (draw.skinBoneMatrices)
+                workspace = AddStorage(workspace, 256 + uint64_t{draw.indexCount} * sizeof(spatial::BvhLink));
             meshes.emplace_back();
             auto &work = hasStreams ? resident : recovery[artifact - 1].slices;
             work.push_back(slice);
@@ -293,8 +325,8 @@ bool RayWorldGeometryBuild::BuildSlices(const std::vector<Slice> &work, uint32_t
 {
     while (nextSlice < work.size()) {
         const auto &slice = work[nextSlice];
+        const auto &draw = *slice.draw;
         if (!meshBuild) {
-            const auto &draw = *slice.draw;
             const auto *vertices = draw.meshVertices;
             const auto *indices = draw.meshIndices;
             if (decodedMesh) {
@@ -306,11 +338,25 @@ bool RayWorldGeometryBuild::BuildSlices(const std::vector<Slice> &work, uint32_t
                 vertices = &geometry->vertices;
                 indices = &geometry->indices;
             }
-            meshBuild =
-                std::make_unique<RayMeshBuild>(*vertices, *indices, draw.indexStart, draw.indexCount, draw.vertexStart);
+            std::shared_ptr<const spatial::BvhTopology> tree;
+            if (draw.skinBoneMatrices && skinBasis) {
+                const auto found = skinBasis->skins.find(draw.surfaceId);
+                if (found != skinBasis->skins.end() && found->second.owner == draw.meshDataOwner &&
+                    found->second.source == GetMeshSlice(draw))
+                    tree = found->second.tree;
+            }
+            meshBuild = std::make_unique<RayMeshBuild>(*vertices, *indices, draw.indexStart, draw.indexCount,
+                                                       draw.vertexStart, draw.skinBoneMatrices.get(), std::move(tree));
         }
         if (meshBuild->Advance(window)) {
-            meshes[slice.mesh] = meshBuild->Take();
+            auto mesh = meshBuild->Take();
+            if (mesh.topology) {
+                meshCandidate->skinStorage += 256 + mesh.topology->links.capacity() * sizeof(spatial::BvhLink) +
+                                              mesh.topology->primitiveOrder.capacity() * sizeof(uint32_t);
+                meshCandidate->skins.emplace(draw.surfaceId,
+                                             RaySkinTopology{GetMeshSlice(draw), draw.meshDataOwner, mesh.topology});
+            }
+            meshes[slice.mesh] = std::move(mesh);
             meshBuild.reset();
             ++nextSlice;
         }
@@ -348,6 +394,7 @@ void RayWorldGeometryBuild::Run(uint32_t window)
         case Step::BuildResident:
             if (!BuildSlices(resident, window))
                 break;
+            skinBasis.reset();
             meshPageBuild = std::make_unique<RayMeshPageBuild>(meshes);
             step = Step::PackMeshes;
             if (window != FullBuild)
@@ -497,7 +544,7 @@ std::shared_ptr<const RayWorldMeshPage> RayWorldGeometryBuild::PublishedMeshes()
         const auto shadowBytes = shadowHistory.instances.capacity() * sizeof(RayShadowInstance) +
                                  shadowHistory.stamps.capacity() * sizeof(RayGeometryWord);
         storage->ReduceTo(meshCandidate->draws.capacity() * (sizeof(DrawMeshPlacement) + topologyBytesPerDraw) +
-                          shadowBytes);
+                          shadowBytes + meshCandidate->skinStorage);
         meshCandidate->storage = std::move(storage);
         sharedMeshes = std::move(meshCandidate);
     }
@@ -531,13 +578,20 @@ RayWorldGeometryBinding RayWorldGeometry::Acquire(const std::shared_ptr<const Re
     const auto revision = GetRevision(*world);
     if (!publication || publication->revision != revision) {
         auto meshes = publication && publication->revision.meshes == revision.meshes ? publication->meshes : nullptr;
+        auto skinBasis = publication && revision.SharesDrawSlots(publication->revision) ? publication->meshes : nullptr;
+        if (skinBasis && skinBasis->skins.empty())
+            skinBasis.reset();
         publication.reset();
         m_publications.erase(std::remove_if(m_publications.begin(), m_publications.end(),
                                             [](const auto &entry) { return entry.expired(); }),
                              m_publications.end());
         for (const auto &entry : m_publications) {
             auto value = entry.lock();
-            if (!value || value->revision.meshes != revision.meshes)
+            if (!value || !revision.SharesDrawSlots(value->revision))
+                continue;
+            if (!skinBasis && value->meshes && !value->meshes->skins.empty())
+                skinBasis = value->meshes;
+            if (value->revision.meshes != revision.meshes)
                 continue;
             if (value->revision == revision) {
                 publication = std::move(value);
@@ -549,6 +603,8 @@ RayWorldGeometryBinding RayWorldGeometry::Acquire(const std::shared_ptr<const Re
         if (!publication) {
             auto value = std::make_shared<RayWorldGeometryPublication>(world);
             value->meshes = std::move(meshes);
+            if (!value->meshes)
+                value->skinBasis = std::move(skinBasis);
             m_publications.emplace_back(value);
             publication = std::move(value);
             m_owner.Wake(m_source);
@@ -637,6 +693,7 @@ bool RayWorldGeometry::Advance()
             build->publication = publication;
             build->world = std::move(publication->world);
             build->sharedMeshes = publication->meshes;
+            build->skinBasis = std::move(publication->skinBasis);
             if (build->sharedMeshes) {
                 build->step = RayWorldGeometryBuild::Step::CollectInstances;
                 build->workspace = AddStorage(

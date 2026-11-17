@@ -18,6 +18,7 @@ using spatial::Bounds;
 using spatial::BvhBuild;
 using spatial::BvhNode;
 using spatial::kBvhLeafBit;
+constexpr double RebuildCostRatio = 1.5;
 
 bool IsFinite(const glm::vec3 &value) noexcept
 {
@@ -90,14 +91,33 @@ template <typename Visit> void VisitWindow(size_t &cursor, size_t count, uint32_
     for (; cursor != end; ++cursor)
         visit(cursor);
 }
+
+Vertex SkinVertex(Vertex vertex, const std::vector<glm::mat4> &palette)
+{
+    // Match inx_skin_vertex in the standard raster stages using the same immutable palette.
+    const auto bones = glm::min(vertex.boneIndices, glm::uvec4(static_cast<uint32_t>(palette.size() - 1)));
+    const auto &weights = vertex.boneWeights;
+    const auto matrix = weights.x * palette[bones.x] + weights.y * palette[bones.y] + weights.z * palette[bones.z] +
+                        weights.w * palette[bones.w];
+    const glm::mat3 linear(matrix);
+    const auto a = glm::cross(linear[1], linear[2]);
+    const auto b = glm::cross(linear[2], linear[0]);
+    const auto c = glm::cross(linear[0], linear[1]);
+    const auto sign = glm::sign(glm::dot(linear[0], a));
+    vertex.pos = glm::vec3(matrix * glm::vec4(vertex.pos, 1.0f));
+    vertex.normal = glm::normalize((a * vertex.normal.x + b * vertex.normal.y + c * vertex.normal.z) * sign);
+    vertex.tangent = glm::vec4(glm::normalize(linear * glm::vec3(vertex.tangent)), vertex.tangent.w * sign);
+    return vertex;
+}
 } // namespace
 
 struct RayMeshBuild::State
 {
     State(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices, uint32_t indexStart,
-          uint32_t indexCount, int32_t vertexStart)
+          uint32_t indexCount, int32_t vertexStart, const std::vector<glm::mat4> *skinPalette,
+          std::shared_ptr<const spatial::BvhTopology> topology)
         : vertices(vertices), indices(indices), indexStart(indexStart), vertexStart(vertexStart),
-          triangleCount(indexCount / 3)
+          triangleCount(indexCount / 3), skinPalette(skinPalette), previous(std::move(topology))
     {
         if (indexCount % 3 != 0 || indexStart > indices.size() || indexCount > indices.size() - indexStart)
             throw std::invalid_argument("Ray mesh requires a complete indexed triangle slice");
@@ -106,6 +126,23 @@ struct RayMeshBuild::State
         const auto vertexCapacity = std::min<size_t>(vertices.size(), indexCount);
         mesh.positions.reserve(vertexCapacity);
         mesh.attributes.reserve(vertexCapacity);
+    }
+
+    void AppendVertex(const Vertex &vertex)
+    {
+        const auto &position = vertex.pos;
+        if (!IsFinite(position))
+            throw std::invalid_argument("Ray mesh requires finite vertex positions");
+        mesh.positions.push_back({position.x, position.y, position.z});
+        const auto &uv = vertex.texCoord;
+        const auto &uv1 = vertex.texCoord1;
+        const auto &normal = vertex.normal;
+        const auto &tangent = vertex.tangent;
+        const auto &color = vertex.color;
+        mesh.attributes.push_back({{uv.x, uv.y, uv1.x, uv1.y},
+                                   {normal.x, normal.y, normal.z, 0.0f},
+                                   {tangent.x, tangent.y, tangent.z, tangent.w},
+                                   {color.r, color.g, color.b, 1.0f}});
     }
 
     void Gather(uint32_t primitive)
@@ -117,29 +154,21 @@ struct RayMeshBuild::State
             const int64_t vertex = static_cast<int64_t>(indices[first + corner]) + vertexStart;
             if (vertex < 0 || static_cast<uint64_t>(vertex) >= vertices.size() || vertex > UINT32_MAX)
                 throw std::invalid_argument("Ray mesh index falls outside its vertex stream");
-            const auto &sourceVertex = vertices[static_cast<size_t>(vertex)];
-            const auto &position = sourceVertex.pos;
             const auto source = static_cast<uint32_t>(vertex);
             auto [page, inserted] = positionIndices.try_emplace(source / RemapPageSize);
             if (inserted)
                 page->second.fill(kInvalidRayIndex);
             auto &mapped = page->second[source % RemapPageSize];
             if (mapped == kInvalidRayIndex) {
-                if (!IsFinite(position))
-                    throw std::invalid_argument("Ray mesh requires finite vertex positions");
                 mapped = static_cast<uint32_t>(mesh.positions.size());
-                mesh.positions.push_back({position.x, position.y, position.z});
-                const auto &uv = sourceVertex.texCoord;
-                const auto &uv1 = sourceVertex.texCoord1;
-                const auto &normal = sourceVertex.normal;
-                const auto &tangent = sourceVertex.tangent;
-                const auto &color = sourceVertex.color;
-                mesh.attributes.push_back({{uv.x, uv.y, uv1.x, uv1.y},
-                                           {normal.x, normal.y, normal.z, 0.0f},
-                                           {tangent.x, tangent.y, tangent.z, tangent.w},
-                                           {color.r, color.g, color.b, 1.0f}});
+                if (skinPalette)
+                    AppendVertex(SkinVertex(vertices[source], *skinPalette));
+                else
+                    AppendVertex(vertices[source]);
             }
             corners[corner] = mapped;
+            const auto &packed = mesh.positions[mapped];
+            const glm::vec3 position(packed.x, packed.y, packed.z);
             triangleBounds.Include({position, position});
         }
         bounds.push_back(triangleBounds);
@@ -151,6 +180,10 @@ struct RayMeshBuild::State
     uint32_t indexStart;
     int32_t vertexStart;
     uint32_t triangleCount;
+    const std::vector<glm::mat4> *skinPalette;
+    std::shared_ptr<const spatial::BvhTopology> previous;
+    std::shared_ptr<spatial::BvhTopology> captured;
+    double buildCost = 0.0;
     size_t cursor = 0;
     RayMesh mesh;
     std::vector<Bounds> bounds;
@@ -158,19 +191,38 @@ struct RayMeshBuild::State
     static constexpr uint32_t RemapPageSize = 32;
     std::map<uint32_t, std::array<uint32_t, RemapPageSize>> positionIndices;
     std::optional<BvhBuild> builder;
+    std::optional<spatial::BvhRefit> refit;
     std::vector<uint32_t> order;
     enum class Phase : uint8_t
     {
         Gather,
+        Refit,
         Build,
+        CaptureTopology,
         Reorder,
         Done,
     } phase = Phase::Gather;
+
+    void StartBuild()
+    {
+        builder.emplace(bounds);
+        phase = Phase::Build;
+    }
+
+    void StartReorder()
+    {
+        mesh.triangles.reserve(triangles.size());
+        cursor = 0;
+        phase = Phase::Reorder;
+    }
 };
 
 RayMeshBuild::RayMeshBuild(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
-                           uint32_t indexStart, uint32_t indexCount, int32_t vertexStart)
-    : m_state(std::make_unique<State>(vertices, indices, indexStart, indexCount, vertexStart))
+                           uint32_t indexStart, uint32_t indexCount, int32_t vertexStart,
+                           const std::vector<glm::mat4> *skinPalette,
+                           std::shared_ptr<const spatial::BvhTopology> topology)
+    : m_state(std::make_unique<State>(vertices, indices, indexStart, indexCount, vertexStart, skinPalette,
+                                      std::move(topology)))
 {
 }
 
@@ -187,9 +239,25 @@ bool RayMeshBuild::Advance(uint32_t budget)
         VisitWindow(state.cursor, state.triangleCount, budget,
                     [&](size_t index) { state.Gather(static_cast<uint32_t>(index)); });
         if (state.cursor == state.triangleCount) {
-            state.builder.emplace(state.bounds);
-            state.phase = Phase::Build;
+            if (state.previous) {
+                state.refit.emplace(*state.previous, state.bounds);
+                state.phase = Phase::Refit;
+            } else {
+                state.StartBuild();
+            }
         }
+        return false;
+    case Phase::Refit:
+        if (!state.refit->Advance(budget))
+            return false;
+        if (state.refit->Cost() <= state.previous->buildCost * RebuildCostRatio) {
+            state.mesh.nodes = state.refit->Take();
+            state.mesh.topology = std::move(state.previous);
+            state.StartReorder();
+        } else {
+            state.StartBuild();
+        }
+        state.refit.reset();
         return false;
     case Phase::Build: {
         if (!state.builder->Advance(budget))
@@ -197,19 +265,39 @@ bool RayMeshBuild::Advance(uint32_t budget)
         auto hierarchy = state.builder->Take();
         state.builder.reset();
         state.mesh.nodes = std::move(hierarchy.nodes);
-        state.order = std::move(hierarchy.primitiveOrder);
-        state.mesh.triangles.reserve(state.order.size());
-        state.cursor = 0;
-        state.phase = Phase::Reorder;
+        if (state.skinPalette) {
+            state.captured = std::make_shared<spatial::BvhTopology>();
+            state.captured->primitiveOrder = std::move(hierarchy.primitiveOrder);
+            state.captured->links.reserve(state.mesh.nodes.size());
+            state.cursor = 0;
+            state.phase = Phase::CaptureTopology;
+        } else {
+            state.order = std::move(hierarchy.primitiveOrder);
+            state.StartReorder();
+        }
         return false;
     }
-    case Phase::Reorder:
-        VisitWindow(state.cursor, state.order.size(), budget,
-                    [&](size_t index) { state.mesh.triangles.push_back(state.triangles[state.order[index]]); });
-        if (state.cursor != state.order.size())
+    case Phase::CaptureTopology:
+        VisitWindow(state.cursor, state.mesh.nodes.size(), budget, [&](size_t index) {
+            const auto &node = state.mesh.nodes[index];
+            state.captured->links.push_back({node.first, node.second});
+            state.buildCost += spatial::BvhNodeCost(node);
+        });
+        if (state.cursor == state.mesh.nodes.size()) {
+            state.captured->buildCost = spatial::NormalizeBvhCost(state.buildCost, state.mesh.nodes);
+            state.mesh.topology = std::move(state.captured);
+            state.StartReorder();
+        }
+        return false;
+    case Phase::Reorder: {
+        const auto &order = state.mesh.topology ? state.mesh.topology->primitiveOrder : state.order;
+        VisitWindow(state.cursor, order.size(), budget,
+                    [&](size_t index) { state.mesh.triangles.push_back(state.triangles[order[index]]); });
+        if (state.cursor != order.size())
             return false;
         state.phase = Phase::Done;
         return true;
+    }
     case Phase::Done:
         return true;
     }
@@ -388,8 +476,7 @@ bool RayInstancePageBuild::Advance(uint32_t budget)
         if (!s.refit->Advance(budget))
             return false;
         // Relative SAH preserves a well-partitioned tree under uniform motion or scale.
-        constexpr double rebuildCostRatio = 1.5;
-        if (s.refit->Cost() <= s.previous->buildCost * rebuildCostRatio) {
+        if (s.refit->Cost() <= s.previous->buildCost * RebuildCostRatio) {
             s.page.nodes = s.refit->Take();
             s.Reorder(std::move(s.previous));
         } else {
