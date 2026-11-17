@@ -92,6 +92,8 @@ class JoltGpuScene::Impl
         TargetState target;
     };
 
+    struct ActorChanges;
+
     struct Partition
     {
         RuntimeWorld *world = nullptr;
@@ -100,6 +102,8 @@ class JoltGpuScene::Impl
         std::vector<uint32_t> records;
         std::vector<uint32_t> freeLocals;
         std::vector<JoltGpuControlGroup> pending;
+        std::shared_ptr<ActorChanges> trailingCreations;
+        size_t trailingCreationGroup = 0;
         std::shared_ptr<JoltGpuSleep::BoundsValidation> pendingBoundsValidation;
         std::shared_ptr<PhysicsTargetBatch> pendingSources;
         std::vector<TargetCompletion> pendingCompletions;
@@ -222,8 +226,14 @@ class JoltGpuScene::Impl
         BodyState initialState;
         PhysicsActorPublication publication;
         std::shared_ptr<PublishedActor> identity;
-        bool creation = false;
         bool initializesRigidbody = false;
+    };
+
+    struct ActorChanges
+    {
+        std::vector<std::shared_ptr<ActorChange>> actors;
+        bool deferred = false;
+        bool wakeExisting = false;
     };
 
     struct JointRecord
@@ -256,6 +266,7 @@ class JoltGpuScene::Impl
             check.prepareWork = [this, validation] { return programs.GetSleep().ValidateBoundsEdits(*validation); };
             domain.pending.push_back(std::move(check));
         }
+        domain.trailingCreations.reset();
         return std::exchange(domain.pending, {});
     }
 
@@ -281,8 +292,7 @@ class JoltGpuScene::Impl
                 RequireOwnership(record, id);
                 source = Packed(record);
             }
-            return programs.GetSleep().PrepareBoundsWake(storage, SleepSelection(domain), old ? *old : nullptr, source,
-                                                         validation);
+            return programs.GetSleep().PrepareBoundsWake(storage, SleepSelection(domain), *old, source, validation);
         };
         domain.pending.push_back(std::move(wake));
     }
@@ -869,45 +879,181 @@ class JoltGpuScene::Impl
     {
         auto &slot = slots[change->slot];
         slot.accepted = change->identity;
-        publicationDirectory.reset();
         change->publication.AcceptGeometry(change->identity->actor, change->bodyId, change->identity->shapeRevision);
         if (change->initializesRigidbody)
             change->publication.ConsumeInitialVelocities(change->identity->actor, change->bodyId);
     }
 
-    JoltGpuModel RepackModel(uint32_t changedSlot, BodyModel changedBody,
-                             const std::vector<ShapeModel> &changedLeaves) const
+    struct ModelEdit
     {
-        // Only this transaction's actor is new. Everything else comes from the
-        // actual accepted model, including earlier groups in this same prefix.
+        uint32_t bodyIndex;
+        BodyModel body;
+        const std::vector<ShapeModel> *leaves;
+    };
+
+    JoltGpuModel RepackModel(const std::vector<ModelEdit> &edits) const
+    {
+        // Copy each accepted leaf range once, applying the ordered slot edits in
+        // this transaction. Earlier control groups are already part of the input.
         const auto &accepted = storage.GetModel();
-        const uint64_t leafCount =
-            uint64_t(accepted.shapes.size()) - accepted.bodies[changedSlot].meta.y + changedLeaves.size();
+        uint64_t leafCount = accepted.shapes.size();
+        for (const auto &edit : edits)
+            leafCount = leafCount - accepted.bodies[edit.bodyIndex].meta.y + edit.leaves->size();
         if (leafCount > std::numeric_limits<uint32_t>::max())
             throw std::length_error("Jolt GPU scene exceeds its leaf index range");
         JoltGpuModel replacement;
         replacement.bodies = accepted.bodies;
         replacement.shapes.reserve(static_cast<size_t>(leafCount));
+        auto edit = edits.begin();
         for (uint32_t slot = 0; slot < replacement.bodies.size(); ++slot) {
-            const auto &old = accepted.bodies[slot];
-            auto body = slot == changedSlot ? changedBody : old;
-            body.meta.x = static_cast<uint32_t>(replacement.shapes.size());
-            body.meta.y = slot == changedSlot ? static_cast<uint32_t>(changedLeaves.size()) : old.meta.y;
-            for (uint32_t leaf = 0; leaf < body.meta.y; ++leaf) {
-                auto model = slot == changedSlot ? changedLeaves[leaf] : accepted.shapes[old.meta.x + leaf];
-                model.meta.y = slot;
-                replacement.shapes.push_back(model);
+            auto &body = replacement.bodies[slot];
+            auto first = accepted.shapes.begin() + body.meta.x;
+            auto last = first + body.meta.y;
+            if (edit != edits.end() && edit->bodyIndex == slot) {
+                body = edit->body;
+                body.meta.y = static_cast<uint32_t>(edit->leaves->size());
+                first = edit->leaves->begin();
+                last = edit->leaves->end();
+                ++edit;
             }
-            replacement.bodies[slot] = body;
+            body.meta.x = static_cast<uint32_t>(replacement.shapes.size());
+            replacement.shapes.insert(replacement.shapes.end(), first, last);
         }
-        const auto count = static_cast<uint32_t>(leafCount);
-        (void)count;
         replacement.joints = accepted.joints;
         std::vector<uint32_t> capacities;
         for (const auto &world : accepted.worlds)
             capacities.push_back(world.bodies.y);
         JoltGpuBuildWorldRanges(replacement, capacities);
         return replacement;
+    }
+
+    std::unique_ptr<JoltGpuModelUpdate> PrepareActorChanges(ActorChanges &changes)
+    {
+        changes.deferred = false;
+        const auto &accepted = storage.GetModel();
+        std::vector<ModelEdit> edits;
+        std::vector<BodyInitialization> initial;
+        std::vector<CenterOfMassUpdate> rebases;
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        std::vector<rhi::ComputeDispatchDesc> dispatches;
+        edits.reserve(changes.actors.size());
+        initial.reserve(changes.actors.size());
+        uploads.reserve(changes.actors.size());
+        bool repack = false;
+        for (const auto &change : changes.actors) {
+            RequireOwnership(change->slot, change->bodyId);
+            const uint32_t packed = Packed(change->slot);
+            const auto &slot = slots[change->slot];
+            change->identity->slot = packed;
+            change->model.meta.w = slot.partition->row;
+            for (auto &leaf : change->leaves)
+                leaf.meta.y = packed;
+            const auto &previous = slot.accepted;
+            change->identity->shapeRevision =
+                change->publication.sharedGeometryRevision.value_or(previous ? previous->shapeRevision + 1 : 0);
+            const auto &old = accepted.bodies[packed];
+            if (previous) {
+                const auto a = previous->rootCenterOfMass;
+                const auto b = change->identity->rootCenterOfMass;
+                rebases.push_back({{packed, 0, 0, 0}, {b.x - a.x, b.y - a.y, b.z - a.z, 0.0f}});
+                const auto different = [](const Float4 &lhs, const Float4 &rhs) {
+                    return lhs.x != rhs.x || lhs.y != rhs.y || lhs.z != rhs.z || lhs.w != rhs.w;
+                };
+                const auto &next = change->model;
+                if (old.mass.x != next.mass.x || old.mass.y != next.mass.y || old.mass.z != next.mass.z ||
+                    different(old.invInertiaDiagonal, next.invInertiaDiagonal) ||
+                    different(old.inertiaRotation, next.inertiaRotation)) {
+                    auto warm = joints.PrepareMobilityReset(storage, packed, changes.deferred);
+                    if (changes.deferred)
+                        return {};
+                    for (auto &upload : warm.updates)
+                        uploads.push_back(std::move(upload));
+                    for (auto &dispatch : warm.dispatches)
+                        dispatches.push_back(std::move(dispatch));
+                }
+            } else
+                initial.push_back({{packed, 0, 0, 0}, change->initialState, {}});
+            std::vector<uint8_t> sleepAuthor(sizeof(change->sleep));
+            std::memcpy(sleepAuthor.data(), &change->sleep, sizeof(change->sleep));
+            uploads.push_back({storage.Get(Resource::SleepStates), uint64_t(packed) * sizeof(BodySleepRecord),
+                               std::move(sleepAuthor)});
+            repack |= old.meta.y != change->leaves.size();
+            edits.push_back({packed, change->model, &change->leaves});
+        }
+        if (repack) {
+            std::sort(edits.begin(), edits.end(),
+                      [](const auto &a, const auto &b) { return a.bodyIndex < b.bodyIndex; });
+            return mutations.PrepareReplacement(storage, RepackModel(edits), initial, rebases, std::move(uploads),
+                                                std::move(dispatches));
+        }
+
+        std::vector<JoltGpuBodyModelUpdate> bodies;
+        std::vector<JoltGpuShapeModelUpdate> leaves;
+        bodies.reserve(edits.size());
+        for (const auto &edit : edits) {
+            auto body = edit.body;
+            body.meta.x = accepted.bodies[edit.bodyIndex].meta.x;
+            bodies.push_back({edit.bodyIndex, body});
+            for (uint32_t leaf = 0; leaf < edit.leaves->size(); ++leaf)
+                leaves.push_back({body.meta.x + leaf, (*edit.leaves)[leaf]});
+        }
+        return mutations.Prepare(storage, std::move(bodies), std::move(leaves), initial, rebases, std::move(uploads),
+                                 std::move(dispatches));
+    }
+
+    void BindActorChanges(JoltGpuControlGroup &group, const std::shared_ptr<ActorChanges> &changes,
+                          Partition *creationWorld = nullptr)
+    {
+        group.modelDeferred = [changes] { return changes->deferred; };
+        group.prepareModel = [this, changes, creationWorld] {
+            if (creationWorld) {
+                // Initialization starts each new body awake with a fresh sleep
+                // history. Only earlier dynamics can need a creation wake.
+                const auto &accepted = storage.GetModel();
+                const auto &range = accepted.worlds[creationWorld->row].bodies;
+                const auto first = accepted.bodies.begin() + range.x;
+                changes->wakeExisting =
+                    std::any_of(first, first + range.y, [](const auto &body) { return body.meta.z == MotionDynamic; });
+            }
+            return PrepareActorChanges(*changes);
+        };
+        group.modelAccepted = [this, changes]() noexcept {
+            publicationDirectory.reset();
+            for (const auto &change : changes->actors)
+                CommitActor(change);
+        };
+    }
+
+    void QueueActorCreation(Partition &domain, std::shared_ptr<ActorChange> change, JoltGpuControlGroup group)
+    {
+        auto batch = domain.trailingCreations;
+        // A layout, body command, joint or edit between creations closes the
+        // batch. Only independent new slots share a model acceptance boundary.
+        if (batch && domain.pending.size() == domain.trailingCreationGroup &&
+            batch->actors.size() < JoltGpuPoseWake::BodiesPerDispatch) {
+            if (batch->actors.size() == batch->actors.capacity())
+                batch->actors.reserve(batch->actors.size() * 2u);
+            auto &batchedCommands = domain.pending.back().commands;
+            batchedCommands.insert(batchedCommands.end(), group.commands.begin(), group.commands.end());
+            batch->actors.push_back(std::move(change));
+            return;
+        }
+        batch = std::make_shared<ActorChanges>();
+        batch->actors.push_back(std::move(change));
+        BindActorChanges(group, batch, &domain);
+        group.prepareWork = [this, &domain, batch, validation = PendingBoundsValidation(domain)] {
+            if (!batch->wakeExisting)
+                return JoltGpuControlWork{};
+            std::vector<uint32_t> sources;
+            sources.reserve(batch->actors.size());
+            for (const auto &actor : batch->actors)
+                sources.push_back(actor->identity->slot);
+            return programs.GetSleep().PrepareCreationWake(storage, SleepSelection(domain), std::move(sources),
+                                                           validation);
+        };
+        domain.pending.push_back(std::move(group));
+        domain.trailingCreations = std::move(batch);
+        domain.trailingCreationGroup = domain.pending.size();
     }
 
     void StageActor(uint32_t id, PreparedGpuActor actor, bool resetMotion)
@@ -992,62 +1138,6 @@ class JoltGpuScene::Impl
         pendingCompletions.reserve(pendingCompletions.size() + 2);
 
         JoltGpuControlGroup group;
-        auto deferred = std::make_shared<bool>(false);
-        group.modelDeferred = [deferred] { return *deferred; };
-        group.prepareModel = [this, change, deferred]() -> std::unique_ptr<JoltGpuModelUpdate> {
-            *deferred = false;
-            RequireOwnership(change->slot, change->bodyId);
-            const uint32_t packed = Packed(change->slot);
-            change->identity->slot = packed;
-            change->model.meta.w = slots[change->slot].partition->row;
-            for (auto &leaf : change->leaves)
-                leaf.meta.y = packed;
-            const auto &previous = slots[change->slot].accepted;
-            change->creation = !previous;
-            change->identity->shapeRevision =
-                change->publication.sharedGeometryRevision.value_or(previous ? previous->shapeRevision + 1 : 0);
-            std::vector<BodyInitialization> initial;
-            std::vector<CenterOfMassUpdate> rebases;
-            if (change->creation) {
-                initial.push_back({{packed, 0, 0, 0}, change->initialState, {}});
-            } else {
-                const auto oldCOM = previous->rootCenterOfMass;
-                const auto newCOM = change->identity->rootCenterOfMass;
-                rebases.push_back(
-                    {{packed, 0, 0, 0}, {newCOM.x - oldCOM.x, newCOM.y - oldCOM.y, newCOM.z - oldCOM.z, 0.0f}});
-            }
-            const auto &acceptedBody = storage.GetModel().bodies[packed];
-            const auto different = [](const Float4 &a, const Float4 &b) {
-                return a.x != b.x || a.y != b.y || a.z != b.z || a.w != b.w;
-            };
-            const bool mobilityChanged =
-                !change->creation &&
-                (acceptedBody.mass.x != change->model.mass.x || acceptedBody.mass.y != change->model.mass.y ||
-                 acceptedBody.mass.z != change->model.mass.z ||
-                 different(acceptedBody.invInertiaDiagonal, change->model.invInertiaDiagonal) ||
-                 different(acceptedBody.inertiaRotation, change->model.inertiaRotation));
-            auto warm =
-                mobilityChanged ? joints.PrepareMobilityReset(storage, packed, *deferred) : JoltGpuJointReplacement{};
-            if (*deferred)
-                return {};
-            std::vector<uint8_t> sleepAuthor(sizeof(change->sleep));
-            std::memcpy(sleepAuthor.data(), &change->sleep, sizeof(change->sleep));
-            warm.updates.push_back({storage.Get(Resource::SleepStates), uint64_t(packed) * sizeof(BodySleepRecord),
-                                    std::move(sleepAuthor)});
-            if (acceptedBody.meta.y == change->leaves.size()) {
-                auto body = change->model;
-                body.meta.x = acceptedBody.meta.x;
-                std::vector<JoltGpuShapeModelUpdate> leaves;
-                leaves.reserve(change->leaves.size());
-                for (uint32_t leaf = 0; leaf < change->leaves.size(); ++leaf)
-                    leaves.push_back({acceptedBody.meta.x + leaf, change->leaves[leaf]});
-                return mutations.Prepare(storage, {{packed, body}}, std::move(leaves), initial, rebases,
-                                         std::move(warm.updates), std::move(warm.dispatches));
-            }
-            return mutations.PrepareReplacement(storage, RepackModel(packed, change->model, change->leaves), initial,
-                                                rebases, std::move(warm.updates), std::move(warm.dispatches));
-        };
-        group.modelAccepted = [this, change]() noexcept { CommitActor(change); };
         if (resetMotion && !firstOwnership) {
             BodyCommand reset{};
             reset.meta = {id, CommandResetMotion, 0, 0};
@@ -1080,14 +1170,21 @@ class JoltGpuScene::Impl
                 group.commands.push_back(angular);
             }
         }
-        auto oldBounds = firstOwnership ? OldBounds{} : QueueOldBounds(domain, index, id);
         if (motion != MotionStatic && !firstOwnership) {
             BodyCommand wake{};
             wake.meta = {id, CommandWake, 0u, 0u};
             group.commands.push_back(wake);
         }
-        pending.push_back(std::move(group));
-        QueueBoundsAfter(domain, std::move(oldBounds), index, id, true);
+        if (firstOwnership) {
+            QueueActorCreation(domain, change, std::move(group));
+        } else {
+            auto oldBounds = QueueOldBounds(domain, index, id);
+            auto changes = std::make_shared<ActorChanges>();
+            changes->actors.push_back(change);
+            BindActorChanges(group, changes);
+            pending.push_back(std::move(group));
+            QueueBoundsAfter(domain, std::move(oldBounds), index, id, true);
+        }
         const bool setsInitialVelocity =
             change->initializesRigidbody && (change->publication.linearVelocity || change->publication.angularVelocity);
         if (resetMotion || motionChanged || (motion != MotionStatic && firstOwnership) || setsInitialVelocity)
@@ -1221,7 +1318,8 @@ class JoltGpuScene::Impl
                 tombstone.meta.w = slots[index].partition->row;
                 return mutations.Prepare(storage, {{packed, tombstone}}, {}, {initial});
             }
-            return mutations.PrepareReplacement(storage, RepackModel(packed, Tombstone(), {}), {initial});
+            const std::vector<ShapeModel> empty;
+            return mutations.PrepareReplacement(storage, RepackModel({{packed, Tombstone(), &empty}}), {initial});
         };
         group.modelAccepted = [this, index, id]() noexcept {
             auto &slot = slots[index];
@@ -1641,6 +1739,7 @@ class JoltGpuScene::Impl
         if (domain.candidateCompletions)
             targets.insert(targets.end(), domain.candidateCompletions->begin(), domain.candidateCompletions->end());
         domain.pending.clear();
+        domain.trailingCreations.reset();
         domain.pendingBoundsValidation.reset();
         domain.queuedPairs.reset();
         domain.pendingSources.reset();

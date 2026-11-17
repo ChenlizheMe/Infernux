@@ -99,7 +99,7 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | B | S | R | Bit(States) | Bit(Bounds) | Bit(Requests),
                                                  P | W | B | S | R | Bit(States) | Bit(Bounds) | Bit(Requests),
                                                  P | W | B | S | Bit(States),
-                                                 P | W | B | S | R | Bit(States)};
+                                                 P | W | B | S | R | Bit(States) | Bit(Requests)};
 struct Layout
 {
     std::string_view name;
@@ -672,20 +672,37 @@ JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, cons
                                                    std::shared_ptr<rhi::ComputeBuffer> old, uint32_t source,
                                                    std::shared_ptr<BoundsValidation> validation)
 {
-    if (old && (old->GetByteSize() != 64u || !old->HasInitializedRange(0u, 64u)))
+    if (!old || old->GetByteSize() != 64u || !old->HasInitializedRange(0u, 64u))
         throw std::invalid_argument("GPU bounds wake requires its exact completed old-bound capture");
-    if (!old && source == UINT32_MAX)
-        return {};
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
     e->boundsValidation = std::move(validation);
     e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     auto p = Selection(s, selection);
     p.operation.x = source;
-    p.operation.y = (old ? 1u : 0u) | (source == UINT32_MAX ? 0u : 2u);
-    const auto entry = old ? BoundsWake : NewBoundsWake;
+    p.operation.y = 1u | (source == UINT32_MAX ? 0u : 2u);
     e->buffers[Bounds] = std::move(old);
-    e->Add(entry, p.selected.y, p.selected.z, p);
+    e->Add(BoundsWake, p.selected.y, p.selected.z, p);
+    e->OnComplete([](auto &) {});
+    return e->Next();
+}
+JoltGpuControlWork JoltGpuSleep::PrepareCreationWake(const JoltGpuStorage &s, const StepParams &selection,
+                                                     std::vector<uint32_t> sources,
+                                                     std::shared_ptr<BoundsValidation> validation)
+{
+    auto e = std::make_shared<Impl::Execution>(m_impl);
+    e->Bind(s);
+    e->SetRequests(sources);
+    e->boundsValidation = std::move(validation);
+    e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
+    auto p = Selection(s, selection);
+    // Bound the comparisons in each dispatch in both dimensions. The same
+    // immutable source list is used by all segments of this creation group.
+    constexpr uint32_t SourcesPerDispatch = 64;
+    for (uint32_t first = 0; first < sources.size(); first += SourcesPerDispatch) {
+        p.operation = {UINT32_MAX, 0u, first, std::min(SourcesPerDispatch, uint32_t(sources.size()) - first)};
+        e->Add(NewBoundsWake, p.selected.y, p.selected.z, p);
+    }
     e->OnComplete([](auto &) {});
     return e->Next();
 }
