@@ -189,6 +189,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> impulses;
     std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> corrections;
     uint32_t substep = 0, substepCount = 0;
+    uint32_t largestGroupPatchCount = 0;
     bool solveVelocity = false;
     bool solvePosition = false;
     bool interleaveCpu = false;
@@ -254,6 +255,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         groups.clear();
         patches.clear();
         wakeSlots.clear();
+        largestGroupPatchCount = 0;
         patches.reserve(order.size());
         cpuLinks.clear();
         size_t previous = order.size();
@@ -281,6 +283,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             value.normalFriction = response.normalFriction;
             patches.push_back(value);
             ++group.y;
+            largestGroupPatchCount = std::max(largestGroupPatchCount, group.y);
         }
         std::sort(wakeSlots.begin(), wakeSlots.end());
         wakeSlots.erase(std::unique(wakeSlots.begin(), wakeSlots.end()), wakeSlots.end());
@@ -550,8 +553,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
 
     uint32_t Rounds(uint32_t maximum) const
     {
-        // Keep the packet bounded and preserve the native order wherever it can influence a cross-domain row.
-        return patches.size() <= 32 && !interleaveCpu ? maximum : 1u;
+        // Groups run in parallel. Bound the serial work within each group.
+        return largestGroupPatchCount <= 32 && !interleaveCpu ? maximum : 1u;
     }
 
     void UploadWorkset(std::vector<rhi::ComputeBufferUpdate> &updates) const
