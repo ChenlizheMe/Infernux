@@ -23,6 +23,11 @@ constexpr std::string_view kReadDirectoryOperation = "read.directory";
 constexpr std::string_view kWriteBatchOperation = "write.batch";
 constexpr size_t kMaxNativeReadRange = 32u * 1024u * 1024u;
 
+size_t AdmittedFileWindow(size_t maximum, bool cooperative)
+{
+    return cooperative ? std::min(maximum, detail::kMinimumFileWindow) : maximum;
+}
+
 // A grant covers consecutive private cursor steps. Input, output, and
 // publication remain handoff points. The first indivisible step can overrun.
 template <typename Describe, typename Advance, typename Stop>
@@ -47,6 +52,7 @@ void AdvanceCursorBatch(size_t remaining, uint64_t targetNs, Describe describe, 
 
 struct WriteTask::State : IoStepState
 {
+    const bool cooperative = JobSystem::Get().IsInline();
     std::unique_ptr<Writer> writer;
     WriteProgress progress;
 
@@ -132,12 +138,10 @@ WriteTask::WriteTask(const std::filesystem::path &path, std::vector<WriteEntry> 
                      size_t blockBytes, std::shared_ptr<void> inputOwner)
     : m_state(std::make_shared<State>()), m_inputOwner(std::move(inputOwner))
 {
-    auto &jobs = JobSystem::Get();
-    if (jobs.IsInline())
-        throw std::runtime_error("asynchronous InxPack writing requires the existing worker pool");
     m_borrowedInputs = std::any_of(entries.begin(), entries.end(),
                                    [](const WriteEntry &entry) { return entry.residentData != nullptr; });
-    m_state->writer = std::make_unique<Writer>(path, std::move(entries), options, blockBytes);
+    m_state->writer = std::make_unique<Writer>(path, std::move(entries), options,
+                                               AdmittedFileWindow(blockBytes, m_state->cooperative));
     m_state->retained = sizeof(State) + m_state->writer->GetRetainedBytes();
     m_state->reservation = sizeof(State) + m_state->writer->GetReservationBytes();
 }
@@ -165,18 +169,25 @@ void WriteTask::Dispatch(bool publish, size_t maximum, uint64_t targetNs, bool h
 {
     if (!handoff)
         RequireIdle();
+    const bool cooperative = m_state->cooperative;
+    maximum = AdmittedFileWindow(maximum, cooperative);
+    const auto affinity = cooperative ? JobAffinity::AnyThread : detail::IoJobAffinity;
+    const auto batchNs = cooperative ? 0 : targetNs;
     const auto work = handoff ? IoWork{"write.cleanup", 0, {}, 0} : m_state->writer->DescribeWork(maximum, publish);
     if (work.operation.empty())
         return;
-    m_job = DispatchIo(m_state, [publish, maximum, targetNs](State &state) {
-        if (publish)
-            state.writer->Publish();
-        else if (targetNs)
-            state.AdvanceBatch(maximum, targetNs);
-        else
-            state.writer->Advance(maximum);
-    });
-    m_submittedWork = targetNs ? IoWork{kWriteBatchOperation, maximum, {}, 0} : work;
+    m_job = DispatchIo(
+        m_state,
+        [publish, maximum, batchNs](State &state) {
+            if (publish)
+                state.writer->Publish();
+            else if (batchNs)
+                state.AdvanceBatch(maximum, batchNs);
+            else
+                state.writer->Advance(maximum);
+        },
+        affinity);
+    m_submittedWork = batchNs ? IoWork{kWriteBatchOperation, maximum, {}, 0} : work;
 }
 
 void WriteTask::Append(const uint8_t *data, size_t bytes)
@@ -189,7 +200,8 @@ void WriteTask::Append(const uint8_t *data, size_t bytes)
 void WriteTask::Advance(size_t maxBytes, uint64_t targetNs, bool continuous)
 {
     std::lock_guard lock(m_mutex);
-    if (!continuous) {
+    // Inline work must return to the owner before another grant is queued.
+    if (!continuous || m_state->cooperative) {
         Dispatch(false, maxBytes, targetNs);
         return;
     }
@@ -310,7 +322,7 @@ IoWork WriteTask::DescribeWork(size_t maxBytes, bool publish) const
 {
     std::lock_guard lock(m_mutex);
     RequireIdle();
-    return m_state->writer->DescribeWork(maxBytes, publish);
+    return m_state->writer->DescribeWork(AdmittedFileWindow(maxBytes, m_state->cooperative), publish);
 }
 IoWork WriteTask::GetSubmittedWork() const
 {
@@ -697,10 +709,6 @@ bool ReadTask::PendingLocked() const
 {
     return !m_job.IsComplete() || (m_entryCompletion && !m_entryCompletion->IsComplete());
 }
-size_t ReadTask::LimitWindow(size_t maxBytes) const noexcept
-{
-    return m_state->cooperative ? std::min(maxBytes, detail::kMinimumFileWindow) : maxBytes;
-}
 void ReadTask::Snapshot()
 {
     m_state->Snapshot();
@@ -709,7 +717,7 @@ void ReadTask::Dispatch(size_t maxBytes, uint64_t targetNs, bool handoff, size_t
 {
     if (!handoff)
         Idle();
-    maxBytes = LimitWindow(maxBytes);
+    maxBytes = AdmittedFileWindow(maxBytes, m_state->cooperative);
     const auto affinity = m_state->cooperative ? JobAffinity::AnyThread : detail::IoJobAffinity;
     const auto work = handoff ? IoWork{"read.cleanup", 0, {}, 0} : m_state->DescribeWork(maxBytes);
     if (work.operation.empty())
@@ -987,7 +995,8 @@ ReadProgress ReadTask::GetProgress() const
 IoWork ReadTask::DescribeWork(size_t maxBytes) const
 {
     std::lock_guard lock(m_mutex);
-    return Idle().DescribeWork(LimitWindow(maxBytes));
+    const auto &state = Idle();
+    return state.DescribeWork(AdmittedFileWindow(maxBytes, state.cooperative));
 }
 IoWork ReadTask::GetSubmittedWork() const
 {

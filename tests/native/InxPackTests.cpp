@@ -115,7 +115,69 @@ void RequireExtractFailure(const std::filesystem::path &package, const std::file
     Require(rejected, "extraction unexpectedly succeeded");
 }
 
-void CheckInlineRead(const std::filesystem::path &package, const std::vector<uint8_t> &expected)
+void WriteInlineFixture(const std::filesystem::path &package, const std::vector<uint8_t> &expected)
+{
+    using namespace infernux;
+    using namespace infernux::inxpack;
+
+    constexpr size_t window = 64u * 1024u;
+    constexpr size_t grant = 1024u * 1024u;
+    WriteOptions options;
+    options.textHeader = std::make_shared<const std::string>(R"({"fixture":"inline"})");
+    auto &jobs = JobSystem::Get();
+    WriteTask writer(
+        package,
+        {{"Library/audio.mp3", expected.size(), true, expected.data()}, {"Library/large.bin", expected.size(), false}},
+        options, grant);
+    size_t offset = 0;
+    for (auto state = writer.GetStateName(); state != "ready"; state = writer.GetStateName()) {
+        if (state == "needs_input") {
+            const auto bytes = writer.GetInputBytes();
+            Require(bytes && bytes <= window && bytes <= expected.size() - offset,
+                    "inline writer requested an oversized input copy");
+            writer.Append(expected.data() + offset, bytes);
+            offset += bytes;
+            continue;
+        }
+        const auto before = writer.GetProgress();
+        const auto described = writer.DescribeWork(grant);
+        const auto submissions = writer.GetSubmissionCount();
+        writer.Advance(grant, 250'000, true);
+        Require(writer.IsPending() && writer.GetSubmittedWork().operation == described.operation &&
+                    writer.GetSubmittedWork().bytes <= window,
+                "inline writer lost its bounded grant");
+        Require(jobs.RunPendingJobs(64) == 1 && writer.GetSubmissionCount() == submissions + 1 &&
+                    !writer.RanOnWorker() && writer.GetError().empty(),
+                "inline writer grant did not retire as one owner job");
+        const auto after = writer.GetProgress();
+        Require(after.consumedBytes - before.consumedBytes <= window &&
+                    after.writtenBytes - before.writtenBytes <= window &&
+                    after.hashedBytes - before.hashedBytes <= window,
+                "inline writer processed more than one bounded archive step");
+    }
+    Require(offset == expected.size() && !std::filesystem::exists(package),
+            "inline writer exposed partial contents before publication");
+    writer.Publish();
+    Require(writer.IsPending() && !std::filesystem::exists(package), "inline publish bypassed the IO queue");
+    Require(jobs.RunPendingJobs(64) == 1 && writer.IsComplete() && writer.GetStateName() == "published",
+            "inline writer did not atomically publish the complete archive");
+    Require(writer.GetManifest().textHeader && *writer.GetManifest().textHeader == *options.textHeader,
+            "inline writer lost the INM text header");
+
+    WriteTask replacement(package, {{"replacement.txt", 1, true, expected.data()}}, options);
+    while (replacement.GetStateName() == "working") {
+        replacement.Advance(grant, 250'000, true);
+        Require(jobs.RunPendingJobs(64) == 1 && replacement.GetError().empty(), "replacement grant did not complete");
+    }
+    replacement.Publish();
+    Require(replacement.Cancel(), "queued inline publication could not be cancelled");
+    replacement.Wait();
+    Require(replacement.IsComplete() && replacement.GetStateName() == "cancelled",
+            "cancelled inline publication did not release its private file");
+    RequireNoTemporaryFiles(package.parent_path());
+}
+
+void CheckInlineArchive(const std::filesystem::path &package, const std::vector<uint8_t> &expected)
 {
     using namespace infernux;
     using namespace infernux::inxpack;
@@ -123,6 +185,7 @@ void CheckInlineRead(const std::filesystem::path &package, const std::vector<uin
     JobSystem::InitializeInline();
     try {
         constexpr size_t window = 64u * 1024u;
+        WriteInlineFixture(package, expected);
         FrameWorkOwner owner;
         ReadTask reader(package, 1024u * 1024u);
         auto &jobs = JobSystem::Get();
@@ -382,8 +445,8 @@ int main()
                 "streamed Zstd extraction changed bytes");
         Require(ReadFile(root / "stream-extracted/Library/audio.mp3") == large,
                 "streamed Store extraction changed bytes");
-        phase = "inline Store and Zstd reads";
-        CheckInlineRead(largePack, large);
+        phase = "inline model writes and Store/Zstd reads";
+        CheckInlineArchive(root / "inline-model.inm", large);
         std::fill(large.begin(), large.end(), 0);
         WriteSource(largeSource, large);
         Write(largePack, {{"Library/large.bin", largeSource}});

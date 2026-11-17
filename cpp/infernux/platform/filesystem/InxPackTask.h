@@ -16,9 +16,8 @@ class FrameWorkOwner;
 
 namespace infernux::inxpack
 {
-/// One archive cursor driven by the existing IO worker domain. Resident
-/// inputs are immutable spans. Their owners stay alive until accepted work
-/// has retired, including when the task is destroyed while it is active.
+/// One archive writer on the IO domain. An inline host advances one bounded
+/// step per grant. Borrowed inputs stay alive until accepted work retires.
 class WriteTask
 {
   public:
@@ -122,7 +121,6 @@ class ReadTask
     IoWork m_submittedWork;
     State &Idle() const;
     bool PendingLocked() const;
-    size_t LimitWindow(size_t maxBytes) const noexcept;
     void Snapshot();
     void Dispatch(size_t maxBytes, uint64_t targetNs, bool handoff = false, size_t directoryExtraBytes = 0);
 };
