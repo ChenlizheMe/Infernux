@@ -359,7 +359,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 }
                 self->CaptureModels();
                 self->cpu.AdvanceCoupledVelocity(); // First CPU local round, before the first cross-domain response.
-                if (!self->solveVelocity)
+                if (self->policy.Requested() && (!self->solveVelocity || !self->policy.impulses))
                     self->PublishContacts();
                 return self->Install(std::move(done));
             });
@@ -419,9 +419,9 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         const uint32_t rounds = Rounds(maxRounds);
         params.range = {0, static_cast<uint32_t>(groups.size()), rounds, 0};
         const bool last = iteration + rounds == iterations;
-        const bool readContacts = last && policy.Requested();
+        const bool readImpulses = last && policy.impulses;
         std::vector<rhi::ComputeBufferRead> reads{{buffers[Impulses], 0, velocities.size() * sizeof(Velocity)}};
-        if (readContacts)
+        if (readImpulses)
             reads.push_back({buffers[Patches], 0, patches.size() * sizeof(DevicePatch)});
         std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)},
                                                       {buffers[CpuVelocities], 0, Bytes(velocities)}};
@@ -429,7 +429,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             UploadWorkset(updates);
         auto packet =
             rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {Dispatch(owner.m_velocity)}, std::move(reads));
-        return {packet, [self = shared_from_this(), packet, last, readContacts, rounds, done = std::move(done)] {
+        return {packet, [self = shared_from_this(), packet, last, readImpulses, rounds, done = std::move(done)] {
                     self->receipts.resize(self->native.size());
                     packet->Readback(0)->ReadInto(self->receipts.data(), self->receipts.size() * sizeof(Velocity));
                     self->impulses.clear();
@@ -446,7 +446,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                     if (integrated != last)
                         throw std::logic_error(
                             "CPU and GPU coupling rounds differ from their shared velocity settings");
-                    if (readContacts) {
+                    if (readImpulses) {
                         packet->Readback(1)->ReadInto(self->patches.data(), self->patches.size() * sizeof(DevicePatch));
                         self->PublishContacts();
                     }
