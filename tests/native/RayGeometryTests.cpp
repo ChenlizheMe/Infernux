@@ -39,9 +39,16 @@ Bounds Visit(const Bvh &tree, const std::vector<Bounds> &primitives, uint32_t no
 void CheckHierarchy(const std::vector<Bounds> &bounds)
 {
     const auto result = BuildBvh(bounds);
-    auto repeat = BuildBvh(bounds);
-    assert(result.primitiveOrder == repeat.primitiveOrder && result.nodes.size() == repeat.nodes.size());
-    assert(std::memcmp(result.nodes.data(), repeat.nodes.data(), result.nodes.size() * sizeof(BvhNode)) == 0);
+    for (const uint32_t window : {1u, 17u}) {
+        BvhBuild build(bounds);
+        assert(!build.Advance(0));
+        assert(!build.Advance(window));
+        while (!build.Advance(window)) {
+        }
+        const auto resumed = build.Take();
+        assert(result.primitiveOrder == resumed.primitiveOrder && result.nodes.size() == resumed.nodes.size());
+        assert(std::memcmp(result.nodes.data(), resumed.nodes.data(), result.nodes.size() * sizeof(BvhNode)) == 0);
+    }
     Visit(result, bounds, 0, 0);
     auto order = result.primitiveOrder;
     std::sort(order.begin(), order.end());
@@ -51,6 +58,7 @@ void CheckHierarchy(const std::vector<Bounds> &bounds)
     auto moved = bounds;
     moved.back().minimum.x -= 2.0f;
     moved.back().maximum.y += 3.0f;
+    auto repeat = result;
     RefitBvh(repeat, moved);
     assert(result.primitiveOrder == repeat.primitiveOrder);
     for (size_t i = 0; i < result.nodes.size(); ++i) {
@@ -63,7 +71,10 @@ void CheckHierarchy(const std::vector<Bounds> &bounds)
 
 int main()
 {
-    assert(BuildBvh({}).nodes.empty());
+    const std::vector<Bounds> emptyBounds;
+    BvhBuild emptyBuild(emptyBounds);
+    assert(emptyBuild.Advance(0) && emptyBuild.Take().nodes.empty());
+    assert(BuildBvh(emptyBounds).nodes.empty());
     // Equal centroids need a stable median. Exponential separation pressures the depth limit.
     CheckHierarchy(std::vector<Bounds>(80, Bounds{glm::vec3(-1.0f), glm::vec3(1.0f)}));
     std::vector<Bounds> unbalanced;
@@ -103,6 +114,19 @@ int main()
     assert(packed[0][0] == page.root && packed[1][0] + 8 == packed.size());
     assert(packed[packed[1][0] + 3][1] == 1u);
     assert(packed[packed[1][0] + 7][1] == 2u);
+
+    const std::vector<uint32_t> indices{0, 1, 2, 3, 4, 5, 4, 6, 5};
+    RayMeshBuild meshBuild(source, indices, 3, 6, 0);
+    while (!meshBuild.Advance(1)) {
+    }
+    const auto resumedMesh = meshBuild.Take();
+    const std::vector<RayMeshInstance> instances{{resumedMesh, glm::mat4(1.0f), 1u, 2u},
+                                                 {resumedMesh, mirrored, 2u, 4u}};
+    RayGeometryPageBuild pageBuild(instances);
+    while (!pageBuild.Advance(1)) {
+    }
+    assert(EncodeRayGeometryPage(pageBuild.Take(), RayGeometryStatus::Ready) == packed);
+
     const auto unavailable = EncodeRayGeometryPage({}, RayGeometryStatus::Unavailable);
     const auto empty = EncodeRayGeometryPage({}, RayGeometryStatus::Ready);
     assert(unavailable[1][1] == static_cast<uint32_t>(RayGeometryStatus::Unavailable));

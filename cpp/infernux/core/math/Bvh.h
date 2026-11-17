@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <vector>
 
 namespace infernux::spatial
@@ -42,6 +43,25 @@ struct Bvh
 {
     std::vector<BvhNode> nodes;
     std::vector<uint32_t> primitiveOrder;
+};
+
+/// Builds the same depth-first hierarchy over several bounded continuations.
+/// primitiveBounds must remain alive and unchanged until the build finishes.
+class BvhBuild
+{
+  public:
+    explicit INFERNUX_FOUNDATION_API BvhBuild(const std::vector<Bounds> &primitiveBounds);
+    INFERNUX_FOUNDATION_API ~BvhBuild();
+    INFERNUX_FOUNDATION_API BvhBuild(BvhBuild &&) noexcept;
+    INFERNUX_FOUNDATION_API BvhBuild &operator=(BvhBuild &&) noexcept;
+
+    /// Performs up to primitiveBudget visits and reports whether the tree is complete.
+    [[nodiscard]] INFERNUX_FOUNDATION_API bool Advance(uint32_t primitiveBudget);
+    [[nodiscard]] INFERNUX_FOUNDATION_API Bvh Take();
+
+  private:
+    struct State;
+    std::unique_ptr<State> m_state;
 };
 
 /// Nodes are stored in depth-first order with each parent before its children.

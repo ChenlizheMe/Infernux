@@ -2,8 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 #include <stdexcept>
+#include <utility>
 
 namespace infernux::spatial
 {
@@ -51,135 +51,283 @@ struct Split
     }
 };
 
-class Builder
+enum class Phase : uint8_t
 {
-  public:
-    explicit Builder(const std::vector<Bounds> &bounds)
-        : m_bounds(bounds), m_centers(bounds.size()), m_scratch(bounds.size())
-    {
-        for (size_t index = 0; index < bounds.size(); ++index) {
-            const auto &bound = bounds[index];
-            for (unsigned axis = 0; axis < 3; ++axis)
-                if (!std::isfinite(bound.minimum[axis]) || !std::isfinite(bound.maximum[axis]) ||
-                    bound.minimum[axis] > bound.maximum[axis])
-                    throw std::invalid_argument("BVH requires finite, ordered primitive bounds");
-            m_centers[index] = bound.Center();
-        }
-        m_result.primitiveOrder.resize(bounds.size());
-        std::iota(m_result.primitiveOrder.begin(), m_result.primitiveOrder.end(), 0u);
-        m_result.nodes.reserve((bounds.size() + kBvhLeafCapacity - 1) / kBvhLeafCapacity * 2);
-    }
+    Initialize,
+    ScanBounds,
+    BucketAxis,
+    Partition,
+    Commit,
+    Complete,
+};
 
-    [[nodiscard]] Bvh Build()
-    {
-        Emit(0, static_cast<uint32_t>(m_bounds.size()), 0);
-        return std::move(m_result);
-    }
-
-  private:
-    [[nodiscard]] Split FindSplit(uint32_t first, uint32_t end, const Bounds &centers, uint32_t depth) const
-    {
-        Split best;
-        const uint64_t childCapacity = uint64_t{kBvhLeafCapacity} << (kBvhMaximumDepth - depth - 1);
-        for (unsigned axis = 0; axis < 3; ++axis) {
-            const double extent = static_cast<double>(centers.maximum[axis]) - centers.minimum[axis];
-            if (extent == 0.0)
-                continue;
-
-            Split split;
-            split.minimum = centers.minimum[axis];
-            split.bucketsPerUnit = static_cast<double>(BucketCount) / extent;
-            split.axis = axis;
-            std::array<Bucket, BucketCount> buckets{};
-            for (uint32_t index = first; index < end; ++index) {
-                const auto primitive = m_result.primitiveOrder[index];
-                auto &bucket = buckets[split.BucketOf(m_centers[primitive])];
-                bucket.bounds.Include(m_bounds[primitive]);
-                ++bucket.count;
-            }
-
-            std::array<double, BucketCount - 1> rightCost{};
-            Bucket right;
-            for (uint32_t index = BucketCount - 1; index > 0; --index) {
-                right.bounds.Include(buckets[index].bounds);
-                right.count += buckets[index].count;
-                rightCost[index - 1] = right.count ? right.count * right.bounds.Area() : 0.0;
-            }
-
-            Bucket left;
-            for (uint32_t index = 0; index < BucketCount - 1; ++index) {
-                left.bounds.Include(buckets[index].bounds);
-                left.count += buckets[index].count;
-                const uint32_t rightCount = end - first - left.count;
-                if (left.count == 0 || rightCount == 0 || left.count > childCapacity || rightCount > childCapacity)
-                    continue;
-                const double cost = left.count * left.bounds.Area() + rightCost[index];
-                if (cost < best.cost) {
-                    best = split;
-                    best.cost = cost;
-                    best.leftCount = left.count;
-                    best.lastLeftBucket = index;
-                }
-            }
-        }
-        return best;
-    }
-
-    [[nodiscard]] uint32_t Partition(uint32_t first, uint32_t end, const Split &split)
-    {
-        if (split.leftCount == 0)
-            return first + (end - first) / 2;
-        const uint32_t middle = first + split.leftCount;
-        uint32_t left = first, right = middle;
-        for (uint32_t index = first; index < end; ++index) {
-            const auto primitive = m_result.primitiveOrder[index];
-            const bool goesLeft = split.BucketOf(m_centers[primitive]) <= split.lastLeftBucket;
-            m_scratch[goesLeft ? left++ : right++] = primitive;
-        }
-        std::copy(m_scratch.begin() + first, m_scratch.begin() + end, m_result.primitiveOrder.begin() + first);
-        return middle;
-    }
-
-    uint32_t Emit(uint32_t first, uint32_t end, uint32_t depth)
-    {
-        Bounds bounds, centers;
-        for (uint32_t index = first; index < end; ++index) {
-            const auto primitive = m_result.primitiveOrder[index];
-            bounds.Include(m_bounds[primitive]);
-            const auto center = m_centers[primitive];
-            centers.Include({center, center});
-        }
-
-        const uint32_t node = static_cast<uint32_t>(m_result.nodes.size());
-        const uint32_t count = end - first;
-        m_result.nodes.push_back({{bounds.minimum.x, bounds.minimum.y, bounds.minimum.z},
-                                  first,
-                                  {bounds.maximum.x, bounds.maximum.y, bounds.maximum.z},
-                                  kBvhLeafBit | count});
-        if (count > kBvhLeafCapacity) {
-            const auto middle = Partition(first, end, FindSplit(first, end, centers, depth));
-            const auto left = Emit(first, middle, depth + 1);
-            const auto right = Emit(middle, end, depth + 1);
-            m_result.nodes[node].first = left;
-            m_result.nodes[node].second = right;
-        }
-        return node;
-    }
-
-    const std::vector<Bounds> &m_bounds;
-    std::vector<glm::vec3> m_centers;
-    std::vector<uint32_t> m_scratch;
-    Bvh m_result;
+struct NodeRange
+{
+    uint32_t first;
+    uint32_t end;
+    uint32_t depth;
+    uint32_t parent;
+    bool right;
 };
 } // namespace
 
+struct BvhBuild::State
+{
+    explicit State(const std::vector<Bounds> &source) : primitiveBounds(source)
+    {
+        if (source.size() > kBvhLeafBit / 2u)
+            throw std::length_error("BVH exceeds its node index range");
+        if (source.empty()) {
+            phase = Phase::Complete;
+            return;
+        }
+
+        // Reserve raw storage once. Growing any of these vectors during an
+        // advance could relocate an entire previously processed range.
+        centers.reserve(source.size());
+        scratch.reserve(source.size());
+        result.primitiveOrder.reserve(source.size());
+        result.nodes.reserve(source.size() * 2 - 1);
+        range.end = static_cast<uint32_t>(source.size());
+    }
+
+    [[nodiscard]] bool Advance(uint32_t primitiveBudget)
+    {
+        while (primitiveBudget && phase != Phase::Complete) {
+            const auto count = std::min(primitiveBudget, range.end - cursor);
+            const uint32_t stop = cursor + count;
+            switch (phase) {
+            case Phase::Initialize:
+                Initialize(stop);
+                break;
+            case Phase::ScanBounds:
+                ScanBounds(stop);
+                break;
+            case Phase::BucketAxis:
+                BucketAxis(stop);
+                break;
+            case Phase::Partition:
+                Partition(stop);
+                break;
+            case Phase::Commit:
+                Commit(stop);
+                break;
+            case Phase::Complete:
+                break;
+            }
+            primitiveBudget -= count;
+        }
+        return phase == Phase::Complete;
+    }
+
+    void Initialize(uint32_t stop)
+    {
+        for (; cursor < stop; ++cursor) {
+            const auto &bound = primitiveBounds[cursor];
+            for (unsigned component = 0; component < 3; ++component)
+                if (!std::isfinite(bound.minimum[component]) || !std::isfinite(bound.maximum[component]) ||
+                    bound.minimum[component] > bound.maximum[component])
+                    throw std::invalid_argument("BVH requires finite, ordered primitive bounds");
+            centers.push_back(bound.Center());
+            scratch.push_back(0);
+            result.primitiveOrder.push_back(cursor);
+        }
+        if (cursor == range.end) {
+            cursor = 0;
+            phase = Phase::ScanBounds;
+        }
+    }
+
+    void ScanBounds(uint32_t stop)
+    {
+        for (; cursor < stop; ++cursor) {
+            const auto primitive = result.primitiveOrder[cursor];
+            bounds.Include(primitiveBounds[primitive]);
+            const auto center = centers[primitive];
+            centerBounds.Include({center, center});
+        }
+        if (cursor == range.end)
+            EmitNode();
+    }
+
+    void EmitNode()
+    {
+        node = static_cast<uint32_t>(result.nodes.size());
+        const uint32_t count = range.end - range.first;
+        result.nodes.push_back({{bounds.minimum.x, bounds.minimum.y, bounds.minimum.z},
+                                range.first,
+                                {bounds.maximum.x, bounds.maximum.y, bounds.maximum.z},
+                                kBvhLeafBit | count});
+        if (range.depth != 0) {
+            auto &parent = result.nodes[range.parent];
+            (range.right ? parent.second : parent.first) = node;
+        }
+        if (count <= kBvhLeafCapacity) {
+            NextNode();
+            return;
+        }
+        best = {};
+        axis = 0;
+        NextAxis();
+    }
+
+    void NextAxis()
+    {
+        for (; axis < 3; ++axis) {
+            const double extent = static_cast<double>(centerBounds.maximum[axis]) - centerBounds.minimum[axis];
+            if (extent == 0.0)
+                continue;
+            axisSplit.minimum = centerBounds.minimum[axis];
+            axisSplit.bucketsPerUnit = static_cast<double>(BucketCount) / extent;
+            axisSplit.axis = axis;
+            buckets = {};
+            cursor = range.first;
+            phase = Phase::BucketAxis;
+            return;
+        }
+
+        if (best.leftCount == 0) {
+            ScheduleChildren(range.first + (range.end - range.first) / 2);
+            return;
+        }
+        cursor = left = range.first;
+        right = range.first + best.leftCount;
+        phase = Phase::Partition;
+    }
+
+    void BucketAxis(uint32_t stop)
+    {
+        for (; cursor < stop; ++cursor) {
+            const auto primitive = result.primitiveOrder[cursor];
+            auto &bucket = buckets[axisSplit.BucketOf(centers[primitive])];
+            bucket.bounds.Include(primitiveBounds[primitive]);
+            ++bucket.count;
+        }
+        if (cursor == range.end) {
+            ScoreAxis();
+            ++axis;
+            NextAxis();
+        }
+    }
+
+    void ScoreAxis()
+    {
+        // Bucket reductions have a fixed size regardless of the input range.
+        std::array<double, BucketCount - 1> rightCost{};
+        Bucket rightBucket;
+        for (uint32_t index = BucketCount - 1; index > 0; --index) {
+            rightBucket.bounds.Include(buckets[index].bounds);
+            rightBucket.count += buckets[index].count;
+            rightCost[index - 1] = rightBucket.count ? rightBucket.count * rightBucket.bounds.Area() : 0.0;
+        }
+
+        const uint64_t childCapacity = uint64_t{kBvhLeafCapacity} << (kBvhMaximumDepth - range.depth - 1);
+        Bucket leftBucket;
+        for (uint32_t index = 0; index < BucketCount - 1; ++index) {
+            leftBucket.bounds.Include(buckets[index].bounds);
+            leftBucket.count += buckets[index].count;
+            const uint32_t rightCount = range.end - range.first - leftBucket.count;
+            if (leftBucket.count == 0 || rightCount == 0 || leftBucket.count > childCapacity ||
+                rightCount > childCapacity)
+                continue;
+            const double cost = leftBucket.count * leftBucket.bounds.Area() + rightCost[index];
+            if (cost < best.cost) {
+                best = axisSplit;
+                best.cost = cost;
+                best.leftCount = leftBucket.count;
+                best.lastLeftBucket = index;
+            }
+        }
+    }
+
+    void Partition(uint32_t stop)
+    {
+        for (; cursor < stop; ++cursor) {
+            const auto primitive = result.primitiveOrder[cursor];
+            const bool goesLeft = best.BucketOf(centers[primitive]) <= best.lastLeftBucket;
+            scratch[goesLeft ? left++ : right++] = primitive;
+        }
+        if (cursor == range.end) {
+            cursor = range.first;
+            phase = Phase::Commit;
+        }
+    }
+
+    void Commit(uint32_t stop)
+    {
+        std::copy(scratch.begin() + cursor, scratch.begin() + stop, result.primitiveOrder.begin() + cursor);
+        cursor = stop;
+        if (cursor == range.end)
+            ScheduleChildren(range.first + best.leftCount);
+    }
+
+    void ScheduleChildren(uint32_t middle)
+    {
+        const uint32_t depth = range.depth + 1;
+        pending[pendingCount++] = {middle, range.end, depth, node, true};
+        pending[pendingCount++] = {range.first, middle, depth, node, false};
+        NextNode();
+    }
+
+    void NextNode()
+    {
+        if (pendingCount == 0) {
+            phase = Phase::Complete;
+            return;
+        }
+        range = pending[--pendingCount];
+        cursor = range.first;
+        bounds = {};
+        centerBounds = {};
+        phase = Phase::ScanBounds;
+    }
+
+    const std::vector<Bounds> &primitiveBounds;
+    std::vector<glm::vec3> centers;
+    std::vector<uint32_t> scratch;
+    Bvh result;
+    std::array<NodeRange, kBvhMaximumDepth + 1> pending;
+    std::array<Bucket, BucketCount> buckets;
+    NodeRange range{};
+    Bounds bounds;
+    Bounds centerBounds;
+    Split best;
+    Split axisSplit;
+    uint32_t pendingCount = 0;
+    uint32_t cursor = 0;
+    uint32_t node = 0;
+    uint32_t left = 0;
+    uint32_t right = 0;
+    unsigned axis = 0;
+    Phase phase = Phase::Initialize;
+};
+
+BvhBuild::BvhBuild(const std::vector<Bounds> &primitiveBounds) : m_state(std::make_unique<State>(primitiveBounds))
+{
+}
+
+BvhBuild::~BvhBuild() = default;
+BvhBuild::BvhBuild(BvhBuild &&) noexcept = default;
+BvhBuild &BvhBuild::operator=(BvhBuild &&) noexcept = default;
+
+bool BvhBuild::Advance(uint32_t primitiveBudget)
+{
+    return m_state->Advance(primitiveBudget);
+}
+
+Bvh BvhBuild::Take()
+{
+    if (m_state->phase != Phase::Complete)
+        throw std::logic_error("BVH build is incomplete");
+    return std::move(m_state->result);
+}
+
 Bvh BuildBvh(const std::vector<Bounds> &primitiveBounds)
 {
-    if (primitiveBounds.empty())
-        return {};
-    if (primitiveBounds.size() > (kBvhLeafBit / 2u))
-        throw std::length_error("BVH exceeds its node index range");
-    return Builder(primitiveBounds).Build();
+    BvhBuild build(primitiveBounds);
+    while (!build.Advance(std::numeric_limits<uint32_t>::max())) {
+    }
+    return build.Take();
 }
 
 void RefitBvh(Bvh &tree, const std::vector<Bounds> &primitiveBounds)

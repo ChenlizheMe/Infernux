@@ -3,6 +3,7 @@
 #include <core/math/Bvh.h>
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace infernux
@@ -66,6 +67,35 @@ struct RayGeometryPage
     uint32_t root = kInvalidRayIndex;
 };
 
+/// The draw's streams remain alive and unchanged until the last continuation.
+class RayMeshBuild
+{
+  public:
+    RayMeshBuild(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices, uint32_t indexStart,
+                 uint32_t indexCount, int32_t vertexStart);
+    ~RayMeshBuild();
+    [[nodiscard]] bool Advance(uint32_t budget);
+    [[nodiscard]] RayMesh Take();
+
+  private:
+    struct State;
+    std::unique_ptr<State> m_state;
+};
+
+/// The instance descriptions and their finished meshes remain alive through the build.
+class RayGeometryPageBuild
+{
+  public:
+    explicit RayGeometryPageBuild(const std::vector<RayMeshInstance> &instances);
+    ~RayGeometryPageBuild();
+    [[nodiscard]] bool Advance(uint32_t budget);
+    [[nodiscard]] RayGeometryPage Take();
+
+  private:
+    struct State;
+    std::unique_ptr<State> m_state;
+};
+
 [[nodiscard]] RayMesh BuildRayMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
                                    uint32_t indexStart, uint32_t indexCount, int32_t vertexStart);
 [[nodiscard]] RayGeometryPage BuildRayGeometryPage(const std::vector<RayMeshInstance> &instances);
@@ -78,6 +108,26 @@ enum class RayGeometryStatus : uint32_t
 };
 
 using RayGeometryWord = std::array<uint32_t, 4>;
+
+struct RayGeometryBytes
+{
+    const void *data;
+    size_t bytes;
+};
+
+/// Contiguous page layout expressed as sections, so the renderer can upload
+/// ranges without allocating a second, packed copy of the whole scene.
+struct RayGeometryPageLayout
+{
+    explicit RayGeometryPageLayout(const RayGeometryPage &page, RayGeometryStatus status);
+    [[nodiscard]] std::array<RayGeometryBytes, 5> Sections() const;
+
+    std::array<RayGeometryWord, 2> header;
+    uint64_t bytes = 0;
+
+  private:
+    const RayGeometryPage &m_page;
+};
 
 /// Two uvec4 header words followed by page-relative storage arrays.
 /// Header 0: TLAS root, node offset, position offset, triangle offset.

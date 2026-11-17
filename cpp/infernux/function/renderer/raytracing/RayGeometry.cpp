@@ -6,16 +6,17 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
-#include <unordered_map>
 
 namespace infernux::raytracing
 {
 namespace
 {
 using spatial::Bounds;
-using spatial::BuildBvh;
+using spatial::BvhBuild;
 using spatial::BvhNode;
 using spatial::kBvhLeafBit;
 
@@ -69,49 +70,43 @@ RayInstance EncodeInstance(const RayMeshInstance &instance, uint32_t root)
     return {row(0), row(1), row(2), root, instance.surfaceId, instance.layerMask};
 }
 
-void AppendNodes(std::vector<BvhNode> &destination, const std::vector<BvhNode> &nodes, uint32_t root,
-                 uint32_t leafOffset)
+BvhNode RelocateNode(BvhNode node, uint32_t root, uint32_t leafOffset)
 {
-    for (auto node : nodes) {
-        if ((node.second & kBvhLeafBit) != 0) {
-            node.first += leafOffset;
-        } else {
-            node.first += root;
-            node.second += root;
-        }
-        destination.push_back(node);
+    if ((node.second & kBvhLeafBit) != 0) {
+        node.first += leafOffset;
+    } else {
+        node.first += root;
+        node.second += root;
     }
+    return node;
 }
 
-uint32_t AppendMesh(RayGeometryPage &page, const RayMesh &mesh)
+template <typename Visit> void VisitWindow(size_t &cursor, size_t count, uint32_t &budget, Visit visit)
 {
-    const auto root = PageOffset(page.nodes.size(), mesh.nodes.size());
-    const auto positionOffset = PageOffset(page.positions.size(), mesh.positions.size());
-    const auto triangleOffset = PageOffset(page.triangles.size(), mesh.triangles.size());
-    AppendNodes(page.nodes, mesh.nodes, root, triangleOffset);
-    page.positions.insert(page.positions.end(), mesh.positions.begin(), mesh.positions.end());
-    for (const auto &triangle : mesh.triangles) {
-        page.triangles.push_back({triangle.a + positionOffset, triangle.b + positionOffset, triangle.c + positionOffset,
-                                  triangle.primitive});
-    }
-    return root;
+    const auto visits = std::min<size_t>(count - cursor, budget);
+    budget -= static_cast<uint32_t>(visits);
+    const auto end = cursor + visits;
+    for (; cursor != end; ++cursor)
+        visit(cursor);
 }
 } // namespace
 
-RayMesh BuildRayMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices, uint32_t indexStart,
-                     uint32_t indexCount, int32_t vertexStart)
+struct RayMeshBuild::State
 {
-    if (indexCount % 3 != 0 || indexStart > indices.size() || indexCount > indices.size() - indexStart)
-        throw std::invalid_argument("Ray mesh requires a complete indexed triangle slice");
+    State(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices, uint32_t indexStart,
+          uint32_t indexCount, int32_t vertexStart)
+        : vertices(vertices), indices(indices), indexStart(indexStart), vertexStart(vertexStart),
+          triangleCount(indexCount / 3)
+    {
+        if (indexCount % 3 != 0 || indexStart > indices.size() || indexCount > indices.size() - indexStart)
+            throw std::invalid_argument("Ray mesh requires a complete indexed triangle slice");
+        bounds.reserve(triangleCount);
+        triangles.reserve(triangleCount);
+        mesh.positions.reserve(std::min<size_t>(vertices.size(), indexCount));
+    }
 
-    RayMesh mesh;
-    const auto triangleCount = indexCount / 3;
-    std::vector<Bounds> bounds;
-    std::vector<RayTriangle> triangles;
-    std::unordered_map<uint32_t, uint32_t> positionIndices;
-    bounds.reserve(triangleCount);
-    triangles.reserve(triangleCount);
-    for (uint32_t primitive = 0; primitive < triangleCount; ++primitive) {
+    void Gather(uint32_t primitive)
+    {
         const size_t first = static_cast<size_t>(indexStart) + primitive * 3;
         uint32_t corners[3];
         Bounds triangleBounds;
@@ -120,58 +115,271 @@ RayMesh BuildRayMesh(const std::vector<Vertex> &vertices, const std::vector<uint
             if (vertex < 0 || static_cast<uint64_t>(vertex) >= vertices.size() || vertex > UINT32_MAX)
                 throw std::invalid_argument("Ray mesh index falls outside its vertex stream");
             const glm::vec3 &position = vertices[static_cast<size_t>(vertex)].pos;
-            const auto [entry, inserted] = positionIndices.try_emplace(static_cast<uint32_t>(vertex),
-                                                                       static_cast<uint32_t>(mesh.positions.size()));
-            if (inserted) {
+            const auto source = static_cast<uint32_t>(vertex);
+            auto [page, inserted] = positionIndices.try_emplace(source / RemapPageSize);
+            if (inserted)
+                page->second.fill(kInvalidRayIndex);
+            auto &mapped = page->second[source % RemapPageSize];
+            if (mapped == kInvalidRayIndex) {
                 if (!IsFinite(position))
                     throw std::invalid_argument("Ray mesh requires finite vertex positions");
+                mapped = static_cast<uint32_t>(mesh.positions.size());
                 mesh.positions.push_back({position.x, position.y, position.z});
             }
-            corners[corner] = entry->second;
+            corners[corner] = mapped;
             triangleBounds.Include({position, position});
         }
         bounds.push_back(triangleBounds);
         triangles.push_back({corners[0], corners[1], corners[2], primitive});
     }
 
-    auto hierarchy = BuildBvh(bounds);
-    mesh.nodes = std::move(hierarchy.nodes);
-    mesh.triangles.reserve(triangleCount);
-    for (uint32_t index : hierarchy.primitiveOrder)
-        mesh.triangles.push_back(triangles[index]);
-    return mesh;
+    const std::vector<Vertex> &vertices;
+    const std::vector<uint32_t> &indices;
+    uint32_t indexStart;
+    int32_t vertexStart;
+    uint32_t triangleCount;
+    size_t cursor = 0;
+    RayMesh mesh;
+    std::vector<Bounds> bounds;
+    std::vector<RayTriangle> triangles;
+    static constexpr uint32_t RemapPageSize = 32;
+    std::map<uint32_t, std::array<uint32_t, RemapPageSize>> positionIndices;
+    std::optional<BvhBuild> builder;
+    std::vector<uint32_t> order;
+    enum class Phase : uint8_t
+    {
+        Gather,
+        Build,
+        Reorder,
+        Done,
+    } phase = Phase::Gather;
+};
+
+RayMeshBuild::RayMeshBuild(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
+                           uint32_t indexStart, uint32_t indexCount, int32_t vertexStart)
+    : m_state(std::make_unique<State>(vertices, indices, indexStart, indexCount, vertexStart))
+{
+}
+
+RayMeshBuild::~RayMeshBuild() = default;
+
+bool RayMeshBuild::Advance(uint32_t budget)
+{
+    auto &state = *m_state;
+    using Phase = State::Phase;
+    // Each stage owns the window. In particular the BVH builder accounts for
+    // every SAH visit internally, including repeated visits to the same range.
+    switch (state.phase) {
+    case Phase::Gather:
+        VisitWindow(state.cursor, state.triangleCount, budget,
+                    [&](size_t index) { state.Gather(static_cast<uint32_t>(index)); });
+        if (state.cursor == state.triangleCount) {
+            state.builder.emplace(state.bounds);
+            state.phase = Phase::Build;
+        }
+        return false;
+    case Phase::Build: {
+        if (!state.builder->Advance(budget))
+            return false;
+        auto hierarchy = state.builder->Take();
+        state.builder.reset();
+        state.mesh.nodes = std::move(hierarchy.nodes);
+        state.order = std::move(hierarchy.primitiveOrder);
+        state.mesh.triangles.reserve(state.order.size());
+        state.cursor = 0;
+        state.phase = Phase::Reorder;
+        return false;
+    }
+    case Phase::Reorder:
+        VisitWindow(state.cursor, state.order.size(), budget,
+                    [&](size_t index) { state.mesh.triangles.push_back(state.triangles[state.order[index]]); });
+        if (state.cursor != state.order.size())
+            return false;
+        state.phase = Phase::Done;
+        return true;
+    case Phase::Done:
+        return true;
+    }
+    std::terminate();
+}
+
+RayMesh RayMeshBuild::Take()
+{
+    return std::move(m_state->mesh);
+}
+
+struct RayGeometryPageBuild::State
+{
+    struct MeshRange
+    {
+        const RayMesh *mesh;
+        uint32_t node;
+        uint32_t position;
+        uint32_t triangle;
+    };
+
+    explicit State(const std::vector<RayMeshInstance> &instances) : instances(instances)
+    {
+        bounds.reserve(instances.size());
+        packed.reserve(instances.size());
+        ranges.reserve(instances.size());
+    }
+
+    void AddInstance(const RayMeshInstance &instance)
+    {
+        if (instance.mesh.nodes.empty())
+            return;
+        const auto [entry, inserted] = roots.try_emplace(&instance.mesh, nodeCount);
+        if (inserted) {
+            const auto &mesh = instance.mesh;
+            ranges.push_back({&mesh, PageOffset(nodeCount, mesh.nodes.size()),
+                              PageOffset(positionCount, mesh.positions.size()),
+                              PageOffset(triangleCount, mesh.triangles.size())});
+            nodeCount += static_cast<uint32_t>(mesh.nodes.size());
+            positionCount += static_cast<uint32_t>(mesh.positions.size());
+            triangleCount += static_cast<uint32_t>(mesh.triangles.size());
+        }
+        bounds.push_back(TransformBounds(instance.mesh.nodes.front(), instance.objectToWorld));
+        packed.push_back(EncodeInstance(instance, entry->second));
+    }
+
+    bool AppendMeshes(uint32_t budget)
+    {
+        for (; meshIndex < ranges.size() && budget; ++meshIndex) {
+            const auto &range = ranges[meshIndex];
+            const auto &mesh = *range.mesh;
+            const auto positions = mesh.nodes.size();
+            const auto triangles = positions + mesh.positions.size();
+            const auto end = triangles + mesh.triangles.size();
+            if (cursor < positions)
+                VisitWindow(cursor, positions, budget, [&](size_t i) {
+                    page.nodes.push_back(RelocateNode(mesh.nodes[i], range.node, range.triangle));
+                });
+            if (cursor < triangles)
+                VisitWindow(cursor, triangles, budget,
+                            [&](size_t i) { page.positions.push_back(mesh.positions[i - positions]); });
+            if (cursor < end)
+                VisitWindow(cursor, end, budget, [&](size_t i) {
+                    const auto &tri = mesh.triangles[i - triangles];
+                    page.triangles.push_back(
+                        {tri.a + range.position, tri.b + range.position, tri.c + range.position, tri.primitive});
+                });
+            if (cursor != end)
+                return false;
+            cursor = 0;
+        }
+        return meshIndex == ranges.size();
+    }
+
+    const std::vector<RayMeshInstance> &instances;
+    size_t cursor = 0;
+    size_t meshIndex = 0;
+    uint32_t nodeCount = 0, positionCount = 0, triangleCount = 0;
+    RayGeometryPage page;
+    std::map<const RayMesh *, uint32_t> roots;
+    std::vector<MeshRange> ranges;
+    std::vector<Bounds> bounds;
+    std::vector<RayInstance> packed;
+    std::optional<BvhBuild> builder;
+    spatial::Bvh hierarchy;
+    enum class Phase : uint8_t
+    {
+        Gather,
+        Build,
+        AppendMeshes,
+        AppendTop,
+        Reorder,
+        Done,
+    } phase = Phase::Gather;
+};
+
+RayGeometryPageBuild::RayGeometryPageBuild(const std::vector<RayMeshInstance> &instances)
+    : m_state(std::make_unique<State>(instances))
+{
+}
+
+RayGeometryPageBuild::~RayGeometryPageBuild() = default;
+
+bool RayGeometryPageBuild::Advance(uint32_t budget)
+{
+    auto &state = *m_state;
+    using Phase = State::Phase;
+    switch (state.phase) {
+    case Phase::Gather:
+        VisitWindow(state.cursor, state.instances.size(), budget,
+                    [&](size_t index) { state.AddInstance(state.instances[index]); });
+        if (state.cursor == state.instances.size()) {
+            state.builder.emplace(state.bounds);
+            state.phase = Phase::Build;
+        }
+        return false;
+    case Phase::Build:
+        if (!state.builder->Advance(budget))
+            return false;
+        state.hierarchy = state.builder->Take();
+        state.builder.reset();
+        if (state.hierarchy.nodes.empty()) {
+            state.phase = Phase::Done;
+            return true;
+        }
+        state.page.root = PageOffset(state.nodeCount, state.hierarchy.nodes.size());
+        state.page.nodes.reserve(state.nodeCount + state.hierarchy.nodes.size());
+        state.page.positions.reserve(state.positionCount);
+        state.page.triangles.reserve(state.triangleCount);
+        state.page.instances.reserve(state.packed.size());
+        state.cursor = 0;
+        state.phase = Phase::AppendMeshes;
+        return false;
+    case Phase::AppendMeshes:
+        if (state.AppendMeshes(budget))
+            state.phase = Phase::AppendTop;
+        return false;
+    case Phase::AppendTop:
+        VisitWindow(state.cursor, state.hierarchy.nodes.size(), budget, [&](size_t index) {
+            state.page.nodes.push_back(RelocateNode(state.hierarchy.nodes[index], state.page.root, 0));
+        });
+        if (state.cursor == state.hierarchy.nodes.size()) {
+            state.cursor = 0;
+            state.phase = Phase::Reorder;
+        }
+        return false;
+    case Phase::Reorder:
+        VisitWindow(state.cursor, state.packed.size(), budget, [&](size_t index) {
+            state.page.instances.push_back(state.packed[state.hierarchy.primitiveOrder[index]]);
+        });
+        if (state.cursor != state.packed.size())
+            return false;
+        state.phase = Phase::Done;
+        return true;
+    case Phase::Done:
+        return true;
+    }
+    std::terminate();
+}
+
+RayGeometryPage RayGeometryPageBuild::Take()
+{
+    return std::move(m_state->page);
+}
+
+RayMesh BuildRayMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices, uint32_t indexStart,
+                     uint32_t indexCount, int32_t vertexStart)
+{
+    RayMeshBuild build(vertices, indices, indexStart, indexCount, vertexStart);
+    while (!build.Advance(UINT32_MAX)) {
+    }
+    return build.Take();
 }
 
 RayGeometryPage BuildRayGeometryPage(const std::vector<RayMeshInstance> &instances)
 {
-    RayGeometryPage page;
-    std::unordered_map<const RayMesh *, uint32_t> roots;
-    std::vector<Bounds> bounds;
-    std::vector<RayInstance> packed;
-    bounds.reserve(instances.size());
-    packed.reserve(instances.size());
-    for (const auto &instance : instances) {
-        if (instance.mesh.nodes.empty())
-            continue;
-        const auto [entry, inserted] = roots.try_emplace(&instance.mesh, 0);
-        if (inserted)
-            entry->second = AppendMesh(page, instance.mesh);
-        bounds.push_back(TransformBounds(instance.mesh.nodes.front(), instance.objectToWorld));
-        packed.push_back(EncodeInstance(instance, entry->second));
+    RayGeometryPageBuild build(instances);
+    while (!build.Advance(UINT32_MAX)) {
     }
-    auto hierarchy = BuildBvh(bounds);
-    if (hierarchy.nodes.empty())
-        return page;
-
-    page.root = PageOffset(page.nodes.size(), hierarchy.nodes.size());
-    AppendNodes(page.nodes, hierarchy.nodes, page.root, 0);
-    page.instances.reserve(packed.size());
-    for (uint32_t index : hierarchy.primitiveOrder)
-        page.instances.push_back(packed[index]);
-    return page;
+    return build.Take();
 }
 
-std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, RayGeometryStatus status)
+RayGeometryPageLayout::RayGeometryPageLayout(const RayGeometryPage &page, RayGeometryStatus status) : m_page(page)
 {
     const uint64_t nodes = 2;
     const uint64_t positions = nodes + uint64_t{page.nodes.size()} * (sizeof(BvhNode) / sizeof(RayGeometryWord));
@@ -180,20 +388,33 @@ std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, 
     const uint64_t size = instances + uint64_t{page.instances.size()} * (sizeof(RayInstance) / sizeof(RayGeometryWord));
     if (size > kInvalidRayIndex)
         throw std::length_error("Ray geometry exceeds the uvec4 address range");
-    std::vector<RayGeometryWord> storage(static_cast<size_t>(size));
-    storage[0] = {page.root, static_cast<uint32_t>(nodes), static_cast<uint32_t>(positions),
-                  static_cast<uint32_t>(triangles)};
-    storage[1] = {static_cast<uint32_t>(instances), static_cast<uint32_t>(status), 0u, 0u};
-    const auto append = [&](uint64_t offset, const auto &values) {
+    header[0] = {page.root, static_cast<uint32_t>(nodes), static_cast<uint32_t>(positions),
+                 static_cast<uint32_t>(triangles)};
+    header[1] = {static_cast<uint32_t>(instances), static_cast<uint32_t>(status), 0u, 0u};
+    bytes = size * sizeof(RayGeometryWord);
+}
+
+std::array<RayGeometryBytes, 5> RayGeometryPageLayout::Sections() const
+{
+    const auto section = [](const auto &values) -> RayGeometryBytes {
         using Value = typename std::decay_t<decltype(values)>::value_type;
         static_assert(sizeof(Value) % sizeof(RayGeometryWord) == 0);
-        if (!values.empty())
-            std::memcpy(storage.data() + static_cast<size_t>(offset), values.data(), values.size() * sizeof(Value));
+        return {values.data(), values.size() * sizeof(Value)};
     };
-    append(nodes, page.nodes);
-    append(positions, page.positions);
-    append(triangles, page.triangles);
-    append(instances, page.instances);
+    return {section(header), section(m_page.nodes), section(m_page.positions), section(m_page.triangles),
+            section(m_page.instances)};
+}
+
+std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, RayGeometryStatus status)
+{
+    const RayGeometryPageLayout layout(page, status);
+    std::vector<RayGeometryWord> storage(static_cast<size_t>(layout.bytes / sizeof(RayGeometryWord)));
+    auto *destination = reinterpret_cast<std::byte *>(storage.data());
+    for (const auto &section : layout.Sections()) {
+        if (section.bytes)
+            std::memcpy(destination, section.data, section.bytes);
+        destination += section.bytes;
+    }
     return storage;
 }
 

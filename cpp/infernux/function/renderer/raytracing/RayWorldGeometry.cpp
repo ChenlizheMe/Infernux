@@ -15,6 +15,7 @@
 #include <exception>
 #include <limits>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <tuple>
 
@@ -23,6 +24,9 @@ namespace infernux::raytracing
 namespace
 {
 using WorldRevision = std::array<uint64_t, 6>;
+constexpr uint32_t FullBuild = UINT32_MAX;
+constexpr uint32_t InlineWorkWindow = 1024;
+constexpr uint64_t UploadWindow = 256 * 1024;
 
 WorldRevision GetRevision(const RenderWorldFrame &world)
 {
@@ -36,14 +40,8 @@ uint64_t AddStorage(uint64_t bytes, uint64_t extra)
     return bytes > maximum - extra ? maximum : bytes + extra;
 }
 
-uint64_t PageSize(const std::vector<RayGeometryWord> &page)
+std::shared_ptr<const rhi::BufferResource> AllocatePage(rhi::Device &device, uint64_t bytes)
 {
-    return page.size() * sizeof(RayGeometryWord);
-}
-
-std::shared_ptr<const rhi::BufferResource> UploadPage(rhi::Device &device, const std::vector<RayGeometryWord> &page)
-{
-    const auto bytes = PageSize(page);
     if (!device.GetCapabilities().IsStorageBufferRangeValid(0, bytes))
         throw std::length_error("World ray geometry exceeds the device storage range");
     rhi::BufferDesc desc;
@@ -51,10 +49,16 @@ std::shared_ptr<const rhi::BufferResource> UploadPage(rhi::Device &device, const
     desc.usage = rhi::BufferUsageFlags::Storage;
     desc.memory = rhi::BufferMemory::Upload;
     const auto allocation = device.CreateBuffer(desc);
-    const auto buffer = std::make_shared<rhi::BufferResource>(device, allocation, bytes);
-    if (!allocation.IsValid() || !device.WriteBuffer(allocation, 0, page.data(), bytes))
-        throw std::runtime_error("Could not publish the world's ray geometry");
-    return buffer;
+    if (!allocation.IsValid())
+        throw std::runtime_error("Could not allocate the world's ray geometry page");
+    return std::make_shared<rhi::BufferResource>(device, allocation, bytes);
+}
+
+void WritePage(rhi::Device &device, const rhi::BufferResource &buffer, uint64_t offset, const void *data,
+               uint64_t bytes)
+{
+    if (!device.WriteBuffer(buffer.GetBuffer(), offset, data, bytes))
+        throw std::runtime_error("Could not publish the world's ray geometry page");
 }
 } // namespace
 
@@ -77,32 +81,39 @@ class RayWorldGeometryBuild final
   public:
     enum class Step : uint8_t
     {
+        Plan,
         Open,
         Decode,
         BuildRecovered,
-        Build,
+        BuildResident,
+        CollectInstances,
+        BuildPage,
         Upload,
     };
 
-    bool Plan();
-    void Run();
+    bool Plan(uint32_t window);
+    void Run(uint32_t window);
+    [[nodiscard]] bool Upload(rhi::Device &device, uint64_t bytes);
     [[nodiscard]] FrameWorkResource Resource() const;
+    [[nodiscard]] uint64_t UploadBytes(uint64_t remaining) const;
     [[nodiscard]] uint64_t DecodeWorkspace() const
     {
         return reader->WorkspaceBytes();
     }
 
-    Step step = Step::Build;
+    Step step = Step::Plan;
     std::weak_ptr<RayWorldGeometryPublication> publication;
     std::shared_ptr<const RenderWorldFrame> world;
     std::shared_ptr<FrameCpuStorageClaim> storage;
     std::shared_ptr<FrameCpuStorageClaim> decodeStorage;
-    std::vector<RayGeometryWord> words;
+    std::shared_ptr<const rhi::BufferResource> buffer;
     std::exception_ptr failure;
     uint64_t workspace = 2 * sizeof(RayGeometryWord);
     uint64_t elapsed = 0;
 
   private:
+    using SliceKey = std::tuple<size_t, uintptr_t, uintptr_t, MeshGeometryView, uint32_t, uint32_t, int32_t>;
+
     struct Slice
     {
         const DrawCall *draw;
@@ -115,6 +126,11 @@ class RayWorldGeometryBuild final
         std::vector<Slice> slices;
     };
 
+    bool BuildSlices(const std::vector<Slice> &work, uint32_t window);
+
+    std::map<SliceKey, size_t> sliceIndices;
+    std::map<std::pair<std::string, uint64_t>, size_t> artifactIndices;
+    size_t nextDraw = 0;
     std::vector<RayMesh> meshes;
     std::vector<Slice> instances;
     std::vector<Slice> resident;
@@ -122,16 +138,25 @@ class RayWorldGeometryBuild final
     size_t nextArtifact = 0;
     std::unique_ptr<MeshArtifactReader> reader;
     std::shared_ptr<InxMesh> decodedMesh;
+    size_t nextSlice = 0;
+    std::unique_ptr<RayMeshBuild> meshBuild;
+    std::vector<RayMeshInstance> rays;
+    std::unique_ptr<RayGeometryPageBuild> pageBuild;
+    RayGeometryPage page;
+    std::optional<RayGeometryPageLayout> layout;
+    uint64_t uploadedBytes = 0;
+    size_t uploadSection = 0;
+    uint64_t sectionOffset = 0;
 };
 
-bool RayWorldGeometryBuild::Plan()
+bool RayWorldGeometryBuild::Plan(uint32_t window)
 {
     // Matches the exact draw ranges of the frozen raster world. Ray queries
     // also need geometry outside the current camera frustum.
-    using Key = std::tuple<size_t, uintptr_t, uintptr_t, MeshGeometryView, uint32_t, uint32_t, int32_t>;
-    std::map<Key, size_t> slices;
-    std::map<std::pair<std::string, uint64_t>, size_t> artifacts;
-    for (const auto &draw : world->DrawCalls().drawCalls) {
+    const auto &draws = world->DrawCalls().drawCalls;
+    const auto end = nextDraw + std::min<size_t>(window, draws.size() - nextDraw);
+    for (; nextDraw < end; ++nextDraw) {
+        const auto &draw = draws[nextDraw];
         if (!draw.indexCount)
             continue;
         if (!draw.surfaceId || draw.meshVertexBuffer || draw.devicePose.HasValue() || draw.skinBoneMatrices)
@@ -144,7 +169,7 @@ bool RayWorldGeometryBuild::Plan()
             if (draw.meshUsesDetachedStorage || draw.meshAssetGuid.empty())
                 return false;
             auto [entry, inserted] =
-                artifacts.try_emplace({draw.meshAssetGuid, draw.meshRuntimeVersion}, recovery.size() + 1);
+                artifactIndices.try_emplace({draw.meshAssetGuid, draw.meshRuntimeVersion}, recovery.size() + 1);
             if (inserted) {
                 auto reference =
                     AssetRegistry::Instance().CaptureMeshArtifact(draw.meshAssetGuid, draw.meshRuntimeVersion);
@@ -156,26 +181,29 @@ bool RayWorldGeometryBuild::Plan()
         }
         const auto *vertices = hasStreams ? draw.meshVertices : nullptr;
         const auto *indices = hasStreams ? draw.meshIndices : nullptr;
-        const Key key{artifact,
-                      reinterpret_cast<uintptr_t>(vertices),
-                      reinterpret_cast<uintptr_t>(indices),
-                      draw.meshGeometryView,
-                      draw.indexStart,
-                      draw.indexCount,
-                      draw.vertexStart};
-        auto [entry, inserted] = slices.try_emplace(key, slices.size());
+        const SliceKey key{artifact,
+                           reinterpret_cast<uintptr_t>(vertices),
+                           reinterpret_cast<uintptr_t>(indices),
+                           draw.meshGeometryView,
+                           draw.indexStart,
+                           draw.indexCount,
+                           draw.vertexStart};
+        auto [entry, inserted] = sliceIndices.try_emplace(key, sliceIndices.size());
         const Slice slice{&draw, entry->second};
         instances.push_back(slice);
         workspace = AddStorage(workspace, 512);
         if (inserted) {
             // Covers the compact-index map, BLAS, and its contribution to the final page.
             workspace = AddStorage(workspace, uint64_t{draw.indexCount} * 256);
+            meshes.emplace_back();
             auto &work = hasStreams ? resident : recovery[artifact - 1].slices;
             work.push_back(slice);
         }
     }
-    meshes.resize(slices.size());
-    step = recovery.empty() ? Step::Build : Step::Open;
+    if (nextDraw == draws.size()) {
+        rays.reserve(instances.size());
+        step = recovery.empty() ? Step::BuildResident : Step::Open;
+    }
     return true;
 }
 
@@ -185,8 +213,11 @@ FrameWorkResource RayWorldGeometryBuild::Resource() const
     case Step::Open:
     case Step::Decode:
         return FrameWorkResource::Io;
+    case Step::Plan:
     case Step::BuildRecovered:
-    case Step::Build:
+    case Step::BuildResident:
+    case Step::CollectInstances:
+    case Step::BuildPage:
         return FrameWorkResource::Cpu;
     case Step::Upload:
         return FrameWorkResource::Transfer;
@@ -194,15 +225,47 @@ FrameWorkResource RayWorldGeometryBuild::Resource() const
     std::terminate();
 }
 
-void RayWorldGeometryBuild::Run()
+bool RayWorldGeometryBuild::BuildSlices(const std::vector<Slice> &work, uint32_t window)
+{
+    while (nextSlice < work.size()) {
+        const auto &slice = work[nextSlice];
+        if (!meshBuild) {
+            const auto &draw = *slice.draw;
+            const auto *vertices = draw.meshVertices;
+            const auto *indices = draw.meshIndices;
+            if (decodedMesh) {
+                const auto geometry = draw.meshGeometryView == MeshGeometryView::NodeLocal
+                                          ? decodedMesh->GetModelSourceGeometry()
+                                          : decodedMesh->GetGeometrySnapshot();
+                if (!geometry)
+                    throw std::runtime_error("The cooked mesh does not contain the frozen geometry view");
+                vertices = &geometry->vertices;
+                indices = &geometry->indices;
+            }
+            meshBuild =
+                std::make_unique<RayMeshBuild>(*vertices, *indices, draw.indexStart, draw.indexCount, draw.vertexStart);
+        }
+        if (meshBuild->Advance(window)) {
+            meshes[slice.mesh] = meshBuild->Take();
+            meshBuild.reset();
+            ++nextSlice;
+        }
+        if (window != FullBuild)
+            break;
+    }
+    if (nextSlice != work.size())
+        return false;
+    nextSlice = 0;
+    return true;
+}
+
+void RayWorldGeometryBuild::Run(uint32_t window)
 {
     const auto start = std::chrono::steady_clock::now();
-    const auto buildSlice = [this](const Slice &slice, const auto &vertices, const auto &indices) {
-        const auto &draw = *slice.draw;
-        meshes[slice.mesh] = BuildRayMesh(vertices, indices, draw.indexStart, draw.indexCount, draw.vertexStart);
-    };
     try {
         switch (step) {
+        case Step::Plan:
+            std::terminate();
         case Step::Open:
             reader = std::make_unique<MeshArtifactReader>(recovery[nextArtifact].artifact);
             step = Step::Decode;
@@ -212,32 +275,45 @@ void RayWorldGeometryBuild::Run()
             reader.reset();
             step = Step::BuildRecovered;
             break;
-        case Step::BuildRecovered: {
-            const auto merged = decodedMesh->GetGeometrySnapshot();
-            const auto nodeLocal = decodedMesh->GetModelSourceGeometry();
-            for (const auto &slice : recovery[nextArtifact].slices) {
-                const auto &geometry = slice.draw->meshGeometryView == MeshGeometryView::NodeLocal ? nodeLocal : merged;
-                if (!geometry)
-                    throw std::runtime_error("The cooked mesh does not contain the frozen geometry view");
-                buildSlice(slice, geometry->vertices, geometry->indices);
+        case Step::BuildRecovered:
+            if (BuildSlices(recovery[nextArtifact].slices, window)) {
+                decodedMesh.reset();
+                step = ++nextArtifact == recovery.size() ? Step::BuildResident : Step::Open;
             }
-            decodedMesh.reset();
-            step = ++nextArtifact == recovery.size() ? Step::Build : Step::Open;
             break;
-        }
-        case Step::Build: {
-            for (const auto &slice : resident)
-                buildSlice(slice, *slice.draw->meshVertices, *slice.draw->meshIndices);
-            std::vector<RayMeshInstance> rays;
-            rays.reserve(instances.size());
-            for (const auto &slice : instances) {
+        case Step::BuildResident:
+            if (!BuildSlices(resident, window))
+                break;
+            step = Step::CollectInstances;
+            if (window != FullBuild)
+                break;
+            [[fallthrough]];
+        case Step::CollectInstances: {
+            const auto end = rays.size() + std::min<size_t>(window, instances.size() - rays.size());
+            for (; rays.size() < end;) {
+                const auto &slice = instances[rays.size()];
                 const auto &draw = *slice.draw;
                 rays.push_back({meshes[slice.mesh], draw.worldMatrix, draw.surfaceId, draw.layerMask});
             }
-            words = EncodeRayGeometryPage(BuildRayGeometryPage(rays), RayGeometryStatus::Ready);
-            step = Step::Upload;
-            break;
+            if (rays.size() != instances.size())
+                break;
+            pageBuild = std::make_unique<RayGeometryPageBuild>(rays);
+            step = Step::BuildPage;
+            if (window != FullBuild)
+                break;
+            [[fallthrough]];
         }
+        case Step::BuildPage:
+            do {
+                if (pageBuild->Advance(window)) {
+                    page = pageBuild->Take();
+                    pageBuild.reset();
+                    layout.emplace(page, RayGeometryStatus::Ready);
+                    step = Step::Upload;
+                    break;
+                }
+            } while (window == FullBuild);
+            break;
         case Step::Upload:
             std::terminate();
         }
@@ -246,6 +322,36 @@ void RayWorldGeometryBuild::Run()
     }
     elapsed = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+}
+
+uint64_t RayWorldGeometryBuild::UploadBytes(uint64_t remaining) const
+{
+    const auto capacity = std::max<uint64_t>(sizeof(RayGeometryWord), remaining);
+    const auto window = std::min<uint64_t>(capacity, UploadWindow);
+    return std::min(layout->bytes - uploadedBytes, window / sizeof(RayGeometryWord) * sizeof(RayGeometryWord));
+}
+
+bool RayWorldGeometryBuild::Upload(rhi::Device &device, uint64_t bytes)
+{
+    if (!buffer)
+        buffer = AllocatePage(device, layout->bytes);
+    const auto sections = layout->Sections();
+    while (bytes) {
+        const auto &section = sections[uploadSection];
+        const auto part = std::min<uint64_t>(bytes, section.bytes - sectionOffset);
+        if (part) {
+            const auto *data = static_cast<const std::byte *>(section.data) + sectionOffset;
+            WritePage(device, *buffer, uploadedBytes, data, part);
+            uploadedBytes += part;
+            sectionOffset += part;
+            bytes -= part;
+        }
+        if (sectionOffset == section.bytes) {
+            ++uploadSection;
+            sectionOffset = 0;
+        }
+    }
+    return uploadedBytes == layout->bytes;
 }
 
 RayWorldGeometry::RayWorldGeometry(FrameWorkOwner &owner, rhi::Device &device) : m_owner(owner), m_device(device)
@@ -293,8 +399,13 @@ RayWorldGeometryBinding RayWorldGeometry::Acquire(const std::shared_ptr<const Re
         return {publication->buffer, false};
     const bool pending = publication->status == RayGeometryStatus::Pending;
     auto &header = pending ? m_pendingBuffer : m_unavailableBuffer;
-    if (!header)
-        header = UploadPage(m_device, EncodeRayGeometryPage({}, publication->status));
+    if (!header) {
+        const RayGeometryPage empty;
+        const RayGeometryPageLayout layout(empty, publication->status);
+        auto buffer = AllocatePage(m_device, layout.bytes);
+        WritePage(m_device, *buffer, 0, layout.header.data(), layout.bytes);
+        header = std::move(buffer);
+    }
     return {header, pending};
 }
 
@@ -312,8 +423,13 @@ void RayWorldGeometry::Observe()
 {
     if (!m_job.IsValid() || !m_job.IsComplete())
         return;
-    m_owner.ObserveResource(m_workResource, m_active->elapsed, m_submittedOpportunity, m_workGrant);
     m_job = {};
+    CollectReceipt();
+}
+
+void RayWorldGeometry::CollectReceipt()
+{
+    m_owner.ObserveResource(m_workResource, m_active->elapsed, m_submittedOpportunity, m_workGrant);
     if (m_active->step != RayWorldGeometryBuild::Step::BuildRecovered)
         m_active->decodeStorage.reset();
 }
@@ -326,7 +442,9 @@ FrameWorkFacts RayWorldGeometry::Describe()
         facts.workerBusy = m_job.IsValid();
         if (!facts.workerBusy) {
             const auto resource = m_active->Resource();
-            const auto prediction = resource == FrameWorkResource::Transfer ? PageSize(m_active->words) : 0;
+            const auto prediction = resource == FrameWorkResource::Transfer
+                                        ? m_active->UploadBytes(m_owner.ResourceRemaining(resource))
+                                        : 0;
             facts.host.ready = m_active->publication.expired() || m_active->failure ||
                                m_owner.CanAdmitResource(resource, prediction, true);
             facts.ioReady = facts.host.ready && resource == FrameWorkResource::Io;
@@ -353,23 +471,38 @@ bool RayWorldGeometry::Advance()
             auto build = std::make_shared<RayWorldGeometryBuild>();
             build->publication = publication;
             build->world = std::move(publication->world);
-            if (build->Plan())
-                m_active = std::move(build);
-            else
-                publication->status = RayGeometryStatus::Unavailable;
-            return true;
+            m_active = std::move(build);
         }
         if (m_active->failure)
             std::rethrow_exception(m_active->failure);
         const auto resource = m_active->Resource();
-        const auto bytes = resource == FrameWorkResource::Transfer ? PageSize(m_active->words) : 0;
+        const auto bytes =
+            resource == FrameWorkResource::Transfer ? m_active->UploadBytes(m_owner.ResourceRemaining(resource)) : 0;
         if (!m_owner.CanAdmitResource(resource, bytes, true))
             return false;
         if (resource == FrameWorkResource::Transfer) {
-            publication->buffer = UploadPage(m_device, m_active->words);
-            publication->status = RayGeometryStatus::Ready;
+            const bool done = m_active->Upload(m_device, bytes);
             m_owner.RecordAcceptedResource(resource, bytes);
-            m_active.reset();
+            if (done) {
+                publication->buffer = std::move(m_active->buffer);
+                publication->status = RayGeometryStatus::Ready;
+                m_active.reset();
+            }
+            return true;
+        }
+        auto &jobs = JobSystem::Get();
+        if (m_active->step == RayWorldGeometryBuild::Step::Plan) {
+            const auto opportunity = m_owner.Opportunity();
+            const auto grant = m_owner.RecordAcceptedResource(resource, 0);
+            const auto started = std::chrono::steady_clock::now();
+            const bool supported = m_active->Plan(jobs.IsInline() ? InlineWorkWindow : FullBuild);
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started);
+            m_owner.ObserveResource(resource, static_cast<uint64_t>(elapsed.count()), opportunity, grant);
+            if (!supported) {
+                publication->status = RayGeometryStatus::Unavailable;
+                m_active.reset();
+            }
             return true;
         }
         const auto decode = m_active->step == RayWorldGeometryBuild::Step::Decode ? m_active->DecodeWorkspace() : 0;
@@ -385,12 +518,17 @@ bool RayWorldGeometry::Advance()
             if (!m_active->decodeStorage)
                 return false;
         }
-        m_job = JobSystem::Get().Schedule([build = m_active] { build->Run(); },
-                                          resource == FrameWorkResource::Io ? JobDomain::IO : JobDomain::Render,
-                                          JobPriority::Low, JobAffinity::WorkerOnly);
+        if (!jobs.IsInline())
+            m_job = jobs.Schedule([build = m_active] { build->Run(FullBuild); },
+                                  resource == FrameWorkResource::Io ? JobDomain::IO : JobDomain::Render,
+                                  JobPriority::Low, JobAffinity::WorkerOnly);
         m_workResource = resource;
         m_submittedOpportunity = m_owner.Opportunity();
         m_workGrant = m_owner.RecordAcceptedResource(resource, 0);
+        if (jobs.IsInline()) {
+            m_active->Run(InlineWorkWindow);
+            CollectReceipt();
+        }
     } catch (const std::exception &error) {
         INXLOG_ERROR("World ray geometry preparation failed: ", error.what());
         publication->world.reset();

@@ -39,6 +39,7 @@ class RayWorldGeometry final
 
   private:
     void Observe();
+    void CollectReceipt();
     [[nodiscard]] FrameWorkFacts Describe();
     bool Advance();
     [[nodiscard]] std::shared_ptr<RayWorldGeometryPublication> FindPending() const;
