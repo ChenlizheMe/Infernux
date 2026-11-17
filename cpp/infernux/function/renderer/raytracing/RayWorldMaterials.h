@@ -1,6 +1,7 @@
 #pragma once
 
 #include "RayLitMaterials.h"
+#include "RayTexturePageRenderer.h"
 
 #include <core/threading/FrameWorkOwner.h>
 #include <function/renderer/rhi/RhiUpload.h>
@@ -45,8 +46,8 @@ using ResolveRayPlaceholderTexture = std::function<std::shared_ptr<const rhi::Te
 /// A reusable one-texel array for a class used only by constant descriptors.
 [[nodiscard]] rhi::TextureUploadRequest RayPlaceholderTextureUpload(RayTexturePageClass pageClass) noexcept;
 
-/// Owns material preparation and buffer uploads on the frame-work owner.
-/// The backend records image copies and observes their actual submission receipts.
+/// Owns material preparation and budgeted page normalization on the frame-work owner.
+/// The backend records the prepared raster stripes and observes their actual submission receipts.
 class RayWorldMaterials final
 {
   public:
@@ -61,11 +62,11 @@ class RayWorldMaterials final
                                                   const std::shared_ptr<const RayLitMaterialLayout> &layout,
                                                   uint64_t textureContentGeneration,
                                                   std::shared_ptr<const RayWorldMaterialRequest> &request);
-    [[nodiscard]] std::shared_ptr<RayTexturePageBatch> PrepareCopyBatch();
+    [[nodiscard]] std::shared_ptr<RayTexturePageBatch> PreparePageBatch();
     /// Submitters retain the batch through its accepted GPU work and give its receipt the real queue ticket.
-    [[nodiscard]] bool AcceptCopyBatch(const RayTexturePageBatch &batch) noexcept;
+    [[nodiscard]] bool AcceptPageBatch(const RayTexturePageBatch &batch) noexcept;
     /// Report a synchronous recording or submission failure for the batch just prepared by this owner.
-    void FailCopyBatch() noexcept;
+    void FailPageBatch() noexcept;
 
   private:
     void Observe();
@@ -76,6 +77,7 @@ class RayWorldMaterials final
 
     FrameWorkOwner &m_owner;
     rhi::Device &m_device;
+    RayTexturePageRenderer m_pageRenderer;
     ResolveRayLitTexture m_resolve;
     ResolveRayPlaceholderTexture m_placeholder;
     uint64_t m_atlasByteBudget;

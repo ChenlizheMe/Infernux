@@ -577,7 +577,8 @@ public InxRaySurfaceHit inx_world_ray_closest(float3 origin_ws, float3 direction
     RayPage page = ray_page();
     InxRaySurfaceHit result = (InxRaySurfaceHit)0;
     result.distance = max_distance;
-    if (page.status != ray_page_ready)
+    result.available = page.status == ray_page_ready;
+    if (!result.available)
         return result;
     RayHit hit = inx_trace_lit_closest(page, ray, layer_mask, lod);
     if (hit.triangle_index != ray_invalid_index)

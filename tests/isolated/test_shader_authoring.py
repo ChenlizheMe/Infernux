@@ -634,10 +634,12 @@ def closest(uv: gpu.vec2) -> gpu.RaySurfaceHit:
                                               0.01, 4.0, shader.uint(1), 0.0)
         return shader.vec4(shader.vec3(1.0 if visible else 0.0), 1.0)
 ''' if visibility else '''        hit = closest(uv)
+        if not hit.available:
+            return shader.vec4(0.0)
         if hit.found:
             return shader.vec4(hit.surface.albedo * hit.surface.occlusion,
                                hit.distance + hit.position_ws.z + float(hit.surface_id))
-        return shader.vec4(0.0)
+        return shader.vec4(0.25)
 '''
     text = "import infernux.shader as shader\n" + imports + '''
 class Reflection(shader.fullscreen):

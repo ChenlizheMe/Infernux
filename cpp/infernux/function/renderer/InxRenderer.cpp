@@ -5057,11 +5057,12 @@ void InxRenderer::UpdateViewSchedule()
     // The last admitted screen view composites the screen-space lists.
     // Prepare from the end to assign that owner before building each view.
     std::unordered_set<uint64_t> screenUIOwners;
-    bool waitingForResults = false;
+    std::unordered_set<uint64_t> rejectedRayWorlds;
     for (auto entry = m_nextScheduledViews.rbegin(); entry != m_nextScheduledViews.rend(); ++entry) {
         auto &view = *entry;
         const bool game = view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game;
-        const uint64_t owner = view.graph->GetCachedCameraView().worldId;
+        const auto &camera = view.graph->GetCachedCameraView();
+        const uint64_t owner = camera.worldId;
         const bool ownsScreenUI = game && !view.graph->HasOutputTexture() && !screenUIOwners.count(owner);
         if (game)
             view.graph->SetScreenUIRenderer(m_screenUIRenderer.get(), ownsScreenUI);
@@ -5069,15 +5070,26 @@ void InxRenderer::UpdateViewSchedule()
         view.waitingForResult = view.graph->HasPendingBufferInputs();
         view.admitted = !view.waitingForResult && view.graph->AdmitGraphEvents(m_graphEventInterests);
         view.accessRevision = view.graph->GetResourceAccessRevision();
+        if (game && !camera.renderToTexture && view.graph->HasRejectedWorldRayMaterials())
+            rejectedRayWorlds.insert(owner);
         if (view.admitted && ownsScreenUI)
             screenUIOwners.insert(owner);
-        waitingForResults |= view.waitingForResult;
     }
+    for (const auto world : rejectedRayWorlds)
+        GameScreens().RejectUnsubmittedSource(world);
     std::unordered_map<uint64_t, GameScreenColorContract> screenColors;
-    for (const auto &view : m_nextScheduledViews) {
+    bool waitingForResults = false;
+    for (auto &view : m_nextScheduledViews) {
         const auto &camera = view.graph->GetCachedCameraView();
-        if (view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture)
-            screenColors[camera.worldId].Append(view.graph->OutputDisplayEncoded(), PreservesScreenColor(camera));
+        if (view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture) {
+            if (rejectedRayWorlds.count(camera.worldId)) {
+                view.admitted = false;
+                view.waitingForResult = false;
+            } else {
+                screenColors[camera.worldId].Append(view.graph->OutputDisplayEncoded(), PreservesScreenColor(camera));
+            }
+        }
+        waitingForResults |= view.waitingForResult;
     }
     for (const auto &[world, color] : screenColors) {
         if (!GameScreens().ValidateColorContract(world, color))

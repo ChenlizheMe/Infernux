@@ -2,6 +2,7 @@
 #include "InxVkCoreModular.h"
 #include "MaterialSamplerState.h"
 #include "TextureUploadBuilder.h"
+#include "raytracing/RayTexturePageRenderer.h"
 #include "raytracing/RayWorldMaterials.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkRenderUtils.h"
@@ -58,64 +59,74 @@ raytracing::RayWorldMaterials &InxVkCoreModular::GetWorldRayMaterials()
     return *m_worldRayMaterials;
 }
 
-uint32_t InxVkCoreModular::PrepareWorldRayMaterialCopies(vk::VulkanFrameSubmission &submission)
+void InxVkCoreModular::PrepareWorldRayMaterialPages(vk::VulkanFrameSubmission &submission)
 {
-    auto batch = m_worldRayMaterials ? m_worldRayMaterials->PrepareCopyBatch() : nullptr;
+    auto batch = m_worldRayMaterials ? m_worldRayMaterials->PreparePageBatch() : nullptr;
     if (!batch)
-        return 0;
+        return;
     auto &device = GetDeviceContext().GetRhiDevice();
+    const auto dynamic = rhi::ResolveDynamicRenderingCommands(GetDevice());
+    if (!dynamic.IsValid()) {
+        m_worldRayMaterials->FailPageBatch();
+        return;
+    }
     const auto work = submission.AddWork(
-        device.GetDeviceId(), rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, 0, rhi::PipelineStage::Transfer,
-        {},
-        [this, &device, batch](VkCommandBuffer commands) {
-            std::vector<VkImageMemoryBarrier> before, after;
-            before.reserve(2 * batch->Transfers().size());
-            after.reserve(before.capacity());
-            const auto add = [&](rhi::TextureHandle texture, VkImageLayout oldLayout, VkImageLayout transferLayout,
-                                 VkAccessFlags access, uint32_t mip, uint32_t layer) {
-                const auto image = device.Resolve(texture);
+        device.GetDeviceId(), rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, 0,
+        rhi::PipelineStage::FragmentShader, {},
+        [this, &device, batch, dynamic](VkCommandBuffer commands) {
+            for (const auto &slice : batch->Slices()) {
+                constexpr auto color = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                constexpr auto colorStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                const bool first = slice.FirstStripe();
                 auto barrier = vkrender::MakeImageBarrier(
-                    image, oldLayout, transferLayout, VK_IMAGE_ASPECT_COLOR_BIT,
-                    oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT, access);
-                barrier.subresourceRange.baseMipLevel = mip;
-                barrier.subresourceRange.baseArrayLayer = layer;
-                before.push_back(barrier);
-                barrier.oldLayout = transferLayout;
-                barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                barrier.srcAccessMask = access;
-                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-                after.push_back(barrier);
-            };
-            for (const auto &copy : batch->Transfers()) {
-                const auto &region = copy.region;
-                add(copy.source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    VK_ACCESS_TRANSFER_READ_BIT, region.sourceMip, region.sourceLayer);
-                add(copy.destination,
-                    region.destinationY ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, region.destinationMip,
-                    region.destinationLayer);
+                    device.Resolve(slice.destination), first ? VK_IMAGE_LAYOUT_UNDEFINED : color, color,
+                    VK_IMAGE_ASPECT_COLOR_BIT, first ? 0 : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+                barrier.subresourceRange.baseMipLevel = slice.mip;
+                barrier.subresourceRange.baseArrayLayer = slice.layer;
+                vkCmdPipelineBarrier(commands, first ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : colorStage, colorStage, 0, 0,
+                                     nullptr, 0, nullptr, 1, &barrier);
+
+                auto raster = slice.draw->Raster();
+                raster.colors[0].load = first ? rhi::AttachmentLoad::Clear : rhi::AttachmentLoad::Load;
+                vk::VulkanRasterPass pass;
+                device.PrepareRasterPass(raster, pass);
+                pass.info.renderArea = {{0, static_cast<int32_t>(slice.y)}, {raster.width, slice.rowCount}};
+                dynamic.begin(commands, &pass.info);
+                const VkViewport viewport{
+                    0.0f, 0.0f, static_cast<float>(raster.width), static_cast<float>(raster.height), 0.0f, 1.0f};
+                const VkRect2D scissor{{0, static_cast<int32_t>(slice.y)}, {raster.width, slice.rowCount}};
+                vkCmdSetViewport(commands, 0, 1, &viewport);
+                vkCmdSetScissor(commands, 0, 1, &scissor);
+                vk::VulkanGraphicsCommandContext context;
+                const bool recorded = slice.draw->Record(device.MakeGraphicsCommandEncoder(context, commands));
+                dynamic.end(commands);
+                if (!recorded) {
+                    m_worldRayMaterials->FailPageBatch();
+                    return false;
+                }
+
+                if (slice.LastStripe()) {
+                    barrier.oldLayout = color;
+                    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                    vkCmdPipelineBarrier(commands, colorStage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                                         nullptr, 1, &barrier);
+                }
             }
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
-                                 nullptr, 0, nullptr, static_cast<uint32_t>(before.size()), before.data());
-            vk::VulkanTransferCommandContext context;
-            if (!batch->Record(device.MakeTransferCommandEncoder(context, commands))) {
-                m_worldRayMaterials->FailCopyBatch();
-                return false;
-            }
-            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
-                                 nullptr, 0, nullptr, static_cast<uint32_t>(after.size()), after.data());
+            batch->MarkRecorded();
             return true;
         },
         "World/RayTexturePages");
-    for (const auto &copy : batch->Transfers())
-        submission.Require(work, copy.sourceUpload, rhi::PipelineStage::Transfer);
+    for (const auto &slice : batch->Slices())
+        submission.Require(work, slice.sourceUpload, rhi::PipelineStage::FragmentShader);
     submission.Retain(batch);
     submission.OnWorkAccepted(work, [this, batch](rhi::SubmissionTicket ticket) {
         GetBackendContext().Queues().WatchWorkCompletion(ticket, batch->Receipt());
-        if (!m_worldRayMaterials->AcceptCopyBatch(*batch))
+        if (!m_worldRayMaterials->AcceptPageBatch(*batch))
             throw std::logic_error("Accepted Vulkan ray texture batch lost its owner");
     });
-    return work;
 }
 
 size_t InxVkCoreModular::GetPendingTextureCpuLoadCount() const noexcept

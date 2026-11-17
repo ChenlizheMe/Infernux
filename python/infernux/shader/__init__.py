@@ -257,8 +257,12 @@ class SurfaceData:
 
 
 class RaySurfaceHit:
-    """The closest accepted world ray hit and its Lit surface properties."""
+    """The closest accepted world ray hit and its Lit surface properties.
 
+    ``available`` is true when a ready world page was queried, including misses.
+    """
+
+    available: bool
     found: bool
     distance: float
     position_ws: vec3
@@ -435,7 +439,7 @@ class _RayQueries:
 
         The explicit texture LOD applies to alpha testing and surface evaluation.
         Read the surface properties, position and surface ID when ``found`` is true.
-        A miss keeps ``distance`` at ``max_distance``.
+        A miss or unavailable page keeps ``distance`` at ``max_distance``.
         """
         raise RuntimeError("shader.ray.trace_closest executes in a compiled GPU program")
 

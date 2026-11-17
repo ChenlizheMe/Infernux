@@ -162,10 +162,8 @@ try {
         throw std::runtime_error("Failed to prepare the presentation render graph");
 
     const rhi::DeviceId device = m_backend.Device().GetDeviceId();
+    PrepareWorldRayMaterialPages(m_frameSubmission);
     std::vector<uint32_t> frameDependencies;
-    const auto rayPageCopy = PrepareWorldRayMaterialCopies(m_frameSubmission);
-    if (rayPageCopy)
-        frameDependencies.push_back(rayPageCopy);
     if (m_framePreSetupBuilder && !m_framePreSetupBuilder(m_frameSubmission, frameDependencies)) {
         throw std::runtime_error("Failed to publish pre-setup queue ownership releases");
     }
@@ -238,12 +236,9 @@ try {
         // RenderGraphs consume the previous exported generation. Queueing
         // next-frame simulation after their view-local compute batches
         // lets simulation overlap the current Graphics lane.
-        std::vector<uint32_t> sourceReads;
-        if (rayPageCopy)
-            sourceReads.push_back(rayPageCopy);
         simulationWork = m_frameSubmission.AddWork(
             device, rhi::QueueRole::Compute, rhi::SubmissionDomain::Frame, rhi::InvalidRenderViewId,
-            rhi::PipelineStage::ComputeShader, std::move(sourceReads),
+            rhi::PipelineStage::ComputeShader, {},
             [this](VkCommandBuffer commandBuffer) { return m_frameAsyncSimulationExecutor(commandBuffer); },
             "GpuParticle/AsyncSimulation");
     }

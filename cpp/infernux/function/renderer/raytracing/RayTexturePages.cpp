@@ -1,9 +1,11 @@
 #include "RayTexturePages.h"
+#include "RayTexturePageRenderer.h"
 
 #include <function/renderer/rhi/RhiCapabilities.h>
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <numeric>
 #include <stdexcept>
 #include <string_view>
@@ -29,10 +31,10 @@ constexpr uint32_t AtMip(uint32_t size, uint32_t mip) noexcept
     return std::max(1u, size >> mip);
 }
 
-uint32_t MaxMipCount(uint32_t width, uint32_t height) noexcept
+constexpr uint32_t MaxMipCount(uint32_t width, uint32_t height) noexcept
 {
     uint32_t count = 0;
-    for (auto extent = std::max(width, height); extent; extent >>= 1)
+    for (auto size = std::max(width, height); size; size >>= 1u)
         ++count;
     return count;
 }
@@ -40,37 +42,56 @@ uint32_t MaxMipCount(uint32_t width, uint32_t height) noexcept
 auto SourceKey(const RayTexturePageSource &source) noexcept
 {
     const auto &view = source.view->GetViewDesc();
-    // The same exact asset can have independent resident allocations for different material samplers.
+    // A source view is independent of the material sampler applied to its normalized page.
     return std::make_tuple(source.pageClass, std::string_view(source.view->GetSourceId()), source.view->GetRevision(),
-                           source.contentGeneration, view.baseLayer, view.baseMip, view.mipCount);
+                           source.contentGeneration, view.baseLayer, view.baseMip, view.mipCount, view.format);
 }
 
-bool CanCopy(const RayTexturePageSource &source) noexcept
+bool CanSample(const RayTexturePageSource &source, const rhi::DeviceCaps &caps) noexcept
 {
     const auto &allocation = source.allocation;
     const auto &view = source.view->GetViewDesc();
-    const auto format = PageFormat(source.pageClass);
+    const auto format = view.format == rhi::PixelFormat::Undefined ? source.view->GetFormat() : view.format;
+    const auto usage = view.usage == rhi::TextureUsageFlags::None ? allocation.usage : view.usage;
     return allocation.dimension == rhi::TextureDimension::Texture2D && allocation.samples == rhi::SampleCount::One &&
-           allocation.format == format && source.view->GetFormat() == format &&
-           (view.format == rhi::PixelFormat::Undefined || view.format == format) &&
-           rhi::HasTextureUsage(allocation.usage, rhi::TextureUsageFlags::TransferSource) && allocation.width > 0 &&
+           caps.CheckFormat(format, rhi::FormatFeature::Sampled | rhi::FormatFeature::FilterLinear).IsSupported() &&
+           rhi::HasTextureUsage(usage, rhi::TextureUsageFlags::Sampled) && allocation.width > 0 &&
            allocation.height > 0 && allocation.mipLevels <= MaxMipCount(allocation.width, allocation.height) &&
            view.dimension == rhi::TextureViewDimension::Texture2D && view.aspect == rhi::TextureAspect::Color &&
            view.layerCount == 1 && view.baseLayer < allocation.depthOrLayers && view.mipCount > 0 &&
            view.baseMip < allocation.mipLevels && view.mipCount <= allocation.mipLevels - view.baseMip;
 }
 
-bool ReserveLayerBytes(const rhi::TextureDesc &texture, uint64_t &budget) noexcept
+bool SetPageCosts(RayTexturePagePlan &plan, uint64_t budget) noexcept
 {
-    const auto layout = rhi::GetPixelFormatLayout(texture.format);
-    for (uint32_t mip = 0; mip < texture.mipLevels; ++mip) {
-        const auto rowBytes = layout.RowBytes(AtMip(texture.width, mip));
-        const auto rows = AtMip(texture.height, mip);
-        if (rows > budget / rowBytes)
-            return false;
-        budget -= rowBytes * rows;
+    uint64_t remaining = budget;
+    for (std::size_t i = 0; i < plan.pages.size(); ++i) {
+        auto &page = plan.pages[i];
+        if (!page)
+            continue;
+        page->mipLevels = MaxMipCount(page->width, page->height);
+        auto layerRoom = remaining / page->depthOrLayers;
+        const auto startRoom = layerRoom;
+        for (uint32_t mip = 0; mip < page->mipLevels; ++mip) {
+            const auto rowBytes = uint64_t{AtMip(page->width, mip)} * 4;
+            const auto rows = AtMip(page->height, mip);
+            if (rows > layerRoom / rowBytes)
+                return false;
+            layerRoom -= rowBytes * rows;
+        }
+        plan.pageBytes[i] = (startRoom - layerRoom) * page->depthOrLayers;
+        remaining -= plan.pageBytes[i];
     }
+    plan.byteSize = budget - remaining;
     return true;
+}
+
+float SourceLod(const RayTexturePageSource &source, uint32_t width, uint32_t height) noexcept
+{
+    const auto &view = source.view->GetViewDesc();
+    const float x = static_cast<float>(AtMip(source.allocation.width, view.baseMip)) / static_cast<float>(width);
+    const float y = static_cast<float>(AtMip(source.allocation.height, view.baseMip)) / static_cast<float>(height);
+    return std::clamp(std::log2(std::max(x, y)), 0.0f, static_cast<float>(view.mipCount - 1));
 }
 
 std::shared_ptr<rhi::TextureResource> AllocatePage(rhi::Device &device, const rhi::TextureDesc &desc, uint64_t bytes)
@@ -109,8 +130,8 @@ std::shared_ptr<rhi::TextureResource> AllocatePage(rhi::Device &device, const rh
 
 } // namespace
 
-RayTexturePagePreparation PrepareRayTexturePages(rhi::DeviceId device, const rhi::DeviceLimits &limits,
-                                                 uint64_t byteBudget, const std::vector<RayTexturePageSource> &sources)
+RayTexturePagePreparation PrepareRayTexturePages(rhi::DeviceId device, const rhi::DeviceCaps &caps, uint64_t byteBudget,
+                                                 uint64_t maxRowBytes, const std::vector<RayTexturePageSource> &sources)
 {
     using Issue = RayTexturePageIssue;
     for (std::size_t i = 0; i < sources.size(); ++i) {
@@ -118,7 +139,13 @@ RayTexturePagePreparation PrepareRayTexturePages(rhi::DeviceId device, const rhi
         if (!source.view || !source.view->IsValid() || !source.view->GetTexture().IsValid() ||
             source.view->GetTexture().Device() != device || source.allocation.format == rhi::PixelFormat::Undefined)
             return {{}, Issue::SourceUnavailable, i};
+        if (!CanSample(source, caps))
+            return {{}, Issue::UnsupportedSource, i};
     }
+    const auto &limits = caps.limits;
+    const auto rowWidth = std::min<uint64_t>(limits.maxTextureDimension2D, maxRowBytes / 4);
+    if (!sources.empty() && !rowWidth)
+        return {{}, Issue::DeviceLimit, 0};
 
     std::vector<std::size_t> order(sources.size());
     std::iota(order.begin(), order.end(), std::size_t{0});
@@ -135,44 +162,53 @@ RayTexturePagePreparation PrepareRayTexturePages(rhi::DeviceId device, const rhi
     RayTexturePagePlan plan;
     plan.device = device;
     plan.slots.resize(sources.size());
-    uint64_t remaining = byteBudget;
     for (const auto index : order) {
         const auto &source = sources[index];
-        if (!CanCopy(source))
-            return {{}, Issue::NeedsConversion, index};
-        const auto &view = source.view->GetViewDesc();
-        const auto width = AtMip(source.allocation.width, view.baseMip);
-        const auto height = AtMip(source.allocation.height, view.baseMip);
-        auto &page = plan.pages[PageIndex(source.pageClass)];
-        if (!page) {
-            if (width > limits.maxTextureDimension2D || height > limits.maxTextureDimension2D)
-                return {{}, Issue::DeviceLimit, index};
-            page.emplace();
-            page->width = width;
-            page->height = height;
-            page->depthOrLayers = 0;
-            page->mipLevels = view.mipCount;
-            page->format = PageFormat(source.pageClass);
-            page->usage = rhi::TextureUsageFlags::Sampled | rhi::TextureUsageFlags::TransferDestination;
-        }
-        if (width != page->width || height != page->height || view.mipCount != page->mipLevels)
-            return {{}, Issue::NeedsConversion, index};
-
         if (!plan.layers.empty() && SourceKey(plan.layers.back().source) == SourceKey(source)) {
             plan.slots[index] = plan.layers.back().slot;
             continue;
         }
+        auto &page = plan.pages[PageIndex(source.pageClass)];
+        if (!page) {
+            constexpr auto features =
+                rhi::FormatFeature::Sampled | rhi::FormatFeature::FilterLinear | rhi::FormatFeature::ColorAttachment;
+            const auto format = PageFormat(source.pageClass);
+            if (!caps.CheckFormat(format, features).IsSupported())
+                return {{}, Issue::DeviceLimit, index};
+            page.emplace();
+            page->depthOrLayers = 0;
+            page->format = format;
+            page->usage = rhi::TextureUsageFlags::Sampled | rhi::TextureUsageFlags::ColorAttachment;
+        }
         if (page->depthOrLayers == limits.maxTextureArrayLayers)
             return {{}, Issue::DeviceLimit, index};
-        const uint64_t before = remaining;
-        if (!ReserveLayerBytes(*page, remaining))
-            return {{}, Issue::ByteBudget, index};
-        plan.pageBytes[PageIndex(source.pageClass)] += before - remaining;
+        const auto &view = source.view->GetViewDesc();
+        page->width = std::max(page->width, AtMip(source.allocation.width, view.baseMip));
+        page->height = std::max(page->height, AtMip(source.allocation.height, view.baseMip));
         const RayTexturePageSlot slot{source.pageClass, page->depthOrLayers++};
         plan.slots[index] = slot;
         plan.layers.push_back({source, slot});
     }
-    plan.byteSize = byteBudget - remaining;
+    for (auto &page : plan.pages) {
+        if (!page)
+            continue;
+        while (page->width > rowWidth || page->height > limits.maxTextureDimension2D) {
+            page->width = AtMip(page->width, 1);
+            page->height = AtMip(page->height, 1);
+        }
+    }
+    while (!SetPageCosts(plan, byteBudget)) {
+        bool shrink = false;
+        for (auto &page : plan.pages) {
+            if (page) {
+                shrink |= page->width > 1 || page->height > 1;
+                page->width = AtMip(page->width, 1);
+                page->height = AtMip(page->height, 1);
+            }
+        }
+        if (!shrink)
+            return {{}, Issue::ByteBudget, 0};
+    }
     return {std::move(plan)};
 }
 
@@ -183,31 +219,17 @@ bool RayTexturePageCursor::Done() const noexcept
 
 uint64_t RayTexturePageCursor::MinimumBytes() const noexcept
 {
-    if (Done())
-        return 0;
-    const auto &page = *m_plan.pages[PageIndex(m_plan.layers[m_layer].slot.pageClass)];
-    return rhi::GetPixelFormatLayout(page.format).RowBytes(AtMip(page.width, m_mip));
+    return Done() ? 0 : uint64_t{Width()} * 4;
 }
 
-std::optional<RayTexturePageCopy> RayTexturePageCursor::Peek(uint64_t byteAllowance) const noexcept
+uint32_t RayTexturePageCursor::Width() const noexcept
 {
-    const auto rowBytes = MinimumBytes();
-    if (rowBytes == 0 || byteAllowance < rowBytes)
-        return std::nullopt;
-    const auto &layer = m_plan.layers[m_layer];
-    const auto &view = layer.source.view->GetViewDesc();
-    const auto &page = *m_plan.pages[PageIndex(layer.slot.pageClass)];
-    const auto rows =
-        static_cast<uint32_t>(std::min<uint64_t>(AtMip(page.height, m_mip) - m_row, byteAllowance / rowBytes));
-    rhi::TextureCopyRegion region;
-    region.sourceMip = view.baseMip + m_mip;
-    region.sourceLayer = view.baseLayer;
-    region.destinationMip = m_mip;
-    region.destinationLayer = layer.slot.layer;
-    region.width = AtMip(page.width, m_mip);
-    region.height = rows;
-    region.sourceY = region.destinationY = m_row;
-    return RayTexturePageCopy{m_layer, region, rowBytes * rows};
+    return AtMip(m_plan.pages[PageIndex(m_plan.layers[m_layer].slot.pageClass)]->width, m_mip);
+}
+
+uint32_t RayTexturePageCursor::Height() const noexcept
+{
+    return AtMip(m_plan.pages[PageIndex(m_plan.layers[m_layer].slot.pageClass)]->height, m_mip);
 }
 
 void RayTexturePageCursor::Advance(uint32_t rows) noexcept
@@ -232,16 +254,6 @@ RayTexturePageBatch::RayTexturePageBatch(std::shared_ptr<RayTexturePageCandidate
 {
 }
 
-bool RayTexturePageBatch::Record(const rhi::TransferCommandEncoder &encoder)
-{
-    if (!encoder.HasCompleteDispatch())
-        return false;
-    for (const auto &copy : m_transfers)
-        encoder.CopyTexture(copy.source, copy.destination, copy.region);
-    m_recorded = true;
-    return true;
-}
-
 std::shared_ptr<RayTexturePageCandidate> RayTexturePageCandidate::Create(rhi::Device &device, RayTexturePagePlan plan,
                                                                          std::string sourceId, uint64_t revision)
 {
@@ -264,26 +276,36 @@ RayTexturePageCandidate::RayTexturePageCandidate(rhi::Device &device, RayTexture
     }
 }
 
-std::shared_ptr<RayTexturePageBatch> RayTexturePageCandidate::PrepareBatch(uint64_t byteAllowance, uint32_t maxCopies)
+std::shared_ptr<RayTexturePageBatch> RayTexturePageCandidate::PrepareBatch(RayTexturePageRenderer &renderer,
+                                                                           uint64_t byteAllowance, uint32_t maxSlices)
 {
-    if (m_failed || m_pending || m_publication || !maxCopies || byteAllowance < m_cursor.MinimumBytes())
+    if (m_failed || m_pending || m_publication || !maxSlices || byteAllowance < m_cursor.MinimumBytes())
         return {};
     auto batch = std::shared_ptr<RayTexturePageBatch>(new RayTexturePageBatch(shared_from_this(), m_acceptedBytes));
     auto cursor = m_cursor;
-    for (uint32_t i = 0; i < maxCopies; ++i) {
-        const auto part = cursor.Peek(byteAllowance);
-        if (!part)
+    for (uint32_t i = 0; i < maxSlices && !cursor.Done(); ++i) {
+        const auto rowBytes = cursor.MinimumBytes();
+        if (rowBytes > byteAllowance)
             break;
-        const auto &layer = m_plan.layers[part->layerIndex];
+        const auto &layer = m_plan.layers[cursor.m_layer];
         const auto page = PageIndex(layer.slot.pageClass);
-        const auto &source = *layer.source.view;
-        batch->m_transfers.push_back(
-            {source.GetTexture(), m_resources[page]->GetTexture(), part->region, source.GetUploadSubmission()});
-        batch->m_pageBytes[page] += part->bytes;
-        byteAllowance -= part->bytes;
-        cursor.Advance(part->region.height);
+        const auto width = cursor.Width();
+        const auto height = cursor.Height();
+        const auto rows = static_cast<uint32_t>(std::min<uint64_t>(height - cursor.m_row, byteAllowance / rowBytes));
+        const auto &destination = m_resources[page];
+        auto draw = cursor.m_row ? m_continuedDraw
+                                 : renderer.Prepare(layer.source.view, destination, width, height, cursor.m_mip,
+                                                    layer.slot.layer, SourceLod(layer.source, width, height));
+        assert(draw);
+        batch->m_slices.push_back({std::move(draw), destination->GetTexture(), layer.source.view->GetUploadSubmission(),
+                                   layer.slot.pageClass, cursor.m_mip, layer.slot.layer, width, height, cursor.m_row,
+                                   rows});
+        const auto bytes = rowBytes * rows;
+        batch->m_pageBytes[page] += bytes;
+        byteAllowance -= bytes;
+        cursor.Advance(rows);
     }
-    assert(!batch->m_transfers.empty());
+    assert(!batch->m_slices.empty());
     return batch;
 }
 
@@ -293,8 +315,10 @@ bool RayTexturePageCandidate::Accept(const RayTexturePageBatch &batch) noexcept
     if (m_failed || m_pending || m_publication || batch.m_owner.get() != this || batch.m_offset != m_acceptedBytes ||
         !batch.m_recorded || !receipt.submission.IsValid() || receipt.submission.device != m_plan.device)
         return false;
-    for (const auto &copy : batch.m_transfers)
-        m_cursor.Advance(copy.region.height);
+    for (const auto &slice : batch.m_slices)
+        m_cursor.Advance(slice.rowCount);
+    const auto &last = batch.m_slices.back();
+    m_continuedDraw = last.LastStripe() ? nullptr : last.draw;
     m_acceptedBytes += batch.ByteSize();
     m_pending = batch.m_receipt;
     return true;

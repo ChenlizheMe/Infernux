@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <exception>
 #include <stdexcept>
 #include <string>
 
@@ -16,8 +17,16 @@ namespace
 {
 
 constexpr uint64_t TransferWindow = 256 * 1024;
-constexpr uint32_t CopyCommandLimit = 64;
+constexpr uint64_t RasterWriteWindow = 256 * 1024;
+// Conservative starting estimate per normalized RGBA8 texel until backend timings are available.
+constexpr uint64_t NanosecondsPerPagePixel = 4;
+constexpr uint32_t StripeLimit = 16;
 using MaterialRevision = std::array<uint64_t, 5>;
+
+uint64_t PageWindow(uint64_t gpuNanoseconds) noexcept
+{
+    return std::min(RasterWriteWindow / 4, gpuNanoseconds / NanosecondsPerPagePixel) * 4;
+}
 
 MaterialRevision RevisionOf(const RenderWorldFrame &world, uint64_t textureContentGeneration) noexcept
 {
@@ -44,8 +53,8 @@ const char *PageIssue(RayTexturePageIssue issue) noexcept
     switch (issue) {
     case RayTexturePageIssue::SourceUnavailable:
         return "has no resident allocation";
-    case RayTexturePageIssue::NeedsConversion:
-        return "needs texture page format, size, or mip conversion";
+    case RayTexturePageIssue::UnsupportedSource:
+        return "must be a filterable single-sampled 2D color view";
     case RayTexturePageIssue::DeviceLimit:
         return "exceeds the texture page device limits";
     case RayTexturePageIssue::ByteBudget:
@@ -137,9 +146,8 @@ class RayWorldMaterialBuild final
     std::array<Table, 2> tables;
     std::shared_ptr<FrameCpuStorageClaim> storage;
     std::shared_ptr<rhi::WorkCompletionReceipt> receipt;
+    std::exception_ptr failure;
     uint64_t atlasBytes = 0;
-    uint64_t copyBytes = 0;
-    uint64_t copyOpportunity = 0;
     uint64_t retryOpportunity = 0;
     uint64_t tableOffset = 0;
     std::size_t nextTable = 0;
@@ -147,8 +155,8 @@ class RayWorldMaterialBuild final
 
 RayWorldMaterials::RayWorldMaterials(FrameWorkOwner &owner, rhi::Device &device, ResolveRayLitTexture resolver,
                                      ResolveRayPlaceholderTexture placeholders, uint64_t atlasByteBudget)
-    : m_owner(owner), m_device(device), m_resolve(std::move(resolver)), m_placeholder(std::move(placeholders)),
-      m_atlasByteBudget(atlasByteBudget)
+    : m_owner(owner), m_device(device), m_pageRenderer(device), m_resolve(std::move(resolver)),
+      m_placeholder(std::move(placeholders)), m_atlasByteBudget(atlasByteBudget)
 {
     FrameWorkSource source;
     source.observe = [this] { Observe(); };
@@ -192,28 +200,34 @@ RayWorldMaterialBinding RayWorldMaterials::Acquire(const std::shared_ptr<const R
     return {request->value, static_cast<bool>(request->world)};
 }
 
-std::shared_ptr<RayTexturePageBatch> RayWorldMaterials::PrepareCopyBatch()
+std::shared_ptr<RayTexturePageBatch> RayWorldMaterials::PreparePageBatch()
 {
-    constexpr auto resource = FrameWorkResource::Transfer;
-    if (!m_active || !m_active->candidate || m_active->UploadPending() || m_active->request.expired())
+    constexpr auto resource = FrameWorkResource::Gpu;
+    if (!m_active || !m_active->candidate || m_active->UploadPending() || m_active->request.expired() ||
+        m_owner.IsGpuForegroundBlocked())
         return {};
-    const auto bytes = (std::min)(m_owner.ResourceRemaining(resource), TransferWindow);
-    if (!m_owner.CanAdmitResource(resource, bytes))
+    const auto bytes = PageWindow(m_owner.ResourceRemaining(resource));
+    if (!bytes || !m_owner.CanAdmitResource(resource, bytes / 4 * NanosecondsPerPagePixel))
         return {};
-    return m_active->candidate->PrepareBatch(bytes, CopyCommandLimit);
+    try {
+        return m_active->candidate->PrepareBatch(m_pageRenderer, bytes, StripeLimit);
+    } catch (...) {
+        m_active->failure = std::current_exception();
+        FailPageBatch();
+        return {};
+    }
 }
 
-bool RayWorldMaterials::AcceptCopyBatch(const RayTexturePageBatch &batch) noexcept
+bool RayWorldMaterials::AcceptPageBatch(const RayTexturePageBatch &batch) noexcept
 {
     if (!m_active || !m_active->candidate || !m_active->candidate->Accept(batch))
         return false;
     m_active->receipt = batch.Receipt();
-    m_active->copyOpportunity = m_owner.Opportunity();
-    m_active->copyBytes = m_owner.RecordAcceptedResource(FrameWorkResource::Transfer, batch.ByteSize());
+    m_owner.RecordAcceptedResource(FrameWorkResource::Gpu, batch.ByteSize() / 4 * NanosecondsPerPagePixel);
     return true;
 }
 
-void RayWorldMaterials::FailCopyBatch() noexcept
+void RayWorldMaterials::FailPageBatch() noexcept
 {
     assert(m_active && m_active->candidate && !m_active->receipt);
     m_active->candidate->Fail();
@@ -228,9 +242,6 @@ void RayWorldMaterials::Observe()
     if (build.receipt) {
         if (!build.candidate->Observe())
             return;
-        if (!build.receipt->failed)
-            m_owner.ObserveResource(FrameWorkResource::Transfer, build.copyBytes, build.copyOpportunity,
-                                    build.copyBytes);
         build.receipt.reset();
     }
     if (build.request.expired()) {
@@ -311,8 +322,9 @@ bool RayWorldMaterials::AdvanceCpu(const std::shared_ptr<RayWorldMaterialRequest
             auto input = request->layout->Capture(request->world->DrawCalls(), m_resolve);
             if (!input)
                 return false;
-            auto prepared = PrepareRayTexturePages(m_device.GetDeviceId(), m_device.GetCapabilities().limits,
-                                                   m_atlasByteBudget, input->sources);
+            auto prepared =
+                PrepareRayTexturePages(m_device.GetDeviceId(), m_device.GetCapabilities(), m_atlasByteBudget,
+                                       PageWindow(m_owner.ResourceState(FrameWorkResource::Gpu).limit), input->sources);
             if (!prepared.plan)
                 throw std::invalid_argument("Ray Lit texture source " + std::to_string(prepared.sourceIndex) + " " +
                                             PageIssue(prepared.issue));
@@ -341,6 +353,8 @@ bool RayWorldMaterials::AdvanceCpu(const std::shared_ptr<RayWorldMaterialRequest
         build.plan.reset();
         return true;
     }
+    if (build.failure)
+        std::rethrow_exception(build.failure);
     if (build.candidate->Failed())
         throw std::runtime_error("Ray texture page submission failed");
     const auto &textures = build.candidate->Publication();

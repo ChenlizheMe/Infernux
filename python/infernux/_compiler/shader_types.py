@@ -40,8 +40,8 @@ STRUCT_FIELDS = {"InxParticleInput": {'position': 'float4', 'position_ws': 'floa
                                   "view_depth": "float", "line_color": "float4", "object_id": "uint2",
                                   "object_flags": "uint", "layer_mask": "uint"},
                  "InxSurfaceData": {name: kind for name, (kind, _) in SURFACE_FIELDS.items()},
-                 "InxRaySurfaceHit": {"found": "bool", "distance": "float", "position_ws": "float3",
-                                      "surface_id": "uint", "surface": "InxSurfaceData"},
+                 "InxRaySurfaceHit": {"available": "bool", "found": "bool", "distance": "float",
+                                      "position_ws": "float3", "surface_id": "uint", "surface": "InxSurfaceData"},
                  "InxSurfaceDifferentials": {"position_dx": "float3", "position_dy": "float3",
                                              "uv_dx": "float2", "uv_dy": "float2"},
                  "InxShadingContext": {"position_ws": "float3", "geometric_normal_ws": "float3", "view_depth": "float",
@@ -65,6 +65,7 @@ import inx_geometry;
 
 public struct InxRaySurfaceHit
 {
+    public bool available;
     public bool found;
     public float distance;
     public float3 position_ws;

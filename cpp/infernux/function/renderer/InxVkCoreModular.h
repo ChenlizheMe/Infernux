@@ -515,7 +515,7 @@ class InxVkCoreModular
     }
     [[nodiscard]] raytracing::RayWorldGeometry &GetWorldRayGeometry();
     [[nodiscard]] raytracing::RayWorldMaterials &GetWorldRayMaterials();
-    [[nodiscard]] uint32_t PrepareWorldRayMaterialCopies(vk::VulkanFrameSubmission &submission);
+    void PrepareWorldRayMaterialPages(vk::VulkanFrameSubmission &submission);
     [[nodiscard]] uint64_t GetStagingPoolBytes() const noexcept
     {
         return m_resourceManager.GetStagingPoolBytes();

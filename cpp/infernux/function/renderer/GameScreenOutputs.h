@@ -501,6 +501,14 @@ class GameScreenOutputs final
         }
     }
 
+    void RejectUnsubmittedSource(uint64_t worldId)
+    {
+        if (const auto output = Find(worldId)) {
+            output->work.reset();
+            output->admission.reset();
+        }
+    }
+
     bool ValidateColorContract(uint64_t worldId, const GameScreenColorContract &contract, bool checkPrevious = true)
     {
         auto output = Ensure(worldId);
@@ -540,8 +548,7 @@ class GameScreenOutputs final
             if (checkPrevious) {
                 // These CPU plans were rejected before submission. Release the
                 // admission so it cannot pin the rejected source indefinitely.
-                output->work.reset();
-                output->admission.reset();
+                RejectUnsubmittedSource(worldId);
             }
             return false;
         }

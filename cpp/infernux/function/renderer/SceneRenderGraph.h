@@ -677,6 +677,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
     {
         return m_worldRayMaterial;
     }
+    [[nodiscard]] bool HasRejectedWorldRayMaterials() const noexcept
+    {
+        return m_hasPythonGraph && m_worldRayLitLayout && !m_worldRayMaterial && !m_worldRayPending;
+    }
 
     /// @brief Clear cached draw calls and camera state.
     ///

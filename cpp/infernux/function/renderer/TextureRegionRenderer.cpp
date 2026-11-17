@@ -1,6 +1,7 @@
 #include "TextureRegionRenderer.h"
 #include "rhi/RhiDevice.h"
 #include "shader/DeviceShaderProgram.h"
+#include "shader/FullscreenTriangleSource.h"
 #include "shader/ShaderValueCopy.h"
 #include <algorithm>
 #include <array>
@@ -86,13 +87,8 @@ std::string TextureRegionRenderer::ShaderSource(bool depth, bool multisample)
 {
     std::string source = R"(
 struct Region { int4 offset; };
-ConstantBuffer<Region> parameters;
-[shader("vertex")]
-float4 vertex_main(uint id : SV_VertexID) : SV_Position {
-    float2 uv = float2((id << 1) & 2, id & 2);
-    return float4(uv * 2 - 1, 0, 1);
-}
-)";
+ConstantBuffer<Region> parameters;)";
+    source += FullscreenTriangleVertexSource;
     source += depth ? (multisample ? "DepthTexture2DMS" : "DepthTexture2D")
                     : (multisample ? "Texture2DMS<float4>" : "Texture2D<float4>");
     source += " source_texture;\n[shader(\"fragment\")]\n";
