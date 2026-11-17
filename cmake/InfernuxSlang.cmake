@@ -116,9 +116,7 @@ else()
         set(SLANG_LIB_TYPE SHARED CACHE STRING "" FORCE)
     endif()
     get_directory_property(_infernux_compile_options COMPILE_OPTIONS)
-    if(MSVC)
-        add_compile_options(/utf-8)
-    elseif(EMSCRIPTEN)
+    if(EMSCRIPTEN)
         # SPIRV-Tools disables C++ exceptions locally. Keep its setjmp mode
         # consistent with the resident compiler's Wasm exception ABI.
         add_compile_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)

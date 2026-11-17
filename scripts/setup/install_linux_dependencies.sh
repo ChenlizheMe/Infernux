@@ -6,12 +6,23 @@ if ! command -v apt-get >/dev/null 2>&1; then
     exit 1
 fi
 
+# The resident Slang compiler uses C++20 features missing from Jammy's Clang.
+# Keep building against the runner's system libraries with a current compiler.
+llvm_version=22
+. /etc/os-release
+llvm_key=/etc/apt/keyrings/infernux-llvm.asc
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee "$llvm_key" >/dev/null
+printf 'deb [signed-by=%s] https://apt.llvm.org/%s/ llvm-toolchain-%s-%s main\n' \
+    "$llvm_key" "$VERSION_CODENAME" "$VERSION_CODENAME" "$llvm_version" | \
+    sudo tee /etc/apt/sources.list.d/infernux-llvm.list >/dev/null
+
 sudo apt-get update
 sudo apt-get install --yes --no-install-recommends \
     build-essential \
     ccache \
-    clang \
-    clang-format \
+    "clang-$llvm_version" \
+    "clang-format-$llvm_version" \
     git \
     libasound2-dev \
     libdecor-0-dev \
@@ -53,8 +64,8 @@ sudo apt-get install --yes --no-install-recommends \
     libxrender-dev \
     libxss-dev \
     libxtst-dev \
-    lld \
-    llvm \
+    "lld-$llvm_version" \
+    "llvm-$llvm_version" \
     mesa-vulkan-drivers \
     ninja-build \
     pkg-config \
@@ -65,4 +76,10 @@ sudo apt-get install --yes --no-install-recommends \
     xvfb \
     zlib1g-dev
 
-echo "Linux native build dependencies are installed. No reboot is required."
+llvm_bin="/usr/lib/llvm-$llvm_version/bin"
+if [[ -n ${GITHUB_PATH:-} ]]; then
+    printf '%s\n' "$llvm_bin" >> "$GITHUB_PATH"
+else
+    printf 'Run with this LLVM toolchain: export PATH="%s:$PATH"\n' "$llvm_bin"
+fi
+echo "Linux native build dependencies are installed."

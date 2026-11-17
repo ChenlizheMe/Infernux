@@ -234,9 +234,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/build/linux-clang-release
-          key: linux-player-${{ runner.os }}-${{ hashFiles('cmake/**', 'CMakeLists.txt', 'cpp/**') }}
+          key: linux-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-${{ hashFiles('cmake/**', 'CMakeLists.txt', 'cpp/**') }}
           restore-keys: |
-            linux-player-${{ runner.os }}-
+            linux-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-
 
       - name: Install Linux build and software Vulkan dependencies
         run: |
@@ -337,9 +337,9 @@ jobs:
             out/toolchains/web-numpy-static
             out/cache/web
             out/build/linux-clang-headless
-          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'scripts/setup/prepare_dawn_official_snapshots.py', 'scripts/setup/dawn_dependencies.lock.json', 'external/plugins/infernux_web/native/**', 'external/plugins/infernux_web/package/editor/infernux_web/**', 'cmake/**', 'CMakeLists.txt') }}
+          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'scripts/setup/prepare_dawn_official_snapshots.py', 'scripts/setup/dawn_dependencies.lock.json', 'external/plugins/infernux_web/native/**', 'external/plugins/infernux_web/package/editor/infernux_web/**', 'cmake/**', 'CMakeLists.txt') }}
           restore-keys: |
-            web-player-${{ runner.os }}-
+            web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-
 
       - name: Install host dependencies
         run: scripts/setup/install_linux_dependencies.sh
@@ -679,9 +679,9 @@ jobs:
             out/build/linux-clang-headless
             out/cache/gradle/caches
             out/cache/gradle/wrapper
-          key: android-player-${{ runner.os }}-${{ hashFiles('tests/acceptance/android_emulator_ci.sh', 'scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**', 'cmake/**', 'CMakeLists.txt', 'cpp/**') }}
+          key: android-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-${{ hashFiles('tests/acceptance/android_emulator_ci.sh', 'scripts/setup/build_android_python_runtime.sh', 'scripts/setup/android_python_runtime.py', 'scripts/setup/android_numpy_cross.ini', 'external/plugins/infernux_android/**', 'cmake/**', 'CMakeLists.txt', 'cpp/**') }}
           restore-keys: |
-            android-player-${{ runner.os }}-
+            android-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-
 
       - name: Install Linux host dependencies
         run: scripts/setup/install_linux_dependencies.sh
