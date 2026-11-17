@@ -974,10 +974,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                                                       JPH::Vec3(value.angular.x, value.angular.y, value.angular.z)});
                         }
                         // With no local rows the final response advances all the empty sweeps together.
-                        bool integrated = self->cpu.AdvanceCoupledVelocity(self->impulses);
+                        bool velocityComplete = self->cpu.AdvanceCoupledVelocity(self->impulses);
                         for (uint32_t i = 1; i < cpuRounds; ++i)
-                            integrated = self->cpu.AdvanceCoupledVelocity();
-                        if (integrated != last)
+                            velocityComplete = self->cpu.AdvanceCoupledVelocity();
+                        if (velocityComplete != last)
                             throw std::logic_error(
                                 "CPU and GPU coupling rounds differ from their shared velocity settings");
                     }
@@ -1071,6 +1071,11 @@ JoltMixedConstraintSolver::Prepare(const std::shared_ptr<const JoltGpuScene::Pub
             return job->Prepare(storage, inputs, params, substep, [done = std::move(done)] { done(1); });
         if (stage == JoltGpuCoupledContactStage::WarmVelocity)
             return job->WarmVelocity(inputs, std::move(done));
+        if (stage == JoltGpuCoupledContactStage::Integrate) {
+            job->cpu.AdvanceCoupledIntegration();
+            done(1u);
+            return JoltGpuControlWork{};
+        }
         if (stage == JoltGpuCoupledContactStage::Position)
             return job->ExchangePosition(iteration, params.solve.x, maxRounds, std::move(done));
         return job->ExchangeVelocity(iteration, params.counts.w, maxRounds, std::move(done));

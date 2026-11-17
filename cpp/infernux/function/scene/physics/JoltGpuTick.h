@@ -102,6 +102,7 @@ enum class JoltGpuCoupledContactStage
     Prepare,
     WarmVelocity,
     Velocity,
+    Integrate,
     Position
 };
 
@@ -153,6 +154,7 @@ struct JoltGpuTickControl
                                      uint32_t, JoltGpuContactReportStage, std::function<void()>)>
         prepareContactReport;
     // Prepare before native topology, then exchange after local velocity and position rounds.
+    // The Integrate phase releases the peer's retained pre-integration boundary once.
     // With no local GPU rows, the caller may advance multiple independent rounds in one submission.
     std::function<JoltGpuControlWork(const JoltGpuStorage &, JoltGpuStepInputs &, const JPH::GPU::StepParams &,
                                      uint32_t, uint32_t, JoltGpuCoupledContactStage, uint32_t,

@@ -735,6 +735,13 @@ bool JoltCpuContactPublication::AdvanceCoupledVelocity(
     return AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Velocity);
 }
 
+void JoltCpuContactPublication::AdvanceCoupledIntegration()
+{
+    auto &fixed = *m_coupled;
+    const auto result = fixed.scene.System().AdvanceCoupledIntegrationUpdate(*fixed.context);
+    AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Integration);
+}
+
 bool JoltCpuContactPublication::AdvanceCoupledPosition(
     const std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> &corrections, uint32_t rounds)
 {
@@ -798,6 +805,8 @@ void JoltCpuContactPublication::CancelCoupled() noexcept
                 system.BeginNextCoupledSubstep(context, nullptr, 0);
             if (context.mCoupledStage == Stage::Position)
                 system.AdvanceCoupledPositionUpdate(context);
+            else if (context.mCoupledStage == Stage::Integration)
+                system.AdvanceCoupledIntegrationUpdate(context);
             else if (context.mCoupledStage == Stage::Sleep)
                 system.FinishCoupledSleep(context);
             else
