@@ -34,6 +34,7 @@ from infernux.ui.ui_render_dispatch import (
     _runtime_command_epoch,
 )
 from infernux.ui.ui_command_packets import UICommandPackets
+from infernux.ui.ui_render_revision import _get_shared_visual_revision
 from infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 
 
@@ -831,7 +832,9 @@ class RuntimeScreenUISubmission:
             self._last_submission_frame = frame_token
             return not renderer.begin_frame_cached(width, height, 0)
 
-        self._prepare_native_layouts(canvases, world_elements, renderer, width, height, camera_size)
+        canvas_revision = _get_shared_visual_revision()
+        output_size = width, height
+        prepared_canvases = self._prepare_native_layouts(canvases, world_elements, renderer, output_size, camera_size)
 
         if capture_key is not None:
             view_key = capture_key[0], capture_key[-1]
@@ -865,22 +868,23 @@ class RuntimeScreenUISubmission:
                 return False
 
         get_texture_id = texture_cache.get_bound(engine)
-        self._submit_prepared_elements(world_elements, canvases, renderer, get_texture_id,
-                                       ScreenUIList, RenderMode, packets, width, height, camera_size,
-                                       prepared_pose_reads)
+        self._submit_prepared_elements(world_elements, prepared_canvases, renderer, get_texture_id, packets,
+                                       output_size, camera_size, canvas_revision, prepared_pose_reads)
         if not force:
             self._last_submission_frame = frame_token
         return True
 
-    def _submit_prepared_elements(self, world_elements, canvases, renderer, get_texture_id,
-                                  ScreenUIList, RenderMode, packets, width, height, camera_size,
-                                  prepared_pose_reads):
+    def _submit_prepared_elements(self, world_elements, canvases, renderer, get_texture_id, packets,
+                                  output_size, camera_size, canvas_revision, prepared_pose_reads):
         packets.submit_elements(
             world_elements, renderer, self._submit_world_element,
             get_texture_id, ScreenUIList, prepared_pose_reads,
         )
-        for canvas in canvases:
-            canvas_width, canvas_height = self._canvas_size(canvas, (width, height), camera_size)
+        for canvas, (canvas_width, canvas_height), metrics in canvases:
+            # A custom draw above may edit the next Canvas's settings.
+            if canvas_revision != _get_shared_visual_revision():
+                canvas_width, canvas_height = self._canvas_size(canvas, output_size, camera_size)
+                metrics = None
             self._submit_canvas(
                 canvas,
                 renderer,
@@ -891,6 +895,7 @@ class RuntimeScreenUISubmission:
                 RenderMode,
                 packets,
                 prepared_pose_reads,
+                metrics=metrics,
             )
         packets.flush(renderer)
 
@@ -912,17 +917,19 @@ class RuntimeScreenUISubmission:
 
     @staticmethod
     def _canvas_size(canvas, output_size, camera_size):
-        from infernux.ui.enums import RenderMode
         return camera_size if canvas.render_mode == RenderMode.CameraOverlay else output_size
 
-    def _prepare_native_layouts(self, canvases, world_elements, renderer, width, height, camera_size):
+    def _prepare_native_layouts(self, canvases, world_elements, renderer, output_size, camera_size):
         """Publish layout before geometry dependencies and command keys are read."""
+        projections = []
         for canvas in canvases:
+            size = self._canvas_size(canvas, output_size, camera_size)
+            metrics = _canvas_metrics(canvas, *size)
             prepare = getattr(canvas, '_prepare_native_layout', None)
             if prepare is not None:
-                canvas_width, canvas_height = self._canvas_size(canvas, (width, height), camera_size)
-                _, _, scale, cw, ch = _canvas_metrics(canvas, canvas_width, canvas_height)
+                _, _, scale, cw, ch = metrics
                 prepare(renderer.measure_text, cw, ch, scale)
+            projections.append((canvas, size, metrics))
         if self.__dict__.get('_world_layout_members') is not world_elements:
             by_owner = {element.game_object.id: element for element in world_elements
                         if isinstance(element, InxUIScreenComponent)}
@@ -943,6 +950,7 @@ class RuntimeScreenUISubmission:
                     isinstance(element, UIFrame) and element.layout_direction != UILayoutDirection.None_
                     for element in group):
                 rebuild_world(root, measure_text=renderer.measure_text)
+        return projections
 
     @staticmethod
     def prepare_text_layouts(world_elements, canvases, renderer,
@@ -1037,6 +1045,8 @@ class RuntimeScreenUISubmission:
         render_mode,
         packets=None,
         prepared_pose_reads=False,
+        *,
+        metrics=None,
     ) -> None:
         canvas_object = getattr(canvas, "game_object", None)
         if canvas_object is not None and not canvas_object.active_in_hierarchy:
@@ -1057,9 +1067,9 @@ class RuntimeScreenUISubmission:
         ) < 1:
             return
 
-        scale_x, scale_y, text_scale, logical_width, logical_height = _canvas_metrics(
-            canvas, game_width, game_height
-        )
+        if metrics is None:
+            metrics = _canvas_metrics(canvas, game_width, game_height)
+        scale_x, scale_y, text_scale, logical_width, logical_height = metrics
 
         elements = canvas_elements(canvas)
         args = (canvas, ui_list, logical_width, logical_height, scale_x, scale_y,

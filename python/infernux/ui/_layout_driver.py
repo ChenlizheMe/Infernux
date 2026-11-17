@@ -106,10 +106,9 @@ def _publish_layout(owner, elements, width, height, measure_text, text_scale):
     return changed
 
 
-def rebuild_canvas(canvas, width=None, height=None, *, force=False, measure_text=None, text_scale=1.0):
+def rebuild_canvas(canvas, elements, width=None, height=None, *, force=False, measure_text=None, text_scale=1.0):
     width = float(canvas.reference_width if width is None else width)
     height = float(canvas.reference_height if height is None else height)
-    elements = canvas._get_elements()
     key = canvas._cached_elements_version, _layout_key(elements, width, height), float(text_scale), measure_text is not None
     if not force and canvas.__dict__.get('_native_layout_key') == key:
         return False

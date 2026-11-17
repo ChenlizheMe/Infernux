@@ -63,7 +63,7 @@ class UICanvas(InxUIComponent):
     def rebuild_layout(self, canvas_width=None, canvas_height=None):
         """Publish this canvas's resolved layout into native rectangle channels."""
         from ._layout_driver import rebuild_canvas
-        return rebuild_canvas(self, canvas_width, canvas_height, force=True)
+        return rebuild_canvas(self, self._get_elements(), canvas_width, canvas_height, force=True)
 
     def _prepare_native_layout(self, measure_text, width, height, text_scale):
         from ._layout_driver import rebuild_canvas, release_layout
@@ -85,7 +85,7 @@ class UICanvas(InxUIComponent):
         if member is None:
             if not any(frame.layout_direction != UILayoutDirection.None_ for frame in self._layout_frames):
                 return False
-        return rebuild_canvas(self, width, height, measure_text=measure_text, text_scale=text_scale)
+        return rebuild_canvas(self, elements, width, height, measure_text=measure_text, text_scale=text_scale)
 
     def on_disable(self):
         from ._layout_driver import release_layout

@@ -809,7 +809,7 @@ def test_destroyed_element_packets_do_not_survive_membership_change(ui):
 
 
 @pytest.mark.parametrize("ui", [False], indirect=True, ids=["screen"])
-def test_completed_views_retain_their_own_commands(ui):
+def test_completed_views_retain_their_own_commands(ui, monkeypatch):
     from infernux.lib import Vector2
 
     label = ui.add()
@@ -817,6 +817,14 @@ def test_completed_views_retain_their_own_commands(ui):
     world = int(ui.scene._runtime_world_id)
     views = [SimpleNamespace(camera_id=camera_id, simulation_epoch=1, world_frame=1) for camera_id in (10, 20)]
     sizes = [(1920, 1080), (960, 1080)]
+    scale_inputs = []
+    compute_scale = ui.canvas.compute_scale
+
+    def observe_scale(width, height):
+        scale_inputs.append((width, height))
+        return compute_scale(width, height)
+
+    monkeypatch.setattr(ui.canvas, "compute_scale", observe_scale)
 
     def submit(view, size):
         ui.renderer.commands.clear()
@@ -826,6 +834,7 @@ def test_completed_views_retain_their_own_commands(ui):
 
     first, second = [submit(view, size) for view, size in zip(views, sizes)]
     assert first != second
+    assert scale_inputs == sizes
     assert ui.renderer.captures == 2
     for view in views:
         view.world_frame += 1

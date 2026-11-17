@@ -41,7 +41,7 @@ class UIFrame(InxUIScreenComponent):
         """Publish current layout to native transforms; return whether it changed."""
         from ._layout_driver import rebuild_canvas, rebuild_world
         canvas = self.get_canvas()
-        return (rebuild_canvas(canvas, canvas_width, canvas_height, force=True)
+        return (rebuild_canvas(canvas, canvas._get_elements(), canvas_width, canvas_height, force=True)
                 if canvas is not None else rebuild_world(self, force=True))
 
     def on_disable(self):
