@@ -489,7 +489,29 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
     e->buffers[Schedule] = plan->schedule;
     const uint32_t world = inputs.GetParameters().selection.x;
     const auto &h = state->header;
-    e->Add(Begin, 0, h.maps.x, world);
+    // Cross-device contact rows share the same maximal velocity representation as ordinary external contacts.
+    std::vector<uint32_t> contactedTrees;
+    for (const uint32_t slot : inputs.GetExternalContactBodies()) {
+        if (slot < h.selected.x || slot - h.selected.x >= h.selected.y)
+            continue;
+        uint32_t tree;
+        std::memcpy(&tree, state->prefix.data() + h.maps.y + 4u * (slot - h.selected.x), sizeof(tree));
+        if (tree != ArtControlInvalid)
+            contactedTrees.push_back(tree);
+    }
+    std::sort(contactedTrees.begin(), contactedTrees.end());
+    contactedTrees.erase(std::unique(contactedTrees.begin(), contactedTrees.end()), contactedTrees.end());
+    uint32_t first = 0;
+    for (size_t i = 0; i < contactedTrees.size();) {
+        const uint32_t start = contactedTrees[i];
+        uint32_t end = start + 1;
+        for (++i; i < contactedTrees.size() && contactedTrees[i] == end; ++i)
+            ++end;
+        e->Add(Begin, first, start - first, world);
+        e->Add(Begin, start, end - start, world, {}, ArtRefusedContact);
+        first = end;
+    }
+    e->Add(Begin, first, h.maps.x - first, world);
     e->Add(Bodies, h.selected.x, h.selected.y, world);
     e->Add(RuntimeJoints, h.selected.z, h.selected.w, world);
     const UInt4 refs{plan->jointRefFirst, plan->jointRefCount, plan->patchRefFirst, plan->patchRefCount};

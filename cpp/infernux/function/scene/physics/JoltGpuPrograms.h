@@ -350,6 +350,14 @@ class JoltGpuStepInputs
     {
         return m_articulations;
     }
+    void SetExternalContactBodies(std::vector<uint32_t> bodies) noexcept
+    {
+        m_externalContactBodies = std::move(bodies);
+    }
+    [[nodiscard]] const std::vector<uint32_t> &GetExternalContactBodies() const noexcept
+    {
+        return m_externalContactBodies;
+    }
     void SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts);
     void ClearContacts() noexcept;
     [[nodiscard]] const std::shared_ptr<const JoltGpuContactWorkset> &GetContacts() const noexcept
@@ -379,6 +387,7 @@ class JoltGpuStepInputs
     std::shared_ptr<const JoltGpuColliderPairs> m_colliderPairs;
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     std::shared_ptr<JoltGpuArticulationState> m_articulations;
+    std::vector<uint32_t> m_externalContactBodies;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
     mutable std::vector<WorkUniform> m_workUniforms;

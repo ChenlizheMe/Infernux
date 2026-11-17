@@ -147,9 +147,11 @@ struct JoltGpuTickControl
     std::function<JoltGpuControlWork(const JoltGpuStorage &, const JoltGpuStepInputs &, const JPH::GPU::StepParams &,
                                      uint32_t, JoltGpuContactReportStage, std::function<void()>)>
         prepareContactReport;
-    // Prepare candidates before native topology, then exchange once after each local velocity round.
-    std::function<JoltGpuControlWork(const JoltGpuStorage &, const JoltGpuStepInputs &, const JPH::GPU::StepParams &,
-                                     uint32_t, uint32_t, JoltGpuCoupledContactStage, std::function<void()>)>
+    // Prepare before native topology, then exchange after local velocity rounds.
+    // With no local GPU rows, the caller may advance multiple independent rounds in one submission.
+    std::function<JoltGpuControlWork(const JoltGpuStorage &, JoltGpuStepInputs &, const JPH::GPU::StepParams &,
+                                     uint32_t, uint32_t, JoltGpuCoupledContactStage, uint32_t,
+                                     std::function<void(uint32_t)>)>
         prepareCoupledContacts;
     /// Prepare exactly once after every numerical writer is accepted, including
     /// for a control-only/empty world. The input is the compact selected-world

@@ -29,6 +29,7 @@ class JoltCpuContactPublication final
     // Advances one native velocity round. True once this substep integrates.
     bool AdvanceCoupled(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses = {});
     [[nodiscard]] JPH::PhysicsUpdateContext::CoupledFreeVelocity CoupledFreeVelocity(JPH::BodyID body) const;
+    [[nodiscard]] bool CoupledHasLocalVelocityRows() const noexcept;
     /// Observe the previous prepared Fixed. Call Validate before taking frames.
     void ValidateCompleted(ContactStreamIdentity, uint32_t substeps) const;
     [[nodiscard]] PhysicsContactPublication::Frame TakeFrame(uint32_t substep);

@@ -1758,9 +1758,17 @@ class JoltGpuTick::Impl
                 const auto phase = stageCursor.phase == Phase::PrepareCoupledContacts
                                        ? JoltGpuCoupledContactStage::Prepare
                                        : JoltGpuCoupledContactStage::Exchange;
+                using JPH::GPU::Domain;
+                const bool canBatch = phase == JoltGpuCoupledContactStage::Exchange && !control.prepareParticipant &&
+                                      IslandCount(Domain::IslandPatches) == 0 && IslandCount(Domain::IslandJoints) == 0;
+                const uint32_t maxRounds =
+                    canBatch ? std::min(tickParameters.counts.w - stageCursor.iteration, 4u) : 1u;
                 SelectControlWork(control.prepareCoupledContacts(storage, inputs, tickParameters, stageCursor.substep,
-                                                                 stageCursor.iteration, phase,
-                                                                 [this] {
+                                                                 stageCursor.iteration, phase, maxRounds,
+                                                                 [this](uint32_t rounds) {
+                                                                     if (stageCursor.phase ==
+                                                                         Phase::ExchangeCoupledContacts)
+                                                                         stageCursor.iteration += rounds - 1;
                                                                      NextSpan(stageCursor);
                                                                      Normalize(stageCursor);
                                                                  }),

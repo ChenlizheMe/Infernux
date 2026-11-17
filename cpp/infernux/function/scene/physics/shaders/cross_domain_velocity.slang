@@ -2,7 +2,7 @@
 
 struct CouplingParams
 {
-    uint4 range; // First group or wake slot, and count.
+    uint4 range; // First group or wake slot, count, and velocity rounds.
     float4 gravityDt;
 };
 struct CpuBoundary
@@ -120,8 +120,9 @@ void exchange_cross_domain_velocity(uint3 id : SV_DispatchThreadID)
     const Velocity zero = {float4(0), float4(0)};
     for (uint i = group.z; i < group.z + group.w; ++i)
         cpu_impulses[i] = zero;
-    for (uint i = group.x; i < group.x + group.y; ++i)
-        solve_patch(i);
+    for (uint round = 0; round < params.range.z; ++round)
+        for (uint i = group.x; i < group.x + group.y; ++i)
+            solve_patch(i);
 }
 
 [shader("compute")]

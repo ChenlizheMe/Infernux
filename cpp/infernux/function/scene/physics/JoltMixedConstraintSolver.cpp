@@ -142,7 +142,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         return *step.Scene().System().GetBodyLockInterfaceNoLock().TryGetBody(id);
     }
 
-    void BuildWorkset()
+    void BuildWorkset(JoltGpuStepInputs &inputs)
     {
         auto &responses = step.Responses();
         std::sort(responses.begin(), responses.end(), PatchOrder);
@@ -169,6 +169,11 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         for (size_t i = 0; i < parents.size(); ++i)
             parents[i] = root(i);
         std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return parents[a] < parents[b]; });
+        std::vector<uint32_t> gpuContactBodies;
+        gpuContactBodies.reserve(gpuLinks.size());
+        for (const auto &[slot, _] : gpuLinks)
+            gpuContactBodies.push_back(slot);
+        inputs.SetExternalContactBodies(std::move(gpuContactBodies));
 
         native.clear();
         groups.clear();
@@ -294,8 +299,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 JoltGpuControlWork::ResumeAfter::Acceptance};
     }
 
-    JoltGpuControlWork Prepare(const JoltGpuStorage &storage, const JPH::GPU::StepParams &stepParams, uint32_t index,
-                               std::function<void()> done)
+    JoltGpuControlWork Prepare(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
+                               const JPH::GPU::StepParams &stepParams, uint32_t index, std::function<void()> done)
     {
         substep = index;
         params.gravityDt = stepParams.gravityDt;
@@ -305,10 +310,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         buffers[Forces] = storage.Get(Resource::BodyForces);
         return discovery.Discover(
             storage, stepParams, substep, publication, step, policy,
-            [self = shared_from_this(), solve = stepParams.counts.w, done = std::move(done)]() mutable {
+            [self = shared_from_this(), &inputs, solve = stepParams.counts.w, done = std::move(done)]() mutable {
                 if (!solve)
                     self->step.Responses().clear();
-                self->BuildWorkset();
+                self->BuildWorkset(inputs);
                 self->cpu.BeginCoupledSubstep(self->substep, self->native);
                 if (self->native.empty()) {
                     self->cpu.AdvanceCoupled();
@@ -346,10 +351,11 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         }
     }
 
-    JoltGpuControlWork Exchange(uint32_t iteration, uint32_t iterations, std::function<void()> done)
+    JoltGpuControlWork Exchange(uint32_t iteration, uint32_t iterations, uint32_t maxRounds,
+                                std::function<void(uint32_t)> done)
     {
         if (native.empty()) {
-            done();
+            done(maxRounds);
             return {};
         }
         velocities.clear();
@@ -358,8 +364,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             const auto &body = Body(id);
             velocities.push_back({Pack(body.GetLinearVelocity()), Pack(body.GetAngularVelocity())});
         }
-        params.range = {0, static_cast<uint32_t>(groups.size()), 0, 0};
-        const bool last = iteration + 1 == iterations;
+        // Bound the extra GPU work in one packet. Keep interleaving whenever the CPU island has local rows.
+        const uint32_t rounds = patches.size() <= 32 && !cpu.CoupledHasLocalVelocityRows() ? maxRounds : 1u;
+        params.range = {0, static_cast<uint32_t>(groups.size()), rounds, 0};
+        const bool last = iteration + rounds == iterations;
         const bool readContacts = last && policy.Requested();
         std::vector<rhi::ComputeBufferRead> reads{{buffers[Impulses], 0, velocities.size() * sizeof(Velocity)}};
         if (readContacts)
@@ -373,7 +381,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         }
         auto packet =
             rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {Dispatch(owner.m_exchange)}, std::move(reads));
-        return {packet, [self = shared_from_this(), packet, last, readContacts, done = std::move(done)] {
+        return {packet, [self = shared_from_this(), packet, last, readContacts, rounds, done = std::move(done)] {
                     self->receipts.resize(self->native.size());
                     packet->Readback(0)->ReadInto(self->receipts.data(), self->receipts.size() * sizeof(Velocity));
                     self->impulses.clear();
@@ -383,14 +391,18 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                                                   JPH::Vec3(value.linear.x, value.linear.y, value.linear.z),
                                                   JPH::Vec3(value.angular.x, value.angular.y, value.angular.z)});
                     }
-                    if (self->cpu.AdvanceCoupled(self->impulses) != last)
+                    // With no local rows, all impulses can be applied before the remaining empty native rounds.
+                    bool integrated = self->cpu.AdvanceCoupled(self->impulses);
+                    for (uint32_t i = 1; i < rounds; ++i)
+                        integrated = self->cpu.AdvanceCoupled();
+                    if (integrated != last)
                         throw std::logic_error(
                             "CPU and GPU coupling rounds differ from their shared velocity settings");
                     if (readContacts) {
                         packet->Readback(1)->ReadInto(self->patches.data(), self->patches.size() * sizeof(DevicePatch));
                         self->PublishContacts();
                     }
-                    done();
+                    done(rounds);
                     return JoltGpuControlWork{};
                 }};
     }
@@ -402,11 +414,12 @@ JoltMixedConstraintSolver::Prepare(const std::shared_ptr<const JoltGpuScene::Pub
                                    JoltCpuContactPublication &cpu, const JoltMixedContactStep::Policy &policy)
 {
     auto job = std::make_shared<Job>(*this, discovery, step, cpu, policy, publication);
-    return [job](const JoltGpuStorage &storage, const JoltGpuStepInputs &, const JPH::GPU::StepParams &params,
-                 uint32_t substep, uint32_t iteration, JoltGpuCoupledContactStage stage, std::function<void()> done) {
+    return [job](const JoltGpuStorage &storage, JoltGpuStepInputs &inputs, const JPH::GPU::StepParams &params,
+                 uint32_t substep, uint32_t iteration, JoltGpuCoupledContactStage stage, uint32_t maxRounds,
+                 std::function<void(uint32_t)> done) {
         return stage == JoltGpuCoupledContactStage::Prepare
-                   ? job->Prepare(storage, params, substep, std::move(done))
-                   : job->Exchange(iteration, params.counts.w, std::move(done));
+                   ? job->Prepare(storage, inputs, params, substep, [done = std::move(done)] { done(1); })
+                   : job->Exchange(iteration, params.counts.w, maxRounds, std::move(done));
     };
 }
 } // namespace infernux

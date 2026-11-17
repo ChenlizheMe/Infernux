@@ -743,6 +743,11 @@ JPH::PhysicsUpdateContext::CoupledFreeVelocity JoltCpuContactPublication::Couple
     return context.mCoupledFreeVelocities[found - bodies.begin()];
 }
 
+bool JoltCpuContactPublication::CoupledHasLocalVelocityRows() const noexcept
+{
+    return m_coupled->context->mCoupledHasLocalVelocityRows;
+}
+
 void JoltCpuContactPublication::CancelCoupled() noexcept
 {
     if (!m_coupled)
