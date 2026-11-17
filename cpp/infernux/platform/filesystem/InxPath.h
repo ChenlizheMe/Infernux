@@ -1,5 +1,6 @@
 #pragma once
 
+#include "FileRevision.h"
 #include "NativeFilePath.h"
 
 #include <algorithm>
@@ -296,24 +297,8 @@ class FileInput
         Snapshot
     };
 
-    struct State
-    {
-        uint64_t size;
-        std::pair<int64_t, int64_t> modified;
-    };
-
-    struct Revision
-    {
-        State data;
-        std::pair<uint64_t, uint64_t> identity;
-        std::pair<int64_t, int64_t> changed;
-
-        bool operator==(const Revision &other) const
-        {
-            return data.size == other.data.size && data.modified == other.data.modified && identity == other.identity &&
-                   changed == other.changed;
-        }
-    };
+    using State = FileRevision::State;
+    using Revision = FileRevision;
 
     explicit FileInput(const std::filesystem::path &path, Sharing sharing = Sharing::ReadWrite)
     {

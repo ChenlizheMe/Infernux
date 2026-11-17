@@ -1,6 +1,5 @@
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/raytracing/RayGeometry.h>
-#include <function/resources/InxMesh/InxMesh.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -100,37 +99,12 @@ int main()
     assert(page.instances[1].surfaceId == 2u && page.instances[1].layerMask == 4u);
     assert(BuildRayGeometryPage({}).root == kInvalidRayIndex);
 
-    auto asset = std::make_shared<MeshGeometry>();
-    asset->vertices = source;
-    asset->indices = {0, 1, 2, 3, 4, 5, 4, 6, 5};
-    DrawCall first;
-    first.indexStart = 3;
-    first.indexCount = 6;
-    first.meshDataOwner = asset;
-    first.meshVertices = &asset->vertices;
-    first.meshIndices = &asset->indices;
-    first.surfaceId = 1;
-    first.layerMask = 2;
-    DrawCall offscreen = first;
-    offscreen.frustumVisible = false;
-    offscreen.worldMatrix = mirrored;
-    offscreen.surfaceId = 2;
-    offscreen.layerMask = 4;
-    DrawCallResult world;
-    world.drawCalls = {first, offscreen};
-    const auto packed = BuildWorldRayGeometry(world);
-    assert(packed == EncodeRayGeometryPage(page, RayGeometryStatus::Ready));
+    const auto packed = EncodeRayGeometryPage(page, RayGeometryStatus::Ready);
     assert(packed[0][0] == page.root && packed[1][0] + 8 == packed.size());
-    assert(packed[packed[1][0] + 3][1] == first.surfaceId);
-    assert(packed[packed[1][0] + 7][1] == offscreen.surfaceId);
-
-    const auto stripped = std::make_shared<const MeshGeometry>();
-    world.drawCalls[1].meshDataOwner = stripped;
-    world.drawCalls[1].meshVertices = &stripped->vertices;
-    world.drawCalls[1].meshIndices = &stripped->indices;
-    const auto unavailable = BuildWorldRayGeometry(world);
-    assert(unavailable == EncodeRayGeometryPage({}, RayGeometryStatus::Unavailable));
-    const auto empty = BuildWorldRayGeometry({});
-    assert(empty == EncodeRayGeometryPage({}, RayGeometryStatus::Ready));
+    assert(packed[packed[1][0] + 3][1] == 1u);
+    assert(packed[packed[1][0] + 7][1] == 2u);
+    const auto unavailable = EncodeRayGeometryPage({}, RayGeometryStatus::Unavailable);
+    const auto empty = EncodeRayGeometryPage({}, RayGeometryStatus::Ready);
+    assert(unavailable[1][1] == static_cast<uint32_t>(RayGeometryStatus::Unavailable));
     assert(empty != unavailable);
 }

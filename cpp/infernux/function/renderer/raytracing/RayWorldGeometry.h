@@ -50,8 +50,9 @@ class RayWorldGeometry final
     std::shared_ptr<RayWorldGeometryBuild> m_active;
     std::shared_ptr<const rhi::BufferResource> m_pendingBuffer, m_unavailableBuffer;
     JobHandle m_job;
+    FrameWorkResource m_workResource = FrameWorkResource::Cpu;
     uint64_t m_submittedOpportunity = 0;
-    uint64_t m_cpuGrant = 0;
+    uint64_t m_workGrant = 0;
 };
 } // namespace raytracing
 } // namespace infernux

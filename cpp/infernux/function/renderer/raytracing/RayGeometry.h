@@ -7,7 +7,6 @@
 
 namespace infernux
 {
-struct DrawCallResult;
 struct Vertex;
 
 namespace raytracing
@@ -85,7 +84,6 @@ using RayGeometryWord = std::array<uint32_t, 4>;
 /// Header 1: instance offset, RayGeometryStatus, reserved, reserved.
 /// All offsets address uvec4 words. Node and instance indices remain array-relative.
 [[nodiscard]] std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, RayGeometryStatus status);
-[[nodiscard]] std::vector<RayGeometryWord> BuildWorldRayGeometry(const DrawCallResult &geometry);
 
 } // namespace raytracing
 } // namespace infernux

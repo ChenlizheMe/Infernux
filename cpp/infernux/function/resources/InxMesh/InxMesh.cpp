@@ -301,6 +301,7 @@ void InxMesh::SetModelData(std::vector<Vertex> vertices, std::vector<uint32_t> i
     m_geometry = candidate.m_geometry;
     m_modelSourceGeometry = source;
     m_modelNodes = std::move(candidate.m_modelNodes);
+    m_primaryArtifactRevision.reset();
     ++m_generation;
 }
 
@@ -348,6 +349,7 @@ void InxMesh::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indice
     }
     m_geometry = std::move(geometry);
     m_modelSourceGeometry.reset();
+    m_primaryArtifactRevision.reset();
     ++m_generation;
 }
 

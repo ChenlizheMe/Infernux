@@ -529,6 +529,7 @@ void AssetRegistry::PublishMesh(const std::string &guid, InxMesh replacement)
     auto mesh = entry->second.payload.Get<InxMesh>();
     replacement.SetGuid(mesh->GetGuid());
     replacement.SetFilePath(mesh->GetFilePath());
+    replacement.m_primaryArtifactRevision.reset();
     const auto bytes = TrackMeshStorage(entry->second.payload.GetStorageOwner(), replacement);
     const auto version = NextRuntimeVersion(guid);
     static_assert(std::is_nothrow_move_assignable_v<InxMesh>);
@@ -1311,6 +1312,27 @@ uint64_t AssetRegistry::GetAssetContentGeneration(const std::string &guid) const
 {
     const auto found = m_assetContentGenerations.find(guid);
     return found != m_assetContentGenerations.end() ? found->second : 0;
+}
+
+std::optional<MeshArtifactReference> AssetRegistry::CaptureMeshArtifact(const std::string &guid,
+                                                                        uint64_t runtimeVersion) const
+{
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Mesh artifact capture requires the initialized registry owner thread");
+    const auto found = m_loadedAssets.find(guid);
+    if (found == m_loadedAssets.end() || found->second.type != ResourceType::Mesh ||
+        found->second.version != runtimeVersion)
+        return std::nullopt;
+
+    const auto mesh = found->second.payload.Get<InxMesh>();
+    const auto &metadata = mesh->GetImportMetadata();
+    if (!mesh->m_primaryArtifactRevision || !metadata || !metadata->HasKey("content_hash"))
+        return std::nullopt;
+    auto path = m_assetDb->GetRuntimeArtifactPath(guid, ResourceType::Mesh);
+    if (path.empty())
+        return std::nullopt;
+    return MeshArtifactReference{std::move(path), metadata->GetDataAs<std::string>("content_hash"),
+                                 *mesh->m_primaryArtifactRevision};
 }
 
 void AssetRegistry::MarkMeshGpuViewResident(const std::string &guid, uint64_t runtimeVersion, MeshGeometryView view)

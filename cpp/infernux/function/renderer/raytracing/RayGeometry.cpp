@@ -6,9 +6,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <stdexcept>
-#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 
@@ -197,33 +195,6 @@ std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, 
     append(triangles, page.triangles);
     append(instances, page.instances);
     return storage;
-}
-
-std::vector<RayGeometryWord> BuildWorldRayGeometry(const DrawCallResult &geometry)
-{
-    using Slice = std::tuple<uintptr_t, uintptr_t, uint32_t, uint32_t, int32_t>;
-    std::map<Slice, RayMesh> meshes;
-    std::vector<RayMeshInstance> instances;
-    instances.reserve(geometry.drawCalls.size());
-    for (const auto &draw : geometry.drawCalls) {
-        if (!draw.indexCount)
-            continue;
-        // Ready means the whole frozen World can be queried. A stripped or
-        // device-authored source must not appear to be empty space.
-        if (!draw.surfaceId || !draw.meshDataOwner || !draw.meshVertices || !draw.meshIndices ||
-            draw.meshVertices->empty() || draw.meshIndices->empty() || draw.meshVertexBuffer ||
-            draw.devicePose.HasValue() || draw.skinBoneMatrices)
-            return EncodeRayGeometryPage({}, RayGeometryStatus::Unavailable);
-        const Slice slice{reinterpret_cast<uintptr_t>(draw.meshVertices), reinterpret_cast<uintptr_t>(draw.meshIndices),
-                          draw.indexStart, draw.indexCount, draw.vertexStart};
-        auto [entry, inserted] = meshes.try_emplace(slice);
-        if (inserted)
-            entry->second =
-                BuildRayMesh(*draw.meshVertices, *draw.meshIndices, draw.indexStart, draw.indexCount, draw.vertexStart);
-        // frustumVisible belongs to the raster view. Rays can reach off-screen geometry.
-        instances.push_back({entry->second, draw.worldMatrix, draw.surfaceId, draw.layerMask});
-    }
-    return EncodeRayGeometryPage(BuildRayGeometryPage(instances), RayGeometryStatus::Ready);
 }
 
 } // namespace infernux::raytracing

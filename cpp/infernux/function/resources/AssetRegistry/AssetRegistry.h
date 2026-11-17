@@ -6,6 +6,7 @@
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRef.h>
 #include <function/resources/AssetRegistry/IAssetLoader.h>
+#include <function/resources/InxMesh/MeshArtifactReference.h>
 
 #include <array>
 #include <cstdint>
@@ -279,6 +280,10 @@ class AssetRegistry
     [[nodiscard]] uint64_t GetAssetVersion(const std::string &guid) const;
     /// Content invalidation is independent of CPU residency and publication.
     [[nodiscard]] uint64_t GetAssetContentGeneration(const std::string &guid) const;
+    /// Owner-thread capture for private reads of a published mesh's primary artifact.
+    /// Absence means this runtime version has no matching imported geometry source.
+    [[nodiscard]] std::optional<MeshArtifactReference> CaptureMeshArtifact(const std::string &guid,
+                                                                           uint64_t runtimeVersion) const;
     /// Publish one immutable GPU geometry view for an exact asset generation.
     /// Hierarchical models require both merged and node-local views before CPU
     /// streams may be released.

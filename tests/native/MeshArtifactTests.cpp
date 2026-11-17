@@ -1,13 +1,17 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
+#include <function/resources/InxMesh/MeshArtifactReader.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 #include <function/scene/PrimitiveMeshes.h>
+#include <platform/filesystem/AtomicFile.h>
 
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -135,6 +139,59 @@ void DowngradeMaterialTexturesV4ToV3(std::string &bytes)
     bytes.replace(marker + 2U * sizeof(uint32_t), cursor - (marker + 2U * sizeof(uint32_t)), replacement);
     WriteU32(bytes, marker, 0x3358544dU);
     RewriteChecksum(bytes);
+}
+void CheckPinnedArtifact(const infernux::InxMesh &mesh, const std::string &sourceHash)
+{
+    using namespace infernux;
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto path = std::filesystem::temp_directory_path() / ("infernux-mesh-artifact-" + std::to_string(unique));
+    const auto utf8Path = FromFsPath(path);
+    const auto bytes = MeshArtifact::Serialize(mesh, sourceHash);
+    std::string error;
+    if (!WriteTextFileAtomically(utf8Path, bytes, error))
+        throw std::runtime_error(error);
+    FileInput file(path, FileInput::Sharing::Snapshot);
+    const MeshArtifactReference reference{utf8Path, sourceHash, file.InspectRevision()};
+    std::vector<char> block(bytes.size());
+    auto published = MeshArtifact::Read(file, sourceHash, block);
+    file.Close();
+    const auto modified = std::filesystem::last_write_time(path);
+
+    published->SetCpuReadable(false);
+    const auto released = published->ReleaseCpuGeometry();
+    assert(released && !published->HasCpuGeometry());
+    MeshArtifactReader reader(reference);
+    assert(reader.FileBytes() == bytes.size());
+    assert(reader.WorkspaceBytes() > reader.FileBytes());
+    const auto restored = reader.Read();
+    assert(restored->GetModelSourceGeometry()->vertices.front().pos ==
+           mesh.GetModelSourceGeometry()->vertices.front().pos);
+    assert(restored->GetVertices().front().pos == mesh.GetVertices().front().pos);
+    assert(!published->HasCpuGeometry());
+
+    // A settings-only republish can preserve source hash, size and write time.
+    auto replacement = mesh;
+    auto nodes = replacement.GetModelNodes();
+    nodes.front().localTransform[3].x += 2.0f;
+    replacement.SetModelNodes(std::move(nodes));
+    const auto newer = MeshArtifact::Serialize(replacement, sourceHash);
+    assert(newer.size() == bytes.size() && newer != bytes);
+    if (!WriteTextFileAtomically(utf8Path, newer, error))
+        throw std::runtime_error(error);
+    std::filesystem::last_write_time(path, modified);
+    bool stale = false;
+    try {
+        MeshArtifactReader staleReader(reference);
+    } catch (const std::runtime_error &) {
+        stale = true;
+    }
+    assert(stale);
+    FileInput current(path, FileInput::Sharing::Snapshot);
+    const auto latest = MeshArtifact::Read(current, sourceHash, block);
+    current.Close();
+    assert(latest->GetVertices().front().pos == replacement.GetVertices().front().pos);
+    assert(latest->GetVertices().front().pos != restored->GetVertices().front().pos);
+    std::filesystem::remove(path);
 }
 } // namespace
 
@@ -561,6 +618,7 @@ int main()
     assert(localModel.GetMorphTargets().size() == 1);
     assert(localModel.GetMorphTargets()[0].positionDeltas[0] == glm::vec3(-2, 2, 3));
     assert(localModel.GetSubMesh(0).boundsMin == localModel.GetVertices()[0].pos);
+    CheckPinnedArtifact(localModel, SourceHash);
     const auto localBytes = infernux::MeshArtifact::SerializeSource(localModel);
     auto localRestored = infernux::MeshArtifact::DeserializeSource(localBytes);
     assert(localRestored->GetModelSourceGeometry()->vertices[0].pos == vertex.pos);

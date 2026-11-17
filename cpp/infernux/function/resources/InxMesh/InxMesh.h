@@ -2,12 +2,14 @@
 
 #include <function/renderer/InxRenderStruct.h>
 #include <function/resources/InxMaterial/MaterialProperty.h>
+#include <platform/filesystem/FileRevision.h>
 
 #include <glm/glm.hpp>
 
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -425,6 +427,9 @@ class InxMesh
     [[nodiscard]] size_t GetRuntimeMemoryBytes() const noexcept;
 
   private:
+    friend class AssetRegistry;
+    friend class MeshArtifact;
+
     std::string m_name;
     std::string m_guid;
     std::string m_filePath;
@@ -438,6 +443,7 @@ class InxMesh
     std::vector<ImportedModelNode> m_modelNodes;
     std::shared_ptr<const InxSkinnedMesh> m_skinnedData;
     std::shared_ptr<const InxResourceMeta> m_importMetadata;
+    std::optional<FileRevision> m_primaryArtifactRevision;
     MeshIndexFormat m_indexFormat = MeshIndexFormat::Auto;
     MeshCompression m_compression = MeshCompression::Off;
     bool m_cpuReadable = true;

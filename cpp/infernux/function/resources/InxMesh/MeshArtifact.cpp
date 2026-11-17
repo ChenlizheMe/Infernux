@@ -1,6 +1,7 @@
 #include "MeshArtifact.h"
 
 #include "InxMesh.h"
+#include "MeshArtifactReader.h"
 #include "MeshDecodeStorage.h"
 #include "MeshGeometryCodec.h"
 
@@ -468,6 +469,12 @@ std::shared_ptr<InxMesh> ReadCookedMesh(Input input, std::string_view expectedSo
     Reader reader(std::move(input), workspace);
     return ReadMeshPayload(reader, expectedSourceContentHash);
 }
+
+void RequireArtifactRevision(const FileRevision &observed, const FileRevision &expected)
+{
+    if (!(observed == expected))
+        throw std::runtime_error("Primary mesh artifact revision differs from the requested revision");
+}
 } // namespace
 
 std::string MeshArtifact::SerializeSource(const InxMesh &mesh)
@@ -497,11 +504,17 @@ std::shared_ptr<InxMesh> MeshArtifact::Deserialize(std::string_view bytes, std::
 }
 
 std::shared_ptr<InxMesh> MeshArtifact::Read(FileInput &file, std::string_view expectedSourceContentHash,
-                                            std::vector<char> &block, uint64_t workspaceLimit)
+                                            std::vector<char> &block, uint64_t workspaceLimit,
+                                            const FileRevision *expectedRevision)
 {
+    const auto revision = file.InspectRevision();
+    if (expectedRevision)
+        RequireArtifactRevision(revision, *expectedRevision);
     ArtifactFileReader input(file, (std::numeric_limits<size_t>::max)(), block);
     auto mesh = ReadCookedMesh(input.Begin<Input>(), expectedSourceContentHash, workspaceLimit);
     input.Verify();
+    RequireArtifactRevision(file.InspectRevision(), revision);
+    mesh->m_primaryArtifactRevision = revision;
     return mesh;
 }
 
@@ -513,6 +526,31 @@ bool MeshArtifact::HasCurrentHeader(std::string_view bytes) noexcept
 uint64_t MeshArtifact::ReadWorkspace(FileInput &file)
 {
     return artifact_layout::ReadWorkspace(file, Magic, ArtifactSchema);
+}
+
+MeshArtifactReader::MeshArtifactReader(const MeshArtifactReference &reference)
+    : m_file(ToFsPath(reference.path), FileInput::Sharing::Snapshot), m_revision(reference.revision),
+      m_sourceHash(reference.sourceHash), m_workspace(0),
+      m_blockBytes(static_cast<size_t>((std::min<uint64_t>)(FileBytes(), ArtifactFileReader::BlockBytes)))
+{
+    RequireArtifactRevision(m_file.InspectRevision(), m_revision);
+    m_workspace = MeshArtifact::ReadWorkspace(m_file);
+    RequireArtifactRevision(m_file.InspectRevision(), m_revision);
+    if (m_workspace > (std::numeric_limits<uint64_t>::max)() - m_blockBytes)
+        throw std::length_error("Primary mesh artifact workspace exceeds the host byte range");
+}
+
+uint64_t MeshArtifactReader::WorkspaceBytes() const noexcept
+{
+    return m_workspace + m_blockBytes;
+}
+
+std::shared_ptr<InxMesh> MeshArtifactReader::Read()
+{
+    std::vector<char> block(m_blockBytes);
+    auto mesh = MeshArtifact::Read(m_file, m_sourceHash, block, m_workspace, &m_revision);
+    m_file.Close();
+    return mesh;
 }
 
 } // namespace infernux

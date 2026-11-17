@@ -1,5 +1,7 @@
 #pragma once
 
+#include <platform/filesystem/FileRevision.h>
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -25,7 +27,8 @@ class MeshArtifact final
     [[nodiscard]] static std::shared_ptr<InxMesh> Deserialize(std::string_view bytes,
                                                               std::string_view expectedSourceContentHash);
     [[nodiscard]] static std::shared_ptr<InxMesh> Read(FileInput &file, std::string_view expectedSourceContentHash,
-                                                       std::vector<char> &block, uint64_t workspaceLimit = UINT64_MAX);
+                                                       std::vector<char> &block, uint64_t workspaceLimit = UINT64_MAX,
+                                                       const FileRevision *expectedRevision = nullptr);
 };
 
 } // namespace infernux

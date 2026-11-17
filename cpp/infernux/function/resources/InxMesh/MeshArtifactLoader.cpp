@@ -101,7 +101,7 @@ class MeshArtifactDecode
     RuntimeAssetPayload Advance()
     {
         if (!m_mesh) {
-            FileInput primary(ToFsPath(m_source.primaryPath));
+            FileInput primary(ToFsPath(m_source.primaryPath), FileInput::Sharing::Snapshot);
             m_companion.emplace(ToFsPath(m_source.skinnedPath));
             m_block.resize(m_blockBytes);
             m_mesh = MeshArtifact::Read(primary, m_source.sourceHash, m_block, m_primaryLayout.workspace);
