@@ -10,7 +10,7 @@ def decode_octahedral_normal(encoded: shader.vec2) -> shader.vec3:
 
 
 def decode_model_scalars(bits: shader.uint) -> shader.vec2:
-    return shader.vec2(shader.f16_to_f32(bits & shader.uint(65535)), shader.f16_to_f32(bits >> 16))
+    return shader.unpack_half_2x16(bits)
 
 
 def texture_uv(ctx: shader.SurfaceContext, uv_set: int, transform: shader.vec4) -> shader.vec2:

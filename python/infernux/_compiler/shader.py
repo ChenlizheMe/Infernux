@@ -694,7 +694,7 @@ uint2 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFac
     float3 toward_eye = inx_camera_toward_eye(input.position_ws);
     normal *= (dot(normal, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(length_squared);
     float2 encoded = inx_encode_surface_normal(normal);
-    return uint2(input.surface_id, f32tof16(encoded.x) | (f32tof16(encoded.y) << 16u));
+    return uint2(input.surface_id, packHalf2x16(encoded));
 }
 """
 

@@ -18,7 +18,5 @@ class RayPrimarySurface(shader.fullscreen):
         replay_depth = shader.load(self.replay_depth, pixel, 0)
         if surface == 0 or replay.x != surface or replay_depth != depth:
             return shader.vec4(0.0)
-        octahedral = shader.vec2(
-            shader.f16_to_f32(replay.y & shader.uint(65535)), shader.f16_to_f32(replay.y >> 16),
-        )
+        octahedral = shader.unpack_half_2x16(replay.y)
         return shader.vec4(decode_octahedral_normal(octahedral), 1.0)

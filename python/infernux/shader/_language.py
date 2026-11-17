@@ -14,5 +14,6 @@ INTRINSICS = {name: name for name in (
 INTRINSICS.update(
     mix="lerp", fract="frac", as_float="asfloat", as_int="asint", as_uint="asuint",
     f16_to_f32="f16tof32", f32_to_f16="f32tof16", count_bits="countbits",
+    pack_half_2x16="packHalf2x16", unpack_half_2x16="unpackHalf2x16ToFloat",
     reverse_bits="reversebits", first_bit_high="firstbithigh", first_bit_low="firstbitlow",
 )

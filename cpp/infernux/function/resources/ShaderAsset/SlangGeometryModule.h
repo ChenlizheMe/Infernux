@@ -330,7 +330,7 @@ public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, uint surface_id
     result.oct_normal_roughness_ao = float4(inx_encode_surface_normal(surface.normal_ws),
                                             saturate(1.0 - surface.smoothness), saturate(surface.occlusion));
     result.emission_specular = float4(surface.emission, saturate(surface.specular_highlights));
-    result.surface = uint2(surface_id, f32tof16(surface.shading_param0) | (f32tof16(surface.shading_param1) << 16u));
+    result.surface = uint2(surface_id, packHalf2x16(float2(surface.shading_param0, surface.shading_param1)));
     return result;
 }
 // Keep color and coverage lanes independently eliminable in every entry.

@@ -234,6 +234,10 @@ class SlangEmitter(ast.NodeVisitor):
                 return shaped_type(self.infer(node.args[0]), "bool")
             if name in {"as_float", "f16_to_f32"}:
                 return shaped_type(self.infer(node.args[0]), "float")
+            if name == "pack_half_2x16":
+                return "uint"
+            if name == "unpack_half_2x16":
+                return "float2"
             if name == "as_int":
                 return shaped_type(self.infer(node.args[0]), "int")
             if name in {"as_uint", "f32_to_f16", "count_bits", "first_bit_high", "first_bit_low"}:
