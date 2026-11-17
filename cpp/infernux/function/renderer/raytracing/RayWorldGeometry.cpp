@@ -87,6 +87,8 @@ struct RayWorldMeshPage
     std::vector<DrawMeshPlacement> draws;
     std::shared_ptr<const rhi::BufferResource> buffer;
     std::shared_ptr<FrameCpuStorageClaim> storage;
+    // The frame owner caches the latest validated TLAS topology for this mesh set.
+    mutable std::shared_ptr<const spatial::BvhTopology> topology;
 };
 } // namespace
 
@@ -371,7 +373,8 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                 break;
             if (sharedMeshes && nextPlacement != sharedMeshes->draws.size())
                 throw std::logic_error("World mesh revision reused with a different frozen draw count");
-            instanceBuild = std::make_unique<RayInstancePageBuild>(rays);
+            instanceBuild =
+                std::make_unique<RayInstancePageBuild>(rays, sharedMeshes ? sharedMeshes->topology : nullptr);
             step = Step::BuildInstances;
             if (window != FullBuild)
                 break;
@@ -446,11 +449,15 @@ bool RayWorldGeometryBuild::Upload(rhi::Device &device, uint64_t bytes)
 
 std::shared_ptr<const RayWorldMeshPage> RayWorldGeometryBuild::PublishedMeshes()
 {
-    if (!meshCandidate)
-        return sharedMeshes;
-    storage->ReduceTo(meshCandidate->draws.capacity() * sizeof(DrawMeshPlacement));
-    meshCandidate->storage = std::move(storage);
-    return std::move(meshCandidate);
+    if (meshCandidate) {
+        // A binary TLAS has at most twice as many links as instance records.
+        constexpr auto topologyBytesPerDraw = 2 * sizeof(spatial::BvhLink) + sizeof(uint32_t);
+        storage->ReduceTo(meshCandidate->draws.capacity() * (sizeof(DrawMeshPlacement) + topologyBytesPerDraw));
+        meshCandidate->storage = std::move(storage);
+        sharedMeshes = std::move(meshCandidate);
+    }
+    sharedMeshes->topology = std::move(instancePage.topology);
+    return std::move(sharedMeshes);
 }
 
 RayWorldGeometry::RayWorldGeometry(FrameWorkOwner &owner, rhi::Device &device) : m_owner(owner), m_device(device)

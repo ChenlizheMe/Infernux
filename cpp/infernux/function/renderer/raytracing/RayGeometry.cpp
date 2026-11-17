@@ -314,7 +314,8 @@ RayMeshPage RayMeshPageBuild::Take()
 
 struct RayInstancePageBuild::State
 {
-    explicit State(const std::vector<RayMeshInstance> &instances) : instances(instances)
+    State(const std::vector<RayMeshInstance> &instances, std::shared_ptr<const spatial::BvhTopology> topology)
+        : instances(instances), previous(std::move(topology))
     {
         bounds.reserve(instances.size());
         packed.reserve(instances.size());
@@ -323,21 +324,41 @@ struct RayInstancePageBuild::State
     const std::vector<RayMeshInstance> &instances;
     std::vector<Bounds> bounds;
     std::vector<RayInstance> packed;
+    std::shared_ptr<const spatial::BvhTopology> previous;
+    std::optional<spatial::BvhRefit> refit;
     std::optional<BvhBuild> builder;
-    spatial::Bvh hierarchy;
+    std::shared_ptr<spatial::BvhTopology> captured;
     RayInstancePage page;
+    double buildCost = 0.0;
     size_t cursor = 0;
     enum class Phase : uint8_t
     {
         Gather,
+        Refit,
         Build,
+        CaptureTopology,
         Reorder,
         Done
     } phase = Phase::Gather;
+
+    void StartBuild()
+    {
+        builder.emplace(bounds);
+        phase = Phase::Build;
+    }
+
+    void Reorder(std::shared_ptr<const spatial::BvhTopology> topology)
+    {
+        page.topology = std::move(topology);
+        page.instances.reserve(packed.size());
+        cursor = 0;
+        phase = Phase::Reorder;
+    }
 };
 
-RayInstancePageBuild::RayInstancePageBuild(const std::vector<RayMeshInstance> &instances)
-    : m_state(std::make_unique<State>(instances))
+RayInstancePageBuild::RayInstancePageBuild(const std::vector<RayMeshInstance> &instances,
+                                           std::shared_ptr<const spatial::BvhTopology> topology)
+    : m_state(std::make_unique<State>(instances, std::move(topology)))
 {
 }
 
@@ -355,23 +376,56 @@ bool RayInstancePageBuild::Advance(uint32_t budget)
             s.packed.push_back(EncodeInstance(instance));
         });
         if (s.cursor == s.instances.size()) {
-            s.builder.emplace(s.bounds);
-            s.phase = Phase::Build;
+            if (s.previous) {
+                s.refit.emplace(*s.previous, s.bounds);
+                s.phase = Phase::Refit;
+            } else {
+                s.StartBuild();
+            }
         }
         return false;
-    case Phase::Build:
+    case Phase::Refit: {
+        if (!s.refit->Advance(budget))
+            return false;
+        // Relative SAH preserves a well-partitioned tree under uniform motion or scale.
+        constexpr double rebuildCostRatio = 1.5;
+        if (s.refit->Cost() <= s.previous->buildCost * rebuildCostRatio) {
+            s.page.nodes = s.refit->Take();
+            s.Reorder(std::move(s.previous));
+        } else {
+            s.StartBuild();
+        }
+        s.refit.reset();
+        return false;
+    }
+    case Phase::Build: {
         if (!s.builder->Advance(budget))
             return false;
-        s.hierarchy = s.builder->Take();
+        auto hierarchy = s.builder->Take();
         s.builder.reset();
-        s.page.nodes = std::move(s.hierarchy.nodes);
-        s.page.instances.reserve(s.packed.size());
+        s.page.nodes = std::move(hierarchy.nodes);
+        s.captured = std::make_shared<spatial::BvhTopology>();
+        s.captured->primitiveOrder = std::move(hierarchy.primitiveOrder);
+        s.captured->links.reserve(s.page.nodes.size());
         s.cursor = 0;
-        s.phase = Phase::Reorder;
+        s.phase = Phase::CaptureTopology;
+        return false;
+    }
+    case Phase::CaptureTopology:
+        VisitWindow(s.cursor, s.page.nodes.size(), budget, [&](size_t index) {
+            const auto &node = s.page.nodes[index];
+            s.captured->links.push_back({node.first, node.second});
+            s.buildCost += spatial::BvhNodeCost(node);
+        });
+        if (s.cursor == s.page.nodes.size()) {
+            s.captured->buildCost = spatial::NormalizeBvhCost(s.buildCost, s.page.nodes);
+            s.Reorder(std::move(s.captured));
+        }
         return false;
     case Phase::Reorder:
-        VisitWindow(s.cursor, s.packed.size(), budget,
-                    [&](size_t index) { s.page.instances.push_back(s.packed[s.hierarchy.primitiveOrder[index]]); });
+        VisitWindow(s.cursor, s.packed.size(), budget, [&](size_t index) {
+            s.page.instances.push_back(s.packed[s.page.topology->primitiveOrder[index]]);
+        });
         if (s.cursor != s.packed.size())
             return false;
         s.phase = Phase::Done;

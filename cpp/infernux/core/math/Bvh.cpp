@@ -330,28 +330,88 @@ Bvh BuildBvh(const std::vector<Bounds> &primitiveBounds)
     return build.Take();
 }
 
+namespace
+{
+Bounds NodeBounds(const BvhNode &node) noexcept
+{
+    return {{node.minimum[0], node.minimum[1], node.minimum[2]}, {node.maximum[0], node.maximum[1], node.maximum[2]}};
+}
+
+template <typename NodeAt>
+BvhNode FitNode(uint32_t first, uint32_t second, const std::vector<uint32_t> &order,
+                const std::vector<Bounds> &primitives, NodeAt child)
+{
+    Bounds bounds;
+    if (second & kBvhLeafBit) {
+        const uint32_t count = second & ~kBvhLeafBit;
+        for (uint32_t i = 0; i < count; ++i)
+            bounds.Include(primitives[order[first + i]]);
+    } else {
+        bounds = NodeBounds(child(first));
+        bounds.Include(NodeBounds(child(second)));
+    }
+    return {{bounds.minimum.x, bounds.minimum.y, bounds.minimum.z},
+            first,
+            {bounds.maximum.x, bounds.maximum.y, bounds.maximum.z},
+            second};
+}
+} // namespace
+
+double BvhNodeCost(const BvhNode &node) noexcept
+{
+    return NodeBounds(node).Area() * ((node.second & kBvhLeafBit) ? (node.second & ~kBvhLeafBit) : 1u);
+}
+
+double NormalizeBvhCost(double cost, const std::vector<BvhNode> &nodes) noexcept
+{
+    const auto area = nodes.empty() ? 0.0 : NodeBounds(nodes.front()).Area();
+    return area > 0.0 ? cost / area : 0.0;
+}
+
+BvhRefit::BvhRefit(const BvhTopology &topology, const std::vector<Bounds> &primitiveBounds)
+    : m_topology(topology), m_bounds(primitiveBounds), m_remaining(topology.links.size())
+{
+    if (topology.primitiveOrder.size() != primitiveBounds.size())
+        throw std::invalid_argument("BVH refit requires the same primitive count");
+    m_nodes.reserve(m_remaining);
+}
+
+bool BvhRefit::Advance(uint32_t nodeBudget)
+{
+    const size_t count = m_topology.links.size();
+    while (m_remaining && nodeBudget) {
+        const auto &[first, second] = m_topology.links[--m_remaining];
+        const auto node = FitNode(first, second, m_topology.primitiveOrder, m_bounds,
+                                  [&](size_t child) -> const BvhNode & { return m_nodes[count - 1 - child]; });
+        m_cost += BvhNodeCost(node);
+        m_nodes.push_back(node);
+        --nodeBudget;
+    }
+    if (m_remaining)
+        return false;
+    const auto end = m_flip + std::min<size_t>(nodeBudget, count / 2 - m_flip);
+    for (; m_flip < end; ++m_flip)
+        std::swap(m_nodes[m_flip], m_nodes[count - 1 - m_flip]);
+    return m_flip == count / 2;
+}
+
+double BvhRefit::Cost() const noexcept
+{
+    return NormalizeBvhCost(m_cost, m_nodes);
+}
+
+std::vector<BvhNode> BvhRefit::Take()
+{
+    return std::move(m_nodes);
+}
+
 void RefitBvh(Bvh &tree, const std::vector<Bounds> &primitiveBounds)
 {
     if (tree.primitiveOrder.size() != primitiveBounds.size())
         throw std::invalid_argument("BVH refit requires the same primitive count");
-    for (auto it = tree.nodes.rbegin(); it != tree.nodes.rend(); ++it) {
-        auto &node = *it;
-        Bounds bounds;
-        if (node.second & kBvhLeafBit) {
-            const uint32_t count = node.second & ~kBvhLeafBit;
-            for (uint32_t i = 0; i < count; ++i)
-                bounds.Include(primitiveBounds[tree.primitiveOrder[node.first + i]]);
-        } else {
-            const auto &first = tree.nodes[node.first];
-            const auto &second = tree.nodes[node.second];
-            for (size_t i = 0; i < 3; ++i) {
-                bounds.minimum[i] = std::min(first.minimum[i], second.minimum[i]);
-                bounds.maximum[i] = std::max(first.maximum[i], second.maximum[i]);
-            }
-        }
-        node.minimum = {bounds.minimum.x, bounds.minimum.y, bounds.minimum.z};
-        node.maximum = {bounds.maximum.x, bounds.maximum.y, bounds.maximum.z};
-    }
+    for (auto it = tree.nodes.rbegin(); it != tree.nodes.rend(); ++it)
+        *it = FitNode(it->first, it->second, tree.primitiveOrder, primitiveBounds,
+                      [&](size_t child) -> const BvhNode & { return tree.nodes[child]; });
 }
 
 } // namespace infernux::spatial

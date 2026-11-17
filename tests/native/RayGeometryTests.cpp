@@ -66,6 +66,19 @@ void CheckHierarchy(const std::vector<Bounds> &bounds)
         assert(result.nodes[i].second == repeat.nodes[i].second);
     }
     Visit(repeat, moved, 0, 0);
+
+    BvhTopology topology;
+    topology.primitiveOrder = result.primitiveOrder;
+    for (const auto &node : result.nodes)
+        topology.links.push_back({node.first, node.second});
+    BvhRefit refit(topology, moved);
+    assert(!refit.Advance(0));
+    while (!refit.Advance(1)) {
+    }
+    assert(refit.Cost() >= 1.0);
+    const auto incremental = refit.Take();
+    assert(incremental.size() == repeat.nodes.size());
+    assert(std::memcmp(incremental.data(), repeat.nodes.data(), incremental.size() * sizeof(BvhNode)) == 0);
 }
 } // namespace
 
@@ -145,13 +158,42 @@ int main()
     assert(instanceUpload.bytes == 16u + sizeof(BvhNode) + 2 * sizeof(RayInstance));
 
     instances[1].objectToWorld[3].z += 7.0f;
-    RayInstancePageBuild moving(instances);
+    RayInstancePageBuild moving(instances, page.topology);
     while (!moving.Advance(1u)) {
     }
     const auto movedPage = moving.Take();
+    assert(movedPage.topology == page.topology);
     assert(movedPage.instances[1].root == page.instances[1].root);
     assert(movedPage.nodes[0].maximum[2] > page.nodes[0].maximum[2]);
     assert(movedPage.instances[1].worldToObjectZ[3] != page.instances[1].worldToObjectZ[3]);
+
+    const auto clustered = [&](bool interleaved) {
+        std::vector<RayMeshInstance> result;
+        for (uint32_t index = 0; index < 32u; ++index) {
+            const bool right = interleaved ? (index % 2u != 0u) : index >= 16u;
+            glm::mat4 transform(1.0f);
+            transform[3].x = float(index % 16u) * 0.7f + (right ? 128.0f : 0.0f);
+            result.push_back({meshPage.placements[0], transform, index + 1u, 1u});
+        }
+        return result;
+    };
+    const auto sorted = clustered(false);
+    RayInstancePageBuild stable(sorted);
+    while (!stable.Advance(7)) {
+    }
+    const auto old = stable.Take();
+    const auto reordered = clustered(true);
+    RayInstancePageBuild degraded(reordered, old.topology);
+    while (!degraded.Advance(7)) {
+    }
+    const auto rebuilt = degraded.Take();
+    assert(rebuilt.topology != old.topology);
+    assert(rebuilt.topology->buildCost <= old.topology->buildCost * 1.5);
+    assert(rebuilt.instances.size() == old.instances.size());
+    for (size_t i = 0; i < rebuilt.instances.size(); ++i) {
+        const auto sourceIndex = rebuilt.topology->primitiveOrder[i];
+        assert(rebuilt.instances[i].surfaceId == reordered[sourceIndex].surfaceId);
+    }
 
     const std::vector<uint32_t> indices{0, 1, 2, 3, 4, 5, 4, 6, 5};
     RayMeshBuild meshBuild(source, indices, 3, 6, 0);

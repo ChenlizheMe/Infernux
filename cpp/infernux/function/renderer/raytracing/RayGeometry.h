@@ -88,6 +88,7 @@ struct RayInstancePage
 {
     std::vector<spatial::BvhNode> nodes;
     std::vector<RayInstance> instances;
+    std::shared_ptr<const spatial::BvhTopology> topology;
 };
 
 /// The draw's streams remain alive and unchanged until the last continuation.
@@ -122,7 +123,8 @@ class RayMeshPageBuild
 class RayInstancePageBuild
 {
   public:
-    explicit RayInstancePageBuild(const std::vector<RayMeshInstance> &instances);
+    explicit RayInstancePageBuild(const std::vector<RayMeshInstance> &instances,
+                                  std::shared_ptr<const spatial::BvhTopology> topology = {});
     ~RayInstancePageBuild();
     [[nodiscard]] bool Advance(uint32_t budget);
     [[nodiscard]] RayInstancePage Take();
