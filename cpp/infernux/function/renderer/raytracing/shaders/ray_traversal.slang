@@ -104,33 +104,20 @@ struct RayCursor
 
 bool ray_box_entry(TraceRay ray, RayNode node, float maximum, out float entry)
 {
-    entry = ray.minimum;
-    float exit_distance = maximum;
-    for (uint axis = 0u; axis < 3u; ++axis)
-    {
-        float origin = ray.origin[axis];
-        float direction = ray.direction[axis];
-        if (direction == 0.0f)
-        {
-            if (origin < node.minimum[axis] || origin > node.maximum[axis])
-                return false;
-        }
-        else
-        {
-            float a = (node.minimum[axis] - origin) / direction;
-            float b = (node.maximum[axis] - origin) / direction;
-            float low = max(min(a, b), ray.minimum);
-            float high = min(max(a, b), maximum);
-            if (low > maximum || high < ray.minimum)
-                return false;
-            const float rounding = 3.57628e-7f;
-            entry = max(entry, low - abs(low) * rounding);
-            exit_distance = min(exit_distance, high + abs(high) * rounding);
-            if (entry > exit_distance)
-                return false;
-        }
-    }
-    return true;
+    const float rounding = 3.57628e-7f;
+    bool3 parallel = ray.direction == float3(0.0f);
+    float3 direction = select(parallel, float3(1.0f), ray.direction);
+    float3 a = (node.minimum - ray.origin) / direction;
+    float3 b = (node.maximum - ray.origin) / direction;
+    float3 low = max(min(a, b), ray.minimum);
+    float3 high = min(max(a, b), maximum);
+    bool3 outside = (ray.origin < node.minimum) | (ray.origin > node.maximum);
+    bool3 disjoint = (low > maximum) | (high < ray.minimum);
+    bool3 missed = select(parallel, outside, disjoint);
+    float3 near_distance = select(parallel, float3(ray.minimum), low - abs(low) * rounding);
+    float3 far_distance = select(parallel, float3(maximum), high + abs(high) * rounding);
+    entry = max(ray.minimum, max(near_distance.x, max(near_distance.y, near_distance.z)));
+    return !any(missed) && entry <= min(maximum, min(far_distance.x, min(far_distance.y, far_distance.z)));
 }
 
 void ray_begin<let MeshNodes : bool>(uint nodes, out RayCursor cursor, TraceRay ray, uint root, float maximum)
