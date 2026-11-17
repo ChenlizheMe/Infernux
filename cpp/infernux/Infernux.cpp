@@ -473,7 +473,7 @@ void Infernux::RegisterAssetCallbacks()
             if (auto *ui = m_renderer->GetScreenUIRenderer())
                 ui->InvalidateMaterialRejection(dependentGuid);
             if (event == AssetEvent::Deleted)
-                m_renderer->InvalidateUIMaterialProgram({mat->GetVertShaderName(), mat->GetFragShaderName()});
+                m_renderer->InvalidateUIMaterialProgram(mat->GetShaderStages());
         }
         mat->MarkPipelineDirty();
         INXLOG_INFO("AssetGraph: marked material '", mat->GetName(), "' pipeline dirty (shader changed)");

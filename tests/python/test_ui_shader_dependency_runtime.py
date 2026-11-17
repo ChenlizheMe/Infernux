@@ -13,115 +13,39 @@ from infernux.ui.ui_render_dispatch import _bind_runtime_material
 from test_shader_dependency_publication import dependency_sources
 
 
-VERTEX = '''#version 450
-layout(location=0) in vec2 aPosition;
-layout(location=1) in vec2 aUV;
-layout(location=2) in vec4 aColor;
-layout(push_constant) uniform ScreenUIConstants {
-    vec2 scale;
-    vec2 translate;
-    float encodeSample;
-    float _pad0;
-    float _pad1;
-    float _pad2;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 _tailPadding;
-} pc;
-layout(location=0) out vec4 outColor;
-layout(location=1) out vec2 outUV;
-void main() {
-    gl_Position = vec4(aPosition * pc.scale + pc.translate, 0.0, 1.0);
-    outColor = aColor;
-    outUV = aUV;
-}
-'''
-
-FRAGMENT = '''#version 450
-layout(location=0) in vec4 inColor;
-layout(location=1) in vec2 inUV;
-layout(set=0,binding=0) uniform sampler2D uiTexture;
-layout(push_constant) uniform ScreenUIConstants {
-    vec2 scale;
-    vec2 translate;
-    float encodeSample;
-    float _pad0;
-    float _pad1;
-    float _pad2;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 _tailPadding;
-} pc;
-layout(location=0) out vec4 outColor;
-void main() { outColor = dependencyColor() * texture(uiTexture, inUV) * inColor * pc.materialColor; }
-'''
+_FRAME_COLORS = ((1, 1, 1), (1, 0, 1), (0, 1, 1), (1, 1, 0))
 
 
-WORLD_PUSH_CONSTANTS = '''layout(push_constant) uniform WorldUIConstants {
-    mat4 viewProjection;
-    vec4 materialColor;
-    float alphaClipThreshold;
-    float alphaClipEnabled;
-    vec2 screenScale;
-    vec4 cameraRight;
-    vec4 cameraUp;
-} pc;'''
-
-WORLD_VERTEX = '''#version 450
-layout(location=0) in vec3 aPosition;
-layout(location=1) in vec2 aUV;
-layout(location=2) in vec4 aColor;
-layout(location=3) in vec2 aLocalPosition;
-layout(location=4) in vec3 aAnchor;
-layout(location=5) in vec3 aLocalOffset;
-layout(location=6) in float aPolicy;
-''' + WORLD_PUSH_CONSTANTS + '''
-layout(location=0) out vec4 outColor;
-layout(location=1) out vec2 outUV;
-void main() {
-    vec3 position = aPosition;
-    int policy = int(aPolicy + 0.5);
-    if (policy != 0) {
-        vec3 offset = aPosition - aAnchor;
-        if ((policy & 1) != 0)
-            offset = pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y +
-                     cross(pc.cameraRight.xyz, pc.cameraUp.xyz) * aLocalOffset.z;
-        if ((policy & 2) != 0) {
-            float clipW = (pc.viewProjection * vec4(aAnchor, 1.0)).w;
-            offset *= max(clipW, 0.0) * pc.screenScale.x * 100.0;
-        }
-        position = aAnchor + offset;
-    }
-    gl_Position = pc.viewProjection * vec4(position, 1.0);
-    outColor = aColor;
-    outUV = aUV;
-}
-'''
-
-WORLD_FRAGMENT = (FRAGMENT[:FRAGMENT.index('layout(push_constant)')]
-                  + WORLD_PUSH_CONSTANTS
-                  + FRAGMENT[FRAGMENT.index('layout(location=0) out vec4'):])
+def ui_shader_source(shader_id, domain, color, *, library=None, material_properties=False):
+    context = 'WorldUIContext' if domain == 'world_ui' else 'UIContext'
+    lines = ['import infernux.shader as shader']
+    if library is not None:
+        lines.append(f'from .{library.name.removesuffix(".shaderlib.py")} import dependency_color')
+    lines.extend(('', f'class DependencyUI(shader.{domain}):', f'    shader_id = {shader_id!r}'))
+    if material_properties:
+        lines.append('    base_color = shader.material.color()')
+    lines.append(f'    def main(self, ctx: shader.{context}) -> shader.vec4:')
+    expression = color + ' * ctx.texture_color * ctx.color * ctx.material_color'
+    if material_properties:
+        expression += ' * self.base_color'
+    lines.append(f'        return {expression}')
+    return '\n'.join(lines) + '\n'
 
 
 def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, scene, dependency_sources):
     prefix, create, _ = dependency_sources
-    vertex_name, fragment_name = prefix + ' Vertex', prefix + ' Fragment'
-    _, vertex_guid = create('Vertex', '.vert',
-        f'ShaderInfo {{ Name "{vertex_name}" Capabilities [ScreenUI] }}\n' + VERTEX)
-    fragment, fragment_guid = create('Fragment', '.frag',
-        f'ShaderInfo {{ Name "{fragment_name}" Capabilities [ScreenUI] }}\n'
-        + FRAGMENT.replace('dependencyColor()', 'vec4(0,0,1,1)'))
+    fragment_name = prefix.lower() + '/ui'
+    fragment, fragment_guid = create('Fragment', '.frag.py', ui_shader_source(
+        fragment_name, 'screen_ui', 'shader.vec4(0.0, 0.0, 1.0, 1.0)'))
     document = InxMaterial.create_default_lit().serialize_document()
     document.update(builtin=False, name=prefix + ' Missing UI material')
     document['shaders'] = {
-        'vertex': {'guid': vertex_guid, 'shader_id': vertex_name},
+        'vertex': {'guid': '', 'shader_id': ''},
         'fragment': {'guid': fragment_guid, 'shader_id': fragment_name},
     }
     _, material_guid = create('Material', '.mat', json.dumps(document))
     material = AssetManager.load(material_guid, Material)
-    metadata = fragment.with_suffix('.frag.meta')
+    metadata = fragment.with_name(fragment.name + '.meta')
     source_bytes, metadata_bytes = fragment.read_bytes(), metadata.read_bytes()
 
     def remove_shader():
@@ -148,13 +72,13 @@ def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, 
     errors = []
 
     class Submission:
-        def submit(self):
+        def submit(self, **_capture):
             renderer = engine.get_screen_ui_renderer()
             renderer.begin_frame(64, 64)
             renderer.begin_command_packet()
             try:
                 _bind_runtime_material(renderer, ScreenUIList.Overlay, {})
-                renderer.add_filled_rect(ScreenUIList.Overlay, 4, 4, 16, 16)
+                renderer.add_filled_rect(ScreenUIList.Overlay, 4, 4, 16, 16, *_FRAME_COLORS[state['phase']])
                 _bind_runtime_material(renderer, ScreenUIList.Overlay, {'_native': material._native})
                 renderer.add_filled_rect(ScreenUIList.Overlay, 28, 28, 60, 60)
                 packet = renderer.end_command_packet()
@@ -166,7 +90,7 @@ def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, 
     def after_draw():
         try:
             state['frames'] += 1
-            assert state['frames'] <= 100, 'UI shader recovery readback never completed'
+            assert state['frames'] <= 100, f'UI shader recovery readback never completed: {state}'
             ticket = state['ticket']
             if ticket is not None and not ticket.done:
                 return
@@ -181,22 +105,28 @@ def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, 
                 return
             assert not ticket.error, ticket.error
             pixels = ticket.result_numpy()
-            assert min(pixels[8, 8, :3]) >= .95, 'A rejected material suppressed healthy UI'
+            state['ticket'] = None
+            state['phase_execution'] = execution
+            # The Game readback can complete on a frame submitted before the
+            # asset edit. The default-material rectangle labels each phase
+            # independently of the custom material being tested.
+            if tuple(pixels[8, 8, :3]) != _FRAME_COLORS[state['phase']]:
+                return
             sample = pixels[42, 42, :3].tolist()
             draws = engine.get_screen_ui_renderer().last_submitted_draw_count(ScreenUIList.Overlay)
-            state['phase_execution'] = execution
-            if state['phase'] % 2 == 0:
-                assert draws == 1, 'Missing UI shader was rendered using a default material'
+            expect_present = state['phase'] % 2 == 1
+            blue = sample[2] >= .95 and max(sample[:2]) <= .02
+            expected_draws = 2 if expect_present else 1
+            assert draws == expected_draws
+            assert blue == expect_present, sample
+            if not expect_present:
                 restore_shader()
             else:
-                assert draws == 2
-                assert sample[2] >= .95 and max(sample[:2]) <= .02, sample
                 if state['phase'] == 1:
                     remove_shader()
                 else:
                     engine.exit()
             state['phase'] += 1
-            state['ticket'] = None
         except BaseException as error:
             errors.append(error)
             engine.exit()
@@ -217,10 +147,9 @@ def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, 
         if not fragment.exists():
             restore_shader()
     rejected = [entry for entry in console._get_visible_log_snapshot(1000)
-                if 'Material shader GUID cannot be resolved' in entry['message']
+                if fragment_guid in entry['message']
                 and 'This UI draw is disabled' in entry['message']]
     assert len(rejected) == 2, rejected
-    assert all(fragment_guid in entry['message'] for entry in rejected)
 
 
 @pytest.mark.parametrize('draw_list', (ScreenUIList.Overlay, ScreenUIList.Camera, ScreenUIList.World),
@@ -230,37 +159,30 @@ def test_missing_ui_shader_skips_draw_and_recovers_on_asset_publication(engine, 
 def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
         engine, scene, dependency_sources, capfd, draw_list, material_properties, initial_samples):
     prefix, create, _ = dependency_sources
-    library_name = prefix + ' Library'
-    red = (f'ShaderInfo {{ Name "{library_name}" }}\n'
-           'vec4 dependencyColor(){[[flatten]] if(true) return vec4(1,0,0,1); return vec4(0);}\n')
-    green = red.replace('vec4(1,0,0,1)', 'vec4(0,1,0,1)')
-    invalid = red.replace('return vec4(1,0,0,1)', 'return missingUiDependencyFunction()')
-    library, _ = create('Library', '.glsl', red)
-    vertex_name, fragment_name = prefix + ' Vertex', prefix + ' Fragment'
+    red = ('import infernux.shader as shader\n'
+           'def dependency_color() -> shader.vec4:\n'
+           '    return shader.vec4(1.0, 0.0, 0.0, 1.0)\n')
+    green = red.replace('1.0, 0.0, 0.0', '0.0, 1.0, 0.0')
+    invalid = red.replace('shader.vec4(1.0, 0.0, 0.0, 1.0)', 'missing_ui_dependency_function()')
+    library, _ = create('Library', '.shaderlib.py', red)
+    fragment_name = prefix.lower() + '/ui'
     world = draw_list == ScreenUIList.World
-    domain = 'WorldUI' if world else 'ScreenUI'
-    vertex_body = WORLD_VERTEX if world else VERTEX
-    vertex, vertex_guid = create('Vertex', '.vert',
-        f'#version 450\nShaderInfo {{ Name "{vertex_name}" Capabilities [{domain}] }}\n' + vertex_body.removeprefix('#version 450\n'))
-    properties = ' Properties { Color base_color = [1,1,1,1] }' if material_properties else ''
-    fragment_body = (WORLD_FRAGMENT if world else FRAGMENT).removeprefix('#version 450\n')
-    if material_properties:
-        fragment_body = fragment_body.replace('pc.materialColor;', 'pc.materialColor * material.base_color;')
-    fragment, fragment_guid = create('Fragment', '.frag',
-        '#version 450\n#extension GL_EXT_control_flow_attributes : require\n'
-        f'ShaderInfo {{ Name "{fragment_name}" Capabilities [{domain}] Imports ["{library_name}"]{properties} }}\n' + fragment_body)
-    roots = {vertex: vertex.read_bytes(), fragment: fragment.read_bytes()}
+    domain = 'world_ui' if world else 'screen_ui'
+    fragment, fragment_guid = create('Fragment', '.frag.py', ui_shader_source(
+        fragment_name, domain, 'dependency_color()', library=library, material_properties=material_properties))
+    fragment_source = fragment.read_bytes()
     document = InxMaterial.create_default_lit().serialize_document()
     document['builtin'] = False
     document['name'] = prefix + ' UI material'
     document['shaders'] = {
-        'vertex': {'guid': vertex_guid, 'shader_id': vertex_name},
+        'vertex': {'guid': '', 'shader_id': ''},
         'fragment': {'guid': fragment_guid, 'shader_id': fragment_name},
     }
     _, material_guid = create('Material', '.mat', json.dumps(document))
     material = AssetManager.load(material_guid, Material)
+    before_refresh = engine.renderer_frame_snapshot['graphics_pipeline_create_attempt_count']
     assert engine.refresh_material_pipeline(material._native)
-    assert not engine.is_shader_loaded(vertex_name, 'vertex'), 'Pre-draw refresh published an ownerless UI artifact'
+    assert engine.renderer_frame_snapshot['graphics_pipeline_create_attempt_count'] == before_refresh
     camera = scene.create_game_object('UI dependency camera')
     camera.transform.position = Vector3(0, 0, -2)
     camera.add_component('Camera')
@@ -277,7 +199,7 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
     samples, errors = [], []
 
     class Submission:
-        def submit(self):
+        def submit(self, **_capture):
             nonlocal renderer, renderer_samples
             renderer = engine.get_screen_ui_renderer()
             renderer_samples = engine.get_msaa_samples()
@@ -285,6 +207,8 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
             renderer.begin_frame(64, 64)
             renderer.begin_command_packet()
             try:
+                _bind_runtime_material(renderer, ScreenUIList.Overlay, {})
+                renderer.add_filled_rect(ScreenUIList.Overlay, 2, 2, 7, 7, *_FRAME_COLORS[state['phase']])
                 if world:
                     renderer.begin_world_object(world_object, 32, 32)
                 _bind_runtime_material(renderer, draw_list, {'_native': material._native, 'color': (1, 1, 1, 1)})
@@ -310,7 +234,6 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
                 assert state['phase'] == 0 and state['ticket'] is None
                 assert engine.get_msaa_samples() != renderer_samples
                 assert not engine.renderer_frame_snapshot['game_render_graph_pass_names']
-                assert not engine.is_shader_loaded(vertex_name, 'vertex')
                 state['msaa_rebuilds'] += 1
                 assert state['msaa_rebuilds'] <= 2
                 renderer = current_renderer
@@ -328,7 +251,7 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
             observation = {
                 'frames': state['frames'], 'phase': state['phase'], 'submissions': state['submissions'],
                 'commands': renderer.has_commands(draw_list), 'enabled': renderer.is_enabled(),
-                'shader_loaded': engine.is_shader_loaded(vertex_name, 'vertex'),
+                'shader_loaded': engine.is_shader_loaded(fragment_guid, 'fragment'),
                 'pending_textures': engine.pending_imgui_texture_upload_count,
                 'submitted_textures': engine.submitted_imgui_texture_upload_count,
                 'completed_textures': engine.completed_imgui_texture_upload_count,
@@ -338,8 +261,8 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
                                             'game_target_ready', 'scene_view_visible', 'game_draw_call_count',
                                             'game_render_graph_name', 'game_render_graph_pass_names')}}
             assert renderer.last_submitted_draw_count(draw_list) >= 1, json.dumps(observation)
-            assert engine.is_shader_loaded(vertex_name, 'vertex')
-            assert all(path.read_bytes() == contents for path, contents in roots.items())
+            assert observation['shader_loaded']
+            assert fragment.read_bytes() == fragment_source
             if ticket is None:
                 state['ticket'] = engine.request_render_target_readback(True)
                 return
@@ -348,12 +271,14 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
             assert not ticket.error, ticket.error
             pixels = ticket.result_numpy()
             assert pixels.shape == (64, 64, 4) and str(pixels.dtype) == 'float16'
+            state['ticket'] = None
+            state['phase_execution'] = execution
+            if tuple(pixels[4, 4, :3]) != _FRAME_COLORS[state['phase']]:
+                return
             sample = pixels[32, 32].tolist()
             expected = (0, 1, 1, 0)[state['phase']]
             assert sample[expected] >= .95 and sample[1-expected] <= .02 and sample[2] <= .02, sample
             samples.append(sample)
-            state['ticket'] = None
-            state['phase_execution'] = execution
             if state['phase'] == 0:
                 library.write_text(green, encoding='utf-8')
                 prepared = AssetManager.reimport_asset(str(library))
@@ -365,7 +290,7 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
             elif state['phase'] == 1:
                 before = engine.gpu_residency_snapshot['shader_hot_reload_retirement_count']
                 rejected = AssetManager.reimport_asset(str(library))
-                assert not rejected and 'missingUiDependencyFunction' in rejected.error
+                assert not rejected and 'author.syntax' in rejected.error, rejected.error
                 assert engine.gpu_residency_snapshot['shader_hot_reload_retirement_count'] == before
                 own = [entry for entry in DebugConsole.instance().get_entries()
                        if entry.log_type == LogType.ERROR and entry.source_file == str(library)]
