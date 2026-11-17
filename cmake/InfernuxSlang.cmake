@@ -55,10 +55,11 @@ function(infernux_add_rt_slang_module compiler_target)
         "${_output}/RayDeformationSource.h" @ONLY)
     set_property(SOURCE "${_root}/cpp/infernux/function/renderer/raytracing/RayWorldGeometry.cpp"
         APPEND PROPERTY OBJECT_DEPENDS "${_output}/RayDeformationSource.h")
+    set_property(SOURCE "${_root}/cpp/infernux/function/renderer/raytracing/RayWorldGeometry.cpp"
+        APPEND PROPERTY INCLUDE_DIRECTORIES "${_output}")
     set_property(SOURCE "${_root}/cpp/infernux/function/resources/ShaderAsset/SlangCompiler.cpp"
         APPEND PROPERTY OBJECT_DEPENDS "${_header}")
     target_include_directories("${compiler_target}" PRIVATE "${_output}")
-    include_directories("${_output}")
 endfunction()
 
 if(INFERNUX_SLANG_ROOT)
