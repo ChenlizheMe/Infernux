@@ -18,6 +18,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxCompilerTools.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxDependencyLayout.cmake")
 
 project(Infernux LANGUAGES C CXX)
+infernux_configure_compiler_outputs()
 
 # Root orchestration only. Target ownership and packaging policy live in the
 # focused modules below so platform bring-up does not keep expanding this file.

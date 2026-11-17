@@ -1,5 +1,18 @@
 # Compiler companion tools needed while project() identifies the toolchain.
 
+function(infernux_configure_compiler_outputs)
+    if(MSVC AND CMAKE_GENERATOR MATCHES "^Ninja")
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        foreach(_language C CXX)
+            set(_command "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/msvc_dependencies.py"
+                ${CMAKE_${_language}_COMPILER_LAUNCHER})
+            set(CMAKE_${_language}_COMPILER_LAUNCHER "${_command}" PARENT_SCOPE)
+            set(CMAKE_${_language}_CL_SHOWINCLUDES_PREFIX "Note: including file:" PARENT_SCOPE)
+        endforeach()
+        set(CMAKE_CL_SHOWINCLUDES_PREFIX "Note: including file:" PARENT_SCOPE)
+    endif()
+endfunction()
+
 if(NOT CMAKE_HOST_LINUX)
     return()
 endif()
