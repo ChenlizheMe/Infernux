@@ -508,7 +508,7 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
         uint32_t end = start + 1;
         for (++i; i < contactedTrees.size() && contactedTrees[i] == end; ++i)
             ++end;
-        e->Add(Begin, first, start - first, world);
+        e->Add(Begin, first, start - first, world, {}, sweepsDynamicPairs ? ArtRefusedContact : 0u);
         e->Add(Begin, start, end - start, world, {}, ArtRefusedContact);
         first = end;
     }
