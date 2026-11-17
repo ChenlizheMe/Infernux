@@ -16,6 +16,7 @@
 #include "gui/GPUMeshPreview.h"
 #include "lighting/ForwardPlusLightGrid.h"
 #include "raytracing/RayWorldGeometry.h"
+#include "raytracing/RayWorldMaterials.h"
 #include "vk/RhiVulkanTypes.h"
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
@@ -137,6 +138,8 @@ raytracing::RayWorldGeometry &InxVkCoreModular::GetWorldRayGeometry()
 
 InxVkCoreModular::~InxVkCoreModular()
 {
+    m_worldRayMaterials.reset();
+    m_rayPlaceholderUploads = {};
     m_worldRayGeometry.reset();
     // Renderer construction precedes SDL/Vulkan startup.  If window creation
     // fails, this object is still destroyed even though no Vulkan instance or

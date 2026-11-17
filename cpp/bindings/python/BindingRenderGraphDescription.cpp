@@ -88,7 +88,9 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .value("TEMPORAL_WRITE", GraphTextureRole::TemporalWrite)
         .value("PERSISTENT", GraphTextureRole::Persistent)
         .value("ASSET", GraphTextureRole::Asset)
-        .value("CAMERA", GraphTextureRole::Camera);
+        .value("CAMERA", GraphTextureRole::Camera)
+        .value("WORLD_RAY_COLOR_PAGES", GraphTextureRole::WorldRayColorPages)
+        .value("WORLD_RAY_DATA_PAGES", GraphTextureRole::WorldRayDataPages);
 
     py::enum_<GraphTextureAttachment>(m, "GraphTextureAttachment")
         .value("COLOR", GraphTextureAttachment::Color)
@@ -142,6 +144,7 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .def_readwrite("name", &GraphTextureDesc::name, "Unique resource name")
         .def_readwrite("format", &GraphTextureDesc::format, "Backend-neutral pixel format")
         .def_property_readonly("is_camera_target", &GraphTextureDesc::IsViewAttachment)
+        .def_property_readonly("_is_sampled_import", &GraphTextureDesc::IsSampledImport)
         .def_property_readonly("is_depth", &GraphTextureDesc::IsDepth)
         .def_readwrite("width", &GraphTextureDesc::width, "Custom width (0 = use scene target size)")
         .def_readwrite("height", &GraphTextureDesc::height, "Custom height (0 = use scene target size)")
@@ -174,7 +177,9 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .value("NONE", GraphFrameBuffer::None)
         .value("VIEW_LIGHTS", GraphFrameBuffer::ViewLights)
         .value("WORLD_SURFACES", GraphFrameBuffer::WorldSurfaces)
-        .value("WORLD_RAY_GEOMETRY", GraphFrameBuffer::WorldRayGeometry);
+        .value("WORLD_RAY_GEOMETRY", GraphFrameBuffer::WorldRayGeometry)
+        .value("WORLD_RAY_LIT_MATERIALS", GraphFrameBuffer::WorldRayLitMaterials)
+        .value("WORLD_RAY_TEXTURE_DESCRIPTORS", GraphFrameBuffer::WorldRayTextureDescriptors);
 
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())

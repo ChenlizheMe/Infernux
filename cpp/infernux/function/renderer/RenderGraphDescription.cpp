@@ -11,6 +11,7 @@
 #include <function/scene/Camera.h>
 
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 
 namespace infernux
@@ -27,6 +28,93 @@ bool GraphUsesForwardPlus(const RenderGraphDescription &graph)
                 return true;
         }
     return false;
+}
+
+std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGraphDescription &graph)
+{
+    const auto isLitTable = [](const GraphBufferDesc &buffer) {
+        return buffer.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials ||
+               buffer.frameBuffer == GraphFrameBuffer::WorldRayTextureDescriptors;
+    };
+    const bool hasTables = std::any_of(graph.buffers.begin(), graph.buffers.end(), isLitTable);
+    const bool hasPages = std::any_of(graph.textures.begin(), graph.textures.end(),
+                                      [](const auto &texture) { return texture.IsWorldRayPage(); });
+    if (!hasTables && !hasPages)
+        return {};
+    constexpr std::array bufferPorts{
+        std::pair{"world_ray_geometry", GraphFrameBuffer::WorldRayGeometry},
+        std::pair{"ray_lit_materials", GraphFrameBuffer::WorldRayLitMaterials},
+        std::pair{"ray_texture_descriptors", GraphFrameBuffer::WorldRayTextureDescriptors},
+    };
+    constexpr std::array pagePorts{
+        std::pair{"ray_color_pages", GraphTextureRole::WorldRayColorPages},
+        std::pair{"ray_data_pages", GraphTextureRole::WorldRayDataPages},
+    };
+
+    const auto tables = [](const ShaderTargetCode &code) {
+        std::array<const ShaderResourceLayout *, 2> result{};
+        for (const auto &resource : code.resources) {
+            if (resource.set != 0 || resource.binding.type != rhi::BindingType::StorageBuffer ||
+                !resource.binding.readOnlyStorage)
+                continue;
+            if (resource.name == "ray_lit_materials")
+                result[0] = &resource;
+            else if (resource.name == "ray_texture_descriptors")
+                result[1] = &resource;
+        }
+        return result;
+    };
+    std::shared_ptr<const ShaderTargetCode> program;
+    std::array<const ShaderResourceLayout *, 2> layout{};
+    for (const auto &pass : graph.passes) {
+        const auto *command = pass.PrimaryCommand();
+        if (!command || command->type != GraphCommandType::FullscreenQuad)
+            continue;
+        const bool readsTables =
+            std::any_of(command->inputBindings.begin(), command->inputBindings.end(), [&](const auto &binding) {
+                return std::any_of(graph.buffers.begin(), graph.buffers.end(), [&](const auto &buffer) {
+                    return isLitTable(buffer) && buffer.name == binding.second;
+                });
+            });
+        if (!readsTables)
+            continue;
+        const auto bound = [&](const char *port) {
+            const auto it = std::find_if(command->inputBindings.begin(), command->inputBindings.end(),
+                                         [&](const auto &binding) { return binding.first == port; });
+            return it == command->inputBindings.end() ? std::string_view{} : std::string_view(it->second);
+        };
+        for (const auto &[name, source] : bufferPorts) {
+            const auto resource = bound(name);
+            if (std::none_of(graph.buffers.begin(), graph.buffers.end(),
+                             [&](const auto &item) { return item.frameBuffer == source && item.name == resource; }))
+                throw std::invalid_argument("World ray Lit pass must bind its World buffer: " + std::string(name));
+        }
+        for (const auto &[name, source] : pagePorts) {
+            const auto resource = bound(name);
+            if (std::none_of(graph.textures.begin(), graph.textures.end(),
+                             [&](const auto &item) { return item.role == source && item.name == resource; }))
+                throw std::invalid_argument("World ray Lit pass must bind its World page: " + std::string(name));
+        }
+        if (!command->fullscreenProgram)
+            throw std::invalid_argument("World ray Lit pass has no captured shader: " + pass.name);
+        const auto &candidate = command->fullscreenProgram->code;
+        const auto reflected = tables(*candidate);
+        if (!reflected[0] || !reflected[1])
+            throw std::invalid_argument("World ray Lit pass must read both reflected tables: " + pass.name);
+        if (!program) {
+            program = candidate;
+            layout = reflected;
+            continue;
+        }
+        for (size_t index = 0; index < layout.size(); ++index) {
+            if (reflected[index]->elementStride != layout[index]->elementStride ||
+                !(reflected[index]->value == layout[index]->value))
+                throw std::invalid_argument("World ray Lit pass uses a different table layout: " + pass.name);
+        }
+    }
+    if (!program)
+        throw std::invalid_argument("World ray Lit resources require a fullscreen consumer");
+    return program;
 }
 
 std::string ResolveGraphShadowTexture(const RenderGraphDescription &graph)

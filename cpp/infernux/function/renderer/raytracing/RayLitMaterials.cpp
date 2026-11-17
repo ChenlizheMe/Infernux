@@ -81,6 +81,32 @@ RayLitMaterialLayout::RayLitMaterialLayout(const std::vector<ShaderResourceLayou
 
 RayLitMaterialLayout::~RayLitMaterialLayout() = default;
 
+RayLitTextureReference ResolveRayLitTextureReference(const InxMaterial &material,
+                                                     const RendererParameterBlock *parameters,
+                                                     std::string_view property)
+{
+    const std::string name(property);
+    if (material.GetRenderTextureGeneration(name))
+        throw std::invalid_argument("Ray Lit cannot capture a live RenderTexture: " + name);
+    const auto *value = material.GetProperty(name);
+    if (parameters) {
+        const auto override = parameters->properties.find(name);
+        if (override != parameters->properties.end())
+            value = &override->second;
+    }
+    const auto *guid = value ? std::get_if<std::string>(&value->value) : nullptr;
+    const auto key = guid && !guid->empty() ? std::string_view(*guid) : material.GetTextureDefault(name);
+    if (key == "white" || key == "White")
+        return RayLitSolidTexture::White;
+    if (key == "black" || key == "Black")
+        return RayLitSolidTexture::Black;
+    if (key == "normal" || key == "Normal")
+        return RayLitSolidTexture::FlatNormal;
+    if (guid && !guid->empty())
+        return *guid;
+    throw std::invalid_argument("Ray Lit texture parameter has no default: " + name);
+}
+
 std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallResult &world,
                                                                  const ResolveRayLitTexture &resolve) const
 {
@@ -100,10 +126,12 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
         auto *row = input.materials.data() + draw.surfaceId * layout.materialStride;
         auto *values = row + layout.values.offset;
         const auto &material = *draw.material;
+        const auto &renderState = material.GetRenderState();
+        if (renderState.blendEnable)
+            throw std::invalid_argument("Ray Lit requires an opaque or alpha-clipped surface: " + material.GetName());
         layout.uniforms.Write(values, material);
         if (draw.parameterBlock)
             layout.uniforms.Apply(values, material, *draw.parameterBlock);
-        const auto &renderState = material.GetRenderState();
         const float alpha = renderState.alphaClipEnabled ? renderState.alphaClipThreshold : 0.0f;
         layout.uniforms.WriteValue(values, "_alpha_clip_threshold", &alpha);
 

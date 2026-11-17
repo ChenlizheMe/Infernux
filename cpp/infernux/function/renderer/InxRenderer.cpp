@@ -747,6 +747,8 @@ void InxRenderer::PreparePipeline()
                 m_vkCore->CaptureResidentGeometryReads(graph->GetCachedDrawCalls(), graph->GetCachedShadowDrawCalls());
                 const auto &viewContext = graph->GetRenderViewContext();
                 submission.Retain(graph->AcquireComputeReadValues());
+                if (const auto &materials = graph->GetWorldRayMaterialPublication())
+                    submission.Retain(std::const_pointer_cast<raytracing::RayWorldMaterialPublication>(materials));
                 std::vector<uint32_t> graphDependencies = predecessors;
                 if (particleComputeWorkItem != 0)
                     graphDependencies.push_back(particleComputeWorkItem);

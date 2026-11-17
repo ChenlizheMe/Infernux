@@ -15,10 +15,13 @@ from .shader_types import (
 from .diagnostics import parse_gpu_module
 
 
+_RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
+_RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceHit", _RAY_ARGUMENTS),
+                  "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS)}
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
                      "frame_delta_time": ("inx_frame_delta_time", "float", ()),
                      "view": ("inx_view_context", "InxViewContext", ()),
-                     "camera": ("inx_camera_context", "InxCameraContext", ())}
+                     "camera": ("inx_camera_context", "InxCameraContext", ()), **_RAY_FUNCTIONS}
 _ENGINE_FUNCTIONS.update({
     "lighting.particle_pbr": ("inx_particle_pbr", "float3", ("InxSurfaceData", "InxParticleInput")),
     "lighting.six_way_smoke": ("inx_particle_six_way_smoke", "float3", (
@@ -35,12 +38,18 @@ _CONSTRUCTORS = {"ShadingContext": ("InxShadingContext", "inx_shading_context"),
 
 def engine_imports(body, alias, *, graph, owner):
     names = {
-        qualified(node)
+        qualified(node): node
         for declaration in body for node in ast.walk(declaration)
         if isinstance(node, ast.Attribute)
     }
     modules = [module for module, exports in _ENGINE_MODULES.items()
                if any(alias + "." + name in names for name in exports)]
+    ray_use = next((names[alias + "." + name] for name in _RAY_FUNCTIONS
+                    if alias + "." + name in names), None)
+    if ray_use is not None:
+        from .shader import _world_ray_module
+
+        modules.append(_world_ray_module(graph, owner, ray_use).name)
     if alias + ".lighting.shade" in names:
         from .shading_model import surface_lighting_module
 
@@ -387,11 +396,13 @@ def declarations(source, path):
 
 
 class LibraryGraph:
-    def __init__(self, reader=None, *, compute_autodiff=None):
+    def __init__(self, reader=None, *, compute_autodiff=None, allow_world_rays=False):
         self.modules: dict[Path, Module] = {}
         self.ordered: list[Module] = []
         self.loading: set[Path] = set()
         self.lighting_registry: Module | None = None
+        self.ray_lit: Module | None = None
+        self.allow_world_rays = allow_world_rays
         self.reader = reader or (lambda path: Path(path).read_text(encoding="utf-8-sig"))
         self.compute_autodiff = compute_autodiff
         self._derivative_sources: list[_LibrarySource] = []

@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 
-from .shader_library import LibraryGraph, ShaderEmitter, declarations, engine_imports, uses_surface_lighting
+from .shader_library import LibraryGraph, Module, ShaderEmitter, declarations, engine_imports, uses_surface_lighting
 from .shader_types import RESOURCE_BINDINGS, RESOURCE_MODULE, RESOURCE_TYPES
 from .shading_model import default_shading_model, read_shading_model
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
@@ -16,6 +16,13 @@ from .vertex import read_vertex
 
 
 _RAY_LIT_MODULE = "inx_ray_lit"
+_WORLD_RAY_INPUTS = tuple(ShaderInput(name, name, kind) for name, kind in (
+    ("world_ray_geometry", "WorldBuffer"),
+    ("ray_lit_materials", "WorldBuffer"),
+    ("ray_texture_descriptors", "WorldBuffer"),
+    ("ray_color_pages", "Color2DArray"),
+    ("ray_data_pages", "Color2DArray"),
+))
 
 
 @dataclass(frozen=True)
@@ -562,6 +569,34 @@ bool inx_trace_lit_visibility(RayPage page, TraceRay ray, uint layer_mask, float
     InxRayLitHitPolicy policy = {lod};
     return trace_visibility(page, ray, layer_mask, policy);
 }
+
+public InxRaySurfaceHit inx_world_ray_closest(float3 origin_ws, float3 direction_ws, float min_distance,
+                                            float max_distance, uint layer_mask, float lod)
+{
+    TraceRay ray = {origin_ws, min_distance, direction_ws, max_distance};
+    RayPage page = ray_page();
+    InxRaySurfaceHit result = (InxRaySurfaceHit)0;
+    result.distance = max_distance;
+    if (page.status != ray_page_ready)
+        return result;
+    RayHit hit = inx_trace_lit_closest(page, ray, layer_mask, lod);
+    if (hit.triangle_index != ray_invalid_index)
+    {
+        result.found = true;
+        result.distance = hit.distance;
+        result.position_ws = ray.origin + hit.distance * ray.direction;
+        result.surface_id = hit.surface_id;
+        inx_evaluate_ray_lit_hit(page, ray, hit, lod, result.surface);
+    }
+    return result;
+}
+
+public bool inx_world_ray_visibility(float3 origin_ws, float3 direction_ws, float min_distance,
+                                     float max_distance, uint layer_mask, float lod)
+{
+    TraceRay ray = {origin_ws, min_distance, direction_ws, max_distance};
+    return inx_trace_lit_visibility(ray_page(), ray, layer_mask, lod);
+}
 """
 
 
@@ -584,13 +619,12 @@ InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsF
 """
 
 
-def parse_shader(source: str, source_path: str, module_name: str, *, reader=None, vertex_path=None) -> ShaderDefinition:
+def parse_shader(source: str, source_path: str, module_name: str, *, reader=None, vertex_path=None,
+                 _graph=None) -> ShaderDefinition:
     info = read_shader_info(source, source_path)
     author = _Author(source, source_path)
     author.alias, imports, body = declarations(source, source_path)
     author.aliases = (author.alias,)
-    graph = LibraryGraph(reader)
-    author.functions, dependencies = graph.imports(imports, author)
     if len(body) != 1 or not isinstance(body[0], ast.ClassDef):
         author.error(ast.Constant(lineno=1, col_offset=0), "Declare one shader class")
     declaration = body[0]
@@ -600,6 +634,8 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) not in bases:
         author.error(declaration, "Declare a fullscreen, mesh, particle, screen UI or world UI shader")
     author.domain = bases[author.qualified(declaration.bases[0])]
+    graph = _graph if _graph is not None else LibraryGraph(reader, allow_world_rays=author.domain == "fullscreen")
+    author.functions, dependencies = graph.imports(imports, author)
     author.lighting_mode = "true" if author.domain == "fullscreen" else "false"
     author.is_surface = author.qualified(declaration.bases[0]) == author.alias + ".surface"
     author.ray_lit = module_name == _RAY_LIT_MODULE
@@ -689,6 +725,11 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies)]
     code.extend(engine_imports(body, author.alias, graph=graph, owner=author))
+    if graph.ray_lit is not None:
+        for field in _WORLD_RAY_INPUTS:
+            if field.name in author.fields:
+                author.error(author.field_nodes[field.name], "World ray input name is reserved: " + field.name,
+                             code="author.parameter")
     if vertex:
         code.append("import inx_frame;")
     if author.domain == "mesh":
@@ -748,7 +789,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if model:
         libraries = (*libraries, ("inx_surface_model", model.path, model.source))
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
-                            "\n".join(code), libraries, inputs,
+                            "\n".join(code), libraries, (*inputs, *_WORLD_RAY_INPUTS) if graph.ray_lit else inputs,
                             tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *vertex_ranges,
                                                  *(vertex.author.source_ranges if vertex else ()), *author.source_ranges))),
                             author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None,
@@ -759,13 +800,25 @@ def read_shader(path: Path, module_name: str) -> ShaderDefinition:
     return parse_shader(path.read_text(encoding="utf-8-sig"), str(path), module_name)
 
 
-def _prepare_ray_lit(reader=None):
+def _prepare_ray_lit(reader=None, *, _graph=None):
     """Prepare the built-in Lit module for full-layer pages with one sampler per page class."""
     path = default_shading_model().with_name("lit.frag.py")
-    source = reader(str(path)) if reader is not None else path.read_text(encoding="utf-8-sig")
+    graph = _graph if _graph is not None else LibraryGraph(reader)
+    source = graph.reader(str(path))
     if source is None:
         raise FileNotFoundError(path)
-    return parse_shader(source.removeprefix("\ufeff"), str(path), _RAY_LIT_MODULE, reader=reader)
+    return parse_shader(source.removeprefix("\ufeff"), str(path), _RAY_LIT_MODULE, _graph=graph)
+
+
+def _world_ray_module(graph, owner, location):
+    if not graph.allow_world_rays:
+        owner.error(location, "World ray queries require a fullscreen shader", code="author.stage")
+    if graph.ray_lit is None:
+        lit = _prepare_ray_lit(_graph=graph)
+        ranges = tuple(span for span in lit.source_ranges if span[0] == lit.source_path)
+        graph.ray_lit = Module(lit.module_name, lit.source_path, lit.generated_source, {}, ranges)
+        graph.ordered.append(graph.ray_lit)
+    return graph.ray_lit
 
 
 def _prepare_source(source, source_path, module_name, reader, *, metadata_only=False, vertex_source=None):
@@ -797,7 +850,7 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
                   "parameters": [], "inputs": []}
         return model.source, graph.sources(), json.dumps(schema, ensure_ascii=False), (*graph.ranges(), *model.source_ranges)
     if source_extension(source_path) == ".shaderlib.py":
-        graph = LibraryGraph(reader)
+        graph = LibraryGraph(reader, allow_world_rays=True)
         owner = ShaderEmitter(source, source_path)
         module = graph.load(Path(source_path), owner, ast.Constant(value=None, lineno=1, col_offset=0), source=source)
         schema = {"name": Path(source_path).name[:-len(".shaderlib.py")], "domain": "library",

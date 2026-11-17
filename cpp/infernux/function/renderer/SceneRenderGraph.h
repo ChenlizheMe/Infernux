@@ -59,7 +59,10 @@ namespace infernux
 namespace raytracing
 {
 class RayWorldGeometryPublication;
-}
+class RayLitMaterialLayout;
+class RayWorldMaterialRequest;
+struct RayWorldMaterialPublication;
+} // namespace raytracing
 namespace rhi
 {
 class BufferResource;
@@ -670,6 +673,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
         return m_worldRayRequested;
     }
     void SetWorldRayGeometry(const std::shared_ptr<const RenderWorldFrame> &world);
+    [[nodiscard]] const auto &GetWorldRayMaterialPublication() const noexcept
+    {
+        return m_worldRayMaterial;
+    }
 
     /// @brief Clear cached draw calls and camera state.
     ///
@@ -689,6 +696,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_worldRayBuffer.reset();
         m_worldRayHandle = {};
         m_worldRayPending = false;
+        m_worldRayMaterialRequest.reset();
+        m_worldRayMaterial.reset();
         InvalidateParticleViews();
         RetireWorkInstances();
         InvalidatePerViewShadowBindings();
@@ -821,6 +830,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     bool RegisterGraphTextures(uint32_t width, uint32_t height, const std::vector<GraphAssetTexture> &assetTextures,
                                std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles);
     void RetireImportedTextureAssets();
+    void SetRayLitProgram(std::shared_ptr<const ShaderTargetCode> program);
     void RetireWorkInstances();
     bool ProveGraphBufferContents();
     bool PrepareGraphBuffers();
@@ -1055,6 +1065,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
     std::shared_ptr<const raytracing::RayWorldGeometryPublication> m_worldRayPublication;
     std::shared_ptr<const rhi::BufferResource> m_worldRayBuffer;
     vk::ResourceHandle m_worldRayHandle;
+    std::shared_ptr<const ShaderTargetCode> m_worldRayLitProgram;
+    std::shared_ptr<const raytracing::RayLitMaterialLayout> m_worldRayLitLayout;
+    std::shared_ptr<const raytracing::RayWorldMaterialRequest> m_worldRayMaterialRequest;
+    std::shared_ptr<const raytracing::RayWorldMaterialPublication> m_worldRayMaterial;
     bool m_worldRayRequested = false;
     bool m_worldRayPending = false;
     bool m_hasShadowCasterPass = false;

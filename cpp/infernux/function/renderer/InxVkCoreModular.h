@@ -50,7 +50,8 @@ struct SceneDepthResolveProgram;
 namespace raytracing
 {
 class RayWorldGeometry;
-}
+class RayWorldMaterials;
+} // namespace raytracing
 namespace lighting
 {
 struct ForwardPlusGridPipeline;
@@ -513,6 +514,8 @@ class InxVkCoreModular
         return m_frameWorkOwner;
     }
     [[nodiscard]] raytracing::RayWorldGeometry &GetWorldRayGeometry();
+    [[nodiscard]] raytracing::RayWorldMaterials &GetWorldRayMaterials();
+    [[nodiscard]] uint32_t PrepareWorldRayMaterialCopies(vk::VulkanFrameSubmission &submission);
     [[nodiscard]] uint64_t GetStagingPoolBytes() const noexcept
     {
         return m_resourceManager.GetStagingPoolBytes();
@@ -1341,6 +1344,8 @@ class InxVkCoreModular
     uint64_t m_nextTextureWorkToken = 1, m_nextTextureHost = 0, m_nextTextureGpu = 0;
     FrameWorkOwner *m_frameWorkOwner = nullptr;
     std::unique_ptr<raytracing::RayWorldGeometry> m_worldRayGeometry;
+    std::unique_ptr<raytracing::RayWorldMaterials> m_worldRayMaterials;
+    std::array<std::shared_ptr<vk::TextureUploadTicket>, 2> m_rayPlaceholderUploads;
     std::unordered_map<std::string, FailedTextureUpload> m_failedTextureUploads;
     std::function<std::shared_ptr<rhi::RenderTexture>(const std::string &)> m_renderTextureAssetLoader;
     std::unordered_map<std::string, std::weak_ptr<InxMaterial>> m_materialTextureOwners;

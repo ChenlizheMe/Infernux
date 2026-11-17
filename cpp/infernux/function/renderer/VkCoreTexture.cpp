@@ -2,7 +2,9 @@
 #include "InxVkCoreModular.h"
 #include "MaterialSamplerState.h"
 #include "TextureUploadBuilder.h"
+#include "raytracing/RayWorldMaterials.h"
 #include "vk/RhiVulkanTypes.h"
+#include "vk/VkRenderUtils.h"
 #include <algorithm>
 #include <core/threading/FrameWorkOwner.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -12,6 +14,110 @@
 
 namespace infernux
 {
+raytracing::RayWorldMaterials &InxVkCoreModular::GetWorldRayMaterials()
+{
+    using namespace raytracing;
+    if (!m_worldRayMaterials) {
+        auto &device = GetDeviceContext().GetRhiDevice();
+        m_worldRayMaterials = std::make_unique<RayWorldMaterials>(
+            *m_frameWorkOwner, device,
+            [this, &device](const InxMaterial &material, const RendererParameterBlock *parameters,
+                            std::string_view property) -> std::optional<RayLitTexture> {
+                auto reference = ResolveRayLitTextureReference(material, parameters, property);
+                if (const auto *constant = std::get_if<RayLitSolidTexture>(&reference))
+                    return *constant;
+                const auto &guid = std::get<std::string>(reference);
+                const std::string name(property);
+                auto source = ResolveTextureForMaterial(guid, name, material.GetTextureSampler(name), false);
+                if (source.status == TextureResolveStatus::Pending)
+                    return std::nullopt;
+                if (source.status != TextureResolveStatus::Ready)
+                    throw std::invalid_argument("Ray Lit material texture is unavailable: " + guid);
+                const auto page = rhi::IsSrgbFormat(source.binding.gpuView->GetFormat()) ? RayTexturePageClass::Color
+                                                                                         : RayTexturePageClass::Data;
+                return CaptureRayTexturePageSource(device, std::move(source.binding.gpuView), source.contentGeneration,
+                                                   page);
+            },
+            [this](RayTexturePageClass page) -> std::shared_ptr<const rhi::TextureGpuView> {
+                auto &ticket = m_rayPlaceholderUploads[static_cast<size_t>(page)];
+                const auto upload = RayPlaceholderTextureUpload(page);
+                if (!ticket)
+                    ticket = m_resourceManager.CreateTextureUpload(upload);
+                if (!ticket->GetSubmittedBytes() &&
+                    !m_resourceManager.TryAppendTextureUpload(ticket, upload.subresources->data,
+                                                              upload.subresources->byteSize, m_frameWorkOwner))
+                    return {};
+                if (!m_resourceManager.TryPublishTextureUpload(ticket))
+                    return {};
+                const char *name =
+                    page == RayTexturePageClass::Color ? "world/ray_empty_color" : "world/ray_empty_data";
+                return std::make_shared<const rhi::TextureGpuView>(name, 1, ticket->GetTexture());
+            },
+            64 * 1024 * 1024);
+    }
+    return *m_worldRayMaterials;
+}
+
+uint32_t InxVkCoreModular::PrepareWorldRayMaterialCopies(vk::VulkanFrameSubmission &submission)
+{
+    auto batch = m_worldRayMaterials ? m_worldRayMaterials->PrepareCopyBatch() : nullptr;
+    if (!batch)
+        return 0;
+    auto &device = GetDeviceContext().GetRhiDevice();
+    const auto work = submission.AddWork(
+        device.GetDeviceId(), rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, 0, rhi::PipelineStage::Transfer,
+        {},
+        [this, &device, batch](VkCommandBuffer commands) {
+            std::vector<VkImageMemoryBarrier> before, after;
+            before.reserve(2 * batch->Transfers().size());
+            after.reserve(before.capacity());
+            const auto add = [&](rhi::TextureHandle texture, VkImageLayout oldLayout, VkImageLayout transferLayout,
+                                 VkAccessFlags access, uint32_t mip, uint32_t layer) {
+                const auto image = device.Resolve(texture);
+                auto barrier = vkrender::MakeImageBarrier(
+                    image, oldLayout, transferLayout, VK_IMAGE_ASPECT_COLOR_BIT,
+                    oldLayout == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_SHADER_READ_BIT, access);
+                barrier.subresourceRange.baseMipLevel = mip;
+                barrier.subresourceRange.baseArrayLayer = layer;
+                before.push_back(barrier);
+                barrier.oldLayout = transferLayout;
+                barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barrier.srcAccessMask = access;
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                after.push_back(barrier);
+            };
+            for (const auto &copy : batch->Transfers()) {
+                const auto &region = copy.region;
+                add(copy.source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_ACCESS_TRANSFER_READ_BIT, region.sourceMip, region.sourceLayer);
+                add(copy.destination,
+                    region.destinationY ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT, region.destinationMip,
+                    region.destinationLayer);
+            }
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                                 nullptr, 0, nullptr, static_cast<uint32_t>(before.size()), before.data());
+            vk::VulkanTransferCommandContext context;
+            if (!batch->Record(device.MakeTransferCommandEncoder(context, commands))) {
+                m_worldRayMaterials->FailCopyBatch();
+                return false;
+            }
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
+                                 nullptr, 0, nullptr, static_cast<uint32_t>(after.size()), after.data());
+            return true;
+        },
+        "World/RayTexturePages");
+    for (const auto &copy : batch->Transfers())
+        submission.Require(work, copy.sourceUpload, rhi::PipelineStage::Transfer);
+    submission.Retain(batch);
+    submission.OnWorkAccepted(work, [this, batch](rhi::SubmissionTicket ticket) {
+        GetBackendContext().Queues().WatchWorkCompletion(ticket, batch->Receipt());
+        if (!m_worldRayMaterials->AcceptCopyBatch(*batch))
+            throw std::logic_error("Accepted Vulkan ray texture batch lost its owner");
+    });
+    return work;
+}
+
 size_t InxVkCoreModular::GetPendingTextureCpuLoadCount() const noexcept
 {
     return m_pendingTextureAssetLoads.size() +

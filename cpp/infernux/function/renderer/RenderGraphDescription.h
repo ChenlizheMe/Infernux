@@ -47,6 +47,7 @@ struct RenderViewContext;
 class RendererSelection;
 class InxMaterial;
 struct FullscreenProgram;
+struct ShaderTargetCode;
 struct MaterialPassPipelineDescriptor;
 enum class CameraClearFlags;
 
@@ -110,6 +111,8 @@ enum class GraphTextureRole : uint8_t
     Persistent,
     Asset,
     Camera,
+    WorldRayColorPages,
+    WorldRayDataPages,
 };
 
 enum class GraphTextureAttachment : uint8_t
@@ -228,6 +231,14 @@ struct GraphTextureDesc
     {
         return role == GraphTextureRole::Camera;
     }
+    [[nodiscard]] bool IsWorldRayPage() const noexcept
+    {
+        return role == GraphTextureRole::WorldRayColorPages || role == GraphTextureRole::WorldRayDataPages;
+    }
+    [[nodiscard]] bool IsSampledImport() const noexcept
+    {
+        return role == GraphTextureRole::Asset || IsWorldRayPage();
+    }
     [[nodiscard]] bool IsViewColor() const noexcept
     {
         return IsViewAttachment() && !IsDepth();
@@ -298,6 +309,8 @@ enum class GraphFrameBuffer : uint8_t
     ViewLights,
     WorldSurfaces,
     WorldRayGeometry,
+    WorldRayLitMaterials,
+    WorldRayTextureDescriptors,
     Count,
 };
 
@@ -442,6 +455,8 @@ std::optional<GraphPassDesc> ResolveGraphCameraClear(const RenderGraphDescriptio
 /// The view lighting set consumes this graph image outside material set 0.
 std::string ResolveGraphShadowTexture(const RenderGraphDescription &graph);
 bool GraphUsesForwardPlus(const RenderGraphDescription &graph);
+/// The reflected physical table layout is shared by every ray Lit consumer of a World.
+std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGraphDescription &graph);
 std::pair<uint32_t, uint32_t> ResolveGraphPassExtent(const RenderGraphDescription &graph, const GraphPassDesc &pass,
                                                      uint32_t viewWidth, uint32_t viewHeight);
 const GraphTextureDesc *ResolveGraphReadOnlyDepth(const RenderGraphDescription &graph, const GraphPassDesc &pass);

@@ -18,7 +18,8 @@ SURFACE_FIELDS = {
     "shading_param0": ("float", "0.0"), "shading_param1": ("float", "0.0"),
 }
 STRUCT_TYPES = {"ParticleContext": "InxParticleInput", "fragment_input": "InxFragmentInput", "multisample_input": "InxMultisampleInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
-                "SurfaceData": "InxSurfaceData", "ShadingContext": "InxShadingContext", "LightData": "InxLight",
+                "SurfaceData": "InxSurfaceData", "RaySurfaceHit": "InxRaySurfaceHit",
+                "ShadingContext": "InxShadingContext", "LightData": "InxLight",
                 "VertexData": "InxVertexData", "VertexContext": "InxVertexContext", "ViewContext": "InxViewContext",
                 "ProjectionContext": "InxProjectionContext", "CameraContext": "InxCameraContext",
                 "FragmentOutput": "InxFragmentOutput"}
@@ -39,6 +40,8 @@ STRUCT_FIELDS = {"InxParticleInput": {'position': 'float4', 'position_ws': 'floa
                                   "view_depth": "float", "line_color": "float4", "object_id": "uint2",
                                   "object_flags": "uint", "layer_mask": "uint"},
                  "InxSurfaceData": {name: kind for name, (kind, _) in SURFACE_FIELDS.items()},
+                 "InxRaySurfaceHit": {"found": "bool", "distance": "float", "position_ws": "float3",
+                                      "surface_id": "uint", "surface": "InxSurfaceData"},
                  "InxSurfaceDifferentials": {"position_dx": "float3", "position_dy": "float3",
                                              "uv_dx": "float2", "uv_dy": "float2"},
                  "InxShadingContext": {"position_ws": "float3", "geometric_normal_ws": "float3", "view_depth": "float",
@@ -58,6 +61,17 @@ STRUCT_FIELDS["InxWorldUIContext"] = dict(STRUCT_FIELDS["InxUIContext"], local_p
 # A logical image carries its sampler through typed library calls. Slang
 # flattens the pair for each target; neither authors nor helpers name slots.
 RESOURCE_MODULE = ("inx_resource_types", "<infernux/shader/resources>", """
+import inx_geometry;
+
+public struct InxRaySurfaceHit
+{
+    public bool found;
+    public float distance;
+    public float3 position_ws;
+    public uint surface_id;
+    public InxSurfaceData surface;
+};
+
 public struct InxColor2D
 {
     public Texture2D<float4> texture;

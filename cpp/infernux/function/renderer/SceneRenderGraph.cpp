@@ -26,6 +26,7 @@
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuSorter.h"
 #include "raytracing/RayWorldGeometry.h"
+#include "raytracing/RayWorldMaterials.h"
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiComputeKernel.h"
 #include "vk/RhiVulkanTypes.h"
@@ -40,6 +41,7 @@
 #include <core/types/ColorSpace.h>
 #include <cstring>
 #include <function/renderer/rhi/RhiBuffer.h>
+#include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxTexture/InxTexture.h>
@@ -1402,6 +1404,20 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
     // Keep the already selected Game World admission pending until its own
     // geometry settles. Accepting a placeholder would consume the source.
     m_worldRayPending = binding.pending;
+    if (m_worldRayLitLayout) {
+        const auto *assets = AssetRegistry::Instance().GetAssetDatabase();
+        auto materials = m_vkCore->GetWorldRayMaterials().Acquire(
+            world, m_worldRayLitLayout, assets ? assets->GetQueryGeneration() : 0, m_worldRayMaterialRequest);
+        m_worldRayPending |= materials.pending;
+        if (m_worldRayMaterial != materials.value) {
+            if (materials.pending) {
+                m_graphBuilt = false;
+                RetireImportedTextureAssets();
+            }
+            m_worldRayMaterial = std::move(materials.value);
+            m_needsRebuild = true;
+        }
+    }
     auto &next = binding.buffer;
     if (next == m_worldRayBuffer)
         return;
@@ -1411,6 +1427,18 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
         m_renderGraph->RebindImportedBuffers({{m_worldRayHandle, next->GetBuffer(), rhi::QueueRole::Graphics, false}});
     m_worldRayBuffer = std::move(next);
     m_needsRebuild |= !rebound;
+}
+
+void SceneRenderGraph::SetRayLitProgram(std::shared_ptr<const ShaderTargetCode> program)
+{
+    if (m_worldRayLitProgram == program)
+        return;
+    m_worldRayLitLayout =
+        program ? std::make_shared<const raytracing::RayLitMaterialLayout>(program->resources) : nullptr;
+    m_worldRayLitProgram = std::move(program);
+    m_worldRayMaterialRequest.reset();
+    m_worldRayMaterial.reset();
+    m_needsRebuild = true;
 }
 
 bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
@@ -1434,6 +1462,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         m_worldRayHandle = {};
         m_worldRayPublication.reset();
         m_worldRayBuffer.reset();
+        SetRayLitProgram({});
         m_hasPythonGraph = true;
         m_pythonGraphValid = false;
         m_graphBuilt = false;
@@ -1452,6 +1481,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     RenderGraphDescription normalizedDesc;
     try {
         normalizedDesc = NormalizeRenderGraphForOutput(desc, HasOutputTexture(), m_renderView.samples);
+        SetRayLitProgram(ResolveGraphRayLitProgram(normalizedDesc));
         for (auto &pass : normalizedDesc.passes) {
             for (auto &command : pass.commands) {
                 if (command.type != GraphCommandType::FullscreenQuad)
@@ -2158,6 +2188,12 @@ void SceneRenderGraph::EnsureGraphBuilt()
     if (!m_sceneTarget || !m_sceneTarget->IsReady() || !m_renderGraph) {
         return;
     }
+    if (m_worldRayPending)
+        return;
+    if (m_worldRayLitLayout && !m_worldRayMaterial) {
+        m_graphBuilt = false;
+        return;
+    }
 
     // Only views entering actual preparation allocate GPU resources. Keep the
     // staged lighting current even when a later rebuild waits on an asset.
@@ -2318,6 +2354,11 @@ void SceneRenderGraph::EnsureGraphBuilt()
     const auto resolveAssetTextures = [&] {
         bool allResolved = true;
         for (const auto &texture : m_pythonGraphDesc.textures) {
+            if (texture.IsWorldRayPage()) {
+                const size_t page = texture.role == GraphTextureRole::WorldRayColorPages ? 0 : 1;
+                assetTextures.push_back({&texture, m_worldRayMaterial->pages[page], 0});
+                continue;
+            }
             if (texture.role != GraphTextureRole::Asset)
                 continue;
             auto resolved = m_vkCore->ResolveTextureForGraph(texture.assetGuid, texture.isVolume, false);
@@ -3627,6 +3668,12 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 importFrameBuffer(binding, 0, "World/RayGeometry", m_worldRayBuffer->GetBuffer(),
                                   m_worldRayBuffer->GetByteSize());
                 m_worldRayHandle = binding.handles[0];
+            } else if (description.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials ||
+                       description.frameBuffer == GraphFrameBuffer::WorldRayTextureDescriptors) {
+                const auto &table = description.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials
+                                        ? m_worldRayMaterial->materials
+                                        : m_worldRayMaterial->descriptors;
+                importFrameBuffer(binding, 0, description.name, table->GetBuffer(), table->GetByteSize());
             } else {
                 if (!m_worldSurfaceRecords)
                     throw std::runtime_error("Surface records require an acquired RenderWorld");
@@ -4626,13 +4673,15 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     bool multisampled = false;
                     bool history = false;
                     rhi::TextureViewDimension dimension = rhi::TextureViewDimension::Texture2D;
-                    rhi::ComputeBufferDesc element;
+                    std::optional<rhi::ComputeBufferDesc> element;
+                    uint64_t stride = 0;
                 };
                 std::vector<FullscreenInput> declaredInputs;
                 const auto schema = nlohmann::json::parse(authorProgram->schema);
                 for (const auto &input : schema.at("inputs")) {
                     const auto name = input.at("name").get<std::string>();
-                    const bool storage = input.at("kind") == "Buffer";
+                    const auto kind = input.at("kind").get<std::string>();
+                    const bool storage = kind == "Buffer" || kind == "WorldBuffer";
                     const auto &resources = authorProgram->code->resources;
                     const auto resource = std::find_if(resources.begin(), resources.end(), [&](const auto &item) {
                         return item.name == name && item.binding.type == (storage ? rhi::BindingType::StorageBuffer
@@ -4644,9 +4693,15 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     item.name = name;
                     item.storage = storage;
                     item.readOnly = resource->binding.readOnlyStorage;
-                    if (storage)
+                    if (kind == "Buffer") {
                         item.element = ShaderBufferElementLayout(input.at("element").get<std::string>());
-                    item.history = input.at("kind") == "History2D";
+                        item.stride = item.element->GetElementStride();
+                    } else if (storage) {
+                        item.stride = resource->elementStride;
+                        if (item.stride == 0)
+                            throw std::logic_error("World buffer has no reflected element stride: " + name);
+                    }
+                    item.history = kind == "History2D";
                     item.binding = static_cast<uint32_t>(declaredInputs.size());
                     item.multisampled = resource->binding.multisampled;
                     item.dimension = resource->binding.viewDimension;
@@ -4736,15 +4791,14 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             return;
                         }
                         if (const auto *type = ResolveGraphComputeBufferDesc(m_pythonGraphDesc, *description)) {
-                            if (type->scalarType != reflected->element.scalarType ||
-                                type->lanes != reflected->element.lanes) {
+                            if (!reflected->element || type->scalarType != reflected->element->scalarType ||
+                                type->lanes != reflected->element->lanes) {
                                 INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
                                              "' does not match its declared Buffer element type");
                                 return;
                             }
                         }
-                        if (description->byteOffset % sizeof(uint32_t) != 0 ||
-                            inputByteSize % reflected->element.GetElementStride() != 0 ||
+                        if (description->byteOffset % sizeof(uint32_t) != 0 || inputByteSize % reflected->stride != 0 ||
                             bindingBytes > std::numeric_limits<uint32_t>::max()) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name,
                                          "' requires a complete packed 32-bit element span");
@@ -4769,17 +4823,18 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     auto source = texture.IsViewColor() ? m_importedColorTarget : customRTHandles.at(name);
                     auto format = texture.EffectiveFormat(m_renderView);
                     rhi::SamplerHandle sampler;
-                    if (texture.role == GraphTextureRole::Asset) {
+                    if (texture.IsSampledImport()) {
                         const auto dimension = sampledDimensions.find(binding);
-                        const auto expected = texture.isVolume ? rhi::TextureViewDimension::Texture3D
-                                                               : rhi::TextureViewDimension::Texture2D;
+                        const auto expected = texture.IsWorldRayPage() ? rhi::TextureViewDimension::Texture2DArray
+                                              : texture.isVolume       ? rhi::TextureViewDimension::Texture3D
+                                                                       : rhi::TextureViewDimension::Texture2D;
                         if (dimension == sampledDimensions.end() || dimension->second != expected) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' binds Texture asset '", name,
                                          "' to an incompatible shader resource dimension at binding ", binding);
                             return;
                         }
                     }
-                    if (texture.role == GraphTextureRole::Asset || texture.role == GraphTextureRole::Persistent) {
+                    if (texture.IsSampledImport() || texture.role == GraphTextureRole::Persistent) {
                         const auto &imported = m_importedTextureBindings.at(name);
                         format = imported.format;
                         sampler = imported.sampler;

@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <variant>
 #include <vector>
@@ -31,6 +32,11 @@ enum class RayLitSolidTexture : uint8_t
 
 using RayLitTexture = std::variant<RayTexturePageSource, RayLitSolidTexture>;
 using RayLitTextureDescriptor = std::variant<uint32_t, RayLitSolidTexture>;
+using RayLitTextureReference = std::variant<RayLitSolidTexture, std::string>;
+
+[[nodiscard]] RayLitTextureReference ResolveRayLitTextureReference(const InxMaterial &material,
+                                                                   const RendererParameterBlock *parameters,
+                                                                   std::string_view property);
 
 struct RayLitMaterialInput
 {

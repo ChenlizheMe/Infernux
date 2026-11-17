@@ -323,7 +323,7 @@ def _validate_texture_buffer_copy(texture, buffer, to_buffer, size, buffer_offse
     texel_bytes = None if texture.is_camera_target else texture.format.buffer_copy_texel_bytes
     if (texel_bytes == 0 or texture.is_volume or texture.samples not in (0, 1)
             or (texture.is_camera_target and not texture.is_depth)
-            or texture.temporal_role == GraphTextureRole.ASSET):
+            or texture._is_sampled_import):
         raise ValueError("texture-buffer copy requires a single-sample 2D texture with a packed color or depth layout")
     if to_buffer and buffer._read_only:
         raise ValueError(f"Buffer '{buffer.name}' is read-only")
@@ -1545,10 +1545,7 @@ class RenderGraph:
         return self._create_frame_buffer(name, _GraphFrameBuffer.VIEW_LIGHTS)
 
     def _create_world_surface_records(self) -> BufferHandle:
-        for buffer in self._buffers:
-            if buffer._frame_buffer == _GraphFrameBuffer.WORLD_SURFACES:
-                return buffer
-        return self._create_frame_buffer("surface_records", _GraphFrameBuffer.WORLD_SURFACES)
+        return self._create_world_buffer("surface_records", _GraphFrameBuffer.WORLD_SURFACES)
 
     def _create_world_ray_geometry(self) -> BufferHandle:
         """Request read-only uvec4 words for the native view's frozen World.
@@ -1556,11 +1553,34 @@ class RenderGraph:
         A pending build holds that view's admission. A terminal unavailable
         page has its own status and must not be traced as an empty World.
         """
-        source = _GraphFrameBuffer.WORLD_RAY_GEOMETRY
+        return self._create_world_buffer("world_ray_geometry", _GraphFrameBuffer.WORLD_RAY_GEOMETRY)
+
+    def _create_world_ray_lit(self) -> dict[str, BufferHandle | TextureHandle]:
+        inputs = {"world_ray_geometry": self._create_world_ray_geometry()}
+        for name, source in (
+            ("ray_lit_materials", _GraphFrameBuffer.WORLD_RAY_LIT_MATERIALS),
+            ("ray_texture_descriptors", _GraphFrameBuffer.WORLD_RAY_TEXTURE_DESCRIPTORS),
+        ):
+            inputs[name] = self._create_world_buffer(name, source)
+        for name, role, format in (
+            ("ray_color_pages", GraphTextureRole.WORLD_RAY_COLOR_PAGES, Format.RGBA8_SRGB),
+            ("ray_data_pages", GraphTextureRole.WORLD_RAY_DATA_PAGES, Format.RGBA8_UNORM),
+        ):
+            page = next((texture for texture in self._textures if texture.role == role), None)
+            if page is None:
+                resource_name = self._scoped_name(name)
+                if self._find_texture_exact(resource_name) is not None or self._find_buffer_exact(resource_name) is not None:
+                    raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
+                page = TextureHandle(resource_name, format, temporal_role=role)
+                self._textures.append(page)
+            inputs[name] = page
+        return inputs
+
+    def _create_world_buffer(self, name, source) -> BufferHandle:
         for buffer in self._buffers:
             if buffer._frame_buffer == source:
                 return buffer
-        return self._create_frame_buffer("world_ray_geometry", source)
+        return self._create_frame_buffer(name, source)
 
     def _create_frame_buffer(self, name: str, source) -> BufferHandle:
         handle = self.create_buffer(name, 16)
@@ -2071,8 +2091,8 @@ class RenderGraph:
             raise ValueError(
                 f"Graph '{self._name}' output '{self._output}' does not exist"
             )
-        if self._output is not None and texture_map[self._output].temporal_role == GraphTextureRole.ASSET:
-            raise ValueError("A sampled Texture asset cannot be the graph output")
+        if self._output is not None and texture_map[self._output]._is_sampled_import:
+            raise ValueError("A sampled texture import cannot be the graph output")
 
     def _validate_pass(
         self,
@@ -2174,8 +2194,7 @@ class RenderGraph:
                 raise ValueError(f"Copy pass '{p._name}' requires distinct textures")
             source = texture_map[p._source_resource]
             destination = texture_map[p._destination_resource]
-            if (source.temporal_role == GraphTextureRole.ASSET
-                    or destination.temporal_role == GraphTextureRole.ASSET):
+            if source._is_sampled_import or destination._is_sampled_import:
                 raise ValueError(f"Copy pass '{p._name}' cannot use a sample-only Texture asset")
             if ((source.is_camera_target and not source.is_depth)
                     or (destination.is_camera_target and not destination.is_depth)):
@@ -2233,7 +2252,7 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' writes depth texture '{tex_name}' as color[{slot}]"
                 )
-            if tex.temporal_role == GraphTextureRole.ASSET:
+            if tex._is_sampled_import:
                 raise ValueError(f"Pass '{p._name}' cannot write sample-only Texture asset '{tex_name}'")
 
         if p._write_depth is not None:
@@ -2246,7 +2265,7 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' writes color texture '{p._write_depth}' as depth"
                 )
-            if tex.temporal_role == GraphTextureRole.ASSET:
+            if tex._is_sampled_import:
                 raise ValueError(f"Pass '{p._name}' cannot write sample-only Texture asset '{p._write_depth}'")
 
         attachment_names = list(p._write_colors.values())
@@ -2277,7 +2296,7 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' resolve target must be a non-camera color texture"
                 )
-            if resolve.temporal_role == GraphTextureRole.ASSET:
+            if resolve._is_sampled_import:
                 raise ValueError(f"Pass '{p._name}' cannot resolve into a sample-only Texture asset")
             if sorted(p._write_colors) != [0]:
                 raise ValueError(

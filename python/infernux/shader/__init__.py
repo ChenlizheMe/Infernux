@@ -256,6 +256,16 @@ class SurfaceData:
     shading_param1: float
 
 
+class RaySurfaceHit:
+    """The closest accepted world ray hit and its Lit surface properties."""
+
+    found: bool
+    distance: float
+    position_ws: vec3
+    surface_id: uint
+    surface: SurfaceData
+
+
 class Color2D:
     """A typed sampled RGBA image and the sampler supplied by its graph port."""
 
@@ -414,4 +424,28 @@ class _Lighting:
 
 lighting = _Lighting()
 
-__all__ = ["fullscreen", "frag", "surface", "particle", "ParticleContext", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "multisample_input", "mesh_input", "SurfaceContext", "SurfaceData", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Color3D", "Color2DMS", "Depth2DMS", "UInt2DMS", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]
+
+class _RayQueries:
+    """World-space queries for fullscreen passes using the view's Lit ray geometry."""
+
+    @staticmethod
+    def trace_closest(origin_ws: vec3, direction_ws: vec3, min_distance: float, max_distance: float,
+                      layer_mask: uint, lod: float) -> RaySurfaceHit:
+        """Trace along a unit direction over the given world-space distance interval.
+
+        The explicit texture LOD applies to alpha testing and surface evaluation.
+        Read the surface properties, position and surface ID when ``found`` is true.
+        A miss keeps ``distance`` at ``max_distance``.
+        """
+        raise RuntimeError("shader.ray.trace_closest executes in a compiled GPU program")
+
+    @staticmethod
+    def trace_visibility(origin_ws: vec3, direction_ws: vec3, min_distance: float, max_distance: float,
+                         layer_mask: uint, lod: float) -> bool:
+        """Return true when the world geometry is ready and no Lit surface blocks the ray."""
+        raise RuntimeError("shader.ray.trace_visibility executes in a compiled GPU program")
+
+
+ray = _RayQueries()
+
+__all__ = ["fullscreen", "frag", "surface", "particle", "ParticleContext", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "multisample_input", "mesh_input", "SurfaceContext", "SurfaceData", "ray", "RaySurfaceHit", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Color3D", "Color2DMS", "Depth2DMS", "UInt2DMS", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]

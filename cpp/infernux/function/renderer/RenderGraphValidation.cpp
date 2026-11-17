@@ -476,6 +476,25 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
             }
             continue;
         }
+        if (tex.IsWorldRayPage()) {
+            const auto format = tex.role == GraphTextureRole::WorldRayColorPages ? rhi::PixelFormat::RGBA8Srgb
+                                                                                 : rhi::PixelFormat::RGBA8UNorm;
+            if (tex.format != format || tex.renderTexture || !tex.assetGuid.empty() || !tex.temporalKey.empty() ||
+                tex.width || tex.height || tex.sizeDivisor || tex.samples != 1 || tex.isVolume || tex.depth != 1) {
+                INXLOG_ERROR("World ray texture page must use its World publication layout: ", tex.name);
+                return false;
+            }
+            if (std::any_of(desc.passes.begin(), desc.passes.end(), [&](const auto &pass) {
+                    return pass.WritesTexture(tex.name) ||
+                           (pass.ReadsTexture(tex.name) &&
+                            (!pass.PrimaryCommand() ||
+                             pass.PrimaryCommand()->type != GraphCommandType::FullscreenQuad));
+                })) {
+                INXLOG_ERROR("World ray texture pages are sampled fullscreen inputs: ", tex.name);
+                return false;
+            }
+            continue;
+        }
         if (tex.renderTexture) {
             INXLOG_ERROR("Only persistent graph textures may retain a RenderTexture owner");
             return false;
@@ -758,8 +777,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
             const auto destination = textures.find(command->destinationResource);
             if (source == textures.end() || destination == textures.end() || source == destination ||
                 source->second->IsViewColor() || destination->second->IsViewColor() ||
-                source->second->role == GraphTextureRole::Asset ||
-                destination->second->role == GraphTextureRole::Asset ||
+                source->second->IsSampledImport() || destination->second->IsSampledImport() ||
                 source->second->EffectiveFormat(view) != destination->second->EffectiveFormat(view) ||
                 source->second->EffectiveSamples(frameSamples) != destination->second->EffectiveSamples(frameSamples) ||
                 (ResolveGraphTextureImport(*source->second).IsValid() &&
@@ -817,7 +835,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                                                       toBuffer ? command->copyHeight : height,
                                                       range.byteOffset + command->copyBufferOffset};
             const auto usage = toBuffer ? GraphBufferUsage::TransferDestination : GraphBufferUsage::TransferSource;
-            if (texture.IsViewColor() || texture.isVolume || texture.role == GraphTextureRole::Asset ||
+            if (texture.IsViewColor() || texture.isVolume || texture.IsSampledImport() ||
                 texture.EffectiveSamples(frameSamples) != 1 ||
                 (!toBuffer && texture.role != GraphTextureRole::Persistent &&
                  (!texture.width || !texture.height || texture.sizeDivisor)) ||
@@ -934,9 +952,9 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                              textureName, "' as color slot ", slot);
                 return false;
             }
-            if (texIt->second->role == GraphTextureRole::Asset) {
+            if (texIt->second->IsSampledImport()) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' cannot write sampled Texture asset '", textureName, "'");
+                             "' cannot write sampled texture import '", textureName, "'");
                 return false;
             }
             if (!acceptAttachmentSamples(*texIt->second)) {
@@ -965,9 +983,9 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                              pass.writeDepth, "' as depth");
                 return false;
             }
-            if (texIt->second->role == GraphTextureRole::Asset) {
+            if (texIt->second->IsSampledImport()) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
-                             "' cannot write sampled Texture asset '", pass.writeDepth, "'");
+                             "' cannot write sampled texture import '", pass.writeDepth, "'");
                 return false;
             }
             if (!acceptAttachmentSamples(*texIt->second)) {
@@ -1006,7 +1024,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                                     ? textures.find(pass.writeColors.front().second)
                                     : textures.end();
             if (resolve == textures.end() || source == textures.end() || resolve->second->IsViewColor() ||
-                resolve->second->role == GraphTextureRole::Asset || resolve->second->IsDepth() ||
+                resolve->second->IsSampledImport() || resolve->second->IsDepth() ||
                 pass.resolveColor == pass.writeColors.front().second ||
                 source->second->EffectiveSamples(frameSamples) <= 1 ||
                 resolve->second->EffectiveSamples(frameSamples) != 1 ||
@@ -1051,7 +1069,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: output texture '", desc.outputTexture, "' is not declared");
         return false;
     }
-    if (!desc.outputTexture.empty() && textures.at(desc.outputTexture)->role == GraphTextureRole::Asset) {
+    if (!desc.outputTexture.empty() && textures.at(desc.outputTexture)->IsSampledImport()) {
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: a sampled Texture asset cannot be the graph output");
         return false;
     }

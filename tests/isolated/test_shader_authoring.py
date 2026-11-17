@@ -614,6 +614,89 @@ void evaluate_hit(uint3 id : SV_DispatchThreadID)
     assert all(operation not in compute["code"] for operation in (b"textureSample(", b"dpdx", b"dpdy", b"discard"))
 
 
+@pytest.mark.parametrize("visibility", [False, True], ids=["closest", "visibility"])
+def test_fullscreen_world_ray_uses_shared_lit_and_reflected_inputs(tmp_path, visibility):
+    from pathlib import Path
+
+    from infernux._compiler.shader import _prepare_source
+    from infernux.lib import _Infernux
+
+    helper = tmp_path / "reflections.shaderlib.py"
+    helper_source = '''import infernux.shader as gpu
+from infernux.shader.lib.surface import decode_octahedral_normal
+
+def closest(uv: gpu.vec2) -> gpu.RaySurfaceHit:
+    direction = decode_octahedral_normal(uv * 0.125)
+    return gpu.ray.trace_closest(gpu.vec3(uv, 0.0), direction, 0.01, 4.0, gpu.uint(1), 0.0)
+'''
+    imports = "" if visibility else "from .reflections import closest\n"
+    body = '''        visible = shader.ray.trace_visibility(shader.vec3(uv, 0.0), shader.vec3(0.0, 0.0, 1.0),
+                                              0.01, 4.0, shader.uint(1), 0.0)
+        return shader.vec4(shader.vec3(1.0 if visible else 0.0), 1.0)
+''' if visibility else '''        hit = closest(uv)
+        if hit.found:
+            return shader.vec4(hit.surface.albedo * hit.surface.occlusion,
+                               hit.distance + hit.position_ws.z + float(hit.surface_id))
+        return shader.vec4(0.0)
+'''
+    text = "import infernux.shader as shader\n" + imports + '''
+class Reflection(shader.fullscreen):
+    def main(self, uv: shader.vec2) -> shader.vec4:
+''' + body
+    reads = []
+
+    def read(path):
+        path = Path(path)
+        reads.append(path.name)
+        return helper_source if path == helper else path.read_text(encoding="utf-8")
+
+    path = str(tmp_path / "reflection.frag.py")
+    generated, libraries, schema_text, ranges = _prepare_source(text, path, "reflection", read)
+    assert reads.count("lit.frag.py") == reads.count("surface.shaderlib.py") == 1
+    assert len({module for module, _, _ in libraries}) == len(libraries)
+    assert [Path(path).name for module, path, _ in libraries if module == "inx_ray_lit"] == ["lit.frag.py"]
+    assert any(Path(span[0]).name == "lit.frag.py" for span in ranges)
+    buffer_strides = {"world_ray_geometry": 16, "ray_lit_materials": 272, "ray_texture_descriptors": 8}
+    array_names = {"ray_color_pages", "ray_data_pages"}
+    samplers = {"ray_color_sampler", "ray_data_sampler"}
+    inputs = {field["name"]: field["kind"] for field in json.loads(schema_text)["inputs"]}
+    assert inputs == dict.fromkeys(buffer_strides, "WorldBuffer") | dict.fromkeys(array_names, "Color2DArray")
+    compiled = _Infernux._compile_shader_program(generated, path, "reflection", libraries,
+                                               targets=["spirv", "wgsl"], source_ranges=ranges,
+                                               input_kinds=list(inputs.items()))
+    for target in compiled["targets"]:
+        entries = {entry["name"]: entry for entry in target["entries"]}
+        assert not entries["vertex_main"]["bindings"]
+        fragment = entries["fragment_main"]
+        resources = {item["name"]: item for item in target["resources"]
+                     if [item["set"], item["binding"]] in fragment["bindings"]}
+        assert resources.keys() == inputs.keys() | samplers
+        assert all(item["set"] == 0 for item in resources.values())
+        for name, stride in buffer_strides.items():
+            assert resources[name]["read_only"] and resources[name]["element_stride"] == stride
+        assert all(resources[name]["dimension"] == 3 for name in array_names)
+        if target["target"] == "wgsl":
+            assert b"textureSampleLevel" in fragment["code"]
+            assert b"textureSample(" not in fragment["code"]
+
+
+@pytest.mark.parametrize("domain, context, mask, code", [
+    ("frag", "mesh_input", "shader.uint(1)", "author.stage"),
+    ("fullscreen", "fragment_input", "1", "author.type"),
+])
+def test_world_ray_query_reports_stage_and_argument_errors(domain, context, mask, code):
+    text = f'''import infernux.shader as shader
+class Reflection(shader.{domain}):
+    def main(self, ctx: shader.{context}) -> shader.vec4:
+        visible = shader.ray.trace_visibility(shader.vec3(0.0), shader.vec3(0.0, 0.0, 1.0), 0.01, 4.0, {mask}, 0.0)
+        return shader.vec4(1.0 if visible else 0.0)
+'''
+    with pytest.raises(SyntaxError) as failure:
+        parse_shader(text, "reflection.frag.py", "reflection")
+    assert failure.value.diagnostics[0]["code"] == code
+    assert failure.value.filename == "reflection.frag.py" and failure.value.lineno == 4
+
+
 def test_deferred_lighting_reuses_surface_models_and_the_view_resource_contract():
     from infernux._compiler.shading_model import default_shading_model
 
