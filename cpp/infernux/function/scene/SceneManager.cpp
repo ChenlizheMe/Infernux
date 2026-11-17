@@ -1102,24 +1102,25 @@ void SceneManager::UnbindRuntimeFrameWork() noexcept
 
 FrameWorkFacts SceneManager::DescribeRuntimeFrames()
 {
-    FrameWorkFacts facts;
-    auto ids = GetRuntimeWorldIds();
-    const auto first = std::find(ids.begin(), ids.end(), m_nextRuntimeWorldId);
-    if (first != ids.end())
-        std::rotate(ids.begin(), first, ids.end());
-    for (uint64_t id : ids) {
-        const auto *world = FindRuntimeWorld(id);
-        if (!world || !world->simulation.isPlaying)
-            continue;
+    const auto eligible = [](const auto &world) {
         const bool step = world->simulation.isPaused && world->simulation.pausedStepPending;
         const bool frame = !world->simulation.isPaused &&
                            (world->frame.phase != RuntimeWorld::FramePhase::Idle || !world->frame.pending.empty());
-        if (!step && !frame && !world->pausedAuthor.Pending())
-            continue;
-        facts.pending = true;
-        facts.host = {id, 0, m_runtimeFrameWork && m_runtimeFrameWork->IsLate(), false};
-        break;
+        return world->simulation.isPlaying && (step || frame || world->pausedAuthor.Pending());
+    };
+    const auto end = m_runtimeWorlds.end();
+    const auto cursor = std::find_if(m_runtimeWorlds.begin(), end,
+                                     [this](const auto &world) { return world->id == m_nextRuntimeWorldId; });
+    const auto first = cursor == end ? m_runtimeWorlds.begin() : cursor;
+    auto selected = std::find_if(first, end, eligible);
+    if (selected == end) {
+        selected = std::find_if(m_runtimeWorlds.begin(), first, eligible);
+        if (selected == first)
+            return {};
     }
+    FrameWorkFacts facts;
+    facts.pending = true;
+    facts.host = {(*selected)->id, 0, m_runtimeFrameWork && m_runtimeFrameWork->IsLate(), false};
     return facts;
 }
 
@@ -1766,8 +1767,8 @@ void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTim
     }
     // Admission stays at the original Host/input boundary. Actual runtime work
     // competes with preparation/physics through the same late owner chooser.
-    for (uint64_t id : GetRuntimeWorldIds()) {
-        const WorldExecutionScope scope(FindRuntimeWorld(id));
+    for (const auto &world : m_runtimeWorlds) {
+        const WorldExecutionScope scope(world.get());
         RecordHostFrame(consumeDelta(), !explicitDelta);
     }
     work.Wake(m_runtimeFrameSource);

@@ -3358,6 +3358,9 @@ void InxVkCoreModular::KeepObjectBuffers(const std::vector<DrawCall> &drawCalls)
         const auto binding = m_perObjectBuffers.find(draw.objectId);
         if (binding != m_perObjectBuffers.end())
             binding->second.ensuredOnFrame = m_ensureFrameCounter;
+        const auto upload = m_runtimeMeshUploads.find(draw.objectId);
+        if (upload != m_runtimeMeshUploads.end())
+            upload->second.requestedFrame = m_ensureFrameCounter;
     }
 }
 

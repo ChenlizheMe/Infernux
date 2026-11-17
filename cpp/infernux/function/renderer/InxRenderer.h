@@ -962,7 +962,8 @@ class InxRenderer
     uint64_t m_viewScheduleBuildCount = 0;
     uint64_t m_viewRequestSerial = 0;
     uint64_t m_cameraRequestSerial = 1;
-    void CollectRequestedViews(bool sceneActive, bool gameActive);
+    [[nodiscard]] std::vector<SceneRenderGraph *>
+    CollectRequestedViews(bool sceneActive, bool gameActive, const std::vector<uint64_t> &skippedAuthorGameCameras);
     void UpdateViewSchedule();
     std::unique_ptr<InxScreenUIRenderer> m_screenUIRenderer;
     bool m_gameCameraEnabled = false;
@@ -1098,7 +1099,7 @@ class InxRenderer
 
     /// @brief Collect and merge draw calls from all active render graphs,
     /// then pass them to VkCore for unused buffer cleanup.
-    void CleanupDrawCallBuffers();
+    void CleanupDrawCallBuffers(const std::vector<SceneRenderGraph *> &retainedScreenViews);
 
     void RetireReplacedViewTargets();
     std::vector<std::unique_ptr<SceneRenderTarget>> m_replacedViewTargets;

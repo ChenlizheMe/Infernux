@@ -38,8 +38,7 @@ class WorldViewState:
             self.world_id = visible[0] if visible else 0
         now = perf_counter()
         if now >= self._next_sample:
-            snapshot = engine.get_native_engine().renderer_frame_snapshot
-            frame = int(snapshot['frame'])
+            frame = engine.get_native_engine().frame_work.opportunity
             if self._sample_frame is not None and frame >= self._sample_frame:
                 elapsed = now - self._sample_time
                 frames = frame - self._sample_frame
@@ -50,7 +49,7 @@ class WorldViewState:
 
     @property
     def fps_text(self):
-        return f'FPS: {self.fps:.0f} ({self.frame_ms:.1f} ms)' if self.fps else 'FPS: --'
+        return f'Main FPS: {self.fps:.0f} ({self.frame_ms:.2f} ms)' if self.fps else 'Main FPS: --'
 
     def select(self, world_id):
         world_id = int(world_id)

@@ -1302,6 +1302,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // Update camera from scene system (uses PrepareFrame results)
     bridge.UpdateCameraData(m_cameraPos, m_cameraLookAt, m_cameraUp);
 
+    std::vector<uint64_t> skippedAuthorGameCameras;
     // A compiled view is reusable, but each draw must request it again.
     if (m_renderPipeline) {
         EditorGizmosContext gizmoCtx;
@@ -1408,7 +1409,10 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                     plan = capture.CapturePlan();
                     if (!view->renderToTexture) {
                         ++authorScreenSelections;
-                        authorSkippedScreenSelections += plan->state == RenderViewPlanState::Skipped;
+                        if (plan->state == RenderViewPlanState::Skipped) {
+                            ++authorSkippedScreenSelections;
+                            skippedAuthorGameCameras.push_back(view->cameraId);
+                        }
                     }
                 }
                 // Selection is CPU work and precedes writable GPU admission.
@@ -1450,7 +1454,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         m_gui->PrepareRuntimeFontTextures();
 
     // The current pipeline submissions decide the shared screen attachments.
-    CollectRequestedViews(sceneViewActive, gameViewActive);
+    const auto retainedScreenViews = CollectRequestedViews(sceneViewActive, gameViewActive, skippedAuthorGameCameras);
     if (CheckAndApplyMsaaRequest()) {
         sceneManager.FinishStepPresentation(false);
         runDeferredTasks();
@@ -1464,7 +1468,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     // not treat every mesh as dead. Game/Scene reopen rebuilds from cache miss
     // instead of drawing an empty buffer table.
     if (sceneViewActive || gameViewActive)
-        CleanupDrawCallBuffers();
+        CleanupDrawCallBuffers(retainedScreenViews);
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [5] after CleanupUnusedBuffers
 #endif
@@ -2094,7 +2098,7 @@ void InxRenderer::StageEngineGlobalsUBO()
     m_vkCore->StageGlobals(globals);
 }
 
-void InxRenderer::CleanupDrawCallBuffers()
+void InxRenderer::CleanupDrawCallBuffers(const std::vector<SceneRenderGraph *> &retainedScreenViews)
 {
     if (!m_vkCore)
         return;
@@ -2103,28 +2107,37 @@ void InxRenderer::CleanupDrawCallBuffers()
     using Clock = std::chrono::high_resolution_clock;
     auto t0 = Clock::now();
 #endif
-    const auto key = [](const ScheduledView &view) {
-        return std::make_pair(view.viewId, view.graph->GetObjectBindingIdentity());
+    const auto key = [](const SceneRenderGraph *graph) {
+        return std::make_pair(graph->GetRenderViewContext().id, graph->GetObjectBindingIdentity());
     };
+    const auto scheduledCount = m_nextScheduledViews.size();
     const bool sameBindings =
+        m_objectBindingViews.size() == scheduledCount + retainedScreenViews.size() &&
         std::equal(m_nextScheduledViews.begin(), m_nextScheduledViews.end(), m_objectBindingViews.begin(),
-                   m_objectBindingViews.end(),
-                   [&](const ScheduledView &view, const auto &previous) { return key(view) == previous; });
+                   [&](const ScheduledView &view, const auto &previous) { return key(view.graph) == previous; }) &&
+        std::equal(retainedScreenViews.begin(), retainedScreenViews.end(),
+                   m_objectBindingViews.begin() + scheduledCount,
+                   [&](const SceneRenderGraph *graph, const auto &previous) { return key(graph) == previous; });
     if (sameBindings && m_sweptObjectBufferRevision == m_vkCore->GetObjectBufferRevision())
         return;
 
     if (m_nextScheduledViews.empty())
         m_vkCore->ReleaseActiveDrawLists();
 
-    // A view that reused its bindings has not stamped them during preparation.
-    // The sweep must preserve the union of both reused and prepared bindings.
+    const auto keep = [this](const SceneRenderGraph *graph) {
+        m_vkCore->KeepObjectBuffers(graph->GetCachedDrawCalls());
+        m_vkCore->KeepObjectBuffers(graph->GetCachedShadowDrawCalls());
+    };
+    // The sweep includes both the views drawing now and screens between samples.
     m_objectBindingViews.clear();
     for (const auto &view : m_nextScheduledViews) {
-        m_objectBindingViews.push_back(key(view));
-        if (view.graph->ReusesObjectBindings()) {
-            m_vkCore->KeepObjectBuffers(view.graph->GetCachedDrawCalls());
-            m_vkCore->KeepObjectBuffers(view.graph->GetCachedShadowDrawCalls());
-        }
+        m_objectBindingViews.push_back(key(view.graph));
+        if (view.graph->ReusesObjectBindings())
+            keep(view.graph);
+    }
+    for (const auto *graph : retainedScreenViews) {
+        m_objectBindingViews.push_back(key(graph));
+        keep(graph);
     }
 #if INFERNUX_FRAME_PROFILE
     m_frameDetailTiming.cleanupCollectIdsMs = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -3258,9 +3271,13 @@ void InxRenderer::UpdateSceneLighting()
     if (m_cameraPreviewFrame)
         stage(m_sceneCameraPreviewGraph.get(), m_cameraPreviewFrame,
               m_cameraPreviewFrame->FindView(m_sceneCameraPreviewId));
-    for (const auto *view : FindGameCamerasCached())
-        if (const auto graph = m_gameRenderGraphs.find(view->cameraId); graph != m_gameRenderGraphs.end())
-            stage(graph->second.get(), m_gameSources.at(view->worldId), view);
+    for (const auto &scheduled : m_nextScheduledViews) {
+        auto *graph = scheduled.graph;
+        if (graph->GetRenderViewContext().kind != rhi::RenderViewKind::Game)
+            continue;
+        const auto &view = graph->GetCachedCameraView();
+        stage(graph, m_gameSources.at(view.worldId), &view);
+    }
     const auto frame = bridge.AcquirePreparedGameFrame();
     if (frame && frame->Lighting())
         m_vkCore->GetLightCollector().CollectLights(*frame->Lighting(), frame->PrimaryView().position);
@@ -4995,23 +5012,42 @@ bool InxRenderer::HasActiveGameViews(bool allowScreen)
     });
 }
 
-void InxRenderer::CollectRequestedViews(bool sceneActive, bool gameActive)
+std::vector<SceneRenderGraph *>
+InxRenderer::CollectRequestedViews(bool sceneActive, bool gameActive,
+                                   const std::vector<uint64_t> &skippedAuthorGameCameras)
 {
     m_nextScheduledViews.clear();
     const auto add = [&](SceneRenderGraph *graph, bool scene) {
-        if (graph && graph->IsViewRequested(m_viewRequestSerial))
-            m_nextScheduledViews.push_back({graph, graph->GetRenderViewContext().id, 0, scene});
+        if (!graph || !graph->IsViewRequested(m_viewRequestSerial))
+            return false;
+        m_nextScheduledViews.push_back({graph, graph->GetRenderViewContext().id, 0, scene});
+        return true;
     };
     if (sceneActive)
         add(m_sceneRenderGraph.get(), true);
-    if (gameActive) {
-        for (const auto *camera : FindGameCamerasCached()) {
+    std::vector<SceneRenderGraph *> retainedScreenViews;
+    if (sceneActive || gameActive) {
+        for (const auto *camera : m_cachedGameCameras) {
             const auto view = m_gameRenderGraphs.find(camera->cameraId);
-            if (view != m_gameRenderGraphs.end())
-                add(view->second.get(), false);
+            if (view == m_gameRenderGraphs.end())
+                continue;
+            auto *graph = view->second.get();
+            if (gameActive && add(graph, false))
+                continue;
+            if (camera->renderToTexture || !m_gameScreenOutputs || !m_gameScreenOutputs->Requested(camera->worldId) ||
+                (!graph->HasCachedDrawCalls() && !graph->HasCachedShadowDrawCalls()))
+                continue;
+            const auto publication = m_gamePublications.find(camera->worldId);
+            if ((publication != m_gamePublications.end() && !publication->second->Participates(camera->cameraId)) ||
+                std::find(skippedAuthorGameCameras.begin(), skippedAuthorGameCameras.end(), camera->cameraId) !=
+                    skippedAuthorGameCameras.end())
+                continue;
+            // A leased output or unchanged source can leave the live screen out of this submission.
+            retainedScreenViews.push_back(graph);
         }
     }
     add(m_sceneCameraPreviewGraph.get(), false);
+    return retainedScreenViews;
 }
 
 void InxRenderer::UpdateViewSchedule()
