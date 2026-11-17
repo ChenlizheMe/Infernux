@@ -2,6 +2,7 @@
 
 #include <core/threading/FrameWorkOwner.h>
 #include <core/threading/JobSystem.h>
+#include <function/renderer/rhi/RhiSubmission.h>
 
 #include <memory>
 #include <vector>
@@ -27,7 +28,11 @@ struct RayWorldGeometryBinding
     bool pending = false;
     uint32_t visibilitySerial = 0;
     uint64_t visibilityLighting = 0;
+    rhi::SubmissionTicket producer;
 };
+
+[[nodiscard]] rhi::SubmissionTicket
+RayGeometryProducer(const std::shared_ptr<const RayWorldGeometryPublication> &publication) noexcept;
 
 /// Device-local presentation of immutable World geometry requested by a view.
 /// All request, upload and publication operations run on the frame owner.

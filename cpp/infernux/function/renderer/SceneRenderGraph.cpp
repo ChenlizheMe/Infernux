@@ -2150,15 +2150,25 @@ bool SceneRenderGraph::RefreshComputeBufferBindings(bool &prepared)
 
 std::shared_ptr<void> SceneRenderGraph::AcquireComputeReadValues() const
 {
-    if (m_computeBufferReads.empty())
+    const bool rayRead =
+        m_worldRayBuffers[0] && m_renderGraph &&
+        m_renderGraph->GetImportedBufferAccessStages(m_worldRayBuffers[0]->GetBuffer()) != rhi::PipelineStage::None;
+    if (m_computeBufferReads.empty() && !rayRead)
         return {};
-    auto values = std::make_shared<std::vector<std::shared_ptr<rhi::ComputeBufferState>>>();
+    struct ReadValues
+    {
+        std::vector<std::shared_ptr<rhi::ComputeBufferState>> buffers;
+        std::shared_ptr<const raytracing::RayWorldGeometryPublication> rays;
+    };
+    auto values = std::make_shared<ReadValues>();
+    if (rayRead)
+        values->rays = m_worldRayPublication;
     std::unordered_set<const rhi::ComputeBufferAllocation *> included;
     const auto include = [&](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
         const auto &allocation = m_computeBufferReads.at(buffer.get());
         if (m_renderGraph->GetImportedBufferAccessStages(allocation->GetBuffer()) != rhi::PipelineStage::None &&
             included.insert(allocation.get()).second)
-            values->push_back(std::make_shared<rhi::ComputeBufferState>(buffer->GetDesc(), allocation, true));
+            values->buffers.push_back(std::make_shared<rhi::ComputeBufferState>(buffer->GetDesc(), allocation, true));
     };
     for (const auto &read : m_materialBufferReads)
         include(read.buffer);
@@ -2171,7 +2181,7 @@ std::shared_ptr<void> SceneRenderGraph::AcquireComputeReadValues() const
             if (slots[index].external)
                 include(instance->GetBuffers()[index]);
     }
-    return values->empty() ? nullptr : values;
+    return values->buffers.empty() && !values->rays ? nullptr : values;
 }
 
 std::vector<rhi::SubmissionDependency> SceneRenderGraph::GetBufferReadDependencies() const
@@ -2187,6 +2197,14 @@ std::vector<rhi::SubmissionDependency> SceneRenderGraph::GetBufferReadDependenci
             const auto stages = m_renderGraph->GetImportedBufferAccessStages(allocation->GetBuffer(), queue);
             if (stages != rhi::PipelineStage::None)
                 dependencies.push_back({ticket, stages, queue});
+        }
+    }
+    const auto rayProducer = raytracing::RayGeometryProducer(m_worldRayPublication);
+    if (rayProducer.IsValid() && m_worldRayBuffers[0]) {
+        for (const auto queue : {rhi::QueueRole::Graphics, rhi::QueueRole::Compute, rhi::QueueRole::Transfer}) {
+            const auto stages = m_renderGraph->GetImportedBufferAccessStages(m_worldRayBuffers[0]->GetBuffer(), queue);
+            if (stages != rhi::PipelineStage::None)
+                dependencies.push_back({rayProducer, stages, queue});
         }
     }
     return dependencies;

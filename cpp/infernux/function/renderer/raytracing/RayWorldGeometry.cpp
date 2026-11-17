@@ -152,9 +152,16 @@ class RayWorldGeometryPublication final
     std::shared_ptr<const rhi::BufferResource> buffer;
     std::shared_ptr<const RayWorldMeshPage> meshes;
     std::shared_ptr<const RayWorldMeshPage> skinBasis;
+    rhi::SubmissionTicket producer;
     uint32_t visibilitySerial = 0;
     RayGeometryStatus status = RayGeometryStatus::Pending;
 };
+
+rhi::SubmissionTicket
+RayGeometryProducer(const std::shared_ptr<const RayWorldGeometryPublication> &publication) noexcept
+{
+    return publication ? publication->producer : rhi::SubmissionTicket{};
+}
 
 class RayWorldGeometryBuild final
 {
@@ -731,8 +738,8 @@ RayWorldGeometryBinding RayWorldGeometry::Acquire(const std::shared_ptr<const Re
         }
     }
     if (publication->buffer)
-        return {publication->buffer, publication->meshes->buffer, false, publication->visibilitySerial,
-                publication->visibilityLighting};
+        return {publication->buffer,           publication->meshes->buffer,     false,
+                publication->visibilitySerial, publication->visibilityLighting, publication->producer};
     if (publication->status == RayGeometryStatus::Pending)
         return {{}, {}, true};
     if (!m_unavailableBuffer) {
@@ -911,6 +918,7 @@ bool RayWorldGeometry::Advance(bool gpu)
                 return false;
             CollectDeformationReceipt();
             publication->buffer = m_active->deformation->Output();
+            publication->producer = m_active->deformation->Submission();
             publication->visibilitySerial = m_active->VisibilitySerial();
             publication->meshes = m_active->PublishedMeshes();
             publication->status = RayGeometryStatus::Ready;

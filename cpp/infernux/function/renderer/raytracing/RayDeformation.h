@@ -329,6 +329,10 @@ class RayDeformation final : public std::enable_shared_from_this<RayDeformation>
     {
         return m_output;
     }
+    rhi::SubmissionTicket Submission() const noexcept
+    {
+        return m_submission;
+    }
 
   private:
     struct Dispatch
