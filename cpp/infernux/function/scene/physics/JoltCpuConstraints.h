@@ -68,7 +68,7 @@ class JoltCpuConstraints final
     void Update(uint64_t id, const Settings &settings, bool enableCollision, bool clearPoseDrive = false);
     void SetPoseDrive(uint64_t id, const std::optional<JPH::Quat> &relative);
     void SetCollisionEnabled(uint64_t id, bool enabled);
-    bool Retire(uint64_t id);
+    bool Retire(uint64_t id, bool wake = true);
     /// The owner completes retirement for these public IDs before destroying the body.
     std::vector<uint64_t> RetireBody(uint32_t bodyId);
     [[nodiscard]] bool HasBodyConstraints(uint32_t bodyId) const;
@@ -122,7 +122,7 @@ class JoltCpuConstraints final
     static void ApplyPoseDrive(Record &joint);
     void EraseBodyIndex(uint32_t bodyId, uint64_t id);
     bool ChangeCollision(Record &joint, bool enabled);
-    void WakeEndpoints(const Record &joint, bool invalidateContacts);
+    void UpdateEndpoints(const Record &joint, bool invalidateContacts, bool wake = true);
 
     JoltCpuScene &m_scene;
     std::unordered_map<uint64_t, Record> m_joints;

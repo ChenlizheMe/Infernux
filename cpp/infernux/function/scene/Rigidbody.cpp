@@ -417,7 +417,7 @@ void Rigidbody::ValidateGpuSelection(bool gpu) const
 {
     if (gpu != IsGpuEnabled())
         if (const auto *world = GetBoundPhysicsWorld(); world && world->simulation.isPlaying)
-            PhysicsWorld::Instance().ValidateBodyTransfer(*this);
+            PhysicsWorld::Instance().ValidateBodyTransfer(*this, gpu);
 }
 
 void Rigidbody::SetIsKinematic(bool kinematic)

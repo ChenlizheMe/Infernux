@@ -74,6 +74,7 @@ struct JoltCpuControl::State
     struct JointRetire
     {
         std::vector<uint64_t> ids;
+        bool wake = true;
     };
 
     struct Entry
@@ -339,7 +340,7 @@ struct JoltCpuControl::State
     void Apply(uint32_t, const JointRetire &retire, const RetiredJoints &)
     {
         for (const auto id : retire.ids)
-            scene.Constraints().Retire(id);
+            scene.Constraints().Retire(id, retire.wake);
     }
 
     void Apply(const std::vector<Entry> &entries, const RetiredJoints &retired)
@@ -599,7 +600,7 @@ void JoltCpuControl::TransferJointsOut(const std::vector<uint64_t> &ids)
     if (ids.empty())
         return;
     auto &state = *m_state;
-    state.pending.push_back({UINT32_MAX, State::JointRetire{ids}});
+    state.pending.push_back({UINT32_MAX, State::JointRetire{ids, false}});
     for (const auto id : ids)
         state.joints.erase(id);
 }

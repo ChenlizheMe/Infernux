@@ -215,6 +215,21 @@ JoltGpuControlWork PrepareJointReadWork(std::function<JoltGpuControlWork()> prep
 }
 } // namespace
 
+PhysicsWorld::JointBackend PhysicsWorld::SelectJointBackend(Backend owner, Backend connected) noexcept
+{
+    if (owner != Backend::StaticBoundary && connected != Backend::StaticBoundary && owner != connected)
+        return JointBackend::Mixed;
+    return owner == Backend::Gpu || connected == Backend::Gpu ? JointBackend::Gpu : JointBackend::Cpu;
+}
+
+void PhysicsWorld::ValidateMixedJointPermission(uint32_t owner, uint32_t connected) const
+{
+    if (!FindRigidbodyByBodyId(owner)->AllowsCrossBackendInteraction() ||
+        !FindRigidbodyByBodyId(connected)->AllowsCrossBackendInteraction())
+        throw std::invalid_argument(
+            "A cross-backend FixedJoint requires both Rigidbody components to allow cross-backend interaction");
+}
+
 PhysicsWorld::JointBackend PhysicsWorld::PrepareJointEndpoints(PhysicsDomain &domain, uint32_t ownerBody,
                                                                uint32_t connectedBody, bool supportsMixed)
 {
@@ -227,24 +242,21 @@ PhysicsWorld::JointBackend PhysicsWorld::PrepareJointEndpoints(PhysicsDomain &do
         const auto &connected = *FindBodyRegistration(connectedBody);
         b = connected.AuthorBackend();
     }
-    const auto consumer = a == Backend::StaticBoundary ? b : a;
-    if (consumer == Backend::StaticBoundary)
+    if (a == Backend::StaticBoundary && b == Backend::StaticBoundary)
         throw std::invalid_argument("Joint requires a Rigidbody endpoint to select its physics backend");
-    if (a != Backend::StaticBoundary && b != Backend::StaticBoundary && a != b) {
+    const auto route = SelectJointBackend(a, b);
+    if (route == JointBackend::Mixed) {
         if (!supportsMixed)
             throw std::invalid_argument(
                 "Joint endpoints on different physics backends are unsupported for this joint type");
-        if (!FindRigidbodyByBodyId(ownerBody)->AllowsCrossBackendInteraction() ||
-            !FindRigidbodyByBodyId(connectedBody)->AllowsCrossBackendInteraction())
-            throw std::invalid_argument(
-                "A cross-backend FixedJoint requires both Rigidbody components to allow cross-backend interaction");
+        ValidateMixedJointPermission(ownerBody, connectedBody);
         return JointBackend::Mixed;
     }
     if (a == Backend::StaticBoundary)
-        EnsureStaticBoundary(domain, ownerBody, consumer);
+        EnsureStaticBoundary(domain, ownerBody, b);
     if (b == Backend::StaticBoundary && connectedBody != Cpu::WorldBody)
-        EnsureStaticBoundary(domain, connectedBody, consumer);
-    return consumer == Backend::Cpu ? JointBackend::Cpu : JointBackend::Gpu;
+        EnsureStaticBoundary(domain, connectedBody, a);
+    return route;
 }
 
 PhysicsDomain *PhysicsWorld::FindCpuJointDomain(uint64_t id) const noexcept
@@ -374,14 +386,11 @@ uint64_t PhysicsWorld::CreateFixedConstraint(PhysicsConstraintOwner &owner, uint
                              imported);
     if (route == JointBackend::Mixed) {
         const auto baked = JointVector(localBakedAnchor), local = JointVector(localAnchor);
-        const auto id = PhysicsECSStore::Instance().AllocateJointIdentity();
+        const auto id = imported ? imported->id : PhysicsECSStore::Instance().AllocateJointIdentity();
         const bool cpuOwns = FindBodyRegistration(bodyIdA)->AuthorBackend() == Backend::Cpu;
-        auto joint = std::make_shared<JoltMixedFixedJoint>(JoltMixedFixedJoint{cpuOwns ? bodyIdA : bodyIdB,
-                                                                               cpuOwns ? bodyIdB : bodyIdA,
-                                                                               cpuOwns,
-                                                                               JPH::Vec3(baked.x, baked.y, baked.z),
-                                                                               JPH::Vec3(local.x, local.y, local.z),
-                                                                               {}});
+        auto joint = std::make_shared<JoltMixedFixedJoint>(JoltMixedFixedJoint{
+            cpuOwns ? bodyIdA : bodyIdB, cpuOwns ? bodyIdB : bodyIdA, cpuOwns, JPH::Vec3(baked.x, baked.y, baked.z),
+            JPH::Vec3(local.x, local.y, local.z), imported && imported->state ? *imported->state : std::nullopt});
         domain.mixedFixedJoints.emplace(id, PhysicsDomain::MixedFixed{std::move(joint), &owner, enableCollision});
         m_mixedJointDomains.emplace(id, &domain);
         return id;

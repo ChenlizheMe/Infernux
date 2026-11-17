@@ -603,7 +603,7 @@ void JoltCpuConstraints::Create(uint64_t id, const Binding &binding, const Setti
         throw;
     }
     if (!restored)
-        WakeEndpoints(entry->second, changed);
+        UpdateEndpoints(entry->second, changed);
 }
 
 JoltJointTransfer JoltCpuConstraints::ReadTransfer(uint64_t id) const
@@ -666,7 +666,7 @@ void JoltCpuConstraints::SetPoseDrive(uint64_t id, const std::optional<JPH::Quat
         return;
     joint.poseDriveRelative = relative;
     ApplyPoseDrive(joint);
-    WakeEndpoints(joint, false);
+    UpdateEndpoints(joint, false);
 }
 
 void JoltCpuConstraints::Update(uint64_t id, const Settings &settings, bool enableCollision, bool clearPoseDrive)
@@ -723,17 +723,17 @@ void JoltCpuConstraints::Update(uint64_t id, const Settings &settings, bool enab
         joint.poseDriveRelative.reset();
     if (joint.poseDriveRelative)
         ApplyPoseDrive(joint);
-    WakeEndpoints(joint, changed);
+    UpdateEndpoints(joint, changed);
 }
 
 void JoltCpuConstraints::SetCollisionEnabled(uint64_t id, bool enabled)
 {
     auto &joint = m_joints.at(id);
     if (ChangeCollision(joint, enabled))
-        WakeEndpoints(joint, true);
+        UpdateEndpoints(joint, true);
 }
 
-bool JoltCpuConstraints::Retire(uint64_t id)
+bool JoltCpuConstraints::Retire(uint64_t id, bool wake)
 {
     const auto found = m_joints.find(id);
     if (found == m_joints.end())
@@ -741,7 +741,7 @@ bool JoltCpuConstraints::Retire(uint64_t id)
     auto &joint = found->second;
     const bool changed = ChangeCollision(joint, true);
     m_scene.System().RemoveConstraint(joint.native.GetPtr());
-    WakeEndpoints(joint, changed);
+    UpdateEndpoints(joint, changed, wake);
     EraseBodyIndex(joint.ownerBody, id);
     EraseBodyIndex(joint.connectedBody, id);
     m_joints.erase(found);
@@ -857,7 +857,7 @@ bool JoltCpuConstraints::SuppressesCollision(uint32_t bodyA, uint32_t bodyB) con
     return !m_suppressedPairs.empty() && m_suppressedPairs.find(PairKey(bodyA, bodyB)) != m_suppressedPairs.end();
 }
 
-void JoltCpuConstraints::WakeEndpoints(const Record &joint, bool invalidateContacts)
+void JoltCpuConstraints::UpdateEndpoints(const Record &joint, bool invalidateContacts, bool wake)
 {
     auto &bodies = m_scene.System().GetBodyInterface();
     for (const auto id : {joint.connectedBody, joint.ownerBody}) {
@@ -865,7 +865,8 @@ void JoltCpuConstraints::WakeEndpoints(const Record &joint, bool invalidateConta
             continue;
         if (invalidateContacts)
             bodies.InvalidateContactCache(m_scene.NativeBody(id));
-        m_scene.SetBodyAwake(id, true);
+        if (wake)
+            m_scene.SetBodyAwake(id, true);
     }
 }
 

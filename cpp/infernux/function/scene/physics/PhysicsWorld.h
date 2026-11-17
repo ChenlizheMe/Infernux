@@ -833,6 +833,8 @@ class PhysicsWorld
         Gpu,
         Mixed
     };
+    [[nodiscard]] static JointBackend SelectJointBackend(Backend owner, Backend connected) noexcept;
+    void ValidateMixedJointPermission(uint32_t owner, uint32_t connected) const;
     [[nodiscard]] JointBackend PrepareJointEndpoints(PhysicsDomain &, uint32_t ownerBody, uint32_t connectedBody,
                                                      bool supportsMixed = false);
     [[nodiscard]] PhysicsDomain *FindCpuJointDomain(uint64_t jointId) const noexcept;
@@ -869,13 +871,17 @@ class PhysicsWorld
     void RequireHealthyStep(PhysicsDomain &domain) const;
     void FailStep(PhysicsDomain &domain) noexcept;
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
-    void ValidateBodyTransfer(const Rigidbody &) const;
+    void ValidateBodyTransfer(const Rigidbody &, bool gpu) const;
     void RequestBodyTransfer(const Rigidbody &);
-    [[nodiscard]] std::vector<Joint *> CollectTransferJoints(const PhysicsDomain &, const std::vector<uint32_t> &,
-                                                             Backend target) const;
+    struct JointTransferBinding
+    {
+        Joint *joint;
+        JointBackend destination;
+    };
+    [[nodiscard]] std::vector<JointTransferBinding>
+    CollectTransferJoints(const PhysicsDomain &, const std::vector<uint32_t> &, Backend target) const;
     void StageBodyTransfer(PhysicsDomain &domain);
-    bool TryStageBodyTransfer(PhysicsDomain &domain, const std::vector<uint32_t> &bodies, Backend target,
-                              bool explicitGroup);
+    bool TryStageBodyTransfer(PhysicsDomain &domain, const std::vector<uint32_t> &bodies, Backend target);
     bool AdvanceBodyTransfer(PhysicsDomain &domain, bool synchronous);
     bool TryBeginFixed(PhysicsDomain &domain);
     void FinishFixed(PhysicsDomain &domain);
