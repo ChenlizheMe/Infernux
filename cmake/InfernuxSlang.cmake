@@ -46,8 +46,10 @@ function(infernux_add_rt_slang_module compiler_target)
     _infernux_embed_ray_source("${_traversal}" _ray_traversal_source)
     _infernux_embed_ray_source("${_bsdf}" _ray_bsdf_source)
     set(_output "${CMAKE_CURRENT_BINARY_DIR}/infernux-slang-modules")
-    configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/SlangRayModules.h.in"
-        "${_output}/SlangRayModules.h" @ONLY)
+    set(_header "${_output}/SlangRayModules.h")
+    configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/SlangRayModules.h.in" "${_header}" @ONLY)
+    set_property(SOURCE "${_root}/cpp/infernux/function/resources/ShaderAsset/SlangCompiler.cpp"
+        APPEND PROPERTY OBJECT_DEPENDS "${_header}")
     target_include_directories("${compiler_target}" PRIVATE "${_output}")
 endfunction()
 

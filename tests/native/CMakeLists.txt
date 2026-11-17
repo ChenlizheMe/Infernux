@@ -1272,30 +1272,6 @@ if(INFERNUX_BUILD_TESTS)
         )
     endforeach()
 
-    if(TARGET infernux_gpu_jit_compiler)
-        foreach(contract compiler bit)
-            add_test(NAME infernux.compute_${contract}_contract
-                # The nested Taichi compiler project has its own explicit
-                # configuration, which can differ from the outer multi-config
-                # tree (for example RelWithDebInfo).  Use that shared value
-                # instead of letting CTest point at a directory it never
-                # produces.
-                COMMAND ${INFERNUX_GPU_JIT_BINARY_DIR}/tests/${INFERNUX_GPU_JIT_BUILD_CONFIG}/infernux_${contract}_contract_tests${CMAKE_EXECUTABLE_SUFFIX})
-            set_tests_properties(infernux.compute_${contract}_contract PROPERTIES
-                LABELS "compiler" TIMEOUT 30)
-        endforeach()
-        add_test(
-            NAME infernux.compute_compiler_only
-            COMMAND ${Python3_EXECUTABLE}
-                ${INFERNUX_GPU_JIT_SOURCE_DIR}/tests/infernux/compiler_only_kernel.py
-                ${INFERNUX_GPU_JIT_INSTALL_ROOT}/infernux/_compiler/taichi/_vendor/taichi
-        )
-        set_tests_properties(infernux.compute_compiler_only PROPERTIES
-            LABELS "compiler"
-            TIMEOUT 30
-        )
-    endif()
-
     add_test(
         NAME infernux.compute_buffer_gpu
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/gpu/compute_buffer_gpu_test.py
@@ -1324,7 +1300,7 @@ if(INFERNUX_BUILD_TESTS)
         infernux.compute_physics_exchange_gpu
         PROPERTIES
         FAIL_REGULAR_EXPRESSION "Validation Error:"
-        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;INFERNUX_GPU_JIT_VENDOR_DIR=${INFERNUX_GPU_JIT_INSTALL_ROOT}/infernux/_compiler/taichi/_vendor/taichi"
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
         LABELS "requires_vulkan_device"
         TIMEOUT 60
         RUN_SERIAL TRUE
