@@ -159,6 +159,7 @@ class JoltCpuScene final : private JPH::ContactListener,
 
   private:
     friend class JoltCpuContactPublication;
+    friend class JoltMixedContactStep;
     friend class JoltCpuConstraints;
     friend class JoltCpuQueries;
     struct BodyRecord

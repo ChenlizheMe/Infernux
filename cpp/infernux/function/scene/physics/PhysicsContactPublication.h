@@ -34,6 +34,7 @@ class PhysicsContactPublication final
             return events || impulses || !receivers.empty();
         }
         void CaptureActor(const RuntimeWorld &, const PhysicsActorData &);
+        [[nodiscard]] bool WantsTriggers() const;
         [[nodiscard]] uint8_t Interest(Surface) const;
         [[nodiscard]] bool Observes(Surface a, Surface b, bool trigger) const;
     };

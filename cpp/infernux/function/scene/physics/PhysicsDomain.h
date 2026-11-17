@@ -18,6 +18,7 @@ namespace infernux
 class RuntimeWorld;
 class JoltCpuScene;
 class JoltCpuControl;
+class JoltMixedContactStep;
 
 /// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
 /// Worker services and GPU storage/submission remain shared between worlds.
@@ -102,6 +103,7 @@ struct PhysicsDomain final
     bool contactEventStreamEnabled = false, contactImpulseStreamEnabled = false, contactIncludeTriggers = true;
     PhysicsContactPublication contacts;
     JoltGpuContactPublication gpuContacts;
+    std::unique_ptr<JoltMixedContactStep> mixedContacts;
     struct RenderState
     {
         using Keys = std::array<uint64_t, 3>;

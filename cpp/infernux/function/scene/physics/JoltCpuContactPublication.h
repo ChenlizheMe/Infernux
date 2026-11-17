@@ -20,7 +20,8 @@ class JoltCpuContactPublication final
     ~JoltCpuContactPublication();
 
     JPH::EPhysicsUpdateError Step(JoltCpuExecution &, JoltCpuScene &, float deltaTime, uint32_t substeps,
-                                  ContactStreamIdentity, PhysicsContactPublication::Policy);
+                                  ContactStreamIdentity, PhysicsContactPublication::Policy,
+                                  std::function<void(uint32_t)> afterSubstep = {});
     /// Observe the previous prepared Fixed. Call Validate before taking frames.
     void ValidateCompleted(ContactStreamIdentity, uint32_t substeps) const;
     [[nodiscard]] PhysicsContactPublication::Frame TakeFrame(uint32_t substep);

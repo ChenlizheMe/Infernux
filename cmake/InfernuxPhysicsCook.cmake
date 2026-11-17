@@ -34,6 +34,7 @@ function(infernux_cook_jolt_gpu_programs target format)
     get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     set(_jolt_gpu "${_root}/external/joltphysics_for_infernux/Jolt/GPU")
     file(GLOB_RECURSE _shader_sources CONFIGURE_DEPENDS
+        "${_root}/cpp/infernux/function/scene/physics/shaders/*.slang"
         "${_jolt_gpu}/*.slang" "${_jolt_gpu}/*.h" "${_jolt_gpu}/*.inl")
     list(APPEND _shader_sources "${_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
     if(CMAKE_CROSSCOMPILING)

@@ -22,6 +22,7 @@
 #include "JoltGpuQueries.h"
 #include "JoltGpuRenderBindings.h"
 #include "JoltGpuRenderPoses.h"
+#include "JoltMixedContacts.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsDomain.h"
 #include "PhysicsLayers.h"
@@ -664,6 +665,7 @@ void PhysicsWorld::Shutdown()
         domain->contacts.Close();
         domain->gpuContacts.Close();
         domain->cpuContacts.Close();
+        domain->mixedContacts.reset();
         RetireCpuJointRoutes(*domain);
         domain->cpuControl.reset();
         domain->cpuScene.reset();
@@ -690,6 +692,7 @@ void PhysicsWorld::Shutdown()
         domain->rendering.checkedKeys.reset();
     }
     m_gpuContactReports.reset();
+    m_gpuMixedContacts.reset();
     m_gpuRenderProgram.reset();
     m_gpuQueries.reset();
     m_gpuJoints.reset();
@@ -745,20 +748,71 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     // admission must not consume CPU commands or install a new contact policy.
     auto policy = CaptureContactPolicy(domain);
     const auto pairs = CaptureColliderPairs(domain);
+    std::vector<uint32_t> cpuEndpoints;
+    bool mixedTriggers = false;
+    if (domain.cpuControl && domain.gpuRegistered && policy.WantsTriggers()) {
+        bool gpuBody = false, sensor = false;
+        const auto &store = PhysicsECSStore::Instance();
+        for (const auto id : domain.bodyIds) {
+            const auto *entry = FindBodyRegistration(id);
+            if (!entry || entry->backend == Backend::StaticBoundary)
+                continue;
+            if (entry->backend == Backend::Cpu)
+                cpuEndpoints.push_back(id);
+            else
+                gpuBody = true;
+            const auto &actor = store.GetActor(entry->actor);
+            sensor |= std::any_of(actor.colliders.begin(), actor.colliders.end(),
+                                  [](const auto *c) { return c && c->IsEnabled() && c->IsTrigger(); });
+        }
+        mixedTriggers = gpuBody && sensor && !cpuEndpoints.empty();
+    }
+    if (mixedTriggers) {
+        if (!m_gpuMixedContacts) {
+            const auto target = PhysicsShaderTarget(*m_gpuHost);
+            m_gpuMixedContacts = std::make_unique<JoltGpuMixedContacts>(
+                *m_gpuHost, LoadJoltGpuProgram(JoltGpuProgram::CrossDomainCandidates, target));
+        }
+        if (!domain.mixedContacts)
+            domain.mixedContacts = std::make_unique<JoltMixedContactStep>();
+    }
     if (domain.gpuRegistered) {
         QueueColliderPairs(domain);
         AdmissionScope admission(*m_gpuScene, domain.owner);
         if (!m_gpuScene->TryBeginTick(
                 domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime, *domain.admittedParameters,
                 [this, &domain] { return PrepareRenderConsumer(domain, true); },
-                [this, &domain, policy](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
-                    return domain.gpuContacts.Prepare(*m_gpuContactReports, p, domain.admittedParameters->Get().solve.y,
-                                                      policy);
+                [this, &domain, policy, mixedTriggers](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
+                    auto observer = domain.gpuContacts.Prepare(*m_gpuContactReports, p,
+                                                               domain.admittedParameters->Get().solve.y, policy);
+                    if (mixedTriggers) {
+                        auto mixed =
+                            m_gpuMixedContacts->Observe(p, *domain.mixedContacts, domain.admittedContactPolicy);
+                        observer.phase = [gather = std::move(mixed.phase), observe = std::move(observer.phase)](
+                                             const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                                             const JPH::GPU::StepParams &params, uint32_t substep,
+                                             JoltGpuContactReportStage stage, std::function<void()> done) {
+                            if (stage == JoltGpuContactReportStage::AfterVelocity)
+                                return observe(storage, inputs, params, substep, stage, std::move(done));
+                            auto cross = gather(storage, inputs, params, substep, stage, [] {});
+                            return AfterWork(std::move(cross), [observe, &storage, &inputs, params, substep, stage,
+                                                                done = std::move(done)]() mutable {
+                                return observe(storage, inputs, params, substep, stage, std::move(done));
+                            });
+                        };
+                        observer.finish = [finish = std::move(observer.finish),
+                                           mixedFinish = std::move(mixed.finish)](const auto &completed) {
+                            return AfterWork(finish(completed),
+                                             [mixedFinish, completed] { return mixedFinish(completed); });
+                        };
+                    }
+                    return observer;
                 },
                 [&domain] { return domain.admittedParticipants; }))
             return false;
     }
     domain.admittedContactPolicy = std::move(policy);
+    SealStaticFixedMoves(domain);
     domain.cpuFixedAdmitted = bool(domain.cpuControl);
     if (domain.cpuFixedAdmitted) {
         // Apply the accepted CPU prefix before either numerical domain advances.
@@ -770,8 +824,20 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         system.SetGravity(JPH::Vec3(gravity.x, gravity.y, gravity.z));
         system.SetPhysicsSettings(*domain.admittedCpuSettings);
         domain.cpuScene->SetIgnoredPairs(pairs);
+        const ContactStreamIdentity identity{domain.owner.id, domain.stepEpoch, domain.stepIndex};
+        const auto substeps = domain.admittedParameters->Get().solve.y;
+        std::function<void(uint32_t)> capture;
+        if (mixedTriggers) {
+            auto &mixed = *domain.mixedContacts;
+            mixed.Begin(*domain.cpuScene, std::move(cpuEndpoints), substeps);
+            capture = [&mixed](uint32_t substep) { mixed.CaptureCpuBoundary(substep + 1); };
+        }
+        const auto error =
+            domain.cpuContacts.Step(m_cpuServices->execution, *domain.cpuScene, domain.admittedDeltaTime, substeps,
+                                    identity, domain.admittedContactPolicy, std::move(capture));
+        if (error != JPH::EPhysicsUpdateError::None)
+            throw std::runtime_error("CPU physics exceeded its configured native capacity");
     }
-    SealStaticFixedMoves(domain);
     return true;
 }
 
@@ -779,13 +845,8 @@ void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
 {
     const ContactStreamIdentity identity{domain.owner.id, domain.stepEpoch, domain.stepIndex};
     const auto substeps = domain.admittedParameters->Get().solve.y;
-    if (domain.cpuFixedAdmitted) {
-        const auto error = domain.cpuContacts.Step(m_cpuServices->execution, *domain.cpuScene, domain.admittedDeltaTime,
-                                                   substeps, identity, domain.admittedContactPolicy);
-        if (error != JPH::EPhysicsUpdateError::None)
-            throw std::runtime_error("CPU physics exceeded its configured native capacity");
+    if (domain.cpuFixedAdmitted)
         domain.cpuContacts.ValidateCompleted(identity, substeps);
-    }
     std::shared_ptr<const JoltGpuScene::Publication> gpu;
     if (domain.gpuRegistered) {
         if (!m_gpuScene->PublishCompletedTick(domain.owner))
@@ -802,6 +863,8 @@ void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
                 domain.cpuFixedAdmitted ? domain.cpuContacts.TakeFrame(substep) : PhysicsContactPublication::Frame{};
             if (gpu)
                 domain.gpuContacts.AppendFrame(substep, frame);
+            if (domain.mixedContacts)
+                domain.mixedContacts->AppendFrame(substep, frame);
             return frame;
         });
     } else {
@@ -813,6 +876,8 @@ void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
         domain.cpuPublication = identity;
         CaptureCpuPoses(domain, true);
     }
+    if (domain.mixedContacts)
+        domain.mixedContacts->ClearStep();
     if (gpu) {
         domain.gpuContacts.AcceptCompleted(gpu);
         ObserveGpuPublication(domain, true);
@@ -1118,6 +1183,8 @@ void PhysicsWorld::FailStep(PhysicsDomain &domain) noexcept
 {
     domain.gpuContacts.CancelPending();
     domain.cpuContacts.CancelPending();
+    if (domain.mixedContacts)
+        domain.mixedContacts->ClearStep();
     domain.fixedGpuPhase = PhysicsDomain::FixedGpuPhase::Failed;
     domain.stepCompleted = false;
     if (domain.gpuRegistered)
@@ -1671,6 +1738,7 @@ void PhysicsWorld::CancelPendingStep() noexcept
     domain.contacts.Close();
     domain.gpuContacts.Close();
     domain.cpuContacts.Close();
+    domain.mixedContacts.reset();
     RetireCpuJointRoutes(domain);
     domain.cpuControl.reset();
     domain.cpuScene.reset();

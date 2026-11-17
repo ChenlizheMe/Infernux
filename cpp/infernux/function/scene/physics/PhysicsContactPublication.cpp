@@ -97,6 +97,13 @@ uint8_t State::Policy::Interest(Surface surface) const
             mask |= receiver.mask;
     return mask;
 }
+bool State::Policy::WantsTriggers() const
+{
+    return (events && triggers) || std::any_of(receivers.begin(), receivers.end(), [](const auto &entry) {
+               return std::any_of(entry.second.begin(), entry.second.end(),
+                                  [](const Receiver &receiver) { return (receiver.mask & TriggerInterest) != 0; });
+           });
+}
 bool State::Policy::Observes(Surface a, Surface b, bool trigger) const
 {
     if (trigger ? events && triggers : events || impulses)

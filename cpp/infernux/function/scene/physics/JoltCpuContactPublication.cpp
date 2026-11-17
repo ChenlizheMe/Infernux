@@ -179,18 +179,15 @@ class ScopedListener final
 
 struct JoltCpuContactPublication::Capture final : JPH::ContactListener
 {
-    void Begin(JoltCpuScene &scene, Reports::Policy nextPolicy, uint32_t substeps, bool sameEpoch)
+    void Begin(JoltCpuScene &scene, Reports::Policy nextPolicy, uint32_t substeps, bool sameEpoch,
+               std::function<void(uint32_t)> afterSubstep)
     {
         m_scene = &scene;
         m_material = scene.System().GetContactListener();
         m_policy = std::move(nextPolicy);
+        m_afterSubstep = std::move(afterSubstep);
         m_streamTriggers = m_policy.events && m_policy.triggers;
-        m_observeTriggers =
-            m_streamTriggers ||
-            std::any_of(m_policy.receivers.begin(), m_policy.receivers.end(), [](const auto &surface) {
-                return std::any_of(surface.second.begin(), surface.second.end(),
-                                   [](const Reports::Receiver &r) { return (r.mask & TriggerInterest) != 0; });
-            });
+        m_observeTriggers = m_policy.WantsTriggers();
         m_failure = nullptr;
         m_frames.clear();
         m_frames.reserve(substeps);
@@ -297,6 +294,8 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
             if (substep != m_frames.size())
                 throw std::logic_error("CPU contact substep sequence mismatch");
             m_frames.push_back(BuildFrame(system));
+            if (m_afterSubstep)
+                m_afterSubstep(substep);
         } catch (...) {
             m_failure = std::current_exception();
         }
@@ -308,6 +307,7 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
         if (m_frames.empty() && !m_failure)
             for (uint32_t step = 0; step < substeps; ++step)
                 OnContactStepCompleted(step, system);
+        m_afterSubstep = {};
         if (m_failure)
             std::rethrow_exception(m_failure);
         if (m_frames.size() != substeps)
@@ -339,6 +339,7 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
     {
         m_previous.clear();
         m_frames.clear();
+        m_afterSubstep = {};
     }
 
   private:
@@ -610,6 +611,7 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
     std::vector<Reports::Point> m_points;
     std::mutex m_samplesMutex;
     std::exception_ptr m_failure;
+    std::function<void(uint32_t)> m_afterSubstep;
     bool m_streamTriggers = false, m_observeTriggers = false;
 };
 
@@ -618,10 +620,11 @@ JoltCpuContactPublication::~JoltCpuContactPublication() = default;
 
 JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execution, JoltCpuScene &scene,
                                                          float deltaTime, uint32_t substeps,
-                                                         ContactStreamIdentity identity, Reports::Policy policy)
+                                                         ContactStreamIdentity identity, Reports::Policy policy,
+                                                         std::function<void(uint32_t)> afterSubstep)
 {
     m_ready.reset();
-    m_observing = policy.Requested();
+    m_observing = policy.Requested() || bool(afterSubstep);
     scene.MarkActivePoseUpdates();
     JPH::EPhysicsUpdateError result;
     if (m_observing) {
@@ -629,7 +632,7 @@ JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execu
             m_capture = std::make_unique<Capture>();
         const bool sameEpoch = m_published && m_published->worldId == identity.worldId &&
                                m_published->simulationEpoch == identity.simulationEpoch;
-        m_capture->Begin(scene, std::move(policy), substeps, sameEpoch);
+        m_capture->Begin(scene, std::move(policy), substeps, sameEpoch, std::move(afterSubstep));
         {
             const ScopedListener listener(scene.System(), *m_capture);
             result = execution.Step(scene.System(), deltaTime, static_cast<int>(substeps));

@@ -42,6 +42,7 @@ class RuntimeWorld;
 struct PhysicsDomain;
 class JoltGpuRenderPoses;
 class JoltGpuContactReports;
+class JoltGpuMixedContacts;
 class Infernux;
 class JoltGpuScene;
 class JoltGpuQueries;
@@ -943,6 +944,7 @@ class PhysicsWorld
     std::unique_ptr<JoltGpuQueries> m_gpuQueries;
     std::unique_ptr<JoltGpuRenderPoses> m_gpuRenderProgram;
     std::unique_ptr<JoltGpuContactReports> m_gpuContactReports;
+    std::unique_ptr<JoltGpuMixedContacts> m_gpuMixedContacts;
     // Live component ownership is independent of a backend's numerical slots
     // and immutable publications, which may outlive a retired component.
     std::unordered_map<uint32_t, BodyRegistration> m_bodyActors;
