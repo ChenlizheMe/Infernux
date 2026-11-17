@@ -62,16 +62,30 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
         std::sort(roots.begin(), roots.end());
         roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
 
-        m_shaderReloadSources.clear();
+        std::vector<std::string> sourcePaths;
+        sourcePaths.reserve(roots.size());
         for (const auto &root : roots)
-            m_shaderReloadSources.push_back(database->GetPathFromGuid(root));
-        RetireShaderPreparations(m_shaderReloadSources);
+            sourcePaths.push_back(database->GetPathFromGuid(root));
+        m_shaderReloadSources = sourcePaths;
+        RetireShaderPreparations(sourcePaths);
 
         ShaderLoader loader;
+        const auto changedPath = database->GetPathFromGuid(guid);
+        auto changed = loader.Load(changedPath, guid, database).Get<ShaderAsset>();
+        if (roots.size() > 1 && (changed->shaderType == "library" || changed->shaderType == "shadingmodel")) {
+            // The edited dependency compiled on its own. A later rejection
+            // belongs to its consumers, whose separate repairs can resolve it.
+            m_shaderReloadSources.erase(
+                std::remove(m_shaderReloadSources.begin(), m_shaderReloadSources.end(), changedPath),
+                m_shaderReloadSources.end());
+        }
         std::vector<std::pair<std::string, std::shared_ptr<ShaderAsset>>> candidates;
-        for (const auto &root : roots) {
-            const auto path = database->GetPathFromGuid(root);
-            candidates.emplace_back(root, loader.Load(path, root, database).Get<ShaderAsset>());
+        candidates.reserve(roots.size());
+        for (size_t index = 0; index < roots.size(); ++index) {
+            const auto &root = roots[index];
+            auto asset =
+                root == guid ? std::move(changed) : loader.Load(sourcePaths[index], root, database).Get<ShaderAsset>();
+            candidates.emplace_back(root, std::move(asset));
         }
 
         std::vector<ShaderProgramArtifact> materials;
@@ -153,6 +167,7 @@ std::string Infernux::ReloadShaderAuthorSource(const std::string &shaderPath)
             combination.material->SynchronizeShaderPropertyDefaults(program);
             m_linkedShaderProgramCache.erase(program.key.stages);
         }
+        m_shaderReloadSources = std::move(sourcePaths);
         return {};
     } catch (const ShaderCompilationError &error) {
         m_shaderReloadDiagnostics = error.diagnostics;

@@ -1047,22 +1047,24 @@ class AssetManager:
             Debug.resolve_diagnostic("asset.compile", key)
 
     @classmethod
-    def _publish_shader_compile_result(cls, path: str, error: str, native) -> None:
+    def _publish_shader_compile_result(cls, path: str, error: str, native, *, deleted_consumers=()) -> None:
         """Retire source diagnostics only after their consumers accept a candidate."""
         sources = tuple(native._shader_reload_sources)
-        roots = frozenset(path_key(source) for source in sources)
+        roots = frozenset(path_key(source) for source in deleted_consumers or sources)
         key = path_key(path)
-        cls._shader_diagnostic_roots.pop(key, None)
-        diagnostic = next((item for item in native._shader_reload_diagnostics
-                           if item["severity"] in {"error", "fatal error"}), {"path": path, "line": 0})
-        source = diagnostic["path"] or path
-        cls._publish_compile_diagnostic(source, error, line=diagnostic["line"], key_path=path,
-                                        summary=diagnostic.get("message", ""))
         if error:
+            diagnostic = next((item for item in native._shader_reload_diagnostics
+                               if item["severity"] in {"error", "fatal error"}), {"path": path, "line": 0})
+            cls._publish_compile_diagnostic(diagnostic["path"] or path, error, line=diagnostic["line"], key_path=path,
+                                             summary=diagnostic.get("message", ""))
             if roots:
                 cls._shader_diagnostic_roots[key] = (path, roots)
+            else:
+                cls._shader_diagnostic_roots.pop(key, None)
             return
         Shader._record_runtime_publication(cls._asset_database, sources or (path,))
+        if key not in cls._shader_diagnostic_roots:
+            cls._publish_compile_diagnostic(path)
         for owner, (source, outstanding) in tuple(cls._shader_diagnostic_roots.items()):
             remaining = outstanding - roots
             if not remaining:
@@ -1193,7 +1195,8 @@ class AssetManager:
         bump_shader_property_generation()
 
     @classmethod
-    def _compile_shader_dependency_runtime(cls, path: str, previous_path: str = "") -> str:
+    def _compile_shader_dependency_runtime(cls, path: str, previous_path: str = "", *, deleted_guid: str = "",
+                                           database=None) -> str:
         if not any(source_extension(source) in SHADER_DEPENDENCY_EXTENSIONS
                    for source in (path, previous_path)):
             return ""
@@ -1205,7 +1208,19 @@ class AssetManager:
         if previous_path:
             cls._publish_compile_diagnostic(previous_path)
             cls._shader_diagnostic_roots.pop(path_key(previous_path), None)
-        cls._publish_shader_compile_result(path, error, native)
+        deleted_consumers = ()
+        if error and deleted_guid:
+            # The catalog has removed this path. The deleted GUID still has
+            # incoming edges from consumers with published source closures.
+            registry = cls._get_registry()
+            if registry is not None:
+                asset_database = cls._mutation_database(database)
+                dependents = asset_database.dependency_graph.get_dependents(deleted_guid)
+                published = (asset_database.get_path_from_guid(guid) for guid in dependents
+                             if registry.get_asset_version(guid))
+                deleted_consumers = tuple(source for source in published
+                                          if source_extension(source) in SHADER_SOURCE_EXTENSIONS)
+        cls._publish_shader_compile_result(path, error, native, deleted_consumers=deleted_consumers)
         return error
 
     @classmethod
@@ -1394,7 +1409,7 @@ class AssetManager:
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._publish_asset_content_change(path, "deleted", guid=guid)
-        cls._compile_shader_dependency_runtime(path)
+        cls._compile_shader_dependency_runtime(path, deleted_guid=guid, database=asset_database)
         return result
 
     @classmethod

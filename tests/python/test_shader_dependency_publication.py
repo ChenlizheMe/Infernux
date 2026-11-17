@@ -9,6 +9,8 @@ import pytest
 from infernux.core.assets import AssetManager
 from infernux.core.material import Material
 from infernux.core.shader import Shader
+from infernux.debug import DebugConsole
+from infernux.engine.path_utils import path_key
 from infernux.lib import AssetMutationErrorCode, AssetRegistry, InxMaterial
 
 
@@ -44,111 +46,159 @@ def dependency_sources(engine, monkeypatch):
             assert result, result.error
 
 
-def sources(prefix):
-    name = prefix + " Library"
-    good = (
-        f'ShaderInfo {{ Name "{name}" }}\n'
-        "vec4 sharedColor(){return vec4(0.2,0.3,0.4,1);}\n"
-        "vec4 optionalColor(){return sharedColor();}\n"
+SHARED_COLOR = '''import infernux.shader as shader
+
+def shared_color() -> shader.vec4:
+    return shader.vec4(0.2, 0.3, 0.4, 1.0)
+'''
+OPTIONAL_COLOR = '''
+def optional_color() -> shader.vec4:
+    return shared_color()
+'''
+LIBRARY = SHARED_COLOR + OPTIONAL_COLOR
+REVISED_SHARED_COLOR = SHARED_COLOR.replace("0.2, 0.3, 0.4", "0.7, 0.6, 0.5")
+
+
+def _shaderlib_import(path, function):
+    module = path.name.removesuffix(".shaderlib.py")
+    return f"from .{module} import {function}\n"
+
+
+def _fullscreen_source(shader_id, library=None, function="optional_color"):
+    imported = _shaderlib_import(library, function) if library is not None else ""
+    color = f"{function}()" if library is not None else "shader.vec4(1.0)"
+    return f'''import infernux.shader as shader
+{imported}
+class Color(shader.fullscreen):
+    shader_id = {shader_id!r}
+
+    def main(self) -> shader.vec4:
+        return {color}
+'''
+
+
+def _surface_source(shader_id, *, library=None, function="optional_color", signal=False):
+    imported = _shaderlib_import(library, function) if library is not None else ""
+    field = "    signal = shader.material.float(default=0.25)\n" if signal else ""
+    albedo = f"{function}().rgb" if library is not None else (
+        "shader.vec3(self.signal)" if signal else "shader.vec3(0.2, 0.3, 0.4)"
     )
-    bad = good.replace("0.2,0.3,0.4", "0.7,0.6,0.5").replace("vec4 optionalColor(){return sharedColor();}\n", "")
-    restored = good.replace("0.2,0.3,0.4", "0.7,0.6,0.5")
-    return name, good, bad, restored
+    return f'''import infernux.shader as shader
+{imported}
+class Color(shader.surface):
+    shader_id = {shader_id!r}
+    shading_model = shader.ref("infernux/shading/unlit")
+{field}
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo={albedo})
+'''
+
+
+def _vertex_source(shader_id):
+    return f'''import infernux.shader as shader
+
+class Shift(shader.vert):
+    shader_id = {shader_id!r}
+    signal = shader.material.float(default=0.25)
+
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os.x += self.signal
+        return vertex
+'''
+
+
+def _linked_material(engine, create, label, *, vertex, fragment):
+    document = InxMaterial.create_default_unlit().serialize_document()
+    document.update(builtin=False, name=fragment[1], shaders={
+        stage: {"guid": guid, "shader_id": shader_id}
+        for stage, (guid, shader_id) in (("vertex", vertex), ("fragment", fragment))
+    })
+    _, guid = create(label, ".mat", json.dumps(document))
+    material = AssetManager.load(guid, Material)
+    assert engine.refresh_material_pipeline(material.native)
+    return material
+
+
+def _compile_diagnostics(owner_path):
+    return [entry for entry in DebugConsole.instance().get_entries()
+            if entry.diagnostic_owner == "asset.compile" and entry.diagnostic_key == path_key(owner_path)]
 
 
 def test_standalone_dependency_failure_preserves_every_published_generation(engine, dependency_sources):
     prefix, create, registry = dependency_sources
-    library_name, good, bad, restored = sources(prefix)
-    library, _ = create("Library", ".glsl", good)
-    stages = []
-    for label, function in [("A", "sharedColor"), ("B", "optionalColor")]:
+    library, _ = create("Library", ".shaderlib.py", LIBRARY)
+    candidates = []
+    for label in ("A", "B"):
         name = prefix + label
-        path, guid = create(
-            label,
-            ".frag",
-            f'#version 450\nShaderInfo {{ Name "{name}" Capabilities [Fullscreen] '
-            f'Imports ["{library_name}"] Outputs {{ Float4 outColor }} }}\n'
-            f"void main(){{outColor={function}();}}\n",
-        )
+        path, guid = create(label, ".frag.py", _fullscreen_source(name, library, "shared_color"))
+        candidates.append((guid, path, name))
+    # The reload prepares consumers in GUID order. Reject the second so the
+    # first, independently valid candidate is already prepared at rejection.
+    _, rejecting_path, rejecting_name = max(candidates)
+    rejecting_path.write_text(_fullscreen_source(rejecting_name, library), encoding="utf-8")
+    stages = []
+    for guid, path, _ in candidates:
         assert Shader.reload(str(path))
-        stages.append((guid, name))
-    versions = [registry.get_asset_version(guid) for guid, _ in stages]
+        stages.append(guid)
+    versions = [registry.get_asset_version(guid) for guid in stages]
     assert all(versions)
-    library.write_text(bad, encoding="utf-8")
+
+    library.write_text(REVISED_SHARED_COLOR, encoding="utf-8")
     rejected = AssetManager.reimport_asset(str(library))
     assert not rejected and rejected.database_committed
     assert rejected.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
-    assert "optionalColor" in rejected.error
-    # The valid A candidate must wait for the rejected B candidate.
-    assert [registry.get_asset_version(guid) for guid, _ in stages] == versions
-    assert all(engine.is_shader_loaded(name, "fragment") for _, name in stages)
-    library.write_text(restored, encoding="utf-8")
+    assert "has no export 'optional_color'" in rejected.error
+    assert [registry.get_asset_version(guid) for guid in stages] == versions
+    assert all(engine.is_shader_loaded(guid, "fragment") for guid in stages)
+
+    library.write_text(REVISED_SHARED_COLOR + OPTIONAL_COLOR, encoding="utf-8")
     accepted = AssetManager.reimport_asset(str(library))
     assert accepted, accepted.error
-    assert [registry.get_asset_version(guid) for guid, _ in stages] == [v + 1 for v in versions]
+    assert [registry.get_asset_version(guid) for guid in stages] == [v + 1 for v in versions]
 
 
 def test_linked_dependency_failure_does_not_retire_a_successful_sibling_program(engine, dependency_sources):
-    prefix, create, registry = dependency_sources
-    library_name, good, bad, restored = sources(prefix)
-    library, _ = create("Library", ".glsl", good)
+    prefix, create, _ = dependency_sources
+    library, _ = create("Library", ".shaderlib.py", LIBRARY)
     vertex_name = prefix + " Vertex"
-    _, vertex_guid = create("Vertex", ".vert", f'#version 450\nShaderInfo {{ Name "{vertex_name}" }}\n')
+    _, vertex_guid = create("Vertex", ".vert.py", _vertex_source(vertex_name))
     materials = []
-    for label, function in [("A", "sharedColor"), ("B", "optionalColor")]:
+    for label, function in (("A", "shared_color"), ("B", "optional_color")):
         name = prefix + label
         _, fragment_guid = create(
-            label,
-            ".frag",
-            f'#version 450\nShaderInfo {{ Name "{name}" ShadingModel Unlit Imports ["{library_name}"] }}\n'
-            f"void surface(out SurfaceData s){{s=InitSurfaceData();s.albedo={function}().rgb;}}\n",
+            label, ".frag.py", _surface_source(name, library=library, function=function),
         )
-        document = InxMaterial.create_default_lit().serialize_document()
-        document["builtin"] = False
-        document["name"] = name
-        document["shaders"] = {
-            "vertex": {"guid": vertex_guid, "shader_id": vertex_name},
-            "fragment": {"guid": fragment_guid, "shader_id": name},
-        }
-        _, guid = create(label, ".mat", json.dumps(document))
-        material = AssetManager.load(guid, Material)
-        assert engine.refresh_material_pipeline(material._native)
-        materials.append(material)
+        materials.append(_linked_material(engine, create, label, vertex=(vertex_guid, vertex_name),
+                                          fragment=(fragment_guid, name)))
     retired = engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"]
-    library.write_text(bad, encoding="utf-8")
+    library.write_text(REVISED_SHARED_COLOR, encoding="utf-8")
     rejected = AssetManager.reimport_asset(str(library))
-    assert not rejected and "optionalColor" in rejected.error
+    assert not rejected and "has no export 'optional_color'" in rejected.error
     assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == retired
     for material in materials:
-        assert engine.refresh_material_pipeline(material._native)
+        assert engine.refresh_material_pipeline(material.native)
 
     assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == retired
-    library.write_text(restored, encoding="utf-8")
+    library.write_text(REVISED_SHARED_COLOR + OPTIONAL_COLOR, encoding="utf-8")
     accepted = AssetManager.reimport_asset(str(library))
     assert accepted, accepted.error
     assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] > retired
 
 
-@pytest.mark.parametrize("header", ("same-name", "renamed-name"))
-def test_dependency_move_keeps_guid_and_reports_rejected_runtime_candidate(engine, dependency_sources, header):
+@pytest.mark.parametrize("retarget", (True, False), ids=("missing-export", "missing-module"))
+def test_dependency_move_keeps_guid_and_reports_rejected_runtime_candidate(engine, dependency_sources, retarget):
     prefix, create, registry = dependency_sources
-    library_name, good, bad, _ = sources(prefix)
-    library, library_guid = create("Library", ".glsl", good)
+    library, library_guid = create("Library", ".shaderlib.py", LIBRARY)
     name = prefix + " Stage"
-    stage, stage_guid = create(
-        "Stage",
-        ".frag",
-        f'#version 450\nShaderInfo {{ Name "{name}" Capabilities [Fullscreen] '
-        f'Imports ["{library_name}"] Outputs {{ Float4 outColor }} }}\n'
-        "void main(){outColor=optionalColor();}\n",
-    )
+    stage, stage_guid = create("Stage", ".frag.py", _fullscreen_source(name, library))
     assert Shader.reload(str(stage))
     version = registry.get_asset_version(stage_guid)
-    if header == "renamed-name":
-        bad = good.replace(library_name, library_name + " Renamed")
-    library.write_text(bad, encoding="utf-8")
-    moved_path = library.with_name(library.stem + "Moved.glsl")
+    moved_path = library.with_name(prefix + "Moved.shaderlib.py")
+    if retarget:
+        stage.write_text(_fullscreen_source(name, moved_path), encoding="utf-8")
+        library.write_text(REVISED_SHARED_COLOR, encoding="utf-8")
     library.replace(moved_path)
+
     result = AssetManager.move_asset(str(library), str(moved_path))
     assert result.database_committed and not result
     assert result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
@@ -156,11 +206,14 @@ def test_dependency_move_keeps_guid_and_reports_rejected_runtime_candidate(engin
     database = engine.get_asset_database()
     assert database.get_guid_from_path(str(moved_path)) == library_guid
     assert not database.get_guid_from_path(str(library))
-    assert ("optionalColor" if header == "same-name" else "shader import not found") in result.error
-    moved_path.write_text(good, encoding="utf-8")
+    assert ("has no export 'optional_color'" if retarget else "ShaderLib source does not exist") in result.error
+
+    moved_path.write_text(LIBRARY, encoding="utf-8")
+    stage.write_text(_fullscreen_source(name, moved_path), encoding="utf-8")
     restored = AssetManager.reimport_asset(str(moved_path))
     assert restored, restored.error
     assert registry.get_asset_version(stage_guid) == version + 1
+    stage.write_text(_fullscreen_source(name, library), encoding="utf-8")
     moved_path.replace(library)
     back = AssetManager.move_asset(str(moved_path), str(library))
     assert back, back.error
@@ -170,116 +223,115 @@ def test_dependency_move_keeps_guid_and_reports_rejected_runtime_candidate(engin
 def test_same_name_vertex_save_rejects_all_pairs_before_retiring_any_program(engine, dependency_sources):
     prefix, create, _ = dependency_sources
     name = prefix + " Vertex"
-    original = (
-        f'#version 450\nShaderInfo {{ Name "{name}" Outputs {{ Smooth Float signal }} }}\n'
-        "VertexOutput vertex(inout VertexInput v){VertexOutput o;o.signal=0.25;return o;}\n"
-    )
-    changed = f'#version 450\nShaderInfo {{ Name "{name}" }}\nvoid vertex(inout VertexInput v){{v.position.x+=0.2;}}\n'
-    vertex, vertex_guid = create("Vertex", ".vert", original)
+    original = _vertex_source(name)
+    changed = original.replace("default=0.25", "default=0.5")
+    vertex, vertex_guid = create("Vertex", ".vert.py", original)
     materials = []
     for label in ("A", "B"):
         fragment_name = prefix + label
-        inputs = " Inputs { Smooth Float signal }" if label == "B" else ""
-        color = "vec3(fragmentInput.signal)" if label == "B" else "vec3(0.2,0.3,0.4)"
         _, fragment_guid = create(
-            label,
-            ".frag",
-            f'#version 450\nShaderInfo {{ Name "{fragment_name}" ShadingModel Unlit{inputs} }}\n'
-            f"void surface(out SurfaceData s){{s=InitSurfaceData();s.albedo={color};}}\n",
+            label, ".frag.py", _surface_source(fragment_name, signal=label == "B"),
         )
-        document = InxMaterial.create_default_lit().serialize_document()
-        document["builtin"] = False
-        document["name"] = fragment_name
-        document["shaders"] = {
-            "vertex": {"guid": vertex_guid, "shader_id": name},
-            "fragment": {"guid": fragment_guid, "shader_id": fragment_name},
-        }
-        _, guid = create(label, ".mat", json.dumps(document))
-        material = AssetManager.load(guid, Material)
-        assert engine.refresh_material_pipeline(material._native)
-        materials.append(material)
-    before = [material._native.serialize_document() for material in materials]
+        materials.append(_linked_material(engine, create, label, vertex=(vertex_guid, name),
+                                          fragment=(fragment_guid, fragment_name)))
+    before = [material.native.serialize_document() for material in materials]
     retired = engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"]
     vertex.write_text(changed, encoding="utf-8")
     rejected = AssetManager.reimport_asset(str(vertex))
-    assert not rejected and rejected.database_committed and "signal" in rejected.error
+    assert not rejected and rejected.database_committed
+    assert "disagree on material field: signal" in rejected.error
     assert engine.gpu_residency_snapshot["shader_hot_reload_retirement_count"] == retired
-    assert [material._native.serialize_document() for material in materials] == before
+    assert [material.native.serialize_document() for material in materials] == before
+
     vertex.write_text(original, encoding="utf-8")
     restored = AssetManager.reimport_asset(str(vertex))
     assert restored, restored.error
     for material in materials:
-        assert engine.refresh_material_pipeline(material._native)
+        assert engine.refresh_material_pipeline(material.native)
 
 
 @pytest.mark.parametrize("recreate_at", ("same-path", "different-path"))
 def test_recreated_dependency_clears_the_resolved_deleted_source_diagnostic(engine, dependency_sources, recreate_at):
-    from infernux.debug import DebugConsole, LogType
-
     prefix, create, registry = dependency_sources
-    library_name, good, _, _ = sources(prefix)
-    library, library_guid = create("DeletedLibrary", ".glsl", good)
-    stage, stage_guid = create(
-        "Consumer",
-        ".frag",
-        f'#version 450\nShaderInfo {{ Name "{prefix} Consumer" Capabilities [Fullscreen] '
-        f'Imports ["{library_name}"] Outputs {{ Float4 outColor }} }}\n'
-        "void main(){outColor=optionalColor();}\n",
-    )
+    library, library_guid = create("DeletedLibrary", ".shaderlib.py", LIBRARY)
+    name = prefix + " Consumer"
+    stage, stage_guid = create("Consumer", ".frag.py", _fullscreen_source(name, library))
     assert Shader.reload(str(stage))
     version = registry.get_asset_version(stage_guid)
     library.unlink()  # External delete notification follows the filesystem mutation.
     deleted = AssetManager.delete_asset(str(library))
     assert deleted and not engine.get_asset_database().get_path_from_guid(library_guid)
     assert registry.get_asset_version(stage_guid) == version
-    console = DebugConsole.instance()
-    own = lambda: [
-        entry
-        for entry in console.get_entries()
-        if entry.log_type == LogType.ERROR and Path(entry.source_file) == library
-    ]
-    assert len(own()) == 1 and "shader import not found" in own()[0].message
+    diagnostic, = _compile_diagnostics(library)
+    assert library.name in diagnostic.message
+
     label = "DeletedLibrary" if recreate_at == "same-path" else "ReplacementLibrary"
-    replacement, replacement_guid = create(label, ".glsl", good)
+    replacement, replacement_guid = create(label, ".shaderlib.py", LIBRARY)
     assert replacement_guid != library_guid
-    assert registry.get_asset_version(stage_guid) == version + 1
-    # A successful new-path declaration resolves the original missing import;
-    # its previous source-owned error must no longer remain in Console.
-    assert not own(), [entry.message for entry in own()]
+    assert _compile_diagnostics(library)
+    if replacement != library:
+        # Typed imports follow module paths. A replacement at another path
+        # becomes the dependency when the consumer publishes that import.
+        assert registry.get_asset_version(stage_guid) == version
+        stage.write_text(_fullscreen_source(name, replacement), encoding="utf-8")
+    before_reimport = registry.get_asset_version(stage_guid)
+    accepted = AssetManager.reimport_asset(str(stage))
+    assert accepted, accepted.error
+    assert registry.get_asset_version(stage_guid) == before_reimport + 1
+    assert engine.get_asset_database().dependency_graph.has_dependency(stage_guid, replacement_guid)
+    assert not _compile_diagnostics(library)
 
 
 @pytest.mark.parametrize("consumer_count", (1, 2))
 def test_repaired_roots_retire_only_their_resolved_dependency_diagnostic(engine, dependency_sources, consumer_count):
-    from infernux.debug import DebugConsole, LogType
-
     prefix, create, registry = dependency_sources
-    library_name, good, bad, _ = sources(prefix)
-    library, _ = create("Library", ".glsl", good)
+    library, _ = create("Library", ".shaderlib.py", LIBRARY)
     stages = []
     for index in range(consumer_count):
-        original = (
-            f'#version 450\nShaderInfo {{ Name "{prefix}{index}" Capabilities [Fullscreen] '
-            f'Imports ["{library_name}"] Outputs {{ Float4 outColor }} }}\n'
-            "void main(){outColor=optionalColor();}\n"
-        )
-        root, guid = create(str(index), ".frag", original)
+        name = prefix + str(index)
+        root, guid = create(str(index), ".frag.py", _fullscreen_source(name, library))
         assert Shader.reload(str(root))
-        stages.append((root, guid, original))
+        stages.append((root, guid, name))
     versions = [registry.get_asset_version(guid) for _, guid, _ in stages]
-    library.write_text(bad, encoding="utf-8")
+    library.write_text(REVISED_SHARED_COLOR, encoding="utf-8")
     rejected = AssetManager.reimport_asset(str(library))
-    assert not rejected and "optionalColor" in rejected.error
-    console = DebugConsole.instance()
-    own = lambda: [
-        entry
-        for entry in console.get_entries()
-        if entry.log_type == LogType.ERROR and Path(entry.source_file) == library
-    ]
-    assert len(own()) == 1
-    for index, (root, guid, original) in enumerate(stages):
-        repaired = original.replace(f'Imports ["{library_name}"] ', "").replace("optionalColor()", "vec4(1)")
-        root.write_text(repaired, encoding="utf-8")
+    assert not rejected and "has no export 'optional_color'" in rejected.error
+    diagnostic, = _compile_diagnostics(library)
+    assert Path(diagnostic.source_file) in {root for root, _, _ in stages}
+    assert diagnostic.source_line == 2
+
+    for index, (root, guid, name) in enumerate(stages):
+        root.write_text(_fullscreen_source(name), encoding="utf-8")
         accepted = AssetManager.reimport_asset(str(root))
         assert accepted, accepted.error
         assert registry.get_asset_version(guid) == versions[index] + 1
-        assert bool(own()) == (index + 1 < consumer_count)
+        assert bool(_compile_diagnostics(library)) == (index + 1 < consumer_count)
+
+
+def test_invalid_library_retains_its_diagnostic_after_its_consumer_detaches(dependency_sources):
+    prefix, create, registry = dependency_sources
+    library, _ = create("Library", ".shaderlib.py", LIBRARY)
+    root, guid = create("Consumer", ".frag.py", _fullscreen_source(prefix, library))
+    assert Shader.reload(str(root))
+    version = registry.get_asset_version(guid)
+
+    invalid_library = REVISED_SHARED_COLOR.replace("1.0)", "1.0, 2.0)")
+    library.write_text(invalid_library, encoding="utf-8")
+    rejected = AssetManager.reimport_asset(str(library))
+    assert not rejected and rejected.database_committed
+    assert rejected.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+    diagnostic, = _compile_diagnostics(library)
+    assert Path(diagnostic.source_file) == library
+    assert diagnostic.source_line == 4
+    assert registry.get_asset_version(guid) == version
+
+    root.write_text(_fullscreen_source(prefix), encoding="utf-8")
+    accepted = AssetManager.reimport_asset(str(root))
+    assert accepted, accepted.error
+    assert registry.get_asset_version(guid) == version + 1
+    assert _compile_diagnostics(library)
+
+    library.write_text(LIBRARY, encoding="utf-8")
+    accepted = AssetManager.reimport_asset(str(library))
+    assert accepted, accepted.error
+    assert not _compile_diagnostics(library)
