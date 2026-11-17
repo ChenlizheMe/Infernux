@@ -279,6 +279,63 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             throw std::runtime_error("GPU sleep failed state/root validation (status " + std::to_string(status) + ")");
     }
 
+    rhi::ComputeDispatchDesc Dispatch(const Operation &op, uint32_t offset, uint32_t count,
+                                      const std::shared_ptr<rhi::ComputeBuffer> &params,
+                                      const std::shared_ptr<rhi::ComputeBuffer> &work) const
+    {
+        rhi::ComputeDispatchDesc dispatch;
+        dispatch.kernel = owner->entries[op.entry].kernel;
+        dispatch.groupCountX = Groups(count);
+        rhi::ComputeDispatchProof proof;
+        for (Port port : owner->entries[op.entry].ports) {
+            auto buffer = port == Params ? params : port == Work ? work : buffers[port];
+            if (!buffer)
+                throw std::logic_error("GPU sleep dispatch lacks its exact resource");
+            uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
+            dispatch.buffers.push_back(buffer);
+            const bool complete = (port == Bounds && (op.entry == CaptureBounds || op.entry == PrescribedCapture)) ||
+                                  (port == Snapshot && op.entry == Export) || (port == Results && op.entry == Query) ||
+                                  (port == Roots && op.entry == Clear);
+            const bool writer =
+                port == Roots ||
+                (port == Sleeps && (op.entry == Wake || op.entry == ForceWake || op.entry == Update ||
+                                    op.entry == Commit || op.entry == BoundsWake || op.entry == PrescribedWake ||
+                                    op.entry == Initialize || op.entry == NewBoundsWake)) ||
+                (port == Forces && op.entry == Update) || (port == States && op.entry == Commit) ||
+                (port == Joints && op.entry == RetireHinge);
+            dispatch.bufferAccesses.push_back(complete ? rhi::ComputeBufferAccess::Write
+                                              : writer ? rhi::ComputeBufferAccess::ReadWrite
+                                                       : rhi::ComputeBufferAccess::Read);
+            if (complete) {
+                uint64_t first = op.first + offset;
+                if (port == Roots) {
+                    proof.writes.push_back({binding, first * 4u, uint64_t(count) * 4u});
+                    if (first == op.parameters.selected.y)
+                        proof.writes.push_back({binding, uint64_t(statusIndex) * 4u, 4u});
+                } else if (port == Bounds) {
+                    if (op.entry == PrescribedCapture)
+                        proof.writes.push_back({binding, first * 64u, uint64_t(count) * 64u});
+                    else
+                        proof.writes.push_back({binding, 0u, 64u});
+                } else {
+                    if (port == Snapshot)
+                        first -= op.parameters.selected.y;
+                    proof.writes.push_back({binding, first * 16u, uint64_t(count) * 16u});
+                }
+            } else if (port == Roots) {
+                // The CC bank has B+1 scalars, but only the selected body
+                // roots and explicit status lane were initialized here.
+                if (buffer->GetByteSize() > 4u && op.parameters.selected.z)
+                    proof.reads.push_back(
+                        {binding, uint64_t(op.parameters.selected.y) * 4u, uint64_t(op.parameters.selected.z) * 4u});
+                proof.reads.push_back({binding, uint64_t(statusIndex) * 4u, 4u});
+            } else
+                proof.reads.push_back({binding, 0u, buffer->GetByteSize()});
+        }
+        dispatch.proof = std::move(proof);
+        return dispatch;
+    }
+
     JoltGpuControlWork Next(uint32_t maximumDispatches = 16u)
     {
         if (cursor == plan.size()) {
@@ -323,64 +380,13 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         };
         while (next < plan.size() && dispatches.size() < maximumDispatches) {
             const auto &op = plan[next];
-            uint32_t count = std::min(2048u, op.count - offset);
+            uint32_t count = std::min(JoltGpuPoseWake::BodiesPerDispatch, op.count - offset);
             auto params = uniform(op.parameters);
             StageWork range{{op.first + offset, count, 0u, 0u}};
             auto work = uniform(range);
             if (!params || !work)
                 break;
-            rhi::ComputeDispatchDesc dispatch;
-            dispatch.kernel = owner->entries[op.entry].kernel;
-            dispatch.groupCountX = Groups(count);
-            rhi::ComputeDispatchProof proof;
-            for (Port port : owner->entries[op.entry].ports) {
-                auto buffer = port == Params ? params : port == Work ? work : buffers[port];
-                if (!buffer)
-                    throw std::logic_error("GPU sleep dispatch lacks its exact resource");
-                uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
-                dispatch.buffers.push_back(buffer);
-                const bool complete =
-                    (port == Bounds && (op.entry == CaptureBounds || op.entry == PrescribedCapture)) ||
-                    (port == Snapshot && op.entry == Export) || (port == Results && op.entry == Query) ||
-                    (port == Roots && op.entry == Clear);
-                const bool writer =
-                    port == Roots ||
-                    (port == Sleeps && (op.entry == Wake || op.entry == ForceWake || op.entry == Update ||
-                                        op.entry == Commit || op.entry == BoundsWake || op.entry == PrescribedWake ||
-                                        op.entry == Initialize || op.entry == NewBoundsWake)) ||
-                    (port == Forces && op.entry == Update) || (port == States && op.entry == Commit) ||
-                    (port == Joints && op.entry == RetireHinge);
-                dispatch.bufferAccesses.push_back(complete ? rhi::ComputeBufferAccess::Write
-                                                  : writer ? rhi::ComputeBufferAccess::ReadWrite
-                                                           : rhi::ComputeBufferAccess::Read);
-                if (complete) {
-                    uint64_t first = op.first + offset;
-                    if (port == Roots) {
-                        proof.writes.push_back({binding, first * 4u, uint64_t(count) * 4u});
-                        if (first == op.parameters.selected.y)
-                            proof.writes.push_back({binding, uint64_t(statusIndex) * 4u, 4u});
-                    } else if (port == Bounds) {
-                        if (op.entry == PrescribedCapture)
-                            proof.writes.push_back({binding, first * 64u, uint64_t(count) * 64u});
-                        else
-                            proof.writes.push_back({binding, 0u, 64u});
-                    } else {
-                        if (port == Snapshot)
-                            first -= op.parameters.selected.y;
-                        proof.writes.push_back({binding, first * 16u, uint64_t(count) * 16u});
-                    }
-                } else if (port == Roots) {
-                    // The CC bank has B+1 scalars, but only the selected body
-                    // roots and explicit status lane were initialized here.
-                    if (buffer->GetByteSize() > 4u && op.parameters.selected.z)
-                        proof.reads.push_back({binding, uint64_t(op.parameters.selected.y) * 4u,
-                                               uint64_t(op.parameters.selected.z) * 4u});
-                    proof.reads.push_back({binding, uint64_t(statusIndex) * 4u, 4u});
-                } else
-                    proof.reads.push_back({binding, 0u, buffer->GetByteSize()});
-            }
-            dispatch.proof = std::move(proof);
-            dispatches.push_back(std::move(dispatch));
+            dispatches.push_back(Dispatch(op, offset, count, params, work));
             offset += count;
             if (offset == op.count) {
                 offset = 0u;
@@ -619,14 +625,12 @@ JoltGpuControlWork JoltGpuSleep::PrepareOldBounds(const JoltGpuStorage &s, const
 }
 JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, const StepParams &selection,
                                                    std::shared_ptr<rhi::ComputeBuffer> old, uint32_t source,
-                                                   std::shared_ptr<BoundsValidation> validation, bool requirePoseChange)
+                                                   std::shared_ptr<BoundsValidation> validation)
 {
     if (old && (old->GetByteSize() != 64u || !old->HasInitializedRange(0u, 64u)))
         throw std::invalid_argument("GPU bounds wake requires its exact completed old-bound capture");
     if (!old && source == UINT32_MAX)
         return {};
-    if (requirePoseChange && (!old || source == UINT32_MAX))
-        throw std::invalid_argument("Pose wake requires its old pose and surviving source");
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
     e->boundsValidation = std::move(validation);
@@ -634,8 +638,6 @@ JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, cons
     auto p = Selection(s, selection);
     p.operation.x = source;
     p.operation.y = (old ? 1u : 0u) | (source == UINT32_MAX ? 0u : 2u);
-    if (requirePoseChange)
-        p.operation.y |= 4u;
     const auto entry = old ? BoundsWake : NewBoundsWake;
     e->buffers[Bounds] = std::move(old);
     e->Add(entry, p.selected.y, p.selected.z, p);
@@ -662,6 +664,50 @@ JoltGpuControlWork JoltGpuSleep::PrepareAuthoredBoundsWake(const JoltGpuStorage 
     e->Add(BoundsWake, p.selected.y, p.selected.z, p);
     e->completed = [](auto &) {};
     return e->Next();
+}
+
+JoltGpuPoseWake JoltGpuSleep::PreparePoseWake(const JoltGpuStorage &s, const StepParams &selection,
+                                              BoundsValidation &validation)
+{
+    auto e = std::make_shared<Impl::Execution>(m_impl);
+    e->Bind(s);
+    const auto p = Selection(s, selection);
+    const auto makeBuffer = [](rhi::ComputeHost &host, size_t bytes) {
+        return std::make_shared<rhi::ComputeBuffer>(
+            host, rhi::ComputeBufferDesc{bytes / 4u, rhi::ComputeScalarType::UInt32, 1});
+    };
+    if (!validation.status)
+        validation.status = makeBuffer(m_impl->host, sizeof(uint32_t));
+    e->buffers[Roots] = validation.status;
+    e->buffers[Bounds] = makeBuffer(m_impl->host, 4u * sizeof(Float4));
+
+    return {p.selected.z,
+            [e, p, makeBuffer](const JoltGpuPoseWake::Work &piece, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                               std::vector<rhi::ComputeDispatchDesc> &dispatches) {
+                const auto &status = e->buffers[Roots];
+                if (!status->HasInitializedRange(0u, sizeof(uint32_t)) &&
+                    std::none_of(uploads.begin(), uploads.end(),
+                                 [&](const auto &upload) { return upload.buffer == status; }))
+                    uploads.push_back({status, 0u, Bytes(uint32_t(0))});
+                const auto uniform = [&](const auto &value) {
+                    auto bytes = Bytes(value);
+                    auto found = std::find_if(uploads.begin(), uploads.end(),
+                                              [&](const auto &upload) { return upload.data == bytes; });
+                    if (found != uploads.end())
+                        return found->buffer;
+                    auto buffer = makeBuffer(e->owner->host, bytes.size());
+                    uploads.push_back({buffer, 0u, std::move(bytes)});
+                    return buffer;
+                };
+                auto parameters = p;
+                parameters.operation = {piece.source, 7u, 0u, 0u}; // Old and new bounds, only if pose changes.
+                const uint32_t first = p.selected.y + piece.first;
+                const auto params = uniform(parameters);
+                const auto work = piece.capture ? nullptr : uniform(StageWork{{first, piece.count, 0u, 0u}});
+                const Impl::Execution::Operation op{piece.capture ? CaptureBounds : BoundsWake, first, piece.count,
+                                                    parameters};
+                dispatches.push_back(e->Dispatch(op, 0u, piece.count, params, work));
+            }};
 }
 
 JoltGpuControlWork JoltGpuSleep::ValidateBoundsEdits(const BoundsValidation &validation)

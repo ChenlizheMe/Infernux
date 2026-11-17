@@ -272,19 +272,17 @@ class JoltGpuScene::Impl
         domain.pending.push_back(std::move(capture));
         return old;
     }
-    void QueueBoundsAfter(Partition &domain, OldBounds old, uint32_t record, uint32_t id, bool newBody,
-                          bool requirePoseChange = false)
+    void QueueBoundsAfter(Partition &domain, OldBounds old, uint32_t record, uint32_t id, bool newBody)
     {
         JoltGpuControlGroup wake;
-        wake.prepareWork = [this, &domain, old, record, id, newBody, requirePoseChange,
-                            validation = PendingBoundsValidation(domain)] {
+        wake.prepareWork = [this, &domain, old, record, id, newBody, validation = PendingBoundsValidation(domain)] {
             uint32_t source = UINT32_MAX;
             if (newBody) {
                 RequireOwnership(record, id);
                 source = Packed(record);
             }
             return programs.GetSleep().PrepareBoundsWake(storage, SleepSelection(domain), old ? *old : nullptr, source,
-                                                         validation, requirePoseChange);
+                                                         validation);
         };
         domain.pending.push_back(std::move(wake));
     }
@@ -1170,7 +1168,6 @@ class JoltGpuScene::Impl
         }
         pendingCompletions.reserve(pendingCompletions.size() + 2);
         const auto source = author ? AppendSource(domain, *author) : PhysicsTargetSource{};
-        const auto oldBounds = kind <= CommandSetPose ? QueueOldBounds(domain, index, id) : OldBounds{};
         if (!pending.empty() && !pending.back().prepareModel && !pending.back().modelAccepted &&
             !pending.back().prepareWork) {
             pending.back().commands.push_back(command);
@@ -1179,8 +1176,6 @@ class JoltGpuScene::Impl
             group.commands.push_back(command);
             pending.push_back(std::move(group));
         }
-        if (oldBounds)
-            QueueBoundsAfter(domain, oldBounds, index, id, true, true);
         auto &target = slot.queuedTarget;
         if (acceptsMove) {
             if (!target.pending) {
@@ -1387,25 +1382,34 @@ class JoltGpuScene::Impl
             capture.prepareWork = {};
         }
         domain.pending.push_back(std::move(capture));
-        for (auto &group : domain.pending)
-            if (!group.commands.empty())
-                group.materializeCommands = [this, &domain](std::vector<BodyCommand> &values) {
-                    for (auto &command : values) {
-                        const auto found = byId.find(command.meta.x);
-                        if (found == byId.end() || slots[found->second].partition != &domain)
-                            throw std::logic_error("GPU command identity is not owned by the accepted partition");
-                        const auto record = found->second;
-                        command.meta.x = Packed(record);
-                        const auto kind = command.meta.y;
-                        const bool move = kind >= CommandMovePosition && kind <= CommandMovePose;
-                        if ((kind <= CommandSetPose || move) && slots[record].accepted) {
-                            const auto speed = command.rootCOM.w;
-                            command.rootCOM = slots[record].accepted->rootCenterOfMass;
-                            if (move)
-                                command.rootCOM.w = speed;
-                        }
+        for (auto &group : domain.pending) {
+            if (group.commands.empty())
+                continue;
+            const bool poses = std::any_of(group.commands.begin(), group.commands.end(),
+                                           [](const BodyCommand &command) { return command.meta.y <= CommandSetPose; });
+            group.prepareCommands = [this, &domain, validation = poses ? PendingBoundsValidation(domain) : nullptr](
+                                        std::vector<BodyCommand> values) {
+                for (auto &command : values) {
+                    const auto found = byId.find(command.meta.x);
+                    if (found == byId.end() || slots[found->second].partition != &domain)
+                        throw std::logic_error("GPU command identity is not owned by the accepted partition");
+                    const auto record = found->second;
+                    command.meta.x = Packed(record);
+                    const auto kind = command.meta.y;
+                    const bool move = kind >= CommandMovePosition && kind <= CommandMovePose;
+                    if ((kind <= CommandSetPose || move) && slots[record].accepted) {
+                        const auto speed = command.rootCOM.w;
+                        command.rootCOM = slots[record].accepted->rootCenterOfMass;
+                        if (move)
+                            command.rootCOM.w = speed;
                     }
-                };
+                }
+                auto poseWake = validation
+                                    ? programs.GetSleep().PreparePoseWake(storage, SleepSelection(domain), *validation)
+                                    : JoltGpuPoseWake{};
+                return commands.Prepare(storage, std::move(values), std::move(poseWake));
+            };
+        }
         JoltGpuTickControl control;
         std::vector<std::pair<uint32_t, uint32_t>> prescribedSources;
         for (const auto record : domain.records) {

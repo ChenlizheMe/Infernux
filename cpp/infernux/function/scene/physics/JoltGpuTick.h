@@ -67,7 +67,7 @@ struct JoltGpuControlGroup
     std::function<void()> retireJointRuntime;
     std::function<void()> modelAccepted;
     std::vector<JPH::GPU::BodyCommand> commands;
-    std::function<void(std::vector<JPH::GPU::BodyCommand> &)> materializeCommands;
+    std::function<std::unique_ptr<JoltGpuCommandCursor>(std::vector<JPH::GPU::BodyCommand>)> prepareCommands;
     /// Prepare once, after this group's model and commands are accepted. Its
     /// packet and completion-dependent successors share this source's admission
     /// and receipts. The group advances only after the chain's final acceptance.

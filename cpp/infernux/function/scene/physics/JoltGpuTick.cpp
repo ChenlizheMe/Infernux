@@ -1571,11 +1571,10 @@ class JoltGpuTick::Impl
                     return true;
                 }
                 if (!commandCursor && !group.commands.empty()) {
-                    if (group.materializeCommands) {
-                        auto materialize = std::move(group.materializeCommands);
-                        materialize(group.commands);
-                    }
-                    commandCursor = control.commandProgram->Prepare(storage, std::move(group.commands));
+                    commandCursor = group.prepareCommands
+                                        ? group.prepareCommands(std::move(group.commands))
+                                        : control.commandProgram->Prepare(storage, std::move(group.commands));
+                    group.prepareCommands = {};
                     group.commands.clear();
                 }
                 if (commandCursor && !commandCursor->IsComplete())

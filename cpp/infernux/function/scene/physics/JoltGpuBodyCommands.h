@@ -2,10 +2,27 @@
 
 #include "JoltGpuPrograms.h"
 
+#include <functional>
+#include <variant>
+
 namespace infernux
 {
 
 class JoltGpuCommandCursor;
+
+struct JoltGpuPoseWake
+{
+    struct Work
+    {
+        uint32_t source, first, count;
+        bool capture;
+    };
+
+    static constexpr uint32_t BodiesPerDispatch = 2048u;
+    uint32_t bodyCount = 0;
+    std::function<void(const Work &, std::vector<rhi::ComputeBufferUpdate> &, std::vector<rhi::ComputeDispatchDesc> &)>
+        append;
+};
 
 /// Prepares immutable, per-body FIFO commands against accepted author metadata.
 /// The owner finishes the current logical tick/model transaction first, then
@@ -17,7 +34,8 @@ class JoltGpuBodyCommands final
   public:
     JoltGpuBodyCommands(rhi::ComputeHost &host, const ShaderTargetCode &target);
     [[nodiscard]] std::unique_ptr<JoltGpuCommandCursor> Prepare(const JoltGpuStorage &storage,
-                                                                std::vector<JPH::GPU::BodyCommand> commands) const;
+                                                                std::vector<JPH::GPU::BodyCommand> commands,
+                                                                JoltGpuPoseWake poseWake = {}) const;
 
   private:
     rhi::ComputeHost m_host;
@@ -35,8 +53,7 @@ class JoltGpuCommandCursor final
     JoltGpuCommandCursor(const JoltGpuCommandCursor &) = delete;
     JoltGpuCommandCursor &operator=(const JoltGpuCommandCursor &) = delete;
 
-    /// Budget a prefix of bounded dispatches: <=64 bodies and <=64 commands
-    /// per body per dispatch. A pending prefix is returned verbatim. Hosts must
+    /// Budget a prefix of bounded dispatches. A pending prefix is returned verbatim. Hosts must
     /// share the original compute services; no accepted commands are resent.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareNext(rhi::ComputeHost &host,
                                                                          uint32_t maxDispatches);
@@ -56,28 +73,38 @@ class JoltGpuCommandCursor final
     }
     [[nodiscard]] size_t GetDispatchCount() const noexcept
     {
-        return m_dispatches.size();
+        return m_dispatchCount;
     }
 
   private:
     friend class JoltGpuBodyCommands;
-    struct Dispatch
+    struct BodyDispatch
     {
         uint32_t firstCommand, commandCount, firstSpan, spanCount, firstBody;
     };
+    using Dispatch = std::variant<BodyDispatch, JoltGpuPoseWake::Work>;
+    using CommandIterator = std::vector<JPH::GPU::BodyCommand>::const_iterator;
+    struct Location
+    {
+        size_t index = 0;
+        uint32_t offset = 0;
+    };
     JoltGpuCommandCursor(const rhi::ComputeHost &host, std::shared_ptr<rhi::ComputeKernel> kernel,
-                         std::vector<uint8_t> ports, const JoltGpuStorage &storage);
+                         std::vector<uint8_t> ports, const JoltGpuStorage &storage, JoltGpuPoseWake poseWake);
+    void AppendCommands(CommandIterator begin, CommandIterator end);
     void Accepted() noexcept;
     rhi::ComputeHost m_host;
     std::shared_ptr<rhi::ComputeKernel> m_kernel;
     std::vector<uint8_t> m_ports;
     std::shared_ptr<rhi::ComputeBuffer> m_models, m_states, m_forces, m_targets, m_sleeps;
+    JoltGpuPoseWake m_poseWake;
     // Immutable after Prepare returns; no CPU mirror of live state exists.
     std::vector<JPH::GPU::BodyCommand> m_commands;
     std::vector<JPH::GPU::BodyCommandSpan> m_spans;
     std::vector<Dispatch> m_dispatches;
     std::shared_ptr<rhi::PreparedComputeBatch> m_batch;
-    size_t m_next = 0, m_pendingEnd = 0;
+    size_t m_dispatchCount = 0, m_next = 0, m_pendingEnd = 0;
+    Location m_location, m_pendingLocation;
 };
 
 } // namespace infernux

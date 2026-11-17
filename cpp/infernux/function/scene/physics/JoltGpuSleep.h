@@ -49,11 +49,12 @@ class JoltGpuSleep final
                      std::function<void(std::shared_ptr<rhi::ComputeBuffer>)> completed);
     [[nodiscard]] JoltGpuControlWork PrepareBoundsWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,
                                                        std::shared_ptr<rhi::ComputeBuffer> oldBounds,
-                                                       uint32_t newSource, std::shared_ptr<BoundsValidation>,
-                                                       bool requirePoseChange = false);
+                                                       uint32_t newSource, std::shared_ptr<BoundsValidation>);
     [[nodiscard]] JoltGpuControlWork PrepareAuthoredBoundsWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,
                                                                JPH::GPU::Float4 low, JPH::GPU::Float4 high,
                                                                std::shared_ptr<BoundsValidation>);
+    [[nodiscard]] JoltGpuPoseWake PreparePoseWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,
+                                                  BoundsValidation &);
     [[nodiscard]] JoltGpuControlWork ValidateBoundsEdits(const BoundsValidation &);
     [[nodiscard]] JoltGpuControlWork PrepareQuery(std::shared_ptr<rhi::ComputeBuffer> snapshot, uint32_t bodyCount,
                                                   std::vector<uint32_t> requests,
