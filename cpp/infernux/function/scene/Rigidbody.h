@@ -368,7 +368,8 @@ class Rigidbody : public PhysicsBody
     void ApplyBodyCommand(class PhysicsWorld &world, uint32_t bodyId, const BodyCommand &command);
 
     /// Notify all sibling Colliders to rebuild their Jolt body type.
-    [[nodiscard]] const RuntimeWorld *GetBoundPhysicsWorld() const override;
+    [[nodiscard]] const RuntimeWorld *GetBoundPhysicsWorld() const;
+    void ValidateGpuSelection(bool gpu) const override;
     void OnGpuSelectionChanged() override;
     void NotifyCollidersBodyTypeChanged();
     void CacheActorPose(const glm::vec3 &position, const glm::quat &rotation);

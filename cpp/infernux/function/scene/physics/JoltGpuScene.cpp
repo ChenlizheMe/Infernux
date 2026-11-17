@@ -1,4 +1,5 @@
 #include "JoltGpuScene.h"
+#include "JoltBodyTransfer.h"
 #include "JoltGpuArticulations.h"
 #include "JoltGpuSleep.h"
 #include "PhysicsDomain.h"
@@ -65,6 +66,24 @@ JoltGpuControlWork Then(JoltGpuControlWork work, std::function<JoltGpuControlWor
         return continuation ? Then(continuation(), std::move(next)) : next();
     };
     return work;
+}
+
+Float4 TransferVector(JPH::Vec3Arg value, float extra = 0.0f)
+{
+    return {value.GetX(), value.GetY(), value.GetZ(), extra};
+}
+
+JPH::Vec3 TransferVector(const Float4 &value)
+{
+    return {value.x, value.y, value.z};
+}
+
+template <class T>
+rhi::ComputeBufferUpdate TransferUpload(JoltGpuStorage &storage, Resource resource, uint32_t slot, const T &value)
+{
+    std::vector<uint8_t> bytes(sizeof(T));
+    std::memcpy(bytes.data(), &value, sizeof(T));
+    return {storage.Get(resource), uint64_t(slot) * sizeof(T), std::move(bytes)};
 }
 
 } // namespace
@@ -1299,7 +1318,120 @@ class JoltGpuScene::Impl
         return source;
     }
 
-    void StageRetire(uint32_t id)
+    void QueueTransferRead(uint32_t id, std::function<void(JoltBodyTransfer)> read)
+    {
+        auto &domain = BodyDomain(id);
+        const auto record = RequireSlot(id);
+        const auto target = slots[record].queuedTarget;
+        JoltGpuControlGroup group;
+        group.prepareWork = [this, id, record, target, read = std::move(read)] {
+            RequireOwnership(record, id);
+            const auto slot = Packed(record);
+            const auto &accepted = *slots[record].accepted;
+            const bool resident = (storage.GetModel().bodies[slot].meta.z & MotionNotResident) == 0;
+            auto host = storage.GetHost();
+            auto packet = rhi::PrepareComputeBatch(
+                host, {}, {},
+                {{storage.Get(Resource::BodyStates), uint64_t(slot) * sizeof(BodyState), sizeof(BodyState)},
+                 {storage.Get(Resource::BodyForces), uint64_t(slot) * sizeof(BodyForces), sizeof(BodyForces)},
+                 {storage.Get(Resource::KinematicTargets), uint64_t(slot) * sizeof(KinematicTarget),
+                  sizeof(KinematicTarget)},
+                 {storage.Get(Resource::SleepStates),
+                  uint64_t(slot) * sizeof(BodySleepRecord) + offsetof(BodySleepRecord, runtime) +
+                      offsetof(BodySleepRuntime, state),
+                  sizeof(UInt4)}});
+            return JoltGpuControlWork{
+                packet,
+                [packet, read, target, resident, root = accepted.rootCenterOfMass,
+                 revision = accepted.shapeRevision]() -> JoltGpuControlWork {
+                    BodyState state;
+                    BodyForces forces;
+                    KinematicTarget move;
+                    UInt4 sleep;
+                    packet->Readback(0)->ReadInto(&state, sizeof(state));
+                    packet->Readback(1)->ReadInto(&forces, sizeof(forces));
+                    packet->Readback(2)->ReadInto(&move, sizeof(move));
+                    packet->Readback(3)->ReadInto(&sleep, sizeof(sleep));
+                    const JPH::Quat rotation(state.rotation.x, state.rotation.y, state.rotation.z, state.rotation.w);
+                    JoltBodyTransfer value{JPH::RVec3(TransferVector(state.positionCOM)) -
+                                               JPH::RVec3(rotation * TransferVector(root)),
+                                           rotation,
+                                           TransferVector(state.linearVelocity),
+                                           TransferVector(state.angularVelocity),
+                                           TransferVector(forces.force),
+                                           TransferVector(forces.torque),
+                                           {},
+                                           revision,
+                                           resident,
+                                           sleep.x != 0};
+                    const bool pending = (move.state.x & TargetPending) != 0;
+                    const bool ownsVelocity = (move.state.x & (TargetActive | TargetDrivenLastTick)) != 0;
+                    if (pending || ownsVelocity)
+                        value.drive = JoltBodyTransfer::Drive{
+                            JPH::RVec3(TransferVector(move.positionSpeed)),
+                            JPH::Quat(move.rotation.x, move.rotation.y, move.rotation.z, move.rotation.w),
+                            move.rootCOMDt.w,
+                            move.positionSpeed.w,
+                            target.position,
+                            target.rotation,
+                            pending,
+                            ownsVelocity,
+                            (move.state.x & TargetTemporaryStatic) != 0};
+                    read(std::move(value));
+                    return {};
+                }};
+        };
+        domain.pending.push_back(std::move(group));
+    }
+
+    void QueueTransferRestore(uint32_t id, const JoltBodyTransfer &value)
+    {
+        auto &domain = BodyDomain(id);
+        const auto record = RequireSlot(id);
+        auto &slot = slots[record];
+        JoltGpuControlGroup group;
+        if (!value.awake) {
+            BodyCommand signaledSleep{};
+            signaledSleep.meta = {id, CommandSleep, 0, 0};
+            group.commands.push_back(signaledSleep);
+        }
+        const BodyForces forces{TransferVector(value.force), TransferVector(value.torque)};
+        KinematicTarget target{};
+        if (value.drive) {
+            const auto &drive = *value.drive;
+            const auto root = slot.authored->rootCenterOfMass;
+            target.positionSpeed = TransferVector(JPH::Vec3(drive.position), drive.maxSpeed);
+            target.rotation = {drive.rotation.GetX(), drive.rotation.GetY(), drive.rotation.GetZ(),
+                               drive.rotation.GetW()};
+            target.rootCOMDt = {root.x, root.y, root.z, drive.duration};
+            target.state.x = (drive.pending        ? TargetPending
+                              : drive.ownsVelocity ? TargetDrivenLastTick
+                                                   : 0u) |
+                             (drive.temporaryStatic ? TargetTemporaryStatic : 0u);
+        }
+        const bool hasForces = value.force != JPH::Vec3::sZero() || value.torque != JPH::Vec3::sZero();
+        if (hasForces || value.drive) {
+            group.prepareWork = [this, id, record, forces, target, hasForces, hasDrive = bool(value.drive)] {
+                RequireOwnership(record, id);
+                const auto packed = Packed(record);
+                std::vector<rhi::ComputeBufferUpdate> writes;
+                if (hasForces)
+                    writes.push_back(TransferUpload(storage, Resource::BodyForces, packed, forces));
+                if (hasDrive)
+                    writes.push_back(TransferUpload(storage, Resource::KinematicTargets, packed, target));
+                auto host = storage.GetHost();
+                return JoltGpuControlWork{rhi::PrepareComputeBatch(host, std::move(writes), {}, {})};
+            };
+        }
+        if (!group.commands.empty() || group.prepareWork)
+            domain.pending.push_back(std::move(group));
+        if (value.drive) {
+            const auto &drive = *value.drive;
+            slot.queuedTarget = {drive.pending, drive.temporaryStatic, drive.positionSource, drive.rotationSource};
+        }
+    }
+
+    void StageRetire(uint32_t id, bool transferDrive = false)
     {
         auto &domain = BodyDomain(id);
         auto &pending = domain.pending;
@@ -1336,7 +1468,10 @@ class JoltGpuScene::Impl
         auto oldBounds = QueueOldBounds(domain, index, id);
         pending.push_back(std::move(group));
         QueueBoundsAfter(domain, std::move(oldBounds), index, id, false);
-        CancelTarget(slots[index].queuedTarget, pendingCompletions);
+        if (transferDrive)
+            slots[index].queuedTarget = {};
+        else
+            CancelTarget(slots[index].queuedTarget, pendingCompletions);
         slots[index].retiring = true;
         --domain.liveCount;
     }
@@ -2162,9 +2297,17 @@ void JoltGpuScene::SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const P
     domain.pending.push_back(std::move(group));
     domain.queuedPairs = std::move(pairs);
 }
-void JoltGpuScene::StageRetire(uint32_t id)
+void JoltGpuScene::QueueTransferRead(uint32_t id, std::function<void(JoltBodyTransfer)> read)
 {
-    m_impl->StageRetire(id);
+    m_impl->QueueTransferRead(id, std::move(read));
+}
+void JoltGpuScene::QueueTransferRestore(uint32_t id, const JoltBodyTransfer &value)
+{
+    m_impl->QueueTransferRestore(id, value);
+}
+void JoltGpuScene::StageRetire(uint32_t id, bool transferDrive)
+{
+    m_impl->StageRetire(id, transferDrive);
 }
 void JoltGpuScene::QueueBoundsWake(RuntimeWorld &world, Float4 low, Float4 high)
 {
@@ -2212,6 +2355,13 @@ void JoltGpuScene::DestroyJoint(uint64_t id)
 void JoltGpuScene::DestroyJointsForBody(uint32_t id)
 {
     m_impl->DestroyJointsForBody(id);
+}
+bool JoltGpuScene::HasJointForBody(uint32_t bodyId) const noexcept
+{
+    const auto &joints = m_impl->authoredJoints;
+    return std::any_of(joints.begin(), joints.end(), [bodyId](const auto &entry) {
+        return entry.second.value.bodyIdA == bodyId || entry.second.value.bodyIdB == bodyId;
+    });
 }
 const JoltGpuScene::PublishedJoint &JoltGpuScene::GetAuthoredJoint(uint64_t id) const
 {

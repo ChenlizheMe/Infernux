@@ -799,6 +799,9 @@ class PhysicsWorld
         uint64_t stagedShapeRevision = 0;
         std::shared_ptr<PhysicsStaticBoundaryModel> staticModel;
         mutable size_t cpuPoseIndex = SIZE_MAX;
+        // The source owns the published actor until the transfer's receipt.
+        // Later author writes belong to the already staged target FIFO.
+        std::optional<Backend> transferTarget;
 
         [[nodiscard]] bool HasCpuBody() const noexcept
         {
@@ -807,6 +810,18 @@ class PhysicsWorld
         [[nodiscard]] bool HasGpuBody() const noexcept
         {
             return gpuStaged && backend != Backend::Cpu;
+        }
+        [[nodiscard]] Backend AuthorBackend() const noexcept
+        {
+            return transferTarget.value_or(backend);
+        }
+        [[nodiscard]] bool HasCpuAuthor() const noexcept
+        {
+            return cpuStaged && AuthorBackend() != Backend::Gpu;
+        }
+        [[nodiscard]] bool HasGpuAuthor() const noexcept
+        {
+            return gpuStaged && AuthorBackend() != Backend::Cpu;
         }
     };
 
@@ -836,6 +851,10 @@ class PhysicsWorld
     void RequireHealthyStep(PhysicsDomain &domain) const;
     void FailStep(PhysicsDomain &domain) noexcept;
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
+    void ValidateBodyTransfer(const Rigidbody &) const;
+    void RequestBodyTransfer(const Rigidbody &);
+    void StageBodyTransfer(PhysicsDomain &domain);
+    bool AdvanceBodyTransfer(PhysicsDomain &domain, bool synchronous);
     bool TryBeginFixed(PhysicsDomain &domain);
     void FinishFixed(PhysicsDomain &domain);
     [[nodiscard]] PhysicsContactPublication::Policy CaptureContactPolicy(const PhysicsDomain &domain) const;

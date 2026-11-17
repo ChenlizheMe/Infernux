@@ -8,6 +8,7 @@
 #include <Jolt/Physics/Collision/SimShapeFilter.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include "InfernuxJoltJobSystemAdapter.h"
+#include "JoltBodyTransfer.h"
 #include "JoltCpuActor.h"
 #include "JoltCpuConstraints.h"
 #include "JoltCpuTempAllocator.h"
@@ -179,6 +180,7 @@ class JoltCpuScene final : private JPH::ContactListener,
     friend class JoltCpuContactPublication;
     friend class JoltMixedContactStep;
     friend class JoltCpuConstraints;
+    friend class JoltCpuControl;
     friend class JoltCpuQueries;
     struct BodyRecord
     {
@@ -202,6 +204,8 @@ class JoltCpuScene final : private JPH::ContactListener,
         void ReuseQueryGeometry(const BodyRecord &previous);
     };
     static BodyRecord CaptureBodyRecord(const PreparedCpuActor &actor);
+    [[nodiscard]] JoltBodyTransfer ReadBodyTransfer(uint32_t bodyId) const;
+    void RestoreBodyTransfer(uint32_t bodyId, const JoltBodyTransfer &);
     static PhysicsBodyMotionState SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,
                                                     PhysicsStateFields fields, bool *sleeping = nullptr);
     static bool AcceptedAwake(const BodyRecord &record, const JPH::Body &body);

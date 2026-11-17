@@ -1,18 +1,7 @@
 #include "PhysicsBody.h"
-#include "RuntimeWorld.h"
-
-#include <stdexcept>
 
 namespace infernux
 {
-void PhysicsBody::ValidateGpuSelection(bool gpu) const
-{
-    if (gpu == m_gpu)
-        return;
-    if (const auto *world = GetBoundPhysicsWorld(); world && world->simulation.isPlaying)
-        throw std::logic_error("Live CPU/GPU body migration is not implemented yet; change GPU while stopped");
-}
-
 void PhysicsBody::SetGpuEnabled(bool gpu)
 {
     if (gpu == m_gpu)
@@ -45,7 +34,6 @@ bool PhysicsBody::DeserializeDocument(const nlohmann::json &document)
 {
     const bool gpu = document.value("gpu", false);
     const bool crossBackendInteraction = document.value("cross_backend_interaction", false);
-    ValidateGpuSelection(gpu);
     if (!Component::DeserializeDocument(document))
         return false;
     m_gpu = gpu;

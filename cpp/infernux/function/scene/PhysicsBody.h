@@ -4,7 +4,7 @@
 
 namespace infernux
 {
-class RuntimeWorld;
+class PhysicsWorld;
 
 /// Author and result lifetime shared by components with a physical backend.
 class PhysicsBody : public Component
@@ -36,9 +36,7 @@ class PhysicsBody : public Component
     bool DeserializeDocument(const nlohmann::json &document) override;
 
   protected:
-    void ValidateGpuSelection(bool gpu) const;
-    /// Resolve an accepted binding using the concrete body's existing directory.
-    [[nodiscard]] virtual const RuntimeWorld *GetBoundPhysicsWorld() const = 0;
+    virtual void ValidateGpuSelection(bool gpu) const = 0;
     virtual void OnGpuSelectionChanged() = 0;
 
     void CopyPhysicsBodyAuthoringTo(PhysicsBody &clone) const noexcept;
@@ -52,6 +50,7 @@ class PhysicsBody : public Component
     }
 
   private:
+    friend class PhysicsWorld;
     bool m_gpu = false;
     bool m_crossBackendInteraction = false;
     uint64_t m_resultEpoch = 0;

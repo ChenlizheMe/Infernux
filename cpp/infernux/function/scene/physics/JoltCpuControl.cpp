@@ -3,6 +3,7 @@
 #include "../Rigidbody.h"
 #include "PhysicsBodyState.h"
 #include "PhysicsConstraintOwner.h"
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <stdexcept>
@@ -39,6 +40,11 @@ struct JoltCpuControl::State
     };
     struct Retire
     {
+        bool transferDrive;
+    };
+    struct Import
+    {
+        std::shared_ptr<std::optional<JoltBodyTransfer>> state;
     };
     struct Move
     {
@@ -72,23 +78,13 @@ struct JoltCpuControl::State
     struct Entry
     {
         uint32_t body;
-        std::variant<Model, Add, Retire, Command, Move, JointCreate, JointUpdates, JointPoseDrives, JointRetire> data;
+        std::variant<Model, Add, Retire, Import, Command, Move, JointCreate, JointUpdates, JointPoseDrives, JointRetire>
+            data;
     };
     struct Fixed
     {
         std::vector<Entry> commands;
         bool applied = false;
-    };
-    struct Drive
-    {
-        JPH::RVec3 position;
-        JPH::Quat rotation;
-        float duration = 0.0f;
-        float maxSpeed = 0.0f;
-        PhysicsTargetSource positionSource, rotationSource;
-        bool pending = false;
-        bool ownsVelocity = false;
-        bool temporaryStatic = false;
     };
     struct Completion
     {
@@ -212,12 +208,23 @@ struct JoltCpuControl::State
         scene.AddBodiesBatch(add.bodies);
     }
 
-    void Apply(uint32_t body, Retire, const RetiredJoints &retired)
+    void Apply(uint32_t body, Retire retire, const RetiredJoints &retired)
     {
-        CancelDrive(body, false);
+        if (retire.transferDrive)
+            drives.erase(body);
+        else
+            CancelDrive(body, false);
         RetireBodyConstraints(body, retired);
         scene.DestroyBody(body);
         bindings.erase(body);
+    }
+
+    void Apply(uint32_t body, const Import &import, const RetiredJoints &)
+    {
+        const auto &value = import.state->value();
+        scene.RestoreBodyTransfer(body, value);
+        if (value.drive)
+            drives.insert_or_assign(body, *value.drive);
     }
 
     void Apply(uint32_t body, const Command &command, const RetiredJoints &)
@@ -371,7 +378,7 @@ struct JoltCpuControl::State
     std::unordered_map<uint64_t, JointRecord> joints;
     std::vector<Entry> pending;
     std::optional<Fixed> fixed;
-    std::map<uint32_t, Drive> drives;
+    std::map<uint32_t, JoltBodyTransfer::Drive> drives;
     std::vector<Completion> completions;
 };
 
@@ -414,6 +421,36 @@ bool JoltCpuControl::HasStagedRigidbody(uint32_t bodyId, PhysicsECSStore::Rigidb
            found->second.staged == rigidbody;
 }
 
+void JoltCpuControl::StageTransfer(uint32_t bodyId, const PreparedCpuActor &prepared,
+                                   std::shared_ptr<std::optional<JoltBodyTransfer>> value)
+{
+    auto &state = *m_state;
+    const auto rigidbody = prepared.publication.rigidbody;
+    const bool kinematic = prepared.settings.mMotionType == JPH::EMotionType::Kinematic && !prepared.authoredDynamic;
+    const bool staticBody = prepared.settings.mMotionType == JPH::EMotionType::Static;
+    const auto [binding, inserted] =
+        state.bindings.try_emplace(bodyId, State::Binding{rigidbody, rigidbody, kinematic, staticBody});
+    if (!inserted)
+        throw std::logic_error("CPU transfer requires an unused body binding");
+    try {
+        state.pending.reserve(state.pending.size() + 1);
+        state.scene.CreateBody(bodyId, prepared);
+    } catch (...) {
+        state.bindings.erase(binding);
+        throw;
+    }
+    state.pending.push_back({bodyId, State::Import{std::move(value)}});
+}
+
+JoltBodyTransfer JoltCpuControl::ReadBodyTransfer(uint32_t bodyId) const
+{
+    const auto &state = *m_state;
+    auto value = state.scene.ReadBodyTransfer(bodyId);
+    if (const auto drive = state.drives.find(bodyId); drive != state.drives.end())
+        value.drive = drive->second;
+    return value;
+}
+
 void JoltCpuControl::AddBodies(std::vector<uint32_t> bodyIds)
 {
     if (bodyIds.empty())
@@ -424,11 +461,11 @@ void JoltCpuControl::AddBodies(std::vector<uint32_t> bodyIds)
     state.pending.push_back({UINT32_MAX, State::Add{std::move(bodyIds)}});
 }
 
-void JoltCpuControl::RetireActor(uint32_t bodyId)
+void JoltCpuControl::RetireActor(uint32_t bodyId, bool transferDrive)
 {
     auto &state = *m_state;
     state.RequireStaged(bodyId);
-    state.pending.push_back({bodyId, State::Retire{}});
+    state.pending.push_back({bodyId, State::Retire{transferDrive}});
     state.bindings.at(bodyId).retiring = true;
 }
 
@@ -533,6 +570,15 @@ void JoltCpuControl::DestroyJoint(uint64_t id)
 {
     if (FindJoint(id))
         m_state->QueueJointRetirement({id});
+}
+
+bool JoltCpuControl::HasJointForBody(uint32_t bodyId) const noexcept
+{
+    const auto &joints = m_state->joints;
+    return std::any_of(joints.begin(), joints.end(), [bodyId](const auto &entry) {
+        const auto &binding = entry.second.value.binding;
+        return binding.ownerBody == bodyId || binding.connectedBody == bodyId;
+    });
 }
 
 std::vector<uint64_t> JoltCpuControl::DestroyJointsForBody(uint32_t bodyId)

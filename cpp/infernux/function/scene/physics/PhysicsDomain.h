@@ -65,11 +65,19 @@ struct PhysicsDomain final
     std::unordered_map<uint32_t, StaticMove> pendingStaticMoves;
     std::vector<std::pair<uint32_t, StaticMove>> admittedStaticMoves;
     std::vector<PhysicsActorHandle> recreateActors;
+    std::set<uint32_t> requestedBodyTransfers;
+    struct BodyTransfer
+    {
+        uint32_t bodyId;
+        bool controlBegun = false;
+    };
+    std::optional<BodyTransfer> bodyTransfer;
     uint64_t surfaceRevision = 0;
     bool stepPending = false, stepCompleted = false, solverStarted = false;
     enum class FixedGpuPhase
     {
         Idle,
+        Transfer,
         RetireControl,
         RetryCreation,
         Solver,

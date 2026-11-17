@@ -213,12 +213,18 @@ JoltGpuControlWork PrepareJointReadWork(std::function<JoltGpuControlWork()> prep
 PhysicsWorld::Backend PhysicsWorld::PrepareJointEndpoints(PhysicsDomain &domain, uint32_t ownerBody,
                                                           uint32_t connectedBody)
 {
-    const auto a = FindBodyRegistration(ownerBody)->backend;
+    const auto &owner = *FindBodyRegistration(ownerBody);
+    const auto a = owner.backend;
+    if (owner.transferTarget)
+        throw std::invalid_argument("A joint endpoint is transferring its physics backend");
     auto b = Backend::StaticBoundary;
     if (connectedBody != Cpu::WorldBody) {
         if (ownerBody == connectedBody || &DomainForBody(connectedBody) != &domain)
             throw std::invalid_argument("Joint endpoints must be distinct bodies belonging to the same RuntimeWorld");
-        b = FindBodyRegistration(connectedBody)->backend;
+        const auto &connected = *FindBodyRegistration(connectedBody);
+        if (connected.transferTarget)
+            throw std::invalid_argument("A joint endpoint is transferring its physics backend");
+        b = connected.backend;
     }
     const auto consumer = a == Backend::StaticBoundary ? b : a;
     if (consumer == Backend::StaticBoundary)

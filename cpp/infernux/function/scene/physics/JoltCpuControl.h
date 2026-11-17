@@ -64,8 +64,13 @@ class JoltCpuControl final
     /// An invalid actor handle denotes a static replica; the owner commits the shared author metadata.
     void StageActor(uint32_t bodyId, PhysicsActorHandle actor, PreparedCpuActor prepared, bool resetMotion = false);
     [[nodiscard]] bool HasStagedRigidbody(uint32_t bodyId, PhysicsECSStore::RigidbodyHandle rigidbody) const;
+    // The native target is allocated detached before the GPU prefix is sealed.
+    // Import is the first command of its author FIFO and waits for that prefix
+    // through the world's fixed admission, not by polling from CPU Jolt.
+    void StageTransfer(uint32_t bodyId, const PreparedCpuActor &, std::shared_ptr<std::optional<JoltBodyTransfer>>);
+    [[nodiscard]] JoltBodyTransfer ReadBodyTransfer(uint32_t bodyId) const;
     void AddBodies(std::vector<uint32_t> bodyIds);
-    void RetireActor(uint32_t bodyId);
+    void RetireActor(uint32_t bodyId, bool transferDrive = false);
     void Queue(uint32_t bodyId, Command command);
     PhysicsTargetSource QueueMove(uint32_t bodyId, KinematicMove command, const PhysicsTargetAuthor *author = nullptr);
     void QueueTemporaryStaticMove(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
@@ -94,6 +99,7 @@ class JoltCpuControl final
     void UpdateJoints(std::vector<JointUpdate> updates);
     void QueueJointPoseDrives(std::vector<JointPoseDrive> drives);
     void DestroyJoint(uint64_t id);
+    [[nodiscard]] bool HasJointForBody(uint32_t bodyId) const noexcept;
     [[nodiscard]] std::vector<uint64_t> DestroyJointsForBody(uint32_t bodyId);
 
     [[nodiscard]] bool HasPending() const noexcept;

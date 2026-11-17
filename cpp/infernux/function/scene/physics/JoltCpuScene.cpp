@@ -294,6 +294,40 @@ PhysicsBodyMotionState JoltCpuScene::ReadMotionState(uint32_t bodyId, PhysicsSta
     return SampleMotionState(bodyId, record, lock.GetBody(), fields, sleeping);
 }
 
+JoltBodyTransfer JoltCpuScene::ReadBodyTransfer(uint32_t bodyId) const
+{
+    const auto &record = m_bodies.at(bodyId);
+    JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), record.native);
+    const auto &body = lock.GetBody();
+    const auto *motion = body.GetMotionPropertiesUnchecked();
+    return {body.GetPosition(),
+            body.GetRotation(),
+            body.GetLinearVelocity(),
+            body.GetAngularVelocity(),
+            motion ? motion->GetAccumulatedForce() : JPH::Vec3::sZero(),
+            motion ? motion->GetAccumulatedTorque() : JPH::Vec3::sZero(),
+            {},
+            record.shapeRevision,
+            body.IsInBroadPhase(),
+            AcceptedAwake(record, body)};
+}
+
+void JoltCpuScene::RestoreBodyTransfer(uint32_t bodyId, const JoltBodyTransfer &value)
+{
+    // Install the import before later author commands and before this body can
+    // enter a Fixed's constraint graph. Creation already accepted its shape.
+    SetBodyOriginPose(bodyId, value.position, value.rotation);
+    if (value.resident)
+        AddBodiesBatch({bodyId});
+    SetBodyVelocity(bodyId, value.linearVelocity, value.angularVelocity);
+    SetBodyAwake(bodyId, value.awake);
+    auto &record = m_bodies.at(bodyId);
+    JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
+    if (auto *motion = lock.GetBody().GetMotionPropertiesUnchecked())
+        motion->SetAccumulatedForceAndTorque(value.force, value.torque);
+    MarkPoseUpdate(bodyId, record);
+}
+
 PhysicsBodyMotionState JoltCpuScene::SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,
                                                        PhysicsStateFields fields, bool *sleeping)
 {

@@ -17,6 +17,7 @@
 namespace infernux
 {
 class JoltGpuJoints;
+struct JoltBodyTransfer;
 class JoltGpuGeometryStore;
 struct JoltGpuGeometryHandle;
 struct JoltGpuGeometryLease;
@@ -206,7 +207,9 @@ class JoltGpuScene final
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);
     PhysicsTargetSource QueueCommand(uint32_t bodyId, JPH::GPU::BodyCommand command,
                                      const PhysicsTargetAuthor *author = nullptr);
-    void StageRetire(uint32_t bodyId);
+    void QueueTransferRead(uint32_t bodyId, std::function<void(JoltBodyTransfer)> read);
+    void QueueTransferRestore(uint32_t bodyId, const JoltBodyTransfer &);
+    void StageRetire(uint32_t bodyId, bool transferDrive = false);
     void QueueBoundsWake(RuntimeWorld &, JPH::GPU::Float4 low, JPH::GPU::Float4 high);
     void QueueStaticWake(uint32_t bodyId);
     uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
@@ -223,6 +226,7 @@ class JoltGpuScene final
     };
     void QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents);
     void DestroyJoint(uint64_t id);
+    [[nodiscard]] bool HasJointForBody(uint32_t bodyId) const noexcept;
     void SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const PhysicsColliderPairs> pairs);
     void DestroyJointsForBody(uint32_t bodyId);
     [[nodiscard]] const PublishedJoint &GetAuthoredJoint(uint64_t id) const;

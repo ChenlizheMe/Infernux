@@ -407,7 +407,17 @@ const RuntimeWorld *Rigidbody::GetBoundPhysicsWorld() const
 
 void Rigidbody::OnGpuSelectionChanged()
 {
-    NotifyCollidersBodyTypeChanged();
+    if (const auto *world = GetBoundPhysicsWorld(); world && world->simulation.isPlaying)
+        PhysicsWorld::Instance().RequestBodyTransfer(*this);
+    else
+        NotifyCollidersBodyTypeChanged();
+}
+
+void Rigidbody::ValidateGpuSelection(bool gpu) const
+{
+    if (gpu != IsGpuEnabled())
+        if (const auto *world = GetBoundPhysicsWorld(); world && world->simulation.isPlaying)
+            PhysicsWorld::Instance().ValidateBodyTransfer(*this);
 }
 
 void Rigidbody::SetIsKinematic(bool kinematic)
@@ -1395,6 +1405,7 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
     try {
         ValidateSerializedDocument(j);
 
+        const bool previousGpu = IsGpuEnabled();
         ValidateGpuSelection(j.value("gpu", false));
         RigidbodyECSData staged = Data();
         staged.mass = j.at("mass").get<float>();
@@ -1415,6 +1426,9 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
             return false;
         DataMut() = staged;
         m_massProperties = properties;
+        if (previousGpu != IsGpuEnabled())
+            if (const auto *world = GetBoundPhysicsWorld(); world && world->simulation.isPlaying)
+                PhysicsWorld::Instance().RequestBodyTransfer(*this);
 
         // Propagate all settings to Jolt bodies (e.g. when edited in Inspector during play)
         NotifyCollidersBodyTypeChanged();

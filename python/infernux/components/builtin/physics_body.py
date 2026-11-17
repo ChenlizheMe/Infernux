@@ -14,9 +14,9 @@ class PhysicsBody(BuiltinComponent, ABC):
     @property
     @abstractmethod
     def gpu(self) -> bool:
-        """Whether this component uses GPU physics."""
+        """Whether this component selects GPU physics. The default is CPU."""
 
     @gpu.setter
     @abstractmethod
     def gpu(self, value: bool) -> None:
-        """Select the component's physical device."""
+        """Select the backend. A live Rigidbody applies the selection at a fixed-step boundary."""
