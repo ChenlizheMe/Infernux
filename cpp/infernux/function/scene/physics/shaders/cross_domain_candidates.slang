@@ -16,6 +16,9 @@ struct CrossDomainParams
 [[vk::binding(7, 0)]] RWStructuredBuffer<uint4> candidates;
 [[vk::binding(8, 0)]] StructuredBuffer<BodySleepRecord> gpu_sleep;
 
+static const uint ResponseProxy = 2u;
+static const uint DynamicProxy = 4u;
+
 bool inside_range(float3 a_min, float3 a_max, float3 b_min, float3 b_max)
 {
     return all(a_min <= b_max) && all(b_min <= a_max);
@@ -43,8 +46,9 @@ bool has_proxy(float3 lo, float3 hi, uint flags, uint motion)
             uint4 proxy_min = cpu_tree[address], proxy_max = cpu_tree[address + 1u];
             bool trigger = ((flags | proxy_max.w) & ShapeSensor) != 0u;
             bool observes = (cross_domain.policy.x & 1u) != 0u && trigger;
-            bool responds = (cross_domain.policy.x & 2u) != 0u && motion == MotionDynamic
-                && (flags & ShapeSensor) == 0u && (proxy_max.w & 2u) != 0u;
+            bool responds = (cross_domain.policy.x & 2u) != 0u && (flags & ShapeSensor) == 0u
+                && (proxy_max.w & ResponseProxy) != 0u
+                && (motion == MotionDynamic || (proxy_max.w & DynamicProxy) != 0u);
             if ((observes || responds) && inside_range(lo, hi, asfloat(proxy_min.xyz), asfloat(proxy_max.xyz)))
                 return true;
         }

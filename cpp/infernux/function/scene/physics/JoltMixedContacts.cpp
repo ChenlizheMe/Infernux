@@ -16,6 +16,7 @@ namespace
 using namespace JPH::GPU;
 using Contact = PhysicsContactPublication;
 constexpr uint32_t ResponseProxy = 2;
+constexpr uint32_t DynamicProxy = 4;
 constexpr uint32_t ObservedActive = 8;
 
 template <class Vector> glm::vec3 Vector3(const Vector &v)
@@ -108,7 +109,7 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
         const bool sensor = std::any_of(record.surfaces.begin(), record.surfaces.end(),
                                         [](const auto &surface) { return surface.sensor; });
         m_proxies.push_back({endpoint.body, record.shapeRevision, record.shape, record.bodyTarget, sensor,
-                             endpoint.allowResponse && body.IsDynamic()});
+                             endpoint.allowResponse && !body.IsStatic(), body.IsDynamic()});
         bodyIds.push_back(endpoint.body);
     }
     if (m_ids != bodyIds) {
@@ -195,7 +196,8 @@ const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t su
         const uint32_t proxy = m_tree.primitiveOrder[i];
         words[boundsBase + 2 * i] = EncodeBounds(bounds[proxy].minimum, proxy);
         const auto &source = m_proxies[proxy];
-        const uint32_t flags = (source.sensor ? ShapeSensor : 0u) | (source.allowResponse ? ResponseProxy : 0u);
+        const uint32_t flags = (source.sensor ? ShapeSensor : 0u) | (source.allowResponse ? ResponseProxy : 0u) |
+                               (source.dynamic ? DynamicProxy : 0u);
         words[boundsBase + 2 * i + 1] = EncodeBounds(bounds[proxy].maximum, flags);
     }
     return words;
@@ -222,14 +224,14 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
     const JPH::TransformedShape gpu(center, rotation, leaf.shape.GetPtr(), {});
     auto &frame = m_frames[substep];
     const bool gpuActive = (candidate.source.w & ObservedActive) != 0;
-    const bool gpuResponds = !leaf.sensor && (candidate.source.w & ~ObservedActive) == MotionDynamic &&
-                             std::binary_search(m_gpuResponseBodies.begin(), m_gpuResponseBodies.end(), actor.bodyId);
+    const bool gpuDynamic = (candidate.source.w & ~ObservedActive) == MotionDynamic;
+    const bool gpuPermitsResponse =
+        !leaf.sensor && std::binary_search(m_gpuResponseBodies.begin(), m_gpuResponseBodies.end(), actor.bodyId);
     const bool observeTriggers = policy.WantsTriggers();
     const auto &physicsSettings = m_scene->System().GetPhysicsSettings();
-    const auto collect = [&](uint32_t index) {
+    const auto collect = [&](uint32_t index, bool mayRespond) {
         const auto &proxy = m_proxies[index];
         const auto &cpu = m_pose[substep][index];
-        const bool mayRespond = proxy.allowResponse && gpuResponds;
         JPH::CollideShapeSettings settings;
         if (mayRespond) {
             settings.mCollectFacesMode = JPH::ECollectFacesMode::CollectFaces;
@@ -278,7 +280,9 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
             patch.gpu = b;
             patch.shapeRevisions = {proxy.shapeRevision, actor.shapeRevision};
             patch.gpuSlot = address.bodySlot;
-            patch.wakeGpu = !gpuActive;
+            patch.cpuDynamic = proxy.dynamic;
+            patch.gpuDynamic = gpuDynamic;
+            patch.wakeGpu = gpuDynamic && !gpuActive;
             patch.native = m_scene->NativeBody(proxy.id);
             patch.pointCount = static_cast<uint32_t>(first.size());
             const auto n = Vector3(normal);
@@ -323,8 +327,10 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
             for (uint32_t i = lower.w; i < end; ++i) {
                 const auto proxyMin = tree[layout.z + 2u * i], proxyMax = tree[layout.z + 2u * i + 1u];
                 const bool trigger = observeTriggers && (leaf.sensor || (proxyMax.w & ShapeSensor));
-                if ((trigger || (gpuResponds && (proxyMax.w & ResponseProxy))) && Overlaps(sweep, proxyMin, proxyMax))
-                    collect(proxyMin.w);
+                const bool response =
+                    gpuPermitsResponse && (proxyMax.w & ResponseProxy) && (gpuDynamic || (proxyMax.w & DynamicProxy));
+                if ((trigger || response) && Overlaps(sweep, proxyMin, proxyMax))
+                    collect(proxyMin.w, response);
             }
         }
         node = m_escape[node];

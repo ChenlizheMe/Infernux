@@ -182,7 +182,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     std::vector<PositionAnchors> anchors;
     std::vector<DevicePatch> patches;
     std::vector<UInt4> groups;
-    std::vector<JPH::BodyID> native;
+    // Dynamic slots form the compact readback prefix. Prescribed boundaries are inputs only.
+    std::vector<JPH::BodyID> native, prescribed;
     std::vector<uint32_t> wakeSlots;
     std::vector<size_t> order;
     std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> impulses;
@@ -190,6 +191,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     uint32_t substep = 0, substepCount = 0;
     bool solveVelocity = false;
     bool solvePosition = false;
+    float warmStartScale = 0.0f;
     Parameters params{};
 
     Job(JoltMixedConstraintSolver &owner, JoltGpuMixedContacts &discovery, JoltMixedContactStep &step,
@@ -223,25 +225,31 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             return i;
         };
         std::unordered_map<uint32_t, size_t> cpuLinks, gpuLinks;
+        const auto link = [&](auto &links, uint32_t body, size_t i) {
+            const auto [first, added] = links.try_emplace(body, i);
+            if (!added)
+                parents[root(i)] = root(first->second);
+        };
+        std::vector<uint32_t> gpuContactBodies;
+        gpuContactBodies.reserve(responses.size());
         for (size_t i = 0; i < responses.size(); ++i) {
             const auto &response = responses[i];
-            const auto [first, newCpu] = cpuLinks.try_emplace(response.cpu.body, i);
-            const auto [second, newGpu] = gpuLinks.try_emplace(response.gpuSlot, i);
-            if (!newCpu)
-                parents[root(i)] = root(first->second);
-            if (!newGpu)
-                parents[root(i)] = root(second->second);
+            if (response.cpuDynamic)
+                link(cpuLinks, response.cpu.body, i);
+            if (response.gpuDynamic)
+                link(gpuLinks, response.gpuSlot, i);
+            gpuContactBodies.push_back(response.gpuSlot);
         }
         for (size_t i = 0; i < parents.size(); ++i)
             parents[i] = root(i);
         std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return parents[a] < parents[b]; });
-        std::vector<uint32_t> gpuContactBodies;
-        gpuContactBodies.reserve(gpuLinks.size());
-        for (const auto &[slot, _] : gpuLinks)
-            gpuContactBodies.push_back(slot);
+        std::sort(gpuContactBodies.begin(), gpuContactBodies.end());
+        gpuContactBodies.erase(std::unique(gpuContactBodies.begin(), gpuContactBodies.end()), gpuContactBodies.end());
         inputs.SetExternalContactBodies(std::move(gpuContactBodies));
 
+        const auto dynamicCount = cpuLinks.size();
         native.clear();
+        prescribed.clear();
         groups.clear();
         patches.clear();
         wakeSlots.clear();
@@ -257,10 +265,15 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             if (response.wakeGpu)
                 wakeSlots.push_back(response.gpuSlot);
             auto &group = groups.back();
-            const auto [mapped, added] = cpuLinks.try_emplace(response.cpu.body, native.size());
+            const size_t slot = response.cpuDynamic ? native.size() : dynamicCount + prescribed.size();
+            const auto [mapped, added] = cpuLinks.try_emplace(response.cpu.body, slot);
             if (added) {
-                native.push_back(response.native);
-                ++group.w;
+                if (response.cpuDynamic) {
+                    native.push_back(response.native);
+                    ++group.w;
+                } else {
+                    prescribed.push_back(response.native);
+                }
             }
             DevicePatch value{};
             value.endpoints = {static_cast<uint32_t>(mapped->second), response.gpuSlot, response.pointCount, 0};
@@ -355,20 +368,29 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
 
     void CaptureModels()
     {
-        models.resize(native.size());
-        for (size_t i = 0; i < native.size(); ++i) {
-            const auto &body = Body(native[i]);
-            const auto *motion = body.GetMotionProperties();
-            const auto locks = ~static_cast<uint32_t>(motion->GetAllowedDOFs());
+        models.resize(native.size() + prescribed.size());
+        velocities.resize(models.size());
+        for (size_t i = 0; i < models.size(); ++i) {
+            const bool dynamic = i < native.size();
+            const auto id = dynamic ? native[i] : prescribed[i - native.size()];
+            const auto &body = Body(id);
             auto &boundary = models[i];
             boundary.model = {};
-            boundary.model.meta.z = MotionDynamic;
-            boundary.model.mass = {motion->GetInverseMass(), float(locks & 7u), float((locks >> 3) & 7u), 0};
-            boundary.model.invInertiaDiagonal = Pack(motion->GetInverseInertiaDiagonal());
-            const auto inertia = motion->GetInertiaRotation();
-            boundary.model.inertiaRotation = {inertia.GetX(), inertia.GetY(), inertia.GetZ(), inertia.GetW()};
+            boundary.model.meta.z = dynamic ? MotionDynamic : MotionKinematic;
             boundary.center = Pack(body.GetCenterOfMassPosition());
             boundary.rotation = Pack(body.GetRotation());
+            if (dynamic) {
+                const auto *motion = body.GetMotionProperties();
+                const auto locks = ~static_cast<uint32_t>(motion->GetAllowedDOFs());
+                boundary.model.mass = {motion->GetInverseMass(), float(locks & 7u), float((locks >> 3) & 7u), 0};
+                boundary.model.invInertiaDiagonal = Pack(motion->GetInverseInertiaDiagonal());
+                boundary.model.inertiaRotation = Pack(motion->GetInertiaRotation());
+                const auto free = cpu.CoupledFreeVelocity(id);
+                velocities[i] = {Pack(free.mLinear), Pack(free.mAngular)};
+            } else {
+                // Capture velocity before Jolt advances the prescribed body to the end of the substep.
+                velocities[i] = {Pack(body.GetLinearVelocity()), Pack(body.GetAngularVelocity())};
+            }
         }
         anchors.resize(solvePosition ? patches.size() : 0);
         const float dt = params.gravityDt.w;
@@ -377,9 +399,9 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         for (size_t i = 0; i < order.size(); ++i) {
             auto &response = responses[order[i]];
             auto &patch = patches[i];
-            const auto free = cpu.CoupledFreeVelocity(response.native);
-            const auto v = XYZ(Pack(free.mLinear));
-            const auto w = XYZ(Pack(free.mAngular));
+            const auto &free = velocities[patch.endpoints.x];
+            const auto v = XYZ(free.linear);
+            const auto w = XYZ(free.angular);
             const auto center = XYZ(models[patch.endpoints.x].center);
             for (uint32_t j = 0; j < response.pointCount; ++j) {
                 auto &point = response.points[j];
@@ -433,7 +455,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             !Allocate(CpuVelocities, velocityBytes) || !Allocate(Groups, groups.size() * sizeof(UInt4)) ||
             !Allocate(Patches, patches.size() * sizeof(DevicePatch)) ||
             (solveVelocity && !Allocate(PreviousPatches, sizeof(DevicePatch))) ||
-            (solveVelocity && !Allocate(Impulses, velocityBytes)) ||
+            (solveVelocity && !Allocate(Impulses, std::max(size_t{1}, native.size()) * sizeof(Velocity))) ||
             (solvePosition && !Allocate(Anchors, anchors.size() * sizeof(PositionAnchors))) ||
             (!wakeSlots.empty() && !Allocate(WakeSlots, wakeSlots.size() * sizeof(uint32_t)))) {
             return {nullptr, [self = shared_from_this(), done = std::move(done)]() mutable {
@@ -482,13 +504,14 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                     self->step.Responses().clear();
                 self->BuildWorkset(inputs);
                 self->cpu.BeginCoupledSubstep(self->substep, self->native);
-                if (self->native.empty()) {
+                if (self->patches.empty()) {
                     self->history->manifolds.clear();
                     self->cpu.AdvanceCoupledVelocity();
                     done();
                     return JoltGpuControlWork{};
                 }
                 self->CaptureModels();
+                self->warmStartScale = self->solveVelocity ? self->MatchWarmStarts() : 0.0f;
                 self->cpu.AdvanceCoupledVelocity(); // First CPU local round, before the first cross-domain response.
                 if (self->policy.Requested() && (!self->solveVelocity || !self->policy.impulses))
                     self->PublishContacts();
@@ -524,7 +547,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     uint32_t Rounds(uint32_t maximum) const
     {
         // Keep the packet bounded and preserve the native order wherever it can influence a cross-domain row.
-        return patches.size() <= 32 && !cpu.CoupledHasLocalVelocityRows() ? maximum : 1u;
+        return patches.size() <= 32 && (native.empty() || !cpu.CoupledHasLocalVelocityRows()) ? maximum : 1u;
     }
 
     void UploadWorkset(std::vector<rhi::ComputeBufferUpdate> &updates) const
@@ -537,85 +560,106 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     JoltGpuControlWork ExchangeVelocity(uint32_t iteration, uint32_t iterations, uint32_t maxRounds,
                                         std::function<void(uint32_t)> done)
     {
-        if (native.empty()) {
+        if (patches.empty()) {
             done(maxRounds);
             return {};
         }
-        velocities.clear();
-        velocities.reserve(native.size());
-        for (const auto id : native) {
-            const auto &body = Body(id);
-            velocities.push_back({Pack(body.GetLinearVelocity()), Pack(body.GetAngularVelocity())});
+        for (size_t i = 0; i < native.size(); ++i) {
+            const auto &body = Body(native[i]);
+            velocities[i] = {Pack(body.GetLinearVelocity()), Pack(body.GetAngularVelocity())};
         }
         const uint32_t rounds = Rounds(maxRounds);
         params.range = {0, static_cast<uint32_t>(groups.size()), rounds, 0};
-        params.contact.x = iteration == 0 ? MatchWarmStarts() : 0.0f;
+        params.contact.x = iteration == 0 ? warmStartScale : 0.0f;
         const bool last = iteration + rounds == iterations;
         const bool readImpulses = last && policy.impulses;
-        std::vector<rhi::ComputeBufferRead> reads{{buffers[Impulses], 0, velocities.size() * sizeof(Velocity)}};
+        std::vector<rhi::ComputeBufferRead> reads;
+        if (!native.empty())
+            reads.push_back({buffers[Impulses], 0, native.size() * sizeof(Velocity)});
+        const auto contactRead = reads.size();
         if (readImpulses)
             reads.push_back({buffers[Patches], 0, patches.size() * sizeof(DevicePatch)});
-        std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)},
-                                                      {buffers[CpuVelocities], 0, Bytes(velocities)}};
+        const auto resume =
+            reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
+        std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)}};
+        const size_t velocityCount = iteration == 0 ? velocities.size() : native.size();
+        if (velocityCount)
+            updates.push_back({buffers[CpuVelocities], 0, Bytes(velocities.data(), velocityCount)});
         if (iteration == 0)
             UploadWorkset(updates);
         auto packet =
             rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {Dispatch(owner.m_velocity)}, std::move(reads));
-        return {packet, [self = shared_from_this(), packet, last, readImpulses, rounds, done = std::move(done)] {
-                    self->receipts.resize(self->native.size());
-                    packet->Readback(0)->ReadInto(self->receipts.data(), self->receipts.size() * sizeof(Velocity));
-                    self->impulses.clear();
-                    for (size_t i = 0; i < self->native.size(); ++i) {
-                        const auto &value = self->receipts[i];
-                        self->impulses.push_back({self->native[i],
-                                                  JPH::Vec3(value.linear.x, value.linear.y, value.linear.z),
-                                                  JPH::Vec3(value.angular.x, value.angular.y, value.angular.z)});
+        return {packet,
+                [self = shared_from_this(), packet, last, readImpulses, contactRead, rounds, done = std::move(done)] {
+                    if (!self->native.empty()) {
+                        self->receipts.resize(self->native.size());
+                        packet->Readback(0)->ReadInto(self->receipts.data(), self->receipts.size() * sizeof(Velocity));
+                        self->impulses.clear();
+                        for (size_t i = 0; i < self->native.size(); ++i) {
+                            const auto &value = self->receipts[i];
+                            self->impulses.push_back({self->native[i],
+                                                      JPH::Vec3(value.linear.x, value.linear.y, value.linear.z),
+                                                      JPH::Vec3(value.angular.x, value.angular.y, value.angular.z)});
+                        }
+                        // Multiple rounds have no intervening CPU local rows.
+                        bool integrated = self->cpu.AdvanceCoupledVelocity(self->impulses);
+                        for (uint32_t i = 1; i < rounds; ++i)
+                            integrated = self->cpu.AdvanceCoupledVelocity();
+                        if (integrated != last)
+                            throw std::logic_error(
+                                "CPU and GPU coupling rounds differ from their shared velocity settings");
                     }
-                    // With no local rows, all impulses can be applied before the remaining empty native rounds.
-                    bool integrated = self->cpu.AdvanceCoupledVelocity(self->impulses);
-                    for (uint32_t i = 1; i < rounds; ++i)
-                        integrated = self->cpu.AdvanceCoupledVelocity();
-                    if (integrated != last)
-                        throw std::logic_error(
-                            "CPU and GPU coupling rounds differ from their shared velocity settings");
                     if (readImpulses) {
-                        packet->Readback(1)->ReadInto(self->patches.data(), self->patches.size() * sizeof(DevicePatch));
+                        packet->Readback(contactRead)
+                            ->ReadInto(self->patches.data(), self->patches.size() * sizeof(DevicePatch));
                         self->PublishContacts();
                     }
                     if (last)
                         self->RetainImpulses();
                     done(rounds);
                     return JoltGpuControlWork{};
-                }};
+                },
+                resume};
     }
 
     JoltGpuControlWork ExchangePosition(uint32_t iteration, uint32_t iterations, uint32_t maxRounds,
                                         std::function<void(uint32_t)> done)
     {
-        poses.clear();
-        poses.reserve(native.size());
-        for (const auto id : native) {
+        if (iteration == 0)
+            poses.resize(models.size());
+        const size_t poseCount = iteration == 0 ? poses.size() : native.size();
+        for (size_t i = 0; i < poseCount; ++i) {
+            const auto id = i < native.size() ? native[i] : prescribed[i - native.size()];
             const auto &body = Body(id);
-            poses.push_back({Pack(body.GetCenterOfMassPosition()), Pack(body.GetRotation())});
+            poses[i] = {Pack(body.GetCenterOfMassPosition()), Pack(body.GetRotation())};
         }
         const uint32_t rounds = Rounds(maxRounds);
         const bool last = iteration + rounds == iterations;
         params.range = {0, static_cast<uint32_t>(groups.size()), rounds, 0};
-        std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)},
-                                                      {buffers[CpuPoses], 0, Bytes(poses)}};
+        std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)}};
+        if (poseCount)
+            updates.push_back({buffers[CpuPoses], 0, Bytes(poses.data(), poseCount)});
         if (iteration == 0) {
             if (!solveVelocity)
                 UploadWorkset(updates);
             updates.push_back({buffers[Anchors], 0, Bytes(anchors)});
         }
-        auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {Dispatch(owner.m_position)},
-                                               {{buffers[CpuPoses], 0, poses.size() * sizeof(Pose)}});
-        return {packet, [self = shared_from_this(), packet, last, rounds, done = std::move(done)] {
-                    self->projected.resize(self->poses.size());
+        std::vector<rhi::ComputeBufferRead> reads;
+        if (!native.empty())
+            reads.push_back({buffers[CpuPoses], 0, native.size() * sizeof(Pose)});
+        const auto resume =
+            reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
+        auto packet =
+            rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {Dispatch(owner.m_position)}, std::move(reads));
+        return {
+            packet,
+            [self = shared_from_this(), packet, last, rounds, done = std::move(done)] {
+                if (!self->native.empty()) {
+                    self->projected.resize(self->native.size());
                     packet->Readback(0)->ReadInto(self->projected.data(), self->projected.size() * sizeof(Pose));
                     self->corrections.clear();
-                    self->corrections.reserve(self->poses.size());
-                    for (size_t i = 0; i < self->poses.size(); ++i) {
+                    self->corrections.reserve(self->native.size());
+                    for (size_t i = 0; i < self->native.size(); ++i) {
                         const auto &origin = self->poses[i].center;
                         const auto &pose = self->projected[i];
                         self->corrections.push_back(
@@ -626,9 +670,11 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                     if (self->cpu.AdvanceCoupledPosition(self->corrections, rounds) != last)
                         throw std::logic_error(
                             "CPU and GPU coupling rounds differ from their shared position settings");
-                    done(rounds);
-                    return JoltGpuControlWork{};
-                }};
+                }
+                done(rounds);
+                return JoltGpuControlWork{};
+            },
+            resume};
     }
 };
 

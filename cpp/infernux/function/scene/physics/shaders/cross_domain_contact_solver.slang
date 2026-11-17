@@ -46,9 +46,11 @@ struct MixedPatch
 [[vk::binding(12, 0)]] StructuredBuffer<PositionAnchors> anchors;
 [[vk::binding(13, 0)]] StructuredBuffer<MixedPatch> previous_patches;
 
-void store_velocity_result(uint a, uint b, BodyState sa, BodyState sb, float3 impulse, float3 torqueA)
+void store_velocity_result(uint a, uint b, bool dynamic_a, bool dynamic_b,
+                           BodyState sa, BodyState sb, float3 impulse, float3 torqueA)
 {
-    gpu_states[b] = sb;
+    if (dynamic_b) gpu_states[b] = sb;
+    if (!dynamic_a) return;
     cpu_velocities[a] = {sa.linearVelocity, sa.angularVelocity};
     Velocity accumulated = cpu_impulses[a];
     accumulated.linear.xyz -= impulse;
@@ -114,7 +116,7 @@ void warm_patch(uint index)
     sa.angularVelocity.xyz -= jph_inverse_inertia(ma, sa, torqueA);
     sb.linearVelocity.xyz += jph_inverse_linear_mass(mb, impulse);
     sb.angularVelocity.xyz += jph_inverse_inertia(mb, sb, torqueB);
-    store_velocity_result(a, b, sa, sb, impulse, torqueA);
+    store_velocity_result(a, b, jph_dynamic(ma), jph_dynamic(mb), sa, sb, impulse, torqueA);
     patch.normalLambda = normalLambda;
     patch.frictionLambda = float4(tangent, spin, 0);
     patches[index] = patch;
@@ -186,7 +188,7 @@ void solve_patch(uint index)
     sa.angularVelocity.xyz -= jph_inverse_inertia(ma, sa, jna);
     sb.linearVelocity.xyz += jph_inverse_linear_mass(mb, jn);
     sb.angularVelocity.xyz += jph_inverse_inertia(mb, sb, jnb);
-    store_velocity_result(a, b, sa, sb, jt + jn, jt_angular + jna);
+    store_velocity_result(a, b, jph_dynamic(ma), jph_dynamic(mb), sa, sb, jt + jn, jt_angular + jna);
     patch.normalLambda = next;
     patch.frictionLambda.xyz = float3(tangent, angular);
     patches[index] = patch;
@@ -227,10 +229,13 @@ void project_patch(uint index)
         contact.localAnchorB = geometry.localB[i];
         jph_solve_position(ma, sa, mb, sb, contact, params.contact.y, params.contact.z, params.contact.w);
     }
-    cpu_poses[a] = {sa.positionCOM, sa.rotation};
-    sb.linearVelocity = linear;
-    sb.angularVelocity = angular;
-    gpu_states[b] = sb;
+    if (jph_dynamic(ma)) cpu_poses[a] = {sa.positionCOM, sa.rotation};
+    if (jph_dynamic(mb))
+    {
+        sb.linearVelocity = linear;
+        sb.angularVelocity = angular;
+        gpu_states[b] = sb;
+    }
 }
 
 [shader("compute")]

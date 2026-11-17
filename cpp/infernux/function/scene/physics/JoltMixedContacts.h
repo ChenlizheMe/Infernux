@@ -50,7 +50,7 @@ class JoltMixedContactStep final
         uint32_t gpuSlot, pointCount;
         JPH::GPU::Float4 normalFriction;
         float restitution;
-        bool wakeGpu;
+        bool cpuDynamic, gpuDynamic, wakeGpu;
         std::array<ResponsePoint, JPH::GPU::MaxContactPointsPerPair> points;
     };
 
@@ -86,7 +86,7 @@ class JoltMixedContactStep final
         uint64_t shapeRevision;
         JPH::RefConst<JPH::Shape> shape;
         PhysicsTargetReference target;
-        bool sensor, allowResponse;
+        bool sensor, allowResponse, dynamic;
     };
     struct Pose
     {

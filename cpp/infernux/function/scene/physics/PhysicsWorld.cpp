@@ -761,7 +761,7 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     std::vector<uint32_t> respondingGpu;
     bool mixedTriggers = false, coupled = false;
     if (domain.cpuControl && domain.gpuRegistered) {
-        bool gpuBody = false, sensor = false, respondingCpu = false;
+        bool gpuBody = false, sensor = false, respondingCpu = false, dynamicCpu = false, dynamicGpu = false;
         const bool observeTriggers = policy.WantsTriggers();
         const auto &store = PhysicsECSStore::Instance();
         for (const auto id : domain.bodyIds) {
@@ -771,20 +771,23 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
             const auto &actor = store.GetActor(entry->actor);
             const bool respond =
                 actor.rigidbody && actor.rigidbody->IsEnabled() && actor.rigidbody->AllowsCrossBackendInteraction();
+            const bool dynamic = respond && !actor.rigidbody->IsKinematic();
             if (entry->backend == Backend::Cpu) {
                 cpuEndpoints.push_back({id, respond});
                 respondingCpu |= respond;
+                dynamicCpu |= dynamic;
             } else {
                 gpuBody = true;
                 if (respond)
                     respondingGpu.push_back(id);
+                dynamicGpu |= dynamic;
             }
             if (observeTriggers && !sensor)
                 sensor = std::any_of(actor.colliders.begin(), actor.colliders.end(),
                                      [](const auto *c) { return c && c->IsEnabled() && c->IsTrigger(); });
         }
         mixedTriggers = gpuBody && sensor && !cpuEndpoints.empty();
-        coupled = respondingCpu && !respondingGpu.empty();
+        coupled = respondingCpu && !respondingGpu.empty() && (dynamicCpu || dynamicGpu);
     }
     if (mixedTriggers || coupled) {
         if (!m_gpuMixedContacts) {
