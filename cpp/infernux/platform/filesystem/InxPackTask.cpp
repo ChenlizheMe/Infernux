@@ -376,10 +376,11 @@ ReadTask::ReadBuffer::ReadBuffer(size_t bytes, std::shared_ptr<FrameCpuStorageCl
 struct ReadTask::State : IoStepState
 {
     State(const std::filesystem::path &path, size_t metadataLimit, size_t blockBytes)
-        : cursor(path, metadataLimit, blockBytes)
+        : cursor(path, metadataLimit, blockBytes), cooperative(JobSystem::Get().IsInline())
     {
     }
     ReadCursor cursor;
+    const bool cooperative;
     std::shared_ptr<ReadBuffer> output;
     size_t outputOffset = 0;
     uint64_t rawLeft = 0;
@@ -438,7 +439,7 @@ struct ReadTask::State : IoStepState
 #ifdef INX_PLATFORM_WINDOWS
         // Pin the same file revision for async ranges before its pathname can
         // be replaced while the caller is using the parsed archive directory.
-        if (!rangeReader && cursor.GetState() == ReadState::Opening)
+        if (!cooperative && !rangeReader && cursor.GetState() == ReadState::Opening)
             rangeReader = std::make_shared<OverlappedFile>(cursor.OpenedFile());
 #endif
     }
@@ -458,6 +459,19 @@ struct ReadTask::State : IoStepState
         return {destination, capacity, maxBytes};
     }
 
+    EntryReadRange Prepare(Destination destination)
+    {
+        return cursor.PrepareReadInto(destination.data, destination.capacity, destination.maximum);
+    }
+
+    size_t ReadBlockingRange(Destination destination)
+    {
+        const auto range = Prepare(destination);
+        if (range.bytes)
+            cursor.OpenedFile().ReadAt(range.offset, range.destination, range.bytes);
+        return range.bytes;
+    }
+
     size_t Commit(Destination destination, size_t readBytes)
     {
         const auto produced =
@@ -474,7 +488,8 @@ struct ReadTask::State : IoStepState
         size_t readerBytes = 0, readerReservation = 0;
 #ifdef INX_PLATFORM_WINDOWS
         readerBytes = rangeReader ? sizeof(OverlappedFile) : 0;
-        readerReservation = (rangeReader || cursor.GetState() == ReadState::Opening) ? sizeof(OverlappedFile) : 0;
+        readerReservation =
+            !cooperative && (rangeReader || cursor.GetState() == ReadState::Opening) ? sizeof(OverlappedFile) : 0;
 #endif
         retained.store(storage + readerBytes + (output ? sizeof(ReadBuffer) : 0) + cursor.GetRetainedBytes(),
                        std::memory_order_relaxed);
@@ -627,19 +642,16 @@ struct ReadTask::EntryStep : std::enable_shared_from_this<EntryStep>
             }
             while (more && !Cancelled()) {
                 const auto destination = Destination();
-                const auto range =
-                    state->cursor.PrepareReadInto(destination.data, destination.capacity, destination.maximum);
-                if (range.bytes) {
 #ifdef INX_PLATFORM_WINDOWS
+                const auto range = state->Prepare(destination);
+                if (range.bytes) {
                     Submit(range);
                     RecordYield(started);
                     return;
-#else
-                    state->cursor.OpenedFile().ReadAt(range.offset, range.destination, range.bytes);
-#endif
                 }
-                more = Commit(destination, range.bytes, started, previous);
-#ifndef INX_PLATFORM_WINDOWS
+                more = Commit(destination, 0, started, previous);
+#else
+                more = Commit(destination, state->ReadBlockingRange(destination), started, previous);
                 if (more && !targetNs && !Cancelled()) {
                     // Keep the same grant and output, but return the worker
                     // to the shared queue before the next file range.
@@ -659,16 +671,14 @@ struct ReadTask::EntryStep : std::enable_shared_from_this<EntryStep>
 ReadTask::ReadTask(const std::filesystem::path &path, size_t metadataLimit, size_t blockBytes)
     : m_state(std::make_shared<State>(path, metadataLimit, blockBytes))
 {
-    if (JobSystem::Get().IsInline())
-        throw std::runtime_error("asynchronous InxPack reading requires the existing worker pool");
     Snapshot();
 }
 ReadTask::~ReadTask()
 {
-    // During normal engine life, dropping an idle sink hands its private-file
-    // cleanup to the same IO workers. After pool shutdown this is cold RAII.
+    // During normal engine life, the IO queue retires the private cursor.
+    // After pool shutdown this is cold RAII.
     try {
-        if (JobSystem::IsAvailable() && !JobSystem::Get().IsInline())
+        if (JobSystem::IsAvailable())
             Cancel();
     } catch (...) {
     } // Noexcept destruction also covers shutdown or failed job allocation.
@@ -687,6 +697,10 @@ bool ReadTask::PendingLocked() const
 {
     return !m_job.IsComplete() || (m_entryCompletion && !m_entryCompletion->IsComplete());
 }
+size_t ReadTask::LimitWindow(size_t maxBytes) const noexcept
+{
+    return m_state->cooperative ? std::min(maxBytes, detail::kMinimumFileWindow) : maxBytes;
+}
 void ReadTask::Snapshot()
 {
     m_state->Snapshot();
@@ -695,22 +709,41 @@ void ReadTask::Dispatch(size_t maxBytes, uint64_t targetNs, bool handoff, size_t
 {
     if (!handoff)
         Idle();
+    maxBytes = LimitWindow(maxBytes);
+    const auto affinity = m_state->cooperative ? JobAffinity::AnyThread : detail::IoJobAffinity;
     const auto work = handoff ? IoWork{"read.cleanup", 0, {}, 0} : m_state->DescribeWork(maxBytes);
     if (work.operation.empty())
         return;
     const bool directory = targetNs && m_state->cursor.GetState() == ReadState::Opening;
     if (!handoff && m_state->cursor.GetState() == ReadState::Reading) {
         const bool batch = work.operation == kReadBufferOperation;
-        auto step = std::make_shared<EntryStep>(m_state, batch ? work.bytes : maxBytes, targetNs, batch);
-        m_state->control.fetch_or(State::active, std::memory_order_acq_rel);
-        try {
-            step->Queue();
-        } catch (...) {
-            m_state->control.fetch_and(static_cast<uint8_t>(~State::active), std::memory_order_release);
-            throw;
+        const size_t maximum = batch ? work.bytes : maxBytes;
+        if (m_state->cooperative) {
+            // The next range needs a new owner grant. Requeuing here could
+            // make the same browser-frame pump consume the whole entry.
+            m_job = DispatchIo(
+                m_state,
+                [maximum, batch](State &state) {
+                    if (state.control.load(std::memory_order_acquire) & State::cancel)
+                        return;
+                    const auto destination = state.GetDestination(maximum);
+                    const auto used = state.Commit(destination, state.ReadBlockingRange(destination));
+                    if (batch)
+                        state.bufferWorkBytes += used;
+                },
+                affinity);
+        } else {
+            auto step = std::make_shared<EntryStep>(m_state, maximum, targetNs, batch);
+            m_state->control.fetch_or(State::active, std::memory_order_acq_rel);
+            try {
+                step->Queue();
+            } catch (...) {
+                m_state->control.fetch_and(static_cast<uint8_t>(~State::active), std::memory_order_release);
+                throw;
+            }
+            m_entryCompletion = step->completion;
+            m_state->submissions.fetch_add(1, std::memory_order_relaxed);
         }
-        m_entryCompletion = step->completion;
-        m_state->submissions.fetch_add(1, std::memory_order_relaxed);
     } else if (directory) {
         const auto previous = m_state->reservation.load(std::memory_order_relaxed);
         if (directoryExtraBytes > (std::numeric_limits<size_t>::max)() - previous)
@@ -718,24 +751,30 @@ void ReadTask::Dispatch(size_t maxBytes, uint64_t targetNs, bool handoff, size_t
         const auto limit = m_state->cursor.GetReservationBytes() + directoryExtraBytes;
         m_state->reservation.store(previous + directoryExtraBytes, std::memory_order_relaxed);
         try {
-            m_job = DispatchIo(m_state, [maxBytes, targetNs, limit](State &state) {
-                AdvanceCursorBatch(
-                    maxBytes, targetNs, [&](size_t bytes) { return state.DescribeWork(bytes); },
-                    [&](size_t bytes) { state.AdvanceCursor(bytes); },
-                    [&] {
-                        return (state.control.load(std::memory_order_acquire) & State::cancel) ||
-                               state.cursor.GetReservationBytes() > limit;
-                    });
-            });
+            m_job = DispatchIo(
+                m_state,
+                [maxBytes, targetNs, limit](State &state) {
+                    AdvanceCursorBatch(
+                        maxBytes, targetNs, [&](size_t bytes) { return state.DescribeWork(bytes); },
+                        [&](size_t bytes) { state.AdvanceCursor(bytes); },
+                        [&] {
+                            return (state.control.load(std::memory_order_acquire) & State::cancel) ||
+                                   state.cursor.GetReservationBytes() > limit;
+                        });
+                },
+                affinity);
         } catch (...) {
             m_state->reservation.store(previous, std::memory_order_relaxed);
             throw;
         }
     } else {
-        m_job = DispatchIo(m_state, [maxBytes](State &state) {
-            if (!(state.control.load(std::memory_order_acquire) & State::cancel))
-                state.AdvanceCursor(maxBytes);
-        });
+        m_job = DispatchIo(
+            m_state,
+            [maxBytes](State &state) {
+                if (!(state.control.load(std::memory_order_acquire) & State::cancel))
+                    state.AdvanceCursor(maxBytes);
+            },
+            affinity);
     }
     m_submittedWork = directory ? IoWork{kReadDirectoryOperation, maxBytes, {}, 0} : work;
 }
@@ -948,7 +987,7 @@ ReadProgress ReadTask::GetProgress() const
 IoWork ReadTask::DescribeWork(size_t maxBytes) const
 {
     std::lock_guard lock(m_mutex);
-    return Idle().DescribeWork(maxBytes);
+    return Idle().DescribeWork(LimitWindow(maxBytes));
 }
 IoWork ReadTask::GetSubmittedWork() const
 {

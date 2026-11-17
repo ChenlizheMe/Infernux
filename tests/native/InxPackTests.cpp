@@ -1,5 +1,7 @@
-#include <platform/filesystem/InxPack.h>
+#include <core/threading/FrameWorkOwner.h>
 #include <platform/filesystem/AtomicFile.h>
+#include <platform/filesystem/InxPack.h>
+#include <platform/filesystem/InxPackTask.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
@@ -111,6 +113,86 @@ void RequireExtractFailure(const std::filesystem::path &package, const std::file
         rejected = true;
     }
     Require(rejected, "extraction unexpectedly succeeded");
+}
+
+void CheckInlineRead(const std::filesystem::path &package, const std::vector<uint8_t> &expected)
+{
+    using namespace infernux;
+    using namespace infernux::inxpack;
+
+    JobSystem::InitializeInline();
+    try {
+        constexpr size_t window = 64u * 1024u;
+        FrameWorkOwner owner;
+        ReadTask reader(package, 1024u * 1024u);
+        auto &jobs = JobSystem::Get();
+        const auto pump = [&](uint64_t target = 0) {
+            owner.BeginOpportunity();
+            const auto before = reader.GetProgress();
+            const auto submissions = reader.GetSubmissionCount();
+            reader.Advance(expected.size(), target, 1024u * 1024u);
+            Require(reader.IsPending(), "inline grant executed before its owner pumped jobs");
+            Require(reader.GetSubmittedWork().bytes <= window, "inline grant exceeded its byte window");
+            owner.EndOpportunity();
+            owner.BeginOpportunity();
+            Require(jobs.RunPendingJobs(64) == 1, "inline grant requeued work in one owner opportunity");
+            owner.EndOpportunity();
+            Require(!reader.IsPending() && !reader.RanOnWorker() && reader.GetError().empty(),
+                    "inline grant did not retire normally on its owner");
+            Require(reader.GetSubmissionCount() == submissions + 1, "inline grant lost its IO receipt");
+            const auto after = reader.GetProgress();
+            Require(after.readBytes - before.readBytes <= window &&
+                        after.bufferedBytes - before.bufferedBytes <= window,
+                    "inline grant performed more than one bounded read or decode");
+        };
+
+        while (reader.GetStateName() == "opening")
+            pump(250'000);
+        Require(reader.GetManifest().entries.size() == 2, "inline directory lost a packed entry");
+
+        // A resident Store destination may request unlimited worker streaming.
+        // The inline executor still has to return after each bounded grant.
+        Require(reader.BeginReadBuffer("Library/audio.mp3", owner), "cannot reserve Store fixture output");
+        pump();
+        Require(reader.GetStateName() == "reading", "the first inline grant consumed the full Store entry");
+        while (reader.GetStateName() == "reading")
+            pump();
+        {
+            const auto stored = reader.TakeReadBuffer();
+            Require(stored->bytes == expected.size() &&
+                        std::memcmp(stored->data.get(), expected.data(), stored->bytes) == 0,
+                    "inline Store output did not match the original bytes");
+        }
+
+        reader.BeginReadStream("Library/large.bin");
+        size_t offset = 0;
+        while (offset != expected.size()) {
+            const auto state = reader.GetStateName();
+            if (state == "needs_buffer") {
+                Require(reader.ReserveReadWindow(owner, window * 2), "cannot reserve streamed Zstd output");
+            } else if (state == "output" || state == "ready") {
+                const auto part = reader.TakeReadBuffer();
+                Require(part->bytes <= expected.size() - offset &&
+                            std::memcmp(part->data.get(), expected.data() + offset, part->bytes) == 0,
+                        "inline Zstd window did not match the original bytes");
+                offset += part->bytes;
+            } else {
+                pump(250'000);
+            }
+        }
+
+        Require(owner.CpuStorageReservedBytes() == 0, "inline reads leaked a CPU storage reservation");
+        Require(reader.BeginReadBuffer("Library/audio.mp3", owner), "cannot reserve cancellation fixture output");
+        reader.Advance(expected.size());
+        Require(reader.Cancel(), "inline reader could not cancel queued work");
+        reader.Wait(); // Shutdown completion helps the queued JobHandle without an entry event wait.
+        Require(reader.IsComplete() && reader.GetStateName() == "cancelled" && owner.CpuStorageReservedBytes() == 0,
+                "inline cancellation did not retire its queued read and storage");
+    } catch (...) {
+        JobSystem::Shutdown();
+        throw;
+    }
+    JobSystem::Shutdown();
 }
 } // namespace
 
@@ -300,6 +382,8 @@ int main()
                 "streamed Zstd extraction changed bytes");
         Require(ReadFile(root / "stream-extracted/Library/audio.mp3") == large,
                 "streamed Store extraction changed bytes");
+        phase = "inline Store and Zstd reads";
+        CheckInlineRead(largePack, large);
         std::fill(large.begin(), large.end(), 0);
         WriteSource(largeSource, large);
         Write(largePack, {{"Library/large.bin", largeSource}});

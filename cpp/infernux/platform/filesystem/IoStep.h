@@ -91,7 +91,8 @@ template <class State> void FinishIoStep(State &state, IoClock::time_point start
     }
 }
 
-template <class State, class Work> JobHandle DispatchIo(const std::shared_ptr<State> &state, Work work)
+template <class State, class Work>
+JobHandle DispatchIo(const std::shared_ptr<State> &state, Work work, JobAffinity affinity = IoJobAffinity)
 {
     state->control.fetch_or(State::active, std::memory_order_acq_rel);
     JobHandle job;
@@ -107,7 +108,7 @@ template <class State, class Work> JobHandle DispatchIo(const std::shared_ptr<St
                 }
                 FinishIoStep(*state, started);
             },
-            JobDomain::IO, JobPriority::Low, IoJobAffinity);
+            JobDomain::IO, JobPriority::Low, affinity);
     } catch (...) {
         state->control.fetch_and(static_cast<uint8_t>(~State::active), std::memory_order_release);
         throw;

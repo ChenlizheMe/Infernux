@@ -64,8 +64,8 @@ class WriteTask
     void Dispatch(bool publish, size_t maximum, uint64_t targetNs = 0, bool handoff = false);
 };
 
-/// One read cursor on the IO worker domain. An entry fills a private buffer,
-/// produces bounded windows, or materializes a file for the native loader.
+/// One read cursor on the IO domain. Worker pools can stream between owner
+/// opportunities. An inline host advances one bounded window per grant.
 class ReadTask
 {
   public:
@@ -122,6 +122,7 @@ class ReadTask
     IoWork m_submittedWork;
     State &Idle() const;
     bool PendingLocked() const;
+    size_t LimitWindow(size_t maxBytes) const noexcept;
     void Snapshot();
     void Dispatch(size_t maxBytes, uint64_t targetNs, bool handoff = false, size_t directoryExtraBytes = 0);
 };
