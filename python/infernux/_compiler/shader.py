@@ -486,9 +486,22 @@ struct InxRayLitSampling
     {
         InxRayTextureDescriptor descriptor = ray_texture_descriptors[descriptor_index];
         float3 coordinates = float3(uv, float(descriptor.layer));
-        if (descriptor.page_class == 0u)
+        switch (descriptor.page_class)
+        {
+        case 0u:
             return ray_color_pages.SampleLevel(ray_color_sampler, coordinates, footprint.lod);
-        return ray_data_pages.SampleLevel(ray_data_sampler, coordinates, footprint.lod);
+        case 1u:
+            return ray_data_pages.SampleLevel(ray_data_sampler, coordinates, footprint.lod);
+        case 2u:
+            return float4(1.0);
+        case 3u:
+            return float4(0.0, 0.0, 0.0, 1.0);
+        case 4u:
+            return float4(128.0 / 255.0, 128.0 / 255.0, 1.0, 1.0);
+        default:
+            // Keep the invalid sample a runtime expression in WGSL.
+            return float4(asfloat(0x7fc00000u | descriptor.page_class));
+        }
     }
     InxSurfaceDifferentials differentials(InxMeshInput input, float2 uv, float2 uv_scale)
     {

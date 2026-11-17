@@ -111,25 +111,41 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
             auto texture = resolve(material, draw.parameterBlock.get(), name);
             if (!texture)
                 return std::nullopt;
-            if (input.sources.size() >= UINT32_MAX)
+            if (input.descriptors.size() >= UINT32_MAX)
                 throw std::length_error("Ray Lit texture references exceed the shader index range");
-            const auto descriptor = static_cast<uint32_t>(input.sources.size());
+            const auto descriptor = static_cast<uint32_t>(input.descriptors.size());
             copy.Write(row, &descriptor);
-            input.sources.push_back(std::move(*texture));
+            if (auto *source = std::get_if<RayTexturePageSource>(&*texture)) {
+                input.descriptors.emplace_back(static_cast<uint32_t>(input.sources.size()));
+                input.sources.push_back(std::move(*source));
+            } else {
+                input.descriptors.emplace_back(std::get<RayLitSolidTexture>(*texture));
+            }
         }
     }
     return input;
 }
 
-std::vector<std::byte> RayLitMaterialLayout::PackDescriptors(const std::vector<RayTexturePageSlot> &slots) const
+std::vector<std::byte> RayLitMaterialLayout::PackDescriptors(const RayLitMaterialInput &input,
+                                                             const std::vector<RayTexturePageSlot> &slots) const
 {
+    if (slots.size() != input.sources.size())
+        throw std::invalid_argument("Ray Lit texture page slots do not match the captured sources");
     const auto &layout = *m_state;
-    auto bytes = Rows(layout.descriptorStride, slots.size());
+    auto bytes = Rows(layout.descriptorStride, input.descriptors.size());
     auto *record = bytes.data();
-    for (const auto &slot : slots) {
-        const auto pageClass = static_cast<uint32_t>(slot.pageClass);
+    for (const auto &descriptor : input.descriptors) {
+        uint32_t pageClass;
+        uint32_t layer = 0;
+        if (const auto *source = std::get_if<uint32_t>(&descriptor)) {
+            const auto &slot = slots[*source];
+            pageClass = static_cast<uint32_t>(slot.pageClass);
+            layer = slot.layer;
+        } else {
+            pageClass = static_cast<uint32_t>(std::get<RayLitSolidTexture>(descriptor));
+        }
         layout.pageClass.Write(record, &pageClass);
-        layout.layer.Write(record, &slot.layer);
+        layout.layer.Write(record, &layer);
         record += layout.descriptorStride;
     }
     return bytes;
