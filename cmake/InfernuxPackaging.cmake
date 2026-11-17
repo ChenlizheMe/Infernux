@@ -12,10 +12,15 @@ endif()
 # LLVM's CMake package must already be provided through CMAKE_PREFIX_PATH.
 # Keep this separate from package_python until every supported installation
 # channel can resolve the patched dependency without a source build.
+set(_infernux_cpu_jit_wheel_args)
+if(CMAKE_HOST_WIN32 AND CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64)$")
+    list(APPEND _infernux_cpu_jit_wheel_args --native-target-only)
+endif()
 add_custom_target(package_cpu_jit_dependency
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/cmake/package_cpu_jit_dependency.py"
         --source-dir "${CMAKE_SOURCE_DIR}/external/llvmlite_for_infernux"
         --wheel-dir "${INFERNUX_STAGE_DIR}/cpu-jit-wheels"
+        ${_infernux_cpu_jit_wheel_args}
     COMMENT "Building the pinned llvmlite dependency wheel (requires an LLVM build toolchain)"
     VERBATIM
 )

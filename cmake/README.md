@@ -48,7 +48,7 @@ Useful target groups are:
 | `stage_python_package` | Assemble the wheel source tree |
 | `package_python` | Build and verify the wheel |
 | `prebuild_player_runtime` | Publish a platform Player payload when explicitly requested |
-| `package_cpu_jit_dependency` | Build the pinned llvmlite fork separately |
+| `package_cpu_jit_dependency` | Build the pinned llvmlite fork separately. Windows x64 links only the native LLVM target for the Player. |
 
 Do not add a plugin with `add_subdirectory()` merely because it is a Git
 submodule. Add a target only when the plugin's platform export actually needs

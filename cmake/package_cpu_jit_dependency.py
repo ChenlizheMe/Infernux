@@ -9,7 +9,7 @@ import sys
 import tempfile
 
 
-def build_wheel(source: Path, output: Path) -> None:
+def build_wheel(source: Path, output: Path, *, native_target_only: bool = False) -> None:
     tool = {"win32": "delvewheel", "linux": "auditwheel"}.get(sys.platform)
     if tool is None:
         raise RuntimeError(f"CPU dependency wheel target does not support {sys.platform}")
@@ -17,13 +17,18 @@ def build_wheel(source: Path, output: Path) -> None:
         raise RuntimeError(f"Install the developer wheel repair tool '{tool}' before building")
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    environment = {**os.environ, "LLVMLITE_PACKAGE_FORMAT": "wheel"}
+    if native_target_only:
+        environment["CMAKE_ARGS"] = (
+            environment.get("CMAKE_ARGS", "") + " -DLLVMLITE_NATIVE_TARGET_ONLY=ON"
+        ).strip()
     # Each invocation repairs only its own output, never an older wheel left
     # beside it. Native compilation still uses llvmlite's incremental build.
     with tempfile.TemporaryDirectory(prefix="cpu-wheel-", dir=output) as staging:
         subprocess.run(
             [sys.executable, "setup.py", "bdist_wheel", "--dist-dir", staging],
             cwd=source.resolve(), check=True,
-            env={**os.environ, "LLVMLITE_PACKAGE_FORMAT": "wheel"},
+            env=environment,
         )
         wheels = list(Path(staging).glob("llvmlite-*.whl"))
         if len(wheels) != 1:
@@ -39,5 +44,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", type=Path, required=True)
     parser.add_argument("--wheel-dir", type=Path, required=True)
+    parser.add_argument("--native-target-only", action="store_true")
     args = parser.parse_args()
-    build_wheel(args.source_dir, args.wheel_dir)
+    build_wheel(args.source_dir, args.wheel_dir, native_target_only=args.native_target_only)
