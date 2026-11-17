@@ -214,7 +214,8 @@ class JoltGpuScene final
     void QueueJointTransferReads(RuntimeWorld &world, std::vector<JoltJointImport> joints);
     void QueueJointTransferRestore(RuntimeWorld &world, std::vector<JoltJointImport> joints);
     void StageRetire(uint32_t bodyId, bool transferDrive = false);
-    void StageRetireBodies(RuntimeWorld &world, const std::vector<uint32_t> &ids, bool transferDrive);
+    void StageRetireBodies(RuntimeWorld &world, const std::vector<uint32_t> &ids, bool transferDrive,
+                           std::vector<std::pair<uint32_t, uint32_t>> wakeExclusions);
     void QueueBoundsWake(RuntimeWorld &, JPH::GPU::Float4 low, JPH::GPU::Float4 high);
     void QueueStaticWake(uint32_t bodyId);
     uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,

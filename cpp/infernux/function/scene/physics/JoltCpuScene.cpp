@@ -201,7 +201,7 @@ bool JoltCpuScene::IsBodyInBroadphase(uint32_t bodyId) const
     return found != m_bodies.end() && m_system.GetBodyInterface().IsAdded(found->second.native);
 }
 
-void JoltCpuScene::DestroyBody(uint32_t bodyId)
+void JoltCpuScene::DestroyBody(uint32_t bodyId, const std::vector<uint32_t> &wakeExclusions)
 {
     if (m_constraints.HasBodyConstraints(bodyId))
         throw std::logic_error("Retire the CPU body's constraints before destroying it");
@@ -225,10 +225,11 @@ void JoltCpuScene::DestroyBody(uint32_t bodyId)
     }
     m_bodies.erase(bodyId);
     if (added)
-        WakeBodiesInBounds(oldBounds);
+        WakeBodiesInBounds(oldBounds, {}, wakeExclusions);
 }
 
-void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude)
+void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude,
+                                      const std::vector<uint32_t> &wakeExclusions)
 {
     bounds.ExpandBy(JPH::Vec3::sReplicate(m_system.GetPhysicsSettings().mSpeculativeContactDistance));
     JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector> collector;
@@ -241,7 +242,8 @@ void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude)
                                       return true;
                                   const auto id = static_cast<uint32_t>(lock.GetBody().GetUserData());
                                   auto &record = m_bodies.at(id);
-                                  if (!record.authoredDynamic)
+                                  if (!record.authoredDynamic ||
+                                      std::binary_search(wakeExclusions.begin(), wakeExclusions.end(), id))
                                       return true;
                                   if (!lock.GetBody().IsActive())
                                       MarkPoseUpdate(id, record);

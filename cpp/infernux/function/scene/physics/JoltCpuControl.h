@@ -75,7 +75,7 @@ class JoltCpuControl final
     void StageTransfers(const std::vector<BodyTransfer> &bodies);
     [[nodiscard]] JoltBodyTransfer ReadBodyTransfer(uint32_t bodyId) const;
     void AddBodies(std::vector<uint32_t> bodyIds);
-    void RetireActor(uint32_t bodyId, bool transferDrive = false);
+    void RetireActor(uint32_t bodyId, bool transferDrive = false, std::vector<uint32_t> wakeExclusions = {});
     void Queue(uint32_t bodyId, Command command);
     PhysicsTargetSource QueueMove(uint32_t bodyId, KinematicMove command, const PhysicsTargetAuthor *author = nullptr);
     void QueueTemporaryStaticMove(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,

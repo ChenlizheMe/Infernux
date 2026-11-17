@@ -1647,18 +1647,25 @@ class JoltGpuScene::Impl
         }
     }
 
-    void StageRetireBodies(Partition &domain, const std::vector<uint32_t> &ids, bool transferDrive)
+    void StageRetireBodies(Partition &domain, const std::vector<uint32_t> &ids, bool transferDrive,
+                           std::vector<std::pair<uint32_t, uint32_t>> wakeExclusions = {})
     {
         auto records = std::make_shared<std::vector<std::pair<uint32_t, uint32_t>>>();
         records->reserve(ids.size());
         for (const auto id : ids)
             records->emplace_back(id, RequireSlot(id));
+        // Resolve IDs while the source slots still accept owner lookups.
+        for (auto &[source, target] : wakeExclusions) {
+            source = RequireSlot(source);
+            target = RequireSlot(target);
+        }
         DestroyJointsForBodies(domain, ids);
 
         // The source bounds are still available locally. Wake from those exact
         // shapes before withdrawing the group, after any state export.
         JoltGpuControlGroup wake;
-        wake.prepareWork = [this, &domain, records, validation = PendingBoundsValidation(domain)] {
+        wake.prepareWork = [this, &domain, records, wakeExclusions = std::move(wakeExclusions),
+                            validation = PendingBoundsValidation(domain)] {
             std::vector<uint32_t> sources;
             sources.reserve(records->size());
             for (const auto &[id, record] : *records) {
@@ -1670,9 +1677,15 @@ class JoltGpuScene::Impl
             const auto &models = storage.GetModel().bodies;
             for (uint32_t index = selection.selection.y; index < selection.selection.y + selection.selectedCounts.x;
                  ++index)
-                if (models[index].meta.z == MotionDynamic && !std::binary_search(sources.begin(), sources.end(), index))
+                if (models[index].meta.z == MotionDynamic &&
+                    !std::binary_search(sources.begin(), sources.end(), index)) {
+                    std::vector<std::pair<uint32_t, uint32_t>> packedExclusions;
+                    packedExclusions.reserve(wakeExclusions.size());
+                    for (const auto &[source, target] : wakeExclusions)
+                        packedExclusions.emplace_back(Packed(source), Packed(target));
                     return programs.GetSleep().PrepareSourceBoundsWake(storage, selection, std::move(sources),
-                                                                       validation);
+                                                                       validation, std::move(packedExclusions));
+                }
             return JoltGpuControlWork{};
         };
         domain.pending.push_back(std::move(wake));
@@ -2557,9 +2570,10 @@ void JoltGpuScene::StageRetire(uint32_t id, bool transferDrive)
 {
     m_impl->StageRetire(id, transferDrive);
 }
-void JoltGpuScene::StageRetireBodies(RuntimeWorld &world, const std::vector<uint32_t> &ids, bool transferDrive)
+void JoltGpuScene::StageRetireBodies(RuntimeWorld &world, const std::vector<uint32_t> &ids, bool transferDrive,
+                                     std::vector<std::pair<uint32_t, uint32_t>> wakeExclusions)
 {
-    m_impl->StageRetireBodies(m_impl->Domain(world), ids, transferDrive);
+    m_impl->StageRetireBodies(m_impl->Domain(world), ids, transferDrive, std::move(wakeExclusions));
 }
 void JoltGpuScene::QueueBoundsWake(RuntimeWorld &world, Float4 low, Float4 high)
 {

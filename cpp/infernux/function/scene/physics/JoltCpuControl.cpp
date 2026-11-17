@@ -41,6 +41,7 @@ struct JoltCpuControl::State
     struct Retire
     {
         bool transferDrive;
+        std::vector<uint32_t> wakeExclusions;
     };
     struct Import
     {
@@ -210,14 +211,14 @@ struct JoltCpuControl::State
         scene.AddBodiesBatch(add.bodies);
     }
 
-    void Apply(uint32_t body, Retire retire, const RetiredJoints &retired)
+    void Apply(uint32_t body, const Retire &retire, const RetiredJoints &retired)
     {
         if (retire.transferDrive)
             drives.erase(body);
         else
             CancelDrive(body, false);
         RetireBodyConstraints(body, retired);
-        scene.DestroyBody(body);
+        scene.DestroyBody(body, retire.wakeExclusions);
         bindings.erase(body);
     }
 
@@ -483,11 +484,11 @@ void JoltCpuControl::AddBodies(std::vector<uint32_t> bodyIds)
     state.pending.push_back({UINT32_MAX, State::Add{std::move(bodyIds)}});
 }
 
-void JoltCpuControl::RetireActor(uint32_t bodyId, bool transferDrive)
+void JoltCpuControl::RetireActor(uint32_t bodyId, bool transferDrive, std::vector<uint32_t> wakeExclusions)
 {
     auto &state = *m_state;
     state.RequireStaged(bodyId);
-    state.pending.push_back({bodyId, State::Retire{transferDrive}});
+    state.pending.push_back({bodyId, State::Retire{transferDrive, std::move(wakeExclusions)}});
     state.bindings.at(bodyId).retiring = true;
 }
 

@@ -83,6 +83,7 @@ struct PhysicsDomain final
     {
         std::vector<uint32_t> bodies;
         bool controlBegun = false;
+        std::vector<std::pair<uint32_t, uint32_t>> cpuWakeExclusions;
     };
     std::optional<BodyTransfer> bodyTransfer;
     uint64_t surfaceRevision = 0;

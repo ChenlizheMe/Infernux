@@ -1912,24 +1912,35 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
     for (const auto id : mixedJoints)
         DetachMixedJointRoute(domain, id);
     std::vector<JoltJointImport> gpuRestores;
+    std::vector<std::pair<uint32_t, uint32_t>> wakeExclusions;
     for (size_t index = 0; index < joints.size(); ++index) {
         const auto &[joint, destination] = joints[index];
         auto &import = imports[index];
         joint->CreateConstraint(*this, joint->m_boundBodyId, joint->m_boundConnectedBodyId, &import);
         if (destination == JointBackend::Gpu) {
             gpuRestores.push_back(std::move(import));
-        } else if (!toGpu && destination == JointBackend::Mixed) {
-            // Hold the receiving joint until the source GPU frame has been read.
-            const auto &receiver = domain.mixedFixedJoints.at(import.id).joint;
-            gpuReads.push_back({import.id, {receiver, &receiver->reference}});
+        } else if (destination == JointBackend::Mixed) {
+            const auto &binding = domain.mixedFixedJoints.at(import.id);
+            const auto &receiver = binding.joint;
+            if (!toGpu) {
+                // Hold the receiving joint until the source GPU frame has been read.
+                gpuReads.push_back({import.id, {receiver, &receiver->reference}});
+            }
+            if (!binding.enableCollision) {
+                const auto source = toGpu ? receiver->gpuBody : receiver->cpuBody;
+                const auto remaining = toGpu ? receiver->cpuBody : receiver->gpuBody;
+                wakeExclusions.emplace_back(source, remaining);
+            }
         }
     }
     if (toGpu) {
+        std::sort(wakeExclusions.begin(), wakeExclusions.end());
+        domain.bodyTransfer->cpuWakeExclusions = std::move(wakeExclusions);
         m_gpuScene->QueueJointTransferRestore(domain.owner, std::move(gpuRestores));
     } else {
         m_gpuScene->QueueJointTransferReads(domain.owner, std::move(gpuReads));
         m_gpuScene->TransferJointsOut(domain.owner, nativeJoints);
-        m_gpuScene->StageRetireBodies(domain.owner, domain.bodyTransfer->bodies, true);
+        m_gpuScene->StageRetireBodies(domain.owner, domain.bodyTransfer->bodies, true, std::move(wakeExclusions));
     }
     return true;
 }
@@ -1987,7 +1998,12 @@ bool PhysicsWorld::AdvanceBodyTransfer(PhysicsDomain &domain, bool synchronous)
         auto &entry = found->second;
         ChangeBodyBackend(domain, entry, *std::exchange(entry.transferTarget, {}));
         if (entry.backend == Backend::Gpu) {
-            domain.cpuControl->RetireActor(id, true);
+            const auto &pairs = transfer.cpuWakeExclusions;
+            const auto first = std::lower_bound(pairs.begin(), pairs.end(), std::make_pair(id, 0u));
+            std::vector<uint32_t> exclusions;
+            for (auto pair = first; pair != pairs.end() && pair->first == id; ++pair)
+                exclusions.push_back(pair->second);
+            domain.cpuControl->RetireActor(id, true, std::move(exclusions));
             entry.cpuStaged = false;
             const auto index = std::exchange(entry.cpuPoseIndex, SIZE_MAX);
             if (index < domain.cpuPoses.size() && domain.cpuPoses[index].pose.bodyId == id)

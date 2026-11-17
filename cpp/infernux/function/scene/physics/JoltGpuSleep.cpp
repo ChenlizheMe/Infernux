@@ -688,19 +688,29 @@ JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, cons
 }
 JoltGpuControlWork JoltGpuSleep::PrepareSourceBoundsWake(const JoltGpuStorage &s, const StepParams &selection,
                                                          std::vector<uint32_t> sources,
-                                                         std::shared_ptr<BoundsValidation> validation)
+                                                         std::shared_ptr<BoundsValidation> validation,
+                                                         std::vector<std::pair<uint32_t, uint32_t>> exclusions)
 {
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
+    const auto sourceCount = static_cast<uint32_t>(sources.size());
+    std::sort(exclusions.begin(), exclusions.end());
+    sources.reserve(sources.size() + 2 * exclusions.size());
+    for (const auto &[source, target] : exclusions) {
+        sources.push_back(source);
+        sources.push_back(target);
+    }
     e->SetRequests(sources);
     e->boundsValidation = std::move(validation);
     e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     auto p = Selection(s, selection);
+    p.layout.z = sourceCount;
+    p.layout.w = static_cast<uint32_t>(exclusions.size());
     // Bound the comparisons in each dispatch in both dimensions. The same
     // immutable source list is used by all segments of this topology edit.
     constexpr uint32_t SourcesPerDispatch = 64;
-    for (uint32_t first = 0; first < sources.size(); first += SourcesPerDispatch) {
-        p.operation = {UINT32_MAX, 0u, first, std::min(SourcesPerDispatch, uint32_t(sources.size()) - first)};
+    for (uint32_t first = 0; first < sourceCount; first += SourcesPerDispatch) {
+        p.operation = {UINT32_MAX, 0u, first, std::min(SourcesPerDispatch, sourceCount - first)};
         e->Add(NewBoundsWake, p.selected.y, p.selected.z, p);
     }
     e->OnComplete([](auto &) {});

@@ -98,7 +98,7 @@ class JoltCpuScene final : private JPH::ContactListener,
     /// goes through the owner's body/constraint replacement.
     JPH::Vec3 UpdateBody(uint32_t bodyId, const PreparedCpuActor &actor);
     /// Caller has detached this body's constraints before destruction.
-    void DestroyBody(uint32_t bodyId);
+    void DestroyBody(uint32_t bodyId, const std::vector<uint32_t> &wakeExclusions = {});
     [[nodiscard]] JPH::BodyID NativeBody(uint32_t bodyId) const;
     [[nodiscard]] bool HasBody(uint32_t bodyId) const noexcept;
     [[nodiscard]] const PreparedBodyMass &GetAcceptedMass(uint32_t bodyId) const;
@@ -210,7 +210,8 @@ class JoltCpuScene final : private JPH::ContactListener,
                                                     PhysicsStateFields fields, bool *sleeping = nullptr);
     static bool AcceptedAwake(const BodyRecord &record, const JPH::Body &body);
     void WakeBody(BodyRecord &record, JPH::Body &body);
-    void WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude = {});
+    void WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude = {},
+                            const std::vector<uint32_t> &wakeExclusions = {});
     void MarkPoseUpdate(uint32_t bodyId, BodyRecord &record);
     void MarkActivePoseUpdates();
     void OnBodyActivated(const JPH::BodyID &, JPH::uint64) noexcept override
