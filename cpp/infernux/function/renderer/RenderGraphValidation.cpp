@@ -1,5 +1,5 @@
-#include "MaterialPassPipeline.h"
 #include "FullscreenRenderer.h"
+#include "MaterialPassPipeline.h"
 #include "MsaaPolicy.h"
 #include "RenderGraphDescription.h"
 #include "rhi/RenderViewContext.h"
@@ -665,8 +665,8 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
         const GraphCommandDesc *command = pass.PrimaryCommand();
         if (command) {
             if (command->type == GraphCommandType::FullscreenQuad) {
-                if (pass.writeColors.empty() ||
-                    (command->depthTest && pass.writeDepth.empty()) || (command->depthWrite && !command->depthTest) ||
+                if (pass.writeColors.empty() || (command->depthTest && pass.writeDepth.empty()) ||
+                    (command->depthWrite && !command->depthTest) ||
                     static_cast<uint8_t>(command->depthCompare) > static_cast<uint8_t>(rhi::CompareFunction::Always)) {
                     INXLOG_ERROR("Fullscreen pass '", pass.name, "' has an invalid color/depth contract");
                     return false;
@@ -989,23 +989,23 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                 return false;
             }
             if (!texIt->second->IsDepth()) {
-        if (command && command->type == GraphCommandType::FullscreenQuad && command->fullscreenProgram) {
-            std::array<rhi::PixelFormat, rhi::GraphicsPipelineDesc::MaxColorTargets> formats{};
-            for (const auto &[slot, name] : pass.writeColors)
-                formats[slot] = textures.at(name)->EffectiveFormat(view);
-            if (command->alphaBlend &&
-                std::any_of(formats.begin(), formats.begin() + pass.writeColors.size(), rhi::IsIntegerFormat)) {
-                INXLOG_ERROR("Fullscreen pass '", pass.name, "' cannot blend integer color attachments");
-                return false;
-            }
-            try {
-                ValidateFullscreenColorOutputs(*command->fullscreenProgram, formats.data(),
-                                               static_cast<uint32_t>(pass.writeColors.size()));
-            } catch (const std::invalid_argument &error) {
-                INXLOG_ERROR("Fullscreen pass '", pass.name, "': ", error.what());
-                return false;
-            }
-        }
+                if (command && command->type == GraphCommandType::FullscreenQuad && command->fullscreenProgram) {
+                    std::array<rhi::PixelFormat, rhi::GraphicsPipelineDesc::MaxColorTargets> formats{};
+                    for (const auto &[slot, name] : pass.writeColors)
+                        formats[slot] = textures.at(name)->EffectiveFormat(view);
+                    if (command->alphaBlend &&
+                        std::any_of(formats.begin(), formats.begin() + pass.writeColors.size(), rhi::IsIntegerFormat)) {
+                        INXLOG_ERROR("Fullscreen pass '", pass.name, "' cannot blend integer color attachments");
+                        return false;
+                    }
+                    try {
+                        ValidateFullscreenColorOutputs(*command->fullscreenProgram, formats.data(),
+                                                       static_cast<uint32_t>(pass.writeColors.size()));
+                    } catch (const std::invalid_argument &error) {
+                        INXLOG_ERROR("Fullscreen pass '", pass.name, "': ", error.what());
+                        return false;
+                    }
+                }
 
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes color texture '",
                              pass.writeDepth, "' as depth");
