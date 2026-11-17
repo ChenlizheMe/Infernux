@@ -618,6 +618,23 @@ InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsF
 {
     return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input.surface_id);
 }
+
+[shader("fragment")]
+uint2 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
+{
+    // Form the plane before coverage can discard a lane in this derivative quad.
+    float3 normal = cross(ddx(input.position_ws), ddy(input.position_ws));
+    inx_evaluate_surface(input, front_facing);
+    float length_squared = dot(normal, normal);
+    if (!(length_squared > 0.0))
+        return uint2(0u);
+    // At fixed screen XY, increasing reversed clip depth moves toward the camera.
+    float4 depth_direction = mul(inx_view.inverse_view_projection, float4(0.0, 0.0, 1.0, 0.0));
+    float3 toward_eye = depth_direction.xyz - input.position_ws * depth_direction.w;
+    normal *= (dot(normal, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(length_squared);
+    float2 encoded = inx_encode_surface_normal(normal);
+    return uint2(input.surface_id, f32tof16(encoded.x) | (f32tof16(encoded.y) << 16u));
+}
 """
 
 

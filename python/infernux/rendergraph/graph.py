@@ -666,7 +666,7 @@ class RenderPassBuilder:
                                (empty = per-object material).
             material_pass: Linked material program used by this pass. Supported
             values are ``forward``, ``forward_plus``, ``gbuffer``, ``depth``,
-                           ``picking``, ``motion``, ``normal``, and ``base_color``.
+                           ``picking``, ``motion``, ``normal``, ``base_color``, and ``ray_surface``.
             material_filter: Select all materials, only Deferred-compatible
                              materials, or only models that declare
                              ``Unsupported [Deferred]``.
@@ -690,6 +690,7 @@ class RenderPassBuilder:
             "motion",
             "normal",
             "base_color",
+            "ray_surface",
         }:
             raise ValueError(f"Unknown material pass '{material_pass}'")
         self._action = "draw_renderers"
@@ -2149,7 +2150,7 @@ class RenderGraph:
                     raise ValueError(
                         f"Depth pass '{p._name}' requires one depth output and no color outputs"
                     )
-            elif p._material_pass == "picking":
+            elif p._material_pass in ("picking", "ray_surface"):
                 colors = [texture_map[name] for _, name in sorted(p._write_colors.items())]
                 if (
                     len(colors) != 1
@@ -2157,8 +2158,14 @@ class RenderGraph:
                     or p._write_depth is None
                 ):
                     raise ValueError(
-                        f"Picking pass '{p._name}' requires RG32_UINT color[0] and a depth output"
+                        f"{p._material_pass.replace('_', ' ').capitalize()} pass '{p._name}' "
+                        "requires RG32_UINT color[0] and a depth output"
                     )
+                if p._material_pass == "ray_surface" and (
+                    (colors[0].samples or self._msaa_samples) != 1
+                    or texture_map[p._write_depth].format != Format.D32_SFLOAT
+                ):
+                    raise ValueError(f"Ray surface pass '{p._name}' requires 1× attachments and D32_SFLOAT depth")
             elif p._material_pass in ("motion", "normal"):
                 expected = Format.RG16_SFLOAT if p._material_pass == "motion" else Format.RGBA16_SFLOAT
                 color = texture_map[p._write_colors[0]] if len(p._write_colors) == 1 else None
@@ -2433,6 +2440,7 @@ class RenderGraph:
             "motion": MaterialPassType.MOTION,
             "normal": MaterialPassType.NORMAL,
             "base_color": MaterialPassType.BASE_COLOR,
+            "ray_surface": MaterialPassType.RAY_SURFACE,
         }
         _material_filter_map = {
             "all": GraphMaterialFilter.ALL,

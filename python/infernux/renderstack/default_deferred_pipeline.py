@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING
 
 from infernux.renderstack.render_pipeline import RenderPipeline
 from infernux.renderstack.geometry_buffers import geometry_buffer
+from infernux.rendergraph.graph import Format
 from infernux.renderstack._platform_quality import effective_shadow_resolution
 from infernux.components.fields import serialized_field
 from infernux.renderstack._pipeline_common import (
@@ -74,6 +75,20 @@ from infernux.renderstack._pipeline_common import (
 
 if TYPE_CHECKING:
     from infernux.rendergraph.graph import RenderGraph
+
+
+_RAY_PRIMARY_SURFACE = "ray_primary_surface"
+
+
+def _draw_deferred_geometry(render_pass, depth, queue_range, sort_mode, material_pass):
+    render_pass.write_depth(depth)
+    render_pass.set_clear(color=DEFERRED_GBUFFER_CLEAR_COLOR, depth=0.0)
+    render_pass.draw_renderers(
+        queue_range=queue_range,
+        sort_mode=sort_mode,
+        material_pass=material_pass,
+        material_filter="deferred_compatible",
+    )
 
 
 class DeferredMSAA(IntEnum):
@@ -127,6 +142,27 @@ class DefaultDeferredPipeline(RenderPipeline):
             material_filter="deferred_compatible",
         )
 
+    @geometry_buffer(_RAY_PRIMARY_SURFACE, dependencies={DEPTH_TEXTURE, "surface"})
+    def _provide_ray_primary_surface(self, context):
+        graph = context.graph
+        stem = f"_result/{context.source}/ray_surface"
+        replay = graph.create_texture(f"{stem}_witness", format=Format.RG32_UINT, samples=1)
+        depth = graph.create_texture(f"{stem}_depth", format=Format.D32_SFLOAT, samples=1)
+        result = graph.create_texture(f"{stem}_normal", format=Format.RGBA16_SFLOAT, samples=1)
+        with graph.add_pass(f"{context.source}/Ray Surface Replay") as render_pass:
+            render_pass.write_color(replay)
+            _draw_deferred_geometry(render_pass, depth, context.queue_range, context.sort_mode, "ray_surface")
+        with graph.add_pass(f"{context.source}/Ray Surface Witness") as render_pass:
+            render_pass.write_color(result)
+            render_pass.set_textures({
+                "gbuffer_surface": context.sample("surface"),
+                "gbuffer_depth": context.sample(DEPTH_TEXTURE),
+                "replay_surface": replay,
+                "replay_depth": depth,
+            })
+            render_pass.fullscreen_quad("infernux/internal/ray_primary_surface")
+        return result
+
     # ------------------------------------------------------------------
     # RenderPipeline interface
     # ------------------------------------------------------------------
@@ -154,6 +190,8 @@ class DefaultDeferredPipeline(RenderPipeline):
             msaa_samples=1,
         )
         surface = create_deferred_gbuffer(graph)
+        geometry_queues = opaque_queue_range()
+        geometry_sort = "front_to_back"
 
         # ---- Pass 0: Shadow casters ----
         add_shadow_caster_pass(graph)
@@ -161,17 +199,7 @@ class DefaultDeferredPipeline(RenderPipeline):
         # ---- Pass 1: GBuffer (opaque geometry → MRT) ----
         with graph.add_pass("GBufferPass") as p:
             write_deferred_gbuffer(p, surface)
-            p.write_depth(DEPTH_TEXTURE)
-            p.set_clear(
-                color=DEFERRED_GBUFFER_CLEAR_COLOR,
-                depth=0.0,
-            )
-            p.draw_renderers(
-                queue_range=opaque_queue_range(),
-                sort_mode="front_to_back",
-                material_pass="gbuffer",
-                material_filter="deferred_compatible",
-            )
+            _draw_deferred_geometry(p, DEPTH_TEXTURE, geometry_queues, geometry_sort, "gbuffer")
 
         geometry_buffers = {
             **surface,
@@ -185,7 +213,8 @@ class DefaultDeferredPipeline(RenderPipeline):
             graph,
             "gbuffer",
             buffers=geometry_buffers,
-            queue_range=opaque_queue_range(),
+            queue_range=geometry_queues,
+            sort_mode=geometry_sort,
             clear=True,
         )
 

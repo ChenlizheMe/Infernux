@@ -1,3 +1,4 @@
+#include "MaterialPassPipeline.h"
 #include "MsaaPolicy.h"
 #include "RenderGraphDescription.h"
 #include "rhi/RenderViewContext.h"
@@ -1021,6 +1022,13 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
         if (readOnlyDepthAttachmentCount > 1 || (readOnlyDepthAttachmentCount != 0 && !pass.writeDepth.empty())) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
                          "' must declare exactly one depth attachment as either read-only or writable");
+            return false;
+        }
+        if (command && command->type == GraphCommandType::DrawRenderers &&
+            command->shaderTarget == ShaderCompileTarget::RaySurface &&
+            !ResolveMaterialPass(desc, pass, view).IsValid()) {
+            INXLOG_ERROR("Ray surface replay '", pass.name,
+                         "' requires one 1x RG32UInt color and writable D32SFloat depth");
             return false;
         }
 

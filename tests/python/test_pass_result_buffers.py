@@ -158,6 +158,40 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
     assert second._write_depth is None
     assert second._clear_color is None
 
+
+def test_deferred_ray_surface_replays_raw_gbuffer_depth_and_surface_id_on_demand():
+    graph = RenderGraph("Deferred ray surface")
+    pipeline = DefaultDeferredPipeline()
+    pipeline.define_topology(graph)
+    assert not graph.get_pass_result("gbuffer").has("ray_primary_surface")
+
+    graph = RenderGraph("Deferred with ray surface")
+    graph.require_geometry_buffers({"ray_primary_surface"})
+    pipeline.define_topology(graph)
+    graph.build()
+
+    source = graph.get_pass_result("gbuffer")
+    primary = source.sample("ray_primary_surface")
+    passes = {render_pass.name: render_pass for render_pass in graph._passes}
+    gbuffer = passes["GBufferPass"]
+    replay = passes["gbuffer/Ray Surface Replay"]
+    witness = passes["gbuffer/Ray Surface Witness"]
+    order = list(passes)
+    assert order.index(gbuffer.name) < order.index(replay.name) < order.index(witness.name)
+    assert replay._material_filter == gbuffer._material_filter == "deferred_compatible"
+    assert replay._sort_mode == gbuffer._sort_mode
+    assert replay._queue_min == gbuffer._queue_min
+    assert replay._queue_max == gbuffer._queue_max
+    assert replay._clear_depth == gbuffer._clear_depth == 0.0
+    assert witness._input_bindings == {
+        "gbuffer_surface": source.sample("surface").name,
+        "gbuffer_depth": source.sample("depth").name,
+        "replay_surface": replay._write_colors[0],
+        "replay_depth": replay._write_depth,
+    }
+    assert witness._write_colors == {0: primary.name}
+
+
 @pytest.mark.parametrize("pipeline_type", [DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline])
 def test_light_list_is_a_view_owned_read_only_buffer(pipeline_type):
     graph = RenderGraph(f"{pipeline_type.__name__} light list")

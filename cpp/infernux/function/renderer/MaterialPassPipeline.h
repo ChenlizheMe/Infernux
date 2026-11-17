@@ -85,6 +85,9 @@ struct MaterialPassPipelineDescriptor
         case ShaderCompileTarget::Picking:
             return colorFormats.size() == 1 && colorFormats.front() == rhi::PixelFormat::RG32UInt &&
                    depthFormat != rhi::PixelFormat::Undefined;
+        case ShaderCompileTarget::RaySurface:
+            return colorFormats.size() == 1 && colorFormats.front() == rhi::PixelFormat::RG32UInt &&
+                   depthFormat == rhi::PixelFormat::D32SFloat && samples == rhi::SampleCount::One && !depthReadOnly;
         case ShaderCompileTarget::Forward:
         case ShaderCompileTarget::ForwardPlus:
         case ShaderCompileTarget::GBuffer:

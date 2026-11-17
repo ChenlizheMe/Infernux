@@ -109,6 +109,7 @@ enum class ShaderCompileTarget : int
     ForwardPlus = 6, // Tiled/clustered forward lighting
     Normal = 7,      // World-space normal output for screen-space effects
     BaseColor = 8,   // Linear surface albedo + alpha output for the Geometry Stage
+    RaySurface = 9,  // Primary geometric normal and a frozen GBuffer surface witness
 
     Count // Sentinel — number of targets; must be last
 };
@@ -134,6 +135,8 @@ enum class ShaderCompileTarget : int
         return "Normal";
     case ShaderCompileTarget::BaseColor:
         return "BaseColor";
+    case ShaderCompileTarget::RaySurface:
+        return "RaySurface";
     case ShaderCompileTarget::Count:
         return "Count";
     }
@@ -154,6 +157,7 @@ enum class ShaderCompileTarget : int
     case ShaderCompileTarget::Motion:
     case ShaderCompileTarget::Normal:
     case ShaderCompileTarget::BaseColor:
+    case ShaderCompileTarget::RaySurface:
     case ShaderCompileTarget::Depth:
     case ShaderCompileTarget::Shadow:
         return true;

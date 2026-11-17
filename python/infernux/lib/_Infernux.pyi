@@ -453,6 +453,7 @@ class MaterialPassType(IntEnum):
     MOTION: int
     NORMAL: int
     BASE_COLOR: int
+    RAY_SURFACE: int
 
 
 class ResourceType(IntEnum):

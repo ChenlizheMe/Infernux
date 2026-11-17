@@ -29,7 +29,8 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .value("PICKING", ShaderCompileTarget::Picking)
         .value("MOTION", ShaderCompileTarget::Motion)
         .value("NORMAL", ShaderCompileTarget::Normal)
-        .value("BASE_COLOR", ShaderCompileTarget::BaseColor);
+        .value("BASE_COLOR", ShaderCompileTarget::BaseColor)
+        .value("RAY_SURFACE", ShaderCompileTarget::RaySurface);
 
     py::enum_<rhi::CompareFunction>(m, "DepthCompare", "Depth comparison against a graph attachment")
         .value("NEVER", rhi::CompareFunction::Never)
