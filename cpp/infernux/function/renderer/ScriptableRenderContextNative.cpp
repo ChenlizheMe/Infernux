@@ -409,17 +409,6 @@ void ScriptableRenderContext::MarkSubmitted(uint64_t objectBindingIdentity, bool
         m_graph->RequestView(m_draw, objectBindingIdentity, reusesObjectBindings);
 }
 
-void ScriptableRenderContext::CaptureEmptyScreenUI()
-{
-    if (!m_captureCompletedWorld)
-        throw std::logic_error("World UI preparation requires its owning view capture");
-    const auto &worldUI = m_recordedPlan->worldUI;
-    if (worldUI && !worldUI->m_data)
-        SetScreenUISnapshot(worldUI);
-    else
-        SetScreenUISnapshot(CompletedUIFrame(new CompletedUISnapshot(m_renderWorldOwner)));
-}
-
 bool ScriptableRenderContext::CaptureScreenUI(InxScreenUIRenderer &renderer)
 {
     if (!m_captureCompletedWorld || !m_recordedPlan)

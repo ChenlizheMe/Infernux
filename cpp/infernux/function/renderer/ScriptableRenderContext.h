@@ -288,7 +288,6 @@ class ScriptableRenderContext
         return m_captureCompletedWorld;
     }
     void SetScreenUISnapshot(CompletedUIFrame snapshot);
-    void CaptureEmptyScreenUI();
     bool CaptureScreenUI(InxScreenUIRenderer &renderer);
     [[nodiscard]] bool UsesSharedSceneUI() const noexcept
     {

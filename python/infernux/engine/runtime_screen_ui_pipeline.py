@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from infernux.lib import RenderPipelineCallback
-from .runtime_worlds import current_world_runtime
 
 
 class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
@@ -17,19 +16,10 @@ class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
     def collect_presentation_pose_objects(self):
         return self._submission.collect_presentation_pose_objects()
 
-    def _capture_empty(self, context, camera_id=0):
-        world = current_world_runtime()
-        if world is None or world.scheduler.may_have_ui_components:
-            return False
-        self._submission.capture_empty(context, world.identity, camera_id)
-        return True
-
     def prepare_world_ui(self, context):
         from infernux.lib._Infernux import _PresentationPosePending
         try:
             if not context._has_screen_ui_snapshot:
-                if self._capture_empty(context):
-                    return True
                 self._submission.submit(
                     force=True, world_id=context._ui_world_id, target_size=(1, 1), camera_size=(1, 1),
                     prepared_pose_reads=bool(context._ui_author_revision),
@@ -45,8 +35,6 @@ class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
         from infernux.lib._Infernux import _PresentationPosePending
         try:
             if not context._has_screen_ui_snapshot:
-                if self._capture_empty(context, view.camera_id):
-                    return True
                 self._submission.submit(
                     force=True, world_id=view.world_id,
                     target_size=(view.output_width, view.output_height),
@@ -65,8 +53,7 @@ class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
     def render(self, context, camera) -> None:
         completed = context.capturing_completed_world
         published_world_ui = context._uses_published_world_ui
-        if (not context._has_screen_ui_snapshot and not context._uses_shared_scene_ui
-                and not (completed and self._capture_empty(context, camera.camera_id))):
+        if not context._has_screen_ui_snapshot and not context._uses_shared_scene_ui:
             self._submission.submit(
                 force=completed,
                 world_id=camera.world_id,

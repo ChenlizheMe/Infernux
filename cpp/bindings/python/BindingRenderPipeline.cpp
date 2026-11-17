@@ -177,7 +177,6 @@ void RegisterRenderPipelineBindings(py::module_ &m)
         .def_property_readonly("_uses_shared_scene_ui", &ScriptableRenderContext::UsesSharedSceneUI)
         .def_property_readonly("_uses_published_world_ui", &ScriptableRenderContext::UsesPublishedWorldUI)
 #if !defined(INFERNUX_PYBIND_WEB_PLAYER)
-        .def("_capture_empty_screen_ui", &ScriptableRenderContext::CaptureEmptyScreenUI)
         .def("capture_screen_ui", &ScriptableRenderContext::CaptureScreenUI, py::arg("renderer"))
 #endif
         .def("cull", &ScriptableRenderContext::Cull, py::return_value_policy::reference_internal,

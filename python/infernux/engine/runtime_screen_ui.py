@@ -871,12 +871,6 @@ class RuntimeScreenUISubmission:
             )
         packets.flush(renderer)
 
-    def capture_empty(self, context, world_id, camera_id) -> None:
-        """Seal the current World without touching the live renderer's draw lists."""
-        self._submitted_packets = None
-        self._presentation_packets.pop((world_id, camera_id), None)
-        context._capture_empty_screen_ui()
-
     def capture_completed(self, context) -> bool:
         """Prepare this view's resources before running authored render work."""
         packets = self._submitted_packets

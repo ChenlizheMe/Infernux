@@ -6,7 +6,6 @@ namespace infernux
 {
 class RenderWorldFrame;
 class InxScreenUIRenderer;
-class ScriptableRenderContext;
 
 /// Immutable UI publication identity. Device storage remains private to its renderer.
 class CompletedUISnapshot
@@ -20,8 +19,7 @@ class CompletedUISnapshot
 
   private:
     friend class InxScreenUIRenderer;
-    friend class ScriptableRenderContext;
-    explicit CompletedUISnapshot(std::shared_ptr<const RenderWorldFrame> world);
+    CompletedUISnapshot();
     struct Data;
     std::shared_ptr<const RenderWorldFrame> m_world;
     std::unique_ptr<Data> m_data;

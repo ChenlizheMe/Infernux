@@ -45,16 +45,6 @@ def _is_uicanvas_component(component, canvas_type) -> bool:
     )
 
 
-def _has_ui_components(components) -> bool:
-    from infernux.ui.inx_ui_screen_component import is_ui_screen_component
-    from infernux.ui.ui_canvas import UICanvas
-
-    return any(
-        _is_uicanvas_component(component, UICanvas) or is_ui_screen_component(component)
-        for component in components
-    )
-
-
 def _registered_canvas_entries(*scenes) -> list[tuple]:
     """Return live Canvas owners from the component lifecycle registry.
 

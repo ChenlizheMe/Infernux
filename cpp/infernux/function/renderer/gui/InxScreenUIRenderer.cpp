@@ -530,7 +530,7 @@ struct CompletedUISnapshot::Data
     }
 };
 
-CompletedUISnapshot::CompletedUISnapshot(std::shared_ptr<const RenderWorldFrame> world) : m_world(std::move(world))
+CompletedUISnapshot::CompletedUISnapshot() : m_data(std::make_unique<Data>())
 {
 }
 CompletedUISnapshot::~CompletedUISnapshot() = default;
@@ -607,14 +607,9 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureWorldCommands(std::sha
         throw std::logic_error("Completed UI capture requires its actual World execution owner");
     if (!m_deletionQueue || !m_descriptorManager)
         throw std::logic_error("Completed UI capture requires existing GPU resource owners");
-    auto snapshot = std::shared_ptr<CompletedSnapshot>(new CompletedSnapshot(std::move(world)));
-    const std::array drawLists{m_cameraDrawList, m_overlayDrawList, m_worldDrawList};
-    // An empty publication carries World identity only.
-    if (std::all_of(drawLists.begin(), drawLists.end(), [](const auto *list) { return list->IdxBuffer.empty(); }))
-        return snapshot;
-
-    snapshot->m_data = std::make_unique<CompletedSnapshot::Data>();
+    auto snapshot = std::shared_ptr<CompletedSnapshot>(new CompletedSnapshot());
     auto &data = *snapshot->m_data;
+    snapshot->m_world = std::move(world);
     data.renderer = this;
     data.retire = [this](auto &resources) { RetireCompletedSnapshot(resources); };
     data.width = m_cachedWidth;
@@ -630,8 +625,9 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureWorldCommands(std::sha
     data.hdr = {m_cameraHDRRanges, m_overlayHDRRanges, m_worldHDRRanges};
     data.worlds = m_worldElementSpans;
     data.screens = m_screenElementSpans;
-    for (size_t index = 0; index < drawLists.size(); ++index) {
-        const auto *drawList = drawLists[index];
+    for (int index = 0; index < 3; ++index) {
+        const auto list = index == 0 ? ScreenUIList::Camera : index == 1 ? ScreenUIList::Overlay : ScreenUIList::World;
+        const auto *drawList = GetDrawList(list);
         if (drawList->IdxBuffer.empty())
             continue;
         data.lists[index] = drawList->CloneOutput();
@@ -668,8 +664,6 @@ InxScreenUIRenderer::Snapshot InxScreenUIRenderer::CaptureWorldCommands(std::sha
 
 bool InxScreenUIRenderer::PrepareSnapshot(const Snapshot &snapshot)
 {
-    if (snapshot && !snapshot->m_data)
-        return true;
     if (!snapshot || snapshot->m_data->renderer != this)
         throw std::logic_error("UI preparation requires its actual retained renderer owner");
     // Resolve each selected material while source assets still belong to F.
@@ -1666,14 +1660,12 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
                                  uint32_t frameSlot, const std::array<VkDescriptorSet, 2> &viewSets,
                                  const Snapshot &snapshot, const rhi::GraphicsRenderingSignature *target)
 {
+    SnapshotScope selected(*this, snapshot);
     if (list == ScreenUIList::World)
         throw std::invalid_argument("World UI requires RenderWorld with the active camera matrix");
     const int listIndex = ListIndex(list);
     m_lastSubmittedDrawCounts[listIndex] = 0;
     m_lastSubmittedIndexCounts[listIndex] = 0;
-    if (snapshot && !snapshot->m_data)
-        return;
-    SnapshotScope selected(*this, snapshot);
     PruneUnusedMaterialPrograms();
     if (!m_initialized || !m_pipeline || width == 0 || height == 0 || !m_enabled)
         return;
@@ -2653,8 +2645,6 @@ ImDrawList *InxScreenUIRenderer::GetDrawList(ScreenUIList list)
 
 bool InxScreenUIRenderer::HasSelectiveWorldOcclusion(uint32_t cullingMask, const Snapshot &snapshot) const
 {
-    if (snapshot && !snapshot->m_data)
-        return false;
     SnapshotScope selected(*const_cast<InxScreenUIRenderer *>(this), snapshot);
     if (!m_initialized || !m_hasSelectiveWorldOcclusion)
         return false;
@@ -2667,8 +2657,6 @@ std::vector<InxScreenUIRenderer::WorldDepthRun> InxScreenUIRenderer::GetWorldDep
                                                                                        uint32_t cullingMask,
                                                                                        const Snapshot &snapshot) const
 {
-    if (snapshot && !snapshot->m_data)
-        return {};
     SnapshotScope selected(*const_cast<InxScreenUIRenderer *>(this), snapshot);
     struct OrderedElement
     {
@@ -2705,15 +2693,13 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
                                       const glm::mat4 &projection, const glm::mat4 &billboardView,
                                       uint32_t firstOrdinal, uint32_t endOrdinal, const Snapshot &snapshot)
 {
+    SnapshotScope selected(*this, snapshot);
     constexpr ScreenUIList list = ScreenUIList::World;
     constexpr int listIndex = 2;
     if (firstOrdinal == 0) {
         m_lastSubmittedDrawCounts[listIndex] = 0;
         m_lastSubmittedIndexCounts[listIndex] = 0;
     }
-    if (snapshot && !snapshot->m_data)
-        return;
-    SnapshotScope selected(*this, snapshot);
     if (!m_initialized || !m_worldPipeline || width == 0 || height == 0 || !m_enabled)
         return;
     PruneUnusedMaterialPrograms();
@@ -2948,8 +2934,6 @@ void InxScreenUIRenderer::RenderWorld(VkCommandBuffer cmdBuf, uint32_t width, ui
 std::vector<std::shared_ptr<rhi::RenderTexture>>
 InxScreenUIRenderer::GetRenderTextureReads(ScreenUIList list, uint32_t cullingMask, const Snapshot &snapshot) const
 {
-    if (snapshot && !snapshot->m_data)
-        return {};
     SnapshotScope selected(*const_cast<InxScreenUIRenderer *>(this), snapshot);
     std::vector<std::shared_ptr<rhi::RenderTexture>> reads;
     const auto *drawList = GetDrawList(list);
@@ -2988,12 +2972,11 @@ InxScreenUIRenderer::GetRenderTextureReadGeneration(const std::shared_ptr<rhi::R
 {
     if (!snapshot)
         return texture->Acquire();
-    if (const auto &data = snapshot->m_data) {
-        const auto found = data->generations.find(texture.get());
-        if (found != data->generations.end())
-            return found->second;
-    }
-    throw std::logic_error("UI texture dependency is absent from its completed publication");
+    const auto &generations = snapshot->m_data->generations;
+    const auto found = generations.find(texture.get());
+    if (found == generations.end())
+        throw std::logic_error("UI texture dependency is absent from its completed publication");
+    return found->second;
 }
 
 const ImDrawList *InxScreenUIRenderer::GetDrawList(ScreenUIList list) const
