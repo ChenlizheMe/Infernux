@@ -410,10 +410,10 @@ void VerifyIndirectLifetime()
         auto work = PrepareComputeBatch(host, {}, {producer, consumer});
         auto preservation = work->PreparePreservation(64, false);
         // Even a declared full write needs preservation: its device count may be zero.
-        assert(preservation.capacityGranted && preservation.copy);
+        assert(preservation.ready && preservation.copy);
         (void)preservation.copy->Submit();
         preservation = work->PreparePreservation(64, false);
-        assert(preservation.capacityGranted && !preservation.copy);
+        assert(preservation.ready && !preservation.copy);
         assert(work->TrySubmit());
         assert(output->GetBuffer() != oldOutput->GetBuffer());
         assert(queue.indirect.size() == 1 && queue.indirect.back().first == arguments->GetBuffer());

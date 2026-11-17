@@ -227,6 +227,14 @@ class JoltGpuTick::Impl
             }
         }
         if (receipts.empty()) {
+            try {
+                if (batch)
+                    if (const auto prepared = batch->WaitForPreparation(maxWaitNanoseconds))
+                        return *prepared ? FrameWorkWaitResult::Progress : FrameWorkWaitResult::Waiting;
+            } catch (...) {
+                Fail();
+                throw;
+            }
             // A refused prepared packet may need a slot held by another
             // accepted user of this same queue, outside this Tick source.
             const auto dependency =
@@ -1998,7 +2006,7 @@ class JoltGpuTick::Impl
         // all. A minimum preparation range does not grant its copy submission.
         const auto allowance = std::max(uint64_t{4}, work.ResourceRemaining(FrameWorkResource::Transfer));
         const auto prepared = batch->PreparePreservation(allowance, true);
-        if (!prepared.capacityGranted)
+        if (!prepared.ready)
             return false;
         preservation = prepared.copy;
         return true;

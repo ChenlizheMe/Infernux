@@ -284,6 +284,12 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
 
     [[nodiscard]] BindGroupHandle
     ResolveBindGroup(const std::vector<std::shared_ptr<ComputeBufferAllocation>> &allocations);
+    [[nodiscard]] PreparedDispatch CaptureDispatch(std::vector<std::shared_ptr<ComputeBuffer>> buffers,
+                                                   std::vector<ComputeBufferAccess> bufferAccesses,
+                                                   std::vector<uint8_t> pushConstants, uint32_t groupCountX,
+                                                   uint32_t groupCountY, uint32_t groupCountZ,
+                                                   std::optional<ComputeDispatchProof> proof,
+                                                   std::optional<ComputeIndirectArguments> indirectArguments);
     void ValidateDispatch(const std::vector<ComputeBufferAccess> &accesses, size_t pushConstantBytes,
                           uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
                           bool indirect = false) const;
@@ -544,11 +550,14 @@ class PreparedComputeBatch final
     /// Host preparation only: resolve the latest logical endpoints and return
     /// one bounded preservation copy before the original writer may submit.
     [[nodiscard]] INFERNUX_RENDER_CORE_API bool RequiresPreparation() const;
+    /// Synchronous consumers may wait for this batch's actual pipeline job.
+    /// nullopt means no pipeline job can advance this batch.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::optional<bool> WaitForPreparation(uint64_t maxWaitNanoseconds);
     [[nodiscard]] INFERNUX_RENDER_CORE_API uint64_t GetPreparationBytes() const;
     [[nodiscard]] INFERNUX_RENDER_CORE_API bool HasPreservationWork() const noexcept;
     struct PreservationPreparation
     {
-        bool capacityGranted;
+        bool ready;
         std::shared_ptr<PreparedComputeBatch> copy;
     };
     [[nodiscard]] INFERNUX_RENDER_CORE_API PreservationPreparation PreparePreservation(uint64_t maxBytes, bool managed);

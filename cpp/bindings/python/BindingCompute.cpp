@@ -615,7 +615,7 @@ void infernux::RegisterComputeBindings(py::module_ &m)
             "prepare_preservation",
             [](rhi::PreparedComputeBatch &batch, uint64_t maxBytes, bool managed) {
                 auto preparation = batch.PreparePreservation(maxBytes, managed);
-                return py::make_tuple(preparation.capacityGranted, std::move(preparation.copy));
+                return py::make_tuple(preparation.ready, std::move(preparation.copy));
             },
             py::arg("max_bytes"), py::arg("managed"))
         .def_property_readonly("has_work", &rhi::PreparedComputeBatch::HasWork)

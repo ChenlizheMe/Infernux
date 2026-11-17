@@ -72,6 +72,14 @@ bool JobHandle::IsComplete() const noexcept
     return !m_waitsForClose || m_state->closed.load(std::memory_order_acquire);
 }
 
+bool JobHandle::WaitUntil(std::chrono::steady_clock::time_point deadline) const
+{
+    if (!m_state)
+        return true;
+    std::unique_lock lock(m_state->completionMutex);
+    return m_state->completionCv.wait_until(lock, deadline, [this] { return IsComplete(); });
+}
+
 bool JobHandle::Cancel() noexcept
 {
     if (!m_state || IsComplete()) {

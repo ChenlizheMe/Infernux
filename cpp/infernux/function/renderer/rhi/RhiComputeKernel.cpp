@@ -281,6 +281,21 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
     std::vector<uint8_t> pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
     std::optional<ComputeDispatchProof> proof, std::optional<ComputeIndirectArguments> indirectArguments)
 {
+    auto result = CaptureDispatch(std::move(buffers), std::move(bufferAccesses), std::move(pushConstants), groupCountX,
+                                  groupCountY, groupCountZ, std::move(proof), std::move(indirectArguments));
+    if (!result.pipeline.IsValid()) {
+        (void)PreparePipeline(true);
+        result.pipeline = m_pipeline;
+        result.group = ResolveBindGroup(result.allocations);
+    }
+    return result;
+}
+
+ComputeKernel::PreparedDispatch ComputeKernel::CaptureDispatch(
+    std::vector<std::shared_ptr<ComputeBuffer>> buffers, std::vector<ComputeBufferAccess> bufferAccesses,
+    std::vector<uint8_t> pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
+    std::optional<ComputeDispatchProof> proof, std::optional<ComputeIndirectArguments> indirectArguments)
+{
     if (bufferAccesses.size() != buffers.size())
         throw std::invalid_argument("Compute kernel buffer access count does not match its resource bindings");
     ValidateDispatch(bufferAccesses, pushConstants.size(), groupCountX, groupCountY, groupCountZ,
@@ -333,9 +348,10 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
                 throw std::invalid_argument("Counted compute bindings alias writable count or payload storage");
         }
     }
-    (void)PreparePipeline(true);
-    result.pipeline = m_pipeline;
-    result.group = ResolveBindGroup(result.allocations);
+    if (m_pipeline.IsValid()) {
+        result.pipeline = m_pipeline;
+        result.group = ResolveBindGroup(result.allocations);
+    }
     result.bufferAccesses = std::move(bufferAccesses);
     result.pushConstants = std::move(pushConstants);
     result.groupCountX = groupCountX;
@@ -474,7 +490,7 @@ ComputeKernel::PreparedBatch ComputeKernel::PrepareBatch(ComputeHost &host, std:
     std::unordered_map<ComputeBufferAllocation *, uint8_t> pendingAccesses;
     std::unordered_map<ComputeBufferAllocation *, bool> writtenBuffers;
     for (auto &dispatch : dispatches) {
-        auto prepared = dispatch.kernel->PrepareDispatch(
+        auto prepared = dispatch.kernel->CaptureDispatch(
             std::move(dispatch.buffers), std::move(dispatch.bufferAccesses), std::move(dispatch.pushConstants),
             dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ, std::move(dispatch.proof),
             std::move(dispatch.indirectArguments));
@@ -761,9 +777,11 @@ PreparedComputeBatch::PreparedComputeBatch(ComputeHost &host, std::vector<Comput
     }
     for (const auto &dispatch : m_batch->dispatches) {
         const auto &work = dispatch.work;
+        // The kernel owns its unique layout before deferred pipeline creation.
+        // Keep one cost identity across cold preparation and warm execution.
         m_executionSignature.insert(m_executionSignature.end(),
-                                    {work.pipeline.index, work.pipeline.generation, work.groupCountX, work.groupCountY,
-                                     work.groupCountZ, work.allocations.size(), work.IsIndirect(),
+                                    {work.kernel->m_layout.index, work.kernel->m_layout.generation, work.groupCountX,
+                                     work.groupCountY, work.groupCountZ, work.allocations.size(), work.IsIndirect(),
                                      work.indirectOffset.value_or(0)});
         for (size_t index = 0; index < work.allocations.size(); ++index) {
             m_executionSignature.push_back(work.allocations[index]->GetByteSize());
@@ -845,12 +863,15 @@ bool PreparedComputeBatch::RequiresPreparation() const
     for (const auto &update : m_batch->updates)
         if (changed(update.state, update.allocation, true))
             return true;
-    for (const auto &dispatch : m_batch->dispatches)
+    for (const auto &dispatch : m_batch->dispatches) {
+        if (!dispatch.work.pipeline.IsValid())
+            return true;
         for (size_t index = 0; index < dispatch.work.states.size(); ++index)
             if (changed(dispatch.work.states[index], dispatch.work.allocations[index],
                         (static_cast<uint8_t>(dispatch.work.bufferAccesses[index]) &
                          static_cast<uint8_t>(ComputeBufferAccess::Write)) != 0))
                 return true;
+    }
     for (const auto &copy : m_batch->copies)
         if (changed(copy.sourceState, copy.source, false) || changed(copy.destinationState, copy.destination, true))
             return true;
@@ -858,6 +879,23 @@ bool PreparedComputeBatch::RequiresPreparation() const
         if (!read->IsCancelled() && changed(read->m_source, read->m_storage->source, false))
             return true;
     return false;
+}
+
+std::optional<bool> PreparedComputeBatch::WaitForPreparation(uint64_t maxWaitNanoseconds)
+{
+    m_host.RequireAlive();
+    if (!m_batch)
+        return std::nullopt;
+    for (const auto &kernel : m_batch->kernels) {
+        if (!kernel->m_pendingPipeline)
+            continue;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(maxWaitNanoseconds);
+        if (!kernel->m_pendingPipeline->preparation.completion.WaitUntil(deadline))
+            return false;
+        (void)kernel->TryPreparePipeline();
+        return true;
+    }
+    return std::nullopt;
 }
 
 bool PreparedComputeBatch::OverwritesBeforeRead(const ComputeBufferState &state) const
@@ -922,6 +960,11 @@ bool PreparedComputeBatch::ResolveStorage(bool managed)
 {
     if (!RequiresPreparation())
         return true;
+    bool pipelinesReady = true;
+    for (const auto &kernel : m_batch->kernels)
+        pipelinesReady &= kernel->PreparePipeline(!managed);
+    if (!pipelinesReady)
+        return false;
     std::vector<WriteVersion> resolved;
     std::vector<std::shared_ptr<ComputeBufferAllocation>> invalidated;
     for (const auto &state : WriterStates()) {
@@ -999,6 +1042,7 @@ bool PreparedComputeBatch::ResolveStorage(bool managed)
             if (static_cast<uint8_t>(work.bufferAccesses[index]) & static_cast<uint8_t>(ComputeBufferAccess::Write))
                 include(m_batch->writtenBuffers, work.allocations[index]);
         }
+        work.pipeline = work.kernel->m_pipeline;
         work.group = work.kernel->ResolveBindGroup(work.allocations);
     }
     for (auto &copy : m_batch->copies) {

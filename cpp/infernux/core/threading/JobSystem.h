@@ -100,6 +100,8 @@ class JobHandle
     }
 
     [[nodiscard]] INFERNUX_FOUNDATION_API bool IsComplete() const noexcept;
+    /// Passive owner-thread wait on this ticket only, bounded by a deadline.
+    [[nodiscard]] INFERNUX_FOUNDATION_API bool WaitUntil(std::chrono::steady_clock::time_point deadline) const;
 
     /** Request cooperative cancellation. Queued callbacks are skipped; a
      * callback that has already begun is not

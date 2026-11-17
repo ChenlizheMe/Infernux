@@ -2706,7 +2706,7 @@ class CpuWorkOwner:
         if packet.prepare_storage(chunk_bytes, managed=not block):
             self._gpu_busy_packets.pop(packet, None)
             return True
-        self.command_metrics['blocked_reason'] = 'GPU write candidate is waiting for Vulkan memory'
+        self.command_metrics['blocked_reason'] = 'GPU pipeline or storage preparation is pending'
         self._gpu_busy_packets[packet] = self._gpu_retry_key()
         return False
 
