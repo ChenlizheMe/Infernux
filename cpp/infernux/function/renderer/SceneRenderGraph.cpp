@@ -1221,7 +1221,8 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     globals.projectionParams = camera.projectionParams;
     globals.zBufferParams = camera.zBufferParams;
     globals.viewOptions = glm::uvec4(static_cast<uint32_t>(m_cameraDithering), static_cast<uint32_t>(m_cameraStopNaNs),
-                                     static_cast<uint32_t>(m_renderView.kind == rhi::RenderViewKind::Scene), 0u);
+                                     static_cast<uint32_t>(m_renderView.kind == rhi::RenderViewKind::Scene),
+                                     static_cast<uint32_t>(m_executionCount));
     if (!rhiDevice.WriteBuffer(frame.globals.buffer, 0, &globals, sizeof(globals))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local globals UBO");
         return false;
@@ -1420,6 +1421,9 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
     }
     if (binding.pending)
         return;
+    if (m_worldRayMaterial && !m_worldRayPending &&
+        m_rayHistoryWorld.Update(*world, binding.meshes, m_worldRayMaterial))
+        raytracing::InvalidateRayHistories(m_temporalHistories);
     auto next = std::array{std::move(binding.buffer), std::move(binding.meshes)};
     if (next == m_worldRayBuffers)
         return;
@@ -1645,8 +1649,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), GetViewGlobalsBinding(),
                                           m_drawView, queueMin, queueMax, sortMode, overrideMaterial, passTag,
                                           &materialPass, materialFilter, command->rendererSelection.get(), 0, false,
-                                          materialPass.target == ShaderCompileTarget::Motion ? &m_motionHistory
-                                                                                             : nullptr,
+                                          UsesInstanceMotion(materialPass.target) ? &m_motionHistory : nullptr,
                                           command->overrideMaterialValue);
                 break;
             case GraphCommandType::DrawSkybox: {

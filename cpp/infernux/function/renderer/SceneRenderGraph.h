@@ -33,6 +33,7 @@
 #include "lighting/CanonicalLightGpuBuffer.h"
 #include "lighting/ForwardPlusLightGrid.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
+#include "raytracing/RayHistoryWorldState.h"
 #include "rhi/CameraViewportTarget.h"
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiRenderTexture.h"
@@ -1009,6 +1010,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         vk::ResourceHandle writeHandle;
     };
     std::unordered_map<std::string, TemporalHistoryResource> m_temporalHistories;
+    raytracing::RayHistoryWorldState m_rayHistoryWorld;
     struct ImportedTextureBinding
     {
         rhi::TextureHandle texture;

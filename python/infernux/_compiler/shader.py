@@ -122,16 +122,18 @@ class _Author(ParameterAuthor):
             self.types[uv.arg] = kind
         result = self.annotation(main.returns) if main.returns is not None else None
         expected = {"InxSurfaceData"} if self.is_surface else {"float4", "InxFragmentOutput"}
+        if self.domain == "fullscreen":
+            expected.add("uint4")
         if result not in expected:
-            self.error(main, "Surface returns shader.SurfaceData" if self.is_surface else
-                       "Fragment main returns shader.vec4 or shader.FragmentOutput")
+            permitted = "shader.vec4, shader.uvec4 or shader.FragmentOutput" if self.domain == "fullscreen" else "shader.vec4 or shader.FragmentOutput"
+            self.error(main, "Surface returns shader.SurfaceData" if self.is_surface else f"Fragment main returns {permitted}")
         self.aliases = (self.alias,)
         if self.domain == "particle":
             self.lighting_mode = "tiled_lighting"
         self.declare_locals(main.body, parameters=(field.arg for field in arguments[1:]))
         self.local_declarations()
         self.block(main.body)
-        semantic = " : SV_Target0" if result == "float4" else ""
+        semantic = " : SV_Target0" if result in {"float4", "uint4"} else ""
         if self.domain in {"mesh", "particle"} and not self.is_surface:
             argument = arguments[1].arg if len(arguments) == 2 else ""
             alpha = "color.color.a" if result == "InxFragmentOutput" else "color.a"
@@ -691,15 +693,22 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
     return radiance;
 }
 
-public float4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
-                                     InxBuffer_uint4 records, uint model_id, bool specular)
+uint4 inx_ray_signal_output(float3 signal, uint2 witness)
+{
+    return uint4(packHalf2x16(signal.rg), packHalf2x16(float2(signal.b, 1.0)), witness);
+}
+
+public uint4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
+                                    InxBuffer_uint4 records, uint model_id, bool specular, bool temporal)
 {
     if (model_id != INX_PBR_MODEL_ID)
-        return float4(0.0);
+        return uint4(0u);
     uint2 pixel = uint2(context.pixel_position);
     uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
     if (specular)
         seed = inx_ray_sample_hash(seed);
+    if (temporal)
+        seed ^= inx_ray_sample_hash(inx_view_sample_index());
     float2 uniform = float2(inx_ray_sample_hash(seed) >> 8u, inx_ray_sample_hash(seed + 1u) >> 8u)
                    * (1.0 / 16777216.0);
     float3 shading_normal = normalize(surface.normal_ws);
@@ -714,22 +723,22 @@ public float4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext 
     else
         sample = ray_sample_irradiance(uniform, shading_normal, geometric_normal);
     if (!sample.active)
-        return float4(0.0, 0.0, 0.0, 1.0);
+        return inx_ray_signal_output(float3(0.0), uint2(ray_invalid_index, 0u));
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
-        return float4(0.0);
+        return uint4(0u);
     TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction, inx_view.projection_params.y};
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
-        return float4(inx_environment_radiance(sample.direction) * sample.weight, 1.0);
+        return inx_ray_signal_output(inx_environment_radiance(sample.direction) * sample.weight, uint2(0u));
     if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
-        return float4(0.0);
+        return uint4(0u);
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData secondary;
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
     float3 radiance = secondary.emission + inx_ray_direct_radiance(
         page, attributes, secondary, inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed);
-    return float4(radiance * sample.weight, 1.0);
+    return inx_ray_signal_output(radiance * sample.weight, uint2(hit.surface_id, asuint(hit.distance)));
 }
 """
 
@@ -752,18 +761,18 @@ InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsF
 }
 
 [shader("fragment")]
-uint2 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
+uint4 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
     // Form the plane before coverage can discard a lane in this derivative quad.
     float3 normal = cross(ddx(input.position_ws), ddy(input.position_ws));
     inx_evaluate_surface(input, front_facing);
     float length_squared = dot(normal, normal);
     if (!(length_squared > 0.0))
-        return uint2(0u);
+        return uint4(0u);
     float3 toward_eye = inx_camera_toward_eye(input.position_ws);
     normal *= (dot(normal, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(length_squared);
     float2 encoded = inx_encode_surface_normal(normal);
-    return uint2(input.surface_id, packHalf2x16(encoded));
+    return uint4(input.surface_id, packHalf2x16(encoded), packHalf2x16(input.motion_vector), input.object_flags & 1u);
 }
 """
 
@@ -833,7 +842,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         if not author.uses_surface_sampling:
             author.error(main, "The ray Lit entry requires explicit material sampling", code="author.stage")
         code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", "import inx_ray_traversal;",
-                "import inx_ray_bsdf;", "import inx_camera;", "import inx_lighting;",
+                "import inx_ray_bsdf;", "import inx_camera;", "import inx_lighting;", "import inx_frame;",
                 *("import " + name + ";" for name in dependencies),
                 "struct ShaderParameters {", *author.parameter_field_declarations(values), "};",
                 "struct InxRayLitMaterial {", "    ShaderParameters values;", "    uint participation;",

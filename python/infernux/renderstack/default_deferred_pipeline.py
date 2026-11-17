@@ -79,6 +79,7 @@ if TYPE_CHECKING:
 
 
 _RAY_PRIMARY_SURFACE = "ray_primary_surface"
+_RAY_PRIMARY_HISTORY = "_ray_primary"
 _RAY_DIFFUSE = "ray_diffuse"
 _RAY_SPECULAR = "ray_specular"
 
@@ -94,11 +95,15 @@ def _draw_deferred_geometry(render_pass, depth, queue_range, sort_mode, material
     )
 
 
-def _trace_ray_indirect(graph, gbuffer, lobes):
+def _ray_replay_name(source):
+    return f"_result/{source}/ray_surface_witness"
+
+
+def _trace_ray_indirect(graph, gbuffer, lobes, temporal):
     world = graph._create_world_ray_lit()
-    signals = {}
+    packets = {}
     for name, specular in lobes:
-        output = graph.create_texture(f"_result/gbuffer/{name}", format=Format.RGBA16_SFLOAT, samples=1)
+        output = graph.create_texture(f"_result/gbuffer/{name}_packet", format=Format.RGBA32_UINT, samples=1)
         label = "Ray Specular Radiance" if specular else "Ray Diffuse Irradiance"
         with graph.add_pass(label) as render_pass:
             render_pass.write_color(output)
@@ -109,7 +114,39 @@ def _trace_ray_indirect(graph, gbuffer, lobes):
             for key in ("ray_color_pages", "ray_data_pages"):
                 render_pass.set_texture(key, world[key])
             render_pass.set_param("specular", specular)
+            render_pass.set_param("temporal", temporal)
             render_pass.fullscreen_quad("infernux/internal/ray_indirect")
+        packets[name] = output
+    return packets
+
+
+def _decode_raw_signals(graph, packets):
+    raw = {}
+    for name, packet in packets.items():
+        output = graph.create_texture(f"_result/gbuffer/{name}", format=Format.RGBA16_SFLOAT, samples=1)
+        with graph.add_pass(f"Decode {name} diagnostic") as render_pass:
+            render_pass.set_texture("signal", packet)
+            render_pass.write_color(output)
+            render_pass.fullscreen_quad("infernux/internal/ray_raw_signal")
+        raw[name] = output
+    return raw
+
+
+def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history):
+    previous_primary, primary = primary_history
+    motion = graph.get_texture(_ray_replay_name(source))
+    signals = {}
+    for name, specular in lobes:
+        previous, output = graph.create_temporal_history(f"_{name}", format=Format.RGBA32_UINT)
+        label = "Ray Specular Reconstruction" if specular else "Ray Diffuse Reconstruction"
+        with graph.add_pass(label) as render_pass:
+            render_pass.set_textures({
+                "signal": packets[name], "primary": primary, "motion": motion,
+                "previous_signal": previous, "previous_primary": previous_primary,
+            })
+            render_pass.write_color(output)
+            render_pass.set_param("specular", specular)
+            render_pass.fullscreen_quad("infernux/internal/ray_reconstruct")
         signals[name] = output
     return signals
 
@@ -150,8 +187,8 @@ class DefaultDeferredPipeline(RenderPipeline):
     inserted by ``graph.screen_ui_section()``.
 
     ``ray_diffuse`` and ``ray_specular`` independently replace the raster
-    environment terms. This preview takes one sample per enabled lobe and
-    uses scene ambient radiance and emissive opaque or cutout Lit geometry.
+    environment terms. Each enabled lobe accumulates one indirect sample per
+    rendered view using per-view motion, surface and secondary-hit history.
     """
 
     name: str = "Default Deferred"
@@ -168,6 +205,7 @@ class DefaultDeferredPipeline(RenderPipeline):
     )
     ray_diffuse: bool = serialized_field(default=False, header="Ray Tracing")
     ray_specular: bool = serialized_field(default=False)
+    _reconstruct_rays = True
 
     @geometry_buffer(NORMAL_TEXTURE, dependencies={DEPTH_TEXTURE})
     def _provide_deferred_normal(self, context):
@@ -185,9 +223,11 @@ class DefaultDeferredPipeline(RenderPipeline):
     def _provide_ray_primary_surface(self, context):
         graph = context.graph
         stem = f"_result/{context.source}/ray_surface"
-        replay = graph.create_texture(f"{stem}_witness", format=Format.RG32_UINT, samples=1)
+        replay = graph.create_texture(_ray_replay_name(context.source), format=Format.RGBA32_UINT, samples=1)
         depth = graph.create_texture(f"{stem}_depth", format=Format.D32_SFLOAT, samples=1)
-        result = graph.create_texture(f"{stem}_normal", format=Format.RGBA16_SFLOAT, samples=1)
+        result = graph.get_texture(f"{_RAY_PRIMARY_HISTORY}/write")
+        if result is None:
+            result = graph.create_texture(f"{stem}_primary_witness", format=Format.RGBA32_UINT, samples=1)
         with graph.add_pass(f"{context.source}/Ray Surface Replay") as render_pass:
             render_pass.write_color(replay)
             _draw_deferred_geometry(render_pass, depth, context.queue_range, context.sort_mode, "ray_surface")
@@ -196,6 +236,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             render_pass.set_textures({
                 "gbuffer_surface": context.sample("surface"),
                 "gbuffer_depth": context.sample(DEPTH_TEXTURE),
+                "gbuffer_normal": context.sample("surface_frame"),
                 "replay_surface": replay,
                 "replay_depth": depth,
             })
@@ -223,6 +264,10 @@ class DefaultDeferredPipeline(RenderPipeline):
         lobes = tuple((name, specular) for name, specular, enabled in (
             (_RAY_DIFFUSE, False, self.ray_diffuse), (_RAY_SPECULAR, True, self.ray_specular),
         ) if enabled)
+        temporal = bool(lobes) and self._reconstruct_rays
+        primary_history = None
+        if temporal:
+            primary_history = graph.create_temporal_history(_RAY_PRIMARY_HISTORY, format=Format.RGBA32_UINT)
         if lobes:
             graph.require_geometry_buffers({_RAY_PRIMARY_SURFACE})
         shadow_res = effective_shadow_resolution(self.shadow_resolution)
@@ -277,8 +322,12 @@ class DefaultDeferredPipeline(RenderPipeline):
         if lobes:
             if any(current.sample(name) is not raw_gbuffer.sample(name) for name in (DEPTH_TEXTURE, "surface")):
                 raise ValueError("Ray indirect lighting requires after_gbuffer to retain depth and surface identity")
-            signals = _trace_ray_indirect(graph, current, lobes)
-            current = graph.derive_pass_result("ray_indirect", current, signals)
+            packets = _trace_ray_indirect(graph, current, lobes, temporal)
+            current = graph.derive_pass_result("ray_indirect", current, _decode_raw_signals(graph, packets))
+            signals = packets
+            if temporal:
+                signals = _reconstruct_ray_indirect(graph, raw_gbuffer.source, lobes, packets, primary_history)
+                current = graph.derive_pass_result("ray_reconstructed", current, signals)
 
         # ---- Pass 2: Deferred lighting (fullscreen) ----
         with graph.add_pass("DeferredLightingPass") as p:

@@ -156,7 +156,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
             addVariant(ShaderCompileTarget::Shadow, "vertex_shadow", "fragment_depth");
         if (!source.at("deferred_model").is_null()) {
             addVariant(ShaderCompileTarget::GBuffer, "vertex_main", "fragment_gbuffer");
-            addVariant(ShaderCompileTarget::RaySurface, "vertex_main", "fragment_ray_surface");
+            addVariant(ShaderCompileTarget::RaySurface, "vertex_motion", "fragment_ray_surface");
         }
         addVariant(ShaderCompileTarget::Depth, "vertex_main", "fragment_depth");
         addVariant(ShaderCompileTarget::Picking, "vertex_main", "fragment_picking");

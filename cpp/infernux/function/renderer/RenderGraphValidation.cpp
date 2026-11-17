@@ -1028,7 +1028,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
             command->shaderTarget == ShaderCompileTarget::RaySurface &&
             !ResolveMaterialPass(desc, pass, view).IsValid()) {
             INXLOG_ERROR("Ray surface replay '", pass.name,
-                         "' requires one 1x RG32UInt color and writable D32SFloat depth");
+                         "' requires one 1x RGBA32UInt color and writable D32SFloat depth");
             return false;
         }
 

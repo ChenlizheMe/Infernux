@@ -13,6 +13,7 @@ import inx_geometry;
 [[vk::binding(0, 2)]] public ConstantBuffer<InxEngineGlobals> inx_globals;
 public float inx_frame_time() { return inx_globals.time.x; }
 public float inx_frame_delta_time() { return inx_globals.time.w; }
+public uint inx_view_sample_index() { return inx_globals.view_options.w; }
 public struct InxViewContext
 {
     public float2 size;

@@ -2152,14 +2152,15 @@ class RenderGraph:
                     )
             elif p._material_pass in ("picking", "ray_surface"):
                 colors = [texture_map[name] for _, name in sorted(p._write_colors.items())]
+                expected = Format.RGBA32_UINT if p._material_pass == "ray_surface" else Format.RG32_UINT
                 if (
                     len(colors) != 1
-                    or colors[0].format != Format.RG32_UINT
+                    or colors[0].format != expected
                     or p._write_depth is None
                 ):
                     raise ValueError(
                         f"{p._material_pass.replace('_', ' ').capitalize()} pass '{p._name}' "
-                        "requires RG32_UINT color[0] and a depth output"
+                        f"requires {expected.name} color[0] and a depth output"
                     )
                 if p._material_pass == "ray_surface" and (
                     (colors[0].samples or self._msaa_samples) != 1

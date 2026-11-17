@@ -70,6 +70,8 @@ void PrepareGraphTemporalHistory(HistoryMap &histories, rhi::Device &device, con
             allocation.width = targetWidth;
             allocation.height = targetHeight;
             allocation.colorFormat = desc.format;
+            if (rhi::IsIntegerFormat(desc.format))
+                allocation.filter = rhi::FilterMode::Nearest;
             std::array<std::shared_ptr<rhi::RenderTexture>, 2> targets;
             for (uint32_t index = 0; index < targets.size(); ++index)
                 targets[index] = std::make_shared<rhi::RenderTexture>(

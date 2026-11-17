@@ -55,7 +55,7 @@ struct EngineGlobalsUBO
     /// x = frame count, y = smoothDeltaTime, z = 1/deltaTime, w = previous view sample time
     alignas(16) glm::vec4 frameParams{0.0f};
 
-    /// x = dithering, y = stop NaNs, z = opaque display output, w = reserved.
+    /// x = dithering, y = stop NaNs, z = opaque display output, w = accepted view samples.
     alignas(16) glm::uvec4 viewOptions{0u};
 };
 

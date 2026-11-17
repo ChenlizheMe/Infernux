@@ -1,5 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_shading_context
+from infernux.shader.lib.ray_signal import unpack_ray_signal
 
 
 class DeferredRayLighting(shader.fullscreen):
@@ -11,8 +12,8 @@ class DeferredRayLighting(shader.fullscreen):
     surface_tex = shader.input("gbuffer_surface", shader.UInt2D)
     depth_tex = shader.input("depth", shader.Depth2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
-    ray_diffuse = shader.input("ray_diffuse", shader.Color2D)
-    ray_specular = shader.input("ray_specular", shader.Color2D)
+    ray_diffuse = shader.input("ray_diffuse", shader.UInt2D)
+    ray_specular = shader.input("ray_specular", shader.UInt2D)
     diffuse_enabled = shader.parameter.bool(default=False)
     specular_enabled = shader.parameter.bool(default=False)
 
@@ -28,6 +29,6 @@ class DeferredRayLighting(shader.fullscreen):
         context = deferred_shading_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata)
         if depth <= 0.0 or packed.x == 0 or metadata.y == 0:
             return shader.vec4(0.0)
-        diffuse = shader.load(self.ray_diffuse, pixel, 0) if self.diffuse_enabled else shader.vec4(0.0)
-        specular = shader.load(self.ray_specular, pixel, 0) if self.specular_enabled else shader.vec4(0.0)
+        diffuse = unpack_ray_signal(shader.load(self.ray_diffuse, pixel, 0)) if self.diffuse_enabled else shader.vec4(0.0)
+        specular = unpack_ray_signal(shader.load(self.ray_specular, pixel, 0)) if self.specular_enabled else shader.vec4(0.0)
         return shader.vec4(shader.lighting._shade_ray(surface, context, metadata.y, diffuse, specular), 1.0)

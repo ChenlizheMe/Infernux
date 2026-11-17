@@ -19,6 +19,11 @@ inline constexpr std::array kGBufferColorFormats{
     rhi::PixelFormat::RG32UInt,
 };
 
+inline constexpr bool UsesInstanceMotion(ShaderCompileTarget target) noexcept
+{
+    return target == ShaderCompileTarget::Motion || target == ShaderCompileTarget::RaySurface;
+}
+
 /// Immutable render-target contract for one material pass. It is deliberately
 /// backend-neutral so RenderGraph can key pipelines without leaking Vulkan
 /// formats into the user-facing pipeline model.
@@ -86,7 +91,7 @@ struct MaterialPassPipelineDescriptor
             return colorFormats.size() == 1 && colorFormats.front() == rhi::PixelFormat::RG32UInt &&
                    depthFormat != rhi::PixelFormat::Undefined;
         case ShaderCompileTarget::RaySurface:
-            return colorFormats.size() == 1 && colorFormats.front() == rhi::PixelFormat::RG32UInt &&
+            return colorFormats.size() == 1 && colorFormats.front() == rhi::PixelFormat::RGBA32UInt &&
                    depthFormat == rhi::PixelFormat::D32SFloat && samples == rhi::SampleCount::One && !depthReadOnly;
         case ShaderCompileTarget::Forward:
         case ShaderCompileTarget::ForwardPlus:
