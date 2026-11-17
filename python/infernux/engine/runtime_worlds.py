@@ -120,6 +120,10 @@ class ProjectModules:
         self.importlib.import_module = self.import_module
 
     def _path(self, name):
+        # Packages/infernux is a vendor directory. The engine is shared across
+        # Worlds, and installed scripts use their own package namespace.
+        if name.partition('.')[0] == 'infernux':
+            return None
         if name in self.specifications:
             return self.specifications[name]
         relative = Path(*name.split('.'))

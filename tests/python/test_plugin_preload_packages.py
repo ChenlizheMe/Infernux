@@ -68,6 +68,34 @@ def test_package_preload_relative_imports_refresh_changed_helpers(tmp_path):
         assert (cache.read_bytes() if cache.exists() else None) == cache_bytes
 
 
+def test_runtime_world_uses_public_engine_with_infernux_vendor_packages(tmp_path, monkeypatch):
+    import infernux
+    from infernux.engine import project_context
+    from infernux.engine.runtime_worlds import ProjectModules
+    from infernux.lib import SceneManager
+
+    assets = tmp_path / "Assets"
+    packages = tmp_path / "Packages"
+    assets.mkdir()
+    (packages / "infernux" / "example").mkdir(parents=True)
+    (assets / "probe.py").write_text(
+        "import infernux as engine\n"
+        "from infernux import jit\n"
+        "import importlib\n"
+        "application_module = importlib.import_module('infernux.application')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(project_context, "get_project_script_roots", lambda: (str(assets), str(packages)))
+    modules = ProjectModules(SceneManager.instance()._authoring_runtime_world_id, {})
+    try:
+        probe = modules.load_file("probe", assets / "probe.py")
+        assert probe.engine is infernux
+        assert probe.jit is infernux.jit
+        assert probe.application_module is sys.modules["infernux.application"]
+    finally:
+        modules.close()
+
+
 def test_editor_translation_catalog_hot_reload_is_atomic(tmp_path, monkeypatch):
     from infernux.engine import i18n
 
