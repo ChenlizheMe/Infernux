@@ -1351,16 +1351,17 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             const auto frame = editorCam ? bridge.AcquirePreparedFrameForCamera(editorCam->GetComponentID()) : nullptr;
             if (const auto *view = frame ? frame->FindView(editorCam->GetComponentID()) : nullptr) {
                 ScriptableRenderContext capture(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx,
-                                                frame, *view, true);
+                                                frame, *view);
                 if (frame->IsSharedSceneView()) {
                     const auto publication = bridge.AcquirePreparedRuntimePublication(frame->WorldId());
                     if (publication && publication->worldUI)
                         capture.SetWorldUISnapshot(publication->worldUI);
                 }
                 m_renderPipeline->RenderSelectedView(capture, capture.GetView());
+                const auto plan = capture.CapturePlan();
                 ScriptableRenderContext context(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx,
-                                                frame, *view);
-                context.ExecutePlan(capture.CapturePlan());
+                                                *plan);
+                context.ExecutePlan(plan);
             }
 #if INFERNUX_FRAME_PROFILE
             auto _srpT1 = std::chrono::high_resolution_clock::now();
@@ -1402,7 +1403,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                     const auto existing = m_gameRenderGraphs.find(view->cameraId);
                     auto *previousGraph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
                     ScriptableRenderContext capture(m_vkCore.get(), previousGraph, m_viewRequestSerial, content, frame,
-                                                    *view, true);
+                                                    *view);
                     m_renderPipeline->RenderSelectedView(capture, capture.GetView());
                     plan = capture.CapturePlan();
                     if (!view->renderToTexture) {
@@ -1424,7 +1425,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                 if (!graph)
                     continue;
                 graph->SetBillboardViewMatrix(view->view);
-                ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, frame, *view);
+                ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, *plan);
                 context.ExecutePlan(plan);
             }
             if (authorScreenSelections && authorScreenSelections == authorSkippedScreenSelections)
@@ -3023,12 +3024,12 @@ void InxRenderer::PrepareSceneCameraPreview()
         view.renderToTexture = true;
         view.pixelWidth = view.outputGeneration->width;
         view.pixelHeight = view.outputGeneration->height;
-        ScriptableRenderContext capture(m_vkCore.get(), graph, m_viewRequestSerial, content, m_cameraPreviewFrame, view,
-                                        true);
-        capture.RenderWithGraph(*m_sceneCameraPreviewDescription);
-        ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, m_cameraPreviewFrame,
+        ScriptableRenderContext capture(m_vkCore.get(), graph, m_viewRequestSerial, content, m_cameraPreviewFrame,
                                         view);
-        context.ExecutePlan(capture.CapturePlan());
+        capture.RenderWithGraph(*m_sceneCameraPreviewDescription);
+        const auto plan = capture.CapturePlan();
+        ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, *plan);
+        context.ExecutePlan(plan);
     } catch (const ShaderProgramSelectionError &) {
         // Keep the last complete thumbnail while its source issue is resolved.
     }
@@ -4644,7 +4645,7 @@ bool InxRenderer::CaptureRuntimeViewPlans(RenderWorldPublication &publication, c
         if (!*participates) {
             const auto existing = m_gameRenderGraphs.find(view.cameraId);
             auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
-            ScriptableRenderContext selection(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true, true);
+            ScriptableRenderContext selection(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true);
             selection.SkipView();
             publication.plans.emplace(view.cameraId, selection.CapturePlan());
         }
@@ -4677,7 +4678,7 @@ bool InxRenderer::CaptureRuntimeViewPlans(RenderWorldPublication &publication, c
             }
             const auto existing = m_gameRenderGraphs.find(view.cameraId);
             auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
-            ScriptableRenderContext prepare(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true, true);
+            ScriptableRenderContext prepare(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true);
             const auto ready = publication.preparedUI.find(view.cameraId);
             if (ready != publication.preparedUI.end())
                 prepare.SetScreenUISnapshot(ready->second);
@@ -4698,7 +4699,7 @@ bool InxRenderer::CaptureRuntimeViewPlans(RenderWorldPublication &publication, c
         auto *graph = existing == m_gameRenderGraphs.end() ? nullptr : existing->second.get();
         // The capture constructor selects the retained view's actual World
         // and assigns both scene and gizmo scene before invoking its delegate.
-        ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true, true);
+        ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, {}, frame, view, true);
         if (publication.worldUI)
             context.SetWorldUISnapshot(publication.worldUI);
         const auto ui = publication.preparedUI.find(view.cameraId);

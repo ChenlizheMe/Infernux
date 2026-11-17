@@ -15,6 +15,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -195,13 +196,15 @@ class ScriptableRenderContext
 
     ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
                             const EditorGizmosContext &gizmoCtx, std::shared_ptr<const RenderWorldFrame> world,
-                            const RenderViewData &view, bool capture = false, bool completedWorld = false);
+                            const RenderViewData &view, bool completedWorld = false);
+    ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
+                            const EditorGizmosContext &gizmoCtx, const RenderViewPlan &plan);
 
     [[nodiscard]] const RenderViewData &GetView() const noexcept
     {
         return *m_cachedCameraView;
     }
-    [[nodiscard]] const std::shared_ptr<RenderViewData> &GetViewPublication() const noexcept
+    [[nodiscard]] const std::shared_ptr<const RenderViewData> &GetViewPublication() const noexcept
     {
         return m_cachedCameraView;
     }
@@ -319,8 +322,8 @@ class ScriptableRenderContext
     static const Execution s_nativeExecution;
     const Execution *m_execution = nullptr;
     RenderViewCaptureServices m_captureServices;
-    void InitializeView(std::shared_ptr<const RenderWorldFrame> world, const RenderViewData &view, bool capture,
-                        bool completedWorld);
+    void BeginViewCapture(std::shared_ptr<const RenderWorldFrame> world, const RenderViewData &view,
+                          bool completedWorld);
     void SetupNativeCameraProperties();
     bool ApplyNativeGraph(const RenderGraphDescription &desc);
     void UpdateNativeParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates);
@@ -336,7 +339,7 @@ class ScriptableRenderContext
     std::vector<DrawCall> m_orderedDrawCalls;
 
     Scene *m_scene = nullptr;
-    std::shared_ptr<RenderViewData> m_cachedCameraView;
+    std::shared_ptr<const RenderViewData> m_cachedCameraView;
     std::shared_ptr<const RenderWorldFrame> m_renderWorldOwner;
     glm::mat4 m_cachedView{1.0f};
     glm::mat4 m_cachedProj{1.0f};
@@ -345,7 +348,7 @@ class ScriptableRenderContext
     bool m_submitted = false;
     std::shared_ptr<RenderViewPlan> m_recordedPlan;
     bool m_captureCompletedWorld = false;
-    std::unique_ptr<WorldExecutionScope> m_captureWorldScope;
+    std::optional<WorldExecutionScope> m_captureWorldScope;
 
     // Deferred CommandBuffer execution state
     // ExecuteCommandBuffer captures commands immediately; the Python/local

@@ -40,7 +40,7 @@ const ScriptableRenderContext::Execution ScriptableRenderContext::s_nativeExecut
 ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
                                                  const EditorGizmosContext &gizmoCtx,
                                                  std::shared_ptr<const RenderWorldFrame> world,
-                                                 const RenderViewData &view, bool capture, bool completedWorld)
+                                                 const RenderViewData &view, bool completedWorld)
     : m_vkCore(vkCore), m_graph(graph), m_draw(draw), m_gizmoCtx(gizmoCtx)
 {
     m_execution = &s_nativeExecution;
@@ -51,7 +51,15 @@ ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, Scene
     m_captureServices.acquireProgram = [vkCore](const auto &name) {
         return vkCore->GetFullscreenPipelineCache()->AcquireProgram(name);
     };
-    InitializeView(std::move(world), view, capture, completedWorld);
+    BeginViewCapture(std::move(world), view, completedWorld);
+    SetupCameraProperties();
+}
+
+ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph, uint64_t draw,
+                                                 const EditorGizmosContext &gizmoCtx, const RenderViewPlan &plan)
+    : m_execution(&s_nativeExecution), m_vkCore(vkCore), m_graph(graph), m_draw(draw), m_gizmoCtx(gizmoCtx),
+      m_cachedCameraView(plan.view), m_renderWorldOwner(plan.world)
+{
     SetupCameraProperties();
 }
 

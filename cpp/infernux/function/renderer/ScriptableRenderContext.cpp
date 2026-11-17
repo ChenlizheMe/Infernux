@@ -24,31 +24,27 @@ void ScriptableRenderContext::ResetProfileSnapshot()
 }
 #endif
 
-void ScriptableRenderContext::InitializeView(std::shared_ptr<const RenderWorldFrame> world, const RenderViewData &view,
-                                             bool capture, bool completedWorld)
+void ScriptableRenderContext::BeginViewCapture(std::shared_ptr<const RenderWorldFrame> world,
+                                               const RenderViewData &view, bool completedWorld)
 {
-    const auto *published = world ? world->FindView(view.cameraId) : nullptr;
-    if (!published)
+    if (!world || !world->FindView(view.cameraId))
         throw std::invalid_argument("Render context requires a view in its retained World publication");
-    m_renderWorldOwner = std::move(world);
-    m_cachedCameraView = std::make_shared<RenderViewData>(view);
-
-    if (capture) {
-        auto &manager = SceneManager::Instance();
-        auto *source = manager.AuthoringWorld().id == view.worldId ? &manager.AuthoringWorld()
-                                                                   : manager.FindRuntimeWorld(view.worldId);
-        if (!source)
-            throw std::logic_error("UI capture requires the actual retained view's source World");
-        m_captureWorldScope = std::make_unique<WorldExecutionScope>(source);
-        m_scene = source->scenes.active;
-        m_gizmoCtx.activeScene = source->scenes.active;
-        m_recordedPlan = std::make_shared<RenderViewPlan>();
-        m_recordedPlan->world = m_renderWorldOwner;
-        m_recordedPlan->view = m_cachedCameraView;
-    }
-    m_captureCompletedWorld = completedWorld;
-    if (completedWorld && (!capture || view.editorView))
+    if (completedWorld && view.editorView)
         throw std::logic_error("Completed World capture requires a runtime view plan");
+    auto &manager = SceneManager::Instance();
+    auto *source = manager.AuthoringWorld().id == view.worldId ? &manager.AuthoringWorld()
+                                                               : manager.FindRuntimeWorld(view.worldId);
+    if (!source)
+        throw std::logic_error("UI capture requires the actual retained view's source World");
+    m_captureWorldScope.emplace(source);
+    m_scene = source->scenes.active;
+    m_gizmoCtx.activeScene = source->scenes.active;
+    m_renderWorldOwner = std::move(world);
+    m_cachedCameraView = std::make_shared<const RenderViewData>(view);
+    m_recordedPlan = std::make_shared<RenderViewPlan>();
+    m_recordedPlan->world = m_renderWorldOwner;
+    m_recordedPlan->view = m_cachedCameraView;
+    m_captureCompletedWorld = completedWorld;
 }
 
 ScriptableRenderContext::ScriptableRenderContext(std::shared_ptr<const RenderWorldFrame> world,
@@ -56,7 +52,7 @@ ScriptableRenderContext::ScriptableRenderContext(std::shared_ptr<const RenderWor
                                                  bool completedWorld)
     : m_captureServices(std::move(services))
 {
-    InitializeView(std::move(world), view, true, completedWorld);
+    BeginViewCapture(std::move(world), view, completedWorld);
     SetupCameraProperties();
 }
 
@@ -121,7 +117,7 @@ ScriptableRenderContext::ScriptableRenderContext(std::shared_ptr<const RenderWor
     auto *source = manager.FindRuntimeWorld(m_renderWorldOwner->WorldId());
     if (!source)
         throw std::logic_error("World UI capture requires its live source World");
-    m_captureWorldScope = std::make_unique<WorldExecutionScope>(source);
+    m_captureWorldScope.emplace(source);
     m_scene = source->scenes.active;
     m_recordedPlan = std::make_shared<RenderViewPlan>();
     m_recordedPlan->world = m_renderWorldOwner;
