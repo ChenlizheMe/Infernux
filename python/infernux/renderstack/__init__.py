@@ -100,6 +100,7 @@ _PIPELINE_EXPORTS = {
     "DefaultForwardPipeline": "default_forward_pipeline",
     "DefaultForwardPlusPipeline": "default_forward_plus_pipeline",
     "DefaultDeferredPipeline": "default_deferred_pipeline",
+    "RayTracingQuality": "default_deferred_pipeline",
 }
 
 
@@ -134,6 +135,7 @@ __all__ = [
     "DefaultForwardPipeline",
     "DefaultForwardPlusPipeline",
     "DefaultDeferredPipeline",
+    "RayTracingQuality",
     # Injection points
     "InjectionPoint",
     "EffectStage",

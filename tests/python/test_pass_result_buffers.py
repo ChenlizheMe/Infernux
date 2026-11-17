@@ -10,7 +10,7 @@ from infernux.renderstack.geometry_buffers import (
 from infernux.renderstack.render_pipeline import RenderPipeline
 from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
-from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
+from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline, RayTracingQuality
 from infernux.renderstack.fullscreen_effect import FullScreenEffect
 from infernux.renderstack.pipeline_dsl import PipelineBuilder
 from infernux.renderstack.resource_bus import ResourceBus
@@ -194,12 +194,19 @@ def test_deferred_ray_surface_replays_raw_gbuffer_depth_and_surface_id_on_demand
     assert graph.get_texture(replay._write_colors[0]).format == Format.RGBA32_UINT
 
 
-@pytest.mark.parametrize("diffuse,specular", [(False, False), (True, False), (False, True), (True, True)])
-def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular):
+@pytest.mark.parametrize("diffuse,specular,quality,diffuse_divisor", [
+    (False, False, RayTracingQuality.STANDARD, 2),
+    (True, False, RayTracingQuality.STANDARD, 2),
+    (False, True, RayTracingQuality.LIGHTWEIGHT, 4),
+    (True, True, RayTracingQuality.HIGH, 0),
+    (True, True, RayTracingQuality.LIGHTWEIGHT, 4),
+])
+def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, quality, diffuse_divisor):
     graph = RenderGraph("Deferred ray lighting")
     pipeline = DefaultDeferredPipeline()
     pipeline.ray_diffuse = diffuse
     pipeline.ray_specular = specular
+    pipeline.ray_quality = quality
     pipeline.define_topology(graph)
     graph.build()
 
@@ -217,17 +224,24 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular):
     assert lighting._shader_name == "infernux/internal/deferred_ray_lighting"
     assert lighting._parameters == {"diffuse_enabled": diffuse, "specular_enabled": specular}
     assert lighting._input_bindings["primary_tex"] == result.sample("ray_primary_surface").name
-    for enabled, name, label, resolve in (
-        (diffuse, "ray_diffuse", "Ray Diffuse Irradiance", "Ray Diffuse Reconstruction"),
-        (specular, "ray_specular", "Ray Specular Radiance", "Ray Specular Reconstruction"),
+    assert result.sample("ray_primary_surface").size_divisor == 0
+    for enabled, name, label, resolve, divisor in (
+        (diffuse, "ray_diffuse", "Ray Diffuse Irradiance", "Ray Diffuse Reconstruction", diffuse_divisor),
+        (specular, "ray_specular", "Ray Specular Radiance", "Ray Specular Reconstruction", 0),
     ):
         assert result.has(name) == (label in passes) == enabled
         if enabled:
             trace = passes[label]
             assert trace._input_bindings["primary"] == result.sample("ray_primary_surface").name
             assert trace._input_bindings["world_ray_meshes"] == graph.get_buffer("world_ray_meshes").name
-            assert graph.get_texture(trace._write_colors[0]).format == Format.RGBA32_UINT
+            packet = graph.get_texture(trace._write_colors[0])
+            assert packet.format == Format.RGBA32_UINT and packet.size_divisor == divisor
+            assert trace._parameters["resolution_divisor"] == (divisor or 1)
+            assert result.sample(name).size_divisor == divisor
+            assert reconstructed.sample(name).size_divisor == divisor
             assert passes[resolve]._input_bindings["signal"] == trace._write_colors[0]
+            previous = graph.get_texture(passes[resolve]._input_bindings["previous_signal"])
+            assert previous.size_divisor == divisor
             assert passes[f"Decode {name} diagnostic"]._write_colors == {0: result.sample(name).name}
             assert lighting._input_bindings[name] == reconstructed.sample(name).name
 

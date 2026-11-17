@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
-from infernux.shader.lib.ray_signal import pack_ray_signal, unpack_ray_signal
+from infernux.shader.lib.ray_signal import pack_ray_signal, ray_grid_pixel, unpack_ray_signal
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -22,17 +22,21 @@ class RayReconstruct(shader.fullscreen):
         if current.a <= 0.0:
             return fresh
 
-        primary = shader.load(self.primary, pixel, 0)
-        motion = shader.load(self.motion, pixel, 0)
+        extent = shader.ivec2(shader.dimensions(self.signal, 0))
+        full = shader.ivec2(shader.dimensions(self.primary, 0))
+        reduced = shader.any(extent != full)
+        source = ray_grid_pixel(pixel, extent, full) if reduced else pixel
+        primary = shader.load(self.primary, source, 0)
+        motion = shader.load(self.motion, source, 0)
         if motion.w == 0 or motion.x != primary.x:
             return fresh
-        extent = shader.vec2(shader.dimensions(self.signal, 0))
-        uv = ctx.position.xy / extent
+        uv = (shader.vec2(source) + shader.vec2(0.5)) / shader.vec2(full)
         previous_uv = uv - shader.unpack_half_2x16(motion.z)
         if shader.any(previous_uv < shader.vec2(0.0)) or shader.any(previous_uv >= shader.vec2(1.0)):
             return fresh
-        previous_pixel = shader.ivec2(previous_uv * extent)
-        previous_primary = shader.load(self.previous_primary, previous_pixel, 0)
+        previous_pixel = shader.min(shader.ivec2(previous_uv * shader.vec2(extent)), extent - shader.ivec2(1))
+        previous_source = ray_grid_pixel(previous_pixel, extent, full) if reduced else previous_pixel
+        previous_primary = shader.load(self.previous_primary, previous_source, 0)
         if primary.x != previous_primary.x or primary.w != previous_primary.w:
             return fresh
         normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))

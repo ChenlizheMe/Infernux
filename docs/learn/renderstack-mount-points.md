@@ -41,6 +41,12 @@ The Inspector shows only declared Effect Stages. Internal render passes, layers,
 
 Parameter edits normally update GPU parameter blocks. Each compiled effect binds a named parameter block, and steady frames upload only the changed parameters through `update_parameter_blocks`. Slot order, group structure, enabled topology, and fields declared in `topology_parameters` invalidate the graph instead. A failed individual effect is rolled back and listed in **Effect Compile Errors** with its Stage/Slot path; the rebuilt graph can continue without that effect. A broader topology failure keeps the last valid graph and last valid Inspector topology in the Editor. In a packaged Player, a pipeline build failure does not substitute Default Forward.
 
+### Ray tracing in Default Deferred
+
+Use `ray_diffuse` for indirect diffuse light and `ray_specular` for reflections. The `ray_quality` setting controls the diffuse trace and history grid. Standard uses half the view width and height. Lightweight uses a quarter of both. High traces at the full view resolution. Reflections stay at full resolution in all three settings, including on mirror surfaces.
+
+Deferred lighting reconstructs diffuse light at the view resolution using depth, normals, and surface identity. At lower quality, thin surfaces can lack a matching diffuse sample and receive the regular environment term at those pixels. Raw ray buffers use the selected sampling grid, while the combined lighting output retains the view resolution.
+
 ## Five terms, four sources of authority {#terms-authority}
 
 These names describe different records:
@@ -241,6 +247,12 @@ Inspector 只显示管线声明的 Effect Stage。内部 Render Pass、Layer、C
 </figure>
 
 普通参数修改通常只更新 GPU 参数块。每个编译后的 Effect 绑定一个命名参数块，稳态帧只通过 `update_parameter_blocks` 上传发生变化的参数。Slot 顺序、EffectGroup 结构、影响拓扑的启用状态，以及列入 `topology_parameters` 的字段则让图失效并触发重建。单个 Effect 失败时，其修改会回滚，**Effect Compile Errors** 按 Stage/Slot 路径显示错误，新图可以跳过该 Effect 后继续完成。更大范围的拓扑失败时，Editor 保留上一份有效渲染图和 Inspector 拓扑。打包 Player 遇到管线构建失败时不会替换为 Default Forward。
+
+### 默认延迟管线中的实时光追
+
+`ray_diffuse` 控制间接漫反射，`ray_specular` 控制镜面反射。`ray_quality` 调节漫反射追踪和历史缓冲的尺寸。Standard 在宽高各减半的网格上追踪，Lightweight 在宽高各缩到四分之一的网格上追踪，High 使用完整的视图分辨率。三个档位都保持镜面反射全分辨率，包括镜子这种近乎完全光滑的表面。
+
+延迟光照根据深度、法线和表面标识，将各档的漫反射重建到视图分辨率。低档的细小表面有时找不到匹配的光追样本，这些像素会使用常规环境光。原始光追缓冲按各档的采样网格输出，最终光照仍保持视图分辨率。
 
 ## 五个术语，四层权威 {#terms-authority_1}
 

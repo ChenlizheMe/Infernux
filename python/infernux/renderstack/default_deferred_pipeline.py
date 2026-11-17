@@ -84,6 +84,19 @@ _RAY_DIFFUSE = "ray_diffuse"
 _RAY_SPECULAR = "ray_specular"
 
 
+class RayTracingQuality(IntEnum):
+    LIGHTWEIGHT = 0
+    STANDARD = 1
+    HIGH = 2
+
+
+_RAY_DIFFUSE_SIZE_DIVISORS = {
+    RayTracingQuality.LIGHTWEIGHT: 4,
+    RayTracingQuality.STANDARD: 2,
+    RayTracingQuality.HIGH: 0,
+}
+
+
 def _draw_deferred_geometry(render_pass, depth, queue_range, sort_mode, material_pass):
     render_pass.write_depth(depth)
     render_pass.set_clear(color=DEFERRED_GBUFFER_CLEAR_COLOR, depth=0.0)
@@ -102,8 +115,9 @@ def _ray_replay_name(source):
 def _trace_ray_indirect(graph, gbuffer, lobes, temporal):
     world = graph._create_world_ray_lit()
     packets = {}
-    for name, specular in lobes:
-        output = graph.create_texture(f"_result/gbuffer/{name}_packet", format=Format.RGBA32_UINT, samples=1)
+    for name, specular, divisor in lobes:
+        output = graph.create_texture(f"_result/gbuffer/{name}_packet", format=Format.RGBA32_UINT,
+                                      size_divisor=divisor, samples=1)
         label = "Ray Specular Radiance" if specular else "Ray Diffuse Irradiance"
         with graph.add_pass(label) as render_pass:
             render_pass.write_color(output)
@@ -115,6 +129,7 @@ def _trace_ray_indirect(graph, gbuffer, lobes, temporal):
                 render_pass.set_texture(key, world[key])
             render_pass.set_param("specular", specular)
             render_pass.set_param("temporal", temporal)
+            render_pass.set_param("resolution_divisor", divisor or 1)
             render_pass.fullscreen_quad("infernux/internal/ray_indirect")
         packets[name] = output
     return packets
@@ -123,7 +138,8 @@ def _trace_ray_indirect(graph, gbuffer, lobes, temporal):
 def _decode_raw_signals(graph, packets):
     raw = {}
     for name, packet in packets.items():
-        output = graph.create_texture(f"_result/gbuffer/{name}", format=Format.RGBA16_SFLOAT, samples=1)
+        output = graph.create_texture(f"_result/gbuffer/{name}", format=Format.RGBA16_SFLOAT,
+                                      size_divisor=packet.size_divisor, samples=1)
         with graph.add_pass(f"Decode {name} diagnostic") as render_pass:
             render_pass.set_texture("signal", packet)
             render_pass.write_color(output)
@@ -137,8 +153,9 @@ def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history):
     motion = graph.get_texture(_ray_replay_name(source))
     geometry = graph._create_world_ray_geometry()
     signals = {}
-    for name, specular in lobes:
-        previous, output = graph.create_temporal_history(f"_{name}", format=Format.RGBA32_UINT)
+    for name, specular, divisor in lobes:
+        previous, output = graph.create_temporal_history(f"_{name}", format=Format.RGBA32_UINT,
+                                                         size_divisor=divisor)
         label = "Ray Specular Reconstruction" if specular else "Ray Diffuse Reconstruction"
         with graph.add_pass(label) as render_pass:
             render_pass.set_textures({
@@ -190,9 +207,10 @@ class DefaultDeferredPipeline(RenderPipeline):
     inserted by ``graph.screen_ui_section()``.
 
     ``ray_diffuse`` and ``ray_specular`` independently replace the raster
-    environment terms. Each enabled lobe accumulates one indirect sample per
-    rendered view using per-view motion, surface and secondary-hit history.
-    Lighting resolves a bounded neighborhood from that per-lobe estimate.
+    environment terms. ``ray_quality`` sets the diffuse tracing rate. Light
+    transport samples are kept on their native grid through reconstruction.
+    Lighting resolves them against the full-resolution surface; specular
+    paths use the full-resolution grid at every quality.
     """
 
     name: str = "Default Deferred"
@@ -209,6 +227,7 @@ class DefaultDeferredPipeline(RenderPipeline):
     )
     ray_diffuse: bool = serialized_field(default=False, header="Ray Tracing")
     ray_specular: bool = serialized_field(default=False)
+    ray_quality: RayTracingQuality = serialized_field(default=RayTracingQuality.STANDARD)
     _reconstruct_rays = True
 
     @geometry_buffer(NORMAL_TEXTURE, dependencies={DEPTH_TEXTURE})
@@ -265,8 +284,9 @@ class DefaultDeferredPipeline(RenderPipeline):
         if graph.set_msaa_samples(1) != 1:
             raise ValueError("Default Deferred requires a single-sample Camera target")
 
-        lobes = tuple((name, specular) for name, specular, enabled in (
-            (_RAY_DIFFUSE, False, self.ray_diffuse), (_RAY_SPECULAR, True, self.ray_specular),
+        diffuse_divisor = _RAY_DIFFUSE_SIZE_DIVISORS[self.ray_quality]
+        lobes = tuple((name, specular, divisor) for name, specular, divisor, enabled in (
+            (_RAY_DIFFUSE, False, diffuse_divisor, self.ray_diffuse), (_RAY_SPECULAR, True, 0, self.ray_specular),
         ) if enabled)
         temporal = bool(lobes) and self._reconstruct_rays
         primary_history = None
