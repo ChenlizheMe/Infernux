@@ -1070,6 +1070,31 @@ void RenderGraph::PrecomputeExecuteData()
         if (pass.culled)
             continue;
 
+        // Multiple shader bindings of the same image layout share one transition.
+        // Keep the original reads for version dependencies and state tracking.
+        pass.barrierReads.clear();
+        pass.barrierReads.reserve(pass.reads.size());
+        for (const auto &read : pass.reads) {
+            if ((read.usage & ResourceUsage::VersionDependency) != ResourceUsage::None)
+                continue;
+            const auto existing =
+                std::find_if(pass.barrierReads.begin(), pass.barrierReads.end(), [&](const ResourceAccess &access) {
+                    return access.handle.id == read.handle.id && access.layout == read.layout;
+                });
+            if (existing == pass.barrierReads.end()) {
+                pass.barrierReads.push_back(read);
+                continue;
+            }
+            existing->access = existing->access | read.access;
+            existing->stages = existing->stages | read.stages;
+            existing->usage = existing->usage | read.usage;
+        }
+        pass.splitReadWriteBarriers =
+            std::any_of(pass.writes.begin(), pass.writes.end(), [&](const ResourceAccess &write) {
+                return std::any_of(pass.reads.begin(), pass.reads.end(),
+                                   [&](const ResourceAccess &read) { return read.handle.id == write.handle.id; });
+            });
+
         if (pass.type != PassType::Graphics || !pass.renderingSignature.IsValid())
             continue;
 
@@ -1142,8 +1167,6 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
     const rhi::QueueRole recordingQueue = m_recordingSubmissionBatches ? pass.queue : m_immediateRecordingQueue;
 
     auto addBarrier = [&](const ResourceAccess &access) {
-        if ((access.usage & ResourceUsage::VersionDependency) != ResourceUsage::None)
-            return;
         if (access.handle.id >= m_resources.size())
             return;
 
@@ -1273,47 +1296,11 @@ void RenderGraph::InsertBarriers(VkCommandBuffer cmdBuffer, uint32_t passIndex)
         state.nativeQueueLane = targetBinding.lane;
     };
 
-    // A resource may be bound to several shader names in one pass. Those
-    // bindings are distinct, but the image transition is not: emitting the
-    // same oldLayout -> newLayout barrier twice in one dependency info makes
-    // the second barrier observe the layout produced by the first one.
-    for (size_t readIndex = 0; readIndex < pass.reads.size(); ++readIndex) {
-        const auto &read = pass.reads[readIndex];
-        const bool duplicateTransition =
-            std::any_of(pass.reads.begin(), pass.reads.begin() + readIndex, [&](const ResourceAccess &previous) {
-                return previous.handle.id == read.handle.id && previous.layout == read.layout &&
-                       (previous.usage & ResourceUsage::VersionDependency) == ResourceUsage::None &&
-                       (read.usage & ResourceUsage::VersionDependency) == ResourceUsage::None;
-            });
-        if (duplicateTransition)
-            continue;
-        ResourceAccess combinedRead = read;
-        for (size_t later = readIndex + 1; later < pass.reads.size(); ++later) {
-            const auto &other = pass.reads[later];
-            if (other.handle.id == read.handle.id && other.layout == read.layout &&
-                (other.usage & ResourceUsage::VersionDependency) == ResourceUsage::None) {
-                combinedRead.access = combinedRead.access | other.access;
-                combinedRead.stages = combinedRead.stages | other.stages;
-                combinedRead.usage = combinedRead.usage | other.usage;
-            }
-        }
-        addBarrier(combinedRead);
+    for (const auto &read : pass.barrierReads) {
+        addBarrier(read);
     }
 
-    // Check read-write overlap without heap allocation
-    bool hasReadWriteOverlap = false;
-    for (const auto &write : pass.writes) {
-        for (const auto &read : pass.reads) {
-            if (write.handle.id == read.handle.id) {
-                hasReadWriteOverlap = true;
-                break;
-            }
-        }
-        if (hasReadWriteOverlap)
-            break;
-    }
-
-    if (hasReadWriteOverlap && (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty())) {
+    if (pass.splitReadWriteBarriers && (!m_barrierScratch.empty() || !m_bufferBarrierScratch.empty())) {
         if (srcStageMask == 0)
             srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
         if (dstStageMask == 0)

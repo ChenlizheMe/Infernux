@@ -619,6 +619,7 @@ float4 fragment_main(Vertex input, uint sample : SV_SampleIndex) : SV_Target0 {
     });
     graph.AddPass("copy-color-samples", [&](vk::PassBuilder &builder) {
         builder.Read(color);
+        builder.Read(color, rhi::PipelineStage::VertexShader);
         copiedColor = builder.WriteColor(copiedColor);
         builder.SetRenderArea(desc.width, desc.height);
         return [&](vk::RenderContext &ctx) {

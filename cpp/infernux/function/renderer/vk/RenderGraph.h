@@ -590,9 +590,9 @@ struct RenderPassData
     bool culled = false;
     PassCullReason cullReason = PassCullReason::Unreachable;
 
-    // Pre-computed execution data (populated at end of Compile, used in Execute).
-    // Eliminates per-frame struct construction for beginInfo, clear values,
-    // viewport, and scissor.
+    // Execution data derived from the pass declarations during Compile.
+    std::vector<ResourceAccess> barrierReads;
+    bool splitReadWriteBarriers = false;
     VulkanRasterPass rasterPass;
     VkViewport cachedViewport{};
     VkRect2D cachedScissor{};
