@@ -734,6 +734,7 @@ void PhysicsWorld::Shutdown()
         RetireRagdolls(*domain);
         domain->mixedContacts.reset();
         RetireCpuJointRoutes(*domain);
+        RetireMixedJointRoutes(*domain);
         domain->cpuControl.reset();
         domain->cpuScene.reset();
         domain->cpuPublication = {};
@@ -829,6 +830,8 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     const auto pairs = CaptureColliderPairs(domain);
     std::vector<JoltMixedContactStep::CpuEndpoint> cpuEndpoints;
     std::vector<uint32_t> respondingGpu;
+    std::vector<std::shared_ptr<JoltMixedFixedJoint>> mixedFixed;
+    std::vector<JoltMixedContactStep::BodyPair> suppressedMixedPairs;
     bool mixedTriggers = false, coupled = false;
     if (domain.cpuControl && domain.gpuRegistered) {
         bool gpuBody = false, sensor = false, respondingCpu = false, dynamicCpu = false, dynamicGpu = false;
@@ -858,6 +861,16 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         }
         mixedTriggers = gpuBody && sensor && !cpuEndpoints.empty();
         coupled = respondingCpu && !respondingGpu.empty() && (dynamicCpu || dynamicGpu);
+        if (mixedTriggers || coupled) {
+            for (const auto &[id, entry] : domain.mixedFixedJoints) {
+                const auto &joint = *entry.joint;
+                if (!entry.enableCollision)
+                    suppressedMixedPairs.emplace_back(joint.cpuBody, joint.gpuBody);
+                if (coupled && FindRigidbodyByBodyId(joint.cpuBody)->AllowsCrossBackendInteraction() &&
+                    FindRigidbodyByBodyId(joint.gpuBody)->AllowsCrossBackendInteraction())
+                    mixedFixed.push_back(entry.joint);
+            }
+        }
     }
     if (mixedTriggers || coupled) {
         if (!m_gpuMixedContacts) {
@@ -932,7 +945,8 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         const auto substeps = domain.admittedParameters->Get().solve.y;
         std::function<void(uint32_t)> capture;
         if (mixedTriggers || coupled)
-            domain.mixedContacts->Begin(*domain.cpuScene, std::move(cpuEndpoints), std::move(respondingGpu), substeps);
+            domain.mixedContacts->Begin(*domain.cpuScene, std::move(cpuEndpoints), std::move(respondingGpu), substeps,
+                                        std::move(mixedFixed), std::move(suppressedMixedPairs));
         if (coupled) {
             domain.cpuContacts.ConfigureCoupledFixed(m_cpuServices->execution, *domain.cpuScene,
                                                      domain.admittedDeltaTime, substeps, identity,
@@ -1597,6 +1611,8 @@ void PhysicsWorld::ValidateBodyTransfer(const Rigidbody &body) const
     RequireOwnerThread();
     const auto id = body.GetBodyId();
     const auto &domain = DomainForBody(id);
+    if (HasMixedJointForBody(domain, id))
+        throw std::invalid_argument("Remove the cross-backend FixedJoint before changing either endpoint's backend");
     if ((domain.cpuControl && domain.cpuControl->HasJointForBody(id)) ||
         (m_gpuScene && m_gpuScene->HasJointForBody(id)))
         throw std::invalid_argument("Changing the backend of this Rigidbody requires migrating its joint group");
@@ -1638,6 +1654,9 @@ std::vector<Joint *> PhysicsWorld::CollectTransferJoints(const PhysicsDomain &do
         const bool ownerSelected = contains(a), connectedSelected = contains(b);
         if (!ownerSelected && !connectedSelected)
             continue;
+        if (m_mixedJointDomains.find(joint->m_constraintId) != m_mixedJointDomains.end())
+            throw std::invalid_argument(
+                "Remove the cross-backend FixedJoint before changing either endpoint's backend");
         if (!ownerSelected || (b != UINT32_MAX && !connectedSelected))
             throw std::invalid_argument("Select both endpoints of every joint in the Rigidbody group");
         joints.push_back(joint);
@@ -2214,6 +2233,7 @@ void PhysicsWorld::CancelPendingStep() noexcept
     domain.contacts.Close();
     domain.mixedContacts.reset();
     RetireCpuJointRoutes(domain);
+    RetireMixedJointRoutes(domain);
     domain.cpuControl.reset();
     domain.cpuScene.reset();
     domain.cpuPublication = {};

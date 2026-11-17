@@ -5,9 +5,11 @@
 #include <Jolt/Geometry/AABox.h>
 #include <Jolt/Physics/Body/BodyID.h>
 #include "JoltGpuScene.h"
+#include "JoltJointTransfer.h"
 #include "PhysicsContactPublication.h"
 #include <core/math/Bvh.h>
 #include <functional>
+#include <unordered_map>
 #include <utility>
 
 namespace infernux
@@ -15,6 +17,15 @@ namespace infernux
 class JoltCpuScene;
 class JoltCpuContactPublication;
 class JoltMixedConstraintSolver;
+
+struct JoltMixedFixedJoint
+{
+    uint32_t cpuBody, gpuBody;
+    bool cpuOwner;
+    JPH::Vec3 ownerBakedAnchor, ownerLocalAnchor;
+    // This frame is captured once from the accepted poses at constraint creation.
+    std::optional<JoltJointTransfer> reference;
+};
 
 /// One accepted Fixed step's CPU geometry and substep positions. The CPU
 /// world still owns integration, and this capture owns no solver bodies.
@@ -62,8 +73,9 @@ class JoltMixedContactStep final
         size_t island;
     };
 
+    using BodyPair = std::pair<uint32_t, uint32_t>;
     void Begin(const JoltCpuScene &, std::vector<CpuEndpoint>, std::vector<uint32_t> gpuResponseBodies,
-               uint32_t substeps);
+               uint32_t substeps, std::vector<std::shared_ptr<JoltMixedFixedJoint>>, std::vector<BodyPair> suppressed);
     void BeginSleepObservation();
     [[nodiscard]] std::vector<uint32_t> TakeWakingIslands();
     [[nodiscard]] std::vector<uint32_t> TakeUnavailableIslands(const std::function<bool(uint32_t)> &canCouple);
@@ -91,6 +103,13 @@ class JoltMixedContactStep final
 
   private:
     friend class JoltMixedConstraintSolver;
+    struct MassFrame
+    {
+        JPH::Vec3 scale, localCOM;
+    };
+    [[nodiscard]] MassFrame CpuMassFrame(uint32_t id) const;
+    [[nodiscard]] bool CpuJointMayWake(const JPH::Body &, std::unordered_map<uint32_t, bool> &) const;
+    void ObserveSleepingPair(BodyPair);
     struct ImpulseHistory;
     struct SleepingContact
     {
@@ -121,6 +140,8 @@ class JoltMixedContactStep final
     std::vector<Frame> m_frames;
     std::vector<uint32_t> m_gpuResponseBodies;
     std::vector<ResponsePatch> m_responses;
+    std::vector<std::shared_ptr<JoltMixedFixedJoint>> m_fixedJoints;
+    std::vector<BodyPair> m_suppressedPairs;
     std::vector<SleepLink> m_pendingSleepLinks;
     std::vector<SleepingContact> m_sleepLinks;
     size_t m_nextSleepIsland = 0;

@@ -1,4 +1,5 @@
 #include "rigid_sleep_math.slang"
+#include "rigid_joints.slang"
 
 struct CouplingParams
 {
@@ -25,9 +26,9 @@ struct PositionAnchors
 };
 struct MixedPatch
 {
-    uint4 endpoints; // CPU address, GPU slot, point count, previous manifold + 1.
+    uint4 endpoints; // CPU address, GPU slot, point count, previous manifold + 1 or joint status.
     float4 normalFriction;
-    float4 points[4]; // World midpoint and material/speculative bias.
+    float4 points[4]; // Contact midpoint/bias, or two COM arms and two frames for a fixed joint (zero points).
     float4 normalLambda, frictionLambda;
 };
 
@@ -61,7 +62,7 @@ void store_velocity_result(uint a, uint b, bool dynamic_a, bool dynamic_b,
 void warm_patch(uint index)
 {
     MixedPatch patch = patches[index];
-    if (patch.endpoints.w == 0u) return;
+    if (patch.endpoints.z == 0u || patch.endpoints.w == 0u) return;
     const MixedPatch previous = previous_patches[patch.endpoints.w - 1u];
     const uint a = patch.endpoints.x, b = patch.endpoints.y, count = patch.endpoints.z;
     const float3 normal = patch.normalFriction.xyz, oldNormal = previous.normalFriction.xyz;
@@ -122,6 +123,27 @@ void warm_patch(uint index)
     patches[index] = patch;
 }
 
+JointFixedState fixed_state(MixedPatch patch)
+{
+    JointFixedState state = (JointFixedState)0;
+    state.flags = uint4(1u, patch.endpoints.w, 0u, 0u);
+    state.anchor1 = patch.points[0];
+    state.anchor2 = patch.points[1];
+    state.frame1 = patch.points[2];
+    state.frame2 = patch.points[3];
+    return state;
+}
+
+JointFixedAuthor fixed_author()
+{
+    JointFixedAuthor author = (JointFixedAuthor)0;
+    author.bodies.w = JointEnabled;
+    // The host already expresses both anchors relative to their current COM.
+    author.scale1 = float4(1);
+    author.scale2 = float4(1);
+    return author;
+}
+
 // A thread owns every CPU and GPU endpoint of one connected cross-domain
 // group. Local constraint solvers have completed their current velocity round.
 void solve_patch(uint index)
@@ -135,6 +157,22 @@ void solve_patch(uint index)
     BodyModel ma = boundary.model, mb = gpu_models[b];
     BodyState sa = {boundary.center, boundary.rotation, incoming.linear, incoming.angular};
     BodyState sb = gpu_states[b];
+    if (count == 0u)
+    {
+        JointFixedState fixed = fixed_state(patch);
+        const JointFixedAuthor author = fixed_author();
+        jph_joint_solve_velocity(author, fixed, ma, sa, mb, sb, params.gravityDt.w);
+        if (fixed.flags.y != JointStatusSuccess)
+        {
+            patch.endpoints.w = fixed.flags.y;
+            patches[index] = patch;
+            return;
+        }
+        const float3 j = fixed.pointImpulse.xyz;
+        const float3 torque = fixed.angularImpulse.xyz + cross(jph_rotate(sa.rotation, fixed.anchor1.xyz), j);
+        store_velocity_result(a, b, jph_dynamic(ma), jph_dynamic(mb), sa, sb, j, torque);
+        return;
+    }
     float3 normal = patch.normalFriction.xyz;
     float3 center = float3(0.0f);
     float3 ja[4], jb[4];
@@ -216,21 +254,35 @@ void exchange_cross_domain_velocity(uint3 id : SV_DispatchThreadID)
 
 void project_patch(uint index)
 {
-    const MixedPatch patch = patches[index];
-    const PositionAnchors geometry = anchors[index];
+    MixedPatch patch = patches[index];
     const uint a = patch.endpoints.x, b = patch.endpoints.y;
     const Pose pose = cpu_poses[a];
     BodyState sa = {pose.center, pose.rotation, float4(0), float4(0)};
     BodyState sb = gpu_states[b];
     const BodyModel ma = cpu_models[a].model, mb = gpu_models[b];
     const float4 linear = sb.linearVelocity, angular = sb.angularVelocity;
-    Contact contact = (Contact)0;
-    contact.normalDepth = patch.normalFriction;
-    for (uint i = 0; i < patch.endpoints.z; ++i)
+    if (patch.endpoints.z == 0u)
     {
-        contact.localAnchorA = geometry.localA[i];
-        contact.localAnchorB = geometry.localB[i];
-        jph_solve_position(ma, sa, mb, sb, contact, params.contact.y, params.contact.z, params.contact.w);
+        JointFixedState fixed = fixed_state(patch);
+        jph_joint_solve_position(fixed_author(), fixed, ma, sa, mb, sb, params.contact.w);
+        if (fixed.flags.y != JointStatusSuccess)
+        {
+            patch.endpoints.w = fixed.flags.y;
+            patches[index] = patch;
+            return;
+        }
+    }
+    else
+    {
+        const PositionAnchors geometry = anchors[index];
+        Contact contact = (Contact)0;
+        contact.normalDepth = patch.normalFriction;
+        for (uint i = 0; i < patch.endpoints.z; ++i)
+        {
+            contact.localAnchorA = geometry.localA[i];
+            contact.localAnchorB = geometry.localB[i];
+            jph_solve_position(ma, sa, mb, sb, contact, params.contact.y, params.contact.z, params.contact.w);
+        }
     }
     if (jph_dynamic(ma)) cpu_poses[a] = {sa.positionCOM, sa.rotation};
     if (jph_dynamic(mb))

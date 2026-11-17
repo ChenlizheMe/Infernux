@@ -1,7 +1,9 @@
 #include "../HingeJoint.h"
+#include "../Rigidbody.h"
 #include "JointSettings.h"
 #include "JoltCpuControl.h"
 #include "JoltGpuJoints.h"
+#include "JoltMixedContacts.h"
 #include "PhysicsDomain.h"
 #include "PhysicsWorld.h"
 
@@ -213,8 +215,8 @@ JoltGpuControlWork PrepareJointReadWork(std::function<JoltGpuControlWork()> prep
 }
 } // namespace
 
-PhysicsWorld::Backend PhysicsWorld::PrepareJointEndpoints(PhysicsDomain &domain, uint32_t ownerBody,
-                                                          uint32_t connectedBody)
+PhysicsWorld::JointBackend PhysicsWorld::PrepareJointEndpoints(PhysicsDomain &domain, uint32_t ownerBody,
+                                                               uint32_t connectedBody, bool supportsMixed)
 {
     const auto &owner = *FindBodyRegistration(ownerBody);
     const auto a = owner.AuthorBackend();
@@ -228,13 +230,21 @@ PhysicsWorld::Backend PhysicsWorld::PrepareJointEndpoints(PhysicsDomain &domain,
     const auto consumer = a == Backend::StaticBoundary ? b : a;
     if (consumer == Backend::StaticBoundary)
         throw std::invalid_argument("Joint requires a Rigidbody endpoint to select its physics backend");
-    if (a != Backend::StaticBoundary && b != Backend::StaticBoundary && a != b)
-        throw std::invalid_argument("Joint endpoints on different physics backends are unsupported");
+    if (a != Backend::StaticBoundary && b != Backend::StaticBoundary && a != b) {
+        if (!supportsMixed)
+            throw std::invalid_argument(
+                "Joint endpoints on different physics backends are unsupported for this joint type");
+        if (!FindRigidbodyByBodyId(ownerBody)->AllowsCrossBackendInteraction() ||
+            !FindRigidbodyByBodyId(connectedBody)->AllowsCrossBackendInteraction())
+            throw std::invalid_argument(
+                "A cross-backend FixedJoint requires both Rigidbody components to allow cross-backend interaction");
+        return JointBackend::Mixed;
+    }
     if (a == Backend::StaticBoundary)
         EnsureStaticBoundary(domain, ownerBody, consumer);
     if (b == Backend::StaticBoundary && connectedBody != Cpu::WorldBody)
         EnsureStaticBoundary(domain, connectedBody, consumer);
-    return consumer;
+    return consumer == Backend::Cpu ? JointBackend::Cpu : JointBackend::Gpu;
 }
 
 PhysicsDomain *PhysicsWorld::FindCpuJointDomain(uint64_t id) const noexcept
@@ -259,6 +269,28 @@ void PhysicsWorld::RetireCpuJointRoutes(PhysicsDomain &domain) noexcept
     }
 }
 
+void PhysicsWorld::RetireMixedJoint(PhysicsDomain &domain, uint64_t id) noexcept
+{
+    auto entry = domain.mixedFixedJoints.extract(id);
+    m_mixedJointDomains.erase(id);
+    entry.mapped().owner->OnPhysicsConstraintDestroyed();
+}
+
+void PhysicsWorld::RetireMixedJointRoutes(PhysicsDomain &domain) noexcept
+{
+    while (!domain.mixedFixedJoints.empty())
+        RetireMixedJoint(domain, domain.mixedFixedJoints.begin()->first);
+}
+
+bool PhysicsWorld::HasMixedJointForBody(const PhysicsDomain &domain, uint32_t id) const noexcept
+{
+    const auto &joints = domain.mixedFixedJoints;
+    return std::any_of(joints.begin(), joints.end(), [id](const auto &entry) {
+        const auto &joint = *entry.second.joint;
+        return joint.cpuBody == id || joint.gpuBody == id;
+    });
+}
+
 uint64_t PhysicsWorld::CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                              const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
                                              const JoltJointImport *imported)
@@ -277,7 +309,7 @@ uint64_t PhysicsWorld::CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA
                               owner.m_jointDamping,
                               owner.m_frictionTorque,
                               owner.m_armature};
-    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == Backend::Cpu)
+    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner,
                              {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, settings,
                              owner.GetEnableCollision(), imported);
@@ -308,7 +340,7 @@ uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uin
     (void)JointVector(ownerAxis);
     if (glm::dot(ownerAxis, ownerAxis) <= 1e-12f)
         throw std::invalid_argument("Slider axis must be non-zero");
-    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == Backend::Cpu)
+    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == JointBackend::Cpu)
         return StageCpuJoint(
             domain, m_cpuJointDomains, owner, {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}},
             Cpu::Slider{ownerAxis, useLimits, minimumDistance, maximumDistance}, enableCollision, imported);
@@ -330,10 +362,25 @@ uint64_t PhysicsWorld::CreateFixedConstraint(PhysicsConstraintOwner &owner, uint
 {
     auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
-    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == Backend::Cpu)
+    const auto route = PrepareJointEndpoints(domain, bodyIdA, bodyIdB, true);
+    if (route == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner,
                              {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, Cpu::Fixed{}, enableCollision,
                              imported);
+    if (route == JointBackend::Mixed) {
+        const auto baked = JointVector(localBakedAnchor), local = JointVector(localAnchor);
+        const auto id = PhysicsECSStore::Instance().AllocateJointIdentity();
+        const bool cpuOwns = FindBodyRegistration(bodyIdA)->AuthorBackend() == Backend::Cpu;
+        auto joint = std::make_shared<JoltMixedFixedJoint>(JoltMixedFixedJoint{cpuOwns ? bodyIdA : bodyIdB,
+                                                                               cpuOwns ? bodyIdB : bodyIdA,
+                                                                               cpuOwns,
+                                                                               JPH::Vec3(baked.x, baked.y, baked.z),
+                                                                               JPH::Vec3(local.x, local.y, local.z),
+                                                                               {}});
+        domain.mixedFixedJoints.emplace(id, PhysicsDomain::MixedFixed{std::move(joint), &owner, enableCollision});
+        m_mixedJointDomains.emplace(id, &domain);
+        return id;
+    }
     JointAuthor author{};
     author.SetKind(JPH::GPU::JointFixed);
     author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0);
@@ -346,6 +393,10 @@ uint64_t PhysicsWorld::CreateFixedConstraint(PhysicsConstraintOwner &owner, uint
 void PhysicsWorld::SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled)
 {
     RequireOwnerThread();
+    if (const auto mixed = m_mixedJointDomains.find(constraintId); mixed != m_mixedJointDomains.end()) {
+        mixed->second->mixedFixedJoints.at(constraintId).enableCollision = enabled;
+        return;
+    }
     if (auto *cpu = FindCpuJointDomain(constraintId)) {
         const auto &joint = *cpu->cpuControl->FindJoint(constraintId);
         cpu->cpuControl->UpdateJoints({{constraintId, joint.settings, enabled}});
@@ -370,7 +421,7 @@ uint64_t PhysicsWorld::CreateDistanceConstraint(PhysicsConstraintOwner &owner, u
         !std::isfinite(stiffness) || stiffness < 0.0f || !std::isfinite(damping) || damping < 0.0f)
         throw std::invalid_argument(
             "Distance limits and spring coefficients must be finite ordered non-negative values");
-    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == Backend::Cpu)
+    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == JointBackend::Cpu)
         return StageCpuJoint(
             domain, m_cpuJointDomains, owner,
             {bodyIdA, bodyIdB, localBakedAnchor, connectedBakedAnchor, localAnchor, connectedLocalAnchor},
@@ -715,6 +766,12 @@ void PhysicsWorld::DestroyConstraintsForBody(uint32_t bodyId)
     RequireOwnerThread();
     if (FindBodyRegistration(bodyId)) {
         auto &domain = DomainForBody(bodyId);
+        for (auto it = domain.mixedFixedJoints.begin(); it != domain.mixedFixedJoints.end();) {
+            const auto &joint = *it->second.joint;
+            const auto id = it++->first;
+            if (joint.cpuBody == bodyId || joint.gpuBody == bodyId)
+                RetireMixedJoint(domain, id);
+        }
         if (domain.cpuControl)
             RetireCpuJointRoutes(domain.cpuControl->DestroyJointsForBody(bodyId));
     }
@@ -727,6 +784,10 @@ void PhysicsWorld::DestroyConstraint(uint64_t constraintId)
     if (constraintId == 0)
         return;
     RequireOwnerThread();
+    if (const auto mixed = m_mixedJointDomains.find(constraintId); mixed != m_mixedJointDomains.end()) {
+        RetireMixedJoint(*mixed->second, constraintId);
+        return;
+    }
     if (auto *cpu = FindCpuJointDomain(constraintId)) {
         cpu->cpuControl->DestroyJoint(constraintId);
         m_cpuJointDomains.erase(constraintId);
@@ -779,7 +840,7 @@ uint64_t PhysicsWorld::CreateSwingTwistConstraint(PhysicsConstraintOwner &owner,
 {
     auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
-    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == Backend::Cpu)
+    if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner,
                              {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, settings, enableCollision,
                              imported);
@@ -860,7 +921,7 @@ uint64_t PhysicsWorld::CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uin
 {
     RequireOwnerThread();
     auto &domain = DomainForBody(ownerBody);
-    if (PrepareJointEndpoints(domain, ownerBody, connectedBody) == Backend::Cpu)
+    if (PrepareJointEndpoints(domain, ownerBody, connectedBody) == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner, {ownerBody, connectedBody, baked, {}, raw, {}}, settings,
                              collision, imported);
     JointAuthor author(JPH::GPU::JointSixDOF);

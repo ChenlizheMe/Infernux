@@ -19,6 +19,8 @@ class RuntimeWorld;
 class JoltCpuScene;
 class JoltCpuControl;
 class JoltMixedContactStep;
+struct JoltMixedFixedJoint;
+class PhysicsConstraintOwner;
 
 /// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
 /// Worker services and GPU storage/submission remain shared between worlds.
@@ -119,6 +121,13 @@ struct PhysicsDomain final
     PhysicsContactPublication contacts;
     JoltGpuContactPublication gpuContacts;
     std::unique_ptr<JoltMixedContactStep> mixedContacts;
+    struct MixedFixed
+    {
+        std::shared_ptr<JoltMixedFixedJoint> joint;
+        PhysicsConstraintOwner *owner;
+        bool enableCollision;
+    };
+    std::map<uint64_t, MixedFixed> mixedFixedJoints;
     struct RenderState
     {
         using Keys = std::array<uint64_t, 3>;

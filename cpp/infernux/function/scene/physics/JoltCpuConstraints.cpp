@@ -781,6 +781,19 @@ bool JoltCpuConstraints::HasBodyConstraints(uint32_t bodyId) const
     return m_byBody.find(bodyId) != m_byBody.end();
 }
 
+void JoltCpuConstraints::AppendConnectedBodies(const JPH::Body &body, std::vector<const JPH::Body *> &connected) const
+{
+    const auto [begin, end] = m_byBody.equal_range(static_cast<uint32_t>(body.GetUserData()));
+    for (auto it = begin; it != end; ++it) {
+        const auto &joint = *m_joints.at(it->second).native;
+        if (joint.GetEnabled()) {
+            const auto *other = joint.GetBody1() == &body ? joint.GetBody2() : joint.GetBody1();
+            if (!other->IsStatic())
+                connected.push_back(other);
+        }
+    }
+}
+
 void JoltCpuConstraints::NotifyBodyShapeChanged(uint32_t bodyId, JPH::Vec3Arg deltaCOM, bool scaleChanged)
 {
     if (!scaleChanged && deltaCOM == JPH::Vec3::sZero())

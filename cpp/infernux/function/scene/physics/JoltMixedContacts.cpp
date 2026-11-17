@@ -2,6 +2,7 @@
 #include "JoltCpuScene.h"
 #include "JoltGpuProgramSources.h"
 
+#include <Jolt/Physics/Collision/BroadPhase/BroadPhaseQuery.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/ManifoldBetweenTwoFaces.h>
 #include <Jolt/Physics/Collision/TransformedShape.h>
@@ -89,11 +90,16 @@ template <class Observe> class CrossPairCollector final : public JPH::CollideSha
 } // namespace
 
 void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpoint> endpoints,
-                                 std::vector<uint32_t> gpuResponseBodies, uint32_t substeps)
+                                 std::vector<uint32_t> gpuResponseBodies, uint32_t substeps,
+                                 std::vector<std::shared_ptr<JoltMixedFixedJoint>> joints,
+                                 std::vector<BodyPair> suppressed)
 {
     m_scene = &scene;
     m_proxies.clear();
     m_responses.clear();
+    m_fixedJoints = std::move(joints);
+    std::sort(suppressed.begin(), suppressed.end());
+    m_suppressedPairs = std::move(suppressed);
     std::sort(gpuResponseBodies.begin(), gpuResponseBodies.end());
     m_gpuResponseBodies = std::move(gpuResponseBodies);
     std::sort(endpoints.begin(), endpoints.end(), [](auto a, auto b) { return a.body < b.body; });
@@ -127,6 +133,76 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
         frame.points.clear();
     }
     CaptureCpuBoundary(0);
+}
+
+JoltMixedContactStep::MassFrame JoltMixedContactStep::CpuMassFrame(uint32_t id) const
+{
+    const auto &body = m_scene->m_bodies.at(id);
+    return {body.rootScale, body.shape->GetCenterOfMass()};
+}
+
+bool JoltMixedContactStep::CpuJointMayWake(const JPH::Body &source, std::unordered_map<uint32_t, bool> &cache) const
+{
+    const auto &system = m_scene->System();
+    if (!system.GetNumActiveBodies(JPH::EBodyType::RigidBody))
+        return false;
+    struct ActiveNeighbor final : JPH::CollideShapeBodyCollector
+    {
+        const JPH::PhysicsSystem &system;
+        const JPH::Body &source;
+        bool found = false;
+
+        ActiveNeighbor(const JPH::PhysicsSystem &physics, const JPH::Body &body) : system(physics), source(body)
+        {
+        }
+
+        void AddHit(const JPH::BodyID &id) override
+        {
+            const auto *other = system.GetBodyLockInterfaceNoLock().TryGetBody(id);
+            if (other && other->IsActive() && !other->IsSensor() &&
+                system.GetObjectLayerPairFilter().ShouldCollide(source.GetObjectLayer(), other->GetObjectLayer()) &&
+                source.GetCollisionGroup().CanCollide(other->GetCollisionGroup())) {
+                found = true;
+                ForceEarlyOut();
+            }
+        }
+    };
+    const auto margin = JPH::Vec3::sReplicate(system.GetPhysicsSettings().mSpeculativeContactDistance);
+    std::vector<const JPH::Body *> connected{&source};
+    std::unordered_set<uint32_t> visited;
+    bool wake = false;
+    for (size_t i = 0; i < connected.size() && !wake; ++i) {
+        const auto &body = *connected[i];
+        const auto id = body.GetID().GetIndexAndSequenceNumber();
+        if (!visited.insert(id).second)
+            continue;
+        if (const auto cached = cache.find(id); cached != cache.end()) {
+            wake = cached->second;
+            continue;
+        }
+        if (body.IsActive()) {
+            wake = true;
+        } else if (body.IsDynamic()) {
+            ActiveNeighbor collector(system, body);
+            auto bounds = body.GetWorldSpaceBounds();
+            bounds.ExpandBy(margin);
+            system.GetBroadPhaseQuery().CollideAABox(bounds, collector);
+            wake = collector.found;
+            if (!wake)
+                m_scene->Constraints().AppendConnectedBodies(body, connected);
+        }
+    }
+    for (const auto id : visited)
+        cache.try_emplace(id, wake);
+    return wake;
+}
+
+void JoltMixedContactStep::ObserveSleepingPair(BodyPair pair)
+{
+    const auto found = std::lower_bound(m_sleepLinks.begin(), m_sleepLinks.end(), pair,
+                                        [](const auto &contact, const auto &key) { return contact.link.bodies < key; });
+    if (found != m_sleepLinks.end() && found->link.bodies == pair)
+        found->observed = true;
 }
 
 void JoltMixedContactStep::CaptureCpuBoundary(uint32_t boundary)
@@ -293,6 +369,8 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
     const auto &physicsSettings = m_scene->System().GetPhysicsSettings();
     const auto collect = [&](uint32_t index, bool mayRespond) {
         const auto &proxy = m_proxies[index];
+        if (std::binary_search(m_suppressedPairs.begin(), m_suppressedPairs.end(), BodyPair{proxy.id, actor.bodyId}))
+            return;
         const auto &cpu = m_pose[substep][index];
         JPH::CollideShapeSettings settings;
         if (mayRespond) {
@@ -320,14 +398,8 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
                                       surface.target,     proxy.target};
             const Contact::Endpoint b{actor.bodyId,       leaf.subShapeId, leaf.colliderId, leaf.colliderGeneration,
                                       leaf.surfaceTarget, actor.bodyTarget};
-            if (!trigger && !cpu.active && !gpuActive && proxy.dynamic && gpuDynamic) {
-                const auto pair = std::make_pair(proxy.id, actor.bodyId);
-                const auto found =
-                    std::lower_bound(m_sleepLinks.begin(), m_sleepLinks.end(), pair,
-                                     [](const auto &contact, const auto &key) { return contact.link.bodies < key; });
-                if (found != m_sleepLinks.end() && found->link.bodies == pair)
-                    found->observed = true;
-            }
+            if (!trigger && !cpu.active && !gpuActive && proxy.dynamic && gpuDynamic)
+                ObserveSleepingPair({proxy.id, actor.bodyId});
             if (trigger || (!cpu.active && !gpuActive)) {
                 if (!trigger &&
                     (hit.mPenetrationDepth < 0.0f || !policy.Observes(a.SurfaceKey(), b.SurfaceKey(), false)))
@@ -426,6 +498,8 @@ void JoltMixedContactStep::ClearStep()
     m_proxies.clear();
     m_gpuResponseBodies.clear();
     m_responses.clear();
+    m_fixedJoints.clear();
+    m_suppressedPairs.clear();
     m_pendingSleepLinks.clear();
     for (auto &words : m_treeWords)
         words.clear();

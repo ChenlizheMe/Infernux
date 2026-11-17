@@ -296,12 +296,13 @@ class JoltGpuTick::Impl
         ParticipantAccept,
         WakePrescribedBounds,
         BuildBounds,
-        PrepareCoupledContacts,
         Broadphase,
         CollidePairs,
         CompleteConvexContacts,
         BuildTopology,
         WakeComponents,
+        PrepareCoupledContacts,
+        WakeExternalComponents,
         SetupContacts,
         SetupJoints,
         ReportContactsBeforeVelocity,
@@ -716,7 +717,8 @@ class JoltGpuTick::Impl
                phase == Phase::ParticipantExchange || phase == Phase::ParticipantAccept || phase == Phase::Broadphase ||
                phase == Phase::CompleteConvexContacts || phase == Phase::InitializeSleep ||
                phase == Phase::CapturePrescribedBounds || phase == Phase::WakePrescribedBounds ||
-               phase == Phase::BuildTopology || phase == Phase::WakeComponents || phase == Phase::UpdateSleep ||
+               phase == Phase::BuildTopology || phase == Phase::WakeComponents ||
+               phase == Phase::WakeExternalComponents || phase == Phase::UpdateSleep ||
                phase == Phase::WakeFinalPrescribedBounds || phase == Phase::BuildConstraints ||
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
@@ -767,6 +769,7 @@ class JoltGpuTick::Impl
         case Phase::CompleteConvexContacts:
         case Phase::BuildTopology:
         case Phase::WakeComponents:
+        case Phase::WakeExternalComponents:
         case Phase::UpdateSleep:
         case Phase::WakeFinalPrescribedBounds:
         case Phase::BuildConstraints:
@@ -881,9 +884,6 @@ class JoltGpuTick::Impl
             next.phase = Phase::BuildBounds;
             break;
         case Phase::BuildBounds:
-            next.phase = control.prepareCoupledContacts ? Phase::PrepareCoupledContacts : Phase::Broadphase;
-            break;
-        case Phase::PrepareCoupledContacts:
             next.phase = Phase::Broadphase;
             break;
         case Phase::Broadphase:
@@ -901,6 +901,12 @@ class JoltGpuTick::Impl
             next.phase = Phase::WakeComponents;
             break;
         case Phase::WakeComponents:
+            next.phase = control.prepareCoupledContacts ? Phase::PrepareCoupledContacts : Phase::SetupContacts;
+            break;
+        case Phase::PrepareCoupledContacts:
+            next.phase = inputs.HasExternalWakePending() ? Phase::WakeExternalComponents : Phase::SetupContacts;
+            break;
+        case Phase::WakeExternalComponents:
             next.phase = Phase::SetupContacts;
             break;
         case Phase::SetupContacts:
@@ -1741,7 +1747,7 @@ class JoltGpuTick::Impl
                                   PacketKind::NumericalWork);
                 return true;
             }
-            if (stageCursor.phase == Phase::WakeComponents) {
+            if (stageCursor.phase == Phase::WakeComponents || stageCursor.phase == Phase::WakeExternalComponents) {
                 if (!constraintTopology)
                     throw std::logic_error("GPU sleep wake lost its accepted topology");
                 SelectControlWork(programs.GetSleep().PrepareWake(storage, inputs, *constraintTopology,

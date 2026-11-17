@@ -827,10 +827,20 @@ class PhysicsWorld
         }
     };
 
-    [[nodiscard]] Backend PrepareJointEndpoints(PhysicsDomain &, uint32_t ownerBody, uint32_t connectedBody);
+    enum class JointBackend : uint8_t
+    {
+        Cpu,
+        Gpu,
+        Mixed
+    };
+    [[nodiscard]] JointBackend PrepareJointEndpoints(PhysicsDomain &, uint32_t ownerBody, uint32_t connectedBody,
+                                                     bool supportsMixed = false);
     [[nodiscard]] PhysicsDomain *FindCpuJointDomain(uint64_t jointId) const noexcept;
     void RetireCpuJointRoutes(const std::vector<uint64_t> &jointIds) noexcept;
     void RetireCpuJointRoutes(PhysicsDomain &) noexcept;
+    void RetireMixedJoint(PhysicsDomain &, uint64_t jointId) noexcept;
+    void RetireMixedJointRoutes(PhysicsDomain &) noexcept;
+    [[nodiscard]] bool HasMixedJointForBody(const PhysicsDomain &, uint32_t bodyId) const noexcept;
     PhysicsDomain &CurrentDomain() const;
     void RegisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId, PhysicsActorHandle actor, Backend backend);
     void UnregisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId) noexcept;
@@ -982,6 +992,7 @@ class PhysicsWorld
     // and immutable publications, which may outlive a retired component.
     std::unordered_map<uint32_t, BodyRegistration> m_bodyActors;
     std::unordered_map<uint64_t, PhysicsDomain *> m_cpuJointDomains;
+    std::unordered_map<uint64_t, PhysicsDomain *> m_mixedJointDomains;
     std::unordered_set<PhysicsDomain *> m_domains;
 };
 

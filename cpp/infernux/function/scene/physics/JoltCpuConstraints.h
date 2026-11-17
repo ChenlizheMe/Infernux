@@ -72,6 +72,7 @@ class JoltCpuConstraints final
     /// The owner completes retirement for these public IDs before destroying the body.
     std::vector<uint64_t> RetireBody(uint32_t bodyId);
     [[nodiscard]] bool HasBodyConstraints(uint32_t bodyId) const;
+    void AppendConnectedBodies(const JPH::Body &, std::vector<const JPH::Body *> &) const;
     void OnBodyResidenceChanged(uint32_t bodyId);
     void ResetBodyWarmStart(uint32_t bodyId);
     void NotifyBodyShapeChanged(uint32_t bodyId, JPH::Vec3Arg deltaCOM, bool scaleChanged);

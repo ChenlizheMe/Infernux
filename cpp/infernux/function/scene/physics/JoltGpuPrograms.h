@@ -368,6 +368,14 @@ class JoltGpuStepInputs
     {
         return m_externalContactBodies;
     }
+    void SetExternalWakePending(bool pending) noexcept
+    {
+        m_externalWakePending = pending;
+    }
+    [[nodiscard]] bool HasExternalWakePending() const noexcept
+    {
+        return m_externalWakePending;
+    }
     void SetSleepCoupling(std::function<JoltGpuSleepCoupling()> prepare)
     {
         m_prepareSleepCoupling = std::move(prepare);
@@ -409,6 +417,7 @@ class JoltGpuStepInputs
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     std::shared_ptr<JoltGpuArticulationState> m_articulations;
     std::vector<uint32_t> m_externalContactBodies;
+    bool m_externalWakePending = false;
     std::function<JoltGpuSleepCoupling()> m_prepareSleepCoupling;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
