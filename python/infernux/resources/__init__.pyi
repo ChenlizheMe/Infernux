@@ -22,7 +22,10 @@ engine_font_cjk_path: str
 """Absolute path to the CJK face merged into the UI font (``NotoSansSC-Regular.ttf``)."""
 
 engine_mono_font_path: str
-"""Absolute path to the monospace face for numbers, paths and code (``MapleMono-CN-Regular.ttf``)."""
+"""Absolute path to the Editor's monospace face (``MapleMono-CN-Regular.ttf``).
+
+Windows Players ship Maple Mono through explicitly referenced Font assets.
+"""
 
 engine_lib_path: str
 """Absolute path to the native library directory (``lib/``)."""

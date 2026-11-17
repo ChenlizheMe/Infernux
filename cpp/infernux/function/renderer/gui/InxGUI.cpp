@@ -276,9 +276,10 @@ uint64_t InxGUI::GetEditorIconId(const std::string &name)
 void InxGUI::SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath,
                          const std::string &monoFontPath, float fontSize)
 {
-    if (uiFontPath.empty() || uiCjkFontPath.empty() || monoFontPath.empty() || fontSize <= 0.0f)
-        throw std::invalid_argument(
-            "InxGUI::SetGUIFonts(): ui, ui CJK and mono font paths and a positive size are required");
+    if (uiFontPath.empty() || uiCjkFontPath.empty() || fontSize <= 0.0f)
+        throw std::invalid_argument("InxGUI::SetGUIFonts(): ui and ui CJK font paths and a positive size are required");
+    if (monoFontPath.empty() && !m_playerMode)
+        throw std::invalid_argument("InxGUI::SetGUIFonts(): the Editor requires a mono font path");
     if (ImGui::GetCurrentContext() == nullptr)
         throw std::logic_error("InxGUI::SetGUIFonts(): GUI is not initialized");
 
@@ -315,10 +316,12 @@ bool InxGUI::ReloadGUIFont()
     float scaledSize = dpiState.fontSize * m_dpiScale;
     INXLOG_DEBUG("Loading fonts at ", scaledSize, "px (base ", dpiState.fontSize, " x scale ", m_dpiScale, ")");
 
-    // `ui` (Inter + merged Noto Sans SC) is loaded first so it is Fonts[0];
-    // `mono` (Maple Mono CN, CJK built in) serves numbers, paths and code.
+    // The UI face merges Inter and Noto Sans SC. Players can use it for
+    // numeric widgets too, with a single default font stack.
     ImFont *uiFont = textlayout::LoadEngineFont(dpiState.uiFontPath, {dpiState.uiCjkFontPath}, scaledSize);
-    ImFont *monoFont = uiFont ? textlayout::LoadEngineFont(dpiState.monoFontPath, {}, scaledSize) : nullptr;
+    ImFont *monoFont = uiFont;
+    if (uiFont != nullptr && !dpiState.monoFontPath.empty())
+        monoFont = textlayout::LoadEngineFont(dpiState.monoFontPath, {}, scaledSize);
     if (uiFont == nullptr || monoFont == nullptr) {
         INXLOG_ERROR("InxGUI::ReloadGUIFont(): engine fonts failed to load; GUI text is unavailable");
         return false;

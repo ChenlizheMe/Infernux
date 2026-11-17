@@ -1475,6 +1475,11 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     (final_dir / "_ctypes.pyd").write_bytes(b"ctypes ABI")
     (final_dir / "libffi-8.dll").write_bytes(b"libffi ABI")
     (final_dir / "_socket.pyd").write_bytes(b"socket")
+    fonts = final_dir / "infernux/resources/fonts"
+    fonts.mkdir(parents=True)
+    (fonts / "MapleMono-CN-Regular.ttf").write_bytes(b"editor mono")
+    (fonts / "Inter-VF.ttf").write_bytes(b"default UI")
+    (fonts / "NotoSansSC-Regular.ttf").write_bytes(b"default CJK")
 
     builder._pack_core_runtime_archive(str(final_dir))
 
@@ -1482,6 +1487,9 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert "infernux/lib/_Infernux.pyd" in paths
     assert "infernux/lib/InfernuxFoundation.dll" in paths
     assert "infernux/lib/InfernuxRendererRuntime.dll" in paths
+    assert "infernux/resources/fonts/Inter-VF.ttf" in paths
+    assert "infernux/resources/fonts/NotoSansSC-Regular.ttf" in paths
+    assert "infernux/resources/fonts/MapleMono-CN-Regular.ttf" not in paths
     assert "stdlib/_socket.pyd" in paths
     assert (final_dir / "_InfernuxBootstrap.pyd").is_file()
     assert (final_dir / "InfernuxFoundation.dll").is_file()
@@ -1492,6 +1500,45 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert "stdlib/libffi-8.dll" not in paths
     assert not (final_dir / "InfernuxRendererRuntime.dll").exists()
     assert not (final_dir / "infernux").exists()
+
+
+@pytest.mark.parametrize("platform, referenced", [("windows", True), ("windows", False), ("linux", True)])
+def test_desktop_player_cooks_maple_font_through_asset_dependencies(tmp_path, platform, referenced):
+    builder = _make_builder(tmp_path, tmp_path / "Output")
+    builder._runtime_platform = platform
+    project = Path(builder.project_path)
+    source = project / "Library/Resources/fonts/MapleMono-CN-Regular.ttf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"explicit engine face")
+    guid = "3c30f442f1fc5e1c258bda7945dcd2e6"
+    font = _asset_index_entry(project, source, guid, "", "DefaultBinary")
+    font["read_only"] = True
+    scene_path = project / "Assets/Main.scene"
+    if referenced and platform == "windows":
+        fixture = Path(__file__).resolve().parents[1] / "fixtures/multiplatform_player/Assets/Scenes/Main.scene"
+        document = json.loads(fixture.read_text(encoding="utf-8"))
+        component, = (row for obj in document["objects"] for row in obj["components"]
+                      if row["type_id"].endswith(":PlatformFixtureBootstrap"))
+        component["data"]["fixture_font"] = {"$type": "asset_ref", "asset_type": "Font", "guid": guid}
+        scene_path.write_text(json.dumps(document), encoding="utf-8")
+    scene = _asset_index_entry(project, scene_path, "scene-guid", "", "Scene")
+    if referenced and platform != "windows":
+        scene["dependencies"].append(guid)
+    _write_asset_index(project, [scene, font])
+
+    final = tmp_path / "CookedBuild"
+    data = final / "Data"
+    builder._copy_game_data(str(final))
+    builder._write_runtime_asset_records(str(final))
+    entries = json.loads((data / "Library/RuntimeAssetRecords.json").read_text(encoding="utf-8"))["entries"]
+    record = next((entry for entry in entries if entry["guid"] == guid), None)
+    assert (record is not None) == referenced
+    payload = "infernux/resources/fonts/MapleMono-CN-Regular.ttf"
+    if referenced:
+        asset, = record["runtime_artifacts"]
+        assert asset["runtime_path"] == payload
+        assert asset["package"] == ("Content.inxpkg" if platform == "windows" else "Runtime.inxrt")
+    assert (data / payload).is_file() == (platform == "windows" and referenced)
 
 
 def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
@@ -1522,6 +1569,8 @@ def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     if sys.platform == "win32":
         runtime_files["infernux/lib/InfernuxFoundation.dll"] = b"foundation"
         build_only_files["InfernuxFoundation.dll"] = b"foundation"
+    mono_inputs = build_only_files if sys.platform == "win32" else runtime_files
+    mono_inputs["infernux/resources/fonts/MapleMono-CN-Regular.ttf"] = b"default mono"
     for name, data in (runtime_files | build_only_files).items():
         path = dist / name
         path.parent.mkdir(parents=True, exist_ok=True)

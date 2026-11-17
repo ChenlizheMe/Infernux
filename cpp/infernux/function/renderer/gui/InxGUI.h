@@ -42,8 +42,8 @@ class InxGUI
 
     void Init(SDL_Window *window);
 
-    /// Install the editor font stack: `ui` = uiFontPath with uiCjkFontPath merged
-    /// (ImGui default and UIText default), `mono` = monoFontPath. Throws if any face fails.
+    /// Install the merged ImGui and UIText default and the numeric widget face.
+    /// A Player may use the merged default for both by passing an empty monoFontPath.
     void SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath, const std::string &monoFontPath,
                      float fontSize);
     void InvalidateFontAsset(const std::string &path);
