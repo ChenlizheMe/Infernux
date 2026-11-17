@@ -383,6 +383,7 @@ class WorkItem:
     origin: SourceOrigin
     helper_origins: dict[str, SourceOrigin] = field(default_factory=dict)
     library_calls: dict[str, tuple] = field(default_factory=dict)
+    count_parameter: int | None = None
 
     def loop_definition(self, definition=None, *, bounds: tuple[str, str] | None = None):
         """Wrap the one author body; backends never recover it independently."""
@@ -498,7 +499,8 @@ class LoweredWorkItem:
     parameter_kinds: tuple[str, ...]
 
 
-def normalize_work_item(function, parameter_count: int, *, receiver_fields=None, target=None) -> WorkItem:
+def normalize_work_item(function, parameter_count: int, *, receiver_fields=None, target=None,
+                        allow_device_count=False) -> WorkItem:
     """Normalize source/receiver/helpers once, independently of storage device."""
     signature = inspect.signature(function)
     if any(parameter.kind not in {parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD}
@@ -550,7 +552,9 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
     if any(isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom, ast.Await)) for node in ast.walk(definition)):
         raise TypeError("compute kernels write output buffer values in place and cannot return or yield")
     globals_map = dict(function.__globals__)
-    position, index_name, domain_name, domain_parameter = execution_domain(definition, _index_names(globals_map))
+    position, index_name, domain_name, domain_parameter, count = execution_domain(definition, _index_names(globals_map))
+    if count is not None and not allow_device_count:
+        raise TypeError("Device-counted kernels require compute.prepare_work on GPU")
     body = list(definition.body)
     if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) \
             and isinstance(body[0].value.value, str):
@@ -572,4 +576,4 @@ def normalize_work_item(function, parameter_count: int, *, receiver_fields=None,
         scopes.extend(scope.get_children())
     globals_map = {name: value for name, value in globals_map.items() if name in required}
     return WorkItem(definition, helpers, globals_map, compile_values, index_name, domain_name, domain_parameter,
-                    origin, helper_origins, library_calls)
+                    origin, helper_origins, library_calls, count)

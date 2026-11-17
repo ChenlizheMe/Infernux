@@ -233,9 +233,15 @@ void ValidateWorkDataflow(const RenderGraphDescription &graph,
                 require(contains(physical[required.slot], required.offset, required.byteSize),
                         "Compute work requires a complete input writer: " + binding->name);
             for (const auto &dispatch : binding->recipe->GetDispatches()) {
-                for (const auto &item : dispatch.bindings) {
+                for (uint32_t index = 0; index < dispatch.bindings.size(); ++index) {
+                    const auto &item = dispatch.bindings[index];
                     const auto identity = physical[item.range.slot];
-                    if ((static_cast<uint8_t>(item.access) & static_cast<uint8_t>(rhi::ComputeBufferAccess::Read)) != 0)
+                    // The recipe has already checked this paired read against an earlier counted writer.
+                    const bool readsPrefix = dispatch.prefix &&
+                                             dispatch.prefix->access == rhi::ComputeBufferAccess::Read &&
+                                             dispatch.prefix->payload.binding == index;
+                    if (!readsPrefix &&
+                        (static_cast<uint8_t>(item.access) & static_cast<uint8_t>(rhi::ComputeBufferAccess::Read)) != 0)
                         require(contains(identity, item.range.offset, item.range.byteSize),
                                 "Compute work binding is read before a complete writer: " + binding->name);
                     if ((static_cast<uint8_t>(item.access) & static_cast<uint8_t>(rhi::ComputeBufferAccess::Write)) !=

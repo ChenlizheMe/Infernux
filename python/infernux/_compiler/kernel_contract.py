@@ -37,30 +37,39 @@ def attribute_name(node: ast.expr) -> str:
 _INDEX_NAMES = frozenset({"index", "inx.compute.index", "infernux.compute.index", "compute.index"})
 
 
-def index_declaration(statement: ast.stmt, names=_INDEX_NAMES) -> tuple[str, str] | None:
+def index_declaration(statement: ast.stmt, names=_INDEX_NAMES) -> tuple[str, str, str | None] | None:
     if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
         return None
     target, call = statement.targets[0], statement.value
-    if not isinstance(target, ast.Name) or not isinstance(call, ast.Call) or len(call.args) != 1 or call.keywords:
+    if not isinstance(target, ast.Name) or not isinstance(call, ast.Call):
         return None
     if attribute_name(call.func) not in names:
         return None
-    if not isinstance(call.args[0], ast.Name):
+    if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
         raise TypeError("inx.compute.index requires a buffer parameter name")
-    return target.id, call.args[0].id
+    count = None
+    if call.keywords:
+        if (len(call.keywords) != 1 or call.keywords[0].arg != "count"
+                or not isinstance(call.keywords[0].value, ast.Name)):
+            raise TypeError("inx.compute.index count= requires a buffer parameter name")
+        count = call.keywords[0].value.id
+    return target.id, call.args[0].id, count
 
 
-def execution_domain(definition: ast.FunctionDef, names=_INDEX_NAMES) -> tuple[int, str, str, int]:
-    """Return declaration position, work index, domain name and parameter slot."""
+def execution_domain(definition: ast.FunctionDef, names=_INDEX_NAMES) -> tuple[int, str, str, int, int | None]:
+    """Return the declaration position and the domain and optional count parameters."""
     declarations = [(position, found) for position, statement in enumerate(definition.body)
                     if (found := index_declaration(statement, names)) is not None]
     if len(declarations) != 1:
         raise TypeError("compute kernel must declare exactly one execution domain with inx.compute.index(buffer)")
-    position, (index_name, domain_name) = declarations[0]
+    position, (index_name, domain_name, count_name) = declarations[0]
     parameters = tuple(argument.arg for argument in (*definition.args.posonlyargs, *definition.args.args))
     if domain_name not in parameters:
         raise TypeError("inx.compute.index must refer to an inx.buffer parameter")
-    return position, index_name, domain_name, parameters.index(domain_name)
+    if count_name is not None and (count_name not in parameters or count_name == domain_name):
+        raise TypeError("inx.compute.index count= must refer to a separate buffer parameter")
+    return position, index_name, domain_name, parameters.index(domain_name), (
+        parameters.index(count_name) if count_name is not None else None)
 
 
 def has_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:

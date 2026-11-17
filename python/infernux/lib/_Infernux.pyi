@@ -4362,6 +4362,9 @@ _ComputeCopy = tuple[_ComputeBuffer, _ComputeBuffer, int, int, int]
 _ComputeWorkBinding = tuple[int, int, int, Literal["read", "write", "read_write"]]
 _ComputeWorkDispatch = tuple[_ComputeKernel, Sequence[_ComputeWorkBinding], Sequence[_ComputeBindingRange], bytes, int, int, int] | tuple[
     _ComputeKernel, Sequence[_ComputeWorkBinding], Sequence[_ComputeBindingRange], bytes, int, int, int, tuple[int, int] | None,
+] | tuple[
+    _ComputeKernel, Sequence[_ComputeWorkBinding], Sequence[_ComputeBindingRange], bytes, int, int, int, None,
+    tuple[int, int, Sequence[int]],
 ]
 _ComputeWorkPort = tuple[str, int, int, int, bool]
 

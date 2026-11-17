@@ -194,9 +194,9 @@ std::vector<rhi::ComputeWorkDispatch> DecodeComputeWorkDispatches(py::iterable v
     std::vector<rhi::ComputeWorkDispatch> result;
     for (const auto value : values) {
         const auto dispatch = py::cast<py::tuple>(value);
-        if (dispatch.size() != 7 && dispatch.size() != 8)
+        if (dispatch.size() < 7 || dispatch.size() > 9)
             throw py::value_error("Compute work dispatch must contain kernel, bindings, complete writes, "
-                                  "constants, three group bounds and optional indirect slot/offset");
+                                  "constants, three group bounds and optional indirect arguments or counted payload");
         rhi::ComputeWorkDispatch item;
         item.kernel = dispatch[0].cast<std::shared_ptr<rhi::ComputeKernel>>();
         for (const auto bindingValue : dispatch[1].cast<py::iterable>()) {
@@ -212,12 +212,27 @@ std::vector<rhi::ComputeWorkDispatch> DecodeComputeWorkDispatches(py::iterable v
         item.groupCountX = dispatch[4].cast<uint32_t>();
         item.groupCountY = dispatch[5].cast<uint32_t>();
         item.groupCountZ = dispatch[6].cast<uint32_t>();
-        if (dispatch.size() == 8 && !dispatch[7].is_none()) {
+        if (dispatch.size() >= 8 && !dispatch[7].is_none()) {
             const auto arguments = dispatch[7].cast<py::tuple>();
             if (arguments.size() != 2)
                 throw py::value_error("Work indirect arguments require a slot and byte offset");
             item.indirectArguments = rhi::ComputeWorkRange{arguments[0].cast<uint32_t>(), arguments[1].cast<uint64_t>(),
                                                            rhi::ComputeIndirectArguments::ByteSize};
+        }
+        if (dispatch.size() == 9) {
+            const auto prefix = dispatch[8].cast<py::tuple>();
+            if (prefix.size() != 3)
+                throw py::value_error("Counted work requires count and payload bindings and a workgroup size");
+            const auto count = prefix[0].cast<uint32_t>();
+            const auto payload = prefix[1].cast<uint32_t>();
+            if (count >= item.bindings.size() || payload >= item.bindings.size())
+                throw py::value_error("Counted work must name existing bindings");
+            const auto &countRange = item.bindings[count].range;
+            const auto &payloadRange = item.bindings[payload].range;
+            item.prefix = rhi::ComputePrefixAccess{{count, countRange.offset, countRange.byteSize},
+                                                   {payload, payloadRange.offset, payloadRange.byteSize},
+                                                   item.bindings[payload].access,
+                                                   prefix[2].cast<std::array<uint32_t, 3>>()};
         }
         result.push_back(std::move(item));
     }

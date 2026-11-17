@@ -1481,6 +1481,14 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
         uses.external |= bool(slots[index].external);
     }
     for (const auto &dispatch : dispatches) {
+        if (dispatch.prefix) {
+            const auto &prefix = *dispatch.prefix;
+            for (const auto &range : {prefix.count, prefix.payload}) {
+                const auto identity = identities[dispatch.bindings[range.binding].range.slot];
+                if (identity.IsValid() && allocations.at(identity).aliases)
+                    throw std::invalid_argument("Counted compute storage cannot alias another logical slot");
+            }
+        }
         for (const auto &binding : dispatch.bindings) {
             const auto identity = identities[binding.range.slot];
             if (!identity.IsValid())

@@ -79,6 +79,10 @@ class CompilerArtifact:
     def native_dispatch(self) -> bool:
         return len(self.task_metadata) == 1 and self.task_metadata[0].get("task_type") == "native_dispatch"
 
+    @property
+    def count_parameter(self) -> int | None:
+        return self.task_metadata[0].get("count_parameter") if len(self.task_metadata) == 1 else None
+
     def range_bounds(self, params, *, begin=None, end=None, host=None, _validate_resources=True):
         from infernux.compute import Buffer
 
@@ -108,6 +112,8 @@ class CompilerArtifact:
         begin, end = int(begin), int(end)
         if not 0 <= begin <= end <= size:
             raise ValueError(f"GPU continuation range [{begin},{end}) is outside [0,{size})")
+        if self.count_parameter is not None and (begin != 0 or end != size):
+            raise ValueError("Device-counted compute work requires its full capacity range")
         if not _validate_resources:
             return begin, end
         self.validate_resources(params, size, host=host)
@@ -133,6 +139,8 @@ class CompilerArtifact:
         contract = self.continuation
         if not contract.eligible:
             return
+        if self.count_parameter is not None:
+            _validate_device_count(params[self.count_parameter])
         inner = contract.inner_range
         domain = params[self.domain_parameter]
         buffers = {}
@@ -272,6 +280,14 @@ def _compilation_request(params, autodiff_mode, gradient_parameters):
 
 class ArtifactAbiMismatchError(RuntimeError):
     """An explicitly identified artifact ABI is not executable by this reader."""
+
+
+def _validate_device_count(count):
+    from infernux.compute import Buffer
+
+    if not isinstance(count, Buffer) or count.device != "gpu" or count.dtype != "uint32" or count.shape != (1,):
+        raise TypeError("Device-counted compute work needs a one-element uint32 GPU buffer view")
+
 
 def _artifact_header_bytes(payload, *, path="<memory>"):
     payload = memoryview(payload).cast("B")

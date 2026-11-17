@@ -19,7 +19,7 @@ from .work_item import WorkItem, normalize_work_item
 from .cache import compiler_cache_root, prune_cache_files
 from .kernel_contract import WORK_ITEM_FAST_MATH
 from .gpu_artifact import (_CACHE_ABI, CompilerArtifact, RangeContract, parameter_key, _specialization_identity,
-                           _compilation_request, _decode_artifact, _encode_artifact)
+                           _compilation_request, _decode_artifact, _encode_artifact, _validate_device_count)
 
 
 @dataclass(slots=True)
@@ -89,12 +89,22 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
     from infernux.lib import _Infernux
 
     gradients = _compilation_request(params, autodiff_mode, gradient_parameters)
-    item = normalize_work_item(function, len(params), receiver_fields=receiver_fields) if _lowered is None else _lowered.item
+    item = (normalize_work_item(function, len(params), receiver_fields=receiver_fields, allow_device_count=True)
+            if _lowered is None else _lowered.item)
     domain = params[item.domain_parameter]
     if not isinstance(domain, Buffer) or domain.device != "gpu" or len(domain.shape) != 1:
         raise TypeError("inx.compute.index requires a one-dimensional GPU buffer")
     continuation = _continuation_contract(item, params, autodiff_mode=autodiff_mode, gradient_parameters=gradients,
                                           proof=None if _lowered is None else _lowered.continuation)
+    if item.count_parameter is not None:
+        _validate_device_count(params[item.count_parameter])
+        if (not continuation.eligible or continuation.gathered or continuation.inner_range is not None
+                or item.count_parameter in (*continuation.input_parameters, *continuation.output_parameters)):
+            raise TypeError("Device-counted compute work requires independent same-row accesses and a separate count")
+        reads = item.domain_parameter in continuation.input_parameters
+        writes = item.domain_parameter in continuation.output_parameters
+        if reads == writes or (writes and item.domain_parameter not in continuation.fully_written_output_parameters):
+            raise TypeError("A counted domain must be read-only or written completely at every active row")
     plan = KernelCompilationPlan("", copy.deepcopy(item.definition), copy.deepcopy(item.helpers), dict(item.globals_map),
                                  item.domain_parameter, autodiff_mode, gradients, item, continuation, target)
     entry = _source_location(item.origin, item.definition, role="entry")
@@ -679,11 +689,16 @@ def _source(plan, params):
     domain = plan.work_item.domain_name
     first = "inx_args.inx_range_begin" if plan.continuation.eligible else "0"
     last = "inx_args.inx_range_end" if plan.continuation.eligible else f"inx_args.{domain}_shape_0"
+    extent = f"uint(({last}) - ({first}))"
+    if plan.work_item.count_parameter is not None:
+        count = emitter.names[plan.work_item.count_parameter]
+        count_value = emitter.visit(ast.Subscript(ast.Name(count, ast.Load()), ast.Constant(0), ast.Load()))
+        extent = f"min({extent}, {count_value})"
     entry = f'''{emitter.source_directive(plan.definition)}
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main(uint3 tid : SV_DispatchThreadID) {{
-    if (tid.x >= uint(({last}) - ({first}))) return;
+    if (tid.x >= {extent}) return;
     int {index} = int(tid.x) + ({first});
 '''
     imports = dict.fromkeys("import " + function.symbol.split("::", 1)[0] + ";"
@@ -725,6 +740,8 @@ def _artifact(compiled, emitter, plan, params):
     metadata = {"entry_point": entry["name"], "threads_per_group": entry["workgroup_size"][0], "buffer_bindings": bindings,
                 "task_type": "range_for", "range": {"begin_source": "constant", "begin": 0, "const_begin": True,
                                                        "const_end": False, "end_source": "arguments"}}
+    if plan.work_item.count_parameter is not None:
+        metadata.update(count_parameter=plan.work_item.count_parameter, workgroup_size=entry["workgroup_size"])
     locations = tuple({**location, "entry_point": entry["name"]} for location in plan.source_locations)
     return CompilerArtifact(target=compiled["target"], tasks=(entry["code"],), task_metadata=(metadata,), domain_parameter=plan.domain_parameter,
         argument_layout={"size": arguments["byte_size"], "parameters": layouts},

@@ -296,6 +296,8 @@ def _command_stream(host) -> dict:
 
 def _append_kernel_commands(commands: dict, executable, params, *, gradients=None, bounds=None, cache=True):
     """Merge only the kernel's immutable private argument initializations."""
+    if executable.artifact.count_parameter is not None:
+        raise TypeError("Device-counted kernels require compute.prepare_work")
     updates = dispatches = update = None
     recorded = False
     try:
@@ -2725,6 +2727,7 @@ class _KernelExecutable:
         native = resources = None
         try:
             native_dispatch = self.artifact.native_dispatch
+            dense_writes = self.artifact.count_parameter is None
             if not native_dispatch:
                 prepared.argument_buffer = self.host.create_buffer(max(1, (len(prepared.arguments) + 3) // 4), "uint32")
             domain = params[self.artifact.domain_parameter]
@@ -2759,7 +2762,7 @@ class _KernelExecutable:
                             raise RuntimeError("GPU compiler omitted an external buffer access declaration")
                         if native_dispatch or (contract.eligible and index in contract.input_parameters):
                             reads.append((position, value._byte_offset, value.nbytes))
-                        if contract.eligible and index in contract.fully_written_output_parameters:
+                        if dense_writes and contract.eligible and index in contract.fully_written_output_parameters:
                             first, last = bounds
                             writes.append((position, value._byte_offset + first * value._dtype.itemsize,
                                            (last - first) * value._dtype.itemsize))
@@ -3157,8 +3160,12 @@ def library(module: str) -> _LibraryReference:
     return _LibraryReference(name, level, sys._getframe(1).f_code.co_filename)
 
 
-def index(domain: Buffer) -> int:
-    """Declare and return the current work-item index inside a GPU kernel."""
+def index(domain: Buffer, *, count: Buffer | None = None) -> int:
+    """Declare and return the current work-item index inside a GPU kernel.
+
+    In :func:`prepare_work`, ``count`` can name a one-element uint32 GPU
+    buffer. The entry runs only the first ``min(count[0], len(domain))`` rows.
+    """
     raise RuntimeError("inx.compute.index is valid only inside @inx.compute.kernel")
 
 
@@ -3301,6 +3308,9 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
     bindings, through an input port or an earlier proven writer.
     ``private_buffers`` declares allocations to clone; logical input/output
     mappings name their exact views.
+    A kernel using ``index(payload, count=count)`` can produce or consume
+    the same device-counted prefix within this work. Output ports still
+    require a complete writer for the entire view.
     External resources retain their actual owners and must have accepted
     producers. Their valid contents remain a caller/producer precondition.
 
@@ -3374,6 +3384,7 @@ def _prepare_work(operations, *, private_buffers, inputs, outputs, argument_port
             if not isinstance(executable, _KernelExecutable) or int(executable.host.identity) != int(host.identity):
                 raise ComputeCapabilityError("compute work requires compiled kernels on the same native GPU host")
             artifact = executable.artifact
+            count_parameter = artifact.count_parameter
             ranged = artifact.continuation.eligible
             if ((not ranged and not artifact.native_dispatch)
                     or artifact.autodiff_mode != "none" or artifact.gradient_parameters):
@@ -3393,6 +3404,7 @@ def _prepare_work(operations, *, private_buffers, inputs, outputs, argument_port
             for task, dispatch in zip(executable.tasks, dispatches, strict=True):
                 native_kernel, resources, accesses, constants, gx, gy, gz, proof = dispatch
                 bindings = []
+                count_binding = payload_binding = None
                 for position, (metadata, resource, access) in enumerate(zip(task[1], resources, accesses, strict=True)):
                     kind = metadata["resource_kind"]
                     dynamic_argument = kind == "arguments" and operation_index in argument_ports
@@ -3408,10 +3420,20 @@ def _prepare_work(operations, *, private_buffers, inputs, outputs, argument_port
                         value = effective[parameter]
                         slot = slot_for(resource, key=identity(value))
                         offset, length = int(value.description.byte_offset), value.nbytes
+                        if count_parameter is not None:
+                            if parameter == count_parameter:
+                                count_binding = position
+                            elif parameter == artifact.domain_parameter:
+                                payload_binding = position
                     else:
                         raise TypeError(f"compute work does not support compiler resource kind {kind!r}")
                     bindings.append((slot, offset, length, access))
-                work_dispatches.append((native_kernel, bindings, proof[1], constants, gx, gy, gz))
+                operation = (native_kernel, bindings, proof[1], constants, gx, gy, gz)
+                if count_parameter is not None:
+                    if count_binding is None or payload_binding is None:
+                        raise RuntimeError("Counted compute entry is missing the count or payload binding")
+                    operation += (None, (count_binding, payload_binding, artifact.task_metadata[0]["workgroup_size"]))
+                work_dispatches.append(operation)
         if private_keys - set(slot_indices):
             raise ValueError("compute work private allocations must participate in its operations")
         for is_input, values in ((True, inputs), (False, outputs)):
