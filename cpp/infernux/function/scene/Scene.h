@@ -428,6 +428,9 @@ class Scene : public NativeLifetimeOwner
     void RequireWritableWorld() const;
     void RetireRootObjects();
 
+    const std::vector<Camera *> &GetCameraCandidates() const;
+    template <typename Visitor> void ForEachActiveGameCamera(Camera *editorCam, const Visitor &visit) const;
+
     void CollectAllObjects(GameObject *obj, std::vector<GameObject *> &result) const;
     void QueueStartObject(GameObject *obj);
     void StartObject(GameObject *obj);
@@ -500,8 +503,10 @@ class Scene : public NativeLifetimeOwner
     // Python components pending recreation after deserialize
     std::vector<PendingPyComponent> m_pendingPyComponents;
 
-    // Main camera reference
+    // Camera membership follows the hierarchy. Camera state and depth are read live.
     Camera *m_mainCamera = nullptr;
+    mutable std::vector<Camera *> m_cameraCandidates;
+    mutable uint64_t m_cameraCandidatesVersion = UINT64_MAX;
 
     // State flags
     bool m_isLoaded = false;

@@ -1801,6 +1801,8 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, InstantiationIds &
         m_executionOrderCacheDirty = true;
         std::vector<std::unique_ptr<GameObject>> oldChildren;
         oldChildren.swap(m_children);
+        if (targetScene)
+            targetScene->BumpStructureVersion();
         oldChildren.clear();
         oldComponents.clear();
         m_isDestroying = false;

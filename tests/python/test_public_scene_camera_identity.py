@@ -64,3 +64,26 @@ def test_empty_scene_camera_queries_have_no_proxy(scene):
     assert scene.main_camera is None
     assert scene.effective_game_camera is None
     assert scene.active_game_cameras == []
+
+
+def test_scene_camera_queries_follow_retained_world_rollback(scene):
+    original = scene.create_game_object("OriginalCamera").add_component(inx.Camera)
+    assert scene.effective_game_camera is original
+    assert scene.active_game_cameras == [original]
+
+    candidate = scene.serialize_document()
+    candidate["objects"] = []
+    candidate["authoring_identity"] = {"objects": {}, "components": {}}
+    token = scene._commit_document_retaining_world(candidate)
+    assert token is not None
+    try:
+        assert scene.effective_game_camera is None
+        transient = scene.create_game_object("TransientCamera").add_component(inx.Camera)
+        assert scene.effective_game_camera is transient
+        assert scene.active_game_cameras == [transient]
+        assert token.rollback()
+        assert scene.effective_game_camera is original
+        assert scene.active_game_cameras == [original]
+    finally:
+        if token.is_active:
+            token.rollback()

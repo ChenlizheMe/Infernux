@@ -283,6 +283,7 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
     state.pendingPyComponents = std::move(scene.m_pendingPyComponents);
 
     scene.m_mainCamera = nullptr;
+    scene.m_cameraCandidatesVersion = UINT64_MAX;
     scene.m_hasStarted = false;
     scene.m_retainedCommit = this;
 }
@@ -346,6 +347,7 @@ bool SceneCommitToken::Rollback()
         scene.m_isPlaying = state.isPlaying;
         scene.m_hasStarted = state.hasStarted;
         scene.m_structureVersion = state.structureVersion;
+        scene.m_cameraCandidatesVersion = UINT64_MAX;
         scene.m_nextDocumentObjectId = state.nextDocumentObjectId;
         scene.m_nextDocumentComponentId = state.nextDocumentComponentId;
         scene.m_environment = state.environment;
@@ -484,6 +486,7 @@ void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
     // If it has no parent, add to root objects
     if (gameObject->GetParent() == nullptr) {
         m_rootObjects.push_back(std::move(gameObject));
+        ++m_structureVersion;
     }
 }
 
@@ -1677,6 +1680,7 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, InstantiationIds &i
     } else {
         m_rootObjects.push_back(std::move(clone));
     }
+    ++m_structureVersion;
 
     if (instantiateInWorldSpace) {
         ptr->GetTransform()->SetWorldPosition(sourceWorldPosition);
@@ -1689,8 +1693,6 @@ GameObject *Scene::InstantiateGameObject(GameObject *source, InstantiationIds &i
     if (m_isPlaying && m_hasStarted) {
         QueueStartObject(ptr);
     }
-
-    ++m_structureVersion;
 
     publication.Commit();
     return ptr;
@@ -1769,13 +1771,12 @@ GameObject *Scene::InstantiateFromDocument(const nlohmann::json &document, Insta
     } else {
         m_rootObjects.push_back(std::move(clone));
     }
+    ++m_structureVersion;
 
     AwakeObject(ptr);
     if (m_isPlaying && m_hasStarted) {
         QueueStartObject(ptr);
     }
-
-    ++m_structureVersion;
 
     publication.Commit();
     return ptr;
@@ -2296,6 +2297,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
             root->SetScene(this);
             m_rootObjects.push_back(std::move(root));
         }
+        ++m_structureVersion;
         for (const auto &root : m_rootObjects)
             PhysicsECSStore::Instance().PublishHierarchyOwnership(root.get());
 
@@ -2343,7 +2345,6 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         if (stagedMainCamera)
             m_mainCamera = static_cast<Camera *>(stagedMainCamera);
 
-        ++m_structureVersion; // Scene was fully rebuilt
         MarkTemporalDiscontinuity();
 
         const auto profileEnd = ProfileClock::now();
@@ -2391,6 +2392,51 @@ void Scene::SetMainCamera(Camera *camera)
     ++m_structureVersion;
 }
 
+namespace
+{
+bool CameraRendersBefore(const Camera *lhs, const Camera *rhs)
+{
+    if (lhs->GetDepth() != rhs->GetDepth())
+        return lhs->GetDepth() < rhs->GetDepth();
+    return lhs->GetComponentID() < rhs->GetComponentID();
+}
+} // namespace
+
+const std::vector<Camera *> &Scene::GetCameraCandidates() const
+{
+    if (m_cameraCandidatesVersion != m_structureVersion) {
+        m_cameraCandidates.clear();
+        for (GameObject *object : GetAllObjects()) {
+            if (Camera *camera = object->GetComponent<Camera>())
+                m_cameraCandidates.push_back(camera);
+        }
+        m_cameraCandidatesVersion = m_structureVersion;
+    }
+    return m_cameraCandidates;
+}
+
+template <typename Visitor> void Scene::ForEachActiveGameCamera(Camera *editorCam, const Visitor &visit) const
+{
+    const auto visitScene = [&](const Scene &scene) {
+        for (Camera *camera : scene.GetCameraCandidates()) {
+            if (camera != editorCam && camera->IsEnabled() && camera->GetGameObject()->IsActiveInHierarchy())
+                visit(camera);
+        }
+    };
+    const SceneManager &manager = SceneManager::Instance();
+    if (this == manager.GetActiveScene()) {
+        for (const auto &loadedScene : manager.GetAllScenes()) {
+            if (loadedScene)
+                visitScene(*loadedScene);
+        }
+        Scene *persistentScene = manager.GetRuntimePersistentScene();
+        if (persistentScene)
+            visitScene(*persistentScene);
+    } else {
+        visitScene(*this);
+    }
+}
+
 Camera *Scene::FindGameCamera(Camera *editorCam)
 {
     // The authored preference is persistent. Disabling it temporarily falls
@@ -2402,42 +2448,19 @@ Camera *Scene::FindGameCamera(Camera *editorCam)
         }
     }
 
-    const auto cameras = GetActiveGameCameras(editorCam);
-    return cameras.empty() ? nullptr : cameras.front();
+    Camera *primary = nullptr;
+    ForEachActiveGameCamera(editorCam, [&](Camera *camera) {
+        if (!primary || CameraRendersBefore(camera, primary))
+            primary = camera;
+    });
+    return primary;
 }
 
 std::vector<Camera *> Scene::GetActiveGameCameras(Camera *editorCam) const
 {
     std::vector<Camera *> cameras;
-    const auto appendSceneCameras = [&](const Scene &scene) {
-        const auto objects = scene.FindObjectsWithComponent<Camera>();
-        cameras.reserve(cameras.size() + objects.size());
-        for (GameObject *object : objects) {
-            if (!object || !object->IsActiveInHierarchy())
-                continue;
-            Camera *camera = object->GetComponent<Camera>();
-            if (!camera || !camera->IsEnabled() || camera == editorCam)
-                continue;
-            cameras.push_back(camera);
-        }
-    };
-    const SceneManager &manager = SceneManager::Instance();
-    if (this == manager.GetActiveScene()) {
-        for (const auto &loadedScene : manager.GetAllScenes()) {
-            if (loadedScene)
-                appendSceneCameras(*loadedScene);
-        }
-        Scene *persistentScene = manager.GetRuntimePersistentScene();
-        if (persistentScene)
-            appendSceneCameras(*persistentScene);
-    } else {
-        appendSceneCameras(*this);
-    }
-    std::sort(cameras.begin(), cameras.end(), [](const Camera *lhs, const Camera *rhs) {
-        if (lhs->GetDepth() != rhs->GetDepth())
-            return lhs->GetDepth() < rhs->GetDepth();
-        return lhs->GetComponentID() < rhs->GetComponentID();
-    });
+    ForEachActiveGameCamera(editorCam, [&](Camera *camera) { cameras.push_back(camera); });
+    std::sort(cameras.begin(), cameras.end(), CameraRendersBefore);
     return cameras;
 }
 
