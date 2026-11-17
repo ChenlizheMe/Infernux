@@ -599,6 +599,57 @@ public bool inx_world_ray_visibility(float3 origin_ws, float3 direction_ws, floa
     TraceRay ray = {origin_ws, min_distance, direction_ws, max_distance};
     return inx_trace_lit_visibility(ray_page(), ray, layer_mask, lod);
 }
+
+uint inx_ray_sample_hash(uint state)
+{
+    state = state * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float inx_ray_offset(float position, float normal)
+{
+    if (abs(position) < 1.0 / 32.0)
+        return position + normal * (1.0 / 65536.0);
+    int offset = int(256.0 * normal);
+    return asfloat(asint(position) + (position < 0.0 ? -offset : offset));
+}
+
+public float4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
+                                     uint model_id, bool specular)
+{
+    if (model_id != INX_PBR_MODEL_ID)
+        return float4(0.0);
+    uint2 pixel = uint2(context.pixel_position);
+    uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
+    if (specular)
+        seed = inx_ray_sample_hash(seed);
+    float2 uniform = float2(inx_ray_sample_hash(seed) >> 8u, inx_ray_sample_hash(seed + 1u) >> 8u)
+                   * (1.0 / 16777216.0);
+    float3 shading_normal = normalize(surface.normal_ws);
+    RayDirectionSample sample;
+    if (specular)
+    {
+        float3 outgoing = normalize(inx_camera_toward_eye(context.position_ws));
+        RayGgxMaterial material = ray_lit_ggx(surface.albedo, surface.metallic, surface.smoothness,
+                                              context.normal_variance, surface.specular_highlights);
+        sample = ray_sample_ggx(uniform, shading_normal, geometric_normal, outgoing, material);
+    }
+    else
+        sample = ray_sample_irradiance(uniform, shading_normal, geometric_normal);
+    if (!sample.active)
+        return float4(0.0, 0.0, 0.0, 1.0);
+    float3 position = context.position_ws;
+    float3 origin = float3(inx_ray_offset(position.x, geometric_normal.x),
+                           inx_ray_offset(position.y, geometric_normal.y),
+                           inx_ray_offset(position.z, geometric_normal.z));
+    InxRaySurfaceHit hit = inx_world_ray_closest(origin, sample.direction, 0.0, inx_view.projection_params.y,
+                                               0xffffffffu, 0.0);
+    if (!hit.available)
+        return float4(0.0);
+    float3 radiance = hit.found ? hit.surface.emission : inx_environment_radiance(sample.direction);
+    return float4(radiance * sample.weight, 1.0);
+}
 """
 
 
@@ -628,9 +679,7 @@ uint2 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFac
     float length_squared = dot(normal, normal);
     if (!(length_squared > 0.0))
         return uint2(0u);
-    // At fixed screen XY, increasing reversed clip depth moves toward the camera.
-    float4 depth_direction = mul(inx_view.inverse_view_projection, float4(0.0, 0.0, 1.0, 0.0));
-    float3 toward_eye = depth_direction.xyz - input.position_ws * depth_direction.w;
+    float3 toward_eye = inx_camera_toward_eye(input.position_ws);
     normal *= (dot(normal, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(length_squared);
     float2 encoded = inx_encode_surface_normal(normal);
     return uint2(input.surface_id, f32tof16(encoded.x) | (f32tof16(encoded.y) << 16u));
@@ -703,6 +752,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         if not author.uses_surface_sampling:
             author.error(main, "The ray Lit entry requires explicit material sampling", code="author.stage")
         code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", "import inx_ray_traversal;",
+                "import inx_ray_bsdf;", "import inx_camera;", "import inx_lighting;",
                 *("import " + name + ";" for name in dependencies),
                 "struct ShaderParameters {", *author.parameter_field_declarations(values), "};",
                 "struct InxRayLitMaterial {", "    ShaderParameters values;",

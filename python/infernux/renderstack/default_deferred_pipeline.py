@@ -65,6 +65,7 @@ from infernux.renderstack._pipeline_common import (
     add_skybox_pass,
     add_standard_post_process_section,
     add_transparent_pass,
+    bind_deferred_surface,
     create_deferred_gbuffer,
     create_main_scene_targets,
     draw_deferred_lighting,
@@ -78,6 +79,8 @@ if TYPE_CHECKING:
 
 
 _RAY_PRIMARY_SURFACE = "ray_primary_surface"
+_RAY_DIFFUSE = "ray_diffuse"
+_RAY_SPECULAR = "ray_specular"
 
 
 def _draw_deferred_geometry(render_pass, depth, queue_range, sort_mode, material_pass):
@@ -89,6 +92,36 @@ def _draw_deferred_geometry(render_pass, depth, queue_range, sort_mode, material
         material_pass=material_pass,
         material_filter="deferred_compatible",
     )
+
+
+def _trace_ray_indirect(graph, gbuffer, lobes):
+    world = graph._create_world_ray_lit()
+    signals = {}
+    for name, specular in lobes:
+        output = graph.create_texture(f"_result/gbuffer/{name}", format=Format.RGBA16_SFLOAT, samples=1)
+        label = "Ray Specular Radiance" if specular else "Ray Diffuse Irradiance"
+        with graph.add_pass(label) as render_pass:
+            render_pass.write_color(output)
+            bind_deferred_surface(render_pass, gbuffer.snapshot)
+            render_pass.set_texture("primary", gbuffer.sample(_RAY_PRIMARY_SURFACE))
+            for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials", "ray_texture_descriptors"):
+                render_pass.set_buffer(key, world[key])
+            for key in ("ray_color_pages", "ray_data_pages"):
+                render_pass.set_texture(key, world[key])
+            render_pass.set_param("specular", specular)
+            render_pass.fullscreen_quad("infernux/internal/ray_indirect")
+        signals[name] = output
+    return signals
+
+
+def _draw_ray_lighting(render_pass, gbuffer, signals):
+    bind_deferred_surface(render_pass, gbuffer.snapshot)
+    # One enabled signal also supplies the unused descriptor when a lobe is off.
+    existing = next(iter(signals.values()))
+    render_pass.set_textures({name: signals.get(name, existing) for name in (_RAY_DIFFUSE, _RAY_SPECULAR)})
+    render_pass.set_param("diffuse_enabled", _RAY_DIFFUSE in signals)
+    render_pass.set_param("specular_enabled", _RAY_SPECULAR in signals)
+    render_pass.fullscreen_quad("infernux/internal/deferred_ray_lighting")
 
 
 class DeferredMSAA(IntEnum):
@@ -115,6 +148,10 @@ class DefaultDeferredPipeline(RenderPipeline):
 
     ``before_post_process`` / ``after_post_process`` are automatically
     inserted by ``graph.screen_ui_section()``.
+
+    ``ray_diffuse`` and ``ray_specular`` independently replace the raster
+    environment terms. This preview takes one sample per enabled lobe and
+    uses scene ambient radiance and emissive opaque or cutout Lit geometry.
     """
 
     name: str = "Default Deferred"
@@ -129,6 +166,8 @@ class DefaultDeferredPipeline(RenderPipeline):
         tooltip="Shadow map resolution (width & height)",
         header="Shadows",
     )
+    ray_diffuse: bool = serialized_field(default=False, header="Ray Tracing")
+    ray_specular: bool = serialized_field(default=False)
 
     @geometry_buffer(NORMAL_TEXTURE, dependencies={DEPTH_TEXTURE})
     def _provide_deferred_normal(self, context):
@@ -181,6 +220,11 @@ class DefaultDeferredPipeline(RenderPipeline):
         if graph.set_msaa_samples(1) != 1:
             raise ValueError("Default Deferred requires a single-sample Camera target")
 
+        lobes = tuple((name, specular) for name, specular, enabled in (
+            (_RAY_DIFFUSE, False, self.ray_diffuse), (_RAY_SPECULAR, True, self.ray_specular),
+        ) if enabled)
+        if lobes:
+            graph.require_geometry_buffers({_RAY_PRIMARY_SURFACE})
         shadow_res = effective_shadow_resolution(self.shadow_resolution)
 
         # ---- GBuffer textures (MRT) ----
@@ -217,22 +261,33 @@ class DefaultDeferredPipeline(RenderPipeline):
             sort_mode=geometry_sort,
             clear=True,
         )
+        raw_gbuffer = current
 
         with graph.pass_result(current):
             resources = result_resources(current)
             graph.injection_point("after_gbuffer", resources=resources)
             graph.effects(
                 "after_gbuffer", scope="stage", display_name="After GBuffer",
-                inputs=resources, outputs=resources - {SURFACE_RECORDS_BUFFER, LIGHT_LIST_BUFFER},
+                inputs=resources, outputs=resources - {SURFACE_RECORDS_BUFFER, LIGHT_LIST_BUFFER, _RAY_PRIMARY_SURFACE},
                 capabilities={"fullscreen", "multiple_render_targets"},
             )
             current = graph.current_pass_result
+
+        signals = {}
+        if lobes:
+            if any(current.sample(name) is not raw_gbuffer.sample(name) for name in (DEPTH_TEXTURE, "surface")):
+                raise ValueError("Ray indirect lighting requires after_gbuffer to retain depth and surface identity")
+            signals = _trace_ray_indirect(graph, current, lobes)
+            current = graph.derive_pass_result("ray_indirect", current, signals)
 
         # ---- Pass 2: Deferred lighting (fullscreen) ----
         with graph.add_pass("DeferredLightingPass") as p:
             p.write_color(COLOR_TEXTURE)
             p.set_clear(color=DEFERRED_LIGHTING_CLEAR_COLOR)
-            draw_deferred_lighting(p, current.snapshot)
+            if signals:
+                _draw_ray_lighting(p, current, signals)
+            else:
+                draw_deferred_lighting(p, current.snapshot)
 
         # Opaque shading models are Deferred-compatible by default. Models
         # that explicitly declare Unsupported [Deferred] skip the GBuffer and

@@ -182,9 +182,20 @@ def surface_lighting_module(graph, owner, location):
         imports.append("import " + response.name + ";")
         branches.append("    if (model_id == INX_" + name.upper() + "_MODEL_ID) return " + namespace
                         + "::shade<tiled_lighting>(surface, context);")
-    module.source = "\n".join(["import inx_geometry;", *imports,
+    module.source = "\n".join(["import inx_geometry;", "import inx_lighting;", *imports,
+        "float3 inx_evaluate_non_pbr_material<let tiled_lighting : bool>(",
+        "    InxSurfaceData surface, InxShadingContext context, uint model_id)", "{",
+        *branches[1:], "    return float3(0.0);", "}",
         "public float3 inx_evaluate_material<let tiled_lighting : bool>(",
         "    InxSurfaceData surface, InxShadingContext context, uint model_id)", "{",
-        *branches, "    return float3(0.0);", "}"])
+        branches[0],
+        "    return inx_evaluate_non_pbr_material<tiled_lighting>(surface, context, model_id);", "}",
+        "public float3 inx_evaluate_material_ray<let tiled_lighting : bool>(",
+        "    InxSurfaceData surface, InxShadingContext context, uint model_id, float4 diffuse, float4 specular)",
+        "{",
+        "    if (model_id == INX_PBR_MODEL_ID)",
+        "        return inx_shade_pbr_ray<tiled_lighting>(surface, context, diffuse, specular);",
+        "    return inx_evaluate_non_pbr_material<tiled_lighting>(surface, context, model_id);",
+        "}"])
     graph.ordered.append(module)
     return module

@@ -12,6 +12,12 @@ inline const ShaderSourceModule &GetSlangCameraModule()
     static const ShaderSourceModule module{"inx_camera", "<infernux/shader/camera>", R"slang(
 import inx_geometry;
 [[vk::binding(5, 1)]] public ConstantBuffer<InxCameraData> inx_view;
+public float3 inx_camera_toward_eye(float3 position_ws)
+{
+    // Increasing reversed clip depth at fixed screen XY moves toward the eye.
+    float4 direction = mul(inx_view.inverse_view_projection, float4(0.0, 0.0, 1.0, 0.0));
+    return direction.xyz - position_ws * direction.w;
+}
 public struct InxCameraContext
 {
     public column_major float4x4 view_matrix;

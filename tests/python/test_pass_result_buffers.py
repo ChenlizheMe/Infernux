@@ -192,6 +192,39 @@ def test_deferred_ray_surface_replays_raw_gbuffer_depth_and_surface_id_on_demand
     assert witness._write_colors == {0: primary.name}
 
 
+@pytest.mark.parametrize("diffuse,specular", [(False, False), (True, False), (False, True), (True, True)])
+def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular):
+    graph = RenderGraph("Deferred ray lighting")
+    pipeline = DefaultDeferredPipeline()
+    pipeline.ray_diffuse = diffuse
+    pipeline.ray_specular = specular
+    pipeline.define_topology(graph)
+    graph.build()
+
+    passes = {render_pass.name: render_pass for render_pass in graph._passes}
+    result = graph.get_pass_result("ray_indirect")
+    lighting = passes["DeferredLightingPass"]
+    if not (diffuse or specular):
+        assert result is None
+        assert lighting._shader_name == "infernux/internal/deferred_lighting"
+        assert graph.get_buffer("world_ray_geometry") is None
+        return
+
+    assert lighting._shader_name == "infernux/internal/deferred_ray_lighting"
+    assert lighting._parameters == {"diffuse_enabled": diffuse, "specular_enabled": specular}
+    for enabled, name, label in (
+        (diffuse, "ray_diffuse", "Ray Diffuse Irradiance"),
+        (specular, "ray_specular", "Ray Specular Radiance"),
+    ):
+        assert result.has(name) == (label in passes) == enabled
+        if enabled:
+            trace = passes[label]
+            assert trace._input_bindings["primary"] == result.sample("ray_primary_surface").name
+            assert trace._input_bindings["world_ray_meshes"] == graph.get_buffer("world_ray_meshes").name
+            assert trace._write_colors == {0: result.sample(name).name}
+            assert lighting._input_bindings[name] == result.sample(name).name
+
+
 @pytest.mark.parametrize("pipeline_type", [DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline])
 def test_light_list_is_a_view_owned_read_only_buffer(pipeline_type):
     graph = RenderGraph(f"{pipeline_type.__name__} light list")

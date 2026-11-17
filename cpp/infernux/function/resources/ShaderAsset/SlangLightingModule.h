@@ -611,7 +611,8 @@ if (tiled_lighting) {
 }
     return lo;
 }
-float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx) {
+float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx,
+                                      float4 ray_diffuse = float4(0.0), float4 ray_specular = float4(0.0)) {
     let scattering = inx_prepare_lit_scattering(s.albedo, s.metallic, s.smoothness, ctx.normal_variance);
     float3 albedo = scattering.albedo;
     float metallic = scattering.metallic;
@@ -642,24 +643,23 @@ float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx) 
         response.specular_highlights = s.specular_highlights;
         lo = calculate_all_lighting(ctx.position_ws, N, ctx.view_depth, main_light.shadow, response);
     }
-    float3 diffuse_irradiance = sample_ambient_irradiance(N);
-    float3 refl_dir = get_specular_ambient_direction(N, V, perceptual_roughness);
-    float prefilter = saturate(perceptual_roughness * (1.7 - 0.7 * perceptual_roughness));
-    float3 specular_irradiance = lerp(sample_ambient_probe(refl_dir),
-                                  sample_ambient_irradiance(refl_dir),
-                                  prefilter);
     float3 k_s_env = f_schlick_roughness(F0, f90, ndot_v, perceptual_roughness);
     float3 k_d_env = (1.0 - k_s_env) * (1.0 - metallic);
+    float3 diffuse_irradiance = ray_diffuse.a > 0.0 ? ray_diffuse.rgb * INV_PI : sample_ambient_irradiance(N);
     float3 diffuse_env = k_d_env * albedo * diffuse_irradiance * ao;
-    float spec_occlusion = compute_specular_occlusion(ndot_v, ao, perceptual_roughness);
-    float3 geom_n = normalize(ctx.geometric_normal_ws);
-    geom_n = (dot(geom_n, N) < 0.0) ? -geom_n : geom_n;
-    float horizon_fade = horizon_occlusion(refl_dir, geom_n);
-    float3 spec_env = specular_irradiance
-                 * (F0 * env_brdf.x + env_brdf.y)
-                 * energy_compensation
-                 * (spec_occlusion * horizon_fade)
-                 * s.specular_highlights;
+    float3 spec_env = ray_specular.rgb;
+    if (!(ray_specular.a > 0.0)) {
+        float3 refl_dir = get_specular_ambient_direction(N, V, perceptual_roughness);
+        float prefilter = saturate(perceptual_roughness * (1.7 - 0.7 * perceptual_roughness));
+        float3 specular_irradiance = lerp(sample_ambient_probe(refl_dir),
+                                        sample_ambient_irradiance(refl_dir), prefilter);
+        float spec_occlusion = compute_specular_occlusion(ndot_v, ao, perceptual_roughness);
+        float3 geom_n = normalize(ctx.geometric_normal_ws);
+        geom_n = (dot(geom_n, N) < 0.0) ? -geom_n : geom_n;
+        float horizon_fade = horizon_occlusion(refl_dir, geom_n);
+        spec_env = specular_irradiance * (F0 * env_brdf.x + env_brdf.y) * energy_compensation
+                 * (spec_occlusion * horizon_fade) * s.specular_highlights;
+    }
     float3 ambient = diffuse_env + spec_env;
     return indirect_only ? ambient : ambient + lo + s.emission;
 }
@@ -676,6 +676,15 @@ InxLighting<tiled_lighting> inx_lighting_context<let tiled_lighting : bool>(InxS
 public float3 inx_shade_pbr<let tiled_lighting : bool>(InxSurfaceData surface, InxShadingContext input)
 {
     return inx_lighting_context<tiled_lighting>(input).shade<false>(surface, input);
+}
+public float3 inx_shade_pbr_ray<let tiled_lighting : bool>(InxSurfaceData surface, InxShadingContext input,
+                                                        float4 diffuse, float4 specular)
+{
+    return inx_lighting_context<tiled_lighting>(input).shade<false>(surface, input, diffuse, specular);
+}
+public float3 inx_environment_radiance(float3 direction)
+{
+    return InxLighting<false>().sample_ambient_probe(direction);
 }
 public float3 inx_pbr_indirect(InxSurfaceData surface, InxShadingContext input)
 {

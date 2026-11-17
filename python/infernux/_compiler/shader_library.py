@@ -17,12 +17,16 @@ from .diagnostics import parse_gpu_module
 
 _RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
 _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceHit", _RAY_ARGUMENTS),
-                  "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS)}
+                  "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS),
+                  "ray._indirect_signal": ("inx_ray_indirect_signal", "float4", (
+                      "InxSurfaceData", "InxShadingContext", "float3", "uint", "bool"))}
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
                      "frame_delta_time": ("inx_frame_delta_time", "float", ()),
                      "view": ("inx_view_context", "InxViewContext", ()),
                      "camera": ("inx_camera_context", "InxCameraContext", ()), **_RAY_FUNCTIONS}
 _ENGINE_FUNCTIONS.update({
+    "lighting._shade_ray": ("inx_evaluate_material_ray", "float3", (
+        "InxSurfaceData", "InxShadingContext", "uint", "float4", "float4")),
     "lighting.particle_pbr": ("inx_particle_pbr", "float3", ("InxSurfaceData", "InxParticleInput")),
     "lighting.six_way_smoke": ("inx_particle_six_way_smoke", "float3", (
         "InxParticleInput", "float3", "float3", "float3", "float", "float", "float", "float", "float")),
@@ -50,7 +54,7 @@ def engine_imports(body, alias, *, graph, owner):
         from .shader import _world_ray_module
 
         modules.append(_world_ray_module(graph, owner, ray_use).name)
-    if alias + ".lighting.shade" in names:
+    if any(alias + "." + name in names for name in ("lighting.shade", "lighting._shade_ray")):
         from .shading_model import surface_lighting_module
 
         modules.append(surface_lighting_module(graph, owner, body[0]).name)
@@ -60,7 +64,8 @@ def engine_imports(body, alias, *, graph, owner):
 def uses_surface_lighting(body, alias, functions):
     return any(function.lighting_specialization for function in functions.values()) or any(
         isinstance(node, ast.Call) and qualified(node.func) in {
-            alias + ".lighting.shade", alias + ".lighting.particle_pbr", alias + ".lighting.six_way_smoke"}
+            alias + ".lighting.shade", alias + ".lighting._shade_ray", alias + ".lighting.particle_pbr",
+            alias + ".lighting.six_way_smoke"}
         for declaration in body for node in ast.walk(declaration)
     )
 
@@ -246,7 +251,7 @@ class ShaderEmitter(SlangEmitter):
                 if self.infer(value) != kind:
                     self.error(value, "shader." + operation + " requires " + kind, code="author.type")
             specialization = "<" + self.lighting_mode + ">" if operation in {
-                "lighting.particle_pbr", "lighting.six_way_smoke"} else ""
+                "lighting._shade_ray", "lighting.particle_pbr", "lighting.six_way_smoke"} else ""
             return symbol + specialization + "(" + ", ".join(self.visit(value) for value in node.args) + ")"
         if operation == "SurfaceData" and operation != qualified(node.func):
             values = {keyword.arg: keyword.value for keyword in node.keywords}

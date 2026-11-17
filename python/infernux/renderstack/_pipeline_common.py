@@ -111,7 +111,7 @@ def write_deferred_gbuffer(render_pass: RenderPassBuilder, buffers: Mapping[str,
         render_pass.write_color(buffers[semantic], slot=slot)
 
 
-def draw_deferred_lighting(
+def bind_deferred_surface(
     render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle | BufferHandle],
 ) -> None:
     render_pass.set_textures({
@@ -119,6 +119,12 @@ def draw_deferred_lighting(
         "depth_tex": buffers[DEPTH_TEXTURE],
     })
     render_pass.set_buffer(SURFACE_RECORDS_BUFFER, buffers[SURFACE_RECORDS_BUFFER])
+
+
+def draw_deferred_lighting(
+    render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle | BufferHandle],
+) -> None:
+    bind_deferred_surface(render_pass, buffers)
     render_pass.fullscreen_quad("infernux/internal/deferred_lighting")
 
 
