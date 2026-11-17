@@ -56,6 +56,6 @@
   },
   "shaders": {
     "fragment": {"guid": "", "shader_id": "infernux/lit"},
-    "vertex": {"guid": "", "shader_id": "Standard"}
+    "vertex": {"guid": "", "shader_id": "infernux/standard"}
   }
 }

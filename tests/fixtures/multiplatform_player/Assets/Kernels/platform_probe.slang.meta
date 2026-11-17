@@ -1,0 +1,16 @@
+{
+    "metadata": {
+        "file_path": {
+            "type": "string",
+            "value": "Assets/Kernels/platform_probe.slang"
+        },
+        "guid": {
+            "type": "string",
+            "value": "04000000000000000000000000000004"
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "DefaultText"
+        }
+    }
+}

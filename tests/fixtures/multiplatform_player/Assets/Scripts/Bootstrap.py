@@ -3,6 +3,8 @@
 from pathlib import Path
 import json
 import os
+import sys
+from time import monotonic_ns
 
 import infernux as inx
 from infernux.lib import CameraClearFlags
@@ -27,6 +29,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
     PACKAGE_MESSAGE = "Package resource reached UIText on every Player target."
     MANAGED_MESSAGE_GUID = "8b7148eba8303c90b0589315c16f7cba"
     MANAGED_MESSAGE = "Cooked asset reached the package preload."
+    SLANG_PROBE_SOURCE = "Assets/Kernels/platform_probe.slang"
+    SLANG_PROBE_INPUT = (-4, -1, 0, 2, 5)
 
     def awake(self):
         self._probe = None
@@ -50,6 +54,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._release_acceptance = os.environ.get("_INFERNUX_FIXTURE_RELEASE_ACCEPTANCE") == "1"
         self._release_steps = 0
         self._release_capture = None
+        self._slang_probe = None
+        self._slang_result = None
 
     def start(self):
         inx.jit.warmup(cpu_jit_probe, 7)
@@ -185,6 +191,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
 
     def update(self, delta_time: float):
         del delta_time
+        if self._slang_result is None and inx.Application.is_player():
+            self._update_resident_slang_probe()
         self._validate_camera_clear()
         self._validate_render_settings()
         self._validate_screen_state()
@@ -195,8 +203,59 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         if self._release_acceptance:
             self._validate_release_execution()
 
+    def _update_resident_slang_probe(self):
+        if self._slang_probe is None:
+            from infernux._compiler.gpu_artifact import _read_artifact
+
+            # The link-time value is chosen after the cooked Player starts.
+            bias = monotonic_ns() & 0x3fff_ffff
+            kernel = inx.compute.kernel(
+                self.SLANG_PROBE_SOURCE, entry_point="platform_probe", domain="values",
+                constants={"probe_bias": bias},
+            )
+            count = len(self.SLANG_PROBE_INPUT)
+            source = inx.compute.buffer(shape=count, dtype="int32", device="gpu", data=self.SLANG_PROBE_INPUT)
+            output = inx.compute.buffer(shape=count, dtype="int32", device="gpu", data=[0] * count)
+            arguments = (source, output)
+            artifacts = Path(inx.Application.data_path()) / "Library/Artifacts/Compute"
+            before = set(artifacts.glob("*.inxgpu"))
+            inx.compute.prepare(kernel, arguments)
+            inx.compute.launch(kernel, arguments)
+            artifact_path, = set(artifacts.glob("*.inxgpu")) - before
+            _, compiled = _read_artifact(artifact_path)
+            expected_target = "wgsl" if sys.platform == "emscripten" else "spirv"
+            if compiled.target != expected_target or not compiled.native_dispatch:
+                raise RuntimeError(f"Platform Slang produced an unexpected artifact: {compiled.target}")
+            self._slang_probe = (output.get_data_async(), arguments, bias, compiled.target, compiled.identity)
+            return
+
+        readback, buffers, bias, target, artifact = self._slang_probe
+        if not readback.done:
+            return
+        with readback.get_data() as result:
+            values = [value - bias for value in result.numpy().tolist()]
+        ticket = readback.source_write_submission
+        for buffer in buffers:
+            buffer.close()
+        self._slang_probe = None
+        expected = [value * 3 for value in self.SLANG_PROBE_INPUT]
+        if values != expected or ticket is None or ticket[2] <= 0:
+            raise RuntimeError(f"Platform Slang GPU readback returned {values}, expected {expected}; producer={ticket}")
+        self._slang_result = dict(target=target, values=values, cold_artifact=artifact, source_write=ticket)
+        inx.Debug.log(
+            f"INFERNUX_PLATFORM_FIXTURE_SLANG_READY target={target} value={','.join(map(str, values))} "
+            f"cold_artifact={artifact} source_write={ticket}"
+        )
+
+    def on_destroy(self):
+        if self._slang_probe is not None:
+            readback, buffers, *_ = self._slang_probe
+            readback.cancel()
+            for buffer in buffers:
+                buffer.close()
+
     def _validate_release_execution(self):
-        if self._release_steps < 90:
+        if self._release_steps < 90 or self._slang_result is None:
             return
         root = Path(inx.Application.persistent_data_path())
         try:
@@ -226,6 +285,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
                 initial_position=self._release_initial_position, final_position=position,
                 trail_points=self._trail.position_count, package_text=self._package_status.text,
                 cpu_jit_result=cpu_jit_probe(7), managed_guid=self.MANAGED_MESSAGE_GUID,
+                resident_slang=self._slang_result,
                 renderer=renderer, capture=capture,
             )
             (root / "release-acceptance.json").write_text(

@@ -30,6 +30,14 @@ The bootstrap also invokes the public ``@inx.jit.compile`` and
 function; the Web exporter cooks the same source into ordinary Python bytecode.
 The Web CI checks the sealed bytecode and requires its exact result in Chromium.
 
+The same bootstrap specializes `Assets/Kernels/platform_probe.slang` at runtime
+with a link-time integer chosen after startup. It requires a newly emitted
+native GPU artifact (`spirv` on Vulkan or `wgsl` on WebGPU) and checks five
+integers returned by an asynchronous readback with a GPU producer ticket. The
+`INFERNUX_PLATFORM_FIXTURE_SLANG_READY` marker records the target, result,
+artifact identity, and producer ticket. The desktop Release report records the
+same information.
+
 The interactive Balance project remains the functional acceptance project for
 physics, animation, particles, LineRenderer, authored materials, and shared
 Action input. This fixture does not replace those device tests.

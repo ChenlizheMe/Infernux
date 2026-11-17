@@ -157,6 +157,7 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
         --startup-timeout 240 \
         --expect-landscape \
         --resume-cycles 2 \
+        --require-log "INFERNUX_PLATFORM_FIXTURE_SLANG_READY target=spirv value=-12,-3,0,6,15" \
         --report out/test-results/android-player-smoke.json
 
     "$python_executable" tests/acceptance/android_multitouch_smoke.py \
@@ -176,6 +177,7 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
         --no-back \
         --startup-timeout 240 \
         --resume-cycles 0 \
+        --require-log "INFERNUX_PLATFORM_FIXTURE_SLANG_READY target=spirv value=-12,-3,0,6,15" \
         --report out/test-results/android-release-smoke.json
 
     # Observe real Surface destruction/recreation and exercise input afterwards.

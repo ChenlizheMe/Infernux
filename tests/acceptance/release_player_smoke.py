@@ -36,6 +36,10 @@ def verify_evidence(evidence: dict, capture: Path) -> None:
         raise RuntimeError('Release physics or LineRenderer evidence is invalid')
     if evidence['cpu_jit_result'] != 84 or not evidence['renderer']['submission_ready']:
         raise RuntimeError('Release CPU compiler or renderer evidence is invalid')
+    resident = evidence['resident_slang']
+    if (resident['target'] != 'spirv' or resident['values'] != [-12, -3, 0, 6, 15]
+            or not resident['cold_artifact'] or resident['source_write'][2] <= 0):
+        raise RuntimeError('Release resident Slang did not produce a verified Vulkan dispatch')
     if evidence['package_text'] != 'Package resource reached UIText on every Player target.':
         raise RuntimeError('Release package resource did not reach the UI')
     if evidence['managed_guid'] != '8b7148eba8303c90b0589315c16f7cba':
