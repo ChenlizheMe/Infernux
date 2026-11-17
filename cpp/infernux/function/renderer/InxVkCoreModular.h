@@ -44,8 +44,13 @@ namespace infernux
 {
 
 class FullscreenPipelineCache;
+class RenderWorldFrame;
 struct FullscreenProgram;
 struct SceneDepthResolveProgram;
+namespace raytracing
+{
+class RayWorldGeometry;
+}
 namespace lighting
 {
 struct ForwardPlusGridPipeline;
@@ -507,6 +512,7 @@ class InxVkCoreModular
     {
         return m_frameWorkOwner;
     }
+    [[nodiscard]] raytracing::RayWorldGeometry &GetWorldRayGeometry();
     [[nodiscard]] uint64_t GetStagingPoolBytes() const noexcept
     {
         return m_resourceManager.GetStagingPoolBytes();
@@ -1334,6 +1340,7 @@ class InxVkCoreModular
     std::unordered_map<std::string, PendingTextureUpload> m_pendingTextureUploads;
     uint64_t m_nextTextureWorkToken = 1, m_nextTextureHost = 0, m_nextTextureGpu = 0;
     FrameWorkOwner *m_frameWorkOwner = nullptr;
+    std::unique_ptr<raytracing::RayWorldGeometry> m_worldRayGeometry;
     std::unordered_map<std::string, FailedTextureUpload> m_failedTextureUploads;
     std::function<std::shared_ptr<rhi::RenderTexture>(const std::string &)> m_renderTextureAssetLoader;
     std::unordered_map<std::string, std::weak_ptr<InxMaterial>> m_materialTextureOwners;

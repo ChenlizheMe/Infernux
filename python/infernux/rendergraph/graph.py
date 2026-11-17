@@ -1550,6 +1550,18 @@ class RenderGraph:
                 return buffer
         return self._create_frame_buffer("surface_records", _GraphFrameBuffer.WORLD_SURFACES)
 
+    def _create_world_ray_geometry(self) -> BufferHandle:
+        """Request read-only uvec4 words for the native view's frozen World.
+
+        A pending build holds that view's admission. A terminal unavailable
+        page has its own status and must not be traced as an empty World.
+        """
+        source = _GraphFrameBuffer.WORLD_RAY_GEOMETRY
+        for buffer in self._buffers:
+            if buffer._frame_buffer == source:
+                return buffer
+        return self._create_frame_buffer("world_ray_geometry", source)
+
     def _create_frame_buffer(self, name: str, source) -> BufferHandle:
         handle = self.create_buffer(name, 16)
         handle._frame_buffer = source

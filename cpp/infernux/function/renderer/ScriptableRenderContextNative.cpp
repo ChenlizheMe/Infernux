@@ -452,6 +452,8 @@ bool ScriptableRenderContext::ExecutePlan(const std::shared_ptr<const RenderView
         if (!ApplyGraph(*plan->graph))
             return false;
     }
+    if (m_graph->RequiresWorldRayGeometry())
+        m_graph->SetWorldRayGeometry(m_renderWorldOwner);
     UpdateParameterBlocks(plan->parameters);
     m_graph->SetAppliedPlan(plan);
     m_orderedDrawCalls = plan->draws;

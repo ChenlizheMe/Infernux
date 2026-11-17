@@ -15,6 +15,7 @@
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
 #include "lighting/ForwardPlusLightGrid.h"
+#include "raytracing/RayWorldGeometry.h"
 #include "vk/RhiVulkanTypes.h"
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
@@ -123,8 +124,20 @@ std::shared_ptr<const lighting::ForwardPlusGridPipeline> InxVkCoreModular::GetFo
     return m_forwardPlusProgram;
 }
 
+raytracing::RayWorldGeometry &InxVkCoreModular::GetWorldRayGeometry()
+{
+    if (!m_worldRayGeometry) {
+        if (!m_frameWorkOwner)
+            throw std::logic_error("World ray geometry requires a frame work owner");
+        m_worldRayGeometry =
+            std::make_unique<raytracing::RayWorldGeometry>(*m_frameWorkOwner, GetDeviceContext().GetRhiDevice());
+    }
+    return *m_worldRayGeometry;
+}
+
 InxVkCoreModular::~InxVkCoreModular()
 {
+    m_worldRayGeometry.reset();
     // Renderer construction precedes SDL/Vulkan startup.  If window creation
     // fails, this object is still destroyed even though no Vulkan instance or
     // device ever existed.  The normal teardown below assumes initialized

@@ -56,6 +56,10 @@
 
 namespace infernux
 {
+namespace raytracing
+{
+class RayWorldGeometryPublication;
+}
 namespace rhi
 {
 class BufferResource;
@@ -661,6 +665,11 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// same raw handle values, so handle equality cannot keep these views.
     void InvalidateParticleViews();
     void SetSurfaceRecords(std::shared_ptr<const RenderSurfaceRecords> records);
+    [[nodiscard]] bool RequiresWorldRayGeometry() const noexcept
+    {
+        return m_worldRayRequested;
+    }
+    void SetWorldRayGeometry(const std::shared_ptr<const RenderWorldFrame> &world);
 
     /// @brief Clear cached draw calls and camera state.
     ///
@@ -676,6 +685,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_worldSurfaceRecords.reset();
         m_worldSurfaceBuffer.reset();
         m_worldSurfaceHandle = {};
+        m_worldRayPublication.reset();
+        m_worldRayBuffer.reset();
+        m_worldRayHandle = {};
+        m_worldRayPending = false;
         InvalidateParticleViews();
         RetireWorkInstances();
         InvalidatePerViewShadowBindings();
@@ -1039,6 +1052,11 @@ class SceneRenderGraph : public NativeLifetimeOwner
     std::shared_ptr<const RenderSurfaceRecords> m_worldSurfaceRecords;
     std::shared_ptr<const rhi::BufferResource> m_worldSurfaceBuffer;
     vk::ResourceHandle m_worldSurfaceHandle;
+    std::shared_ptr<const raytracing::RayWorldGeometryPublication> m_worldRayPublication;
+    std::shared_ptr<const rhi::BufferResource> m_worldRayBuffer;
+    vk::ResourceHandle m_worldRayHandle;
+    bool m_worldRayRequested = false;
+    bool m_worldRayPending = false;
     bool m_hasShadowCasterPass = false;
     // Shadow attachments belong to one camera graph and survive across graph
     // executions. Static scenes can therefore preserve the atlas until an

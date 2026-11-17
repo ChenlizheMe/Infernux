@@ -173,7 +173,8 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
     py::enum_<GraphFrameBuffer>(m, "_GraphFrameBuffer")
         .value("NONE", GraphFrameBuffer::None)
         .value("VIEW_LIGHTS", GraphFrameBuffer::ViewLights)
-        .value("WORLD_SURFACES", GraphFrameBuffer::WorldSurfaces);
+        .value("WORLD_SURFACES", GraphFrameBuffer::WorldSurfaces)
+        .value("WORLD_RAY_GEOMETRY", GraphFrameBuffer::WorldRayGeometry);
 
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())

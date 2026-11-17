@@ -25,6 +25,7 @@
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuSorter.h"
+#include "raytracing/RayWorldGeometry.h"
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiComputeKernel.h"
 #include "vk/RhiVulkanTypes.h"
@@ -476,7 +477,7 @@ bool SceneRenderGraph::HasPendingBufferInputs(bool forStep) const
     // revision is only a ready marker here; another view changing its bindings
     // must not withhold this view. Retry the retained plan after uploads finish
     // rather than publishing a clear-only image as the completed World frame.
-    return (m_hasCachedDrawCalls && m_cachedObjectBufferRevision == 0) ||
+    return m_worldRayPending || (m_hasCachedDrawCalls && m_cachedObjectBufferRevision == 0) ||
            std::any_of(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), [forStep](const auto *buffer) {
                return buffer->input->IsWaitingForResult() && (!forStep || buffer->input->HoldsStep());
            });
@@ -1393,6 +1394,25 @@ void SceneRenderGraph::SetSurfaceRecords(std::shared_ptr<const RenderSurfaceReco
     m_needsRebuild |= hasSurfaceInput && !rebound;
 }
 
+void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWorldFrame> &world)
+{
+    if (!world)
+        throw std::logic_error("World ray geometry requires an acquired RenderWorld");
+    auto binding = m_vkCore->GetWorldRayGeometry().Acquire(world, m_worldRayPublication);
+    // Keep the already selected Game World admission pending until its own
+    // geometry settles. Accepting a placeholder would consume the source.
+    m_worldRayPending = binding.pending;
+    auto &next = binding.buffer;
+    if (next == m_worldRayBuffer)
+        return;
+    const bool rebound =
+        m_graphBuilt && !m_needsRebuild && m_worldRayHandle.IsValid() && m_worldRayBuffer &&
+        m_worldRayBuffer->GetByteSize() == next->GetByteSize() &&
+        m_renderGraph->RebindImportedBuffers({{m_worldRayHandle, next->GetBuffer(), rhi::QueueRole::Graphics, false}});
+    m_worldRayBuffer = std::move(next);
+    m_needsRebuild |= !rebound;
+}
+
 bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 {
     if (desc.sourceRevision != 0 && m_rejectedFullscreenSourceRevision == desc.sourceRevision)
@@ -1409,6 +1429,11 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             m_renderGraph->Reset();
         m_liveBufferInputs.clear();
         m_pythonGraphDesc = std::move(attempted);
+        m_worldRayRequested = false;
+        m_worldRayPending = false;
+        m_worldRayHandle = {};
+        m_worldRayPublication.reset();
+        m_worldRayBuffer.reset();
         m_hasPythonGraph = true;
         m_pythonGraphValid = false;
         m_graphBuilt = false;
@@ -1702,6 +1727,15 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         m_importedTextureBindings.clear();
     }
     m_pythonGraphDesc = std::move(normalizedDesc);
+    m_worldRayRequested =
+        std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                    [](const auto &buffer) { return buffer.frameBuffer == GraphFrameBuffer::WorldRayGeometry; });
+    if (!m_worldRayRequested) {
+        m_worldRayPending = false;
+        m_worldRayHandle = {};
+        m_worldRayPublication.reset();
+        m_worldRayBuffer.reset();
+    }
     m_hasPythonGraph = true;
     m_pythonGraphValid = true;
     m_pythonGraphSourceRevision = desc.sourceRevision;
@@ -3576,6 +3610,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
         };
         m_worldSurfaceBuffer.reset();
         m_worldSurfaceHandle = {};
+        m_worldRayHandle = {};
         for (const auto &description : m_pythonGraphDesc.buffers) {
             if (!description.HasFrameBuffer())
                 continue;
@@ -3586,6 +3621,12 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     importFrameBuffer(binding, frameIndex, "View/LightList/Frame" + std::to_string(frameIndex),
                                       lights.buffer, lights.capacityBytes);
                 }
+            } else if (description.frameBuffer == GraphFrameBuffer::WorldRayGeometry) {
+                if (!m_worldRayBuffer)
+                    throw std::logic_error("A World ray geometry view must bind its frozen input before graph build");
+                importFrameBuffer(binding, 0, "World/RayGeometry", m_worldRayBuffer->GetBuffer(),
+                                  m_worldRayBuffer->GetByteSize());
+                m_worldRayHandle = binding.handles[0];
             } else {
                 if (!m_worldSurfaceRecords)
                     throw std::runtime_error("Surface records require an acquired RenderWorld");
