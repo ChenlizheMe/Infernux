@@ -621,10 +621,17 @@ class ModelLoadRequest(CpuRequest):
         if self.program_definition is not None and self.program_definition != definition:
             raise ValueError("checkpoint programs require a built model with the same fixed definition")
         entries = _model_entries(definition, flags, record.get("optimizer"))
+        source, program_files = None, ()
         if "programs" in record:
+            from infernux.nn._programs import select_source
+
+            source, sizes = select_source(record["programs"], self.device)
+            program_files = sizes.items()
+        _check_entries(self.manifest, entries, program_files)
+        if source is not None:
             from .model_program_input import ModelProgramInput
-            self.program_input = ModelProgramInput(self.path, record["programs"], self.device, self.metadata_limit, self.file)
-        _check_entries(self.manifest, entries, () if self.program_input is None else self.program_input.source.file_sizes.items())
+
+            self.program_input = ModelProgramInput(self.path, source, self.metadata_limit, self.file)
         self.definition, self.entries = definition, entries
         self.read_recipes = tuple(self.file.describe_read_work(name, windowed=self.device == "gpu")
                                   for name, _, _, _ in entries)

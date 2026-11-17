@@ -5,7 +5,7 @@ import numbers
 from infernux import compute
 from infernux._compiler.kernel_contract import ARRAY_KINDS
 from infernux.cpu_programs import (NativeCpuLibrary, NativeCpuProgram, library_directory,
-    _library_path, _require_cpu_target)
+    _library_path, native_cpu_target)
 
 
 def recipe(function, params, facts):
@@ -61,13 +61,12 @@ def _bind_family(program, variants):
 
 
 def _catalogue(record):
-    """Validate the serialized catalogue before any code or numerical IO."""
+    """Validate the serialized catalogue independently of the selected target."""
     device = record["device"]
     identities = [row["identity"] for row in record["entries"]]
     if len(set(identities)) != len(identities):
         raise ValueError("model program entries must have unique identities")
     if device == "cpu":
-        _require_cpu_target(record["library"]["target"])
         path = "programs/" + _library_path(".", record["library"]).name
         files = {path: record["library"]["bytes"]}
     elif device == "gpu":
@@ -207,8 +206,15 @@ def load_programs(directory, source, reader):
         raise
 
 
-def create_source(record):
-    if record["device"] == "gpu":
+def select_source(record, device):
+    """Select optional code for the requested device and retain its file directory."""
+    program_device = record["device"]
+    if program_device == device == "gpu":
         from ._gpu_programs import GpuProgramSource
-        return GpuProgramSource(record)
-    return CpuProgramSource(record)
+        source = GpuProgramSource(record)
+    elif program_device == device == "cpu" and record["library"]["target"] == native_cpu_target():
+        source = CpuProgramSource(record)
+    else:
+        files, _ = _catalogue(record)
+        return None, files
+    return source, source.file_sizes

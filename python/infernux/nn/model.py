@@ -165,8 +165,8 @@ def bake(model, path, *, optimizer=None, objective="mse"):
 
     With its optimizer, include loss/backward/update and zero_grad(False) programs without
     executing training. This is a model asset, not optimizer/checkpoint state.
-    CPU and GPU programs are stored in the same model container. Loading either
-    needs no source compiler; CPU code materializes in the common program cache.
+    Programs for the model's device are stored with its portable definition.
+    Loading matching code needs no source compiler. CPU code materializes in the common program cache.
     Player cook is a separate step; this explicit cold call is not frame work.
     """
     return _bake(model, path, optimizer=optimizer, objective=objective)
@@ -404,22 +404,22 @@ def _read(path, device, kind, programs=None):
         record = _read_header(facts)
         definition, flags = _read_facts(record, kind)
         manifest = {row["path"]: row["raw_bytes"] for row in facts["files"]}
+        program_files = ()
         if "programs" in record:
             from pathlib import Path
-            from ._programs import create_source, load_programs
-            source = owned_source = create_source(record["programs"])
-            source.require_device(device)
+            from ._programs import load_programs, select_source
+
+            source, sizes = select_source(record["programs"], device)
+            owned_source = source
+            program_files = sizes.items()
         entries = _model_entries(definition, flags, record.get("optimizer"))
-        _check_entries(manifest, entries,
-                       () if owned_source is None else owned_source.file_sizes.items())
+        _check_entries(manifest, entries, program_files)
         if owned_source is not None:
             load_programs(Path(os.fsdecode(path)).resolve().parent, owned_source, reader)
         if programs is not None:
             expected, source = _checkpoint_programs(programs, device)
             if kind != "checkpoint" or expected != definition:
                 raise ValueError("checkpoint programs require a built model with the same fixed definition")
-        if source is not None:
-            source.require_device(device)
         for name, index, kind, shape in entries:
             storage = _empty(shape, "cpu")
             buffers.append(storage)
@@ -458,10 +458,12 @@ def _managed_load(path, device, kind, programs, window, budget, finish_within_ms
 def load(path, *, device="cpu", finish_within_frames=None, finish_within_ms=None, budget=None):
     """Load a fixed graph/weights without importing its author class.
 
-    A baked file uses its built programs on the ordinary Plan. An export without
-    code uses the compiler on first prepare. A budget, host-frame window or millisecond target schedules
-    program input and parameter transfers on the same managed owner; result
-    publishes the complete Module. Player cook is a separate step.
+    A baked file with programs for the requested device uses them on the ordinary
+    Plan. If the file only has code for a different device or native CPU platform,
+    the fixed definition and weights load alone and compile on first prepare.
+    A budget, host-frame window or millisecond target schedules input and parameter
+    transfers on the same managed owner. The result publishes the complete Module.
+    Player cook is a separate step.
     """
     if any(value is not None for value in (finish_within_frames, finish_within_ms, budget)):
         return _managed_load(path, device, "model", None, finish_within_frames, budget, finish_within_ms)

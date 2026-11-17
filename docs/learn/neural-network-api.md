@@ -239,7 +239,7 @@ ready.emit(materials, targets)
 | --- | --- |
 | `nn.export(model, path)` | 保存自含固定模型结构和参数的 `.inm` |
 | `nn.save_checkpoint(model, optimizer, path)` | 保存参数、可选梯度及当前 SGD/Adam 状态 |
-| `nn.load(path, device=...)` | 恢复固定模型，无需原作者 Python 类 |
+| `nn.load(path, device=...)` | 从定义和权重恢复固定模型，无需原作者 Python 类。若嵌入程序属于其他设备或 CPU 平台，首次 `prepare` 在所请求的设备上准备内建算子 |
 | `nn.load_checkpoint(path, device=..., programs=...)` | 恢复模型和优化器；可借入已有预编译程序 |
 | `finish_within_frames=...` 与 `budget=...` | 将上述保存或加载交给当前引擎共同执行管道，返回可观察请求；默认调用同步完成 |
 | `nn.bake(model, path, optimizer=..., objective="mse")` | 冷构建并封装目标设备的预编译程序；附优化器时封装对应 mse、cross_entropy 或 scalar 训练程序，不预先固化逐帧调度表 |

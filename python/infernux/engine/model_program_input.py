@@ -5,15 +5,13 @@ import numpy as np
 
 from infernux.cpu_programs import NativeCpuLibrary, library_directory, _library_path
 from infernux._compiler.gpu_artifact import _artifact_header_bytes
-from infernux.nn._programs import create_source
 from .io_service import recipe_service
 from .service_windows import ServiceDemand
 
 
 class ModelProgramInput:
-    def __init__(self, path, record, device, metadata_limit, archive):
-        self.source = create_source(record)
-        self.source.require_device(device)
+    def __init__(self, path, source, metadata_limit, archive):
+        self.source = source
         self.directory = Path(path).parent
         self.metadata_limit = metadata_limit
         self.stage = "declare"
@@ -22,10 +20,10 @@ class ModelProgramInput:
         self.payload = None
         self.index = 0
         self.header_bytes = 0
-        self.code_bytes = sum(self.source.file_sizes.values()) if device == "gpu" else 0
+        self.code_bytes = sum(source.file_sizes.values()) if source.device == "gpu" else 0
         self.committed = False
-        self.read_recipes = (tuple(archive.describe_read_work(row["path"]) for row in record["entries"])
-                             if device == "gpu" else ())
+        self.read_recipes = (tuple(archive.describe_read_work(row["path"]) for row in source.record["entries"])
+                             if source.device == "gpu" else ())
 
     @property
     def pending(self):

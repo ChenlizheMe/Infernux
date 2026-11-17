@@ -3,6 +3,7 @@
 from itertools import chain
 from pathlib import Path
 import tempfile
+from time import sleep
 from unittest.mock import patch
 
 import numpy as np
@@ -479,6 +480,24 @@ def check_linear_batches(device):
           device, flush=True)
 
 
+def check_model_target_reconstruction(engine, path, inputs, expected):
+    loaded = nn.load(path, device=inputs.device)
+    request = nn.load(path, device=inputs.device, finish_within_frames=300)
+    for _ in range(300):
+        if request.done:
+            break
+        engine.tick(1. / 60.)
+        sleep(.001)
+    assert request.done and request.status == "published", (request.reason, request.metrics)
+    assert request.metrics.get("program_materialized_bytes", 0) == 0, request.metrics
+    assert request.metrics.get("program_read_bytes", 0) == 0, request.metrics
+    for model in (loaded, request.result):
+        assert model._program_source is None
+        model.prepare(inputs)
+        np.testing.assert_allclose(model(inputs).detach().cpu().numpy(), expected, rtol=2e-5, atol=2e-6)
+    print(f"Baked model reconstructed for {inputs.device} through cold and managed load", flush=True)
+
+
 def main():
     workspace = tempfile.TemporaryDirectory(prefix="infernux-slang-network-")
     project = Path(workspace.name)
@@ -529,6 +548,7 @@ def main():
         nn.save_checkpoint(gpu, optimizer_gpu, str(project / "checkpoint.inm"))
         checkpoint, optimizer = nn.load_checkpoint(str(project / "checkpoint.inm"), device="gpu", programs=baked)
         np.testing.assert_allclose(checkpoint(xgpu).detach().cpu().numpy(), expected, rtol=2e-5, atol=2e-6)
+        check_model_target_reconstruction(engine, str(project / "baked.inm"), xcpu, expected)
         print("MLP forward/backward/SGD/export/bake/checkpoint passed", flush=True)
         check_grad("cpu")
         check_grad("gpu")

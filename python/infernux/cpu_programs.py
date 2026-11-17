@@ -35,19 +35,17 @@ def _library_path(directory, record):
 
 
 def library_filename(target, digest):
-    return "nn-" + digest + _SUFFIX[target]
+    try:
+        suffix = _SUFFIX[target]
+    except KeyError:
+        raise ValueError(f"unknown native CPU program target {target!r}") from None
+    return "nn-" + digest + suffix
 
 
 def native_cpu_target():
     from . import lib
 
     return lib._Infernux._native_cpu_program_target
-
-
-def _require_cpu_target(target):
-    host = native_cpu_target()
-    if host is None or target != host:
-        raise ValueError(f"CPU program target {target} cannot run on {host or 'this host'}")
 
 
 def stage_library(source, directory, record):
