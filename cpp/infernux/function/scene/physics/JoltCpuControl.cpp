@@ -44,7 +44,7 @@ struct JoltCpuControl::State
     };
     struct Import
     {
-        std::shared_ptr<std::optional<JoltBodyTransfer>> state;
+        std::vector<JoltBodyImport> bodies;
     };
     struct Move
     {
@@ -220,12 +220,12 @@ struct JoltCpuControl::State
         bindings.erase(body);
     }
 
-    void Apply(uint32_t body, const Import &import, const RetiredJoints &)
+    void Apply(uint32_t, const Import &import, const RetiredJoints &)
     {
-        const auto &value = import.state->value();
-        scene.RestoreBodyTransfer(body, value);
-        if (value.drive)
-            drives.insert_or_assign(body, *value.drive);
+        scene.RestoreBodyTransfers(import.bodies);
+        for (const auto &[id, state] : import.bodies)
+            if (const auto &drive = state->value().drive)
+                drives.insert_or_assign(id, *drive);
     }
 
     void Apply(uint32_t body, const Command &command, const RetiredJoints &)
@@ -429,7 +429,9 @@ void JoltCpuControl::StageTransfers(const std::vector<BodyTransfer> &bodies)
     const auto &system = state.scene.System();
     if (bodies.size() > system.GetMaxBodies() - system.GetNumBodies())
         throw std::length_error("CPU physics body capacity is insufficient for the transfer");
-    state.pending.reserve(state.pending.size() + bodies.size());
+    std::vector<JoltBodyImport> imports;
+    imports.reserve(bodies.size());
+    state.pending.reserve(state.pending.size() + 1);
     size_t created = 0;
     try {
         for (const auto &[import, prepared] : bodies) {
@@ -448,6 +450,7 @@ void JoltCpuControl::StageTransfers(const std::vector<BodyTransfer> &bodies)
                 throw;
             }
             ++created;
+            imports.push_back(import);
         }
     } catch (...) {
         for (size_t index = 0; index < created; ++index) {
@@ -457,8 +460,7 @@ void JoltCpuControl::StageTransfers(const std::vector<BodyTransfer> &bodies)
         }
         throw;
     }
-    for (const auto &body : bodies)
-        state.pending.push_back({body.import.id, State::Import{body.import.state}});
+    state.pending.push_back({UINT32_MAX, State::Import{std::move(imports)}});
 }
 
 JoltBodyTransfer JoltCpuControl::ReadBodyTransfer(uint32_t bodyId) const

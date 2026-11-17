@@ -1757,7 +1757,7 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
     }
 
     if (toGpu) {
-        if (!EnsureGpuReady(domain))
+        if (!EnsureGpuReady(domain) || !EnsureStaticBoundaries(domain, Backend::Gpu))
             return false;
         bool retiringReplicas = false;
         for (const auto id : moving) {
@@ -1814,6 +1814,9 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
         RetireCpuJointRoutes(jointIds);
     } else {
         EnsureCpuReady(domain);
+        // Destination geometry must precede the imported sleep state. A
+        // lazily created floor would otherwise wake the group at first use.
+        (void)EnsureStaticBoundaries(domain, Backend::Cpu);
         for (const auto id : moving) {
             auto &entry = m_bodyActors.at(id);
             if (entry.cpuStaged) {

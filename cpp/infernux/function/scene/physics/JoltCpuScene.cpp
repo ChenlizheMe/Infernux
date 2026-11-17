@@ -312,20 +312,29 @@ JoltBodyTransfer JoltCpuScene::ReadBodyTransfer(uint32_t bodyId) const
             AcceptedAwake(record, body)};
 }
 
-void JoltCpuScene::RestoreBodyTransfer(uint32_t bodyId, const JoltBodyTransfer &value)
+void JoltCpuScene::RestoreBodyTransfers(const std::vector<JoltBodyImport> &imports)
 {
-    // Install the import before later author commands and before this body can
-    // enter a Fixed's constraint graph. Creation already accepted its shape.
-    SetBodyOriginPose(bodyId, value.position, value.rotation);
-    if (value.resident)
-        AddBodiesBatch({bodyId});
-    SetBodyVelocity(bodyId, value.linearVelocity, value.angularVelocity);
-    SetBodyAwake(bodyId, value.awake);
-    auto &record = m_bodies.at(bodyId);
-    JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
-    if (auto *motion = lock.GetBody().GetMotionPropertiesUnchecked())
-        motion->SetAccumulatedForceAndTorque(value.force, value.torque);
-    MarkPoseUpdate(bodyId, record);
+    std::vector<uint32_t> resident;
+    resident.reserve(imports.size());
+    for (const auto &[id, state] : imports) {
+        const auto &value = state->value();
+        SetBodyOriginPose(id, value.position, value.rotation);
+        if (value.resident)
+            resident.push_back(id);
+    }
+    AddBodiesBatch(resident);
+    // Establish broadphase residence for the group before restoring sleep.
+    // Adding later members can otherwise wake already restored neighbours.
+    for (const auto &[id, state] : imports) {
+        const auto &value = state->value();
+        SetBodyVelocity(id, value.linearVelocity, value.angularVelocity);
+        SetBodyAwake(id, value.awake);
+        auto &record = m_bodies.at(id);
+        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
+        if (auto *motion = lock.GetBody().GetMotionPropertiesUnchecked())
+            motion->SetAccumulatedForceAndTorque(value.force, value.torque);
+        MarkPoseUpdate(id, record);
+    }
 }
 
 PhysicsBodyMotionState JoltCpuScene::SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,

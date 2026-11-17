@@ -205,7 +205,7 @@ class JoltCpuScene final : private JPH::ContactListener,
     };
     static BodyRecord CaptureBodyRecord(const PreparedCpuActor &actor);
     [[nodiscard]] JoltBodyTransfer ReadBodyTransfer(uint32_t bodyId) const;
-    void RestoreBodyTransfer(uint32_t bodyId, const JoltBodyTransfer &);
+    void RestoreBodyTransfers(const std::vector<JoltBodyImport> &);
     static PhysicsBodyMotionState SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,
                                                     PhysicsStateFields fields, bool *sleeping = nullptr);
     static bool AcceptedAwake(const BodyRecord &record, const JPH::Body &body);
