@@ -21,6 +21,15 @@ ARRAY_DTYPES = {"array_f32": "float32", "array_i32": "int32", "array_u32": "uint
 ARRAY_KINDS = {dtype: kind for kind, dtype in ARRAY_DTYPES.items()}
 
 
+def slang_asset_path(value) -> str:
+    from infernux.engine.path_utils import portable_relative_path
+
+    path = portable_relative_path(value)
+    if not path.casefold().startswith("assets/") or not path.casefold().endswith(".slang"):
+        raise ValueError("Project Slang sources require a .slang file under Assets")
+    return path
+
+
 def attribute_name(node: ast.expr) -> str:
     """Return a dotted decorator name, or an empty string for expressions."""
 

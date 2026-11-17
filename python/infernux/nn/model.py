@@ -266,11 +266,15 @@ def save_checkpoint(model, optimizer, path, *, finish_within_frames=None, finish
 def _definition(record):
     parameters = tuple(_ParameterSpec(row["name"], tuple(row["shape"]), row["requires_grad"])
                        for row in record["parameters"])
-    layers = tuple(_Layer(**{key: tuple(value) if isinstance(value, list) else value for key, value in row.items()})
-                   for row in record["layers"])
+    layers = []
+    for row in record["layers"]:
+        fields = {key: tuple(value) if isinstance(value, list) else value for key, value in row.items()}
+        if fields["kind"] == "slang_unary" and len(fields["options"]) == 3:
+            fields["options"] = p.scalar_slang_definition(*fields["options"])
+        layers.append(_Layer(**fields))
     inputs = tuple(_InputSpec(tuple(row["shape"]), row["requires_grad"], row["dtype"]) for row in record["inputs"])
     result = record.get("result")
-    return _Definition(inputs, record["training"], parameters, layers,
+    return _Definition(inputs, record["training"], parameters, tuple(layers),
                        tuple(result) if isinstance(result, list) else result)
 
 

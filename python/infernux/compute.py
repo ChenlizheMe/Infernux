@@ -3103,13 +3103,7 @@ def kernel(function, *, entry_point=None, domain=None, libraries=None, constants
     can select ``[numthreads(tile, 1, 1)]`` in the project source.
     """
     if isinstance(function, (str, PathLike)):
-        from infernux.engine.path_utils import portable_relative_path
-
-        def asset_path(value):
-            path = portable_relative_path(value)
-            if not path.casefold().startswith("assets/") or not path.casefold().endswith(".slang"):
-                raise ValueError("Slang compute sources require a .slang file under Assets")
-            return path
+        from infernux._compiler.kernel_contract import slang_asset_path
 
         if not isinstance(entry_point, str) or not entry_point or not isinstance(domain, str) or not domain:
             raise TypeError("Slang compute kernels require an entry_point and a domain buffer name")
@@ -3124,8 +3118,8 @@ def kernel(function, *, entry_point=None, domain=None, libraries=None, constants
                 raise TypeError(f"Slang link constant '{name}' requires a Python int")
             if not -(1 << 31) <= value < (1 << 31):
                 raise ValueError(f"Slang link constant '{name}' must fit a signed 32-bit int")
-        modules = tuple((name, asset_path(value)) for name, value in sorted(sources.items()))
-        return Kernel._from_slang(asset_path(function), entry_point, domain, modules, tuple(sorted(values.items())))
+        modules = tuple((name, slang_asset_path(value)) for name, value in sorted(sources.items()))
+        return Kernel._from_slang(slang_asset_path(function), entry_point, domain, modules, tuple(sorted(values.items())))
     if entry_point is not None or domain is not None or libraries is not None or constants is not None:
         raise TypeError("entry_point, domain, libraries and constants describe a project Slang kernel")
     if isinstance(function, staticmethod):

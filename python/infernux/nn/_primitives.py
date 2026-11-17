@@ -847,11 +847,23 @@ def grid_sample_dgrid(x, grid, upstream, downstream):
     downstream[i] = total
 
 
-def scalar_slang_definition(entry_point, source):
+def scalar_slang_definition(entry_point, source, libraries=()):
     if (type(entry_point) is not str or not entry_point.isascii() or not entry_point.isidentifier()
             or type(source) is not str or not source.strip() or "\0" in source):
         raise ValueError("SlangUnary requires a Slang module source and an ASCII entry point identifier")
-    return entry_point, source
+    if not libraries:
+        return entry_point, source
+    names = set()
+    modules = []
+    for name, path, text in libraries:
+        if (type(name) is not str or not name.isascii() or not name.isidentifier()
+                or name in ("inx_nn_scalar", "inx_nn_scalar_jvp") or name in names):
+            raise ValueError("SlangUnary requires distinct Slang library identifiers")
+        if type(path) is not str or type(text) is not str:
+            raise ValueError("SlangUnary library definitions require a source path and text")
+        names.add(name)
+        modules.append((name, path, text))
+    return entry_point, source, tuple(sorted(modules))
 
 
 def _prepare_scalar_slang(function, params, definition, *, jvp):

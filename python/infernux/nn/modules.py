@@ -513,19 +513,27 @@ class SlangUnary(_Activation):
     """Apply a pure Slang scalar function to a float32 GPU tensor.
 
     Provide a public ``[Differentiable] float`` function with one float argument
-    in self-contained Slang source. Each element is independent and the
-    function must avoid resource access, mutable state and cross-lane work.
-    The source travels with the fixed model definition. Ordinary forward,
+    in Slang source. Each element is independent and the function must avoid
+    resource access, mutable state and cross-lane work. ``libraries`` maps Slang
+    import names to project ``Assets/.../*.slang`` paths for the entire import
+    closure. The source and its libraries are captured when this module is
+    created and travel with the fixed model definition. Ordinary forward,
     first-order backward and ``autograd.jvp`` share the existing GPU Work.
     """
 
     _kind = "slang_unary"
 
-    def __init__(self, source, *, entry_point="forward"):
+    def __init__(self, source, *, entry_point="forward", libraries=None):
         from ._primitives import scalar_slang_definition
 
         super().__init__()
-        self.options = scalar_slang_definition(entry_point, source)
+        modules = ()
+        if libraries:
+            from infernux._compiler.kernel_contract import slang_asset_path
+            from infernux._compiler.slang import read_slang_libraries
+
+            modules = read_slang_libraries((name, slang_asset_path(path)) for name, path in libraries.items())
+        self.options = scalar_slang_definition(entry_point, source, modules)
 
 
 class Tanh(_Activation):

@@ -139,7 +139,7 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
 
 def _link_scalar_row(plan, definition, *, jvp):
     """Substitute a scalar call while retaining the row wrapper's buffer accesses."""
-    entry_point, source = definition
+    entry_point, source, *dependencies = definition
     (assignment,) = plan.definition.body
     if not isinstance(assignment, ast.Assign):
         raise ValueError("A linked Slang scalar requires a direct row-copy wrapper")
@@ -169,8 +169,11 @@ public float directional(float x, float dx) {{
         raise ValueError("A linked Slang scalar requires direct buffer row inputs")
     assignment.value = ast.copy_location(ast.Call(ast.Name(symbol, ast.Load()), arguments, []), value)
     plan.library_functions[symbol] = Function(function, "float", ("float",) * len(arguments))
-    plan.libraries = ((module, path, library),)
+    modules = dependencies[0] if dependencies else ()
+    plan.libraries = ((module, path, library), *modules)
     plan.source_locations += ({"role": "library", "path": path, "function": entry_point, "line": 1, "column": 1},)
+    plan.source_locations += tuple({"role": "library", "path": origin, "line": 1, "column": 1}
+                                   for _, origin, _ in modules)
     # The buffers still obey the row-address contract. The Slang body has no
     # bounded service-cost estimate for managed scheduling.
     plan.continuation = replace(plan.continuation, operation_cost=0, cost_source="authored_scalar_slang")
@@ -839,17 +842,22 @@ class _SlangKernelSource:
 def _read_slang_kernel_source(path, entry_point, domain, libraries, constants, *, read_source):
     if constants and any(name == _SLANG_CONSTANTS_MODULE for name, _ in libraries):
         raise ValueError(f"Slang library name '{_SLANG_CONSTANTS_MODULE}' is used for link constants")
-    modules = tuple((name, asset, read_source(asset)) for name, asset in libraries)
+    modules = read_slang_libraries(libraries, read_source=read_source)
     return _SlangKernelSource(path, entry_point, domain, read_source(path), modules, constants)
 
 
-def compile_slang_kernel(path, entry_point, domain, libraries, constants, params, *, target):
+def _read_slang_asset(asset):
     from infernux.application import Application
 
-    def read_source(asset):
-        return Path(Application.asset_path(asset)).read_text(encoding="utf-8-sig")
+    return Path(Application.asset_path(asset)).read_text(encoding="utf-8-sig")
 
-    source = _read_slang_kernel_source(path, entry_point, domain, libraries, constants, read_source=read_source)
+
+def read_slang_libraries(libraries, *, read_source=_read_slang_asset):
+    return tuple((name, asset, read_source(asset)) for name, asset in libraries)
+
+
+def compile_slang_kernel(path, entry_point, domain, libraries, constants, params, *, target):
+    source = _read_slang_kernel_source(path, entry_point, domain, libraries, constants, read_source=_read_slang_asset)
     specialization = _specialization_identity(params, target=target)
     key = source.artifact_key(specialization)
     return _cached_artifact(key, specialization, lambda: source.compile(target, key))

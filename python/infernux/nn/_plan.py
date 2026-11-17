@@ -199,11 +199,13 @@ def _unary_facts(layer):
 
 
 def _pointwise_options(kind, options):
-    count = {"elu": 1, "clamp": 2, "slang_unary": 2}.get(kind, 0)
+    if kind == "slang_unary":
+        if len(options) not in (2, 3):
+            raise ValueError("invalid Slang scalar operation configuration")
+        return p.scalar_slang_definition(*options)
+    count = {"elu": 1, "clamp": 2}.get(kind, 0)
     if len(options) != count:
         raise ValueError("invalid pointwise operation configuration")
-    if kind == "slang_unary":
-        return p.scalar_slang_definition(*options)
     if kind == "clamp" and all(value is None for value in options):
         raise ValueError("clamp requires at least one scalar bound")
     values = []

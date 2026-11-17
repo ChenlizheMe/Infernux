@@ -20,6 +20,7 @@
 | `nn.Conv2d(in_channels, out_channels, kernel_size, ...)` | 固定 NCHW 卷积与输入/权重/偏置反向 | 正整数 stride/dilation/groups、可选 bias、零填充；padding 支持整数/二元组、valid、单位 stride 下的 same（含非对称边界） |
 | `nn.PixelShuffle(upscale_factor)`、`nn.functional.pixel_shuffle` | 通道重排放大与反向 | 固定 NCHW，通道数须整除放大倍率的平方；无重采样近似 |
 | `nn.Sigmoid()` | 稳定 sigmoid 与反向 | 正负输入分别处理指数；CPU 原语与 GPU 局部 AD 共用图上的梯度约定 |
+| `nn.SlangUnary(source, entry_point="forward", libraries=None)` | 对 GPU 张量的每个元素调用可微 Slang 标量函数 | 接受 float32。普通执行支持前向、反向和一阶 JVP。 |
 | `nn.ReLU(inplace=False)`、`nn.SiLU(inplace=False)`、`nn.Tanh()` | 激活层与反向 | CPU/Vulkan 共用算子定义；GPU 使用原生局部 AD，当前不支持原地写入 |
 | `nn.Softmax(dim=None)`、`nn.LogSoftmax(dim=None)` | 指定轴归一化、对数概率与反向 | 减去轴最大值避免指数溢出；支持正负轴，跨元素梯度通过同一图上的显式 VJP 执行 |
 | `nn.functional.relu/silu/tanh/sigmoid/softmax/log_softmax` | 对应函数形式 | 可用于模型捕获、普通模型输出和叶张量。 |
@@ -50,6 +51,8 @@ grid_sample 前向使用真实的邻点 gather。动态浮点地址只在显式�
 
 绑定的子层可以直接调用或 `prepare()`，仍使用所属根模型的参数域、锁和梯度槽。切换根图、子层图和批量大小不取消其他仍然有效的图；真实参数更新会使旧参数代的反向结果失效。完整参数加载、优化器和模型文件仍以根模型为边界。导出文件封装根模型最近选定的一种签名；需要其他签名时先 `prepare()` 再导出。
 
+`SlangUnary` 的入口须为公开的 `[Differentiable] float` 函数，接收一个 float 参数。函数逐元素独立执行。实现应只使用纯数值运算。可用 `libraries={"curves": "Assets/Math/curves.slang"}` 声明 `import curves;` 依赖，继续导入的项目模块也在该映射中声明。构造层时读取这些资源，重新创建层时才读取编辑后的源码。导出的 `.inm` 包含入口与库的源码，可以在只有模型文件的项目中准备适合目标 GPU 的程序。
+
 ## 状态与训练
 
 `with nn.no_grad():` 和 `@nn.no_grad()` 暂停梯度记录。外部推理不保留反向激活；它不会把同签名的后续训练永久变成无梯度调用。模型 forward 内部的 no_grad 和 `value.detach()` 捕获为真正停止反向依赖的节点，保存到 INM 后依然成立。未使用参数保持 None 梯度，Adam 不为它们推进动量和计数。无梯度输出仍可计算 MSE/稠密交叉熵损失值；同设备模型输出复用其已准备或烘焙的目标程序，跨设备复制后不携带原设备的程序来源。
@@ -62,7 +65,7 @@ value, directional_derivative = nn.autograd.jvp(
 
 `jvp` 在 CPU 或 Vulkan 上调用 `func` 一次，复用该次前向保存的张量，再用一个 Work 游标沿调用顺序传播切向。闭包捕获的张量和模型参数视为常量，调用保留已有 `.grad`。同一个张量传入两个位置时可指定不同的输入方向。`func` 内部的 `detach()` 和 `no_grad()` 停止切向传播，断开的输出返回零切向。
 
-当前切向规则覆盖 `Linear`、标量逐元素函数和算术、广播展开、变形、转置、切片及 `sum`。逐元素切向复用现有解析反向规则，Vulkan 上编译为 Slang kernel。带活动切向的其他算子会报出算子名。`jvp` 目前用于有源码的普通 NN 调用，范围为一阶输入导数。MSE/交叉熵专用损失、受管 Program、烘焙模型和用户声明的 compute 自定义函数仍使用各自现有接口。
+当前切向规则覆盖 `Linear`、标量逐元素函数和算术、广播展开、变形、转置、切片及 `sum`。内置逐元素切向复用现有解析规则，`SlangUnary` 通过 Slang 的前向微分生成切向程序。带活动切向的其他算子会报出算子名。`jvp` 用于普通 NN 调用的一阶输入导数。含 `SlangUnary` 的 GPU 模型会为受支持的固定签名烘焙切向程序。
 
 | API | 当前行为 | 支持范围 |
 | --- | --- | --- |
