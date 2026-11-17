@@ -46,7 +46,13 @@ struct PhysicsDomain final
     bool cpuFixedAdmitted = false;
     bool gpuRegistered = false;
     size_t gpuBodyOwners = 0;
-    std::optional<bool> startupUsesGpuBodies;
+    enum class StartupPrograms
+    {
+        None,
+        GpuBodies,
+        MixedFixed
+    };
+    std::optional<StartupPrograms> startupPrograms;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::weak_ptr<PhysicsParticipant> participantPreparing;
     bool participantOutputPending = false;

@@ -6,6 +6,7 @@
 #include "../BoxCollider.h"
 #include "../Collider.h"
 #include "../Component.h"
+#include "../FixedJoint.h"
 #include "../GameObject.h"
 #include "../Joint.h"
 #include "../Ragdoll.h"
@@ -636,6 +637,15 @@ JoltGpuScene &PhysicsWorld::EnsureSharedGpuScene()
     }
     return *m_gpuScene;
 }
+JoltMixedConstraintSolver &PhysicsWorld::EnsureMixedConstraintSolver()
+{
+    if (!m_mixedConstraintSolver) {
+        const auto target = PhysicsShaderTarget(*m_gpuHost);
+        m_mixedConstraintSolver = std::make_unique<JoltMixedConstraintSolver>(
+            *m_gpuHost, LoadJoltGpuProgram(JoltGpuProgram::CrossDomainContactSolver, target));
+    }
+    return *m_mixedConstraintSolver;
+}
 bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
 {
     RequireOwnerThread();
@@ -880,11 +890,8 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         }
         if (!domain.mixedContacts)
             domain.mixedContacts = std::make_unique<JoltMixedContactStep>();
-        if (coupled && !m_mixedConstraintSolver) {
-            const auto target = PhysicsShaderTarget(*m_gpuHost);
-            m_mixedConstraintSolver = std::make_unique<JoltMixedConstraintSolver>(
-                *m_gpuHost, LoadJoltGpuProgram(JoltGpuProgram::CrossDomainContactSolver, target));
-        }
+        if (coupled)
+            EnsureMixedConstraintSolver();
     }
     if (domain.gpuRegistered) {
         QueueColliderPairs(domain);
@@ -1357,28 +1364,50 @@ bool PhysicsWorld::TryPrepareStartupPrograms()
 {
     RequireOwnerThread();
     auto &domain = CurrentDomain();
-    if (!domain.startupUsesGpuBodies.has_value()) {
-        const auto hasGpuBody = [](auto &&visit, const GameObject &object) -> bool {
+    using StartupPrograms = PhysicsDomain::StartupPrograms;
+    if (!domain.startupPrograms) {
+        bool gpuBodies = false;
+        const auto visitObject = [&](auto &&visit, const GameObject &object) -> bool {
             if (!object.IsActive())
                 return false;
-            if (const auto *body = object.GetComponent<Rigidbody>(); body && body->IsEnabled() && body->IsGpuEnabled())
-                return true;
+            if (const auto *body = object.GetComponent<Rigidbody>(); body && body->IsEnabled()) {
+                gpuBodies |= body->IsGpuEnabled();
+                if (body->AllowsCrossBackendInteraction()) {
+                    const auto *joint = object.GetComponent<FixedJoint>();
+                    const auto *connected = joint && joint->IsEnabled() ? joint->GetConnectedBody() : nullptr;
+                    if (connected && connected->IsEnabled() && connected->AllowsCrossBackendInteraction() &&
+                        body->IsGpuEnabled() != connected->IsGpuEnabled() &&
+                        (!body->IsKinematic() || !connected->IsKinematic())) {
+                        const auto *endpoint = connected->GetGameObject();
+                        const auto *scene = endpoint ? endpoint->GetScene() : nullptr;
+                        if (scene && scene->GetRuntimeWorld() == &domain.owner && endpoint->IsActiveInHierarchy())
+                            return true;
+                    }
+                }
+            }
             const auto &children = object.GetChildren();
             return std::any_of(children.begin(), children.end(),
                                [&](const auto &child) { return visit(visit, *child); });
         };
-        const auto hasGpuScene = [&](const std::unique_ptr<Scene> &scene) {
+        const auto hasMixedFixed = [&](const std::unique_ptr<Scene> &scene) {
             if (!scene)
                 return false;
             const auto &roots = scene->GetRootObjects();
             return std::any_of(roots.begin(), roots.end(),
-                               [&](const auto &root) { return hasGpuBody(hasGpuBody, *root); });
+                               [&](const auto &root) { return visitObject(visitObject, *root); });
         };
         const auto &scenes = domain.owner.scenes;
-        domain.startupUsesGpuBodies =
-            std::any_of(scenes.loaded.begin(), scenes.loaded.end(), hasGpuScene) || hasGpuScene(scenes.persistent);
+        const bool mixed =
+            std::any_of(scenes.loaded.begin(), scenes.loaded.end(), hasMixedFixed) || hasMixedFixed(scenes.persistent);
+        domain.startupPrograms =
+            mixed ? StartupPrograms::MixedFixed : (gpuBodies ? StartupPrograms::GpuBodies : StartupPrograms::None);
     }
-    return !*domain.startupUsesGpuBodies || EnsureSharedGpuScene().TryPrepareStartupPrograms();
+    if (*domain.startupPrograms == StartupPrograms::None)
+        return true;
+    const bool gpuReady = EnsureSharedGpuScene().TryPrepareStartupPrograms();
+    const bool mixedReady = *domain.startupPrograms != StartupPrograms::MixedFixed ||
+                            EnsureMixedConstraintSolver().TryPreparePrograms(true, true, true);
+    return gpuReady && mixedReady;
 }
 bool PhysicsWorld::ServiceParticipantPreparation()
 {

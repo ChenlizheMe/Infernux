@@ -8,6 +8,7 @@ class JoltMixedConstraintSolver final
 {
   public:
     JoltMixedConstraintSolver(rhi::ComputeHost &, const ShaderTargetCode &);
+    [[nodiscard]] bool TryPreparePrograms(bool velocity, bool position, bool wake);
     [[nodiscard]] decltype(JoltGpuTickControl::prepareCoupledContacts)
     Prepare(const std::shared_ptr<const JoltGpuScene::Publication> &, JoltGpuMixedContacts &, JoltMixedContactStep &,
             JoltCpuContactPublication &, const JoltMixedContactStep::Policy &);

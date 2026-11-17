@@ -859,6 +859,7 @@ class PhysicsWorld
     void RegisterDomain(PhysicsDomain &domain);
     void EnsureCpuReady(PhysicsDomain &domain);
     JoltGpuScene &EnsureSharedGpuScene();
+    JoltMixedConstraintSolver &EnsureMixedConstraintSolver();
     bool EnsureGpuReady(PhysicsDomain &domain);
     void RetireIdleGpuPartition(PhysicsDomain &domain);
     void RetireGpuPartition(PhysicsDomain &domain);

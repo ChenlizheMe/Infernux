@@ -175,6 +175,15 @@ JoltMixedConstraintSolver::JoltMixedConstraintSolver(rhi::ComputeHost &host, con
     load(m_wake, "wake_cross_domain_bodies");
 }
 
+bool JoltMixedConstraintSolver::TryPreparePrograms(bool velocity, bool position, bool wake)
+{
+    // Start all needed driver jobs before checking whether preparation finished.
+    const bool velocityReady = !velocity || m_velocity.kernel->TryPreparePipeline();
+    const bool positionReady = !position || m_position.kernel->TryPreparePipeline();
+    const bool wakeReady = !wake || m_wake.kernel->TryPreparePipeline();
+    return velocityReady && positionReady && wakeReady;
+}
+
 struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
 {
     enum Port : uint32_t
@@ -767,17 +776,9 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             done();
             return {};
         }
-        bool pipelinesReady = true;
-        if (owner.m_host.SupportsPipelinePreparation()) {
-            // Start the needed driver jobs together. Dispatch preparation
-            // otherwise waits for a cold pipeline on the foreground thread.
-            const bool velocityReady =
-                patches.empty() || !solveVelocity || owner.m_velocity.kernel->TryPreparePipeline();
-            const bool positionReady =
-                patches.empty() || !solvePosition || owner.m_position.kernel->TryPreparePipeline();
-            const bool wakeReady = wakeSlots.empty() || owner.m_wake.kernel->TryPreparePipeline();
-            pipelinesReady = velocityReady && positionReady && wakeReady;
-        }
+        const bool pipelinesReady = !owner.m_host.SupportsPipelinePreparation() ||
+                                    owner.TryPreparePrograms(solveVelocity && !patches.empty(),
+                                                             solvePosition && !patches.empty(), !wakeSlots.empty());
         if (!pipelinesReady || !Allocate(Params, sizeof(params)) || (!patches.empty() && !AllocateWorkset()) ||
             (!wakeSlots.empty() && !Allocate(WakeSlots, wakeSlots.size() * sizeof(uint32_t)))) {
             return {nullptr, [self = shared_from_this(), done = std::move(done)]() mutable {
