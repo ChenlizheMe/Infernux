@@ -42,7 +42,8 @@ void ValidatePrefixAccess(const ComputePrefixAccess &prefix, const std::vector<C
     if (count >= accesses.size() || payload >= accesses.size() || count == payload ||
         accesses[count] != ComputeBufferAccess::Read || shaderAccesses[count] != ComputeBufferAccess::Read ||
         (prefix.access != ComputeBufferAccess::Read && prefix.access != ComputeBufferAccess::Write) ||
-        accesses[payload] != prefix.access || Reads(prefix.access) != (shaderAccesses[payload] == ComputeBufferAccess::Read))
+        accesses[payload] != prefix.access ||
+        Reads(prefix.access) != (shaderAccesses[payload] == ComputeBufferAccess::Read))
         throw std::invalid_argument("Counted compute access requires separate count and payload binding roles");
     const auto &countDesc = describe(count);
     if (countDesc.scalarType != ComputeScalarType::UInt32 || countDesc.lanes != 1 ||
@@ -56,8 +57,7 @@ void ValidatePrefixAccess(const ComputePrefixAccess &prefix, const std::vector<C
         throw std::invalid_argument("Counted compute invocation range does not cover the payload capacity");
 }
 
-template <typename Storage>
-struct PrefixValue
+template <typename Storage> struct PrefixValue
 {
     Storage count;
     Storage payload;
@@ -80,12 +80,10 @@ void RequirePrefix(const std::vector<PrefixValue<Storage>> &values, const Prefix
         throw std::invalid_argument("Counted compute read requires a matching current count and payload writer");
 }
 
-template <typename Storage>
-void InvalidatePrefixes(std::vector<PrefixValue<Storage>> &values, Storage written)
+template <typename Storage> void InvalidatePrefixes(std::vector<PrefixValue<Storage>> &values, Storage written)
 {
-    values.erase(std::remove_if(values.begin(), values.end(), [&](const auto &value) {
-                     return value.count == written || value.payload == written;
-                 }),
+    values.erase(std::remove_if(values.begin(), values.end(),
+                                [&](const auto &value) { return value.count == written || value.payload == written; }),
                  values.end());
 }
 
@@ -303,10 +301,10 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
         validate(proof->writes, ComputeBufferAccess::Write);
         if (proof->prefix) {
             const auto &prefix = *proof->prefix;
-            ValidatePrefixAccess(prefix, bufferAccesses, m_defaultBufferAccesses,
-                                 [&](uint32_t index) -> const ComputeBufferDesc & { return buffers[index]->GetDesc(); },
-                                 {groupCountX, groupCountY, groupCountZ}, indirectArguments.has_value(),
-                                 !proof->writes.empty());
+            ValidatePrefixAccess(
+                prefix, bufferAccesses, m_defaultBufferAccesses,
+                [&](uint32_t index) -> const ComputeBufferDesc & { return buffers[index]->GetDesc(); },
+                {groupCountX, groupCountY, groupCountZ}, indirectArguments.has_value(), !proof->writes.empty());
             buffers[prefix.count.binding]->ValidateRange(prefix.count.offset, prefix.count.byteSize);
             buffers[prefix.payload.binding]->ValidateRange(prefix.payload.offset, prefix.payload.byteSize);
         }
@@ -570,16 +568,18 @@ std::vector<ComputeKernel::BufferValueState> ComputeKernel::PrepareValues(const 
         std::optional<PrefixValue<Allocation>> produced;
         if (work.proof) {
             for (const auto &read : work.proof->reads)
-                if (!intervals::Contains(known(work.allocations[read.binding]), read.offset, read.offset + read.byteSize))
+                if (!intervals::Contains(known(work.allocations[read.binding]), read.offset,
+                                         read.offset + read.byteSize))
                     throw std::invalid_argument("Compute input range lacks a prior accepted complete writer");
             if (work.proof->prefix) {
                 const auto &prefix = *work.proof->prefix;
                 const auto &count = work.allocations[prefix.count.binding];
-                if (!intervals::Contains(known(count), prefix.count.offset, prefix.count.offset + prefix.count.byteSize))
+                if (!intervals::Contains(known(count), prefix.count.offset,
+                                         prefix.count.offset + prefix.count.byteSize))
                     throw std::invalid_argument("Counted compute work requires an initialized count");
                 const auto &payload = work.allocations[prefix.payload.binding];
                 const auto stride = work.states[prefix.payload.binding]->GetDesc().GetElementStride();
-                const PrefixValue<Allocation> value{count.get(), payload.get(), prefix.count.offset,
+                const PrefixValue<Allocation> value{count.get(),           payload.get(),           prefix.count.offset,
                                                     prefix.payload.offset, prefix.payload.byteSize, stride};
                 if (prefix.access == ComputeBufferAccess::Read)
                     RequirePrefix(prefixes, value);
@@ -1619,8 +1619,9 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
             };
             const auto count = exactRange(prefix.count);
             const auto payload = exactRange(prefix.payload);
-            const PrefixValue<uint32_t> value{count.slot, payload.slot, count.offset, payload.offset, payload.byteSize,
-                                             describe(prefix.payload.binding).GetElementStride()};
+            const PrefixValue<uint32_t> value{count.slot,       payload.slot,
+                                              count.offset,     payload.offset,
+                                              payload.byteSize, describe(prefix.payload.binding).GetElementStride()};
             if (prefix.access == ComputeBufferAccess::Read)
                 RequirePrefix(prefixes, value);
             else

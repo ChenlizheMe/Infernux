@@ -114,7 +114,7 @@ static std::vector<uint32_t> Words(const ShaderEntryPointCode &entry)
 }
 
 static std::shared_ptr<ComputeKernel> ReflectedKernel(ComputeHost &host, const ShaderTargetCode &program,
-                                                       const std::string &name)
+                                                      const std::string &name)
 {
     const auto &entry = Entry(program, name);
     std::vector<ComputeBufferBinding> layout;
@@ -159,13 +159,15 @@ static void TestDeviceCountedPayload(ComputeHost &host, const ShaderTargetCode &
     makePayload.bindings = {{count, read}, {payload, write}};
     makePayload.groupCountX = groupsFor("make_payload");
     makePayload.prefix = ComputePrefixAccess{{0, count.offset, count.byteSize},
-                                             {1, payload.offset, payload.byteSize}, write,
+                                             {1, payload.offset, payload.byteSize},
+                                             write,
                                              Entry(program, "make_payload").workgroupSize};
     readPayload.kernel = ReflectedKernel(host, program, "read_payload");
     readPayload.bindings = {{count, read}, {payload, read}, {result, write}};
     readPayload.groupCountX = groupsFor("read_payload");
     readPayload.prefix = ComputePrefixAccess{{0, count.offset, count.byteSize},
-                                             {1, payload.offset, payload.byteSize}, read,
+                                             {1, payload.offset, payload.byteSize},
+                                             read,
                                              Entry(program, "read_payload").workgroupSize};
     const std::vector<ComputeWorkDispatch> dispatches{makeCount, reset, makePayload, readPayload};
     const auto recipe = std::make_shared<ComputeWorkRecipe>(host, slots, ports, dispatches);
@@ -181,11 +183,12 @@ static void TestDeviceCountedPayload(ComputeHost &host, const ShaderTargetCode &
             assert(words[row] == (row < rows ? (row * 3 + 7) * 2 : sentinel));
     };
     std::shared_ptr<ComputeBuffer> fullResult;
-    for (const auto &[selector, rows] : std::array<std::pair<uint32_t, uint32_t>, 4>{
-             {{34, capacity}, {1, 1}, {0, 0}, {35, capacity}}}) {
+    for (const auto &[selector, rows] :
+         std::array<std::pair<uint32_t, uint32_t>, 4>{{{34, capacity}, {1, 1}, {0, 0}, {35, capacity}}}) {
         std::vector<uint8_t> value(sizeof(selector));
         std::memcpy(value.data(), &selector, sizeof(selector));
-        const auto ticket = instance->PrepareBatch({{buffers[request.slot], request.offset, std::move(value)}})->Submit();
+        const auto ticket =
+            instance->PrepareBatch({{buffers[request.slot], request.offset, std::move(value)}})->Submit();
         assert(ticket.IsValid() && buffers[result.slot]->GetLastWriteSubmission() == ticket);
         assert(buffers[result.slot]->HasInitializedRange(result.offset, result.byteSize));
         assert(!buffers[payload.slot]->HasInitializedRange(payload.offset, payload.byteSize));
