@@ -2514,7 +2514,8 @@ def statistics(*, reset: bool = False) -> Statistics:
     Native CPU range execution is reported by its request metrics. A CPU-only
     engine has no device transfers, submissions or waits to report here.
     Native rendering or physics may already use the queue before Python creates
-    a Buffer; acquiring its existing host lease makes those counters visible too.
+    a Buffer. A temporary host lease exposes those counters without starting the
+    Python compute scheduler.
     gpu_elapsed_total_ms sums measured submission spans observed complete since
     reset, including barriers and waits inside each span. A zero
     gpu_profiled_submission_count means no measured samples, not zero GPU cost.
@@ -2523,11 +2524,13 @@ def statistics(*, reset: bool = False) -> Statistics:
     """
     from infernux.application import Application
     engine = Application._current_engine()
-    host = getattr(engine, "_infernux_compute_host", None)
+    cached_host = getattr(engine, "_infernux_compute_host", None)
+    host = cached_host
     if host is None and engine is not None:
         native = engine.get_native_engine()
         if native is not None and native.has_gpu_compute:
-            host = _native_compute_host()
+            assert_runtime_owner_thread()
+            host = native._acquire_compute_host()
     if host is None:
         values = Statistics(
             submission_count=0,
@@ -2553,8 +2556,14 @@ def statistics(*, reset: bool = False) -> Statistics:
         )
         return values
     assert_runtime_owner_thread()
-    raw = dict(host.get_statistics())
-    values = Statistics(
+    try:
+        raw = dict(host.get_statistics())
+        if reset:
+            host.reset_statistics()
+    finally:
+        if cached_host is None:
+            host._release_lease()
+    return Statistics(
         submission_count=int(raw["submission_count"]),
         dispatch_count=int(raw["dispatch_count"]),
         upload_request_count=int(raw["upload_request_count"]),
@@ -2576,9 +2585,6 @@ def statistics(*, reset: bool = False) -> Statistics:
         gpu_profiled_submission_count=int(raw["gpu_profiled_submission_count"]),
         gpu_elapsed_total_ms=float(raw["gpu_elapsed_total_ms"]),
     )
-    if reset:
-        host.reset_statistics()
-    return values
 
 
 def set_profiling_enabled(enabled: bool) -> None:

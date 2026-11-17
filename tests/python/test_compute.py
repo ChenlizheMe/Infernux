@@ -585,6 +585,26 @@ def test_engine_resource_release_cancels_unconsumed_native_readbacks():
     assert readback not in inx.compute._readbacks
 
 
+def test_statistics_reads_gpu_counters_without_starting_the_compute_scheduler(engine, monkeypatch):
+    from infernux.application import Application
+
+    frontend = _compute_frontend(engine)
+    monkeypatch.setattr(Application, "_current_engine", staticmethod(lambda: frontend))
+    host = engine._acquire_compute_host()
+    try:
+        before = host.get_statistics()
+        stats = inx.compute.statistics(reset=True)
+        assert stats.dispatch_count == before["dispatch_count"]
+        assert host.get_statistics()["dispatch_count"] == 0
+        assert not hasattr(frontend, "_infernux_compute_host")
+        assert frontend._cpu_work_owner is None
+    finally:
+        cached = getattr(frontend, "_infernux_compute_host", None)
+        if cached is not None:
+            cached._release_lease()
+        host._release_lease()
+
+
 def test_native_readback_abandonment_and_source_release_preserve_gpu_data(engine):
     host = engine._acquire_compute_host()
     expected = np.arange(1024, dtype=np.int32).tobytes()
