@@ -217,6 +217,50 @@ public struct InxPbrLightResponse : IInxLightResponse
                                   f0, f90, energy_compensation, specular_highlights);
     }
 };
+float3 inx_pbr_energy_compensation(float3 f0, float2 environment_brdf)
+{
+    return 1.0 + f0 * (1.0 / max(environment_brdf.x + environment_brdf.y, 0.001) - 1.0);
+}
+InxPbrLightResponse inx_pbr_light_response(InxLitScattering scattering, float3 N, float3 V,
+                                          float3 energy_compensation, float specular_highlights)
+{
+    InxPbrLightResponse response;
+    response.normal = N;
+    response.view = V;
+    response.albedo = scattering.albedo;
+    response.metallic = scattering.metallic;
+    response.roughness = scattering.ggx_alpha;
+    response.perceptual_roughness = scattering.perceptual_roughness;
+    response.f0 = scattering.f0;
+    response.f90 = scattering.f90;
+    response.energy_compensation = energy_compensation;
+    response.specular_highlights = specular_highlights;
+    return response;
+}
+public InxPbrLightResponse inx_secondary_light_response(InxSurfaceData surface, float3 N, float3 outgoing)
+{
+    // The ray has a geometric/UV footprint rather than raster normal derivatives.
+    let scattering = inx_prepare_lit_scattering(surface.albedo, surface.metallic, surface.smoothness, 0.0);
+    float2 brdf = env_brdf_approx(scattering.perceptual_roughness, max(dot(N, outgoing), 0.0));
+    return inx_pbr_light_response(scattering, N, outgoing, inx_pbr_energy_compensation(scattering.f0, brdf),
+                                  surface.specular_highlights);
+}
+public struct InxTransportDirectionalLight
+{
+    public float3 direction;
+    public float3 radiance;
+    public uint layer_mask;
+    public float shadow_strength;
+};
+public uint inx_transport_directional_count() { return light_counts().x; }
+public InxTransportDirectionalLight inx_transport_directional_light(uint index)
+{
+    InxCanonicalLight light = load_light(index);
+    uint geometry_layers = (light.metadata.w & 1u) != 0u ? light.metadata.y : 0u;
+    float strength = light.metadata.z != 0u ? saturate(light.shadow_and_inner_cos.x) : 0.0;
+    return {normalize(-light.direction_outer_cos.xyz), light.color_intensity.rgb * light.color_intensity.w,
+            geometry_layers, strength};
+}
 struct InxLighting<let tiled_lighting : bool>
 {
     uint layer_mask;
@@ -617,7 +661,6 @@ float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx,
     float3 albedo = scattering.albedo;
     float metallic = scattering.metallic;
     float perceptual_roughness = scattering.perceptual_roughness;
-    float roughness = scattering.ggx_alpha;
     float ao = clamp(s.occlusion, 0.0, 1.0);
     float3 N = normalize(s.normal_ws);
     float3 V = normalize(lighting.camera_pos.xyz - ctx.position_ws);
@@ -625,22 +668,12 @@ float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx,
     float f90   = scattering.f90;
     float ndot_v = max(dot(N, V), 0.0);
     float2  env_brdf      = env_brdf_approx(perceptual_roughness, ndot_v);
-    float reflectivity = env_brdf.x + env_brdf.y;
-    float3  energy_compensation = 1.0 + F0 * (1.0 / max(reflectivity, 0.001) - 1.0);
+    float3 energy_compensation = inx_pbr_energy_compensation(F0, env_brdf);
     float3 lo = float3(0.0);
     if (!indirect_only) {
         InxLight main_light = get_main_light(ctx.position_ws, N, ctx.view_depth);
-        InxPbrLightResponse response;
-        response.normal = N;
-        response.view = V;
-        response.albedo = albedo;
-        response.metallic = metallic;
-        response.roughness = roughness;
-        response.perceptual_roughness = perceptual_roughness;
-        response.f0 = F0;
-        response.f90 = f90;
-        response.energy_compensation = energy_compensation;
-        response.specular_highlights = s.specular_highlights;
+        InxPbrLightResponse response = inx_pbr_light_response(scattering, N, V, energy_compensation,
+                                                             s.specular_highlights);
         lo = calculate_all_lighting(ctx.position_ws, N, ctx.view_depth, main_light.shadow, response);
     }
     float3 k_s_env = f_schlick_roughness(F0, f90, ndot_v, perceptual_roughness);

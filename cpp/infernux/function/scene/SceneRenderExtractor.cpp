@@ -35,8 +35,10 @@ std::shared_ptr<const RenderSurfaceRecords> CaptureSurfaceRecords(const DrawCall
         const auto object = PackGPUObjectId(draw.objectId);
         const auto mesh = PackGPUObjectId(draw.meshRuntimeVersion);
         const auto content = PackGPUObjectId(material ? material->GetVersion() : 0);
+        const bool castsShadows = draw.castsShadows && (!program || program->FindVariant(ShaderCompileTarget::Shadow));
         record.lighting = {draw.layerMask, program ? program->deferredModel : 0u,
-                           draw.receivesShadows && program && program->receivesShadows ? 1u : 0u, 0u};
+                           draw.receivesShadows && program && program->receivesShadows ? 1u : 0u,
+                           castsShadows ? 1u : 0u};
         record.identity = {object.x, object.y, draw.identity.primitiveIndex, draw.materialSlot};
         record.revisions = {mesh.x, mesh.y, content.x, content.y};
     }

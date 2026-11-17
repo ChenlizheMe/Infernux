@@ -15,7 +15,7 @@ namespace infernux
 /// Indexed by the world-local surface ID. Record zero represents background.
 struct alignas(16) RenderSurfaceRecord
 {
-    glm::uvec4 lighting{0u};  // Layer mask, deferred model, receive shadows, reserved.
+    glm::uvec4 lighting{0u};  // Layer mask, deferred model, receive shadows, cast shadows.
     glm::uvec4 identity{0u};  // Object ID low/high, draw primitive, material slot.
     glm::uvec4 revisions{0u}; // Mesh revision low/high, material revision low/high.
 };

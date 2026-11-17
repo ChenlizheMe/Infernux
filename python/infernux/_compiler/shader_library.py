@@ -19,7 +19,7 @@ _RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
 _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceHit", _RAY_ARGUMENTS),
                   "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS),
                   "ray._indirect_signal": ("inx_ray_indirect_signal", "float4", (
-                      "InxSurfaceData", "InxShadingContext", "float3", "uint", "bool"))}
+                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool"))}
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
                      "frame_delta_time": ("inx_frame_delta_time", "float", ()),
                      "view": ("inx_view_context", "InxViewContext", ()),

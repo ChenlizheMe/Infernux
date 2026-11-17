@@ -28,4 +28,6 @@ class RayIndirect(shader.fullscreen):
         # The shared roughness policy derives variance before rejecting uncovered lanes.
         if depth <= 0.0 or packed.x == 0 or primary.a <= 0.0:
             return shader.vec4(0.0)
-        return shader.ray._indirect_signal(surface, context, primary.xyz, metadata.y, self.specular)
+        return shader.ray._indirect_signal(
+            surface, context, primary.xyz, self.surface_records, metadata.y, self.specular,
+        )

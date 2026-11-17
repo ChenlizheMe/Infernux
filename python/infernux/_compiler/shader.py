@@ -533,11 +533,10 @@ bool inx_evaluate_ray_lit(InxMeshInput input, bool front_facing, InxSecondarySur
     return inx_surface_covered(surface, material.values._alpha_clip_threshold);
 }
 
-bool inx_evaluate_ray_lit_hit(RayPage page, TraceRay ray, RayHit hit, float lod, out InxSurfaceData surface)
+bool inx_evaluate_ray_lit_hit(RaySurfaceHit attributes, uint surface_id, float lod, out InxSurfaceData surface)
 {
-    RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxMeshInput input = (InxMeshInput)0;
-    input.surface_id = hit.surface_id;
+    input.surface_id = surface_id;
     input.position_ws = attributes.position_ws;
     input.normal_ws = attributes.normal_ws;
     input.tangent_ws = attributes.tangent_ws;
@@ -562,7 +561,7 @@ struct InxRayLitHitPolicy : RayHitPolicy
         if (!(ray_lit_materials[candidate.surface_id].values._alpha_clip_threshold > 0.0))
             return true;
         InxSurfaceData surface;
-        return inx_evaluate_ray_lit_hit(page, ray, candidate, lod, surface);
+        return inx_evaluate_ray_lit_hit(ray_surface_at_hit(page, ray, candidate), candidate.surface_id, lod, surface);
     }
 };
 
@@ -600,7 +599,7 @@ public InxRaySurfaceHit inx_world_ray_closest(float3 origin_ws, float3 direction
         result.distance = hit.distance;
         result.position_ws = ray.origin + hit.distance * ray.direction;
         result.surface_id = hit.surface_id;
-        inx_evaluate_ray_lit_hit(page, ray, hit, lod, result.surface);
+        inx_evaluate_ray_lit_hit(ray_surface_at_hit(page, ray, hit), hit.surface_id, lod, result.surface);
     }
     return result;
 }
@@ -627,8 +626,60 @@ float inx_ray_offset(float position, float normal)
     return asfloat(asint(position) + (position < 0.0 ? -offset : offset));
 }
 
+float3 inx_ray_origin(float3 position, float3 normal)
+{
+    return float3(inx_ray_offset(position.x, normal.x), inx_ray_offset(position.y, normal.y),
+                  inx_ray_offset(position.z, normal.z));
+}
+
+struct InxRayShadowHitPolicy : RayHitPolicy
+{
+    InxBuffer_uint4 records;
+    InxRayLitHitPolicy material;
+
+    bool accepts(RayPage page, TraceRay ray, RayHit candidate)
+    {
+        return inx_buffer_load(records, candidate.surface_id * 3u).w != 0u &&
+               material.accepts(page, ray, candidate);
+    }
+};
+
+float3 inx_ray_directional_radiance(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
+                                    uint4 metadata, InxBuffer_uint4 records, float3 outgoing)
+{
+    uint count = inx_transport_directional_count();
+    float3 radiance = float3(0.0);
+    if (count == 0u)
+        return radiance;
+    float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
+    float3 origin = inx_ray_origin(attributes.position_ws, geometric);
+    InxPbrLightResponse response = inx_secondary_light_response(surface, surface.normal_ws, outgoing);
+    InxRayLitHitPolicy material = {0.0};
+    InxRayShadowHitPolicy caster = {records, material};
+    for (uint i = 0u; i < count; ++i)
+    {
+        InxTransportDirectionalLight light = inx_transport_directional_light(i);
+        if ((light.layer_mask & metadata.x) == 0u || dot(geometric, light.direction) <= 0.0)
+            continue;
+        float visible = 1.0;
+        if (metadata.z != 0u && light.shadow_strength > 0.0)
+        {
+            // A directional source is at infinity. Traversal still stops at the world TLAS bounds.
+            TraceRay shadow_ray = {origin, 0.0, light.direction, 3.402823e38};
+            visible = trace_visibility(page, shadow_ray, light.layer_mask, caster) ? 1.0 : 1.0 - light.shadow_strength;
+        }
+        InxLight sample;
+        sample.direction = light.direction;
+        sample.color = light.radiance;
+        sample.attenuation = 1.0;
+        sample.shadow = visible;
+        radiance += response.evaluate(sample);
+    }
+    return radiance;
+}
+
 public float4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
-                                     uint model_id, bool specular)
+                                     InxBuffer_uint4 records, uint model_id, bool specular)
 {
     if (model_id != INX_PBR_MODEL_ID)
         return float4(0.0);
@@ -651,15 +702,20 @@ public float4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext 
         sample = ray_sample_irradiance(uniform, shading_normal, geometric_normal);
     if (!sample.active)
         return float4(0.0, 0.0, 0.0, 1.0);
-    float3 position = context.position_ws;
-    float3 origin = float3(inx_ray_offset(position.x, geometric_normal.x),
-                           inx_ray_offset(position.y, geometric_normal.y),
-                           inx_ray_offset(position.z, geometric_normal.z));
-    InxRaySurfaceHit hit = inx_world_ray_closest(origin, sample.direction, 0.0, inx_view.projection_params.y,
-                                               0xffffffffu, 0.0);
-    if (!hit.available)
+    RayPage page = ray_page();
+    if (page.status != ray_page_ready)
         return float4(0.0);
-    float3 radiance = hit.found ? hit.surface.emission : inx_environment_radiance(sample.direction);
+    TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction, inx_view.projection_params.y};
+    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
+    if (hit.triangle_index == ray_invalid_index)
+        return float4(inx_environment_radiance(sample.direction) * sample.weight, 1.0);
+    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+        return float4(0.0);
+    RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
+    InxSurfaceData secondary;
+    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
+    float3 radiance = secondary.emission + inx_ray_directional_radiance(
+        page, attributes, secondary, inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction);
     return float4(radiance * sample.weight, 1.0);
 }
 """
