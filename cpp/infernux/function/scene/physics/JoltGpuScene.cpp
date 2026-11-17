@@ -740,12 +740,22 @@ class JoltGpuScene::Impl
     {
         if (transfers.empty())
             return;
-        for (const auto &transfer : transfers)
-            if (const auto &pose = transfer.state->value().poseDrive) {
-                auto &record = authoredJoints.at(transfer.id);
+        JoltGpuControlGroup wake;
+        for (const auto &transfer : transfers) {
+            auto &record = authoredJoints.at(transfer.id);
+            if (!transfer.state)
+                AddJointWake(wake, record.value);
+            else if (const auto &pose = transfer.state->value().poseDrive)
                 record.poseDrive = PoseDriveIntent{transfer.id, record.value.kind, TransferRotation(*pose)};
-            }
+        }
         QueueJointTopology(domain);
+        if (!wake.commands.empty())
+            domain.pending.push_back(std::move(wake));
+        transfers.erase(
+            std::remove_if(transfers.begin(), transfers.end(), [](const auto &transfer) { return !transfer.state; }),
+            transfers.end());
+        if (transfers.empty())
+            return;
         JoltGpuControlGroup group;
         group.prepareWork = [this, transfers = std::move(transfers)] {
             std::vector<rhi::ComputeBufferUpdate> writes;

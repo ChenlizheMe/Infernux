@@ -181,9 +181,10 @@ class Physics(metaclass=_PhysicsMeta):
     def set_rigidbody_backend(rigidbodies, *, gpu: bool) -> None:
         """Move a live group to the selected backend before a fixed step.
 
-        Include both endpoints of every joint that touches the group. World
-        anchors need no extra selection. The group keeps its bodies and
-        joints, their current motion and their constraint reference frames.
+        Include both Rigidbody endpoints of each joint attached to a body that
+        changes backend. This includes a FixedJoint spanning the two backends.
+        The group keeps its bodies and joints, their current motion and their
+        constraint reference frames.
         """
         _CppPhysics.set_rigidbody_backend([body._require_cpp_component() for body in rigidbodies], gpu)
 

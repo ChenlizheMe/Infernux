@@ -838,6 +838,7 @@ class PhysicsWorld
     [[nodiscard]] PhysicsDomain *FindCpuJointDomain(uint64_t jointId) const noexcept;
     void RetireCpuJointRoutes(const std::vector<uint64_t> &jointIds) noexcept;
     void RetireCpuJointRoutes(PhysicsDomain &) noexcept;
+    PhysicsConstraintOwner &DetachMixedJointRoute(PhysicsDomain &, uint64_t jointId) noexcept;
     void RetireMixedJoint(PhysicsDomain &, uint64_t jointId) noexcept;
     void RetireMixedJointRoutes(PhysicsDomain &) noexcept;
     [[nodiscard]] bool HasMixedJointForBody(const PhysicsDomain &, uint32_t bodyId) const noexcept;
@@ -870,8 +871,8 @@ class PhysicsWorld
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
     void ValidateBodyTransfer(const Rigidbody &) const;
     void RequestBodyTransfer(const Rigidbody &);
-    [[nodiscard]] std::vector<Joint *> CollectTransferJoints(const PhysicsDomain &,
-                                                             const std::vector<uint32_t> &) const;
+    [[nodiscard]] std::vector<Joint *> CollectTransferJoints(const PhysicsDomain &, const std::vector<uint32_t> &,
+                                                             Backend target) const;
     void StageBodyTransfer(PhysicsDomain &domain);
     bool TryStageBodyTransfer(PhysicsDomain &domain, const std::vector<uint32_t> &bodies, Backend target,
                               bool explicitGroup);

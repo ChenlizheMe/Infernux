@@ -269,11 +269,16 @@ void PhysicsWorld::RetireCpuJointRoutes(PhysicsDomain &domain) noexcept
     }
 }
 
-void PhysicsWorld::RetireMixedJoint(PhysicsDomain &domain, uint64_t id) noexcept
+PhysicsConstraintOwner &PhysicsWorld::DetachMixedJointRoute(PhysicsDomain &domain, uint64_t id) noexcept
 {
     auto entry = domain.mixedFixedJoints.extract(id);
     m_mixedJointDomains.erase(id);
-    entry.mapped().owner->OnPhysicsConstraintDestroyed();
+    return *entry.mapped().owner;
+}
+
+void PhysicsWorld::RetireMixedJoint(PhysicsDomain &domain, uint64_t id) noexcept
+{
+    DetachMixedJointRoute(domain, id).OnPhysicsConstraintDestroyed();
 }
 
 void PhysicsWorld::RetireMixedJointRoutes(PhysicsDomain &domain) noexcept

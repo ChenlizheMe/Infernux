@@ -30,6 +30,7 @@ struct JoltJointTransfer
 struct JoltJointImport
 {
     uint64_t id;
+    // A joint moved before its first solve still needs its initial binding.
     std::shared_ptr<std::optional<JoltJointTransfer>> state;
 };
 

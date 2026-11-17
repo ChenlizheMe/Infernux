@@ -1640,9 +1640,7 @@ void PhysicsWorld::ValidateBodyTransfer(const Rigidbody &body) const
     RequireOwnerThread();
     const auto id = body.GetBodyId();
     const auto &domain = DomainForBody(id);
-    if (HasMixedJointForBody(domain, id))
-        throw std::invalid_argument("Remove the cross-backend FixedJoint before changing either endpoint's backend");
-    if ((domain.cpuControl && domain.cpuControl->HasJointForBody(id)) ||
+    if (HasMixedJointForBody(domain, id) || (domain.cpuControl && domain.cpuControl->HasJointForBody(id)) ||
         (m_gpuScene && m_gpuScene->HasJointForBody(id)))
         throw std::invalid_argument("Changing the backend of this Rigidbody requires migrating its joint group");
     for (const auto &request : domain.requestedBodyTransfers)
@@ -1670,9 +1668,10 @@ void PhysicsWorld::RequestBodyTransfer(const Rigidbody &body)
 }
 
 std::vector<Joint *> PhysicsWorld::CollectTransferJoints(const PhysicsDomain &domain,
-                                                         const std::vector<uint32_t> &selected) const
+                                                         const std::vector<uint32_t> &selected, Backend target) const
 {
     const auto contains = [&](uint32_t id) { return std::binary_search(selected.begin(), selected.end(), id); };
+    const auto moves = [&](uint32_t id) { return contains(id) && m_bodyActors.at(id).AuthorBackend() != target; };
     std::vector<Joint *> joints;
     for (const auto id : domain.bodyIds) {
         const auto *body = FindRigidbodyByBodyId(id);
@@ -1680,13 +1679,9 @@ std::vector<Joint *> PhysicsWorld::CollectTransferJoints(const PhysicsDomain &do
         if (!joint || !joint->m_constraintId)
             continue;
         const auto a = joint->m_boundBodyId, b = joint->m_boundConnectedBodyId;
-        const bool ownerSelected = contains(a), connectedSelected = contains(b);
-        if (!ownerSelected && !connectedSelected)
+        if (!moves(a) && !moves(b))
             continue;
-        if (m_mixedJointDomains.find(joint->m_constraintId) != m_mixedJointDomains.end())
-            throw std::invalid_argument(
-                "Remove the cross-backend FixedJoint before changing either endpoint's backend");
-        if (!ownerSelected || (b != UINT32_MAX && !connectedSelected))
+        if (!contains(a) || (b != UINT32_MAX && !contains(b)))
             throw std::invalid_argument("Select both endpoints of every joint in the Rigidbody group");
         joints.push_back(joint);
     }
@@ -1701,10 +1696,10 @@ void PhysicsWorld::SetRigidbodyBackend(const std::vector<Rigidbody *> &bodies, b
     if (bodies.empty())
         return;
     PhysicsDomain *domain = nullptr;
-    std::vector<uint32_t> ids, moving;
+    std::vector<uint32_t> ids;
     ids.reserve(bodies.size());
-    moving.reserve(bodies.size());
     const auto target = gpu ? Backend::Gpu : Backend::Cpu;
+    bool changesBackend = false;
     for (auto *body : bodies) {
         const auto id = body ? body->GetBodyId() : UINT32_MAX;
         if (id == UINT32_MAX || FindRigidbodyByBodyId(id) != body)
@@ -1714,15 +1709,13 @@ void PhysicsWorld::SetRigidbodyBackend(const std::vector<Rigidbody *> &bodies, b
             throw std::invalid_argument("A Rigidbody group must belong to one live Play world");
         domain = &owner;
         ids.push_back(id);
-        if (m_bodyActors.at(id).AuthorBackend() != target)
-            moving.push_back(id);
+        changesBackend |= m_bodyActors.at(id).AuthorBackend() != target;
     }
     std::sort(ids.begin(), ids.end());
     if (std::adjacent_find(ids.begin(), ids.end()) != ids.end())
         throw std::invalid_argument("A Rigidbody group cannot contain a body twice");
-    std::sort(moving.begin(), moving.end());
-    if (!moving.empty())
-        (void)CollectTransferJoints(*domain, moving);
+    if (changesBackend)
+        (void)CollectTransferJoints(*domain, ids, target);
     auto &requests = domain->requestedBodyTransfers;
     auto prior = requests.end();
     for (auto it = requests.begin(); it != requests.end(); ++it) {
@@ -1734,7 +1727,7 @@ void PhysicsWorld::SetRigidbodyBackend(const std::vector<Rigidbody *> &bodies, b
                         [&](uint32_t id) { return std::binary_search(ids.begin(), ids.end(), id); }))
             throw std::invalid_argument("Change the pending backend selection for the entire Rigidbody group");
     }
-    if (moving.empty()) {
+    if (!changesBackend) {
         if (prior != requests.end())
             requests.erase(prior);
     } else if (prior == requests.end()) {
@@ -1773,7 +1766,7 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
         return true;
 
     ApplyCpuControl(domain);
-    auto joints = explicitGroup ? CollectTransferJoints(domain, moving) : std::vector<Joint *>{};
+    auto joints = explicitGroup ? CollectTransferJoints(domain, requested, target) : std::vector<Joint *>{};
     std::vector<PreparedBody> prepared;
     prepared.reserve(moving.size());
     {
@@ -1791,17 +1784,29 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
         }
     }
 
-    std::vector<JoltJointImport> imports;
-    std::vector<uint64_t> jointIds;
+    std::vector<JoltJointImport> imports, gpuReads;
+    std::vector<uint64_t> nativeJoints, mixedJoints;
     imports.reserve(joints.size());
-    jointIds.reserve(joints.size());
     for (const auto *joint : joints) {
         const auto id = joint->m_constraintId;
-        auto state = std::make_shared<std::optional<JoltJointTransfer>>();
-        if (toGpu)
-            *state = domain.cpuScene->Constraints().ReadTransfer(id);
+        const auto mixed = domain.mixedFixedJoints.find(id);
+        std::shared_ptr<std::optional<JoltJointTransfer>> state;
+        if (mixed != domain.mixedFixedJoints.end()) {
+            const auto &reference = mixed->second.joint->reference;
+            // A new Fixed has no accepted rest frame yet. The destination
+            // initializes its first frame from the transferred bodies.
+            if (reference)
+                state = std::make_shared<std::optional<JoltJointTransfer>>(reference);
+            mixedJoints.push_back(id);
+        } else {
+            state = std::make_shared<std::optional<JoltJointTransfer>>();
+            if (toGpu)
+                *state = domain.cpuScene->Constraints().ReadTransfer(id);
+            else
+                gpuReads.push_back({id, state});
+            nativeJoints.push_back(id);
+        }
         imports.push_back({id, std::move(state)});
-        jointIds.push_back(id);
     }
 
     if (toGpu) {
@@ -1858,8 +1863,8 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
             entry.gpuStaged = true;
             entry.transferTarget = target;
         }
-        domain.cpuControl->TransferJointsOut(jointIds);
-        RetireCpuJointRoutes(jointIds);
+        domain.cpuControl->TransferJointsOut(nativeJoints);
+        RetireCpuJointRoutes(nativeJoints);
     } else {
         EnsureCpuReady(domain);
         // Destination geometry must precede the imported sleep state. A
@@ -1890,10 +1895,12 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
             entry.transferTarget = target;
         }
         m_gpuScene->QueueBodyTransferReads(domain.owner, reads);
-        m_gpuScene->QueueJointTransferReads(domain.owner, imports);
-        m_gpuScene->TransferJointsOut(domain.owner, jointIds);
+        m_gpuScene->QueueJointTransferReads(domain.owner, std::move(gpuReads));
+        m_gpuScene->TransferJointsOut(domain.owner, nativeJoints);
         m_gpuScene->StageRetireBodies(domain.owner, domain.bodyTransfer->bodies, true);
     }
+    for (const auto id : mixedJoints)
+        DetachMixedJointRoute(domain, id);
     for (size_t index = 0; index < joints.size(); ++index) {
         auto &joint = *joints[index];
         joint.CreateConstraint(*this, joint.m_boundBodyId, joint.m_boundConnectedBodyId, &imports[index]);
