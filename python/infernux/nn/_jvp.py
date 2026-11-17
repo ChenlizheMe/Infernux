@@ -12,20 +12,21 @@ from ._plan import (_BINARY, _STOP_GRADIENT, _UNARY, _binary_pull, _bind_cursor,
 from ._tensor import Tensor, _check_options, _check_storage, _empty
 
 
-def _pushforward(run, indices, seeds, empty, operations):
-    plan = run.plan
+def _pushforward(plan, state, values, indices, seeds, empty, operations=None):
     needed = set().union(*(plan.result_specs[index].backward_values for index in indices))
     directions = dict(enumerate(seeds))
+    source = plan.root._program_source
 
     def bind(program, params):
-        operations.append(_Operation(program, params))
+        if operations is not None:
+            operations.append(_Operation(program, params))
         return params[-1]
 
     def prepare(function, params, **facts):
         key = function, tuple(facts.items())
         program = plan._tangent_programs.get(key)
         if program is None:
-            program = p.prepare(function, params, **facts)
+            program = p.prepare(function, params, source=source, **facts)
             plan._tangent_programs[key] = program
         return bind(program, params)
 
@@ -33,11 +34,11 @@ def _pushforward(run, indices, seeds, empty, operations):
         value_index = plan.input_count + index
         if value_index not in needed or layer.kind in _STOP_GRADIENT:
             continue
-        incoming = tuple(directions.get(source) for source in layer.inputs)
+        incoming = tuple(directions.get(value_index) for value_index in layer.inputs)
         active = tuple(value for value in incoming if value is not None)
         if not active:
             continue
-        if plan.root._program_source is not None:
+        if source is not None and plan.device == "cpu":
             raise NotImplementedError("jvp requires source-backed model programs")
         kind, program = layer.kind, plan.operations[index][0]
         if kind == "reshape" or (kind == "add" and len(active) == 1):
@@ -45,7 +46,7 @@ def _pushforward(run, indices, seeds, empty, operations):
         elif kind in ("add", "expand", "transpose", "slice", "sum"):
             result = bind(program, (*active, empty(layer.output_shape)))
         elif kind == "linear":
-            weight = run.state[layer.weight]
+            weight = state[layer.weight]
             params = (active[0], weight, weight, empty(layer.output_shape))
             if layer.bias is None:
                 result = bind(program, params)
@@ -54,22 +55,50 @@ def _pushforward(run, indices, seeds, empty, operations):
         elif kind == "affine":
             result = prepare(p.affine_vjp, (active[0], empty(layer.output_shape)), _SCALE=layer.options[0])
         elif kind in _BINARY:
-            primals = tuple(run.values[source] for source in layer.inputs)
+            primals = tuple(values[index] for index in layer.inputs)
             recipes = (_binary_pull(layer, primals, value, empty(layer.output_shape), side)
                        for side, value in enumerate(incoming) if value is not None)
             contributions = tuple(prepare(function, params, **facts) for function, params, facts in recipes)
             result = contributions[0]
             if len(contributions) == 2:
                 result = prepare(p.add, (*contributions, empty(layer.output_shape)))
+        elif kind == "slang_unary":
+            result = prepare(p.add, (values[layer.inputs[0]], active[0], empty(layer.output_shape)),
+                             **_unary_facts(layer), _SCALAR_SLANG_JVP=True)
         elif (spec := _UNARY.get(kind)) is not None and spec.backward is not None and not spec.dimension:
             # Scalar pointwise Jacobians are diagonal, so the JVP and VJP use
             # the same derivative of each element and its saved primal value.
-            primal = run.values[value_index if spec.output_gradient else layer.inputs[0]]
+            primal = values[value_index if spec.output_gradient else layer.inputs[0]]
             result = prepare(spec.backward, (primal, active[0], empty(layer.output_shape)), **_unary_facts(layer))
         else:
+            if operations is None:
+                continue
             raise NotImplementedError(f"jvp has no directional derivative for the NN operation {kind!r}")
         directions[value_index] = result
     return tuple(directions.get(index) for index in indices)
+
+
+def _prepare_tangents(plan):
+    """Collect the baked tangent closure from the fixed layouts, without executing Work."""
+    if not all(spec.requires_grad and spec.dtype == "float32" for spec in plan.inputs):
+        return ()
+    indices = tuple(index for index, spec in plan.result_specs.items() if spec.dtype == "float32")
+    if not indices:
+        return ()
+    storage = []
+
+    def empty(shape, dtype="float32"):
+        value = _empty(shape, plan.device, dtype)
+        storage.append(value)
+        return value
+
+    try:
+        inputs = tuple(empty(spec.shape) for spec in plan.inputs)
+        values = (*inputs, *(empty(layer.output_shape, layer.dtype) for layer in plan.layers))
+        _pushforward(plan, plan.root._state, values, indices, tuple(empty(spec.shape) for spec in plan.inputs), empty)
+        return tuple(plan._tangent_programs.values())
+    finally:
+        p.retire(storage, flush=False)
 
 
 def _directions(outputs, primals, tangents, scope):
@@ -98,7 +127,8 @@ def _directions(outputs, primals, tangents, scope):
                 _check_gradient_run(run, "jvp")
                 indices = results[run]
                 seeds = tuple(directions.get(port(value)) for value in run.inputs)
-                for index, value in zip(indices, _pushforward(run, indices, seeds, empty, operations)):
+                directional = _pushforward(run.plan, run.state, run.values, indices, seeds, empty, operations)
+                for index, value in zip(indices, directional):
                     directions[run, index] = value
             buffers = []
             for output, key in zip(outputs, ports):

@@ -165,6 +165,8 @@ def bake(model, path, *, optimizer=None, objective="mse"):
 
     With its optimizer, include loss/backward/update and zero_grad(False) programs without
     executing training. This is a model asset, not optimizer/checkpoint state.
+    Authored GPU models with a differentiable float32 input signature also
+    collect the supported JVP programs for that fixed graph without executing it.
     Programs for the model's device are stored with its portable definition.
     Loading matching code needs no source compiler. CPU code materializes in the common program cache.
     Player cook is a separate step; this explicit cold call is not frame work.
@@ -209,6 +211,9 @@ def _bake(model, path, *, optimizer=None, objective="mse", plan=None, output_ind
                 record, files = root._program_source.stage()
             elif plan.device == "gpu":
                 from ._gpu_programs import build
+                if plan._has_authored_slang:
+                    from ._jvp import _prepare_tangents
+                    programs = (*programs, *_prepare_tangents(plan))
                 plan._gpu_entries(programs, reverse_programs=plan._gpu_reverse_programs)
                 record, files = build(programs)
             else:

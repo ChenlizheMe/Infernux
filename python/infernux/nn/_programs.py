@@ -19,7 +19,8 @@ def recipe(function, params, facts):
                   kinds=[ARRAY_KINDS[value.dtype] if isinstance(value, compute.Buffer) else
                          "int32" if isinstance(value, numbers.Integral) else "float32" for value in params])
     if (definition := facts.get("_SCALAR_SLANG")) is not None:
-        record.update(operation="slang_unary", implementation=definition)
+        operation = "slang_unary_jvp" if facts.get("_SCALAR_SLANG_JVP", False) else "slang_unary"
+        record.update(operation=operation, implementation=definition)
     return record
 
 
@@ -127,11 +128,11 @@ class ProgramSource:
 
     def prepare(self, function, params, **facts):
         self.require_device(next(value.device for value in params if isinstance(value, compute.Buffer)))
-        key = _key(recipe(function, params, facts))
+        requested = recipe(function, params, facts)
         try:
-            return self.programs[key]
+            return self.programs[_key(requested)]
         except KeyError:
-            raise ValueError(f"model was not built with the required {function.__name__} recipe") from None
+            raise ValueError(f"model was not built with the required {requested['operation']} recipe") from None
 
 
 class CpuProgramSource(ProgramSource):

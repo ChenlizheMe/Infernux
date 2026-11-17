@@ -10,7 +10,7 @@ import infernux as inx
 from infernux import nn
 from infernux._compiler import slang
 from infernux.lib import RuntimeMode
-from infernux.nn import _plan
+from infernux.nn import _jvp, _plan
 
 
 SOURCE = """[Differentiable]
@@ -43,6 +43,11 @@ def check_distinct_definitions(model):
     dx, = nn.autograd.grad((cubic, quadratic), x, grad_outputs=(seed, seed))
     np.testing.assert_allclose(dx.cpu().numpy(), 3. * values**2 + .5 * values * np.cos(values**2) + 2. * values + 2.,
                                atol=5e-6)
+    directions = np.array([0.5, -0.25, 0.75], dtype=np.float32)
+    _, (dcubic, dquadratic) = nn.autograd.jvp(model, x, nn.tensor(directions, device="gpu"))
+    np.testing.assert_allclose(dcubic.cpu().numpy(), directions * (3. * values**2 + .5 * values * np.cos(values**2)),
+                               atol=5e-6)
+    np.testing.assert_allclose(dquadratic.cpu().numpy(), directions * (2. * values + 2.), atol=5e-6)
 
 
 def check_gradients(model):
@@ -60,6 +65,22 @@ def check_gradients(model):
     for observed, wanted in ((y, expected), (dx, WEIGHT * pull),
                               (dw, (values * pull).sum().reshape(1, 1)), (db, pull.sum().reshape(1))):
         np.testing.assert_allclose(observed.detach().cpu().numpy(), wanted, rtol=1e-4, atol=5e-6)
+
+
+def check_directional_derivative(model):
+    values = np.linspace(-1.25, 1.5, 131, dtype=np.float32).reshape(-1, 1)
+    directions = np.linspace(-0.7, 0.5, len(values), dtype=np.float32).reshape(-1, 1)
+    x = nn.tensor(values, device="gpu")
+    dx = nn.tensor(directions, device="gpu")
+    with patch.object(_jvp, "_execute_work", wraps=_jvp._execute_work) as execute:
+        prediction, tangent = nn.autograd.jvp(model, x, dx)
+        assert execute.call_count == 1
+    assert all(value.device == "gpu" and not value.requires_grad for value in (prediction, tangent))
+    latent = WEIGHT * values + BIAS
+    expected = latent**3 + 0.25 * np.sin(latent**2)
+    derivative = (3. * latent**2 + .5 * latent * np.cos(latent**2)) * WEIGHT * directions
+    np.testing.assert_allclose(prediction.cpu().numpy(), expected, rtol=1e-4, atol=5e-6)
+    np.testing.assert_allclose(tangent.cpu().numpy(), derivative, rtol=1e-4, atol=5e-6)
 
 
 def main():
@@ -80,11 +101,17 @@ def main():
             exported = str(project / "Assets" / "authored.inm")
             baked = str(project / "Assets" / "baked.inm")
             nn.export(model, exported)
-            nn.bake(model, baked)
+            assert not model._plan._tangent_programs
+            with patch.object(_jvp, "_execute_work", side_effect=AssertionError("bake executed tangent Work")):
+                nn.bake(model, baked)
             source.unlink()
-            check_gradients(nn.load(exported, device="gpu"))
+            source_model = nn.load(exported, device="gpu")
+            check_gradients(source_model)
+            check_directional_derivative(source_model)
             with patch.object(slang, "compile_kernel", side_effect=AssertionError("baked code asked for compilation")):
-                check_gradients(nn.load(baked, device="gpu"))
+                baked_model = nn.load(baked, device="gpu")
+                check_gradients(baked_model)
+                check_directional_derivative(baked_model)
 
             parallel = _Parallel()
             check_distinct_definitions(parallel)
@@ -100,7 +127,7 @@ def main():
                 nn.SlangUnary("StructuredBuffer<float> table;\n"
                               "[Differentiable] public float forward(float x) { return x + table[0]; }")(
                                   nn.tensor([1.], device="gpu"))
-            print("Authored Slang NN forward/VJP and portable/baked INM passed", flush=True)
+            print("Authored Slang NN forward/JVP/VJP and portable/baked INM passed", flush=True)
         finally:
             inx.compute._release_engine_resources()
             engine.get_native_engine().cleanup()

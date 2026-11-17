@@ -84,7 +84,7 @@ def _continuation_contract(work_item, params, *, autodiff_mode, gradient_paramet
 
 
 def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(),
-                   _lowered=None, _scalar_slang=None):
+                   _lowered=None, _scalar_slang=None, _scalar_slang_jvp=False):
     from infernux.compute import Buffer
     from infernux.lib import _Infernux
 
@@ -118,7 +118,7 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
         plan.source_locations += tuple({"role": "library", "path": module.path, "line": 1, "column": 1}
                                        for module in graph.ordered)
     if _scalar_slang is not None:
-        _link_scalar_row(plan, _scalar_slang)
+        _link_scalar_row(plan, _scalar_slang, jvp=_scalar_slang_jvp)
     plan.generated_source, plan.lowering = _source(plan, params)
     # Cache the exact compiler input, including its generated ABI and work
     # proof. Runtime scalar values and buffer identities are not specializations.
@@ -137,19 +137,39 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
     return plan
 
 
-def _link_scalar_row(plan, definition):
-    """Substitute one value operation into the proved two-buffer copy row."""
+def _link_scalar_row(plan, definition, *, jvp):
+    """Substitute a scalar call while retaining the row wrapper's buffer accesses."""
     entry_point, source = definition
     (assignment,) = plan.definition.body
-    if not isinstance(assignment, ast.Assign) or not isinstance(assignment.value, ast.Subscript):
+    if not isinstance(assignment, ast.Assign):
         raise ValueError("A linked Slang scalar requires a direct row-copy wrapper")
     module = "inx_nn_scalar"
     path = "NN/SlangUnary.slang"
     symbol = "_infernux_nn_scalar"
     value = assignment.value
-    assignment.value = ast.copy_location(ast.Call(ast.Name(symbol, ast.Load()), [value], []), value)
-    plan.library_functions[symbol] = Function(f"{module}::{entry_point}", "float", ("float",))
-    plan.libraries = ((module, path, f'namespace {module} {{\n#line 1 "{path}"\n{source}\n}}'),)
+    function = f"{module}::{entry_point}"
+    library = f'namespace {module} {{\n#line 1 "{path}"\n{source}\n}}'
+    arguments = [value]
+    if jvp:
+        if not isinstance(value, ast.BinOp) or not isinstance(value.op, ast.Add):
+            raise ValueError("A linked Slang JVP requires a two-input pointwise row wrapper")
+        arguments = [value.left, value.right]
+        module = "inx_nn_scalar_jvp"
+        library += f'''
+namespace {module} {{
+#line 1 "NN/SlangUnaryJVP.slang"
+public float directional(float x, float dx) {{
+    let result = fwd_diff({function})(diffPair(x, dx));
+    return result.d;
+}}
+}}
+'''
+        function = f"{module}::directional"
+    if not all(isinstance(argument, ast.Subscript) for argument in arguments):
+        raise ValueError("A linked Slang scalar requires direct buffer row inputs")
+    assignment.value = ast.copy_location(ast.Call(ast.Name(symbol, ast.Load()), arguments, []), value)
+    plan.library_functions[symbol] = Function(function, "float", ("float",) * len(arguments))
+    plan.libraries = ((module, path, library),)
     plan.source_locations += ({"role": "library", "path": path, "function": entry_point, "line": 1, "column": 1},)
     # The buffers still obey the row-address contract. The Slang body has no
     # bounded service-cost estimate for managed scheduling.
@@ -757,11 +777,12 @@ def _artifact(compiled, emitter, plan, params):
 
 
 def compile_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(),
-                   _lowered=None, _scalar_slang=None):
+                   _lowered=None, _scalar_slang=None, _scalar_slang_jvp=False):
     from infernux.lib import _Infernux
 
     plan = prepare_kernel(function, params, target=target, receiver_fields=receiver_fields, autodiff_mode=autodiff_mode,
-                          gradient_parameters=gradient_parameters, _lowered=_lowered, _scalar_slang=_scalar_slang)
+                          gradient_parameters=gradient_parameters, _lowered=_lowered, _scalar_slang=_scalar_slang,
+                          _scalar_slang_jvp=_scalar_slang_jvp)
     specialization = _specialization_identity(params, target=target, autodiff_mode=autodiff_mode, gradient_parameters=plan.gradient_parameters)
 
     def emit():
