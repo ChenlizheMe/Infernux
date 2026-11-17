@@ -32,6 +32,10 @@ RUNTIME_SCHEDULER_PHASES = (
     "fixed_update", "physics_pre_step", "physics_post_step",
     "update", "animation_update", "late_update",
 )
+_MOUSE_CALLBACKS = (
+    "on_mouse_enter", "on_mouse_over", "on_mouse_exit", "on_mouse_down",
+    "on_mouse_drag", "on_mouse_up", "on_mouse_up_as_button",
+)
 _MISSING = object()
 _PHASE_INDEX = {name: index for index, name in enumerate(RUNTIME_PHASE_NAMES)}
 
@@ -201,11 +205,19 @@ class RuntimeRevisionEpoch:
     epoch_id: int
     descriptors: Mapping[type, RuntimeTypeDispatchDescriptor]
     retired_types: frozenset[type] = frozenset()
+    has_mouse_receivers: bool = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "epoch_id", int(self.epoch_id))
         object.__setattr__(self, "descriptors", MappingProxyType(dict(self.descriptors)))
         object.__setattr__(self, "retired_types", frozenset(self.retired_types))
+        has_mouse_receivers = any(
+            (method := descriptor.methods.get(name)) is not None
+            and not getattr(method.raw, "__infernux_default_lifecycle__", False)
+            for descriptor in self.descriptors.values()
+            for name in _MOUSE_CALLBACKS
+        )
+        object.__setattr__(self, "has_mouse_receivers", has_mouse_receivers)
 
     def descriptor_for(self, component_type: type) -> Optional[RuntimeTypeDispatchDescriptor]:
         return self.descriptors.get(component_type)

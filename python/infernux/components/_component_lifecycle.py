@@ -123,6 +123,7 @@ class RuntimeExecutionScheduler:
         self._plan_revision = -1
         self._registry_scan_pending = True
         self._dispatch_types_dirty = True
+        self._has_pointer_ui = False
         self._counters = defaultdict(int)
         self._native_frame: RuntimeExecutionFrame | None = None
         self._execution_snapshot: _RuntimeExecutionSnapshot | None = None
@@ -904,15 +905,21 @@ class RuntimeExecutionScheduler:
             self._last_completed_barrier_sequence = tuple(frame.barrier_sequence)
             frame.close()
 
+    @property
+    def may_have_pointer_ui(self) -> bool:
+        """Include attachments made before the next scheduler preparation."""
+        return self._registry_scan_pending or self._dispatch_types_dirty or self._has_pointer_ui
+
     def prepare_frame(self) -> dict[str, tuple[Any, ...]]:
         """Explicitly build or return the plan for the current revision."""
         self._sync_active_registry_once()
         if self._dispatch_types_dirty:
             from infernux.engine.runtime_dispatch import ensure_runtime_dispatch_types
+            from infernux.ui.ui_canvas_utils import _has_pointer_ui_components
 
-            ensure_runtime_dispatch_types(
-                tuple({type(component) for component in self._components.values()})
-            )
+            by_type = {type(component): component for component in self._components.values()}
+            ensure_runtime_dispatch_types(by_type)
+            self._has_pointer_ui = _has_pointer_ui_components(by_type.values())
             self._dispatch_types_dirty = False
         # Descriptor publication can emit ScriptSchema while establishing a
         # previously unseen type.  Consume after that publication so the same

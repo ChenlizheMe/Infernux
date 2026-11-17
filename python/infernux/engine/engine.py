@@ -419,8 +419,21 @@ class Engine(RuntimeWorldHost):
             from infernux.engine.ui.window_manager import WindowManager
             manager = WindowManager.instance()
             view = manager.get_window_instance("game_view") if manager is not None else None
-        if view is not None:
-            view.process_runtime_input()
+        if view is None:
+            return
+
+        world_id = self._runtime_scene_manager._current_runtime_world_id
+        domain = self._world_runtimes.get(world_id)
+        # An existing pointer transaction still settles against the live scene
+        # after its last receiver is removed or its window loses focus.
+        if (
+            domain is not None
+            and not domain.epoch.has_mouse_receivers
+            and not domain.scheduler.may_have_pointer_ui
+            and world_id not in vars(view).get("_world_pointer_states", ())
+        ):
+            return
+        view.process_runtime_input()
 
     def _on_render_extraction(self):
         scene_manager = self._runtime_scene_manager
