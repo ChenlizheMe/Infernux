@@ -767,7 +767,18 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             done();
             return {};
         }
-        if (!Allocate(Params, sizeof(params)) || (!patches.empty() && !AllocateWorkset()) ||
+        bool pipelinesReady = true;
+        if (owner.m_host.SupportsPipelinePreparation()) {
+            // Start the needed driver jobs together. Dispatch preparation
+            // otherwise waits for a cold pipeline on the foreground thread.
+            const bool velocityReady =
+                patches.empty() || !solveVelocity || owner.m_velocity.kernel->TryPreparePipeline();
+            const bool positionReady =
+                patches.empty() || !solvePosition || owner.m_position.kernel->TryPreparePipeline();
+            const bool wakeReady = wakeSlots.empty() || owner.m_wake.kernel->TryPreparePipeline();
+            pipelinesReady = velocityReady && positionReady && wakeReady;
+        }
+        if (!pipelinesReady || !Allocate(Params, sizeof(params)) || (!patches.empty() && !AllocateWorkset()) ||
             (!wakeSlots.empty() && !Allocate(WakeSlots, wakeSlots.size() * sizeof(uint32_t)))) {
             return {nullptr, [self = shared_from_this(), done = std::move(done)]() mutable {
                         return self->Install(std::move(done));
