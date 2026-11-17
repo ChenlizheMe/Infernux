@@ -352,7 +352,7 @@ class RuntimeWorldInitializationCancelled(Exception):
 class RuntimeWorldSession:
     """One immutable initial template; native owns identity, order and membership."""
 
-    def __init__(self, engine, snapshots, *, scene_service=None):
+    def __init__(self, engine, snapshots, *, scene_service=None, player_startup_records=None):
         from collections import deque
         from infernux.lib import SceneManager
         self.engine = engine
@@ -366,6 +366,7 @@ class RuntimeWorldSession:
         # live worlds. Each materialization still creates its own Python realm.
         self.records = tuple(item.snapshot._python_component_records() for item in self.sources)
         self.scene_service = scene_service
+        self._player_startup_records = player_startup_records
         self._preparations = deque()
         self._component_activations = deque()
         self._prefer_component_preparation = False
@@ -536,6 +537,18 @@ class RuntimeWorldSession:
                     token.finalize()
                 tokens.clear()
                 domain.scheduler.bind_native_bridge(manager)
+            if self._player_startup_records:
+                from infernux.engine.startup_warmup import PlayerStartupWarmup
+
+                warmup = PlayerStartupWarmup(self._player_startup_records, scope=f"player-world-{identity}")
+                try:
+                    while True:
+                        with _Infernux._RuntimeWorldScope(identity):
+                            if warmup.pump():
+                                break
+                        yield False
+                finally:
+                    warmup.close()
             yield
             # Publication, Awake, and initial Start form one existing synchronous
             # lifecycle quantum. Commands issued inside them are always posted.
@@ -560,17 +573,18 @@ class RuntimeWorldSession:
                         return
                     if paused:
                         manager.pause()
-                    from infernux.components.component import InxComponent
-                    from infernux.engine.startup_warmup import run_component_warmups
-                    from infernux.engine.project_context import get_project_root
-                    run_component_warmups(
-                        (component for values in InxComponent._active_instances.values() for component in values
-                         if component_world_id(component) == identity),
-                        scope='runtime-world', project_path=get_project_root(),
-                        can_continue=lambda: self.initialization_current(handle, started=True))
-                    if not self.initialization_current(handle, started=True):
-                        self.cancel_initialization(handle)
-                        return
+                    if self._player_startup_records is None:
+                        from infernux.components.component import InxComponent
+                        from infernux.engine.startup_warmup import run_component_warmups
+                        from infernux.engine.project_context import get_project_root
+                        run_component_warmups(
+                            (component for values in InxComponent._active_instances.values() for component in values
+                             if component_world_id(component) == identity),
+                            scope='runtime-world', project_path=get_project_root(),
+                            can_continue=lambda: self.initialization_current(handle, started=True))
+                        if not self.initialization_current(handle, started=True):
+                            self.cancel_initialization(handle)
+                            return
             if handle.pending_primary:
                 self.apply_primary(handle)
             if start_play:

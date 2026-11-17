@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -830,6 +832,8 @@ def test_engine_phase_records_launches_into_one_host_submission():
     host = Host()
 
     class Executable:
+        artifact = SimpleNamespace(count_parameter=None)
+
         def __init__(self):
             self.host = host
             self.sequence = 0
@@ -870,6 +874,8 @@ def test_public_recording_scope_batches_ordered_launches():
     host = Host()
 
     class Executable:
+        artifact = SimpleNamespace(count_parameter=None)
+
         def __init__(self):
             self.host = host
             self.sequence = 0
@@ -915,6 +921,8 @@ def test_explicit_readback_joins_pending_compute_submission():
     host = Host()
 
     class Executable:
+        artifact = SimpleNamespace(count_parameter=None)
+
         def __init__(self):
             self.host = host
 

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 from types import ModuleType
+from typing import Callable
 
 import numpy as np
 
@@ -779,20 +780,68 @@ def _artifact(compiled, emitter, plan, params):
         gradient_parameters=plan.gradient_parameters, identity=plan.artifact_key)
 
 
-def compile_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(),
-                   _lowered=None, _scalar_slang=None, _scalar_slang_jvp=False):
-    from infernux.lib import _Infernux
+@dataclass(frozen=True, slots=True)
+class _ArtifactRequest:
+    source: str
+    path: str
+    target: str
+    libraries: tuple
+    finalize: Callable[[dict], CompilerArtifact]
+    source_ranges: tuple = ()
+    entry_point: str | None = None
 
+    def _invoke(self, compiler):
+        return compiler(self.source, self.path, "inx_kernel", libraries=self.libraries, targets=[self.target],
+                        precise=True, source_ranges=self.source_ranges, entry_point=self.entry_point)
+
+    def compile(self):
+        from infernux.lib import _Infernux
+
+        return self.finalize(self._invoke(_Infernux._compile_shader_program)["targets"][0])
+
+    def begin(self):
+        from infernux.lib import _Infernux
+
+        return self._invoke(_Infernux._begin_compile_shader_program)
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedArtifactRequest:
+    request: _ArtifactRequest
+    specialization: str
+    path: Path
+
+    def load(self):
+        return _decode_artifact(self.path, specialization=self.specialization)
+
+    def store(self, artifact):
+        root = self.path.parent
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_bytes(_encode_artifact(artifact, self.specialization))
+        os.replace(temporary, self.path)
+        prune_cache_files(root, "*.inxgpu", file_limit=128, byte_limit=256 * 1024 * 1024)
+        return artifact
+
+    def compile(self):
+        artifact = self.load()
+        return artifact if artifact is not None else self.store(self.request.compile())
+
+    def begin(self):
+        return self.request.begin()
+
+    def finish(self, result):
+        return self.store(self.request.finalize(result["targets"][0]))
+
+
+def _prepare_kernel_artifact(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none",
+                             gradient_parameters=(), _lowered=None, _scalar_slang=None, _scalar_slang_jvp=False):
     plan = prepare_kernel(function, params, target=target, receiver_fields=receiver_fields, autodiff_mode=autodiff_mode,
                           gradient_parameters=gradient_parameters, _lowered=_lowered, _scalar_slang=_scalar_slang,
                           _scalar_slang_jvp=_scalar_slang_jvp)
     specialization = _specialization_identity(params, target=target, autodiff_mode=autodiff_mode, gradient_parameters=plan.gradient_parameters)
 
-    def emit():
-        compiled = _Infernux._compile_shader_program(plan.generated_source, plan.work_item.origin.path, "inx_kernel",
-                                                    libraries=plan.libraries, targets=[target], precise=True,
-                                                    source_ranges=plan.lowering.source_ranges)
-        code = compiled["targets"][0]
+    def finalize(code):
         artifact = _artifact(code, plan.lowering, plan, params)
         if _scalar_slang is not None:
             actual = {tuple(binding) for binding in code["entries"][0]["bindings"]}
@@ -801,7 +850,13 @@ def compile_kernel(function, params, *, target="spirv", receiver_fields=None, au
                 raise TypeError("NN Slang functions must be resource-free scalar operations")
         return artifact
 
-    return _cached_artifact(plan.artifact_key, specialization, emit)
+    request = _ArtifactRequest(plan.generated_source, plan.work_item.origin.path, target,
+                               plan.libraries, finalize, tuple(plan.lowering.source_ranges))
+    return _CachedArtifactRequest(request, specialization, compiler_cache_root() / (plan.artifact_key + ".inxgpu"))
+
+
+def compile_kernel(function, params, **options):
+    return _prepare_kernel_artifact(function, params, **options).compile()
 
 
 _SLANG_CONSTANTS_MODULE = "inx_specialization"
@@ -831,12 +886,15 @@ class _SlangKernelSource:
                     self.source, self._linked_modules, specialization, True)
         return hashlib.blake2b(json.dumps(identity).encode(), digest_size=16).hexdigest()
 
-    def compile(self, target, key):
-        from infernux.lib import _Infernux
+    def _request(self, target, key):
+        def finalize(result):
+            return _slang_dispatch_artifact(result, self.path, self.entry_point, self.domain, self.modules, key)
 
-        result = _Infernux._compile_shader_program(self.source, self.path, "inx_kernel", libraries=self._linked_modules,
-                                                  targets=[target], precise=True, entry_point=self.entry_point)["targets"][0]
-        return _slang_dispatch_artifact(result, self.path, self.entry_point, self.domain, self.modules, key)
+        return _ArtifactRequest(self.source, self.path, target, self._linked_modules, finalize,
+                                entry_point=self.entry_point)
+
+    def compile(self, target, key):
+        return self._request(target, key).compile()
 
 
 def _read_slang_kernel_source(path, entry_point, domain, libraries, constants, *, read_source):
@@ -856,11 +914,15 @@ def read_slang_libraries(libraries, *, read_source=_read_slang_asset):
     return tuple((name, asset, read_source(asset)) for name, asset in libraries)
 
 
-def compile_slang_kernel(path, entry_point, domain, libraries, constants, params, *, target):
+def _prepare_slang_artifact(path, entry_point, domain, libraries, constants, params, *, target):
     source = _read_slang_kernel_source(path, entry_point, domain, libraries, constants, read_source=_read_slang_asset)
     specialization = _specialization_identity(params, target=target)
     key = source.artifact_key(specialization)
-    return _cached_artifact(key, specialization, lambda: source.compile(target, key))
+    return _CachedArtifactRequest(source._request(target, key), specialization, compiler_cache_root() / (key + ".inxgpu"))
+
+
+def compile_slang_kernel(path, entry_point, domain, libraries, constants, params, *, target):
+    return _prepare_slang_artifact(path, entry_point, domain, libraries, constants, params, target=target).compile()
 
 
 def _slang_dispatch_artifact(compiled, path, entry_point, domain, modules, key):
@@ -914,20 +976,4 @@ def _slang_dispatch_artifact(compiled, path, entry_point, domain, modules, key):
     return CompilerArtifact(compiled["target"], (entry["code"],), (metadata,), domain_index,
         {"size": 0, "parameters": layouts}, {"shader_float32_preserve": compiled["target"] == "spirv"},
         locations, contract, WORK_ITEM_FAST_MATH, identity=key)
-
-
-def _cached_artifact(key, specialization, emit):
-    root = compiler_cache_root()
-    path = root / (key + ".inxgpu")
-    cached = _decode_artifact(path, specialization=specialization)
-    if cached is not None:
-        return cached
-    artifact = emit()
-    root.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_bytes(_encode_artifact(artifact, specialization))
-    os.replace(temporary, path)
-    prune_cache_files(root, "*.inxgpu", file_limit=128, byte_limit=256 * 1024 * 1024)
-    return artifact
-
 

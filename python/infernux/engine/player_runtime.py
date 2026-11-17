@@ -64,7 +64,7 @@ class PlayerRuntimeSession(WorkRuntime):
         self._state = "stopped"
         self._activation = None
         self._membership_warmup_frames = 0
-        self._startup_warmup = None
+        self._startup_warmup_records = ()
 
     @property
     def initial_world_count(self) -> int:
@@ -97,21 +97,10 @@ class PlayerRuntimeSession(WorkRuntime):
         if self._native_engine is not None:
             self._native_engine.request_full_speed_frame()
 
-    def schedule_startup_warmup(self, warmup: Any) -> None:
-        """Install the post-present warmup queue before the native loop starts."""
-        if self._startup_warmup is not None:
-            raise RuntimeError("Player startup warmup is already scheduled")
-        self._startup_warmup = warmup
+    def configure_startup_warmup(self, project_path: str) -> None:
+        from infernux.engine.startup_warmup import player_startup_warmup_records
 
-    def pump_startup_warmup(self) -> bool:
-        """Advance the bounded startup queue and report when it is drained."""
-        warmup = self._startup_warmup
-        if warmup is None:
-            return True
-        if warmup.pump():
-            self._startup_warmup = None
-            return True
-        return False
+        self._startup_warmup_records = player_startup_warmup_records(project_path)
 
     def _refresh_execution_membership(self) -> None:
         # Defer the registry scan to the scheduler's next safe point.  Calling
@@ -427,10 +416,11 @@ class PlayerRuntimeSession(WorkRuntime):
         from infernux.application import Application
         from infernux.engine.runtime_worlds import (
             RuntimeWorldSession, RuntimeWorldInitializationCancelled,
-            capture_runtime_sources, component_world_id,
+            capture_runtime_sources,
         )
         engine = Application._current_engine()
-        session = RuntimeWorldSession(engine, capture_runtime_sources(), scene_service=self._scene_service)
+        session = RuntimeWorldSession(engine, capture_runtime_sources(), scene_service=self._scene_service,
+                                      player_startup_records=self._startup_warmup_records)
         self._runtime_world_session = session
         identity = None
         try:
@@ -454,16 +444,6 @@ class PlayerRuntimeSession(WorkRuntime):
                 if not session.initialization_current(handle, started=True):
                     raise RuntimeWorldInitializationCancelled('Player Start cancelled activation')
                 self._refresh_execution_membership()
-                from infernux.components.component import InxComponent
-                from infernux.engine.startup_warmup import run_component_warmups
-                from infernux.engine.project_context import get_project_root
-                run_component_warmups(
-                    (component for values in InxComponent._active_instances.values() for component in values
-                     if component_world_id(component) == identity),
-                    scope="player", project_path=get_project_root(),
-                    can_continue=lambda: session.initialization_current(handle, started=True))
-                if not session.initialization_current(handle, started=True):
-                    raise RuntimeWorldInitializationCancelled('Player warmup cancelled activation')
                 session.finish_initialization()
         except BaseException:
             # A callback can close this session. Never stop or clear its successor.
@@ -492,7 +472,6 @@ class PlayerRuntimeSession(WorkRuntime):
             return
         from infernux.lib import SceneManager, _Infernux
         from infernux.application import Application
-        self.pump_startup_warmup()
         self._publish_ready_content()
         engine = Application._current_engine()
         manager = SceneManager.instance()

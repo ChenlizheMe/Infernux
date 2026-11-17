@@ -2820,6 +2820,7 @@ class Kernel:
     def _init_runtime(self):
         self.function = None
         self._slang_source = None
+        self._scalar_slang = None
         self._sealed_artifacts = None
         self._lowered_work_item = None
         self._inner_variants = {}
@@ -2865,8 +2866,8 @@ class Kernel:
         declaration.__doc__ = "Built GPU program on the common compute runtime"
         return declaration
 
-    def _executable(self, params, *, receiver_fields=None, autodiff_mode="none", gradient_parameters=()):
-        from infernux._compiler.gpu_artifact import _compilation_request, parameter_key, _specialization_identity
+    def _specialization(self, params, receiver_fields, autodiff_mode, gradient_parameters):
+        from infernux._compiler.gpu_artifact import _compilation_request, parameter_key
 
         gradient_parameters = tuple(gradient_parameters)
         differentiated = autodiff_mode != "none" or bool(gradient_parameters)
@@ -2893,38 +2894,91 @@ class Kernel:
         if any(int(value._host.identity) != host_identity for value in buffers):
             raise ValueError("GPU kernel buffers must belong to the same Infernux compute host")
         key = (host_identity, parameter_key(params), autodiff_mode, gradient_parameters)
+        return host, key
+
+    def _executable(self, params, *, receiver_fields=None, autodiff_mode="none", gradient_parameters=()):
+        host, key = self._specialization(params, receiver_fields, autodiff_mode, gradient_parameters)
         with self._lock:
-            executable = self._executables.pop(key, None)
-            if executable is None:
-                if self._sealed_artifacts is not None:
-                    identity = _specialization_identity(params, target=host.shader_target, autodiff_mode=autodiff_mode,
-                                                        gradient_parameters=gradient_parameters)
-                    try:
-                        artifact = self._sealed_artifacts[identity]
-                    except KeyError:
-                        raise ComputeCapabilityError(f"built GPU program does not contain the requested {host.shader_target} argument/gradient role") from None
-                else:
-                    artifact = self._compile_artifact(params, receiver_fields, autodiff_mode, gradient_parameters, host.shader_target)
-                executable = _KernelExecutable(artifact, host, params)
-                if len(self._executables) >= 64:
-                    _, retired = self._executables.popitem(last=False)
-                    retired.close()
-                self._executables[key] = executable
+            executable = self._executables.get(key)
+            if executable is not None:
+                self._executables.move_to_end(key)
+                return executable
+            if self._sealed_artifacts is not None:
+                artifact = self._sealed_artifact(params, host.shader_target, key[2], key[3])
             else:
-                self._executables[key] = executable
-            return executable
+                artifact = self._compile_artifact(params, receiver_fields, key[2], key[3], host.shader_target)
+            return self._install_executable(key, artifact, host, params)
+
+    def _sealed_artifact(self, params, target, autodiff_mode, gradient_parameters):
+        from infernux._compiler.gpu_artifact import _specialization_identity
+
+        identity = _specialization_identity(params, target=target, autodiff_mode=autodiff_mode,
+                                            gradient_parameters=gradient_parameters)
+        try:
+            return self._sealed_artifacts[identity]
+        except KeyError:
+            raise ComputeCapabilityError(
+                f"built GPU program does not contain the requested {target} argument/gradient role"
+            ) from None
+
+    def _install_executable(self, key, artifact, host, params):
+        executable = _KernelExecutable(artifact, host, params)
+        if len(self._executables) >= 64:
+            _, retired = self._executables.popitem(last=False)
+            retired.close()
+        self._executables[key] = executable
+        return executable
 
     def _compile_artifact(self, params, receiver_fields, autodiff_mode, gradient_parameters, target):
         from infernux._compiler.slang import compile_kernel, compile_slang_kernel
 
-        try:
+        with self._compilation_errors():
             if self._slang_source is not None:
                 return compile_slang_kernel(*self._slang_source, params, target=target)
             return compile_kernel(
                 self.function, params, target=target, receiver_fields=receiver_fields,
                 autodiff_mode=autodiff_mode, gradient_parameters=gradient_parameters,
-                **({"_lowered": self._lowered_work_item} if self._lowered_work_item is not None else {}),
+                **self._kernel_options(),
             )
+
+    def _kernel_options(self):
+        options = {}
+        if self._lowered_work_item is not None:
+            options["_lowered"] = self._lowered_work_item
+        if self._scalar_slang is not None:
+            options["_scalar_slang"], options["_scalar_slang_jvp"] = self._scalar_slang
+        return options
+
+    def _begin_prepare(self, params, *, receiver_fields=None, autodiff_mode="none", gradient_parameters=()):
+        from infernux._compiler.slang import _prepare_kernel_artifact, _prepare_slang_artifact
+
+        host, key = self._specialization(params, receiver_fields, autodiff_mode, gradient_parameters)
+        with self._lock:
+            if key in self._executables:
+                self._executables.move_to_end(key)
+                return None
+            target = host.shader_target
+            if self._sealed_artifacts is not None:
+                self._install_executable(key, self._sealed_artifact(params, target, key[2], key[3]), host, params)
+                return None
+            with self._compilation_errors():
+                if self._slang_source is None:
+                    request = _prepare_kernel_artifact(
+                        self.function, params, target=target, receiver_fields=receiver_fields,
+                        autodiff_mode=key[2], gradient_parameters=key[3], **self._kernel_options(),
+                    )
+                else:
+                    request = _prepare_slang_artifact(*self._slang_source, params, target=target)
+                artifact = request.load()
+                if artifact is None:
+                    return _PendingKernelPrepare(self, key, host, params, request, request.begin())
+            self._install_executable(key, artifact, host, params)
+            return None
+
+    @contextmanager
+    def _compilation_errors(self):
+        try:
+            yield
         except KernelCompilationError:
             raise
         except SyntaxError as exception:
@@ -2934,6 +2988,8 @@ class Kernel:
                 diagnostics=getattr(exception, "diagnostics", ()),
             ) from exception
         except Exception as exception:
+            if self._scalar_slang is not None:
+                raise
             raise KernelCompilationError(
                 f"GPU kernel '{self.__qualname__}' compilation failed: {exception}",
                 diagnostics=getattr(exception, "diagnostics", ()),
@@ -3008,6 +3064,10 @@ class _BoundKernel(Kernel):
 
     def _executable(self, params, **request):
         return self._resolve(params, **request)[0]
+
+    def _begin_prepare(self, params, **request):
+        bindings, effective = self._effective_params(params)
+        return self._declaration._begin_prepare(effective, receiver_fields=bindings, **request)
 
     def _resolve(self, params, **request):
         bindings, effective = self._effective_params(params)
@@ -3234,6 +3294,35 @@ def _prepare_now(declaration: Kernel, params, autodiff_mode="none", gradient_par
         declaration._resolve(params, **request)
     else:
         declaration._executable(params, **request)
+
+
+@dataclass(slots=True)
+class _PendingKernelPrepare:
+    declaration: Kernel
+    key: tuple
+    host: object
+    params: tuple
+    request: object
+    ticket: object
+
+    def finish(self) -> bool:
+        if not self.ticket.done:
+            return False
+        assert_runtime_owner_thread()
+        declaration = self.declaration
+        with declaration._lock:
+            if self.key in declaration._executables:
+                return True
+            with declaration._compilation_errors():
+                result = self.ticket.result()
+                if result is None:
+                    raise RuntimeError("GPU preparation was canceled before pipeline creation")
+                artifact = self.request.finish(result)
+            declaration._install_executable(self.key, artifact, self.host, self.params)
+        return True
+
+    def cancel(self):
+        self.ticket.cancel()
 
 
 class Work:

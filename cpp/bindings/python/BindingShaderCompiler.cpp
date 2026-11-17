@@ -1,5 +1,6 @@
 #include "BindingRegistration.h"
 #include "ShaderDiagnosticPyBridge.h"
+#include <core/threading/JobSystem.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -9,10 +10,15 @@
 #include <function/resources/ShaderAsset/SlangParticleModule.h>
 #include <function/resources/ShaderAsset/SlangUIModule.h>
 
+#include <atomic>
+#include <exception>
+#include <memory>
 #include <optional>
 #include <pybind11/stl.h>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
+#include <utility>
 
 namespace py = pybind11;
 
@@ -96,6 +102,233 @@ py::dict ValueLayout(const ShaderValueLayout &value)
     result["fields"] = std::move(fields);
     return result;
 }
+
+using LibraryTuple = std::tuple<std::string, std::string, std::string>;
+using ShaderInputKinds = std::vector<std::pair<std::string, std::string>>;
+
+struct ShaderCompileRequest
+{
+    ShaderSourceModule module;
+    std::vector<ShaderSourceModule> libraries;
+    std::vector<ShaderCodeTarget> targets;
+    std::vector<ShaderAuthorRange> ranges;
+    ShaderInputKinds inputKinds;
+    std::optional<std::string> entryPoint;
+    bool precise = false;
+    bool rootConstants = false;
+};
+
+ShaderCompileRequest MakeCompileRequest(const std::string &source, const std::string &sourcePath,
+                                        const std::string &moduleName, const std::vector<LibraryTuple> &libraries,
+                                        const std::vector<std::string> &targetNames, bool precise,
+                                        const std::vector<SourceRangeTuple> &sourceRanges,
+                                        const ShaderInputKinds &inputKinds, bool rootConstants,
+                                        const std::optional<std::string> &entryPoint)
+{
+    ShaderCompileRequest request;
+    request.module = {moduleName, sourcePath, source};
+    request.libraries.reserve(libraries.size());
+    for (const auto &[name, path, text] : libraries)
+        request.libraries.push_back({name, path, text});
+    request.targets.reserve(targetNames.size());
+    for (const auto &name : targetNames) {
+        if (name == "spirv")
+            request.targets.push_back(ShaderCodeTarget::SpirV);
+        else if (name == "wgsl")
+            request.targets.push_back(ShaderCodeTarget::Wgsl);
+        else
+            throw std::invalid_argument("Shader target must be spirv or wgsl: " + name);
+    }
+    if (request.targets.empty())
+        throw std::invalid_argument("A shader program needs at least one target");
+    request.ranges = SourceRanges(sourceRanges);
+    request.inputKinds = inputKinds;
+    request.entryPoint = entryPoint;
+    request.precise = precise;
+    request.rootConstants = rootConstants;
+    return request;
+}
+
+struct ShaderCompileResult
+{
+    ShaderCompilation compilation;
+    std::optional<bool> frontendReused;
+};
+
+ShaderCompileResult CompileProgram(const ShaderCompileRequest &request)
+{
+    auto &compiler = SlangCompiler::Get();
+    ShaderCompileResult result;
+    if (request.entryPoint) {
+        bool frontendReused = false;
+        result.compilation =
+            compiler.CompileComputeEntry(request.module, request.libraries, request.targets, *request.entryPoint,
+                                         request.precise, request.ranges, frontendReused);
+        result.frontendReused = frontendReused;
+    } else if (request.rootConstants) {
+        result.compilation = compiler.CompileRootProgram(request.module, request.libraries, request.targets,
+                                                         request.precise, request.ranges);
+    } else {
+        result.compilation =
+            compiler.Compile(request.module, request.libraries, request.targets, request.precise, request.ranges);
+    }
+    ApplyShaderAuthorResources(result.compilation, request.inputKinds);
+    return result;
+}
+
+py::dict CompileResultToPython(const ShaderCompileResult &resultData)
+{
+    const auto &compiled = resultData.compilation;
+    py::dict result;
+    result["diagnostics"] = ShaderDiagnosticsToPython(compiled.diagnostics);
+    if (resultData.frontendReused.has_value())
+        result["frontend_reused"] = *resultData.frontendReused;
+    py::list targetPrograms;
+    for (const auto &target : compiled.targets) {
+        py::dict program;
+        program["target"] = target.target == ShaderCodeTarget::SpirV ? "spirv" : "wgsl";
+        program["reflection"] = target.reflection;
+        py::list resources;
+        for (const auto &resource : target.resources) {
+            py::dict item;
+            item["name"] = resource.name;
+            item["set"] = resource.set;
+            item["binding"] = resource.binding.binding;
+            item["type"] = static_cast<uint8_t>(resource.binding.type);
+            item["count"] = resource.binding.count;
+            item["visibility"] = static_cast<uint8_t>(resource.binding.visibility);
+            item["read_only"] = resource.binding.readOnlyStorage;
+            item["depth"] = resource.binding.depthRead;
+            item["dimension"] = static_cast<uint8_t>(resource.binding.viewDimension);
+            item["multisampled"] = resource.binding.multisampled;
+            item["sample_type"] = static_cast<uint8_t>(resource.binding.sampleType);
+            item["storage_format"] = static_cast<uint8_t>(resource.binding.storageFormat);
+            item["storage_access"] = static_cast<uint8_t>(resource.binding.storageAccess);
+            item["sampler_type"] = static_cast<uint8_t>(resource.binding.samplerType);
+            item["min_buffer_binding_size"] = resource.binding.minBufferBindingSize;
+            item["element_stride"] = resource.elementStride;
+            item["value"] = ValueLayout(resource.value);
+            resources.append(std::move(item));
+        }
+        program["resources"] = std::move(resources);
+        py::list entries;
+        for (const auto &entry : target.entries) {
+            py::dict item;
+            item["name"] = entry.name;
+            switch (entry.stage) {
+            case rhi::ShaderStage::Vertex:
+                item["stage"] = "vertex";
+                break;
+            case rhi::ShaderStage::Fragment:
+                item["stage"] = "fragment";
+                break;
+            default:
+                item["stage"] = "compute";
+                break;
+            }
+            item["workgroup_size"] = entry.workgroupSize;
+            item["bindings"] = entry.bindings;
+            item["root_constants"] =
+                entry.rootConstants ? py::object(ValueLayout(*entry.rootConstants)) : py::object(py::none());
+            const auto stageValues = [](const auto &values) {
+                py::list result;
+                for (const auto &value : values) {
+                    py::dict variable;
+                    variable["name"] = value.name;
+                    variable["location"] = value.location;
+                    variable["scalar"] = static_cast<uint8_t>(value.scalar);
+                    variable["components"] = value.components;
+                    result.append(std::move(variable));
+                }
+                return result;
+            };
+            item["inputs"] = stageValues(entry.inputs);
+            item["outputs"] = stageValues(entry.outputs);
+            item["sample_rate_shading"] = entry.sampleRateShading;
+            item["code"] = py::bytes(entry.code.data(), entry.code.size());
+            entries.append(std::move(item));
+        }
+        program["entries"] = std::move(entries);
+        targetPrograms.append(std::move(program));
+    }
+    result["targets"] = std::move(targetPrograms);
+    return result;
+}
+
+// Only C++ values cross the worker boundary. The owner maps the native result to
+// Python, then prepares pipelines through its compute host.
+class ShaderCompileTicket
+{
+  public:
+    explicit ShaderCompileTicket(ShaderCompileRequest request) : m_state(std::make_shared<State>())
+    {
+        auto compile = [state = m_state, request = std::move(request)] {
+            if (state->cancelRequested.load(std::memory_order_acquire))
+                return;
+            state->producer = std::this_thread::get_id();
+            try {
+                state->result = CompileProgram(request);
+            } catch (...) {
+                state->failure = std::current_exception();
+            }
+        };
+        auto &jobs = JobSystem::Get();
+        if (jobs.IsInline())
+            compile();
+        else
+            m_job = jobs.Schedule(std::move(compile), JobDomain::Runtime, JobPriority::Normal, JobAffinity::WorkerOnly);
+    }
+
+    ~ShaderCompileTicket()
+    {
+        Cancel();
+    }
+
+    ShaderCompileTicket(const ShaderCompileTicket &) = delete;
+    ShaderCompileTicket &operator=(const ShaderCompileTicket &) = delete;
+
+    [[nodiscard]] bool Done() const noexcept
+    {
+        return m_job.IsComplete();
+    }
+
+    [[nodiscard]] bool ProducedOnWorker() const noexcept
+    {
+        return Done() && m_state->producer != std::thread::id{} && m_state->producer != m_owner;
+    }
+
+    bool Cancel() noexcept
+    {
+        if (m_state->cancelRequested.exchange(true, std::memory_order_acq_rel))
+            return false;
+        m_job.Cancel();
+        return true;
+    }
+
+    [[nodiscard]] py::object Result() const
+    {
+        if (std::this_thread::get_id() != m_owner)
+            throw std::logic_error("Shader compile results must be read on the requesting thread");
+        if (!Done() || m_state->cancelRequested.load(std::memory_order_acquire) || m_job.IsCancellationRequested())
+            return py::none();
+        if (m_state->failure)
+            std::rethrow_exception(m_state->failure);
+        return CompileResultToPython(m_state->result.value());
+    }
+
+  private:
+    struct State
+    {
+        std::optional<ShaderCompileResult> result;
+        std::exception_ptr failure;
+        std::thread::id producer;
+        std::atomic<bool> cancelRequested{false};
+    };
+
+    const std::thread::id m_owner = std::this_thread::get_id();
+    std::shared_ptr<State> m_state;
+    JobHandle m_job;
+};
 } // namespace
 
 void RegisterShaderCompilerBindings(py::module_ &m)
@@ -223,125 +456,41 @@ void RegisterShaderCompilerBindings(py::module_ &m)
     m.def("_shader_ui_author_source", &GetSlangUIAuthorSource, py::arg("world"), py::arg("depth"),
           py::call_guard<py::gil_scoped_release>());
 
-    m.def(
-        "_compile_shader_program",
-        [](const std::string &source, const std::string &sourcePath, const std::string &moduleName,
-           const std::vector<std::tuple<std::string, std::string, std::string>> &libraries,
-           const std::vector<std::string> &targetNames, bool precise, const std::vector<SourceRangeTuple> &sourceRanges,
-           const std::vector<std::pair<std::string, std::string>> &inputKinds, bool rootConstants,
-           const std::optional<std::string> &entryPoint) {
-            std::vector<ShaderSourceModule> modules;
-            for (const auto &[name, path, text] : libraries)
-                modules.push_back({name, path, text});
-            std::vector<ShaderCodeTarget> targets;
-            for (const auto &name : targetNames) {
-                if (name == "spirv")
-                    targets.push_back(ShaderCodeTarget::SpirV);
-                else if (name == "wgsl")
-                    targets.push_back(ShaderCodeTarget::Wgsl);
-                else
-                    throw std::invalid_argument("Shader target must be spirv or wgsl: " + name);
-            }
-            if (targets.empty())
-                throw std::invalid_argument("A shader program needs at least one target");
+    py::class_<ShaderCompileTicket>(m, "_ShaderCompileTicket")
+        .def_property_readonly("done", &ShaderCompileTicket::Done)
+        .def_property_readonly("produced_on_worker", &ShaderCompileTicket::ProducedOnWorker)
+        .def("cancel", &ShaderCompileTicket::Cancel)
+        .def("result", &ShaderCompileTicket::Result);
 
-            ShaderCompilation compiled;
-            bool frontendReused = false;
-            {
-                py::gil_scoped_release release;
-                const ShaderSourceModule module{moduleName, sourcePath, source};
-                auto &compiler = SlangCompiler::Get();
-                const auto ranges = SourceRanges(sourceRanges);
-                if (entryPoint)
-                    compiled = compiler.CompileComputeEntry(module, modules, targets, *entryPoint, precise, ranges,
-                                                            frontendReused);
-                else if (rootConstants)
-                    compiled = compiler.CompileRootProgram(module, modules, targets, precise, ranges);
-                else
-                    compiled = compiler.Compile(module, modules, targets, precise, ranges);
-                ApplyShaderAuthorResources(compiled, inputKinds);
-            }
-            py::dict result;
-            result["diagnostics"] = ShaderDiagnosticsToPython(compiled.diagnostics);
-            if (entryPoint)
-                result["frontend_reused"] = frontendReused;
-            py::list targetPrograms;
-            for (const auto &target : compiled.targets) {
-                py::dict program;
-                program["target"] = target.target == ShaderCodeTarget::SpirV ? "spirv" : "wgsl";
-                program["reflection"] = target.reflection;
-                py::list resources;
-                for (const auto &resource : target.resources) {
-                    py::dict item;
-                    item["name"] = resource.name;
-                    item["set"] = resource.set;
-                    item["binding"] = resource.binding.binding;
-                    item["type"] = static_cast<uint8_t>(resource.binding.type);
-                    item["count"] = resource.binding.count;
-                    item["visibility"] = static_cast<uint8_t>(resource.binding.visibility);
-                    item["read_only"] = resource.binding.readOnlyStorage;
-                    item["depth"] = resource.binding.depthRead;
-                    item["dimension"] = static_cast<uint8_t>(resource.binding.viewDimension);
-                    item["multisampled"] = resource.binding.multisampled;
-                    item["sample_type"] = static_cast<uint8_t>(resource.binding.sampleType);
-                    item["storage_format"] = static_cast<uint8_t>(resource.binding.storageFormat);
-                    item["storage_access"] = static_cast<uint8_t>(resource.binding.storageAccess);
-                    item["sampler_type"] = static_cast<uint8_t>(resource.binding.samplerType);
-                    item["min_buffer_binding_size"] = resource.binding.minBufferBindingSize;
-                    item["element_stride"] = resource.elementStride;
-                    item["value"] = ValueLayout(resource.value);
-                    resources.append(std::move(item));
-                }
-                program["resources"] = std::move(resources);
-                py::list entries;
-                for (const auto &entry : target.entries) {
-                    py::dict item;
-                    item["name"] = entry.name;
-                    switch (entry.stage) {
-                    case rhi::ShaderStage::Vertex:
-                        item["stage"] = "vertex";
-                        break;
-                    case rhi::ShaderStage::Fragment:
-                        item["stage"] = "fragment";
-                        break;
-                    default:
-                        item["stage"] = "compute";
-                        break;
-                    }
-                    item["workgroup_size"] = entry.workgroupSize;
-                    item["bindings"] = entry.bindings;
-                    item["root_constants"] =
-                        entry.rootConstants ? py::object(ValueLayout(*entry.rootConstants)) : py::object(py::none());
-                    const auto stageValues = [](const auto &values) {
-                        py::list result;
-                        for (const auto &value : values) {
-                            py::dict variable;
-                            variable["name"] = value.name;
-                            variable["location"] = value.location;
-                            variable["scalar"] = static_cast<uint8_t>(value.scalar);
-                            variable["components"] = value.components;
-                            result.append(std::move(variable));
-                        }
-                        return result;
-                    };
-                    item["inputs"] = stageValues(entry.inputs);
-                    item["outputs"] = stageValues(entry.outputs);
-                    item["sample_rate_shading"] = entry.sampleRateShading;
-                    item["code"] = py::bytes(entry.code.data(), entry.code.size());
-                    entries.append(std::move(item));
-                }
-                program["entries"] = std::move(entries);
-                targetPrograms.append(std::move(program));
-            }
-            result["targets"] = std::move(targetPrograms);
-            return result;
-        },
-        py::arg("source"), py::arg("source_path"), py::arg("module_name"),
-        py::arg("libraries") = std::vector<std::tuple<std::string, std::string, std::string>>{},
-        py::arg("targets") = std::vector<std::string>{"spirv", "wgsl"}, py::arg("precise") = false,
-        py::arg("source_ranges") = std::vector<SourceRangeTuple>{},
-        py::arg("input_kinds") = std::vector<std::pair<std::string, std::string>>{}, py::arg("root_constants") = false,
-        py::arg("entry_point") = py::none());
+    const auto bindCompile = [&m](const char *name, auto compile) {
+        m.def(
+            name,
+            [compile](const std::string &source, const std::string &sourcePath, const std::string &moduleName,
+                      const std::vector<LibraryTuple> &libraries, const std::vector<std::string> &targetNames,
+                      bool precise, const std::vector<SourceRangeTuple> &sourceRanges,
+                      const ShaderInputKinds &inputKinds, bool rootConstants,
+                      const std::optional<std::string> &entryPoint) {
+                return compile(MakeCompileRequest(source, sourcePath, moduleName, libraries, targetNames, precise,
+                                                  sourceRanges, inputKinds, rootConstants, entryPoint));
+            },
+            py::arg("source"), py::arg("source_path"), py::arg("module_name"),
+            py::arg("libraries") = std::vector<LibraryTuple>{},
+            py::arg("targets") = std::vector<std::string>{"spirv", "wgsl"}, py::arg("precise") = false,
+            py::arg("source_ranges") = std::vector<SourceRangeTuple>{}, py::arg("input_kinds") = ShaderInputKinds{},
+            py::arg("root_constants") = false, py::arg("entry_point") = py::none());
+    };
+    bindCompile("_compile_shader_program", [](const ShaderCompileRequest &request) {
+        ShaderCompileResult result;
+        {
+            py::gil_scoped_release release;
+            result = CompileProgram(request);
+        }
+        return CompileResultToPython(result);
+    });
+    bindCompile("_begin_compile_shader_program", [](ShaderCompileRequest request) {
+        py::gil_scoped_release release;
+        return std::make_unique<ShaderCompileTicket>(std::move(request));
+    });
 }
 
 } // namespace infernux

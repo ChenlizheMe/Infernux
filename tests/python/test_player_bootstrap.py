@@ -177,6 +177,12 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
                 monkeypatch.setattr(bootstrap, name, lambda: None)
             run = bootstrap.run
         else:
+            settings = tmp_path / "ProjectSettings"
+            settings.mkdir(exist_ok=True)
+            (settings / "BuildSettings.json").write_text('{"player_initial_world_count": 1}', encoding="utf-8")
+            library = tmp_path / "Library"
+            library.mkdir(exist_ok=True)
+            (library / "RuntimeTypeRegistry.json").write_text('{"types": []}', encoding="utf-8")
             template = Path(__file__).resolve().parents[2] / ("external/plugins/infernux_web/native/bootstrap.py")
             tree = ast.parse(template.read_text(encoding="utf-8"))
             function = next(
@@ -190,15 +196,13 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
             fonts = []
             frame_work = _Infernux._FrameWorkOwner()
             compute_host = object()
-            monkeypatch.setitem(
-                sys.modules,
-                "_InfernuxWebHost",
-                types.SimpleNamespace(
-                    screen_ui_set_default_font=lambda *paths: fonts.append(paths),
-                    frame_work=lambda: frame_work,
-                    acquire_compute_host=lambda: compute_host,
-                ),
+            web_host = types.SimpleNamespace(
+                screen_ui_set_default_font=lambda *paths: fonts.append(paths),
+                frame_work=lambda: frame_work,
+                acquire_compute_host=lambda: compute_host,
             )
+            monkeypatch.setitem(sys.modules, "_InfernuxWebHost", web_host)
+            process_input = object()
             namespace = {
                 "_player_session": None,
                 "_prepare_player_asset_contract": lambda: None,
@@ -206,18 +210,25 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
                 "_player_asset_database": session.get_asset_database(),
                 "_player_runtime_manifest": manifest,
                 "_player_runtime_catalog": catalog,
+                "_process_screen_ui_events": process_input,
             }
 
-            def create_session(**kwargs):
+            def create_host(**kwargs):
                 assert kwargs == {
                     "asset_database": session.get_asset_database(),
                     "frame_work": frame_work,
+                    "compute_host": compute_host,
+                    "process_input": process_input,
+                    "native_services": web_host,
+                    "initial_world_count": 1,
                 }
+                session._infernux_compute_host = compute_host
+                session.get_player_runtime = lambda: session
                 return session
 
             monkeypatch.setattr(
-                "infernux.engine.player_runtime.PlayerRuntimeSession",
-                create_session,
+                "infernux.engine.platform_player_host.PlatformPlayerHost",
+                create_host,
             )
             exec(
                 compile(ast.Module(body=[function], type_ignores=[]), str(template), "exec"),
@@ -294,8 +305,6 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
     from infernux.engine import startup_warmup
 
     calls = []
-    compiler_preloads = []
-    monkeypatch.setattr(startup_warmup, "start_cpu_runtime_preload", lambda: compiler_preloads.append(True))
 
     class Engine:
         def prepare_startup_refresh(self):
@@ -314,7 +323,6 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
     bootstrap._create_managers = lambda: calls.append("managers")
     bootstrap._load_plugins = lambda: calls.append("plugins")
     bootstrap._schedule_project_warmup = lambda: calls.append("project_warmup")
-    bootstrap._finish_project_warmup = lambda: calls.append("finish_warmup")
     bootstrap._setup_game_camera = lambda: calls.append("camera")
     bootstrap._register_player_gui = lambda: calls.append("gui")
     bootstrap._load_initial_scene = lambda: calls.append("scene")
@@ -345,13 +353,8 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
         "pump",
         "play",
         "pump",
-        "finish_warmup",
     ]
-    assert compiler_preloads == []
-    warmup = startup_warmup.PlayerStartupWarmup(str(tmp_path), (), scope="test")
-    assert warmup.pump() and compiler_preloads == []
-    startup_warmup.PlayerStartupWarmup(str(tmp_path), (), cpu_records=({"module": "CPU"},), scope="test")
-    assert compiler_preloads == [True]
+    assert startup_warmup.PlayerStartupWarmup((), scope="test").pump()
 
 
 def test_player_first_frame_prewarm_builds_target_before_composition(monkeypatch):

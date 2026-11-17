@@ -116,7 +116,6 @@ class PlayerBootstrap:
             if self.engine.get_native_engine().exit_requested:
                 return
             self._pump_startup_events()
-        phase("finish project CPU and GPU declarations", self._finish_project_warmup)
         _plog(
             f"[Startup] bootstrap ready: "
             f"{(time.perf_counter() - startup_started) * 1000.0:.1f} ms"
@@ -144,27 +143,10 @@ class PlayerBootstrap:
         )
 
     def _schedule_project_warmup(self) -> None:
-        """Queue build-selected declarations for post-present materialization."""
-        from infernux.engine.startup_warmup import create_player_startup_warmup
-
+        """Choose declarations that each Player world prepares before publication."""
         if self.runtime_session is None:
             raise RuntimeError("Player startup warmup requires a runtime session")
-        self.runtime_session.schedule_startup_warmup(
-            create_player_startup_warmup(project_path=self.project_path)
-        )
-
-    def _finish_project_warmup(self) -> None:
-        """Finish the build-authored queue before the Player becomes interactive."""
-        runtime_session = self.runtime_session
-        engine = self.engine
-        if runtime_session is None or engine is None:
-            raise RuntimeError("Player startup warmup requires an initialized runtime")
-        while not runtime_session.pump_startup_warmup():
-            pump = getattr(engine, "pump_events", None)
-            if callable(pump) and pump() is False:
-                raise RuntimeError("Player startup cancelled")
-            # Yield the GIL when only the CPU declaration worker remains.
-            time.sleep(0.001)
+        self.runtime_session.configure_startup_warmup(self.project_path)
 
     @staticmethod
     def _force_player_mode() -> None:
@@ -483,9 +465,6 @@ class PlayerBootstrap:
         pump = getattr(engine, "pump_events", None)
         if callable(pump) and pump() is False:
             raise RuntimeError("Player startup cancelled")
-        runtime_session = self.runtime_session
-        if runtime_session is not None:
-            runtime_session.pump_startup_warmup()
 
     def _load_plugins(self) -> None:
         from infernux.plugins import PluginManager

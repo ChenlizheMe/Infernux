@@ -866,25 +866,15 @@ def scalar_slang_definition(entry_point, source, libraries=()):
     return entry_point, source, tuple(sorted(modules))
 
 
-def _prepare_scalar_slang(function, params, definition, *, jvp):
-    from infernux._compiler.gpu_artifact import _specialization_identity
-    from infernux._compiler.slang import compile_kernel
-
+def _prepare_scalar_slang(function, params, definition, *, jvp, own_deferred_samples):
     if params[0].device != "gpu":
         raise inx.compute.ComputeCapabilityError("SlangUnary requires a GPU tensor; its Slang definition has no CPU implementation")
-    target = params[0]._host.shader_target
-    artifacts = {}
-    roles = (("none", ()),) if jvp else (("none", ()), ("reverse", (0, 1)))
-    for mode, gradients in roles:
-        specialization = _specialization_identity(params, target=target, autodiff_mode=mode,
-                                                    gradient_parameters=gradients)
-        artifacts[specialization] = compile_kernel(function, params, target=target, autodiff_mode=mode,
-                                                   gradient_parameters=gradients, _scalar_slang=definition,
-                                                   _scalar_slang_jvp=jvp)
-    forward = next(iter(artifacts.values()))
-    declaration = inx.compute.Kernel._from_artifacts(artifacts, "SlangUnary JVP" if jvp else "SlangUnary")
-    declaration._work_layout = forward.domain_parameter, None
-    declaration._work_access = forward.continuation.input_parameters, forward.continuation.output_parameters
+    declaration = _prepare_work(function, params)
+    declaration._scalar_slang = definition, jvp
+    declaration.__name__ = declaration.__qualname__ = "SlangUnary JVP" if jvp else "SlangUnary"
+    if not jvp:
+        _prepare_gpu(declaration, params, own_deferred_samples=own_deferred_samples,
+                     autodiff_mode="reverse", gradient_parameters=(0, 1))
     return declaration
 
 
@@ -894,7 +884,8 @@ def prepare(function, params, *, own_deferred_samples=False, source=None, **fact
         from ._programs import recipe
         definition = facts.get("_SCALAR_SLANG")
         program = (_prepare_work(function, params, **facts) if definition is None
-                   else _prepare_scalar_slang(function, params, definition, jvp=facts.get("_SCALAR_SLANG_JVP", False)))
+                   else _prepare_scalar_slang(function, params, definition, jvp=facts.get("_SCALAR_SLANG_JVP", False),
+                                              own_deferred_samples=own_deferred_samples))
         program._nn_recipe = recipe(function, params, facts)
     else:
         program = source.prepare(function, params, **facts)
