@@ -753,6 +753,19 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     if (domain.gpuRegistered && !EnsureStaticBoundaries(domain, Backend::Gpu))
         return false;
     QueueStaticFixedMoves(domain);
+    if (domain.mixedContacts) {
+        const auto responsiveBody = [this](uint32_t id) -> Rigidbody * {
+            auto *body = FindRigidbodyByBodyId(id);
+            return body && body->IsEnabled() && !body->IsKinematic() ? body : nullptr;
+        };
+        const auto awake = domain.mixedContacts->TakeUnavailableIslands([&](uint32_t id) {
+            const auto *body = responsiveBody(id);
+            return body && body->AllowsCrossBackendInteraction();
+        });
+        for (const auto id : awake)
+            if (responsiveBody(id))
+                ActivateBody(id);
+    }
     // Both backends accept the same author prefix. An unsuccessful GPU
     // admission must not consume CPU commands or install a new contact policy.
     auto policy = CaptureContactPolicy(domain);
@@ -917,8 +930,10 @@ void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
         domain.cpuPublication = identity;
         CaptureCpuPoses(domain, true);
     }
-    if (domain.mixedContacts)
+    if (domain.mixedContacts) {
+        domain.mixedContacts->AcceptSleepLinks();
         domain.mixedContacts->ClearStep();
+    }
     if (gpu) {
         domain.gpuContacts.AcceptCompleted(gpu);
         ObserveGpuPublication(domain, true);

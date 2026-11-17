@@ -87,6 +87,23 @@ PatchKey Key(const Patch &patch)
 {
     return {patch.cpu.Key(), patch.gpu.Key()};
 }
+
+size_t GroupRoot(std::vector<size_t> &parents, size_t index)
+{
+    while (parents[index] != index) {
+        parents[index] = parents[parents[index]];
+        index = parents[index];
+    }
+    return index;
+}
+
+void LinkGroup(std::vector<size_t> &parents, std::unordered_map<uint32_t, size_t> &links, uint32_t endpoint,
+               size_t index)
+{
+    const auto [first, added] = links.try_emplace(endpoint, index);
+    if (!added)
+        parents[GroupRoot(parents, index)] = GroupRoot(parents, first->second);
+}
 } // namespace
 
 struct JoltMixedContactStep::ImpulseHistory
@@ -220,31 +237,19 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         order.resize(responses.size());
         std::iota(order.begin(), order.end(), size_t(0));
         auto parents = order;
-        const auto root = [&parents](size_t i) {
-            while (parents[i] != i) {
-                parents[i] = parents[parents[i]];
-                i = parents[i];
-            }
-            return i;
-        };
         std::unordered_map<uint32_t, size_t> cpuLinks, gpuLinks;
-        const auto link = [&](auto &links, uint32_t body, size_t i) {
-            const auto [first, added] = links.try_emplace(body, i);
-            if (!added)
-                parents[root(i)] = root(first->second);
-        };
         std::vector<uint32_t> gpuContactBodies;
         gpuContactBodies.reserve(responses.size());
         for (size_t i = 0; i < responses.size(); ++i) {
             const auto &response = responses[i];
             if (response.cpuDynamic)
-                link(cpuLinks, response.cpu.body, i);
+                LinkGroup(parents, cpuLinks, response.cpu.body, i);
             if (response.gpuDynamic)
-                link(gpuLinks, response.gpuSlot, i);
+                LinkGroup(parents, gpuLinks, response.gpuSlot, i);
             gpuContactBodies.push_back(response.gpuSlot);
         }
         for (size_t i = 0; i < parents.size(); ++i)
-            parents[i] = root(i);
+            parents[i] = GroupRoot(parents, i);
         std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) { return parents[a] < parents[b]; });
         std::sort(gpuContactBodies.begin(), gpuContactBodies.end());
         gpuContactBodies.erase(std::unique(gpuContactBodies.begin(), gpuContactBodies.end()), gpuContactBodies.end());
@@ -286,8 +291,106 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             ++group.y;
             largestGroupPatchCount = std::max(largestGroupPatchCount, group.y);
         }
+    }
+
+    struct SleepEdge
+    {
+        uint32_t cpuIsland, gpuEndpoint;
+        bool cpuReady;
+        std::pair<uint32_t, uint32_t> bodies;
+    };
+
+    std::vector<uint32_t> ResolveSleep(const std::vector<SleepEdge> &edges, const std::vector<UInt4> &votes)
+    {
+        std::vector<size_t> parents(edges.size());
+        std::iota(parents.begin(), parents.end(), size_t{0});
+        std::unordered_map<uint32_t, size_t> cpuIslands, gpuIslands;
+        for (size_t i = 0; i < edges.size(); ++i) {
+            const auto &edge = edges[i];
+            LinkGroup(parents, cpuIslands, edge.cpuIsland, i);
+            LinkGroup(parents, gpuIslands, votes[edge.gpuEndpoint].x, i);
+        }
+        std::vector<uint8_t> ready(edges.size(), 1);
+        for (size_t i = 0; i < edges.size(); ++i) {
+            const auto &edge = edges[i];
+            ready[GroupRoot(parents, i)] &= uint8_t(edge.cpuReady && votes[edge.gpuEndpoint].y != 0);
+        }
+        std::vector<uint32_t> sleeping, awake;
+        for (const auto &[island, edge] : cpuIslands)
+            if (ready[GroupRoot(parents, edge)])
+                sleeping.push_back(island);
+        for (const auto &[island, edge] : gpuIslands)
+            if (!ready[GroupRoot(parents, edge)])
+                awake.push_back(votes[edges[edge].gpuEndpoint].z);
+        for (size_t i = 0; i < edges.size(); ++i) {
+            const auto island = GroupRoot(parents, i);
+            if (ready[island])
+                step.m_pendingSleepLinks.push_back({edges[i].bodies, island});
+        }
+        std::sort(sleeping.begin(), sleeping.end());
+        std::sort(awake.begin(), awake.end());
+        cpu.FinishCoupledSleep(sleeping);
+        return awake;
+    }
+
+    JoltGpuSleepCoupling PrepareSleep()
+    {
+        JoltGpuSleepCoupling coupling;
+        std::vector<SleepEdge> edges;
+        bool anyCpuReady = false;
+        for (const auto &patch : step.Responses()) {
+            if (!patch.cpuDynamic || !patch.gpuDynamic)
+                continue;
+            const auto island = cpu.CoupledSleepIsland(patch.native);
+            edges.push_back({island.mIndex, patch.gpuSlot, island.mReady, {patch.cpu.body, patch.gpu.body}});
+            coupling.endpoints.push_back(patch.gpuSlot);
+            anyCpuReady |= island.mReady;
+        }
+        auto &endpoints = coupling.endpoints;
+        std::sort(endpoints.begin(), endpoints.end());
+        endpoints.erase(std::unique(endpoints.begin(), endpoints.end()), endpoints.end());
+        if (!anyCpuReady) {
+            // Every mixed component must stay awake. No GPU receipt can change that decision.
+            cpu.FinishCoupledSleep({});
+        } else {
+            for (auto &edge : edges)
+                edge.gpuEndpoint = static_cast<uint32_t>(
+                    std::lower_bound(endpoints.begin(), endpoints.end(), edge.gpuEndpoint) - endpoints.begin());
+            coupling.resolve = [self = shared_from_this(), edges = std::move(edges)](const auto &votes) {
+                return self->ResolveSleep(edges, votes);
+            };
+        }
+        return coupling;
+    }
+
+    void BeginCpuSubstep(JoltGpuStepInputs &inputs)
+    {
+        std::vector<JPH::BodyID> wakeEndpoints;
+        const auto &directory = *publication->directory;
+        for (const uint32_t id : step.TakeWakingIslands()) {
+            const uint32_t gpu = directory.FindBodySlot(id);
+            if (gpu != UINT32_MAX && directory.residentBodies[gpu]) {
+                wakeSlots.push_back(gpu);
+            } else if (step.Scene().HasBody(id)) {
+                const auto nativeId = step.Scene().NativeBody(id);
+                const auto &body = Body(nativeId);
+                if (body.IsInBroadPhase() && body.IsDynamic() && !body.IsActive())
+                    wakeEndpoints.push_back(nativeId);
+            }
+        }
         std::sort(wakeSlots.begin(), wakeSlots.end());
         wakeSlots.erase(std::unique(wakeSlots.begin(), wakeSlots.end()), wakeSlots.end());
+        std::vector<JPH::BodyID> sleepEndpoints;
+        if (substep + 1 == substepCount) {
+            for (const auto &patch : step.Responses())
+                if (patch.cpuDynamic && patch.gpuDynamic)
+                    sleepEndpoints.push_back(patch.native);
+            std::sort(sleepEndpoints.begin(), sleepEndpoints.end());
+            sleepEndpoints.erase(std::unique(sleepEndpoints.begin(), sleepEndpoints.end()), sleepEndpoints.end());
+        }
+        cpu.BeginCoupledSubstep(substep, native, sleepEndpoints, wakeEndpoints);
+        if (!sleepEndpoints.empty())
+            inputs.SetSleepCoupling([self = shared_from_this()] { return self->PrepareSleep(); });
     }
 
     float MatchWarmStarts()
@@ -455,15 +558,24 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         return dispatch;
     }
 
-    JoltGpuControlWork Install(std::function<void()> done)
+    bool AllocateWorkset()
     {
         const auto velocityBytes = models.size() * sizeof(Velocity);
-        if (!Allocate(Params, sizeof(params)) || !Allocate(CpuModels, models.size() * sizeof(CpuBoundary)) ||
-            !Allocate(CpuVelocities, velocityBytes) || !Allocate(Groups, groups.size() * sizeof(UInt4)) ||
-            !Allocate(Patches, patches.size() * sizeof(DevicePatch)) ||
-            (solveVelocity && !Allocate(PreviousPatches, sizeof(DevicePatch))) ||
-            (solveVelocity && !Allocate(Impulses, std::max(size_t{1}, native.size()) * sizeof(Velocity))) ||
-            (solvePosition && !Allocate(Anchors, anchors.size() * sizeof(PositionAnchors))) ||
+        return Allocate(CpuModels, models.size() * sizeof(CpuBoundary)) && Allocate(CpuVelocities, velocityBytes) &&
+               Allocate(Groups, groups.size() * sizeof(UInt4)) &&
+               Allocate(Patches, patches.size() * sizeof(DevicePatch)) &&
+               (!solveVelocity || (Allocate(PreviousPatches, sizeof(DevicePatch)) &&
+                                   Allocate(Impulses, std::max(size_t{1}, native.size()) * sizeof(Velocity)))) &&
+               (!solvePosition || Allocate(Anchors, anchors.size() * sizeof(PositionAnchors)));
+    }
+
+    JoltGpuControlWork Install(std::function<void()> done)
+    {
+        if (patches.empty() && wakeSlots.empty()) {
+            done();
+            return {};
+        }
+        if (!Allocate(Params, sizeof(params)) || (!patches.empty() && !AllocateWorkset()) ||
             (!wakeSlots.empty() && !Allocate(WakeSlots, wakeSlots.size() * sizeof(uint32_t)))) {
             return {nullptr, [self = shared_from_this(), done = std::move(done)]() mutable {
                         return self->Install(std::move(done));
@@ -510,14 +622,13 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                                       if (!self->solveVelocity && !self->solvePosition)
                                           self->step.Responses().clear();
                                       self->BuildWorkset(inputs);
-                                      self->cpu.BeginCoupledSubstep(self->substep, self->native);
+                                      self->BeginCpuSubstep(inputs);
                                       self->interleaveCpu =
                                           !self->native.empty() && self->cpu.CoupledHasLocalVelocityRows();
                                       if (self->patches.empty()) {
                                           self->history->manifolds.clear();
                                           self->cpu.AdvanceCoupledVelocity();
-                                          done();
-                                          return JoltGpuControlWork{};
+                                          return self->Install(std::move(done));
                                       }
                                       self->CaptureModels();
                                       self->warmStartScale = self->solveVelocity ? self->MatchWarmStarts() : 0.0f;

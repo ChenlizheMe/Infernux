@@ -699,10 +699,17 @@ void JoltCpuContactPublication::ConfigureCoupledFixed(JoltCpuExecution &executio
         m_coupled->listener.emplace(scene.System(), *m_capture);
 }
 
-void JoltCpuContactPublication::BeginCoupledSubstep(uint32_t substep, const std::vector<JPH::BodyID> &endpoints)
+void JoltCpuContactPublication::BeginCoupledSubstep(uint32_t substep, const std::vector<JPH::BodyID> &endpoints,
+                                                    const std::vector<JPH::BodyID> &sleepEndpoints,
+                                                    const std::vector<JPH::BodyID> &wakeEndpoints)
 {
     auto &fixed = *m_coupled;
     auto &system = fixed.scene.System();
+    if (!wakeEndpoints.empty()) {
+        JPH_IF_ENABLE_ASSERTS(JPH::BodyManager::GrantActiveBodiesAccess grant_active(true, false);)
+        auto &bodies = substep == 0 ? system.GetBodyInterface() : system.GetBodyInterfaceNoLock();
+        bodies.ActivateBodies(wakeEndpoints.data(), static_cast<int>(wakeEndpoints.size()));
+    }
     bool admitted = false;
     if (substep == 0) {
         fixed.workspace = fixed.execution.AcquireCoupledWorkspace();
@@ -715,6 +722,8 @@ void JoltCpuContactPublication::BeginCoupledSubstep(uint32_t substep, const std:
     }
     if (!admitted)
         throw std::logic_error("CPU coupling endpoints differ from the admitted Fixed");
+    if (!sleepEndpoints.empty())
+        system.DeferCoupledSleep(*fixed.context, sleepEndpoints.data(), static_cast<uint32_t>(sleepEndpoints.size()));
 }
 
 bool JoltCpuContactPublication::AdvanceCoupledVelocity(
@@ -762,6 +771,20 @@ bool JoltCpuContactPublication::CoupledHasLocalVelocityRows() const noexcept
     return m_coupled->context->mCoupledHasLocalVelocityRows;
 }
 
+JPH::PhysicsSystem::CoupledSleepIsland JoltCpuContactPublication::CoupledSleepIsland(JPH::BodyID endpoint) const
+{
+    const auto &fixed = *m_coupled;
+    return fixed.scene.System().GetCoupledSleepIsland(*fixed.context, endpoint);
+}
+
+void JoltCpuContactPublication::FinishCoupledSleep(const std::vector<uint32_t> &sleepingIslands)
+{
+    auto &fixed = *m_coupled;
+    const auto result = fixed.scene.System().FinishCoupledSleep(*fixed.context, sleepingIslands.data(),
+                                                                static_cast<uint32_t>(sleepingIslands.size()));
+    AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Sleep);
+}
+
 void JoltCpuContactPublication::CancelCoupled() noexcept
 {
     if (!m_coupled)
@@ -775,6 +798,8 @@ void JoltCpuContactPublication::CancelCoupled() noexcept
                 system.BeginNextCoupledSubstep(context, nullptr, 0);
             if (context.mCoupledStage == Stage::Position)
                 system.AdvanceCoupledPositionUpdate(context);
+            else if (context.mCoupledStage == Stage::Sleep)
+                system.FinishCoupledSleep(context);
             else
                 system.AdvanceCoupledVelocityUpdate(context);
         }

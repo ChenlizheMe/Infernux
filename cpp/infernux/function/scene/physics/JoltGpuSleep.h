@@ -26,7 +26,7 @@ class JoltGpuSleep final
     [[nodiscard]] JoltGpuControlWork PrepareWake(const JoltGpuStorage &, const JoltGpuStepInputs &,
                                                  const JoltGpuConstraintTopology &, std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareHistory(const JoltGpuStorage &, const JoltGpuStepInputs &,
-                                                    const JPH::GPU::BodySleepParameters &, bool lastSubstep,
+                                                    const JPH::GPU::BodySleepParameters &, JoltGpuSleepCoupling,
                                                     std::function<void()> completed);
     // Called ONLY after a genuinely new accepted force-input producer. An
     // absent CPU upload is not evidence of a new external GPU force write.

@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -142,6 +144,66 @@ void JoltMixedContactStep::CaptureCpuBoundary(uint32_t boundary)
     }
 }
 
+void JoltMixedContactStep::BeginSleepObservation()
+{
+    for (auto &contact : m_sleepLinks)
+        contact.observed = false;
+}
+
+std::vector<uint32_t>
+JoltMixedContactStep::TakeSleepingIslands(const std::function<bool(const SleepingContact &)> &wakes)
+{
+    std::unordered_set<size_t> awake;
+    for (const auto &contact : m_sleepLinks)
+        if (wakes(contact))
+            awake.insert(contact.link.island);
+    std::vector<uint32_t> bodies;
+    if (!awake.empty()) {
+        m_sleepLinks.erase(std::remove_if(m_sleepLinks.begin(), m_sleepLinks.end(),
+                                          [&](const auto &contact) {
+                                              if (awake.find(contact.link.island) == awake.end())
+                                                  return false;
+                                              bodies.push_back(contact.link.bodies.first);
+                                              bodies.push_back(contact.link.bodies.second);
+                                              return true;
+                                          }),
+                           m_sleepLinks.end());
+        std::sort(bodies.begin(), bodies.end());
+        bodies.erase(std::unique(bodies.begin(), bodies.end()), bodies.end());
+    }
+    return bodies;
+}
+
+std::vector<uint32_t> JoltMixedContactStep::TakeWakingIslands()
+{
+    return TakeSleepingIslands([](const SleepingContact &contact) { return !contact.observed; });
+}
+
+std::vector<uint32_t> JoltMixedContactStep::TakeUnavailableIslands(const std::function<bool(uint32_t)> &canCouple)
+{
+    return TakeSleepingIslands([&](const SleepingContact &contact) {
+        return !canCouple(contact.link.bodies.first) || !canCouple(contact.link.bodies.second);
+    });
+}
+
+void JoltMixedContactStep::AcceptSleepLinks()
+{
+    if (m_pendingSleepLinks.empty())
+        return;
+    std::unordered_map<size_t, size_t> islands;
+    for (auto &link : m_pendingSleepLinks) {
+        const auto [island, created] = islands.try_emplace(link.island, m_nextSleepIsland);
+        m_nextSleepIsland += created;
+        link.island = island->second;
+        m_sleepLinks.push_back({link});
+    }
+    std::sort(m_sleepLinks.begin(), m_sleepLinks.end(),
+              [](const auto &a, const auto &b) { return a.link.bodies < b.link.bodies; });
+    m_sleepLinks.erase(std::unique(m_sleepLinks.begin(), m_sleepLinks.end(),
+                                   [](const auto &a, const auto &b) { return a.link.bodies == b.link.bodies; }),
+                       m_sleepLinks.end());
+}
+
 const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t substep, float predictedInterval)
 {
     auto &words = m_treeWords[substep];
@@ -258,6 +320,14 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
                                       surface.target,     proxy.target};
             const Contact::Endpoint b{actor.bodyId,       leaf.subShapeId, leaf.colliderId, leaf.colliderGeneration,
                                       leaf.surfaceTarget, actor.bodyTarget};
+            if (!trigger && !cpu.active && !gpuActive && proxy.dynamic && gpuDynamic) {
+                const auto pair = std::make_pair(proxy.id, actor.bodyId);
+                const auto found =
+                    std::lower_bound(m_sleepLinks.begin(), m_sleepLinks.end(), pair,
+                                     [](const auto &contact, const auto &key) { return contact.link.bodies < key; });
+                if (found != m_sleepLinks.end() && found->link.bodies == pair)
+                    found->observed = true;
+            }
             if (trigger || (!cpu.active && !gpuActive)) {
                 if (!trigger &&
                     (hit.mPenetrationDepth < 0.0f || !policy.Observes(a.SurfaceKey(), b.SurfaceKey(), false)))
@@ -356,6 +426,7 @@ void JoltMixedContactStep::ClearStep()
     m_proxies.clear();
     m_gpuResponseBodies.clear();
     m_responses.clear();
+    m_pendingSleepLinks.clear();
     for (auto &words : m_treeWords)
         words.clear();
     for (auto &frame : m_frames) {
@@ -443,6 +514,7 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
         if (discovery) {
             responseModel = &storage.GetModel();
             step.Responses().clear();
+            step.BeginSleepObservation();
             step.CaptureCpuBoundary(index);
         }
         tree = &step.EncodeTree(index, discovery ? params.gravityDt.w : 0.0f);

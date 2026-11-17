@@ -43,6 +43,8 @@ enum Entry : uint8_t
     Wake,
     ForceWake,
     Update,
+    ReadExternalVotes,
+    VetoExternal,
     Commit,
     RetireHinge,
     CaptureBounds,
@@ -62,6 +64,8 @@ constexpr std::array<std::string_view, EntryCount> Names{"sleep_clear_votes",
                                                          "sleep_wake_components",
                                                          "sleep_wake_force_input",
                                                          "sleep_update_history",
+                                                         "sleep_read_external_votes",
+                                                         "sleep_veto_external",
                                                          "sleep_commit_components",
                                                          "sleep_retire_hinge_momentum",
                                                          "sleep_capture_old_bounds",
@@ -84,6 +88,8 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | B | S | R | C | Bit(States),
                                                  P | W | B | S | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | C | Bit(States) | Bit(Forces),
+                                                 P | W | B | R | C | Bit(Requests) | Bit(Results),
+                                                 P | W | B | R | C | Bit(Requests),
                                                  P | W | B | S | R | C | Bit(States),
                                                  P | W | B | S | R | Bit(Joints),
                                                  P | B | S | R | Bit(States) | Bit(Bounds),
@@ -261,6 +267,31 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         if (count)
             plan.push_back({entry, first, count, p});
     }
+    void SetRequests(const std::vector<uint32_t> &requests)
+    {
+        requestBytes.resize(requests.size() * sizeof(uint32_t));
+        if (!requests.empty())
+            std::memcpy(requestBytes.data(), requests.data(), requestBytes.size());
+    }
+    void AddSleepCommit(SleepWorkParameters p, uint32_t jointFirst, uint32_t jointCount,
+                        const std::vector<uint32_t> &awake)
+    {
+        if (!awake.empty()) {
+            SetRequests(awake);
+            Add(VetoExternal, 0, static_cast<uint32_t>(awake.size()), p);
+        }
+        Add(Commit, p.selected.y, p.selected.z, p);
+        p.layout.z = jointFirst;
+        p.layout.w = jointCount;
+        Add(RetireHinge, jointFirst, jointCount, p);
+    }
+    template <class F> void OnComplete(F done)
+    {
+        completed = [done = std::move(done)](Execution &work) {
+            done(work);
+            return JoltGpuControlWork{};
+        };
+    }
     bool Allocate(std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes)
     {
         if (!bytes || bytes % 4u || bytes > owner->host.device.GetCapabilities().portable.maxStorageBufferBinding)
@@ -294,7 +325,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffer);
             const bool complete = (port == Bounds && (op.entry == CaptureBounds || op.entry == PrescribedCapture)) ||
-                                  (port == Snapshot && op.entry == Export) || (port == Results && op.entry == Query) ||
+                                  (port == Snapshot && op.entry == Export) || port == Results ||
                                   (port == Roots && op.entry == Clear);
             const bool writer =
                 port == Roots ||
@@ -340,8 +371,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
     {
         if (cursor == plan.size()) {
             auto callback = std::move(completed);
-            callback(*this);
-            return {};
+            return callback(*this);
         }
         if (reportsStatus && !buffers[Roots]) {
             auto &status = boundsValidation ? boundsValidation->status : buffers[Roots];
@@ -437,7 +467,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
     uint64_t resultBytes = 0;
     std::vector<uint8_t> requestBytes, boundsBytes;
     std::vector<UInt4> queryResults;
-    std::function<void(Execution &)> completed;
+    std::function<JoltGpuControlWork(Execution &)> completed;
 };
 
 JoltGpuSleep::JoltGpuSleep(rhi::ComputeHost &host, const ShaderTargetCode &target)
@@ -454,7 +484,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareInitialize(const JoltGpuStorage &s, cons
     e->reportsStatus = false;
     e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     e->Add(Initialize, p.selected.y, p.selected.z, p);
-    e->completed = [done = std::move(done)](auto &) { done(); };
+    e->OnComplete([done = std::move(done)](auto &) { done(); });
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
@@ -489,11 +519,11 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     p.layout.w = contacts->patchCount;
     e->Add(SeedPatches, 0u, p.layout.w, p);
     e->Add(Wake, p.selected.y, p.selected.z, p);
-    e->completed = [done = std::move(done)](auto &) { done(); };
+    e->OnComplete([done = std::move(done)](auto &) { done(); });
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-                                                const BodySleepParameters &settings, bool last,
+                                                const BodySleepParameters &settings, JoltGpuSleepCoupling coupling,
                                                 std::function<void()> done)
 {
     if (!std::isfinite(settings.timing.x) || settings.timing.x <= 0 || !std::isfinite(settings.timing.y) ||
@@ -511,16 +541,32 @@ JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, c
     e->initializeStatus = false;
     p.layout = {plan->bodyRootFirst, p.selected.w, 0u, 0u};
     p.timing = settings.timing;
-    p.operation.z = last ? 1u : 0u;
+    p.operation.z = 1u;
     e->Add(Clear, p.selected.y, p.selected.z, p);
     e->Add(Update, p.selected.y, p.selected.z, p);
-    if (last) {
-        e->Add(Commit, p.selected.y, p.selected.z, p);
-        p.layout.z = inputs.GetParameters().selection.w;
-        p.layout.w = inputs.GetParameters().selectedCounts.z;
-        e->Add(RetireHinge, p.layout.z, p.layout.w, p);
+    const auto &step = inputs.GetParameters();
+    const auto jointFirst = step.selection.w, jointCount = step.selectedCounts.z;
+    if (!coupling.resolve) {
+        e->AddSleepCommit(p, jointFirst, jointCount, coupling.endpoints);
+        e->OnComplete([done = std::move(done)](auto &) { done(); });
+        return e->Next();
     }
-    e->completed = [done = std::move(done)](auto &) { done(); };
+
+    e->SetRequests(coupling.endpoints);
+    e->resultBytes = uint64_t(coupling.endpoints.size()) * sizeof(UInt4);
+    e->query = true;
+    e->Add(ReadExternalVotes, 0, static_cast<uint32_t>(coupling.endpoints.size()), p);
+    e->completed = [p, jointFirst, jointCount, resolve = std::move(coupling.resolve),
+                    done = std::move(done)](auto &ready) {
+        const auto awake = resolve(ready.queryResults);
+        auto commit = std::make_shared<Impl::Execution>(ready.owner);
+        commit->buffers = std::move(ready.buffers);
+        commit->statusIndex = ready.statusIndex;
+        commit->initializeStatus = false;
+        commit->AddSleepCommit(p, jointFirst, jointCount, awake);
+        commit->OnComplete([done = std::move(done)](auto &) { done(); });
+        return commit->Next();
+    };
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareForceWake(const JoltGpuStorage &s, const StepParams &selection,
@@ -530,7 +576,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareForceWake(const JoltGpuStorage &s, const
     e->Bind(s);
     auto p = Selection(s, selection);
     e->Add(ForceWake, p.selected.y, p.selected.z, p);
-    e->completed = [done = std::move(done)](auto &) { done(); };
+    e->OnComplete([done = std::move(done)](auto &) { done(); });
     return e->Next();
 }
 JoltGpuControlWork
@@ -551,18 +597,17 @@ JoltGpuSleep::PreparePrescribedCapture(const JoltGpuStorage &s, const StepParams
     for (auto source : sources)
         if (source < p.selected.y || source - p.selected.y >= p.selected.z)
             throw std::out_of_range("Prescribed source crosses selected World slots");
-    e->requestBytes.resize(sources.size() * 4u);
-    std::memcpy(e->requestBytes.data(), sources.data(), e->requestBytes.size());
+    e->SetRequests(sources);
     e->resultPort = Bounds;
     e->resultBytes = uint64_t(sources.size()) * 64u;
     e->Add(PrescribedCapture, 0u, p.operation.w, p);
-    e->completed = [done = std::move(done), count = p.operation.w](auto &self) {
+    e->OnComplete([done = std::move(done), count = p.operation.w](auto &self) {
         auto result = std::make_shared<JoltGpuPrescribedSleepBounds>();
         result->count = count;
         result->sources = self.buffers[Requests]->Freeze();
         result->bounds = self.buffers[Bounds]->Freeze();
         done(std::move(result));
-    };
+    });
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PreparePrescribedWake(const JoltGpuStorage &s, const StepParams &selection,
@@ -588,7 +633,7 @@ JoltGpuControlWork JoltGpuSleep::PreparePrescribedWake(const JoltGpuStorage &s, 
         p.layout.z = source;
         e->Add(PrescribedWake, p.selected.y, p.selected.z, p);
     }
-    e->completed = [done = std::move(done)](auto &) { done(); };
+    e->OnComplete([done = std::move(done)](auto &) { done(); });
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareSnapshot(const JoltGpuStorage &s, const StepParams &selection,
@@ -602,9 +647,9 @@ JoltGpuControlWork JoltGpuSleep::PrepareSnapshot(const JoltGpuStorage &s, const 
     // Export has no status writer. Its snapshot consumer retains the completion boundary.
     e->reportsStatus = false;
     e->Add(Export, p.selected.y, p.selected.z, p);
-    e->completed = [done = std::move(done)](auto &self) {
+    e->OnComplete([done = std::move(done)](auto &self) {
         done(self.buffers[Snapshot] ? self.buffers[Snapshot]->Freeze() : nullptr);
-    };
+    });
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareOldBounds(const JoltGpuStorage &s, const StepParams &selection, uint32_t source,
@@ -620,7 +665,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareOldBounds(const JoltGpuStorage &s, const
     e->resultPort = Bounds;
     e->resultBytes = 64u;
     e->Add(CaptureBounds, 0u, 1u, p);
-    e->completed = [done = std::move(done)](auto &self) { done(self.buffers[Bounds]->Freeze()); };
+    e->OnComplete([done = std::move(done)](auto &self) { done(self.buffers[Bounds]->Freeze()); });
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, const StepParams &selection,
@@ -641,7 +686,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, cons
     const auto entry = old ? BoundsWake : NewBoundsWake;
     e->buffers[Bounds] = std::move(old);
     e->Add(entry, p.selected.y, p.selected.z, p);
-    e->completed = [](auto &) {};
+    e->OnComplete([](auto &) {});
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareAuthoredBoundsWake(const JoltGpuStorage &s, const StepParams &selection,
@@ -662,7 +707,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareAuthoredBoundsWake(const JoltGpuStorage 
     e->resultBytes = 32u;
     e->boundsBytes = Bytes(std::array<Float4, 2>{low, high});
     e->Add(BoundsWake, p.selected.y, p.selected.z, p);
-    e->completed = [](auto &) {};
+    e->OnComplete([](auto &) {});
     return e->Next();
 }
 
@@ -735,14 +780,12 @@ JoltGpuControlWork JoltGpuSleep::PrepareQuery(std::shared_ptr<rhi::ComputeBuffer
     e->buffers[Snapshot] = std::move(snapshot);
     e->query = true;
     e->resultBytes = uint64_t(requests.size()) * 16u;
-    e->requestBytes.resize(requests.size() * 4u);
-    if (!requests.empty())
-        std::memcpy(e->requestBytes.data(), requests.data(), e->requestBytes.size());
+    e->SetRequests(requests);
     SleepWorkParameters p{};
     p.selected.z = count;
     p.operation.w = static_cast<uint32_t>(requests.size());
     e->Add(Query, 0u, p.operation.w, p);
-    e->completed = [done = std::move(done)](auto &self) { done(std::move(self.queryResults)); };
+    e->OnComplete([done = std::move(done)](auto &self) { done(std::move(self.queryResults)); });
     return e->Next();
 }
 } // namespace infernux

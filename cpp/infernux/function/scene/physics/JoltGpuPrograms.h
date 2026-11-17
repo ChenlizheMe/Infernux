@@ -9,9 +9,11 @@
 #include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <array>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -305,6 +307,14 @@ class JoltGpuModelUpdate final
     std::array<uint32_t, 3> m_replacementCounts{};
 };
 
+struct JoltGpuSleepCoupling
+{
+    std::vector<uint32_t> endpoints;
+    // Current root and readiness per endpoint in request order. Return one
+    // endpoint per GPU island that must stay awake.
+    std::function<std::vector<uint32_t>(const std::vector<JPH::GPU::UInt4> &)> resolve;
+};
+
 /// Immutable parameter/author values and a borrowed live force endpoint for
 /// one selected-world tick. The shared packed writer lease excludes later
 /// producers until this cursor releases it. Forces never acquire a content
@@ -358,6 +368,17 @@ class JoltGpuStepInputs
     {
         return m_externalContactBodies;
     }
+    void SetSleepCoupling(std::function<JoltGpuSleepCoupling()> prepare)
+    {
+        m_prepareSleepCoupling = std::move(prepare);
+    }
+    [[nodiscard]] JoltGpuSleepCoupling TakeSleepCoupling()
+    {
+        if (!m_prepareSleepCoupling)
+            return {};
+        auto prepare = std::exchange(m_prepareSleepCoupling, {});
+        return prepare();
+    }
     void SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts);
     void ClearContacts() noexcept;
     [[nodiscard]] const std::shared_ptr<const JoltGpuContactWorkset> &GetContacts() const noexcept
@@ -388,6 +409,7 @@ class JoltGpuStepInputs
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     std::shared_ptr<JoltGpuArticulationState> m_articulations;
     std::vector<uint32_t> m_externalContactBodies;
+    std::function<JoltGpuSleepCoupling()> m_prepareSleepCoupling;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
     mutable std::vector<WorkUniform> m_workUniforms;

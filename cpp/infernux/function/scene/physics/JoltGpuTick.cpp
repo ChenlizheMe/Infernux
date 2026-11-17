@@ -1739,7 +1739,7 @@ class JoltGpuTick::Impl
                 auto settings = control.sleepParameters;
                 settings.timing.x = tickParameters.gravityDt.w;
                 SelectControlWork(programs.GetSleep().PrepareHistory(storage, inputs, settings,
-                                                                     stageCursor.substep + 1u == tickParameters.solve.y,
+                                                                     inputs.TakeSleepCoupling(),
                                                                      [this] {
                                                                          NextSpan(stageCursor);
                                                                          Normalize(stageCursor);

@@ -7,6 +7,8 @@
 #include "JoltGpuScene.h"
 #include "PhysicsContactPublication.h"
 #include <core/math/Bvh.h>
+#include <functional>
+#include <utility>
 
 namespace infernux
 {
@@ -54,8 +56,18 @@ class JoltMixedContactStep final
         std::array<ResponsePoint, JPH::GPU::MaxContactPointsPerPair> points;
     };
 
+    struct SleepLink
+    {
+        std::pair<uint32_t, uint32_t> bodies;
+        size_t island;
+    };
+
     void Begin(const JoltCpuScene &, std::vector<CpuEndpoint>, std::vector<uint32_t> gpuResponseBodies,
                uint32_t substeps);
+    void BeginSleepObservation();
+    [[nodiscard]] std::vector<uint32_t> TakeWakingIslands();
+    [[nodiscard]] std::vector<uint32_t> TakeUnavailableIslands(const std::function<bool(uint32_t)> &canCouple);
+    void AcceptSleepLinks();
     void CaptureCpuBoundary(uint32_t boundary);
     [[nodiscard]] const std::vector<JPH::GPU::UInt4> &EncodeTree(uint32_t substep, float predictedInterval);
     void Collect(uint32_t substep, const JoltGpuScene::Publication &, const Policy &, const Candidate &,
@@ -80,6 +92,12 @@ class JoltMixedContactStep final
   private:
     friend class JoltMixedConstraintSolver;
     struct ImpulseHistory;
+    struct SleepingContact
+    {
+        SleepLink link;
+        bool observed = false;
+    };
+    [[nodiscard]] std::vector<uint32_t> TakeSleepingIslands(const std::function<bool(const SleepingContact &)> &wakes);
     struct CpuProxy
     {
         uint32_t id;
@@ -103,6 +121,9 @@ class JoltMixedContactStep final
     std::vector<Frame> m_frames;
     std::vector<uint32_t> m_gpuResponseBodies;
     std::vector<ResponsePatch> m_responses;
+    std::vector<SleepLink> m_pendingSleepLinks;
+    std::vector<SleepingContact> m_sleepLinks;
+    size_t m_nextSleepIsland = 0;
     std::shared_ptr<ImpulseHistory> m_impulseHistory;
     std::vector<uint32_t> m_ids, m_escape;
     spatial::Bvh m_tree;
