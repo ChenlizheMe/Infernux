@@ -288,13 +288,14 @@ void SwingTwistJoint::SetTargetAngularVelocity(glm::vec3 value)
     UpdateConstraintSettings();
 }
 
-uint64_t SwingTwistJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
+uint64_t SwingTwistJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId,
+                                           const JoltJointImport *imported)
 {
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     const auto *transform = GetTransform();
     const auto baked = glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(m_anchor);
     return world.CreateSwingTwistConstraint(*this, bodyId, connectedBodyId, baked, m_anchor, m_settings,
-                                            m_enableCollision);
+                                            m_enableCollision, imported);
 }
 
 void SwingTwistJoint::UpdateConstraintSettings()

@@ -1715,6 +1715,12 @@ void RegisterPhysicsBindings(py::module_ &m)
                     "Write selected solver fields in input body order; None selects the seven float fields")
         .def_static("reset_rigidbodies", &ResetRigidbodies, "rigidbodies"_a, "state"_a,
                     "Reset resident body poses/velocities and solver history between completed fixed steps")
+        .def_static(
+            "set_rigidbody_backend",
+            [](const std::vector<Rigidbody *> &bodies, bool gpu) {
+                PhysicsWorld::Instance().SetRigidbodyBackend(bodies, gpu);
+            },
+            "rigidbodies"_a, "gpu"_a, "Transfer a complete live Rigidbody group at a fixed step boundary")
         .def_static("_write_rigidbody_state_buffers", &WriteRigidbodyStateBuffers, "rigidbodies"_a, "output"_a,
                     "Gather solver state on GPU and write resident buffers under one immutable snapshot")
         .def_static("_write_rigidbody_state_and_box_state_buffers", &WriteRigidbodyStateAndBoxStateBuffers,

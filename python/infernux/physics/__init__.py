@@ -178,6 +178,16 @@ class Physics(metaclass=_PhysicsMeta):
         _CppPhysics.reset_rigidbodies([body._require_cpp_component() for body in rigidbodies], arrays)
 
     @staticmethod
+    def set_rigidbody_backend(rigidbodies, *, gpu: bool) -> None:
+        """Move a live group to the selected backend before a fixed step.
+
+        Include both endpoints of every joint that touches the group. World
+        anchors need no extra selection. The group keeps its bodies and
+        joints, their current motion and their constraint reference frames.
+        """
+        _CppPhysics.set_rigidbody_backend([body._require_cpp_component() for body in rigidbodies], gpu)
+
+    @staticmethod
     def get_rigidbody_states_and_box_states(rigidbodies, state_out, box_out, *, query_triggers: bool = False):
         """Gather solver state and BoxCollider descriptors in one GPU submission.
 

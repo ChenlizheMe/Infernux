@@ -56,7 +56,8 @@ class DistanceJoint final : public Joint
     std::unique_ptr<Component> Clone() const override;
 
   private:
-    uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId) override;
+    uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId,
+                              const JoltJointImport *imported) override;
     void UpdateConstraintSettings() override;
     glm::vec3 m_connectedAnchor{0};
     bool m_autoDistance = true;

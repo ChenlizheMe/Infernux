@@ -65,10 +65,15 @@ struct PhysicsDomain final
     std::unordered_map<uint32_t, StaticMove> pendingStaticMoves;
     std::vector<std::pair<uint32_t, StaticMove>> admittedStaticMoves;
     std::vector<PhysicsActorHandle> recreateActors;
-    std::set<uint32_t> requestedBodyTransfers;
+    struct BodyTransferRequest
+    {
+        std::vector<uint32_t> bodies;
+        bool gpu, explicitGroup;
+    };
+    std::vector<BodyTransferRequest> requestedBodyTransfers;
     struct BodyTransfer
     {
-        uint32_t bodyId;
+        std::vector<uint32_t> bodies;
         bool controlBegun = false;
     };
     std::optional<BodyTransfer> bodyTransfer;

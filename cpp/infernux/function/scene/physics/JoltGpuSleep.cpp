@@ -686,9 +686,9 @@ JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, cons
     e->OnComplete([](auto &) {});
     return e->Next();
 }
-JoltGpuControlWork JoltGpuSleep::PrepareCreationWake(const JoltGpuStorage &s, const StepParams &selection,
-                                                     std::vector<uint32_t> sources,
-                                                     std::shared_ptr<BoundsValidation> validation)
+JoltGpuControlWork JoltGpuSleep::PrepareSourceBoundsWake(const JoltGpuStorage &s, const StepParams &selection,
+                                                         std::vector<uint32_t> sources,
+                                                         std::shared_ptr<BoundsValidation> validation)
 {
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
@@ -697,7 +697,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareCreationWake(const JoltGpuStorage &s, co
     e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     auto p = Selection(s, selection);
     // Bound the comparisons in each dispatch in both dimensions. The same
-    // immutable source list is used by all segments of this creation group.
+    // immutable source list is used by all segments of this topology edit.
     constexpr uint32_t SourcesPerDispatch = 64;
     for (uint32_t first = 0; first < sources.size(); first += SourcesPerDispatch) {
         p.operation = {UINT32_MAX, 0u, first, std::min(SourcesPerDispatch, uint32_t(sources.size()) - first)};

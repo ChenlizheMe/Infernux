@@ -58,6 +58,8 @@ class Physics:
     @staticmethod
     def reset_rigidbodies(rigidbodies: Sequence[Any], state: dict[str, Any]) -> None: ...
     @staticmethod
+    def set_rigidbody_backend(rigidbodies: Sequence[Any], *, gpu: bool) -> None: ...
+    @staticmethod
     def get_rigidbody_states_and_box_states(
         rigidbodies: List[Any], state_out: dict[str, Any], box_out: dict[str, Any],
         *, query_triggers: bool = ...,

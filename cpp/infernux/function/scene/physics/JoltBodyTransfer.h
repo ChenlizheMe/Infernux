@@ -5,6 +5,8 @@
 #include <Jolt/Math/Real.h>
 #include "PhysicsTargetReference.h"
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 
 namespace infernux
@@ -34,6 +36,12 @@ struct JoltBodyTransfer
     uint64_t shapeRevision = 0;
     bool resident = false;
     bool awake = false;
+};
+
+struct JoltBodyImport
+{
+    uint32_t id;
+    std::shared_ptr<std::optional<JoltBodyTransfer>> state;
 };
 
 } // namespace infernux

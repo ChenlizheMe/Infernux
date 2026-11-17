@@ -197,6 +197,7 @@ using Native = JPH::TwoBodyConstraint;
 JPH::Ref<Native> CreateNative(const Constraints::Hinge &, const Frames &f, JPH::Body &connected, JPH::Body &owner)
 {
     JPH::HingeConstraintSettings settings;
+    settings.mSpace = f.space;
     settings.mPoint1 = f.connected.point;
     settings.mPoint2 = f.owner.point;
     settings.mHingeAxis1 = f.connected.axes.primary;
@@ -208,6 +209,7 @@ JPH::Ref<Native> CreateNative(const Constraints::Hinge &, const Frames &f, JPH::
 JPH::Ref<Native> CreateNative(const Constraints::Slider &, const Frames &f, JPH::Body &connected, JPH::Body &owner)
 {
     JPH::SliderConstraintSettings settings;
+    settings.mSpace = f.space;
     settings.mPoint1 = f.connected.point;
     settings.mPoint2 = f.owner.point;
     settings.mSliderAxis1 = f.connected.axes.primary;
@@ -219,13 +221,19 @@ JPH::Ref<Native> CreateNative(const Constraints::Slider &, const Frames &f, JPH:
 JPH::Ref<Native> CreateNative(const Constraints::Fixed &, const Frames &f, JPH::Body &connected, JPH::Body &owner)
 {
     JPH::FixedConstraintSettings settings;
+    settings.mSpace = f.space;
     settings.mPoint1 = f.connected.point;
     settings.mPoint2 = f.owner.point;
+    settings.mAxisX1 = f.connected.axes.primary;
+    settings.mAxisY1 = f.connected.axes.secondary;
+    settings.mAxisX2 = f.owner.axes.primary;
+    settings.mAxisY2 = f.owner.axes.secondary;
     return settings.Create(connected, owner);
 }
 JPH::Ref<Native> CreateNative(const Constraints::Distance &s, const Frames &f, JPH::Body &connected, JPH::Body &owner)
 {
     JPH::DistanceConstraintSettings settings;
+    settings.mSpace = f.space;
     settings.mPoint1 = f.connected.point;
     settings.mPoint2 = f.owner.point;
     settings.mMinDistance = s.autoDistance ? -1.0f : s.minimum;
@@ -248,6 +256,7 @@ JPH::Ref<Native> CreateNative(const SwingTwistJointSettings &s, const Frames &f,
 JPH::Ref<Native> CreateNative(const SixDOFJointSettings &, const Frames &f, JPH::Body &connected, JPH::Body &owner)
 {
     JPH::SixDOFConstraintSettings settings;
+    settings.mSpace = f.space;
     settings.mPosition1 = f.connected.point;
     settings.mPosition2 = f.owner.point;
     settings.mAxisX1 = f.connected.axes.primary;
@@ -495,7 +504,8 @@ JoltCpuConstraints::CapturedAnchor JoltCpuConstraints::CaptureAnchor(JPH::Vec3Ar
     return anchor;
 }
 
-void JoltCpuConstraints::Create(uint64_t id, const Binding &binding, const Settings &settings, bool enableCollision)
+void JoltCpuConstraints::Create(uint64_t id, const Binding &binding, const Settings &settings, bool enableCollision,
+                                const JoltJointTransfer *restored)
 {
     if (id == 0 || m_joints.find(id) != m_joints.end())
         throw std::logic_error("CPU joint identity is invalid or already owned");
@@ -506,7 +516,7 @@ void JoltCpuConstraints::Create(uint64_t id, const Binding &binding, const Setti
     const bool world = binding.connectedBody == WorldBody;
     const auto *distance = std::get_if<Distance>(&settings);
     const auto connectedAnchor = distance ? Vector(binding.connectedAnchor) : JPH::Vec3::sZero();
-    const auto ownerAnchorCapture =
+    auto ownerAnchorCapture =
         CaptureAnchor(ownerAnchor, m_scene.m_bodies.at(binding.ownerBody).rootScale, Vector(binding.ownerLocalAnchor));
     CapturedAnchor connectedAnchorCapture;
     const JPH::BodyID bodies[] = {world ? JPH::BodyID() : m_scene.NativeBody(binding.connectedBody),
@@ -519,49 +529,71 @@ void JoltCpuConstraints::Create(uint64_t id, const Binding &binding, const Setti
         auto *connected = world ? &JPH::Body::sFixedToWorld : lock.GetBody(0);
         if (!owner || !connected)
             throw std::logic_error("CPU joint requires live native endpoints");
-        const auto rotation = owner->GetRotation();
-        const Axes worldAxes{rotation * axes.primary, rotation * axes.secondary};
-        const auto point = Anchor(*owner, ownerAnchor);
-        const auto connectedPoint =
-            distance ? (world ? JPH::RVec3(connectedAnchor) : Anchor(*connected, connectedAnchor)) : point;
-        if (!world) {
-            const auto &record = m_scene.m_bodies.at(binding.connectedBody);
-            const auto offset =
-                distance
-                    ? connectedAnchor
-                    : connected->GetRotation().InverseRotate(JPH::Vec3(point - connected->GetCenterOfMassPosition())) +
-                          record.shape->GetCenterOfMass();
-            connectedAnchorCapture = CaptureAnchor(
-                offset, record.rootScale, distance ? Vector(binding.connectedLocalAnchor) : JPH::Vec3::sZero());
+        Frames frames;
+        if (restored) {
+            const auto frame = [&](const JoltJointTransfer::Endpoint &value, uint32_t body) {
+                auto point = value.unscaled;
+                if (body != WorldBody) {
+                    const auto &record = m_scene.m_bodies.at(body);
+                    point = point * record.rootScale + value.collapsed - record.shape->GetCenterOfMass();
+                }
+                const auto secondary = std::holds_alternative<SwingTwistJointSettings>(settings)
+                                           ? value.frame.RotateAxisZ()
+                                           : value.frame.RotateAxisY();
+                return Frame{JPH::RVec3(point), {value.frame.RotateAxisX(), secondary}};
+            };
+            frames = {frame(restored->connected, binding.connectedBody), frame(restored->owner, binding.ownerBody),
+                      JPH::EConstraintSpace::LocalToBodyCOM};
+            ownerAnchorCapture = {restored->owner.unscaled, restored->owner.collapsed};
+            connectedAnchorCapture = {restored->connected.unscaled, restored->connected.collapsed};
+        } else {
+            const auto rotation = owner->GetRotation();
+            const Axes worldAxes = std::holds_alternative<Fixed>(settings)
+                                       ? Axes{}
+                                       : Axes{rotation * axes.primary, rotation * axes.secondary};
+            const auto point = Anchor(*owner, ownerAnchor);
+            const auto connectedPoint =
+                distance ? (world ? JPH::RVec3(connectedAnchor) : Anchor(*connected, connectedAnchor)) : point;
+            if (!world) {
+                const auto &record = m_scene.m_bodies.at(binding.connectedBody);
+                const auto offset = distance ? connectedAnchor
+                                             : connected->GetRotation().InverseRotate(
+                                                   JPH::Vec3(point - connected->GetCenterOfMassPosition())) +
+                                                   record.shape->GetCenterOfMass();
+                connectedAnchorCapture = CaptureAnchor(
+                    offset, record.rootScale, distance ? Vector(binding.connectedLocalAnchor) : JPH::Vec3::sZero());
+            }
+            frames = {{connectedPoint, worldAxes}, {point, worldAxes}};
         }
-        const Frames frames{{connectedPoint, worldAxes}, {point, worldAxes}};
         // The connected endpoint is reference frame 1; positive motion is the owner relative to it.
         native = std::visit([&](const auto &s) { return CreateNative(s, frames, *connected, *owner); }, settings);
         native->SetUserData(id);
         native->SetEnabled(EndpointsResident(*native.GetPtr()));
         std::visit([&](const auto &s) { Apply(*native.GetPtr(), s); }, settings);
+        if (restored) {
+            if (distance && distance->autoDistance)
+                static_cast<JPH::DistanceConstraint &>(*native.GetPtr())
+                    .SetDistance(restored->automaticDistance, restored->automaticDistance);
+            if (std::holds_alternative<Hinge>(settings))
+                static_cast<JPH::HingeConstraint &>(*native.GetPtr()).SetRotorSpeed(restored->rotorSpeed);
+        }
     }
     const auto *swing = std::get_if<SwingTwistJointSettings>(&settings);
-    const auto entry = m_joints
-                           .try_emplace(id, Record{native,
-                                                   binding.ownerBody,
-                                                   binding.connectedBody,
-                                                   ownerAnchorCapture,
-                                                   connectedAnchorCapture,
-                                                   axes.primary,
-                                                   axes.secondary,
-                                                   true,
-                                                   distance && distance->autoDistance,
-                                                   swing ? swing->swingType : JointSwingType::Cone,
-                                                   settings,
-                                                   {}})
-                           .first;
+    const auto entry =
+        m_joints
+            .try_emplace(id, Record{native, binding.ownerBody, binding.connectedBody, ownerAnchorCapture,
+                                    connectedAnchorCapture, axes.primary, axes.secondary, true,
+                                    distance && distance->autoDistance, swing ? swing->swingType : JointSwingType::Cone,
+                                    settings, restored ? restored->poseDrive : std::nullopt})
+            .first;
     bool changed = false;
     try {
         m_byBody.emplace(binding.ownerBody, id);
         if (!world)
             m_byBody.emplace(binding.connectedBody, id);
         changed = ChangeCollision(entry->second, enableCollision);
+        if (entry->second.poseDriveRelative)
+            ApplyPoseDrive(entry->second);
         system.AddConstraint(native.GetPtr());
     } catch (...) {
         ChangeCollision(entry->second, true);
@@ -570,7 +602,26 @@ void JoltCpuConstraints::Create(uint64_t id, const Binding &binding, const Setti
         m_joints.erase(entry);
         throw;
     }
-    WakeEndpoints(entry->second, changed);
+    if (!restored)
+        WakeEndpoints(entry->second, changed);
+}
+
+JoltJointTransfer JoltCpuConstraints::ReadTransfer(uint64_t id) const
+{
+    const auto &joint = m_joints.at(id);
+    const auto connected = joint.native->GetConstraintToBody1Matrix();
+    const auto owner = joint.native->GetConstraintToBody2Matrix();
+    JoltJointTransfer result;
+    result.connected = {joint.connectedBody == WorldBody ? connected.GetTranslation() : joint.connectedAnchor.unscaled,
+                        joint.connectedAnchor.collapsed, connected.GetQuaternion()};
+    result.owner = {joint.ownerAnchor.unscaled, joint.ownerAnchor.collapsed, owner.GetQuaternion()};
+    result.poseDrive = joint.poseDriveRelative;
+    if (joint.autoDistance)
+        result.automaticDistance =
+            static_cast<const JPH::DistanceConstraint &>(*joint.native.GetPtr()).GetMinDistance();
+    if (std::holds_alternative<Hinge>(joint.acceptedSettings))
+        result.rotorSpeed = static_cast<const JPH::HingeConstraint &>(*joint.native.GetPtr()).GetRotorSpeed();
+    return result;
 }
 
 bool JoltCpuConstraints::SupportsPoseDrive(const Settings &settings) noexcept

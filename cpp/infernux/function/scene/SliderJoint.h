@@ -46,7 +46,8 @@ class SliderJoint final : public Joint
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   private:
-    uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId) override;
+    uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId,
+                              const JoltJointImport *imported) override;
     void UpdateConstraintSettings() override;
 
     glm::vec3 m_axis{0.0f, 1.0f, 0.0f};

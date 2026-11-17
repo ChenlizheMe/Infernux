@@ -7,6 +7,8 @@
 #include "../Collider.h"
 #include "../Component.h"
 #include "../GameObject.h"
+#include "../Joint.h"
+#include "../Ragdoll.h"
 #include "../Rigidbody.h"
 #include "../RuntimeWorld.h"
 #include "../Scene.h"
@@ -645,7 +647,8 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
         return false;
     domain.gpuRegistered = true;
     RegisterDomain(domain);
-    ReconcileRagdolls(domain);
+    if (!domain.bodyTransfer)
+        ReconcileRagdolls(domain);
     QueueColliderPairs(domain);
     return true;
 }
@@ -1597,6 +1600,9 @@ void PhysicsWorld::ValidateBodyTransfer(const Rigidbody &body) const
     if ((domain.cpuControl && domain.cpuControl->HasJointForBody(id)) ||
         (m_gpuScene && m_gpuScene->HasJointForBody(id)))
         throw std::invalid_argument("Changing the backend of this Rigidbody requires migrating its joint group");
+    for (const auto &request : domain.requestedBodyTransfers)
+        if (request.explicitGroup && std::binary_search(request.bodies.begin(), request.bodies.end(), id))
+            throw std::invalid_argument("Change the pending backend selection for the entire Rigidbody group");
 }
 
 void PhysicsWorld::RequestBodyTransfer(const Rigidbody &body)
@@ -1604,109 +1610,270 @@ void PhysicsWorld::RequestBodyTransfer(const Rigidbody &body)
     const auto id = body.GetBodyId();
     auto &domain = DomainForBody(id);
     const auto target = body.IsGpuEnabled() ? Backend::Gpu : Backend::Cpu;
-    if (m_bodyActors.at(id).AuthorBackend() == target)
-        domain.requestedBodyTransfers.erase(id);
-    else
-        domain.requestedBodyTransfers.insert(id);
+    auto &requests = domain.requestedBodyTransfers;
+    const auto prior = std::find_if(requests.begin(), requests.end(), [id](const auto &request) {
+        return !request.explicitGroup && request.bodies.front() == id;
+    });
+    if (m_bodyActors.at(id).AuthorBackend() == target) {
+        if (prior != requests.end())
+            requests.erase(prior);
+    } else if (prior != requests.end()) {
+        prior->gpu = body.IsGpuEnabled();
+    } else {
+        requests.push_back({{id}, body.IsGpuEnabled(), false});
+    }
+}
+
+std::vector<Joint *> PhysicsWorld::CollectTransferJoints(const PhysicsDomain &domain,
+                                                         const std::vector<uint32_t> &selected) const
+{
+    const auto contains = [&](uint32_t id) { return std::binary_search(selected.begin(), selected.end(), id); };
+    std::vector<Joint *> joints;
+    for (const auto id : domain.bodyIds) {
+        const auto *body = FindRigidbodyByBodyId(id);
+        auto *joint = body ? body->GetGameObject()->GetComponent<Joint>() : nullptr;
+        if (!joint || !joint->m_constraintId)
+            continue;
+        const auto a = joint->m_boundBodyId, b = joint->m_boundConnectedBodyId;
+        const bool ownerSelected = contains(a), connectedSelected = contains(b);
+        if (!ownerSelected && !connectedSelected)
+            continue;
+        if (!ownerSelected || (b != UINT32_MAX && !connectedSelected))
+            throw std::invalid_argument("Select both endpoints of every joint in the Rigidbody group");
+        joints.push_back(joint);
+    }
+    std::sort(joints.begin(), joints.end(),
+              [](const auto *a, const auto *b) { return a->m_constraintId < b->m_constraintId; });
+    return joints;
+}
+
+void PhysicsWorld::SetRigidbodyBackend(const std::vector<Rigidbody *> &bodies, bool gpu)
+{
+    RequireOwnerThread();
+    if (bodies.empty())
+        return;
+    PhysicsDomain *domain = nullptr;
+    std::vector<uint32_t> ids, moving;
+    ids.reserve(bodies.size());
+    moving.reserve(bodies.size());
+    const auto target = gpu ? Backend::Gpu : Backend::Cpu;
+    for (auto *body : bodies) {
+        const auto id = body ? body->GetBodyId() : UINT32_MAX;
+        if (id == UINT32_MAX || FindRigidbodyByBodyId(id) != body)
+            throw std::invalid_argument("Backend transfer requires live Rigidbody components");
+        auto &owner = DomainForBody(id);
+        if (!owner.owner.simulation.isPlaying || owner.retiring || (domain && domain != &owner))
+            throw std::invalid_argument("A Rigidbody group must belong to one live Play world");
+        domain = &owner;
+        ids.push_back(id);
+        if (m_bodyActors.at(id).AuthorBackend() != target)
+            moving.push_back(id);
+    }
+    std::sort(ids.begin(), ids.end());
+    if (std::adjacent_find(ids.begin(), ids.end()) != ids.end())
+        throw std::invalid_argument("A Rigidbody group cannot contain a body twice");
+    std::sort(moving.begin(), moving.end());
+    if (!moving.empty())
+        (void)CollectTransferJoints(*domain, moving);
+    auto &requests = domain->requestedBodyTransfers;
+    auto prior = requests.end();
+    for (auto it = requests.begin(); it != requests.end(); ++it) {
+        if (it->bodies == ids) {
+            prior = it;
+            continue;
+        }
+        if (std::any_of(it->bodies.begin(), it->bodies.end(),
+                        [&](uint32_t id) { return std::binary_search(ids.begin(), ids.end(), id); }))
+            throw std::invalid_argument("Change the pending backend selection for the entire Rigidbody group");
+    }
+    if (moving.empty()) {
+        if (prior != requests.end())
+            requests.erase(prior);
+    } else if (prior == requests.end()) {
+        requests.push_back({std::move(ids), gpu, true});
+    } else {
+        prior->gpu = gpu;
+        prior->explicitGroup = true;
+    }
+    for (auto *body : bodies)
+        body->m_gpu = gpu;
+}
+
+bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector<uint32_t> &requested, Backend target,
+                                        bool explicitGroup)
+{
+    const bool toGpu = target == Backend::Gpu;
+    struct PreparedBody
+    {
+        uint32_t id;
+        std::optional<PreparedGpuActor> gpu;
+        std::optional<PreparedCpuActor> cpu;
+    };
+    std::vector<uint32_t> moving;
+    moving.reserve(requested.size());
+    for (const auto id : requested) {
+        auto *body = FindRigidbodyByBodyId(id);
+        if (!body)
+            throw std::invalid_argument("A member of the requested Rigidbody group was retired");
+        if (m_bodyActors.at(id).backend == target)
+            continue;
+        if (!explicitGroup)
+            ValidateBodyTransfer(*body);
+        moving.push_back(id);
+    }
+    if (moving.empty())
+        return true;
+
+    ApplyCpuControl(domain);
+    auto joints = explicitGroup ? CollectTransferJoints(domain, moving) : std::vector<Joint *>{};
+    std::vector<PreparedBody> prepared;
+    prepared.reserve(moving.size());
+    {
+        TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+        for (const auto id : moving) {
+            const auto &actor = ActorForBody(id);
+            PreparedBody draft{id, {}, {}};
+            if (toGpu)
+                draft.gpu = PrepareJoltGpuActor(actor, 0, 0);
+            else
+                draft.cpu = PrepareJoltCpuActor(actor);
+            if (!draft.gpu && !draft.cpu)
+                return false;
+            prepared.push_back(std::move(draft));
+        }
+    }
+
+    std::vector<JoltJointImport> imports;
+    std::vector<uint64_t> jointIds;
+    imports.reserve(joints.size());
+    jointIds.reserve(joints.size());
+    for (const auto *joint : joints) {
+        const auto id = joint->m_constraintId;
+        auto state = std::make_shared<std::optional<JoltJointTransfer>>();
+        if (toGpu)
+            *state = domain.cpuScene->Constraints().ReadTransfer(id);
+        imports.push_back({id, std::move(state)});
+        jointIds.push_back(id);
+    }
+
+    if (toGpu) {
+        if (!EnsureGpuReady(domain))
+            return false;
+        bool retiringReplicas = false;
+        for (const auto id : moving) {
+            auto &entry = m_bodyActors.at(id);
+            if (entry.gpuStaged) {
+                m_gpuScene->StageRetire(id);
+                entry.gpuStaged = false;
+                retiringReplicas = true;
+            }
+        }
+        if (retiringReplicas) {
+            domain.waitingForSlot = true;
+            return false;
+        }
+        if (!CanStageNewGpuBody(domain, moving.size()))
+            return false;
+
+        std::vector<JoltBodyTransfer> states;
+        states.reserve(moving.size());
+        for (auto &body : prepared) {
+            const auto &state = states.emplace_back(domain.cpuControl->ReadBodyTransfer(body.id));
+            auto &gpu = *body.gpu;
+            const auto com = state.position + JPH::RVec3(state.rotation * gpu.geometry.centerOfMass);
+            const auto packed = [](const auto &v) {
+                return Float4{float(v.GetX()), float(v.GetY()), float(v.GetZ()), 0.0f};
+            };
+            gpu.initialState = {
+                packed(com),
+                {state.rotation.GetX(), state.rotation.GetY(), state.rotation.GetZ(), state.rotation.GetW()},
+                packed(state.linearVelocity),
+                packed(state.angularVelocity)};
+            gpu.publication.sharedGeometryRevision = state.shapeRevision;
+        }
+        size_t staged = 0;
+        try {
+            for (; staged < prepared.size(); ++staged) {
+                auto &body = prepared[staged];
+                StageNewGpuBody(domain, body.id, m_bodyActors.at(body.id).actor, ActorForBody(body.id),
+                                states[staged].resident, std::move(*body.gpu));
+            }
+        } catch (...) {
+            for (size_t index = 0; index < staged; ++index)
+                m_gpuScene->StageRetire(prepared[index].id);
+            throw;
+        }
+        domain.bodyTransfer = PhysicsDomain::BodyTransfer{std::move(moving)};
+        for (size_t index = 0; index < prepared.size(); ++index) {
+            auto &entry = m_bodyActors.at(prepared[index].id);
+            m_gpuScene->QueueTransferRestore(prepared[index].id, states[index]);
+            entry.gpuStaged = true;
+            entry.transferTarget = target;
+        }
+        domain.cpuControl->TransferJointsOut(jointIds);
+        RetireCpuJointRoutes(jointIds);
+    } else {
+        EnsureCpuReady(domain);
+        for (const auto id : moving) {
+            auto &entry = m_bodyActors.at(id);
+            if (entry.cpuStaged) {
+                domain.cpuControl->RetireActor(id);
+                entry.cpuStaged = false;
+            }
+        }
+        ApplyCpuControl(domain);
+        std::vector<JoltCpuControl::BodyTransfer> targets;
+        std::vector<JoltBodyImport> reads;
+        targets.reserve(moving.size());
+        reads.reserve(moving.size());
+        for (auto &body : prepared) {
+            body.cpu->publication.sharedGeometryRevision = m_bodyActors.at(body.id).stagedShapeRevision;
+            reads.push_back({body.id, std::make_shared<std::optional<JoltBodyTransfer>>()});
+            targets.push_back({reads.back(), std::move(*body.cpu)});
+        }
+        domain.cpuControl->StageTransfers(targets);
+        domain.bodyTransfer = PhysicsDomain::BodyTransfer{std::move(moving)};
+        for (const auto id : domain.bodyTransfer->bodies) {
+            auto &entry = m_bodyActors.at(id);
+            entry.cpuStaged = true;
+            entry.transferTarget = target;
+        }
+        m_gpuScene->QueueBodyTransferReads(domain.owner, reads);
+        m_gpuScene->QueueJointTransferReads(domain.owner, imports);
+        m_gpuScene->TransferJointsOut(domain.owner, jointIds);
+        m_gpuScene->StageRetireBodies(domain.owner, domain.bodyTransfer->bodies, true);
+    }
+    for (size_t index = 0; index < joints.size(); ++index) {
+        auto &joint = *joints[index];
+        joint.CreateConstraint(*this, joint.m_boundBodyId, joint.m_boundConnectedBodyId, &imports[index]);
+    }
+    if (toGpu)
+        m_gpuScene->QueueJointTransferRestore(domain.owner, std::move(imports));
+    return true;
 }
 
 void PhysicsWorld::StageBodyTransfer(PhysicsDomain &domain)
 {
     auto &requests = domain.requestedBodyTransfers;
     for (auto it = requests.begin(); it != requests.end();) {
-        const auto id = *it;
-        auto *body = FindRigidbodyByBodyId(id);
-        if (!body) {
-            it = requests.erase(it);
-            continue;
-        }
-        auto &entry = m_bodyActors.at(id);
-        const auto target = body->IsGpuEnabled() ? Backend::Gpu : Backend::Cpu;
-        if (entry.backend == target) {
-            it = requests.erase(it);
-            continue;
-        }
-        const auto reject = [&](const std::exception &error) {
-            body->m_gpu = entry.backend == Backend::Gpu;
-            INXLOG_ERROR("Rigidbody backend transfer failed: ", error.what());
-            it = requests.erase(it);
-        };
-        const auto &actor = ActorForBody(id);
-        std::optional<PreparedGpuActor> gpu;
-        std::optional<PreparedCpuActor> cpu;
         try {
-            ValidateBodyTransfer(*body);
-            TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
-            if (target == Backend::Gpu) {
-                gpu = PrepareJoltGpuActor(actor, 0, 0);
-                if (gpu && !EnsureGpuReady(domain))
-                    gpu.reset();
-            } else {
-                cpu = PrepareJoltCpuActor(actor);
-                if (cpu)
-                    EnsureCpuReady(domain);
-            }
-        } catch (const std::exception &error) {
-            reject(error);
-            continue;
-        }
-        if (!gpu && !cpu) {
-            ++it;
-            continue;
-        }
-        if (gpu) {
-            if (entry.gpuStaged) {
-                // A former collider-only representation can still own a
-                // detached slot under this public identity.
-                m_gpuScene->StageRetire(id);
-                entry.gpuStaged = false;
+            if (!TryStageBodyTransfer(domain, it->bodies, it->gpu ? Backend::Gpu : Backend::Cpu, it->explicitGroup)) {
+                if (domain.waitingForSlot)
+                    return;
                 ++it;
                 continue;
             }
-            if (!CanStageNewGpuBody(domain))
-                return;
-            ApplyCpuControl(domain);
-            const auto state = domain.cpuControl->ReadBodyTransfer(id);
-            const auto com = state.position + JPH::RVec3(state.rotation * gpu->geometry.centerOfMass);
-            const auto packed = [](const auto &v) {
-                return Float4{float(v.GetX()), float(v.GetY()), float(v.GetZ()), 0.0f};
-            };
-            gpu->initialState = {
-                packed(com),
-                {state.rotation.GetX(), state.rotation.GetY(), state.rotation.GetZ(), state.rotation.GetW()},
-                packed(state.linearVelocity),
-                packed(state.angularVelocity)};
-            gpu->publication.sharedGeometryRevision = state.shapeRevision;
-            try {
-                StageNewGpuBody(domain, id, entry.actor, actor, state.resident, std::move(*gpu));
-            } catch (const std::invalid_argument &error) {
-                reject(error);
-                continue;
-            }
-            m_gpuScene->QueueTransferRestore(id, state);
-            entry.gpuStaged = true;
-        } else {
-            if (entry.cpuStaged) {
-                domain.cpuControl->RetireActor(id);
-                ApplyCpuControl(domain);
-                entry.cpuStaged = false;
-            }
-            auto state = std::make_shared<std::optional<JoltBodyTransfer>>();
-            cpu->publication.sharedGeometryRevision = entry.stagedShapeRevision;
-            try {
-                domain.cpuControl->StageTransfer(id, *cpu, state);
-            } catch (const std::length_error &error) {
-                reject(error);
-                continue;
-            }
-            m_gpuScene->QueueTransferRead(id, [state](JoltBodyTransfer value) { *state = std::move(value); });
-            m_gpuScene->StageRetire(id, true);
-            entry.cpuStaged = true;
+        } catch (const std::exception &error) {
+            if (domain.bodyTransfer)
+                throw;
+            for (const auto id : it->bodies)
+                if (auto *body = FindRigidbodyByBodyId(id))
+                    body->m_gpu = m_bodyActors.at(id).backend == Backend::Gpu;
+            INXLOG_ERROR("Rigidbody backend transfer failed: ", error.what());
         }
-        entry.transferTarget = target;
-        domain.bodyTransfer.emplace(PhysicsDomain::BodyTransfer{id});
-        requests.erase(it);
-        return;
+        it = requests.erase(it);
+        if (domain.bodyTransfer)
+            return;
     }
 }
 
@@ -1731,8 +1898,10 @@ bool PhysicsWorld::AdvanceBodyTransfer(PhysicsDomain &domain, bool synchronous)
     if (!AdvanceGpuControl(domain, synchronous))
         return false;
 
-    const auto id = transfer.bodyId;
-    if (const auto found = m_bodyActors.find(id); found != m_bodyActors.end()) {
+    for (const auto id : transfer.bodies) {
+        const auto found = m_bodyActors.find(id);
+        if (found == m_bodyActors.end())
+            continue;
         auto &entry = found->second;
         ChangeBodyBackend(domain, entry, *std::exchange(entry.transferTarget, {}));
         if (entry.backend == Backend::Gpu) {
@@ -1747,11 +1916,14 @@ bool PhysicsWorld::AdvanceBodyTransfer(PhysicsDomain &domain, bool synchronous)
             domain.rendering.bindings.RetireBody(id);
             domain.rendering.ready.reset();
         }
-        domain.rendering.checkedKeys.reset();
-        domain.rendering.hierarchyKeys.reset();
+        if (auto *body = FindRigidbodyByBodyId(id))
+            Ragdoll::MarkPhysicsMembership(body->GetGameObject());
     }
+    domain.rendering.checkedKeys.reset();
+    domain.rendering.hierarchyKeys.reset();
     ApplyCpuControl(domain);
     domain.bodyTransfer.reset();
+    ReconcileRagdolls(domain);
     return true;
 }
 
@@ -2459,16 +2631,17 @@ RaycastHit PhysicsWorld::DecodeQueryHit(const JoltGpuQueryResult &result, const 
     return hit;
 }
 
-bool PhysicsWorld::CanStageNewGpuBody(PhysicsDomain &domain)
+bool PhysicsWorld::CanStageNewGpuBody(PhysicsDomain &domain, size_t count)
 {
-    if (m_gpuScene->GetBodyCount(domain.owner) >= m_gpuScene->GetCapacity(domain.owner)) {
-        const uint64_t capacity =
-            std::max(uint64_t{InitialBodyCapacity}, uint64_t{2} * m_gpuScene->GetCapacity(domain.owner));
+    const uint64_t required = m_gpuScene->GetBodyCount(domain.owner) + count;
+    const uint64_t reserved = m_gpuScene->GetCapacity(domain.owner);
+    if (required > reserved) {
+        const uint64_t capacity = std::max({uint64_t{InitialBodyCapacity}, uint64_t{2} * reserved, required});
         if (capacity > UINT32_MAX)
             throw std::length_error("GPU physics world exceeds body indexing");
         m_gpuScene->ReserveCapacity(domain.owner, static_cast<uint32_t>(capacity));
     }
-    if (m_gpuScene->CanReserve(domain.owner))
+    if (m_gpuScene->CanReserve(domain.owner, count))
         return true;
     domain.waitingForSlot = true;
     return false;
@@ -5198,7 +5371,16 @@ void PhysicsWorld::UnregisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId
     domain.gpuBodyOwners -= m_bodyActors.at(bodyId).backend == Backend::Gpu;
     m_bodyActors.erase(bodyId);
     domain.bodyIds.erase(bodyId);
-    domain.requestedBodyTransfers.erase(bodyId);
+    auto &requests = domain.requestedBodyTransfers;
+    const auto request = std::find_if(requests.begin(), requests.end(), [bodyId](const auto &entry) {
+        return std::binary_search(entry.bodies.begin(), entry.bodies.end(), bodyId);
+    });
+    if (request != requests.end()) {
+        for (const auto id : request->bodies)
+            if (auto *body = FindRigidbodyByBodyId(id))
+                body->m_gpu = m_bodyActors.at(id).AuthorBackend() == Backend::Gpu;
+        requests.erase(request);
+    }
     domain.pendingStaticCpu.erase(bodyId);
     domain.pendingStaticGpu.erase(bodyId);
     domain.pendingStaticMoves.erase(bodyId);

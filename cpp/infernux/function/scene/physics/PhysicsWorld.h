@@ -276,6 +276,7 @@ class PhysicsWorld
     /// True only when this admitted fixed step has completed and published.
     /// False retains the same epoch/step and its shared-source continuation.
     bool Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
+    void SetRigidbodyBackend(const std::vector<Rigidbody *> &bodies, bool gpu);
     std::shared_ptr<PhysicsParticipant> RegisterParticipant(const Component &component,
                                                             PhysicsParticipant::Recipes recipes,
                                                             PhysicsParticipant::Controls controls, uint32_t count);
@@ -447,38 +448,39 @@ class PhysicsWorld
 
     /// Create a world-space hinge between body A and body B, or body A and
     /// the fixed world when body B is invalid. Limits are radians.
-    uint64_t CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                   const glm::vec3 &localBakedAnchor, const glm::vec3 &ownerAxis,
-                                   const glm::vec3 &localAnchor, bool useLimits, float minimumAngle, float maximumAngle,
-                                   bool enableCollision);
+    uint64_t CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                   const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
+                                   const JoltJointImport *imported);
     /// Create a prismatic constraint that permits only translation along one
     /// captured owner-local axis. Limits are metres relative to the creation pose.
     uint64_t CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                     const glm::vec3 &localBakedAnchor, const glm::vec3 &ownerAxis,
                                     const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
-                                    float maximumDistance, bool enableCollision);
+                                    float maximumDistance, bool enableCollision, const JoltJointImport *imported);
     void DestroyConstraint(uint64_t constraintId);
     uint64_t CreateFixedConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                    const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                   bool enableCollision);
+                                   bool enableCollision, const JoltJointImport *imported);
     void SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled);
     uint64_t CreateDistanceConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                       const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
                                       const glm::vec3 &connectedBakedAnchor, const glm::vec3 &connectedLocalAnchor,
                                       bool autoDistance, float minimum, float maximum, float stiffness, float damping,
-                                      bool enableCollision);
+                                      bool enableCollision, const JoltJointImport *imported);
     void UpdateDistanceConstraintSettings(uint64_t constraintId, bool updateLimits, float minimum, float maximum,
                                           float stiffness, float damping, bool enableCollision);
     float GetDistanceConstraintLength(uint64_t constraintId) const;
     uint64_t CreateSwingTwistConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                         const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                        const SwingTwistJointSettings &settings, bool enableCollision);
+                                        const SwingTwistJointSettings &settings, bool enableCollision,
+                                        const JoltJointImport *imported);
     void UpdateSwingTwistConstraint(uint64_t constraintId, const SwingTwistJointSettings &settings,
                                     bool enableCollision, bool claimTarget = false);
     glm::quat GetAngularConstraintOrientation(uint64_t constraintId) const;
     uint64_t CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                     const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                    const SixDOFJointSettings &settings, bool enableCollision);
+                                    const SixDOFJointSettings &settings, bool enableCollision,
+                                    const JoltJointImport *imported);
     void UpdateSixDOFConstraint(uint64_t constraintId, const SixDOFJointSettings &settings, bool enableCollision,
                                 bool claimTarget = false);
     glm::vec3 GetSixDOFConstraintPosition(uint64_t constraintId) const;
@@ -857,7 +859,11 @@ class PhysicsWorld
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
     void ValidateBodyTransfer(const Rigidbody &) const;
     void RequestBodyTransfer(const Rigidbody &);
+    [[nodiscard]] std::vector<Joint *> CollectTransferJoints(const PhysicsDomain &,
+                                                             const std::vector<uint32_t> &) const;
     void StageBodyTransfer(PhysicsDomain &domain);
+    bool TryStageBodyTransfer(PhysicsDomain &domain, const std::vector<uint32_t> &bodies, Backend target,
+                              bool explicitGroup);
     bool AdvanceBodyTransfer(PhysicsDomain &domain, bool synchronous);
     bool TryBeginFixed(PhysicsDomain &domain);
     void FinishFixed(PhysicsDomain &domain);
@@ -927,7 +933,7 @@ class PhysicsWorld
     [[nodiscard]] Backend SelectBodyBackend(const PhysicsActorData &, const BodyRegistration *) const;
     [[nodiscard]] bool NeedsBodyBindingChange(const PhysicsActorData &) const;
     [[nodiscard]] bool RebindBody(PhysicsActorData &);
-    [[nodiscard]] bool CanStageNewGpuBody(PhysicsDomain &);
+    [[nodiscard]] bool CanStageNewGpuBody(PhysicsDomain &, size_t count = 1);
     void StageNewGpuBody(PhysicsDomain &, uint32_t bodyId, PhysicsActorHandle, const PhysicsActorData &, bool resident,
                          PreparedGpuActor);
     [[nodiscard]] uint32_t StageNewBody(const PhysicsActorData &, PhysicsActorHandle, Backend, bool resident);

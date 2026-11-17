@@ -3,6 +3,7 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/Constraints/TwoBodyConstraint.h>
 #include "JointSettings.h"
+#include "JoltJointTransfer.h"
 #include <cstdint>
 #include <optional>
 #include <unordered_map>
@@ -61,7 +62,9 @@ class JoltCpuConstraints final
 
     /// Both bodies must exist. The native joint only solves while both endpoints are resident.
     /// ID allocation and component lifetime stay with the owner.
-    void Create(uint64_t id, const Binding &binding, const Settings &settings, bool enableCollision);
+    void Create(uint64_t id, const Binding &binding, const Settings &settings, bool enableCollision,
+                const JoltJointTransfer *restored = nullptr);
+    [[nodiscard]] JoltJointTransfer ReadTransfer(uint64_t id) const;
     void Update(uint64_t id, const Settings &settings, bool enableCollision, bool clearPoseDrive = false);
     void SetPoseDrive(uint64_t id, const std::optional<JPH::Quat> &relative);
     void SetCollisionEnabled(uint64_t id, bool enabled);

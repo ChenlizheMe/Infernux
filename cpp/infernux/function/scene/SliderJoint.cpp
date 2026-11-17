@@ -62,13 +62,14 @@ const bool registeredSliderJoint = ComponentFactory::Register(
     SliderJoint::GetTypeConstraints(), DescribeSliderJoint);
 } // namespace
 
-uint64_t SliderJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
+uint64_t SliderJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId,
+                                       const JoltJointImport *imported)
 {
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     const auto *transform = GetTransform();
     const auto localBakedAnchor = glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(m_anchor);
     return world.CreateSliderConstraint(*this, bodyId, connectedBodyId, localBakedAnchor, m_axis, m_anchor, m_useLimits,
-                                        m_minimumDistance, m_maximumDistance, m_enableCollision);
+                                        m_minimumDistance, m_maximumDistance, m_enableCollision, imported);
 }
 
 void SliderJoint::SetAxis(const glm::vec3 &axis)

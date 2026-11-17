@@ -24,6 +24,7 @@
 #include <map>
 #include <stdexcept>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -76,6 +77,91 @@ Float4 TransferVector(JPH::Vec3Arg value, float extra = 0.0f)
 JPH::Vec3 TransferVector(const Float4 &value)
 {
     return {value.x, value.y, value.z};
+}
+
+Float4 TransferRotation(JPH::QuatArg value)
+{
+    return {value.GetX(), value.GetY(), value.GetZ(), value.GetW()};
+}
+
+JPH::Quat TransferRotation(const Float4 &value)
+{
+    return {value.x, value.y, value.z, value.w};
+}
+
+template <class Visit> auto WithJointState(uint32_t kind, const Visit &visit)
+{
+    switch (kind) {
+    case JointFixed:
+        return visit(JointFixedState{});
+    case JointHinge:
+        return visit(JointHingeState{});
+    case JointSlider:
+        return visit(JointSliderState{});
+    case JointDistance:
+        return visit(JointDistanceState{});
+    case JointSwingTwist:
+        return visit(JointSwingState{});
+    case JointSixDOF:
+        return visit(JointSixState{});
+    }
+    throw std::logic_error("Cannot transfer an unknown GPU joint kind");
+}
+
+// Native Jolt represents a hinge by (axis, normal, axis cross normal).
+// The GPU hinge keeps the same frame in (normal, axis cross normal, axis).
+const JPH::Quat HingeAxisOrder(0.5f, 0.5f, 0.5f, 0.5f);
+
+template <class State>
+constexpr bool JointHasPoseDrive = std::is_same_v<State, JointHingeState> || std::is_same_v<State, JointSwingState> ||
+                                   std::is_same_v<State, JointSixState>;
+
+template <class State> JoltJointTransfer DecodeJointTransfer(const State &state, const JointAuthor &author)
+{
+    JoltJointTransfer value;
+    value.connected = {TransferVector(state.anchor1), TransferVector(state.collapsed1)};
+    value.owner = {TransferVector(state.anchor2), TransferVector(state.collapsed2)};
+    if constexpr (std::is_same_v<State, JointDistanceState>) {
+        value.automaticDistance = state.distanceReference.w;
+    } else {
+        value.connected.frame = TransferRotation(state.frame1);
+        value.owner.frame = TransferRotation(state.frame2);
+        if constexpr (std::is_same_v<State, JointHingeState>) {
+            value.connected.frame = value.connected.frame * HingeAxisOrder.Conjugated();
+            value.owner.frame = value.owner.frame * HingeAxisOrder.Conjugated();
+            const auto armature = author.passive().z;
+            value.rotorSpeed = armature > 0.0f ? state.rotor.x - state.rotor.y / armature : state.rotor.x;
+        }
+    }
+    if constexpr (JointHasPoseDrive<State>)
+        if (state.flags.w & JointPoseDriveActive)
+            value.poseDrive = TransferRotation(state.poseDriveRelative);
+    return value;
+}
+
+template <class State> State EncodeJointTransfer(State state, const JoltJointTransfer &value, const JointAuthor &author)
+{
+    state.flags = {1, JointStatusSuccess, 0, 0};
+    state.anchor1 = TransferVector(value.connected.unscaled);
+    state.anchor2 = TransferVector(value.owner.unscaled);
+    state.collapsed1 = TransferVector(value.connected.collapsed);
+    state.collapsed2 = TransferVector(value.owner.collapsed);
+    if constexpr (std::is_same_v<State, JointDistanceState>) {
+        state.distanceReference = {0, 1, 0, value.automaticDistance};
+    } else if constexpr (std::is_same_v<State, JointHingeState>) {
+        state.frame1 = TransferRotation(value.connected.frame * HingeAxisOrder);
+        state.frame2 = TransferRotation(value.owner.frame * HingeAxisOrder);
+        state.rotor = {float(value.rotorSpeed), 0, 0, author.passive().z};
+    } else {
+        state.frame1 = TransferRotation(value.connected.frame);
+        state.frame2 = TransferRotation(value.owner.frame);
+    }
+    if constexpr (JointHasPoseDrive<State>) {
+        state.poseDriveRelative = TransferRotation(value.poseDrive.value_or(JPH::Quat::sIdentity()));
+        if (value.poseDrive)
+            state.flags.w |= JointPoseDriveActive;
+    }
+    return state;
 }
 
 template <class T>
@@ -587,7 +673,8 @@ class JoltGpuScene::Impl
         domain.pending.push_back(std::move(group));
     }
 
-    uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody, JointAuthor author)
+    uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody, JointAuthor author,
+                         uint64_t importedId)
     {
         const auto a = RequireSlot(ownerBody);
         const auto b = connectedBody == InvalidBodyId ? InvalidQueryBodySlot : RequireSlot(connectedBody);
@@ -595,7 +682,7 @@ class JoltGpuScene::Impl
             throw std::invalid_argument("GPU Joint endpoints belong to different RuntimeWorld owners");
         if (ownerBody == connectedBody || !slots[a].authored || (b != InvalidQueryBodySlot && !slots[b].authored))
             throw std::invalid_argument("A GPU joint requires distinct authored body endpoints");
-        const auto id = actors.AllocateJointIdentity();
+        const auto id = importedId ? importedId : actors.AllocateJointIdentity();
         author.bodies.x = b;
         author.bodies.y = a;
         author.identity = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), slots[a].partition->row, 0};
@@ -604,12 +691,90 @@ class JoltGpuScene::Impl
         author.scale1() = b == InvalidQueryBodySlot ? Float4{1, 1, 1, 0} : slots[b].authored->rootScale;
         author.scale2() = slots[a].authored->rootScale;
         PublishedJoint value{id, 0, ownerBody, connectedBody, author.bodies.z, author};
-        authoredJoints.emplace(id, JointRecord{value, &owner});
-        QueueJointTopology(*slots[a].partition);
-        JoltGpuControlGroup wake;
-        AddJointWake(wake, value);
-        slots[a].partition->pending.push_back(std::move(wake));
+        if (!authoredJoints.emplace(id, JointRecord{value, &owner}).second)
+            throw std::logic_error("GPU joint already owns its public identity");
+        if (!importedId) {
+            QueueJointTopology(*slots[a].partition);
+            JoltGpuControlGroup wake;
+            AddJointWake(wake, value);
+            slots[a].partition->pending.push_back(std::move(wake));
+        }
         return id;
+    }
+
+    void QueueJointTransferReads(Partition &domain, std::vector<JoltJointImport> transfers)
+    {
+        if (transfers.empty())
+            return;
+        JoltGpuControlGroup group;
+        group.prepareWork = [this, transfers = std::move(transfers)] {
+            std::vector<PublishedJoint> captured;
+            std::vector<rhi::ComputeBufferRead> reads;
+            captured.reserve(transfers.size());
+            reads.reserve(transfers.size());
+            const auto &layout = *storage.GetJointLayout();
+            const auto &stream = storage.Get(Resource::Joints);
+            for (const auto &transfer : transfers) {
+                const auto &joint = AcceptedJoint(transfer.id);
+                captured.push_back(joint);
+                reads.push_back({stream, uint64_t(layout.Row(joint.row).layout.y) * 16,
+                                 uint64_t(JoltGpuJointLayout::StateWords(joint.kind)) * 16});
+            }
+            auto host = storage.GetHost();
+            auto packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(reads));
+            return JoltGpuControlWork{packet, [packet, transfers, captured = std::move(captured)] {
+                                          for (size_t index = 0; index < transfers.size(); ++index) {
+                                              const auto &joint = captured[index];
+                                              *transfers[index].state = WithJointState(joint.kind, [&](auto state) {
+                                                  packet->Readback(index)->ReadInto(&state, sizeof(state));
+                                                  return DecodeJointTransfer(state, joint.author);
+                                              });
+                                          }
+                                          return JoltGpuControlWork{};
+                                      }};
+        };
+        domain.pending.push_back(std::move(group));
+    }
+
+    void QueueJointTransferRestore(Partition &domain, std::vector<JoltJointImport> transfers)
+    {
+        if (transfers.empty())
+            return;
+        for (const auto &transfer : transfers)
+            if (const auto &pose = transfer.state->value().poseDrive) {
+                auto &record = authoredJoints.at(transfer.id);
+                record.poseDrive = PoseDriveIntent{transfer.id, record.value.kind, TransferRotation(*pose)};
+            }
+        QueueJointTopology(domain);
+        JoltGpuControlGroup group;
+        group.prepareWork = [this, transfers = std::move(transfers)] {
+            std::vector<rhi::ComputeBufferUpdate> writes;
+            writes.reserve(transfers.size());
+            const auto &layout = *storage.GetJointLayout();
+            const auto &stream = storage.Get(Resource::Joints);
+            for (const auto &transfer : transfers) {
+                const auto &joint = AcceptedJoint(transfer.id);
+                auto bytes = WithJointState(joint.kind, [&](auto empty) {
+                    auto state = EncodeJointTransfer(empty, transfer.state->value(), joint.author);
+                    std::vector<uint8_t> data(sizeof(state));
+                    std::memcpy(data.data(), &state, sizeof(state));
+                    return data;
+                });
+                writes.push_back({stream, uint64_t(layout.Row(joint.row).layout.y) * 16, std::move(bytes)});
+            }
+            auto host = storage.GetHost();
+            return JoltGpuControlWork{rhi::PrepareComputeBatch(host, std::move(writes), {})};
+        };
+        domain.pending.push_back(std::move(group));
+    }
+
+    void TransferJointsOut(Partition &domain, const std::vector<uint64_t> &ids)
+    {
+        if (ids.empty())
+            return;
+        for (const auto id : ids)
+            authoredJoints.erase(id);
+        QueueJointTopology(domain);
     }
 
     void UpdateJoint(uint64_t id, const std::function<void(JointAuthor &)> &update, uint32_t runtimeIntent)
@@ -715,13 +880,13 @@ class JoltGpuScene::Impl
         owner->OnPhysicsConstraintDestroyed();
     }
 
-    void DestroyJointsForBody(uint32_t bodyId)
+    void DestroyJointsForBodies(Partition &domain, const std::vector<uint32_t> &ids)
     {
-        auto &domain = BodyDomain(bodyId);
         std::vector<PhysicsConstraintOwner *> owners;
         JoltGpuControlGroup wake;
         for (auto it = authoredJoints.begin(); it != authoredJoints.end();) {
-            if (it->second.value.bodyIdA == bodyId || it->second.value.bodyIdB == bodyId) {
+            if (std::binary_search(ids.begin(), ids.end(), it->second.value.bodyIdA) ||
+                std::binary_search(ids.begin(), ids.end(), it->second.value.bodyIdB)) {
                 AddJointWake(wake, it->second.value);
                 owners.push_back(it->second.owner);
                 it = authoredJoints.erase(it);
@@ -735,6 +900,11 @@ class JoltGpuScene::Impl
             domain.pending.push_back(std::move(wake));
         for (auto *owner : owners)
             owner->OnPhysicsConstraintDestroyed();
+    }
+
+    void DestroyJointsForBody(uint32_t id)
+    {
+        DestroyJointsForBodies(BodyDomain(id), {id});
     }
 
     struct LayoutPlan
@@ -1067,8 +1237,8 @@ class JoltGpuScene::Impl
             sources.reserve(batch->actors.size());
             for (const auto &actor : batch->actors)
                 sources.push_back(actor->identity->slot);
-            return programs.GetSleep().PrepareCreationWake(storage, SleepSelection(domain), std::move(sources),
-                                                           validation);
+            return programs.GetSleep().PrepareSourceBoundsWake(storage, SleepSelection(domain), std::move(sources),
+                                                               validation);
         };
         domain.pending.push_back(std::move(group));
         domain.trailingCreations = std::move(batch);
@@ -1318,69 +1488,105 @@ class JoltGpuScene::Impl
         return source;
     }
 
-    void QueueTransferRead(uint32_t id, std::function<void(JoltBodyTransfer)> read)
+    struct BodyTransferCapture
     {
-        auto &domain = BodyDomain(id);
-        const auto record = RequireSlot(id);
-        const auto target = slots[record].queuedTarget;
-        JoltGpuControlGroup group;
-        group.prepareWork = [this, id, record, target, read = std::move(read)] {
-            RequireOwnership(record, id);
-            const auto slot = Packed(record);
-            const auto &accepted = *slots[record].accepted;
-            const bool resident = (storage.GetModel().bodies[slot].meta.z & MotionNotResident) == 0;
-            auto host = storage.GetHost();
-            auto packet = rhi::PrepareComputeBatch(
-                host, {}, {},
-                {{storage.Get(Resource::BodyStates), uint64_t(slot) * sizeof(BodyState), sizeof(BodyState)},
-                 {storage.Get(Resource::BodyForces), uint64_t(slot) * sizeof(BodyForces), sizeof(BodyForces)},
-                 {storage.Get(Resource::KinematicTargets), uint64_t(slot) * sizeof(KinematicTarget),
-                  sizeof(KinematicTarget)},
-                 {storage.Get(Resource::SleepStates),
-                  uint64_t(slot) * sizeof(BodySleepRecord) + offsetof(BodySleepRecord, runtime) +
-                      offsetof(BodySleepRuntime, state),
-                  sizeof(UInt4)}});
-            return JoltGpuControlWork{
-                packet,
-                [packet, read, target, resident, root = accepted.rootCenterOfMass,
-                 revision = accepted.shapeRevision]() -> JoltGpuControlWork {
-                    BodyState state;
-                    BodyForces forces;
-                    KinematicTarget move;
-                    UInt4 sleep;
-                    packet->Readback(0)->ReadInto(&state, sizeof(state));
-                    packet->Readback(1)->ReadInto(&forces, sizeof(forces));
-                    packet->Readback(2)->ReadInto(&move, sizeof(move));
-                    packet->Readback(3)->ReadInto(&sleep, sizeof(sleep));
-                    const JPH::Quat rotation(state.rotation.x, state.rotation.y, state.rotation.z, state.rotation.w);
-                    JoltBodyTransfer value{JPH::RVec3(TransferVector(state.positionCOM)) -
-                                               JPH::RVec3(rotation * TransferVector(root)),
-                                           rotation,
-                                           TransferVector(state.linearVelocity),
-                                           TransferVector(state.angularVelocity),
-                                           TransferVector(forces.force),
-                                           TransferVector(forces.torque),
-                                           {},
-                                           revision,
-                                           resident,
-                                           sleep.x != 0};
-                    const bool pending = (move.state.x & TargetPending) != 0;
-                    const bool ownsVelocity = (move.state.x & (TargetActive | TargetDrivenLastTick)) != 0;
-                    if (pending || ownsVelocity)
-                        value.drive = JoltBodyTransfer::Drive{
-                            JPH::RVec3(TransferVector(move.positionSpeed)),
-                            JPH::Quat(move.rotation.x, move.rotation.y, move.rotation.z, move.rotation.w),
-                            move.rootCOMDt.w,
-                            move.positionSpeed.w,
-                            target.position,
-                            target.rotation,
-                            pending,
-                            ownsVelocity,
-                            (move.state.x & TargetTemporaryStatic) != 0};
-                    read(std::move(value));
-                    return {};
-                }};
+        JoltBodyImport target;
+        uint32_t record;
+        TargetState drive;
+    };
+
+    JoltGpuControlWork PrepareBodyTransferReads(std::shared_ptr<const std::vector<BodyTransferCapture>> bodies,
+                                                size_t first)
+    {
+        if (first == bodies->size())
+            return {};
+        constexpr uint64_t bytesPerBody =
+            sizeof(BodyState) + sizeof(BodyForces) + sizeof(KinematicTarget) + sizeof(UInt4);
+        const auto available = work.ResourceRemaining(FrameWorkResource::Transfer);
+        const auto limit = work.ResourceState(FrameWorkResource::Transfer).limit;
+        const auto count = static_cast<size_t>(std::min<uint64_t>(
+            bodies->size() - first, std::max(uint64_t{1}, (available ? available : limit) / bytesPerBody)));
+        struct Source
+        {
+            Float4 root;
+            uint64_t revision;
+            bool resident;
         };
+        std::vector<Source> sources;
+        std::vector<rhi::ComputeBufferRead> reads;
+        sources.reserve(count);
+        reads.reserve(4 * count);
+        for (size_t index = first; index < first + count; ++index) {
+            const auto &body = (*bodies)[index];
+            RequireOwnership(body.record, body.target.id);
+            const auto slot = Packed(body.record);
+            const auto &accepted = *slots[body.record].accepted;
+            sources.push_back({accepted.rootCenterOfMass, accepted.shapeRevision,
+                               (storage.GetModel().bodies[slot].meta.z & MotionNotResident) == 0});
+            reads.push_back({storage.Get(Resource::BodyStates), uint64_t(slot) * sizeof(BodyState), sizeof(BodyState)});
+            reads.push_back(
+                {storage.Get(Resource::BodyForces), uint64_t(slot) * sizeof(BodyForces), sizeof(BodyForces)});
+            reads.push_back({storage.Get(Resource::KinematicTargets), uint64_t(slot) * sizeof(KinematicTarget),
+                             sizeof(KinematicTarget)});
+            reads.push_back({storage.Get(Resource::SleepStates),
+                             uint64_t(slot) * sizeof(BodySleepRecord) + offsetof(BodySleepRecord, runtime) +
+                                 offsetof(BodySleepRuntime, state),
+                             sizeof(UInt4)});
+        }
+        auto host = storage.GetHost();
+        auto packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(reads));
+        return {packet, [this, packet, bodies = std::move(bodies), first, sources = std::move(sources)] {
+                    for (size_t index = 0; index < sources.size(); ++index) {
+                        const auto &body = (*bodies)[first + index];
+                        const auto &source = sources[index];
+                        BodyState state;
+                        BodyForces forces;
+                        KinematicTarget move;
+                        UInt4 sleep;
+                        packet->Readback(4 * index)->ReadInto(&state, sizeof(state));
+                        packet->Readback(4 * index + 1)->ReadInto(&forces, sizeof(forces));
+                        packet->Readback(4 * index + 2)->ReadInto(&move, sizeof(move));
+                        packet->Readback(4 * index + 3)->ReadInto(&sleep, sizeof(sleep));
+                        const auto rotation = TransferRotation(state.rotation);
+                        JoltBodyTransfer value{JPH::RVec3(TransferVector(state.positionCOM)) -
+                                                   JPH::RVec3(rotation * TransferVector(source.root)),
+                                               rotation,
+                                               TransferVector(state.linearVelocity),
+                                               TransferVector(state.angularVelocity),
+                                               TransferVector(forces.force),
+                                               TransferVector(forces.torque),
+                                               {},
+                                               source.revision,
+                                               source.resident,
+                                               sleep.x != 0};
+                        const bool pending = (move.state.x & TargetPending) != 0;
+                        const bool ownsVelocity = (move.state.x & (TargetActive | TargetDrivenLastTick)) != 0;
+                        if (pending || ownsVelocity)
+                            value.drive = JoltBodyTransfer::Drive{JPH::RVec3(TransferVector(move.positionSpeed)),
+                                                                  TransferRotation(move.rotation),
+                                                                  move.rootCOMDt.w,
+                                                                  move.positionSpeed.w,
+                                                                  body.drive.position,
+                                                                  body.drive.rotation,
+                                                                  pending,
+                                                                  ownsVelocity,
+                                                                  (move.state.x & TargetTemporaryStatic) != 0};
+                        *body.target.state = std::move(value);
+                    }
+                    return PrepareBodyTransferReads(bodies, first + sources.size());
+                }};
+    }
+
+    void QueueBodyTransferReads(Partition &domain, const std::vector<JoltBodyImport> &bodies)
+    {
+        auto records = std::make_shared<std::vector<BodyTransferCapture>>();
+        records->reserve(bodies.size());
+        for (const auto &body : bodies) {
+            const auto record = RequireSlot(body.id);
+            records->push_back({body, record, slots[record].queuedTarget});
+        }
+        JoltGpuControlGroup group;
+        group.prepareWork = [this, records] { return PrepareBodyTransferReads(records, 0); };
         domain.pending.push_back(std::move(group));
     }
 
@@ -1431,49 +1637,93 @@ class JoltGpuScene::Impl
         }
     }
 
-    void StageRetire(uint32_t id, bool transferDrive = false)
+    void StageRetireBodies(Partition &domain, const std::vector<uint32_t> &ids, bool transferDrive)
     {
-        auto &domain = BodyDomain(id);
-        auto &pending = domain.pending;
-        auto &pendingCompletions = domain.pendingCompletions;
-        const uint32_t index = RequireSlot(id);
-        DestroyJointsForBody(id);
+        auto records = std::make_shared<std::vector<std::pair<uint32_t, uint32_t>>>();
+        records->reserve(ids.size());
+        for (const auto id : ids)
+            records->emplace_back(id, RequireSlot(id));
+        DestroyJointsForBodies(domain, ids);
+
+        // The source bounds are still available locally. Wake from those exact
+        // shapes before withdrawing the group, after any state export.
+        JoltGpuControlGroup wake;
+        wake.prepareWork = [this, &domain, records, validation = PendingBoundsValidation(domain)] {
+            std::vector<uint32_t> sources;
+            sources.reserve(records->size());
+            for (const auto &[id, record] : *records) {
+                RequireOwnership(record, id);
+                sources.push_back(Packed(record));
+            }
+            std::sort(sources.begin(), sources.end());
+            const auto selection = SleepSelection(domain);
+            const auto &models = storage.GetModel().bodies;
+            for (uint32_t index = selection.selection.y; index < selection.selection.y + selection.selectedCounts.x;
+                 ++index)
+                if (models[index].meta.z == MotionDynamic && !std::binary_search(sources.begin(), sources.end(), index))
+                    return programs.GetSleep().PrepareSourceBoundsWake(storage, selection, std::move(sources),
+                                                                       validation);
+            return JoltGpuControlWork{};
+        };
+        domain.pending.push_back(std::move(wake));
         JoltGpuControlGroup group;
-        group.prepareModel = [this, index, id] {
-            RequireOwnership(index, id);
-            const auto packed = Packed(index);
-            const BodyInitialization initial{{packed, 0, 0, 0}, EmptyState(), {}};
-            const auto &body = storage.GetModel().bodies[packed];
-            if (body.meta.y == 0) {
+        group.prepareModel = [this, &domain, records] {
+            const std::vector<ShapeModel> empty;
+            std::vector<ModelEdit> replacements;
+            std::vector<BodyInitialization> initial;
+            replacements.reserve(records->size());
+            initial.reserve(records->size());
+            bool hasLeaves = false;
+            for (const auto &[id, record] : *records) {
+                RequireOwnership(record, id);
+                const auto packed = Packed(record);
+                const auto &body = storage.GetModel().bodies[packed];
                 auto tombstone = Tombstone();
                 tombstone.meta.x = body.meta.x;
-                tombstone.meta.w = slots[index].partition->row;
-                return mutations.Prepare(storage, {{packed, tombstone}}, {}, {initial});
+                tombstone.meta.w = domain.row;
+                hasLeaves |= body.meta.y != 0;
+                replacements.push_back({packed, tombstone, &empty});
+                initial.push_back({{packed, 0, 0, 0}, EmptyState(), {}});
             }
-            const std::vector<ShapeModel> empty;
-            return mutations.PrepareReplacement(storage, RepackModel({{packed, Tombstone(), &empty}}), {initial});
+            if (hasLeaves) {
+                std::sort(replacements.begin(), replacements.end(),
+                          [](const auto &a, const auto &b) { return a.bodyIndex < b.bodyIndex; });
+                return mutations.PrepareReplacement(storage, RepackModel(replacements), initial);
+            }
+            std::vector<JoltGpuBodyModelUpdate> bodies;
+            bodies.reserve(replacements.size());
+            for (const auto &value : replacements)
+                bodies.push_back({value.bodyIndex, value.body});
+            return mutations.Prepare(storage, std::move(bodies), {}, initial);
         };
-        group.modelAccepted = [this, index, id]() noexcept {
-            auto &slot = slots[index];
-            slot.partition->records[slot.local] = UINT32_MAX;
-            slot.partition->freeLocals.push_back(slot.local);
-            byId.erase(id);
-            // Free records must not retain a retiring Partition*, target owner,
-            // initial Rigidbody generation, actor model or command provenance.
-            slot = Slot{};
-            freeRecords.push_back(index);
+        group.modelAccepted = [this, records]() noexcept {
+            for (const auto &[id, record] : *records) {
+                auto &slot = slots[record];
+                slot.partition->records[slot.local] = UINT32_MAX;
+                slot.partition->freeLocals.push_back(slot.local);
+                byId.erase(id);
+                slot = Slot{};
+                freeRecords.push_back(record);
+            }
             publicationDirectory.reset();
         };
-        pendingCompletions.reserve(pendingCompletions.size() + 2);
-        auto oldBounds = QueueOldBounds(domain, index, id);
-        pending.push_back(std::move(group));
-        QueueBoundsAfter(domain, std::move(oldBounds), index, id, false);
-        if (transferDrive)
-            slots[index].queuedTarget = {};
-        else
-            CancelTarget(slots[index].queuedTarget, pendingCompletions);
-        slots[index].retiring = true;
-        --domain.liveCount;
+        auto &completions = domain.pendingCompletions;
+        completions.reserve(completions.size() + records->size() * 2);
+        domain.pending.push_back(std::move(group));
+        for (const auto &[id, record] : *records) {
+            auto &slot = slots[record];
+            if (transferDrive)
+                slot.queuedTarget = {};
+            else
+                CancelTarget(slot.queuedTarget, completions);
+            slot.retiring = true;
+        }
+        domain.liveCount -= static_cast<uint32_t>(records->size());
+    }
+
+    void StageRetire(uint32_t id, bool transferDrive = false)
+    {
+        StageRetireBodies(BodyDomain(id), {id}, transferDrive);
     }
 
     enum class WriterKind
@@ -2277,17 +2527,29 @@ void JoltGpuScene::SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const P
     domain.pending.push_back(std::move(group));
     domain.queuedPairs = std::move(pairs);
 }
-void JoltGpuScene::QueueTransferRead(uint32_t id, std::function<void(JoltBodyTransfer)> read)
+void JoltGpuScene::QueueBodyTransferReads(RuntimeWorld &world, const std::vector<JoltBodyImport> &bodies)
 {
-    m_impl->QueueTransferRead(id, std::move(read));
+    m_impl->QueueBodyTransferReads(m_impl->Domain(world), bodies);
 }
 void JoltGpuScene::QueueTransferRestore(uint32_t id, const JoltBodyTransfer &value)
 {
     m_impl->QueueTransferRestore(id, value);
 }
+void JoltGpuScene::QueueJointTransferReads(RuntimeWorld &world, std::vector<JoltJointImport> joints)
+{
+    m_impl->QueueJointTransferReads(m_impl->Domain(world), std::move(joints));
+}
+void JoltGpuScene::QueueJointTransferRestore(RuntimeWorld &world, std::vector<JoltJointImport> joints)
+{
+    m_impl->QueueJointTransferRestore(m_impl->Domain(world), std::move(joints));
+}
 void JoltGpuScene::StageRetire(uint32_t id, bool transferDrive)
 {
     m_impl->StageRetire(id, transferDrive);
+}
+void JoltGpuScene::StageRetireBodies(RuntimeWorld &world, const std::vector<uint32_t> &ids, bool transferDrive)
+{
+    m_impl->StageRetireBodies(m_impl->Domain(world), ids, transferDrive);
 }
 void JoltGpuScene::QueueBoundsWake(RuntimeWorld &world, Float4 low, Float4 high)
 {
@@ -2308,9 +2570,10 @@ void JoltGpuScene::QueueStaticWake(uint32_t id)
     auto old = m_impl->QueueOldBounds(domain, record, id);
     m_impl->QueueBoundsAfter(domain, std::move(old), record, id, true);
 }
-uint64_t JoltGpuScene::CreateJoint(PhysicsConstraintOwner &owner, uint32_t a, uint32_t b, JointAuthor author)
+uint64_t JoltGpuScene::CreateJoint(PhysicsConstraintOwner &owner, uint32_t a, uint32_t b, JointAuthor author,
+                                   uint64_t importedId)
 {
-    return m_impl->CreateJoint(owner, a, b, author);
+    return m_impl->CreateJoint(owner, a, b, std::move(author), importedId);
 }
 JPH::GPU::BodyModel JoltGpuScene::GetAcceptedBodyModel(uint32_t bodyId) const
 {
@@ -2331,6 +2594,10 @@ void JoltGpuScene::UpdateJoints(std::vector<JointUpdate> values)
 void JoltGpuScene::DestroyJoint(uint64_t id)
 {
     m_impl->DestroyJoint(id);
+}
+void JoltGpuScene::TransferJointsOut(RuntimeWorld &world, const std::vector<uint64_t> &ids)
+{
+    m_impl->TransferJointsOut(m_impl->Domain(world), ids);
 }
 void JoltGpuScene::DestroyJointsForBody(uint32_t id)
 {
@@ -2395,12 +2662,12 @@ uint32_t JoltGpuScene::GetCapacity(const RuntimeWorld &world) const
 {
     return m_impl->domains.count(world.id) ? m_impl->Domain(world).capacity : 0u;
 }
-bool JoltGpuScene::CanReserve(const RuntimeWorld &world) const
+bool JoltGpuScene::CanReserve(const RuntimeWorld &world, size_t count) const
 {
     if (!m_impl->domains.count(world.id))
         return false;
     const auto &domain = m_impl->Domain(world);
-    return !domain.closed && !domain.freeLocals.empty();
+    return !domain.closed && domain.freeLocals.size() >= count;
 }
 bool JoltGpuScene::HasPendingControl(const RuntimeWorld &world) const
 {

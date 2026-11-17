@@ -61,6 +61,7 @@ struct JoltCpuControl::State
     {
         uint64_t id;
         std::unique_ptr<AuthoredJoint> value;
+        std::shared_ptr<const std::optional<JoltJointTransfer>> transfer;
     };
     struct JointUpdates
     {
@@ -316,7 +317,8 @@ struct JoltCpuControl::State
     void Apply(uint32_t, const JointCreate &create, const RetiredJoints &)
     {
         const auto &joint = *create.value;
-        scene.Constraints().Create(create.id, joint.binding, joint.settings, joint.enableCollision);
+        scene.Constraints().Create(create.id, joint.binding, joint.settings, joint.enableCollision,
+                                   create.transfer ? &create.transfer->value() : nullptr);
     }
 
     void Apply(uint32_t, const JointUpdates &update, const RetiredJoints &)
@@ -421,25 +423,42 @@ bool JoltCpuControl::HasStagedRigidbody(uint32_t bodyId, PhysicsECSStore::Rigidb
            found->second.staged == rigidbody;
 }
 
-void JoltCpuControl::StageTransfer(uint32_t bodyId, const PreparedCpuActor &prepared,
-                                   std::shared_ptr<std::optional<JoltBodyTransfer>> value)
+void JoltCpuControl::StageTransfers(const std::vector<BodyTransfer> &bodies)
 {
     auto &state = *m_state;
-    const auto rigidbody = prepared.publication.rigidbody;
-    const bool kinematic = prepared.settings.mMotionType == JPH::EMotionType::Kinematic && !prepared.authoredDynamic;
-    const bool staticBody = prepared.settings.mMotionType == JPH::EMotionType::Static;
-    const auto [binding, inserted] =
-        state.bindings.try_emplace(bodyId, State::Binding{rigidbody, rigidbody, kinematic, staticBody});
-    if (!inserted)
-        throw std::logic_error("CPU transfer requires an unused body binding");
+    const auto &system = state.scene.System();
+    if (bodies.size() > system.GetMaxBodies() - system.GetNumBodies())
+        throw std::length_error("CPU physics body capacity is insufficient for the transfer");
+    state.pending.reserve(state.pending.size() + bodies.size());
+    size_t created = 0;
     try {
-        state.pending.reserve(state.pending.size() + 1);
-        state.scene.CreateBody(bodyId, prepared);
+        for (const auto &[import, prepared] : bodies) {
+            const auto rigidbody = prepared.publication.rigidbody;
+            const bool kinematic =
+                prepared.settings.mMotionType == JPH::EMotionType::Kinematic && !prepared.authoredDynamic;
+            const bool staticBody = prepared.settings.mMotionType == JPH::EMotionType::Static;
+            const auto [binding, inserted] =
+                state.bindings.try_emplace(import.id, State::Binding{rigidbody, rigidbody, kinematic, staticBody});
+            if (!inserted)
+                throw std::logic_error("CPU transfer requires an unused body binding");
+            try {
+                state.scene.CreateBody(import.id, prepared);
+            } catch (...) {
+                state.bindings.erase(binding);
+                throw;
+            }
+            ++created;
+        }
     } catch (...) {
-        state.bindings.erase(binding);
+        for (size_t index = 0; index < created; ++index) {
+            const auto id = bodies[index].import.id;
+            state.scene.DestroyBody(id);
+            state.bindings.erase(id);
+        }
         throw;
     }
-    state.pending.push_back({bodyId, State::Import{std::move(value)}});
+    for (const auto &body : bodies)
+        state.pending.push_back({body.import.id, State::Import{body.import.state}});
 }
 
 JoltBodyTransfer JoltCpuControl::ReadBodyTransfer(uint32_t bodyId) const
@@ -509,7 +528,8 @@ void JoltCpuControl::QueueTemporaryStaticMove(uint32_t bodyId, JPH::RVec3Arg pos
     state.pending.push_back({bodyId, State::Move{{position, rotation, duration, maxSpeed}, {}, true}});
 }
 
-void JoltCpuControl::CreateJoint(uint64_t id, PhysicsConstraintOwner &owner, AuthoredJoint joint)
+void JoltCpuControl::CreateJoint(uint64_t id, PhysicsConstraintOwner &owner, AuthoredJoint joint,
+                                 std::shared_ptr<std::optional<JoltJointTransfer>> transfer)
 {
     auto &state = *m_state;
     state.RequireStaged(joint.binding.ownerBody);
@@ -521,7 +541,7 @@ void JoltCpuControl::CreateJoint(uint64_t id, PhysicsConstraintOwner &owner, Aut
     if (!inserted)
         throw std::logic_error("CPU joint already owns its public identity");
     try {
-        state.pending.push_back({UINT32_MAX, State::JointCreate{id, std::move(captured)}});
+        state.pending.push_back({UINT32_MAX, State::JointCreate{id, std::move(captured), std::move(transfer)}});
     } catch (...) {
         state.joints.erase(entry);
         throw;
@@ -570,6 +590,16 @@ void JoltCpuControl::DestroyJoint(uint64_t id)
 {
     if (FindJoint(id))
         m_state->QueueJointRetirement({id});
+}
+
+void JoltCpuControl::TransferJointsOut(const std::vector<uint64_t> &ids)
+{
+    if (ids.empty())
+        return;
+    auto &state = *m_state;
+    state.pending.push_back({UINT32_MAX, State::JointRetire{ids}});
+    for (const auto id : ids)
+        state.joints.erase(id);
 }
 
 bool JoltCpuControl::HasJointForBody(uint32_t bodyId) const noexcept

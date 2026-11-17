@@ -4,6 +4,7 @@
 
 #include "JoltGpuActor.h"
 #include "JoltGpuTick.h"
+#include "JoltJointTransfer.h"
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsECSStore.h"
 #include "PhysicsTargetReference.h"
@@ -18,6 +19,7 @@ namespace infernux
 {
 class JoltGpuJoints;
 struct JoltBodyTransfer;
+struct JoltBodyImport;
 class JoltGpuGeometryStore;
 struct JoltGpuGeometryHandle;
 struct JoltGpuGeometryLease;
@@ -207,13 +209,16 @@ class JoltGpuScene final
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);
     PhysicsTargetSource QueueCommand(uint32_t bodyId, JPH::GPU::BodyCommand command,
                                      const PhysicsTargetAuthor *author = nullptr);
-    void QueueTransferRead(uint32_t bodyId, std::function<void(JoltBodyTransfer)> read);
+    void QueueBodyTransferReads(RuntimeWorld &world, const std::vector<JoltBodyImport> &bodies);
     void QueueTransferRestore(uint32_t bodyId, const JoltBodyTransfer &);
+    void QueueJointTransferReads(RuntimeWorld &world, std::vector<JoltJointImport> joints);
+    void QueueJointTransferRestore(RuntimeWorld &world, std::vector<JoltJointImport> joints);
     void StageRetire(uint32_t bodyId, bool transferDrive = false);
+    void StageRetireBodies(RuntimeWorld &world, const std::vector<uint32_t> &ids, bool transferDrive);
     void QueueBoundsWake(RuntimeWorld &, JPH::GPU::Float4 low, JPH::GPU::Float4 high);
     void QueueStaticWake(uint32_t bodyId);
     uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
-                         JPH::GPU::JointAuthor author);
+                         JPH::GPU::JointAuthor author, uint64_t importedId = 0);
     void UpdateJoint(uint64_t id, const std::function<void(JPH::GPU::JointAuthor &)> &update,
                      uint32_t runtimeIntent = 0);
     void UpdateJoints(std::vector<JointUpdate> updates);
@@ -226,6 +231,7 @@ class JoltGpuScene final
     };
     void QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents);
     void DestroyJoint(uint64_t id);
+    void TransferJointsOut(RuntimeWorld &world, const std::vector<uint64_t> &ids);
     [[nodiscard]] bool HasJointForBody(uint32_t bodyId) const noexcept;
     void SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const PhysicsColliderPairs> pairs);
     void DestroyJointsForBody(uint32_t bodyId);
@@ -241,7 +247,7 @@ class JoltGpuScene final
     [[nodiscard]] size_t GetBodyCount(const RuntimeWorld &world) const;
     [[nodiscard]] JPH::GPU::BodyModel GetAcceptedBodyModel(uint32_t bodyId) const;
     [[nodiscard]] uint32_t GetCapacity(const RuntimeWorld &world) const;
-    [[nodiscard]] bool CanReserve(const RuntimeWorld &world) const;
+    [[nodiscard]] bool CanReserve(const RuntimeWorld &world, size_t count = 1) const;
     [[nodiscard]] bool HasPendingControl(const RuntimeWorld &world) const;
 
     /// Busy preserves the complete per-world FIFO and logical tick identity.
