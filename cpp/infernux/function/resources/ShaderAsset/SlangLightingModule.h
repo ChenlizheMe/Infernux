@@ -245,23 +245,63 @@ public InxPbrLightResponse inx_secondary_light_response(InxSurfaceData surface, 
     return inx_pbr_light_response(scattering, N, outgoing, inx_pbr_energy_compensation(scattering.f0, brdf),
                                   surface.specular_highlights);
 }
-public struct InxTransportDirectionalLight
+float3 rectangle_extent(float4 axis_width) { return normalize(axis_width.xyz) * axis_width.w * 0.5; }
+float rectangle_facing(float3 direction, float3 from_light, bool two_sided)
 {
-    public float3 direction;
-    public float3 radiance;
+    float facing = dot(normalize(direction), normalize(from_light));
+    return two_sided ? abs(facing) : max(facing, 0.0);
+}
+public struct InxTransportLight
+{
+    public InxLight sample;
+    public float3 endpoint;
     public uint layer_mask;
     public float shadow_strength;
+    public bool directional;
 };
-public uint inx_transport_directional_count() { return light_counts().x; }
-public InxTransportDirectionalLight inx_transport_directional_light(uint index)
+public uint2 inx_transport_light_counts() { return light_counts().xy; }
+public InxTransportLight inx_transport_light(uint index, float3 position, uint rectangle_corner)
 {
     InxCanonicalLight light = load_light(index);
-    uint geometry_layers = (light.metadata.w & 1u) != 0u ? light.metadata.y : 0u;
-    float strength = light.metadata.z != 0u ? saturate(light.shadow_and_inner_cos.x) : 0.0;
-    return {normalize(-light.direction_outer_cos.xyz), light.color_intensity.rgb * light.color_intensity.w,
-            geometry_layers, strength};
+    InxTransportLight result = (InxTransportLight)0;
+    result.layer_mask = (light.metadata.w & 1u) != 0u ? light.metadata.y : 0u;
+    result.shadow_strength = light.metadata.z != 0u ? saturate(light.shadow_and_inner_cos.x) : 0.0;
+    result.directional = light.metadata.x == 0u;
+    float3 radiance = light.color_intensity.rgb * light.color_intensity.w;
+    if (result.directional)
+    {
+        result.sample = inx_light_sample(normalize(-light.direction_outer_cos.xyz), radiance, 1.0, 1.0);
+        return result;
+    }
+
+    result.endpoint = light.position_range.xyz;
+    float emitter_facing = 1.0;
+    if (light.metadata.x == 3u)
+    {
+        emitter_facing = rectangle_facing(light.direction_outer_cos.xyz, position - result.endpoint,
+                                          light.direction_outer_cos.w > 0.5);
+        // One uniform sample of the same four rectangle locations used by raster lighting.
+        float side = (rectangle_corner & 1u) != 0u ? 1.0 : -1.0;
+        float height = (rectangle_corner & 2u) != 0u ? 1.0 : -1.0;
+        result.endpoint += rectangle_extent(light.area_right_width) * side +
+                           rectangle_extent(light.area_up_height) * height;
+    }
+    float3 to_light = result.endpoint - position;
+    float distance = length(to_light);
+    if (distance <= 0.00001 || distance >= light.position_range.w || emitter_facing <= 0.0001)
+        return result;
+    float3 direction = to_light / distance;
+    float attenuation = calculate_attenuation(float3(light.position_range.w, 0.0, 0.0), distance) * emitter_facing;
+    if (light.metadata.x == 2u)
+    {
+        float cone = dot(direction, -normalize(light.direction_outer_cos.xyz));
+        attenuation *= smoothstep(light.direction_outer_cos.w, light.shadow_and_inner_cos.w, cone);
+    }
+    result.sample = inx_light_sample(direction, radiance, attenuation, 1.0);
+    return result;
 }
-struct InxLighting<let tiled_lighting : bool>
+)slang"
+                                           R"slang(struct InxLighting<let tiled_lighting : bool>
 {
     uint layer_mask;
     uint light_domain;
@@ -513,11 +553,10 @@ float3 evaluate_rectangle_area_light<T : IInxLightResponse>(float3 light_positio
                                 uint first_shadow_view, uint shadow_view_count, float4 shadow_params,
                                 float3 world_pos, float3 N, T response) {
     float3 from_light = world_pos - light_position;
-    float emitter_facing = dot(normalize(ray_direction), normalize(from_light));
-    emitter_facing = two_sided ? abs(emitter_facing) : max(emitter_facing, 0.0);
+    float emitter_facing = rectangle_facing(ray_direction, from_light, two_sided);
     if (emitter_facing <= 0.0001) return float3(0.0);
-    float3 right = normalize(right_width.xyz) * right_width.w * 0.5;
-    float3 up = normalize(up_height.xyz) * up_height.w * 0.5;
+    float3 right = rectangle_extent(right_width);
+    float3 up = rectangle_extent(up_height);
     float3 samples[4] = {light_position - right - up, light_position + right - up,
                               light_position + right + up, light_position - right + up};
     float3 result = float3(0.0);

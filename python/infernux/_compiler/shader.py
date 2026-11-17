@@ -644,36 +644,49 @@ struct InxRayShadowHitPolicy : RayHitPolicy
     }
 };
 
-float3 inx_ray_directional_radiance(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
-                                    uint4 metadata, InxBuffer_uint4 records, float3 outgoing)
+TraceRay inx_ray_light_visibility(float3 origin, InxTransportLight light)
 {
-    uint count = inx_transport_directional_count();
+    if (light.directional)
+        return {origin, 0.0, light.sample.direction, 3.402823e38};
+    float3 to_light = light.endpoint - origin;
+    if (dot(to_light, light.sample.direction) <= 0.0)
+        return {origin, 0.0, light.sample.direction, 0.0};
+    float distance = length(to_light);
+    // Leave the point/spot/rectangle endpoint outside the occlusion interval.
+    return {origin, 0.0, to_light / distance, asfloat(asuint(distance) - 1u)};
+}
+
+float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
+                               uint4 metadata, InxBuffer_uint4 records, float3 outgoing, uint seed)
+{
+    uint2 counts = inx_transport_light_counts();
     float3 radiance = float3(0.0);
-    if (count == 0u)
+    if (counts.x + counts.y == 0u)
         return radiance;
     float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
     float3 origin = inx_ray_origin(attributes.position_ws, geometric);
     InxPbrLightResponse response = inx_secondary_light_response(surface, surface.normal_ws, outgoing);
     InxRayLitHitPolicy material = {0.0};
     InxRayShadowHitPolicy caster = {records, material};
-    for (uint i = 0u; i < count; ++i)
+    float uniform = float(inx_ray_sample_hash(seed ^ 0x91e10da5u) >> 8u) * (1.0 / 16777216.0);
+    uint selected = uint(uniform * float(counts.y));
+    uint corner = inx_ray_sample_hash(seed ^ 0x68bc21ebu) & 3u;
+    for (uint i = 0u; i < counts.x + min(counts.y, 1u); ++i)
     {
-        InxTransportDirectionalLight light = inx_transport_directional_light(i);
-        if ((light.layer_mask & metadata.x) == 0u || dot(geometric, light.direction) <= 0.0)
+        // Every directional light contributes. One local candidate is weighted by its selection PDF.
+        bool local = i == counts.x;
+        uint index = local ? i + min(selected, counts.y - 1u) : i;
+        InxTransportLight light = inx_transport_light(index, attributes.position_ws, corner);
+        if ((light.layer_mask & metadata.x) == 0u || light.sample.attenuation <= 0.0 ||
+            dot(geometric, light.sample.direction) <= 0.0 || dot(surface.normal_ws, light.sample.direction) <= 0.0)
             continue;
-        float visible = 1.0;
         if (metadata.z != 0u && light.shadow_strength > 0.0)
         {
-            // A directional source is at infinity. Traversal still stops at the world TLAS bounds.
-            TraceRay shadow_ray = {origin, 0.0, light.direction, 3.402823e38};
-            visible = trace_visibility(page, shadow_ray, light.layer_mask, caster) ? 1.0 : 1.0 - light.shadow_strength;
+            TraceRay shadow_ray = inx_ray_light_visibility(origin, light);
+            if (shadow_ray.maximum > 0.0 && !trace_visibility(page, shadow_ray, light.layer_mask, caster))
+                light.sample.shadow = 1.0 - light.shadow_strength;
         }
-        InxLight sample;
-        sample.direction = light.direction;
-        sample.color = light.radiance;
-        sample.attenuation = 1.0;
-        sample.shadow = visible;
-        radiance += response.evaluate(sample);
+        radiance += response.evaluate(light.sample) * (local ? float(counts.y) : 1.0);
     }
     return radiance;
 }
@@ -714,8 +727,8 @@ public float4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext 
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData secondary;
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
-    float3 radiance = secondary.emission + inx_ray_directional_radiance(
-        page, attributes, secondary, inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction);
+    float3 radiance = secondary.emission + inx_ray_direct_radiance(
+        page, attributes, secondary, inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed);
     return float4(radiance * sample.weight, 1.0);
 }
 """
