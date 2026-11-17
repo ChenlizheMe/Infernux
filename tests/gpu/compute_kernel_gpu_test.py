@@ -280,7 +280,7 @@ def main() -> int:
             assert read_only_view.description.access == "read_only"
             try:
                 inx.compute.launch(affine, params=(read_only_view, 1, 0))
-            except ValueError as exception:
+            except RuntimeError as exception:
                 assert "read-only" in str(exception)
             else:
                 raise AssertionError("GPU kernel wrote a read-only inx.buffer view")
