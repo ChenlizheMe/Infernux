@@ -307,6 +307,7 @@ class JoltGpuTick::Impl
         BuildConstraints,
         ClassifyArticulations,
         WarmJoints,
+        WarmCoupledContacts,
         SolveJointVelocity,
         SolveVelocity,
         ExchangeCoupledContacts,
@@ -719,7 +720,8 @@ class JoltGpuTick::Impl
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
                phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareCoupledContacts ||
-               phase == Phase::ExchangeCoupledContacts || phase == Phase::ProjectCoupledContacts;
+               phase == Phase::WarmCoupledContacts || phase == Phase::ExchangeCoupledContacts ||
+               phase == Phase::ProjectCoupledContacts;
     }
 
     StageSpan Span(Phase phase) const
@@ -771,6 +773,7 @@ class JoltGpuTick::Impl
         case Phase::ReportContactsBeforeVelocity:
         case Phase::ReportContactsAfterVelocity:
         case Phase::PrepareCoupledContacts:
+        case Phase::WarmCoupledContacts:
         case Phase::ExchangeCoupledContacts:
         case Phase::ProjectCoupledContacts:
         case Phase::Done:
@@ -922,6 +925,12 @@ class JoltGpuTick::Impl
                                                         : Phase::Integrate;
             break;
         case Phase::WarmJoints:
+            if (control.prepareCoupledContacts) {
+                next.phase = Phase::WarmCoupledContacts;
+                break;
+            }
+            [[fallthrough]];
+        case Phase::WarmCoupledContacts:
             next.phase = control.prepareParticipant ? Phase::ParticipantExchange : Phase::SolveJointVelocity;
             break;
         case Phase::SolveJointVelocity:
@@ -1761,24 +1770,27 @@ class JoltGpuTick::Impl
                                   PacketKind::NumericalWork);
                 return true;
             }
-            if (stageCursor.phase == Phase::PrepareCoupledContacts ||
+            if (stageCursor.phase == Phase::PrepareCoupledContacts || stageCursor.phase == Phase::WarmCoupledContacts ||
                 stageCursor.phase == Phase::ExchangeCoupledContacts ||
                 stageCursor.phase == Phase::ProjectCoupledContacts) {
                 using CoupledStage = JoltGpuCoupledContactStage;
                 const bool preparing = stageCursor.phase == Phase::PrepareCoupledContacts;
+                const bool warming = stageCursor.phase == Phase::WarmCoupledContacts;
                 const bool projecting = stageCursor.phase == Phase::ProjectCoupledContacts;
                 const auto phase = preparing    ? CoupledStage::Prepare
+                                   : warming    ? CoupledStage::WarmVelocity
                                    : projecting ? CoupledStage::Position
                                                 : CoupledStage::Velocity;
                 using JPH::GPU::Domain;
-                const bool canBatch = !preparing && !control.prepareParticipant &&
+                const bool iterating = !preparing && !warming;
+                const bool canBatch = iterating && !control.prepareParticipant &&
                                       IslandCount(Domain::IslandPatches) == 0 && IslandCount(Domain::IslandJoints) == 0;
                 const uint32_t iterations = projecting ? tickParameters.solve.x : tickParameters.counts.w;
                 const uint32_t maxRounds = canBatch ? std::min(iterations - stageCursor.iteration, 4u) : 1u;
                 SelectControlWork(control.prepareCoupledContacts(storage, inputs, tickParameters, stageCursor.substep,
                                                                  stageCursor.iteration, phase, maxRounds,
-                                                                 [this, preparing](uint32_t rounds) {
-                                                                     if (!preparing)
+                                                                 [this, iterating](uint32_t rounds) {
+                                                                     if (iterating)
                                                                          stageCursor.iteration += rounds - 1;
                                                                      NextSpan(stageCursor);
                                                                      Normalize(stageCursor);

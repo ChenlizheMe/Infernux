@@ -99,6 +99,7 @@ enum class JoltGpuContactReportStage
 enum class JoltGpuCoupledContactStage
 {
     Prepare,
+    WarmVelocity,
     Velocity,
     Position
 };

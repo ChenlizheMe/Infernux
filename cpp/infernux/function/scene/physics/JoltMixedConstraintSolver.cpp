@@ -193,6 +193,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     bool solveVelocity = false;
     bool solvePosition = false;
     bool interleaveCpu = false;
+    bool velocityInitialized = false;
     float warmStartScale = 0.0f;
     Parameters params{};
 
@@ -493,6 +494,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         substepCount = stepParams.solve.y;
         solveVelocity = stepParams.counts.w != 0;
         solvePosition = stepParams.solve.x != 0;
+        velocityInitialized = false;
         params.gravityDt = stepParams.gravityDt;
         params.contact = stepParams.contact;
         buffers[GpuModels] = storage.Get(Resource::BodyModels);
@@ -503,27 +505,28 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             buffers[PreviousPatches] = history->previousPatches;
             buffers[Patches] = history->nextPatches;
         }
-        return discovery.Discover(
-            storage, stepParams, substep, publication, step, policy,
-            [self = shared_from_this(), &inputs, done = std::move(done)]() mutable {
-                if (!self->solveVelocity && !self->solvePosition)
-                    self->step.Responses().clear();
-                self->BuildWorkset(inputs);
-                self->cpu.BeginCoupledSubstep(self->substep, self->native);
-                self->interleaveCpu = !self->native.empty() && self->cpu.CoupledHasLocalVelocityRows();
-                if (self->patches.empty()) {
-                    self->history->manifolds.clear();
-                    self->cpu.AdvanceCoupledVelocity();
-                    done();
-                    return JoltGpuControlWork{};
-                }
-                self->CaptureModels();
-                self->warmStartScale = self->solveVelocity ? self->MatchWarmStarts() : 0.0f;
-                self->cpu.AdvanceCoupledVelocity(); // First CPU local round, before the first cross-domain response.
-                if (self->policy.Requested() && (!self->solveVelocity || !self->policy.impulses))
-                    self->PublishContacts();
-                return self->Install(std::move(done));
-            });
+        return discovery.Discover(storage, stepParams, substep, publication, step, policy,
+                                  [self = shared_from_this(), &inputs, done = std::move(done)]() mutable {
+                                      if (!self->solveVelocity && !self->solvePosition)
+                                          self->step.Responses().clear();
+                                      self->BuildWorkset(inputs);
+                                      self->cpu.BeginCoupledSubstep(self->substep, self->native);
+                                      self->interleaveCpu =
+                                          !self->native.empty() && self->cpu.CoupledHasLocalVelocityRows();
+                                      if (self->patches.empty()) {
+                                          self->history->manifolds.clear();
+                                          self->cpu.AdvanceCoupledVelocity();
+                                          done();
+                                          return JoltGpuControlWork{};
+                                      }
+                                      self->CaptureModels();
+                                      self->warmStartScale = self->solveVelocity ? self->MatchWarmStarts() : 0.0f;
+                                      if (!self->solveVelocity || !self->interleaveCpu)
+                                          self->cpu.AdvanceCoupledVelocity();
+                                      if (self->policy.Requested() && (!self->solveVelocity || !self->policy.impulses))
+                                          self->PublishContacts();
+                                      return self->Install(std::move(done));
+                                  });
     }
 
     void PublishContacts()
@@ -564,6 +567,20 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         updates.push_back({buffers[Patches], 0, Bytes(patches)});
     }
 
+    JoltGpuControlWork WarmVelocity(const JoltGpuStepInputs &inputs, std::function<void(uint32_t)> done)
+    {
+        const auto &plan = inputs.GetConstraints();
+        const bool gpuHasLocalRows = plan && (plan->jointIslandCount || plan->contactIslandCount);
+        // Both backends have prepared their local rows. Apply the cached cross-device response
+        // before either backend solves its first local round against the warmed velocities.
+        if (!patches.empty() && warmStartScale > 0.0f && (interleaveCpu || gpuHasLocalRows))
+            return SubmitVelocity(0, 1, false, std::move(done));
+        if (!patches.empty() && interleaveCpu)
+            cpu.AdvanceCoupledVelocity();
+        done(0);
+        return {};
+    }
+
     JoltGpuControlWork ExchangeVelocity(uint32_t iteration, uint32_t iterations, uint32_t maxRounds,
                                         std::function<void(uint32_t)> done)
     {
@@ -571,21 +588,27 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             done(maxRounds);
             return {};
         }
-        const bool newVelocities = iteration == 0 || interleaveCpu;
-        const size_t velocityCount = iteration == 0 ? velocities.size() : interleaveCpu ? native.size() : 0;
+        const uint32_t rounds = Rounds(maxRounds);
+        return SubmitVelocity(rounds, interleaveCpu ? rounds : iterations, iteration + rounds == iterations,
+                              std::move(done));
+    }
+
+    JoltGpuControlWork SubmitVelocity(uint32_t rounds, uint32_t cpuRounds, bool last,
+                                      std::function<void(uint32_t)> done)
+    {
+        const bool first = !velocityInitialized;
+        const bool newVelocities = first || interleaveCpu;
+        const size_t velocityCount = first ? velocities.size() : interleaveCpu ? native.size() : 0;
         if (newVelocities) {
             for (size_t i = 0; i < native.size(); ++i) {
                 const auto &body = Body(native[i]);
                 velocities[i] = {Pack(body.GetLinearVelocity()), Pack(body.GetAngularVelocity())};
             }
         }
-        const uint32_t rounds = Rounds(maxRounds);
         // An island with no native rows can keep the updated shadow and impulse sum on the GPU.
         params.range = {0, static_cast<uint32_t>(groups.size()), rounds, newVelocities ? 1u : 0u};
-        params.contact.x = iteration == 0 ? warmStartScale : 0.0f;
-        const bool last = iteration + rounds == iterations;
+        params.contact.x = first ? warmStartScale : 0.0f;
         const bool readFeedback = !native.empty() && (interleaveCpu || last);
-        const uint32_t cpuRounds = interleaveCpu ? rounds : iterations;
         const bool readImpulses = last && policy.impulses;
         std::vector<rhi::ComputeBufferRead> reads;
         if (readFeedback)
@@ -598,10 +621,11 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)}};
         if (velocityCount)
             updates.push_back({buffers[CpuVelocities], 0, Bytes(velocities.data(), velocityCount)});
-        if (iteration == 0)
+        if (first)
             UploadWorkset(updates);
         auto packet =
             rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {Dispatch(owner.m_velocity)}, std::move(reads));
+        velocityInitialized = true;
         return {packet,
                 [self = shared_from_this(), packet, last, readFeedback, readImpulses, contactRead, rounds, cpuRounds,
                  done = std::move(done)] {
@@ -705,6 +729,8 @@ JoltMixedConstraintSolver::Prepare(const std::shared_ptr<const JoltGpuScene::Pub
                  std::function<void(uint32_t)> done) {
         if (stage == JoltGpuCoupledContactStage::Prepare)
             return job->Prepare(storage, inputs, params, substep, [done = std::move(done)] { done(1); });
+        if (stage == JoltGpuCoupledContactStage::WarmVelocity)
+            return job->WarmVelocity(inputs, std::move(done));
         if (stage == JoltGpuCoupledContactStage::Position)
             return job->ExchangePosition(iteration, params.solve.x, maxRounds, std::move(done));
         return job->ExchangeVelocity(iteration, params.counts.w, maxRounds, std::move(done));
