@@ -1,3 +1,5 @@
+import inx_ray_layout;
+
 // Both buffers use uint4 word offsets. TLAS nodes and instances live in the
 // geometry page. Mesh nodes, positions, triangles and attributes live in the
 // mesh page, so instance roots index the mesh node array.
@@ -48,6 +50,13 @@ struct RayInstance
     float orientation;
 };
 
+struct RayInstanceTransform
+{
+    float4 x;
+    float4 y;
+    float4 z;
+};
+
 RayNode ray_node<let MeshNodes : bool, let Dynamic : bool>(uint nodes, uint index)
 {
     uint offset = nodes + 2u * index;
@@ -67,10 +76,17 @@ RayNode ray_node<let MeshNodes : bool, let Dynamic : bool>(uint nodes, uint inde
 
 RayInstance ray_instance(RayPage page, uint index)
 {
-    uint offset = page.instances + 4u * index;
+    uint offset = page.instances + ray_instance_words * index;
     uint4 record = world_ray_geometry[offset + 3u];
     return {asfloat(world_ray_geometry[offset]), asfloat(world_ray_geometry[offset + 1u]),
             asfloat(world_ray_geometry[offset + 2u]), record.x, record.y, record.z, asfloat(record.w)};
+}
+
+RayInstanceTransform ray_instance_transform(RayPage page, uint index)
+{
+    uint offset = page.instances + ray_instance_words * index;
+    return {asfloat(world_ray_geometry[offset + 4u]), asfloat(world_ray_geometry[offset + 5u]),
+            asfloat(world_ray_geometry[offset + 6u])};
 }
 
 struct TraceRay
@@ -213,6 +229,13 @@ float ray_edge(float2 a, float2 b)
     return all(a == b) ? 0.0f : ascending ? edge : -edge;
 }
 
+// Forward-error factor for binary32 arithmetic. Bounds also cover a contracted multiply/add.
+float ray_gamma(float operations)
+{
+    float accumulated = operations * 5.9604644775390625e-8f;
+    return accumulated / (1.0f - accumulated);
+}
+
 uint4 ray_mesh_word<let Dynamic : bool>(uint offset)
 {
     if (Dynamic)
@@ -224,20 +247,36 @@ uint4 ray_mesh_word<let Dynamic : bool>(uint offset)
 bool ray_intersect_triangle<let Dynamic : bool>(RayPage page, TraceRay ray, RayProjection projection, uint3 corners, float maximum,
                             out float distance, out float2 weights)
 {
-    float3 a = ray_project_point(asfloat(ray_mesh_word<Dynamic>(page.positions + corners.x - page.vertex_base).xyz) - ray.origin, projection);
-    float3 b = ray_project_point(asfloat(ray_mesh_word<Dynamic>(page.positions + corners.y - page.vertex_base).xyz) - ray.origin, projection);
-    float3 c = ray_project_point(asfloat(ray_mesh_word<Dynamic>(page.positions + corners.z - page.vertex_base).xyz) - ray.origin, projection);
+    float3 vertex_a = asfloat(ray_mesh_word<Dynamic>(page.positions + corners.x - page.vertex_base).xyz);
+    float3 vertex_b = asfloat(ray_mesh_word<Dynamic>(page.positions + corners.y - page.vertex_base).xyz);
+    float3 vertex_c = asfloat(ray_mesh_word<Dynamic>(page.positions + corners.z - page.vertex_base).xyz);
+    float3 local_a = vertex_a - ray.origin;
+    float3 a = ray_project_point(local_a, projection);
+    float3 b = ray_project_point(vertex_b - ray.origin, projection);
+    float3 c = ray_project_point(vertex_c - ray.origin, projection);
     float3 edge = float3(ray_edge(b.xy, c.xy), ray_edge(c.xy, a.xy), ray_edge(a.xy, b.xy));
     float det = edge.x + edge.y + edge.z;
     distance = maximum;
     weights = float2(0.0f);
     if ((any(edge < 0.0f) && any(edge > 0.0f)) || det == 0.0f)
         return false;
+    weights = edge.yz / det;
 
-    float inverse_det = 1.0f / det;
-    distance = dot(edge, float3(a.z, b.z, c.z)) * inverse_det;
-    weights = edge.yz * inverse_det;
-    return distance >= ray.minimum && distance <= maximum;
+    // The coverage test remains watertight. Compute t from the original plane,
+    // avoiding cancellation of large sheared vertex depths on long triangles.
+    float3 e1 = vertex_b - vertex_a;
+    float3 e2 = vertex_c - vertex_a;
+    float3 plane = cross(e1, e2);
+    float3 plane_error = ray_gamma(5.0f) * (abs(e1.yzx * e2.zxy) + abs(e1.zxy * e2.yzx));
+    float numerator = dot(plane, local_a);
+    float denominator = dot(plane, ray.direction);
+    float numerator_error = ray_gamma(5.0f) * dot(abs(plane), abs(local_a)) +
+                              (1.0f + ray_gamma(3.0f)) * dot(plane_error, abs(local_a));
+    float denominator_error = ray_gamma(4.0f) * dot(abs(plane), abs(ray.direction)) +
+                                (1.0f + ray_gamma(3.0f)) * dot(plane_error, abs(ray.direction));
+    distance = numerator / denominator;
+    return distance > 0.0f && distance >= ray.minimum && distance <= maximum &&
+           abs(numerator) > numerator_error && abs(denominator) > denominator_error;
 }
 
 TraceRay ray_to_object(TraceRay ray, RayInstance instance)
@@ -364,6 +403,7 @@ bool trace_visibility(RayPage page, TraceRay ray, uint layer_mask)
 struct RaySurfaceHit
 {
     float3 position_ws;
+    float3 position_error_ws;
     float3 geometric_normal_ws; // Triangle winding before any face-forward rule.
     float3 normal_ws;
     float4 tangent_ws;
@@ -428,7 +468,10 @@ RaySurfaceHit ray_surface_at_hit_impl<let Dynamic : bool>(RayPage page, TraceRay
     float3 a = asfloat(ray_mesh_word<Dynamic>(page.positions + vertices.x - page.vertex_base).xyz);
     float3 b = asfloat(ray_mesh_word<Dynamic>(page.positions + vertices.y - page.vertex_base).xyz);
     float3 c = asfloat(ray_mesh_word<Dynamic>(page.positions + vertices.z - page.vertex_base).xyz);
-    float3 geometric = normalize(ray_world_normal(cross(b - a, c - a), instance) * instance.orientation);
+    float3 local_geometric = cross(b - a, c - a);
+    float3 world_geometric = ray_world_normal(local_geometric, instance);
+    float inverse_normal_length = rsqrt(dot(world_geometric, world_geometric));
+    float3 geometric = world_geometric * (inverse_normal_length * instance.orientation);
     float3 r0 = instance.world_to_object_x.xyz;
     float3 r1 = instance.world_to_object_y.xyz;
     float3 r2 = instance.world_to_object_z.xyz;
@@ -436,15 +479,18 @@ RaySurfaceHit ray_surface_at_hit_impl<let Dynamic : bool>(RayPage page, TraceRay
     // Raster transforms and normalizes each corner before interpolation.
     float3 normal = ray_interpolate_direction<Dynamic>(attributes + 1u, weights, r0, r1, r2, geometric);
 
-    // Cofactors of the inverse transform give the forward tangent direction.
-    // Normalization cancels the magnitude of the determinant, but not its sign.
-    float3 c0 = cross(r1, r2);
-    float3 c1 = cross(r2, r0);
-    float3 c2 = cross(r0, r1);
+    // Use the original affine rows, rather than numerically inverting the inverse again.
+    RayInstanceTransform model = ray_instance_transform(page, hit.instance_index);
+    float4 forward_x = model.x;
+    float4 forward_y = model.y;
+    float4 forward_z = model.z;
+    float3 c0 = float3(forward_x.x, forward_y.x, forward_z.x);
+    float3 c1 = float3(forward_x.y, forward_y.y, forward_z.y);
+    float3 c2 = float3(forward_x.z, forward_y.z, forward_z.z);
     float3 axis = abs(normal.x) < 0.9f ? float3(1.0f, 0.0f, 0.0f) : float3(0.0f, 1.0f, 0.0f);
     float3 fallback = normalize(cross(normal, axis));
     float3 tangent_ws = ray_interpolate_direction<Dynamic>(attributes + 2u, weights,
-        c0 * instance.orientation, c1 * instance.orientation, c2 * instance.orientation, fallback);
+        c0, c1, c2, fallback);
     uint3 tangent_offsets = attributes + 2u;
     float3 signs = float3(asfloat(ray_mesh_word<Dynamic>(tangent_offsets.x).w),
                           asfloat(ray_mesh_word<Dynamic>(tangent_offsets.y).w),
@@ -454,18 +500,42 @@ RaySurfaceHit ray_surface_at_hit_impl<let Dynamic : bool>(RayPage page, TraceRay
     float4 uv_b = asfloat(ray_mesh_word<Dynamic>(attributes.y));
     float4 uv_c = asfloat(ray_mesh_word<Dynamic>(attributes.z));
     float4 uv = uv_a * weights.x + uv_b * weights.y + uv_c * weights.z;
-    float inverse_det = 1.0f / dot(r0, c0);
-
     RaySurfaceHit surface;
-    surface.position_ws = ray.origin + hit.distance * ray.direction;
+    float3 local_position = a + hit.barycentrics.x * (b - a) + hit.barycentrics.y * (c - a);
+    float3 edge_u = b - a;
+    float3 edge_v = c - a;
+    float3 local_error = ray_gamma(5.0f) * (abs(a) + abs(hit.barycentrics.x * edge_u) +
+                                            abs(hit.barycentrics.y * edge_v)) +
+                         ray_gamma(2.0f) * (abs(hit.barycentrics.x) * (abs(a) + abs(b)) +
+                                            abs(hit.barycentrics.y) * (abs(a) + abs(c)));
+    float4 homogeneous = float4(local_position, 1.0f);
+    surface.position_ws = float3(dot(forward_x, homogeneous), dot(forward_y, homogeneous), dot(forward_z, homogeneous));
+    float3 propagated = abs(c0) * local_error.x + abs(c1) * local_error.y + abs(c2) * local_error.z;
+    float3 forward_magnitude = abs(c0) * abs(local_position.x) + abs(c1) * abs(local_position.y) +
+                                abs(c2) * abs(local_position.z) + abs(float3(forward_x.w, forward_y.w, forward_z.w));
+    float3 world_error = (1.0f + ray_gamma(5.0f)) * propagated + ray_gamma(5.0f) * forward_magnitude;
+    // The stored forward/inverse matrices are independently rounded binary32
+    // values. Their actual round trip and its arithmetic bound cover that
+    // mismatch before a secondary ray is transformed back to object space.
+    float4 world_position = float4(surface.position_ws, 1.0f);
+    float3 round_trip = float3(dot(instance.world_to_object_x, world_position),
+                                dot(instance.world_to_object_y, world_position),
+                                dot(instance.world_to_object_z, world_position));
+    float3 inverse_magnitude = float3(dot(abs(instance.world_to_object_x), abs(world_position)),
+                                       dot(abs(instance.world_to_object_y), abs(world_position)),
+                                       dot(abs(instance.world_to_object_z), abs(world_position)));
+    float3 inverse_error = (1.0f + ray_gamma(1.0f)) * abs(round_trip - local_position) +
+                            ray_gamma(5.0f) * inverse_magnitude;
+    float inverse_plane_error = dot(abs(local_geometric), inverse_error) * inverse_normal_length;
+    surface.position_error_ws = world_error + abs(geometric) * inverse_plane_error;
     surface.geometric_normal_ws = geometric;
     surface.normal_ws = normal;
     surface.tangent_ws = float4(tangent_ws, sign);
     surface.color = ray_interpolate_attribute<Dynamic>(page, vertices, 3u, weights);
     surface.uv0 = uv.xy;
     surface.uv1 = uv.zw;
-    surface.edge_u_ws = ray_transform_columns(b - a, c0, c1, c2) * inverse_det;
-    surface.edge_v_ws = ray_transform_columns(c - a, c0, c1, c2) * inverse_det;
+    surface.edge_u_ws = ray_transform_columns(b - a, c0, c1, c2);
+    surface.edge_v_ws = ray_transform_columns(c - a, c0, c1, c2);
     surface.edge_u_uv1 = uv_b.zw - uv_a.zw;
     surface.edge_v_uv1 = uv_c.zw - uv_a.zw;
     surface.front_face = dot(ray.direction, geometric) < 0.0f;

@@ -14,6 +14,7 @@ namespace raytracing
 {
 
 inline constexpr uint32_t kInvalidRayIndex = UINT32_MAX;
+using RayGeometryWord = std::array<uint32_t, 4>;
 
 struct alignas(16) RayPosition
 {
@@ -45,11 +46,16 @@ struct alignas(16) RayInstance
     uint32_t surfaceId;
     uint32_t layerMask;
     float orientation = 1.0f;
+    std::array<float, 4> objectToWorldX;
+    std::array<float, 4> objectToWorldY;
+    std::array<float, 4> objectToWorldZ;
 };
 
-static_assert(sizeof(RayPosition) == 16 && sizeof(RayTriangle) == 16 && sizeof(RayInstance) == 64);
+static_assert(sizeof(RayPosition) == 16 && sizeof(RayTriangle) == 16 && sizeof(RayInstance) == 112);
 static_assert(sizeof(RayVertexAttributes) == 64);
 static_assert(offsetof(RayInstance, root) == 48 && offsetof(RayInstance, orientation) == 60);
+static_assert(offsetof(RayInstance, objectToWorldX) == 64);
+inline constexpr uint32_t kRayInstanceWords = sizeof(RayInstance) / sizeof(RayGeometryWord);
 
 /// Immutable object-space data for one contiguous indexed triangle slice.
 struct RayMesh
@@ -149,8 +155,6 @@ enum class RayGeometryStatus : uint32_t
     Ready,
     Unavailable,
 };
-
-using RayGeometryWord = std::array<uint32_t, 4>;
 
 struct RayGeometryBytes
 {

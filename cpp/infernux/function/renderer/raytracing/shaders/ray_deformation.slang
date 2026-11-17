@@ -1,3 +1,5 @@
+import inx_ray_layout;
+
 // The CPU owns immutable topology. Every invocation reads the exact canonical
 // Vertex allocation retained by the raster World and writes a new ray page.
 StructuredBuffer<uint> vertex_source;
@@ -119,10 +121,10 @@ void refit_geometry(uint3 thread : SV_DispatchThreadID)
     float3 maximum = -minimum;
     for (uint index = first; index < first + count; ++index)
     {
-        uint instance = pc.mesh.z + 4u * index;
-        float4 r0 = asfloat(geometry_page[instance]);
-        float4 r1 = asfloat(geometry_page[instance + 1u]);
-        float4 r2 = asfloat(geometry_page[instance + 2u]);
+        uint instance = pc.mesh.z + ray_instance_words * index;
+        float4 r0 = asfloat(geometry_page[instance + 4u]);
+        float4 r1 = asfloat(geometry_page[instance + 5u]);
+        float4 r2 = asfloat(geometry_page[instance + 6u]);
         uint root = geometry_page[instance + 3u].x;
         float3 low, high;
         if ((root & 0x80000000u) != 0u)
@@ -137,14 +139,10 @@ void refit_geometry(uint3 thread : SV_DispatchThreadID)
             low = asfloat(mesh_page[nodes].xyz);
             high = asfloat(mesh_page[nodes + 1u].xyz);
         }
-        float3 c0 = cross(r1.xyz, r2.xyz);
-        float3 c1 = cross(r2.xyz, r0.xyz);
-        float3 c2 = cross(r0.xyz, r1.xyz);
-        float determinant = dot(r0.xyz, c0);
-        c0 /= determinant;
-        c1 /= determinant;
-        c2 /= determinant;
-        float3 translation = -(c0 * r0.w + c1 * r1.w + c2 * r2.w);
+        float3 c0 = float3(r0.x, r1.x, r2.x);
+        float3 c1 = float3(r0.y, r1.y, r2.y);
+        float3 c2 = float3(r0.z, r1.z, r2.z);
+        float3 translation = float3(r0.w, r1.w, r2.w);
         float3 a0 = c0 * low.x, b0 = c0 * high.x;
         float3 a1 = c1 * low.y, b1 = c1 * high.y;
         float3 a2 = c2 * low.z, b2 = c2 * high.z;

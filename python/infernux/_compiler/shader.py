@@ -680,9 +680,10 @@ public InxRaySurfaceHit inx_world_ray_closest(float3 origin_ws, float3 direction
         }
         result.found = true;
         result.distance = hit.distance;
-        result.position_ws = ray.origin + hit.distance * ray.direction;
+        RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
+        result.position_ws = attributes.position_ws;
         result.surface_id = hit.surface_id;
-        inx_evaluate_ray_lit_hit(ray_surface_at_hit(page, ray, hit), hit.surface_id, lod, result.surface);
+        inx_evaluate_ray_lit_hit(attributes, hit.surface_id, lod, result.surface);
     }
     return result;
 }
@@ -713,6 +714,25 @@ float3 inx_ray_origin(float3 position, float3 normal)
 {
     return float3(inx_ray_offset(position.x, normal.x), inx_ray_offset(position.y, normal.y),
                   inx_ray_offset(position.z, normal.z));
+}
+
+float inx_ray_round_outside(float position, float displacement)
+{
+    if (displacement == 0.0)
+        return position;
+    if (position == 0.0)
+        return asfloat(displacement > 0.0 ? 1u : 0x80000001u);
+    uint bits = asuint(position);
+    return asfloat((position > 0.0) == (displacement > 0.0) ? bits + 1u : bits - 1u);
+}
+
+float3 inx_ray_origin(float3 position, float3 normal, float3 error)
+{
+    float3 displacement = normal * dot(abs(normal), error);
+    float3 outside = position + displacement;
+    return float3(inx_ray_round_outside(outside.x, displacement.x),
+                  inx_ray_round_outside(outside.y, displacement.y),
+                  inx_ray_round_outside(outside.z, displacement.z));
 }
 
 struct InxRayShadowHitPolicy : RayHitPolicy
@@ -747,7 +767,7 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
     if (counts.x + counts.y == 0u)
         return radiance;
     float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
-    float3 origin = inx_ray_origin(attributes.position_ws, geometric);
+    float3 origin = inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws);
     InxPbrLightResponse response = inx_secondary_light_response(surface, surface.normal_ws, outgoing);
     InxRayLitHitPolicy material = {0.0};
     InxRayShadowHitPolicy caster = {records, material};
@@ -811,7 +831,7 @@ InxRayTransportTerm inx_ray_direct_fresh(RayPage page, RaySurfaceHit attributes,
     float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0xb5297a4du, proposal);
     if (!proposal.active || max(weight.r, max(weight.g, weight.b)) <= 0.0)
         return {radiance, true, 0.0};
-    TraceRay endpoint = {inx_ray_origin(attributes.position_ws, geometric), 0.0, proposal.direction, maximum};
+    TraceRay endpoint = {inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws), 0.0, proposal.direction, maximum};
     RayHit hit = inx_trace_lit_closest(page, endpoint, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return {radiance + weight * inx_environment_radiance(endpoint.direction), true, 0.0};
@@ -832,7 +852,7 @@ InxRayTransportTerm inx_ray_tail_sample(RayPage page, RaySurfaceHit attributes, 
     float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0x1b56c4e9u, proposal);
     if (!proposal.active || max(weight.r, max(weight.g, weight.b)) <= 0.0)
         return {float3(0.0), true, 0.0};
-    TraceRay ray = {inx_ray_origin(attributes.position_ws, geometric), 0.0, proposal.direction, maximum};
+    TraceRay ray = {inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws), 0.0, proposal.direction, maximum};
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return {float3(0.0), true, 0.0};

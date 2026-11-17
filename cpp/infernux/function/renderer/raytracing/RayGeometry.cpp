@@ -69,7 +69,12 @@ RayInstance EncodeInstance(const RayMeshInstance &instance)
         return components;
     };
     const auto orientation = glm::determinant(linear) < 0.0 ? -1.0f : 1.0f;
-    return {row(0), row(1), row(2), instance.mesh.root, instance.surfaceId, instance.layerMask, orientation};
+    const auto forward = [&](unsigned i) {
+        return std::array<float, 4>{instance.objectToWorld[0][i], instance.objectToWorld[1][i],
+                                    instance.objectToWorld[2][i], instance.objectToWorld[3][i]};
+    };
+    return {row(0),      row(1),     row(2),     instance.mesh.root, instance.surfaceId, instance.layerMask,
+            orientation, forward(0), forward(1), forward(2)};
 }
 
 BvhNode RelocateNode(BvhNode node, uint32_t root, uint32_t leafOffset)

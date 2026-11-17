@@ -3,6 +3,15 @@
 namespace infernux
 {
 
+inline const ShaderSourceModule &GetSlangRayLayoutModule()
+{
+    static const ShaderSourceModule module{"inx_ray_layout", "<infernux/shader/ray_layout>", [] {
+            std::string source;
+@_ray_layout_source@            return source;
+        }()};
+    return module;
+}
+
 inline const ShaderSourceModule &GetSlangRayTraversalModule()
 {
     static const ShaderSourceModule module{"inx_ray_traversal", "<infernux/shader/ray_traversal>", [] {

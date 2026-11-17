@@ -229,7 +229,7 @@ class RayDeformation final : public std::enable_shared_from_this<RayDeformation>
         for (size_t i = 0; i < instances.instances.size(); ++i) {
             const auto found = roots.find(instances.instances[i].surfaceId);
             if (found != roots.end())
-                templateWords[instanceOffset + 4u * i + 3u][0] = found->second;
+                templateWords[instanceOffset + kRayInstanceWords * i + 3u][0] = found->second;
         }
         std::vector<uint32_t> topIndices;
         std::vector<std::vector<uint32_t>> topLevels;

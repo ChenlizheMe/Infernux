@@ -62,6 +62,7 @@ class SlangModuleFiles final : public ISlangFileSystemExt
         Add(GetSlangParticleModule());
         Add(GetSlangParticleLightingModule());
         Add(GetSlangUIContextModule());
+        Add(GetSlangRayLayoutModule());
         Add(GetSlangRayTraversalModule());
         Add(GetSlangRayBsdfModule());
         for (const auto &library : libraries)

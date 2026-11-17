@@ -146,6 +146,9 @@ int main()
     assert(page.instances[1].worldToObjectY[1] == 0.25f && page.instances[1].worldToObjectY[3] == -2.0f);
     assert(page.instances[1].surfaceId == 2u && page.instances[1].layerMask == 4u);
     assert(page.instances[0].orientation == 1.0f && page.instances[1].orientation == -1.0f);
+    assert((page.instances[1].objectToWorldX == std::array<float, 4>{-2.0f, 0.0f, 0.0f, 4.0f}));
+    assert((page.instances[1].objectToWorldY == std::array<float, 4>{0.0f, 4.0f, 0.0f, 8.0f}));
+    assert((page.instances[1].objectToWorldZ == std::array<float, 4>{0.0f, 0.0f, 1.0f, 12.0f}));
 
     const RayPageUpload meshUpload(meshPage);
     const std::vector<RayGeometryWord> shadowStamps{{0u, 17u, 0u, 0u}};
@@ -157,7 +160,7 @@ int main()
     assert(header(meshUpload)[3] + 4 * meshPage.attributes.size() == meshUpload.bytes / sizeof(RayGeometryWord));
     assert((header(instanceUpload) == RayGeometryWord{0u, 2u, 4u, 1u}));
     const auto *instanceHeaders = static_cast<const RayGeometryWord *>(instanceUpload.Section(0).data);
-    assert((instanceHeaders[1] == RayGeometryWord{12u, 17u, 0u, 0u}));
+    assert((instanceHeaders[1] == RayGeometryWord{4u + 2u * kRayInstanceWords, 17u, 0u, 0u}));
     assert(instanceUpload.Section(3).data == shadowStamps.data());
     assert(instanceUpload.bytes == 48u + sizeof(BvhNode) + 2 * sizeof(RayInstance));
 
