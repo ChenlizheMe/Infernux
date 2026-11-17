@@ -66,6 +66,7 @@ enum Entry : uint8_t
     InitContacts,
     PublishResidentCount,
     InitCandidates,
+    BuildSmallPairs,
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> EntryNames{"init_words",
@@ -94,7 +95,8 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"init_words",
                                                               "set_candidate_bank",
                                                               "init_contacts",
                                                               "publish_resident_count",
-                                                              "init_candidates"};
+                                                              "init_candidates",
+                                                              "build_small_pairs"};
 
 constexpr uint32_t Bit(Port port)
 {
@@ -128,7 +130,9 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     A | P | Bit(CandidateArena),
     P | K | Bit(ResidentContacts),
     A | P | Bit(ResidentStep),
-    P | K | Bit(CandidateArena)};
+    P | K | Bit(CandidateArena),
+    A | P | Bit(Bodies) | Bit(Shapes) | Bit(AuthorWorlds) | Bit(Bounds) | Bit(Joints) | Bit(ColliderPairs) |
+        Bit(CandidateArena)};
 
 struct PortLayout
 {
@@ -267,6 +271,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         InitialCapacity,
         Initialize,
         InitializeCandidates,
+        SmallPairs,
         Suppression,
         SuppressionStatus,
         SuppressionStatusPublish,
@@ -354,7 +359,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         ValidateInput(settingsPorts[ColliderPairs]);
         requireBytes(ColliderPairs, uint64_t(std::max<size_t>(1, pairs->keys.size())) * sizeof(ColliderPairKey));
         config.selectedCounts.w = static_cast<uint32_t>(pairs->keys.size());
-        config.round = {BroadphaseNeighborLimit, 0, 0, 0};
+        const uint32_t leaves = config.selectedCounts.y;
+        const bool smallPairs =
+            leaves && leaves <= BroadphaseSmallSetLimit && config.selectedCounts.z <= BroadphaseSmallSetLimit;
+        config.round = {BroadphaseNeighborLimit, 0, 0, uint32_t(smallPairs)};
         rounds = n > 1 ? (n - 2u) / BroadphaseNeighborLimit + 1u : 1u;
         uint64_t words = 0;
         const auto reserve = [&](uint64_t size) {
@@ -365,42 +373,42 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             return result;
         };
         config.workspace.y = reserve(2);
-        zeroRecord = reserve(1);
-        sap[0] = reserve(n);
-        sap[1] = reserve(n);
-        suppression[0] = reserve(j);
-        suppression[1] = reserve(j);
-        config.rankRows = {reserve(n), reserve(n), reserve(j), 0};
-        queues = {reserve(n), reserve(n)};
-        activeMeta = {reserve(1), reserve(1)};
-        config.activeQueues = {queues[0], queues[1], n, 0};
-        config.activeState = {activeMeta[0], activeMeta[1], 0, 0};
-        uint32_t count = std::max({n, j, w, 1u});
-        do {
-            const uint32_t input = reserve(count), prefix = reserve(count);
-            levels.push_back({input, prefix, 0, count});
-            const uint32_t next = Blocks(count);
-            if (next == 1)
-                break;
-            count = next;
-        } while (true);
-        const uint32_t terminal = reserve(1);
-        for (size_t level = 0; level < levels.size(); ++level)
-            levels[level].total = level + 1 < levels.size() ? levels[level + 1].input : terminal;
+        if (!smallPairs) {
+            zeroRecord = reserve(1);
+            sap = {reserve(n), reserve(n)};
+            suppression = {reserve(j), reserve(j)};
+            config.rankRows = {reserve(n), reserve(n), reserve(j), 0};
+            queues = {reserve(n), reserve(n)};
+            activeMeta = {reserve(1), reserve(1)};
+            config.activeQueues = {queues[0], queues[1], n, 0};
+            config.activeState = {activeMeta[0], activeMeta[1], 0, 0};
+            uint32_t count = std::max({n, j, w, 1u});
+            do {
+                const uint32_t input = reserve(count), prefix = reserve(count);
+                levels.push_back({input, prefix, 0, count});
+                const uint32_t next = Blocks(count);
+                if (next == 1)
+                    break;
+                count = next;
+            } while (true);
+            const uint32_t terminal = reserve(1);
+            for (size_t level = 0; level < levels.size(); ++level)
+                levels[level].total = level + 1 < levels.size() ? levels[level + 1].input : terminal;
+            config.workspace.z = sap[0];
+            config.workspace.w = suppression[0];
+            config.scan.x = levels[0].input;
+            config.summary.y = levels[0].input;
+            config.summary.z = levels[0].input;
+        }
         scratchWords = static_cast<uint32_t>(words);
         config.workspace.x = scratchWords;
-        config.workspace.z = sap[0];
-        config.workspace.w = suppression[0];
-        config.scan.x = levels[0].input;
-        config.summary.y = levels[0].input;
-        config.summary.z = levels[0].input;
         parameters.counts.x = storage.GetBodyCount();
         parameters.counts.y = w;
         parameters.counts.z = n;
         parameters.solve.z = parameters.solve.w = 0;
         workset = std::make_shared<JoltGpuContactWorkset>();
-        capacity = implementation->recentCapacity;
-        ConfigureCapacity(capacity);
+        // A single group knows its complete pair upper bound from this World.
+        ConfigureCapacity(smallPairs ? std::max(1u, leaves * (leaves - 1u) / 2u) : implementation->recentCapacity);
     }
 
     void ConfigureCapacity(uint32_t value)
@@ -459,7 +467,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             if (!Endpoint(candidateArena, (1ull + 2ull * capacity) * WordBytes) ||
                 !Endpoint(workset->contacts,
                           uint64_t(std::max(1u, capacity * MaxContactPointsPerPair)) * sizeof(Contact))) {
-                if (capacity) {
+                if (capacity && !config.round.w) {
                     // A historical K is not a mandatory lower bound. Drop all
                     // partial optimistic owners, then let the SAME execution
                     // run its cold CountBoundary with K=0. Nothing is replayed.
@@ -868,12 +876,16 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::InitializeCandidates:
                 if (Range(InitCandidates, static_cast<uint32_t>(1ull + 2ull * capacity), uploads, dispatches))
                     return true;
-                if (!workset->contacts->HasInitializedRange(0, workset->contacts->GetByteSize())) {
-                    phase = Phase::FinalContacts;
-                    afterContacts = Phase::Suppression;
-                } else
-                    phase = Phase::Suppression;
+                afterContacts = config.round.w ? Phase::SmallPairs : Phase::Suppression;
+                phase = workset->contacts->HasInitializedRange(0, workset->contacts->GetByteSize())
+                            ? afterContacts
+                            : Phase::FinalContacts;
                 break;
+            case Phase::SmallPairs:
+                if (!Emit(BuildSmallPairs, 0, 1, config, uploads, dispatches))
+                    return true;
+                phase = Phase::Worlds;
+                return true;
             case Phase::Suppression:
                 config.merge.x = suppression[0];
                 if (Range(BuildSuppression, config.counts.y, uploads, dispatches))
@@ -947,6 +959,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::Worlds:
                 if (Range(BuildWorldRanges, config.counts.z, uploads, dispatches))
                     return true;
+                if (config.round.w) {
+                    phase = Phase::ResidentPublish;
+                    break;
+                }
                 BeginScan(levels[0].input, config.counts.z, false);
                 phase = Phase::WorldReduce;
                 break;
@@ -979,6 +995,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::ResidentPublish:
                 if (!Emit(PublishResidentCount, 0, 1, config, uploads, dispatches))
                     return true;
+                if (config.round.w) {
+                    phase = Phase::Collide;
+                    return true;
+                }
                 BeginActive(true);
                 phase = Phase::Reset;
                 return true;
@@ -1105,7 +1125,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         } else {
             workset->patchCount = result.x;
             workset->maxPatchesPerWorld = result.w;
-            implementation->recentCapacity = result.x < capacity / 4u ? std::max(1u, capacity / 2u) : capacity;
+            if (!config.round.w)
+                implementation->recentCapacity = result.x < capacity / 4u ? std::max(1u, capacity / 2u) : capacity;
         }
     }
 
@@ -1260,6 +1281,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
 JoltGpuBroadphase::JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetCode &target)
     : m_impl(std::make_shared<Impl>(host, target))
 {
+}
+
+bool JoltGpuBroadphase::TryPrepareSmallPairPipeline()
+{
+    return m_impl->programs[BuildSmallPairs].kernel->TryPreparePipeline();
 }
 
 JoltGpuControlWork
