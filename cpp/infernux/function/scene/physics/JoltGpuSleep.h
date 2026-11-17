@@ -15,6 +15,11 @@ struct JoltGpuPrescribedSleepBounds
 class JoltGpuSleep final
 {
   public:
+    struct BoundsValidation
+    {
+        std::shared_ptr<rhi::ComputeBuffer> status;
+    };
+
     JoltGpuSleep(rhi::ComputeHost &host, const ShaderTargetCode &stepTarget);
     [[nodiscard]] JoltGpuControlWork PrepareInitialize(const JoltGpuStorage &, const JPH::GPU::StepParams &,
                                                        std::function<void()> completed);
@@ -40,14 +45,16 @@ class JoltGpuSleep final
     // wake retains the exact 64B bound/pose witness even if the source is removed.
     [[nodiscard]] JoltGpuControlWork
     PrepareOldBounds(const JoltGpuStorage &, const JPH::GPU::StepParams &, uint32_t source,
+                     std::shared_ptr<BoundsValidation>,
                      std::function<void(std::shared_ptr<rhi::ComputeBuffer>)> completed);
     [[nodiscard]] JoltGpuControlWork PrepareBoundsWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,
                                                        std::shared_ptr<rhi::ComputeBuffer> oldBounds,
-                                                       uint32_t newSource, std::function<void()> completed,
+                                                       uint32_t newSource, std::shared_ptr<BoundsValidation>,
                                                        bool requirePoseChange = false);
     [[nodiscard]] JoltGpuControlWork PrepareAuthoredBoundsWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,
                                                                JPH::GPU::Float4 low, JPH::GPU::Float4 high,
-                                                               std::function<void()> completed);
+                                                               std::shared_ptr<BoundsValidation>);
+    [[nodiscard]] JoltGpuControlWork ValidateBoundsEdits(const BoundsValidation &);
     [[nodiscard]] JoltGpuControlWork PrepareQuery(std::shared_ptr<rhi::ComputeBuffer> snapshot, uint32_t bodyCount,
                                                   std::vector<uint32_t> requests,
                                                   std::function<void(std::vector<JPH::GPU::UInt4>)> completed);

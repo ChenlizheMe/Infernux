@@ -270,6 +270,15 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
                 owner->host, {bytes / 4u, rhi::ComputeScalarType::UInt32, 1u, rhi::BufferUsageFlags::None});
         return buffer != nullptr;
     }
+
+    static void ReadStatus(rhi::PreparedComputeBatch &packet)
+    {
+        uint32_t status = 0;
+        packet.Readback(0)->ReadInto(&status, sizeof(status));
+        if (status)
+            throw std::runtime_error("GPU sleep failed state/root validation (status " + std::to_string(status) + ")");
+    }
+
     JoltGpuControlWork Next(uint32_t maximumDispatches = 16u)
     {
         if (cursor == plan.size()) {
@@ -277,8 +286,12 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             callback(*this);
             return {};
         }
-        if (reportsStatus && !buffers[Roots] && !Allocate(buffers[Roots], 4u))
-            return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+        if (reportsStatus && !buffers[Roots]) {
+            auto &status = boundsValidation ? boundsValidation->status : buffers[Roots];
+            if (!Allocate(status, sizeof(uint32_t)))
+                return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+            buffers[Roots] = status;
+        }
         if (resultBytes && !Allocate(buffers[resultPort], resultBytes))
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         if (!requestBytes.empty() && !Allocate(buffers[Requests], requestBytes.size()))
@@ -288,7 +301,8 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
         if (!started) {
-            if (reportsStatus && initializeStatus)
+            if (reportsStatus && initializeStatus &&
+                (!boundsValidation || !buffers[Roots]->HasInitializedRange(0u, sizeof(uint32_t))))
                 uploads.push_back({buffers[Roots], uint64_t(statusIndex) * 4u, Bytes(uint32_t(0))});
             if (!requestBytes.empty())
                 uploads.push_back({buffers[Requests], 0u, requestBytes});
@@ -376,8 +390,9 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         if (dispatches.empty())
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         bool final = next == plan.size();
+        const bool readStatus = final && reportsStatus && !boundsValidation;
         std::vector<rhi::ComputeBufferRead> reads;
-        if (final && reportsStatus) {
+        if (readStatus) {
             reads.push_back({buffers[Roots], uint64_t(statusIndex) * 4u, 4u});
             if (query)
                 reads.push_back({buffers[Results], 0u, resultBytes});
@@ -386,16 +401,12 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         auto packet =
             rhi::PrepareComputeBatch(owner->host, std::move(uploads), std::move(dispatches), std::move(reads));
         JoltGpuControlWork work{packet,
-                                [self = shared_from_this(), packet, next, offset, final]() -> JoltGpuControlWork {
+                                [self = shared_from_this(), packet, next, offset, readStatus]() -> JoltGpuControlWork {
                                     self->started = true;
                                     self->cursor = next;
                                     self->cursorOffset = offset;
-                                    if (final && self->reportsStatus) {
-                                        uint32_t status = 0;
-                                        packet->Readback(0)->ReadInto(&status, sizeof(status));
-                                        if (status)
-                                            throw std::runtime_error("GPU sleep failed state/root validation (status " +
-                                                                     std::to_string(status) + ")");
+                                    if (readStatus) {
+                                        ReadStatus(*packet);
                                         if (self->query) {
                                             self->queryResults.resize(self->resultBytes / sizeof(UInt4));
                                             packet->Readback(1)->ReadInto(self->queryResults.data(), self->resultBytes);
@@ -410,6 +421,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
     }
     std::shared_ptr<Impl> owner;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
+    std::shared_ptr<BoundsValidation> boundsValidation;
     std::vector<Operation> plan;
     size_t cursor = 0;
     uint32_t cursorOffset = 0, statusIndex = 0;
@@ -590,10 +602,13 @@ JoltGpuControlWork JoltGpuSleep::PrepareSnapshot(const JoltGpuStorage &s, const 
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareOldBounds(const JoltGpuStorage &s, const StepParams &selection, uint32_t source,
+                                                  std::shared_ptr<BoundsValidation> validation,
                                                   std::function<void(std::shared_ptr<rhi::ComputeBuffer>)> done)
 {
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
+    e->boundsValidation = std::move(validation);
+    e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     auto p = Selection(s, selection);
     p.operation.x = source;
     e->resultPort = Bounds;
@@ -604,18 +619,18 @@ JoltGpuControlWork JoltGpuSleep::PrepareOldBounds(const JoltGpuStorage &s, const
 }
 JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, const StepParams &selection,
                                                    std::shared_ptr<rhi::ComputeBuffer> old, uint32_t source,
-                                                   std::function<void()> done, bool requirePoseChange)
+                                                   std::shared_ptr<BoundsValidation> validation, bool requirePoseChange)
 {
     if (old && (old->GetByteSize() != 64u || !old->HasInitializedRange(0u, 64u)))
         throw std::invalid_argument("GPU bounds wake requires its exact completed old-bound capture");
-    if (!old && source == UINT32_MAX) {
-        done();
+    if (!old && source == UINT32_MAX)
         return {};
-    }
     if (requirePoseChange && (!old || source == UINT32_MAX))
         throw std::invalid_argument("Pose wake requires its old pose and surviving source");
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
+    e->boundsValidation = std::move(validation);
+    e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     auto p = Selection(s, selection);
     p.operation.x = source;
     p.operation.y = (old ? 1u : 0u) | (source == UINT32_MAX ? 0u : 2u);
@@ -624,11 +639,12 @@ JoltGpuControlWork JoltGpuSleep::PrepareBoundsWake(const JoltGpuStorage &s, cons
     const auto entry = old ? BoundsWake : NewBoundsWake;
     e->buffers[Bounds] = std::move(old);
     e->Add(entry, p.selected.y, p.selected.z, p);
-    e->completed = [done = std::move(done)](auto &) { done(); };
+    e->completed = [](auto &) {};
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareAuthoredBoundsWake(const JoltGpuStorage &s, const StepParams &selection,
-                                                           Float4 low, Float4 high, std::function<void()> done)
+                                                           Float4 low, Float4 high,
+                                                           std::shared_ptr<BoundsValidation> validation)
 {
     if (!std::isfinite(low.x) || !std::isfinite(low.y) || !std::isfinite(low.z) || low.w != 0 ||
         !std::isfinite(high.x) || !std::isfinite(high.y) || !std::isfinite(high.z) || high.w != 0 || low.x > high.x ||
@@ -636,14 +652,27 @@ JoltGpuControlWork JoltGpuSleep::PrepareAuthoredBoundsWake(const JoltGpuStorage 
         throw std::invalid_argument("Wake bounds must be finite ordered world coordinates");
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
+    e->boundsValidation = std::move(validation);
+    e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     auto p = Selection(s, selection);
     p.operation.y = 1u;
     e->resultPort = Bounds;
     e->resultBytes = 32u;
     e->boundsBytes = Bytes(std::array<Float4, 2>{low, high});
     e->Add(BoundsWake, p.selected.y, p.selected.z, p);
-    e->completed = [done = std::move(done)](auto &) { done(); };
+    e->completed = [](auto &) {};
     return e->Next();
+}
+
+JoltGpuControlWork JoltGpuSleep::ValidateBoundsEdits(const BoundsValidation &validation)
+{
+    if (!validation.status)
+        return {};
+    auto packet = rhi::PrepareComputeBatch(m_impl->host, {}, {}, {{validation.status, 0u, sizeof(uint32_t)}});
+    return {packet, [packet] {
+                Impl::Execution::ReadStatus(*packet);
+                return JoltGpuControlWork{};
+            }};
 }
 JoltGpuControlWork JoltGpuSleep::PrepareQuery(std::shared_ptr<rhi::ComputeBuffer> snapshot, uint32_t count,
                                               std::vector<uint32_t> requests,

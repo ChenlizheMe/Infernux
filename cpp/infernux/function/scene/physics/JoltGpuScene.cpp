@@ -100,6 +100,7 @@ class JoltGpuScene::Impl
         std::vector<uint32_t> records;
         std::vector<uint32_t> freeLocals;
         std::vector<JoltGpuControlGroup> pending;
+        std::shared_ptr<JoltGpuSleep::BoundsValidation> pendingBoundsValidation;
         std::shared_ptr<PhysicsTargetBatch> pendingSources;
         std::vector<TargetCompletion> pendingCompletions;
         std::shared_ptr<const Publication> published;
@@ -241,14 +242,31 @@ class JoltGpuScene::Impl
         result.selectedCounts = {range.bodies.y, range.leaves.y, range.leaves.w, 0u};
         return result;
     }
+    static std::shared_ptr<JoltGpuSleep::BoundsValidation> PendingBoundsValidation(Partition &domain)
+    {
+        if (!domain.pendingBoundsValidation)
+            domain.pendingBoundsValidation = std::make_shared<JoltGpuSleep::BoundsValidation>();
+        return domain.pendingBoundsValidation;
+    }
+    std::vector<JoltGpuControlGroup> TakeControlGroups(Partition &domain)
+    {
+        if (auto validation = std::exchange(domain.pendingBoundsValidation, {})) {
+            // Bounds edits retain their command order and report device errors before publishing the batch.
+            JoltGpuControlGroup check;
+            check.prepareWork = [this, validation] { return programs.GetSleep().ValidateBoundsEdits(*validation); };
+            domain.pending.push_back(std::move(check));
+        }
+        return std::exchange(domain.pending, {});
+    }
+
     using OldBounds = std::shared_ptr<std::shared_ptr<rhi::ComputeBuffer>>;
     OldBounds QueueOldBounds(Partition &domain, uint32_t record, uint32_t id)
     {
         auto old = std::make_shared<std::shared_ptr<rhi::ComputeBuffer>>();
         JoltGpuControlGroup capture;
-        capture.prepareWork = [this, &domain, record, id, old] {
+        capture.prepareWork = [this, &domain, record, id, old, validation = PendingBoundsValidation(domain)] {
             RequireOwnership(record, id);
-            return programs.GetSleep().PrepareOldBounds(storage, SleepSelection(domain), Packed(record),
+            return programs.GetSleep().PrepareOldBounds(storage, SleepSelection(domain), Packed(record), validation,
                                                         [old](auto value) { *old = std::move(value); });
         };
         domain.pending.push_back(std::move(capture));
@@ -258,14 +276,15 @@ class JoltGpuScene::Impl
                           bool requirePoseChange = false)
     {
         JoltGpuControlGroup wake;
-        wake.prepareWork = [this, &domain, old, record, id, newBody, requirePoseChange] {
+        wake.prepareWork = [this, &domain, old, record, id, newBody, requirePoseChange,
+                            validation = PendingBoundsValidation(domain)] {
             uint32_t source = UINT32_MAX;
             if (newBody) {
                 RequireOwnership(record, id);
                 source = Packed(record);
             }
-            return programs.GetSleep().PrepareBoundsWake(
-                storage, SleepSelection(domain), old ? *old : nullptr, source, [] {}, requirePoseChange);
+            return programs.GetSleep().PrepareBoundsWake(storage, SleepSelection(domain), old ? *old : nullptr, source,
+                                                         validation, requirePoseChange);
         };
         domain.pending.push_back(std::move(wake));
     }
@@ -1417,7 +1436,7 @@ class JoltGpuScene::Impl
         }
         control.prepareContactReport = std::move(reports.phase);
         control.prepareCoupledContacts = std::move(reports.couple);
-        control.groups = std::move(domain.pending);
+        control.groups = TakeControlGroups(domain);
         domain.pendingSources.reset();
         domain.pendingCompletions.clear();
         const std::shared_ptr<const Publication> retained = publication;
@@ -1618,6 +1637,7 @@ class JoltGpuScene::Impl
         if (domain.candidateCompletions)
             targets.insert(targets.end(), domain.candidateCompletions->begin(), domain.candidateCompletions->end());
         domain.pending.clear();
+        domain.pendingBoundsValidation.reset();
         domain.queuedPairs.reset();
         domain.pendingSources.reset();
         domain.pendingCompletions.clear();
@@ -1855,7 +1875,7 @@ class JoltGpuScene::Impl
                 QueueLayout(*domain, 0u);
             JoltGpuTickControl control;
             control.commandProgram = &commands;
-            control.groups = std::move(domain->pending);
+            control.groups = TakeControlGroups(*domain);
             writer = domain;
             domain->cursor = &tick;
             domain->shareable = false;
@@ -2040,9 +2060,9 @@ void JoltGpuScene::QueueBoundsWake(RuntimeWorld &world, Float4 low, Float4 high)
     if (domain.closed || domain.retiring)
         throw std::logic_error("Cannot wake a closed World");
     JoltGpuControlGroup group;
-    group.prepareWork = [impl = m_impl.get(), &domain, low, high] {
+    group.prepareWork = [impl = m_impl.get(), &domain, low, high, validation = Impl::PendingBoundsValidation(domain)] {
         return impl->programs.GetSleep().PrepareAuthoredBoundsWake(impl->storage, impl->SleepSelection(domain), low,
-                                                                   high, [] {});
+                                                                   high, validation);
     };
     domain.pending.push_back(std::move(group));
 }
