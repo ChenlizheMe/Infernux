@@ -1,17 +1,25 @@
-"""Independent temporary project: exact tutorial material in both views and GPU preview."""
+"""A typed Slang material in both views and the GPU material preview."""
 import argparse
 import json
 from pathlib import Path
-import re
 import tempfile
 
 import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
-from infernux.engine.path_utils import resolved_path
 from infernux.lib import ConsolePanel, LightShadows, SceneManager, Vector3
+from mesh_preview_dependency_case import measure_preview_pixels
 
-ROOT = Path(resolved_path(__file__)).parents[2]
+PAINTED_SHADER = '''import infernux.shader as shader
+
+class Painted(shader.surface):
+    shader_id = "tests/materials/painted"
+    shading_model = shader.ref("infernux/shading/unlit")
+    base_color = shader.material.color(default=(0.9, 0.1, 0.2, 1.0))
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=self.base_color.rgb, alpha=self.base_color.a)
+'''
 
 
 def main():
@@ -40,14 +48,14 @@ def main():
             native.set_editor_idle_fps(0.)
             native.editor_camera.restore_state(0, 2, -5, 0, 0, 0, 5.3851648, 0, 21.801409)
             database = frontend.get_asset_database()
-            template = inx.Material.create_lit('Tutorial Shared')
             if args.surface == 'painted':
-                source = re.findall(r'```glsl\n(.*?)```', (ROOT / 'docs/learn/fragment-materials.md').read_text(encoding='utf-8'), re.S)[0]
-                shader = project / 'Assets/PaintedUnlit.frag'
-                shader.write_text(source, encoding='utf-8')
+                shader = project / 'Assets/painted.frag.py'
+                shader.write_text(PAINTED_SHADER, encoding='utf-8')
                 result = AssetManager.import_asset(str(shader), database=database)
                 assert result, result.error
-                template.frag_shader_name = 'Painted Unlit'
+                template = inx.Material.from_shader(result.guid, 'Tutorial Shared')
+            else:
+                template = inx.Material.create_lit('Tutorial Shared')
             path = project / 'Assets/TutorialShared.mat'
             path.write_text(json.dumps(template.serialize_document()), encoding='utf-8')
             result = AssetManager.import_asset(str(path), database=database)
@@ -79,6 +87,7 @@ def main():
             phase = frames = changed = 0
             tickets = None
             images, previews = {}, {}
+            preview_reads = {}
             preview_key = 'mat|' + material.guid
 
             def after_draw():
@@ -89,13 +98,14 @@ def main():
                     native.pump_preview_tasks()
                     tasks = [s for s in native.preview_task_snapshots if s['kind'] == 'material' and s['resource_key'] == preview_key]
                     ready = tasks and tasks[0]['ready_generation'] == tasks[0]['generation'] and tasks[0]['texture_id'] != 0
-                    if tickets is None and frames >= changed + 10 and ready:
+                    preview = measure_preview_pixels(native, tasks[0], preview_reads) if ready else None
+                    if tickets is None and frames >= changed + 10 and preview is not None:
                         tickets = [frontend.request_render_target_readback(False), frontend.request_render_target_readback(True)]
-                    elif tickets is not None and all(t.done for t in tickets):
+                    elif tickets is not None and preview is not None and all(t.done for t in tickets):
                         label, color_index = plans[phase]
-                        record = {'phase': label, 'views': [], 'preview': tasks[0], 'material_guid': material.guid}
-                        previews[label] = tasks[0]['pixel_hash']
-                        assert tasks[0]['non_transparent_pixel_count'] > 500
+                        record = {'phase': label, 'views': [], 'preview': preview, 'material_guid': material.guid}
+                        previews[label] = preview['measured_hash']
+                        assert preview['measured_nontransparent_pixels'] > 500, preview
                         for view, ticket in zip(('scene', 'game'), tickets):
                             pixels = ticket.result_numpy().copy().astype(np.float32)
                             rgb = pixels[..., :3]

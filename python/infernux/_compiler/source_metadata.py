@@ -8,8 +8,7 @@ from functools import lru_cache
 from .kernel_contract import attribute_name as _attribute_name
 
 
-_MARKER = "# <infernux-compute-source-metadata>"
-_GLOBAL_NAME = "__infernux_compute_sources__"
+_RECORDS_PREFIX = "\n# <infernux-compute-source-metadata>\n__infernux_compute_sources__ = "
 
 
 def compute_decorator_names(
@@ -86,7 +85,7 @@ def function_source_spans(source: str):
 
 def compute_source_records(source: str) -> dict[tuple[str, int], tuple[str, int]]:
     """Index GPU declarations by qualified name and Python's code start line."""
-    source = source.split(_MARKER, 1)[0]
+    source = source.partition(_RECORDS_PREFIX)[0]
     if "kernel" not in source and "function" not in source:
         return {}
     lines = source.splitlines(keepends=True)
@@ -96,13 +95,13 @@ def compute_source_records(source: str) -> dict[tuple[str, int], tuple[str, int]
 
 def embed_compute_sources(source: str) -> str:
     """Embed only decorated GPU functions for a source-less Player module."""
-    had_marker = _MARKER in source
-    base = source.split(_MARKER, 1)[0].rstrip() + "\n"
+    base, marker, _ = source.partition(_RECORDS_PREFIX)
+    base = base.rstrip() + "\n"
     records = compute_source_records(base)
     if not records:
-        return base if had_marker else source
+        return base if marker else source
     ordered = {name: records[name] for name in sorted(records)}
-    return f"{base}\n{_MARKER}\n{_GLOBAL_NAME} = {ordered!r}\n"
+    return f"{base}{_RECORDS_PREFIX}{ordered!r}\n"
 
 
 __all__ = ["embed_compute_sources"]

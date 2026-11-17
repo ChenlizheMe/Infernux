@@ -23,6 +23,28 @@ from packaging.utils import canonicalize_name
 from .path_utils import resolved_path
 
 
+_NUMPY_RUNTIME_EXCLUDED_DIRECTORIES = frozenset(
+    {"__pycache__", "_examples", "doc", "docs", "include", "testing", "tests"}
+)
+_NUMPY_RUNTIME_EXCLUDED_SUFFIXES = frozenset(
+    {".c", ".cc", ".cpp", ".h", ".hpp", ".html", ".md", ".pc", ".pxd", ".pxi", ".pyi", ".pyx", ".rst", ".txt"}
+)
+_NUMPY_RUNTIME_LEGAL_FILE_MARKERS = ("license", "copying", "notice", "authors")
+
+
+def include_numpy_runtime_file(relative: Path) -> bool:
+    """Select a file relative to the NumPy package for a desktop Player."""
+    if any(part.casefold() in _NUMPY_RUNTIME_EXCLUDED_DIRECTORIES for part in relative.parts[:-1]):
+        return False
+    name = relative.name.casefold()
+    if name == "py.typed" or (name.endswith(".pyd") and "_tests" in name):
+        return False
+    return (
+        any(marker in name for marker in _NUMPY_RUNTIME_LEGAL_FILE_MARKERS)
+        or relative.suffix.casefold() not in _NUMPY_RUNTIME_EXCLUDED_SUFFIXES
+    )
+
+
 @dataclass(frozen=True)
 class DependencyFile:
     source: Path

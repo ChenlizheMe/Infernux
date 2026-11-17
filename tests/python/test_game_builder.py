@@ -1351,11 +1351,16 @@ def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
     source = tmp_path / "source" / "infernux"
     (source / "engine").mkdir(parents=True)
     (source / "lib").mkdir()
+    (source / "_compiler").mkdir()
     (source / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
     (source / "engine" / "__init__.py").write_text("ENGINE = 1\n", encoding="utf-8")
     (source / "engine" / "runtime.py").write_text(
         "from __future__ import annotations\nVALUE = 2\n",
         encoding="utf-8",
+    )
+    shutil.copy2(
+        Path(infernux.__file__).parent / "_compiler" / "source_metadata.py",
+        source / "_compiler" / "source_metadata.py",
     )
     (source / "engine" / "path_utils.py").write_text(
         "def resolved_path(value): return str(value)\n",
@@ -1397,6 +1402,7 @@ def test_player_module_stages_source_less_engine_runtime(tmp_path, monkeypatch):
     runtime = dist / "infernux"
     assert (runtime / "__init__.pyc").is_file()
     assert (runtime / "engine" / "runtime.pyc").is_file()
+    assert (runtime / "_compiler" / "source_metadata.pyc").is_file()
     assert (runtime / "engine" / "path_utils.pyc").is_file()
     assert (runtime / "engine" / "runtime_artifact_catalog.pyc").is_file()
     assert (runtime / "engine" / "build_settings.pyc").is_file()
@@ -1499,24 +1505,43 @@ def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     os.makedirs(builder._staging_dir)
     dist = tmp_path / "original.dist"
     dist.mkdir(parents=True)
-    (dist / "InfernuxPlayer.exe").write_bytes(b"runtime")
     (dist / "bindings.pyi.bak").write_bytes(b"editor backup")
     (dist / "InfernuxPlayer.pdb").write_bytes(b"debug symbols")
+    runtime_files = {
+        "InfernuxPlayer.exe": b"runtime",
+        "numpy/__init__.pyc": b"runtime bytecode",
+        "numpy/_core/_multiarray_umath.pyd": b"native extension",
+        "numpy/LICENSE.txt": b"notice",
+        "numpy.libs/blas.dll": b"native dependency",
+    }
+    build_only_files = {
+        "numpy/_core/include/numpy/arrayobject.h": b"header",
+        "numpy/tests/test_runtime.pyc": b"test",
+        "numpy/_core/_multiarray_tests.pyd": b"native test",
+    }
+    if sys.platform == "win32":
+        runtime_files["infernux/lib/InfernuxFoundation.dll"] = b"foundation"
+        build_only_files["InfernuxFoundation.dll"] = b"foundation"
+    for name, data in (runtime_files | build_only_files).items():
+        path = dist / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
 
     builder._store_runtime_pack("a" * 64, str(dist))
     restored = builder._restore_runtime_pack("a" * 64)
 
     assert restored == os.path.join(builder._staging_dir, "boot.dist")
-    assert (tmp_path / "staging" / "boot.dist" / "InfernuxPlayer.exe").read_bytes() == b"runtime"
+    for name, data in runtime_files.items():
+        assert (Path(restored) / name).read_bytes() == data
     cache_manifest = json.loads((cache_root / ("a" * 64) / "Player.inxmanifest").read_text(encoding="utf-8"))
     assert cache_manifest["archive"] == "Runtime.inxrt"
     assert cache_manifest["compression"] == "store"
     assert cache_manifest["lto"] is True
-    assert cache_manifest["file_count"] == 1
+    assert cache_manifest["file_count"] == len(runtime_files)
     assert cache_manifest["archive_bytes"] > 0
     native_manifest = read_manifest(cache_root / ("a" * 64) / "Runtime.inxrt")
     assert native_manifest["compression_profile"] == "development"
-    assert {entry["path"] for entry in native_manifest["files"]} == {"InfernuxPlayer.exe"}
+    assert {entry["path"] for entry in native_manifest["files"]} == runtime_files.keys()
     assert not (tmp_path / "staging" / "boot.dist" / "_infernux_runtime_pack.json").exists()
 
 

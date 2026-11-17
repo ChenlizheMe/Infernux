@@ -301,26 +301,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         }
     )
     _PLAYER_PORTABLE_DOCUMENT_SUFFIXES = RUNTIME_AUTHORING_DOCUMENT_SUFFIXES
-    _NUMPY_RUNTIME_EXCLUDED_DIRECTORIES = frozenset(
-        {
-            "__pycache__",
-            "_examples",
-            "doc",
-            "docs",
-            "include",
-            "testing",
-            "tests",
-        }
-    )
-    _NUMPY_RUNTIME_EXCLUDED_SUFFIXES = frozenset(
-        {".c", ".cc", ".cpp", ".h", ".hpp", ".md", ".pc", ".pxd", ".pxi", ".pyi", ".pyx", ".rst"}
-    )
-    _NUMPY_RUNTIME_LEGAL_FILE_MARKERS = (
-        "license",
-        "copying",
-        "notice",
-        "authors",
-    )
     _PLAYER_RUNTIME_ICON_FILES = frozenset(
         {
             # The Player bootstrap uses icon.png for the game window and
@@ -334,24 +314,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         }
     )
 
-    @classmethod
-    def _include_numpy_runtime_file(cls, filename: str) -> bool:
-        """Keep importable NumPy payload and legal notices, not test/docs data."""
 
-        lowered = filename.casefold()
-        if lowered == "py.typed":
-            return False
-        # NumPy ships compiled test modules beside its production extensions,
-        # e.g. an ABI-tagged _multiarray_tests extension. It is never needed by
-        # engine runtime imports and are unambiguously test-only by name.
-        if lowered.endswith(".pyd") and "_tests" in lowered:
-            return False
-        if any(marker in lowered for marker in cls._NUMPY_RUNTIME_LEGAL_FILE_MARKERS):
-            return True
-        return Path(filename).suffix.casefold() not in cls._NUMPY_RUNTIME_EXCLUDED_SUFFIXES | {
-            ".html",
-            ".txt",
-        }
     # Editor localization is loaded by the Editor only.  Keep this explicit
     # because ``--include-package-data=infernux`` otherwise makes it easy for
     # Nuitka to copy the directory back into a Player staging tree.
@@ -3200,6 +3163,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     ) -> None:
         """Write the always-required runtime payload as Runtime.inxrt."""
 
+        from .player_dependencies import include_numpy_runtime_file
+
         data_root = os.path.join(final_dir, f"{self.project_name}_Data")
         archive_path = os.path.join(data_root, self._RUNTIME_ARCHIVE_FILENAME)
         roots = [
@@ -3284,21 +3249,15 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             if not os.path.isdir(payload_root):
                 continue
             is_numpy_package = os.path.basename(payload_root).casefold() == "numpy"
-            for root, dirs, filenames in os.walk(payload_root):
-                if is_numpy_package:
-                    dirs[:] = [
-                        directory
-                        for directory in dirs
-                        if directory.casefold() not in self._NUMPY_RUNTIME_EXCLUDED_DIRECTORIES
-                    ]
+            for root, _, filenames in os.walk(payload_root):
                 for filename in filenames:
                     # A Player has one executable only. Never hide another
                     # executable inside Runtime.inxrt.
                     if filename.casefold().endswith(".exe"):
                         continue
-                    if is_numpy_package and not self._include_numpy_runtime_file(filename):
-                        continue
                     source_path = os.path.join(root, filename)
+                    if is_numpy_package and not include_numpy_runtime_file(Path(source_path).relative_to(payload_root)):
+                        continue
                     portable_source = relative_path(source_path, final_dir)
                     if (
                         portable_source.startswith(

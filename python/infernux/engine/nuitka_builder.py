@@ -1060,7 +1060,6 @@ class NuitkaBuilder:
     # packagers. Keep these separate from _PLAYER_POST_BUILD_ONLY_FILES so a
     # change to their output policy still invalidates the prebuilt runtime.
     _PLAYER_RUNTIME_EXCLUDED_FILES = frozenset({
-        "_compiler/source_metadata.py",
         "engine/nuitka_builder.py",
     })
     _GAME_BUILD_EXCLUDED_PACKAGES = frozenset()
@@ -1701,6 +1700,8 @@ print(json.dumps({{
     ) -> None:
         """Cache the compiled runtime through the native InxPack writer."""
 
+        from .player_dependencies import include_numpy_runtime_file
+
         os.makedirs(self._runtime_pack_dir, exist_ok=True)
         pack_root = self._runtime_pack_path(runtime_pack_key)
         metadata = {
@@ -1736,7 +1737,8 @@ print(json.dumps({{
             os.makedirs(temporary, exist_ok=False)
             archive_path = os.path.join(temporary, _RUNTIME_ARCHIVE_FILENAME)
             source_files: list[tuple[str, str]] = []
-            for source_path in sorted(Path(dist_dir).rglob("*")):
+            dist_root = Path(dist_dir)
+            for source_path in sorted(dist_root.rglob("*")):
                 if not source_path.is_file():
                     continue
                 if source_path.name in {
@@ -1750,10 +1752,16 @@ print(json.dumps({{
                     or source_path.suffix.lower() in _RUNTIME_PACK_FORBIDDEN_SUFFIXES
                 ):
                     continue
-                relative = source_path.relative_to(dist_dir).as_posix()
-                if self._is_redundant_engine_native_alias(source_path, Path(dist_dir)):
+                relative = source_path.relative_to(dist_root)
+                if self._is_redundant_engine_native_alias(source_path, dist_root):
                     continue
-                source_files.append((relative, str(source_path)))
+                if relative.parts[0].casefold() == "numpy" and not include_numpy_runtime_file(Path(*relative.parts[1:])):
+                    continue
+                # Windows bootstraps Foundation from infernux/lib; the root
+                # copy is only needed while staging the compiler output.
+                if sys.platform == "win32" and relative == Path("InfernuxFoundation.dll"):
+                    continue
+                source_files.append((relative.as_posix(), str(source_path)))
             if not source_files:
                 raise RuntimeError("Native Runtime.inxrt would be empty")
 
