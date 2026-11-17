@@ -504,38 +504,37 @@ class ModelLoadRequest(CpuRequest):
         if self.stage not in ("programs", "values", "complete"):
             return ServiceDemand(reason="model directory/structure/program facts are not yet ready")
         availability = _service_availability(self, owner, opportunity)
-        if availability.reason:
-            return availability
-        demands = []
+        return combine_services(availability, self._remaining_services(owner))
+
+    def _remaining_services(self, owner):
         if self.stage == "programs":
             program = self.program_input
-            demands.extend(program.remaining_services(self.file, self._IO_BATCH_BYTES, owner,
-                lambda action, units: host_service(owner, program.host_key(action), units)))
+            yield from program.remaining_services(self.file, self._IO_BATCH_BYTES, owner,
+                lambda action, units: host_service(owner, program.host_key(action), units))
         observation = owner._io_observations.get(self.file)
         for index in range(self.index, len(self.entries)):
             _, _, _, shape = self.entries[index]
             nbytes, current = math.prod(shape) * 4, index == self.index
             cursor = self.cursor if current else None
             if cursor is not None:
-                demands.append(cursor_transfer_service(self, owner, cursor, ("model-load-transfer",)))
+                yield cursor_transfer_service(self, owner, cursor, ("model-load-transfer",))
             started = current and (self.reading or self.gpu_value is not None)
             if not started:
-                demands.append(host_service(owner, self._host_key("allocate", len(shape)), nbytes))
+                yield host_service(owner, self._host_key("allocate", len(shape)), nbytes)
                 recipe, active, pending = self.read_recipes[index], None, False
             else:
                 pending, active = self.file.pending, observation
                 recipe = observation.recipe if pending else self.file.describe_remaining_work()
             maximum = (max(nbytes, self._IO_BATCH_BYTES) if self.device == "cpu" else
                        (self.reserved_window_bytes if started else 0) or self._IO_BATCH_BYTES)
-            demands.append(recipe_service(recipe, owner, maximum, observation=active, pending=pending))
+            yield recipe_service(recipe, owner, maximum, observation=active, pending=pending)
             if self.device == "cpu":
-                demands.append(host_service(owner, self._host_key("adopt"), 1))
+                yield host_service(owner, self._host_key("adopt"), 1)
             else:
                 remaining = nbytes - (self.uploaded_bytes if current else 0) - (cursor.nbytes if cursor else 0)
                 if remaining:
-                    demands.append(self._gpu_window_service(owner, remaining, current))
-        demands.append(host_service(owner, self._host_key("publish"), len(self.entries)+len(self.definition.layers)))
-        return combine_services(availability, demands)
+                    yield self._gpu_window_service(owner, remaining, current)
+        yield host_service(owner, self._host_key("publish"), len(self.entries)+len(self.definition.layers))
 
     def _gpu_window_service(self, owner, nbytes, current):
         if not current or nbytes != self.reserved_window_bytes:
