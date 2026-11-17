@@ -1878,6 +1878,8 @@ class JoltGpuScene::Impl
             else
                 QueueLayout(*domain, 0u);
             JoltGpuTickControl control;
+            control.needsSnapshot = false;
+            control.partitionCleanup = true;
             control.commandProgram = &commands;
             control.groups = TakeControlGroups(*domain);
             writer = domain;

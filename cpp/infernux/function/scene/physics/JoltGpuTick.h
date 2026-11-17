@@ -128,6 +128,8 @@ struct JoltGpuTickControl
     std::function<std::vector<uint32_t>()> prepareSleepSources;
     // Pure observations explicitly opt out; existing Tick/Control/Work retain snapshots.
     bool needsSnapshot = true;
+    // Closed partitions release their resources through the regular control cursor.
+    bool partitionCleanup = false;
     std::shared_ptr<const JoltGpuGeometryLease> acceptedGeometry;
     bool acceptedGenericGeometry = false;
     JoltGpuTickControl() = default;

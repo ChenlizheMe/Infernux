@@ -1288,10 +1288,12 @@ class JoltGpuTick::Impl
             facts.gpuBusy = !receipts.empty() || !sharedStages.empty();
             return facts;
         }
-        // An admitted mixed Fixed can consume its retired response before drawing.
-        // Only its next numerical packet can use an idle queue slot in that opportunity.
-        const bool early = !work.IsLate() && !controlOnly && !pressureActive;
-        const bool nextFeedbackPacket = early && earlyFeedbackOpportunity == work.Opportunity() &&
+        // Advance a closed partition's retirement and already completed coupling
+        // feedback while the host still has room before foreground scene work.
+        const bool early = !work.IsLate() && !pressureActive;
+        const bool cleanup = early && control.partitionCleanup;
+        const bool coupled = early && !controlOnly;
+        const bool nextFeedbackPacket = coupled && earlyFeedbackOpportunity == work.Opportunity() &&
                                         stageCursor.phase != Phase::Done &&
                                         (!ProducerPhase(stageCursor.phase) || CoupledFeedbackPhase(stageCursor.phase));
         if ((!batch && (workContinuation || !controlAccepted || !inputAccepted || stageCursor.phase != Phase::Done ||
@@ -1299,11 +1301,11 @@ class JoltGpuTick::Impl
             (batch && !preservation &&
              (batch->RequiresPreparation() || batch->HasPreservationWork() || NeedsSmallerPrefix()))) {
             facts.host.ready = true;
-            facts.host.reserved =
-                nextFeedbackPacket || (early && workContinuation && CoupledFeedbackPhase(stageCursor.phase) &&
-                                       continuationResumeAfter == JoltGpuControlWork::ResumeAfter::Completion);
+            facts.host.reserved = cleanup || nextFeedbackPacket ||
+                                  (coupled && workContinuation && CoupledFeedbackPhase(stageCursor.phase) &&
+                                   continuationResumeAfter == JoltGpuControlWork::ResumeAfter::Completion);
         } else if (!submissionBusy && CanSubmit()) {
-            facts.gpu = {0, 0, true, nextFeedbackPacket && !preservation};
+            facts.gpu = {0, 0, true, cleanup || (nextFeedbackPacket && !preservation)};
         }
         // Accepted predecessors do not block this source's ready successor.
         // Its actual buffer dependencies and queue-slot admission order it.
@@ -1398,7 +1400,7 @@ class JoltGpuTick::Impl
     JoltGpuControlWork PrepareSnapshot()
     {
         if (!control.needsSnapshot)
-            return {}; // Explicit pure Work has no World-publication consumer.
+            return {}; // Pure observations and closed partitions have no publication consumer.
         using namespace JPH::GPU;
         const auto &liveLayout = *storage.GetJointLayout();
         const auto slice = liveLayout.WorldSlice(finalOutput.jointBase, finalOutput.jointCount);
@@ -2246,7 +2248,7 @@ bool JoltGpuTick::Impl::Lane::Advance(bool gpu, uint64_t token)
         next = (index + 1) % members.size();
         const auto affected = prepared && prepared->owner == member ? prepared : nullptr;
         try {
-            if (token && !gpu)
+            if (token && !gpu && !member->controlOnly)
                 member->earlyFeedbackOpportunity = member->work.Opportunity();
             if (member->Advance(gpu)) {
                 if (gpu)
