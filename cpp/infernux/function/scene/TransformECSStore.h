@@ -142,7 +142,6 @@ class TransformECSStore
     }
     ui::RectTransformState &EnableRectLayout(Handle h);
     void DisableRectLayout(Handle h);
-    uint64_t GetRectLayoutVersion(Handle h) const;
     void ApplyRectLayout(Handle h, bool authored = true);
     void ResolveRectLocalPosition(Handle h, const glm::vec3 &position);
     uint64_t NextRectLayoutRevision() noexcept

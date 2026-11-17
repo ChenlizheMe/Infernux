@@ -808,6 +808,46 @@ def test_destroyed_element_packets_do_not_survive_membership_change(ui):
     assert sum(name == "add_text" for name, _, _ in commands) == 2
 
 
+@pytest.mark.parametrize("ui", [False], indirect=True, ids=["screen"])
+def test_completed_views_retain_their_own_commands(ui):
+    from infernux.lib import Vector2
+
+    label = ui.add()
+    label.anchored_position = Vector2(80.0, 90.0)
+    world = int(ui.scene._runtime_world_id)
+    views = [SimpleNamespace(camera_id=camera_id, simulation_epoch=1, world_frame=1) for camera_id in (10, 20)]
+    sizes = [(1920, 1080), (960, 1080)]
+
+    def submit(view, size):
+        ui.renderer.commands.clear()
+        ui.submission.submit(force=True, world_id=world, target_size=size, camera_size=size,
+                             completed_view=view, include_world=False)
+        return tuple(ui.renderer.commands)
+
+    first, second = [submit(view, size) for view, size in zip(views, sizes)]
+    assert first != second
+    assert ui.renderer.captures == 2
+    for view in views:
+        view.world_frame += 1
+    assert [submit(view, size) for view, size in zip(views, sizes)] == [first, second]
+    assert ui.renderer.captures == 2
+
+    label.text = "Changed in Play"
+    for view, size in zip(views, sizes):
+        view.world_frame += 1
+        commands = submit(view, size)
+        assert [args[5] for name, args, _ in commands if name == "add_text"] == [label.text]
+    assert ui.renderer.captures == 4
+
+    views[0].world_frame += 1
+    submit(views[0], sizes[0])
+    views[0].world_frame += 1
+    submit(views[0], sizes[0])
+    views[1].world_frame = views[0].world_frame
+    submit(views[1], sizes[1])
+    assert ui.renderer.captures == 5
+
+
 def test_empty_ui_capture_does_not_wait_for_removed_texture(ui):
     from infernux.core.asset_ref import TextureRef
     from infernux.ui import UICanvas, UIImage

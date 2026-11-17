@@ -724,6 +724,7 @@ class RuntimeScreenUISubmission:
         self._canvas_snapshot = ()
         self._last_submission_frame = -1
         self._command_packets = UICommandPackets(_get_tex_cache())
+        self._completed_view_packets = {}
         self._presentation_packets = {}
         self._submitted_packets = None
 
@@ -740,8 +741,29 @@ class RuntimeScreenUISubmission:
         self._target_height = height
 
     def retire_world(self, world):
+        world = int(world)
+        self._completed_view_packets.pop(world, None)
         self._presentation_packets = {key: value for key, value in self._presentation_packets.items()
-                                      if key[0] != int(world)}
+                                      if key[0] != world}
+
+    def _packets_for_completed_view(self, world, view):
+        source = view.simulation_epoch, view.world_frame
+        cached = self._completed_view_packets.get(world)
+        if cached is None or cached[0] != source:
+            # Keep only views used by the preceding publication. A retired
+            # camera drops out without retaining its packets for the World lifetime.
+            previous = cached[2] if cached is not None and cached[0][0] == source[0] else {}
+            cached = source, previous, {}
+            self._completed_view_packets[world] = cached
+        _, previous, current = cached
+        camera = view.camera_id
+        packets = current.get(camera)
+        if packets is None:
+            packets = previous.pop(camera, None)
+            if packets is None:
+                packets = UICommandPackets(_get_tex_cache())
+            current[camera] = packets
+        return packets
 
     def collect_presentation_pose_objects(self):
         """Collect this World's actual UI consumers before any layout or draw reads."""
@@ -761,7 +783,8 @@ class RuntimeScreenUISubmission:
                     local[element.game_object.id] = element.game_object
         return list(objects.values()), list(local.values())
 
-    def submit(self, *, force=False, world_id=None, target_size=None, camera_size=None, prepared_pose_reads=False, capture_key=None, world_only=False, include_world=True) -> bool:
+    def submit(self, *, force=False, world_id=None, target_size=None, camera_size=None, prepared_pose_reads=False,
+               capture_key=None, completed_view=None, world_only=False, include_world=True) -> bool:
         """Publish current-frame UI commands before camera RenderGraph submission.
 
         Returns ``True`` when commands were rebuilt and ``False`` when the
@@ -798,6 +821,8 @@ class RuntimeScreenUISubmission:
             # An empty command list has no layout, texture or material dependencies.
             # Each capture still seals it against its actual completed World.
             self._submitted_packets = None
+            if completed_view is not None:
+                self._completed_view_packets.pop(source_world, None)
             if capture_key is not None:
                 self._presentation_packets.pop((capture_key[0], capture_key[-1]), None)
             if force:
@@ -808,7 +833,6 @@ class RuntimeScreenUISubmission:
 
         self._prepare_native_layouts(canvases, world_elements, renderer, width, height, camera_size)
 
-        packets = self._command_packets
         if capture_key is not None:
             view_key = capture_key[0], capture_key[-1]
             entry = self._presentation_packets.get(view_key)
@@ -816,6 +840,10 @@ class RuntimeScreenUISubmission:
                 entry = capture_key, UICommandPackets(_get_tex_cache(), freeze_custom=True)
                 self._presentation_packets[view_key] = entry
             packets = entry[1]
+        elif completed_view is not None:
+            packets = self._packets_for_completed_view(source_world, completed_view)
+        else:
+            packets = self._command_packets
         texture_cache = packets.texture_cache
         revision = _runtime_ui_revision(
             None, canvases, width, height, texture_cache.generation,

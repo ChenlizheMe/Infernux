@@ -15,6 +15,13 @@ struct RectLayoutSpec
     RectPoint parentSize{}, parentPivot{0.5f, 0.5f};
     RectPoint anchorMin{0.5f, 0.5f}, anchorMax{0.5f, 0.5f};
     RectPoint pivot{0.5f, 0.5f}, sizeDelta{}, anchoredPosition{};
+
+    bool operator==(const RectLayoutSpec &other) const
+    {
+        return parentSize == other.parentSize && parentPivot == other.parentPivot && anchorMin == other.anchorMin &&
+               anchorMax == other.anchorMax && pivot == other.pivot && sizeDelta == other.sizeDelta &&
+               anchoredPosition == other.anchoredPosition;
+    }
 };
 
 struct RectLayoutGeometry

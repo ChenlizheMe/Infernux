@@ -4,6 +4,7 @@
 #include "Scene.h"
 #include "WorldUIProjection.h"
 #include <array>
+#include <core/math/RectLayoutTypes.h>
 #include <glm/gtc/quaternion.hpp>
 #include <limits>
 #include <stdexcept>
@@ -137,9 +138,16 @@ class UITransformDependencies
             if (!store.IsValid(entry.handle))
                 throw std::runtime_error("UI dependency membership outlived its Transform; rebuild the snapshot");
             auto *transform = store.GetOwner(entry.handle);
-            const uint64_t layoutRevision = store.GetRectLayoutVersion(entry.handle);
-            entryChanged |= layoutRevision != entry.layoutRevision;
-            entry.layoutRevision = layoutRevision;
+            const auto *layout = store.GetRectLayout(entry.handle);
+            const auto layoutRevision = layout ? layout->revision : 0;
+            if (layoutRevision != entry.layoutRevision) {
+                // A viewport can restore a layout previously seen by this
+                // consumer. Its new write revision does not change that rect.
+                const auto spec = layout ? std::optional{layout->spec} : std::nullopt;
+                entryChanged |= !(spec == entry.layout);
+                entry.layout = spec;
+                entry.layoutRevision = layoutRevision;
+            }
             if (entry.world) {
                 const int layer = transform->GetGameObject()->GetLayer();
                 entryChanged |= layer != entry.layer;
@@ -283,6 +291,7 @@ class UITransformDependencies
         bool world;
         int layer = -1;
         uint64_t layoutRevision = 0;
+        std::optional<ui::RectLayoutSpec> layout;
         glm::vec3 position{0.0f};
         glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
         glm::vec2 scale{1.0f};

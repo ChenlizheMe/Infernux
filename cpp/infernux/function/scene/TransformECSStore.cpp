@@ -103,12 +103,6 @@ void TransformECSStore::DisableRectLayout(Handle h)
     MarkRectLayoutInputChanged();
 }
 
-uint64_t TransformECSStore::GetRectLayoutVersion(Handle h) const
-{
-    const auto *layout = m_rectLayouts[h.index].get();
-    return layout ? layout->revision : 0;
-}
-
 TransformECSStore &TransformECSStore::Instance()
 {
     // Intentionally leaked (see SceneManager::Instance) — Transform

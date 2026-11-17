@@ -50,20 +50,21 @@ class RuntimeScreenUIRenderPipeline(RenderPipelineCallback):
     def should_render_view(self, view) -> bool:
         return self._delegate.should_render_view(view)
 
-    def render(self, context, camera) -> None:
+    def render(self, context, view) -> None:
         completed = context.capturing_completed_world
         published_world_ui = context._uses_published_world_ui
         if not context._has_screen_ui_snapshot and not context._uses_shared_scene_ui:
             self._submission.submit(
                 force=completed,
-                world_id=camera.world_id,
-                target_size=(camera.output_width, camera.output_height),
-                camera_size=(camera.pixel_width, camera.pixel_height),
+                world_id=view.world_id,
+                target_size=(view.output_width, view.output_height),
+                camera_size=(view.pixel_width, view.pixel_height),
+                completed_view=view if completed else None,
                 include_world=not published_world_ui,
             )
             if completed and not self._submission.capture_completed(context):
                 return
-        self._delegate.render(context, camera)
+        self._delegate.render(context, view)
 
     def dispose(self) -> None:
         self._delegate.dispose()
