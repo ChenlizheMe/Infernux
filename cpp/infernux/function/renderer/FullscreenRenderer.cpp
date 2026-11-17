@@ -116,13 +116,69 @@ void PrepareInputs(FullscreenPipelineEntry &entry, const std::string &schemaText
 }
 } // namespace
 
+void ValidateFullscreenColorOutputs(const FullscreenProgram &program, const rhi::PixelFormat *formats, uint32_t count)
+{
+    const auto fragment = std::find_if(program.code->entries.begin(), program.code->entries.end(),
+                                       [](const auto &entry) { return entry.stage == rhi::ShaderStage::Fragment; });
+    if (fragment == program.code->entries.end() || fragment->outputs.size() != count)
+        throw std::invalid_argument("Fullscreen shader '" + program.shaderId + "' color output count does not match " +
+                                    std::to_string(count) + " declared attachments");
+    for (const auto &output : fragment->outputs) {
+        if (output.location >= count || output.components != 4 ||
+            (rhi::IsIntegerFormat(formats[output.location]) ? output.scalar != ShaderScalarKind::UInt32
+                                                            : output.scalar != ShaderScalarKind::Float32))
+            throw std::invalid_argument("Fullscreen shader '" + program.shaderId + "' output at slot " +
+                                        std::to_string(output.location) +
+                                        " does not match the attachment numeric type");
+    }
+}
+
+uint32_t FullscreenColorBytes(const rhi::PixelFormat *formats, uint32_t count)
+{
+    uint32_t total = 0;
+    for (uint32_t index = 0; index < count; ++index) {
+        const auto format = formats[index];
+        const auto layout = rhi::GetPixelFormatLayout(format);
+        uint32_t alignment = 1, cost = layout.bytesPerBlock;
+        switch (format) {
+        case rhi::PixelFormat::RGBA8UNorm:
+        case rhi::PixelFormat::RGBA8Srgb:
+        case rhi::PixelFormat::BGRA8UNorm:
+        case rhi::PixelFormat::BGRA8Srgb:
+            cost = 8;
+            break;
+        case rhi::PixelFormat::R16SFloat:
+        case rhi::PixelFormat::RG16SFloat:
+        case rhi::PixelFormat::RGBA16SFloat:
+        case rhi::PixelFormat::RGBA16UNorm:
+        case rhi::PixelFormat::RGBA4UNormPack16:
+            alignment = 2;
+            break;
+        case rhi::PixelFormat::RGB10A2UNorm:
+            cost = 8;
+            [[fallthrough]];
+        case rhi::PixelFormat::R32SFloat:
+        case rhi::PixelFormat::RG32UInt:
+        case rhi::PixelFormat::RGBA32SFloat:
+        case rhi::PixelFormat::RGBA32UInt:
+            alignment = 4;
+            break;
+        default:
+            break;
+        }
+        total = ((total + alignment - 1) / alignment) * alignment + cost;
+    }
+    return total;
+}
+
 bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const noexcept
 {
     return shaderName == other.shaderName && renderTargetLayout == other.renderTargetLayout &&
-           samples == other.samples && colorFormat == other.colorFormat && depthFormat == other.depthFormat &&
-           depth.testEnabled == other.depth.testEnabled && depth.writeEnabled == other.depth.writeEnabled &&
-           depth.compare == other.depth.compare && alphaBlend == other.alphaBlend &&
-           colorWriteMask == other.colorWriteMask && useDynamicRendering == other.useDynamicRendering &&
+           samples == other.samples && colorCount == other.colorCount && colorFormats == other.colorFormats &&
+           depthFormat == other.depthFormat && depth.testEnabled == other.depth.testEnabled &&
+           depth.writeEnabled == other.depth.writeEnabled && depth.compare == other.depth.compare &&
+           alphaBlend == other.alphaBlend && colorWriteMask == other.colorWriteMask &&
+           useDynamicRendering == other.useDynamicRendering &&
            (program ? program->code.get() : nullptr) == (other.program ? other.program->code.get() : nullptr);
 }
 
@@ -132,7 +188,9 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     const auto combine = [&hash](size_t value) { hash ^= value + 0x9e3779b9U + (hash << 6) + (hash >> 2); };
     combine(rhi::HandleHash<rhi::RenderTargetLayoutTag>{}(key.renderTargetLayout));
     combine(static_cast<size_t>(key.samples));
-    combine(static_cast<size_t>(key.colorFormat));
+    combine(key.colorCount);
+    for (const auto format : key.colorFormats)
+        combine(static_cast<size_t>(format));
     combine(static_cast<size_t>(key.depthFormat));
     combine(key.depth.testEnabled);
     combine(key.depth.writeEnabled);
@@ -169,6 +227,16 @@ struct FullscreenPipelineCache::Impl
         PipelineEntry entry;
         if (!host || !device || (!key.useDynamicRendering && !key.renderTargetLayout.IsValid()))
             return entry;
+        if (key.colorCount == 0 || key.colorCount > key.colorFormats.size() ||
+            key.colorCount > device->GetCapabilities().limits.maxColorAttachments)
+            throw std::invalid_argument("Fullscreen pass exceeds the device color attachment limit: " + key.shaderName);
+        if (!key.program)
+            throw std::invalid_argument("Fullscreen pipeline requires a compiled author program: " + key.shaderName);
+        ValidateFullscreenColorOutputs(*key.program, key.colorFormats.data(), key.colorCount);
+        const uint32_t colorBytes = FullscreenColorBytes(key.colorFormats.data(), key.colorCount);
+        if (colorBytes > device->GetCapabilities().limits.maxColorAttachmentBytesPerSample)
+            throw std::invalid_argument("Fullscreen pass exceeds the device color bytes-per-sample limit: " +
+                                        key.shaderName);
 
         rhi::GraphicsPipelineDesc desc;
         desc.useDynamicRendering = key.useDynamicRendering;
@@ -177,21 +245,24 @@ struct FullscreenPipelineCache::Impl
         desc.raster.cullMode = rhi::CullMode::None;
         desc.raster.frontFace = rhi::FrontFace::Clockwise;
         desc.samples = key.samples;
-        desc.colorTargetCount = 1;
-        desc.colorTargets[0].format = key.colorFormat;
-        desc.colorTargets[0].blendEnabled = key.alphaBlend;
-        desc.colorTargets[0].writeMask = key.colorWriteMask;
+        desc.colorTargetCount = key.colorCount;
+        for (uint32_t index = 0; index < key.colorCount; ++index) {
+            if (key.alphaBlend && rhi::IsIntegerFormat(key.colorFormats[index]))
+                throw std::invalid_argument("Fullscreen integer color attachments cannot enable blending: " +
+                                            key.shaderName);
+            desc.colorTargets[index].format = key.colorFormats[index];
+            desc.colorTargets[index].blendEnabled = key.alphaBlend;
+            desc.colorTargets[index].writeMask = key.colorWriteMask;
+        }
         desc.depth = key.depth;
         if (key.useDynamicRendering) {
-            desc.renderingSignature.colorFormatCount = 1;
-            desc.renderingSignature.colorFormats[0] = key.colorFormat;
+            desc.renderingSignature.colorFormatCount = key.colorCount;
+            desc.renderingSignature.colorFormats = key.colorFormats;
             desc.renderingSignature.samples = key.samples;
             desc.renderingSignature.depthFormat = key.depthFormat;
             if (rhi::IsStencilFormat(key.depthFormat))
                 desc.renderingSignature.stencilFormat = key.depthFormat;
         }
-        if (!key.program)
-            throw std::invalid_argument("Fullscreen pipeline requires a compiled author program: " + key.shaderName);
         std::vector<uint32_t> selected;
         for (uint32_t index = 0; index < key.program->code->entries.size(); ++index)
             if (key.program->code->entries[index].stage != rhi::ShaderStage::Compute)

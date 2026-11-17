@@ -248,6 +248,64 @@ void CheckFullscreenState()
     assert(variants.size() == 6 && variants.at(key) == 5);
 }
 
+void CheckFullscreenOutputs()
+{
+    using Format = rhi::PixelFormat;
+    const Format packed[] = {Format::R8UNorm, Format::R32SFloat, Format::RGBA8UNorm, Format::RGBA32SFloat,
+                             Format::R8UNorm};
+    assert(FullscreenColorBytes(packed, 5) == 33);
+    const Format aligned[] = {Format::R32SFloat, Format::RGBA8UNorm, Format::RGBA32SFloat, Format::R8UNorm,
+                              Format::R8UNorm};
+    assert(FullscreenColorBytes(aligned, 5) == 30);
+    const Format integer[] = {Format::RGBA32UInt, Format::RGBA32UInt};
+    assert(FullscreenColorBytes(integer, 2) == 32);
+
+    auto code = std::make_shared<ShaderTargetCode>();
+    ShaderEntryPointCode fragment;
+    fragment.stage = rhi::ShaderStage::Fragment;
+    fragment.outputs = {{"first", 0, ShaderScalarKind::UInt32, 4}, {"second", 1, ShaderScalarKind::UInt32, 4}};
+    code->entries.push_back(fragment);
+    auto program = std::make_shared<FullscreenProgram>();
+    program->shaderId = "tests/mrt";
+    program->code = code;
+    RenderGraphDescription graph;
+    graph.textures = {{"first", integer[0]}, {"second", integer[1]}};
+    GraphPassDesc pass;
+    pass.name = "MRT";
+    pass.writeColors = {{0, "first"}, {1, "second"}};
+    pass.clearColor = true;
+    GraphCommandDesc command;
+    command.type = GraphCommandType::FullscreenQuad;
+    command.shaderName = program->shaderId;
+    command.fullscreenProgram = program;
+    pass.commands.push_back(command);
+    graph.passes.push_back(pass);
+    graph.outputTexture = "first";
+    assert(ValidateRenderGraphDescription(graph, 1));
+    auto broken = graph;
+    broken.passes[0].writeColors.pop_back();
+    assert(!ValidateRenderGraphDescription(broken, 1));
+    broken = graph;
+    broken.textures[1].format = Format::RGBA16SFloat;
+    assert(!ValidateRenderGraphDescription(broken, 1));
+    broken = graph;
+    broken.passes[0].writeColors[1].first = 2;
+    assert(!ValidateRenderGraphDescription(broken, 1));
+    broken = graph;
+    broken.passes[0].commands[0].alphaBlend = true;
+    assert(!ValidateRenderGraphDescription(broken, 1));
+
+    FullscreenPipelineKey key;
+    key.colorCount = 2;
+    key.colorFormats = {integer[0], integer[1]};
+    auto changed = key;
+    changed.colorFormats[1] = Format::RGBA16SFloat;
+    std::unordered_map<FullscreenPipelineKey, int, FullscreenPipelineKeyHash> variants;
+    variants.emplace(key, 0);
+    variants.emplace(changed, 1);
+    assert(variants.size() == 2);
+}
+
 void CheckGraphBufferValidation()
 {
     RenderGraphDescription graph;
@@ -709,6 +767,7 @@ int main(int argc, char **argv)
     }
     CheckCameraHistoryResetIsolation();
     CheckFullscreenState();
+    CheckFullscreenOutputs();
     CheckGraphBufferValidation();
     CheckViewLightListValidation();
     CheckSampledAssetTextureValidation();

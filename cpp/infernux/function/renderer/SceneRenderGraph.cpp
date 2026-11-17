@@ -4982,9 +4982,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 const rhi::DepthState fsDepthState{command->depthTest, command->depthWrite,
                                                    rhi::ReverseDepthCompare(command->depthCompare)};
                 const bool fsAlphaBlend = command->alphaBlend;
-                // Determine output target (primary color)
-                vk::ResourceHandle fsOutputTarget = primaryColorTarget;
-                vk::ResourceHandle fsWrittenVersion;
+                std::vector<vk::ResourceHandle> fsWrittenVersions(colorTargets.size());
                 vk::ResourceHandle fsDepthTarget;
                 vk::ResourceHandle fsWrittenDepthVersion;
                 rhi::PixelFormat fsDepthFormat = rhi::PixelFormat::Undefined;
@@ -4993,23 +4991,17 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     fsDepthFormat = ResolveMaterialPass(m_pythonGraphDesc, passDesc, m_renderView).depthFormat;
                 }
 
-                // Determine MSAA sample count and output format.
-                // When writing to the MSAA backbuffer the pipeline sample
-                // count must match the render pass attachment.
-                rhi::SampleCount fsSamples = rhi::SampleCount::One;
-                rhi::PixelFormat fsColorFormat = rhi::FromVkFormat(m_sceneTarget->GetColorFormat());
-                for (const auto &[slot, texName] : passDesc.writeColors) {
-                    if (slot == 0 && !texName.empty()) {
-                        auto texIt = texDescMap.find(texName);
-                        if (texIt != texDescMap.end()) {
-                            const uint32_t outputSamples =
-                                texIt->second->EffectiveSamples(static_cast<uint32_t>(msaaSamples));
-                            fsSamples = ToRhiSampleCount(static_cast<int>(outputSamples));
-                            if (!texIt->second->IsViewColor() && texIt->second->format != rhi::PixelFormat::Undefined) {
-                                fsColorFormat = texIt->second->format;
-                            }
-                        }
-                    }
+                auto fsView = m_renderView;
+                fsView.samples = ToRhiSampleCount(static_cast<int>(msaaSamples));
+                const auto fsAttachments = ResolveMaterialPass(m_pythonGraphDesc, passDesc, fsView);
+                const auto &fsLimits = m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilities().limits;
+                const auto fsColorBytes = FullscreenColorBytes(
+                    fsAttachments.colorFormats.data(), static_cast<uint32_t>(fsAttachments.colorFormats.size()));
+                if (fsAttachments.colorFormats.size() > fsLimits.maxColorAttachments ||
+                    fsColorBytes > fsLimits.maxColorAttachmentBytesPerSample) {
+                    INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' exceeds this device's color attachment limits");
+                    m_pythonGraphValid = false;
+                    return;
                 }
 
                 const auto fsPassExtent = ResolveGraphPassExtent(m_pythonGraphDesc, passDesc, width, height);
@@ -5028,12 +5020,14 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 fullscreenPipelineKey.depth = fsDepthState;
                 fullscreenPipelineKey.alphaBlend = fsAlphaBlend;
                 fullscreenPipelineKey.shaderName = shaderName;
-                fullscreenPipelineKey.samples = fsSamples;
-                fullscreenPipelineKey.colorFormat = fsColorFormat;
+                fullscreenPipelineKey.samples = fsAttachments.samples;
+                fullscreenPipelineKey.colorCount = static_cast<uint32_t>(fsAttachments.colorFormats.size());
+                std::copy(fsAttachments.colorFormats.begin(), fsAttachments.colorFormats.end(),
+                          fullscreenPipelineKey.colorFormats.begin());
                 fullscreenPipelineKey.useDynamicRendering = true;
                 fullscreenPipelineKey.program = authorProgram;
                 const auto pass =
-                    m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion, &fsResolvedVersion,
+                    m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersions, &fsResolvedVersion,
                                                            &fsWrittenDepthVersion](vk::PassBuilder &builder) {
                         builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                         // Declare read dependencies for DAG edges + barriers
@@ -5070,8 +5064,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
                             }
                         }
-                        // Declare color output
-                        fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);
+                        for (const auto &[slot, target] : colorTargets)
+                            fsWrittenVersions[slot] = builder.WriteColor(target, slot);
                         if (resolveTarget.IsValid())
                             fsResolvedVersion = builder.WriteResolve(resolveTarget);
                         if (fsDepthTarget.IsValid())
@@ -5153,7 +5147,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     m_shadowMapInputIsDepth = true;
                     fullscreenShadowDependencyDeclared = true;
                 }
-                publishResourceVersion(fsWrittenVersion);
+                for (const auto version : fsWrittenVersions)
+                    publishResourceVersion(version);
                 publishResourceVersion(fsResolvedVersion);
                 publishResourceVersion(fsWrittenDepthVersion);
                 if (sharedDepth.IsValid() && sharedDepth.id == fsWrittenDepthVersion.id) {

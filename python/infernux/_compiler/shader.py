@@ -54,6 +54,7 @@ class ShaderDefinition:
     info: dict | None = None
     vertex_source: str | None = None
     thin_sheet: bool = False
+    color_outputs: tuple[str, ...] = ()
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
@@ -71,6 +72,8 @@ class ShaderDefinition:
 class _Author(ParameterAuthor):
     uses_surface_sampling = False
     ray_lit = False
+    color_outputs = ()
+    tuple_outputs = ()
 
     _surface_sampling_operations = {
         "_surface_sample": ("sample", "float4", ("InxColor2D", "float2")),
@@ -109,6 +112,17 @@ class _Author(ParameterAuthor):
                 return f"({value} != 0u)" if field.kind == "bool" else value
         return super().visit_Attribute(node)
 
+    def visit_Return(self, node):
+        if not self.tuple_outputs:
+            return super().visit_Return(node)
+        if not isinstance(node.value, ast.Tuple) or len(node.value.elts) != len(self.tuple_outputs):
+            self.error(node, f"Fullscreen main returns a tuple of {len(self.tuple_outputs)} color outputs",
+                       code="author.output")
+        for value, kind in zip(node.value.elts, self.tuple_outputs):
+            if self.infer(value) != kind:
+                self.error(value, f"Fullscreen output requires {kind}", code="author.type")
+        self.line("return {" + ", ".join(self.visit(value) for value in node.value.elts) + "};")
+
     def function(self, main):
         if main.decorator_list or main.args.vararg or main.args.kwarg or main.args.kwonlyargs or main.args.defaults:
             self.error(main, "Shader entry parameters have a fixed typed signature")
@@ -132,10 +146,28 @@ class _Author(ParameterAuthor):
                                     self.domain, "Fullscreen input is shader.vec2, shader.fragment_input or shader.multisample_input"))
             signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
             self.types[uv.arg] = kind
-        result = self.annotation(main.returns) if main.returns is not None else None
+        tuple_return = (isinstance(main.returns, ast.Subscript)
+                        and self.qualified(main.returns.value) == "tuple")
+        if tuple_return:
+            if self.domain != "fullscreen":
+                self.error(main.returns, "Tuple color outputs belong to shader.fullscreen", code="author.stage")
+            elements = main.returns.slice.elts if isinstance(main.returns.slice, ast.Tuple) else [main.returns.slice]
+            if not 1 <= len(elements) <= 8:
+                self.error(main.returns, "Fullscreen tuples declare between one and eight color outputs",
+                           code="author.output")
+            kinds = tuple(self.annotation(element) for element in elements)
+            if any(kind not in {"float4", "uint4"} for kind in kinds):
+                self.error(main.returns, "Fullscreen tuple elements are shader.vec4 or shader.uvec4",
+                           code="author.output")
+            self.tuple_outputs = self.color_outputs = kinds
+            result = "InxFullscreenOutput"
+        else:
+            result = self.annotation(main.returns) if main.returns is not None else None
         expected = {"InxSurfaceData"} if self.is_surface else {"float4", "InxFragmentOutput"}
         if self.domain == "fullscreen":
-            expected.add("uint4")
+            expected.update(("uint4", "InxFullscreenOutput"))
+            if not tuple_return:
+                self.color_outputs = ("float4" if result == "InxFragmentOutput" else result,)
         if result not in expected:
             permitted = "shader.vec4, shader.uvec4 or shader.FragmentOutput" if self.domain == "fullscreen" else "shader.vec4 or shader.FragmentOutput"
             self.error(main, "Surface returns shader.SurfaceData" if self.is_surface else f"Fragment main returns {permitted}")
@@ -182,7 +214,10 @@ class _Author(ParameterAuthor):
             declaration = f"InxSurfaceData inx_author_surface{sampling}({signature}{sampling_argument})"
         else:
             declaration = result + " fragment_main(" + signature + ")" + semantic
-        return ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
+        outputs = (["struct InxFullscreenOutput {",
+                    *(f"    {kind} target_{slot} : SV_Target{slot};" for slot, kind in enumerate(self.tuple_outputs)),
+                    "};"] if tuple_return else [])
+        return outputs + ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
             declaration, "{", *self.lines, "}"]
 
 
@@ -1170,7 +1205,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                             tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *vertex_ranges,
                                                  *(vertex.author.source_ranges if vertex else ()), *author.source_ranges))),
                             author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None,
-                            info, vertex.path if vertex else None, thin is not None)
+                            info, vertex.path if vertex else None, thin is not None, author.color_outputs)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
@@ -1256,3 +1291,4 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
               "parameters": [asdict(field) for field in definition.parameters],
               "inputs": [asdict(field) for field in definition.inputs]}
     return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False), definition.source_ranges
+              "color_outputs": definition.color_outputs,

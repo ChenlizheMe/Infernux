@@ -601,7 +601,7 @@ float4 fragment_main(Vertex input, uint sample : SV_SampleIndex) : SV_Target0 {
     key.program = writeProgram;
     key.useDynamicRendering = true;
     key.samples = rhi::SampleCount::Four;
-    key.colorFormat = rhi::PixelFormat::RGBA32SFloat;
+    key.colorFormats[0] = rhi::PixelFormat::RGBA32SFloat;
     key.depthFormat = desc.depthFormat;
     key.depth = {true, true, rhi::CompareFunction::Always};
     const auto writePipeline = writer.EnsurePipeline(key);
@@ -639,7 +639,7 @@ float4 fragment_main(Vertex input, uint sample : SV_SampleIndex) : SV_Target0 {
     depth = copiedDepth;
     key.shaderName = "sample-read";
     key.program = readProgram;
-    key.colorFormat = desc.colorFormat;
+    key.colorFormats[0] = desc.colorFormat;
     key.depthFormat = rhi::PixelFormat::Undefined;
     key.depth = {};
     const auto readPipeline = reader.EnsurePipeline(key);
@@ -759,7 +759,7 @@ float4 fragment_main(Vertex input) : SV_Target0 {
     key.shaderName = "storage-read";
     key.program = program;
     key.useDynamicRendering = true;
-    key.colorFormat = imageDesc.colorFormat;
+    key.colorFormats[0] = imageDesc.colorFormat;
     const auto pipeline = renderer.EnsurePipeline(key);
     assert(pipeline.pipeline.IsValid());
 
@@ -926,7 +926,7 @@ float4 fragment_main(Vertex input) : SV_Target0 {
     key.shaderName = "volume-read";
     key.program = renderer.AcquireProgram(key.shaderName);
     key.useDynamicRendering = true;
-    key.colorFormat = targetDesc.colorFormat;
+    key.colorFormats[0] = targetDesc.colorFormat;
     const auto pipeline = renderer.EnsurePipeline(key);
     assert(pipeline.pipeline.IsValid());
 

@@ -149,6 +149,7 @@ struct DeviceLimits
     uint32_t maxTextureDimension3D = 0;
     uint32_t maxTextureArrayLayers = 0;
     uint32_t maxColorAttachments = 0;
+    uint32_t maxColorAttachmentBytesPerSample = 0;
     uint32_t maxPushConstantBytes = 0;
     uint32_t maxBindingLayouts = 0;
     uint32_t maxSampledTexturesPerStage = 0;

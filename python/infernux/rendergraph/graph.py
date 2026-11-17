@@ -2137,8 +2137,9 @@ class RenderGraph:
             )
 
         if p._action == "fullscreen_quad":
-            if sorted(p._write_colors) != [0]:
-                raise ValueError(f"Fullscreen pass '{p._name}' requires one color output at slot 0")
+            slots = sorted(p._write_colors)
+            if not slots or slots != list(range(len(slots))):
+                raise ValueError(f"Fullscreen pass '{p._name}' requires contiguous color outputs starting at slot 0")
             if p._depth_test is not None and p._write_depth is None:
                 raise ValueError(f"Fullscreen pass '{p._name}' requires a depth output for depth_test")
             if p._write_depth is not None and (p._write_depth in p._reads or p._write_depth in p._input_bindings.values()):

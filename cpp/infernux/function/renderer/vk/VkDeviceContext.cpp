@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -961,6 +962,8 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.limits.maxTextureDimension3D = limits.maxImageDimension3D;
     capabilities.limits.maxTextureArrayLayers = limits.maxImageArrayLayers;
     capabilities.limits.maxColorAttachments = limits.maxColorAttachments;
+    // Vulkan constrains attachment count and format support, without WebGPU's separate byte-sum limit.
+    capabilities.limits.maxColorAttachmentBytesPerSample = std::numeric_limits<uint32_t>::max();
     capabilities.limits.maxPushConstantBytes = limits.maxPushConstantsSize;
     capabilities.limits.maxBindingLayouts = limits.maxBoundDescriptorSets;
     capabilities.limits.maxSampledTexturesPerStage = limits.maxPerStageDescriptorSampledImages;

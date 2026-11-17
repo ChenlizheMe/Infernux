@@ -33,7 +33,7 @@ std::shared_ptr<PreviewImage> PreviewDisplay::Prepare(VkImageView source, VkForm
     FullscreenPipelineKey key;
     key.shaderName = program->shaderId;
     key.program = program;
-    key.colorFormat = rhi::PixelFormat::RGBA8Srgb;
+    key.colorFormats[0] = rhi::PixelFormat::RGBA8Srgb;
     key.useDynamicRendering = true;
     m_pipeline = m_renderer.EnsurePipeline(key);
     if (!m_pipeline.pipeline.IsValid())
@@ -45,7 +45,7 @@ std::shared_ptr<PreviewImage> PreviewDisplay::Prepare(VkImageView source, VkForm
 
     rhi::RenderTextureDesc description;
     description.width = description.height = static_cast<uint32_t>(outputSize);
-    description.colorFormat = key.colorFormat;
+    description.colorFormat = key.colorFormats[0];
     const std::string sourceId = "Preview/" + std::to_string(m_viewId) + '/' + std::to_string(++m_sequence);
     rhi::RenderTexture target(device, sourceId, description);
     auto output = std::make_shared<PreviewImage>();

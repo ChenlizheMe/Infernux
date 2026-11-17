@@ -7,6 +7,7 @@
 #include <function/renderer/shader/ShaderProgramCode.h>
 #include <function/renderer/shader/ShaderValueCopy.h>
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -95,7 +96,8 @@ struct FullscreenPipelineKey
     std::string shaderName;
     rhi::RenderTargetLayoutHandle renderTargetLayout;
     rhi::SampleCount samples = rhi::SampleCount::One;
-    rhi::PixelFormat colorFormat = rhi::PixelFormat::RGBA8UNorm;
+    uint32_t colorCount = 1;
+    std::array<rhi::PixelFormat, rhi::GraphicsPipelineDesc::MaxColorTargets> colorFormats{rhi::PixelFormat::RGBA8UNorm};
     rhi::PixelFormat depthFormat = rhi::PixelFormat::Undefined;
     rhi::DepthState depth;
     bool alphaBlend = false;
@@ -105,6 +107,12 @@ struct FullscreenPipelineKey
 
     INFERNUX_RENDER_CORE_API bool operator==(const FullscreenPipelineKey &other) const noexcept;
 };
+
+/// Validate the compiled output locations against the declared attachments before creating a PSO.
+INFERNUX_RENDER_CORE_API void ValidateFullscreenColorOutputs(const FullscreenProgram &program,
+                                                             const rhi::PixelFormat *formats, uint32_t count);
+// Render-target cost, including component alignment, is distinct from texture storage size.
+INFERNUX_RENDER_CORE_API uint32_t FullscreenColorBytes(const rhi::PixelFormat *formats, uint32_t count);
 
 struct FullscreenPipelineKeyHash
 {

@@ -265,7 +265,7 @@ bool OutlineRenderer::EnsureGraphPipelines(const rhi::GraphicsRenderingSignature
     FullscreenPipelineKey key;
     key.shaderName = program->shaderId;
     key.program = program;
-    key.colorFormat = compositeSignature.colorFormats[0];
+    key.colorFormats[0] = compositeSignature.colorFormats[0];
     key.depthFormat = compositeSignature.depthFormat;
     key.samples = compositeSignature.samples;
     key.alphaBlend = true;

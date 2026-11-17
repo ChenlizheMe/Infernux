@@ -180,6 +180,41 @@ def test_static_fullscreen_schema_and_both_targets():
         assert block["fields"][-1]["type"]["scalarType"] == "uint32"
 
 
+def test_fullscreen_tuple_outputs_reflect_all_slots_for_both_targets():
+    source = '''import infernux.shader as shader
+class Outputs(shader.fullscreen):
+    def main(self, ctx: shader.fragment_input) -> tuple[shader.uvec4, shader.uvec4, shader.vec4, shader.vec4]:
+        pixel = shader.uvec2(ctx.position.xy)
+        if pixel.x == 0:
+            return (shader.uvec4(11), shader.uvec4(22), shader.vec4(0.25), shader.vec4(0.5))
+        return (shader.uvec4(pixel, 0xffffffff, 0x80000000), shader.uvec4(33), shader.vec4(0.75), shader.vec4(1.0))
+'''
+    definition = parse_shader(source, "outputs.frag.py", "outputs")
+    assert definition.color_outputs == ("uint4", "uint4", "float4", "float4")
+    for target in definition.compile()["targets"]:
+        fragment = next(entry for entry in target["entries"] if entry["stage"] == "fragment")
+        assert [(value["location"], value["scalar"], value["components"]) for value in fragment["outputs"]] == [
+            (0, 3, 4), (1, 3, 4), (2, 7, 4), (3, 7, 4)]
+
+
+@pytest.mark.parametrize("domain,annotation,expression,message", [
+    ("fullscreen", "tuple[shader.vec4, shader.uvec4]", "(shader.vec4(1.0),)", "tuple of 2"),
+    ("fullscreen", "tuple[shader.vec4, shader.uvec4]", "(shader.vec4(1.0), shader.vec4(0.0))", "requires uint4"),
+    ("fullscreen", "tuple[shader.vec3]", "(shader.vec3(1.0),)", "elements are"),
+    ("fullscreen", "tuple[" + ",".join(["shader.vec4"] * 9) + "]", "(shader.vec4(1.0),)", "one and eight"),
+    ("frag", "tuple[shader.vec4]", "(shader.vec4(1.0),)", "belong to shader.fullscreen"),
+])
+def test_fullscreen_tuple_reports_author_errors(domain, annotation, expression, message):
+    context = "fragment_input" if domain == "fullscreen" else "mesh_input"
+    source = f'''import infernux.shader as shader
+class Outputs(shader.{domain}):
+    def main(self, ctx: shader.{context}) -> {annotation}:
+        return {expression}
+'''
+    with pytest.raises(SyntaxError, match=message):
+        parse_shader(source, "outputs.frag.py", "outputs")
+
+
 def test_each_temporal_input_has_engine_owned_validity_and_typed_library_calls(tmp_path):
     (tmp_path / "history.shaderlib.py").write_text('''import infernux.shader as shader
 def sample(image: shader.History2D, uv: shader.vec2) -> shader.vec4:
