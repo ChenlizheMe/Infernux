@@ -175,7 +175,8 @@ constexpr PortLayout Ports[] = {
     {"resident_patches", sizeof(ContactPatch), {"leaves"}, 1u, false}};
 
 constexpr uint32_t MaxDispatchesPerPacket = 16;
-constexpr uint32_t ActiveRoundsPerWindow = 4;
+constexpr uint32_t ActivePassesPerWindow = 4;
+constexpr uint32_t NeighborTestsPerDispatch = BroadphaseItemLimit * 128u;
 constexpr uint64_t WordBytes = sizeof(UInt4);
 
 template <class T> std::vector<uint8_t> Bytes(const T &value)
@@ -316,6 +317,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         uint32_t originalInput = 0, level = 0, first = 0, root = 0;
         std::vector<uint32_t> counts;
     };
+    struct SweepTail
+    {
+        uint32_t ranks, neighbors;
+    };
 
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
               JoltGpuPrograms &programs, const StepParams &settings,
@@ -365,8 +370,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const uint32_t leaves = config.selectedCounts.y;
         const bool smallPairs =
             leaves && leaves <= BroadphaseSmallSetLimit && config.selectedCounts.z <= BroadphaseSmallSetLimit;
-        config.round = {BroadphaseNeighborLimit, 0, 0, uint32_t(smallPairs)};
-        rounds = n > 1 ? (n - 2u) / BroadphaseNeighborLimit + 1u : 1u;
+        config.round.w = uint32_t(smallPairs);
         uint64_t words = 0;
         const auto reserve = [&](uint64_t size) {
             if (size > UINT32_MAX || words > UINT32_MAX - size)
@@ -383,8 +387,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             config.rankRows = {reserve(n), reserve(n), reserve(j), 0};
             queues = {reserve(n), reserve(n)};
             activeMeta = {reserve(1), reserve(1)};
-            config.activeQueues = {queues[0], queues[1], n, 0};
-            config.activeState = {activeMeta[0], activeMeta[1], 0, 0};
             uint32_t count = std::max({n, j, w, 1u});
             do {
                 const uint32_t input = reserve(count), prefix = reserve(count);
@@ -760,9 +762,19 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         config.round.z = fill ? 1u : 0u;
         activeStage = ActiveStage::Seed;
         activeBound = config.selectedCounts.y;
-        round = windowRounds = 0;
-        config.activeQueues = {queues[0], queues[1], activeBound, 0};
+        neighborsRemaining = std::max(1u, activeBound) - 1u;
+        windowPasses = 0;
+        fillTail = 0;
+        config.activeQueues = {queues[0], queues[1], 0, 0};
         config.activeState = {activeMeta[0], activeMeta[1], 0, 0};
+    }
+
+    void ContinueSweep(SweepTail tail)
+    {
+        activeBound = tail.ranks;
+        neighborsRemaining = tail.neighbors;
+        windowPasses = 0;
+        phase = activeFilling ? Phase::Fill : Phase::Count;
     }
 
     bool ActiveRange(Entry entry, std::vector<rhi::ComputeBufferUpdate> &uploads,
@@ -791,20 +803,32 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     return true;
                 activeStage = ActiveStage::Round;
                 return true;
-            case ActiveStage::Round:
+            case ActiveStage::Round: {
                 config.scan.x = levels[0].input;
+                if (!neighborsRemaining) {
+                    // The final count/fill reduction already verifies every cursor.
+                    phase = activeFilling ? Phase::FillCheck : Phase::Counts;
+                    return false;
+                }
+                const uint32_t ranksPerDispatch = std::min(activeBound, BroadphaseItemLimit);
+                // Give shorter queues more work per rank within the same dispatch limit.
+                config.round.x = std::min(
+                    {neighborsRemaining, BroadphaseNeighborLimit, NeighborTestsPerDispatch / ranksPerDispatch});
                 if (ActiveRange(activeFilling ? FillRound : CountRound, uploads, dispatches))
                     return true;
-                ++round;
-                ++windowRounds;
-                // A small window amortizes global scan/compaction. Each pass
-                // retains the same input queue and bounded neighbor quantum;
-                // a rank whose cursor reached its end performs no more tests.
-                if (windowRounds < ActiveRoundsPerWindow && round < rounds)
+                neighborsRemaining -= config.round.x;
+                if (!neighborsRemaining || ++windowPasses < ActivePassesPerWindow)
                     break;
+                // Fill traverses the same frozen spans. Its last window can
+                // also skip compaction when count proved the queue exhausted.
+                if (activeFilling && countTails[fillTail].ranks == 0) {
+                    neighborsRemaining = 0;
+                    break;
+                }
                 BeginScan(levels[0].input, activeBound, true, true);
                 activeStage = ActiveStage::Scan;
                 break;
+            }
             case ActiveStage::Scan:
                 if (Scan(uploads, dispatches))
                     return true;
@@ -818,25 +842,17 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     return true;
                 activeStage = ActiveStage::Publish;
                 break;
-            case ActiveStage::Publish: {
-                auto value = config;
-                value.round.y = windowRounds;
-                if (!Emit(PublishActive, 0, 1, value, uploads, dispatches))
+            case ActiveStage::Publish:
+                if (!Emit(PublishActive, 0, 1, config, uploads, dispatches))
                     return true;
                 std::swap(config.activeQueues.x, config.activeQueues.y);
                 std::swap(config.activeState.x, config.activeState.y);
                 activeStage = ActiveStage::Round;
-                if (round == rounds) {
-                    // The full rank validation below already checks every
-                    // cursor/status and publishes the count/fill receipt. At
-                    // the algorithmic final round, share that boundary instead
-                    // of adding an earlier host map of the active metadata.
-                    config.scan.x = levels[0].input;
-                    phase = activeFilling ? Phase::FillCheck : Phase::Counts;
-                } else if (windowRounds == ActiveRoundsPerWindow)
+                if (activeFilling)
+                    ContinueSweep(countTails[fillTail++]);
+                else
                     phase = Phase::ActiveBoundary;
                 return true;
-            }
             }
         }
     }
@@ -848,25 +864,13 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         if (!read || !read->IsComplete())
             throw std::logic_error("Jolt GPU active queue requires its completed source receipt");
         read->ReadInto(&value, sizeof(value));
-        if (activeFilling && value.z == 128u) {
-            BeginSort(config.candidates.x, config.candidates.y, capacity, 2);
-            phase = Phase::CandidateSort;
-            return;
-        }
         if (value.z)
             throw std::runtime_error("Jolt GPU active queue failed numerical validation (status " +
                                      std::to_string(value.z) + ")");
-        if (value.x > activeBound || value.y > rounds || value.w || (value.x && (round == rounds || value.y != round)))
-            throw std::runtime_error("Jolt GPU active queue failed its monotone bounded-round contract");
-        item = windowRounds = 0;
-        if (value.x) {
-            activeBound = value.x;
-            config.activeQueues.z = activeBound;
-            phase = activeFilling ? Phase::Fill : Phase::Count;
-        } else {
-            config.scan.x = levels[0].input;
-            phase = activeFilling ? Phase::FillCheck : Phase::Counts;
-        }
+        if (value.x > activeBound || value.y > neighborsRemaining || (value.x == 0) != (value.y == 0))
+            throw std::runtime_error("Jolt GPU active queue exceeded its remaining sweep range");
+        countTails.push_back({value.x, value.y});
+        ContinueSweep(countTails.back());
     }
 
     bool NextDispatch(std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
@@ -933,17 +937,19 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 if (Sort(uploads, dispatches))
                     return true;
                 config.workspace.z = sortSource;
+                BeginActive(false);
                 phase = Phase::Ends;
                 break;
             case Phase::Ends:
                 if (Range(FindEnds, config.counts.x, uploads, dispatches))
                     return true;
-                BeginActive(false);
                 phase = Phase::Count;
                 break;
             case Phase::Count:
             case Phase::Fill:
-                return ActiveRounds(uploads, dispatches);
+                if (ActiveRounds(uploads, dispatches))
+                    return true;
+                break;
             case Phase::Counts:
                 if (Range(MaterializeCounts, config.counts.x, uploads, dispatches))
                     return true;
@@ -1164,8 +1170,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         scratchWords = s.scratchWords;
         zeroRecord = s.zeroRecord;
         item = s.item;
-        rounds = s.rounds;
-        round = s.round;
         sortSource = s.sortSource;
         sortTarget = s.sortTarget;
         sortCount = s.sortCount;
@@ -1174,7 +1178,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         activeStage = s.activeStage;
         indirectEntry = s.indirectEntry;
         activeBound = s.activeBound;
-        windowRounds = s.windowRounds;
+        neighborsRemaining = s.neighborsRemaining;
+        windowPasses = s.windowPasses;
+        fillTail = s.fillTail;
         indirectMeta = s.indirectMeta;
         indirectLevel = s.indirectLevel;
         indirectFirst = s.indirectFirst;
@@ -1275,13 +1281,17 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed;
     std::vector<ScanLevel> levels;
     ScanCursor scan;
+    // Appended only after a count receipt completes. Packet preparation and
+    // its rollback never change these bounds for the subsequent fill passes.
+    std::vector<SweepTail> countTails;
     Phase phase = Phase::InitialCapacity;
     std::array<uint32_t, 2> sap{}, suppression{}, queues{}, activeMeta{};
-    uint32_t scratchWords = 0, zeroRecord = 0, item = 0, rounds = 0, round = 0;
+    uint32_t scratchWords = 0, zeroRecord = 0, item = 0;
     uint32_t sortSource = 0, sortTarget = 0, sortCount = 0, sortKey = 0, sortWidth = 1;
     ActiveStage activeStage = ActiveStage::Seed;
     Entry indirectEntry = EntryCount;
-    uint32_t activeBound = 0, windowRounds = 0;
+    uint32_t activeBound = 0, neighborsRemaining = 0, windowPasses = 0;
+    size_t fillTail = 0;
     uint32_t indirectMeta = 0, indirectLevel = 0, indirectFirst = 0, indirectCount = 0;
     uint32_t capacity = 0, requiredCapacity = 0, packetLimit = MaxDispatchesPerPacket;
     Phase afterContacts = Phase::Suppression;
