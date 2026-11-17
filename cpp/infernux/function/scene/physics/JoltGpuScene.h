@@ -189,6 +189,7 @@ class JoltGpuScene final
                  const ShaderTargetCode &constraintTarget, JoltGpuJoints &joints, FailureObserver failureObserver = {},
                  const ShaderTargetCode *captureTarget = nullptr, const ShaderTargetCode *dynamicsTarget = nullptr);
     ~JoltGpuScene();
+    [[nodiscard]] bool TryPrepareStartupPrograms();
     [[nodiscard]] const std::shared_ptr<JoltGpuGeometryStore> &GetGeometryStore() const noexcept;
     JoltGpuScene(const JoltGpuScene &) = delete;
     JoltGpuScene &operator=(const JoltGpuScene &) = delete;

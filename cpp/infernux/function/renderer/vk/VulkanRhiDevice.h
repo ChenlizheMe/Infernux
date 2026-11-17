@@ -25,6 +25,11 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
+namespace infernux::rhi
+{
+struct ComputePipelinePreparation;
+}
+
 namespace infernux::vk
 {
 
@@ -390,6 +395,7 @@ class VulkanRhiDevice final : public rhi::Device
     CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc) override;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ComputePipelineHandle
     CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override;
+    [[nodiscard]] rhi::ComputePipelinePreparation PrepareComputePipeline(const rhi::ComputePipelineDesc &desc);
     INFERNUX_VULKAN_BACKEND_API bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data,
                                                  uint64_t byteSize) override;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API void *MapBuffer(rhi::BufferHandle handle, uint64_t offset,
@@ -568,6 +574,8 @@ class VulkanRhiDevice final : public rhi::Device
     void DestroyOwnedResources() noexcept;
     [[nodiscard]] bool SupportsPipelineLayout(uint32_t bindingLayoutCount, uint32_t pushConstantBytes,
                                               const char *pipelineKind) const;
+    struct NativeComputePipeline;
+    [[nodiscard]] std::unique_ptr<NativeComputePipeline> DescribeComputePipeline(const rhi::ComputePipelineDesc &desc);
 
     static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline);
     static void BindGroup(void *context, rhi::GraphicsPipelineHandle pipeline, uint32_t setIndex,

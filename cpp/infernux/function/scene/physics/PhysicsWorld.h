@@ -280,6 +280,7 @@ class PhysicsWorld
                                                             PhysicsParticipant::Recipes recipes,
                                                             PhysicsParticipant::Controls controls, uint32_t count);
     /// Existing Host service / Tick source only; never waits for GPU completion.
+    bool TryPrepareStartupPrograms();
     bool ServiceParticipantPreparation();
     bool ServiceParticipantOutputs();
     [[nodiscard]] bool HasActiveParticipants() const;
@@ -829,6 +830,7 @@ class PhysicsWorld
     void RunPreparedWork(PhysicsDomain &domain, JoltGpuControlWork work) const;
     void RegisterDomain(PhysicsDomain &domain);
     void EnsureCpuReady(PhysicsDomain &domain);
+    JoltGpuScene &EnsureSharedGpuScene();
     bool EnsureGpuReady(PhysicsDomain &domain);
     void RefreshBodySurfaces(PhysicsDomain &domain);
     void RequireHealthyStep(PhysicsDomain &domain) const;

@@ -7,6 +7,7 @@
 #include "RhiVulkanTypes.h"
 
 #include <core/log/InxLog.h>
+#include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/rhi/RhiUpload.h>
 
 #include <algorithm>
@@ -1946,7 +1947,58 @@ bool VulkanRhiDevice::SupportsPipelineLayout(uint32_t bindingLayoutCount, uint32
     return true;
 }
 
-rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::ComputePipelineDesc &desc)
+struct VulkanRhiDevice::NativeComputePipeline
+{
+    VkDevice device = VK_NULL_HANDLE;
+    VkPipelineCache cache = VK_NULL_HANDLE;
+    VkShaderModule shader = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    rhi::BindingLayoutHandle firstBinding;
+    std::string entryPoint;
+
+    ~NativeComputePipeline()
+    {
+        if (pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        if (layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device, layout, nullptr);
+    }
+
+    void Compile() noexcept
+    {
+        VkComputePipelineCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        info.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        info.stage.module = shader;
+        info.stage.pName = entryPoint.c_str();
+        info.layout = layout;
+
+        // This cache uses Vulkan's internal synchronization.
+        infernux::RecordComputePipelineCreationAttempt();
+        if (vkCreateComputePipelines(device, cache, 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
+            if (pipeline != VK_NULL_HANDLE)
+                vkDestroyPipeline(device, pipeline, nullptr);
+            pipeline = VK_NULL_HANDLE;
+        }
+    }
+
+    rhi::ComputePipelineHandle Publish(VulkanRhiDevice &owner)
+    {
+        if (pipeline == VK_NULL_HANDLE)
+            return {};
+        const auto handle = owner.Register<rhi::ComputePipelineHandle>(
+            owner.m_computePipelines, owner.m_freeComputePipeline,
+            GraphicsPipelinePayload{pipeline, layout, true, true, firstBinding});
+        pipeline = VK_NULL_HANDLE;
+        layout = VK_NULL_HANDLE;
+        return handle;
+    }
+};
+
+std::unique_ptr<VulkanRhiDevice::NativeComputePipeline>
+VulkanRhiDevice::DescribeComputePipeline(const rhi::ComputePipelineDesc &desc)
 {
     if (m_device == VK_NULL_HANDLE || !desc.computeShader.IsValid() ||
         desc.bindingLayoutCount > desc.bindingLayouts.size() || (desc.pushConstantBytes % 4u) != 0u)
@@ -1979,32 +2031,39 @@ rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::Com
     layoutInfo.pushConstantRangeCount = desc.pushConstantBytes > 0 ? 1u : 0u;
     layoutInfo.pPushConstantRanges = desc.pushConstantBytes > 0 ? &pushConstants : nullptr;
 
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    if (vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &layout) != VK_SUCCESS)
+    auto result = std::make_unique<NativeComputePipeline>();
+    result->device = m_device;
+    result->cache = m_pipelineCache;
+    result->shader = shader;
+    result->entryPoint = desc.entryPoint;
+    if (desc.bindingLayoutCount > 0)
+        result->firstBinding = desc.bindingLayouts[0];
+    if (vkCreatePipelineLayout(m_device, &layoutInfo, nullptr, &result->layout) != VK_SUCCESS)
         return {};
+    return result;
+}
 
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = shader;
-    stage.pName = desc.entryPoint;
-
-    VkComputePipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage = stage;
-    pipelineInfo.layout = layout;
-
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    infernux::RecordComputePipelineCreationAttempt();
-    if (vkCreateComputePipelines(m_device, m_pipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
-        vkDestroyPipelineLayout(m_device, layout, nullptr);
+rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::ComputePipelineDesc &desc)
+{
+    auto native = DescribeComputePipeline(desc);
+    if (!native)
         return {};
-    }
+    native->Compile();
+    return native->Publish(*this);
+}
 
-    return Register<rhi::ComputePipelineHandle>(
-        m_computePipelines, m_freeComputePipeline,
-        GraphicsPipelinePayload{pipeline, layout, true, true,
-                                desc.bindingLayoutCount > 0 ? desc.bindingLayouts[0] : rhi::BindingLayoutHandle{}});
+rhi::ComputePipelinePreparation VulkanRhiDevice::PrepareComputePipeline(const rhi::ComputePipelineDesc &desc)
+{
+    std::shared_ptr<NativeComputePipeline> native = DescribeComputePipeline(desc);
+    if (!native)
+        return {};
+    // The kernel owns this ticket and keeps the shader and layout alive until
+    // the job completes. Only the driver call runs on the worker.
+    rhi::ComputePipelinePreparation preparation;
+    preparation.publish = [this, native] { return native->Publish(*this); };
+    preparation.completion = JobSystem::Get().Schedule([pipeline = native.get()] { pipeline->Compile(); },
+                                                       JobDomain::Render, JobPriority::High, JobAffinity::WorkerOnly);
+    return preparation;
 }
 
 rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc)

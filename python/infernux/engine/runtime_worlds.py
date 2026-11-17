@@ -442,7 +442,7 @@ class RuntimeWorldSession:
             SceneManager.instance()._cancel_reserved_runtime_world(handle, 'cancelled', reason)
 
     def _prepare(self, handle, *, start_play):
-        from infernux.lib import SceneManager, _Infernux
+        from infernux.lib import Physics, SceneManager, _Infernux
         from infernux.engine.component_restore import (
             _prepare_python_component_records, PreparedPythonComponentGraph,
             publish_prepared_scene_python_components,
@@ -488,6 +488,7 @@ class RuntimeWorldSession:
                 yield
             with _Infernux._RuntimeWorldScope(identity):
                 manager._remap_preparing_world_references(identity, component_map)
+                Physics._prepare_startup_programs()
             yield
             attached = []
             cursor = 0
@@ -515,9 +516,9 @@ class RuntimeWorldSession:
                 yield
             while True:
                 with _Infernux._RuntimeWorldScope(identity):
-                    from infernux.lib import Physics
+                    programs_ready = Physics._prepare_startup_programs()
                     ready = Physics._participants_ready()
-                if ready and not domain.physics_preparations:
+                if programs_ready and ready and not domain.physics_preparations:
                     break
                 if self.closed or handle.destroy_requested:
                     raise GeneratorExit

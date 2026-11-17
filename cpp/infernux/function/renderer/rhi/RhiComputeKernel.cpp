@@ -111,20 +111,63 @@ ComputeKernel::ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shaderDe
     }
 }
 
+ComputePipelineDesc ComputeKernel::DescribePipeline(ShaderModuleHandle shader, const std::string &entryPoint) const
+{
+    ComputePipelineDesc desc;
+    desc.computeShader = shader;
+    desc.entryPoint = entryPoint.c_str();
+    desc.bindingLayouts[0] = m_layout;
+    desc.bindingLayoutCount = 1;
+    desc.pushConstantBytes = m_pushConstantBytes;
+    return desc;
+}
+
 bool ComputeKernel::BuildPipeline(const ShaderModuleDesc &shaderDesc, const std::string &entryPoint)
 {
     const auto shader = m_host.device.CreateShaderModule(shaderDesc);
-    if (shader.IsValid()) {
-        ComputePipelineDesc pipelineDesc;
-        pipelineDesc.computeShader = shader;
-        pipelineDesc.entryPoint = entryPoint.c_str();
-        pipelineDesc.bindingLayouts[0] = m_layout;
-        pipelineDesc.bindingLayoutCount = 1;
-        pipelineDesc.pushConstantBytes = m_pushConstantBytes;
-        m_pipeline = m_host.device.CreateComputePipeline(pipelineDesc);
-    }
+    if (shader.IsValid())
+        m_pipeline = m_host.device.CreateComputePipeline(DescribePipeline(shader, entryPoint));
     m_host.device.Release(shader);
     return m_pipeline.IsValid();
+}
+
+bool ComputeKernel::TryPreparePipeline()
+{
+    m_host.RequireAlive();
+    return PreparePipeline(false);
+}
+
+bool ComputeKernel::PreparePipeline(bool wait)
+{
+    if (!m_deferredPipeline)
+        return true;
+    const auto &source = *m_deferredPipeline;
+    const ShaderModuleDesc shaderDesc{source.language, source.code.data(), source.byteSize,
+                                      source.widenReadOnlyStorage};
+    if (!wait && !m_pendingPipeline && m_host.SupportsPipelinePreparation()) {
+        auto &pending = m_pendingPipeline.emplace();
+        pending.shader = m_host.device.CreateShaderModule(shaderDesc);
+        if (pending.shader.IsValid())
+            pending.preparation = m_host.PreparePipeline(DescribePipeline(pending.shader, source.entryPoint));
+    }
+    if (m_pendingPipeline) {
+        auto &pending = *m_pendingPipeline;
+        if (!pending.preparation.completion.IsComplete()) {
+            if (!wait)
+                return false;
+            JobSystem::Get().WaitPassiveCompletion(pending.preparation.completion);
+        }
+        if (pending.preparation.publish)
+            m_pipeline = pending.preparation.publish();
+        m_host.device.Release(pending.shader);
+        m_pendingPipeline.reset();
+    } else {
+        (void)BuildPipeline(shaderDesc, source.entryPoint);
+    }
+    if (!m_pipeline.IsValid())
+        throw std::runtime_error("Failed to create compute kernel pipeline: " + source.entryPoint);
+    m_deferredPipeline.reset();
+    return true;
 }
 
 ComputeKernel::~ComputeKernel()
@@ -195,13 +238,7 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
         result.allocations.push_back(buffer->GetAllocation());
         result.states.push_back(buffer->m_state);
     }
-    if (m_deferredPipeline) {
-        const auto &source = *m_deferredPipeline;
-        if (!BuildPipeline({source.language, source.code.data(), source.byteSize, source.widenReadOnlyStorage},
-                           source.entryPoint))
-            throw std::runtime_error("Failed to create compute kernel pipeline: " + source.entryPoint);
-        m_deferredPipeline.reset();
-    }
+    (void)PreparePipeline(true);
     result.pipeline = m_pipeline;
     result.group = ResolveBindGroup(result.allocations);
     result.bufferAccesses = std::move(bufferAccesses);
@@ -1225,12 +1262,20 @@ void ComputeKernel::Wait()
 
 void ComputeKernel::Destroy() noexcept
 {
+    if (m_pendingPipeline) {
+        auto &preparation = m_pendingPipeline->preparation;
+        if (preparation.completion.Cancel())
+            JobSystem::Get().WaitPassiveCompletion(preparation.completion);
+        preparation = {};
+    }
     // Accepted compute batches retain the kernel until completion; frame
     // callers retain PreparedDispatch until their Graphics completion epoch.
     // Destruction must not wait on a queue or call a retired device.
     const auto release = [&] {
         for (const auto &entry : m_groups)
             m_host.device.Release(entry.group);
+        if (m_pendingPipeline)
+            m_host.device.Release(m_pendingPipeline->shader);
         m_host.device.Release(m_pipeline);
         m_host.device.Release(m_layout);
     };
@@ -1245,6 +1290,7 @@ void ComputeKernel::Destroy() noexcept
     m_pending.clear();
     m_pipeline = {};
     m_layout = {};
+    m_pendingPipeline.reset();
     m_deferredPipeline.reset();
 }
 

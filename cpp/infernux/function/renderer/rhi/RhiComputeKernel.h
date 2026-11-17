@@ -160,6 +160,8 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
                                            uint32_t groupCountY, uint32_t groupCountZ);
     INFERNUX_RENDER_CORE_API void Collect();
     INFERNUX_RENDER_CORE_API void Wait();
+    /// During resource preparation, publish a deferred pipeline when its job completes.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API bool TryPreparePipeline();
 
     /// Validated, immutable dispatch payload. RecordOne neither submits nor
     /// attaches a compute ticket. A graphics caller must retain this owner
@@ -294,9 +296,17 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
         bool widenReadOnlyStorage;
         std::string entryPoint;
     };
+    struct PendingPipeline
+    {
+        ShaderModuleHandle shader;
+        ComputePipelinePreparation preparation;
+    };
+    [[nodiscard]] ComputePipelineDesc DescribePipeline(ShaderModuleHandle shader, const std::string &entryPoint) const;
     [[nodiscard]] bool BuildPipeline(const ShaderModuleDesc &shader, const std::string &entryPoint);
+    [[nodiscard]] bool PreparePipeline(bool wait);
     ComputePipelineHandle m_pipeline;
     std::optional<DeferredPipeline> m_deferredPipeline;
+    std::optional<PendingPipeline> m_pendingPipeline;
     std::vector<BindingGroupEntry> m_groups;
     std::vector<uint32_t> m_bufferBindings;
     std::vector<BindingType> m_bufferBindingTypes;

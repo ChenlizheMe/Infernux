@@ -595,25 +595,13 @@ void PhysicsWorld::EnsureCpuReady(PhysicsDomain &domain)
     }
     RegisterDomain(domain);
 }
-bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
+JoltGpuScene &PhysicsWorld::EnsureSharedGpuScene()
 {
-    RequireOwnerThread();
-    RequireHealthyStep(domain);
     if (!m_initialized)
         throw std::logic_error("PhysicsWorld is not initialized");
     if (!m_gpuHost || !m_gpuWork)
         throw std::runtime_error("GPU physics requires engine compute services");
     m_gpuHost->RequireAlive();
-    if (domain.retiring)
-        return false;
-    if (domain.gpuCancelled) {
-        if (!m_gpuScene->CanRetire(domain.owner))
-            return false;
-        domain.lastPublication.reset();
-        domain.requestedMotion.clear();
-        domain.gpuCancelled = false;
-        domain.queuedColliderPairs.reset();
-    }
     if (!m_gpuScene) {
         auto &host = *m_gpuHost;
         const auto target = PhysicsShaderTarget(host);
@@ -643,7 +631,24 @@ bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
         m_gpuContactReports = std::move(reports);
         m_gpuScene = std::move(scene);
     }
-    if (!m_gpuScene->RegisterPartition(domain.owner, InitialBodyCapacity))
+    return *m_gpuScene;
+}
+bool PhysicsWorld::EnsureGpuReady(PhysicsDomain &domain)
+{
+    RequireOwnerThread();
+    RequireHealthyStep(domain);
+    if (domain.retiring)
+        return false;
+    auto &scene = EnsureSharedGpuScene();
+    if (domain.gpuCancelled) {
+        if (!scene.CanRetire(domain.owner))
+            return false;
+        domain.lastPublication.reset();
+        domain.requestedMotion.clear();
+        domain.gpuCancelled = false;
+        domain.queuedColliderPairs.reset();
+    }
+    if (!scene.RegisterPartition(domain.owner, InitialBodyCapacity))
         return false;
     domain.gpuRegistered = true;
     RegisterDomain(domain);
@@ -1281,6 +1286,33 @@ bool PhysicsWorld::HasActiveParticipants() const
         const auto owner = value.lock();
         return owner && owner->IsActive();
     });
+}
+bool PhysicsWorld::TryPrepareStartupPrograms()
+{
+    RequireOwnerThread();
+    auto &domain = CurrentDomain();
+    if (!domain.startupUsesGpuBodies.has_value()) {
+        const auto hasGpuBody = [](auto &&visit, const GameObject &object) -> bool {
+            if (!object.IsActive())
+                return false;
+            if (const auto *body = object.GetComponent<Rigidbody>(); body && body->IsEnabled() && body->IsGpuEnabled())
+                return true;
+            const auto &children = object.GetChildren();
+            return std::any_of(children.begin(), children.end(),
+                               [&](const auto &child) { return visit(visit, *child); });
+        };
+        const auto hasGpuScene = [&](const std::unique_ptr<Scene> &scene) {
+            if (!scene)
+                return false;
+            const auto &roots = scene->GetRootObjects();
+            return std::any_of(roots.begin(), roots.end(),
+                               [&](const auto &root) { return hasGpuBody(hasGpuBody, *root); });
+        };
+        const auto &scenes = domain.owner.scenes;
+        domain.startupUsesGpuBodies =
+            std::any_of(scenes.loaded.begin(), scenes.loaded.end(), hasGpuScene) || hasGpuScene(scenes.persistent);
+    }
+    return !*domain.startupUsesGpuBodies || EnsureSharedGpuScene().TryPrepareStartupPrograms();
 }
 bool PhysicsWorld::ServiceParticipantPreparation()
 {

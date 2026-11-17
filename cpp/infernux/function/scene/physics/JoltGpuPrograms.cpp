@@ -1396,6 +1396,11 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
     }
 }
 
+bool JoltGpuPrograms::TryPrepareStartupPrograms()
+{
+    return m_entries[static_cast<size_t>(Stage::ApplyForces)].kernel->TryPreparePipeline();
+}
+
 rhi::ComputeDispatchDesc
 JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                const JoltGpuStageWork &work, const std::shared_ptr<rhi::ComputeBuffer> &workUniform,

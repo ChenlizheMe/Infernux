@@ -43,6 +43,7 @@ struct PhysicsDomain final
     std::unordered_set<uint32_t> cpuInterpolated;
     bool cpuFixedAdmitted = false;
     bool gpuRegistered = false;
+    std::optional<bool> startupUsesGpuBodies;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::weak_ptr<PhysicsParticipant> participantPreparing;
     bool participantOutputPending = false;

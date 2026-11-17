@@ -59,6 +59,11 @@ bool VulkanBackendContext::InitializeDevice(VkSurfaceKHR surface, uint32_t graph
     device.UseSubmissionSerials([this] { return m_queues.GetLastReservedCompletionEpoch(); });
     m_services->collect = [this] { CollectComputeResources(); };
     m_services->framePressure = [this] { return m_queues.GetFramePressure(); };
+    if (JobSystem::IsAvailable() && !JobSystem::Get().IsInline()) {
+        m_services->preparePipeline = [this](const rhi::ComputePipelineDesc &desc) {
+            return Device().GetRhiDevice().PrepareComputePipeline(desc);
+        };
+    }
     m_services->alive = true;
     return true;
 }
@@ -89,6 +94,7 @@ void VulkanBackendContext::BeginShutdown() noexcept
     m_services->alive = false;
     m_services->collect = {};
     m_services->framePressure = {};
+    m_services->preparePipeline = {};
     Device().WaitIdleForShutdown();
     Device().SetShuttingDown(true);
     m_presentation.SetSkipWaitIdle(true);

@@ -1943,6 +1943,11 @@ JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const S
 }
 JoltGpuScene::~JoltGpuScene() = default;
 
+bool JoltGpuScene::TryPrepareStartupPrograms()
+{
+    return m_impl->programs.TryPrepareStartupPrograms();
+}
+
 const std::shared_ptr<JoltGpuGeometryStore> &JoltGpuScene::GetGeometryStore() const noexcept
 {
     return m_impl->geometry;

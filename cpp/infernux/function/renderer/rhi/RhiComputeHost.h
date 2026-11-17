@@ -2,11 +2,19 @@
 
 #include "RhiComputeQueue.h"
 #include "RhiDevice.h"
+#include <core/threading/JobSystem.h>
 #include <functional>
 #include <stdexcept>
 
 namespace infernux::rhi
 {
+struct ComputePipelinePreparation
+{
+    JobHandle completion;
+    // Adopt the completed native pipeline on the device's owner thread.
+    std::function<ComputePipelineHandle()> publish;
+};
+
 /// Owner-thread service lifetime, shared by leases and resident resource views.
 /// It ends before the queue is destroyed; DeviceLifetime separately guards frees.
 struct ComputeHostServices
@@ -15,6 +23,7 @@ struct ComputeHostServices
     size_t leases = 0;
     std::function<void()> collect;
     std::function<GpuQueuePressure()> framePressure;
+    std::function<ComputePipelinePreparation(const ComputePipelineDesc &)> preparePipeline;
 };
 
 /// Borrowed engine services. Resources copy this view, not an acquired lease.
@@ -59,6 +68,15 @@ class ComputeHost
     {
         RequireAlive();
         return queue;
+    }
+    [[nodiscard]] bool SupportsPipelinePreparation() const noexcept
+    {
+        return m_services && bool(m_services->preparePipeline);
+    }
+    [[nodiscard]] ComputePipelinePreparation PreparePipeline(const ComputePipelineDesc &desc) const
+    {
+        RequireAlive();
+        return m_services->preparePipeline(desc);
     }
     void Collect() const
     {

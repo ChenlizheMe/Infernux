@@ -1,5 +1,6 @@
 """Failed Play preparation restores authored Scenes before reopening authoring."""
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -82,6 +83,15 @@ def assert_authoring_restored(state):
     assert state.path.read_bytes() == state.original_bytes
 
 
+def complete_transition(state):
+    deadline = time.monotonic() + 30
+    while state.runner.is_busy:
+        assert time.monotonic() < deadline, "Play transition did not complete"
+        state.runner.tick()
+        if state.runner.is_busy:
+            state.host.tick(0.0)
+
+
 def remember_runtime_domains(state):
     for domain in state.host._world_runtimes.values():
         if all(domain is not known for known in state.runtime_domains):
@@ -114,7 +124,7 @@ def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, 
     Debug.clear_console()
 
     def fail(*args, **kwargs):
-        if phase in ("snapshot", "sprite", "enter_notification", "isolation"):
+        if phase in ("snapshot", "sprite", "enter_notification", "isolation", "domain"):
             # These boundaries precede graph materialization; never mutate authoring.
             remember_runtime_domains(state)
             assert not state.native._runtime_world_ids
@@ -163,7 +173,7 @@ def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, 
             def prepare_then_fail():
                 prepare()
                 if phase == "domain_rejected":
-                    mutate_runtime_clone(state)
+                    assert not state.native._runtime_world_ids
                     return False
                 fail()
 
@@ -184,7 +194,7 @@ def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, 
 
             fault.setattr(state.manager, "_get_scene_manager", lambda: NativeStartFault())
         assert state.manager.enter_play_mode()
-        state.runner.tick()
+        complete_transition(state)
         errors = DebugConsole.instance().get_filtered_entries(show_logs=False, show_warnings=False)
         expected = ("Play scripting-domain preparation was rejected" if phase == "domain_rejected"
                     else f"injected {phase} failure")
@@ -193,10 +203,10 @@ def test_failed_enter_restores_authoring_and_can_enter_again(authoring_project, 
         assert_authoring_restored(state)
 
     assert state.manager.enter_play_mode()
-    state.runner.tick()
+    complete_transition(state)
     assert state.manager.is_playing and state.native.is_playing()
     assert state.manager.exit_play_mode()
-    state.runner.tick()
+    complete_transition(state)
     assert_authoring_restored(state)
 
 
@@ -212,7 +222,7 @@ def test_enter_publishes_playing_only_after_native_start(authoring_project):
 
     state.manager.add_state_change_listener(observe)
     assert state.manager.enter_play_mode()
-    state.runner.tick()
+    complete_transition(state)
     assert observed == [("ENTERING", False), ("PLAYING", True)]
 
 
@@ -243,7 +253,7 @@ def test_play_progress_window_is_editor_only(authoring_project, monkeypatch, rol
 
     monkeypatch.setattr(state.manager, "_save_scene_state", capture_preparation)
     assert state.manager.enter_play_mode()
-    state.runner.tick()
+    complete_transition(state)
     assert state.manager.is_edit_mode and not state.native.is_playing()
     if role == "editor":
         assert events[0] == "open" and events[-1] == "close"
@@ -278,7 +288,7 @@ def test_failed_enter_with_failed_rollback_retains_snapshot(authoring_project, m
         else:
             fault.setattr(state.manager, "_restore_loaded_scenes_after_play", reject_restore)
         assert state.manager.enter_play_mode()
-        state.runner.tick()
+        complete_transition(state)
         assert state.manager.state is PlayModeState.RECOVERY_REQUIRED
         assert not state.native.is_playing() and not state.runner.is_busy
         assert state.manager._scene_backups
@@ -286,7 +296,7 @@ def test_failed_enter_with_failed_rollback_retains_snapshot(authoring_project, m
         assert not state.files.save_current_scene()
         assert state.path.read_bytes() == state.original_bytes
     assert state.manager.exit_play_mode()
-    state.runner.tick()
+    complete_transition(state)
     assert_authoring_restored(state)
 
 
@@ -306,10 +316,10 @@ def test_not_ready_warmup_is_not_a_failed_play(authoring_project, monkeypatch):
 
     monkeypatch.setattr(startup_warmup, "run_component_warmups", invoke_actual_hook)
     assert state.manager.enter_play_mode()
-    state.runner.tick()
+    complete_transition(state)
     assert calls and state.manager.is_playing and state.native.is_playing()
     assert state.manager.exit_play_mode()
-    state.runner.tick()
+    complete_transition(state)
     assert_authoring_restored(state)
 
 
@@ -355,7 +365,7 @@ def test_failed_second_scene_preparation_restores_every_resident(authoring_proje
 
     monkeypatch.setattr(component_restore, "publish_prepared_scene_python_components", prepare_then_fail)
     assert state.manager.enter_play_mode()
-    state.runner.tick()
+    complete_transition(state)
     assert_authoring_restored(state)
     assert created and runtime_worlds
     assert state.native.get_scene_by_world_id(secondary.world_id) is secondary
