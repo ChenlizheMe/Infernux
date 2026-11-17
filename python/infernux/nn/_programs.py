@@ -70,6 +70,8 @@ def _catalogue(record):
         path = "programs/" + _library_path(".", record["library"]).name
         files = {path: record["library"]["bytes"]}
     elif device == "gpu":
+        if record.get("target") not in (None, "spirv", "wgsl"):
+            raise ValueError("GPU model catalogue has an invalid shader target")
         files = {}
         for row in record["entries"]:
             if row["path"] != "programs/" + row["identity"] + ".inxgpu":
@@ -210,11 +212,13 @@ def select_source(record, device):
     """Select optional code for the requested device and retain its file directory."""
     program_device = record["device"]
     if program_device == device == "gpu":
-        from ._gpu_programs import GpuProgramSource
-        source = GpuProgramSource(record)
+        target = record.get("target")
+        if target is None or target == compute._native_compute_host().shader_target:
+            from ._gpu_programs import GpuProgramSource
+            source = GpuProgramSource(record)
+            return source, source.file_sizes
     elif program_device == device == "cpu" and record["library"]["target"] == native_cpu_target():
         source = CpuProgramSource(record)
-    else:
-        files, _ = _catalogue(record)
-        return None, files
-    return source, source.file_sizes
+        return source, source.file_sizes
+    files, _ = _catalogue(record)
+    return None, files

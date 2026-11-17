@@ -458,9 +458,10 @@ def _managed_load(path, device, kind, programs, window, budget, finish_within_ms
 def load(path, *, device="cpu", finish_within_frames=None, finish_within_ms=None, budget=None):
     """Load a fixed graph/weights without importing its author class.
 
-    A baked file with programs for the requested device uses them on the ordinary
-    Plan. If the file only has code for a different device or native CPU platform,
-    the fixed definition and weights load alone and compile on first prepare.
+    A baked file with programs for the requested device and target uses them on
+    the ordinary Plan. If its catalogue identifies a different device, CPU
+    platform or shader target, the fixed definition and weights load alone and
+    compile on first prepare.
     A budget, host-frame window or millisecond target schedules input and parameter
     transfers on the same managed owner. The result publishes the complete Module.
     Player cook is a separate step.

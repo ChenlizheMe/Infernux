@@ -1,9 +1,11 @@
 """A real Slang MLP retains training, model IO and the public NN syntax."""
 
+import json
 from itertools import chain
 from pathlib import Path
 import tempfile
 from time import sleep
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -498,6 +500,21 @@ def check_model_target_reconstruction(engine, path, inputs, expected):
     print(f"Baked model reconstructed for {inputs.device} through cold and managed load", flush=True)
 
 
+def check_vulkan_bake_for_web(path):
+    from infernux.nn._programs import select_source
+
+    reader = inx.lib._Infernux._InxPackReader(str(path))
+    try:
+        record = json.loads(reader.manifest["text_header"])["programs"]
+    finally:
+        reader.close()
+    assert record["device"] == "gpu" and record["target"] == "spirv"
+    with patch.object(inx.compute, "_native_compute_host", return_value=SimpleNamespace(shader_target="wgsl")):
+        source, files = select_source(record, "gpu")
+    assert source is None
+    assert files and files == {row["path"]: row["bytes"] for row in record["entries"]}
+
+
 def main():
     workspace = tempfile.TemporaryDirectory(prefix="infernux-slang-network-")
     project = Path(workspace.name)
@@ -536,6 +553,7 @@ def main():
         loaded = nn.load(str(project / "exported.inm"), device="gpu")
         np.testing.assert_allclose(loaded(xgpu).detach().cpu().numpy(), expected, rtol=2e-5, atol=2e-6)
         nn.bake(gpu, str(project / "baked.inm"), optimizer=optimizer_gpu)
+        check_vulkan_bake_for_web(project / "baked.inm")
         baked = nn.load(str(project / "baked.inm"), device="gpu")
         np.testing.assert_allclose(baked(xgpu).detach().cpu().numpy(), expected, rtol=2e-5, atol=2e-6)
         baked_parameters = tuple(baked.parameters())

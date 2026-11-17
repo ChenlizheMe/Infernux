@@ -45,11 +45,13 @@ def build(programs):
     from ._primitives import program_family, inner_range
 
     entries, declarations, files, recipes = {}, {}, {}, {}
+    targets = set()
     for program in programs:
         for variant in program_family(program):
             roles = {}
             for executable in variant._executables.values():
                 artifact = executable.artifact
+                targets.add(artifact.target)
                 payload = _encode_artifact(artifact, executable.specialization)
                 identity = hashlib.sha256(payload).hexdigest()
                 path = "programs/"+identity+".inxgpu"
@@ -83,7 +85,10 @@ def build(programs):
     rows = [dict(row, roles=tuple(row['roles'].values()),
                  variants={kind:tuple(roles.values()) for kind,roles in row['variants'].items()})
             for row in recipes.values()]
-    return dict(device="gpu", entries=list(entries.values()), recipes=rows), tuple(files.items())
+    record = dict(device="gpu", entries=list(entries.values()), recipes=rows)
+    if len(targets) == 1:
+        record["target"] = next(iter(targets))
+    return record, tuple(files.items())
 
 
 class GpuProgramSource(ProgramSource):
@@ -108,6 +113,9 @@ class GpuProgramSource(ProgramSource):
         if len(payload) != row["bytes"]:
             raise ValueError("GPU model program size differs from its catalogue")
         header, artifact = _read_artifact_payload(payload, path=row["path"])
+        target = self.record.get("target")
+        if target is not None and artifact.target != target:
+            raise ValueError("GPU model program target differs from its catalogue")
         self.artifacts[row["identity"]] = header["specialization"], artifact
 
     def _declaration(self, roles, operation):
@@ -142,11 +150,14 @@ class GpuProgramSource(ProgramSource):
 
     def stage(self):
         files = []
+        targets = set()
         for row in self.record["entries"]:
             specialization, artifact = self.artifacts[row["identity"]]
+            targets.add(artifact.target)
             payload = _encode_artifact(artifact, specialization)
             files.append((row["path"], payload))
-        return self.record, tuple(files)
+        record = dict(self.record, target=next(iter(targets))) if len(targets) == 1 else self.record
+        return record, tuple(files)
 
     def _discard_unpublished(self):
         for program in self.programs.values():
