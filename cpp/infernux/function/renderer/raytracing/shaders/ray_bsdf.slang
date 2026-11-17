@@ -1,3 +1,5 @@
+import inx_lit_scattering;
+
 static const float ray_bsdf_pi = 3.14159265358979323846;
 static const float ray_bsdf_inverse_pi = 0.31830988618379067154;
 
@@ -59,13 +61,8 @@ public struct RayGgxMaterial
 public RayGgxMaterial ray_lit_ggx(float3 albedo, float metallic, float smoothness, float normal_variance,
                                   float specular_highlights)
 {
-    // Match the Lit author's raster roughness, including its nonzero perceptual floor and geometric AA.
-    float perceptual = clamp(1.0 - smoothness, 0.045, 1.0);
-    float alpha = perceptual * perceptual;
-    alpha = max(alpha, sqrt(alpha * alpha + min(normal_variance, 0.18)));
-    float3 f0 = lerp(float3(0.04), saturate(albedo), saturate(metallic));
-    float f90 = saturate(50.0 * dot(f0, float3(0.33333)));
-    return {alpha, f0, f90, saturate(specular_highlights)};
+    let scattering = inx_prepare_lit_scattering(albedo, metallic, smoothness, normal_variance);
+    return {scattering.ggx_alpha, scattering.f0, scattering.f90, saturate(specular_highlights)};
 }
 
 float3 ray_ggx_fresnel(RayGgxMaterial material, float cosine)

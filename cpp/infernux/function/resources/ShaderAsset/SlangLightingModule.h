@@ -6,6 +6,7 @@ inline const ShaderSourceModule &GetSlangLightingModule()
 {
     static const ShaderSourceModule module{"inx_lighting", "<infernux/shader/lighting>",
                                            R"slang(import inx_geometry;
+import inx_lit_scattering;
 static const float PI = 3.14159265358979323846;
 static const float INV_PI = 0.31830988618379067154;
 static const float FLT_MIN = 1.175494351e-38;
@@ -109,9 +110,6 @@ float3 f_schlick_roughness(float3 f0, float f90, float u, float perceptual_rough
     float x5 = x * x2 * x2;
     return f0 + (max(float3(1.0 - perceptual_roughness), f0) - f0) * x5;
 }
-float compute_f90(float3 F0) {
-    return saturate(50.0 * dot(F0, float3(0.33333)));
-}
 float D_GGX(float ndot_h, float roughness) {
     float a2 = roughness * roughness;
     float s  = (ndot_h * a2 - ndot_h) * ndot_h + 1.0;
@@ -157,10 +155,6 @@ float calculate_attenuation(float3 atten_params, float distance) {
     float ratio2 = d2 / r2;
     float factor = saturate(1.0 - ratio2 * ratio2);
     return (factor * factor) / (d2 + 1.0);
-}
-float geometric_specular_aa(float variance, float roughness) {
-    float kernel_roughness = min(variance, 0.18);
-    return max(roughness, sqrt(roughness * roughness + kernel_roughness));
 }
 float calculate_spot_falloff(float3 light_dir, float3 spot_dir, float inner_angle_cos, float outer_angle_cos) {
     float spot_len2 = max(dot(spot_dir, spot_dir), 1e-8);
@@ -618,17 +612,16 @@ if (tiled_lighting) {
     return lo;
 }
 float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx) {
-    float3 albedo = clamp(s.albedo, 0.0, 1.0);
-    float metallic = clamp(s.metallic, 0.0, 1.0);
-    float perceptual_roughness = clamp(1.0 - s.smoothness, 0.045, 1.0);
-    float roughness = perceptual_roughness * perceptual_roughness;
+    let scattering = inx_prepare_lit_scattering(s.albedo, s.metallic, s.smoothness, ctx.normal_variance);
+    float3 albedo = scattering.albedo;
+    float metallic = scattering.metallic;
+    float perceptual_roughness = scattering.perceptual_roughness;
+    float roughness = scattering.ggx_alpha;
     float ao = clamp(s.occlusion, 0.0, 1.0);
     float3 N = normalize(s.normal_ws);
-    roughness = geometric_specular_aa(ctx.normal_variance, roughness);
-    perceptual_roughness = max(perceptual_roughness, sqrt(roughness));
     float3 V = normalize(lighting.camera_pos.xyz - ctx.position_ws);
-    float3  F0    = lerp(float3(0.04), albedo, metallic);
-    float f90   = compute_f90(F0);
+    float3  F0    = scattering.f0;
+    float f90   = scattering.f90;
     float ndot_v = max(dot(N, V), 0.0);
     float2  env_brdf      = env_brdf_approx(perceptual_roughness, ndot_v);
     float reflectivity = env_brdf.x + env_brdf.y;

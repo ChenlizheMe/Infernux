@@ -5,6 +5,7 @@
 #include "SlangFrameModule.h"
 #include "SlangGeometryModule.h"
 #include "SlangLightingModule.h"
+#include "SlangLitScatteringModule.h"
 #include "SlangParticleLightingModule.h"
 #include "SlangParticleModule.h"
 #include "SlangUIModule.h"
@@ -55,6 +56,7 @@ class SlangModuleFiles final : public ISlangFileSystemExt
     {
         Add(GetSlangGeometryModule());
         Add(GetSlangCameraModule());
+        Add(GetSlangLitScatteringModule());
         Add(GetSlangLightingModule());
         Add(GetSlangFrameModule());
         Add(GetSlangParticleModule());
