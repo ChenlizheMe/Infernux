@@ -260,7 +260,7 @@ class JoltGpuBroadphase::Impl
     }
     // A numeric capacity hint owns no optional GPU allocations. The current
     // workset alone retains the values still required by its real consumers.
-    uint32_t recentCapacity = 0;
+    std::array<uint32_t, 2> recentCapacity{};
     rhi::ComputeHost host;
     std::array<Program, EntryCount> programs;
 };
@@ -319,7 +319,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
 
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
               JoltGpuPrograms &programs, const StepParams &settings,
-              std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> callback)
+              std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> callback, bool swept)
         : implementation(std::move(owner)), stagePrograms(programs), storageOwner(storage), acceptedInputs(inputs),
           parameters(settings), completed(std::move(callback))
     {
@@ -366,6 +366,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const uint32_t joints = config.selectedCounts.z;
         const bool smallPairs = leaves && leaves <= BroadphaseSmallSetLimit && joints <= BroadphaseSmallSetLimit;
         config.round.w = uint32_t(smallPairs);
+        config.round.y = uint32_t(swept);
         uint64_t words = 0;
         const auto reserve = [&](uint64_t size) {
             if (size > UINT32_MAX || words > UINT32_MAX - size)
@@ -406,7 +407,13 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         parameters.solve.z = parameters.solve.w = 0;
         workset = std::make_shared<JoltGpuContactWorkset>();
         // A single group knows its complete pair upper bound from this World.
-        ConfigureCapacity(smallPairs ? std::max(1u, leaves * (leaves - 1u) / 2u) : implementation->recentCapacity);
+        ConfigureCapacity(smallPairs ? std::max(1u, leaves * (leaves - 1u) / 2u)
+                                     : implementation->recentCapacity[config.round.y]);
+    }
+
+    uint32_t PointsPerPair() const
+    {
+        return config.round.y ? 1u : MaxContactPointsPerPair;
     }
 
     void ConfigureCapacity(uint32_t value)
@@ -463,8 +470,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                           rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect))
                 return false;
             if (!Endpoint(candidateArena, (1ull + 2ull * capacity) * WordBytes) ||
-                !Endpoint(workset->contacts,
-                          uint64_t(std::max(1u, capacity * MaxContactPointsPerPair)) * sizeof(Contact))) {
+                !Endpoint(workset->contacts, uint64_t(std::max(1u, capacity * PointsPerPair())) * sizeof(Contact))) {
                 if (capacity && !config.round.w) {
                     // A historical K is not a mandatory lower bound. Drop all
                     // partial optimistic owners, then let the SAME execution
@@ -481,8 +487,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             phase = Phase::Initialize;
         } else if (phase == Phase::FinalCapacity) {
             if (!Endpoint(candidateArena, (1ull + 2ull * capacity) * WordBytes) ||
-                !Endpoint(workset->contacts,
-                          uint64_t(std::max(1u, capacity * MaxContactPointsPerPair)) * sizeof(Contact)) ||
+                !Endpoint(workset->contacts, uint64_t(std::max(1u, capacity * PointsPerPair())) * sizeof(Contact)) ||
                 !Endpoint(workset->parameters, sizeof(StepParams))) {
                 // Historical growth slack is optional. Under real allocation
                 // pressure release the partial grown owner, then retry exactly
@@ -978,7 +983,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 phase = Phase::FinalContacts;
                 break;
             case Phase::FinalContacts:
-                if (Range(InitContacts, std::max(1u, capacity * MaxContactPointsPerPair), uploads, dispatches))
+                if (Range(InitContacts, std::max(1u, capacity * PointsPerPair()), uploads, dispatches))
                     return true;
                 phase = afterContacts;
                 break;
@@ -986,7 +991,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 if (!Emit(PublishResidentCount, 0, 1, config, uploads, dispatches))
                     return true;
                 if (config.round.w) {
-                    phase = Phase::Collide;
+                    phase = config.round.y ? Phase::Done : Phase::Collide;
                     return true;
                 }
                 BeginActive(true);
@@ -1025,7 +1030,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 if (!Emit(SetCandidateBank, 0, 1, config, uploads, dispatches))
                     return true;
                 item = 0;
-                phase = capacity ? Phase::Collide : Phase::Done;
+                phase = capacity && !config.round.y ? Phase::Collide : Phase::Done;
                 return true;
             case Phase::Collide: {
                 if (item == capacity) {
@@ -1099,7 +1104,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             const uint64_t grown =
                 std::max<uint64_t>(std::max(1u, result.x), previousCapacity + (previousCapacity + 1u) / 2u);
             const uint64_t binding = implementation->host.device.GetCapabilities().portable.maxStorageBufferBinding;
-            const uint64_t contactLimit = binding / (uint64_t(MaxContactPointsPerPair) * sizeof(Contact));
+            const uint64_t contactLimit = binding / (uint64_t(PointsPerPair()) * sizeof(Contact));
             const uint64_t candidateLimit = binding < WordBytes ? 0u : (binding / WordBytes - 1u) / 2u;
             const uint64_t maximum = std::min<uint64_t>(
                 {UINT32_MAX / MaxContactPointsPerPair, (uint64_t(UINT32_MAX) - 1u) / 2u, contactLimit, candidateLimit});
@@ -1116,7 +1121,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             workset->patchCount = result.x;
             workset->maxPatchesPerWorld = result.w;
             if (!config.round.w)
-                implementation->recentCapacity = result.x < capacity / 4u ? std::max(1u, capacity / 2u) : capacity;
+                implementation->recentCapacity[config.round.y] =
+                    result.x < capacity / 4u ? std::max(1u, capacity / 2u) : capacity;
         }
     }
 
@@ -1285,15 +1291,15 @@ bool JoltGpuBroadphase::TryPrepareSmallPairPipeline()
 JoltGpuControlWork
 JoltGpuBroadphase::Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
                            const StepParams &parameters,
-                           std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed)
+                           std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed, bool swept)
 {
-    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, std::move(completed))
+    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, std::move(completed), swept)
         ->Next();
 }
 
 void JoltGpuBroadphase::ResetCapacityHint() noexcept
 {
-    m_impl->recentCapacity = 0;
+    m_impl->recentCapacity = {};
 }
 
 } // namespace infernux

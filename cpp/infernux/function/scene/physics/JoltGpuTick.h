@@ -93,7 +93,8 @@ struct JoltGpuTickOutput
 enum class JoltGpuContactReportStage
 {
     BeforeVelocity,
-    AfterVelocity
+    AfterVelocity,
+    Sweep
 };
 
 enum class JoltGpuCoupledContactStage

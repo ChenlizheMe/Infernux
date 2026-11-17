@@ -44,7 +44,7 @@ inline std::shared_ptr<JoltGpuArticulationState> BuildJoltGpuArticulationForest(
         return m.meta.z == MotionDynamic && std::isfinite(m.mass.x) && m.mass.x > 0 && m.mass.y == 0 && m.mass.z == 0 &&
                std::isfinite(m.invInertiaDiagonal.x) && m.invInertiaDiagonal.x > 0 &&
                std::isfinite(m.invInertiaDiagonal.y) && m.invInertiaDiagonal.y > 0 &&
-               std::isfinite(m.invInertiaDiagonal.z) && m.invInertiaDiagonal.z > 0;
+               std::isfinite(m.invInertiaDiagonal.z) && m.invInertiaDiagonal.z > 0 && m.invInertiaDiagonal.w == 0;
     };
     for (uint32_t offset = 0; offset < joints; ++offset) {
         const uint32_t row = jointBase + offset;

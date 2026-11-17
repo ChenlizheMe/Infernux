@@ -317,7 +317,14 @@ class JoltGpuTick::Impl
         SolveVelocity,
         ExchangeCoupledContacts,
         ReportContactsAfterVelocity,
+        PrepareSweep,
+        CaptureSweepMotion,
+        BuildSweptBounds,
+        SweptBroadphase,
+        ResolveSweep,
+        ReportSweep,
         Integrate,
+        IntegrateSwept,
         CommitArticulationPose,
         SolveJointPosition,
         SolvePosition,
@@ -729,7 +736,8 @@ class JoltGpuTick::Impl
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
                phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareCoupledContacts ||
-               phase == Phase::PrepareContactStore || CoupledFeedbackPhase(phase);
+               phase == Phase::PrepareContactStore || phase == Phase::PrepareSweep || phase == Phase::SweptBroadphase ||
+               phase == Phase::ResolveSweep || phase == Phase::ReportSweep || CoupledFeedbackPhase(phase);
     }
 
     StageSpan Span(Phase phase) const
@@ -743,6 +751,10 @@ class JoltGpuTick::Impl
             return {Stage::ApplyForces, Domain::Bodies};
         case Phase::BuildBounds:
             return {Stage::BuildBounds, Domain::Shapes};
+        case Phase::CaptureSweepMotion:
+            return {Stage::CaptureSweepMotion, Domain::Bodies};
+        case Phase::BuildSweptBounds:
+            return {Stage::BuildSweptBounds, Domain::Shapes};
         case Phase::CollidePairs:
             return {Stage::CollidePairs, Domain::Patches};
         case Phase::SetupContacts:
@@ -761,6 +773,8 @@ class JoltGpuTick::Impl
             return {Stage::StoreContactHistory, Domain::Patches};
         case Phase::Integrate:
             return {Stage::Integrate, Domain::Bodies};
+        case Phase::IntegrateSwept:
+            return {Stage::IntegrateSwept, Domain::Bodies};
         case Phase::SolveJointPosition:
             return {Stage::SolveJointPosition, Domain::IslandJoints};
         case Phase::SolvePosition:
@@ -773,6 +787,10 @@ class JoltGpuTick::Impl
         case Phase::CaptureArticulationRotors:
         case Phase::ClassifyArticulations:
         case Phase::Broadphase:
+        case Phase::PrepareSweep:
+        case Phase::SweptBroadphase:
+        case Phase::ResolveSweep:
+        case Phase::ReportSweep:
         case Phase::InitializeSleep:
         case Phase::CapturePrescribedBounds:
         case Phase::WakePrescribedBounds:
@@ -848,6 +866,7 @@ class JoltGpuTick::Impl
         const bool velocity = tickParameters.counts.w && (responding || control.prepareCoupledContacts);
         const bool coupledPositions = control.prepareCoupledContacts && !inputs.GetExternalContactBodies().empty();
         const bool position = tickParameters.solve.x && (responding || coupledPositions);
+        const auto drift = storage.HasSweepBodies(selectedRow) ? Phase::PrepareSweep : Phase::Integrate;
         next.islandBatchFirst = 0;
         next.islandBatchLanes = 0;
         next.localFirst = 0;
@@ -930,7 +949,7 @@ class JoltGpuTick::Impl
             next.phase = Phase::BuildConstraints;
             break;
         case Phase::ReportContactsAfterVelocity:
-            next.phase = Phase::Integrate;
+            next.phase = drift;
             break;
         case Phase::BuildConstraints:
             next.phase = Phase::ClassifyArticulations;
@@ -939,7 +958,7 @@ class JoltGpuTick::Impl
             next.iteration = 0;
             next.phase = velocity                       ? Phase::WarmJoints
                          : control.prepareContactReport ? Phase::ReportContactsAfterVelocity
-                                                        : Phase::Integrate;
+                                                        : drift;
             break;
         case Phase::WarmJoints:
             next.phase = Phase::WarmContacts;
@@ -966,9 +985,28 @@ class JoltGpuTick::Impl
             next.phase = ++next.iteration < tickParameters.counts.w
                              ? (control.prepareParticipant ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
                          : control.prepareContactReport ? Phase::ReportContactsAfterVelocity
-                                                        : Phase::Integrate;
+                                                        : drift;
+            break;
+        case Phase::PrepareSweep:
+            next.phase = Phase::CaptureSweepMotion;
+            break;
+        case Phase::CaptureSweepMotion:
+            next.phase = Phase::BuildSweptBounds;
+            break;
+        case Phase::BuildSweptBounds:
+            next.phase = Phase::SweptBroadphase;
+            break;
+        case Phase::SweptBroadphase:
+            next.phase = inputs.GetSweepContacts()->patchCount ? Phase::ResolveSweep : Phase::Integrate;
+            break;
+        case Phase::ResolveSweep:
+            next.phase = control.prepareContactReport ? Phase::ReportSweep : Phase::IntegrateSwept;
+            break;
+        case Phase::ReportSweep:
+            next.phase = Phase::IntegrateSwept;
             break;
         case Phase::Integrate:
+        case Phase::IntegrateSwept:
             next.phase = Phase::CommitArticulationPose;
             break;
         case Phase::CommitArticulationPose:
@@ -1142,6 +1180,22 @@ class JoltGpuTick::Impl
         if (!next.buffer)
             return {nullptr, [this] { return PrepareContactStore(); }};
         inputs.SetContactHistory({}, std::move(next));
+        NextSpan(stageCursor);
+        Normalize(stageCursor);
+        return {};
+    }
+
+    JoltGpuControlWork PrepareSweep()
+    {
+        inputs.SetSweepContacts(nullptr);
+        if (!inputs.GetSweepBodies()) {
+            auto bodies = rhi::ComputeBuffer::TryCreatePrivate(
+                host, {uint64_t(tickParameters.selectedCounts.x) * sizeof(JPH::GPU::SweepBody) / sizeof(uint32_t),
+                       rhi::ComputeScalarType::UInt32, 1u});
+            if (!bodies)
+                return {nullptr, [this] { return PrepareSweep(); }};
+            inputs.SetSweepBodies(std::move(bodies));
+        }
         NextSpan(stageCursor);
         Normalize(stageCursor);
         return {};
@@ -1727,6 +1781,31 @@ class JoltGpuTick::Impl
                     PacketKind::NumericalWork);
                 return true;
             }
+            if (stageCursor.phase == Phase::PrepareSweep) {
+                SelectControlWork(PrepareSweep(), PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::SweptBroadphase) {
+                SelectControlWork(broadphase.Prepare(
+                                      storage, inputs, programs, tickParameters,
+                                      [this](auto contacts) {
+                                          inputs.SetSweepContacts(std::move(contacts));
+                                          NextSpan(stageCursor);
+                                          Normalize(stageCursor);
+                                      },
+                                      true),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::ResolveSweep) {
+                SelectControlWork(narrowphase.PrepareSweeps(storage, inputs, work,
+                                                            [this] {
+                                                                NextSpan(stageCursor);
+                                                                Normalize(stageCursor);
+                                                            }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
             if (stageCursor.phase == Phase::PrepareContactStore) {
                 SelectControlWork(PrepareContactStore(), PacketKind::NumericalWork);
                 return true;
@@ -1856,10 +1935,11 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::ReportContactsBeforeVelocity ||
-                stageCursor.phase == Phase::ReportContactsAfterVelocity) {
+                stageCursor.phase == Phase::ReportContactsAfterVelocity || stageCursor.phase == Phase::ReportSweep) {
                 const auto phase = stageCursor.phase == Phase::ReportContactsBeforeVelocity
                                        ? JoltGpuContactReportStage::BeforeVelocity
-                                       : JoltGpuContactReportStage::AfterVelocity;
+                                   : stageCursor.phase == Phase::ReportSweep ? JoltGpuContactReportStage::Sweep
+                                                                             : JoltGpuContactReportStage::AfterVelocity;
                 SelectControlWork(control.prepareContactReport(storage, inputs, tickParameters, stageCursor.substep,
                                                                phase,
                                                                [this] {

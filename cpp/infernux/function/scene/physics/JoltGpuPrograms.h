@@ -235,6 +235,10 @@ class JoltGpuStorage
     {
         return m_shapeCount;
     }
+    [[nodiscard]] bool HasSweepBodies(uint32_t world) const noexcept
+    {
+        return m_sweepCounts[world] != 0u;
+    }
     [[nodiscard]] uint32_t GetMaxLeavesPerWorld() const noexcept
     {
         return m_maxLeavesPerWorld;
@@ -278,6 +282,7 @@ class JoltGpuStorage
     std::shared_ptr<const JoltGpuJointLayout> m_jointLayout;
     bool m_modelUpdatePending = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> m_buffers;
+    std::vector<uint32_t> m_sweepCounts;
     std::map<uint32_t, JoltGpuContactHistory> m_contactHistory;
     uint32_t m_bodyCount = 0, m_worldCount = 0, m_shapeCount = 0, m_maxBodiesPerWorld = 0, m_maxLeavesPerWorld = 0;
 };
@@ -319,6 +324,7 @@ class JoltGpuModelUpdate final
     std::vector<JoltGpuShapeModelUpdate> m_shapeChanges;
     std::vector<JoltGpuJointModelUpdate> m_jointChanges;
     std::optional<JoltGpuModel> m_replacement;
+    std::vector<uint32_t> m_replacementSweepCounts;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> m_replacementBuffers;
     // Shapes, maximum bodies/world, maximum leaves/world.
     std::array<uint32_t, 3> m_replacementCounts{};
@@ -410,6 +416,22 @@ class JoltGpuStepInputs
     {
         return m_contacts;
     }
+    void SetSweepBodies(std::shared_ptr<rhi::ComputeBuffer> bodies) noexcept
+    {
+        m_sweepBodies = std::move(bodies);
+    }
+    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetSweepBodies() const noexcept
+    {
+        return m_sweepBodies;
+    }
+    void SetSweepContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts) noexcept
+    {
+        m_sweepContacts = std::move(contacts);
+    }
+    [[nodiscard]] const std::shared_ptr<const JoltGpuContactWorkset> &GetSweepContacts() const noexcept
+    {
+        return m_sweepContacts;
+    }
 
     void SetContactHistory(JoltGpuContactHistory previous, JoltGpuContactHistory next) noexcept;
     [[nodiscard]] const JoltGpuContactHistory &PreviousContactHistory() const noexcept
@@ -439,6 +461,8 @@ class JoltGpuStepInputs
     std::shared_ptr<const JoltGpuGeometryLease> m_geometry;
     bool m_hasGenericGeometry = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
+    std::shared_ptr<rhi::ComputeBuffer> m_sweepBodies;
+    std::shared_ptr<const JoltGpuContactWorkset> m_sweepContacts;
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
     JoltGpuContactHistory m_previousContacts, m_nextContacts;
     std::shared_ptr<const JoltGpuColliderPairs> m_colliderPairs;

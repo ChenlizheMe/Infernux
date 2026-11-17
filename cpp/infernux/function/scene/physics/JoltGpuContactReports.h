@@ -2,6 +2,7 @@
 #include <Jolt/GPU/ContactReportTypes.h>
 #include "JoltGpuScene.h"
 #include <array>
+#include <map>
 
 namespace infernux
 {
@@ -19,6 +20,7 @@ struct JoltGpuContactReportResult
     };
     std::shared_ptr<const JoltGpuScene::Publication> publication;
     std::vector<Frame> frames;
+    std::map<uint32_t, Frame> sweepFrames;
     uint32_t expectedSubsteps = 0;
     bool complete = false;
 };

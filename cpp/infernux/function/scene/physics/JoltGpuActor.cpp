@@ -104,9 +104,10 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
     if (rigidbody) {
         if ((rigidbody->GetConstraints() & ~126) != 0)
             throw std::invalid_argument("Rigidbody constraints contain unknown bits");
-        if (rigidbody->GetCollisionDetectionMode() != static_cast<int>(CollisionDetectionMode::Discrete))
+        if (!rigidbody->IsKinematic() &&
+            rigidbody->GetCollisionDetectionMode() == static_cast<int>(CollisionDetectionMode::ContinuousDynamic))
             throw std::invalid_argument(
-                "Jolt GPU actor preparation does not yet support continuous collision detection");
+                "Jolt GPU actors currently support Discrete and Continuous collision detection");
     }
     const auto *transform = actor.owner->GetTransform();
     const auto motion = rigidbody ? (rigidbody->IsKinematic() ? JPH::GPU::MotionKinematic : JPH::GPU::MotionDynamic)
@@ -128,6 +129,9 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
         prepared.body.mass.w = rigidbody->GetUseGravity() ? 1.0f : 0.0f;
         prepared.body.damping = {rigidbody->GetDrag(), rigidbody->GetAngularDrag(), rigidbody->GetMaxLinearVelocity(),
                                  rigidbody->GetMaxAngularVelocity()};
+        if (motion == JPH::GPU::MotionDynamic &&
+            rigidbody->GetCollisionDetectionMode() == static_cast<int>(CollisionDetectionMode::Continuous))
+            prepared.body.invInertiaDiagonal.w = shape->GetInnerRadius();
 
         if (const auto &linear = prepared.publication.linearVelocity)
             prepared.initialState.linearVelocity = {linear->x, linear->y, linear->z, 0.0f};

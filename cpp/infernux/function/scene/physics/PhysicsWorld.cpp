@@ -453,6 +453,8 @@ JoltGpuStepParameters StepParameters(float dt, const glm::vec3 &gravity)
     p.contact = {c.physicsSpeculativeContactDistance, c.physicsPenetrationSlop, c.physicsMaxPenetrationDistance,
                  c.physicsBaumgarte};
     p.restitution.x = c.physicsMinVelocityForRestitution;
+    p.restitution.y = c.physicsLinearCastThreshold;
+    p.restitution.z = c.physicsLinearCastMaxPenetration;
     return JoltGpuStepParameters(p);
 }
 } // namespace
@@ -3350,12 +3352,9 @@ void PhysicsWorld::SetBodyAllowedDOFs(uint32_t id, int allowed, float mass)
 void PhysicsWorld::SetBodyMotionQuality(uint32_t id, int quality)
 {
     (void)ActorForBody(id);
-    if (m_bodyActors.at(id).AuthorBackend() == Backend::Cpu) {
-        RefreshBodyLayers(id);
-        return;
-    }
-    if (quality != 0)
-        Unsupported("continuous collision detection");
+    if (m_bodyActors.at(id).AuthorBackend() == Backend::Gpu && quality == 2)
+        Unsupported("continuous collision detection between dynamic bodies");
+    RefreshBodyLayers(id);
 }
 void PhysicsWorld::ValidateBodyMassProperties(const Rigidbody &body, float mass,
                                               const RigidbodyMassProperties *properties) const

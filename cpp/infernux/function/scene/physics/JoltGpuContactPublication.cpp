@@ -88,6 +88,12 @@ State::Manifold DecodeManifold(const JoltGpuScene::Publication &p, const Contact
     }
     return {a, b, trigger, offset, r.meta.z};
 }
+
+State::PairKey PairKey(const State::Manifold &manifold)
+{
+    const auto a = manifold.a.Key(), b = manifold.b.Key();
+    return {std::min(a, b), std::max(a, b), manifold.trigger};
+}
 } // namespace
 
 struct JoltGpuContactPublication::Pending
@@ -143,15 +149,47 @@ void JoltGpuContactPublication::AppendFrame(uint32_t substep, State::Frame &dest
     if (!m_pending)
         return;
     const auto &report = *m_pending->report;
-    const auto &frame = report.frames.at(substep);
-    if (frame.substep != substep || !frame.finished || !frame.seeded)
-        throw std::logic_error("Contact frame sequence mismatch");
-    destination.manifolds.reserve(destination.manifolds.size() + frame.records.size());
-    destination.points.reserve(destination.points.size() + frame.records.size() * MaxPatchPoints);
-    for (const auto &record : frame.records) {
-        if (record.meta.w >= frame.capacity)
-            throw std::runtime_error("Contact source ordinal exceeds retained workset");
-        destination.manifolds.push_back(DecodeManifold(*report.publication, record, substep, destination.points));
+    const auto append = [&](const auto &frame, std::map<State::PairKey, size_t> *existing) {
+        if (frame.substep != substep || !frame.finished || !frame.seeded)
+            throw std::logic_error("Contact frame sequence mismatch");
+        destination.manifolds.reserve(destination.manifolds.size() + frame.records.size());
+        destination.points.reserve(destination.points.size() + frame.records.size() * MaxPatchPoints);
+        for (const auto &record : frame.records) {
+            if (record.meta.w >= frame.capacity)
+                throw std::runtime_error("Contact source ordinal exceeds retained workset");
+            auto manifold = DecodeManifold(*report.publication, record, substep, destination.points);
+            if (existing) {
+                const auto [found, inserted] = existing->emplace(PairKey(manifold), destination.manifolds.size());
+                if (!inserted) {
+                    auto &prior = destination.manifolds[found->second];
+                    auto point = destination.points.back();
+                    destination.points.pop_back();
+                    if (prior.a.Key() != manifold.a.Key()) {
+                        point.normal = -point.normal;
+                        point.relativeVelocity = -point.relativeVelocity;
+                        point.impulse = -point.impulse;
+                    }
+                    const auto offset = destination.points.size();
+                    destination.points.reserve(offset + prior.pointCount + 1u);
+                    for (uint32_t i = 0; i < prior.pointCount; ++i)
+                        destination.points.push_back(destination.points[prior.pointOffset + i]);
+                    destination.points.push_back(point);
+                    prior.pointOffset = offset;
+                    ++prior.pointCount;
+                    continue;
+                }
+            }
+            destination.manifolds.push_back(std::move(manifold));
+        }
+    };
+    const auto ordinaryFirst = destination.manifolds.size();
+    append(report.frames.at(substep), nullptr);
+    if (const auto swept = report.sweepFrames.find(substep);
+        swept != report.sweepFrames.end() && !swept->second.records.empty()) {
+        std::map<State::PairKey, size_t> existing;
+        for (size_t i = ordinaryFirst; i < destination.manifolds.size(); ++i)
+            existing.emplace(PairKey(destination.manifolds[i]), i);
+        append(swept->second, &existing);
     }
 }
 

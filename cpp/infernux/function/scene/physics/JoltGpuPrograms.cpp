@@ -143,6 +143,12 @@ constexpr Port Ports[] = {
     {Resource::ConvexGeometry, "convex_geometry", sizeof(UInt4), {}, 1},
     {Resource::ArticulationControl, "articulation_control", sizeof(QueryRecordWord), {"value"}, 1},
     {Resource::ContactHistory, "contact_history", sizeof(QueryRecordWord), {"value"}, 1},
+    {Resource::SweepBodies,
+     "sweep_bodies",
+     sizeof(SweepBody),
+     {"positionCOM", "rotation", "linearVelocity", "angularVelocity", "displacement", "linearResponse",
+      "angularResponse"},
+     0},
 };
 
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
@@ -197,6 +203,8 @@ constexpr size_t PortIndex(Resource resource)
         return 15;
     case Resource::ContactHistory:
         return 16;
+    case Resource::SweepBodies:
+        return 17;
     case Resource::SleepStates:
         return 11;
     }
@@ -238,7 +246,10 @@ constexpr uint32_t CompleteWrites(Stage stage)
 {
     switch (stage) {
     case Stage::BuildBounds:
+    case Stage::BuildSweptBounds:
         return Mask(Resource::Bounds);
+    case Stage::CaptureSweepMotion:
+        return Mask(Resource::SweepBodies);
     case Stage::CollidePairs:
         return Mask(Resource::Contacts);
     case Stage::StoreContactHistory:
@@ -264,7 +275,7 @@ constexpr bool IndexedDefinitions()
     return true;
 }
 
-static_assert(PortCount == StoragePortCount + 5);
+static_assert(PortCount == StoragePortCount + 6);
 static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
@@ -292,6 +303,20 @@ struct ModelCounts
 {
     uint32_t bodies, worlds, shapes, maxBodiesPerWorld = 0, maxLeavesPerWorld = 0;
 };
+
+bool Sweeps(const BodyModel &body)
+{
+    return body.meta.z == MotionDynamic && body.meta.y && body.invInertiaDiagonal.w > 0.0f;
+}
+
+std::vector<uint32_t> CountSweeps(const JoltGpuModel &model)
+{
+    std::vector<uint32_t> counts(model.worlds.size());
+    for (const auto &body : model.bodies)
+        if (Sweeps(body))
+            ++counts[body.meta.w];
+    return counts;
+}
 
 template <class Change, class Record>
 const Record &ModelRecord(const std::vector<Record> &records, const std::vector<Change> &changes, uint32_t index)
@@ -339,6 +364,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                 std::floor(record.mass.z) != record.mass.z ||
                 (nonstatic ? (!finiteMass && !prescribed) : record.mass.x != 0) || !Finite4(record.damping) ||
                 record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 || record.damping.w < 0 ||
+                !std::isfinite(record.invInertiaDiagonal.w) || record.invInertiaDiagonal.w < 0.0f ||
                 (nonstatic && !Normalized(record.inertiaRotation)))
                 throw std::invalid_argument("Jolt GPU body has invalid mass, inertia or damping");
             for (uint32_t leaf = record.meta.x; leaf < bodyLeafEnd + record.meta.y; ++leaf) {
@@ -723,7 +749,8 @@ JoltGpuStepParameters::JoltGpuStepParameters(StepParams parameters) : m_paramete
 {
     if (parameters.solve.y == 0 || !Finite4(parameters.contact) || parameters.contact.x < 0 ||
         parameters.contact.y < 0 || parameters.contact.z < 0 || parameters.contact.w < 0 || parameters.contact.w > 1 ||
-        !std::isfinite(parameters.restitution.x) || parameters.restitution.x < 0)
+        !Finite3(parameters.restitution) || parameters.restitution.x < 0 || parameters.restitution.y < 0 ||
+        parameters.restitution.z < 0)
         throw std::invalid_argument("Jolt GPU substep count and contact parameters are invalid");
     SetGravityAndDeltaTime(parameters.gravityDt);
 }
@@ -740,6 +767,7 @@ JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
 {
     const auto &model = m_model;
     const auto counts = ValidateModel(model);
+    m_sweepCounts = CountSweeps(model);
     m_jointLayout = std::make_shared<JoltGpuJointLayout>(model.joints);
     if (!model.joints.empty())
         throw std::invalid_argument("Jolt GPU initial joint topology requires an ordered GPU initialization");
@@ -1167,6 +1195,7 @@ JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<
       m_replacementBuffers(std::move(replacementBuffers)), m_replacementCounts(replacementCounts)
 {
     m_jointLayout = std::make_shared<JoltGpuJointLayout>(m_replacement->joints);
+    m_replacementSweepCounts = CountSweeps(*m_replacement);
 }
 
 void JoltGpuModelUpdate::Commit() noexcept
@@ -1179,6 +1208,7 @@ void JoltGpuModelUpdate::Commit() noexcept
         m_storage->m_model.shapes.swap(m_replacement->shapes);
         m_storage->m_model.worlds.swap(m_replacement->worlds);
         m_storage->m_model.joints.swap(m_replacement->joints);
+        m_storage->m_sweepCounts.swap(m_replacementSweepCounts);
         m_storage->m_buffers.swap(m_replacementBuffers);
         m_storage->m_bodyCount = static_cast<uint32_t>(m_storage->m_model.bodies.size());
         m_storage->m_worldCount = static_cast<uint32_t>(m_storage->m_model.worlds.size());
@@ -1188,7 +1218,10 @@ void JoltGpuModelUpdate::Commit() noexcept
     }
     for (const auto &change : m_bodyChanges) {
         m_storage->ClearContactHistory(change.model.meta.w);
-        m_storage->m_model.bodies[change.index] = change.model;
+        auto &old = m_storage->m_model.bodies[change.index];
+        m_storage->m_sweepCounts[change.model.meta.w] += uint32_t(Sweeps(change.model));
+        m_storage->m_sweepCounts[old.meta.w] -= uint32_t(Sweeps(old));
+        old = change.model;
     }
     for (const auto &change : m_shapeChanges) {
         const auto &bodies = m_storage->m_model.bodies;
@@ -1462,6 +1495,7 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
                 ? (inputs.m_articulations ? inputs.m_articulations->control : m_emptyArticulationControl)
             : resource == Resource::ConvexGeometry     ? inputs.GetCaptured(resource)
             : resource == Resource::StageWork          ? workUniform
+            : resource == Resource::SweepBodies        ? inputs.GetSweepBodies()
             : resource == Resource::ConstraintSchedule ? (constraints ? constraints->schedule : nullptr)
             : resource == Resource::ContactHistory
                 ? (writer ? inputs.NextContactHistory().buffer : inputs.PreviousContactHistory().buffer)
@@ -1500,6 +1534,8 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
             };
             if (resource == Resource::Bounds) {
                 complete(range.x, range.y, sizeof(Aabb));
+            } else if (resource == Resource::SweepBodies) {
+                complete(range.x - inputs.GetParameters().selection.y, range.y, sizeof(SweepBody));
             } else if (resource == Resource::Contacts) {
                 complete(uint64_t(range.x) * MaxContactPointsPerPair, uint64_t(range.y) * MaxContactPointsPerPair,
                          sizeof(Contact));

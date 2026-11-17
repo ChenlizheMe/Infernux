@@ -17,7 +17,7 @@ class JoltGpuBroadphase final
     [[nodiscard]] JoltGpuControlWork
     Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
             const JPH::GPU::StepParams &parameters,
-            std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed);
+            std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed, bool swept = false);
 
     // Clear only the numeric hint at cancellation/admission shutdown. No
     // optional GPU allocation is retained between producer executions.
