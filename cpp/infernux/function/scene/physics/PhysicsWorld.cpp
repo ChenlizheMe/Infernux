@@ -1795,7 +1795,8 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
         }
     }
 
-    std::vector<JoltJointImport> imports, gpuReads;
+    std::vector<JoltJointImport> imports, gpuJointReads;
+    std::vector<JoltBodyImport> gpuBodyReads;
     std::vector<uint64_t> nativeJoints, mixedJoints;
     imports.reserve(joints.size());
     for (const auto &[joint, destination] : joints) {
@@ -1815,7 +1816,7 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
                     std::make_shared<std::optional<JoltJointTransfer>>(domain.cpuScene->Constraints().ReadTransfer(id));
             else if (destination == JointBackend::Cpu) {
                 state = std::make_shared<std::optional<JoltJointTransfer>>();
-                gpuReads.push_back({id, state});
+                gpuJointReads.push_back({id, state});
             }
             nativeJoints.push_back(id);
         }
@@ -1892,13 +1893,12 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
         }
         ApplyCpuControl(domain);
         std::vector<JoltCpuControl::BodyTransfer> targets;
-        std::vector<JoltBodyImport> reads;
         targets.reserve(moving.size());
-        reads.reserve(moving.size());
+        gpuBodyReads.reserve(moving.size());
         for (auto &body : prepared) {
             body.cpu->publication.sharedGeometryRevision = m_bodyActors.at(body.id).stagedShapeRevision;
-            reads.push_back({body.id, std::make_shared<std::optional<JoltBodyTransfer>>()});
-            targets.push_back({reads.back(), std::move(*body.cpu)});
+            gpuBodyReads.push_back({body.id, std::make_shared<std::optional<JoltBodyTransfer>>()});
+            targets.push_back({gpuBodyReads.back(), std::move(*body.cpu)});
         }
         domain.cpuControl->StageTransfers(targets);
         domain.bodyTransfer = PhysicsDomain::BodyTransfer{std::move(moving)};
@@ -1907,7 +1907,6 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
             entry.cpuStaged = true;
             entry.transferTarget = target;
         }
-        m_gpuScene->QueueBodyTransferReads(domain.owner, reads);
     }
     for (const auto id : mixedJoints)
         DetachMixedJointRoute(domain, id);
@@ -1924,7 +1923,7 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
             const auto &receiver = binding.joint;
             if (!toGpu) {
                 // Hold the receiving joint until the source GPU frame has been read.
-                gpuReads.push_back({import.id, {receiver, &receiver->reference}});
+                gpuJointReads.push_back({import.id, {receiver, &receiver->reference}});
             }
             if (!binding.enableCollision) {
                 const auto source = toGpu ? receiver->gpuBody : receiver->cpuBody;
@@ -1938,7 +1937,7 @@ bool PhysicsWorld::TryStageBodyTransfer(PhysicsDomain &domain, const std::vector
         domain.bodyTransfer->cpuWakeExclusions = std::move(wakeExclusions);
         m_gpuScene->QueueJointTransferRestore(domain.owner, std::move(gpuRestores));
     } else {
-        m_gpuScene->QueueJointTransferReads(domain.owner, std::move(gpuReads));
+        m_gpuScene->QueueTransferReads(domain.owner, gpuBodyReads, std::move(gpuJointReads));
         m_gpuScene->TransferJointsOut(domain.owner, nativeJoints);
         m_gpuScene->StageRetireBodies(domain.owner, domain.bodyTransfer->bodies, true, std::move(wakeExclusions));
     }

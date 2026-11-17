@@ -209,9 +209,9 @@ class JoltGpuScene final
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);
     PhysicsTargetSource QueueCommand(uint32_t bodyId, JPH::GPU::BodyCommand command,
                                      const PhysicsTargetAuthor *author = nullptr);
-    void QueueBodyTransferReads(RuntimeWorld &world, const std::vector<JoltBodyImport> &bodies);
+    void QueueTransferReads(RuntimeWorld &world, const std::vector<JoltBodyImport> &bodies,
+                            std::vector<JoltJointImport> joints);
     void QueueTransferRestore(uint32_t bodyId, const JoltBodyTransfer &);
-    void QueueJointTransferReads(RuntimeWorld &world, std::vector<JoltJointImport> joints);
     void QueueJointTransferRestore(RuntimeWorld &world, std::vector<JoltJointImport> joints);
     void StageRetire(uint32_t bodyId, bool transferDrive = false);
     void StageRetireBodies(RuntimeWorld &world, const std::vector<uint32_t> &ids, bool transferDrive,

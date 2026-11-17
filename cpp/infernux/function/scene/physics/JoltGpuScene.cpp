@@ -702,40 +702,6 @@ class JoltGpuScene::Impl
         return id;
     }
 
-    void QueueJointTransferReads(Partition &domain, std::vector<JoltJointImport> transfers)
-    {
-        if (transfers.empty())
-            return;
-        JoltGpuControlGroup group;
-        group.prepareWork = [this, transfers = std::move(transfers)] {
-            std::vector<PublishedJoint> captured;
-            std::vector<rhi::ComputeBufferRead> reads;
-            captured.reserve(transfers.size());
-            reads.reserve(transfers.size());
-            const auto &layout = *storage.GetJointLayout();
-            const auto &stream = storage.Get(Resource::Joints);
-            for (const auto &transfer : transfers) {
-                const auto &joint = AcceptedJoint(transfer.id);
-                captured.push_back(joint);
-                reads.push_back({stream, uint64_t(layout.Row(joint.row).layout.y) * 16,
-                                 uint64_t(JoltGpuJointLayout::StateWords(joint.kind)) * 16});
-            }
-            auto host = storage.GetHost();
-            auto packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(reads));
-            return JoltGpuControlWork{packet, [packet, transfers, captured = std::move(captured)] {
-                                          for (size_t index = 0; index < transfers.size(); ++index) {
-                                              const auto &joint = captured[index];
-                                              *transfers[index].state = WithJointState(joint.kind, [&](auto state) {
-                                                  packet->Readback(index)->ReadInto(&state, sizeof(state));
-                                                  return DecodeJointTransfer(state, joint.author);
-                                              });
-                                          }
-                                          return JoltGpuControlWork{};
-                                      }};
-        };
-        domain.pending.push_back(std::move(group));
-    }
-
     void QueueJointTransferRestore(Partition &domain, std::vector<JoltJointImport> transfers)
     {
         if (transfers.empty())
@@ -1505,17 +1471,23 @@ class JoltGpuScene::Impl
         TargetState drive;
     };
 
-    JoltGpuControlWork PrepareBodyTransferReads(std::shared_ptr<const std::vector<BodyTransferCapture>> bodies,
-                                                size_t first)
+    struct TransferReadback
     {
-        if (first == bodies->size())
+        std::vector<BodyTransferCapture> bodies;
+        std::vector<JoltJointImport> joints;
+    };
+
+    JoltGpuControlWork PrepareTransferReads(std::shared_ptr<const TransferReadback> transfer, size_t firstBody,
+                                            size_t firstJoint)
+    {
+        if (firstBody == transfer->bodies.size() && firstJoint == transfer->joints.size())
             return {};
         constexpr uint64_t bytesPerBody =
             sizeof(BodyState) + sizeof(BodyForces) + sizeof(KinematicTarget) + sizeof(UInt4);
         const auto available = work.ResourceRemaining(FrameWorkResource::Transfer);
-        const auto limit = work.ResourceState(FrameWorkResource::Transfer).limit;
-        const auto count = static_cast<size_t>(std::min<uint64_t>(
-            bodies->size() - first, std::max(uint64_t{1}, (available ? available : limit) / bytesPerBody)));
+        const auto budget = available ? available : work.ResourceState(FrameWorkResource::Transfer).limit;
+        const auto bodyCount = static_cast<size_t>(
+            std::min<uint64_t>(transfer->bodies.size() - firstBody, std::max(uint64_t{1}, budget / bytesPerBody)));
         struct Source
         {
             Float4 root;
@@ -1523,11 +1495,12 @@ class JoltGpuScene::Impl
             bool resident;
         };
         std::vector<Source> sources;
+        std::vector<PublishedJoint> capturedJoints;
         std::vector<rhi::ComputeBufferRead> reads;
-        sources.reserve(count);
-        reads.reserve(4 * count);
-        for (size_t index = first; index < first + count; ++index) {
-            const auto &body = (*bodies)[index];
+        sources.reserve(bodyCount);
+        reads.reserve(4 * bodyCount);
+        for (size_t index = firstBody; index < firstBody + bodyCount; ++index) {
+            const auto &body = transfer->bodies[index];
             RequireOwnership(body.record, body.target.id);
             const auto slot = Packed(body.record);
             const auto &accepted = *slots[body.record].accepted;
@@ -1543,11 +1516,23 @@ class JoltGpuScene::Impl
                                  offsetof(BodySleepRuntime, state),
                              sizeof(UInt4)});
         }
+        auto packetBytes = bodyCount * bytesPerBody;
+        for (size_t index = firstJoint; index < transfer->joints.size(); ++index) {
+            const auto &joint = AcceptedJoint(transfer->joints[index].id);
+            const auto bytes = uint64_t(JoltGpuJointLayout::StateWords(joint.kind)) * 16;
+            if (!reads.empty() && packetBytes + bytes > budget)
+                break;
+            const auto offset = uint64_t(storage.GetJointLayout()->Row(joint.row).layout.y) * 16;
+            reads.push_back({storage.Get(Resource::Joints), offset, bytes});
+            capturedJoints.push_back(joint);
+            packetBytes += bytes;
+        }
         auto host = storage.GetHost();
         auto packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(reads));
-        return {packet, [this, packet, bodies = std::move(bodies), first, sources = std::move(sources)] {
+        return {packet, [this, packet, transfer = std::move(transfer), firstBody, firstJoint,
+                         sources = std::move(sources), capturedJoints = std::move(capturedJoints)] {
                     for (size_t index = 0; index < sources.size(); ++index) {
-                        const auto &body = (*bodies)[first + index];
+                        const auto &body = transfer->bodies[firstBody + index];
                         const auto &source = sources[index];
                         BodyState state;
                         BodyForces forces;
@@ -1583,20 +1568,30 @@ class JoltGpuScene::Impl
                                                                   (move.state.x & TargetTemporaryStatic) != 0};
                         *body.target.state = std::move(value);
                     }
-                    return PrepareBodyTransferReads(bodies, first + sources.size());
+                    for (size_t index = 0; index < capturedJoints.size(); ++index) {
+                        const auto &joint = capturedJoints[index];
+                        *transfer->joints[firstJoint + index].state = WithJointState(joint.kind, [&](auto state) {
+                            packet->Readback(4 * sources.size() + index)->ReadInto(&state, sizeof(state));
+                            return DecodeJointTransfer(state, joint.author);
+                        });
+                    }
+                    return PrepareTransferReads(transfer, firstBody + sources.size(),
+                                                firstJoint + capturedJoints.size());
                 }};
     }
 
-    void QueueBodyTransferReads(Partition &domain, const std::vector<JoltBodyImport> &bodies)
+    void QueueTransferReads(Partition &domain, const std::vector<JoltBodyImport> &bodies,
+                            std::vector<JoltJointImport> jointImports)
     {
-        auto records = std::make_shared<std::vector<BodyTransferCapture>>();
-        records->reserve(bodies.size());
+        auto transfer = std::make_shared<TransferReadback>();
+        transfer->joints = std::move(jointImports);
+        transfer->bodies.reserve(bodies.size());
         for (const auto &body : bodies) {
             const auto record = RequireSlot(body.id);
-            records->push_back({body, record, slots[record].queuedTarget});
+            transfer->bodies.push_back({body, record, slots[record].queuedTarget});
         }
         JoltGpuControlGroup group;
-        group.prepareWork = [this, records] { return PrepareBodyTransferReads(records, 0); };
+        group.prepareWork = [this, transfer] { return PrepareTransferReads(transfer, 0, 0); };
         domain.pending.push_back(std::move(group));
     }
 
@@ -2550,17 +2545,14 @@ void JoltGpuScene::SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const P
     domain.pending.push_back(std::move(group));
     domain.queuedPairs = std::move(pairs);
 }
-void JoltGpuScene::QueueBodyTransferReads(RuntimeWorld &world, const std::vector<JoltBodyImport> &bodies)
+void JoltGpuScene::QueueTransferReads(RuntimeWorld &world, const std::vector<JoltBodyImport> &bodies,
+                                      std::vector<JoltJointImport> joints)
 {
-    m_impl->QueueBodyTransferReads(m_impl->Domain(world), bodies);
+    m_impl->QueueTransferReads(m_impl->Domain(world), bodies, std::move(joints));
 }
 void JoltGpuScene::QueueTransferRestore(uint32_t id, const JoltBodyTransfer &value)
 {
     m_impl->QueueTransferRestore(id, value);
-}
-void JoltGpuScene::QueueJointTransferReads(RuntimeWorld &world, std::vector<JoltJointImport> joints)
-{
-    m_impl->QueueJointTransferReads(m_impl->Domain(world), std::move(joints));
 }
 void JoltGpuScene::QueueJointTransferRestore(RuntimeWorld &world, std::vector<JoltJointImport> joints)
 {
