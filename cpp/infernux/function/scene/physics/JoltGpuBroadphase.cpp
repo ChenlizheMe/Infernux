@@ -59,7 +59,6 @@ enum Entry : uint8_t
     StoreOffsets,
     PublishCount,
     BuildWorldRanges,
-    PublishWorld,
     ResetFill,
     CheckFill,
     PublishFill,
@@ -90,7 +89,6 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"init_words",
                                                               "store_rank_offsets",
                                                               "publish_count_summary",
                                                               "build_world_ranges",
-                                                              "publish_world_summary",
                                                               "reset_fill_ranks",
                                                               "check_fill",
                                                               "publish_fill_summary",
@@ -126,7 +124,6 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     A | P | K,
     A | P,
     A | P | K | Bit(AuthorWorlds) | Bit(RuntimeWorlds),
-    A | P,
     A | P | K,
     A | P | K,
     A | P,
@@ -213,7 +210,7 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
 bool SummaryEntry(Entry entry)
 {
     return entry == SeedActive || entry == AccumulateStatus || entry == PublishActive || entry == PublishCount ||
-           entry == PublishWorld || entry == PublishFill || entry == SetCandidateBank || entry == PublishResidentCount;
+           entry == PublishFill || entry == SetCandidateBank || entry == PublishResidentCount;
 }
 } // namespace
 
@@ -289,8 +286,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         Offsets,
         CountPublish,
         Worlds,
-        WorldReduce,
-        WorldPublish,
         CountBoundary,
         FinalCapacity,
         FinalInitialize,
@@ -368,8 +363,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         requireBytes(ColliderPairs, uint64_t(std::max<size_t>(1, pairs->keys.size())) * sizeof(ColliderPairKey));
         config.selectedCounts.w = static_cast<uint32_t>(pairs->keys.size());
         const uint32_t leaves = config.selectedCounts.y;
-        const bool smallPairs =
-            leaves && leaves <= BroadphaseSmallSetLimit && config.selectedCounts.z <= BroadphaseSmallSetLimit;
+        const uint32_t joints = config.selectedCounts.z;
+        const bool smallPairs = leaves && leaves <= BroadphaseSmallSetLimit && joints <= BroadphaseSmallSetLimit;
         config.round.w = uint32_t(smallPairs);
         uint64_t words = 0;
         const auto reserve = [&](uint64_t size) {
@@ -379,15 +374,15 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             words += size;
             return result;
         };
-        config.workspace.y = reserve(2);
+        config.workspace.y = reserve(1);
         if (!smallPairs) {
             zeroRecord = reserve(1);
-            sap = {reserve(n), reserve(n)};
-            suppression = {reserve(j), reserve(j)};
-            config.rankRows = {reserve(n), reserve(n), reserve(j), 0};
-            queues = {reserve(n), reserve(n)};
+            sap = {reserve(leaves), reserve(leaves)};
+            suppression = {reserve(joints), reserve(joints)};
+            config.rankRows = {reserve(leaves), reserve(leaves), 0, 0};
+            queues = {reserve(leaves), reserve(leaves)};
             activeMeta = {reserve(1), reserve(1)};
-            uint32_t count = std::max({n, j, w, 1u});
+            uint32_t count = std::max({leaves, joints, 1u});
             do {
                 const uint32_t input = reserve(count), prefix = reserve(count);
                 levels.push_back({input, prefix, 0, count});
@@ -402,8 +397,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             config.workspace.z = sap[0];
             config.workspace.w = suppression[0];
             config.scan.x = levels[0].input;
-            config.summary.y = levels[0].input;
-            config.summary.z = levels[0].input;
         }
         scratchWords = static_cast<uint32_t>(words);
         config.workspace.x = scratchWords;
@@ -903,9 +896,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 return true;
             case Phase::Suppression:
                 config.merge.x = suppression[0];
-                if (Range(BuildSuppression, config.counts.y, uploads, dispatches))
+                if (Range(BuildSuppression, config.selectedCounts.z, uploads, dispatches))
                     return true;
-                BeginScan(config.rankRows.z, config.counts.y, false);
+                BeginScan(config.scan.x, config.selectedCounts.z, false);
                 phase = Phase::SuppressionStatus;
                 break;
             case Phase::SuppressionStatus:
@@ -917,7 +910,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::SuppressionStatusPublish:
                 if (!Emit(AccumulateStatus, 0, 1, config, uploads, dispatches))
                     return true;
-                BeginSort(suppression[0], suppression[1], config.counts.y, 1);
+                BeginSort(suppression[0], suppression[1], config.selectedCounts.z, 1);
                 phase = Phase::SuppressionSort;
                 return true;
             case Phase::SuppressionSort:
@@ -928,9 +921,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 break;
             case Phase::SortRecords:
                 config.merge.x = sap[0];
-                if (Range(BuildSort, config.counts.x, uploads, dispatches))
+                if (Range(BuildSort, config.selectedCounts.y, uploads, dispatches))
                     return true;
-                BeginSort(sap[0], sap[1], config.counts.x, 0);
+                BeginSort(sap[0], sap[1], config.selectedCounts.y, 0);
                 phase = Phase::SapSort;
                 break;
             case Phase::SapSort:
@@ -941,7 +934,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 phase = Phase::Ends;
                 break;
             case Phase::Ends:
-                if (Range(FindEnds, config.counts.x, uploads, dispatches))
+                if (Range(FindEnds, config.selectedCounts.y, uploads, dispatches))
                     return true;
                 phase = Phase::Count;
                 break;
@@ -951,9 +944,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     return true;
                 break;
             case Phase::Counts:
-                if (Range(MaterializeCounts, config.counts.x, uploads, dispatches))
+                if (Range(MaterializeCounts, config.selectedCounts.y, uploads, dispatches))
                     return true;
-                BeginScan(levels[0].input, config.counts.x, true);
+                BeginScan(config.scan.x, config.selectedCounts.y, true);
                 phase = Phase::CountScan;
                 break;
             case Phase::CountScan:
@@ -964,7 +957,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 phase = Phase::Offsets;
                 break;
             case Phase::Offsets:
-                if (Range(StoreOffsets, config.counts.x, uploads, dispatches))
+                if (Range(StoreOffsets, config.selectedCounts.y, uploads, dispatches))
                     return true;
                 phase = Phase::CountPublish;
                 break;
@@ -976,28 +969,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::Worlds:
                 if (Range(BuildWorldRanges, config.counts.z, uploads, dispatches))
                     return true;
-                if (config.round.w) {
-                    phase = Phase::ResidentPublish;
-                    break;
-                }
-                BeginScan(levels[0].input, config.counts.z, false);
-                phase = Phase::WorldReduce;
+                phase = capacity ? Phase::ResidentPublish : Phase::CountBoundary;
                 break;
-            case Phase::WorldReduce:
-                if (Scan(uploads, dispatches))
-                    return true;
-                config.summary.x = scan.root;
-                phase = Phase::WorldPublish;
-                break;
-            case Phase::WorldPublish:
-                if (!Emit(PublishWorld, 0, 1, config, uploads, dispatches))
-                    return true;
-                if (!capacity)
-                    phase = Phase::CountBoundary;
-                else {
-                    phase = Phase::ResidentPublish;
-                }
-                return true;
             case Phase::FinalInitialize:
                 if (Range(InitCandidates, static_cast<uint32_t>(1ull + 2ull * capacity), uploads, dispatches))
                     return true;
@@ -1020,14 +993,14 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 phase = Phase::Reset;
                 return true;
             case Phase::Reset:
-                if (Range(ResetFill, config.counts.x, uploads, dispatches))
+                if (Range(ResetFill, config.selectedCounts.y, uploads, dispatches))
                     return true;
                 phase = Phase::Fill;
                 break;
             case Phase::FillCheck:
-                if (Range(CheckFill, config.counts.x, uploads, dispatches))
+                if (Range(CheckFill, config.selectedCounts.y, uploads, dispatches))
                     return true;
-                BeginScan(config.summary.z, config.counts.x, false);
+                BeginScan(config.scan.x, config.selectedCounts.y, false);
                 phase = Phase::FillReduce;
                 break;
             case Phase::FillReduce:
@@ -1222,7 +1195,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const auto boundary = phase;
         std::vector<rhi::ComputeBufferRead> reads;
         if (boundary == Phase::CountBoundary || boundary == Phase::Done)
-            reads.push_back({arena, uint64_t(config.workspace.y + 1u) * WordBytes, WordBytes});
+            reads.push_back({arena, uint64_t(config.workspace.y) * WordBytes, WordBytes});
         if (boundary == Phase::ActiveBoundary)
             reads.push_back({arena, uint64_t(config.activeState.x) * WordBytes, WordBytes});
         if (dispatches.empty() && uploads.empty() && allocationBlocked)
