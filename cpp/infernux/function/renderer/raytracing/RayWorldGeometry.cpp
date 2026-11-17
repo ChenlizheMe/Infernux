@@ -1,5 +1,7 @@
 #include "RayWorldGeometry.h"
 
+#include "RayDeformation.h"
+#include "RayDeformationSource.h"
 #include "RayGeometry.h"
 #include "RayShadowChanges.h"
 
@@ -12,6 +14,7 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifactReader.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
+#include <function/resources/ShaderAsset/SlangCompiler.h>
 
 #include <algorithm>
 #include <array>
@@ -22,6 +25,7 @@
 #include <optional>
 #include <stdexcept>
 #include <tuple>
+#include <utility>
 
 namespace infernux::raytracing
 {
@@ -86,6 +90,7 @@ std::shared_ptr<const rhi::BufferResource> AllocatePage(rhi::Device &device, uin
     desc.byteSize = bytes;
     desc.usage = rhi::BufferUsageFlags::Storage;
     desc.memory = rhi::BufferMemory::Upload;
+    desc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
     const auto allocation = device.CreateBuffer(desc);
     if (!allocation.IsValid())
         throw std::runtime_error("Could not allocate the world's ray geometry page");
@@ -103,6 +108,11 @@ struct DrawMeshPlacement
 {
     uint32_t surfaceId;
     RayMeshPlacement placement;
+    MeshSlice source;
+    std::shared_ptr<const void> owner;
+    uint64_t version;
+    std::shared_ptr<const std::vector<glm::mat4>> palette;
+    bool deviceVertices;
 };
 
 struct RaySkinTopology
@@ -119,6 +129,8 @@ struct RayWorldMeshPage
     std::shared_ptr<FrameCpuStorageClaim> storage;
     std::map<uint32_t, RaySkinTopology> skins;
     uint64_t skinStorage = 0;
+    RayRefitPlan refit;
+    mutable std::shared_ptr<RayDeformationProgram> deformationProgram;
     // The frame owner caches the latest validated TLAS topology for this mesh set.
     mutable std::shared_ptr<const spatial::BvhTopology> topology;
     mutable RayShadowState shadowHistory;
@@ -159,6 +171,8 @@ class RayWorldGeometryBuild final
         BuildInstances,
         UpdateShadows,
         Upload,
+        CompileDeformation,
+        Deform,
     };
 
     bool Plan(uint32_t window);
@@ -167,6 +181,27 @@ class RayWorldGeometryBuild final
     [[nodiscard]] FrameWorkResource Resource() const;
     [[nodiscard]] uint64_t UploadBytes(uint64_t remaining) const;
     [[nodiscard]] std::shared_ptr<const RayWorldMeshPage> PublishedMeshes();
+    bool NeedsDeformation() const noexcept
+    {
+        const auto &page = meshCandidate ? meshCandidate : sharedMeshes;
+        return page && !page->refit.meshes.empty();
+    }
+    const RayRefitPlan &DeformationPlan() const noexcept
+    {
+        return (meshCandidate ? meshCandidate : sharedMeshes)->refit;
+    }
+    void PrepareDeformation(rhi::Device &device)
+    {
+        const auto &page = meshCandidate ? meshCandidate : sharedMeshes;
+        if (!page->deformationProgram) {
+            page->deformationProgram = std::make_shared<RayDeformationProgram>(device, *deformationCompilation);
+            deformationCompilation.reset();
+        }
+        deformation = std::make_shared<RayDeformation>(
+            device, page->deformationProgram, page->refit, instancePage, world->DrawCalls().drawCalls,
+            RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.serial, shadowHistory.stamps),
+            page->buffer);
+    }
     [[nodiscard]] uint32_t VisibilitySerial() const noexcept
     {
         return shadowHistory.serial;
@@ -187,6 +222,13 @@ class RayWorldGeometryBuild final
     std::exception_ptr failure;
     uint64_t workspace = 2 * sizeof(RayGeometryWord);
     uint64_t elapsed = 0;
+    std::shared_ptr<RayDeformation> deformation;
+    bool deformationSubmitted = false;
+    uint64_t deformationTransferGrant = 0;
+    uint64_t topologyUploadBytes = 0;
+    ShaderCodeTarget deformationTarget = ShaderCodeTarget::SpirV;
+    ShaderSourceModule deformationSource;
+    std::optional<ShaderCompilation> deformationCompilation;
 
   private:
     using SliceKey = std::tuple<size_t, MeshSlice, uintptr_t>;
@@ -221,6 +263,8 @@ class RayWorldGeometryBuild final
     std::unique_ptr<RayMeshPageBuild> meshPageBuild;
     RayMeshPage meshPage;
     std::shared_ptr<RayWorldMeshPage> meshCandidate;
+    std::vector<RayDeformedMesh> deformed;
+    bool reusesSources = true;
     std::vector<RayMeshInstance> rays;
     std::vector<RayShadowInstance> shadowInstances;
     size_t surfaceCount = 1;
@@ -246,9 +290,12 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         const auto &draw = draws[nextDraw];
         if (!draw.indexCount)
             continue;
-        if (!draw.surfaceId || draw.meshVertexBuffer || draw.devicePose.HasValue())
+        if (!draw.surfaceId || draw.devicePose.HasValue())
             return false;
-        if (draw.skinBoneMatrices && (!draw.material || draw.material->GetVertShaderName() != kStandardVertexShaderId))
+        if ((draw.skinBoneMatrices || draw.meshVertexBuffer) &&
+            (!draw.material || draw.material->GetVertShaderName() != kStandardVertexShaderId))
+            return false;
+        if (draw.skinBoneMatrices && draw.meshVertexBuffer)
             return false;
         surfaceCount = std::max(surfaceCount, size_t{draw.surfaceId} + 1);
 
@@ -275,7 +322,20 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
             std::get<0>(source) = 0;
             std::get<1>(source) = 0;
         }
-        const SliceKey key{artifact, source, reinterpret_cast<uintptr_t>(draw.skinBoneMatrices.get())};
+        const SliceKey key{artifact, source,
+                           draw.meshVertexBuffer ? draw.surfaceId
+                                                 : reinterpret_cast<uintptr_t>(draw.skinBoneMatrices.get())};
+        if (skinBasis && reusesSources) {
+            const auto index = instances.size();
+            reusesSources = index < skinBasis->draws.size();
+            if (reusesSources) {
+                const auto &old = skinBasis->draws[index];
+                reusesSources = old.surfaceId == draw.surfaceId && old.source == GetMeshSlice(draw) &&
+                                old.owner == draw.meshDataOwner && old.version == draw.meshRuntimeVersion &&
+                                old.palette == draw.skinBoneMatrices &&
+                                old.deviceVertices == bool(draw.meshVertexBuffer);
+            }
+        }
         auto [entry, inserted] = sliceIndices.try_emplace(key, sliceIndices.size());
         const Slice slice{&draw, entry->second};
         instances.push_back(slice);
@@ -283,7 +343,7 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         if (inserted) {
             // Covers the compact-index map, BLAS, and its contribution to the final page.
             workspace = AddStorage(workspace, uint64_t{draw.indexCount} * 352);
-            if (draw.skinBoneMatrices)
+            if (draw.skinBoneMatrices || draw.meshVertexBuffer)
                 workspace = AddStorage(workspace, 256 + uint64_t{draw.indexCount} * sizeof(spatial::BvhLink));
             meshes.emplace_back();
             auto &work = hasStreams ? resident : recovery[artifact - 1].slices;
@@ -291,10 +351,17 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         }
     }
     if (nextDraw == draws.size()) {
+        if (skinBasis && reusesSources && skinBasis->draws.size() == instances.size()) {
+            sharedMeshes = std::move(skinBasis);
+            step = Step::CollectInstances;
+            return true;
+        }
         rays.reserve(instances.size());
         shadowInstances.reserve(instances.size());
         workspace = AddStorage(workspace, sizeof(uint32_t) * (surfaceCount + 3u));
         meshCandidate = std::make_shared<RayWorldMeshPage>();
+        if (skinBasis)
+            meshCandidate->deformationProgram = skinBasis->deformationProgram;
         meshCandidate->draws.reserve(instances.size());
         step = recovery.empty() ? Step::BuildResident : Step::Open;
     }
@@ -314,9 +381,12 @@ FrameWorkResource RayWorldGeometryBuild::Resource() const
     case Step::CollectInstances:
     case Step::BuildInstances:
     case Step::UpdateShadows:
+    case Step::CompileDeformation:
         return FrameWorkResource::Cpu;
     case Step::Upload:
         return FrameWorkResource::Transfer;
+    case Step::Deform:
+        return FrameWorkResource::Gpu;
     }
     std::terminate();
 }
@@ -346,15 +416,21 @@ bool RayWorldGeometryBuild::BuildSlices(const std::vector<Slice> &work, uint32_t
                     tree = found->second.tree;
             }
             meshBuild = std::make_unique<RayMeshBuild>(*vertices, *indices, draw.indexStart, draw.indexCount,
-                                                       draw.vertexStart, draw.skinBoneMatrices.get(), std::move(tree));
+                                                       draw.vertexStart, draw.skinBoneMatrices.get(), std::move(tree),
+                                                       bool(draw.meshVertexBuffer));
         }
         if (meshBuild->Advance(window)) {
             auto mesh = meshBuild->Take();
-            if (mesh.topology) {
+            if (mesh.topology && draw.skinBoneMatrices) {
                 meshCandidate->skinStorage += 256 + mesh.topology->links.capacity() * sizeof(spatial::BvhLink) +
                                               mesh.topology->primitiveOrder.capacity() * sizeof(uint32_t);
                 meshCandidate->skins.emplace(draw.surfaceId,
                                              RaySkinTopology{GetMeshSlice(draw), draw.meshDataOwner, mesh.topology});
+            }
+            if (draw.meshVertexBuffer) {
+                deformed.push_back({draw.surfaceId, static_cast<uint32_t>(slice.mesh), 0u, 0u,
+                                    static_cast<uint32_t>(mesh.nodes.size()), std::move(mesh.sourceVertices),
+                                    std::move(mesh.refitLeaves), std::move(mesh.refitLevels)});
             }
             meshes[slice.mesh] = std::move(mesh);
             meshBuild.reset();
@@ -405,6 +481,20 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                 if (meshPageBuild->Advance(window)) {
                     meshPage = meshPageBuild->Take();
                     meshPageBuild.reset();
+                    // Cooked recovery and resident streams complete in separate groups.
+                    // The packed page keeps the original slice order.
+                    std::sort(deformed.begin(), deformed.end(),
+                              [](const auto &a, const auto &b) { return a.meshIndex < b.meshIndex; });
+                    uint32_t vertexBase = 0;
+                    size_t dynamic = 0;
+                    for (size_t mesh = 0; mesh < meshes.size(); ++mesh) {
+                        if (dynamic < deformed.size() && deformed[dynamic].meshIndex == mesh) {
+                            auto &deformationLayout = deformed[dynamic++];
+                            deformationLayout.root = meshPage.placements[mesh].root;
+                            deformationLayout.vertexBase = vertexBase;
+                        }
+                        vertexBase += static_cast<uint32_t>(meshes[mesh].positions.size());
+                    }
                     meshes.clear();
                     step = Step::CollectInstances;
                     break;
@@ -433,7 +523,9 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                     placement = sharedMeshes->draws[nextPlacement].placement;
                 } else {
                     placement = meshPage.placements[instances[nextPlacement].mesh];
-                    meshCandidate->draws.push_back({draw.surfaceId, placement});
+                    meshCandidate->draws.push_back({draw.surfaceId, placement, GetMeshSlice(draw), draw.meshDataOwner,
+                                                    draw.meshRuntimeVersion, draw.skinBoneMatrices,
+                                                    bool(draw.meshVertexBuffer)});
                 }
                 ++nextPlacement;
                 if (placement.root != kInvalidRayIndex) {
@@ -474,7 +566,14 @@ void RayWorldGeometryBuild::Run(uint32_t window)
         case Step::UpdateShadows:
             if (shadowChanges->Advance(window)) {
                 shadowHistory = shadowChanges->Take();
+                if (NeedsDeformation() || !deformed.empty())
+                    for (auto &stamp : shadowHistory.stamps)
+                        stamp.fill(shadowHistory.serial);
                 shadowChanges.reset();
+                if (sharedMeshes && NeedsDeformation()) {
+                    step = Step::Deform;
+                    break;
+                }
                 StartUpload(meshCandidate ? RayPageUpload(meshPage)
                                           : RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.serial,
                                                           shadowHistory.stamps));
@@ -482,7 +581,14 @@ void RayWorldGeometryBuild::Run(uint32_t window)
             }
             break;
         case Step::Upload:
+        case Step::Deform:
             std::terminate();
+        case Step::CompileDeformation:
+            deformationCompilation =
+                SlangCompiler::Get().CompileRootProgram(std::move(deformationSource), {}, {deformationTarget}, true);
+            deformationSource = {};
+            step = Step::Deform;
+            break;
         }
     } catch (...) {
         failure = std::current_exception();
@@ -529,7 +635,18 @@ bool RayWorldGeometryBuild::Upload(rhi::Device &device, uint64_t bytes)
         return false;
     if (meshCandidate && !meshCandidate->buffer) {
         meshCandidate->buffer = std::move(buffer);
+        if (!deformed.empty()) {
+            meshCandidate->refit = UploadRayRefitPlan(device, std::move(deformed));
+            topologyUploadBytes = meshCandidate->refit.buffer->GetByteSize();
+        }
         meshPage = {};
+        if (!meshCandidate->refit.meshes.empty()) {
+            step = meshCandidate->deformationProgram ? Step::Deform : Step::CompileDeformation;
+            if (step == Step::CompileDeformation)
+                deformationSource = {"inx_ray_deformation", "Infernux/RayDeformation.slang",
+                                     std::string(RayDeformationSource())};
+            return false;
+        }
         StartUpload(RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.serial, shadowHistory.stamps));
         return false;
     }
@@ -543,8 +660,11 @@ std::shared_ptr<const RayWorldMeshPage> RayWorldGeometryBuild::PublishedMeshes()
         constexpr auto topologyBytesPerDraw = 2 * sizeof(spatial::BvhLink) + sizeof(uint32_t);
         const auto shadowBytes = shadowHistory.instances.capacity() * sizeof(RayShadowInstance) +
                                  shadowHistory.stamps.capacity() * sizeof(RayGeometryWord);
+        uint64_t refitBytes = meshCandidate->refit.meshes.capacity() * sizeof(RayRefitMesh);
+        for (const auto &mesh : meshCandidate->refit.meshes)
+            refitBytes += mesh.levels.capacity() * sizeof(RayRefitRange);
         storage->ReduceTo(meshCandidate->draws.capacity() * (sizeof(DrawMeshPlacement) + topologyBytesPerDraw) +
-                          shadowBytes + meshCandidate->skinStorage);
+                          shadowBytes + meshCandidate->skinStorage + refitBytes);
         meshCandidate->storage = std::move(storage);
         sharedMeshes = std::move(meshCandidate);
     }
@@ -559,7 +679,7 @@ RayWorldGeometry::RayWorldGeometry(FrameWorkOwner &owner, rhi::Device &device) :
     source.observe = [this] { Observe(); };
     source.refresh = source.observe;
     source.describe = [this] { return Describe(); };
-    source.advance = [this](bool, uint64_t) { return Advance(); };
+    source.advance = [this](bool gpu, uint64_t) { return Advance(gpu); };
     m_source = owner.AddSource(std::move(source));
 }
 
@@ -579,7 +699,7 @@ RayWorldGeometryBinding RayWorldGeometry::Acquire(const std::shared_ptr<const Re
     if (!publication || publication->revision != revision) {
         auto meshes = publication && publication->revision.meshes == revision.meshes ? publication->meshes : nullptr;
         auto skinBasis = publication && revision.SharesDrawSlots(publication->revision) ? publication->meshes : nullptr;
-        if (skinBasis && skinBasis->skins.empty())
+        if (skinBasis && skinBasis->skins.empty() && skinBasis->refit.meshes.empty())
             skinBasis.reset();
         publication.reset();
         m_publications.erase(std::remove_if(m_publications.begin(), m_publications.end(),
@@ -589,7 +709,7 @@ RayWorldGeometryBinding RayWorldGeometry::Acquire(const std::shared_ptr<const Re
             auto value = entry.lock();
             if (!value || !revision.SharesDrawSlots(value->revision))
                 continue;
-            if (!skinBasis && value->meshes && !value->meshes->skins.empty())
+            if (!skinBasis && value->meshes && (!value->meshes->skins.empty() || !value->meshes->refit.meshes.empty()))
                 skinBasis = value->meshes;
             if (value->revision.meshes != revision.meshes)
                 continue;
@@ -655,11 +775,40 @@ void RayWorldGeometry::CollectReceipt()
         m_active->decodeStorage.reset();
 }
 
+void RayWorldGeometry::CollectDeformationReceipt()
+{
+    const auto elapsed = m_active->deformation->Elapsed();
+    m_owner.ObserveResource(FrameWorkResource::Gpu, elapsed, m_submittedOpportunity, m_workGrant);
+    m_owner.ObserveResource(FrameWorkResource::Transfer, m_active->deformation->TransferBytes(), m_submittedOpportunity,
+                            m_active->deformationTransferGrant);
+    if (elapsed)
+        m_active->DeformationPlan().predictedNanoseconds = elapsed;
+}
+
 FrameWorkFacts RayWorldGeometry::Describe()
 {
     FrameWorkFacts facts;
     if (m_active) {
         facts.pending = true;
+        if (m_active->step == RayWorldGeometryBuild::Step::Deform) {
+            if (m_active->publication.expired()) {
+                facts.gpuBusy = m_active->deformationSubmitted && !m_active->deformation->IsComplete();
+                facts.host.ready = !facts.gpuBusy;
+                return facts;
+            }
+            if (!m_active->deformation)
+                facts.host.ready = m_owner.CanAdmitResource(FrameWorkResource::Cpu, 0);
+            else if (!m_active->deformationSubmitted)
+                facts.gpu.ready =
+                    m_owner.CanAdmitResource(FrameWorkResource::Gpu, m_active->DeformationPlan().predictedNanoseconds,
+                                             true) &&
+                    m_owner.CanAdmitResource(FrameWorkResource::Transfer, m_active->deformation->TransferBytes(), true);
+            else {
+                facts.host.ready = m_active->deformation->IsComplete();
+                facts.gpuBusy = !facts.host.ready;
+            }
+            return facts;
+        }
         facts.workerBusy = m_job.IsValid();
         if (!facts.workerBusy) {
             const auto resource = m_active->Resource();
@@ -677,13 +826,18 @@ FrameWorkFacts RayWorldGeometry::Describe()
     return facts;
 }
 
-bool RayWorldGeometry::Advance()
+bool RayWorldGeometry::Advance(bool gpu)
 {
     if (m_job.IsValid())
         return false;
     const auto publication = m_active ? m_active->publication.lock() : FindPending();
     if (!publication) {
         const bool wasActive = static_cast<bool>(m_active);
+        if (m_active && m_active->deformationSubmitted) {
+            if (!m_active->deformation->IsComplete())
+                return false;
+            CollectDeformationReceipt();
+        }
         m_active.reset();
         return wasActive;
     }
@@ -692,6 +846,9 @@ bool RayWorldGeometry::Advance()
             auto build = std::make_shared<RayWorldGeometryBuild>();
             build->publication = publication;
             build->world = std::move(publication->world);
+            build->deformationTarget = m_device.GetShaderSourceLanguage() == rhi::ShaderSourceLanguage::Wgsl
+                                           ? ShaderCodeTarget::Wgsl
+                                           : ShaderCodeTarget::SpirV;
             build->sharedMeshes = publication->meshes;
             build->skinBasis = std::move(publication->skinBasis);
             if (build->sharedMeshes) {
@@ -707,18 +864,57 @@ bool RayWorldGeometry::Advance()
         const auto resource = m_active->Resource();
         const auto bytes =
             resource == FrameWorkResource::Transfer ? m_active->UploadBytes(m_owner.ResourceRemaining(resource)) : 0;
-        if (!m_owner.CanAdmitResource(resource, bytes, true))
+        if (resource != FrameWorkResource::Gpu && !m_owner.CanAdmitResource(resource, bytes, true))
             return false;
         if (resource == FrameWorkResource::Transfer) {
             const bool done = m_active->Upload(m_device, bytes);
-            m_owner.RecordAcceptedResource(resource, bytes);
+            m_owner.RecordAcceptedResource(resource, bytes + std::exchange(m_active->topologyUploadBytes, 0));
             if (done) {
+                if (m_active->NeedsDeformation()) {
+                    m_active->step = RayWorldGeometryBuild::Step::Deform;
+                    return true;
+                }
                 publication->buffer = std::move(m_active->buffer);
                 publication->visibilitySerial = m_active->VisibilitySerial();
                 publication->meshes = m_active->PublishedMeshes();
                 publication->status = RayGeometryStatus::Ready;
                 m_active.reset();
             }
+            return true;
+        }
+        if (resource == FrameWorkResource::Gpu) {
+            if (!m_active->deformation) {
+                const auto before = std::chrono::steady_clock::now();
+                const auto opportunity = m_owner.Opportunity();
+                const auto grant = m_owner.RecordAcceptedResource(FrameWorkResource::Cpu, 0);
+                m_active->PrepareDeformation(m_device);
+                const auto elapsed = std::chrono::steady_clock::now() - before;
+                m_owner.ObserveResource(FrameWorkResource::Cpu,
+                                        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count(),
+                                        opportunity, grant);
+                return true;
+            }
+            if (!m_active->deformationSubmitted) {
+                if (!gpu)
+                    return false;
+                if (!m_active->deformation->Submit())
+                    return false;
+                m_active->deformationSubmitted = true;
+                m_submittedOpportunity = m_owner.Opportunity();
+                m_workGrant =
+                    m_owner.RecordAcceptedResource(resource, m_active->DeformationPlan().predictedNanoseconds);
+                m_active->deformationTransferGrant =
+                    m_owner.RecordAcceptedResource(FrameWorkResource::Transfer, m_active->deformation->TransferBytes());
+                return true;
+            }
+            if (!m_active->deformation->IsComplete())
+                return false;
+            CollectDeformationReceipt();
+            publication->buffer = m_active->deformation->Output();
+            publication->visibilitySerial = m_active->VisibilitySerial();
+            publication->meshes = m_active->PublishedMeshes();
+            publication->status = RayGeometryStatus::Ready;
+            m_active.reset();
             return true;
         }
         auto &jobs = JobSystem::Get();

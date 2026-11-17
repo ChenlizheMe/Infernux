@@ -1,0 +1,16 @@
+#pragma once
+
+#include <string>
+#include <string_view>
+
+namespace infernux::raytracing
+{
+inline std::string_view RayDeformationSource()
+{
+    static const std::string source = [] {
+        std::string source;
+@_ray_deformation_source@        return source;
+    }();
+    return source;
+}
+} // namespace infernux::raytracing

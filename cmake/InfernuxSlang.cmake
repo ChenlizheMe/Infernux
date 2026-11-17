@@ -45,12 +45,20 @@ function(infernux_add_rt_slang_module compiler_target)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_traversal}" "${_bsdf}")
     _infernux_embed_ray_source("${_traversal}" _ray_traversal_source)
     _infernux_embed_ray_source("${_bsdf}" _ray_bsdf_source)
+    set(_deformation "${_shader_dir}/ray_deformation.slang")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_deformation}")
+    _infernux_embed_ray_source("${_deformation}" _ray_deformation_source)
     set(_output "${CMAKE_CURRENT_BINARY_DIR}/infernux-slang-modules")
     set(_header "${_output}/SlangRayModules.h")
     configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/SlangRayModules.h.in" "${_header}" @ONLY)
+    configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/RayDeformationSource.h.in"
+        "${_output}/RayDeformationSource.h" @ONLY)
+    set_property(SOURCE "${_root}/cpp/infernux/function/renderer/raytracing/RayWorldGeometry.cpp"
+        APPEND PROPERTY OBJECT_DEPENDS "${_output}/RayDeformationSource.h")
     set_property(SOURCE "${_root}/cpp/infernux/function/resources/ShaderAsset/SlangCompiler.cpp"
         APPEND PROPERTY OBJECT_DEPENDS "${_header}")
     target_include_directories("${compiler_target}" PRIVATE "${_output}")
+    include_directories("${_output}")
 endfunction()
 
 if(INFERNUX_SLANG_ROOT)

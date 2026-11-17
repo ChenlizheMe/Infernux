@@ -59,6 +59,9 @@ struct RayMesh
     std::vector<RayVertexAttributes> attributes;
     std::vector<RayTriangle> triangles;
     std::shared_ptr<const spatial::BvhTopology> topology;
+    std::vector<uint32_t> sourceVertices;
+    std::vector<std::vector<uint32_t>> refitLevels;
+    std::vector<uint32_t> refitLeaves;
 };
 
 struct RayMeshPlacement
@@ -99,7 +102,7 @@ class RayMeshBuild
   public:
     RayMeshBuild(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices, uint32_t indexStart,
                  uint32_t indexCount, int32_t vertexStart, const std::vector<glm::mat4> *skinPalette = nullptr,
-                 std::shared_ptr<const spatial::BvhTopology> topology = {});
+                 std::shared_ptr<const spatial::BvhTopology> topology = {}, bool captureSources = false);
     ~RayMeshBuild();
     [[nodiscard]] bool Advance(uint32_t budget);
     [[nodiscard]] RayMesh Take();

@@ -115,9 +115,10 @@ struct RayMeshBuild::State
 {
     State(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices, uint32_t indexStart,
           uint32_t indexCount, int32_t vertexStart, const std::vector<glm::mat4> *skinPalette,
-          std::shared_ptr<const spatial::BvhTopology> topology)
+          std::shared_ptr<const spatial::BvhTopology> topology, bool captureSources)
         : vertices(vertices), indices(indices), indexStart(indexStart), vertexStart(vertexStart),
-          triangleCount(indexCount / 3), skinPalette(skinPalette), previous(std::move(topology))
+          triangleCount(indexCount / 3), skinPalette(skinPalette), previous(std::move(topology)),
+          captureSources(captureSources)
     {
         if (indexCount % 3 != 0 || indexStart > indices.size() || indexCount > indices.size() - indexStart)
             throw std::invalid_argument("Ray mesh requires a complete indexed triangle slice");
@@ -161,6 +162,8 @@ struct RayMeshBuild::State
             auto &mapped = page->second[source % RemapPageSize];
             if (mapped == kInvalidRayIndex) {
                 mapped = static_cast<uint32_t>(mesh.positions.size());
+                if (captureSources)
+                    mesh.sourceVertices.push_back(source);
                 if (skinPalette)
                     AppendVertex(SkinVertex(vertices[source], *skinPalette));
                 else
@@ -183,6 +186,8 @@ struct RayMeshBuild::State
     const std::vector<glm::mat4> *skinPalette;
     std::shared_ptr<const spatial::BvhTopology> previous;
     std::shared_ptr<spatial::BvhTopology> captured;
+    bool captureSources;
+    std::vector<uint32_t> nodeDepths;
     double buildCost = 0.0;
     size_t cursor = 0;
     RayMesh mesh;
@@ -220,9 +225,9 @@ struct RayMeshBuild::State
 RayMeshBuild::RayMeshBuild(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
                            uint32_t indexStart, uint32_t indexCount, int32_t vertexStart,
                            const std::vector<glm::mat4> *skinPalette,
-                           std::shared_ptr<const spatial::BvhTopology> topology)
+                           std::shared_ptr<const spatial::BvhTopology> topology, bool captureSources)
     : m_state(std::make_unique<State>(vertices, indices, indexStart, indexCount, vertexStart, skinPalette,
-                                      std::move(topology)))
+                                      std::move(topology), captureSources))
 {
 }
 
@@ -265,10 +270,12 @@ bool RayMeshBuild::Advance(uint32_t budget)
         auto hierarchy = state.builder->Take();
         state.builder.reset();
         state.mesh.nodes = std::move(hierarchy.nodes);
-        if (state.skinPalette) {
+        if (state.skinPalette || state.captureSources) {
             state.captured = std::make_shared<spatial::BvhTopology>();
             state.captured->primitiveOrder = std::move(hierarchy.primitiveOrder);
             state.captured->links.reserve(state.mesh.nodes.size());
+            if (state.captureSources)
+                state.nodeDepths.resize(state.mesh.nodes.size());
             state.cursor = 0;
             state.phase = Phase::CaptureTopology;
         } else {
@@ -282,6 +289,18 @@ bool RayMeshBuild::Advance(uint32_t budget)
             const auto &node = state.mesh.nodes[index];
             state.captured->links.push_back({node.first, node.second});
             state.buildCost += spatial::BvhNodeCost(node);
+            if (state.captureSources) {
+                if (node.second & kBvhLeafBit) {
+                    state.mesh.refitLeaves.push_back(static_cast<uint32_t>(index));
+                } else {
+                    const auto depth = state.nodeDepths[index];
+                    if (state.mesh.refitLevels.size() <= depth)
+                        state.mesh.refitLevels.resize(depth + 1);
+                    state.mesh.refitLevels[depth].push_back(static_cast<uint32_t>(index));
+                    state.nodeDepths[node.first] = depth + 1;
+                    state.nodeDepths[node.second] = depth + 1;
+                }
+            }
         });
         if (state.cursor == state.mesh.nodes.size()) {
             state.captured->buildCost = spatial::NormalizeBvhCost(state.buildCost, state.mesh.nodes);

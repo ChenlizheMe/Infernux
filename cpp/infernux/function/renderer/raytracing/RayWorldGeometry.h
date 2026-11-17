@@ -43,8 +43,9 @@ class RayWorldGeometry final
   private:
     void Observe();
     void CollectReceipt();
+    void CollectDeformationReceipt();
     [[nodiscard]] FrameWorkFacts Describe();
-    bool Advance();
+    bool Advance(bool gpu);
     [[nodiscard]] std::shared_ptr<RayWorldGeometryPublication> FindPending() const;
 
     FrameWorkOwner &m_owner;
