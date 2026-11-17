@@ -405,10 +405,6 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             count = blocks;
         } while (true);
         config.limits.x = Checked(words);
-        // references.z/w are set to the actual final merge bank BEFORE any
-        // recipe is emitted; seed/finalize see precisely the frozen layout.
-        config.references.z = FinalBank(jointSort, j);
-        config.references.w = FinalBank(patchSort, p);
         BuildRoundWindow();
     }
 
@@ -444,13 +440,6 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                (isolatedTopology || Endpoint(labels[0], voteBytes));
     }
 
-    static uint32_t FinalBank(std::array<uint32_t, 2> banks, uint32_t count)
-    {
-        uint32_t bank = 0;
-        for (uint64_t width = 1u; width < count; width *= 2u)
-            bank ^= 1u;
-        return banks[bank];
-    }
     void Append(std::vector<Operation> &operations, Entry entry, uint32_t length, const ConstraintParams &value,
                 uint32_t bank)
     {
@@ -536,17 +525,18 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             Add(AddOffsets, child.count, value, planBank);
         }
     }
-    void Sort(uint32_t kind, std::array<uint32_t, 2> banks, uint32_t count)
+    uint32_t Sort(uint32_t kind, std::array<uint32_t, 2> banks, uint32_t count)
     {
         auto value = config;
         value.select = {kind, banks[0], 0u, 0u};
         Add(SeedSort, count, value, planBank);
         uint32_t source = 0;
-        for (uint64_t width = 1u; width < count; width *= 2u) {
+        for (uint64_t width = ConstraintBlockSize; width < count; width *= 2u) {
             value.merge = {banks[source], banks[source ^ 1u], count, Checked(width)};
             Add(MergeItems, count, value, planBank);
             source ^= 1u;
         }
+        return banks[source];
     }
     void ResetPlan(Phase next)
     {
@@ -607,8 +597,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         AppendComponentValidation(plan);
         if (topologyOnly)
             return;
-        Sort(ConstraintJoint, jointSort, config.counts.y);
-        Sort(ConstraintPatch, patchSort, config.counts.z);
+        config.references.z = Sort(ConstraintJoint, jointSort, config.counts.y);
+        config.references.w = Sort(ConstraintPatch, patchSort, config.counts.z);
         Add(ClearRootFlags, config.counts.x);
         Kind(MarkRoots, ConstraintJoint);
         Kind(MarkRoots, ConstraintPatch);

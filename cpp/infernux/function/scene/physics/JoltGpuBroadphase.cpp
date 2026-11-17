@@ -45,6 +45,7 @@ enum Entry : uint8_t
     BuildSort,
     BuildSuppression,
     Merge,
+    SortCandidateTiles,
     FindEnds,
     CountRound,
     FillRound,
@@ -75,6 +76,7 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"init_words",
                                                               "build_sort_records",
                                                               "build_suppression",
                                                               "merge_items",
+                                                              "sort_candidate_tiles",
                                                               "find_sap_ends",
                                                               "count_round",
                                                               "fill_round",
@@ -109,6 +111,7 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     A | Bit(Arguments) | P | K,
     A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(AuthorWorlds) | Bit(Bounds),
     A | P | K | Bit(Joints) | Bit(Bodies) | Bit(AuthorWorlds),
+    A | P | K | Bit(CandidateArena),
     A | P | K | Bit(CandidateArena),
     A | P | K | Bit(Bounds),
     A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(Bounds) | Bit(ColliderPairs) | Bit(CandidateArena),
@@ -708,7 +711,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         sortTarget = second;
         sortCount = count;
         sortKey = key;
-        sortWidth = 1;
+        // SAP and suppression records are sorted when seeded. Filled pairs
+        // enter as unsorted device-counted rows and seed their own tiles.
+        sortWidth = key == 2u ? 1u : BroadphaseBlockSize;
         item = 0;
     }
 
@@ -721,15 +726,21 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         value.mergeKey.x = sortKey;
         const uint32_t count = std::min(BroadphaseItemLimit, sortCount - item);
         value.mergeKey.y = sortKey == 2u ? 1u : 0u;
-        if (!(sortKey == 2u ? EmitIndirect(Merge, item, count, sortCount, value, uploads, dispatches)
+        const bool seed = sortWidth == 1u;
+        const auto entry = seed ? SortCandidateTiles : Merge;
+        if (!(sortKey == 2u ? EmitIndirect(entry, item, count, sortCount, value, uploads, dispatches)
                             : Emit(Merge, item, count, value, uploads, dispatches)))
             return true;
         item += count;
         if (item == sortCount) {
             item = 0;
-            std::swap(sortSource, sortTarget);
-            // A final width of 2^31 completes every uint32-sized domain.
-            sortWidth = sortWidth > UINT32_MAX / 2u ? sortCount : sortWidth * 2u;
+            if (seed) {
+                sortWidth = BroadphaseBlockSize;
+            } else {
+                std::swap(sortSource, sortTarget);
+                // A final width of 2^31 completes every uint32-sized domain.
+                sortWidth = sortWidth > UINT32_MAX / 2u ? sortCount : sortWidth * 2u;
+            }
         }
         return true;
     }
