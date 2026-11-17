@@ -22,10 +22,8 @@ SignPath 的服务署名、适用范围和签名流程见 [英文政策](signing
 | Jolt Physics | [LICENSE](../external/joltphysics_for_infernux/LICENSE) |
 | Dear ImGui | [LICENSE](../external/imgui_for_infernux/LICENSE.txt) |
 | GLM | [copying.txt](../external/glm/copying.txt) |
-| glslang | [LICENSE](../external/glslang/LICENSE.txt) |
 | Slang | [LICENSE](../external/slang_for_infernux/LICENSE)、[原始授权文本](../external/slang_for_infernux/LICENSES)；编译器与配套标准模块按固定源码一起分发 |
 | Zstandard | [LICENSE](../external/zstd_for_infernux/LICENSE) |
-| SPIRV-Cross | [LICENSE](../external/spirv_cross_for_infernux/LICENSE) |
 | Volk | [LICENSE](../external/volk_for_infernux/LICENSE.md) |
 | utf8proc / Unicode 数据 | [发行授权声明](utf8proc/LICENSE.md)、[上游原文](../external/utf8proc_for_infernux/LICENSE.md)；固定子模块，静态链接；wheel 声明放在 dist-info，Player 在发行文件中保留声明，不作为项目资源 |
 | Vulkan Memory Allocator | [LICENSE](../external/VulkanMemoryAllocator/LICENSE.txt) |
