@@ -3248,7 +3248,7 @@ void InxRenderer::UpdateSceneLighting()
     const auto stage = [this](SceneRenderGraph *graph, const std::shared_ptr<const RenderWorldFrame> &frame,
                               const RenderViewData *view) {
         if (graph && view && frame && frame->Lighting() && graph->IsViewRequested(m_viewRequestSerial))
-            graph->StageCameraLighting(*frame->Lighting(), *view);
+            graph->StageCameraLighting(frame->Lighting(), *view);
     };
     if (const auto *editor = bridge.GetEditorCamera()) {
         const auto frame = bridge.AcquirePreparedFrameForCamera(editor->GetComponentID());

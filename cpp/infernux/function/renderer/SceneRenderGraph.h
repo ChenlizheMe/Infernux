@@ -756,7 +756,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     /// Build immutable lighting and shadow state owned by this camera graph.
     /// Stage the existing CPU collector; EnsureGraphBuilt publishes its GPU data.
-    void StageCameraLighting(const RenderLightingSource &source, const RenderViewData &view);
+    void StageCameraLighting(const std::shared_ptr<const RenderLightingSource> &source, const RenderViewData &view);
     [[nodiscard]] bool HasCameraShadows() const noexcept
     {
         return !m_cameraLightCollector.GetShadowFrame().views.empty();
@@ -1106,6 +1106,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         rhi::BufferHandle cameraMatrix;
         rhi::BufferHandle editorOverlayCameraMatrix;
         rhi::BufferHandle lighting;
+        uint64_t lightingRevision = 0;
         PerViewBufferBindingState geometryBindings;
         PerViewBufferBindingState particleBindings;
         PerViewShadowBindingState shadowBinding;
@@ -1129,6 +1130,26 @@ class SceneRenderGraph : public NativeLifetimeOwner
     std::array<PerViewFrameState, EngineConfig::kFrameSlotCapacity> m_perViewFrames{};
     rhi::BindingLayoutHandle m_perViewLayout;
     lighting::CanonicalLightGpuBuffer m_cameraCanonicalLights;
+    struct CameraLightingInputs
+    {
+        std::shared_ptr<const RenderLightingSource> source;
+        glm::mat4 view{1.0f};
+        glm::mat4 projection{1.0f};
+        glm::vec3 position{0.0f};
+        lighting::ShadowDepthRange visibleDepth;
+        uint32_t shadowResolution = 0;
+        bool valid = false;
+
+        bool operator==(const CameraLightingInputs &other) const noexcept
+        {
+            return source == other.source && view == other.view && projection == other.projection &&
+                   position == other.position && visibleDepth.nearDepth == other.visibleDepth.nearDepth &&
+                   visibleDepth.farDepth == other.visibleDepth.farDepth && shadowResolution == other.shadowResolution &&
+                   valid == other.valid;
+        }
+    };
+    CameraLightingInputs m_cameraLightingInputs;
+    uint64_t m_cameraLightingRevision = 1;
     SceneLightCollector m_cameraLightCollector;
     uint64_t m_shadowCameraResourceId = 0;
 

@@ -1243,23 +1243,30 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     return true;
 }
 
-void SceneRenderGraph::StageCameraLighting(const RenderLightingSource &source, const RenderViewData &view)
+void SceneRenderGraph::StageCameraLighting(const std::shared_ptr<const RenderLightingSource> &source,
+                                           const RenderViewData &view)
 {
-    m_cameraLightCollector.CollectLights(source, view.position);
-    if (m_renderView.kind != rhi::RenderViewKind::Preview) {
-        const auto visibleDepthRange = m_hasCachedDrawCalls
-                                           ? VisibleShadowDepthRange(view, m_cachedRenderers.DrawCalls())
-                                           : lighting::ShadowDepthRange{};
-        m_cameraLightCollector.ComputeShadowVP(source, view, static_cast<float>(GetShadowMapResolution()),
-                                               visibleDepthRange);
-    }
+    const uint32_t shadowResolution = m_renderView.kind == rhi::RenderViewKind::Preview ? 0 : GetShadowMapResolution();
+    const auto visibleDepth = shadowResolution && m_hasCachedDrawCalls
+                                  ? VisibleShadowDepthRange(view, m_cachedRenderers.DrawCalls())
+                                  : lighting::ShadowDepthRange{};
+    CameraLightingInputs inputs{source,       view.view,        view.projection, view.position,
+                                visibleDepth, shadowResolution, view.valid};
+    if (inputs == m_cameraLightingInputs)
+        return;
+    m_cameraLightCollector.CollectLights(*source, view.position);
+    m_cameraLightCollector.ComputeShadowVP(*source, view, static_cast<float>(shadowResolution), visibleDepth);
     m_cameraLightCollector.BuildShaderLightingUBO();
+    m_cameraLightingInputs = std::move(inputs);
+    ++m_cameraLightingRevision;
 }
 
 bool SceneRenderGraph::UploadCameraLighting()
 {
     const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
+    if (frame.lightingRevision == m_cameraLightingRevision)
+        return true;
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     const ShaderLightingUBO &lighting = m_cameraLightCollector.GetShaderLightingUBO();
     if (!frame.lighting.IsValid() || !rhiDevice.WriteBuffer(frame.lighting, 0, &lighting, sizeof(lighting))) {
@@ -1276,6 +1283,7 @@ bool SceneRenderGraph::UploadCameraLighting()
         m_needsRebuild = true;
         m_graphBuilt = false;
     }
+    frame.lightingRevision = m_cameraLightingRevision;
     return true;
 }
 

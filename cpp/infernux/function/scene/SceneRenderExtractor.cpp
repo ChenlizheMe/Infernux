@@ -364,9 +364,9 @@ void SceneRenderExtractor::CaptureViews(RenderWorldFrame &frame, Camera *primary
 }
 void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
 {
-    auto next = std::make_shared<RenderLightingSource>();
+    RenderLightingSource next;
     SceneManager &manager = SceneManager::Instance();
-    next->lights = CaptureRenderLights();
+    next.lights = CaptureRenderLights();
     Scene *scene = manager.GetActiveScene();
     const SceneEnvironmentSettings environment = scene ? scene->GetEnvironment() : SceneEnvironmentSettings{};
     auto sourceSky =
@@ -408,7 +408,7 @@ void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
     } else {
         m_baseSkybox.reset();
     }
-    next->skyboxMaterial = capturedSky;
+    next.skyboxMaterial = capturedSky;
     SceneLightCollector ambient;
     ambient.Clear();
     using AmbientSource = SceneEnvironmentSettings::AmbientSource;
@@ -438,12 +438,12 @@ void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
         }
     }
     const auto &values = ambient.GetLightingUBO();
-    next->ambientSky = values.ambientSkyColor;
-    next->ambientEquator = values.ambientEquatorColor;
-    next->ambientGround = values.ambientGroundColor;
-    if (!m_lighting || !next->SameValues(*m_lighting)) {
-        next->generation = ++m_lightingGeneration;
-        m_lighting = std::move(next);
+    next.ambientSky = values.ambientSkyColor;
+    next.ambientEquator = values.ambientEquatorColor;
+    next.ambientGround = values.ambientGroundColor;
+    if (!m_lighting || !next.SameValues(*m_lighting)) {
+        next.generation = ++m_lightingGeneration;
+        m_lighting = std::make_shared<const RenderLightingSource>(std::move(next));
     }
     frame.m_lighting = m_lighting;
 }
