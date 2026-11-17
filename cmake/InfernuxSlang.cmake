@@ -6,16 +6,18 @@ set(INFERNUX_SLANG_ROOT "" CACHE PATH "Prepared Slang SDK matching the pinned co
 set(INFERNUX_SLANG_VERSION "2026.21")
 get_filename_component(_infernux_slang_engine_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 
-# Keep native, Web and standalone cooker module closure identical. The .slang
-# file remains the editable source and is a configure-time dependency.
+# All resident compilers use the same ray modules and rebuild on authored source changes.
 function(infernux_add_rt_slang_module compiler_target)
     get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
-    set(_source "${_root}/cpp/infernux/function/renderer/raytracing/shaders/ray_traversal.slang")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_source}")
-    file(READ "${_source}" _ray_traversal_source)
+    set(_shader_dir "${_root}/cpp/infernux/function/renderer/raytracing/shaders")
+    set(_traversal "${_shader_dir}/ray_traversal.slang")
+    set(_bsdf "${_shader_dir}/ray_bsdf.slang")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_traversal}" "${_bsdf}")
+    file(READ "${_traversal}" _ray_traversal_source)
+    file(READ "${_bsdf}" _ray_bsdf_source)
     set(_output "${CMAKE_CURRENT_BINARY_DIR}/infernux-slang-modules")
-    configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/SlangRayTraversalModule.h.in"
-        "${_output}/SlangRayTraversalModule.h" @ONLY)
+    configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/SlangRayModules.h.in"
+        "${_output}/SlangRayModules.h" @ONLY)
     target_include_directories("${compiler_target}" PRIVATE "${_output}")
 endfunction()
 

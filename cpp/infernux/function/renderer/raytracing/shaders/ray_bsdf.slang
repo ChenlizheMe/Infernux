@@ -1,0 +1,173 @@
+static const float ray_bsdf_pi = 3.14159265358979323846;
+static const float ray_bsdf_inverse_pi = 0.31830988618379067154;
+
+struct RayBsdfFrame
+{
+    float3 tangent;
+    float3 bitangent;
+    float3 normal;
+
+    float3 to_world(float3 direction)
+    {
+        return tangent * direction.x + bitangent * direction.y + normal * direction.z;
+    }
+
+    float3 to_local(float3 direction)
+    {
+        return float3(dot(tangent, direction), dot(bitangent, direction), dot(normal, direction));
+    }
+};
+
+RayBsdfFrame ray_bsdf_frame(float3 normal)
+{
+    float3 axis = abs(normal.z) < 0.999 ? float3(0.0, 0.0, 1.0) : float3(0.0, 1.0, 0.0);
+    float3 tangent = normalize(cross(axis, normal));
+    return {tangent, cross(normal, tangent), normal};
+}
+
+/// Directions and both normals are unit length. The geometric normal faces the outgoing side.
+public struct RayDirectionSample
+{
+    public float3 direction;
+    public float pdf;
+    public float3 weight;
+    public bool active;
+    public bool delta;
+};
+
+/// Proposal outcomes outside the geometric hemisphere are counted with zero weight.
+public RayDirectionSample ray_sample_irradiance(float2 uniform, float3 shading_normal, float3 geometric_normal)
+{
+    float radius = sqrt(uniform.x);
+    float phi = 2.0 * ray_bsdf_pi * uniform.y;
+    float cosine = sqrt(1.0 - uniform.x);
+    float3 direction =
+        ray_bsdf_frame(shading_normal).to_world(float3(radius * cos(phi), radius * sin(phi), cosine));
+    bool active = cosine > 0.0 && dot(direction, geometric_normal) > 0.0;
+    return {direction, cosine * ray_bsdf_inverse_pi, float3(active ? ray_bsdf_pi : 0.0), active, false};
+}
+
+/// Lit uses its authored roughness range. An explicit alpha of zero represents an ideal reflection event.
+public struct RayGgxMaterial
+{
+    public float alpha;
+    public float3 f0;
+    public float f90;
+    public float strength;
+};
+
+public RayGgxMaterial ray_lit_ggx(float3 albedo, float metallic, float smoothness, float normal_variance,
+                                  float specular_highlights)
+{
+    // Match the Lit author's raster roughness, including its nonzero perceptual floor and geometric AA.
+    float perceptual = clamp(1.0 - smoothness, 0.045, 1.0);
+    float alpha = perceptual * perceptual;
+    alpha = max(alpha, sqrt(alpha * alpha + min(normal_variance, 0.18)));
+    float3 f0 = lerp(float3(0.04), saturate(albedo), saturate(metallic));
+    float f90 = saturate(50.0 * dot(f0, float3(0.33333)));
+    return {alpha, f0, f90, saturate(specular_highlights)};
+}
+
+float3 ray_ggx_fresnel(RayGgxMaterial material, float cosine)
+{
+    float tail = 1.0 - saturate(cosine);
+    float tail_squared = tail * tail;
+    return lerp(material.f0, float3(material.f90), tail * tail_squared * tail_squared) * material.strength;
+}
+
+float ray_ggx_projected_roughness(float cosine, float alpha_squared)
+{
+    return sqrt(cosine * cosine + alpha_squared * (1.0 - cosine * cosine));
+}
+
+struct RayGgxTerms
+{
+    float pdf;
+    float3 weight;
+    bool active;
+};
+
+RayGgxTerms ray_ggx_terms(float3 shading_normal, float3 geometric_normal, float3 outgoing, float3 incoming,
+                          float3 facet, RayGgxMaterial material)
+{
+    float nov = saturate(dot(shading_normal, outgoing));
+    float noh = saturate(dot(shading_normal, facet));
+    float voh = saturate(dot(outgoing, facet));
+    if (!(nov > 0.0 && noh > 0.0 && voh > 0.0 && dot(geometric_normal, outgoing) > 0.0))
+        return {0.0, float3(0.0), false};
+
+    float alpha_squared = material.alpha * material.alpha;
+    float nv = ray_ggx_projected_roughness(nov, alpha_squared);
+    // Use a factored form to preserve the finite peak when noh rounds to one.
+    float d = (1.0 - noh) * (1.0 + noh) + alpha_squared * noh * noh;
+    float distribution = ray_bsdf_inverse_pi * alpha_squared / (d * d);
+    // Visible normal density times the reflection Jacobian. G1(v)/(4 * nov) simplifies analytically.
+    float pdf = distribution / (2.0 * (nov + nv));
+    float nol = saturate(dot(shading_normal, incoming));
+    if (!(nol > 0.0 && dot(geometric_normal, incoming) > 0.0))
+        return {pdf, float3(0.0), false};
+
+    float nl = ray_ggx_projected_roughness(nol, alpha_squared);
+    // In f*cos/pdf, only the ratio of correlated Smith G2 to visible-normal G1 remains.
+    float masking = (nol * (nov + nv)) / (nol * nv + nov * nl);
+    return {pdf, ray_ggx_fresnel(material, voh) * masking, true};
+}
+
+public struct RayGgxEvaluation
+{
+    public float pdf;
+    public float3 projected_bsdf;
+};
+
+/// Continuous BSDF times the incident cosine. Delta reflection has no solid-angle density.
+public RayGgxEvaluation ray_evaluate_ggx(float3 shading_normal, float3 geometric_normal, float3 outgoing,
+                                          float3 incoming, RayGgxMaterial material)
+{
+    float3 half_vector = outgoing + incoming;
+    float half_length_squared = dot(half_vector, half_vector);
+    if (material.alpha == 0.0 || half_length_squared == 0.0)
+        return {0.0, float3(0.0)};
+    RayGgxTerms terms = ray_ggx_terms(shading_normal, geometric_normal, outgoing, incoming,
+                                      half_vector * rsqrt(half_length_squared), material);
+    return {terms.pdf, terms.weight * terms.pdf};
+}
+
+float3 ray_visible_ggx_facet(float3 outgoing, float alpha, float2 uniform)
+{
+    // Heitz (2018), projected disk parameterization for the unit-roughness hemisphere.
+    float3 projected_view = normalize(float3(alpha * outgoing.xy, outgoing.z));
+    float3 azimuth = float3(-projected_view.y, projected_view.x, 0.0);
+    float azimuth_length_squared = dot(azimuth, azimuth);
+    azimuth = azimuth_length_squared > 0.0 ? azimuth * rsqrt(azimuth_length_squared) : float3(1.0, 0.0, 0.0);
+
+    float phi = 2.0 * ray_bsdf_pi * uniform.y;
+    float2 disk = sqrt(uniform.x) * float2(cos(phi), sin(phi));
+    float rim = sqrt(max(0.0, 1.0 - disk.x * disk.x));
+    disk.y = lerp(rim, disk.y, 0.5 * (1.0 + projected_view.z));
+    float z = sqrt(max(0.0, 1.0 - dot(disk, disk)));
+    float3 projected_normal =
+        disk.x * azimuth + disk.y * cross(projected_view, azimuth) + z * projected_view;
+    return normalize(float3(alpha * projected_normal.xy, max(0.0, projected_normal.z)));
+}
+
+/// Sample a reflected direction about the shading normal and reject geometry-crossing directions without resampling.
+public RayDirectionSample ray_sample_ggx(float2 uniform, float3 shading_normal, float3 geometric_normal,
+                                          float3 outgoing, RayGgxMaterial material)
+{
+    float cosine = dot(shading_normal, outgoing);
+    if (!(cosine > 0.0 && dot(geometric_normal, outgoing) > 0.0))
+        return {float3(0.0), 0.0, float3(0.0), false, material.alpha == 0.0};
+
+    if (material.alpha == 0.0)
+    {
+        float3 direction = reflect(-outgoing, shading_normal);
+        bool active = dot(geometric_normal, direction) > 0.0;
+        return {direction, 0.0, active ? ray_ggx_fresnel(material, cosine) : float3(0.0), active, true};
+    }
+
+    let frame = ray_bsdf_frame(shading_normal);
+    float3 facet = frame.to_world(ray_visible_ggx_facet(frame.to_local(outgoing), material.alpha, uniform));
+    float3 direction = reflect(-outgoing, facet);
+    RayGgxTerms terms = ray_ggx_terms(shading_normal, geometric_normal, outgoing, direction, facet, material);
+    return {direction, terms.pdf, terms.weight, terms.active, false};
+}

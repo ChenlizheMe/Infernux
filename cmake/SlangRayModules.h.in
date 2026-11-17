@@ -10,4 +10,11 @@ inline const ShaderSourceModule &GetSlangRayTraversalModule()
     return module;
 }
 
+inline const ShaderSourceModule &GetSlangRayBsdfModule()
+{
+    static const ShaderSourceModule module{"inx_ray_bsdf", "<infernux/shader/ray_bsdf>", R"inxslang(
+@_ray_bsdf_source@)inxslang"};
+    return module;
+}
+
 } // namespace infernux
