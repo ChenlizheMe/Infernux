@@ -123,8 +123,8 @@ class CompilerArtifact:
                 raise ValueError(f"Slang compute parameters must supply GPU buffers in binding order ({names})")
             for value, layout in zip(params, layouts, strict=True):
                 name, dtype = layout["name"], layout["dtype"]
-                if (not isinstance(value, Buffer) or value.device != "gpu" or value._dtype.scalar.name != dtype
-                        or value._dtype.lanes != 1 or len(value.shape) != 1):
+                if (not isinstance(value, Buffer) or value.device != "gpu" or value._dtype.name != dtype
+                        or len(value.shape) != 1):
                     raise TypeError(f"Slang binding '{name}' requires a one-dimensional {dtype} GPU buffer")
                 value._require_open()
                 if value._byte_offset != 0 or value.nbytes != value._native.byte_size:

@@ -797,17 +797,23 @@ def _slang_dispatch_artifact(compiled, path, entry_point, domain, modules, key):
         raise ValueError("Slang compute entry resources must use structured storage buffers")
 
     resources = {(item["set"], item["binding"]): item for item in compiled["resources"]}
-    # ShaderProgramLayout.h reflects the scalar kind and the target element stride.
-    scalars = {2: "int32", 3: "uint32", 7: "float32"}
+    # ShaderProgramLayout.h supplies the value kind, scalar kind and vector width.
+    dtypes = {(0, 2, 1): "int32", (0, 3, 1): "uint32", (0, 7, 1): "float32",
+              (1, 7, 2): "vector2", (1, 7, 4): "vector4"}
     bindings, layouts, writes = [], [], []
     for group, binding in sorted(entry["bindings"]):
         resource = resources[group, binding]
         value = resource["value"]
-        dtype = scalars.get(value["scalar"]) if value["kind"] == 0 else None
+        dtype = dtypes.get((value["kind"], value["scalar"], value["columns"]))
         name = resource["name"]
-        if (group != 0 or resource["type"] != 1 or resource["count"] != 1
-                or dtype is None or resource["element_stride"] != 4):
-            raise ValueError(f"Slang binding '{name}' requires a scalar float32, int32 or uint32 structured buffer in group 0")
+        if group != 0 or resource["type"] != 1 or resource["count"] != 1 or dtype is None:
+            raise ValueError(f"Slang binding '{name}' requires a float32, int32, uint32, float2 or float4 "
+                             "structured buffer in group 0")
+        stride = resource["element_stride"]
+        packed_stride = 4 * value["columns"]
+        if stride != packed_stride:
+            raise ValueError(f"Slang binding '{name}' uses {stride}-byte elements on {compiled['target']}; "
+                             f"inx.buffer {dtype} requires {packed_stride}-byte elements")
         index = len(layouts)
         read_only = resource["read_only"]
         layouts.append({"kind": "external_buffer", "name": name, "dtype": dtype})

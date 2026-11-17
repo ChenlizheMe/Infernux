@@ -212,6 +212,57 @@ def test_native_slang_compiles_reflected_group_with_transitive_sources(project, 
                for row in failure.value.diagnostics), failure.value.diagnostics
 
 
+def _typed_transfer(project, storage_type):
+    path = 'Assets/Kernels/typed_transfer.slang'
+    (project / path).write_text(f'''
+[[vk::binding(0, 0)]] StructuredBuffer<{storage_type}> values;
+[[vk::binding(1, 0)]] RWStructuredBuffer<{storage_type}> result;
+[shader("compute")] [numthreads(4, 1, 1)]
+void transfer(uint3 thread : SV_DispatchThreadID)
+{{
+    uint count, stride;
+    values.GetDimensions(count, stride);
+    if (thread.x < count)
+        result[thread.x] = values[thread.x] * 2.0 + float(stride);
+}}
+''', encoding='utf-8')
+    return compute.kernel(path, entry_point='transfer', domain='values')
+
+
+@pytest.mark.parametrize('storage_type, dtype, packed_stride', [
+    ('float, Std140DataLayout', np.float32, 4),
+    ('float2, Std140DataLayout', compute.vec2, 8),
+])
+def test_native_slang_rejects_mismatched_storage_stride(project, storage_type, dtype, packed_stride):
+    kernel = _typed_transfer(project, storage_type)
+    params = (_gpu_buffer_descriptor((5,), dtype),) * 2
+    with using_project_root(project), pytest.raises(
+        compute.KernelCompilationError, match=f'16-byte elements on spirv.*{packed_stride}-byte elements'
+    ):
+        kernel._compile_artifact(params, None, 'none', (), 'spirv')
+
+
+@pytest.mark.parametrize('storage_type, dtype, lanes', [
+    ('float2', compute.vec2, 2),
+    ('float4', compute.vec4, 4),
+])
+def test_native_slang_launches_packed_vector_buffers(project, engine, monkeypatch, storage_type, dtype, lanes):
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    kernel = _typed_transfer(project, storage_type)
+    values = np.arange(5 * lanes, dtype=np.float32).reshape(5, lanes)
+    with using_project_root(project), ExitStack() as resources:
+        resources.callback(host._release_lease)
+        resources.callback(kernel._release_engine_resources)
+        source = resources.enter_context(compute.buffer(shape=5, dtype=dtype, device='gpu', data=values))
+        result = resources.enter_context(compute.buffer(shape=5, dtype=dtype, device='gpu'))
+        web = kernel._compile_artifact((source, result), None, 'none', (), 'wgsl')
+        assert [layout['dtype'] for layout in web.argument_layout['parameters']] == [f'vector{lanes}'] * 2
+        compute.launch(kernel, (source, result))
+        with result.get_data_async().get_data() as readback:
+            np.testing.assert_array_equal(readback.numpy(), values * 2 + 4 * lanes)
+
+
 def test_native_slang_kernel_launch_and_work_share_gpu_resources(project, engine, monkeypatch):
     host = engine._acquire_compute_host()
     monkeypatch.setattr(compute, '_native_compute_host', lambda: host)

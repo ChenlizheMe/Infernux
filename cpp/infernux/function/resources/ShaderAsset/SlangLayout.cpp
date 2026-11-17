@@ -249,7 +249,8 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
                 resource.binding.readOnlyStorage = type->getResourceAccess() == SLANG_RESOURCE_ACCESS_READ;
                 if ((type->getResourceShape() & SLANG_RESOURCE_BASE_SHAPE_MASK) == SLANG_STRUCTURED_BUFFER) {
                     resource.value = ValueLayout(type->getElementTypeLayout());
-                    resource.elementStride = type->getElementTypeLayout()->getStride(SLANG_PARAMETER_CATEGORY_UNIFORM);
+                    auto *contents = type->getContentVarLayout()->getTypeLayout();
+                    resource.elementStride = contents->getElementStride(SLANG_PARAMETER_CATEGORY_UNIFORM);
                 }
                 break;
             case slang::BindingType::CombinedTextureSampler:
