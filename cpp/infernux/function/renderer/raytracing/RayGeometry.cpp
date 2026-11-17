@@ -4,8 +4,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
+#include <map>
 #include <stdexcept>
+#include <tuple>
+#include <type_traits>
 #include <unordered_map>
 
 namespace infernux::raytracing
@@ -167,6 +171,59 @@ RayGeometryPage BuildRayGeometryPage(const std::vector<RayMeshInstance> &instanc
     for (uint32_t index : hierarchy.primitiveOrder)
         page.instances.push_back(packed[index]);
     return page;
+}
+
+std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, RayGeometryStatus status)
+{
+    const uint64_t nodes = 2;
+    const uint64_t positions = nodes + uint64_t{page.nodes.size()} * (sizeof(BvhNode) / sizeof(RayGeometryWord));
+    const uint64_t triangles = positions + page.positions.size();
+    const uint64_t instances = triangles + page.triangles.size();
+    const uint64_t size = instances + uint64_t{page.instances.size()} * (sizeof(RayInstance) / sizeof(RayGeometryWord));
+    if (size > kInvalidRayIndex)
+        throw std::length_error("Ray geometry exceeds the uvec4 address range");
+    std::vector<RayGeometryWord> storage(static_cast<size_t>(size));
+    storage[0] = {page.root, static_cast<uint32_t>(nodes), static_cast<uint32_t>(positions),
+                  static_cast<uint32_t>(triangles)};
+    storage[1] = {static_cast<uint32_t>(instances), static_cast<uint32_t>(status), 0u, 0u};
+    const auto append = [&](uint64_t offset, const auto &values) {
+        using Value = typename std::decay_t<decltype(values)>::value_type;
+        static_assert(sizeof(Value) % sizeof(RayGeometryWord) == 0);
+        if (!values.empty())
+            std::memcpy(storage.data() + static_cast<size_t>(offset), values.data(), values.size() * sizeof(Value));
+    };
+    append(nodes, page.nodes);
+    append(positions, page.positions);
+    append(triangles, page.triangles);
+    append(instances, page.instances);
+    return storage;
+}
+
+std::vector<RayGeometryWord> BuildWorldRayGeometry(const DrawCallResult &geometry)
+{
+    using Slice = std::tuple<uintptr_t, uintptr_t, uint32_t, uint32_t, int32_t>;
+    std::map<Slice, RayMesh> meshes;
+    std::vector<RayMeshInstance> instances;
+    instances.reserve(geometry.drawCalls.size());
+    for (const auto &draw : geometry.drawCalls) {
+        if (!draw.indexCount)
+            continue;
+        // Ready means the whole frozen World can be queried. A stripped or
+        // device-authored source must not appear to be empty space.
+        if (!draw.surfaceId || !draw.meshDataOwner || !draw.meshVertices || !draw.meshIndices ||
+            draw.meshVertices->empty() || draw.meshIndices->empty() || draw.meshVertexBuffer ||
+            draw.devicePose.HasValue() || draw.skinBoneMatrices)
+            return EncodeRayGeometryPage({}, RayGeometryStatus::Unavailable);
+        const Slice slice{reinterpret_cast<uintptr_t>(draw.meshVertices), reinterpret_cast<uintptr_t>(draw.meshIndices),
+                          draw.indexStart, draw.indexCount, draw.vertexStart};
+        auto [entry, inserted] = meshes.try_emplace(slice);
+        if (inserted)
+            entry->second =
+                BuildRayMesh(*draw.meshVertices, *draw.meshIndices, draw.indexStart, draw.indexCount, draw.vertexStart);
+        // frustumVisible belongs to the raster view. Rays can reach off-screen geometry.
+        instances.push_back({entry->second, draw.worldMatrix, draw.surfaceId, draw.layerMask});
+    }
+    return EncodeRayGeometryPage(BuildRayGeometryPage(instances), RayGeometryStatus::Ready);
 }
 
 } // namespace infernux::raytracing

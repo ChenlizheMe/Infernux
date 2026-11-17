@@ -7,6 +7,7 @@
 
 namespace infernux
 {
+struct DrawCallResult;
 struct Vertex;
 
 namespace raytracing
@@ -69,6 +70,22 @@ struct RayGeometryPage
 [[nodiscard]] RayMesh BuildRayMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
                                    uint32_t indexStart, uint32_t indexCount, int32_t vertexStart);
 [[nodiscard]] RayGeometryPage BuildRayGeometryPage(const std::vector<RayMeshInstance> &instances);
+
+enum class RayGeometryStatus : uint32_t
+{
+    Pending,
+    Ready,
+    Unavailable,
+};
+
+using RayGeometryWord = std::array<uint32_t, 4>;
+
+/// Two uvec4 header words followed by page-relative storage arrays.
+/// Header 0: TLAS root, node offset, position offset, triangle offset.
+/// Header 1: instance offset, RayGeometryStatus, reserved, reserved.
+/// All offsets address uvec4 words. Node and instance indices remain array-relative.
+[[nodiscard]] std::vector<RayGeometryWord> EncodeRayGeometryPage(const RayGeometryPage &page, RayGeometryStatus status);
+[[nodiscard]] std::vector<RayGeometryWord> BuildWorldRayGeometry(const DrawCallResult &geometry);
 
 } // namespace raytracing
 } // namespace infernux
