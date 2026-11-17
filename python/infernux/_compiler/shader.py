@@ -46,6 +46,35 @@ class ShaderDefinition:
 
 
 class _Author(ParameterAuthor):
+    uses_surface_sampling = False
+
+    _surface_sampling_operations = {
+        "_surface_sample": ("sample", "float4", ("InxColor2D", "float2")),
+        "_surface_differentials": ("differentials", "InxSurfaceDifferentials", ("InxMeshInput", "float2", "float2")),
+    }
+
+    def _surface_sampling_operation(self, node):
+        name = self.qualified(node.func)
+        operation = self.symbol(name)
+        return self._surface_sampling_operations.get(operation) if operation != name else None
+
+    def infer(self, node):
+        if isinstance(node, ast.Call) and (operation := self._surface_sampling_operation(node)) is not None:
+            return operation[1]
+        return super().infer(node)
+
+    def visit_Call(self, node):
+        operation = self._surface_sampling_operation(node)
+        if operation is None:
+            return super().visit_Call(node)
+        if not self.is_surface:
+            self.error(node, "Material sampling context is available in the Surface entry", code="author.stage")
+        method, _, arguments = operation
+        if node.keywords or tuple(self.infer(arg) for arg in node.args) != arguments:
+            self.error(node, "Material sampling arguments must match the typed Surface context", code="author.type")
+        self.uses_surface_sampling = True
+        return f"inx_surface_sampling.{method}(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
+
     def function(self, main):
         if main.decorator_list or main.args.vararg or main.args.kwarg or main.args.kwonlyargs or main.args.defaults:
             self.error(main, "Shader entry parameters have a fixed typed signature")
@@ -99,7 +128,9 @@ class _Author(ParameterAuthor):
                     "    clip(" + alpha + " - " + threshold + ");", "    return color;", "}"]
         if self.domain in {"screen_ui", "world_ui"}:
             return [self.source_directive(main), result + " inx_author_ui(" + signature + ")", "{", *self.lines, "}"]
-        declaration = ("InxSurfaceData inx_author_surface(" + signature + ")" if self.is_surface else
+        sampling = "<Sampling : InxSurfaceSampling>" if self.uses_surface_sampling else ""
+        sampling_argument = ", Sampling inx_surface_sampling" if self.uses_surface_sampling else ""
+        declaration = (f"InxSurfaceData inx_author_surface{sampling}({signature}{sampling_argument})" if self.is_surface else
                        result + " fragment_main(" + signature + ")" + semantic)
         return ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
             declaration, "{", *self.lines, "}"]
@@ -298,12 +329,6 @@ InxMeshInput vertex_motion(InxVertexInput input, uint instance : SV_VulkanInstan
     inx_clip_device_bounds(result, instance);
     return result;
 }
-InxSurfaceData inx_evaluate_surface(InxMeshInput input, bool front_facing)
-{
-    InxSurfaceData surface = inx_prepare_surface(inx_author_surface(input), input, front_facing);
-    if (inx_parameters._alpha_clip_threshold > 0.0 && surface.alpha < inx_parameters._alpha_clip_threshold) discard;
-    return surface;
-}
 [shader("fragment")]
 float4 fragment_main(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
@@ -343,6 +368,80 @@ float4 fragment_base_color(InxMeshInput input, bool front_facing : SV_IsFrontFac
     return float4(surface.albedo, surface.alpha);
 }
 """
+
+
+_SURFACE_SAMPLING = """
+struct InxSurfaceDifferentials
+{
+    float3 position_dx;
+    float3 position_dy;
+    float2 uv_dx;
+    float2 uv_dy;
+};
+interface InxSurfaceSampling
+{
+    float4 sample(InxColor2D image, float2 uv);
+    InxSurfaceDifferentials differentials(InxMeshInput input, float2 uv, float2 uv_scale);
+}
+struct InxRasterSurfaceSampling : InxSurfaceSampling
+{
+    float4 sample(InxColor2D image, float2 uv)
+    {
+        return image.texture.Sample(image.sampler, uv);
+    }
+    InxSurfaceDifferentials differentials(InxMeshInput input, float2 uv, float2 uv_scale)
+    {
+        return {ddx(input.position_ws), ddy(input.position_ws), ddx(uv), ddy(uv)};
+    }
+};
+struct InxSecondarySurfaceSampling : InxSurfaceSampling
+{
+    float lod;
+    // Corresponding world-position and raw UV1 edges of the hit triangle.
+    float3 edge_u_ws;
+    float3 edge_v_ws;
+    float2 edge_u_uv1;
+    float2 edge_v_uv1;
+
+    float4 sample(InxColor2D image, float2 uv)
+    {
+        return image.texture.SampleLevel(image.sampler, uv, lod);
+    }
+    InxSurfaceDifferentials differentials(InxMeshInput input, float2 uv, float2 uv_scale)
+    {
+        // Orient the cotangent frame by the shading normal, independent of the triangle winding.
+        float orientation = dot(cross(edge_u_ws, edge_v_ws), input.normal_ws) < 0.0 ? -1.0 : 1.0;
+        return {edge_u_ws, edge_v_ws * orientation, edge_u_uv1 * uv_scale, edge_v_uv1 * (uv_scale * orientation)};
+    }
+};
+"""
+
+
+def _surface_evaluation(uses_surface_sampling):
+    raster_arguments = "input, InxRasterSurfaceSampling()" if uses_surface_sampling else "input"
+    source = f"""
+bool inx_surface_covered(InxSurfaceData surface)
+{{
+    float threshold = inx_parameters._alpha_clip_threshold;
+    return !(threshold > 0.0 && surface.alpha < threshold);
+}}
+InxSurfaceData inx_evaluate_surface(InxMeshInput input, bool front_facing)
+{{
+    InxSurfaceData surface = inx_prepare_surface(inx_author_surface({raster_arguments}), input, front_facing);
+    if (!inx_surface_covered(surface)) discard;
+    return surface;
+}}
+"""
+    if uses_surface_sampling:
+        source += """
+bool inx_evaluate_secondary_surface(InxMeshInput input, bool front_facing, InxSecondarySurfaceSampling sampling,
+                                    out InxSurfaceData surface)
+{
+    surface = inx_prepare_surface(inx_author_surface(input, sampling), input, front_facing);
+    return inx_surface_covered(surface);
+}
+"""
+    return source
 
 
 _SURFACE_LIGHTING = """
@@ -481,7 +580,10 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         emitter.functions = author.functions
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
         author.source_ranges.extend(emitter.source_ranges)
-    code.extend(author.function(main))
+    entry = author.function(main)
+    if author.uses_surface_sampling:
+        code.append(_SURFACE_SAMPLING)
+    code.extend(entry)
     if author.domain in {"screen_ui", "world_ui"}:
         from infernux.lib import _Infernux
         code.append(_Infernux._shader_ui_author_source(
@@ -490,6 +592,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         code.append(_particle_passes(author.annotation(main.returns)))
     if author.is_surface:
         code.append("static const bool INX_RECEIVE_SHADOWS = " + ("true" if info["receive_shadows"] else "false") + ";")
+        code.append(_surface_evaluation(author.uses_surface_sampling))
         code.append(_SURFACE_LIGHTING)
         passes = _SURFACE_PASSES
         if vertex:

@@ -575,6 +575,45 @@ def test_editor_shader_authors_use_standard_libraries_and_explicit_vertex_select
             assert {parameter.name for parameter in definition.parameters} >= {"fade_start", "fade_end"}
 
 
+def test_lit_surface_compiles_raster_and_secondary_sampling_from_one_author():
+    from infernux._compiler.shading_model import default_shading_model
+    from infernux.lib import _Infernux
+
+    path = default_shading_model().with_name("lit.frag.py")
+    definition = parse_shader(path.read_text(encoding="utf-8"), str(path), "builtin_lit")
+    assert definition.generated_source.count("InxSurfaceData inx_author_surface") == 1
+    raster = definition.compile()
+    probe = """
+RWStructuredBuffer<float4> hit_normal;
+[shader("compute")] [numthreads(1, 1, 1)]
+void evaluate_hit(uint3 id : SV_DispatchThreadID)
+{
+    InxMeshInput hit = (InxMeshInput)0;
+    hit.normal_ws = float3(0, 0, 1);
+    hit.tangent_ws = float4(1, 0, 0, 1);
+    hit.color = float3(1);
+    hit.line_color = float4(1);
+    InxSecondarySurfaceSampling sampling = {float(id.x), float3(1, 0, 0), float3(0, 1, 0),
+                                           float2(0, 1), float2(1, 0)};
+    InxSurfaceData surface;
+    bool covered = inx_evaluate_secondary_surface(hit, true, sampling, surface);
+    hit_normal[id.x] = float4(surface.normal_ws, covered ? surface.alpha : -1.0);
+}
+"""
+    secondary = _Infernux._compile_shader_program(
+        definition.generated_source + probe, str(path), "builtin_lit", definition.libraries,
+        targets=["spirv", "wgsl"], source_ranges=definition.source_ranges, entry_point="evaluate_hit",
+    )
+    assert {target["target"] for target in secondary["targets"]} == {"spirv", "wgsl"}
+    wgsl = next(target for target in raster["targets"] if target["target"] == "wgsl")
+    fragment = next(entry["code"] for entry in wgsl["entries"] if entry["name"] == "fragment_normal")
+    wgsl = next(target for target in secondary["targets"] if target["target"] == "wgsl")
+    compute, = wgsl["entries"]
+    assert b"textureSample(" in fragment and b"dpdx" in fragment and b"discard" in fragment
+    assert b"textureSampleLevel" in compute["code"]
+    assert all(operation not in compute["code"] for operation in (b"textureSample(", b"dpdx", b"dpdy", b"discard"))
+
+
 def test_deferred_lighting_reuses_surface_models_and_the_view_resource_contract():
     from infernux._compiler.shading_model import default_shading_model
 

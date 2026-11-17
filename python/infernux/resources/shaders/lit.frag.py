@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.surface import sample_normal, texture_uv
+from infernux.shader.lib.surface import _cotangent_to_world, _decode_normal_rg, tangent_to_world, texture_uv
 
 
 class Lit(shader.surface):
@@ -35,18 +35,24 @@ class Lit(shader.surface):
     emission_map_st = shader.material.vec4(default=(1.0, 1.0, 0.0, 0.0))
 
     def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
-        base = shader.sample(self.albedo_map, texture_uv(ctx, self.base_color_uv_set, self.albedo_map_st))
-        metallic = shader.dot(shader.sample(self.metallic_map, texture_uv(ctx, self.metallic_uv_set, self.metallic_map_st)), self.metallic_channels)
-        smoothness = shader.dot(shader.sample(self.smoothness_map, texture_uv(ctx, self.smoothness_uv_set, self.smoothness_map_st)), self.smoothness_channels)
-        occlusion = shader.sample(self.occlusion_map, texture_uv(ctx, self.occlusion_uv_set, self.occlusion_map_st)).r
+        base = shader._surface_sample(self.albedo_map, texture_uv(ctx, self.base_color_uv_set, self.albedo_map_st))
+        metallic = shader.dot(shader._surface_sample(self.metallic_map, texture_uv(ctx, self.metallic_uv_set, self.metallic_map_st)), self.metallic_channels)
+        smoothness = shader.dot(shader._surface_sample(self.smoothness_map, texture_uv(ctx, self.smoothness_uv_set, self.smoothness_map_st)), self.smoothness_channels)
+        occlusion = shader._surface_sample(self.occlusion_map, texture_uv(ctx, self.occlusion_uv_set, self.occlusion_map_st)).r
         normal_uv = texture_uv(ctx, self.normal_uv_set, self.normal_map_st)
-        emission = shader.sample(self.emission_map, texture_uv(ctx, self.emission_uv_set, self.emission_map_st)).rgb
+        normal_ts = _decode_normal_rg(shader._surface_sample(self.normal_map, normal_uv).rg, self.normal_scale)
+        normal_ws = tangent_to_world(normal_ts, ctx)
+        if self.normal_uv_set == 1:
+            derivatives = shader._surface_differentials(ctx, normal_uv, self.normal_map_st.xy)
+            normal_ws = _cotangent_to_world(normal_ts, ctx, derivatives.position_dx, derivatives.position_dy,
+                                            derivatives.uv_dx, derivatives.uv_dy)
+        emission = shader._surface_sample(self.emission_map, texture_uv(ctx, self.emission_uv_set, self.emission_map_st)).rgb
         return shader.SurfaceData(
             albedo=base.rgb * ctx.color * self.base_color.rgb,
             metallic=metallic * self.metallic,
             smoothness=shader.mix(smoothness * self.smoothness, 1.0 - smoothness * (1.0 - self.smoothness), self.smoothness_from_roughness),
             occlusion=shader.mix(1.0, occlusion, self.occlusion_strength) * self.ambient_occlusion,
-            normal_ws=sample_normal(self.normal_map, normal_uv, self.normal_uv_set, self.normal_scale, ctx),
+            normal_ws=normal_ws,
             emission=emission * self.emission_color.rgb * self.emission_color.a,
             alpha=base.a * self.base_color.a,
             specular_highlights=self.specular_highlights,

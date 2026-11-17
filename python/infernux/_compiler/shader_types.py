@@ -39,6 +39,8 @@ STRUCT_FIELDS = {"InxParticleInput": {'position': 'float4', 'position_ws': 'floa
                                   "view_depth": "float", "line_color": "float4", "object_id": "uint2",
                                   "object_flags": "uint", "layer_mask": "uint"},
                  "InxSurfaceData": {name: kind for name, (kind, _) in SURFACE_FIELDS.items()},
+                 "InxSurfaceDifferentials": {"position_dx": "float3", "position_dy": "float3",
+                                             "uv_dx": "float2", "uv_dy": "float2"},
                  "InxShadingContext": {"position_ws": "float3", "geometric_normal_ws": "float3", "view_depth": "float",
                                        "pixel_position": "float2", "layer_mask": "uint", "receives_shadows": "bool"},
                  "InxLight": {"direction": "float3", "color": "float3", "attenuation": "float", "shadow": "float"},
