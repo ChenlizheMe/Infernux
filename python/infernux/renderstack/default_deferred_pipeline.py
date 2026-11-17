@@ -153,6 +153,7 @@ def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history):
 
 def _draw_ray_lighting(render_pass, gbuffer, signals):
     bind_deferred_surface(render_pass, gbuffer.snapshot)
+    render_pass.set_texture("primary_tex", gbuffer.sample(_RAY_PRIMARY_SURFACE))
     # One enabled signal also supplies the unused descriptor when a lobe is off.
     existing = next(iter(signals.values()))
     render_pass.set_textures({name: signals.get(name, existing) for name in (_RAY_DIFFUSE, _RAY_SPECULAR)})
@@ -189,6 +190,7 @@ class DefaultDeferredPipeline(RenderPipeline):
     ``ray_diffuse`` and ``ray_specular`` independently replace the raster
     environment terms. Each enabled lobe accumulates one indirect sample per
     rendered view using per-view motion, surface and secondary-hit history.
+    Lighting resolves a bounded neighborhood from that per-lobe estimate.
     """
 
     name: str = "Default Deferred"

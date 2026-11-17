@@ -216,6 +216,7 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular):
 
     assert lighting._shader_name == "infernux/internal/deferred_ray_lighting"
     assert lighting._parameters == {"diffuse_enabled": diffuse, "specular_enabled": specular}
+    assert lighting._input_bindings["primary_tex"] == result.sample("ray_primary_surface").name
     for enabled, name, label, resolve in (
         (diffuse, "ray_diffuse", "Ray Diffuse Irradiance", "Ray Diffuse Reconstruction"),
         (specular, "ray_specular", "Ray Specular Radiance", "Ray Specular Reconstruction"),
