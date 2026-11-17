@@ -2900,6 +2900,11 @@ void PhysicsWorld::DestroyBody(uint32_t id)
     RetireBodyReplicas(domain, id, *registration);
     UnregisterBodyIdentity(domain, id);
     domain.requestedMotion.erase(id);
+    // Close an emptied partition at the removal boundary. A new scene can
+    // otherwise acquire this World before the next render opportunity and
+    // admit stale create/remove work that no longer has a consumer.
+    if (!domain.stepPending && !IsFixedPublicationHeld(domain))
+        RetireIdleGpuPartition(domain);
 }
 bool PhysicsWorld::RebindBody(PhysicsActorData &actor)
 {
