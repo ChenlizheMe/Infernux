@@ -2,7 +2,7 @@
 
 struct CouplingParams
 {
-    uint4 range; // First group or wake slot, count, and rounds.
+    uint4 range; // First group or wake slot, count, rounds, clear accumulated CPU impulses.
     float4 gravityDt;
     float4 contact; // Warm-start scale, penetration slop, max correction, Baumgarte.
 };
@@ -200,9 +200,12 @@ void exchange_cross_domain_velocity(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= params.range.y) return;
     uint4 group = groups[params.range.x + id.x];
-    const Velocity zero = {float4(0), float4(0)};
-    for (uint i = group.z; i < group.z + group.w; ++i)
-        cpu_impulses[i] = zero;
+    if (params.range.w != 0u)
+    {
+        const Velocity zero = {float4(0), float4(0)};
+        for (uint i = group.z; i < group.z + group.w; ++i)
+            cpu_impulses[i] = zero;
+    }
     if (params.contact.x > 0.0f)
         for (uint i = group.x; i < group.x + group.y; ++i)
             warm_patch(i);
