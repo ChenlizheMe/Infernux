@@ -266,8 +266,8 @@ def _compilation_request(params, autodiff_mode, gradient_parameters):
     for index in checked:
         value = params[index]
         if (not isinstance(value, Buffer) or value.device != "gpu" or len(value.shape) != 1
-                or value._dtype.scalar != np.dtype(np.float32) or value._dtype.lanes != 1):
-            raise TypeError("Local differentiation parameters must be one-dimensional float32 GPU buffers")
+                or value._dtype.scalar != np.dtype(np.float32)):
+            raise TypeError("Local differentiation requires one-dimensional GPU buffers with float32 scalar or vector elements")
     return indices
 
 class ArtifactAbiMismatchError(RuntimeError):

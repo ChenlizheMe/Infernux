@@ -1,4 +1,5 @@
 """Exercise the same authored ShaderLib through graphics and numerical Slang."""
+from contextlib import ExitStack
 import json
 import linecache
 import py_compile
@@ -261,6 +262,104 @@ def solve(x, y, shift, output, auxiliary):
         for buffer in (*seeds, *buffers):
             buffer.close()
         host._release_lease()
+
+
+def test_local_derivatives_use_packed_vector_buffer_elements(project, engine, monkeypatch):
+    root, scripts = project
+    (scripts / 'packing.shaderlib.py').write_text('''import infernux.shader as shader
+from .forces import damp
+
+def warp(value: shader.vec3, bias: float) -> shader.vec3:
+    x = value.x
+    y = value.y
+    z = value.z
+    return shader.vec3(damp(x * y), y * z + bias, x + bias * z * z)
+''', encoding='utf-8')
+    work = scripts / 'Work.py'
+    work.write_text('''import infernux as inx
+packing = inx.compute.library(".packing")
+
+@inx.compute.kernel
+def solve(values, biases, output):
+    i = inx.compute.index(values)
+    output[i] = packing.warp(values[i], biases[i])
+''', encoding='utf-8')
+    declaration = load_kernel(work)
+    rows = 67
+    values = np.linspace(-1.5, 1.25, rows * 3, dtype=np.float32).reshape(rows, 3)
+    biases = np.linspace(-0.5, 0.75, rows, dtype=np.float32)
+    tangents = np.resize(np.array([0.25, 0.0, -0.75, 1.0], dtype=np.float32), values.shape)
+    bias_tangents = np.linspace(0.75, -0.25, rows, dtype=np.float32)
+    seeds = np.roll(tangents, 1, axis=0)
+    x, y, z = values.T
+    dx, dy, dz = tangents.T
+    first, second, third = seeds.T
+    expected = np.column_stack((3 * x * y + 1, y * z + biases, x + biases * z * z))
+    expected_tangent = np.column_stack((3 * (dx * y + x * dy), dy * z + y * dz + bias_tangents,
+                                        dx + bias_tangents * z * z + 2 * biases * z * dz))
+    expected_gradient = np.column_stack((3 * y * first + third, 3 * x * first + z * second,
+                                         y * second + 2 * biases * z * third))
+
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    with using_project_root(root), ExitStack() as storage:
+        storage.callback(host._release_lease)
+
+        def gpu(data, dtype=np.float32):
+            return storage.enter_context(compute.buffer(shape=len(data), dtype=dtype, device='gpu', data=data))
+
+        def check(buffer, expected_values):
+            with buffer.get_data() as snapshot:
+                np.testing.assert_allclose(snapshot.numpy(), expected_values, rtol=3e-6, atol=3e-6)
+
+        # A nonzero offset exercises the packed 12-byte row stride and 67 rows exercise the last group.
+        guarded = np.full((rows + 2, 3), 11.0, dtype=np.float32)
+        output_owner = gpu(guarded, compute.vec3)
+        output = storage.enter_context(output_owner.view(offset=1, count=rows))
+        params = gpu(values, compute.vec3), gpu(biases), output
+        direction = storage.enter_context(gpu(tangents, compute.vec3).view(readonly=True))
+        bias_direction = gpu(bias_tangents)
+        output_tangent = gpu(np.ones_like(values), compute.vec3)
+        output_seed = gpu(seeds, compute.vec3)
+        input_gradient = gpu(np.full_like(values, 0.125), compute.vec3)
+        bias_gradient = gpu(np.full_like(biases, -0.25))
+        storage.callback(declaration._release_engine_resources)
+
+        bindings = {
+            'forward': {0: direction, 1: bias_direction, 2: output_tangent},
+            'reverse': {0: input_gradient, 1: bias_gradient, 2: output_seed},
+        }
+        dispatches = host.get_statistics()['dispatch_count']
+        for mode, derivatives in bindings.items():
+            indices = tuple(derivatives)
+            wgsl = frontend.compile_kernel(declaration.function, params, target='wgsl',
+                                           autodiff_mode=mode, gradient_parameters=indices)
+            assert wgsl.autodiff_mode == mode and b'@compute' in wgsl.tasks[0]
+            compute.prepare(declaration, params, autodiff_mode=mode, gradient_parameters=indices)
+            compute.launch(declaration, params, autodiff_mode=mode, gradients=derivatives)
+
+        guarded[1:-1] = expected
+        check(output_owner, guarded)
+        check(output_tangent, expected_tangent)
+        check(input_gradient, 0.125 + expected_gradient)
+        check(bias_gradient, -0.25 + second + z * z * third)
+        check(direction, tangents)
+        check(output_seed, seeds)
+
+        # Holding every input constant must construct a zero tangent of the output's vector type.
+        compute.launch(declaration, params, autodiff_mode='forward', gradients={2: output_tangent})
+        check(output_tangent, np.zeros_like(values))
+        assert host.get_statistics()['dispatch_count'] - dispatches == 3
+
+    data = root.parent / 'build' / 'Data'
+    stage_compute_artifacts(root, (work,), data)
+    manifest = json.loads((data / 'Library/Artifacts/Compute/AotManifest.json').read_text(encoding='utf-8'))
+    specializations = [json.loads(row['specialization']) for row in manifest['artifacts']
+                       if row['function'] == 'Scripts.Work.solve']
+    assert {(role['target'], role['autodiff_mode']) for role in specializations
+            if role['gradient_parameters'] == [0, 1, 2]} == {
+        (target, mode) for target in ('spirv', 'wgsl') for mode in bindings
+    }
 
 
 @pytest.mark.parametrize(('body', 'mask', 'message'), [

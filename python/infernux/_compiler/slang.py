@@ -536,63 +536,67 @@ def _local_derivative_source(plan, params, primal):
     local.line_offset = primal.line_offset
     local.declare_locals(plan.definition.body)
     local.local_declarations()
+    types = primal.types
     for name in outputs:
-        local.line("float inx_local_" + name + ";")
+        local.line(f"{types[name]} inx_local_{name};")
     local.block(plan.definition.body)
     local.line("LocalOutputs result;")
     for name in outputs:
         local.line("result." + name + " = inx_local_" + name + ";")
     local.line("return result;")
-    # The row index is discrete; the scalar inputs and outputs carry tangents.
+    # The discrete row index has no differential.
     parameters = [f"no_diff int {index}"]
     for name in inputs:
         qualifier = "" if name in selected else "no_diff "
-        parameters.append(qualifier + "float inx_local_" + name)
-    fields = " ".join("float " + name + ";" for name in outputs)
+        parameters.append(f"{qualifier}{types[name]} inx_local_{name}")
+    fields = " ".join(f"{types[name]} {name};" for name in outputs)
     local_function = "struct LocalOutputs : IDifferentiable { " + fields + " };\n[Differentiable]\nLocalOutputs inx_primal(" + ", ".join(parameters) + ") {\n" + "\n".join(local.lines) + "\n}"
     primal.lines.clear()
     primal.accesses.clear()
-    primal.types.update({"inx_local_" + name: "float" for name in inputs})
     index_node = ast.Name(id=index, ctx=ast.Load())
     arguments = [index]
     for name in inputs:
+        kind = types[name]
         address = primal._address(name, index_node)
         primal.accesses[name] = 1
         if name in selected:
-            tangent = "0.0"
+            tangent = f"{kind}(0.0)"
             if forward:
                 tangent_address = primal._address(name, index_node, derivative=True)
-                tangent = f"inx_grad_{name}.Load<float>({tangent_address})"
+                tangent = f"inx_grad_{name}.Load<{kind}>({tangent_address})"
                 primal.gradient_accesses[name] = 1
-            primal.line(f"DifferentialPair<float> inx_pair_{name} = diffPair({name}.Load<float>({address}), {tangent});")
+            primal.line(f"DifferentialPair<{kind}> inx_pair_{name} = diffPair({name}.Load<{kind}>({address}), {tangent});")
             arguments.append("inx_pair_" + name)
         else:
-            arguments.append(f"{name}.Load<float>({address})")
+            arguments.append(f"{name}.Load<{kind}>({address})")
     if forward:
         primal.line("let inx_result = fwd_diff(inx_primal)(" + ", ".join(arguments) + ");")
         for name in outputs:
+            kind = types[name]
             address = primal._address(name, index_node)
             primal.accesses[name] = 2
-            primal.line(f"{name}.Store<float>({address}, inx_result.p.{name});")
+            primal.line(f"{name}.Store<{kind}>({address}, inx_result.p.{name});")
             if name in selected:
                 tangent_address = primal._address(name, index_node, derivative=True)
                 primal.gradient_accesses[name] = 2
-                primal.line(f"inx_grad_{name}.Store<float>({tangent_address}, inx_result.d.{name});")
+                primal.line(f"inx_grad_{name}.Store<{kind}>({tangent_address}, inx_result.d.{name});")
     else:
         primal.line("LocalOutputs.Differential seed;")
         for name in outputs:
-            seed = "0.0"
+            kind = types[name]
+            seed = f"{kind}(0.0)"
             if name in selected:
                 address = primal._address(name, index_node, derivative=True)
                 primal.gradient_accesses[name] = 1
-                seed = f"inx_grad_{name}.Load<float>({address})"
+                seed = f"inx_grad_{name}.Load<{kind}>({address})"
             primal.line(f"seed.{name} = {seed};")
         primal.line("bwd_diff(inx_primal)(" + ", ".join([*arguments, "seed"]) + ");")
         for name in inputs:
             if name in selected:
+                kind = types[name]
                 address = primal._address(name, index_node, derivative=True)
                 primal.gradient_accesses[name] = 3
-                primal.line(f"inx_grad_{name}.Store<float>({address}, inx_grad_{name}.Load<float>({address}) + inx_pair_{name}.d);")
+                primal.line(f"inx_grad_{name}.Store<{kind}>({address}, inx_grad_{name}.Load<{kind}>({address}) + inx_pair_{name}.d);")
     primal.helper_sources.update(local.helper_sources)
     primal.source_ranges.extend(local.source_ranges)
     return local_function
