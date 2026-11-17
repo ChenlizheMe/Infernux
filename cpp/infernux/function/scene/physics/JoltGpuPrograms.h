@@ -86,6 +86,19 @@ struct JoltGpuContactWorkset
     std::shared_ptr<rhi::ComputeBuffer> parameters, worlds, contacts, patches;
 };
 
+// Sorted by the preceding substep's canonical leaf pair. Only the stored
+// prefix is readable when a larger device allocation is reused.
+struct JoltGpuContactHistory
+{
+    std::shared_ptr<rhi::ComputeBuffer> buffer;
+    uint32_t patchCount = 0;
+
+    [[nodiscard]] uint64_t ByteSize() const noexcept
+    {
+        return (1u + uint64_t(patchCount) * JPH::GPU::ContactHistoryWords) * sizeof(JPH::GPU::UInt4);
+    }
+};
+
 /// One substep plan built on the GPU with the required CC checks. Only the fixed
 /// structural summary is returned to the host for producer installation. Numerical
 /// dispatches bind schedule as one transient port and retain its accepted lease.
@@ -194,6 +207,9 @@ class JoltGpuStorage
     // the caller completes that phase without preparing or submitting a packet.
 
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Get(JPH::GPU::Resource resource) const;
+    [[nodiscard]] JoltGpuContactHistory GetContactHistory(uint32_t worldRow) const;
+    void PublishContactHistory(uint32_t worldRow, const JoltGpuContactHistory &history);
+    void ClearContactHistory(uint32_t worldRow) noexcept;
     /// Accepted author metadata only; never a CPU mirror of dynamic body state.
     [[nodiscard]] const JoltGpuModel &GetModel() const noexcept
     {
@@ -262,6 +278,7 @@ class JoltGpuStorage
     std::shared_ptr<const JoltGpuJointLayout> m_jointLayout;
     bool m_modelUpdatePending = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 12> m_buffers;
+    std::map<uint32_t, JoltGpuContactHistory> m_contactHistory;
     uint32_t m_bodyCount = 0, m_worldCount = 0, m_shapeCount = 0, m_maxBodiesPerWorld = 0, m_maxLeavesPerWorld = 0;
 };
 
@@ -394,6 +411,16 @@ class JoltGpuStepInputs
         return m_contacts;
     }
 
+    void SetContactHistory(JoltGpuContactHistory previous, JoltGpuContactHistory next) noexcept;
+    [[nodiscard]] const JoltGpuContactHistory &PreviousContactHistory() const noexcept
+    {
+        return m_previousContacts;
+    }
+    [[nodiscard]] const JoltGpuContactHistory &NextContactHistory() const noexcept
+    {
+        return m_nextContacts;
+    }
+
     void SetConstraints(std::shared_ptr<const JoltGpuConstraintWorkset> constraints) noexcept;
     void ClearConstraints() noexcept;
     [[nodiscard]] const std::shared_ptr<const JoltGpuConstraintWorkset> &GetConstraints() const noexcept
@@ -413,6 +440,7 @@ class JoltGpuStepInputs
     bool m_hasGenericGeometry = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
+    JoltGpuContactHistory m_previousContacts, m_nextContacts;
     std::shared_ptr<const JoltGpuColliderPairs> m_colliderPairs;
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     std::shared_ptr<JoltGpuArticulationState> m_articulations;

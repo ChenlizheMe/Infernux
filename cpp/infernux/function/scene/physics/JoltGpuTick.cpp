@@ -173,6 +173,8 @@ class JoltGpuTick::Impl
     void Cancel() noexcept
     {
         lane->DropShared(this);
+        if (!controlOnly && (status == Status::Running || status == Status::Failed))
+            storage.ClearContactHistory(selectedRow);
         if (status == Status::Running)
             status = Status::Cancelled;
         CancelPackets();
@@ -309,6 +311,7 @@ class JoltGpuTick::Impl
         BuildConstraints,
         ClassifyArticulations,
         WarmJoints,
+        WarmContacts,
         WarmCoupledContacts,
         SolveJointVelocity,
         SolveVelocity,
@@ -320,6 +323,8 @@ class JoltGpuTick::Impl
         SolvePosition,
         ProjectCoupledContacts,
         FinishJoints,
+        PrepareContactStore,
+        StoreContactHistory,
         UpdateSleep,
         WakeFinalPrescribedBounds,
         FinishTick,
@@ -580,7 +585,8 @@ class JoltGpuTick::Impl
 
     bool GuardConsumersFinished() const noexcept
     {
-        return stageCursor.phase == Phase::ParticipantAccept || stageCursor.phase == Phase::UpdateSleep ||
+        return stageCursor.phase == Phase::PrepareContactStore || stageCursor.phase == Phase::StoreContactHistory ||
+               stageCursor.phase == Phase::ParticipantAccept || stageCursor.phase == Phase::UpdateSleep ||
                stageCursor.phase == Phase::WakeFinalPrescribedBounds ||
                stageCursor.phase == Phase::CaptureArticulationRotors || stageCursor.phase == Phase::FinishTick ||
                stageCursor.phase == Phase::Done;
@@ -723,7 +729,7 @@ class JoltGpuTick::Impl
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
                phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareCoupledContacts ||
-               CoupledFeedbackPhase(phase);
+               phase == Phase::PrepareContactStore || CoupledFeedbackPhase(phase);
     }
 
     StageSpan Span(Phase phase) const
@@ -745,10 +751,14 @@ class JoltGpuTick::Impl
             return {Stage::SetupJoints, Domain::Joints};
         case Phase::WarmJoints:
             return {Stage::WarmJoints, Domain::IslandJoints};
+        case Phase::WarmContacts:
+            return {Stage::WarmContacts, Domain::IslandPatches};
         case Phase::SolveJointVelocity:
             return {Stage::SolveJointVelocity, Domain::IslandJoints};
         case Phase::SolveVelocity:
             return {Stage::SolveVelocity, Domain::IslandPatches};
+        case Phase::StoreContactHistory:
+            return {Stage::StoreContactHistory, Domain::Patches};
         case Phase::Integrate:
             return {Stage::Integrate, Domain::Bodies};
         case Phase::SolveJointPosition:
@@ -773,6 +783,7 @@ class JoltGpuTick::Impl
         case Phase::UpdateSleep:
         case Phase::WakeFinalPrescribedBounds:
         case Phase::BuildConstraints:
+        case Phase::PrepareContactStore:
         case Phase::ReportContactsBeforeVelocity:
         case Phase::ReportContactsAfterVelocity:
         case Phase::PrepareCoupledContacts:
@@ -931,6 +942,9 @@ class JoltGpuTick::Impl
                                                         : Phase::Integrate;
             break;
         case Phase::WarmJoints:
+            next.phase = Phase::WarmContacts;
+            break;
+        case Phase::WarmContacts:
             if (control.prepareCoupledContacts) {
                 next.phase = Phase::WarmCoupledContacts;
                 break;
@@ -974,7 +988,17 @@ class JoltGpuTick::Impl
             next.phase = ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
             break;
         case Phase::FinishJoints:
+            if (inputs.NextContactHistory().patchCount) {
+                next.phase =
+                    inputs.NextContactHistory().buffer ? Phase::StoreContactHistory : Phase::PrepareContactStore;
+                break;
+            }
+            [[fallthrough]];
+        case Phase::StoreContactHistory:
             next.phase = control.prepareParticipant ? Phase::ParticipantAccept : Phase::UpdateSleep;
+            break;
+        case Phase::PrepareContactStore:
+            next.phase = Phase::StoreContactHistory;
             break;
         case Phase::UpdateSleep:
             next.phase = Phase::WakeFinalPrescribedBounds;
@@ -995,6 +1019,10 @@ class JoltGpuTick::Impl
         while (next.phase != Phase::Done) {
             // CPU Jolt samples sleep history only at the final collision substep.
             if (next.phase == Phase::UpdateSleep && next.substep + 1u < tickParameters.solve.y) {
+                NextSpan(next);
+                continue;
+            }
+            if (next.phase == Phase::WarmContacts && !inputs.PreviousContactHistory().buffer) {
                 NextSpan(next);
                 continue;
             }
@@ -1086,6 +1114,46 @@ class JoltGpuTick::Impl
         Normalize(stageCursor);
     }
 
+    void CaptureContactHistory()
+    {
+        const auto &plan = inputs.GetConstraints();
+        if (!tickParameters.counts.w || !plan || !plan->activePatches) {
+            storage.ClearContactHistory(selectedRow);
+            return;
+        }
+
+        auto previous = storage.GetContactHistory(selectedRow);
+        JoltGpuContactHistory next{previous.buffer, inputs.GetContacts()->patchCount};
+        if (next.buffer &&
+            (next.buffer->GetByteSize() < next.ByteSize() || next.buffer->GetByteSize() / 4u > next.ByteSize()))
+            next.buffer.reset();
+        inputs.SetContactHistory(std::move(previous), std::move(next));
+    }
+
+    JoltGpuControlWork PrepareContactStore()
+    {
+        auto next = inputs.NextContactHistory();
+        // All previous-history readers have already been submitted. The actual
+        // queue receipts keep their allocation alive until GPU access ends.
+        storage.ClearContactHistory(selectedRow);
+        inputs.SetContactHistory({}, next);
+        next.buffer = rhi::ComputeBuffer::TryCreatePrivate(
+            host, {next.ByteSize() / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1u});
+        if (!next.buffer)
+            return {nullptr, [this] { return PrepareContactStore(); }};
+        inputs.SetContactHistory({}, std::move(next));
+        NextSpan(stageCursor);
+        Normalize(stageCursor);
+        return {};
+    }
+
+    void PublishContactHistory()
+    {
+        const auto &next = inputs.NextContactHistory();
+        if (next.buffer)
+            storage.PublishContactHistory(selectedRow, next);
+    }
+
     void CaptureControlInputs()
     {
         if (selectedRow >= storage.GetModel().worlds.size())
@@ -1133,6 +1201,7 @@ class JoltGpuTick::Impl
         completedOutput = std::move(finalOutput);
         status = Status::Complete;
         // Factories have been consumed and every actual receipt retired.
+        PublishContactHistory();
         control = {};
         inputs = {};
         parameters.reset();
@@ -1650,11 +1719,16 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::Broadphase) {
+                PublishContactHistory();
                 inputs.ClearContacts();
                 SelectControlWork(
                     broadphase.Prepare(storage, inputs, programs, tickParameters,
                                        [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }),
                     PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::PrepareContactStore) {
+                SelectControlWork(PrepareContactStore(), PacketKind::NumericalWork);
                 return true;
             }
             if (forceWakePending) {
@@ -1704,8 +1778,10 @@ class JoltGpuTick::Impl
                     NextSpan(stageCursor);
                     Normalize(stageCursor);
                 };
-                if (stageCursor.phase == Phase::ClassifyArticulations)
+                if (stageCursor.phase == Phase::ClassifyArticulations) {
+                    CaptureContactHistory();
                     reducedGuardWindow = true;
+                }
                 SelectControlWork(stageCursor.phase == Phase::CaptureArticulationRotors
                                       ? programs.GetArticulations().PrepareRotors(storage, inputs, done)
                                       : programs.GetArticulations().PrepareClassification(storage, inputs, done),

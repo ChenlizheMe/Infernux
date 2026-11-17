@@ -2117,6 +2117,7 @@ class JoltGpuScene::Impl
     void Cancel(Partition &domain)
     {
         domain.closed = true;
+        storage.ClearContactHistory(domain.row);
         if (observationOwner == &domain)
             observationCursor->Cancel();
         domain.cleanup = true;

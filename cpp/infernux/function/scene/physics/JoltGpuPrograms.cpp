@@ -142,6 +142,7 @@ constexpr Port Ports[] = {
     {Resource::ConstraintSchedule, "constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1},
     {Resource::ConvexGeometry, "convex_geometry", sizeof(UInt4), {}, 1},
     {Resource::ArticulationControl, "articulation_control", sizeof(QueryRecordWord), {"value"}, 1},
+    {Resource::ContactHistory, "contact_history", sizeof(QueryRecordWord), {"value"}, 1},
 };
 
 constexpr size_t PortCount = sizeof(Ports) / sizeof(Ports[0]);
@@ -194,6 +195,8 @@ constexpr size_t PortIndex(Resource resource)
         return 14;
     case Resource::ArticulationControl:
         return 15;
+    case Resource::ContactHistory:
+        return 16;
     case Resource::SleepStates:
         return 11;
     }
@@ -238,6 +241,8 @@ constexpr uint32_t CompleteWrites(Stage stage)
         return Mask(Resource::Bounds);
     case Stage::CollidePairs:
         return Mask(Resource::Contacts);
+    case Stage::StoreContactHistory:
+        return Mask(Resource::ContactHistory);
     default:
         return 0;
     }
@@ -259,8 +264,7 @@ constexpr bool IndexedDefinitions()
     return true;
 }
 
-static_assert(PortCount == StoragePortCount + 4,
-              "Jolt GPU has twelve persistent ports and four producer-owned virtual views");
+static_assert(PortCount == StoragePortCount + 5);
 static_assert(IndexedDefinitions(), "Jolt GPU resources/stages must retain their compact index contract");
 
 bool Finite3(const Float4 &value)
@@ -787,6 +791,22 @@ const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuStorage::Get(Resource resource
     return m_buffers[slot];
 }
 
+JoltGpuContactHistory JoltGpuStorage::GetContactHistory(uint32_t worldRow) const
+{
+    const auto found = m_contactHistory.find(worldRow);
+    return found == m_contactHistory.end() ? JoltGpuContactHistory{} : found->second;
+}
+
+void JoltGpuStorage::PublishContactHistory(uint32_t worldRow, const JoltGpuContactHistory &history)
+{
+    m_contactHistory.insert_or_assign(worldRow, history);
+}
+
+void JoltGpuStorage::ClearContactHistory(uint32_t worldRow) noexcept
+{
+    m_contactHistory.erase(worldRow);
+}
+
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuStorage::PrepareInitialization(const std::vector<BodyState> &states,
                                                                                  const std::vector<BodyForces> &forces)
 {
@@ -1152,6 +1172,9 @@ JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<
 void JoltGpuModelUpdate::Commit() noexcept
 {
     if (m_replacement) {
+        const auto slot = PortIndex(Resource::ShapeModels);
+        if (m_replacementBuffers[slot] != m_storage->m_buffers[slot])
+            m_storage->m_contactHistory.clear();
         m_storage->m_model.bodies.swap(m_replacement->bodies);
         m_storage->m_model.shapes.swap(m_replacement->shapes);
         m_storage->m_model.worlds.swap(m_replacement->worlds);
@@ -1163,10 +1186,15 @@ void JoltGpuModelUpdate::Commit() noexcept
         m_storage->m_maxBodiesPerWorld = m_replacementCounts[1];
         m_storage->m_maxLeavesPerWorld = m_replacementCounts[2];
     }
-    for (const auto &change : m_bodyChanges)
+    for (const auto &change : m_bodyChanges) {
+        m_storage->ClearContactHistory(change.model.meta.w);
         m_storage->m_model.bodies[change.index] = change.model;
-    for (const auto &change : m_shapeChanges)
+    }
+    for (const auto &change : m_shapeChanges) {
+        const auto &bodies = m_storage->m_model.bodies;
+        m_storage->ClearContactHistory(bodies[change.model.meta.y].meta.w);
         m_storage->m_model.shapes[change.index] = change.model;
+    }
     for (const auto &change : m_jointChanges)
         m_storage->m_model.joints[change.index] = change.author;
     m_storage->m_jointLayout = std::move(m_jointLayout);
@@ -1276,7 +1304,15 @@ void JoltGpuStepInputs::SetContacts(std::shared_ptr<const JoltGpuContactWorkset>
 void JoltGpuStepInputs::ClearContacts() noexcept
 {
     m_contacts.reset();
+    m_previousContacts = {};
+    m_nextContacts = {};
     ClearConstraints();
+}
+
+void JoltGpuStepInputs::SetContactHistory(JoltGpuContactHistory previous, JoltGpuContactHistory next) noexcept
+{
+    m_previousContacts = std::move(previous);
+    m_nextContacts = std::move(next);
 }
 
 void JoltGpuStepInputs::SetConstraints(std::shared_ptr<const JoltGpuConstraintWorkset> constraints) noexcept
@@ -1424,9 +1460,11 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
         const auto &buffer =
             resource == Resource::ArticulationControl
                 ? (inputs.m_articulations ? inputs.m_articulations->control : m_emptyArticulationControl)
-            : resource == Resource::ConvexGeometry             ? inputs.GetCaptured(resource)
-            : resource == Resource::StageWork                  ? workUniform
-            : resource == Resource::ConstraintSchedule         ? (constraints ? constraints->schedule : nullptr)
+            : resource == Resource::ConvexGeometry     ? inputs.GetCaptured(resource)
+            : resource == Resource::StageWork          ? workUniform
+            : resource == Resource::ConstraintSchedule ? (constraints ? constraints->schedule : nullptr)
+            : resource == Resource::ContactHistory
+                ? (writer ? inputs.NextContactHistory().buffer : inputs.PreviousContactHistory().buffer)
             : contacts && resource == Resource::StepParams     ? contacts->parameters
             : contacts && resource == Resource::Worlds         ? contacts->worlds
             : contacts && resource == Resource::Contacts       ? contacts->contacts
@@ -1447,7 +1485,9 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
                 for (const auto &[first, end] : inputs.m_geometry->wordRanges)
                     proof.reads.push_back(
                         {static_cast<uint32_t>(index), first * sizeof(UInt4), (end - first) * sizeof(UInt4)});
-            } else
+            } else if (resource == Resource::ContactHistory)
+                proof.reads.push_back({static_cast<uint32_t>(index), 0, inputs.PreviousContactHistory().ByteSize()});
+            else
                 proof.reads.push_back({static_cast<uint32_t>(index), 0, buffer->GetByteSize()});
         }
         if (binding.completeWrite) {
@@ -1463,6 +1503,9 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
             } else if (resource == Resource::Contacts) {
                 complete(uint64_t(range.x) * MaxContactPointsPerPair, uint64_t(range.y) * MaxContactPointsPerPair,
                          sizeof(Contact));
+            } else if (resource == Resource::ContactHistory) {
+                complete(range.x ? 1u + uint64_t(range.x) * ContactHistoryWords : 0u,
+                         uint64_t(range.y) * ContactHistoryWords + (range.x == 0u), sizeof(QueryRecordWord));
             } else {
                 throw std::invalid_argument("Jolt GPU stage lacks a typed bounded complete-write domain");
             }

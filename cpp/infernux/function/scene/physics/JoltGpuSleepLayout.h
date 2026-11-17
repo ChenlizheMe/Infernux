@@ -25,9 +25,9 @@ inline void ValidateJoltGpuSleepLayout(const ShaderValueLayout &layout)
         runtime.name != "runtime" || runtime.offset != 48 || runtime.byteSize != sizeof(JPH::GPU::BodySleepRuntime) ||
         runtime.kind != ShaderValueKind::Struct || runtime.fields.size() != 5)
         throw std::invalid_argument("GPU sleep author/runtime fields differ from the shared contract");
-    constexpr std::array<std::string_view, 5> names{"sphere0", "sphere1", "sphere2", "clock", "state"};
+    constexpr std::array<std::string_view, 5> names{"sphere0", "sphere1", "sphere2", "timing", "state"};
     for (size_t i = 0; i < names.size(); ++i)
-        if (!vector(runtime.fields[i], names[i], i * 16, i == 4))
+        if (!vector(runtime.fields[i], names[i], i * 16, i >= 3))
             throw std::invalid_argument("GPU sleep history field differs from the shared contract");
 }
 } // namespace infernux
