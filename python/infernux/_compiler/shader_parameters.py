@@ -190,6 +190,13 @@ class ParameterAuthor(ShaderEmitter):
             return "(" + name + " != 0u)" if field.kind == "bool" else name
         return super().visit_Attribute(node)
 
+    def parameter_field_declarations(self, fields):
+        code = []
+        for field in fields:
+            owner, node = self.field_sources[field.name]
+            code.extend([owner.source_directive(node), "    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";"])
+        return code
+
     def parameter_declarations(self, parameters):
         code = []
         descriptor_set = 0
@@ -202,9 +209,7 @@ class ParameterAuthor(ShaderEmitter):
         buffers = tuple(field for field in self.fields.values() if isinstance(field, ShaderInput) and field.kind == "Buffer")
         if uniforms or histories or buffers:
             code.append("struct ShaderParameters {")
-            for field in uniforms:
-                owner, node = self.field_sources[field.name]
-                code.extend([owner.source_directive(node), "    " + _PARAMETER_TYPES[field.kind] + " " + field.name + ";"])
+            code.extend(self.parameter_field_declarations(uniforms))
             code.extend("    uint _inx_history_valid_" + field.name + ";" for field in histories)
             for field in buffers:
                 code.extend(["    uint _inx_buffer_offset_" + field.name + ";",
