@@ -552,15 +552,13 @@ class GameScreenOutputs final
         return true;
     }
 
-    /// Output completion gets a distinct public-plan work item and batch ticket.
-    /// No per-World submitter, frame fence, image resolve or full-image copy.
-    uint32_t AppendCompletion(vk::VulkanFrameSubmission &submission, uint64_t worldId,
-                              const std::shared_ptr<const RenderWorldFrame> &source,
-                              const std::vector<uint32_t> &stackTerminals)
+    /// The final camera's Graphics batch covers the whole screen stack.
+    void PublishOnCompletion(vk::VulkanFrameSubmission &submission, uint64_t worldId,
+                             const std::shared_ptr<const RenderWorldFrame> &source, uint32_t completionWork)
     {
         const auto output = Find(worldId);
         const auto admission = output ? output->admission : nullptr;
-        if (!output || !output->work || !admission || stackTerminals.empty())
+        if (!output || !output->work || !admission || !completionWork)
             throw std::logic_error("Game screen completion has no real stack work");
         if (admission->source != source || admission->worldId != worldId)
             throw std::logic_error("Screen work source changed after admission");
@@ -581,13 +579,6 @@ class GameScreenOutputs final
         sample->image = output->work->pixels->texture->Acquire();
         sample->storageOwner = output->work->pixels;
         const auto workOwner = output->work;
-        // AddWork forces a real boundary in SubmissionPlanComposer; executor
-        // retains each VkSubmitInfo's timeline signal even when batching the
-        // host vkQueueSubmit call. A later World cannot share this batch ticket.
-        const auto completionWork = submission.AddWork(
-            m_core.GetDeviceContext().GetDeviceId(), rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, output->id,
-            rhi::PipelineStage::AllCommands, stackTerminals, [](VkCommandBuffer) { return true; },
-            "WorldScreen/Complete");
         submission.OnWorkAccepted(
             completionWork, [this, output, sample, source, admission, workOwner](rhi::SubmissionTicket ticket) {
                 sample->completion = ticket;
@@ -612,7 +603,6 @@ class GameScreenOutputs final
         // Retain pixels through the real frame owner even if retirement/source
         // switch removes the registry entry before the GPU completes.
         submission.Retain(sample);
-        return completionWork;
     }
 
     void Poll()

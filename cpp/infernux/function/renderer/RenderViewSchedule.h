@@ -39,6 +39,7 @@ struct RenderViewAccess
     bool admitted = true;
     uint64_t viewId = 0;
     std::vector<RenderViewResultDependency> pendingResults;
+    uint64_t screenOutputId = 0;
 };
 
 struct RenderViewSchedule
@@ -64,6 +65,7 @@ struct RenderViewSchedule
             }
         };
         std::unordered_map<const void *, uint32_t> lastWriter;
+        std::unordered_map<uint64_t, uint32_t> lastScreenWriter;
         const auto edge = [&](uint32_t before, uint32_t after) {
             if (before == after)
                 throw std::invalid_argument("RenderTexture feedback requires distinct input/output resources");
@@ -76,6 +78,16 @@ struct RenderViewSchedule
         for (uint32_t i = 0; i < views.size(); ++i) {
             if (!views[i].admitted)
                 withhold(i);
+            const auto chainWriter = [&](auto &writers, auto resource) {
+                const auto [last, inserted] = writers.try_emplace(resource, i);
+                if (!inserted && last->second != i) {
+                    edge(last->second, i);
+                    earlierLayers[i].push_back(last->second);
+                    last->second = i;
+                }
+            };
+            if (views[i].screenOutputId)
+                chainWriter(lastScreenWriter, views[i].screenOutputId);
             for (const void *resource : views[i].writes) {
                 const auto feedback = std::find_if(views[i].reads.begin(), views[i].reads.end(),
                                                    [resource](const auto &read) { return read.texture == resource; });
@@ -87,13 +99,8 @@ struct RenderViewSchedule
                         withhold(i);
                     }
                 }
-                const auto previous = lastWriter.find(resource);
                 // Cameras sharing an output preserve author order (depth).
-                if (previous != lastWriter.end() && previous->second != i) {
-                    edge(previous->second, i);
-                    earlierLayers[i].push_back(previous->second);
-                }
-                lastWriter[resource] = i;
+                chainWriter(lastWriter, resource);
             }
         }
         for (uint32_t i = 0; i < views.size(); ++i) {

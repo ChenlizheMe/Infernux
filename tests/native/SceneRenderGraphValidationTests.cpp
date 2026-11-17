@@ -458,6 +458,19 @@ void CheckViewResourceSchedule()
         RenderViewSchedule::Build({{{&monitor}, {&screen}}, {{&monitor}, {&reflection}}, {{}, {&monitor}}});
     assert((fanout.order == std::vector<uint32_t>{2, 0, 1}));
     assert(fanout.predecessors[0] == fanout.predecessors[1]);
+
+    // A screen output owns its stack independently of the allocated image.
+    std::vector<RenderViewAccess> screens(3);
+    screens[0].screenOutputId = 10;
+    screens[1].screenOutputId = 20;
+    screens[2].screenOutputId = 10;
+    screens[2].reads.emplace_back(&monitor);
+    screens[1].writes.push_back(&monitor);
+    const auto ordered = RenderViewSchedule::Build(screens);
+    assert((ordered.predecessors[2] == std::vector<uint32_t>{0, 1}));
+    assert(ordered.predecessors[1].empty());
+    screens[2].admitted = false;
+    assert((RenderViewSchedule::Build(screens).order == std::vector<uint32_t>{1}));
 }
 
 void CheckViewMaterialContracts()

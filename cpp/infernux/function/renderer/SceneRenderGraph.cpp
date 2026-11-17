@@ -9,6 +9,7 @@
 
 #include "Frustum.h"
 #include "FullscreenRenderer.h"
+#include "GameScreenOutput.h"
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
@@ -413,8 +414,12 @@ RenderViewAccess SceneRenderGraph::GetResourceAccess() const
             found->requiresProducer |= requiresProducer;
     };
     (void)AppendPendingGraphBufferResults(access, m_liveBufferInputs);
-    if (!m_outputGeneration)
-        access.writes.push_back(m_screenTarget);
+    if (!m_outputGeneration) {
+        if (m_screenAdmission)
+            access.screenOutputId = m_screenAdmission->outputId;
+        else
+            access.writes.push_back(m_screenTarget);
+    }
     const auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
     const auto addWrite = [&](const rhi::TextureResource *attachment, bool expected) {
         if (!attachment)
@@ -550,8 +555,13 @@ void SceneRenderGraph::CacheLiveAuthorPasses()
     std::reverse(m_executedEventPasses.begin(), m_executedEventPasses.end());
 }
 
-void SceneRenderGraph::BindScreenOutput(SceneRenderTarget *target, std::shared_ptr<const void> storageOwner)
+void SceneRenderGraph::BindScreenOutput(SceneRenderTarget *target, std::shared_ptr<const void> storageOwner,
+                                        std::shared_ptr<const GameScreenAdmission> admission)
 {
+    // The schedule uses the admitted output identity across compatible slots.
+    if (!m_screenAdmission || m_screenAdmission->outputId != admission->outputId)
+        ++m_resourceAccessRevision;
+    m_screenAdmission = std::move(admission);
     [[maybe_unused]] const auto previousStorage = m_screenStorageOwner;
     m_screenStorageOwner = std::move(storageOwner);
     if (m_screenTarget == target || HasOutputTexture())
@@ -573,8 +583,6 @@ void SceneRenderGraph::BindScreenOutput(SceneRenderTarget *target, std::shared_p
     m_screenTarget = target;
     if (!m_viewportGeneration)
         m_sceneTarget = target;
-    ++m_resourceAccessRevision;
-    // Slot rotation is not a logical view revision or temporal discontinuity.
     if (m_graphBuilt) {
         const auto color = m_importedResolveTarget.IsValid() ? m_importedResolveTarget : m_importedColorTarget;
         m_renderView.color = m_renderGraph->ResolveRhiTextureView(color);

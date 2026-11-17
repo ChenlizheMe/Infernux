@@ -167,6 +167,7 @@ struct RendererFrameTelemetrySnapshot
     std::string gameRenderGraphName;
     uint64_t sceneRenderGraphExecutionCount = 0;
     uint64_t gameRenderGraphExecutionCount = 0;
+    uint64_t viewScheduleBuildCount = 0;
     bool sceneRenderGraphCurrentExecuted = false;
     bool gameRenderGraphCurrentExecuted = false;
     std::vector<std::string> sceneRenderGraphPassNames;
@@ -958,6 +959,7 @@ class InxRenderer
     uint64_t m_sweptObjectBufferRevision = 0;
     RenderViewSchedule m_viewSchedule;
     bool m_viewScheduleDirty = false;
+    uint64_t m_viewScheduleBuildCount = 0;
     uint64_t m_viewRequestSerial = 0;
     uint64_t m_cameraRequestSerial = 1;
     void CollectRequestedViews(bool sceneActive, bool gameActive);

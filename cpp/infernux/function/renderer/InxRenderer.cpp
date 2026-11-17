@@ -735,7 +735,8 @@ void InxRenderer::PreparePipeline()
             };
 
             const auto appendView = [&](SceneRenderGraph *graph, bool sceneView, const glm::mat4 &view,
-                                        const std::vector<uint32_t> &predecessors, uint32_t *finalWorkItem) {
+                                        const std::vector<uint32_t> &predecessors,
+                                        const std::vector<uint32_t> *earlierScreenCameras, uint32_t &finalWorkItem) {
                 if (!graph || !graph->GetCompiledRenderGraph())
                     return true;
                 graph->SetDrawViewMatrix(view);
@@ -748,7 +749,7 @@ void InxRenderer::PreparePipeline()
                 std::vector<uint32_t> graphDependencies = predecessors;
                 if (particleComputeWorkItem != 0)
                     graphDependencies.push_back(particleComputeWorkItem);
-                const auto range = submission.AppendRenderGraph(
+                auto range = submission.AppendRenderGraph(
                     *compiled, graphDependencies, [graph, activateView](uint32_t batchIndex, VkCommandBuffer) {
                         activateView(graph);
                         return batchIndex != 0 || graph->PrepareSubmissionExecution();
@@ -761,9 +762,16 @@ void InxRenderer::PreparePipeline()
                 const auto sceneWorld = sceneView ? graph->GetCachedCameraView().worldId : 0;
                 const auto sceneTargetGeneration = m_sceneRenderTargetGeneration;
 
+                if (earlierScreenCameras)
+                    range.terminals.insert(range.terminals.end(), earlierScreenCameras->begin(),
+                                           earlierScreenCameras->end());
+                // The last camera also completes the output. Its distinct
+                // batch waits on the terminals of every camera in this stack.
+                const auto finalizeStages =
+                    earlierScreenCameras ? rhi::PipelineStage::AllCommands : rhi::PipelineStage::AllGraphics;
                 const uint32_t finalize = submission.AddWork(
                     viewContext.device, rhi::QueueRole::Graphics, rhi::SubmissionDomain::Frame, viewContext.id,
-                    rhi::PipelineStage::AllGraphics, range.terminals,
+                    finalizeStages, std::move(range.terminals),
                     [this, graph, sceneView, activateView](VkCommandBuffer commandBuffer) {
                         activateView(graph);
                         if (!graph->CompleteSubmissionExecution(commandBuffer))
@@ -792,51 +800,53 @@ void InxRenderer::PreparePipeline()
                         publication->Accept(ticket, m_graphEvents);
                 });
                 presentationDependencies.push_back(finalize);
-                if (finalWorkItem)
-                    *finalWorkItem = finalize;
+                finalWorkItem = finalize;
                 return true;
             };
 
+            struct ScreenStack
+            {
+                uint32_t finalView = 0;
+                uint32_t setup = 0;
+                std::vector<uint32_t> earlierCameras;
+            };
             std::vector<uint32_t> viewFinals(m_scheduledViews.size());
-            std::unordered_map<uint64_t, uint32_t> finalScreenIndex;
+            std::unordered_map<uint64_t, ScreenStack> screenStacks;
             for (const auto index : m_viewSchedule.order) {
                 const auto *graph = m_scheduledViews[index].graph;
                 const auto &camera = graph->GetCachedCameraView();
                 if (graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture)
-                    finalScreenIndex[camera.worldId] = index;
+                    screenStacks[camera.worldId].finalView = index;
             }
-            std::unordered_map<uint64_t, std::vector<uint32_t>> screenTerminals;
-            std::unordered_map<uint64_t, uint32_t> screenSetups;
             for (const auto index : m_viewSchedule.order) {
                 const auto &view = m_scheduledViews[index];
                 std::vector<uint32_t> dependencies{frameSetupWorkItem};
-                const auto &screenCamera = view.graph->GetCachedCameraView();
-                if (view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game &&
-                    !screenCamera.renderToTexture) {
-                    auto setup = screenSetups.find(screenCamera.worldId);
-                    if (setup == screenSetups.end()) {
-                        const bool partial = screenCamera.rect != glm::vec4(0, 0, 1, 1);
-                        const bool preserveColor = PreservesScreenColor(screenCamera);
-                        const bool preserveDepth = partial || screenCamera.clearFlags == CameraClearFlags::DontClear;
-                        const auto work = GameScreens().AppendPreserve(
-                            submission, screenCamera.worldId, frameSetupWorkItem, preserveColor, preserveDepth);
-                        setup = screenSetups.emplace(screenCamera.worldId, work).first;
+                const auto &camera = view.graph->GetCachedCameraView();
+                ScreenStack *stack = nullptr;
+                if (view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture) {
+                    stack = &screenStacks.at(camera.worldId);
+                    if (!stack->setup) {
+                        const bool partial = camera.rect != glm::vec4(0, 0, 1, 1);
+                        const bool preserveColor = PreservesScreenColor(camera);
+                        const bool preserveDepth = partial || camera.clearFlags == CameraClearFlags::DontClear;
+                        stack->setup = GameScreens().AppendPreserve(submission, camera.worldId, frameSetupWorkItem,
+                                                                    preserveColor, preserveDepth);
                     }
-                    dependencies.push_back(setup->second);
+                    dependencies.push_back(stack->setup);
                 }
                 for (const auto producer : m_viewSchedule.predecessors[index])
                     dependencies.push_back(viewFinals[producer]);
-                if (!appendView(view.graph, view.scene, view.graph->GetCachedView(), dependencies, &viewFinals[index]))
+                const bool completesScreen = stack && stack->finalView == index;
+                const auto *earlier = completesScreen ? &stack->earlierCameras : nullptr;
+                if (!appendView(view.graph, view.scene, view.graph->GetCachedView(), dependencies, earlier,
+                                viewFinals[index]))
                     return false;
-                const auto &camera = view.graph->GetCachedCameraView();
-                if (view.graph->GetRenderViewContext().kind == rhi::RenderViewKind::Game && !camera.renderToTexture &&
-                    viewFinals[index]) {
-                    auto &terminals = screenTerminals[camera.worldId];
-                    terminals.push_back(viewFinals[index]);
-                    if (finalScreenIndex.at(camera.worldId) == index) {
-                        const auto source = m_gameSources.at(camera.worldId);
-                        (void)GameScreens().AppendCompletion(submission, camera.worldId, source, terminals);
-                    }
+                if (stack && viewFinals[index]) {
+                    if (completesScreen)
+                        GameScreens().PublishOnCompletion(submission, camera.worldId, m_gameSources.at(camera.worldId),
+                                                          viewFinals[index]);
+                    else
+                        stack->earlierCameras.push_back(viewFinals[index]);
                 }
             }
 
@@ -3332,6 +3342,7 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
                                                  [](const DrawCall &drawCall) { return drawCall.castsShadows; }));
     };
     snapshot.frame = m_frameCount;
+    snapshot.viewScheduleBuildCount = m_viewScheduleBuildCount;
     const auto builds = GetShaderBuildStatistics();
     snapshot.shaderCompileAttemptCount = builds.compilationAttempts;
     snapshot.graphicsPipelineCreateAttemptCount = builds.graphicsPipelineCreationAttempts;
@@ -4924,8 +4935,7 @@ SceneRenderGraph *InxRenderer::EnsureGameRenderGraph(const RenderViewData *camer
         if (!admission || admission->source != m_gameSources.at(camera->worldId))
             throw std::logic_error("Screen graph requires its original immutable admission");
         graph->SetEffectiveMsaaSamples(static_cast<int>(rhi::ToVkSampleCount(admission->samples)));
-        graph->SetScreenAdmission(admission);
-        graph->BindScreenOutput(screen, GameScreens().WorkOwner(camera->worldId));
+        graph->BindScreenOutput(screen, GameScreens().WorkOwner(camera->worldId), admission);
     }
     graph->SetOutputTextureGeneration(camera->outputTexture, camera->outputGeneration);
     if (!graph->SetCameraViewport(*camera))
@@ -5026,6 +5036,7 @@ void InxRenderer::UpdateViewSchedule()
         return;
     m_viewScheduleDirty = false;
     m_scheduledViews.swap(m_nextScheduledViews);
+    ++m_viewScheduleBuildCount;
     std::vector<RenderViewAccess> accesses;
     accesses.reserve(m_scheduledViews.size());
     try {

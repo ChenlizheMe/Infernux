@@ -145,7 +145,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// Invalidate the compiled graph before replacing its imported target views.
     void InvalidateBeforeTargetReplacement();
     /// Same-contract allocation rotation preserves compiled passes and history.
-    void BindScreenOutput(SceneRenderTarget *target, std::shared_ptr<const void> storageOwner);
+    void BindScreenOutput(SceneRenderTarget *target, std::shared_ptr<const void> storageOwner,
+                          std::shared_ptr<const GameScreenAdmission> admission);
     [[nodiscard]] const RenderViewData &GetCachedCameraView() const noexcept
     {
         return m_cachedCameraView;
@@ -474,10 +475,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
     [[nodiscard]] bool HasPendingBufferCaptures() const
     {
         return m_graphResults.HasPendingCaptures();
-    }
-    void SetScreenAdmission(std::shared_ptr<const GameScreenAdmission> admission)
-    {
-        m_screenAdmission = std::move(admission);
     }
     [[nodiscard]] std::shared_ptr<GraphFramePublication> PreparePublication(const GraphEventInterests &interests);
 

@@ -1488,6 +1488,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                                        snapshot.sceneRenderGraphExecutionCount;
                                    result["game_render_graph_execution_count"] =
                                        snapshot.gameRenderGraphExecutionCount;
+                                   result["view_schedule_build_count"] = snapshot.viewScheduleBuildCount;
                                    result["scene_render_graph_current_executed"] =
                                        snapshot.sceneRenderGraphCurrentExecuted;
                                    result["game_render_graph_current_executed"] =
