@@ -246,6 +246,36 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
             assert lighting._input_bindings[name] == reconstructed.sample(name).name
 
 
+def test_deferred_thin_sheet_preserves_background_and_partitions_transparency():
+    graph = RenderGraph("Deferred thin sheets")
+    pipeline = DefaultDeferredPipeline()
+    pipeline.ray_transparency = True
+    pipeline.define_topology(graph)
+    graph.build()
+
+    passes = {render_pass.name: render_pass for render_pass in graph._passes}
+    capture = passes["Thin Surface Capture"]
+    before = passes["Transparent Behind Thin Surface"]
+    after = passes["Transparent In Front Of Thin Surface"]
+    compose = passes["Thin Surface Composite"]
+    saved = passes["Thin Surface Background"]
+    layer = graph.get_texture("_ray_thin_layer")
+    assert layer.format == Format.RGBA32_UINT
+    assert capture._write_colors == {0: layer.name, 1: "_ray_thin_optics"}
+    assert capture._material_filter == "thin_sheet"
+    assert capture._clear_depth is None
+    assert passes["Thin Surface Depth"]._destination_resource == capture._write_depth
+    assert before._material_filter == after._material_filter == "ordinary_transparent"
+    assert before._input_bindings["transparent_layer"] == after._input_bindings["transparent_layer"] == layer.name
+    assert before._write_depth == after._write_depth == ""
+    assert saved._input_bindings["source_tex"] == "color"
+    assert compose._input_bindings["background"] == saved._write_colors[0] != compose._write_colors[0]
+    order = list(passes)
+    assert order.index(capture.name) < order.index(before.name) < order.index(saved.name)
+    assert order.index(saved.name) < order.index(compose.name) < order.index(after.name)
+    assert "TransparentPass" not in passes
+
+
 @pytest.mark.parametrize("pipeline_type", [DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline])
 def test_light_list_is_a_view_owned_read_only_buffer(pipeline_type):
     graph = RenderGraph(f"{pipeline_type.__name__} light list")
@@ -322,6 +352,40 @@ def test_geometry_buffer_cycle_reports_source_and_dependency_chain():
             buffers={},
             queue_range=(0, 2500),
         )
+
+
+def test_deferred_thin_sheet_preserves_background_and_partitions_transparency():
+    graph = RenderGraph("Thin sheet composition")
+    pipeline = DefaultDeferredPipeline()
+    pipeline.ray_transparency = True
+    pipeline.define_topology(graph)
+    passes = {render_pass._name: render_pass for render_pass in graph._passes}
+    layer = graph.get_texture("_ray_thin_layer")
+    optics = graph.get_texture("_ray_thin_optics")
+    assert layer.format == optics.format == Format.RGBA32_UINT
+    capture = passes["Thin Surface Capture"]
+    assert capture._material_pass == "thin_surface"
+    assert capture._material_filter == "thin_sheet"
+    assert capture._clear_depth is None
+    assert capture._write_depth == "_ray_thin_depth"
+    for phase, label in (
+        ("transparent_behind", "Transparent Behind Thin Surface"),
+        ("transparent_front", "Transparent In Front Of Thin Surface"),
+    ):
+        render_pass = passes[label]
+        assert render_pass._material_pass == phase
+        assert render_pass._material_filter == "ordinary_transparent"
+        assert render_pass._input_bindings["transparent_layer"] == layer.name
+        assert render_pass._write_depth is None
+    background = passes["Thin Surface Background"]
+    assert background._input_bindings["source_tex"] == "color"
+    assert background._write_colors == {0: "_ray_thin_background"}
+    names = list(passes)
+    assert names.index("Thin Surface Capture") < names.index("Transparent Behind Thin Surface")
+    assert names.index("Transparent Behind Thin Surface") < names.index("Thin Surface Background")
+    assert names.index("Thin Surface Background") < names.index("Thin Surface Composite")
+    assert names.index("Thin Surface Composite") < names.index("Transparent In Front Of Thin Surface")
+    assert "TransparentPass" not in passes
 
 
 def test_declarative_pipeline_propagates_effect_result_revision():

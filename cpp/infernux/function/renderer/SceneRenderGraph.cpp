@@ -1976,8 +1976,11 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
                 const auto *committed = m_vkCore->ResolveMeshMaterial(material);
                 const auto artifact = committed ? committed->shaderArtifact : nullptr;
                 const bool deferred = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
+                const bool thinSheet = artifact && artifact->FindVariant(ShaderCompileTarget::ThinSurface);
                 if ((command->materialFilter == GraphMaterialFilter::DeferredCompatible && !deferred) ||
-                    (command->materialFilter == GraphMaterialFilter::DeferredUnsupported && deferred))
+                    (command->materialFilter == GraphMaterialFilter::DeferredUnsupported && deferred) ||
+                    (command->materialFilter == GraphMaterialFilter::ThinSheet && !thinSheet) ||
+                    (command->materialFilter == GraphMaterialFilter::OrdinaryTransparent && thinSheet))
                     return;
             }
             for (const auto &[name, texture] : material->GetRenderTextures())
@@ -2448,6 +2451,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
 
     if (m_graphBuilt) {
         RefreshPerViewShadowDescriptor();
+        RefreshPerViewTransparentLayerDescriptor();
     }
 }
 
@@ -2464,11 +2468,12 @@ void SceneRenderGraph::RefreshForwardPlusParticleRequirement()
     for (const auto &pass : m_pythonGraphDesc.passes) {
         for (const auto &command : pass.commands) {
             if (command.type != GraphCommandType::DrawRenderers || command.rendererSelection ||
-                command.shaderTarget != ShaderCompileTarget::ForwardPlus) {
+                !IsForwardPlusMaterialPass(command.shaderTarget)) {
                 continue;
             }
             const auto entries = m_particleDrawRegistry->SnapshotShared(command.queueMin, command.queueMax);
-            if (std::any_of(entries->begin(), entries->end(),
+            if ((IsTransparentPartition(command.shaderTarget) && !entries->empty()) ||
+                std::any_of(entries->begin(), entries->end(),
                             [](const auto &entry) { return entry.semantics.receiveSceneLighting; })) {
                 m_forwardPlusParticlesRequired = true;
                 return;
@@ -2828,8 +2833,25 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
 
 void SceneRenderGraph::InvalidatePerViewShadowBindings() noexcept
 {
-    for (auto &frame : m_perViewFrames)
+    for (auto &frame : m_perViewFrames) {
         frame.shadowBinding = {};
+        frame.transparentLayer = VK_NULL_HANDLE;
+    }
+}
+
+void SceneRenderGraph::RefreshPerViewTransparentLayerDescriptor()
+{
+    if (!m_transparentLayerInputHandle.IsValid())
+        return;
+    const auto layer = m_renderGraph->ResolveTextureView(m_transparentLayerInputHandle);
+    if (layer == VK_NULL_HANDLE)
+        throw std::logic_error("Transparent partition graph did not publish its layer");
+    auto &frame = m_perViewFrames[m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity];
+    if (frame.transparentLayer == layer)
+        return;
+    m_vkCore->UpdatePerViewTransparentLayer(frame.GeometrySet(), layer);
+    m_vkCore->UpdatePerViewTransparentLayer(frame.ParticleSet(), layer);
+    frame.transparentLayer = layer;
 }
 
 // ============================================================================
@@ -3471,6 +3493,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
 
     m_graphBuilt = false;
     m_shadowMapInputHandle = {};
+    m_transparentLayerInputHandle = {};
     m_shadowMapInputIsDepth = false;
     m_visibleRendererList = {};
     m_shadowRendererList = {};
@@ -4247,7 +4270,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             const bool particleSurfacePass = command && !command->rendererSelection &&
                                              command->type == GraphCommandType::DrawRenderers &&
                                              (command->shaderTarget == ShaderCompileTarget::Forward ||
-                                              command->shaderTarget == ShaderCompileTarget::ForwardPlus ||
+                                              IsForwardPlusMaterialPass(command->shaderTarget) ||
                                               command->shaderTarget == ShaderCompileTarget::Motion);
             const bool particleShadowPass = command && command->type == GraphCommandType::DrawShadowCasters &&
                                             command->shaderTarget == ShaderCompileTarget::Shadow;
@@ -5278,7 +5301,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 particlePackets.reserve(particleEntries.size());
 
                 if (command && command->type == GraphCommandType::DrawRenderers &&
-                    command->shaderTarget == ShaderCompileTarget::ForwardPlus) {
+                    IsForwardPlusMaterialPass(command->shaderTarget)) {
                     for (const auto &resources : forwardPlusResources) {
                         if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
                             !resources.lightMasks.IsValid()) {
@@ -5289,6 +5312,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
                     }
                     const bool hasLitParticles =
+                        (IsTransparentPartition(command->shaderTarget) && !particleEntries.empty()) ||
                         std::any_of(particleEntries.begin(), particleEntries.end(),
                                     [](const auto &entry) { return entry.semantics.receiveSceneLighting; });
                     if (hasLitParticles) {
@@ -5463,6 +5487,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         m_shadowMapInputHandle = binding.handle;
                         m_shadowMapInputIsDepth = binding.isDepth;
                     }
+                    if (command && IsTransparentPartition(command->shaderTarget) &&
+                        binding.samplerName == kTransparentLayerInput)
+                        m_transparentLayerInputHandle = binding.handle;
                 }
 
                 return [this, callback, passWidth, passHeight, inputBindingHandles, isShadowPass, rendererListHandle,

@@ -20,8 +20,7 @@ bool GraphUsesForwardPlus(const RenderGraphDescription &graph)
 {
     for (const auto &pass : graph.passes)
         for (const auto &command : pass.commands) {
-            if (command.type == GraphCommandType::DrawRenderers &&
-                command.shaderTarget == ShaderCompileTarget::ForwardPlus)
+            if (command.type == GraphCommandType::DrawRenderers && IsForwardPlusMaterialPass(command.shaderTarget))
                 return true;
             const auto &program = command.fullscreenProgram;
             if (program && (program->UsesViewBinding(2) || program->UsesViewBinding(3)))
@@ -388,6 +387,15 @@ bool GraphCommandDesc::BindsResource(const std::string &name) const
 {
     return std::any_of(inputBindings.begin(), inputBindings.end(),
                        [&](const auto &binding) { return binding.second == name; });
+}
+
+std::string_view GraphCommandDesc::TransparentLayer() const noexcept
+{
+    if (type != GraphCommandType::DrawRenderers || !IsTransparentPartition(shaderTarget))
+        return {};
+    const auto binding = std::find_if(inputBindings.begin(), inputBindings.end(),
+                                      [](const auto &value) { return value.first == kTransparentLayerInput; });
+    return binding == inputBindings.end() ? std::string_view{} : std::string_view(binding->second);
 }
 
 const GraphCommandDesc *GraphPassDesc::PrimaryCommand() const noexcept

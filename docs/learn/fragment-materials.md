@@ -161,6 +161,23 @@ MCP clients can use `infernux.shader.list` to discover registered assets and `in
 
 `shader.frag` is a separate raw fragment entry: `main(self, ctx: shader.mesh_input) -> shader.vec4`. It currently supplies Forward/Forward+ color. The engine does not reinterpret that final shaded RGB as an albedo or claim that it automatically supplies surface auxiliary passes. Use `shader.surface` when those shared passes are required. Fullscreen programs use `shader.fullscreen`, graph `shader.input(...)` ports, and `shader.parameter`; they share the same compiler and target-layout service.
 
+## Transparent thin sheets {#thin-sheets}
+
+Enable `ray_transparency` on `DefaultDeferredPipeline` and select the built-in `infernux/thin_glass` fragment asset on a material. Its Inspector exposes refractive index, thickness, RGB absorption, coverage, and emission. Existing vertex selection and material instances still apply. The nearest visible sheet reflects the ray-traced world and transmits the scene behind it; ordinary transparent surfaces and particles keep their depth order around the sheet.
+
+Custom `shader.surface` assets opt in with `surface_type = "transparent"` and this method:
+
+```python
+def thin_sheet(self, ctx: shader.SurfaceContext) -> shader.ThinSheetData:
+    return shader.ThinSheetData(
+        ior=self.ior,
+        thickness=self.thickness,
+        absorption=self.absorption,
+    )
+```
+
+Declare these fields with `shader.material.float` and `shader.material.vec3`. `SurfaceData.alpha` supplies coverage, and `SurfaceData.emission` supplies emitted light. Absorption is the nonnegative RGB coefficient per world unit; thickness supplies the normal-incidence path length. Parallel smooth interfaces use the captured geometric normal, exact dielectric Fresnel reflection, and absorption along the refracted path. This first implementation selects one nearest thin layer per pixel. Its transmission uses the background image at that pixel; solid-volume refraction, rough transmission, and multiple transparent layers remain separate extensions.
+
 ## Checking changes {#diagnostics}
 
 `inx.Shader.check(path, source=draft)` checks a file or unsaved draft without publishing a GPU program. It returns validity, logical schema, and source diagnostics for SPIR-V and WGSL. `inx.Shader.get_schema(path)` reads the imported asset's fields. Error locations point to the original author, model, or library file. Host imports and unsupported type/stage combinations are preparation errors.
@@ -329,6 +346,23 @@ GPU 文件导入 `infernux.shader` 与明确的静态 ShaderLib 导出，不导�
 MCP 可通过 `infernux.shader.list` 发现已注册资产，通过 `infernux.shader.library.search` 读取当前函数签名、文档和阶段要求。`infernux.shader.create` 使用与 Project 相同的事务和 Undo，创建顶点、片元、光照模型或函数库模板。
 
 `shader.frag` 是独立的原始片元入口：`main(self, ctx: shader.mesh_input) -> shader.vec4`，目前提供 Forward／Forward+ 颜色。引擎不会把这个最终 RGB 猜成 albedo，也不会声称它自动提供 Surface 的辅助通道。需要这些通道时使用 `shader.surface`。全屏程序使用 `shader.fullscreen`、图的 `shader.input(...)` 端口和 `shader.parameter`，共用编译及目标布局服务。
+
+## 透明薄层 {#thin-sheets_1}
+
+在 `DefaultDeferredPipeline` 开启 `ray_transparency`，并给材质选择内置片段资产 `infernux/thin_glass`。Inspector 可以调整折射率、厚度、RGB 吸收、覆盖率和自发光。顶点资产选择和材质实例继续使用已有方式。最近的可见薄层反射光追世界并透过后方画面，普通透明物体与粒子按相对薄层的深度保持混合顺序。
+
+自定义 `shader.surface` 设置 `surface_type = "transparent"`，并加入以下方法：
+
+```python
+def thin_sheet(self, ctx: shader.SurfaceContext) -> shader.ThinSheetData:
+    return shader.ThinSheetData(
+        ior=self.ior,
+        thickness=self.thickness,
+        absorption=self.absorption,
+    )
+```
+
+使用 `shader.material.float`、`shader.material.vec3` 声明相应字段。覆盖率来自 `SurfaceData.alpha`，自发光来自 `SurfaceData.emission`。吸收系数是每世界单位的非负 RGB 系数，厚度表示正入射路径长度。平行光滑界面使用实际捕获的几何法线、精确的介质菲涅耳反射和折射路径吸收。本次实现每像素选择最近的一层，透射读取该像素的背景画面；实体体积折射、粗糙透射和多层透明仍是后续扩展。
 
 ## 检查与更新 {#diagnostics_1}
 

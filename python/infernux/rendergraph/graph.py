@@ -667,6 +667,8 @@ class RenderPassBuilder:
             material_pass: Linked material program used by this pass. Supported
             values are ``forward``, ``forward_plus``, ``gbuffer``, ``depth``,
                            ``picking``, ``motion``, ``normal``, ``base_color``, and ``ray_surface``.
+                           ``transparent_behind`` and ``transparent_front`` use a shared
+                           ``transparent_layer`` input and a read-only opaque depth attachment.
             material_filter: Select all materials, only Deferred-compatible
                              materials, or only models that declare
                              ``Unsupported [Deferred]``.
@@ -691,12 +693,17 @@ class RenderPassBuilder:
             "normal",
             "base_color",
             "ray_surface",
+            "transparent_behind",
+            "transparent_front",
+            "thin_surface",
         }:
             raise ValueError(f"Unknown material pass '{material_pass}'")
         self._action = "draw_renderers"
         self._material_pass = normalized_pass
         normalized_filter = str(material_filter).strip().lower()
-        if normalized_filter not in {"all", "deferred_compatible", "deferred_unsupported"}:
+        if normalized_filter not in {
+            "all", "deferred_compatible", "deferred_unsupported", "thin_sheet", "ordinary_transparent",
+        }:
             raise ValueError(f"Unknown material filter '{material_filter}'")
         self._material_filter = normalized_filter
         self._queue_min, self._queue_max = queue_range
@@ -2431,22 +2438,12 @@ class RenderGraph:
         desc.work_bindings = work_list
 
         # Build pass list
-        _material_pass_map = {
-            "forward": MaterialPassType.FORWARD,
-            "forward_plus": MaterialPassType.FORWARD_PLUS,
-            "gbuffer": MaterialPassType.GBUFFER,
-            "depth": MaterialPassType.DEPTH,
-            "shadow": MaterialPassType.SHADOW,
-            "picking": MaterialPassType.PICKING,
-            "motion": MaterialPassType.MOTION,
-            "normal": MaterialPassType.NORMAL,
-            "base_color": MaterialPassType.BASE_COLOR,
-            "ray_surface": MaterialPassType.RAY_SURFACE,
-        }
         _material_filter_map = {
             "all": GraphMaterialFilter.ALL,
             "deferred_compatible": GraphMaterialFilter.DEFERRED_COMPATIBLE,
             "deferred_unsupported": GraphMaterialFilter.DEFERRED_UNSUPPORTED,
+            "thin_sheet": GraphMaterialFilter.THIN_SHEET,
+            "ordinary_transparent": GraphMaterialFilter.ORDINARY_TRANSPARENT,
         }
 
         pass_list = []
@@ -2488,7 +2485,7 @@ class RenderGraph:
             if command_type is not None:
                 command = GraphCommandDesc()
                 command.type = command_type
-                command.material_pass = _material_pass_map[p._material_pass]
+                command.material_pass = getattr(MaterialPassType, p._material_pass.upper())
                 command.material_filter = _material_filter_map[p._material_filter]
                 command.queue_min = p._queue_min
                 command.queue_max = p._queue_max

@@ -39,6 +39,8 @@ GpuBillboardMaterialState PassState(ShaderCompileTarget target, const GpuBillboa
     switch (target) {
     case ShaderCompileTarget::Forward:
     case ShaderCompileTarget::ForwardPlus:
+    case ShaderCompileTarget::TransparentBehind:
+    case ShaderCompileTarget::TransparentFront:
         return surface;
     case ShaderCompileTarget::Depth:
     case ShaderCompileTarget::Shadow:
@@ -100,16 +102,15 @@ rhi::GraphicsPipelineHandle ParticleGpuGraphicsProgram::Get(const MaterialPassPi
     const char *vertex = pass.target == ShaderCompileTarget::Motion   ? "vertex_motion"
                          : pass.target == ShaderCompileTarget::Shadow ? "vertex_shadow"
                                                                       : "vertex_main";
+    std::string fragment = variant->fragmentEntryPoint;
+    if (softDepthKind != 0) {
+        if (pass.target == ShaderCompileTarget::Forward)
+            fragment = "fragment";
+        fragment += softDepthKind == 1 ? "_soft_depth" : "_soft_color";
+    }
     const std::vector<ShaderStageSelection> entries = {
         {*m_geometryTarget, EntryIndex(*m_geometryTarget, vertex)},
-        {*m_surfaceTarget,
-         EntryIndex(*m_surfaceTarget, softDepthKind == 1   ? (pass.target == ShaderCompileTarget::ForwardPlus
-                                                                  ? "fragment_forward_plus_soft_depth"
-                                                                  : "fragment_soft_depth")
-                                      : softDepthKind == 2 ? (pass.target == ShaderCompileTarget::ForwardPlus
-                                                                  ? "fragment_forward_plus_soft_color"
-                                                                  : "fragment_soft_color")
-                                                           : variant->fragmentEntryPoint)},
+        {*m_surfaceTarget, EntryIndex(*m_surfaceTarget, fragment)},
     };
     auto program = std::make_unique<DeviceShaderProgram>(
         m_device, entries, std::vector<rhi::BindingLayoutHandle>{m_materialLayout, perView.layout, geometryLayout});

@@ -633,6 +633,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
     passNames.reserve(desc.passes.size());
     std::unordered_set<std::string> parameterBlockIds;
     std::unordered_set<std::string> producedTextures;
+    std::string_view transparentLayer;
     for (const auto &pass : desc.passes) {
         if (pass.name.empty()) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass name cannot be empty");
@@ -1030,6 +1031,41 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
             INXLOG_ERROR("Ray surface replay '", pass.name,
                          "' requires one 1x RGBA32UInt color and writable D32SFloat depth");
             return false;
+        }
+        if (!transparentLayer.empty() && pass.WritesTexture(std::string(transparentLayer))) {
+            INXLOG_ERROR("Transparent layer must remain unchanged between renderer partitions: ", pass.name);
+            return false;
+        }
+        if (command && command->shaderTarget == ShaderCompileTarget::ThinSurface) {
+            const auto depth = textures.find(pass.writeDepth);
+            const auto contract = ResolveMaterialPass(desc, pass, view);
+            if (command->type != GraphCommandType::DrawRenderers ||
+                command->materialFilter != GraphMaterialFilter::ThinSheet || !contract.IsValid() ||
+                depth == textures.end() || depth->second->role != GraphTextureRole::Transient ||
+                producedTextures.find(pass.writeDepth) == producedTextures.end() || pass.clearDepth) {
+                INXLOG_ERROR("Thin surface capture '", pass.name,
+                             "' requires two 1x RGBA32UInt outputs, a previously seeded private D32SFloat depth "
+                             "and the thin_sheet renderer filter");
+                return false;
+            }
+        }
+        if (command && IsTransparentPartition(command->shaderTarget)) {
+            const auto resource = command->TransparentLayer();
+            const auto input = textures.find(std::string(resource));
+            const auto extent = ResolveGraphPassExtent(desc, pass, view.width, view.height);
+            if (input == textures.end() || input->second->role != GraphTextureRole::Transient ||
+                input->second->EffectiveFormat(view) != rhi::PixelFormat::RGBA32UInt ||
+                input->second->EffectiveSamples(frameSamples) != 1 ||
+                input->second->ResolveExtent(view.width, view.height) != extent ||
+                producedTextures.find(input->first) == producedTextures.end() || pass.WritesTexture(input->first) ||
+                (!transparentLayer.empty() && transparentLayer != resource) || attachmentSamples != 1 ||
+                pass.writeColors.size() != 1 || readOnlyDepthAttachmentCount != 1) {
+                INXLOG_ERROR("Transparent partition '", pass.name,
+                             "' requires the view's produced 1x RGBA32UInt transparent_layer, "
+                             "one color output and read-only depth at the same extent");
+                return false;
+            }
+            transparentLayer = resource;
         }
 
         if (!pass.resolveColor.empty()) {

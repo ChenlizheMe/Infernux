@@ -878,6 +878,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     /// @brief Update this frame's per-view shadow descriptor before recording.
     void RefreshPerViewShadowDescriptor();
+    void RefreshPerViewTransparentLayerDescriptor();
     void InvalidatePerViewShadowBindings() noexcept;
     [[nodiscard]] bool UsesForwardPlus() const;
     void RefreshForwardPlusParticleRequirement();
@@ -1148,6 +1149,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         PerViewBufferBindingState geometryBindings;
         PerViewBufferBindingState particleBindings;
         PerViewShadowBindingState shadowBinding;
+        VkImageView transparentLayer = VK_NULL_HANDLE;
 
         [[nodiscard]] VkDescriptorSet GeometrySet() const noexcept
         {
@@ -1195,6 +1197,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     // Resolved after Compile() so the per-view descriptor can be updated
     // BEFORE command buffer recording starts.
     vk::ResourceHandle m_shadowMapInputHandle;
+    vk::ResourceHandle m_transparentLayerInputHandle;
     bool m_shadowMapInputIsDepth = false;
 
     // Fullscreen effect renderer — manages pipeline cache, descriptor pool,

@@ -24,6 +24,17 @@ _WORLD_RAY_INPUTS = tuple(ShaderInput(name, name, kind) for name, kind in (
     ("ray_color_pages", "Color2DArray"),
     ("ray_data_pages", "Color2DArray"),
 ))
+_TRANSPARENT_PARTITIONS = (("transparent_behind", "false"), ("transparent_front", "true"))
+_TRANSPARENT_LAYER = """
+[[vk::binding(8, 1)]] Texture2D<uint4> inx_transparent_layer;
+void inx_partition_transparent<let front : bool>(float4 position, float depth)
+{
+    const uint4 layer = inx_transparent_layer.Load(int3(int2(position.xy), 0));
+    const bool in_front = layer.x != 0u && depth >= asfloat(layer.w);
+    if (in_front != front)
+        discard;
+}
+"""
 
 
 @dataclass(frozen=True)
@@ -42,6 +53,7 @@ class ShaderDefinition:
     deferred_model: str | None = None
     info: dict | None = None
     vertex_source: str | None = None
+    thin_sheet: bool = False
 
     def compile(self, targets=("spirv", "wgsl")):
         from infernux.lib import _Infernux
@@ -137,19 +149,28 @@ class _Author(ParameterAuthor):
         if self.domain in {"mesh", "particle"} and not self.is_surface:
             argument = arguments[1].arg if len(arguments) == 2 else ""
             alpha = "color.color.a" if result == "InxFragmentOutput" else "color.a"
-            entry = "inx_evaluate_particle" if self.domain == "particle" else "fragment_main"
-            marker = [] if self.domain == "particle" else ['[shader("fragment")]']
+            entry = "inx_evaluate_particle" if self.domain == "particle" else "inx_evaluate_fragment"
             threshold = "max(inx_parameters._alpha_clip_threshold, 0.0001)" if self.domain == "particle" else "inx_parameters._alpha_clip_threshold"
             evaluation_signature = signature or ("InxParticleInput inx_input" if self.domain == "particle" else "")
             coverage = ["    if (!(" + (argument or "inx_input") + ".alpha > 0.0)) discard;"] if self.domain == "particle" else []
             inline = ["[ForceInline]"] if self.domain == "particle" else []
             specialization = "<let tiled_lighting : bool>" if self.domain == "particle" else ""
             arguments_specialization = "<tiled_lighting>" if self.domain == "particle" else ""
-            return [self.source_directive(main), *inline, result + " inx_author_fragment" + specialization + "(" + signature + ")",
-                    "{", *self.lines, "}", *marker, *inline,
-                    result + " " + entry + specialization + "(" + evaluation_signature + ")" + (semantic if marker else ""), "{", *coverage,
+            evaluator = [self.source_directive(main), *inline,
+                    result + " inx_author_fragment" + specialization + "(" + signature + ")",
+                    "{", *self.lines, "}", *inline,
+                    result + " " + entry + specialization + "(" + evaluation_signature + ")", "{", *coverage,
                     "    " + result + " color = inx_author_fragment" + arguments_specialization + "(" + argument + ");",
                     "    clip(" + alpha + " - " + threshold + ");", "    return color;", "}"]
+            if self.domain == "mesh":
+                evaluator += ['[shader("fragment")]', f"{result} fragment_main({signature}){semantic}",
+                              "{", f"    return {entry}({argument});", "}"]
+                depth = "value.depth" if result == "InxFragmentOutput" else "input.position.z"
+                value = entry + "(input)" if argument else entry + "()"
+                for name, front in _TRANSPARENT_PARTITIONS:
+                    evaluator.append(_partitioned_entry(
+                        name, result, "InxMeshInput input", semantic, value, front, depth))
+            return evaluator
         if self.domain in {"screen_ui", "world_ui"}:
             return [self.source_directive(main), result + " inx_author_ui(" + signature + ")", "{", *self.lines, "}"]
         if self.ray_lit:
@@ -164,6 +185,19 @@ class _Author(ParameterAuthor):
         return ([self.source_directive(main)] if self.is_surface else ['[shader("fragment")]', self.source_directive(main)]) + [
             declaration, "{", *self.lines, "}"]
 
+
+
+def _partitioned_entry(name, result, signature, semantic, value, front, depth, coverage=""):
+    return f"""
+[shader("fragment")]
+{result} fragment_{name}({signature}){semantic}
+{{
+    {result} value = {value};
+    {coverage}
+    inx_partition_transparent<{front}>(input.position, {depth});
+    return value;
+}}
+"""
 
 
 def _particle_passes(result):
@@ -199,6 +233,18 @@ def _particle_passes(result):
     return value;
 }}
 """)
+    signature = "InxParticleInput input"
+    semantic = "" if depth else " : SV_Target0"
+    layer_depth = "value.depth" if depth else "input.position.z"
+    for name, front in _TRANSPARENT_PARTITIONS:
+        for suffix, sample in (("", ""), ("_soft_depth", "true"), ("_soft_color", "false")):
+            coverage = (
+                f"{color} = inx_particle_apply_soft_coverage({color}, inx_particle_soft_coverage<{sample}>(input));"
+                if sample else ""
+            )
+            color_passes.append(_partitioned_entry(
+                name + suffix, result, signature, semantic, "inx_evaluate_particle<true>(input)",
+                front, layer_depth, coverage))
     return outputs + "".join(color_passes) + f"""
 [shader("fragment")]
 {picking_result} fragment_picking(InxParticleInput input){"" if depth else " : SV_Target0"} {{
@@ -698,6 +744,37 @@ uint4 inx_ray_signal_output(float3 signal, uint2 witness)
     return uint4(packHalf2x16(signal.rg), packHalf2x16(float2(signal.b, 1.0)), witness);
 }
 
+uint4 inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, uint seed, float3 weight)
+{
+    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
+    if (hit.triangle_index == ray_invalid_index)
+        return inx_ray_signal_output(inx_environment_radiance(ray.direction) * weight, uint2(0u));
+    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+        return uint4(0u);
+    RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
+    InxSurfaceData secondary;
+    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
+    float3 radiance = secondary.emission + inx_ray_direct_radiance(
+        page, attributes, secondary, inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed);
+    return inx_ray_signal_output(radiance * weight, uint2(hit.surface_id, asuint(hit.distance)));
+}
+
+public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxBuffer_uint4 records,
+                                     float2 pixel_position)
+{
+    RayPage page = ray_page();
+    if (page.status != ray_page_ready)
+        return float4(0.0);
+    float3 toward_eye = normalize(inx_camera_toward_eye(position_ws));
+    float3 normal = dot(normal_ws, toward_eye) < 0.0 ? -normal_ws : normal_ws;
+    TraceRay ray = {inx_ray_origin(position_ws, normal), 0.0, reflect(-toward_eye, normal),
+                    inx_view.projection_params.y};
+    uint2 pixel = uint2(pixel_position);
+    uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y) ^ inx_view_sample_index());
+    uint4 packet = inx_ray_radiance(page, ray, records, seed, float3(1.0));
+    return float4(unpackHalf2x16ToFloat(packet.x), unpackHalf2x16ToFloat(packet.y));
+}
+
 public uint4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
                                     InxBuffer_uint4 records, uint model_id, bool specular, bool temporal)
 {
@@ -728,17 +805,7 @@ public uint4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext c
     if (page.status != ray_page_ready)
         return uint4(0u);
     TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction, inx_view.projection_params.y};
-    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
-    if (hit.triangle_index == ray_invalid_index)
-        return inx_ray_signal_output(inx_environment_radiance(sample.direction) * sample.weight, uint2(0u));
-    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
-        return uint4(0u);
-    RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
-    InxSurfaceData secondary;
-    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
-    float3 radiance = secondary.emission + inx_ray_direct_radiance(
-        page, attributes, secondary, inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed);
-    return inx_ray_signal_output(radiance * sample.weight, uint2(hit.surface_id, asuint(hit.distance)));
+    return inx_ray_radiance(page, ray, records, seed, sample.weight);
 }
 """
 
@@ -773,6 +840,37 @@ uint4 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFac
     normal *= (dot(normal, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(length_squared);
     float2 encoded = inx_encode_surface_normal(normal);
     return uint4(input.surface_id, packHalf2x16(encoded), packHalf2x16(input.motion_vector), input.object_flags & 1u);
+}
+"""
+
+_SURFACE_THIN = """
+struct InxThinSurfaceOutput
+{
+    uint4 layer : SV_Target0;
+    uint4 optics : SV_Target1;
+};
+[shader("fragment")]
+InxThinSurfaceOutput fragment_thin_surface(InxMeshInput input, bool front_facing : SV_IsFrontFace)
+{
+    // Evaluate the plane over the whole quad before authored coverage discards.
+    float3 plane = cross(ddx(input.position_ws), ddy(input.position_ws));
+    float plane_squared = dot(plane, plane);
+    InxSurfaceData surface = inx_evaluate_surface(input, front_facing);
+    if (!(surface.alpha > 0.0 && plane_squared > 0.0))
+        discard;
+    float3 toward_eye = inx_camera_toward_eye(input.position_ws);
+    float3 normal = plane * ((dot(plane, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(plane_squared));
+    InxThinSheetData sheet = thin_sheet(input);
+    float ior = clamp(sheet.ior, 0.0001, 65504.0);
+    float3 optical_depth = min(max(sheet.absorption, float3(0.0)) * max(sheet.thickness, 0.0), float3(65504.0));
+    float3 emission = clamp(surface.emission, float3(0.0), float3(65504.0));
+    InxThinSurfaceOutput result;
+    result.layer = uint4(input.surface_id, packHalf2x16(inx_encode_surface_normal(normal)),
+                         packHalf2x16(input.motion_vector), asuint(input.position.z));
+    result.optics = uint4(packHalf2x16(float2(ior, optical_depth.r)),
+                          packHalf2x16(optical_depth.gb), packHalf2x16(emission.rg),
+                          packHalf2x16(float2(emission.b, saturate(surface.alpha))));
+    return result;
 }
 """
 
@@ -823,6 +921,13 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             author.error(statement, "Expected a shader parameter or typed method")
     if main is None:
         author.error(declaration, "Shader class needs a " + entry_name + " entry")
+    thin = next((method for method in helpers if method.name == "thin_sheet"), None)
+    if thin is not None:
+        signature = author.functions["self.thin_sheet"]
+        if not author.is_surface or info["surface_type"] != "transparent":
+            author.error(thin, "thin_sheet belongs to a transparent shader.surface", code="author.stage")
+        if signature.result != "InxThinSheetData" or signature.arguments != ("InxMeshInput",):
+            author.error(thin, "thin_sheet accepts a SurfaceContext and returns ThinSheetData", code="author.type")
     if uses_surface_lighting(body, author.alias, author.functions):
         for helper in helpers:
             name = "self." + helper.name
@@ -896,6 +1001,8 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     elif author.domain == "particle":
         code.append("import inx_particle;")
     code = list(dict.fromkeys(code))
+    if author.domain in {"mesh", "particle"}:
+        code.append(_TRANSPARENT_LAYER)
     if author.is_surface:
         code.insert(0, "import inx_surface_model;")
     for field in inputs:
@@ -942,8 +1049,15 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                                     "InxVertexInput previous = inx_apply_vertex(input, instance, inx_globals.frame_params.w, inx_previous_model(history));\n"
                                     "        float3 previous_local = inx_skin_vertex(previous, skin, inx_bones).position;")
         code.append(passes)
+        for name, front in _TRANSPARENT_PARTITIONS:
+            code.append(_partitioned_entry(
+                name, "float4", "InxMeshInput input, bool front_facing : SV_IsFrontFace", " : SV_Target0",
+                "inx_shade_surface<true>(inx_evaluate_surface(input, front_facing), input)", front,
+                "input.position.z"))
         if model.deferred_model:
             code.append(_SURFACE_GBUFFER)
+        if thin is not None:
+            code.append(_SURFACE_THIN)
     libraries = graph.sources()
     if model:
         libraries = (*libraries, ("inx_surface_model", model.path, model.source))
@@ -952,7 +1066,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                             tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *vertex_ranges,
                                                  *(vertex.author.source_ranges if vertex else ()), *author.source_ranges))),
                             author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None,
-                            info, vertex.path if vertex else None)
+                            info, vertex.path if vertex else None, thin is not None)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
@@ -1031,6 +1145,7 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
             return source_reader(path) if source_reader is not None else Path(path).read_text(encoding="utf-8-sig")
     definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader, vertex_path=vertex_path)
     schema = {"name": definition.name, "domain": definition.domain, "surface": definition.surface,
+              "thin_sheet": definition.thin_sheet,
               "info": definition.info,
               "shading_model": definition.shading_model, "deferred_model": definition.deferred_model,
               "vertex_source": definition.vertex_source,

@@ -14,13 +14,15 @@ inline RenderState ResolveMaterialPassState(const RenderState &authored, const M
     if (pass.invertCulling)
         state.frontFace = state.frontFace == MaterialFrontFace::Clockwise ? MaterialFrontFace::CounterClockwise
                                                                           : MaterialFrontFace::Clockwise;
-    if (pass.target != ShaderCompileTarget::Forward && pass.target != ShaderCompileTarget::ForwardPlus) {
+    if (pass.target != ShaderCompileTarget::Forward && !IsForwardPlusMaterialPass(pass.target)) {
         state.blendEnable = false;
         state.depthTestEnable = pass.depthFormat != rhi::PixelFormat::Undefined;
         state.depthWriteEnable = state.depthTestEnable;
     }
     if (pass.depthReadOnly)
         state.depthWriteEnable = false;
+    if (pass.target == ShaderCompileTarget::ThinSurface)
+        state.depthCompareOp = MaterialCompareOp::Less;
     if (pass.target == ShaderCompileTarget::Motion || pass.target == ShaderCompileTarget::Normal ||
         pass.target == ShaderCompileTarget::BaseColor)
         state.depthCompareOp = MaterialCompareOp::LessOrEqual;

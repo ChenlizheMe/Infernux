@@ -853,8 +853,11 @@ void InxVkCoreModular::DrawSceneFiltered(
             const auto *artifact =
                 committed ? m_shaderCache.FindProgramArtifact(committed->programKey.stages) : nullptr;
             const bool deferredCompatible = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
+            const bool thinSheet = artifact && artifact->FindVariant(ShaderCompileTarget::ThinSurface);
             if ((materialFilter == GraphMaterialFilter::DeferredCompatible && !deferredCompatible) ||
-                (materialFilter == GraphMaterialFilter::DeferredUnsupported && deferredCompatible))
+                (materialFilter == GraphMaterialFilter::DeferredUnsupported && deferredCompatible) ||
+                (materialFilter == GraphMaterialFilter::ThinSheet && !thinSheet) ||
+                (materialFilter == GraphMaterialFilter::OrdinaryTransparent && thinSheet))
                 continue;
         }
 
@@ -3704,7 +3707,7 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     // Canonical per-view ABI. Geometry uses binding 0 plus the tiled buffers;
     // particles also consume binding 4 because their set 0 remains dedicated
     // to simulation instances and material resources.
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, kTransparentLayerViewBinding + 1> bindings{};
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     bindings[0].descriptorCount = 1;
@@ -3728,6 +3731,8 @@ bool InxVkCoreModular::CreatePerViewDescriptorResources()
     bindings[6].descriptorCount = 1;
     bindings[6].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+    bindings[kTransparentLayerViewBinding] = {kTransparentLayerViewBinding, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                                              VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo layoutInfo{};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -3775,6 +3780,18 @@ vk::DescriptorLease InxVkCoreModular::AllocatePerViewDescriptorLease()
     ClearPerViewShadowMap(lease.set);
 
     return lease;
+}
+
+void InxVkCoreModular::UpdatePerViewTransparentLayer(VkDescriptorSet perViewDescSet, VkImageView layer)
+{
+    const VkDescriptorImageInfo image{VK_NULL_HANDLE, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = perViewDescSet;
+    write.dstBinding = kTransparentLayerViewBinding;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    write.pImageInfo = &image;
+    vkUpdateDescriptorSets(GetDevice(), 1, &write, 0, nullptr);
 }
 
 void InxVkCoreModular::UpdatePerViewShadowMap(VkDescriptorSet perViewDescSet, VkImageView shadowView,

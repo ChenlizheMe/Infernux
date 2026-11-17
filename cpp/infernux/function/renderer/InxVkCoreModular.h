@@ -972,6 +972,7 @@ class InxVkCoreModular
     /// Allocate a per-view descriptor lease. The owning RenderView retires the
     /// lease when its generation is replaced or destroyed.
     [[nodiscard]] vk::DescriptorLease AllocatePerViewDescriptorLease();
+    void UpdatePerViewTransparentLayer(VkDescriptorSet perViewDescSet, VkImageView layer);
 
     /// @brief Update a per-view descriptor set with shadow map resources.
     void UpdatePerViewShadowMap(VkDescriptorSet perViewDescSet, VkImageView shadowView, VkSampler shadowSampler,

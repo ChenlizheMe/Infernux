@@ -511,7 +511,9 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
             for (const auto target :
                  {ShaderCompileTarget::ForwardPlus, ShaderCompileTarget::GBuffer, ShaderCompileTarget::Shadow,
                   ShaderCompileTarget::Depth, ShaderCompileTarget::Picking, ShaderCompileTarget::Motion,
-                  ShaderCompileTarget::Normal, ShaderCompileTarget::BaseColor, ShaderCompileTarget::RaySurface})
+                  ShaderCompileTarget::Normal, ShaderCompileTarget::BaseColor, ShaderCompileTarget::RaySurface,
+                  ShaderCompileTarget::TransparentBehind, ShaderCompileTarget::TransparentFront,
+                  ShaderCompileTarget::ThinSurface})
                 material->SetPassShaderProgram(target, nullptr);
         }
 

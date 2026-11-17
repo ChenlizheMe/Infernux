@@ -26,6 +26,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -89,7 +90,14 @@ enum class GraphMaterialFilter : uint8_t
     All,
     DeferredCompatible,
     DeferredUnsupported,
+    ThinSheet,
+    OrdinaryTransparent,
 };
+
+/// A single camera-local witness separates ordinary transparent fragments
+/// around the selected optical layer. Both partitions share this resource.
+inline constexpr std::string_view kTransparentLayerInput = "transparent_layer";
+inline constexpr uint32_t kTransparentLayerViewBinding = 8;
 
 using GraphBufferUsage = rhi::BufferUsageFlags;
 
@@ -167,6 +175,7 @@ struct GraphCommandDesc
     std::string workBinding;
 
     [[nodiscard]] bool BindsResource(const std::string &name) const;
+    [[nodiscard]] std::string_view TransparentLayer() const noexcept;
     [[nodiscard]] bool CopiesToTexture() const noexcept
     {
         return type == GraphCommandType::CopyTexture || type == GraphCommandType::CopyBufferToTexture;

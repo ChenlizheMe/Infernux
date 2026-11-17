@@ -30,7 +30,10 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .value("MOTION", ShaderCompileTarget::Motion)
         .value("NORMAL", ShaderCompileTarget::Normal)
         .value("BASE_COLOR", ShaderCompileTarget::BaseColor)
-        .value("RAY_SURFACE", ShaderCompileTarget::RaySurface);
+        .value("RAY_SURFACE", ShaderCompileTarget::RaySurface)
+        .value("TRANSPARENT_BEHIND", ShaderCompileTarget::TransparentBehind)
+        .value("TRANSPARENT_FRONT", ShaderCompileTarget::TransparentFront)
+        .value("THIN_SURFACE", ShaderCompileTarget::ThinSurface);
 
     py::enum_<rhi::CompareFunction>(m, "DepthCompare", "Depth comparison against a graph attachment")
         .value("NEVER", rhi::CompareFunction::Never)
@@ -65,7 +68,9 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
     py::enum_<GraphMaterialFilter>(m, "GraphMaterialFilter", "Shading-model compatibility filter for renderer lists")
         .value("ALL", GraphMaterialFilter::All)
         .value("DEFERRED_COMPATIBLE", GraphMaterialFilter::DeferredCompatible)
-        .value("DEFERRED_UNSUPPORTED", GraphMaterialFilter::DeferredUnsupported);
+        .value("DEFERRED_UNSUPPORTED", GraphMaterialFilter::DeferredUnsupported)
+        .value("THIN_SHEET", GraphMaterialFilter::ThinSheet)
+        .value("ORDINARY_TRANSPARENT", GraphMaterialFilter::OrdinaryTransparent);
 
     py::enum_<GraphBufferUsage>(m, "GraphBufferUsage", py::arithmetic(), "Allowed uses of a graph buffer")
         .value("NONE", GraphBufferUsage::None)

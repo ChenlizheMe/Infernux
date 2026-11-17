@@ -420,6 +420,8 @@ class GraphPassType(IntEnum):
 
 
 class GraphMaterialFilter(IntEnum):
+    THIN_SHEET: int
+    ORDINARY_TRANSPARENT: int
     ALL: int
     DEFERRED_COMPATIBLE: int
     DEFERRED_UNSUPPORTED: int
@@ -454,6 +456,9 @@ class MaterialPassType(IntEnum):
     NORMAL: int
     BASE_COLOR: int
     RAY_SURFACE: int
+    TRANSPARENT_BEHIND: int
+    TRANSPARENT_FRONT: int
+    THIN_SURFACE: int
 
 
 class ResourceType(IntEnum):

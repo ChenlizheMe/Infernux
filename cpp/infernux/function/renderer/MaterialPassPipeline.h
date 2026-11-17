@@ -21,7 +21,8 @@ inline constexpr std::array kGBufferColorFormats{
 
 inline constexpr bool UsesInstanceMotion(ShaderCompileTarget target) noexcept
 {
-    return target == ShaderCompileTarget::Motion || target == ShaderCompileTarget::RaySurface;
+    return target == ShaderCompileTarget::Motion || target == ShaderCompileTarget::RaySurface ||
+           target == ShaderCompileTarget::ThinSurface;
 }
 
 /// Immutable render-target contract for one material pass. It is deliberately
@@ -93,6 +94,13 @@ struct MaterialPassPipelineDescriptor
         case ShaderCompileTarget::RaySurface:
             return colorFormats.size() == 1 && colorFormats.front() == rhi::PixelFormat::RGBA32UInt &&
                    depthFormat == rhi::PixelFormat::D32SFloat && samples == rhi::SampleCount::One && !depthReadOnly;
+        case ShaderCompileTarget::ThinSurface:
+            return colorFormats.size() == 2 && colorFormats[0] == rhi::PixelFormat::RGBA32UInt &&
+                   colorFormats[1] == rhi::PixelFormat::RGBA32UInt && depthFormat == rhi::PixelFormat::D32SFloat &&
+                   samples == rhi::SampleCount::One && !depthReadOnly;
+        case ShaderCompileTarget::TransparentBehind:
+        case ShaderCompileTarget::TransparentFront:
+            return colorFormats.size() == 1 && samples == rhi::SampleCount::One && depthReadOnly;
         case ShaderCompileTarget::Forward:
         case ShaderCompileTarget::ForwardPlus:
         case ShaderCompileTarget::GBuffer:

@@ -110,9 +110,22 @@ enum class ShaderCompileTarget : int
     Normal = 7,      // World-space normal output for screen-space effects
     BaseColor = 8,   // Linear surface albedo + alpha output for the Geometry Stage
     RaySurface = 9,  // Primary geometric normal and a frozen GBuffer surface witness
+    TransparentBehind = 10,
+    TransparentFront = 11,
+    ThinSurface = 12,
 
     Count // Sentinel — number of targets; must be last
 };
+
+[[nodiscard]] constexpr bool IsTransparentPartition(ShaderCompileTarget target) noexcept
+{
+    return target == ShaderCompileTarget::TransparentBehind || target == ShaderCompileTarget::TransparentFront;
+}
+
+[[nodiscard]] constexpr bool IsForwardPlusMaterialPass(ShaderCompileTarget target) noexcept
+{
+    return target == ShaderCompileTarget::ForwardPlus || IsTransparentPartition(target);
+}
 
 [[nodiscard]] constexpr const char *ShaderCompileTargetName(ShaderCompileTarget target) noexcept
 {
@@ -137,6 +150,12 @@ enum class ShaderCompileTarget : int
         return "BaseColor";
     case ShaderCompileTarget::RaySurface:
         return "RaySurface";
+    case ShaderCompileTarget::TransparentBehind:
+        return "TransparentBehind";
+    case ShaderCompileTarget::TransparentFront:
+        return "TransparentFront";
+    case ShaderCompileTarget::ThinSurface:
+        return "ThinSurface";
     case ShaderCompileTarget::Count:
         return "Count";
     }
@@ -158,6 +177,9 @@ enum class ShaderCompileTarget : int
     case ShaderCompileTarget::Normal:
     case ShaderCompileTarget::BaseColor:
     case ShaderCompileTarget::RaySurface:
+    case ShaderCompileTarget::TransparentBehind:
+    case ShaderCompileTarget::TransparentFront:
+    case ShaderCompileTarget::ThinSurface:
     case ShaderCompileTarget::Depth:
     case ShaderCompileTarget::Shadow:
         return true;

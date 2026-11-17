@@ -257,10 +257,9 @@ GpuParticleViewConstants ParticleGpuRenderer::DrawConstants(const GpuParticleVie
 {
     auto result = view;
     result.cameraRight[3] = m_semantics.softDistance;
-    const bool color = pass == ShaderCompileTarget::Forward || pass == ShaderCompileTarget::ForwardPlus;
+    const bool color = pass == ShaderCompileTarget::Forward || IsForwardPlusMaterialPass(pass);
     result.cameraUp[3] = color && m_semantics.softParticles ? 1.0f : 0.0f;
-    result.lightingControl[0] =
-        pass == ShaderCompileTarget::ForwardPlus && m_semantics.receiveSceneLighting ? 1.0f : 0.0f;
+    result.lightingControl[0] = IsForwardPlusMaterialPass(pass) && m_semantics.receiveSceneLighting ? 1.0f : 0.0f;
     result.lightingControl[1] = m_semantics.sortMode != ParticleSortMode::None ? 1.0f : 0.0f;
     result.lightingControl[2] = m_surface.ResolveMaterialFloat("softness", 0.18f);
     result.lightingControl[3] = m_semantics.receiveSceneLighting ? 1.0f : 0.0f;
@@ -287,7 +286,7 @@ bool ParticleGpuRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &encoder,
                                      rhi::BufferHandle indices, rhi::TextureViewHandle sceneDepth,
                                      bool sceneDepthIsDepth)
 {
-    const bool color = pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus;
+    const bool color = pass.target == ShaderCompileTarget::Forward || IsForwardPlusMaterialPass(pass.target);
     const uint8_t depthKind = color && m_semantics.softParticles ? (sceneDepthIsDepth ? 1 : 2) : 0;
     const bool readsDepth = depthKind != 0 && m_depthReads[depthKind - 1];
     if (!m_surface.RefreshMaterialBuffer(false) || !m_surface.RefreshTextureBindings(false) ||

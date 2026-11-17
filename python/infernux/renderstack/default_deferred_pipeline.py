@@ -65,6 +65,7 @@ from infernux.renderstack._pipeline_common import (
     add_skybox_pass,
     add_standard_post_process_section,
     add_transparent_pass,
+    transparent_queue_range,
     bind_deferred_surface,
     create_deferred_gbuffer,
     create_main_scene_targets,
@@ -148,6 +149,59 @@ def _decode_raw_signals(graph, packets):
     return raw
 
 
+def _draw_thin_transparency(graph, surface_records):
+    layer = graph.create_texture("_ray_thin_layer", format=Format.RGBA32_UINT, samples=1)
+    optics = graph.create_texture("_ray_thin_optics", format=Format.RGBA32_UINT, samples=1)
+    depth = graph.create_texture("_ray_thin_depth", format=Format.D32_SFLOAT, samples=1)
+    reflection = graph.create_texture("_ray_thin_reflection", format=Format.RGBA16_SFLOAT, samples=1)
+    background = graph.create_texture("_ray_thin_background", format=Format.RGBA16_SFLOAT, samples=1)
+    with graph.add_copy_pass("Thin Surface Depth") as render_pass:
+        render_pass.copy_texture(DEPTH_TEXTURE, depth)
+    with graph.add_pass("Thin Surface Capture") as render_pass:
+        render_pass.write_color(layer, slot=0)
+        render_pass.write_color(optics, slot=1)
+        render_pass.write_depth(depth)
+        render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
+        render_pass.draw_renderers(
+            queue_range=transparent_queue_range(), sort_mode="front_to_back",
+            material_pass="thin_surface", material_filter="thin_sheet",
+        )
+    world = graph._create_world_ray_lit()
+    with graph.add_pass("Thin Surface Reflection") as render_pass:
+        render_pass.set_textures({"layer": layer, "optics": optics})
+        render_pass.set_buffer("surface_records", surface_records)
+        for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials", "ray_texture_descriptors"):
+            render_pass.set_buffer(key, world[key])
+        for key in ("ray_color_pages", "ray_data_pages"):
+            render_pass.set_texture(key, world[key])
+        render_pass.write_color(reflection)
+        render_pass.fullscreen_quad("infernux/internal/ray_thin_reflection")
+    with graph.add_pass("Transparent Behind Thin Surface") as render_pass:
+        render_pass.read(DEPTH_TEXTURE)
+        render_pass.write_color(COLOR_TEXTURE)
+        render_pass.set_textures({"transparent_layer": layer, "shadowMap": graph.get_texture(SHADOW_MAP_TEXTURE)})
+        render_pass.draw_renderers(
+            queue_range=transparent_queue_range(), sort_mode="back_to_front",
+            material_pass="transparent_behind", material_filter="ordinary_transparent",
+        )
+    with graph.add_pass("Thin Surface Background") as render_pass:
+        render_pass.set_texture("source_tex", graph.get_texture(COLOR_TEXTURE))
+        render_pass.write_color(background)
+        render_pass.fullscreen_quad("infernux/internal/fullscreen_copy")
+    with graph.add_pass("Thin Surface Composite") as render_pass:
+        render_pass.set_textures({"background": background, "layer": layer, "optics": optics, "reflection": reflection})
+        render_pass.write_color(COLOR_TEXTURE)
+        render_pass.fullscreen_quad("infernux/internal/thin_composite")
+    with graph.add_pass("Transparent In Front Of Thin Surface") as render_pass:
+        render_pass.read(DEPTH_TEXTURE)
+        render_pass.write_color(COLOR_TEXTURE)
+        render_pass.set_textures({"transparent_layer": layer, "shadowMap": graph.get_texture(SHADOW_MAP_TEXTURE)})
+        render_pass.draw_renderers(
+            queue_range=transparent_queue_range(), sort_mode="back_to_front",
+            material_pass="transparent_front", material_filter="ordinary_transparent",
+        )
+
+
 def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history):
     previous_primary, primary = primary_history
     motion = graph.get_texture(_ray_replay_name(source))
@@ -227,6 +281,7 @@ class DefaultDeferredPipeline(RenderPipeline):
     )
     ray_diffuse: bool = serialized_field(default=False, header="Ray Tracing")
     ray_specular: bool = serialized_field(default=False)
+    ray_transparency: bool = serialized_field(default=False)
     ray_quality: RayTracingQuality = serialized_field(default=RayTracingQuality.STANDARD)
     _reconstruct_rays = True
 
@@ -414,7 +469,10 @@ class DefaultDeferredPipeline(RenderPipeline):
             current = graph.current_pass_result
 
         # ---- Pass 4: Transparent objects (Forward+ rendering) ----
-        add_transparent_pass(graph, material_pass="forward_plus")
+        if self.ray_transparency:
+            _draw_thin_transparency(graph, current.snapshot[SURFACE_RECORDS_BUFFER])
+        else:
+            add_transparent_pass(graph, material_pass="forward_plus")
         current = graph.derive_pass_result(
             "transparent", current, {"color": graph.get_texture(COLOR_TEXTURE)}
         )

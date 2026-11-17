@@ -256,6 +256,20 @@ class SurfaceData:
     shading_param1: float
 
 
+class ThinSheetData:
+    """Parallel smooth optical interfaces on a transparent Surface.
+
+    A Surface opts in by defining thin_sheet(self, ctx) with this return type.
+    Thickness uses world units. Absorption is the nonnegative RGB coefficient
+    per world unit. The Surface's alpha and emission define coverage and light.
+    The initial capture uses the geometric normal for perfect reflection.
+    """
+
+    ior: float
+    thickness: float
+    absorption: vec3
+
+
 class RaySurfaceHit:
     """The closest accepted world ray hit and its Lit surface properties.
 
@@ -458,4 +472,4 @@ class _RayQueries:
 
 ray = _RayQueries()
 
-__all__ = ["fullscreen", "frag", "surface", "particle", "ParticleContext", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "multisample_input", "mesh_input", "SurfaceContext", "SurfaceData", "ray", "RaySurfaceHit", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Color3D", "Color2DMS", "Depth2DMS", "UInt2DMS", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]
+__all__ = ["fullscreen", "frag", "surface", "particle", "ParticleContext", "shadingmodel", "vert", "VertexData", "VertexContext", "ProjectionContext", "CameraContext", "ViewContext", "FragmentOutput", "ref", "lighting", "ShadingContext", "LightData", "fragment_input", "multisample_input", "mesh_input", "SurfaceContext", "SurfaceData", "ThinSheetData", "ray", "RaySurfaceHit", "parameter", "material", "Color2D", "History2D", "Depth2D", "UInt2D", "Color3D", "Color2DMS", "Depth2DMS", "UInt2DMS", "Buffer", "input", "sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera", *TYPES, *INTRINSICS]

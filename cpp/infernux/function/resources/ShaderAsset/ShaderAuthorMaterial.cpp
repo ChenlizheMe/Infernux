@@ -119,6 +119,14 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
         variant.fragmentTarget = publication;
         result.variants.push_back(std::move(variant));
     };
+    const auto addPartitions = [&](const char *vertexName) {
+        const bool compiled = std::any_of(target->entries.begin(), target->entries.end(),
+                                          [](const auto &code) { return code.name == "fragment_transparent_behind"; });
+        if (compiled) {
+            addVariant(ShaderCompileTarget::TransparentBehind, vertexName, "fragment_transparent_behind");
+            addVariant(ShaderCompileTarget::TransparentFront, vertexName, "fragment_transparent_front");
+        }
+    };
     if (ui) {
         addVariant(ShaderCompileTarget::Forward, "vertex_main", "fragment_main");
         result.key.revision = ComputeShaderProgramArtifactRevision(result);
@@ -127,6 +135,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     if (particle) {
         addVariant(ShaderCompileTarget::Forward, nullptr, "fragment_main");
         addVariant(ShaderCompileTarget::ForwardPlus, nullptr, "fragment_forward_plus");
+        addPartitions(nullptr);
         addVariant(ShaderCompileTarget::Depth, nullptr, "fragment_depth");
         addVariant(ShaderCompileTarget::Picking, nullptr, "fragment_picking");
         addVariant(ShaderCompileTarget::Motion, nullptr, "fragment_motion");
@@ -151,7 +160,10 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     }
     addVariant(ShaderCompileTarget::Forward, "vertex_main", "fragment_main");
     addVariant(ShaderCompileTarget::ForwardPlus, "vertex_main", surface ? "fragment_forward_plus" : "fragment_main");
+    addPartitions("vertex_main");
     if (surface) {
+        if (source.at("thin_sheet").get<bool>())
+            addVariant(ShaderCompileTarget::ThinSurface, "vertex_motion", "fragment_thin_surface");
         if (source.at("info").at("cast_shadows").get<bool>())
             addVariant(ShaderCompileTarget::Shadow, "vertex_shadow", "fragment_depth");
         if (!source.at("deferred_model").is_null()) {

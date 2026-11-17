@@ -18,7 +18,8 @@ SURFACE_FIELDS = {
     "shading_param0": ("float", "0.0"), "shading_param1": ("float", "0.0"),
 }
 STRUCT_TYPES = {"ParticleContext": "InxParticleInput", "fragment_input": "InxFragmentInput", "multisample_input": "InxMultisampleInput", "mesh_input": "InxMeshInput", "SurfaceContext": "InxMeshInput",
-                "SurfaceData": "InxSurfaceData", "RaySurfaceHit": "InxRaySurfaceHit",
+                "SurfaceData": "InxSurfaceData", "ThinSheetData": "InxThinSheetData",
+                "RaySurfaceHit": "InxRaySurfaceHit",
                 "ShadingContext": "InxShadingContext", "LightData": "InxLight",
                 "VertexData": "InxVertexData", "VertexContext": "InxVertexContext", "ViewContext": "InxViewContext",
                 "ProjectionContext": "InxProjectionContext", "CameraContext": "InxCameraContext",
@@ -40,6 +41,7 @@ STRUCT_FIELDS = {"InxParticleInput": {'position': 'float4', 'position_ws': 'floa
                                   "view_depth": "float", "line_color": "float4", "object_id": "uint2",
                                   "object_flags": "uint", "layer_mask": "uint"},
                  "InxSurfaceData": {name: kind for name, (kind, _) in SURFACE_FIELDS.items()},
+                 "InxThinSheetData": {"ior": "float", "thickness": "float", "absorption": "float3"},
                  "InxRaySurfaceHit": {"available": "bool", "found": "bool", "distance": "float",
                                       "position_ws": "float3", "surface_id": "uint", "surface": "InxSurfaceData"},
                  "InxSurfaceDifferentials": {"position_dx": "float3", "position_dy": "float3",
@@ -62,6 +64,17 @@ STRUCT_FIELDS["InxWorldUIContext"] = dict(STRUCT_FIELDS["InxUIContext"], local_p
 # flattens the pair for each target; neither authors nor helpers name slots.
 RESOURCE_MODULE = ("inx_resource_types", "<infernux/shader/resources>", """
 import inx_geometry;
+
+public struct InxThinSheetData
+{
+    public float ior;
+    public float thickness;
+    public float3 absorption;
+};
+public InxThinSheetData inx_thin_sheet_data(float ior, float thickness, float3 absorption)
+{
+    return {ior, thickness, absorption};
+}
 
 public struct InxRaySurfaceHit
 {

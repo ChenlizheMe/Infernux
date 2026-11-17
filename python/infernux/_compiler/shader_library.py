@@ -18,6 +18,8 @@ from .diagnostics import parse_gpu_module
 _RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
 _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceHit", _RAY_ARGUMENTS),
                   "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS),
+                  "ray._thin_reflection": ("inx_ray_thin_reflection", "float4", (
+                      "float3", "float3", "InxBuffer_uint4", "float2")),
                   "ray._indirect_signal": ("inx_ray_indirect_signal", "uint4", (
                       "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool"))}
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
@@ -38,7 +40,8 @@ _ENGINE_MODULES = {"inx_ui_context": ("UIContext", "WorldUIContext"),
                    "inx_frame": ("frame_time", "frame_delta_time", "_previous_ray_geometry_serial", "view", "ViewContext"),
                    "inx_camera": ("camera", "CameraContext")}
 _CONSTRUCTORS = {"ShadingContext": ("InxShadingContext", "inx_shading_context"),
-                 "FragmentOutput": ("InxFragmentOutput", "inx_fragment_output")}
+                 "FragmentOutput": ("InxFragmentOutput", "inx_fragment_output"),
+                 "ThinSheetData": ("InxThinSheetData", "inx_thin_sheet_data")}
 
 
 def engine_imports(body, alias, *, graph, owner):

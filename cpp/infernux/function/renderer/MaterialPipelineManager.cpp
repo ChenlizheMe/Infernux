@@ -404,9 +404,21 @@ MaterialPipelineManager::GetDefaultPassPipelineDescriptorFor(VkSampleCountFlagBi
         pipeline.depthFormat = rhi::PixelFormat::D32SFloat;
         pipeline.samples = rhi::SampleCount::One;
         break;
+    case ShaderCompileTarget::ThinSurface:
+        pipeline.colorFormats = {rhi::PixelFormat::RGBA32UInt, rhi::PixelFormat::RGBA32UInt};
+        pipeline.depthFormat = rhi::PixelFormat::D32SFloat;
+        pipeline.samples = rhi::SampleCount::One;
+        break;
     case ShaderCompileTarget::Forward:
     case ShaderCompileTarget::ForwardPlus:
         pipeline.colorFormats = {rhi::FromVkFormat(m_colorFormat)};
+        break;
+    case ShaderCompileTarget::TransparentBehind:
+    case ShaderCompileTarget::TransparentFront:
+        pipeline.colorFormats = {rhi::FromVkFormat(m_colorFormat)};
+        pipeline.depthFormat = rhi::PixelFormat::D32SFloat;
+        pipeline.samples = rhi::SampleCount::One;
+        pipeline.depthReadOnly = true;
         break;
     case ShaderCompileTarget::GBuffer:
         pipeline.colorFormats.assign(kGBufferColorFormats.begin(), kGBufferColorFormats.end());
