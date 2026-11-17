@@ -6,9 +6,11 @@
 #include <Jolt/Physics/Body/MotionProperties.h>
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -17,11 +19,12 @@ namespace
 using namespace JPH::GPU;
 using Contact = PhysicsContactPublication;
 using Patch = JoltMixedContactStep::ResponsePatch;
+using PatchKey = std::pair<Contact::EndpointKey, Contact::EndpointKey>;
 
 struct Parameters
 {
     UInt4 range;
-    Float4 gravityDt, contact;
+    Float4 gravityDt, contact; // Warm-start scale, penetration slop, maximum correction, Baumgarte.
 };
 struct CpuBoundary
 {
@@ -80,11 +83,44 @@ template <typename T> std::vector<uint8_t> Bytes(const std::vector<T> &source)
     return Bytes(source.data(), source.size());
 }
 
-bool PatchOrder(const Patch &a, const Patch &b)
+PatchKey Key(const Patch &patch)
 {
-    return std::tuple(a.cpu.Key(), a.gpu.Key()) < std::tuple(b.cpu.Key(), b.gpu.Key());
+    return {patch.cpu.Key(), patch.gpu.Key()};
 }
 } // namespace
+
+struct JoltMixedContactStep::ImpulseHistory
+{
+    struct Anchors
+    {
+        glm::vec3 cpu, gpu;
+    };
+    struct Manifold
+    {
+        PatchKey key;
+        std::array<uint64_t, 2> shapeRevisions;
+        glm::vec3 normal;
+        uint32_t deviceIndex, pointCount;
+        std::array<Anchors, MaxContactPointsPerPair> anchors;
+    };
+    // Sorted by the canonical manifold key, independently of device group order.
+    std::vector<Manifold> manifolds;
+    std::shared_ptr<rhi::ComputeBuffer> previousPatches, nextPatches;
+    std::unordered_set<uint32_t> teleportedBodies;
+    std::tuple<uint64_t, uint64_t, uint32_t> nextSubstep;
+    float deltaTime = 0;
+};
+
+void JoltMixedContactStep::InvalidateImpulseHistory(uint32_t bodyId)
+{
+    if (m_impulseHistory)
+        m_impulseHistory->teleportedBodies.insert(bodyId);
+}
+
+void JoltMixedContactStep::DiscardImpulseHistory() noexcept
+{
+    m_impulseHistory.reset();
+}
 
 JoltMixedConstraintSolver::JoltMixedConstraintSolver(rhi::ComputeHost &host, const ShaderTargetCode &target)
     : m_host(host)
@@ -127,6 +163,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         WakeSlots,
         CpuPoses,
         Anchors,
+        PreviousPatches,
         PortCount
     };
 
@@ -136,6 +173,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     JoltCpuContactPublication &cpu;
     const JoltMixedContactStep::Policy &policy;
     std::shared_ptr<const JoltGpuScene::Publication> publication;
+    std::shared_ptr<JoltMixedContactStep::ImpulseHistory> history;
+    std::unordered_set<uint32_t> teleportedBodies;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
     std::vector<CpuBoundary> models;
     std::vector<Velocity> velocities, receipts;
@@ -148,7 +187,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     std::vector<size_t> order;
     std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> impulses;
     std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> corrections;
-    uint32_t substep = 0;
+    uint32_t substep = 0, substepCount = 0;
     bool solveVelocity = false;
     bool solvePosition = false;
     Parameters params{};
@@ -158,6 +197,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         std::shared_ptr<const JoltGpuScene::Publication> publication)
         : owner(owner), discovery(discovery), step(step), cpu(cpu), policy(policy), publication(std::move(publication))
     {
+        if (!step.m_impulseHistory)
+            step.m_impulseHistory = std::make_shared<JoltMixedContactStep::ImpulseHistory>();
+        history = step.m_impulseHistory;
+        teleportedBodies.swap(history->teleportedBodies);
     }
 
     const JPH::Body &Body(JPH::BodyID id) const
@@ -168,7 +211,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     void BuildWorkset(JoltGpuStepInputs &inputs)
     {
         auto &responses = step.Responses();
-        std::sort(responses.begin(), responses.end(), PatchOrder);
+        std::sort(responses.begin(), responses.end(), [](const Patch &a, const Patch &b) { return Key(a) < Key(b); });
         order.resize(responses.size());
         std::iota(order.begin(), order.end(), size_t(0));
         auto parents = order;
@@ -227,6 +270,87 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         }
         std::sort(wakeSlots.begin(), wakeSlots.end());
         wakeSlots.erase(std::unique(wakeSlots.begin(), wakeSlots.end()), wakeSlots.end());
+    }
+
+    float MatchWarmStarts()
+    {
+        const auto &settings = step.Scene().System().GetPhysicsSettings();
+        if (!settings.mConstraintWarmStart || history->manifolds.empty() ||
+            history->nextSubstep != std::tuple(publication->simulationEpoch, publication->fixedStepIndex, substep))
+            return 0.0f;
+
+        bool matched = false;
+        const auto &responses = step.Responses();
+        for (size_t i = 0; i < order.size(); ++i) {
+            const auto &response = responses[order[i]];
+            if (substep == 0 && (teleportedBodies.find(response.gpu.body) != teleportedBodies.end() ||
+                                 Body(response.native).IsCollisionCacheInvalid()))
+                continue;
+            const auto key = Key(response);
+            const auto found = std::lower_bound(history->manifolds.begin(), history->manifolds.end(), key,
+                                                [](const auto &cached, const auto &key) { return cached.key < key; });
+            constexpr float alignedNormals = 0.95f;
+            if (found == history->manifolds.end() || found->key != key ||
+                found->shapeRevisions != response.shapeRevisions ||
+                glm::dot(found->normal, XYZ(response.normalFriction)) < alignedNormals)
+                continue;
+
+            std::array<float, MaxContactPointsPerPair> pointIndices{};
+            uint32_t used = 0;
+            for (uint32_t point = 0; point < response.pointCount; ++point) {
+                const auto &current = response.points[point];
+                uint32_t nearest = found->pointCount;
+                float distance = std::numeric_limits<float>::max();
+                for (uint32_t previous = 0; previous < found->pointCount; ++previous) {
+                    if (used & (1u << previous))
+                        continue;
+                    const auto da = current.localAnchorA - found->anchors[previous].cpu;
+                    const auto db = current.localAnchorB - found->anchors[previous].gpu;
+                    const float sa = glm::dot(da, da), sb = glm::dot(db, db);
+                    const float limit = settings.mContactPointPreserveLambdaMaxDistSq;
+                    if (sa <= limit && sb <= limit && sa + sb < distance) {
+                        distance = sa + sb;
+                        nearest = previous;
+                    }
+                }
+                if (nearest != found->pointCount) {
+                    used |= 1u << nearest;
+                    pointIndices[point] = static_cast<float>(nearest + 1);
+                }
+            }
+            if (used) {
+                matched = true;
+                auto &patch = patches[i];
+                patch.endpoints.w = found->deviceIndex + 1;
+                patch.normalLambda = {pointIndices[0], pointIndices[1], pointIndices[2], pointIndices[3]};
+            }
+        }
+        return matched ? params.gravityDt.w / history->deltaTime : 0.0f;
+    }
+
+    void RetainImpulses()
+    {
+        const auto &responses = step.Responses();
+        history->manifolds.resize(order.size());
+        for (uint32_t i = 0; i < order.size(); ++i) {
+            const auto &response = responses[order[i]];
+            auto &cached = history->manifolds[order[i]];
+            cached.key = Key(response);
+            cached.shapeRevisions = response.shapeRevisions;
+            cached.normal = XYZ(response.normalFriction);
+            cached.deviceIndex = i;
+            cached.pointCount = response.pointCount;
+            for (uint32_t point = 0; point < response.pointCount; ++point) {
+                const auto &current = response.points[point];
+                cached.anchors[point] = {current.localAnchorA, current.localAnchorB};
+            }
+        }
+        history->previousPatches = buffers[Patches];
+        history->nextPatches = buffers[PreviousPatches];
+        const bool lastSubstep = substep + 1 == substepCount;
+        history->nextSubstep = {publication->simulationEpoch, publication->fixedStepIndex + lastSubstep,
+                                lastSubstep ? 0u : substep + 1};
+        history->deltaTime = params.gravityDt.w;
     }
 
     void CaptureModels()
@@ -308,6 +432,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         if (!Allocate(Params, sizeof(params)) || !Allocate(CpuModels, models.size() * sizeof(CpuBoundary)) ||
             !Allocate(CpuVelocities, velocityBytes) || !Allocate(Groups, groups.size() * sizeof(UInt4)) ||
             !Allocate(Patches, patches.size() * sizeof(DevicePatch)) ||
+            (solveVelocity && !Allocate(PreviousPatches, sizeof(DevicePatch))) ||
             (solveVelocity && !Allocate(Impulses, velocityBytes)) ||
             (solvePosition && !Allocate(Anchors, anchors.size() * sizeof(PositionAnchors))) ||
             (!wakeSlots.empty() && !Allocate(WakeSlots, wakeSlots.size() * sizeof(uint32_t)))) {
@@ -337,6 +462,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                                const JPH::GPU::StepParams &stepParams, uint32_t index, std::function<void()> done)
     {
         substep = index;
+        substepCount = stepParams.solve.y;
         solveVelocity = stepParams.counts.w != 0;
         solvePosition = stepParams.solve.x != 0;
         params.gravityDt = stepParams.gravityDt;
@@ -345,6 +471,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         buffers[GpuStates] = storage.Get(Resource::BodyStates);
         buffers[Sleep] = storage.Get(Resource::SleepStates);
         buffers[Forces] = storage.Get(Resource::BodyForces);
+        if (solveVelocity) {
+            buffers[PreviousPatches] = history->previousPatches;
+            buffers[Patches] = history->nextPatches;
+        }
         return discovery.Discover(
             storage, stepParams, substep, publication, step, policy,
             [self = shared_from_this(), &inputs, done = std::move(done)]() mutable {
@@ -353,6 +483,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 self->BuildWorkset(inputs);
                 self->cpu.BeginCoupledSubstep(self->substep, self->native);
                 if (self->native.empty()) {
+                    self->history->manifolds.clear();
                     self->cpu.AdvanceCoupledVelocity();
                     done();
                     return JoltGpuControlWork{};
@@ -418,6 +549,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         }
         const uint32_t rounds = Rounds(maxRounds);
         params.range = {0, static_cast<uint32_t>(groups.size()), rounds, 0};
+        params.contact.x = iteration == 0 ? MatchWarmStarts() : 0.0f;
         const bool last = iteration + rounds == iterations;
         const bool readImpulses = last && policy.impulses;
         std::vector<rhi::ComputeBufferRead> reads{{buffers[Impulses], 0, velocities.size() * sizeof(Velocity)}};
@@ -450,6 +582,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                         packet->Readback(1)->ReadInto(self->patches.data(), self->patches.size() * sizeof(DevicePatch));
                         self->PublishContacts();
                     }
+                    if (last)
+                        self->RetainImpulses();
                     done(rounds);
                     return JoltGpuControlWork{};
                 }};

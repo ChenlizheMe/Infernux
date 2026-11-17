@@ -107,8 +107,8 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
             continue;
         const bool sensor = std::any_of(record.surfaces.begin(), record.surfaces.end(),
                                         [](const auto &surface) { return surface.sensor; });
-        m_proxies.push_back(
-            {endpoint.body, record.shape, record.bodyTarget, sensor, endpoint.allowResponse && body.IsDynamic()});
+        m_proxies.push_back({endpoint.body, record.shapeRevision, record.shape, record.bodyTarget, sensor,
+                             endpoint.allowResponse && body.IsDynamic()});
         bodyIds.push_back(endpoint.body);
     }
     if (m_ids != bodyIds) {
@@ -276,6 +276,7 @@ void JoltMixedContactStep::Collect(uint32_t substep, const JoltGpuScene::Publica
             auto &patch = m_responses.emplace_back();
             patch.cpu = a;
             patch.gpu = b;
+            patch.shapeRevisions = {proxy.shapeRevision, actor.shapeRevision};
             patch.gpuSlot = address.bodySlot;
             patch.wakeGpu = !gpuActive;
             patch.native = m_scene->NativeBody(proxy.id);

@@ -27,6 +27,7 @@ struct PhysicsDomain final
 {
     explicit PhysicsDomain(RuntimeWorld &world);
     ~PhysicsDomain();
+    void MarkGpuPoseDiscontinuity(uint32_t bodyId);
     RuntimeWorld &owner;
     glm::vec3 gravity;
     std::unique_ptr<JoltCpuScene> cpuScene;

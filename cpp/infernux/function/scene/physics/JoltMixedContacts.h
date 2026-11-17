@@ -12,6 +12,7 @@ namespace infernux
 {
 class JoltCpuScene;
 class JoltCpuContactPublication;
+class JoltMixedConstraintSolver;
 
 /// One accepted Fixed step's CPU geometry and substep positions. The CPU
 /// world still owns integration, and this capture owns no solver bodies.
@@ -44,6 +45,7 @@ class JoltMixedContactStep final
     struct ResponsePatch
     {
         PhysicsContactPublication::Endpoint cpu, gpu;
+        std::array<uint64_t, 2> shapeRevisions;
         JPH::BodyID native;
         uint32_t gpuSlot, pointCount;
         JPH::GPU::Float4 normalFriction;
@@ -72,11 +74,16 @@ class JoltMixedContactStep final
     }
     void AppendFrame(uint32_t substep, Frame &);
     void ClearStep();
+    void InvalidateImpulseHistory(uint32_t bodyId);
+    void DiscardImpulseHistory() noexcept;
 
   private:
+    friend class JoltMixedConstraintSolver;
+    struct ImpulseHistory;
     struct CpuProxy
     {
         uint32_t id;
+        uint64_t shapeRevision;
         JPH::RefConst<JPH::Shape> shape;
         PhysicsTargetReference target;
         bool sensor, allowResponse;
@@ -96,6 +103,7 @@ class JoltMixedContactStep final
     std::vector<Frame> m_frames;
     std::vector<uint32_t> m_gpuResponseBodies;
     std::vector<ResponsePatch> m_responses;
+    std::shared_ptr<ImpulseHistory> m_impulseHistory;
     std::vector<uint32_t> m_ids, m_escape;
     spatial::Bvh m_tree;
 };

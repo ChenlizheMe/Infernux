@@ -473,6 +473,13 @@ PhysicsDomain::PhysicsDomain(RuntimeWorld &world) : owner(world), gravity(Engine
 {
 }
 PhysicsDomain::~PhysicsDomain() = default;
+
+void PhysicsDomain::MarkGpuPoseDiscontinuity(uint32_t bodyId)
+{
+    rendering.bindings.MarkDiscontinuity(bodyId);
+    if (mixedContacts)
+        mixedContacts->InvalidateImpulseHistory(bodyId);
+}
 namespace
 {
 // Geometry cooking and mass authoring also run before Play and between engine
@@ -834,6 +841,8 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
             return false;
     }
     domain.admittedContactPolicy = std::move(policy);
+    if (domain.mixedContacts && !coupled)
+        domain.mixedContacts->DiscardImpulseHistory();
     SealStaticFixedMoves(domain);
     domain.cpuFixedAdmitted = bool(domain.cpuControl);
     if (domain.cpuFixedAdmitted) {
@@ -2615,7 +2624,7 @@ void PhysicsWorld::SetBodyPosition(uint32_t id, const glm::vec3 &position, const
     if (entry.HasGpuBody()) {
         RequireGpu(domain);
         m_gpuScene->QueueCommand(id, c);
-        domain.rendering.bindings.MarkDiscontinuity(id);
+        domain.MarkGpuPoseDiscontinuity(id);
     }
 }
 void PhysicsWorld::SetBodyPositionOnly(uint32_t id, const glm::vec3 &position)
@@ -2632,7 +2641,7 @@ void PhysicsWorld::SetBodyPositionOnly(uint32_t id, const glm::vec3 &position)
     if (entry.HasGpuBody()) {
         RequireGpu(domain);
         m_gpuScene->QueueCommand(id, c);
-        domain.rendering.bindings.MarkDiscontinuity(id);
+        domain.MarkGpuPoseDiscontinuity(id);
     }
 }
 void PhysicsWorld::SetBodyRotationOnly(uint32_t id, const glm::quat &rotation)
@@ -2649,7 +2658,7 @@ void PhysicsWorld::SetBodyRotationOnly(uint32_t id, const glm::quat &rotation)
     if (entry.HasGpuBody()) {
         RequireGpu(domain);
         m_gpuScene->QueueCommand(id, c);
-        domain.rendering.bindings.MarkDiscontinuity(id);
+        domain.MarkGpuPoseDiscontinuity(id);
     }
 }
 void PhysicsWorld::SetBodyPositionsBatch(const std::vector<PhysicsBodyPoseUpdate> &updates)

@@ -4,7 +4,7 @@ struct CouplingParams
 {
     uint4 range; // First group or wake slot, count, and rounds.
     float4 gravityDt;
-    float4 contact;
+    float4 contact; // Warm-start scale, penetration slop, max correction, Baumgarte.
 };
 struct CpuBoundary
 {
@@ -25,7 +25,7 @@ struct PositionAnchors
 };
 struct MixedPatch
 {
-    uint4 endpoints; // CPU address, GPU slot, point count, reserved.
+    uint4 endpoints; // CPU address, GPU slot, point count, previous manifold + 1.
     float4 normalFriction;
     float4 points[4]; // World midpoint and material/speculative bias.
     float4 normalLambda, frictionLambda;
@@ -44,6 +44,81 @@ struct MixedPatch
 [[vk::binding(10, 0)]] StructuredBuffer<uint> wake_slots;
 [[vk::binding(11, 0)]] RWStructuredBuffer<Pose> cpu_poses;
 [[vk::binding(12, 0)]] StructuredBuffer<PositionAnchors> anchors;
+[[vk::binding(13, 0)]] StructuredBuffer<MixedPatch> previous_patches;
+
+void store_velocity_result(uint a, uint b, BodyState sa, BodyState sb, float3 impulse, float3 torqueA)
+{
+    gpu_states[b] = sb;
+    cpu_velocities[a] = {sa.linearVelocity, sa.angularVelocity};
+    Velocity accumulated = cpu_impulses[a];
+    accumulated.linear.xyz -= impulse;
+    accumulated.angular.xyz -= torqueA;
+    cpu_impulses[a] = accumulated;
+}
+
+void warm_patch(uint index)
+{
+    MixedPatch patch = patches[index];
+    if (patch.endpoints.w == 0u) return;
+    const MixedPatch previous = previous_patches[patch.endpoints.w - 1u];
+    const uint a = patch.endpoints.x, b = patch.endpoints.y, count = patch.endpoints.z;
+    const float3 normal = patch.normalFriction.xyz, oldNormal = previous.normalFriction.xyz;
+    const float normalAlignment = dot(normal, oldNormal);
+    const float scale = params.contact.x;
+    float4 normalLambda = float4(0);
+    float3 center = float3(0);
+    for (uint point = 0; point < count; ++point)
+    {
+        // On this first dispatch the host packed previous point indices + 1.
+        const uint previousPoint = uint(patch.normalLambda[point]);
+        if (previousPoint != 0u)
+            normalLambda[point] = previous.normalLambda[previousPoint - 1u] * (scale * normalAlignment);
+        center += patch.points[point].xyz;
+    }
+    center /= float(count);
+
+    float3 oldT1, oldT2, t1, t2;
+    jph_tangents(oldNormal, oldT1, oldT2);
+    jph_tangents(normal, t1, t2);
+    const float normalSum = dot(normalLambda, float4(1));
+    const float3 oldFriction = (oldT1 * previous.frictionLambda.x + oldT2 * previous.frictionLambda.y) * scale;
+    const float frictionLimit = patch.normalFriction.w * normalSum;
+    float2 tangent = float2(dot(oldFriction, t1), dot(oldFriction, t2));
+    const float tangentSquared = dot(tangent, tangent);
+    if (tangentSquared > frictionLimit * frictionLimit)
+        tangent *= frictionLimit / sqrt(tangentSquared);
+
+    const CpuBoundary boundary = cpu_models[a];
+    const Velocity incoming = cpu_velocities[a];
+    const BodyModel ma = boundary.model, mb = gpu_models[b];
+    BodyState sa = {boundary.center, boundary.rotation, incoming.linear, incoming.angular};
+    BodyState sb = gpu_states[b];
+    float3 torqueA = float3(0), torqueB = float3(0);
+    float weightedRadius = 0.0f;
+    for (uint point = 0; point < count; ++point)
+    {
+        const float3 midpoint = patch.points[point].xyz;
+        const float3 offset = midpoint - center;
+        weightedRadius += length(offset - normal * dot(offset, normal)) * normalLambda[point];
+        const float3 impulse = normal * normalLambda[point];
+        torqueA += cross(midpoint - sa.positionCOM.xyz, impulse);
+        torqueB += cross(midpoint - sb.positionCOM.xyz, impulse);
+    }
+    const float spinLimit = patch.normalFriction.w * weightedRadius;
+    const float spin = clamp(previous.frictionLambda.z * (scale * normalAlignment), -spinLimit, spinLimit);
+    const float3 friction = t1 * tangent.x + t2 * tangent.y;
+    torqueA += cross(center - sa.positionCOM.xyz, friction) + normal * spin;
+    torqueB += cross(center - sb.positionCOM.xyz, friction) + normal * spin;
+    const float3 impulse = normal * normalSum + friction;
+    sa.linearVelocity.xyz -= jph_inverse_linear_mass(ma, impulse);
+    sa.angularVelocity.xyz -= jph_inverse_inertia(ma, sa, torqueA);
+    sb.linearVelocity.xyz += jph_inverse_linear_mass(mb, impulse);
+    sb.angularVelocity.xyz += jph_inverse_inertia(mb, sb, torqueB);
+    store_velocity_result(a, b, sa, sb, impulse, torqueA);
+    patch.normalLambda = normalLambda;
+    patch.frictionLambda = float4(tangent, spin, 0);
+    patches[index] = patch;
+}
 
 // A thread owns every CPU and GPU endpoint of one connected cross-domain
 // group. Local constraint solvers have completed their current velocity round.
@@ -111,12 +186,7 @@ void solve_patch(uint index)
     sa.angularVelocity.xyz -= jph_inverse_inertia(ma, sa, jna);
     sb.linearVelocity.xyz += jph_inverse_linear_mass(mb, jn);
     sb.angularVelocity.xyz += jph_inverse_inertia(mb, sb, jnb);
-    gpu_states[b] = sb;
-    cpu_velocities[a] = {sa.linearVelocity, sa.angularVelocity};
-    Velocity impulses = cpu_impulses[a];
-    impulses.linear.xyz -= jt + jn;
-    impulses.angular.xyz -= jt_angular + jna;
-    cpu_impulses[a] = impulses;
+    store_velocity_result(a, b, sa, sb, jt + jn, jt_angular + jna);
     patch.normalLambda = next;
     patch.frictionLambda.xyz = float3(tangent, angular);
     patches[index] = patch;
@@ -131,6 +201,9 @@ void exchange_cross_domain_velocity(uint3 id : SV_DispatchThreadID)
     const Velocity zero = {float4(0), float4(0)};
     for (uint i = group.z; i < group.z + group.w; ++i)
         cpu_impulses[i] = zero;
+    if (params.contact.x > 0.0f)
+        for (uint i = group.x; i < group.x + group.y; ++i)
+            warm_patch(i);
     for (uint round = 0; round < params.range.z; ++round)
         for (uint i = group.x; i < group.x + group.y; ++i)
             solve_patch(i);
