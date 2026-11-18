@@ -4,6 +4,7 @@
 
 #include <function/renderer/ProfileConfig.h>
 #include <function/renderer/rhi/RhiQuery.h>
+#include <function/renderer/rhi/RhiSubmission.h>
 
 #include <array>
 #include <cstdint>
@@ -45,6 +46,10 @@ class GpuTimestampQueries
     /// The terminal fence for this slot must have retired before reading its results.
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::optional<rhi::GpuTimestampFrame>
     CollectCompletedFrame(uint32_t frameIndex);
+    [[nodiscard]] uint64_t FrameSerial(uint32_t frameIndex) const noexcept
+    {
+        return m_frames[frameIndex].serial;
+    }
 #if INFERNUX_FRAME_PROFILE
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API static GpuTimestampQueries *CurrentRecording() noexcept;
 #endif
@@ -95,6 +100,26 @@ class GpuTimestampQueries
     uint32_t m_maxQueriesPerFrame = 0;
     uint64_t m_nextSerial = 1;
     bool m_resetOnHost = false;
+};
+
+/// Leased from the device owner; an execution receipt and its consumed timing
+/// keep this slot unavailable to subsequent batches.
+class BudgetGpuTiming final
+{
+  public:
+    INFERNUX_VULKAN_BACKEND_API explicit BudgetGpuTiming(const VkDeviceContext &context);
+    INFERNUX_VULKAN_BACKEND_API void BeginPass(VkCommandBuffer commands, std::string_view name);
+    INFERNUX_VULKAN_BACKEND_API void EndPass(VkCommandBuffer commands, bool last);
+    INFERNUX_VULKAN_BACKEND_API std::optional<rhi::GpuTimestampFrame>
+    Collect(const rhi::WorkCompletionReceipt &receipt);
+    INFERNUX_VULKAN_BACKEND_API void Reset() noexcept;
+    INFERNUX_VULKAN_BACKEND_API void Destroy() noexcept;
+
+  private:
+    GpuTimestampQueries m_queries;
+    rhi::TimestampRegionHandle m_region;
+    uint64_t m_serial = 0;
+    bool m_started = false, m_finished = false, m_submitted = false;
 };
 
 } // namespace infernux::vk

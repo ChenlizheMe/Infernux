@@ -267,15 +267,13 @@ struct FullscreenPipelineCache::Impl
         for (uint32_t index = 0; index < key.program->code->entries.size(); ++index)
             if (key.program->code->entries[index].stage != rhi::ShaderStage::Compute)
                 selected.push_back(index);
-        std::vector<rhi::BindingLayoutHandle> sharedLayouts;
-        entry.rhi.hasPerView = std::any_of(key.program->code->resources.begin(), key.program->code->resources.end(),
-                                           [](const auto &resource) { return resource.set == 1; });
-        if (entry.rhi.hasPerView) {
-            if (!host->GetPerViewLayout().IsValid())
-                throw std::logic_error("Fullscreen scene lighting requires its owner's view layout");
-            sharedLayouts = {{}, host->GetPerViewLayout()};
-        }
-        entry.rhi.program = std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected, sharedLayouts);
+        // Geometry's shared view layout includes Forward+ buffers even when a
+        // fullscreen entry only reads canonical lights. Reflect its actual set-1
+        // subset so unused storage bindings do not consume the device's limit.
+        entry.rhi.program = std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected);
+        const auto &resources = entry.rhi.program->GetResources();
+        entry.rhi.hasPerView =
+            std::any_of(resources.begin(), resources.end(), [](const auto &resource) { return resource.set == 1; });
         entry.rhi.program->Apply(desc);
         PrepareInputs(entry.rhi, key.program->schema);
         entry.rhi.pipeline = device->CreateGraphicsPipeline(desc);
@@ -626,6 +624,18 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
         groups[index].lifetime = rhi::BindGroupLifetime::FrameTransient;
     }
     const auto &resources = entry.program->GetResources();
+    if (entry.hasPerView) {
+        auto &group = groups[1];
+        for (const auto &resource : resources) {
+            if (resource.set != 1)
+                continue;
+            const auto &binding = resource.binding;
+            if (binding.type == rhi::BindingType::UniformBuffer || binding.type == rhi::BindingType::StorageBuffer)
+                group.buffers[group.bufferCount++] = view.perView->buffers[binding.binding];
+            else
+                group.textures[group.textureCount++] = view.perView->textures[binding.binding];
+        }
+    }
     for (size_t index = 0; index < entry.resourceIndices.size(); ++index) {
         const auto &resource = resources[entry.resourceIndices[index]];
         auto &group = groups[resource.set];
@@ -649,10 +659,6 @@ void FullscreenRenderer::DrawProgram(rhi::GraphicsCommandEncoder &encoder, const
     }
     encoder.BindPipeline(entry.pipeline);
     for (uint32_t index = 0; index < layouts.size(); ++index) {
-        if (index == 1 && entry.hasPerView) {
-            encoder.BindGroup(entry.pipeline, index, view.perView);
-            continue;
-        }
         const auto group = m_impl->device->CreateBindGroup(groups[index]);
         if (!group.IsValid())
             throw std::runtime_error("Fullscreen bind group creation failed");

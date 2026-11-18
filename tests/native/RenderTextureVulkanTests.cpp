@@ -297,10 +297,6 @@ class FullscreenTestHost final : public FullscreenRendererHost
     {
         return 0;
     }
-    rhi::BindingLayoutHandle GetPerViewLayout() const noexcept override
-    {
-        return {};
-    }
     rhi::Device &device;
     std::shared_ptr<const FullscreenProgram> program;
 };

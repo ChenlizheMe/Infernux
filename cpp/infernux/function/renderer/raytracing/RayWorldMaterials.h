@@ -15,6 +15,7 @@
 namespace infernux
 {
 class RenderWorldFrame;
+struct ShaderTargetCode;
 namespace rhi
 {
 class BufferResource;
@@ -59,7 +60,7 @@ class RayWorldMaterials final
     RayWorldMaterials &operator=(const RayWorldMaterials &) = delete;
 
     [[nodiscard]] RayWorldMaterialBinding Acquire(const std::shared_ptr<const RenderWorldFrame> &world,
-                                                  const std::shared_ptr<const RayLitMaterialLayout> &layout,
+                                                  const std::shared_ptr<const ShaderTargetCode> &program,
                                                   uint64_t textureContentGeneration,
                                                   std::shared_ptr<const RayWorldMaterialRequest> &request);
     [[nodiscard]] std::shared_ptr<RayTexturePageBatch> PreparePageBatch();
@@ -83,6 +84,12 @@ class RayWorldMaterials final
     uint64_t m_atlasByteBudget;
     FrameWorkOwner::SourceId m_source = 0;
     uint64_t m_revision = 0;
+    struct ProgramLayout
+    {
+        std::weak_ptr<const ShaderTargetCode> program;
+        std::weak_ptr<const RayLitMaterialLayout> layout;
+    };
+    std::vector<ProgramLayout> m_layouts;
     std::vector<std::weak_ptr<RayWorldMaterialRequest>> m_requests;
     std::deque<std::weak_ptr<RayWorldMaterialRequest>> m_waiting;
     std::vector<std::weak_ptr<const RayWorldMaterialPublication>> m_published;

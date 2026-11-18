@@ -46,6 +46,7 @@ from __future__ import annotations
 from enum import IntEnum
 from typing import TYPE_CHECKING
 
+from infernux.lib import _Infernux
 from infernux.renderstack.render_pipeline import RenderPipeline
 from infernux.renderstack.geometry_buffers import geometry_buffer
 from infernux.rendergraph.graph import Format
@@ -115,6 +116,7 @@ def _ray_replay_name(source):
 
 def _trace_ray_indirect(graph, gbuffer, lobes, temporal):
     world = graph._create_world_ray_lit()
+    tail = graph._create_world_ray_tail()
     packets = {}
     for name, specular, divisor in lobes:
         output = graph.create_texture(f"_result/gbuffer/{name}_packet", format=Format.RGBA32_UINT,
@@ -124,6 +126,7 @@ def _trace_ray_indirect(graph, gbuffer, lobes, temporal):
             render_pass.write_color(output)
             bind_deferred_surface(render_pass, gbuffer.snapshot)
             render_pass.set_texture("primary", gbuffer.sample(_RAY_PRIMARY_SURFACE))
+            render_pass.set_buffer("tail_cache", tail["ray_tail_read"])
             for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials", "ray_texture_descriptors"):
                 render_pass.set_buffer(key, world[key])
             for key in ("ray_color_pages", "ray_data_pages"):
@@ -149,12 +152,10 @@ def _decode_raw_signals(graph, packets):
     return raw
 
 
-def _draw_thin_transparency(graph, surface_records):
+def _capture_thin_transparency(graph):
     layer = graph.create_texture("_ray_thin_layer", format=Format.RGBA32_UINT, samples=1)
     optics = graph.create_texture("_ray_thin_optics", format=Format.RGBA32_UINT, samples=1)
     depth = graph.create_texture("_ray_thin_depth", format=Format.D32_SFLOAT, samples=1)
-    reflection = graph.create_texture("_ray_thin_reflection", format=Format.RGBA16_SFLOAT, samples=1)
-    background = graph.create_texture("_ray_thin_background", format=Format.RGBA16_SFLOAT, samples=1)
     with graph.add_copy_pass("Thin Surface Depth") as render_pass:
         render_pass.copy_texture(DEPTH_TEXTURE, depth)
     with graph.add_pass("Thin Surface Capture") as render_pass:
@@ -166,10 +167,72 @@ def _draw_thin_transparency(graph, surface_records):
             queue_range=transparent_queue_range(), sort_mode="front_to_back",
             material_pass="thin_surface", material_filter="thin_sheet",
         )
+    return layer, optics
+
+
+def _update_ray_tail(graph, gbuffer, *, opaque, thin):
+    world = graph._create_world_ray_lit()
+    tail = graph._create_world_ray_tail()
+    count = _Infernux._ray_tail_batch_size()
+    requests = tuple(graph.create_texture(f"_ray_tail_request_{index}", format=Format.RGBA32_UINT,
+                                          size=(count, 2), samples=1) for index in range(2))
+    samples = graph.create_texture("_ray_tail_samples", format=Format.RGBA32_SFLOAT,
+                                    size=(count, 1), samples=1)
+    primary = gbuffer.sample(_RAY_PRIMARY_SURFACE) if opaque else thin[0]
+    with graph.add_pass("Ray Tail Requests") as render_pass:
+        render_pass._ray_tail_batch = 2
+        bind_deferred_surface(render_pass, gbuffer.snapshot)
+        render_pass.set_texture("primary", primary)
+        render_pass.set_texture("thin_layer", thin[0] if thin else primary)
+        render_pass.set_buffer("requests", tail["ray_tail_requests"])
+        for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials", "ray_texture_descriptors"):
+            render_pass.set_buffer(key, world[key])
+        for key in ("ray_color_pages", "ray_data_pages"):
+            render_pass.set_texture(key, world[key])
+        for index, target in enumerate(requests):
+            render_pass.write_color(target, slot=index)
+        render_pass.set_param("opaque_enabled", opaque)
+        render_pass.set_param("thin_enabled", bool(thin))
+        render_pass.fullscreen_quad("infernux/internal/ray_tail_request")
+    with graph.add_compute_pass("Ray Tail Prepare") as render_pass:
+        render_pass._action = "ray_tail_prepare"
+        render_pass._ray_tail_batch = 1
+        render_pass._side_effect = True
+        render_pass.set_textures({f"request_{index}": target for index, target in enumerate(requests)})
+        render_pass.read_buffer(tail["ray_tail_read"])
+        render_pass.read_buffer(tail["ray_tail_control"])
+        render_pass.write_buffer(tail["ray_tail_write"])
+        render_pass.write_buffer(tail["ray_tail_requests"])
+    with graph.add_pass("Ray Tail Estimate") as render_pass:
+        render_pass._ray_tail_batch = 2
+        render_pass.set_buffer("requests", tail["ray_tail_requests"])
+        render_pass.set_buffer("cache", tail["ray_tail_read"])
+        render_pass.set_buffer("surface_records", gbuffer.snapshot[SURFACE_RECORDS_BUFFER])
+        for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials", "ray_texture_descriptors"):
+            render_pass.set_buffer(key, world[key])
+        for key in ("ray_color_pages", "ray_data_pages"):
+            render_pass.set_texture(key, world[key])
+        render_pass.write_color(samples)
+        render_pass.fullscreen_quad("infernux/internal/ray_tail_estimate")
+    with graph.add_compute_pass("Ray Tail Merge") as render_pass:
+        render_pass._action = "ray_tail_merge"
+        render_pass._ray_tail_batch = 1
+        render_pass._side_effect = True
+        render_pass.set_texture("tail_samples", samples)
+        render_pass.read_buffer(tail["ray_tail_requests"])
+        render_pass.read_buffer(tail["ray_tail_control"])
+        render_pass.write_buffer(tail["ray_tail_write"])
+
+
+def _draw_thin_transparency(graph, surface_records, capture):
+    layer, optics = capture
+    reflection = graph.create_texture("_ray_thin_reflection", format=Format.RGBA16_SFLOAT, samples=1)
+    background = graph.create_texture("_ray_thin_background", format=Format.RGBA16_SFLOAT, samples=1)
     world = graph._create_world_ray_lit()
     with graph.add_pass("Thin Surface Reflection") as render_pass:
         render_pass.set_textures({"layer": layer, "optics": optics})
         render_pass.set_buffer("surface_records", surface_records)
+        render_pass.set_buffer("tail_cache", graph._create_world_ray_tail()["ray_tail_read"])
         for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials", "ray_texture_descriptors"):
             render_pass.set_buffer(key, world[key])
         for key in ("ray_color_pages", "ray_data_pages"):
@@ -397,6 +460,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             )
             current = graph.current_pass_result
 
+        ray_source = current
         signals = {}
         if lobes:
             if any(current.sample(name) is not raw_gbuffer.sample(name) for name in (DEPTH_TEXTURE, "surface")):
@@ -468,9 +532,13 @@ class DefaultDeferredPipeline(RenderPipeline):
             )
             current = graph.current_pass_result
 
+        capture = _capture_thin_transparency(graph) if self.ray_transparency else None
+        if lobes or capture:
+            _update_ray_tail(graph, ray_source, opaque=bool(lobes), thin=capture)
+
         # ---- Pass 4: Transparent objects (Forward+ rendering) ----
         if self.ray_transparency:
-            _draw_thin_transparency(graph, current.snapshot[SURFACE_RECORDS_BUFFER])
+            _draw_thin_transparency(graph, current.snapshot[SURFACE_RECORDS_BUFFER], capture)
         else:
             add_transparent_pass(graph, material_pass="forward_plus")
         current = graph.derive_pass_result(

@@ -51,6 +51,7 @@ namespace raytracing
 {
 class RayWorldGeometry;
 class RayWorldMaterials;
+class RayWorldTailCache;
 } // namespace raytracing
 namespace lighting
 {
@@ -515,6 +516,8 @@ class InxVkCoreModular
     }
     [[nodiscard]] raytracing::RayWorldGeometry &GetWorldRayGeometry();
     [[nodiscard]] raytracing::RayWorldMaterials &GetWorldRayMaterials();
+    [[nodiscard]] raytracing::RayWorldTailCache &GetWorldRayTailCache();
+    [[nodiscard]] std::shared_ptr<vk::BudgetGpuTiming> AcquireRayTailGpuTiming();
     void PrepareWorldRayMaterialPages(vk::VulkanFrameSubmission &submission);
     [[nodiscard]] uint64_t GetStagingPoolBytes() const noexcept
     {
@@ -1346,6 +1349,8 @@ class InxVkCoreModular
     FrameWorkOwner *m_frameWorkOwner = nullptr;
     std::unique_ptr<raytracing::RayWorldGeometry> m_worldRayGeometry;
     std::unique_ptr<raytracing::RayWorldMaterials> m_worldRayMaterials;
+    std::unique_ptr<raytracing::RayWorldTailCache> m_worldRayTailCache;
+    std::vector<std::shared_ptr<vk::BudgetGpuTiming>> m_rayTailGpuTimings;
     std::array<std::shared_ptr<vk::TextureUploadTicket>, 2> m_rayPlaceholderUploads;
     std::unordered_map<std::string, FailedTextureUpload> m_failedTextureUploads;
     std::function<std::shared_ptr<rhi::RenderTexture>(const std::string &)> m_renderTextureAssetLoader;

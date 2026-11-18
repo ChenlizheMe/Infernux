@@ -26,12 +26,6 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
     explicit VulkanFullscreenRendererHost(InxVkCoreModular &core)
         : m_core(core), m_device(core.GetDeviceContext().GetRhiDevice())
     {
-        m_perViewLayout = m_device.RegisterBindingLayout(core.GetPerViewDescSetLayout());
-    }
-
-    ~VulkanFullscreenRendererHost() override
-    {
-        m_device.Release(m_perViewLayout);
     }
 
     [[nodiscard]] rhi::Device &GetRhiDevice() noexcept override
@@ -54,11 +48,6 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
         return m_core.AcquireFullscreenProgram(name);
     }
 
-    [[nodiscard]] rhi::BindingLayoutHandle GetPerViewLayout() const noexcept override
-    {
-        return m_perViewLayout;
-    }
-
     void ReportInfo(const std::string &message) override
     {
         INXLOG_INFO(message);
@@ -67,7 +56,6 @@ class VulkanFullscreenRendererHost final : public FullscreenRendererHost
   private:
     InxVkCoreModular &m_core;
     vk::VulkanRhiDevice &m_device;
-    rhi::BindingLayoutHandle m_perViewLayout;
 };
 
 } // namespace

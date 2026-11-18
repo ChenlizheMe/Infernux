@@ -37,7 +37,10 @@ class VulkanFrameSubmission
                              size_t acceptedCount);
     [[nodiscard]] size_t WorkPublicationCount() const noexcept
     {
-        return m_workPublications.size();
+        size_t count = 0;
+        for (const auto &[work, callbacks] : m_workPublications)
+            count += callbacks.size();
+        return count;
     }
     void DiscardPublications() noexcept;
 

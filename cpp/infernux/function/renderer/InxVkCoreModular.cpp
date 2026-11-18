@@ -17,6 +17,7 @@
 #include "lighting/ForwardPlusLightGrid.h"
 #include "raytracing/RayWorldGeometry.h"
 #include "raytracing/RayWorldMaterials.h"
+#include "raytracing/RayWorldTailCache.h"
 #include "vk/RhiVulkanTypes.h"
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 
@@ -136,8 +137,31 @@ raytracing::RayWorldGeometry &InxVkCoreModular::GetWorldRayGeometry()
     return *m_worldRayGeometry;
 }
 
+raytracing::RayWorldTailCache &InxVkCoreModular::GetWorldRayTailCache()
+{
+    if (!m_worldRayTailCache)
+        m_worldRayTailCache =
+            std::make_unique<raytracing::RayWorldTailCache>(*m_frameWorkOwner, GetDeviceContext().GetRhiDevice());
+    return *m_worldRayTailCache;
+}
+
+std::shared_ptr<vk::BudgetGpuTiming> InxVkCoreModular::AcquireRayTailGpuTiming()
+{
+    if (!m_backend.Device().GetCapabilities().timestampQueries.supported)
+        return {};
+    for (const auto &slot : m_rayTailGpuTimings)
+        if (slot.use_count() == 1) {
+            slot->Reset();
+            return slot;
+        }
+    auto slot = std::make_shared<vk::BudgetGpuTiming>(m_backend.Device());
+    m_rayTailGpuTimings.push_back(slot);
+    return slot;
+}
+
 InxVkCoreModular::~InxVkCoreModular()
 {
+    m_worldRayTailCache.reset();
     m_worldRayMaterials.reset();
     m_rayPlaceholderUploads = {};
     m_worldRayGeometry.reset();
@@ -251,6 +275,9 @@ InxVkCoreModular::~InxVkCoreModular()
 #if INFERNUX_FRAME_PROFILE
     m_gpuTimestampQueries.Destroy();
 #endif
+    for (const auto &slot : m_rayTailGpuTimings)
+        slot->Destroy();
+    m_rayTailGpuTimings.clear();
     DestroyGuiRenderGraphs();
     m_backend.ReleasePresentation();
     m_submissionExecutor.Destroy();

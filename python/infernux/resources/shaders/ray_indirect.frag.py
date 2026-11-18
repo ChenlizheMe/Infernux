@@ -13,6 +13,7 @@ class RayIndirect(shader.fullscreen):
     surface_tex = shader.input("gbuffer_surface", shader.UInt2D)
     depth_tex = shader.input("depth", shader.Depth2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
+    tail_cache = shader.input("ray_tail_read", shader.Buffer[shader.uvec4])
     primary = shader.input("ray_primary_surface", shader.UInt2D)
     specular = shader.parameter.bool(default=False)
     temporal = shader.parameter.bool(default=True)
@@ -43,4 +44,5 @@ class RayIndirect(shader.fullscreen):
         geometric_normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
         return shader.ray._indirect_signal(
             surface, context, geometric_normal, self.surface_records, metadata.y, self.specular, self.temporal,
+            self.tail_cache,
         )

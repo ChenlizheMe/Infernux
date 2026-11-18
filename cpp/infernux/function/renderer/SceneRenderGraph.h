@@ -34,6 +34,7 @@
 #include "lighting/ForwardPlusLightGrid.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
 #include "raytracing/RayHistoryWorldState.h"
+#include "raytracing/RayWorldTailCache.h"
 #include "rhi/CameraViewportTarget.h"
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiRenderTexture.h"
@@ -57,10 +58,13 @@
 
 namespace infernux
 {
+namespace vk
+{
+class BudgetGpuTiming;
+}
 namespace raytracing
 {
 class RayWorldGeometryPublication;
-class RayLitMaterialLayout;
 class RayWorldMaterialRequest;
 struct RayWorldMaterialPublication;
 } // namespace raytracing
@@ -627,6 +631,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// pipeline description when it builds the per-camera shadow layout.
     void ClearCachedViewSubmission()
     {
+        if (m_worldRayTail.batch && !m_worldRayTail.batch->Accepted())
+            m_worldRayTail.batch.reset();
         m_cachedRenderers.Clear();
         m_hasCachedDrawCalls = false;
         m_cachedShadowRenderers.Clear();
@@ -674,13 +680,22 @@ class SceneRenderGraph : public NativeLifetimeOwner
         return m_worldRayRequested;
     }
     void SetWorldRayGeometry(const std::shared_ptr<const RenderWorldFrame> &world);
+    [[nodiscard]] const auto &GetRayTailBatch() const noexcept
+    {
+        return m_worldRayTail.batch;
+    }
+    [[nodiscard]] bool AllowsRayTailPass(uint32_t gate) const noexcept
+    {
+        return gate == 0 || (m_worldRayTail.batch && m_worldRayTail.batch->Allows(gate));
+    }
+    void RecordRayTailTiming(VkCommandBuffer commands, const std::string &name, bool begin, bool last);
     [[nodiscard]] const auto &GetWorldRayMaterialPublication() const noexcept
     {
         return m_worldRayMaterial;
     }
     [[nodiscard]] bool HasRejectedWorldRayMaterials() const noexcept
     {
-        return m_hasPythonGraph && m_worldRayLitLayout && !m_worldRayMaterial && !m_worldRayPending;
+        return m_hasPythonGraph && m_worldRayLitProgram && !m_worldRayMaterial && !m_worldRayPending;
     }
 
     /// @brief Clear cached draw calls and camera state.
@@ -703,6 +718,8 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_worldRayPending = false;
         m_worldRayMaterialRequest.reset();
         m_worldRayMaterial.reset();
+        m_worldRayTail = {};
+        m_worldRayTailRequest.reset();
         InvalidateParticleViews();
         RetireWorkInstances();
         InvalidatePerViewShadowBindings();
@@ -1073,11 +1090,15 @@ class SceneRenderGraph : public NativeLifetimeOwner
     std::array<std::shared_ptr<const rhi::BufferResource>, 2> m_worldRayBuffers;
     std::array<vk::ResourceHandle, 2> m_worldRayHandles;
     std::shared_ptr<const ShaderTargetCode> m_worldRayLitProgram;
-    std::shared_ptr<const raytracing::RayLitMaterialLayout> m_worldRayLitLayout;
     std::shared_ptr<const raytracing::RayWorldMaterialRequest> m_worldRayMaterialRequest;
     std::shared_ptr<const raytracing::RayWorldMaterialPublication> m_worldRayMaterial;
     bool m_worldRayRequested = false;
     bool m_worldRayPending = false;
+    raytracing::RayTailCacheBinding m_worldRayTail;
+    std::weak_ptr<raytracing::RayTailCacheBatch> m_timedRayTail;
+    std::weak_ptr<vk::BudgetGpuTiming> m_rayTailTiming;
+    std::shared_ptr<raytracing::RayTailCacheRequest> m_worldRayTailRequest;
+    std::array<vk::ResourceHandle, 4> m_worldRayTailHandles;
     bool m_hasShadowCasterPass = false;
     // Shadow attachments belong to one camera graph and survive across graph
     // executions. Static scenes can therefore preserve the atlas until an
@@ -1145,6 +1166,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         rhi::BufferHandle cameraMatrix;
         rhi::BufferHandle editorOverlayCameraMatrix;
         rhi::BufferHandle lighting;
+        FullscreenViewBindings fullscreenBindings;
         uint64_t lightingRevision = 0;
         PerViewBufferBindingState geometryBindings;
         PerViewBufferBindingState particleBindings;

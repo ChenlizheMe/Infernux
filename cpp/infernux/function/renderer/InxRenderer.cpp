@@ -747,6 +747,8 @@ void InxRenderer::PreparePipeline()
                 m_vkCore->CaptureResidentGeometryReads(graph->GetCachedDrawCalls(), graph->GetCachedShadowDrawCalls());
                 const auto &viewContext = graph->GetRenderViewContext();
                 submission.Retain(graph->AcquireComputeReadValues());
+                const auto rayTailBatch = graph->GetRayTailBatch();
+                submission.Retain(rayTailBatch);
                 if (const auto &materials = graph->GetWorldRayMaterialPublication())
                     submission.Retain(std::const_pointer_cast<raytracing::RayWorldMaterialPublication>(materials));
                 std::vector<uint32_t> graphDependencies = predecessors;
@@ -798,6 +800,15 @@ void InxRenderer::PreparePipeline()
                             return completeView(commandBuffer);
                         },
                         "SceneGraph/Finalize");
+                }
+                if (rayTailBatch && !rayTailBatch->Accepted()) {
+                    submission.OnWorkAccepted(finalize, [this, rayTailBatch](rhi::SubmissionTicket ticket) {
+                        if (rayTailBatch->Accepted())
+                            return;
+                        m_vkCore->GetBackendContext().Queues().WatchWorkCompletion(ticket, rayTailBatch->Receipt());
+                        if (!m_vkCore->GetWorldRayTailCache().AcceptBatch(rayTailBatch))
+                            throw std::logic_error("Accepted directional ray cache batch was not fully recorded");
+                    });
                 }
                 submission.OnWorkAccepted(finalize, [this, graph, previewId, publication, sceneView, sceneWorld,
                                                      sceneTargetGeneration](rhi::SubmissionTicket ticket) {

@@ -3,6 +3,7 @@
 #include <core/error/InxError.h>
 #include <function/renderer/RenderWorld.h>
 #include <function/renderer/rhi/RhiBuffer.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <algorithm>
 #include <cassert>
@@ -32,6 +33,21 @@ MaterialRevision RevisionOf(const RenderWorldFrame &world, uint64_t textureConte
 {
     return {world.WorldId(), world.SimulationEpoch(), world.StructuralRevision(), world.ContentRevision(),
             textureContentGeneration};
+}
+
+bool SameMaterialRecords(const ShaderTargetCode &a, const ShaderTargetCode &b)
+{
+    for (const auto name : {"ray_lit_materials", "ray_texture_descriptors"}) {
+        const auto find = [name](const auto &resources) {
+            return std::find_if(resources.begin(), resources.end(),
+                                [name](const auto &resource) { return resource.name == name; });
+        };
+        const auto left = find(a.resources), right = find(b.resources);
+        if (left == a.resources.end() || right == b.resources.end() || left->elementStride != right->elementStride ||
+            !(left->value == right->value))
+            return false;
+    }
+    return true;
 }
 
 std::shared_ptr<const rhi::BufferResource> AllocateTable(rhi::Device &device, uint64_t bytes)
@@ -172,11 +188,30 @@ RayWorldMaterials::~RayWorldMaterials()
 }
 
 RayWorldMaterialBinding RayWorldMaterials::Acquire(const std::shared_ptr<const RenderWorldFrame> &world,
-                                                   const std::shared_ptr<const RayLitMaterialLayout> &layout,
+                                                   const std::shared_ptr<const ShaderTargetCode> &program,
                                                    uint64_t textureContentGeneration,
                                                    std::shared_ptr<const RayWorldMaterialRequest> &request)
 {
-    assert(world && layout);
+    assert(world && program);
+    std::shared_ptr<const RayLitMaterialLayout> layout;
+    m_layouts.erase(std::remove_if(m_layouts.begin(), m_layouts.end(),
+                                   [](const auto &entry) { return entry.program.expired() || entry.layout.expired(); }),
+                    m_layouts.end());
+    for (const auto &entry : m_layouts)
+        if (!entry.program.owner_before(program) && !program.owner_before(entry.program)) {
+            layout = entry.layout.lock();
+            break;
+        }
+    if (!layout) {
+        for (const auto &entry : m_layouts)
+            if (const auto existing = entry.program.lock(); SameMaterialRecords(*existing, *program)) {
+                layout = entry.layout.lock();
+                break;
+            }
+        if (!layout)
+            layout = std::make_shared<RayLitMaterialLayout>(program->resources);
+        m_layouts.push_back({program, layout});
+    }
     const auto key = RevisionOf(*world, textureContentGeneration);
     if (!request || request->revision != key || request->layout != layout) {
         request.reset();

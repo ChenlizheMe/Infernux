@@ -7,6 +7,7 @@
 #include <function/renderer/shader/ShaderProgramCode.h>
 #include <function/renderer/shader/ShaderValueCopy.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -33,8 +34,9 @@ struct FullscreenProgram
 
     [[nodiscard]] bool UsesViewBinding(uint32_t binding) const noexcept
     {
-        for (const auto &resource : code->resources)
-            if (resource.set == 1 && resource.binding.binding == binding)
+        const std::array<uint32_t, 2> key{1, binding};
+        for (const auto &entry : code->entries)
+            if (std::find(entry.bindings.begin(), entry.bindings.end(), key) != entry.bindings.end())
                 return true;
         return false;
     }
@@ -64,12 +66,19 @@ struct FullscreenParameters
     std::vector<Buffer> buffers;
 };
 
+// Indexed by the engine's set-1 binding, independently of a program's active subset.
+struct FullscreenViewBindings
+{
+    std::array<rhi::BufferBinding, 8> buffers;
+    std::array<rhi::TextureBinding, 8> textures;
+};
+
 // Borrowed view resources. Their owner stages and retires the allocations;
-// fullscreen programs share the geometry view's camera, lights and shadows.
+// each fullscreen program binds only the resources its selected entries use.
 struct FullscreenViewResources
 {
     rhi::BufferBinding globals;
-    rhi::BindGroupHandle perView;
+    const FullscreenViewBindings *perView = nullptr;
     rhi::BufferBinding canonicalLights;
     rhi::BufferBinding worldSurfaces;
 };
@@ -84,7 +93,6 @@ class FullscreenRendererHost
     [[nodiscard]] virtual uint32_t GetCurrentFrame() const noexcept = 0;
 
     [[nodiscard]] virtual std::shared_ptr<const FullscreenProgram> AcquireProgram(const std::string &name) = 0;
-    [[nodiscard]] virtual rhi::BindingLayoutHandle GetPerViewLayout() const noexcept = 0;
     virtual void ReportInfo(const std::string &message)
     {
         (void)message;

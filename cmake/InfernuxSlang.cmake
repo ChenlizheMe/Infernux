@@ -47,6 +47,11 @@ function(infernux_add_rt_slang_module compiler_target)
     _infernux_embed_ray_source("${_traversal}" _ray_traversal_source)
     _infernux_embed_ray_source("${_bsdf}" _ray_bsdf_source)
     _infernux_embed_ray_source("${_layout}" _ray_layout_source)
+    set(_tail_shared "${_shader_dir}/ray_tail_shared.slang")
+    set(_tail_update "${_shader_dir}/ray_tail_update.slang")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_tail_shared}" "${_tail_update}")
+    _infernux_embed_ray_source("${_tail_shared}" _ray_tail_shared_source)
+    _infernux_embed_ray_source("${_tail_update}" _ray_tail_update_source)
     set(_deformation "${_shader_dir}/ray_deformation.slang")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_deformation}")
     _infernux_embed_ray_source("${_deformation}" _ray_deformation_source)
@@ -55,6 +60,12 @@ function(infernux_add_rt_slang_module compiler_target)
     configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/SlangRayModules.h.in" "${_header}" @ONLY)
     configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/RayDeformationSource.h.in"
         "${_output}/RayDeformationSource.h" @ONLY)
+    configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/RayTailCacheSource.h.in"
+        "${_output}/RayTailCacheSource.h" @ONLY)
+    set_property(SOURCE "${_root}/cpp/infernux/function/renderer/raytracing/RayWorldTailCache.cpp"
+        APPEND PROPERTY OBJECT_DEPENDS "${_output}/RayTailCacheSource.h")
+    set_property(SOURCE "${_root}/cpp/infernux/function/renderer/raytracing/RayWorldTailCache.cpp"
+        APPEND PROPERTY INCLUDE_DIRECTORIES "${_output}")
     set_property(SOURCE "${_root}/cpp/infernux/function/renderer/raytracing/RayWorldGeometry.cpp"
         APPEND PROPERTY OBJECT_DEPENDS "${_output}/RayDeformationSource.h")
     set_property(SOURCE "${_root}/cpp/infernux/function/renderer/raytracing/RayWorldGeometry.cpp"

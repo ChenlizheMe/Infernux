@@ -728,7 +728,9 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                         command->type == GraphCommandType::CopyTextureToBuffer);
         if ((pass.type == GraphPassType::Raster && command && !rasterCommand) ||
             (pass.type == GraphPassType::Copy && !copyCommand) ||
-            (pass.type == GraphPassType::Compute && (!command || command->type != GraphCommandType::ComputeWork)) ||
+            (pass.type == GraphPassType::Compute && (!command || (command->type != GraphCommandType::ComputeWork &&
+                                                                  command->type != GraphCommandType::RayTailPrepare &&
+                                                                  command->type != GraphCommandType::RayTailMerge))) ||
             (pass.type == GraphPassType::Present && (!command || command->type != GraphCommandType::Present))) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
                          "' command does not match its execution domain");
@@ -771,7 +773,12 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                              "' does not declare the required usage");
                 return false;
             }
-            if (buffer->second->HasFrameBuffer() && access.type != GraphBufferAccessType::StorageRead) {
+            const bool tailWrite =
+                (buffer->second->frameBuffer == GraphFrameBuffer::WorldRayTailWrite ||
+                 buffer->second->frameBuffer == GraphFrameBuffer::WorldRayTailRequests) &&
+                pass.rayTailBatch == 1 && command &&
+                (command->type == GraphCommandType::RayTailPrepare || command->type == GraphCommandType::RayTailMerge);
+            if (buffer->second->HasFrameBuffer() && access.type != GraphBufferAccessType::StorageRead && !tailWrite) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: frame buffer '", access.resource, "' is read-only");
                 return false;
             }
@@ -981,6 +988,24 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
             }
         }
 
+        if (command && command->type == GraphCommandType::FullscreenQuad && command->fullscreenProgram) {
+            std::array<rhi::PixelFormat, rhi::GraphicsPipelineDesc::MaxColorTargets> formats{};
+            for (const auto &[slot, name] : pass.writeColors)
+                formats[slot] = textures.at(name)->EffectiveFormat(view);
+            if (command->alphaBlend &&
+                std::any_of(formats.begin(), formats.begin() + pass.writeColors.size(), rhi::IsIntegerFormat)) {
+                INXLOG_ERROR("Fullscreen pass '", pass.name, "' cannot blend integer color attachments");
+                return false;
+            }
+            try {
+                ValidateFullscreenColorOutputs(*command->fullscreenProgram, formats.data(),
+                                               static_cast<uint32_t>(pass.writeColors.size()));
+            } catch (const std::invalid_argument &error) {
+                INXLOG_ERROR("Fullscreen pass '", pass.name, "': ", error.what());
+                return false;
+            }
+        }
+
         if (!pass.writeDepth.empty()) {
             auto texIt = textures.find(pass.writeDepth);
             if (texIt == textures.end()) {
@@ -989,24 +1014,6 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                 return false;
             }
             if (!texIt->second->IsDepth()) {
-                if (command && command->type == GraphCommandType::FullscreenQuad && command->fullscreenProgram) {
-                    std::array<rhi::PixelFormat, rhi::GraphicsPipelineDesc::MaxColorTargets> formats{};
-                    for (const auto &[slot, name] : pass.writeColors)
-                        formats[slot] = textures.at(name)->EffectiveFormat(view);
-                    if (command->alphaBlend &&
-                        std::any_of(formats.begin(), formats.begin() + pass.writeColors.size(), rhi::IsIntegerFormat)) {
-                        INXLOG_ERROR("Fullscreen pass '", pass.name, "' cannot blend integer color attachments");
-                        return false;
-                    }
-                    try {
-                        ValidateFullscreenColorOutputs(*command->fullscreenProgram, formats.data(),
-                                                       static_cast<uint32_t>(pass.writeColors.size()));
-                    } catch (const std::invalid_argument &error) {
-                        INXLOG_ERROR("Fullscreen pass '", pass.name, "': ", error.what());
-                        return false;
-                    }
-                }
-
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes color texture '",
                              pass.writeDepth, "' as depth");
                 return false;

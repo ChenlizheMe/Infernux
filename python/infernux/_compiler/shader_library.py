@@ -19,11 +19,17 @@ _RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
 _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceHit", _RAY_ARGUMENTS),
                   "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS),
                   "ray._thin_reflection": ("inx_ray_thin_reflection", "float4", (
-                      "float3", "float3", "InxBuffer_uint4", "float2")),
+                      "float3", "float3", "InxBuffer_uint4", "float2", "InxBuffer_uint4")),
                   "ray._radiance_parts": ("inx_ray_radiance_parts", "float4", (
                       "float3", "float3", "InxBuffer_uint4", "uint", "int", "float")),
+                  "ray._tail_pixel": ("inx_ray_tail_pixel", "uint2", ("uint", "uint2")),
+                  "ray._tail_request": ("inx_ray_tail_primary_request", "InxRayTailRequest", (
+                      "InxSurfaceData", "InxShadingContext", "float3", "uint", "bool", "bool")),
+                  "ray._tail_thin_request": ("inx_ray_tail_thin_request", "InxRayTailRequest", ("float3", "float3")),
+                  "ray._tail_estimate": ("inx_ray_tail_estimate", "float4", (
+                      "InxBuffer_uint4", "InxBuffer_uint4", "InxBuffer_uint4", "uint")),
                   "ray._indirect_signal": ("inx_ray_indirect_signal", "uint4", (
-                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool"))}
+                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool", "InxBuffer_uint4"))}
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
                      "frame_delta_time": ("inx_frame_delta_time", "float", ()),
                      "_previous_ray_geometry_serial": ("inx_previous_ray_geometry_serial", "uint", ()),

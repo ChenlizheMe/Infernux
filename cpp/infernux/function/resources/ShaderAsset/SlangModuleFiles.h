@@ -65,6 +65,7 @@ class SlangModuleFiles final : public ISlangFileSystemExt
         Add(GetSlangRayLayoutModule());
         Add(GetSlangRayTraversalModule());
         Add(GetSlangRayBsdfModule());
+        Add(GetSlangRayTailCacheModule());
         for (const auto &library : libraries)
             Add(library);
         Add(source);

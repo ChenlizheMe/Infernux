@@ -734,6 +734,16 @@ void PassBuilder::SkipCallbackWhenRendererListsEmpty(bool enabled)
     m_graph->m_passes[m_passId].skipCallbackWhenRendererListsEmpty = enabled;
 }
 
+void PassBuilder::SetExecutionGate(std::function<bool()> gate)
+{
+    m_graph->m_passes[m_passId].executionGate = std::move(gate);
+}
+
+void PassBuilder::SetExecutionTiming(std::function<void(VkCommandBuffer, bool)> timing)
+{
+    m_graph->m_passes[m_passId].executionTiming = std::move(timing);
+}
+
 ResourceHandle PassBuilder::TransferRead(ResourceHandle handle)
 {
     if (!m_graph->Owns(handle)) {
@@ -2337,7 +2347,10 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
         }
 #endif
 
-        const bool isGraphicsPass = pass.type == PassType::Graphics && pass.renderingSignature.IsValid();
+        const bool executePass = !pass.executionGate || pass.executionGate();
+        if (executePass && pass.executionTiming)
+            pass.executionTiming(commandBuffer, true);
+        const bool isGraphicsPass = executePass && pass.type == PassType::Graphics && pass.renderingSignature.IsValid();
 #if INFERNUX_FRAME_PROFILE
         if (isGraphicsPass) {
             ++s_executeProfile.graphicsPassCount;
@@ -2376,7 +2389,8 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
         }
 
         // Execute pass callback
-        bool executeCallback = std::visit([](const auto &callback) { return bool(callback); }, pass.executeCallback);
+        bool executeCallback =
+            executePass && std::visit([](const auto &callback) { return bool(callback); }, pass.executeCallback);
         if (executeCallback && pass.skipCallbackWhenRendererListsEmpty) {
             executeCallback =
                 std::any_of(pass.rendererListInputs.begin(), pass.rendererListInputs.end(), [&](ResourceHandle handle) {
@@ -2406,6 +2420,8 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
             } catch (...) {
                 if (isGraphicsPass)
                     m_cmdEndRendering(commandBuffer);
+                if (pass.executionTiming)
+                    pass.executionTiming(commandBuffer, false);
 #if INFERNUX_FRAME_PROFILE
                 if (gpuQueries)
                     gpuQueries->EndRegion(commandBuffer, gpuRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -2435,6 +2451,8 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
             s_executeProfile.endPassMs += std::chrono::duration<double, std::milli>(stageNow - stageStart).count();
 #endif
         }
+        if (executePass && pass.executionTiming)
+            pass.executionTiming(commandBuffer, false);
 #if INFERNUX_FRAME_PROFILE
         if (gpuQueries)
             gpuQueries->EndRegion(commandBuffer, gpuRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);

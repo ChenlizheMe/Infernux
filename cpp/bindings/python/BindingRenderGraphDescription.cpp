@@ -4,6 +4,7 @@
 #include <function/renderer/MaterialPassPipeline.h>
 #include <function/renderer/RenderGraphDescription.h>
 #include <function/renderer/RendererSelection.h>
+#include <function/renderer/raytracing/RayWorldTailCache.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
@@ -15,6 +16,7 @@ namespace infernux
 {
 void RegisterRenderGraphDescriptionBindings(py::module_ &m)
 {
+    m.def("_ray_tail_batch_size", [] { return infernux::raytracing::RayTailCacheConfig{}.batchSize; });
     m.def("_gbuffer_formats", [] { return kGBufferColorFormats; });
     // ========================================================================
     // RenderGraph topology binding types
@@ -57,6 +59,8 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .value("COPY_TEXTURE_TO_BUFFER", GraphCommandType::CopyTextureToBuffer)
         .value("COPY_BUFFER_TO_TEXTURE", GraphCommandType::CopyBufferToTexture)
         .value("COMPUTE_WORK", GraphCommandType::ComputeWork)
+        .value("RAY_TAIL_PREPARE", GraphCommandType::RayTailPrepare)
+        .value("RAY_TAIL_MERGE", GraphCommandType::RayTailMerge)
         .value("PRESENT", GraphCommandType::Present);
 
     py::enum_<GraphPassType>(m, "GraphPassType", "Execution domain of a graph pass")
@@ -186,7 +190,11 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
         .value("WORLD_RAY_GEOMETRY", GraphFrameBuffer::WorldRayGeometry)
         .value("WORLD_RAY_MESHES", GraphFrameBuffer::WorldRayMeshes)
         .value("WORLD_RAY_LIT_MATERIALS", GraphFrameBuffer::WorldRayLitMaterials)
-        .value("WORLD_RAY_TEXTURE_DESCRIPTORS", GraphFrameBuffer::WorldRayTextureDescriptors);
+        .value("WORLD_RAY_TEXTURE_DESCRIPTORS", GraphFrameBuffer::WorldRayTextureDescriptors)
+        .value("WORLD_RAY_TAIL_READ", GraphFrameBuffer::WorldRayTailRead)
+        .value("WORLD_RAY_TAIL_WRITE", GraphFrameBuffer::WorldRayTailWrite)
+        .value("WORLD_RAY_TAIL_REQUESTS", GraphFrameBuffer::WorldRayTailRequests)
+        .value("WORLD_RAY_TAIL_CONTROL", GraphFrameBuffer::WorldRayTailControl);
 
     py::class_<GraphBufferDesc>(m, "GraphBufferDesc", "Description of a buffer resource in the graph")
         .def(py::init<>())
@@ -226,6 +234,7 @@ void RegisterRenderGraphDescriptionBindings(py::module_ &m)
                        "Optional single-sample resolve target for color slot 0")
         .def_readwrite("buffer_accesses", &GraphPassDesc::bufferAccesses, "Typed buffer accesses")
         .def_readwrite("side_effect", &GraphPassDesc::sideEffect, "Retain the pass for externally observable work")
+        .def_readwrite("ray_tail_batch", &GraphPassDesc::rayTailBatch)
         .def_readwrite("events", &GraphPassDesc::events)
         .def_readwrite("clear_color", &GraphPassDesc::clearColor, "Whether to clear color buffer")
         .def_readwrite("clear_depth", &GraphPassDesc::clearDepth, "Whether to clear depth buffer")

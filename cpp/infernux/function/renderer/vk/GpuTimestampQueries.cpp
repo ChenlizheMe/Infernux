@@ -5,9 +5,61 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 
 namespace infernux::vk
 {
+
+BudgetGpuTiming::BudgetGpuTiming(const VkDeviceContext &context)
+{
+    if (!m_queries.Initialize(context, 1, 4))
+        throw std::runtime_error("Could not create budgeted GPU timestamp queries");
+}
+
+void BudgetGpuTiming::Reset() noexcept
+{
+    m_region = {};
+    m_serial = 0;
+    m_started = m_finished = m_submitted = false;
+}
+
+void BudgetGpuTiming::Destroy() noexcept
+{
+    m_queries.Destroy();
+}
+
+void BudgetGpuTiming::BeginPass(VkCommandBuffer commands, std::string_view name)
+{
+    if (!m_started) {
+        m_queries.BeginFrame(commands, 0, false);
+        m_serial = m_queries.FrameSerial(0);
+        m_started = true;
+    }
+    m_region = m_queries.BeginRegion(commands, name, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+}
+
+void BudgetGpuTiming::EndPass(VkCommandBuffer commands, bool last)
+{
+    m_queries.EndRegion(commands, m_region, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    if (last) {
+        m_queries.FinishFrame(commands, 0);
+        m_finished = true;
+    }
+}
+
+std::optional<rhi::GpuTimestampFrame> BudgetGpuTiming::Collect(const rhi::WorkCompletionReceipt &receipt)
+{
+    if (!receipt.complete || !m_finished)
+        return {};
+    if (!m_submitted) {
+        m_queries.MarkSubmitted(0);
+        m_submitted = true;
+    }
+    auto frame = m_queries.CollectCompletedFrame(0);
+    if (frame && frame->serial != m_serial)
+        throw std::logic_error("Budgeted GPU timing did not belong to its leased query frame");
+    return frame;
+}
 
 #if INFERNUX_FRAME_PROFILE
 namespace

@@ -74,6 +74,8 @@ enum class GraphCommandType
     CopyTextureToBuffer,
     CopyBufferToTexture,
     ComputeWork,
+    RayTailPrepare,
+    RayTailMerge,
     Present
 };
 
@@ -321,6 +323,10 @@ enum class GraphFrameBuffer : uint8_t
     WorldRayMeshes,
     WorldRayLitMaterials,
     WorldRayTextureDescriptors,
+    WorldRayTailRead,
+    WorldRayTailWrite,
+    WorldRayTailRequests,
+    WorldRayTailControl,
     Count,
 };
 
@@ -374,6 +380,8 @@ struct GraphPassDesc
     std::string resolveColor; ///< Optional 1x resolve target for color slot 0
     std::vector<GraphBufferAccessDesc> bufferAccesses;
     bool sideEffect = false;
+    /// Private directional-cache batch: 0 ordinary, 1 any slice, 2 estimate slice only.
+    uint32_t rayTailBatch = 0;
     std::vector<GraphEventDesc> events;
 
     // === Clear settings ===

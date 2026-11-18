@@ -1,0 +1,15 @@
+#pragma once
+
+#include <string>
+
+namespace infernux::raytracing
+{
+inline const std::string &RayTailCacheSource()
+{
+    static const std::string value = [] {
+        std::string source;
+@_ray_tail_update_source@        return source;
+    }();
+    return value;
+}
+} // namespace infernux::raytracing

@@ -831,7 +831,8 @@ InxRayTransportTerm inx_ray_direct_fresh(RayPage page, RaySurfaceHit attributes,
     float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0xb5297a4du, proposal);
     if (!proposal.active || max(weight.r, max(weight.g, weight.b)) <= 0.0)
         return {radiance, true, 0.0};
-    TraceRay endpoint = {inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws), 0.0, proposal.direction, maximum};
+    TraceRay endpoint = {inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws),
+                         0.0, proposal.direction, maximum};
     RayHit hit = inx_trace_lit_closest(page, endpoint, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return {radiance + weight * inx_environment_radiance(endpoint.direction), true, 0.0};
@@ -852,7 +853,8 @@ InxRayTransportTerm inx_ray_tail_sample(RayPage page, RaySurfaceHit attributes, 
     float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0x1b56c4e9u, proposal);
     if (!proposal.active || max(weight.r, max(weight.g, weight.b)) <= 0.0)
         return {float3(0.0), true, 0.0};
-    TraceRay ray = {inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws), 0.0, proposal.direction, maximum};
+    TraceRay ray = {inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws),
+                    0.0, proposal.direction, maximum};
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return {float3(0.0), true, 0.0};
@@ -900,7 +902,77 @@ uint4 inx_ray_signal_output(float3 signal, uint2 witness)
     return uint4(packHalf2x16(signal.rg), packHalf2x16(float2(signal.b, 1.0)), witness);
 }
 
-uint4 inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, uint seed, float3 weight)
+float inx_ray_tail_cone(InxSurfaceData surface)
+{
+    RayGgxMaterial scattering = ray_lit_ggx(surface.albedo, surface.metallic, surface.smoothness,
+                                            0.0, surface.specular_highlights);
+    if (scattering.strength > 0.0 && scattering.alpha < 0.1)
+        return 0.0;
+    float cone = scattering.strength > 0.0 ? min(0.06, 0.2 * scattering.alpha) : 0.06;
+    // Request admission and lookup use exactly the same packed angular tolerance.
+    return unpackHalf2x16ToFloat(packHalf2x16(float2(cone, 0.0))).x;
+}
+
+float3 inx_ray_cached_tail(RayPage page, RayHit hit, RaySurfaceHit attributes, InxSurfaceData surface,
+                            InxBuffer_uint4 records, InxBuffer_uint4 cache, float3 outgoing,
+                            uint seed, float maximum)
+{
+    float cone = inx_ray_tail_cone(surface);
+    // Narrow directional response retains a true tail ray, independently of cache resolution.
+    if (cone == 0.0)
+    {
+        InxRayTransportTerm fresh = inx_ray_tail_sample(page, attributes, surface, records,
+                                                          outgoing, seed, maximum);
+        return fresh.available ? fresh.radiance : float3(0.0);
+    }
+    uint4 header = inx_buffer_load(cache, 0u);
+    if (header.x == 0u)
+        return float3(0.0);
+    uint4 metric = inx_buffer_load(cache, 1u);
+    float cell_size = asfloat(metric.x);
+    int3 cell = ray_tail_cell(attributes.position_ws, cell_size);
+    uint direction = ray_tail_direction(outgoing, metric.y);
+    uint hash = ray_tail_hash(cell, 0u, hit.surface_id, hit.primitive, direction);
+    float3 normal = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
+    for (uint probe = 0u; probe < 4u; ++probe)
+    {
+        uint slot = (hash + probe) % header.x;
+        uint base = 2u + slot * 8u;
+        uint4 key = inx_buffer_load(cache, base);
+        uint4 identity = inx_buffer_load(cache, base + 1u);
+        if (!ray_tail_same(key, identity, cell, hit.surface_id, hit.primitive, header.y))
+            continue;
+        uint4 anchor = inx_buffer_load(cache, base + 2u);
+        uint4 wo = inx_buffer_load(cache, base + 3u);
+        uint4 ng = inx_buffer_load(cache, base + 6u);
+        if (wo.w != direction || anchor.w == 0u ||
+            !ray_tail_representative(asfloat(anchor.xyz), asfloat(wo.xyz), asfloat(ng.xyz),
+                                     attributes.position_ws, outgoing, normal, cell_size, cone))
+            continue;
+        uint4 exact = inx_buffer_load(cache, base + 7u);
+        if (exact.x != hit.instance_index)
+            continue;
+        uint4 bary = inx_buffer_load(cache, base + 4u);
+        TraceRay at_anchor = {asfloat(anchor.xyz), 0.0, -asfloat(wo.xyz), 0.0};
+        RayHit anchor_hit = {0.0, asfloat(bary.xy), exact.x, exact.y, hit.primitive, hit.surface_id};
+        RaySurfaceHit anchor_surface = ray_surface_at_hit(page, at_anchor, anchor_hit);
+        float3 origin = inx_ray_origin(attributes.position_ws, normal, attributes.position_error_ws);
+        float3 endpoint = inx_ray_origin(anchor_surface.position_ws, asfloat(ng.xyz), anchor_surface.position_error_ws);
+        float3 link = endpoint - origin;
+        float distance = length(link);
+        if (distance > 0.0)
+        {
+            TraceRay visibility = {origin, 0.0, link / distance, asfloat(asuint(distance) - 1u)};
+            if (!inx_trace_lit_visibility(page, visibility, 0xffffffffu, 0.0))
+                continue;
+        }
+        return asfloat(inx_buffer_load(cache, base + 5u).xyz);
+    }
+    return float3(0.0);
+}
+
+uint4 inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, InxBuffer_uint4 cache,
+                        uint seed, float3 weight)
 {
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
@@ -910,16 +982,19 @@ uint4 inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, uint
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData secondary;
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
+    float maximum = asfloat(inx_buffer_load(cache, 1u).z);
     InxRayTransportTerm direct = inx_ray_direct_fresh(page, attributes, secondary,
-        inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed, ray.maximum);
+        inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed, maximum);
     if (!direct.available)
         return uint4(0u);
-    return inx_ray_signal_output((secondary.emission + direct.radiance) * weight,
+    float3 tail = inx_ray_cached_tail(page, hit, attributes, secondary, records, cache, -ray.direction,
+                                      seed, maximum);
+    return inx_ray_signal_output((secondary.emission + direct.radiance + tail) * weight,
                                   uint2(hit.surface_id, asuint(hit.distance)));
 }
 
 public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxBuffer_uint4 records,
-                                     float2 pixel_position)
+                                     float2 pixel_position, InxBuffer_uint4 cache)
 {
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
@@ -930,17 +1005,16 @@ public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxB
                     inx_view.projection_params.y};
     uint2 pixel = uint2(pixel_position);
     uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y) ^ inx_view_sample_index());
-    uint4 packet = inx_ray_radiance(page, ray, records, seed, float3(1.0));
+    uint4 packet = inx_ray_radiance(page, ray, records, cache, seed, float3(1.0));
     return float4(unpackHalf2x16ToFloat(packet.x), unpackHalf2x16ToFloat(packet.y));
 }
 
-public uint4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
-                                    InxBuffer_uint4 records, uint model_id, bool specular, bool temporal)
+RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,
+                                               float3 geometric_normal, bool specular, bool temporal,
+                                               out uint seed)
 {
-    if (model_id != INX_PBR_MODEL_ID)
-        return uint4(0u);
     uint2 pixel = uint2(context.pixel_position);
-    uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
+    seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
     if (specular)
         seed = inx_ray_sample_hash(seed);
     if (temporal)
@@ -958,13 +1032,104 @@ public uint4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext c
     }
     else
         sample = ray_sample_irradiance(uniform, shading_normal, geometric_normal);
+    return sample;
+}
+
+public uint4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
+                                    InxBuffer_uint4 records, uint model_id, bool specular, bool temporal,
+                                    InxBuffer_uint4 cache)
+{
+    if (model_id != INX_PBR_MODEL_ID)
+        return uint4(0u);
+    uint seed;
+    RayDirectionSample sample = inx_ray_primary_direction(surface, context, geometric_normal, specular, temporal, seed);
     if (!sample.active)
         return inx_ray_signal_output(float3(0.0), uint2(ray_invalid_index, 0u));
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
         return uint4(0u);
     TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction, inx_view.projection_params.y};
-    return inx_ray_radiance(page, ray, records, seed, sample.weight);
+    return inx_ray_radiance(page, ray, records, cache, seed, sample.weight);
+}
+
+public uint2 inx_ray_tail_pixel(uint index, uint2 extent)
+{
+    uint seed = inx_ray_sample_hash(index ^ inx_ray_sample_hash(inx_view_sample_index()));
+    return uint2(seed % extent.x, inx_ray_sample_hash(seed) % extent.y);
+}
+
+InxRayTailRequest inx_ray_tail_request(RayPage page, TraceRay ray)
+{
+    InxRayTailRequest request = (InxRayTailRequest)0;
+    if (page.status != ray_page_ready)
+        return request;
+    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
+    if (hit.triangle_index == ray_invalid_index ||
+        ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+        return request;
+    RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
+    InxSurfaceData surface;
+    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, surface);
+    float cone = inx_ray_tail_cone(surface);
+    if (cone == 0.0)
+        return request;
+    float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
+    request.identity = uint4(hit.instance_index, hit.triangle_index, asuint(hit.barycentrics));
+    request.anchor = uint4(asuint(attributes.position_ws), packHalf2x16(float2(0.0, cone)) | 1u);
+    request.outgoing = uint4(asuint(-ray.direction), hit.surface_id);
+    request.normal = uint4(asuint(geometric), hit.primitive);
+    return request;
+}
+
+public InxRayTailRequest inx_ray_tail_primary_request(InxSurfaceData surface, InxShadingContext context,
+    float3 geometric_normal, uint model_id, bool specular, bool temporal)
+{
+    if (model_id != INX_PBR_MODEL_ID)
+        return (InxRayTailRequest)0;
+    uint seed;
+    RayDirectionSample sample = inx_ray_primary_direction(surface, context, geometric_normal, specular, temporal, seed);
+    if (!sample.active)
+        return (InxRayTailRequest)0;
+    TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction,
+                    inx_view.projection_params.y};
+    return inx_ray_tail_request(ray_page(), ray);
+}
+
+public InxRayTailRequest inx_ray_tail_thin_request(float3 position, float3 normal)
+{
+    float3 outgoing = normalize(inx_camera_toward_eye(position));
+    normal = dot(normal, outgoing) < 0.0 ? -normal : normal;
+    TraceRay ray = {inx_ray_origin(position, normal), 0.0, reflect(-outgoing, normal), inx_view.projection_params.y};
+    return inx_ray_tail_request(ray_page(), ray);
+}
+
+public float4 inx_ray_tail_estimate(InxBuffer_uint4 requests, InxBuffer_uint4 cache,
+                                     InxBuffer_uint4 records, uint index)
+{
+    // The native owner supplies one stable representative and one complete control header.
+    uint4 identity = inx_buffer_load(requests, 4u + index * 4u);
+    uint4 anchor = inx_buffer_load(requests, 5u + index * 4u);
+    if ((anchor.w & 1u) == 0u)
+        return float4(0.0, 0.0, 0.0, -1.0);
+    uint4 outgoing = inx_buffer_load(requests, 6u + index * 4u);
+    uint4 normal = inx_buffer_load(requests, 7u + index * 4u);
+    RayPage page = ray_page();
+    if (page.status != ray_page_ready)
+        return float4(0.0, 0.0, 0.0, -1.0);
+    uint slot = anchor.w >> 2u;
+    uint count = 0u;
+    if ((anchor.w & 2u) == 0u)
+        count = inx_buffer_load(cache, 4u + slot * 8u).w;
+    float3 wo = asfloat(outgoing.xyz);
+    TraceRay at_anchor = {asfloat(anchor.xyz), 0.0, -wo, 0.0};
+    RayHit hit = {0.0, asfloat(identity.zw), identity.x, identity.y, normal.w, outgoing.w};
+    RaySurfaceHit attributes = ray_surface_at_hit(page, at_anchor, hit);
+    InxSurfaceData surface;
+    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, surface);
+    uint4 world = inx_buffer_load(requests, 3u);
+    uint seed = inx_ray_sample_hash(slot ^ inx_ray_sample_hash(count) ^ world.x ^ inx_ray_sample_hash(world.y));
+    InxRayTransportTerm result = inx_ray_tail_sample(page, attributes, surface, records, wo, seed, asfloat(world.z));
+    return float4(result.radiance, result.available ? result.distance : -1.0);
 }
 """
 
@@ -1106,7 +1271,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         if not author.uses_surface_sampling:
             author.error(main, "The ray Lit entry requires explicit material sampling", code="author.stage")
         code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", "import inx_ray_traversal;",
-                "import inx_ray_bsdf;", "import inx_camera;", "import inx_lighting;", "import inx_frame;",
+                "import inx_ray_bsdf;", "import inx_ray_tail_cache;", "import inx_camera;", "import inx_lighting;", "import inx_frame;",
                 *("import " + name + ";" for name in dependencies),
                 "struct ShaderParameters {", *author.parameter_field_declarations(values), "};",
                 "struct InxRayLitMaterial {", "    ShaderParameters values;", "    uint participation;",
@@ -1305,10 +1470,10 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
     definition = parse_shader(source.removeprefix("\ufeff"), source_path, module_name, reader=reader, vertex_path=vertex_path)
     schema = {"name": definition.name, "domain": definition.domain, "surface": definition.surface,
               "thin_sheet": definition.thin_sheet,
+              "color_outputs": definition.color_outputs,
               "info": definition.info,
               "shading_model": definition.shading_model, "deferred_model": definition.deferred_model,
               "vertex_source": definition.vertex_source,
               "parameters": [asdict(field) for field in definition.parameters],
               "inputs": [asdict(field) for field in definition.inputs]}
     return definition.generated_source, definition.libraries, json.dumps(schema, ensure_ascii=False), definition.source_ranges
-              "color_outputs": definition.color_outputs,

@@ -303,6 +303,12 @@ bool SceneRenderGraph::EnsureViewGpuResources()
         vkCore->UpdatePerViewCameraBuffer(frame.ParticleSet(), cameraBuffer, sizeof(UniformBufferObject));
         vkCore->UpdatePerViewCameraBuffer(frame.EditorOverlaySet(), rhiDevice.Resolve(frame.editorOverlayCameraMatrix),
                                           sizeof(UniformBufferObject));
+        frame.fullscreenBindings.buffers[4] = {4, rhi::BindingType::UniformBuffer, frame.lighting, 0,
+                                               sizeof(ShaderLightingUBO)};
+        frame.fullscreenBindings.buffers[5] = {5, rhi::BindingType::UniformBuffer, frame.cameraMatrix, 0,
+                                               sizeof(UniformBufferObject)};
+        frame.fullscreenBindings.buffers[7] = {7, rhi::BindingType::UniformBuffer, frame.cameraMatrix, 0,
+                                               sizeof(UniformBufferObject)};
     }
 
     // Initialize fullscreen effect renderer for FullscreenQuad passes
@@ -871,6 +877,8 @@ void SceneRenderGraph::ReleaseViewGpuResources() noexcept
             rhiDevice.Release(frame.lighting);
             rhiDevice.Release(frame.cameraMatrix);
             rhiDevice.Release(frame.editorOverlayCameraMatrix);
+            rhiDevice.Release(frame.fullscreenBindings.textures[0].texture);
+            rhiDevice.Release(frame.fullscreenBindings.textures[6].sampler);
             frame = {};
         }
         rhiDevice.Release(m_perViewLayout);
@@ -1282,6 +1290,9 @@ bool SceneRenderGraph::UploadCameraLighting()
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local canonical lights");
         return false;
     }
+    const auto &canonical = m_cameraCanonicalLights.Frame(frameIndex);
+    frame.fullscreenBindings.buffers[1] = {1, rhi::BindingType::StorageBuffer, canonical.buffer, 0,
+                                           canonical.dataBytes};
     if (m_cameraCanonicalLights.Frame(frameIndex).buffer != previous) {
         // Both Forward+ and authored light-list passes can import this slot.
         m_needsRebuild = true;
@@ -1405,10 +1416,10 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
     // Keep the already selected Game World admission pending until its own
     // geometry settles. Accepting a placeholder would consume the source.
     m_worldRayPending = binding.pending;
-    if (m_worldRayLitLayout) {
+    if (m_worldRayLitProgram) {
         const auto *assets = AssetRegistry::Instance().GetAssetDatabase();
         auto materials = m_vkCore->GetWorldRayMaterials().Acquire(
-            world, m_worldRayLitLayout, assets ? assets->GetQueryGeneration() : 0, m_worldRayMaterialRequest);
+            world, m_worldRayLitProgram, assets ? assets->GetQueryGeneration() : 0, m_worldRayMaterialRequest);
         m_worldRayPending |= materials.pending;
         if (m_worldRayMaterial != materials.value) {
             if (materials.pending) {
@@ -1421,6 +1432,25 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
     }
     if (binding.pending)
         return;
+    const bool tailRequested =
+        std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                    [](const auto &buffer) { return buffer.frameBuffer == GraphFrameBuffer::WorldRayTailRead; });
+    if (tailRequested && m_worldRayMaterial && !m_worldRayPending) {
+        auto nextTail = m_vkCore->GetWorldRayTailCache().Acquire(world, binding, m_worldRayMaterial, m_renderView.id,
+                                                                 m_worldRayTailRequest);
+        if (nextTail.buffers != m_worldRayTail.buffers && m_graphBuilt && !m_needsRebuild) {
+            std::vector<vk::RenderGraph::ImportedBufferBinding> replacements;
+            for (size_t i = 0; i < 4; ++i)
+                if (m_worldRayTailHandles[i].IsValid())
+                    replacements.push_back(
+                        {m_worldRayTailHandles[i], nextTail.buffers[i]->GetBuffer(), rhi::QueueRole::Graphics, false});
+            m_needsRebuild |= !m_renderGraph->RebindImportedBuffers(replacements);
+        }
+        m_worldRayTail = std::move(nextTail);
+    } else {
+        m_worldRayTail = {};
+        m_worldRayTailRequest.reset();
+    }
     if (m_worldRayMaterial && !m_worldRayPending && m_rayHistoryWorld.Update(*world, binding, m_worldRayMaterial))
         raytracing::InvalidateRayHistories(m_temporalHistories);
     auto next = std::array{std::move(binding.buffer), std::move(binding.meshes)};
@@ -1442,12 +1472,28 @@ void SceneRenderGraph::SetRayLitProgram(std::shared_ptr<const ShaderTargetCode> 
 {
     if (m_worldRayLitProgram == program)
         return;
-    m_worldRayLitLayout =
-        program ? std::make_shared<const raytracing::RayLitMaterialLayout>(program->resources) : nullptr;
     m_worldRayLitProgram = std::move(program);
     m_worldRayMaterialRequest.reset();
     m_worldRayMaterial.reset();
     m_needsRebuild = true;
+}
+
+void SceneRenderGraph::RecordRayTailTiming(VkCommandBuffer commands, const std::string &name, bool begin, bool last)
+{
+    const auto &batch = m_worldRayTail.batch;
+    if (begin && m_timedRayTail.lock() != batch) {
+        auto timing = m_vkCore->AcquireRayTailGpuTiming();
+        m_timedRayTail = batch;
+        m_rayTailTiming = timing;
+        if (timing)
+            batch->SetGpuTiming([timing, receipt = batch->Receipt()] { return timing->Collect(*receipt); });
+    }
+    if (const auto timing = m_rayTailTiming.lock()) {
+        if (begin)
+            timing->BeginPass(commands, name);
+        else
+            timing->EndPass(commands, last);
+    }
 }
 
 bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
@@ -2159,8 +2205,10 @@ std::shared_ptr<void> SceneRenderGraph::AcquireComputeReadValues() const
     {
         std::vector<std::shared_ptr<rhi::ComputeBufferState>> buffers;
         std::shared_ptr<const raytracing::RayWorldGeometryPublication> rays;
+        raytracing::RayTailCacheBinding tail;
     };
     auto values = std::make_shared<ReadValues>();
+    values->tail = m_worldRayTail;
     if (rayRead)
         values->rays = m_worldRayPublication;
     std::unordered_set<const rhi::ComputeBufferAllocation *> included;
@@ -2181,7 +2229,8 @@ std::shared_ptr<void> SceneRenderGraph::AcquireComputeReadValues() const
             if (slots[index].external)
                 include(instance->GetBuffers()[index]);
     }
-    return values->buffers.empty() && !values->rays ? nullptr : values;
+    return values->buffers.empty() && !values->rays && !values->tail.publication && !values->tail.batch ? nullptr
+                                                                                                        : values;
 }
 
 std::vector<rhi::SubmissionDependency> SceneRenderGraph::GetBufferReadDependencies() const
@@ -2207,6 +2256,13 @@ std::vector<rhi::SubmissionDependency> SceneRenderGraph::GetBufferReadDependenci
                 dependencies.push_back({rayProducer, stages, queue});
         }
     }
+    if (m_worldRayTail.publication && m_worldRayTail.publication->producer.IsValid())
+        for (const auto queue : {rhi::QueueRole::Graphics, rhi::QueueRole::Compute}) {
+            const auto stages =
+                m_renderGraph->GetImportedBufferAccessStages(m_worldRayTail.publication->entries->GetBuffer(), queue);
+            if (stages != rhi::PipelineStage::None)
+                dependencies.push_back({m_worldRayTail.publication->producer, stages, queue});
+        }
     return dependencies;
 }
 
@@ -2221,7 +2277,7 @@ void SceneRenderGraph::EnsureGraphBuilt()
     }
     if (m_worldRayPending)
         return;
-    if (m_worldRayLitLayout && !m_worldRayMaterial) {
+    if (m_worldRayLitProgram && !m_worldRayMaterial) {
         m_graphBuilt = false;
         return;
     }
@@ -2581,6 +2637,10 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
             viewFrame.EditorOverlaySet(), lights.buffer, lights.dataBytes, frame.headers, frame.config.headerBytes,
             frame.lightMasks, frame.config.maskBytes, viewFrame.lighting, sizeof(ShaderLightingUBO));
         viewFrame.geometryBindings = geometryBindings;
+        viewFrame.fullscreenBindings.buffers[2] = {2, rhi::BindingType::StorageBuffer, frame.headers, 0,
+                                                   frame.config.headerBytes};
+        viewFrame.fullscreenBindings.buffers[3] = {3, rhi::BindingType::StorageBuffer, frame.lightMasks, 0,
+                                                   frame.config.maskBytes};
     }
     if (m_forwardPlusParticlesRequired) {
         if (viewFrame.ParticleSet() == VK_NULL_HANDLE || !m_perViewLayout.IsValid() ||
@@ -2819,6 +2879,17 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
             m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
             m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
             m_vkCore->ClearPerViewShadowMap(viewFrame.EditorOverlaySet());
+            auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+            auto &defaults = m_vkCore->GetMaterialPipelineManager().GetDescriptorManager();
+            auto &images = viewFrame.fullscreenBindings.textures;
+            device.Release(images[0].texture);
+            device.Release(images[6].sampler);
+            images[0] = {0,
+                         rhi::BindingType::SampledTexture,
+                         device.RegisterTextureView(defaults.GetDefaultImageView()),
+                         {},
+                         false};
+            images[6] = {6, rhi::BindingType::Sampler, {}, device.RegisterSampler(defaults.GetDefaultSampler())};
             viewFrame.shadowBinding = {};
             viewFrame.shadowBinding.usesDefaultTexture = true;
         }
@@ -2846,6 +2917,12 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
     m_vkCore->UpdatePerViewShadowMap(graphShadowDesc, view, shadowSampler, imageLayout);
     m_vkCore->UpdatePerViewShadowMap(particleShadowDesc, view, shadowSampler, imageLayout);
     m_vkCore->UpdatePerViewShadowMap(viewFrame.EditorOverlaySet(), view, shadowSampler, imageLayout);
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    auto &images = viewFrame.fullscreenBindings.textures;
+    device.Release(images[0].texture);
+    device.Release(images[6].sampler);
+    images[0] = {0, rhi::BindingType::SampledTexture, device.RegisterTextureView(view), {}, m_shadowMapInputIsDepth};
+    images[6] = {6, rhi::BindingType::Sampler, {}, device.RegisterSampler(shadowSampler)};
     viewFrame.shadowBinding = {view, shadowSampler, imageLayout, false};
 }
 
@@ -3704,6 +3781,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
         m_worldSurfaceBuffer.reset();
         m_worldSurfaceHandle = {};
         m_worldRayHandles = {};
+        m_worldRayTailHandles = {};
         for (const auto &description : m_pythonGraphDesc.buffers) {
             if (!description.HasFrameBuffer())
                 continue;
@@ -3728,6 +3806,19 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                         ? m_worldRayMaterial->materials
                                         : m_worldRayMaterial->descriptors;
                 importFrameBuffer(binding, 0, description.name, table->GetBuffer(), table->GetByteSize());
+            } else if (description.frameBuffer >= GraphFrameBuffer::WorldRayTailRead &&
+                       description.frameBuffer <= GraphFrameBuffer::WorldRayTailControl) {
+                const auto index = static_cast<size_t>(description.frameBuffer) -
+                                   static_cast<size_t>(GraphFrameBuffer::WorldRayTailRead);
+                const auto &buffer = m_worldRayTail.buffers[index];
+                if (!buffer)
+                    return;
+                importFrameBuffer(binding, 0, description.name, buffer->GetBuffer(), m_worldRayTail.byteSizes[index]);
+                m_worldRayTailHandles[index] = binding.handles[0];
+                if (index != 3)
+                    m_renderGraph->SetResourceInitialState(binding.handles[0], rhi::TextureLayout::Undefined,
+                                                           rhi::Access::MemoryWrite, rhi::PipelineStage::AllCommands,
+                                                           rhi::QueueRole::Graphics);
             } else {
                 if (!m_worldSurfaceRecords)
                     throw std::runtime_error("Surface records require an acquired RenderWorld");
@@ -4426,6 +4517,57 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 }
             }
 
+            if (command && (command->type == GraphCommandType::RayTailPrepare ||
+                            command->type == GraphCommandType::RayTailMerge)) {
+                const bool prepare = command->type == GraphCommandType::RayTailPrepare;
+                std::array<vk::ResourceHandle, 4> images{};
+                for (const auto &[port, resource] : command->inputBindings) {
+                    const size_t index = prepare ? static_cast<size_t>(port.back() - '0') : 0;
+                    images.at(index) = resolveTextureHandle(resource);
+                }
+                std::vector<vk::ResourceHandle> written;
+                const auto pass = m_renderGraph->AddComputePass(passDesc.name, [&](vk::PassBuilder &builder) {
+                    builder.SetQueueRole(rhi::QueueRole::Graphics);
+                    builder.SetExecutionGate([this] { return AllowsRayTailPass(1); });
+                    builder.SetExecutionTiming(
+                        [this, name = passDesc.name, last = !prepare](VkCommandBuffer commands, bool begin) {
+                            RecordRayTailTiming(commands, name, begin, last);
+                        });
+                    for (const auto image : images)
+                        if (image.IsValid())
+                            builder.Read(image, rhi::PipelineStage::ComputeShader);
+                    for (const auto &access : passDesc.bufferAccesses) {
+                        const auto handle = bufferHandles.at(access.resource);
+                        if (access.type == GraphBufferAccessType::StorageWrite) {
+                            builder.ReadStorageBuffer(handle, rhi::PipelineStage::ComputeShader);
+                            written.push_back(builder.WriteStorageBuffer(handle));
+                        } else
+                            builder.ReadStorageBuffer(handle, rhi::PipelineStage::ComputeShader);
+                    }
+                    builder.SetSideEffect();
+                    return [this, images, prepare](vk::RenderContext &ctx) {
+                        if (!AllowsRayTailPass(1))
+                            return;
+                        if (prepare) {
+                            std::array<rhi::TextureViewHandle, 2> views;
+                            for (size_t i = 0; i < views.size(); ++i)
+                                views[i] = ctx.GetTextureView(images[i]);
+                            const auto groups =
+                                m_worldRayTail.batch->RecordPrepare(ctx.GetComputeCommandEncoder(), views);
+                            ctx.RecordComputeDispatch(groups, 1, 1, 0, false);
+                        } else {
+                            const auto groups = m_worldRayTail.batch->RecordMerge(ctx.GetComputeCommandEncoder(),
+                                                                                  ctx.GetTextureView(images[0]));
+                            ctx.RecordComputeDispatch(groups, 1, 1, 0, false);
+                        }
+                    };
+                });
+                trackAuthorPass(pass);
+                for (const auto value : written)
+                    publishResourceVersion(value);
+                continue;
+            }
+
             if (passDesc.type == GraphPassType::Compute && command) {
                 const auto instance = m_graphWork.instances.at(command->workBinding);
                 const auto &recipe = instance->GetRecipe();
@@ -5026,121 +5168,129 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                           fullscreenPipelineKey.colorFormats.begin());
                 fullscreenPipelineKey.useDynamicRendering = true;
                 fullscreenPipelineKey.program = authorProgram;
-                const auto pass =
-                    m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersions, &fsResolvedVersion,
-                                                           &fsWrittenDepthVersion](vk::PassBuilder &builder) {
-                        builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
-                        // Declare read dependencies for DAG edges + barriers
-                        for (const auto &input : fsReadInputs) {
-                            if (input.storageBuffer) {
-                                if (input.frameLocal) {
-                                    for (const auto handle : input.frameHandles) {
-                                        if (handle.IsValid())
-                                            builder.ReadStorageBuffer(handle, rhi::PipelineStage::FragmentShader);
-                                    }
-                                } else {
-                                    builder.ReadStorageBuffer(input.handle, rhi::PipelineStage::FragmentShader);
+                const auto pass = m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersions, &fsResolvedVersion,
+                                                                         &fsWrittenDepthVersion](
+                                                                            vk::PassBuilder &builder) {
+                    builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
+                    // Declare read dependencies for DAG edges + barriers
+                    for (const auto &input : fsReadInputs) {
+                        if (input.storageBuffer) {
+                            if (input.frameLocal) {
+                                for (const auto handle : input.frameHandles) {
+                                    if (handle.IsValid())
+                                        builder.ReadStorageBuffer(handle, rhi::PipelineStage::FragmentShader);
                                 }
-                            } else if (input.depthRead) {
-                                builder.ReadSampledDepth(input.handle);
                             } else {
-                                builder.Read(input.handle);
+                                builder.ReadStorageBuffer(input.handle, rhi::PipelineStage::FragmentShader);
                             }
+                        } else if (input.depthRead) {
+                            builder.ReadSampledDepth(input.handle);
+                        } else {
+                            builder.Read(input.handle);
                         }
-                        if (fullscreenShadowInput.IsValid() &&
-                            std::none_of(fsReadInputs.begin(), fsReadInputs.end(),
-                                         [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
-                            builder.ReadSampledDepth(fullscreenShadowInput);
+                    }
+                    if (fullscreenShadowInput.IsValid() &&
+                        std::none_of(fsReadInputs.begin(), fsReadInputs.end(),
+                                     [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
+                        builder.ReadSampledDepth(fullscreenShadowInput);
+                    }
+                    if (authorProgram->UsesViewBinding(2) || authorProgram->UsesViewBinding(3)) {
+                        for (const auto &resources : forwardPlusResources) {
+                            if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
+                                !resources.lightMasks.IsValid()) {
+                                continue;
+                            }
+                            builder.ReadStorageBuffer(resources.canonicalLights, rhi::PipelineStage::FragmentShader);
+                            builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
+                            builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
                         }
-                        if (authorProgram->UsesViewBinding(2) || authorProgram->UsesViewBinding(3)) {
-                            for (const auto &resources : forwardPlusResources) {
-                                if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
-                                    !resources.lightMasks.IsValid()) {
-                                    continue;
+                    }
+                    for (const auto &[slot, target] : colorTargets)
+                        fsWrittenVersions[slot] = builder.WriteColor(target, slot);
+                    if (resolveTarget.IsValid())
+                        fsResolvedVersion = builder.WriteResolve(resolveTarget);
+                    if (fsDepthTarget.IsValid())
+                        fsWrittenDepthVersion = builder.WriteDepth(fsDepthTarget);
+                    builder.SetDepthTest(fsDepthState.testEnabled);
+                    // Replacement passes fully define color. Partial coverage
+                    // and blending load the preceding graph version unless the
+                    // author explicitly clears it; never load a new transient.
+                    if (clearColor)
+                        builder.SetClearColor(clearColorR, clearColorG, clearColorB, clearColorA);
+                    else if (!fsAlphaBlend && !fsDepthState.testEnabled)
+                        builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);
+                    if (clearDepth && fsDepthTarget.IsValid())
+                        builder.SetClearDepth(clearDepthVal, 0);
+                    builder.SetRenderArea(fsPassWidth, fsPassHeight);
+                    if (passDesc.rayTailBatch) {
+                        builder.SetExecutionGate(
+                            [this, gate = passDesc.rayTailBatch] { return AllowsRayTailPass(gate); });
+                        builder.SetExecutionTiming([this, name = passDesc.name](VkCommandBuffer commands, bool begin) {
+                            RecordRayTailTiming(commands, name, begin, false);
+                        });
+                    }
+                    return [=](vk::RenderContext &ctx) {
+                        if (!AllowsRayTailPass(passDesc.rayTailBatch))
+                            return;
+                        // Resolve input texture views using a stack path for the common case.
+                        FullscreenResourceInput inputsStack[8] = {};
+                        std::vector<FullscreenResourceInput> inputsHeap;
+                        FullscreenResourceInput *inputs = inputsStack;
+                        if (fsReadInputs.size() > 8) {
+                            inputsHeap.resize(fsReadInputs.size());
+                            inputs = inputsHeap.data();
+                        }
+                        const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
+                        for (uint32_t i = 0; i < inputCount; ++i) {
+                            const auto &input = fsReadInputs[i];
+                            if (input.storageBuffer) {
+                                auto resource = input.handle;
+                                auto byteSize = input.byteSize;
+                                if (input.frameLocal) {
+                                    const auto slot =
+                                        m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
+                                    resource = input.frameHandles[slot];
+                                    byteSize = m_cameraCanonicalLights.Frame(slot).capacityBytes;
                                 }
-                                builder.ReadStorageBuffer(resources.canonicalLights,
-                                                          rhi::PipelineStage::FragmentShader);
-                                builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
-                                builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
-                            }
-                        }
-                        for (const auto &[slot, target] : colorTargets)
-                            fsWrittenVersions[slot] = builder.WriteColor(target, slot);
-                        if (resolveTarget.IsValid())
-                            fsResolvedVersion = builder.WriteResolve(resolveTarget);
-                        if (fsDepthTarget.IsValid())
-                            fsWrittenDepthVersion = builder.WriteDepth(fsDepthTarget);
-                        builder.SetDepthTest(fsDepthState.testEnabled);
-                        // Replacement passes fully define color. Partial coverage
-                        // and blending load the preceding graph version unless the
-                        // author explicitly clears it; never load a new transient.
-                        if (clearColor)
-                            builder.SetClearColor(clearColorR, clearColorG, clearColorB, clearColorA);
-                        else if (!fsAlphaBlend && !fsDepthState.testEnabled)
-                            builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);
-                        if (clearDepth && fsDepthTarget.IsValid())
-                            builder.SetClearDepth(clearDepthVal, 0);
-                        builder.SetRenderArea(fsPassWidth, fsPassHeight);
-                        return [=](vk::RenderContext &ctx) {
-                            // Resolve input texture views using a stack path for the common case.
-                            FullscreenResourceInput inputsStack[8] = {};
-                            std::vector<FullscreenResourceInput> inputsHeap;
-                            FullscreenResourceInput *inputs = inputsStack;
-                            if (fsReadInputs.size() > 8) {
-                                inputsHeap.resize(fsReadInputs.size());
-                                inputs = inputsHeap.data();
-                            }
-                            const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
-                            for (uint32_t i = 0; i < inputCount; ++i) {
-                                const auto &input = fsReadInputs[i];
-                                if (input.storageBuffer) {
-                                    auto resource = input.handle;
-                                    auto byteSize = input.byteSize;
-                                    if (input.frameLocal) {
-                                        const auto slot =
-                                            m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
-                                        resource = input.frameHandles[slot];
-                                        byteSize = m_cameraCanonicalLights.Frame(slot).capacityBytes;
-                                    }
-                                    inputs[i].buffer = ctx.GetBufferHandle(resource);
-                                    inputs[i].byteOffset = input.byteOffset;
-                                    inputs[i].byteSize = byteSize;
-                                    inputs[i].dataByteOffset = input.dataByteOffset;
-                                    if (!inputs[i].buffer.IsValid()) {
-                                        INXLOG_ERROR("FullscreenQuad '", shaderName,
-                                                     "': input buffer is unavailable at binding ", i);
-                                        return;
-                                    }
-                                    continue;
-                                }
-                                inputs[i].view = ctx.GetTextureView(input.handle);
-                                inputs[i].sampler = input.sampler;
-                                inputs[i].format = input.format;
-                                inputs[i].depthRead = input.depthRead;
-                                inputs[i].historyValid = input.historyValidity && *input.historyValidity;
-                                if (!inputs[i].view.IsValid()) {
+                                inputs[i].buffer = ctx.GetBufferHandle(resource);
+                                inputs[i].byteOffset = input.byteOffset;
+                                inputs[i].byteSize = byteSize;
+                                inputs[i].dataByteOffset = input.dataByteOffset;
+                                if (!inputs[i].buffer.IsValid()) {
                                     INXLOG_ERROR("FullscreenQuad '", shaderName,
-                                                 "': input texture view is unavailable at binding ", i);
+                                                 "': input buffer is unavailable at binding ", i);
                                     return;
                                 }
+                                continue;
                             }
-
-                            const auto &entry = fsRenderer->EnsurePipeline(fullscreenPipelineKey);
-                            if (!entry.pipeline.IsValid())
+                            inputs[i].view = ctx.GetTextureView(input.handle);
+                            inputs[i].sampler = input.sampler;
+                            inputs[i].format = input.format;
+                            inputs[i].depthRead = input.depthRead;
+                            inputs[i].historyValid = input.historyValidity && *input.historyValidity;
+                            if (!inputs[i].view.IsValid()) {
+                                INXLOG_ERROR("FullscreenQuad '", shaderName,
+                                             "': input texture view is unavailable at binding ", i);
                                 return;
+                            }
+                        }
 
-                            const auto *values = parameterBlock.empty()
-                                                     ? nullptr
-                                                     : m_submittedParameterBlocks.at(parameterBlock).values->data();
-                            const auto &frame = m_perViewFrames[m_vkCore->GetCurrentFrameSlot()];
-                            const FullscreenViewResources viewResources{
-                                {0, rhi::BindingType::UniformBuffer, frame.globals.buffer, 0, sizeof(EngineGlobalsUBO)},
-                                frame.geometryGroup,
-                            };
-                            fsRenderer->DrawProgram(ctx.GetGraphicsCommandEncoder(), entry, inputs, authorParameters,
-                                                    values, viewResources);
+                        const auto &entry = fsRenderer->EnsurePipeline(fullscreenPipelineKey);
+                        if (!entry.pipeline.IsValid())
+                            return;
+
+                        const auto *values = parameterBlock.empty()
+                                                 ? nullptr
+                                                 : m_submittedParameterBlocks.at(parameterBlock).values->data();
+                        const auto &frame = m_perViewFrames[m_vkCore->GetCurrentFrameSlot()];
+                        const FullscreenViewResources viewResources{
+                            {0, rhi::BindingType::UniformBuffer, frame.globals.buffer, 0, sizeof(EngineGlobalsUBO)},
+                            &frame.fullscreenBindings,
                         };
-                    });
+                        fsRenderer->DrawProgram(ctx.GetGraphicsCommandEncoder(), entry, inputs, authorParameters,
+                                                values, viewResources);
+                    };
+                });
                 trackAuthorPass(pass);
                 if (fullscreenShadowInput.IsValid()) {
                     m_shadowMapInputHandle = fullscreenShadowInput;

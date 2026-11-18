@@ -30,4 +30,13 @@ inline const ShaderSourceModule &GetSlangRayBsdfModule()
     return module;
 }
 
+inline const ShaderSourceModule &GetSlangRayTailCacheModule()
+{
+    static const ShaderSourceModule module{"inx_ray_tail_cache", "<infernux/shader/ray_tail_cache>", [] {
+            std::string source;
+@_ray_tail_shared_source@            return source;
+        }()};
+    return module;
+}
+
 } // namespace infernux

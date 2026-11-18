@@ -74,7 +74,11 @@ _PASS_TYPES = {
         "copy_texture_to_buffer": GraphCommandType.COPY_TEXTURE_TO_BUFFER,
         "copy_buffer_to_texture": GraphCommandType.COPY_BUFFER_TO_TEXTURE,
     }),
-    "compute": (GraphPassType.COMPUTE, {"compute_work": GraphCommandType.COMPUTE_WORK}),
+    "compute": (GraphPassType.COMPUTE, {
+        "compute_work": GraphCommandType.COMPUTE_WORK,
+        "ray_tail_prepare": GraphCommandType.RAY_TAIL_PREPARE,
+        "ray_tail_merge": GraphCommandType.RAY_TAIL_MERGE,
+    }),
     "present": (GraphPassType.PRESENT, {"present": GraphCommandType.PRESENT}),
 }
 _BUFFER_ACCESSES = {
@@ -420,6 +424,7 @@ class RenderPassBuilder:
         self._copy_width = self._copy_height = 0
         self._copy_buffer_offset = 0
         self._work_binding = ""
+        self._ray_tail_batch = 0
         self._side_effect = False
         self._events: list[GraphEventDesc] = []
 
@@ -523,7 +528,15 @@ class RenderPassBuilder:
     def write_buffer(self, buffer, usage: str = "storage") -> "RenderPassBuilder":
         """Declare a storage or transfer buffer write."""
         handle = self._resolve_buffer(buffer)
-        if handle._read_only:
+        tail_write = (
+            self._ray_tail_batch == 1
+            and self._action in ("ray_tail_prepare", "ray_tail_merge")
+            and handle._frame_buffer in (
+                _GraphFrameBuffer.WORLD_RAY_TAIL_WRITE,
+                _GraphFrameBuffer.WORLD_RAY_TAIL_REQUESTS,
+            )
+        )
+        if handle._read_only and not tail_write:
             raise ValueError(f"Imported buffer '{handle.name}' is read-only in the render graph")
         access = f"{str(usage).strip().lower()}_write"
         if access not in _BUFFER_ACCESSES:
@@ -1594,6 +1607,17 @@ class RenderGraph:
                 return buffer
         return self._create_frame_buffer(name, source)
 
+    def _create_world_ray_tail(self) -> dict[str, BufferHandle]:
+        return {
+            name: self._create_world_buffer(name, source)
+            for name, source in (
+                ("ray_tail_read", _GraphFrameBuffer.WORLD_RAY_TAIL_READ),
+                ("ray_tail_write", _GraphFrameBuffer.WORLD_RAY_TAIL_WRITE),
+                ("ray_tail_requests", _GraphFrameBuffer.WORLD_RAY_TAIL_REQUESTS),
+                ("ray_tail_control", _GraphFrameBuffer.WORLD_RAY_TAIL_CONTROL),
+            )
+        }
+
     def _create_frame_buffer(self, name: str, source) -> BufferHandle:
         handle = self.create_buffer(name, 16)
         handle._frame_buffer = source
@@ -2121,7 +2145,7 @@ class RenderGraph:
             p._write_colors or p._write_depth is not None
             or p._resolve_color is not None
             or p._clear_color is not None or p._clear_depth is not None
-            or p._reads
+            or (p._reads and p._pass_type != "compute")
         ):
             raise ValueError(
                 f"Pass '{p._name}' uses raster texture attachments in a {p._pass_type} pass"
@@ -2465,6 +2489,7 @@ class RenderGraph:
                 accesses.append(access)
             pd.buffer_accesses = accesses
             pd.side_effect = p._side_effect
+            pd.ray_tail_batch = p._ray_tail_batch
             pd.events = p._events
 
             if p._clear_color is not None:

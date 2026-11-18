@@ -9,6 +9,7 @@ class RayThinReflection(shader.fullscreen):
     layer = shader.input("thin_layer", shader.UInt2D)
     optics = shader.input("thin_optics", shader.UInt2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
+    tail_cache = shader.input("ray_tail_read", shader.Buffer[shader.uvec4])
 
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
         pixel = shader.ivec2(ctx.position.xy)
@@ -22,4 +23,4 @@ class RayThinReflection(shader.fullscreen):
             return shader.vec4(0.0, 0.0, 0.0, 1.0)
         normal = decode_octahedral_normal(shader.unpack_half_2x16(layer.y))
         position = world_position(ctx.uv, shader.as_float(layer.w), shader.camera())
-        return shader.ray._thin_reflection(position, normal, self.surface_records, ctx.position.xy)
+        return shader.ray._thin_reflection(position, normal, self.surface_records, ctx.position.xy, self.tail_cache)
