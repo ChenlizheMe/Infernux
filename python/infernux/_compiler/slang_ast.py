@@ -96,6 +96,7 @@ class SlangEmitter(ast.NodeVisitor):
         self.aliases = aliases
         self.types = dict(types or {})
         self.locals = {}
+        self.local_nodes = {}
         self.lines = []
         self.indent = 1
         self.line_offset = 0
@@ -150,11 +151,13 @@ class SlangEmitter(ast.NodeVisitor):
                         previous = self.locals.get(target.id)
                         self.locals[target.id] = common_type(previous, kind) if previous else kind
                         self.types[target.id] = self.locals[target.id]
+                        self.local_nodes[target.id] = statement
             elif (isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name)
                   and statement.target.id not in parameters):
                 name = statement.target.id
                 value = ast.BinOp(left=statement.target, op=statement.op, right=statement.value)
                 self.locals[name] = self.types[name] = self.infer(value)
+                self.local_nodes[name] = statement
             elif isinstance(statement, ast.For):
                 if not isinstance(statement.target, ast.Name):
                     self.error(statement.target, "GPU ranges use one integer index")
@@ -167,7 +170,9 @@ class SlangEmitter(ast.NodeVisitor):
     def local_declarations(self):
         for name, kind in self.locals.items():
             if kind is None:
-                raise TypeError(f"{self.path}: GPU local {name!r} needs an explicit type annotation")
+                self.error(self.local_nodes[name],
+                           f"Cannot infer GPU local {name!r}; declare its type or correct the assigned expression",
+                           code="author.type")
             self.line(kind + " " + name + ";")
 
     def annotation(self, node):
