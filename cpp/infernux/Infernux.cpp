@@ -2440,6 +2440,16 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
     if (auto *database = GetAssetDatabase(); useImportedTexture && database && m_renderer) {
         const std::string guid = database->GetGuidFromPath(textureFilePath);
         const auto metadata = guid.empty() ? nullptr : database->GetMetaByGuid(guid);
+        // A failed current source owns no preview: never present the previous
+        // generation's pixels or texture while the import error is current.
+        if (!guid.empty() && !database->GetImportError(guid).empty()) {
+            std::lock_guard<std::mutex> lock(m_previewResultMutex);
+            auto &state = m_texturePreviewStates[key];
+            RetireTexturePreviewDecode(key, state);
+            state.textureName.clear();
+            state.upload = {};
+            return {0, 0, 0};
+        }
         // Only documentation-policy imports are faithful source illustrations.
         // Uninstalled packages and images referenced outside plugin_pages use
         // the lossless CPU decoder below, not an arbitrary BC game texture.
