@@ -581,7 +581,7 @@ class JoltGpuTick::Impl
         std::optional<JPH::GPU::Stage> homogeneousStage;
         size_t begin = 0, end = 0;
         StageCursor stageEnd;
-        bool busy = false;
+        bool busy = false, minimumReducesDispatchWork = true;
         uint64_t opportunity = 0, progress = 0, submissions = 0;
     };
 
@@ -592,6 +592,7 @@ class JoltGpuTick::Impl
         swap(preservation, saved.preservation);
         swap(workContinuation, saved.continuation);
         swap(workMinimum, saved.minimum);
+        swap(minimumReducesDispatchWork, saved.minimumReducesDispatchWork);
         swap(workGeometry, saved.geometry);
         swap(batchKind, saved.kind);
         swap(continuationKind, saved.continuationKind);
@@ -1396,6 +1397,7 @@ class JoltGpuTick::Impl
         batch = std::move(selected.packet);
         workGeometry = std::move(selected.geometry);
         workMinimum = std::move(selected.prepareMinimum);
+        minimumReducesDispatchWork = selected.minimumReducesDispatchWork;
         workContinuation = std::move(selected.continueWork);
         continuationKind = kind;
         continuationResumeAfter = selected.resumeAfter;
@@ -1482,7 +1484,7 @@ class JoltGpuTick::Impl
             return false;
         const auto remaining = work.ResourceRemaining(FrameWorkResource::Gpu);
         const auto window = adjustable && remaining ? remaining : work.ResourceState(FrameWorkResource::Gpu).limit;
-        return Prediction(SubmissionKey(*batch)) > window ||
+        return ((!adjustable || minimumReducesDispatchWork) && Prediction(SubmissionKey(*batch)) > window) ||
                batch->GetTransferBytes() > work.ResourceState(FrameWorkResource::Transfer).limit;
     }
 
@@ -2314,6 +2316,7 @@ class JoltGpuTick::Impl
     std::optional<JoltGpuStepParameters> parameters;
     JoltGpuTickControl control;
     std::function<JoltGpuControlWork()> workContinuation, workMinimum;
+    bool minimumReducesDispatchWork = true;
     std::shared_ptr<const JoltGpuGeometryLease> workGeometry;
     PacketKind continuationKind = PacketKind::Work;
     JoltGpuControlWork::ResumeAfter continuationResumeAfter = JoltGpuControlWork::ResumeAfter::Completion;

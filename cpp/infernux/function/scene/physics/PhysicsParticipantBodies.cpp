@@ -224,8 +224,8 @@ struct BodyPorts : std::enable_shared_from_this<BodyPorts>
                     return JoltGpuControlWork{};
                 });
             });
-        // Only the unaccepted fused packet may contract. Its recipe has not
-        // executed, and the original segmented chain still has its exact cursor.
+        // The segmented form reduces staging, but still submits the whole project recipe.
+        result.minimumReducesDispatchWork = false;
         result.prepareMinimum = [self, params, motion, impulses, recipe = std::move(recipe)] {
             return self->SegmentedExchange(params, motion, impulses, recipe, true);
         };

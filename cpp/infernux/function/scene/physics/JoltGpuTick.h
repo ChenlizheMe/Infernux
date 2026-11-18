@@ -37,6 +37,8 @@ struct JoltGpuControlWork
         HostWork
     };
     ResumeAfter resumeAfter = ResumeAfter::Completion;
+    // Some minimums split staging only, leaving the entire GPU program in one submission.
+    bool minimumReducesDispatchWork = true;
     // Optional multi-unit packet contraction before acceptance. It must
     // preserve the accepted producer cursor and return its minimum unit.
     std::function<JoltGpuControlWork()> prepareMinimum;
