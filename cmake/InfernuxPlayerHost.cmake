@@ -4,10 +4,6 @@ if(NOT INFERNUX_BUILD_PLAYER_HOST)
     return()
 endif()
 
-if(WIN32)
-    include(InstallRequiredSystemLibraries)
-endif()
-
 add_executable(InfernuxPlayerHost
     cpp/apps/player/InfernuxPlayerLauncher.cpp
     cpp/apps/player/PlayerHost.cpp

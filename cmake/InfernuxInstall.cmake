@@ -2,6 +2,13 @@
 # Post-Build Steps
 # ------------------------------------------------------------------------------
 
+if(MSVC)
+    # Both bindings need the redistributable, including Editor-only builds.
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    include(InstallRequiredSystemLibraries)
+    include("${CMAKE_CURRENT_LIST_DIR}/InfernuxWindowsRuntime.cmake")
+endif()
+
 set(_infernux_third_party_runtime_targets assimp SDL3-shared Jolt)
 set(_infernux_runtime_dependency_targets
     ${INFERNUX_RUNTIME_DLL_TARGETS} ${_infernux_third_party_runtime_targets} ${INFERNUX_SLANG_TARGET})
@@ -35,6 +42,8 @@ add_custom_command(TARGET _Infernux POST_BUILD
         -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
     COMMAND ${CMAKE_COMMAND}
         "-DDEPENDENCY_FILES=${_infernux_runtime_files}"
+        "-DWINDOWS_DLL_RESOLVER=${_infernux_dll_resolver}"
+        "-DWINDOWS_DLL_ROOTS=$<TARGET_FILE:_Infernux>"
         "-DTARGET_DIR=$<TARGET_FILE_DIR:_Infernux>"
         -P "${CMAKE_SOURCE_DIR}/cmake/copy_dependencies.cmake"
     COMMENT "Stage the native binding and its build target dependencies"
@@ -57,6 +66,8 @@ add_custom_target(stage_python_sdk ALL
         -P "${CMAKE_SOURCE_DIR}/cmake/stage_native_module.cmake"
     COMMAND ${CMAKE_COMMAND}
         "-DDEPENDENCY_FILES=${_infernux_runtime_files}"
+        "-DWINDOWS_DLL_RESOLVER=${_infernux_dll_resolver}"
+        "-DWINDOWS_DLL_ROOTS=${_infernux_wheel_pe_roots}"
         "-DTARGET_DIR=${PYTHON_TARGET_DIR}"
         -P "${CMAKE_SOURCE_DIR}/cmake/copy_dependencies.cmake"
     DEPENDS _Infernux _InfernuxBootstrap
@@ -214,20 +225,29 @@ install(
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
 
+set(_infernux_wheel_targets _Infernux _InfernuxBootstrap)
+if(MSVC)
+    install(CODE "
+        set(TARGET_DIR \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/python/infernux/lib\")
+        set(DEPENDENCY_FILES [==[${_infernux_runtime_files}]==])
+        set(WINDOWS_DLL_RESOLVER [==[${_infernux_dll_resolver}]==])
+        set(WINDOWS_DLL_ROOTS [==[${_infernux_wheel_pe_roots}]==])
+        include([==[${CMAKE_CURRENT_LIST_DIR}/copy_dependencies.cmake]==])"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
+else()
+    list(APPEND _infernux_wheel_targets ${INFERNUX_RUNTIME_DLL_TARGETS} ${_infernux_third_party_runtime_targets})
+    install(FILES "${_infernux_player_native_contract}" "$<TARGET_FILE:${INFERNUX_SLANG_TARGET}>"
+        ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+        DESTINATION "python/infernux/lib" COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
+endif()
 install(
-    TARGETS _Infernux _InfernuxBootstrap ${INFERNUX_RUNTIME_DLL_TARGETS}
+    TARGETS ${_infernux_wheel_targets}
     RUNTIME DESTINATION "python/infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
     LIBRARY DESTINATION "python/infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+        NAMELINK_COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
-install(
-    FILES "${_infernux_player_native_contract}"
-    DESTINATION "python/infernux/lib"
-    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-)
-install(FILES "$<TARGET_FILE:${INFERNUX_SLANG_TARGET}>"
-    DESTINATION "python/infernux/lib" COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
 if(UNIX)
     install(FILES "$<TARGET_SONAME_FILE:${INFERNUX_SLANG_TARGET}>"
                   "$<TARGET_LINKER_FILE:${INFERNUX_SLANG_TARGET}>"
@@ -249,20 +269,6 @@ install(DIRECTORY "${INFERNUX_SLANG_NOTICES_DIR}/"
 install(CODE [[
     file(REMOVE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/python/infernux/lib/libInfernuxRuntime.so")
 ]] COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
-
-install(
-    TARGETS ${_infernux_third_party_runtime_targets}
-    RUNTIME DESTINATION "python/infernux/lib"
-        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-    LIBRARY DESTINATION "python/infernux/lib"
-        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-        NAMELINK_COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-)
-install(
-    FILES ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
-    DESTINATION "python/infernux/lib"
-    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-)
 
 install(
     FILES
