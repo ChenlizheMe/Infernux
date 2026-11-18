@@ -2,7 +2,6 @@
 
 from collections import defaultdict
 from copy import deepcopy
-from concurrent.futures import ThreadPoolExecutor
 from threading import Condition
 import uuid
 
@@ -19,6 +18,8 @@ def emit_signal(name, payload=None):
 
 class QueryService:
     def __init__(self, registry):
+        from concurrent.futures import ThreadPoolExecutor
+
         self.registry = registry
         self._condition = Condition()
         self._queries = {}

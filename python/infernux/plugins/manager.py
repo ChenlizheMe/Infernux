@@ -2754,7 +2754,11 @@ class PluginManager:
         )
 
     def _current_asset_failures(self):
-        """Read published resource results once at a package/status boundary."""
+        """Read source import diagnostics when the host owns an authoring catalog."""
+        from infernux.application import Application
+
+        if self.runtime and Application.is_player():
+            return {}
         database = _asset_database(self.engine)
         if database is None or not same_path(database.project_root, self.project_root):
             return {}

@@ -9,7 +9,7 @@ import re
 import threading
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from contextvars import copy_context
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -381,6 +381,8 @@ class OperationJobRegistry:
         max_workers: int = 4,
         max_jobs: int = 256,
     ) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
         self.registry = registry
         self._max_jobs = max(1, int(max_jobs))
         self._executor = ThreadPoolExecutor(
