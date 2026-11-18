@@ -80,7 +80,7 @@ int main(int argc, char **argv)
     const auto &fs = fragment.targets.front().entries.front();
     assert(program.Create(
         vkDevice, vs.code, fs.code, key,
-        {ShaderProgramDomain::Mesh, vs.name, fs.name, &vertex.targets.front(), &fragment.targets.front()}));
+        {ShaderProgramDomain::Mesh, vs.name, fs.name, vertex.targets.front(), fragment.targets.front()}));
 
     VkAttachmentDescription attachment{};
     attachment.format = VK_FORMAT_R32G32B32A32_SFLOAT;
