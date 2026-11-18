@@ -1,9 +1,9 @@
 #include "InxDefaultLoader.hpp"
+#include <algorithm>
+#include <cctype>
 #include <function/resources/AssetRegistry/AssetBytes.h>
 #include <function/resources/FontSourceValidation.h>
 #include <platform/filesystem/InxPath.h>
-#include <algorithm>
-#include <cctype>
 
 namespace infernux
 {

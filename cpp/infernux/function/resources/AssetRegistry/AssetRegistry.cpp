@@ -870,8 +870,8 @@ bool AssetRegistry::SubmitAssetLoad(const std::shared_ptr<AssetLoadTicket> &tick
                     const auto meta = ticket->m_database->GetMetaByGuid(ticket->m_guid);
                     if (importedArtifact && !ticket->m_artifactRepairAttempted &&
                         !ticket->m_database->m_cookedRuntimeCatalogInstalled &&
-                        !ticket->m_database->IsReadOnlyPath(FilesystemPathKey(ticket->m_sourcePath)) &&
-                        meta && !meta->HasKey("import_owner_guid")) {
+                        !ticket->m_database->IsReadOnlyPath(FilesystemPathKey(ticket->m_sourcePath)) && meta &&
+                        !meta->HasKey("import_owner_guid")) {
                         // Library products are reproducible. Rebuild once from
                         // current source through the existing import queue.
                         ticket->m_workerPlan = {};

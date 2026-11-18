@@ -1018,8 +1018,7 @@ class AssetDatabase : public NativeLifetimeOwner
                                      bool persistMetadata, const std::string &identityKey,
                                      std::optional<AtomicFileState> *expectedMetadata = nullptr,
                                      const PathWriteScope &writeScope = {},
-                                     TextureSourceSnapshot *textureSource = nullptr,
-                                     std::string *failure = nullptr);
+                                     TextureSourceSnapshot *textureSource = nullptr, std::string *failure = nullptr);
     void DeleteMetadata(const std::string &filePath);
     void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath, const PathWriteScope &writeScope,
                       const InxResourceMeta *replacement = nullptr);
