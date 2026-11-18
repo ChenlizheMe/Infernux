@@ -111,7 +111,14 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     std::map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_state, m_controlStorage;
     std::map<uint32_t, std::shared_ptr<rhi::ComputeBuffer>> m_stateSlots;
     ControlPayloads m_pendingControls, m_initialControls;
-    std::map<std::string, std::shared_ptr<rhi::ComputeWorkInstance>> m_instances;
+    struct BoundStage
+    {
+        BoundStage(std::shared_ptr<rhi::ComputeWorkInstance> instance, const rhi::ComputeBuffer *step);
+        std::shared_ptr<rhi::ComputeWorkInstance> work;
+        bool usesStep = false, usesIndices = false, writesStep = false;
+    };
+    std::map<std::string, BoundStage> m_instances;
+    std::optional<PhysicsParticipantStep> m_uploadedStep;
     std::shared_ptr<rhi::ComputeBuffer> m_step, m_indices;
     std::vector<std::weak_ptr<PhysicsParticipantOutput>> m_outputs;
     uint64_t m_generation = 0, m_nextOutput = 1;

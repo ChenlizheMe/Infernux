@@ -300,6 +300,24 @@ PhysicsParticipant::Inputs(const rhi::ComputeWorkRecipe &recipe, bool initialize
             result.emplace(name, storage);
     return result;
 }
+PhysicsParticipant::BoundStage::BoundStage(std::shared_ptr<rhi::ComputeWorkInstance> instance,
+                                           const rhi::ComputeBuffer *step)
+    : work(std::move(instance))
+{
+    const auto &recipe = work->GetRecipe();
+    for (const auto &port : recipe.GetPorts()) {
+        usesStep |= port.input && port.name == "step";
+        usesIndices |= port.input && port.name == "indices";
+    }
+    if (step)
+        for (const auto &dispatch : recipe.GetDispatches())
+            for (const auto &binding : dispatch.bindings)
+                if (binding.access != rhi::ComputeBufferAccess::Read &&
+                    work->GetBuffers()[binding.range.slot].get() == step) {
+                    writesStep = true;
+                    return;
+                }
+}
 bool PhysicsParticipant::BindInstances()
 {
     auto &host = m_recipes.at("initialize")->GetHost();
@@ -348,7 +366,7 @@ bool PhysicsParticipant::BindInstances()
         for (const auto &port : instance->GetRecipe().GetPorts())
             if (!port.input)
                 m_state.emplace(port.name, instance->GetBuffers().at(port.range.slot));
-        m_instances.emplace("initialize", std::move(instance));
+        m_instances.try_emplace("initialize", std::move(instance), m_step.get());
     }
     for (const auto &[name, recipe] : m_recipes) {
         if (m_instances.count(name))
@@ -356,7 +374,7 @@ bool PhysicsParticipant::BindInstances()
         auto instance = recipe->Instantiate(Bindings(Inputs(*recipe, false)));
         if (!instance)
             return false;
-        m_instances.emplace(name, std::move(instance));
+        m_instances.try_emplace(name, std::move(instance), m_step.get());
     }
     return true;
 }
@@ -370,14 +388,15 @@ JoltGpuControlWork PhysicsParticipant::PrepareInitialize()
     std::vector<rhi::ComputeBufferUpdate> updates;
     for (const auto &[name, payload] : m_initialControls)
         updates.push_back({m_controlStorage.at(name), 0, *payload});
-    if (m_step)
+    const auto &initialize = m_instances.at("initialize");
+    if (initialize.usesStep)
         updates.push_back({m_step, 0, Bytes(PhysicsParticipantStep{})});
-    if (m_indices) {
+    if (initialize.usesIndices) {
         const PhysicsParticipantIndices values{
             0u, 0u, 0u, 0u, m_initialCount, uint32_t(JoltGpuParticipantStage::Initialize)};
         updates.push_back({m_indices, 0, Bytes(values)});
     }
-    JoltGpuControlWork work{m_instances.at("initialize")->PrepareBatch(std::move(updates)), [self] {
+    JoltGpuControlWork work{initialize.work->PrepareBatch(std::move(updates)), [self] {
                                 self->AcceptControls(self->m_initialControls);
                                 self->m_initialControls.clear();
                                 if (!self->IsRetired())
@@ -392,12 +411,15 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
 {
     const auto name = StageName(stage);
     const auto found = m_instances.find(name);
+    const auto *bound = found != m_instances.end() ? &found->second : nullptr;
+    const PhysicsParticipantStep timing{params.gravityDt.w, fixedDeltaTime};
+    const bool uploadStep = bound && bound->usesStep &&
+                            (!m_uploadedStep || m_uploadedStep->substepDeltaTime != timing.substepDeltaTime ||
+                             m_uploadedStep->fixedDeltaTime != timing.fixedDeltaTime);
     std::vector<rhi::ComputeBufferUpdate> updates;
-    if (m_step && found != m_instances.end()) {
-        const PhysicsParticipantStep values{params.gravityDt.w, fixedDeltaTime};
-        updates.push_back({m_step, 0, Bytes(values)});
-    }
-    if (m_indices && found != m_instances.end()) {
+    if (uploadStep)
+        updates.push_back({m_step, 0, Bytes(timing)});
+    if (bound && bound->usesIndices) {
         const PhysicsParticipantIndices values{
             substep,         params.solve.y, stage == JoltGpuParticipantStage::Exchange ? iteration : 0u,
             params.counts.w, prefix.count,   uint32_t(stage)};
@@ -406,12 +428,21 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
     if (stage == JoltGpuParticipantStage::Predict && substep == 0)
         for (const auto &[control, value] : prefix.controls)
             updates.push_back({m_controlStorage.at(control), 0, *value});
-    if (found == m_instances.end() && updates.empty())
+    if (!bound && updates.empty())
         return {};
-    auto packet = found == m_instances.end()
-                      ? rhi::PrepareComputeBatch(m_recipes.at("initialize")->GetHost(), std::move(updates), {})
-                      : found->second->PrepareBatch(std::move(updates));
-    return {std::move(packet), {}, JoltGpuControlWork::ResumeAfter::Acceptance};
+    auto packet = bound ? bound->work->PrepareBatch(std::move(updates))
+                        : rhi::PrepareComputeBatch(m_recipes.at("initialize")->GetHost(), std::move(updates), {});
+    JoltGpuControlWork work{std::move(packet), {}, JoltGpuControlWork::ResumeAfter::Acceptance};
+    if (bound && (uploadStep || bound->writesStep)) {
+        // The resident value changes only when the packet enters the device queue.
+        // A writable project binding can replace it before the next stage.
+        const auto resident = bound->writesStep ? std::nullopt : std::optional(timing);
+        work.continueWork = [self = shared_from_this(), resident] {
+            self->m_uploadedStep = resident;
+            return JoltGpuControlWork{};
+        };
+    }
+    return work;
 }
 
 decltype(JoltGpuTickControl::prepareParticipant)
