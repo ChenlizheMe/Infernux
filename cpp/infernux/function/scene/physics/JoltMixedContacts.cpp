@@ -100,6 +100,7 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
 {
     m_scene = &scene;
     m_sweepConstraints.clear();
+    m_nativeImpactAtSweepTime = false;
     m_cpuDynamicResponse = m_cpuKinematicResponse = m_cpuContinuous = m_cpuDynamicContinuous = false;
     m_proxies.clear();
     m_responses.clear();
@@ -589,6 +590,7 @@ void JoltMixedContactStep::ClearStep()
 {
     m_scene = nullptr;
     m_sweepConstraints.clear();
+    m_nativeImpactAtSweepTime = false;
     m_proxies.clear();
     m_gpuResponseBodies.clear();
     m_responses.clear();

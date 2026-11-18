@@ -118,6 +118,7 @@ class JoltMixedContactStep final
         float lastNormalVelocity = 0, lastNormalImpulse = 0;
     };
     std::vector<SweepConstraint> m_sweepConstraints;
+    bool m_nativeImpactAtSweepTime = false;
     bool HasSweepJoint(const JoltGpuScene::Publication &, uint32_t body);
     std::weak_ptr<const JoltGpuScene::PublicationDirectory> m_sweepJointDirectory;
     uint32_t m_sweepJointWorld = UINT32_MAX;

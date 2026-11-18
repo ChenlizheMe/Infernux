@@ -33,7 +33,7 @@ class JoltCpuContactPublication final
     void PrepareCoupledIntegration(bool retainMotion);
     [[nodiscard]] std::optional<float> CoupledImpactTime() const;
     [[nodiscard]] bool HasCoupledImpact(JPH::BodyID body) const;
-    [[nodiscard]] bool HasSweepVelocityRows(JPH::BodyID body) const;
+    [[nodiscard]] std::optional<uint32_t> GetSweepVelocityIsland(JPH::BodyID body) const;
     [[nodiscard]] JPH::Vec3 CoupledDisplacement(JPH::BodyID body) const;
     void AdvanceCoupledSweep(float fraction, float remaining,
                              const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses);

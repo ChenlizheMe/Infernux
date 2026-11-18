@@ -23,6 +23,7 @@ using namespace JPH::GPU;
 enum Entry : uint32_t
 {
     Gather,
+    GatherIslands,
     Apply
 };
 constexpr uint32_t PortCount = 24;
@@ -79,7 +80,7 @@ template <typename Accept> class CastCollector final : public JPH::CastShapeColl
 JoltMixedContinuousContacts::JoltMixedContinuousContacts(rhi::ComputeHost &host, const ShaderTargetCode &target)
     : m_host(host)
 {
-    const std::array names{"gather_continuous_boundaries", "apply_cross_domain_sweep"};
+    const std::array names{"gather_continuous_boundaries", "gather_constrained_boundaries", "apply_cross_domain_sweep"};
     for (size_t i = 0; i < names.size(); ++i) {
         const auto entry = std::find_if(target.entries.begin(), target.entries.end(),
                                         [&](const auto &code) { return code.name == names[i]; });
@@ -152,6 +153,9 @@ struct JoltMixedContinuousContacts::Job : std::enable_shared_from_this<Job>
     {
         buffers[1] = inputs.GetCaptured(Resource::BodyModels);
         buffers[15] = inputs.GetSweepBodies();
+        if (settling && step.m_sweepConstraints.size() > 1 &&
+            (params.selectedCounts.z || inputs.GetSweepContacts()->patchCount))
+            buffers[16] = inputs.GetSweepChoices();
         if (!settling) {
             eventTime = inputs.SweepImpactTime();
             if (const auto native = cpu.CoupledImpactTime())
@@ -188,13 +192,13 @@ struct JoltMixedContinuousContacts::Job : std::enable_shared_from_this<Job>
             const auto &buffer = buffers[port];
             const uint32_t index = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffer);
-            const bool output = (entry == Gather && port == 17u) || (entry == Entry::Apply && port == 21u);
+            const bool output = (entry != Entry::Apply && port == 17u) || (entry == Entry::Apply && port == 21u);
             const bool mutablePort = entry == Entry::Apply && (port == 15u || (port == 21u && settling));
             dispatch.bufferAccesses.push_back(mutablePort ? rhi::ComputeBufferAccess::ReadWrite
                                               : output    ? rhi::ComputeBufferAccess::Write
                                                           : rhi::ComputeBufferAccess::Read);
             if (output) {
-                const uint64_t stride = entry == Gather ? sizeof(ContinuousSample) : sizeof(ContinuousReceipt);
+                const uint64_t stride = entry != Entry::Apply ? sizeof(ContinuousSample) : sizeof(ContinuousReceipt);
                 if (mutablePort)
                     proof.reads.push_back({index, uint64_t(first) * stride, uint64_t(count) * stride});
                 proof.writes.push_back({index, uint64_t(first) * stride, uint64_t(count) * stride});
@@ -277,7 +281,8 @@ struct JoltMixedContinuousContacts::Job : std::enable_shared_from_this<Job>
                                         uint32_t((TransferPageBytes - sizeof(Parameters)) / sizeof(ContinuousSample)));
         const uint64_t offset = uint64_t(gatherFirst) * sizeof(ContinuousSample);
         pending.push_back(Uniform({gatherFirst, count, params.selection.y, params.selectedCounts.x}));
-        auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(pending), {Dispatch(Gather, count, gatherFirst)},
+        auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(pending),
+                                               {Dispatch(buffers[16] ? GatherIslands : Gather, count, gatherFirst)},
                                                {{buffers[17], offset, uint64_t(count) * sizeof(ContinuousSample)}});
         return {packet, [self = shared_from_this(), packet, count] {
                     packet->Readback(0)->ReadInto(self->samples.data() + self->gatherFirst,
@@ -328,16 +333,50 @@ void JoltMixedContinuousContacts::Job::FlushConstraints()
     for (const auto &row : step.m_sweepConstraints)
         Publish(row);
     step.m_sweepConstraints.clear();
+    step.m_nativeImpactAtSweepTime = false;
 }
 
 JoltGpuControlWork JoltMixedContinuousContacts::Job::CheckConstraints()
 {
+    // A normal impulse measures the response of its two local islands. Other
+    // impacts can reuse their own measurements in the same dispatch if neither
+    // dynamic island received a second boundary impulse.
+    const auto sampleFor = [&](uint32_t gpuSlot) -> const ContinuousSample & {
+        return samples[std::lower_bound(slots.begin(), slots.end(), gpuSlot) - slots.begin()];
+    };
+    const auto groupsFor = [&](const Constraint &row) {
+        constexpr uint64_t freeBody = uint64_t(1) << 32, nativeImpact = 2 * freeBody, gpuGroup = 3 * freeBody;
+        std::array<uint64_t, 2> groups{UINT64_MAX, UINT64_MAX};
+        if (Body(row.native).IsDynamic()) {
+            const auto island = cpu.GetSweepVelocityIsland(row.native);
+            groups[0] = step.m_nativeImpactAtSweepTime ? nativeImpact
+                        : island                       ? uint64_t(*island)
+                                                       : freeBody + row.native.GetIndexAndSequenceNumber();
+        }
+        if (storage.GetModel().bodies[row.value.gpuSlot].meta.z == MotionDynamic)
+            groups[1] = gpuGroup + (sampleFor(row.value.gpuSlot).islandAndImpact >> 1u);
+        return groups;
+    };
+    std::unordered_map<uint64_t, uint32_t> incident;
+    if (step.m_sweepConstraints.size() > 1) {
+        incident.reserve(step.m_sweepConstraints.size() * 2);
+        for (const auto &row : step.m_sweepConstraints)
+            for (auto group : groupsFor(row))
+                if (group != UINT64_MAX)
+                    ++incident[group];
+    }
+    const auto independent = [&](const Constraint &row) {
+        if (incident.empty())
+            return true;
+        const auto groups = groupsFor(row);
+        return std::all_of(groups.begin(), groups.end(),
+                           [&](uint64_t group) { return group == UINT64_MAX || incident.at(group) == 1; });
+    };
     const float tolerance = JPH::cDefaultCollisionTolerance / inputs.GetParameters().gravityDt.w;
     for (size_t index = 0; index < step.m_sweepConstraints.size(); ++index) {
         const auto &row = step.m_sweepConstraints[index];
         const auto &body = Body(row.native);
-        const auto slot = std::lower_bound(slots.begin(), slots.end(), row.value.gpuSlot) - slots.begin();
-        const auto &gpu = samples[slot].state;
+        const auto &gpu = sampleFor(row.value.gpuSlot).state;
         const auto point = JPH::RVec3(Vector(row.value.pointRestitution));
         const auto arm = JPH::Vec3(point - JPH::RVec3(Vector(gpu.positionCOM)));
         const auto relative =
@@ -368,7 +407,7 @@ JoltGpuControlWork JoltMixedContinuousContacts::Job::CheckConstraints()
                 row.value.normalFriction.w == 0.0f ||
                 ((relative - speed * normal).LengthSq() <= tolerance * tolerance &&
                  (total - normalImpulse * normal).LengthSq() <= JPH::Square(1.0e-5f * normalImpulse));
-            if (step.m_sweepConstraints.size() == 1 && normalOnly && row.lastNormalImpulse * response > 0.0f)
+            if (normalOnly && row.lastNormalImpulse * response > 0.0f && independent(row))
                 hit.normalMass = row.lastNormalImpulse / response;
             hits.push_back(std::move(hit));
         }
@@ -426,7 +465,7 @@ void JoltMixedContinuousContacts::Job::CastPair(uint32_t index)
         return;
     const auto &sample = samples[leafSample];
     const bool cpuCarried = step.m_continuousPose[index].fromEarlierImpact;
-    const bool gpuCarried = sample.displacement.w != 0.0f;
+    const bool gpuCarried = (sample.islandAndImpact & 1u) != 0u;
     const bool cpuContinuous =
         cpuCarried || proxy.collisionDetectionMode != static_cast<int>(CollisionDetectionMode::Discrete);
     const bool cpuDynamicContinuous =
@@ -439,7 +478,7 @@ void JoltMixedContinuousContacts::Job::CastPair(uint32_t index)
     const auto &a = step.m_continuousPose[index];
     const auto da = step.m_continuousDisplacement[index];
     const auto &b = sample.state;
-    const auto db = Vector(sample.displacement);
+    const auto db = JPH::Vec3(sample.dx, sample.dy, sample.dz);
     float radius = proxy.dynamic && cpuContinuous ? proxy.shape->GetInnerRadius() : std::abs(gpuRadius);
     if (proxy.dynamic && cpuContinuous && gpuRadius != 0.0f)
         radius = std::min(radius, std::abs(gpuRadius));
@@ -567,7 +606,7 @@ JoltGpuControlWork JoltMixedContinuousContacts::Job::CastNext()
             const auto &leaf = publication->directory->actors[address.bodySlot]->leaves[address.actorLeaf];
             const auto bounds = leaf.shape->GetWorldSpaceBounds(JPH::RMat44::sRotationTranslation(q * local, center),
                                                                 JPH::Vec3::sOne());
-            const auto delta = XYZ(sample.displacement);
+            const auto delta = glm::vec3(sample.dx, sample.dy, sample.dz);
             const auto lo = Pack(bounds.mMin), hi = Pack(bounds.mMax);
             leafMin = XYZ(lo) + glm::min(delta, glm::vec3(0));
             leafMax = XYZ(hi) + glm::max(delta, glm::vec3(0));
@@ -605,6 +644,8 @@ void JoltMixedContinuousContacts::Job::Arbitrate()
 {
     if (!settling && (!eventTime || *eventTime > 0.0f))
         FlushConstraints();
+    if (!settling && eventTime && cpu.CoupledImpactTime() == eventTime)
+        step.m_nativeImpactAtSweepTime = true;
     if (hits.empty())
         return;
     std::sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) {
@@ -628,8 +669,9 @@ void JoltMixedContinuousContacts::Job::Arbitrate()
         deviceHits.push_back(hit.value);
         selected.push_back(std::move(hit));
     }
-    sharedHits = selected.size() < hits.size() ||
-                 (eventTime && (cpu.CoupledImpactTime() == eventTime || inputs.SweepImpactTime() == eventTime));
+    sharedHits =
+        selected.size() < hits.size() ||
+        (!settling && eventTime && (cpu.CoupledImpactTime() == eventTime || inputs.SweepImpactTime() == eventTime));
 }
 
 JoltGpuControlWork JoltMixedContinuousContacts::Job::PrepareDecisions()
@@ -674,7 +716,7 @@ JoltGpuControlWork JoltMixedContinuousContacts::Job::Apply(std::vector<rhi::Comp
                         self->impulses.push_back({hit.native, Vector(receipt.linear), Vector(receipt.angular)});
                     const auto normal = Vector(hit.value.normalFriction);
                     hit.lastNormalVelocity = -Vector(receipt.relative).Dot(normal);
-                    hit.lastNormalImpulse = -Vector(receipt.linear).Dot(normal);
+                    hit.lastNormalImpulse = self->sharedHits ? 0.0f : -Vector(receipt.linear).Dot(normal);
                     if (self->settling) {
                         auto &row = self->step.m_sweepConstraints[hit.retainedIndex];
                         row.lastNormalVelocity = hit.lastNormalVelocity;
@@ -687,7 +729,7 @@ JoltGpuControlWork JoltMixedContinuousContacts::Job::Apply(std::vector<rhi::Comp
                         hit.impulseTarget = {-receipt.linear.x, -receipt.linear.y, -receipt.linear.z, receipt.linear.w};
                         hit.relative = XYZ(receipt.relative);
                         const auto &actor = self->publication->directory->actors[hit.value.gpuSlot];
-                        if (self->sharedHits || self->cpu.HasSweepVelocityRows(hit.native) ||
+                        if (self->sharedHits || self->cpu.GetSweepVelocityIsland(hit.native) ||
                             self->step.HasSweepJoint(*self->publication, actor->bodyId)) {
                             self->step.m_sweepConstraints.push_back(hit);
                         } else {

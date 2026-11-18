@@ -49,6 +49,7 @@ struct MixedPatch
 [[vk::binding(13, 0)]] StructuredBuffer<MixedPatch> previous_patches;
 [[vk::binding(14, 0)]] StructuredBuffer<uint> continuous_slots;
 [[vk::binding(15, 0)]] RWStructuredBuffer<SweepBody> continuous_motion;
+[[vk::binding(16, 0)]] StructuredBuffer<uint> continuous_islands;
 [[vk::binding(17, 0)]] RWStructuredBuffer<ContinuousSample> continuous_samples;
 [[vk::binding(19, 0)]] StructuredBuffer<ContinuousCpuBody> continuous_cpu;
 [[vk::binding(20, 0)]] StructuredBuffer<ContinuousMixedHit> continuous_hits;
@@ -440,17 +441,32 @@ void wake_cross_domain_bodies(uint3 id : SV_GroupID, uint lane : SV_GroupIndex)
     gpu_states[slot] = state;
 }
 
+void gather_continuous_boundary(uint row, uint local, uint island)
+{
+    SweepBody motion = continuous_motion[local];
+    ContinuousSample sample = {jph_sweep_state(motion), motion.displacement.x, motion.displacement.y,
+                               motion.displacement.z, (island << 1u) | uint(motion.positionCOM.w != 0.0f)};
+    continuous_samples[row] = sample;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gather_continuous_boundaries(uint3 tid : SV_DispatchThreadID)
 {
     if (tid.x >= params.range.y) return;
     uint row = params.range.x + tid.x;
-    uint slot = continuous_slots[row];
-    uint local = slot - params.range.z;
-    SweepBody motion = continuous_motion[local];
-    ContinuousSample sample = {jph_sweep_state(motion), float4(motion.displacement.xyz, motion.positionCOM.w)};
-    continuous_samples[row] = sample;
+    uint local = continuous_slots[row] - params.range.z;
+    gather_continuous_boundary(row, local, local);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void gather_constrained_boundaries(uint3 tid : SV_DispatchThreadID)
+{
+    if (tid.x >= params.range.y) return;
+    uint row = params.range.x + tid.x;
+    uint local = continuous_slots[row] - params.range.z;
+    gather_continuous_boundary(row, local, continuous_islands[local]);
 }
 
 [shader("compute")]
