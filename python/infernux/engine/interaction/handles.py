@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-from ._contributions import current_owner
+from infernux.engine.reload.contributions import current_owner
 
 
 Vec3 = tuple[float, float, float]

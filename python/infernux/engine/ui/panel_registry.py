@@ -34,7 +34,7 @@ from infernux.engine.interaction import (
     PanelInteractionDescriptor,
     PanelInteractionRegistry,
 )
-from infernux.engine.interaction._contributions import current_owner, contribution_scope
+from infernux.engine.reload.contributions import current_owner, contribution_scope
 
 if TYPE_CHECKING:
     from .window_manager import WindowManager

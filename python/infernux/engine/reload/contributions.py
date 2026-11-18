@@ -1,4 +1,4 @@
-"""Preload ownership shared by editor registrations, not input focus scope."""
+"""Attribute registrations to the source executing in this context."""
 
 from contextlib import contextmanager
 from contextvars import ContextVar

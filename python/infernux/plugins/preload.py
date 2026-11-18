@@ -1551,7 +1551,7 @@ def _editor_contribution_scope(owner: str, *, runtime: bool) -> Iterator[None]:
     if runtime:
         yield
         return
-    from infernux.engine.interaction._contributions import contribution_scope
+    from infernux.engine.reload.contributions import contribution_scope
 
     with contribution_scope(owner):
         yield
@@ -1562,7 +1562,8 @@ def _remove_editor_contribution_owner(owner: str, *, runtime: bool) -> bool:
         return True
     from infernux.engine.ui.panel_registry import PanelRegistry
 
-    PanelRegistry.remove_owner(owner)
+    if not PanelRegistry.remove_owner(owner):
+        return False
     from infernux.engine.interaction.commands import EditorCommandRegistry
     from infernux.engine.interaction.handles import EditorHandleRegistry
     from infernux.engine.interaction.shortcuts import ShortcutRouter

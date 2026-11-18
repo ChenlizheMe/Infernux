@@ -10,7 +10,7 @@ from typing import Any, Optional
 from .contexts import FocusService, FocusSnapshot
 from .descriptors import SelectionSnapshot
 from .selection import SelectionService
-from ._contributions import current_owner
+from infernux.engine.reload.contributions import current_owner
 
 
 class CommandSource(str, Enum):

@@ -219,7 +219,7 @@ class ModuleBatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def _exec_module(self, module):
         from infernux.components.serializable_object import _candidate_serializable_scope
         from infernux.renderstack.render_effect_compiler import _capture_source_effect_features
-        from infernux.engine.interaction._contributions import contribution_scope
+        from .contributions import contribution_scope
         from infernux.engine.path_utils import path_key
 
         result = self.sources[module.__name__]

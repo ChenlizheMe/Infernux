@@ -15,7 +15,7 @@ from .commands import (
 )
 from .contexts import FocusService
 from .modals import ModalService
-from ._contributions import current_owner
+from infernux.engine.reload.contributions import current_owner
 
 
 class ShortcutModifier(IntFlag):
