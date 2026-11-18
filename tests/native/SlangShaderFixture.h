@@ -14,15 +14,24 @@
 namespace infernux::test
 {
 
-inline ShaderTargetCode CompileSlangFixture(const std::filesystem::path &path)
+inline ShaderSourceModule ReadSlangFixture(const std::filesystem::path &path)
 {
     std::ifstream source(path, std::ios::binary);
     if (!source)
         throw std::runtime_error("Cannot open shader fixture: " + path.generic_string());
-    return CompileSlangNativeModule(
-        {path.stem().stem().string(), path.generic_string(),
-         std::string(std::istreambuf_iterator<char>(source), std::istreambuf_iterator<char>())},
-        ShaderCodeTarget::SpirV);
+    return {path.stem().stem().string(), path.generic_string(),
+            std::string(std::istreambuf_iterator<char>(source), std::istreambuf_iterator<char>())};
+}
+
+inline ShaderSourceModule ReadSceneShaderFixture(const char *file)
+{
+    const auto root = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    return ReadSlangFixture(root / "cpp/infernux/function/renderer/shaders" / file);
+}
+
+inline ShaderTargetCode CompileSlangFixture(const std::filesystem::path &path)
+{
+    return CompileSlangNativeModule(ReadSlangFixture(path), ShaderCodeTarget::SpirV);
 }
 
 inline std::vector<uint32_t> FixtureSpirv(const std::filesystem::path &path)

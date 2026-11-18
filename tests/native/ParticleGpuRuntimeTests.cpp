@@ -1,4 +1,5 @@
 #include "ParticleGraphicsFixtures.h"
+#include "SlangShaderFixture.h"
 #include <core/config/EngineConfig.h>
 #include <core/types/ColorSpace.h>
 #include <function/renderer/SceneDepthResolver.h>
@@ -1207,9 +1208,8 @@ int main()
 
     {
         FakeDevice resolveDevice;
-        const auto compiled = SlangCompiler::Get().Compile(
-            {"scene_depth", "SceneDepthResolve.compute.py", std::string(SceneDepthResolver::ShaderSource())}, {},
-            {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+        const auto compiled = SlangCompiler::Get().Compile(test::ReadSceneShaderFixture("scene_depth_resolve.slang"),
+                                                           {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
         const auto &code = compiled.targets[0];
         SceneDepthResolver resolver;
         resolver.Initialize(SceneDepthResolver::CreateProgram(resolveDevice, code));
@@ -1250,9 +1250,8 @@ int main()
 
     {
         FakeDevice sharedDevice;
-        const auto compiled = SlangCompiler::Get().Compile(
-            {"scene_depth", "SceneDepthResolve.compute.py", std::string(SceneDepthResolver::ShaderSource())}, {},
-            {ShaderCodeTarget::SpirV});
+        const auto compiled = SlangCompiler::Get().Compile(test::ReadSceneShaderFixture("scene_depth_resolve.slang"),
+                                                           {}, {ShaderCodeTarget::SpirV});
         auto program = SceneDepthResolver::CreateProgram(sharedDevice, compiled.targets[0]);
         assert(program);
         DepthResolveTrace trace;

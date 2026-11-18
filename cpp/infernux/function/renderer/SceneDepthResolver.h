@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <string_view>
 #include <vector>
 
 namespace infernux
@@ -41,8 +40,6 @@ class SceneDepthResolver
 
     /// Groups and their immutable constants share the previous graph's GPU lifetime.
     INFERNUX_RENDER_CORE_API void RetireBindings(GpuRetirementQueue &queue);
-
-    [[nodiscard]] INFERNUX_RENDER_CORE_API static std::string_view ShaderSource() noexcept;
 
   private:
     struct BindingEntry

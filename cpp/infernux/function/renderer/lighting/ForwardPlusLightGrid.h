@@ -7,7 +7,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <string_view>
 #include <vector>
 
 namespace infernux::lighting
@@ -96,8 +95,6 @@ class ForwardPlusLightGrid
     [[nodiscard]] const ForwardPlusGridFrame &Frame(uint32_t frameIndex) const;
     [[nodiscard]] rhi::BindingLayoutHandle ConsumerLayout() const noexcept;
     [[nodiscard]] std::vector<ForwardPlusRetiredResources> TakeRetiredResources();
-
-    [[nodiscard]] static std::string_view ShaderSource() noexcept;
 
   private:
     [[nodiscard]] bool RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::BufferHandle canonicalLights);

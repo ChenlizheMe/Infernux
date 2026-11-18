@@ -19,7 +19,7 @@
 #include "raytracing/RayWorldMaterials.h"
 #include "raytracing/RayWorldTailCache.h"
 #include "vk/RhiVulkanTypes.h"
-#include <function/resources/ShaderAsset/SlangCompiler.h>
+#include <function/renderer/shader/BuiltinSceneProgram.h>
 
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -104,11 +104,8 @@ InxVkCoreModular::InxVkCoreModular(vk::VulkanBackendContext &backend, int maxFra
 std::shared_ptr<const SceneDepthResolveProgram> InxVkCoreModular::GetSceneDepthResolveProgram()
 {
     if (!m_sceneDepthProgram) {
-        const auto program =
-            SlangCompiler::Get().Compile({"inx_scene_depth_resolve", "Infernux/SceneDepthResolve.compute.py",
-                                          std::string(SceneDepthResolver::ShaderSource())},
-                                         {}, {ShaderCodeTarget::SpirV});
-        m_sceneDepthProgram = SceneDepthResolver::CreateProgram(GetDeviceContext().GetRhiDevice(), program.targets[0]);
+        m_sceneDepthProgram = SceneDepthResolver::CreateProgram(
+            GetDeviceContext().GetRhiDevice(), LoadBuiltinSceneProgram(BuiltinSceneProgram::DepthResolve));
     }
     return m_sceneDepthProgram;
 }
@@ -116,12 +113,8 @@ std::shared_ptr<const SceneDepthResolveProgram> InxVkCoreModular::GetSceneDepthR
 std::shared_ptr<const lighting::ForwardPlusGridPipeline> InxVkCoreModular::GetForwardPlusGridProgram()
 {
     if (!m_forwardPlusProgram) {
-        const auto program =
-            SlangCompiler::Get().Compile({"inx_forward_plus_grid", "Infernux/ForwardPlusLightGrid.slang",
-                                          std::string(lighting::ForwardPlusLightGrid::ShaderSource())},
-                                         {}, {ShaderCodeTarget::SpirV});
-        m_forwardPlusProgram =
-            lighting::ForwardPlusLightGrid::CreateProgram(GetDeviceContext().GetRhiDevice(), program.targets[0]);
+        m_forwardPlusProgram = lighting::ForwardPlusLightGrid::CreateProgram(
+            GetDeviceContext().GetRhiDevice(), LoadBuiltinSceneProgram(BuiltinSceneProgram::ForwardPlusGrid));
     }
     return m_forwardPlusProgram;
 }

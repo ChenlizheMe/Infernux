@@ -1,5 +1,6 @@
 #include <Jolt/GPU/PhysicsStages.h>
 #include <function/renderer/gui/BuiltinUIProgram.h>
+#include <function/renderer/shader/BuiltinSceneProgram.h>
 #include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/resources/ShaderAsset/SlangUIModule.h>
@@ -21,13 +22,13 @@ std::string ReadSource(const std::filesystem::path &path)
 {
     std::ifstream file(path);
     if (!file)
-        throw std::runtime_error("Cannot open GPU physics source: " + path.u8string());
+        throw std::runtime_error("Cannot open shader source: " + path.u8string());
     return {std::istreambuf_iterator<char>(file), {}};
 }
 
-ShaderSourceModule LoadModule(const std::filesystem::path &jolt, const char *name, const char *path)
+ShaderSourceModule LoadModule(const std::filesystem::path &root, const char *name, const char *path)
 {
-    return {name, path, ReadSource(jolt / path)};
+    return {name, path, ReadSource(root / path)};
 }
 
 ShaderSourceModule LoadProgramSource(const std::filesystem::path &root, const std::filesystem::path &jolt,
@@ -186,21 +187,38 @@ void CookUI(ShaderCodeTarget target, const std::filesystem::path &output)
         return SlangCompiler::Get().CompileRootProgram(*programs[index], {}, {target});
     });
 }
+
+void CookScene(const std::filesystem::path &root, ShaderCodeTarget target, const std::filesystem::path &output)
+{
+    const auto shaders = root / "cpp/infernux/function/renderer/shaders";
+    const ShaderSourceModule programs[] = {LoadModule(shaders, "inx_scene_depth_resolve", "scene_depth_resolve.slang"),
+                                           LoadModule(shaders, "inx_forward_plus_grid", "forward_plus_grid.slang")};
+    static_assert(std::size(programs) == static_cast<unsigned>(BuiltinSceneProgram::Count));
+    WritePrograms(output, "InfernuxSceneShaderArchive", std::size(programs),
+                  [&](unsigned index) { return SlangCompiler::Get().Compile(programs[index], {}, {target}); });
+}
 } // namespace
 
 int main(int argc, char **argv)
 try {
-    if (argc != 4)
-        throw std::invalid_argument("Usage: InfernuxJoltGpuCook <engine-source|--ui> <spirv|wgsl> <output.c>");
-    const std::string_view format = argv[2];
+    if (argc != 5)
+        throw std::invalid_argument(
+            "Usage: InfernuxJoltGpuCook <physics|ui|scene> <engine-source> <spirv|wgsl> <output.c>");
+    const std::string_view kind = argv[1];
+    const auto root = std::filesystem::u8path(argv[2]);
+    const std::string_view format = argv[3];
     if (format != "spirv" && format != "wgsl")
         throw std::invalid_argument("Unknown shader target");
     const auto target = format == "spirv" ? ShaderCodeTarget::SpirV : ShaderCodeTarget::Wgsl;
-    const auto output = std::filesystem::u8path(argv[3]);
-    if (std::string_view(argv[1]) == "--ui")
+    const auto output = std::filesystem::u8path(argv[4]);
+    if (kind == "physics")
+        CookPhysics(root, target, output);
+    else if (kind == "ui")
         CookUI(target, output);
+    else if (kind == "scene")
+        CookScene(root, target, output);
     else
-        CookPhysics(std::filesystem::u8path(argv[1]), target, output);
+        throw std::invalid_argument("Unknown built-in program group");
     return 0;
 } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

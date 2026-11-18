@@ -4,9 +4,8 @@ bool VerifyForwardPlusTileCoverage(TestResources &resources)
 {
     using namespace infernux;
     using namespace infernux::lighting;
-    const auto code = SlangCompiler::Get().Compile(
-        {"forward_plus_coverage", "Tests/ForwardPlusCoverage.slang", std::string(ForwardPlusLightGrid::ShaderSource())},
-        {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+    const auto code = SlangCompiler::Get().Compile(test::ReadSceneShaderFixture("forward_plus_grid.slang"), {},
+                                                   {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
     auto &device = resources.context.GetRhiDevice();
     const auto native = resources.context.GetDevice();
     struct Owner

@@ -2,6 +2,7 @@
 #undef NDEBUG
 #endif
 
+#include "SlangShaderFixture.h"
 #include <function/renderer/lighting/CanonicalLightGpuBuffer.h>
 #include <function/renderer/lighting/ForwardPlusLightGrid.h>
 #include <function/renderer/lighting/ShadowFrame.h>
@@ -419,10 +420,9 @@ int main()
            2);
 
     FakeDevice device;
-    const auto compiledGrid = infernux::SlangCompiler::Get().Compile(
-        {"forward_plus", "ForwardPlusLightGrid.slang",
-         std::string(infernux::lighting::ForwardPlusLightGrid::ShaderSource())},
-        {}, {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl});
+    const auto compiledGrid =
+        infernux::SlangCompiler::Get().Compile(infernux::test::ReadSceneShaderFixture("forward_plus_grid.slang"), {},
+                                               {infernux::ShaderCodeTarget::SpirV, infernux::ShaderCodeTarget::Wgsl});
     const auto &gridCode = compiledGrid.targets[0];
     infernux::lighting::ForwardPlusLightGrid grid;
     assert(grid.Initialize(device, 2, gridCode));

@@ -75,6 +75,12 @@ def stage_scene_shader_programs(data_root, catalog_path, source_entries, scenes,
         for child in obj.get("children", ()):
             visit_object(child)
 
+    # Presentation selects its fragment from the output colour space and extent.
+    # These passes have no material reference in the scene asset.
+    for shader_id in ("infernux/internal/fullscreen_copy", "infernux/internal/fullscreen_blit",
+                      "infernux/internal/display_encode"):
+        select_builtin(shader_id, "")
+
     pending = list(scenes)
     seen = set()
     while pending:

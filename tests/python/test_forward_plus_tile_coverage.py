@@ -1,6 +1,5 @@
 """Production Forward+ Slang versus independent pixel-segment/sphere geometry."""
 from pathlib import Path
-import re
 import struct
 
 import numpy as np
@@ -12,11 +11,9 @@ from infernux.lib import _Infernux
 @pytest.fixture(scope="module")
 def light_grid(engine):
     source = (Path(__file__).resolve().parents[2] /
-              "cpp/infernux/function/renderer/lighting/ForwardPlusLightGrid.cpp").read_text(encoding="utf-8")
-    match = re.search(r'ForwardPlusLightGrid::ShaderSource\(\).*?return R"\((.*?)\)";', source, re.S)
-    assert match is not None
-    shader = match[1].replace("ConstantBuffer<ForwardPlusGridConstants> pc;",
-                              "[[vk::push_constant]] ConstantBuffer<ForwardPlusGridConstants> pc;")
+              "cpp/infernux/function/renderer/shaders/forward_plus_grid.slang").read_text(encoding="utf-8")
+    shader = source.replace("ConstantBuffer<ForwardPlusGridConstants> pc;",
+                            "[[vk::push_constant]] ConstantBuffer<ForwardPlusGridConstants> pc;")
     compiled = _Infernux._compile_shader_program(shader, "<test-forward-plus-coverage>", "light_grid", targets=["spirv"])
     entry = compiled["targets"][0]["entries"][0]
     host = engine._acquire_compute_host()
