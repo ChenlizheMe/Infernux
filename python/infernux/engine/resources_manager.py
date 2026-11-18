@@ -216,10 +216,19 @@ class _NoOpReloadAdapter:
     def initialize(self, prepared, owner):
         return None
 
+    def activate(self, prepared):
+        return None
+
     def fail(self, paths, error):
         return None
 
     def retire(self, paths):
+        return None
+
+    def validate_sources(self, paths):
+        return None
+
+    def record_dependencies(self, graph):
         return None
 
 
