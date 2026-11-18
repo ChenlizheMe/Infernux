@@ -69,15 +69,12 @@ void BoxCollider::AutoFitToMesh()
 
 JPH::RefConst<JPH::Shape> BoxCollider::CreateJoltShape() const
 {
-    // Jolt expects half-extents; Unity exposes full size.
-    // Keep the authored physical dimensions, including small robot/bone boxes.
-    // Contact slop is a solver setting, not extra collision geometry.
+    // Keep the authored corners in both the query and contact geometry.
+    // The solver already has its own speculative contact distance and slop.
     glm::vec3 halfExt = m_size * 0.5f * GetWorldScale();
     if (halfExt.x == 0 || halfExt.y == 0 || halfExt.z == 0)
         return new JPH::EmptyShape();
-    float minHalf = glm::min(halfExt.x, glm::min(halfExt.y, halfExt.z));
-    float convexRadius = std::min(JPH::cDefaultConvexRadius, minHalf * 0.4f);
-    JPH::RefConst<JPH::Shape> shape = new JPH::BoxShape(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z), convexRadius);
+    JPH::RefConst<JPH::Shape> shape = new JPH::BoxShape(JPH::Vec3(halfExt.x, halfExt.y, halfExt.z), 0.0f);
 
     glm::vec3 center = GetCenterInRigidSpace();
     if (center != glm::vec3(0.0f)) {
