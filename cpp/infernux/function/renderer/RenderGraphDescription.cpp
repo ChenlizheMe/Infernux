@@ -32,8 +32,7 @@ bool GraphUsesForwardPlus(const RenderGraphDescription &graph)
 std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGraphDescription &graph)
 {
     const auto isLitTable = [](const GraphBufferDesc &buffer) {
-        return buffer.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials ||
-               buffer.frameBuffer == GraphFrameBuffer::WorldRayTextureDescriptors;
+        return buffer.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials;
     };
     const bool hasTables = std::any_of(graph.buffers.begin(), graph.buffers.end(), isLitTable);
     const bool hasPages = std::any_of(graph.textures.begin(), graph.textures.end(),
@@ -44,28 +43,14 @@ std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGr
         std::pair{"world_ray_geometry", GraphFrameBuffer::WorldRayGeometry},
         std::pair{"world_ray_meshes", GraphFrameBuffer::WorldRayMeshes},
         std::pair{"ray_lit_materials", GraphFrameBuffer::WorldRayLitMaterials},
-        std::pair{"ray_texture_descriptors", GraphFrameBuffer::WorldRayTextureDescriptors},
     };
     constexpr std::array pagePorts{
         std::pair{"ray_color_pages", GraphTextureRole::WorldRayColorPages},
         std::pair{"ray_data_pages", GraphTextureRole::WorldRayDataPages},
     };
 
-    const auto tables = [](const ShaderTargetCode &code) {
-        std::array<const ShaderResourceLayout *, 2> result{};
-        for (const auto &resource : code.resources) {
-            if (resource.set != 0 || resource.binding.type != rhi::BindingType::StorageBuffer ||
-                !resource.binding.readOnlyStorage)
-                continue;
-            if (resource.name == "ray_lit_materials")
-                result[0] = &resource;
-            else if (resource.name == "ray_texture_descriptors")
-                result[1] = &resource;
-        }
-        return result;
-    };
     std::shared_ptr<const ShaderTargetCode> program;
-    std::array<const ShaderResourceLayout *, 2> layout{};
+    const ShaderResourceLayout *layout = nullptr;
     for (const auto &pass : graph.passes) {
         const auto *command = pass.PrimaryCommand();
         if (!command || command->type != GraphCommandType::FullscreenQuad)
@@ -98,19 +83,20 @@ std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGr
         if (!command->fullscreenProgram)
             throw std::invalid_argument("World ray Lit pass has no captured shader: " + pass.name);
         const auto &candidate = command->fullscreenProgram->code;
-        const auto reflected = tables(*candidate);
-        if (!reflected[0] || !reflected[1])
-            throw std::invalid_argument("World ray Lit pass must read both reflected tables: " + pass.name);
+        const auto reflected =
+            std::find_if(candidate->resources.begin(), candidate->resources.end(), [](const auto &r) {
+                return r.name == "ray_lit_materials" && r.set == 0 &&
+                       r.binding.type == rhi::BindingType::StorageBuffer && r.binding.readOnlyStorage;
+            });
+        if (reflected == candidate->resources.end())
+            throw std::invalid_argument("World ray Lit pass must read its material table: " + pass.name);
         if (!program) {
             program = candidate;
-            layout = reflected;
+            layout = &*reflected;
             continue;
         }
-        for (size_t index = 0; index < layout.size(); ++index) {
-            if (reflected[index]->elementStride != layout[index]->elementStride ||
-                !(reflected[index]->value == layout[index]->value))
-                throw std::invalid_argument("World ray Lit pass uses a different table layout: " + pass.name);
-        }
+        if (reflected->elementStride != layout->elementStride || !(reflected->value == layout->value))
+            throw std::invalid_argument("World ray Lit pass uses a different table layout: " + pass.name);
     }
     if (!program)
         throw std::invalid_argument("World ray Lit resources require a fullscreen consumer");

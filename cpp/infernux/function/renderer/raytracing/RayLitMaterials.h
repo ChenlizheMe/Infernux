@@ -31,7 +31,6 @@ enum class RayLitSolidTexture : uint8_t
 };
 
 using RayLitTexture = std::variant<RayTexturePageSource, RayLitSolidTexture>;
-using RayLitTextureDescriptor = std::variant<uint32_t, RayLitSolidTexture>;
 using RayLitTextureReference = std::variant<RayLitSolidTexture, std::string>;
 
 [[nodiscard]] RayLitTextureReference ResolveRayLitTextureReference(const InxMaterial &material,
@@ -42,8 +41,10 @@ struct RayLitMaterialInput
 {
     std::vector<std::byte> materials;
     std::vector<RayTexturePageSource> sources;
-    /// Material rows index this table. Page-backed descriptors index sources.
-    std::vector<RayLitTextureDescriptor> descriptors;
+    /// Byte offset of each source's reflected field in materials, in page request order.
+    std::vector<size_t> textureOffsets;
+
+    void ApplyPageSlots(const std::vector<RayTexturePageSlot> &slots);
 };
 
 /// Resolve the raster draw's exact resident texture or its constant default.
@@ -52,7 +53,6 @@ using ResolveRayLitTexture =
     std::function<std::optional<RayLitTexture>(const InxMaterial &, const RendererParameterBlock *, std::string_view)>;
 
 /// The reflected per-device Slang layout is the only authority for offsets.
-/// Pair Capture and PackDescriptors with the same ordered texture page plan.
 class RayLitMaterialLayout final
 {
   public:
@@ -60,8 +60,6 @@ class RayLitMaterialLayout final
     ~RayLitMaterialLayout();
     [[nodiscard]] std::optional<RayLitMaterialInput> Capture(const DrawCallResult &world,
                                                              const ResolveRayLitTexture &resolve) const;
-    [[nodiscard]] std::vector<std::byte> PackDescriptors(const RayLitMaterialInput &input,
-                                                         const std::vector<RayTexturePageSlot> &slots) const;
 
   private:
     struct State;

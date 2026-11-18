@@ -3800,11 +3800,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     throw std::logic_error("A World ray geometry view must bind its frozen input before graph build");
                 importFrameBuffer(binding, 0, description.name, page->GetBuffer(), page->GetByteSize());
                 m_worldRayHandles[index] = binding.handles[0];
-            } else if (description.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials ||
-                       description.frameBuffer == GraphFrameBuffer::WorldRayTextureDescriptors) {
-                const auto &table = description.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials
-                                        ? m_worldRayMaterial->materials
-                                        : m_worldRayMaterial->descriptors;
+            } else if (description.frameBuffer == GraphFrameBuffer::WorldRayLitMaterials) {
+                const auto &table = m_worldRayMaterial->materials;
                 importFrameBuffer(binding, 0, description.name, table->GetBuffer(), table->GetByteSize());
             } else if (description.frameBuffer >= GraphFrameBuffer::WorldRayTailRead &&
                        description.frameBuffer <= GraphFrameBuffer::WorldRayTailControl) {

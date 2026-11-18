@@ -165,7 +165,7 @@ class DefaultRayTracer(RayTracer):
 
 
 def _bind_world(render_pass, world):
-    for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials", "ray_texture_descriptors"):
+    for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials"):
         render_pass.set_buffer(key, world[key])
     for key in ("ray_color_pages", "ray_data_pages"):
         render_pass.set_texture(key, world[key])

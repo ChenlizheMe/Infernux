@@ -37,17 +37,13 @@ MaterialRevision RevisionOf(const RenderWorldFrame &world, uint64_t textureConte
 
 bool SameMaterialRecords(const ShaderTargetCode &a, const ShaderTargetCode &b)
 {
-    for (const auto name : {"ray_lit_materials", "ray_texture_descriptors"}) {
-        const auto find = [name](const auto &resources) {
-            return std::find_if(resources.begin(), resources.end(),
-                                [name](const auto &resource) { return resource.name == name; });
-        };
-        const auto left = find(a.resources), right = find(b.resources);
-        if (left == a.resources.end() || right == b.resources.end() || left->elementStride != right->elementStride ||
-            !(left->value == right->value))
-            return false;
-    }
-    return true;
+    const auto table = [](const auto &resources) {
+        return std::find_if(resources.begin(), resources.end(),
+                            [](const auto &resource) { return resource.name == "ray_lit_materials"; });
+    };
+    const auto left = table(a.resources), right = table(b.resources);
+    return left != a.resources.end() && right != b.resources.end() && left->elementStride == right->elementStride &&
+           left->value == right->value;
 }
 
 std::shared_ptr<const rhi::BufferResource> AllocateTable(rhi::Device &device, uint64_t bytes)
@@ -123,50 +119,41 @@ class RayWorldMaterialBuild final
     {
     }
 
-    struct Table
-    {
-        std::vector<std::byte> bytes;
-        std::shared_ptr<const rhi::BufferResource> buffer;
-    };
-
     [[nodiscard]] bool UploadPending() const noexcept
     {
-        return candidate && !candidate->Failed() && nextTable < tables.size();
+        return candidate && !candidate->Failed() && !materialBytes.empty();
     }
 
     [[nodiscard]] uint64_t UploadBytes(uint64_t allowance) const noexcept
     {
         const uint64_t window = (std::min)(allowance, TransferWindow);
-        return (std::min)(uint64_t{tables[nextTable].bytes.size()} - tableOffset, window & ~uint64_t{3});
+        return (std::min)(uint64_t{materialBytes.size()} - tableOffset, window & ~uint64_t{3});
     }
 
     void Upload(rhi::Device &device, uint64_t bytes)
     {
-        auto &table = tables[nextTable];
-        if (!table.buffer)
-            table.buffer = AllocateTable(device, table.bytes.size());
-        if (!device.WriteBuffer(table.buffer->GetBuffer(), tableOffset, table.bytes.data() + tableOffset, bytes))
+        if (!materials)
+            materials = AllocateTable(device, materialBytes.size());
+        if (!device.WriteBuffer(materials->GetBuffer(), tableOffset, materialBytes.data() + tableOffset, bytes))
             throw std::runtime_error("Could not upload a ray material table");
         tableOffset += bytes;
-        if (tableOffset == table.bytes.size()) {
-            storage->ReduceTo(storage->Bytes() - table.bytes.size());
-            std::vector<std::byte>{}.swap(table.bytes);
-            tableOffset = 0;
-            ++nextTable;
+        if (tableOffset == materialBytes.size()) {
+            std::vector<std::byte>{}.swap(materialBytes);
+            storage.reset();
         }
     }
 
     std::weak_ptr<RayWorldMaterialRequest> request;
     std::optional<RayTexturePagePlan> plan;
     std::shared_ptr<RayTexturePageCandidate> candidate;
-    std::array<Table, 2> tables;
+    std::vector<std::byte> materialBytes;
+    std::shared_ptr<const rhi::BufferResource> materials;
     std::shared_ptr<FrameCpuStorageClaim> storage;
     std::shared_ptr<rhi::WorkCompletionReceipt> receipt;
     std::exception_ptr failure;
     uint64_t atlasBytes = 0;
     uint64_t retryOpportunity = 0;
     uint64_t tableOffset = 0;
-    std::size_t nextTable = 0;
 };
 
 RayWorldMaterials::RayWorldMaterials(FrameWorkOwner &owner, rhi::Device &device, ResolveRayLitTexture resolver,
@@ -363,13 +350,9 @@ bool RayWorldMaterials::AdvanceCpu(const std::shared_ptr<RayWorldMaterialRequest
             if (!prepared.plan)
                 throw std::invalid_argument("Ray Lit texture source " + std::to_string(prepared.sourceIndex) + " " +
                                             PageIssue(prepared.issue));
-            auto descriptors = request->layout->PackDescriptors(*input, prepared.plan->slots);
-            if (descriptors.empty())
-                descriptors.resize(2 * sizeof(uint32_t)); // The empty scene still binds one complete descriptor.
-            build.tables[0].bytes = std::move(input->materials);
-            build.tables[1].bytes = std::move(descriptors);
-            build.storage =
-                m_owner.TrackOwnedCpuStorage(uint64_t{build.tables[0].bytes.size()} + build.tables[1].bytes.size());
+            input->ApplyPageSlots(prepared.plan->slots);
+            build.materialBytes = std::move(input->materials);
+            build.storage = m_owner.TrackOwnedCpuStorage(build.materialBytes.size());
             build.plan = std::move(prepared.plan);
         }
         if (build.plan->byteSize > AvailableAtlasBytes())
@@ -397,8 +380,7 @@ bool RayWorldMaterials::AdvanceCpu(const std::shared_ptr<RayWorldMaterialRequest
         return false;
 
     auto value = std::make_shared<RayWorldMaterialPublication>();
-    value->materials = std::move(build.tables[0].buffer);
-    value->descriptors = std::move(build.tables[1].buffer);
+    value->materials = std::move(build.materials);
     value->atlasBytes = build.atlasBytes;
     for (std::size_t index = 0; index < value->pages.size(); ++index)
         value->pages[index] = textures->pages[index] ? textures->pages[index] : m_emptyPages[index];

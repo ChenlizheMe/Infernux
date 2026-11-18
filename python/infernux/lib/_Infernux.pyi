@@ -3003,7 +3003,10 @@ class _GraphFrameBuffer(IntEnum):
     WORLD_RAY_GEOMETRY = 3
     WORLD_RAY_MESHES = 4
     WORLD_RAY_LIT_MATERIALS = 5
-    WORLD_RAY_TEXTURE_DESCRIPTORS = 6
+    WORLD_RAY_TAIL_READ = 6
+    WORLD_RAY_TAIL_WRITE = 7
+    WORLD_RAY_TAIL_REQUESTS = 8
+    WORLD_RAY_TAIL_CONTROL = 9
 
 
 def _gbuffer_formats() -> list[PixelFormat]: ...

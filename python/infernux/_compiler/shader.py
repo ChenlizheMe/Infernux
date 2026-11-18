@@ -20,7 +20,6 @@ _WORLD_RAY_INPUTS = tuple(ShaderInput(name, name, kind) for name, kind in (
     ("world_ray_geometry", "WorldBuffer"),
     ("world_ray_meshes", "WorldBuffer"),
     ("ray_lit_materials", "WorldBuffer"),
-    ("ray_texture_descriptors", "WorldBuffer"),
     ("ray_color_pages", "Color2DArray"),
     ("ray_data_pages", "Color2DArray"),
 ))
@@ -558,12 +557,6 @@ bool inx_evaluate_secondary_surface(InxMeshInput input, bool front_facing, InxSe
 
 
 _RAY_LIT_SAMPLING = """
-struct InxRayTextureDescriptor
-{
-    uint page_class;
-    uint layer;
-};
-StructuredBuffer<InxRayTextureDescriptor> ray_texture_descriptors;
 Texture2DArray<float4> ray_color_pages;
 Texture2DArray<float4> ray_data_pages;
 SamplerState ray_color_sampler;
@@ -573,11 +566,10 @@ struct InxRayLitSampling
 {
     InxSecondarySurfaceSampling footprint;
 
-    float4 sample(uint descriptor_index, float2 uv)
+    float4 sample(uint texture_ref, float2 uv)
     {
-        InxRayTextureDescriptor descriptor = ray_texture_descriptors[descriptor_index];
-        float3 coordinates = float3(uv, float(descriptor.layer));
-        switch (descriptor.page_class)
+        float3 coordinates = float3(uv, float(texture_ref >> 3u));
+        switch (texture_ref & 7u)
         {
         case 0u:
             return ray_color_pages.SampleLevel(ray_color_sampler, coordinates, footprint.lod);
@@ -591,7 +583,7 @@ struct InxRayLitSampling
             return float4(128.0 / 255.0, 128.0 / 255.0, 1.0, 1.0);
         default:
             // Keep the invalid sample a runtime expression in WGSL.
-            return float4(asfloat(0x7fc00000u | descriptor.page_class));
+            return float4(asfloat(0x7fc00000u | texture_ref));
         }
     }
     InxSurfaceDifferentials differentials(InxMeshInput input, float2 uv, float2 uv_scale)

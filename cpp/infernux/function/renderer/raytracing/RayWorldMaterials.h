@@ -31,7 +31,6 @@ class RayWorldMaterialBuild;
 struct RayWorldMaterialPublication
 {
     std::shared_ptr<const rhi::BufferResource> materials;
-    std::shared_ptr<const rhi::BufferResource> descriptors;
     std::array<std::shared_ptr<const rhi::TextureGpuView>, 2> pages;
     uint64_t atlasBytes = 0;
 };

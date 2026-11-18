@@ -4,6 +4,7 @@
 #include <function/renderer/shader/MaterialUniformLayout.h>
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -40,11 +41,11 @@ const ShaderValueLayout &Field(const ShaderValueLayout &record, std::string_view
     return *it;
 }
 
-ShaderValueCopy UIntField(const ShaderValueLayout &field)
+size_t UIntOffset(const ShaderValueLayout &field)
 {
     if (field.kind != ShaderValueKind::Scalar || field.scalar != ShaderScalarKind::UInt32)
         throw std::invalid_argument("Ray material table index needs a reflected uint32 field: " + field.name);
-    return ShaderValueCopy(field);
+    return field.offset;
 }
 
 std::vector<std::byte> Rows(uint64_t stride, uint64_t count)
@@ -58,34 +59,27 @@ std::vector<std::byte> Rows(uint64_t stride, uint64_t count)
 
 struct RayLitMaterialLayout::State
 {
-    explicit State(const ShaderResourceLayout &materials, const ShaderResourceLayout &descriptors)
-        : materialStride(materials.elementStride), descriptorStride(descriptors.elementStride),
-          values(Field(materials.value, "values")), uniforms(values.fields),
-          participation(UIntField(Field(materials.value, "participation"))),
-          pageClass(UIntField(Field(descriptors.value, "page_class"))),
-          layer(UIntField(Field(descriptors.value, "layer")))
+    explicit State(const ShaderResourceLayout &materials)
+        : materialStride(materials.elementStride), values(Field(materials.value, "values")), uniforms(values.fields),
+          participation(UIntOffset(Field(materials.value, "participation")))
     {
         if (values.kind != ShaderValueKind::Struct ||
             Field(values, "_alpha_clip_threshold").scalar != ShaderScalarKind::Float32)
             throw std::invalid_argument("Ray Lit needs the reflected material values block and alpha clip threshold");
         for (const auto &field : materials.value.fields)
             if (field.name != "values" && field.name != "participation")
-                textureIndices.emplace_back(field.name, UIntField(field));
+                textureFields.emplace_back(field.name, UIntOffset(field));
     }
 
     const uint64_t materialStride;
-    const uint64_t descriptorStride;
     const ShaderValueLayout values;
     const MaterialUniformLayout uniforms;
-    const ShaderValueCopy participation;
-    const ShaderValueCopy pageClass;
-    const ShaderValueCopy layer;
-    std::vector<std::pair<std::string, ShaderValueCopy>> textureIndices;
+    const size_t participation;
+    std::vector<std::pair<std::string, size_t>> textureFields;
 };
 
 RayLitMaterialLayout::RayLitMaterialLayout(const std::vector<ShaderResourceLayout> &resources)
-    : m_state(
-          std::make_unique<State>(Buffer(resources, "ray_lit_materials"), Buffer(resources, "ray_texture_descriptors")))
+    : m_state(std::make_unique<State>(Buffer(resources, "ray_lit_materials")))
 {
 }
 
@@ -139,7 +133,7 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
         else if (material.GetFragShaderName() == "infernux/lit")
             participation = RayMaterialParticipation::Lit;
         const auto kind = static_cast<uint32_t>(participation);
-        layout.participation.Write(row, &kind);
+        std::memcpy(row + layout.participation, &kind, sizeof(kind));
         if (participation != RayMaterialParticipation::Lit)
             continue;
         auto *values = row + layout.values.offset;
@@ -149,48 +143,30 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
         const float alpha = renderState.alphaClipEnabled ? renderState.alphaClipThreshold : 0.0f;
         layout.uniforms.WriteValue(values, "_alpha_clip_threshold", &alpha);
 
-        for (const auto &[name, copy] : layout.textureIndices) {
+        for (const auto &[name, offset] : layout.textureFields) {
             auto texture = resolve(material, draw.parameterBlock.get(), name);
             if (!texture)
                 return std::nullopt;
-            if (input.descriptors.size() >= UINT32_MAX)
-                throw std::length_error("Ray Lit texture references exceed the shader index range");
-            const auto descriptor = static_cast<uint32_t>(input.descriptors.size());
-            copy.Write(row, &descriptor);
             if (auto *source = std::get_if<RayTexturePageSource>(&*texture)) {
-                input.descriptors.emplace_back(static_cast<uint32_t>(input.sources.size()));
+                input.textureOffsets.push_back(static_cast<size_t>(row - input.materials.data()) + offset);
                 input.sources.push_back(std::move(*source));
             } else {
-                input.descriptors.emplace_back(std::get<RayLitSolidTexture>(*texture));
+                const auto value = static_cast<uint32_t>(std::get<RayLitSolidTexture>(*texture));
+                std::memcpy(row + offset, &value, sizeof(value));
             }
         }
     }
     return input;
 }
 
-std::vector<std::byte> RayLitMaterialLayout::PackDescriptors(const RayLitMaterialInput &input,
-                                                             const std::vector<RayTexturePageSlot> &slots) const
+void RayLitMaterialInput::ApplyPageSlots(const std::vector<RayTexturePageSlot> &slots)
 {
-    if (slots.size() != input.sources.size())
-        throw std::invalid_argument("Ray Lit texture page slots do not match the captured sources");
-    const auto &layout = *m_state;
-    auto bytes = Rows(layout.descriptorStride, input.descriptors.size());
-    auto *record = bytes.data();
-    for (const auto &descriptor : input.descriptors) {
-        uint32_t pageClass;
-        uint32_t layer = 0;
-        if (const auto *source = std::get_if<uint32_t>(&descriptor)) {
-            const auto &slot = slots[*source];
-            pageClass = static_cast<uint32_t>(slot.pageClass);
-            layer = slot.layer;
-        } else {
-            pageClass = static_cast<uint32_t>(std::get<RayLitSolidTexture>(descriptor));
-        }
-        layout.pageClass.Write(record, &pageClass);
-        layout.layer.Write(record, &layer);
-        record += layout.descriptorStride;
+    // The low three bits select a page or a uniform texel. The rest address its array layer.
+    for (size_t i = 0; i < slots.size(); ++i) {
+        const auto &slot = slots[i];
+        const uint32_t value = (slot.layer << 3u) | static_cast<uint32_t>(slot.pageClass);
+        std::memcpy(materials.data() + textureOffsets[i], &value, sizeof(value));
     }
-    return bytes;
 }
 
 } // namespace infernux::raytracing
