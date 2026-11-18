@@ -31,6 +31,9 @@ def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
 
     scene_manager = SimpleNamespace(
         get_global_transform_serial=lambda: 0,
+        _authoring_runtime_world_id=0,
+        _set_runtime_world_retirement_callbacks=lambda *_args: None,
+        set_runtime_input_callback=lambda *_args: None,
         set_runtime_lifecycle_callbacks=lambda *args: callbacks.update(begin=args[0]),
         set_runtime_frame_barrier_callback=lambda _callback: None,
         set_runtime_result_consumer_callback=lambda _callback: None,
@@ -38,22 +41,34 @@ def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
         _is_executing_step=lambda: False,
     )
     monkeypatch.setattr(native, "SceneManager", SimpleNamespace(instance=lambda: scene_manager))
-    monkeypatch.setattr(MainThreadCommandQueue, "instance", lambda: SimpleNamespace(drain=drain))
+    monkeypatch.setattr(MainThreadCommandQueue, "instance",
+                        lambda: SimpleNamespace(drain=lambda **_kwargs: drain()))
     monkeypatch.setattr(engine_module, "_PLAYER_MODE", False)
-    engine = engine_module.Engine.__new__(engine_module.Engine)
+    monkeypatch.setattr(native._Infernux, "_RuntimeWorldScope", lambda _identity: nullcontext())
+    class _SchedulerEngine(engine_module.Engine):
+        _runtime_scheduler = property(lambda self: self.__dict__["_fake_scheduler"])
+
+    engine = _SchedulerEngine.__new__(_SchedulerEngine)
     engine._mode = engine_module.RuntimeMode.Graphical
     engine._engine = SimpleNamespace(
         _set_runtime_frame_callbacks=lambda pre_scene, _prepare: callbacks.update(pre_scene=pre_scene),
+        _set_runtime_world_retirement_callbacks=lambda *_args: None,
     )
     engine._cpu_range_tasks = set()
     engine._result_consumers = []
-    engine._runtime_scheduler = SimpleNamespace(
+    engine._frame_work = SimpleNamespace(
+        begin_scope=lambda: None, end_scope=lambda: None,
+        active=False, accepting=False, remaining=lambda **_kwargs: 0,
+    )
+    engine._fake_scheduler = SimpleNamespace(
         change_journal=SimpleNamespace(transaction=nullcontext),
         begin_native_frame=begin,
         end_native_frame=lambda: None,
         execute_native_editor_update=lambda: None,
         bind_native_bridge=lambda _manager: None,
     )
+    engine._authoring_scheduler = engine._fake_scheduler
+    engine._runtime_world_session = None
     engine.tick_play_mode = lambda dt: calls.append(("reload", dt))
     engine._install_pre_scene_time_callback()
     callbacks["pre_scene"](0.125)
@@ -140,6 +155,9 @@ def test_ui_input_query_distinguishes_filtered_clicks_without_dispatch(editor_pr
     native = SimpleNamespace(
         frame_index=125, is_cursor_locked=False, is_editor_cursor_capture_allowed=False,
         has_synthetic_gameplay_input=False,
+        _sampled_game_focused=False,
+        _sampled_game_viewport_origin=(100.0, 50.0),
+        _sampled_game_viewport_size=(960.0, 540.0),
         get_mouse_frame_state=lambda button: (420.0, 150.0, 0.0, 0.0, button == 0, button == 0, False),
         get_game_mouse_frame_state=lambda button: (420.0, 150.0, 0.0, 0.0, False, False, False),
     )
