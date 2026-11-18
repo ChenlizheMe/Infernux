@@ -20,10 +20,7 @@ pre-scene maintenance point for Headless hosts (both run and manual tick).
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Callable, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from infernux.engine.runtime_dispatch import ReloadableCallbackRef
+from typing import Callable, Optional, List, Tuple
 
 
 class DeferredTaskRunner:
@@ -38,13 +35,16 @@ class DeferredTaskRunner:
         return cls._instance
 
     def __init__(self):
-        self._steps: list[tuple[str, float, Optional[ReloadableCallbackRef]]] = []
+        self._steps: List[Tuple[str, float, Optional[Callable[[], object]]]] = []
         self._task_name: str = ""
-        self._on_done: Optional[ReloadableCallbackRef] = None
+        self._on_done: Optional[Callable[[bool], None]] = None
         self._index: int = 0
         self._failed: bool = False
+        self._continuation = None
+        self._step_owners: List[object] = []
+        self._on_done_owner = None
         self._task_token = None
-        self._task_lifetimes = []
+        self._task_lifetimes: List[object] = []
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -75,33 +75,39 @@ class DeferredTaskRunner:
         if self.is_busy:
             return False
         from infernux.engine.reload.owners import owner_for
-        from infernux.engine.runtime_dispatch import ReloadableCallbackRef
 
-        submitted_owner = owner_for()
-        references = [
-            (label, progress, ReloadableCallbackRef.normalize(callback) if callback is not None else None)
-            for label, progress, callback in steps
-        ]
-        completion = ReloadableCallbackRef.normalize(on_done) if on_done is not None else None
-        token = object()
-        owners = {reference.reload_owner for _, _, reference in references if reference is not None}
-        owners.add(submitted_owner)
-        if completion is not None:
-            owners.add(completion.reload_owner)
-        owners.discard(None)
-        if any(owner.closed for owner in owners):
+        owners = []
+        step_owners = []
+        for _label, _progress, callback in steps:
+            owner = owner_for(callback) if callback is not None else None
+            if owner is not None and owner.closed:
+                raise ReferenceError("Cannot defer work from a retired source")
+            step_owners.append(owner)
+            if owner is not None:
+                owners.append(owner)
+        completion_owner = owner_for(on_done) if on_done is not None else None
+        if completion_owner is not None and completion_owner.closed:
             raise ReferenceError("Cannot defer work from a retired source")
+        if completion_owner is not None:
+            owners.append(completion_owner)
+        token = object()
         self._task_name = task_name
-        self._steps = references
-        self._on_done = completion
+        self._steps = list(steps)
+        self._step_owners = step_owners
+        self._on_done = on_done
+        self._on_done_owner = completion_owner
         self._index = 0
         self._failed = False
         self._task_token = token
-        self._task_lifetimes = [owner.child() for owner in owners]
-        for lifetime in self._task_lifetimes:
+        self._task_lifetimes = []
+        seen = set()
+        for owner in owners:
+            if id(owner) in seen:
+                continue
+            seen.add(id(owner))
+            lifetime = owner.child()
             lifetime.add_cleanup(lambda target=token: self._cancel_task(target))
-        if self._task_token is not token:
-            return False
+            self._task_lifetimes.append(lifetime)
         # Set the first step's status immediately so it's visible this frame
         if self._steps:
             label, progress, _ = self._steps[0]
@@ -121,35 +127,43 @@ class DeferredTaskRunner:
             self._finish()
             return
 
-        label, progress, reference = self._steps[self._index]
+        label, progress, fn = self._steps[self._index]
+        owner = self._step_owners[self._index] if self._index < len(self._step_owners) else None
         token = self._task_token
+        if owner is not None:
+            if owner.closed:
+                self.cancel()
+                return
+            if not owner.active:
+                return
 
         # Update status bar *before* executing (visible this frame)
         from infernux.engine.ui.engine_status import EngineStatus
         EngineStatus.set(label, progress, source="deferred", priority=10)
 
         # Execute the step
-        if reference is not None and not self._failed:
-            resolution = reference.resolve()
-            scope = reference.execution_scope
-            if not resolution.resolved or (scope is not None and scope.state == 'closed'):
-                self.cancel()
-                return
-            if scope is not None and scope.state == 'paused':
-                return
+        if fn is not None and not self._failed:
             try:
-                from infernux.execution import component_execution
-
-                owner = reference.reload_owner
-                with (owner.enter() if owner is not None else nullcontext()), component_execution(scope):
-                    result = resolution.callback()
-                if self._task_token is token and result is False:
-                    self._failed = True
+                with (owner.enter() if owner is not None else nullcontext()):
+                    if self._continuation is None:
+                        result = fn()
+                        if result is False:
+                            self._failed = True
+                        elif hasattr(result, '__next__'):
+                            self._continuation = result
+                    if self._continuation is not None:
+                        try:
+                            next(self._continuation)
+                        except StopIteration as completed:
+                            self._continuation = None
+                            if completed.value is False:
+                                self._failed = True
+                        else:
+                            return
             except Exception as exc:
                 from infernux.debug import Debug
                 Debug.log_exception(exc)
-                if self._task_token is token:
-                    self._failed = True
+                self._failed = True
 
         # A running callback may retire its own source and cancel this task.
         if self._task_token is not token:
@@ -163,7 +177,11 @@ class DeferredTaskRunner:
 
     def cancel(self) -> None:
         """Cancel outstanding steps."""
+        continuation, self._continuation = self._continuation, None
+        if continuation is not None:
+            continuation.close()
         self._steps.clear()
+        self._step_owners = []
         self._index = 0
         self._on_done = None
         self._failed = False
@@ -185,9 +203,13 @@ class DeferredTaskRunner:
             lifetime.close()
 
     def _finish(self) -> None:
+        continuation, self._continuation = self._continuation, None
+        if continuation is not None:
+            continuation.close()
         on_done = self._on_done
         ok = not self._failed
         self._steps.clear()
+        self._step_owners = []
         self._index = 0
         self._on_done = None
         self._failed = False
@@ -197,8 +219,13 @@ class DeferredTaskRunner:
         from infernux.engine.ui.engine_status import EngineStatus
         EngineStatus.clear(source="deferred")
         if on_done:
+            owner = self._on_done_owner
+            self._on_done_owner = None
+            if owner is not None and not owner.active:
+                return
             try:
-                on_done.invoke(ok, propagate_exceptions=True)
+                with (owner.enter() if owner is not None else nullcontext()):
+                    on_done(ok)
             except Exception as exc:
                 from infernux.debug import Debug
                 Debug.log_exception(exc)
