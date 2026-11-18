@@ -346,14 +346,17 @@ int main()
     desc.renderTargetLayout = {3, 1};
     desc.samples = SampleCount::Four;
     desc.colorTargets[0].format = PixelFormat::RGBA16SFloat;
-    desc.colorTargets[0].premultipliedAlpha = true;
+    desc.colorTargets[0].blendEnabled = true;
+    desc.colorTargets[0].colorBlend.source = BlendFactor::One;
     desc.colorTargetCount = 1;
     desc.pushConstantStages = ShaderStage::Fragment;
     desc.pushConstantBytes = sizeof(constants);
     assert(desc.vertexShader.IsValid());
     assert(desc.HasValidRenderingContract());
     assert(desc.colorTargets[0].format == PixelFormat::RGBA16SFloat);
-    assert(desc.colorTargets[0].premultipliedAlpha);
+    assert(desc.colorTargets[0].blendEnabled);
+    assert(desc.colorTargets[0].colorBlend.source == BlendFactor::One);
+    assert(desc.colorTargets[0].colorBlend.destination == BlendFactor::OneMinusSourceAlpha);
 
     GraphicsPipelineDesc contaminatedLegacyDesc = desc;
     contaminatedLegacyDesc.renderingSignature.colorFormats[0] = PixelFormat::RGBA16SFloat;
