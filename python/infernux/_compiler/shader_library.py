@@ -31,10 +31,14 @@ def using_cooked_shader_sources(resource_root, paths_by_id):
 
 
 def builtin_shader_root():
-    from infernux.resources import resources_path
+    from infernux import resources
 
     catalog = _cook_catalog.get()
-    return (catalog[0] if catalog is not None else Path(resources_path)) / "shaders"
+    if catalog is not None:
+        return catalog[0] / "shaders"
+    if resources._player_shader_root is not None:
+        return Path(resources._player_shader_root)
+    return Path(resources.resources_path) / "shaders"
 
 
 _RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
