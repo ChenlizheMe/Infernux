@@ -411,6 +411,14 @@ void VerifyIndirectLifetime()
         auto preservation = work->PreparePreservation(64, false);
         // Even a declared full write needs preservation: its device count may be zero.
         assert(preservation.ready && preservation.copy);
+        auto whole = preservation.copy;
+        preservation = work->PreparePreservation(7, false);
+        assert(preservation.copy != whole && preservation.copy->GetTransferBytes() == 4);
+        assert(whole->GetTransferBytes() == 0);
+        assert(work->PreparePreservation(64, false).copy == preservation.copy);
+        (void)preservation.copy->Submit();
+        preservation = work->PreparePreservation(64, false);
+        assert(preservation.copy && preservation.copy->GetTransferBytes() == 12);
         (void)preservation.copy->Submit();
         preservation = work->PreparePreservation(64, false);
         assert(preservation.ready && !preservation.copy);

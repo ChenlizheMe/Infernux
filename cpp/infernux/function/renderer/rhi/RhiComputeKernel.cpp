@@ -1069,19 +1069,25 @@ PreparedComputeBatch::PreservationPreparation PreparedComputeBatch::PreparePrese
         throw std::invalid_argument("Preservation needs a positive byte allowance");
     if (!ResolveStorage(managed))
         return {false, {}};
+    maxBytes = std::max(uint64_t{4}, maxBytes - maxBytes % 4);
     if (m_preservation) {
-        if (!m_preservation->GetSubmission().IsValid())
-            return {true, m_preservation};
-        auto &version = m_writeVersions[m_preservationVersion];
-        version.offset = m_preservationEnd;
-        if (version.offset == version.preserve[version.region].second) {
-            ++version.region;
-            if (version.region < version.preserve.size())
-                version.offset = version.preserve[version.region].first;
+        if (m_preservation->GetSubmission().IsValid()) {
+            auto &version = m_writeVersions[m_preservationVersion];
+            version.offset = m_preservationEnd;
+            if (version.offset == version.preserve[version.region].second) {
+                ++version.region;
+                if (version.region < version.preserve.size())
+                    version.offset = version.preserve[version.region].first;
+            }
+        } else {
+            if (m_preservation->GetTransferBytes() <= maxBytes)
+                return {true, m_preservation};
+            // The writer still owns the original range. Replace only its
+            // unsubmitted copy and keep the first unaccepted byte as the cursor.
+            m_preservation->Cancel();
         }
         m_preservation.reset();
     }
-    maxBytes = std::max(uint64_t{4}, maxBytes - maxBytes % 4);
     for (size_t index = 0; index < m_writeVersions.size(); ++index) {
         auto &version = m_writeVersions[index];
         if (version.region == version.preserve.size())

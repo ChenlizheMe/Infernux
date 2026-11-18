@@ -1450,6 +1450,18 @@ class JoltGpuTick::Impl
         return preservation ? preservation.get() : batch.get();
     }
 
+    uint64_t PreservationWindow() const
+    {
+        if (!preservation)
+            return std::max(uint64_t{4}, work.ResourceRemaining(FrameWorkResource::Transfer));
+        // Wait for a fresh opportunity if only this frame is full. Resize an
+        // unsubmitted copy when even an entire GPU or transfer window cannot fit it.
+        auto bytes = work.ResourceState(FrameWorkResource::Transfer).limit;
+        if (Prediction(SubmissionKey(*preservation)) > work.ResourceState(FrameWorkResource::Gpu).limit)
+            bytes = std::min(bytes, preservation->GetTransferBytes() / 2);
+        return std::max(uint64_t{4}, bytes);
+    }
+
     bool NeedsSmallerPrefix() const
     {
         const bool adjustable =
@@ -1531,10 +1543,11 @@ class JoltGpuTick::Impl
         const bool nextFeedbackPacket = coupled && earlyFeedbackOpportunity == work.Opportunity() &&
                                         stageCursor.phase != Phase::Done &&
                                         (!ProducerPhase(stageCursor.phase) || CoupledFeedbackPhase(stageCursor.phase));
-        if ((!batch && (workContinuation || !controlAccepted || !inputAccepted || stageCursor.phase != Phase::Done ||
-                        !finalPrepared)) ||
-            (batch && !preservation &&
-             (batch->RequiresPreparation() || batch->HasPreservationWork() || NeedsSmallerPrefix()))) {
+        const bool preparePacket = preservation ? preservation->GetTransferBytes() > PreservationWindow()
+                                                : batch && (batch->RequiresPreparation() ||
+                                                            batch->HasPreservationWork() || NeedsSmallerPrefix());
+        if (preparePacket || (!batch && (workContinuation || !controlAccepted || !inputAccepted ||
+                                         stageCursor.phase != Phase::Done || !finalPrepared))) {
             facts.host.ready = true;
             facts.host.reserved = cleanup || nextFeedbackPacket ||
                                   (coupled && workContinuation && CoupledFeedbackPhase(stageCursor.phase) &&
@@ -2124,8 +2137,7 @@ class JoltGpuTick::Impl
         }
         // Resolving a full-overwrite COW allocation can require no transfer at
         // all. A minimum preparation range does not grant its copy submission.
-        const auto allowance = std::max(uint64_t{4}, work.ResourceRemaining(FrameWorkResource::Transfer));
-        const auto prepared = batch->PreparePreservation(allowance, true);
+        const auto prepared = batch->PreparePreservation(PreservationWindow(), true);
         if (!prepared.ready)
             return false;
         preservation = prepared.copy;
