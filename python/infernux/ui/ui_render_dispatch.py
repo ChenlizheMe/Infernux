@@ -267,7 +267,15 @@ def text_align_to_float(align_h, align_v) -> tuple[float, float]:
 def resolve_text_layout(elem, measure_text, scale: float = 1.0) -> bool:
     """Resolve a text element's intrinsic box through the shared layout path."""
     resolver = getattr(elem, "resolve_text_layout", None)
-    return bool(resolver(measure_text, scale)) if callable(resolver) else False
+    from .ui_font_asset import FontAssetUnavailable, report_font_asset_error
+
+    try:
+        return bool(resolver(measure_text, scale)) if callable(resolver) else False
+    except FontAssetUnavailable as error:
+        # A stale or missing font identity disables only this text; the rest of
+        # the UI keeps its own layout and the error stays visible to the Editor.
+        report_font_asset_error(error)
+        return False
 
 
 def resolve_text_layout_for_context(ctx, text_comp) -> bool:
@@ -565,6 +573,18 @@ def _resolve_renderer(elem_type: type, backend: str) -> Optional[Callable]:
     return fn
 
 
+def _dispatch_font_failure(fn, elem, kwargs) -> bool:
+    """Run one handler; a missing font identity stops only this element."""
+    from .ui_font_asset import FontAssetUnavailable, report_font_asset_error
+
+    try:
+        fn(elem, **kwargs)
+        return True
+    except FontAssetUnavailable as error:
+        report_font_asset_error(error)
+        return False
+
+
 def dispatch(elem, backend: str, *, defer_group_alpha=False, **kwargs):
     """Dispatch rendering of *elem* to the registered handler.
 
@@ -576,8 +596,7 @@ def dispatch(elem, backend: str, *, defer_group_alpha=False, **kwargs):
     if defer_group_alpha:
         kwargs["defer_group_alpha"] = True
     if backend != 'editor':
-        fn(elem, **kwargs)
-        return True
+        return _dispatch_font_failure(fn, elem, kwargs)
     from infernux.lib._Infernux import _ScreenRectGeometry
     pivot = elem.pivot
     source_rect = (kwargs['base_sx'], kwargs['base_sy'], kwargs['base_sw'], kwargs['base_sh'])
@@ -586,8 +605,7 @@ def dispatch(elem, backend: str, *, defer_group_alpha=False, **kwargs):
     kwargs['base_sx'], kwargs['base_sy'] = geometry.render_rect[:2]
     scale = elem.get_layout_scale()
     if scale == (1.0, 1.0):
-        fn(elem, **kwargs)
-        return True
+        return _dispatch_font_failure(fn, elem, kwargs)
     context = kwargs['ctx']
     first = context._draw_vertex_cursor()
     try:
