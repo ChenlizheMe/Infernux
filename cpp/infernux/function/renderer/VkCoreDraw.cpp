@@ -2190,13 +2190,6 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         scissor.extent = {tileW, tileH};
         vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
-        // Unified caster bias for every view type: the slope-scaled raster
-        // bias tracks each polygon's own depth gradient (which no
-        // receiver-side term can express), while the receiver-side
-        // normal/light offsets in lighting.glsl absorb quantization. Casters
-        // themselves are never moved in world space.
-        vkCmdSetDepthBias(cmdBuf, -1.0f, 0.0f, -2.0f);
-
         // The complete shadow descriptor state is bound per batch below. Set 0
         // belongs to this camera and this shadow view.
         VkDescriptorSet cascadeDescSet = cameraResources.descriptorSets[descIdx];

@@ -358,8 +358,19 @@ float3 get_specular_ambient_direction(float3 N, float3 V, float perceptual_rough
     float lerp_factor = (1.0 - roughness) * (sqrt(1.0 - roughness) + roughness);
     return normalize(lerp(N, R, saturate(lerp_factor)));
 }
-float shadow_bilinear_pcf(float2 atlas_uv, float receiver_depth, float2 tile_min, float2 tile_max,
-                        float atlas_size) {
+// NDC depth is affine over a receiver plane, including perspective shadow views.
+// Express its gradient per atlas texel so every gathered depth uses its own receiver.
+float2 shadow_receiver_gradient(float4x4 projection, float3 ndc, float3 normal, float2 ndc_per_texel) {
+    float3 dx = projection[0].xyz - ndc.x * projection[3].xyz;
+    float3 dy = projection[1].xyz - ndc.y * projection[3].xyz;
+    float3 dz = projection[2].xyz - ndc.z * projection[3].xyz;
+    float3 tangent = cross(dy, normal);
+    float determinant = dot(dx, tangent);
+    if (abs(determinant) <= 0.0001 * length(cross(dx, dy))) return float2(0.0);
+    return ndc_per_texel * float2(dot(dz, tangent), dot(dz, cross(normal, dx))) / determinant;
+}
+float shadow_bilinear_pcf(float2 atlas_uv, float2 receiver_texel, float receiver_depth, float2 gradient,
+                        float2 tile_min, float2 tile_max, float atlas_size) {
     float2 inverse_atlas = float2(1.0 / atlas_size);
     float2 pixel = atlas_uv * atlas_size - float2(0.5);
     float2 base = floor(pixel);
@@ -367,7 +378,10 @@ float shadow_bilinear_pcf(float2 atlas_uv, float receiver_depth, float2 tile_min
     float2 gather_uv = (base + float2(1.0)) * inverse_atlas;
     gather_uv = clamp(gather_uv, tile_min + inverse_atlas * 0.5, tile_max - inverse_atlas * 0.5);
     float4 depths = shadow_image.Gather(shadow_sampler, gather_uv);
-    float4 comparison = step(depths, float4(receiver_depth));
+    float center = receiver_depth + dot(gather_uv * atlas_size - receiver_texel, gradient);
+    float4 depth_offsets = 0.5 * float4(-gradient.x + gradient.y, gradient.x + gradient.y,
+                                        gradient.x - gradient.y, -gradient.x - gradient.y);
+    float4 comparison = step(depths, center + depth_offsets);
     float lower = lerp(comparison.w, comparison.z, fraction.x);
     float upper = lerp(comparison.x, comparison.y, fraction.x);
     return lerp(lower, upper, fraction.y);
@@ -375,25 +389,12 @@ float shadow_bilinear_pcf(float2 atlas_uv, float receiver_depth, float2 tile_min
 float shadow_tent_weight(int index) {
     return (index == 0 || index == 3) ? 1.0 : 3.0;
 }
-float sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 normal, float3 to_light,
+float sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 normal,
                                  float4 shadow_params, bool soft_filter) {
 )slang"
                                            R"slang(    if (view_index >= lighting.shadow_view_header.x) return 1.0;
     InxShadowView shadow_view = lighting.shadow_views[view_index];
-    float3 N = normalize(normal);
-    float3 L = normalize(to_light);
-    float n_dot_l = clamp(dot(N, L), 0.0, 1.0);
-    float slope = clamp(sqrt(max(1.0 - n_dot_l * n_dot_l, 0.0)) / max(n_dot_l, 0.2), 0.0, 4.0);
-    float4 unbiassed_clip = mul(shadow_view.view_projection, float4(world_pos, 1.0));
-    float perspective_scale = shadow_view.metadata.x == 0u
-        ? 1.0
-        : clamp(abs(unbiassed_clip.w) / max(shadow_view.depth_texel.y, 0.000001), 0.001, 1.0);
-    float world_texel = max(shadow_view.depth_texel.z * perspective_scale, 0.000001);
-    float filter_texels = soft_filter ? clamp(shadow_view.depth_texel.w, 0.5, 4.0) : 1.0;
-    float3 biased_position = world_pos;
-    biased_position += N * (shadow_params.z * world_texel * (0.5 * filter_texels + slope));
-    biased_position += L * (shadow_params.y * world_texel);
-    float4 clip = mul(shadow_view.view_projection, float4(biased_position, 1.0));
+    float4 clip = mul(shadow_view.view_projection, float4(world_pos, 1.0));
     if (abs(clip.w) < 0.000001) return 1.0;
     float3 ndc = clip.xyz / clip.w;
     float2 local_uv = ndc.xy * 0.5 + 0.5;
@@ -406,37 +407,35 @@ float sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 no
     float2 texel = float2(1.0 / atlas_size);
     float2 tile_min = atlas_offset + texel * 0.5;
     float2 tile_max = atlas_offset + atlas_scale - texel * 0.5;
+    float2 receiver_texel = atlas_uv * atlas_size;
+    float2 gradient = shadow_params.z * shadow_receiver_gradient(
+        shadow_view.view_projection, ndc, normalize(normal), 2.0 * texel / atlas_scale);
+    float receiver_depth = ndc.z + shadow_params.y * (1.1920929e-7 * ndc.z);
     if (!soft_filter) {
-        float visibility = 0.0;
-        for (int y = 0; y < 2; ++y) {
-            for (int x = 0; x < 2; ++x) {
-                float2 offset = (float2(float(x), float(y)) - float2(0.5)) * texel;
-                visibility += shadow_bilinear_pcf(atlas_uv + offset, ndc.z, tile_min, tile_max, atlas_size);
-            }
-        }
-        return visibility * 0.25;
+        return shadow_bilinear_pcf(atlas_uv, receiver_texel, receiver_depth, gradient, tile_min, tile_max, atlas_size);
     }
-    float step_size = filter_texels / 1.5;
+    float step_size = clamp(shadow_view.depth_texel.w, 0.5, 4.0) / 1.5;
     float visibility = 0.0;
     float total_weight = 0.0;
     for (int y = 0; y < 4; ++y) {
         for (int x = 0; x < 4; ++x) {
             float weight = shadow_tent_weight(x) * shadow_tent_weight(y);
             float2 offset = (float2(float(x), float(y)) - float2(1.5)) * step_size * texel;
-            visibility += shadow_bilinear_pcf(atlas_uv + offset, ndc.z, tile_min, tile_max, atlas_size) * weight;
+            visibility += shadow_bilinear_pcf(atlas_uv + offset, receiver_texel, receiver_depth, gradient,
+                                              tile_min, tile_max, atlas_size) * weight;
             total_weight += weight;
         }
     }
     return visibility / max(total_weight, 1.0);
 }
-float sample_shadow_view(uint view_index, float3 world_pos, float3 normal, float3 to_light, float4 shadow_params) {
+float sample_shadow_view(uint view_index, float3 world_pos, float3 normal, float4 shadow_params) {
     if (view_index >= lighting.shadow_view_header.x || shadow_params.w < 0.5 || shadow_params.x <= 0.0) return 1.0;
     float visibility = sample_shadow_view_visibility(
-        view_index, world_pos, normal, to_light, shadow_params, shadow_params.w > 1.5);
+        view_index, world_pos, normal, shadow_params, shadow_params.w > 1.5);
     return lerp(1.0, visibility, shadow_params.x);
 }
 float sample_directional_views(uint first_view, uint view_count, float4 shadow_params,
-                             float3 world_pos, float3 normal, float3 to_light, float view_depth) {
+                             float3 world_pos, float3 normal, float view_depth) {
     if (!receives_shadows) return 1.0;
     uint available_views = lighting.shadow_view_header.x;
     if (view_count == 0u || first_view >= available_views) return 1.0;
@@ -448,13 +447,15 @@ float sample_directional_views(uint first_view, uint view_count, float4 shadow_p
             break;
         }
     }
-    float shadow = sample_shadow_view(first_view + selected, world_pos, normal, to_light, shadow_params);
+    float shadow = sample_shadow_view(first_view + selected, world_pos, normal, shadow_params);
     if (selected + 1u < view_count) {
         InxShadowView current = lighting.shadow_views[first_view + selected];
         float overlap = max((current.split_data.y - current.split_data.x) * 0.1, 0.0001);
-        float blend = smoothstep(0.0, overlap, current.split_data.y - view_depth);
-        float next_shadow = sample_shadow_view(first_view + selected + 1u, world_pos, normal, to_light, shadow_params);
-        shadow = lerp(next_shadow, shadow, blend);
+        float remaining = current.split_data.y - view_depth;
+        if (remaining < overlap) {
+            float next_shadow = sample_shadow_view(first_view + selected + 1u, world_pos, normal, shadow_params);
+            shadow = lerp(next_shadow, shadow, smoothstep(0.0, overlap, remaining));
+        }
     } else {
         InxShadowView last = lighting.shadow_views[first_view + selected];
         float fade_width = max((last.split_data.y - last.split_data.x) * 0.1, 0.0001);
@@ -470,14 +471,14 @@ uint point_shadow_face(float3 direction_from_light) {
     return direction_from_light.z >= 0.0 ? 4u : 5u;
 }
 float sample_local_shadow(uint first_view, uint view_count, uint light_type, float4 shadow_params,
-                        float3 light_position, float3 world_pos, float3 normal, float3 to_light) {
+                        float3 light_position, float3 world_pos, float3 normal) {
     if (!receives_shadows) return 1.0;
     uint available_views = lighting.shadow_view_header.x;
     if (view_count == 0u || first_view >= available_views) return 1.0;
     view_count = min(view_count, available_views - first_view);
     if (light_type == 2u || shadow_params.w < 1.5) {
         uint offset = light_type == 2u ? 0u : min(point_shadow_face(world_pos - light_position), view_count - 1u);
-        return sample_shadow_view(first_view + offset, world_pos, normal, to_light, shadow_params);
+        return sample_shadow_view(first_view + offset, world_pos, normal, shadow_params);
     }
     float3 radial = world_pos - light_position;
     float radial_length = max(length(radial), 0.0001);
@@ -488,9 +489,7 @@ float sample_local_shadow(uint first_view, uint view_count, uint light_type, flo
     uint center_face = min(point_shadow_face(radial), view_count - 1u);
     InxShadowView center_view = lighting.shadow_views[first_view + center_face];
     float inner_resolution = max(center_view.atlas_scale_offset.x * float(lighting.shadow_view_header.y), 1.0);
-    float radius_world = shadow_params.w > 1.5
-        ? center_view.depth_texel.w * (2.0 * radial_length / inner_resolution)
-        : 0.0;
+    float radius_world = center_view.depth_texel.w * (2.0 * radial_length / inner_resolution);
     float2 disk[8] = {
         float2(0.0, 0.0), float2(0.7071, 0.0), float2(-0.7071, 0.0),
         float2(0.0, 0.7071), float2(0.0, -0.7071), float2(0.5, 0.5),
@@ -501,7 +500,7 @@ float sample_local_shadow(uint first_view, uint view_count, uint light_type, flo
         float3 sample_position = world_pos +
             (tangent * disk[sample_index].x + bitangent * disk[sample_index].y) * radius_world;
         uint face = min(point_shadow_face(sample_position - light_position), view_count - 1u);
-        visibility += sample_shadow_view_visibility(first_view + face, sample_position, normal, to_light,
+        visibility += sample_shadow_view_visibility(first_view + face, sample_position, normal,
                                                   shadow_params, false);
     }
     return lerp(1.0, visibility / float(disk_sample_count), shadow_params.x);
@@ -513,12 +512,12 @@ if (tiled_lighting) {
     InxCanonicalLight light = load_light(0);
     return sample_directional_views(light.identity_and_shadow.z, light.identity_and_shadow.w,
                                   float4(light.shadow_and_inner_cos.xyz, float(light.metadata.z)), world_pos, normal,
-                                  normalize(-light.direction_outer_cos.xyz), frag_view_depth_val);
+                                  frag_view_depth_val);
 } else {
     if (lighting.light_counts.x <= 0) return 1.0;
     InxDirectionalLight light = lighting.directional_lights[0];
     return sample_directional_views(light.metadata.z, light.metadata.w, light.shadow_params, world_pos, normal,
-                                  normalize(-light.direction.xyz), frag_view_depth_val);
+                                  frag_view_depth_val);
 }
 }
 InxLight get_main_light(float3 world_pos, float3 normal, float frag_view_depth_val) {
@@ -566,9 +565,8 @@ float3 evaluate_rectangle_area_light<T : IInxLightResponse>(float3 light_positio
     float3 samples[4] = {light_position - right - up, light_position + right - up,
                               light_position + right + up, light_position - right + up};
     float3 result = float3(0.0);
-    float3 center_to_light = normalize(light_position - world_pos);
     float shadow = sample_local_shadow(first_shadow_view, shadow_view_count, 3u, shadow_params,
-                                     light_position, world_pos, N, center_to_light);
+                                     light_position, world_pos, N);
     for (int sample_index = 0; sample_index < 4; ++sample_index) {
         float3 light_vector = samples[sample_index] - world_pos;
         float distance_to_light = length(light_vector);
@@ -595,7 +593,7 @@ if (tiled_lighting) {
             i == 0u ? shadow
                     : sample_directional_views(
                           light.identity_and_shadow.z, light.identity_and_shadow.w,
-                          float4(light.shadow_and_inner_cos.xyz, float(light.metadata.z)), world_pos, N, L, view_depth);
+                          float4(light.shadow_and_inner_cos.xyz, float(light.metadata.z)), world_pos, N, view_depth);
         lo += response.evaluate(inx_light_sample(L, radiance, 1.0, light_shadow));
     }
     uint4 tile_header = inx_forward_plus_tile_header();
@@ -632,7 +630,7 @@ if (tiled_lighting) {
             float local_shadow = sample_local_shadow(
                 light.identity_and_shadow.z, light.identity_and_shadow.w, light.metadata.x,
                 float4(light.shadow_and_inner_cos.xyz, float(light.metadata.z)), light.position_range.xyz,
-                world_pos, N, L);
+                world_pos, N);
             float3 radiance = light.color_intensity.rgb * light.color_intensity.w;
             lo += response.evaluate(inx_light_sample(L, radiance, attenuation, local_shadow));
         }
@@ -646,7 +644,7 @@ if (tiled_lighting) {
         float3 radiance = light.color.rgb * light.color.w;
         float light_shadow =
             i == 0 ? shadow
-                   : sample_directional_views(light.metadata.z, light.metadata.w, light.shadow_params, world_pos, N, L,
+                   : sample_directional_views(light.metadata.z, light.metadata.w, light.shadow_params, world_pos, N,
                                             view_depth);
         lo += response.evaluate(inx_light_sample(L, radiance, 1.0, light_shadow));
     }
@@ -661,7 +659,7 @@ if (tiled_lighting) {
             float attenuation = calculate_attenuation(light.attenuation.xyz, distance);
             if (attenuation > 0.001) {
                 float local_shadow = sample_local_shadow(light.metadata.z, light.metadata.w, 1u, light.shadow_params,
-                                                      light.position.xyz, world_pos, N, L);
+                                                      light.position.xyz, world_pos, N);
                 float3 radiance = light.color.rgb * light.color.w;
                 lo += response.evaluate(inx_light_sample(L, radiance, attenuation, local_shadow));
             }
@@ -681,7 +679,7 @@ if (tiled_lighting) {
                 float attenuation = calculate_attenuation(light.attenuation.xyz, distance);
                 if (attenuation > 0.001) {
                     float local_shadow = sample_local_shadow(light.metadata.z, light.metadata.w, 2u, light.shadow_params,
-                                                          light.position.xyz, world_pos, N, L);
+                                                          light.position.xyz, world_pos, N);
                     float3 radiance = light.color.rgb * light.color.w;
                     lo += response.evaluate(inx_light_sample(L, radiance, attenuation * spot_falloff, local_shadow));
                 }

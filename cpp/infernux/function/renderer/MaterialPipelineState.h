@@ -47,7 +47,10 @@ inline rhi::GraphicsPipelineDesc MaterialPipelineDescription(const RenderState &
         state.frontFace == MaterialFrontFace::Clockwise ? rhi::FrontFace::Clockwise : rhi::FrontFace::CounterClockwise;
     result.raster.polygonMode = static_cast<rhi::PolygonMode>(state.polygonMode);
     result.raster.lineWidth = state.lineWidth;
-    if (state.depthBiasEnable) {
+    if (pass.target == ShaderCompileTarget::Shadow) {
+        result.raster.depthBias = kShadowCasterDepthBias;
+        result.raster.depthBiasSlope = kShadowCasterSlopeBias;
+    } else if (state.depthBiasEnable) {
         result.raster.depthBias = -state.depthBiasConstantFactor;
         result.raster.depthBiasSlope = -state.depthBiasSlopeFactor;
         result.raster.depthBiasClamp = -state.depthBiasClamp;

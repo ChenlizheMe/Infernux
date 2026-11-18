@@ -12,6 +12,7 @@
 
 #include "InxError.h"
 #include "InxVkCoreModular.h"
+#include "MaterialPassPipeline.h"
 #include "MsaaPolicy.h"
 #include "VertexInputFilter.h"
 #include "gui/GPUMaterialPreview.h"
@@ -819,18 +820,6 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     auto inputAssembly = vkrender::MakeTriangleListInputAssembly();
 
     vkrender::DynamicViewportScissorState dynVpScissor;
-    const std::array<VkDynamicState, 3> shadowDynamicStates = {
-        VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR,
-        VK_DYNAMIC_STATE_DEPTH_BIAS,
-    };
-    dynVpScissor.dynamicState.dynamicStateCount = static_cast<uint32_t>(shadowDynamicStates.size());
-    dynVpScissor.dynamicState.pDynamicStates = shadowDynamicStates.data();
-
-    // Directional depth bias is applied dynamically in raster space. Unlike a
-    // world-space caster translation this follows polygon slope without
-    // detaching contact shadows by a full cascade texel. Local lights retain
-    // their perspective-scaled vertex bias and set the dynamic values to zero.
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
@@ -838,8 +827,8 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     rasterizer.cullMode = static_cast<VkCullModeFlags>(matCullMode);
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_TRUE;
-    rasterizer.depthBiasConstantFactor = 0.0f;
-    rasterizer.depthBiasSlopeFactor = 0.0f;
+    rasterizer.depthBiasConstantFactor = kShadowCasterDepthBias;
+    rasterizer.depthBiasSlopeFactor = kShadowCasterSlopeBias;
     rasterizer.depthBiasClamp = 0.0f;
 
     auto multisampling = vkrender::MakeMultisampleState();
