@@ -341,7 +341,7 @@ class Engine(RuntimeWorldHost):
                 if engine._cpu_range_tasks or host is not None:
                     engine._frame_work.begin_scope()
                     try:
-                        engine._cpu_work()
+                        engine._prepare_work_sources()
                     finally:
                         engine._frame_work.end_scope()
                 engine._clock_callbacks = _update_snapshot()

@@ -72,7 +72,7 @@ class PlatformPlayerHost(RuntimeWorldHost):
                         max_commands=None,
                         can_continue=lambda: work.active and work.accepting and work.remaining(background=True) > 0)
             if self._cpu_range_tasks or self._infernux_compute_host is not None:
-                self._cpu_work()
+                self._prepare_work_sources()
         finally:
             work.end_scope()
         if self._runtime_world_session is not None:

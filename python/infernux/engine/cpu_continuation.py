@@ -12,7 +12,7 @@ import weakref
 
 import numpy as np
 
-from infernux.compute import Buffer, _BufferCapacityPending, _storage_blocks
+from infernux.compute import Buffer, _BufferCapacityPending, _command_streams, _pending_kernel_retirements, _storage_blocks
 from infernux.compute_source import BufferSource
 from infernux.lib import _Infernux as _native
 from .service_windows import (ExecutionCosts, ServiceCalendar, ServiceDemand, CpuSegment, GpuSegment,
@@ -1267,6 +1267,17 @@ class CpuWorkOwner:
     def wake(self):
         self._frame.wake(self._source)
         self._frame.wake(self._commands_source)
+
+    def _wake_pending(self, ranges, host):
+        queued = self._queued_commands(host) is not None
+        if queued:
+            self._frame.wake(self._commands_source)
+        # The native queue is shared with rendering and physics. Its existence
+        # alone does not give these Python sources anything to collect.
+        if (queued or ranges or self.requests or self._gpu_pending or self._fifo_receipts
+                or self._background_completion is not None or self._io_observations
+                or (host is not None and _pending_kernel_retirements())):
+            self._frame.wake(self._source)
 
     def configure_budget(self, budget):
         if isinstance(budget, CpuWorkBudget) and self._budget_locked and budget != self.budget:
@@ -2598,7 +2609,6 @@ class CpuWorkOwner:
     def _queued_commands(host):
         if host is None:
             return None
-        from infernux.compute import _command_streams
         streams = _command_streams()
         if not streams:
             return None

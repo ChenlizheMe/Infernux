@@ -46,6 +46,13 @@ class WorkRuntime:
         owner.wake()
         return owner
 
+    def _prepare_work_sources(self):
+        owner = self._cpu_work_owner
+        if owner is None:
+            self._cpu_work()  # Install the shared resource policy on first use.
+        else:
+            owner._wake_pending(self._cpu_range_tasks, getattr(self, "_infernux_compute_host", None))
+
     @property
     def work_budget(self):
         """Shared host-work limits for compute and IO.

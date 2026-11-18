@@ -728,6 +728,11 @@ def _discard_commands() -> None:
     streams.clear()
 
 
+def _pending_kernel_retirements() -> bool:
+    # A worker may enqueue the last Buffer reference between host frames.
+    return bool(_retiring_native_kernels) or not _retired_launch_generations.empty()
+
+
 def _collect_retiring_native_kernels() -> bool:
     """Poll only kernels that own bindings for wrappers already closed."""
     _collect_launch_retirements()
