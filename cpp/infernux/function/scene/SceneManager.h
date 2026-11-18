@@ -286,11 +286,13 @@ class SceneManager
         return m_lastFrameProfile;
     }
 
+    /// Unadmitted input/time records. One automatic record may hold multiple fixed steps.
     [[nodiscard]] size_t GetPendingRuntimeFrameCount() const noexcept
     {
         const auto *world = QueryWorld();
         return world ? world->frame.pending.size() : 0;
     }
+    [[nodiscard]] double GetQueuedSimulationSeconds() const noexcept;
 
     /// Completed logical gameplay frames for the current active runtime scene.
     /// Advances after Update, LateUpdate, required consumers and complete
@@ -713,6 +715,7 @@ class SceneManager
     void UpdateCurrentWorld(float deltaTime);
     bool ServiceCurrentWorldFrame();
     bool IsRuntimeFrameWaitingForPhysics(const RuntimeWorld &world) const;
+    bool AdvanceRunningPhysics(RuntimeWorld &world);
     FrameWorkFacts DescribeRuntimeFrames();
     bool AdvanceRuntimeFrame(bool gpu, uint64_t worldId);
     bool ServicePausedAuthorPresentation();

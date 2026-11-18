@@ -1,12 +1,14 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <core/math/FrameTimeSmoothing.h>
 #include <core/math/Random.h>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <limits>
 #include <optional>
 #include <platform/input/InputManager.h>
 #include <string>
@@ -80,6 +82,13 @@ class RuntimeWorld final
         Publish
     };
 
+    struct TimedInputSpan
+    {
+        float unscaledDeltaTime = 0, deltaTime = 0;
+        InputFrameLease input;
+        std::optional<double> sampleOffset;
+    };
+
     struct FrameAdmission
     {
         float unscaledDeltaTime = 0.0f;
@@ -89,22 +98,92 @@ class RuntimeWorld final
         float sampledTimeScale = 1.0f;
         float sampledMaximumDeltaTime = 0.0f;
         float sampledFixedTimeStep = 0.0f;
+        // Each unadmitted automatic record is one continuous input-state
+        // segment. A real boundary seals its previous clock debt.
+        double automaticUnscaledDebt = 0.0;
+        double automaticScaledDebt = 0.0;
+        bool automaticInputPending = false;
+        std::vector<TimedInputSpan> inputSpans;
+        double automaticSampleDelay = 0;
+        bool automaticSamplePending = true;
+
+        void InitializeAutomatic(bool inputBoundary)
+        {
+            automaticUnscaledDebt = unscaledDeltaTime;
+            automaticScaledDebt = deltaTime;
+            automaticInputPending = inputBoundary;
+            automaticSampleDelay = deltaTime;
+        }
+
+        [[nodiscard]] bool HasAutomaticDemand() const noexcept
+        {
+            return automaticUnscaledDebt > 0.0 || automaticScaledDebt > 0.0 ||
+                   automaticInputPending;
+        }
+
+        FrameAdmission TakeNextAutomatic(double unscaledLimit = std::numeric_limits<double>::infinity(),
+                                         double scaledLimit = std::numeric_limits<double>::infinity())
+        {
+            // Use the existing maximum frame delta, not one fixed tick:
+            // otherwise cheap no-Fixed/one-Fixed frames can consume the late
+            // budget faster than physics can catch up with a fast Host.
+            const double frameLimit = sampledMaximumDeltaTime;
+            const double unscaledQuantum = (std::min)(unscaledLimit, (std::max)(static_cast<double>(unscaledDeltaTime), frameLimit));
+            const double scaledQuantum = (std::min)(scaledLimit, (std::max)(static_cast<double>(deltaTime), frameLimit));
+            double fraction = 1.0;
+            if (automaticUnscaledDebt > 0.0)
+                fraction = (std::min)(fraction, unscaledQuantum / automaticUnscaledDebt);
+            if (automaticScaledDebt > 0.0)
+                fraction = (std::min)(fraction, scaledQuantum / automaticScaledDebt);
+            // Subtract the exact published float duration, keeping any smaller
+            // residual in double debt. Never throw away accumulated Host time.
+            const auto take = [fraction](double &debt) {
+                float amount = static_cast<float>(debt * fraction);
+                if (static_cast<double>(amount) > debt)
+                    amount = std::nextafter(amount, 0.0f);
+                debt -= static_cast<double>(amount);
+                return amount;
+            };
+            FrameAdmission admitted;
+            admitted.unscaledDeltaTime = take(automaticUnscaledDebt);
+            admitted.deltaTime = take(automaticScaledDebt);
+            admitted.input = input;
+            admitted.automaticHost = true;
+            admitted.sampledTimeScale = sampledTimeScale;
+            admitted.sampledMaximumDeltaTime = sampledMaximumDeltaTime;
+            admitted.sampledFixedTimeStep = sampledFixedTimeStep;
+            admitted.automaticUnscaledDebt = admitted.unscaledDeltaTime;
+            admitted.automaticScaledDebt = admitted.deltaTime;
+            std::optional<double> sampleOffset;
+            if (automaticSamplePending && automaticSampleDelay <= admitted.deltaTime) {
+                sampleOffset = automaticSampleDelay;
+                automaticSamplePending = false;
+            } else if (automaticSamplePending) {
+                automaticSampleDelay -= admitted.deltaTime;
+            }
+            admitted.inputSpans.push_back({admitted.unscaledDeltaTime, admitted.deltaTime, input, sampleOffset});
+            automaticInputPending = false;
+            return admitted;
+        }
 
         bool TryAppendAutomatic(FrameAdmission &next)
         {
-            const double combined = static_cast<double>(deltaTime) + next.deltaTime;
-            const double combinedUnscaled = static_cast<double>(unscaledDeltaTime) + next.unscaledDeltaTime;
-            // Bound only pending coalescing, including at zero/low timeScale.
-            // A single larger Host sample retains its original duration.
-            const float coalescingLimit = (std::min)(sampledMaximumDeltaTime, sampledFixedTimeStep);
-            if (!automaticHost || !next.automaticHost || unscaledDeltaTime <= 0 || next.unscaledDeltaTime <= 0 ||
+            if (!automaticHost || !next.automaticHost ||
                 sampledTimeScale != next.sampledTimeScale || sampledMaximumDeltaTime != next.sampledMaximumDeltaTime ||
-                sampledFixedTimeStep != next.sampledFixedTimeStep || combined > coalescingLimit ||
-                combinedUnscaled > coalescingLimit || !InputManager::CanCoalesceFrames(*input, *next.input))
+                sampledFixedTimeStep != next.sampledFixedTimeStep ||
+                (input->sampleIdentity != next.input->sampleIdentity &&
+                 !InputManager::CanCoalesceFrames(*input, *next.input)))
                 return false;
-            unscaledDeltaTime = static_cast<float>(combinedUnscaled);
-            deltaTime = static_cast<float>(combined);
-            input = std::move(next.input);
+            automaticUnscaledDebt += next.automaticUnscaledDebt;
+            automaticScaledDebt += next.automaticScaledDebt;
+            // Preserve a single large arrival. Coalesced debt is admitted in
+            // quanta bounded by the existing maximum frame delta or a larger
+            // real single arrival, never as one giant Fixed catch-up frame.
+            unscaledDeltaTime = (std::max)(unscaledDeltaTime, next.unscaledDeltaTime);
+            deltaTime = (std::max)(deltaTime, next.deltaTime);
+            automaticInputPending = automaticInputPending || next.automaticInputPending;
+            // Keep the first equivalent source and its original arrival time.
+            // Empty observations do not create later occurrences of its edges.
             return true;
         }
     };
@@ -235,6 +314,18 @@ class RuntimeWorld final
     PausedAuthorPresentation pausedAuthor;
     RenderMembership render;
     SceneCollection scenes;
+
+    struct InputTimeline
+    {
+        struct Point { double time; InputFrameLease input; bool deliverEvents = true; };
+        std::deque<Point> points;
+        double acceptedTime = 0, fixedTime = 0;
+        uint64_t lastInitialSource = 0, lastUpdateSource = 0, lastFixedSource = 0;
+        InputFrameLease held, latest, fixedInput, updateInput;
+        bool zeroScaledFrame = false;
+        bool automaticFrame = false;
+    };
+    std::unique_ptr<InputTimeline> inputTimeline;
 };
 
 /// A NoView UI query may suppress implicit authoring/primary selection.

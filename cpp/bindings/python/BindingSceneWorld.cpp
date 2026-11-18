@@ -702,6 +702,7 @@ void BindSceneManager(py::module_ &m)
                 result["contact_events"] = profile.contactEvents;
                 result["dynamic_ccd_splits"] = profile.dynamicCCDSplits;
                 result["queued_host_frames"] = manager.GetPendingRuntimeFrameCount();
+                result["queued_simulation_seconds"] = manager.GetQueuedSimulationSeconds();
                 return result;
             },
             "Return normalized timing and candidate counters for the most recent frame")

@@ -1392,7 +1392,7 @@ class CpuWorkOwner:
 
     def _has_work(self):
         engine = self._engine()
-        return (self._gpu_pending or self._background_completion is not None and not self._background_completion.done or
+        return (self._gpu_pending or bool(self._fifo_receipts) or self._background_completion is not None and not self._background_completion.done or
                 any(request.execution_scope is None or request.execution_scope.state != 'paused'
                     or self._step_permitted(request) or self._accepted_service(request) for request in self.requests)
                 or bool(engine is not None and engine._cpu_range_tasks))
@@ -1568,6 +1568,17 @@ class CpuWorkOwner:
                    or request.deadline is not None and request.paused_at is None and not request.stepping else
                    _service_availability(request, self, now)
                    for request in requests if request.status == "pending"}
+        if extra is not None and demands[extra].failure not in ("", "host_target"):
+            raise ValueError(demands[extra].reason)
+        # Only a host-frame deadline can reserve future opportunities. Ordinary
+        # transfers still report their input/IO state and use the live admission grants.
+        if all(request.deadline is None for request in demands):
+            self._service_calendar = None
+            self._io_peer_turn = None
+            for request, demand in demands.items():
+                status = "paused" if request.paused_at is not None else "stepping" if request.stepping else "best_effort"
+                self._record_service_plan(request, demand, now, status, demand.reason)
+            return
         known = {request: demand for request, demand in demands.items()
                  if request.deadline is not None and request.paused_at is None and not request.stepping and not demand.reason}
         gpu_state = (self._gpu_pressure_state(host.queue_pressure) if extra is not None and host is not None
@@ -1608,8 +1619,6 @@ class CpuWorkOwner:
         # A host profile is a conditional upper estimate, not a minimum legal
         # execution time. Preserve the same unreserved calibration opportunity
         # already offered when this profile grows after a request is admitted.
-        if extra is not None and demands[extra].failure not in ("", "host_target"):
-            raise ValueError(demands[extra].reason)
         protected = () if self._service_calendar is None else self._service_calendar.demands
         peers_observed = active and (self._frame.early_advanced or self._frame.late)
         if self._io_peer_turn != peers.io_service_serial or (peers_observed and not peers.io_ready):
@@ -2519,7 +2528,7 @@ class CpuWorkOwner:
         if required:
             candidates = tuple(dict.fromkeys((*required, *candidates)))
         for request in candidates:
-            if request.status != "pending":
+            if request.status != "pending" or (gpu and request.packet is None):
                 continue
             if not self._execution_active(request, self._frame.opportunity):
                 continue
@@ -2730,12 +2739,17 @@ class CpuWorkOwner:
         if engine is not None and engine._cpu_range_tasks:
             from infernux.cpu_execution import _poll_cpu_ranges
             _poll_cpu_ranges(engine)
+        before_commands = self._gpu_pending
         if host is not None:
             from infernux.compute import _collect_commands
             self._gpu_pending = _collect_commands(host)
         else:
             self._gpu_pending = False
-        changed |= self._observe_gpu_pressure(host)
+        changed |= before_commands != self._gpu_pending
+        # Only a real Python request or unaccepted command needs this service's
+        # pressure transition. Foreign physics/render tickets do not advance it.
+        if self.requests or self._queued_commands(host) is not None:
+            changed |= self._observe_gpu_pressure(host)
         changed |= self._collect_background_receipt()
         late = self._frame.late
         gpu_wait = None
@@ -2857,7 +2871,7 @@ class CpuWorkOwner:
             # Receipts/ordinary commands still use the original observation path;
             # an empty request set has no numerical service calendar to plan.
             return _native._FrameWorkFacts(pending=self._has_work(),
-                gpu_busy=self._background_completion is not None and not self._background_completion.done,
+                gpu_busy=bool(self._fifo_receipts) or self._background_completion is not None and not self._background_completion.done,
                 reservation=self._reserved_service())
         for request in tuple(self.requests):
             self._execution_active(request, self._frame.opportunity)
@@ -2871,7 +2885,7 @@ class CpuWorkOwner:
         host_request = self._ready_request(gpu=False)
         return _native._FrameWorkFacts(self._candidate(host_request),
             self._candidate(self._ready_request(gpu=True)), pending=self._has_work(),
-            gpu_busy=self._background_completion is not None and not self._background_completion.done,
+            gpu_busy=bool(self._fifo_receipts) or self._background_completion is not None and not self._background_completion.done,
             reservation=self._reserved_service(), observe=bool(self.requests),
             io_ready=host_request is not None and host_request._io_ready(self),
             worker_busy=any((request.task is not None and request.task._native is not None

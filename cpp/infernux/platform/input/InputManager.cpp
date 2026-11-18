@@ -80,6 +80,7 @@ void InputManager::RetireWorldInput(uint64_t worldId) noexcept
     if (const auto found = m_worldReadStates.find(worldId); found != m_worldReadStates.end()) {
         found->second->retired = true;
         m_worldReadStates.erase(found);
+        RefreshMotionSensorDemand();
     }
 }
 std::shared_ptr<InputFrameReadState> InputManager::RetainWorldInputReadState()
@@ -225,6 +226,38 @@ void InputManager::SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcas
     InvalidateCapture();
 }
 
+void InputManager::RouteWorldInput(uint64_t worldId, InputFrameSample &value)
+{
+    if (const auto &routing = value.worldRouting) {
+        const auto output = std::lower_bound(routing->outputs.begin(), routing->outputs.end(), worldId,
+                                             [](const auto &entry, uint64_t id) { return std::get<0>(entry) < id; });
+        value.gameplayRenderSize = output != routing->outputs.end() && std::get<0>(*output) == worldId
+                                        ? std::array<float, 2>{float(std::get<1>(*output)), float(std::get<2>(*output))}
+                                        : std::array<float, 2>{0, 0};
+        if (!routing->broadcast && routing->selectedWorld != worldId) {
+            value.gameplayFocused = false;
+            value.keys.fill(0);
+            value.keyDown.fill(0);
+            value.keyUp.fill(0);
+            value.gameKeyOwned.fill(0);
+            value.mouseButtons.fill(0);
+            value.mouseDown.fill(0);
+            value.mouseUp.fill(0);
+            value.gameMouseOwned.fill(0);
+            for (auto &mouse : value.gameMouseFrames)
+                mouse = {};
+            value.mouseX = value.mouseY = value.mouseDX = value.mouseDY = 0;
+            value.scrollX = value.scrollY = 0;
+            value.gameScroll = {};
+            value.inputString.clear();
+            value.gameInputString.clear();
+            value.touches.clear();
+            value.droppedFiles.clear();
+            value.anyKeyDown = value.syntheticGameplayInput = value.syntheticHeld = false;
+        }
+    }
+}
+
 InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameLease external,
                                                    uint64_t logicalFrameIndex)
 {
@@ -239,34 +272,7 @@ InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameL
     auto value = std::make_shared<InputFrameSample>(*external);
     if (state->lastExternalSample == external->sampleIdentity)
         ClearSampleTransients(*value);
-    if (const auto &routing = value->worldRouting) {
-        const auto output = std::lower_bound(routing->outputs.begin(), routing->outputs.end(), worldId,
-                                             [](const auto &entry, uint64_t id) { return std::get<0>(entry) < id; });
-        value->gameplayRenderSize = output != routing->outputs.end() && std::get<0>(*output) == worldId
-                                        ? std::array<float, 2>{float(std::get<1>(*output)), float(std::get<2>(*output))}
-                                        : std::array<float, 2>{0, 0};
-        if (!routing->broadcast && routing->selectedWorld != worldId) {
-            value->gameplayFocused = false;
-            value->keys.fill(0);
-            value->keyDown.fill(0);
-            value->keyUp.fill(0);
-            value->gameKeyOwned.fill(0);
-            value->mouseButtons.fill(0);
-            value->mouseDown.fill(0);
-            value->mouseUp.fill(0);
-            value->gameMouseOwned.fill(0);
-            for (auto &mouse : value->gameMouseFrames)
-                mouse = {};
-            value->mouseX = value->mouseY = value->mouseDX = value->mouseDY = 0;
-            value->scrollX = value->scrollY = 0;
-            value->gameScroll = {};
-            value->inputString.clear();
-            value->gameInputString.clear();
-            value->touches.clear();
-            value->droppedFiles.clear();
-            value->anyKeyDown = value->syntheticGameplayInput = value->syntheticHeld = false;
-        }
-    }
+    RouteWorldInput(worldId, *value);
     value->logical = true;
     value->logicalFrameIndex = logicalFrameIndex;
     value->sourceSampleIdentity = external->sampleIdentity;
@@ -274,11 +280,23 @@ InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameL
     state->overrideValue.reset();
     state->lastLogicalFrameIndex = logicalFrameIndex;
     state->lastExternalSample = external->sampleIdentity;
+    state->externalValue = external;
     state->logicalValue = std::move(value);
     return state->logicalValue;
 }
 
+InputFrameLease InputManager::GetWorldExternalInput(uint64_t worldId) const noexcept
+{
+    const auto found = m_worldReadStates.find(worldId);
+    return found != m_worldReadStates.end() && !found->second->retired ? found->second->externalValue : InputFrameLease{};
+}
+
 bool InputManager::CanCoalesceFrames(const InputFrameSample &left, const InputFrameSample &right) noexcept
+{
+    return CanCompareFrames(left, right, false);
+}
+
+bool InputManager::CanCompareFrames(const InputFrameSample &left, const InputFrameSample &right, bool continuous) noexcept
 {
     const auto allZero = [](const auto &values) {
         return std::all_of(values.begin(), values.end(), [](const auto &value) { return value == 0; });
@@ -286,16 +304,17 @@ bool InputManager::CanCoalesceFrames(const InputFrameSample &left, const InputFr
     const auto stationary = [&](const InputFrameSample &value) {
         if (value.logical || !allZero(value.keyDownConsumed) || !allZero(value.keyDown) || !allZero(value.keyUp) ||
             !allZero(value.mouseDown) || !allZero(value.mouseUp) || value.anyKeyDown || value.syntheticInputFrame ||
-            value.mouseDX != 0 || value.mouseDY != 0 || value.scrollX != 0 || value.scrollY != 0 ||
+            (!continuous && (value.mouseDX != 0 || value.mouseDY != 0)) || value.scrollX != 0 || value.scrollY != 0 ||
             value.gameScroll.first != 0 || value.gameScroll.second != 0 || !value.inputString.empty() ||
-            !value.gameInputString.empty() || !value.accelerationEvents.empty() || !value.droppedFiles.empty())
+            !value.gameInputString.empty() || (!continuous && !value.accelerationEvents.empty()) || !value.droppedFiles.empty())
             return false;
         for (const auto &mouse : value.gameMouseFrames)
             if (std::get<2>(mouse) != 0 || std::get<3>(mouse) != 0 || std::get<5>(mouse) || std::get<6>(mouse))
                 return false;
-        return std::all_of(value.touches.begin(), value.touches.end(), [](const auto &touch) {
-            return touch.phase == TouchPhase::Stationary && !touch.beganThisFrame && touch.deltaX == 0 &&
-                   touch.deltaY == 0 && touch.deltaTime == 0;
+        return std::all_of(value.touches.begin(), value.touches.end(), [continuous](const auto &touch) {
+            return !touch.beganThisFrame && (continuous
+                ? touch.phase == TouchPhase::Stationary || touch.phase == TouchPhase::Moved
+                : touch.phase == TouchPhase::Stationary && touch.deltaX == 0 && touch.deltaY == 0 && touch.deltaTime == 0);
         });
     };
     if (!stationary(left) || !stationary(right))
@@ -316,20 +335,125 @@ bool InputManager::CanCoalesceFrames(const InputFrameSample &left, const InputFr
     // unchanged. A different owner remains an ordered input boundary.
     return left.worldRouting == right.worldRouting && left.keys == right.keys &&
            left.gameKeyOwned == right.gameKeyOwned && left.mouseButtons == right.mouseButtons &&
-           left.gameMouseOwned == right.gameMouseOwned && left.gameMouseFrames == right.gameMouseFrames &&
-           left.mouseX == right.mouseX && left.mouseY == right.mouseY &&
+           left.gameMouseOwned == right.gameMouseOwned &&
+           std::equal(left.gameMouseFrames.begin(), left.gameMouseFrames.end(), right.gameMouseFrames.begin(),
+                      [continuous](const auto &a, const auto &b) {
+                          return continuous ? std::tie(std::get<2>(a), std::get<3>(a), std::get<4>(a), std::get<5>(a), std::get<6>(a)) ==
+                                              std::tie(std::get<2>(b), std::get<3>(b), std::get<4>(b), std::get<5>(b), std::get<6>(b)) : a == b;
+                      }) &&
+           (continuous || (left.mouseX == right.mouseX && left.mouseY == right.mouseY)) &&
            left.syntheticGameplayInput == right.syntheticGameplayInput && left.syntheticHeld == right.syntheticHeld &&
            left.gameplayFocused == right.gameplayFocused &&
            left.gameplayViewportOrigin == right.gameplayViewportOrigin &&
            left.gameplayViewportSize == right.gameplayViewportSize &&
            left.gameplayRenderSize == right.gameplayRenderSize &&
-           left.gameplayTouchViewport == right.gameplayTouchViewport && left.acceleration == right.acceleration &&
-           left.gyroscopeRotationRate == right.gyroscopeRotationRate &&
+           left.gameplayTouchViewport == right.gameplayTouchViewport &&
+           (continuous || (left.acceleration == right.acceleration && left.gyroscopeRotationRate == right.gyroscopeRotationRate)) &&
            left.accelerometerAvailable == right.accelerometerAvailable &&
            left.gyroscopeAvailable == right.gyroscopeAvailable && screen(left.screen) == screen(right.screen) &&
            left.touches.size() == right.touches.size() &&
            std::equal(left.touches.begin(), left.touches.end(), right.touches.begin(),
-                      [&](const auto &a, const auto &b) { return touchState(a) == touchState(b); });
+                      [&](const auto &a, const auto &b) {
+                          return continuous ? std::tie(a.touchId, a.fingerId, a.windowId, a.isPrimary, a.beganThisFrame,
+                                                       a.beginX, a.beginY, a.cancelReason) ==
+                                              std::tie(b.touchId, b.fingerId, b.windowId, b.isPrimary, b.beganThisFrame,
+                                                       b.beginX, b.beginY, b.cancelReason) : touchState(a) == touchState(b);
+                      });
+}
+
+bool InputManager::CanShareContinuousFrame(const InputFrameSample &left, const InputFrameSample &right) noexcept
+{
+    return CanCompareFrames(left, right, true);
+}
+
+InputFrameLease InputManager::ComposeWorldInput(uint64_t worldId, InputFrameLease held,
+                                                const std::vector<InputFrameLease> &events,
+                                                uint64_t logicalFrameIndex)
+{
+    auto value = std::make_shared<InputFrameSample>(*held);
+    ClearSampleTransients(*value);
+    RouteWorldInput(worldId, *value);
+    std::vector<TouchState> touches;
+    for (const auto &source : events) {
+        auto event = *source;
+        RouteWorldInput(worldId, event);
+        for (size_t i = 0; i < value->keys.size(); ++i) {
+            value->keyDown[i] |= event.keyDown[i];
+            value->keyUp[i] |= event.keyUp[i];
+        }
+        for (size_t i = 0; i < value->mouseButtons.size(); ++i) {
+            value->mouseDown[i] |= event.mouseDown[i];
+            value->mouseUp[i] |= event.mouseUp[i];
+            std::get<5>(value->gameMouseFrames[i]) |= std::get<5>(event.gameMouseFrames[i]);
+            std::get<6>(value->gameMouseFrames[i]) |= std::get<6>(event.gameMouseFrames[i]);
+        }
+        value->mouseDX += event.mouseDX;
+        value->mouseDY += event.mouseDY;
+        value->scrollX += event.scrollX;
+        value->scrollY += event.scrollY;
+        value->gameScroll.first += event.gameScroll.first;
+        value->gameScroll.second += event.gameScroll.second;
+        value->inputString += event.inputString;
+        value->gameInputString += event.gameInputString;
+        value->accelerationEvents.insert(value->accelerationEvents.end(), event.accelerationEvents.begin(),
+                                         event.accelerationEvents.end());
+        value->droppedFiles.insert(value->droppedFiles.end(), event.droppedFiles.begin(), event.droppedFiles.end());
+        value->anyKeyDown |= event.anyKeyDown;
+        value->syntheticInputFrame |= event.syntheticInputFrame;
+        value->syntheticGameplayInput |= event.syntheticGameplayInput;
+        for (const auto &touch : event.touches) {
+            if (touch.phase == TouchPhase::Stationary && !touch.beganThisFrame &&
+                touch.deltaX == 0 && touch.deltaY == 0 && touch.deltaTime == 0)
+                continue;
+            auto found = std::find_if(touches.rbegin(), touches.rend(), [&](const auto &existing) {
+                return existing.touchId == touch.touchId && existing.fingerId == touch.fingerId;
+            });
+            const bool terminal = found != touches.rend() &&
+                (found->phase == TouchPhase::Ended || found->phase == TouchPhase::Canceled);
+            if (found == touches.rend() || terminal || touch.phase == TouchPhase::Began || touch.beganThisFrame) {
+                touches.push_back(touch);
+                continue;
+            }
+            const auto dx = found->deltaX + touch.deltaX, dy = found->deltaY + touch.deltaY;
+            const auto dt = found->deltaTime + touch.deltaTime;
+            const auto began = found->beganThisFrame;
+            const auto beginX = found->beginX, beginY = found->beginY;
+            *found = touch; // Preserve the latest real Began/Moved/Ended/Canceled phase.
+            found->deltaX = dx;
+            found->deltaY = dy;
+            found->deltaTime = dt;
+            found->beganThisFrame |= began;
+            found->beginX = beginX;
+            found->beginY = beginY;
+        }
+    }
+    // Refresh held positions without clearing the last real event phase. A
+    // terminal lifetime and a reused platform ID remain separate occurrences.
+    for (const auto &heldTouch : value->touches) {
+        auto found = std::find_if(touches.rbegin(), touches.rend(), [&](const auto &existing) {
+            return existing.touchId == heldTouch.touchId && existing.fingerId == heldTouch.fingerId;
+        });
+        if (found == touches.rend() || found->phase == TouchPhase::Ended || found->phase == TouchPhase::Canceled) {
+            touches.push_back(heldTouch);
+        } else {
+            found->x = heldTouch.x;
+            found->y = heldTouch.y;
+            found->pressure = heldTouch.pressure;
+            found->contactWidth = heldTouch.contactWidth;
+            found->contactHeight = heldTouch.contactHeight;
+            found->timestampNs = heldTouch.timestampNs;
+        }
+    }
+    value->touches = std::move(touches);
+    for (auto &mouse : value->gameMouseFrames) {
+        std::get<2>(mouse) = value->gameScroll.first;
+        std::get<3>(mouse) = value->gameScroll.second;
+    }
+    value->logical = true;
+    value->logicalFrameIndex = logicalFrameIndex;
+    value->sourceSampleIdentity = held->sampleIdentity;
+    value->sampleIdentity = ++m_sampleIdentity;
+    return value;
 }
 
 InputFrameLease InputManager::CaptureFrame()
@@ -798,21 +922,53 @@ void InputManager::InitializeMotionSensors()
     for (int index = 0; index < sensorCount; ++index) {
         const SDL_SensorID sensorId = sensorIds[index];
         const SDL_SensorType sensorType = SDL_GetSensorTypeForID(sensorId);
-        if (sensorType == SDL_SENSOR_ACCEL && m_accelerometer == nullptr) {
-            m_accelerometer = SDL_OpenSensor(sensorId);
-            if (m_accelerometer != nullptr) {
-                m_accelerometerId = sensorId;
-                m_accelerometerAvailable = true;
-            }
-        } else if (sensorType == SDL_SENSOR_GYRO && m_gyroscope == nullptr) {
-            m_gyroscope = SDL_OpenSensor(sensorId);
-            if (m_gyroscope != nullptr) {
-                m_gyroscopeId = sensorId;
-                m_gyroscopeAvailable = true;
-            }
+        if (sensorType == SDL_SENSOR_ACCEL && !m_accelerometerId) {
+            m_accelerometerId = sensorId;
+            m_accelerometerAvailable = true;
+        } else if (sensorType == SDL_SENSOR_GYRO && !m_gyroscopeId) {
+            m_gyroscopeId = sensorId;
+            m_gyroscopeAvailable = true;
         }
     }
     SDL_free(sensorIds);
+    RefreshMotionSensorDemand();
+#endif
+}
+
+void InputManager::RequestMotionSensor(MotionSensorType type) const noexcept
+{
+    auto &owner = *const_cast<InputManager *>(this);
+    const uint8_t bit = type == MotionSensorType::Accelerometer ? 1u : 2u;
+    if (const auto world = InputReadScope::WorldId()) {
+        const auto state = owner.FindWorldReadState(world);
+        if (!state || state->retired || (state->motionSensorDemand & bit))
+            return;
+        state->motionSensorDemand |= bit;
+    } else {
+        if (owner.m_hostMotionSensorDemand & bit)
+            return;
+        owner.m_hostMotionSensorDemand |= bit;
+    }
+    owner.RefreshMotionSensorDemand();
+}
+
+void InputManager::RefreshMotionSensorDemand() noexcept
+{
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    uint8_t demand = m_hostMotionSensorDemand;
+    for (const auto &[id, state] : m_worldReadStates)
+        if (!state->retired)
+            demand |= state->motionSensorDemand;
+    const auto update = [](SDL_Sensor *&sensor, uint32_t id, bool needed) {
+        if (needed && !sensor && id)
+            sensor = SDL_OpenSensor(id);
+        else if (!needed && sensor) {
+            SDL_CloseSensor(sensor);
+            sensor = nullptr;
+        }
+    };
+    update(m_accelerometer, m_accelerometerId, (demand & 1u) != 0);
+    update(m_gyroscope, m_gyroscopeId, (demand & 2u) != 0);
 #endif
 }
 

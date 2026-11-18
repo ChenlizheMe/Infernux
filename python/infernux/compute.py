@@ -676,8 +676,10 @@ def _collect_commands(host) -> bool:
     assert_runtime_owner_thread()
     stream = _command_streams().get(int(host.identity))
     try:
-        native_pending = int(host.collect())
-        _collect_retiring_native_kernels()
+        # Collect the shared queue without claiming other services' tickets as
+        # Python work. Its public counters/pressure remain global queue facts.
+        host.collect()
+        retiring = _collect_retiring_native_kernels()
     except Exception as exception:
         if stream is None:
             stream = _command_stream(host)
@@ -685,7 +687,7 @@ def _collect_commands(host) -> bool:
         return False
     if stream is not None:
         _remove_empty_stream(stream)
-    return native_pending > 0 or bool(
+    return retiring or bool(
         stream is not None and stream["failure"] is None and stream["pending"]
     )
 
@@ -726,13 +728,14 @@ def _discard_commands() -> None:
     streams.clear()
 
 
-def _collect_retiring_native_kernels() -> None:
+def _collect_retiring_native_kernels() -> bool:
     """Poll only kernels that own bindings for wrappers already closed."""
     _collect_launch_retirements()
     for identity, native in tuple(_retiring_native_kernels.items()):
         native.collect()
         if int(native.pending_dispatch_count) == 0:
             _retiring_native_kernels.pop(identity, None)
+    return bool(_retiring_native_kernels)
 
 
 def _retire_launch_generation(generation, owners) -> None:

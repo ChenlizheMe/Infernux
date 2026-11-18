@@ -1102,11 +1102,20 @@ void SceneManager::UnbindRuntimeFrameWork() noexcept
 
 FrameWorkFacts SceneManager::DescribeRuntimeFrames()
 {
-    const auto eligible = [](const auto &world) {
+    const bool early = !m_runtimeFrameWork->IsLate();
+    FrameWorkFacts facts;
+    const auto eligible = [&](const auto &world) {
         const bool step = world->simulation.isPaused && world->simulation.pausedStepPending;
         const bool frame = !world->simulation.isPaused &&
                            (world->frame.phase != RuntimeWorld::FramePhase::Idle || !world->frame.pending.empty());
-        return world->simulation.isPlaying && (step || frame || world->pausedAuthor.Pending());
+        if (!world->simulation.isPlaying || (!step && !frame && !world->pausedAuthor.Pending()))
+            return false;
+        facts.pending = true;
+        if (!early)
+            return true;
+        const auto &physics = PhysicsWorld::Instance();
+        return frame && world->physics->solverStarted && physics.m_gpuScene &&
+               physics.m_gpuScene->HasRunningFixedTick(*world);
     };
     const auto end = m_runtimeWorlds.end();
     const auto cursor = std::find_if(m_runtimeWorlds.begin(), end,
@@ -1116,18 +1125,18 @@ FrameWorkFacts SceneManager::DescribeRuntimeFrames()
     if (selected == end) {
         selected = std::find_if(m_runtimeWorlds.begin(), first, eligible);
         if (selected == first)
-            return {};
+            return facts;
     }
-    FrameWorkFacts facts;
-    facts.pending = true;
-    facts.host = {(*selected)->id, 0, m_runtimeFrameWork && m_runtimeFrameWork->IsLate(), false};
+    // A solver already started on an earlier host can consume its receipt before
+    // drawing. New simulation frames and user callbacks keep their late boundary.
+    facts.host = {(*selected)->id, 0, true, early};
     return facts;
 }
 
 bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
 {
     auto *work = m_runtimeFrameWork;
-    if (gpu || !work || !work->IsActive() || !work->IsLate() || !work->IsAccepting() || work->ServiceRemaining() <= 0)
+    if (gpu || !work || !work->IsActive() || !work->IsAccepting() || work->ServiceRemaining() <= 0)
         return false;
     // A blocked World must not hide ready peers behind this aggregate source.
     // Probe this stable published-ID snapshot at most once; return immediately
@@ -1139,8 +1148,7 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
     if (first != ids.end())
         std::rotate(ids.begin(), first, ids.end());
     for (auto selected = ids.begin(); selected != ids.end(); ++selected) {
-        if (m_runtimeFrameWork != work || !work->IsActive() || !work->IsLate() || !work->IsAccepting() ||
-            work->ServiceRemaining() <= 0)
+        if (m_runtimeFrameWork != work || !work->IsActive() || !work->IsAccepting() || work->ServiceRemaining() <= 0)
             return false;
         const auto live = std::find_if(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
                                        [id = *selected](const auto &candidate) { return candidate->id == id; });
@@ -1154,9 +1162,11 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
                            (world->frame.phase != RuntimeWorld::FramePhase::Idle || !world->frame.pending.empty());
         if (!step && !frame && !world->pausedAuthor.Pending())
             continue;
+        const WorldExecutionScope scope(world);
+        if (!work->IsLate() && !IsRuntimeFrameWaitingForPhysics(*world))
+            continue;
         const auto next = std::next(selected);
         m_nextRuntimeWorldId = next == ids.end() ? ids.front() : *next;
-        const WorldExecutionScope scope(world);
         const auto cursor = [&] {
             return std::make_tuple(
                 world->frame.phase, world->frame.generation, world->frame.sceneCursor, world->frame.pending.size(),
@@ -1168,7 +1178,7 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
         };
         const auto before = cursor();
         const auto progress = work->ProgressSerial();
-        const bool published = ServiceCurrentWorldFrame();
+        const bool published = work->IsLate() ? ServiceCurrentWorldFrame() : AdvanceRunningPhysics(*world);
         const bool accepted = published || work->ProgressSerial() != progress;
         // Callbacks may Stop/retire this owner or detach the source. Do not
         // inspect the old World cursor after it leaves the published collection.
@@ -1187,6 +1197,15 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
 void SceneManager::SetRuntimeInputCallback(std::function<void()> callback)
 {
     m_runtimeInput = std::move(callback);
+}
+
+double SceneManager::GetQueuedSimulationSeconds() const noexcept
+{
+    double seconds = 0.0;
+    if (const auto *world = QueryWorld())
+        for (const auto &record : world->frame.pending)
+            seconds += record.automaticHost ? record.automaticScaledDebt : record.deltaTime;
+    return seconds;
 }
 
 void SceneManager::SetRuntimeFramePublicationCallbacks(std::function<bool(RuntimeWorld &)> publish,
@@ -1316,11 +1335,15 @@ void SceneManager::RecordHostFrame(float deltaTime, bool automaticHost)
         (world.scenes.loaded.empty() && !world.scenes.persistent))
         return;
     auto input = InputManager::Instance().CaptureFrame();
-    // Repeated zero-time service of one input sample creates no new logical demand.
-    const uint64_t lastSource = !world.frame.pending.empty() ? world.frame.pending.back().input->sampleIdentity
-                                : world.frame.input          ? world.frame.input->sourceSampleIdentity
-                                                             : 0;
-    if (deltaTime == 0.0f && input->sampleIdentity == lastSource)
+    const auto previous = !world.frame.pending.empty()
+                              ? world.frame.pending.back().input
+                              : InputManager::Instance().GetWorldExternalInput(world.id);
+    const bool inputBoundary = !previous ||
+                               (previous->sampleIdentity != input->sampleIdentity &&
+                                !InputManager::CanCoalesceFrames(*previous, *input));
+    // Explicit calls, including dt=0, remain independent frame requests.
+    // Automatic neutral zero-time polling creates no new logical demand.
+    if (automaticHost && deltaTime == 0.0f && !inputBoundary)
         return;
     RuntimeWorld::FrameAdmission admission{
         deltaTime,
@@ -1330,9 +1353,10 @@ void SceneManager::RecordHostFrame(float deltaTime, bool automaticHost)
         world.simulation.timeScale,
         world.simulation.maxFixedDeltaTime,
         world.simulation.fixedTimeStep};
-    // A Host opportunity is demand for future service, not an explicit
-    // gameplay frame. Fold only an equivalent idle tail; admitted work and
-    // every real input/clock boundary retain their original FIFO position.
+    if (automaticHost)
+        admission.InitializeAutomatic(inputBoundary);
+    // Coalesce only continuous identical input. A real input/routing boundary
+    // seals the preceding time segment, so new controls never drive old debt.
     if (!world.frame.pending.empty() && world.frame.pending.back().TryAppendAutomatic(admission))
         return;
     world.frame.pending.push_back(std::move(admission));
@@ -1349,9 +1373,50 @@ void SceneManager::AdmitRuntimeFrame(RuntimeWorld::FrameAdmission admission)
     world.frame.animationStarted = false;
     world.frame.lateStarted = false;
     world.frame.hadRuntimeLifecycleScope = false;
+    auto &input = InputManager::Instance();
+    const auto previous = input.GetWorldExternalInput(world.id);
     AdvanceFrameTime(admission.unscaledDeltaTime, admission.deltaTime);
-    world.frame.input = InputManager::Instance().BeginWorldFrameInput(world.id, std::move(admission.input),
-                                                                      world.simulation.frameTime.frameCount);
+    world.frame.input = input.BeginWorldFrameInput(world.id, admission.input, world.simulation.frameTime.frameCount);
+    if (admission.automaticHost) {
+        if (!world.inputTimeline) {
+            world.inputTimeline = std::make_unique<RuntimeWorld::InputTimeline>();
+            world.inputTimeline->acceptedTime = world.simulation.fixedTimeAccumulator;
+            world.inputTimeline->held = previous ? previous : admission.inputSpans.front().input;
+            world.inputTimeline->latest = world.inputTimeline->held;
+        }
+        auto &timeline = *world.inputTimeline;
+        timeline.automaticFrame = true;
+        timeline.zeroScaledFrame = admission.automaticScaledDebt == 0;
+        timeline.fixedInput.reset();
+        auto first = timeline.latest;
+        const double frameStart = timeline.acceptedTime;
+        std::vector<InputFrameLease> initial;
+        std::vector<InputFrameLease> updates;
+        for (const auto &span : admission.inputSpans) {
+            if (span.sampleOffset) {
+                const double at = timeline.acceptedTime + *span.sampleOffset;
+                timeline.points.push_back({at, span.input, !timeline.zeroScaledFrame});
+                timeline.latest = span.input;
+                if (at <= frameStart)
+                    first = span.input;
+                if (timeline.lastUpdateSource != span.input->sampleIdentity) {
+                    updates.push_back(span.input);
+                    timeline.lastUpdateSource = span.input->sampleIdentity;
+                }
+            }
+            timeline.acceptedTime += span.deltaTime;
+        }
+        if (timeline.lastInitialSource != first->sampleIdentity)
+            initial.push_back(first);
+        timeline.lastInitialSource = first->sampleIdentity;
+        world.frame.input = input.ComposeWorldInput(world.id, first, initial, world.simulation.frameTime.frameCount);
+        timeline.updateInput = input.ComposeWorldInput(world.id, timeline.latest, updates,
+                                                       world.simulation.frameTime.frameCount);
+        world.simulation.frameTime.time += admission.automaticScaledDebt - admission.deltaTime;
+        world.simulation.frameTime.unscaledTime += admission.automaticUnscaledDebt - admission.unscaledDeltaTime;
+    } else {
+        world.inputTimeline.reset();
+    }
     world.simulation.fixedTimeAccumulator += admission.deltaTime;
 }
 
@@ -1386,6 +1451,14 @@ void SceneManager::CloseRuntimeFrame(bool completed)
         ++world.simulation.runtimeFrameCount;
     else
         ++world.frame.generation;
+    if (world.inputTimeline && world.inputTimeline->zeroScaledFrame) {
+        auto &timeline = *world.inputTimeline;
+        while (!timeline.points.empty() && !timeline.points.back().deliverEvents &&
+               timeline.points.back().time == timeline.acceptedTime)
+            timeline.points.pop_back();
+        if (!timeline.held || timeline.held->sampleIdentity != timeline.latest->sampleIdentity)
+            timeline.points.push_back({timeline.acceptedTime, timeline.latest, false});
+    }
     auto &frame = world.frame;
     frame.phase = RuntimeWorld::FramePhase::Idle;
     frame.input.reset();
@@ -1471,8 +1544,42 @@ void SceneManager::ContinueRuntimeUpdate()
     if (world.frame.phase == RuntimeWorld::FramePhase::Idle) {
         if (world.frame.pending.empty() || !CanContinueRuntimeFrame())
             return;
-        auto admission = std::move(world.frame.pending.front());
-        world.frame.pending.pop_front();
+        auto &pending = world.frame.pending.front();
+        RuntimeWorld::FrameAdmission admission;
+        if (pending.automaticHost) {
+            admission = pending.TakeNextAutomatic();
+            if (!pending.HasAutomaticDemand())
+                world.frame.pending.pop_front();
+        } else {
+            admission = std::move(pending);
+            world.frame.pending.pop_front();
+        }
+        if (admission.automaticHost) {
+            const double limit = admission.sampledMaximumDeltaTime;
+            while (!world.frame.pending.empty() && CanContinueRuntimeFrame()) {
+                auto &next = world.frame.pending.front();
+                const double remainingUnscaled = limit - admission.automaticUnscaledDebt;
+                const double remainingScaled = limit - admission.automaticScaledDebt;
+                if (!next.automaticHost || next.sampledTimeScale != admission.sampledTimeScale ||
+                    next.sampledMaximumDeltaTime != admission.sampledMaximumDeltaTime ||
+                    next.sampledFixedTimeStep != admission.sampledFixedTimeStep ||
+                    (next.automaticUnscaledDebt > 0 && remainingUnscaled <= 0) ||
+                    (next.automaticScaledDebt > 0 && remainingScaled <= 0) ||
+                    !InputManager::CanShareContinuousFrame(*admission.input, *next.input))
+                    break;
+                auto part = next.TakeNextAutomatic(remainingUnscaled, remainingScaled);
+                if (!next.HasAutomaticDemand())
+                    world.frame.pending.pop_front();
+                admission.automaticUnscaledDebt += part.automaticUnscaledDebt;
+                admission.automaticScaledDebt += part.automaticScaledDebt;
+                admission.unscaledDeltaTime = static_cast<float>(admission.automaticUnscaledDebt);
+                admission.deltaTime = static_cast<float>(admission.automaticScaledDebt);
+                admission.input = part.input;
+                admission.inputSpans.insert(admission.inputSpans.end(),
+                                            std::make_move_iterator(part.inputSpans.begin()),
+                                            std::make_move_iterator(part.inputSpans.end()));
+            }
+        }
         AdmitRuntimeFrame(std::move(admission));
     }
     if (world.frame.phase == RuntimeWorld::FramePhase::Ready ||
@@ -1511,6 +1618,8 @@ void SceneManager::ContinueRuntimeUpdate()
             if (!CanContinueRuntimeFrame() || !RunFixedSimulationStep(useRuntimeScheduler, admittedState))
                 return;
         }
+        if (world.inputTimeline && world.inputTimeline->automaticFrame)
+            world.frame.input = world.inputTimeline->updateInput;
         world.frame.phase = RuntimeWorld::FramePhase::Update;
         BeginRuntimePhaseScenes();
         EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
@@ -1519,6 +1628,7 @@ void SceneManager::ContinueRuntimeUpdate()
     }
     if (world.frame.phase != RuntimeWorld::FramePhase::Update || !CanContinueRuntimeFrame())
         return;
+    const InputReadScope updateInputScope(world.frame.input, world.id);
     const auto phaseStart = ProfileClock::now();
     if (!world.frame.updateStarted) {
         world.frame.updateStarted = true;
@@ -1683,6 +1793,27 @@ bool SceneManager::IsRuntimeFrameWaitingForPhysics(const RuntimeWorld &world) co
     return owner.m_gpuScene && !owner.HasDomainControl(*world.physics) && owner.m_gpuScene->HasRunningFixedTick(world);
 }
 
+bool SceneManager::AdvanceRunningPhysics(RuntimeWorld &world)
+{
+    const InputReadScope inputScope(world.inputTimeline && world.inputTimeline->fixedInput
+                                        ? world.inputTimeline->fixedInput : world.frame.input, world.id);
+    auto &physics = PhysicsWorld::Instance();
+    const auto started = ProfileClock::now();
+    bool complete;
+    try {
+        FixedSimulationExecutionScope executionScope(world.simulation.fixedExecuting);
+        complete = physics.AdvanceGpuJob(*world.physics, false);
+    } catch (...) {
+        physics.FailStep(*world.physics);
+        world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Failed;
+        world.simulation.pausedStepPending = false;
+        Pause();
+        throw;
+    }
+    m_lastFrameProfile.physicsStepMs += ProfileMsSince(started);
+    return complete;
+}
+
 bool SceneManager::ServiceCurrentWorldFrame()
 {
     auto &world = CurrentWorld();
@@ -1692,23 +1823,7 @@ bool SceneManager::ServiceCurrentWorldFrame()
         return false;
     if (IsRuntimeFrameWaitingForPhysics(world)) {
         const auto admittedState = GetSimulationState();
-        const InputReadScope inputScope(world.frame.input, world.id);
-        auto &physics = PhysicsWorld::Instance();
-        bool complete = false;
-        const auto phaseStart = ProfileClock::now();
-        try {
-            FixedSimulationExecutionScope executionScope(world.simulation.fixedExecuting);
-            // Preserve the original source-specific dependency service and
-            // resource admission; defer only the CPU lifecycle/cache opening.
-            complete = physics.AdvanceGpuJob(*world.physics, false);
-        } catch (...) {
-            physics.FailStep(*world.physics);
-            world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Failed;
-            world.simulation.pausedStepPending = false;
-            Pause();
-            throw;
-        }
-        m_lastFrameProfile.physicsStepMs += ProfileMsSince(phaseStart);
+        const bool complete = AdvanceRunningPhysics(world);
         if (GetSimulationState() != admittedState || !CanContinueRuntimeFrame())
             return false;
         // Dependency preparation may have queued real scene/author work.
@@ -1876,6 +1991,7 @@ void SceneManager::PlayCurrentWorld()
         if (m_runtimeFrameRetirement)
             m_runtimeFrameRetirement(world.id);
         world.simulation.fixedTimeAccumulator = 0.0f;
+        world.inputTimeline.reset();
         world.simulation.fixedTime = 0.0;
         world.simulation.fixedUnscaledTime = 0.0;
         ResetFrameTime();
@@ -2068,6 +2184,7 @@ void SceneManager::StopCurrentWorld()
     AudioEngine::Instance().RefreshWorldState(world);
 #endif
     world.simulation.fixedTimeAccumulator = 0.0f;
+        world.inputTimeline.reset();
     world.simulation.fixedTime = 0.0;
     world.simulation.fixedUnscaledTime = 0.0;
     ResetFrameTime();
@@ -2445,6 +2562,7 @@ void SceneManager::PrepareActiveSceneReplacement()
     // boundary. Discard both wall-clock loading time and old-scene fixed-step
     // remainder before the new graph is allowed to tick.
     world.simulation.fixedTimeAccumulator = 0.0f;
+        world.inputTimeline.reset();
     world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
     world.simulation.pausedStepPending = false;
     world.simulation.stepFrameOpen = false;
@@ -2579,6 +2697,26 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     auto &world = CurrentWorld();
     if (world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed)
         throw std::runtime_error("the physical step failed; stop Play before restarting the simulation");
+    if (world.inputTimeline && world.inputTimeline->automaticFrame &&
+        world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Idle) {
+        auto &timeline = *world.inputTimeline;
+        std::vector<InputFrameLease> events;
+        while (!timeline.points.empty() && timeline.points.front().time <= timeline.fixedTime) {
+            auto sample = std::move(timeline.points.front().input);
+            const bool deliverEvents = timeline.points.front().deliverEvents;
+            timeline.points.pop_front();
+            if (deliverEvents && timeline.lastFixedSource != sample->sampleIdentity) {
+                events.push_back(sample);
+            }
+            timeline.lastFixedSource = sample->sampleIdentity;
+            timeline.held = std::move(sample);
+        }
+        timeline.fixedInput = InputManager::Instance().ComposeWorldInput(
+            world.id, timeline.held, events, world.simulation.frameTime.frameCount);
+    }
+    const InputReadScope fixedInputScope(
+        world.inputTimeline && world.inputTimeline->automaticFrame ? world.inputTimeline->fixedInput : world.frame.input,
+        world.id);
     FixedSimulationExecutionScope executionScope(world.simulation.fixedExecuting);
     const auto validWorld = [&] {
         return world.simulation.simulationEpoch == std::get<0>(admittedState) && world.simulation.isPlaying &&
@@ -2673,6 +2811,8 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
             if (!completed)
                 return false;
         }
+        if (world.inputTimeline && world.inputTimeline->automaticFrame)
+            world.inputTimeline->fixedTime += world.simulation.admittedFixedDeltaTime;
         world.simulation.completedFixedStepIndex = world.simulation.fixedStepIndex;
         m_lastFrameProfile.fixedSteps += 1.0;
         world.simulation.fixedTimeAccumulator -= world.simulation.admittedFixedDeltaTime;

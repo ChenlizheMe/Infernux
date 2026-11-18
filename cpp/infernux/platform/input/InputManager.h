@@ -148,6 +148,8 @@ struct InputFrameReadState final
     uint64_t revision = 0;
     uint64_t lastExternalSample = 0, lastLogicalFrameIndex = 0;
     InputFrameLease logicalValue;
+    InputFrameLease externalValue;
+    uint8_t motionSensorDemand = 0;
 };
 
 /// A short owner-thread read scope. Null explicitly restores live Host reads.
@@ -191,9 +193,15 @@ class InputManager
     /// Call every admitted Host, including while another WorldFrame is open.
     /// Reads raw live members even under an older World InputReadScope.
     [[nodiscard]] InputFrameLease CaptureFrame();
+    /// Last admitted raw external lease, before per-World routing/consumption.
+    [[nodiscard]] InputFrameLease GetWorldExternalInput(uint64_t worldId) const noexcept;
     /// Only equivalent, transient-free external samples may share one
     /// automatic World service demand. Explicit frames retain their samples.
     [[nodiscard]] static bool CanCoalesceFrames(const InputFrameSample &left, const InputFrameSample &right) noexcept;
+    [[nodiscard]] static bool CanShareContinuousFrame(const InputFrameSample &left, const InputFrameSample &right) noexcept;
+    [[nodiscard]] InputFrameLease ComposeWorldInput(uint64_t worldId, InputFrameLease held,
+                                                     const std::vector<InputFrameLease> &events,
+                                                     uint64_t logicalFrameIndex);
     void SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcast,
                                  std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs,
                                  std::vector<std::array<float, 4>> imageRects);
@@ -247,7 +255,7 @@ class InputManager
                               float pixelRatio, int safeAreaX, int safeAreaY, int safeAreaWidth, int safeAreaHeight,
                               bool keyboardInsetKnown = false, int keyboardInset = 0);
 
-    /// Open the first platform accelerometer and gyroscope exposed by SDL.
+    /// Discover platform sensors. Data getters subscribe their actual reader.
     /// Missing hardware is a supported capability state, not an initialization error.
     void InitializeMotionSensors();
     void ShutdownMotionSensors();
@@ -500,6 +508,7 @@ class InputManager
 
     [[nodiscard]] const std::array<float, 3> &GetAcceleration() const noexcept
     {
+        RequestMotionSensor(MotionSensorType::Accelerometer);
         if (const auto *sample = InputReadScope::Current())
             return sample->acceleration;
         return m_acceleration;
@@ -507,6 +516,7 @@ class InputManager
 
     [[nodiscard]] const std::array<float, 3> &GetGyroscopeRotationRate() const noexcept
     {
+        RequestMotionSensor(MotionSensorType::Gyroscope);
         if (const auto *sample = InputReadScope::Current())
             return sample->gyroscopeRotationRate;
         return m_gyroscopeRotationRate;
@@ -514,6 +524,7 @@ class InputManager
 
     [[nodiscard]] const std::vector<AccelerationEvent> &GetAccelerationEvents() const noexcept
     {
+        RequestMotionSensor(MotionSensorType::Accelerometer);
         if (const auto *sample = InputReadScope::Current())
             return sample->accelerationEvents;
         return m_accelerationEvents;
@@ -676,6 +687,11 @@ class InputManager
 
     std::array<float, 3> m_acceleration{};
     std::array<float, 3> m_gyroscopeRotationRate{};
+    static bool CanCompareFrames(const InputFrameSample &left, const InputFrameSample &right, bool continuous) noexcept;
+    static void RouteWorldInput(uint64_t worldId, InputFrameSample &value);
+    void RequestMotionSensor(MotionSensorType type) const noexcept;
+    void RefreshMotionSensorDemand() noexcept;
+    uint8_t m_hostMotionSensorDemand = 0;
     SDL_Sensor *m_accelerometer = nullptr;
     SDL_Sensor *m_gyroscope = nullptr;
     uint32_t m_accelerometerId = 0;
