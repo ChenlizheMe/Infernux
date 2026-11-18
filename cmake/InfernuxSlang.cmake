@@ -39,6 +39,28 @@ endfunction()
 function(infernux_add_rt_slang_module compiler_target)
     get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     set(_shader_dir "${_root}/cpp/infernux/function/renderer/raytracing/shaders")
+    # Authored programs can outlive an engine update. Identify the code that
+    # lowers their sources once at build time, including the built-in modules.
+    file(GLOB _author_inputs CONFIGURE_DEPENDS
+        "${_root}/python/infernux/_compiler/shader*.py" "${_root}/python/infernux/_compiler/shading_model.py"
+        "${_root}/python/infernux/_compiler/vertex.py" "${_root}/python/infernux/_compiler/slang_ast.py"
+        "${_root}/python/infernux/_compiler/diagnostics.py"
+        "${_root}/cpp/infernux/function/resources/ShaderAsset/Slang*.h"
+        "${_root}/cpp/infernux/function/resources/ShaderAsset/Slang*.cpp"
+        "${_root}/cpp/infernux/function/resources/ShaderAsset/ShaderAuthor*.cpp"
+        "${_root}/cpp/infernux/function/resources/ShaderAsset/ShaderAuthor*.h"
+        "${_root}/cpp/infernux/function/renderer/shader/ShaderTargetArchive.h"
+        "${_shader_dir}/*.slang")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_author_inputs})
+    set(_author_identity "")
+    foreach(_file IN LISTS _author_inputs)
+        file(READ "${_file}" _source)
+        string(REPLACE "\r\n" "\n" _source "${_source}")
+        string(SHA1 _digest "${_source}")
+        string(APPEND _author_identity "${_digest}")
+    endforeach()
+    string(SHA1 _author_contract "${_author_identity}")
+    target_compile_definitions(${compiler_target} PRIVATE INFERNUX_SHADER_AUTHOR_CONTRACT="${_author_contract}")
     set(_traversal "${_shader_dir}/ray_traversal.slang")
     set(_bsdf "${_shader_dir}/ray_bsdf.slang")
     set(_layout "${_shader_dir}/ray_layout.slang")

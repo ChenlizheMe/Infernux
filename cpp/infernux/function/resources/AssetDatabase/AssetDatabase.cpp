@@ -6414,44 +6414,13 @@ void AssetDatabase::InstallImportArtifact(const std::string &guid, ImportArtifac
 
 bool AssetDatabase::ReadFile(const std::string &filePath, std::vector<char> &content) const
 {
-    std::ifstream file(ToFsPath(filePath), std::ios::in | std::ios::binary);
-    if (!file.is_open()) {
-        INXLOG_ERROR("Failed to open file: ", filePath);
-        content.clear();
-        return false;
-    }
-
     try {
-        file.seekg(0, std::ios::end);
-        if (file.fail()) {
-            INXLOG_ERROR("Failed to seek to end of file: ", filePath);
-            content.clear();
-            return false;
-        }
-
-        std::streampos fileSize = file.tellg();
-        if (fileSize == std::streampos(-1)) {
-            INXLOG_ERROR("Failed to get file size: ", filePath);
-            content.clear();
-            return false;
-        }
-
-        file.seekg(0, std::ios::beg);
-        if (file.fail()) {
-            INXLOG_ERROR("Failed to seek to beginning of file: ", filePath);
-            content.clear();
-            return false;
-        }
-
-        content.reserve(static_cast<size_t>(fileSize));
-        content.assign((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-
-        if (file.bad() || file.fail()) {
-            INXLOG_ERROR("Error occurred while reading file: ", filePath);
-            content.clear();
-            return false;
-        }
-
+        FileInput file(ToFsPath(filePath));
+        const auto size = file.Size();
+        if (size > content.max_size())
+            throw std::length_error("File does not fit in a memory buffer");
+        content.resize(static_cast<size_t>(size));
+        file.Read(content.data(), content.size());
         return true;
     } catch (const std::exception &e) {
         INXLOG_ERROR("Exception while reading file: ", filePath, " - ", e.what());

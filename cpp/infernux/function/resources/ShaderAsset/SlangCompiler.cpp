@@ -255,18 +255,12 @@ struct ComputeModule
 struct SlangCompiler::Impl
 {
     Slang::ComPtr<slang::IGlobalSession> global;
-    std::string version;
+    std::string version = SLANG_COMPILER_ID;
     ShaderAuthorFrontend authorFrontend;
     // Slang sessions that share a global session must be used serially. The
     // Python caller releases the GIL before entering this compilation owner.
     std::mutex mutex;
     std::unique_ptr<ComputeModule> recentComputeModule;
-
-    Impl()
-    {
-        CheckCompilation(slang::createGlobalSession(global.writeRef()), "initialize", nullptr);
-        version = SLANG_COMPILER_ID;
-    }
 };
 
 SlangCompiler &SlangCompiler::Get()
@@ -283,6 +277,11 @@ SlangCompiler::~SlangCompiler() = default;
 const std::string &SlangCompiler::GetVersion() const noexcept
 {
     return impl->version;
+}
+
+std::string_view SlangCompiler::GetAuthorContract() noexcept
+{
+    return SLANG_COMPILER_ID "/" INFERNUX_SHADER_AUTHOR_CONTRACT;
 }
 
 void SlangCompiler::SetAuthorFrontend(ShaderAuthorFrontend frontend)
@@ -371,6 +370,8 @@ ShaderCompilation SlangCompiler::CompileProgram(const ShaderSourceModule &source
 try {
     RecordShaderCompilationAttempt();
     std::lock_guard lock(impl->mutex);
+    if (!impl->global)
+        CheckCompilation(slang::createGlobalSession(impl->global.writeRef()), "initialize", nullptr);
 
     LoadedModule uncached;
     const LoadedModule *frontend = &uncached;

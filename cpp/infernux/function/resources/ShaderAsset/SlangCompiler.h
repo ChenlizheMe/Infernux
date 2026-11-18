@@ -93,6 +93,7 @@ class SlangCompiler
                         const std::vector<ShaderAuthorRange> &sourceRanges, bool &frontendReused);
 
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API const std::string &GetVersion() const noexcept;
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API static std::string_view GetAuthorContract() noexcept;
 
     SlangCompiler(const SlangCompiler &) = delete;
     SlangCompiler &operator=(const SlangCompiler &) = delete;
