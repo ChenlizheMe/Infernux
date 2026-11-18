@@ -206,7 +206,8 @@ class TestPlayModeManager:
         mgr._get_scene_manager = lambda: scene_manager
 
         assert mgr.step_frame()
-        assert mgr.step_frame()
+        assert mgr.step_fixed(.02)
+        assert mgr.step_fixed(.01)
         assert mgr.step_sequence == 0
         assert scene_manager.admissions == []
         mgr.process_pending_step()
@@ -228,7 +229,6 @@ class TestPlayModeManager:
         mgr.process_pending_step()
         assert mgr.step_sequence == 2
 
-        assert mgr.step_frame()
         mgr.process_pending_step()
         mgr.process_pending_step()
         assert mgr.step_sequence == 2
@@ -237,8 +237,11 @@ class TestPlayModeManager:
             scene_manager.complete(identity)
         mgr.process_pending_step()
         assert mgr.step_sequence == 3
-        for batch in scene_manager.admissions:
-            assert batch == ((101, 7, pytest.approx(1.0/60.0)), (202, 9, pytest.approx(.03)))
+        assert scene_manager.admissions == [
+            ((101, 7, pytest.approx(1.0/60.0)), (202, 9, pytest.approx(.03))),
+            ((101, 7, .02), (202, 9, .02)),
+            ((101, 7, .01), (202, 9, .01)),
+        ]
         assert scene_manager.worlds[101].clock.frame_count == 3
         assert scene_manager.worlds[202].clock.frame_count == 7
         mgr.process_pending_step()

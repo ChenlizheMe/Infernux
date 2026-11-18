@@ -14,9 +14,11 @@ Handles:
 
 from infernux.engine.i18n import t
 
+import math
 import time
 import os
 import types
+from collections import deque
 from enum import Enum, auto
 from typing import Optional, List, Any, Callable, Iterable
 from dataclasses import dataclass
@@ -532,7 +534,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         # so automation needs an explicit completion sequence for Step.
         self._step_sequence: int = 0
         self._step_completion = None
-        self._pending_step_requests: int = 0
+        self._step_deltas: deque[float | None] = deque()
         
         # Typed scene document captured before entering play mode.
         self._scene_backup: Optional[Any] = None
@@ -681,7 +683,7 @@ class PlayModeManager(PlayModeSerializationMixin):
 
     @property
     def pending_step_requests(self) -> int:
-        return int(self._pending_step_requests)
+        return len(self._step_deltas)
 
     @property
     def last_transition_timings_ms(self) -> dict[str, Any]:
@@ -783,7 +785,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             RenderEffect._suppress_auto_save = True
             try:
                 self._step_sequence = 0
-                self._pending_step_requests = 0
+                self._step_deltas.clear()
                 self._step_completion = None
 
 
@@ -884,7 +886,7 @@ class PlayModeManager(PlayModeSerializationMixin):
                     self._notify_state_change(PlayModeState.ENTERING, PlayModeState.EDIT)
                     Material._suppress_auto_save = False
                     RenderEffect._suppress_auto_save = False
-                    self._pending_step_requests = 0
+                    self._step_deltas.clear()
                     self._step_completion = None
                 except Exception as restore_error:
                     self._state = PlayModeState.RECOVERY_REQUIRED
@@ -973,7 +975,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         # presentation listeners retain pixels until authored outputs are ready.
         old_state = self._state
         self._state = PlayModeState.RESTORING
-        self._pending_step_requests = 0
+        self._step_deltas.clear()
         self._step_completion = None
         from infernux.core.material import Material
         from infernux.renderstack.render_effect import RenderEffect
@@ -1100,7 +1102,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             Debug.log_warning("Cannot resume: not currently paused")
             return False
         
-        self._pending_step_requests = 0
+        self._step_deltas.clear()
         self._step_completion = None
         scene_manager = self._get_scene_manager()
         if scene_manager:
@@ -1129,7 +1131,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             Debug.log_warning("Step only works when paused")
             return
         
-        self._pending_step_requests += 1
+        self._step_deltas.append(None)
         return True
 
     def step_fixed(self, delta_time: float) -> bool:
@@ -1143,10 +1145,9 @@ class PlayModeManager(PlayModeSerializationMixin):
         if self._state != PlayModeState.PAUSED:
             return False
         delta = float(delta_time)
-        if not (delta > 0.0) or delta != delta or delta in (float("inf"), float("-inf")):
+        if not math.isfinite(delta) or delta <= 0.0:
             raise ValueError("step_fixed requires a finite positive delta")
-        self._fixed_step_delta = delta
-        self._pending_step_requests += 1
+        self._step_deltas.append(delta)
         return True
 
     def process_pending_step(self) -> bool:
@@ -1154,7 +1155,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         if self._state != PlayModeState.PAUSED:
             self._step_completion = None
             return False
-        if self._pending_step_requests <= 0 and self._step_completion is None:
+        if not self._step_deltas and self._step_completion is None:
             return False
         manager = self._get_scene_manager()
         if manager is None:
@@ -1181,8 +1182,10 @@ class PlayModeManager(PlayModeSerializationMixin):
             else:
                 Debug.log_warning("Paused group Step cancelled because a member left its admitted Play frame")
             self._step_completion = None
-        if self._pending_step_requests <= 0:
+        if not self._step_deltas:
             return False
+        # An explicit duration belongs to the group command, including retries.
+        delta = self._step_deltas[0]
         members = []
         requests = []
         for identity in tuple(manager._runtime_world_ids):
@@ -1197,15 +1200,13 @@ class PlayModeManager(PlayModeSerializationMixin):
                 clock = manager._frame_time
                 # Time is this world's admitted logical clock, never paused wall time.
                 # Preserve the existing first-frame Step default only before any F.
-                override = getattr(self, "_fixed_step_delta", None)
-                self._fixed_step_delta = None
-                source_delta = (float(override) if override else
+                source_delta = (delta if delta is not None else
                                 float(clock.unscaled_delta_time) if clock.frame_count else 1.0 / 60.0)
                 epoch = int(manager.simulation_epoch)
                 members.append((handle, epoch, int(clock.frame_count) + 1))
                 requests.append((int(identity), epoch, source_delta))
         manager._request_runtime_steps(requests)
-        self._pending_step_requests -= 1
+        self._step_deltas.popleft()
         if members:
             completion = []
             for handle, epoch, frame in members:
