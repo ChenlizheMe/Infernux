@@ -87,7 +87,6 @@ bool SceneRenderBridge::PublishRuntimeFrame(RuntimeWorld &world, const CaptureVi
     // View delegates may Stop this World and erase its publication index.
     const auto state = slot;
     state->assetGraph = AssetDependencyGraph::Current();
-    state->extractor.SetMaterialPreparation(m_prepareMaterial);
     try {
         if (!state->pending) {
             (void)state->extractor.ExtractRuntimeFrame(state->staging, world);
@@ -138,7 +137,6 @@ bool SceneRenderBridge::PublishPausedAuthorPresentation(RuntimeWorld &world, con
     state->assetGraph = AssetDependencyGraph::Current();
     const auto serial = world.pausedAuthor.requested;
     const auto epoch = world.simulation.simulationEpoch;
-    state->extractor.SetMaterialPreparation(m_prepareMaterial);
     try {
         auto &pending = state->pausedPending;
         if (pending &&
@@ -327,7 +325,6 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
             m_preparedEditor = std::move(frame);
         }
     } else if (GetEditorViewedWorld()) {
-        m_extractor.SetMaterialPreparation(m_prepareMaterial);
         try {
             (void)m_extractor.ExtractEditorFrame(m_editorPublication, useActiveCameraCulling);
         } catch (const ShaderProgramSelectionError &) {
@@ -366,7 +363,6 @@ std::shared_ptr<const RenderWorldFrame> SceneRenderBridge::AcquirePreparedGameFr
 
 std::shared_ptr<const RenderWorldFrame> SceneRenderBridge::CapturePreview(Camera &camera)
 {
-    m_previewExtractor.SetMaterialPreparation(m_prepareMaterial);
     (void)m_previewExtractor.ExtractCameraFrame(m_previewPublication, &camera);
     return m_previewPublication.Acquire();
 }

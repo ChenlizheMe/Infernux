@@ -365,6 +365,7 @@ class InxVkCoreModular
 
     /// @brief Set draw calls for multi-material rendering (stores pointer, no copy)
     void SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh = false);
+    [[nodiscard]] const std::shared_ptr<InxMaterial> &GetDrawMaterial(const DrawCall &draw);
     void SetDrawBufferBindings(const rhi::ComputeBufferBindings *bindings) noexcept
     {
         m_drawBufferBindings = bindings;
@@ -1723,7 +1724,7 @@ class InxVkCoreModular
     uint64_t m_staticInstanceRangeFrame = UINT64_MAX;
     std::vector<StaticInstanceRange> m_staticInstanceRanges;
 
-    // Cached builtin material lookups (refreshed per SetDrawCalls)
+    // Created on the first draw with an implicit material.
     std::shared_ptr<InxMaterial> m_cachedDefaultLit;
 
     struct ShadowDraw

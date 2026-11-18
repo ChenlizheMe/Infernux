@@ -94,7 +94,6 @@ class PlayerBootstrap:
         phase("force player mode", self._force_player_mode)
         phase("load runtime contract", self._load_runtime_contract)
         phase("initialize engine", self._init_engine)
-        phase("prewarm builtin GPU pipelines", self._prewarm_builtin_pipelines)
         phase("load runtime asset catalog", self._load_runtime_asset_catalog)
         self._pump_startup_events()
         phase("create runtime managers", self._create_managers)
@@ -119,27 +118,6 @@ class PlayerBootstrap:
         _plog(
             f"[Startup] bootstrap ready: "
             f"{(time.perf_counter() - startup_started) * 1000.0:.1f} ms"
-        )
-
-    def _prewarm_builtin_pipelines(self) -> None:
-        """Build the builtin material pipelines before Player is visible."""
-        if self.engine is None:
-            raise RuntimeError("Player GPU pipeline prewarm requires an Engine")
-        native = self.engine.get_native_engine()
-        if native is None:
-            raise RuntimeError("Player GPU pipeline prewarm requires a native Engine")
-        from infernux.lib import AssetRegistry
-
-        registry = AssetRegistry.instance()
-        for name in ("DefaultLit", "SkyboxProcedural"):
-            material = registry.get_builtin_material(name)
-            if material is None:
-                raise RuntimeError(f"Required builtin material is unavailable: {name}")
-            if name == "SkyboxProcedural":
-                native.refresh_material_pipeline(material)
-        _plog(
-            "[Startup] builtin GPU material pipelines prewarmed "
-            "default_lit=engine-init skybox=explicit"
         )
 
     def _schedule_project_warmup(self) -> None:

@@ -2351,11 +2351,10 @@ void SceneRenderGraph::EnsureGraphBuilt()
         }
         const GraphCommandDesc *opaqueCommand = replay ? &replay->draw : nullptr;
         if (opaqueCommand && opaqueCommand->type == GraphCommandType::DrawRenderers) {
-            const auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
             for (const auto &draw : GetCachedDrawCalls()) {
                 if (!draw.frustumVisible)
                     continue;
-                const auto &material = draw.material ? draw.material : defaultMaterial;
+                const auto &material = m_vkCore->GetDrawMaterial(draw);
                 if (!material || material->GetRenderQueue() < opaqueCommand->queueMin ||
                     material->GetRenderQueue() > opaqueCommand->queueMax)
                     continue;

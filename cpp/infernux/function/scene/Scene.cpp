@@ -8,6 +8,7 @@
 #include "Ragdoll.h"
 #include "RuntimeWorld.h"
 #include "SceneManager.h"
+#include "SceneRenderExtractor.h"
 #include "SkeletonInstance.h"
 #include "TransformECSStore.h"
 #include "core/threading/JobSystem.h"
@@ -291,7 +292,7 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
 SceneCommitToken::~SceneCommitToken()
 {
     if (IsActive() && !Rollback())
-        Finalize();
+        ReleaseRetainedWorld();
 }
 
 bool SceneCommitToken::IsActive() const noexcept
@@ -373,6 +374,14 @@ void SceneCommitToken::Finalize()
 {
     if (!IsActive())
         return;
+    // Scripts have restored component bindings; a material failure can still
+    // cancel publication and leave the previous scene visible.
+    SceneRenderExtractor::PrepareSceneMaterials(*m_impl->scene);
+    ReleaseRetainedWorld();
+}
+
+void SceneCommitToken::ReleaseRetainedWorld()
+{
     const WorldExecutionScope worldScope(m_impl->scene->GetRuntimeWorld());
     const WorldRetirementScope retirement;
     Impl &state = *m_impl;
@@ -413,7 +422,7 @@ Scene::~Scene()
     const WorldRetirementScope retirement;
     m_retiringObjects = true;
     if (m_retainedCommit)
-        m_retainedCommit->Finalize();
+        m_retainedCommit->ReleaseRetainedWorld();
     RetireRootObjects();
 }
 

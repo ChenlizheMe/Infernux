@@ -148,9 +148,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Loading scene\u2026")
         self._load_initial_scene()
 
-        self._report_progress("Compiling builtin shaders\u2026")
-        self._prewarm_builtin_pipelines()
-
         self._report_progress("Refreshing project resources\u2026")
         if self.engine:
             self.engine.prepare_startup_refresh()
@@ -273,27 +270,6 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             raise RuntimeError("Asset catalog publication requires an AssetDatabase")
         if bool(database.refresh_pending):
             database.complete_pending_refresh()
-
-    def _prewarm_builtin_pipelines(self):
-        """Prepare builtin pipelines before the first interactive frame.
-
-        A material's existence does not imply its device pipeline is ready.
-        Pay first-use compilation during startup, preserving clean pipelines.
-        """
-        if self.engine is None:
-            raise RuntimeError("Builtin pipeline prewarm requires an Engine")
-        native = self.engine.get_native_engine()
-        if native is None:
-            raise RuntimeError("Builtin pipeline prewarm requires a native Engine")
-        from infernux.lib import AssetRegistry
-
-        registry = AssetRegistry.instance()
-        for name in ("DefaultLit", "SkyboxProcedural"):
-            material = registry.get_builtin_material(name)
-            if material is None:
-                raise RuntimeError(f"Required builtin material is unavailable: {name}")
-            if material.is_pipeline_dirty():
-                native.refresh_material_pipeline(material)
 
     def _prewarm_inspector_metadata(self):
         # These catalogs and logical fields used to be discovered on the first

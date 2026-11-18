@@ -565,6 +565,7 @@ class SceneCommitToken final
     struct Impl;
 
     explicit SceneCommitToken(Scene &scene);
+    void ReleaseRetainedWorld();
     std::unique_ptr<Impl> m_impl;
 };
 

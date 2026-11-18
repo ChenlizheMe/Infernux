@@ -10,6 +10,7 @@ namespace infernux
 {
 
 class Camera;
+class Scene;
 class MeshRenderer;
 class SkinnedMeshRenderer;
 class Transform;
@@ -28,10 +29,8 @@ class SceneRenderExtractor final
     [[nodiscard]] static RenderViewData CaptureCameraView(const Camera &camera);
 
     using PrepareMaterial = std::function<void(const std::shared_ptr<InxMaterial> &)>;
-    void SetMaterialPreparation(PrepareMaterial prepare)
-    {
-        m_prepareMaterial = std::move(prepare);
-    }
+    static void SetMaterialPreparation(PrepareMaterial prepare);
+    static void PrepareSceneMaterials(const Scene &scene);
     void SetAspectRatio(float aspect);
 
 #if INFERNUX_FRAME_PROFILE
@@ -98,7 +97,6 @@ class SceneRenderExtractor final
     std::shared_ptr<const RenderLightingSource> m_lighting;
     std::shared_ptr<const RenderSurfaceRecords> m_surfaceRecords;
     uint64_t m_surfaceStructureRevision = 0;
-    PrepareMaterial m_prepareMaterial;
     std::shared_ptr<InxMaterial> m_baseSkybox;
     std::unordered_map<const RenderPoseBuffer *, std::shared_ptr<const RenderPoseValue>> m_framePoseValues;
     std::unordered_map<const RenderPoseBuffer *, std::shared_ptr<const RenderPoseValue>> m_previousPoseValues;

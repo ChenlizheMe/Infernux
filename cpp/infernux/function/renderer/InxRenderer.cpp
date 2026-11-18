@@ -107,6 +107,20 @@ bool PreservesScreenColor(const RenderViewData &view)
            view.clearFlags == CameraClearFlags::DontClear;
 }
 
+bool PlayerHasParticleGraphs()
+{
+    const auto *database = AssetRegistry::Instance().GetAssetDatabase();
+    const auto catalog = database ? database->GetCatalogSnapshot() : nullptr;
+    if (!catalog)
+        return false;
+    for (const auto &directory : catalog->GetDirectories()) {
+        if (std::any_of(directory.second.begin(), directory.second.end(),
+                        [](const auto &entry) { return entry.resourceType == ResourceType::ParticleGraph; }))
+            return true;
+    }
+    return false;
+}
+
 template <typename Program, size_t Count> struct CompiledParticleProgram
 {
     std::array<particle::CompiledParticleShader, Count> shaders;
@@ -352,7 +366,7 @@ InxRenderer::~InxRenderer()
 {
     SceneManager::Instance().SetRuntimeFramePresentationCallback({});
     SceneManager::Instance().SetRuntimeFramePublicationCallbacks({}, {});
-    SceneRenderBridge::Instance().SetMaterialPreparation({});
+    SceneRenderExtractor::SetMaterialPreparation({});
     SceneRenderBridge::Instance().RetireRuntimeWorld(SceneManager::Instance().CurrentWorld().id);
     // ========================================================================
     // Shutdown order matters!  Every subsystem holds a raw VkCore/device
@@ -576,11 +590,9 @@ void InxRenderer::PreparePipeline()
             InitializeDefaultScene();
         pumpStartup();
 
-        // These support shaders are CPU-compiled. Overlap that work with the
-        // remaining renderer setup and Player catalog/scene publication. The
-        // first real ParticleSystem consumes the finished bundle, while a
-        // project without particles never blocks startup on it.
-        if (JobSystem::IsAvailable() && !m_particleProgramBootstrap) {
+        // Only prewarm support programs the cooked Player can use. Runtime-created
+        // systems still obtain the same programs when their first renderer is created.
+        if (JobSystem::IsAvailable() && !m_particleProgramBootstrap && (!playerMode || PlayerHasParticleGraphs())) {
             m_particleProgramBootstrap = std::make_shared<ParticleProgramBootstrap>();
             auto bootstrap = m_particleProgramBootstrap;
             bootstrap->job =
@@ -907,7 +919,7 @@ void InxRenderer::PreparePipeline()
 
         // The Scene RenderGraph owns the outline passes and target layouts.
         m_outlineRenderer = std::make_unique<OutlineRenderer>();
-        SceneRenderBridge::Instance().SetMaterialPreparation(
+        SceneRenderExtractor::SetMaterialPreparation(
             [this](const auto &material) { m_vkCore->PrepareMaterialAuthoring(material); });
         SceneManager::Instance().SetRuntimeFramePublicationCallbacks(
             [this](RuntimeWorld &world) { return PublishRuntimeRenderFrame(world); },

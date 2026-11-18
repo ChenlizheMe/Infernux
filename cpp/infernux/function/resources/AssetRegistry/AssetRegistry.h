@@ -259,7 +259,7 @@ class AssetRegistry
 
     // ── Built-in material helpers (named, no GUID) ───────────────────────────
 
-    /// Create the common runtime materials without editor asset dependencies.
+    /// Register the common materials. Their shader defaults are loaded on first use.
     void InitializeBuiltinMaterials();
     /// Extend the authoring host with grids, tools and component icon materials.
     void InitializeEditorMaterials();
@@ -315,7 +315,7 @@ class AssetRegistry
     void PinAsset(const std::string &guid);
     void UnpinAsset(const std::string &guid);
 
-    /// Return all known materials — builtin + loaded from disk.
+    /// Return live built-ins, loaded materials and runtime instances.
     [[nodiscard]] std::vector<std::shared_ptr<InxMaterial>> GetAllMaterials() const;
 
     // ── AssetRef resolution ──────────────────────────────────────────────────
@@ -394,8 +394,13 @@ class AssetRegistry
     uint64_t m_nextLoadToken = 1;
     std::vector<std::shared_ptr<TextureReadTask>> m_textureReads;
     std::shared_ptr<TextureReadProfile> m_textureReadProfile;
-    std::unordered_map<ResourceType, std::unique_ptr<IAssetLoader>> m_loaders;        // type → loader
-    std::unordered_map<std::string, std::shared_ptr<InxMaterial>> m_builtinMaterials; // name → builtin mat
+    std::unordered_map<ResourceType, std::unique_ptr<IAssetLoader>> m_loaders; // type → loader
+    struct BuiltinMaterial {
+        std::shared_ptr<InxMaterial> (*create)();
+        mutable std::shared_ptr<InxMaterial> instance;
+    };
+    std::shared_ptr<InxMaterial> BindBuiltinMaterial(std::shared_ptr<InxMaterial> material) const;
+    std::unordered_map<std::string, BuiltinMaterial> m_builtinMaterials;
     mutable std::unordered_map<InxMaterial *, std::weak_ptr<InxMaterial>> m_runtimeMaterials;
     mutable uint64_t m_accessSerial = 0;
     mutable std::map<std::weak_ptr<const void>, size_t, std::owner_less<>> m_cpuStorage;

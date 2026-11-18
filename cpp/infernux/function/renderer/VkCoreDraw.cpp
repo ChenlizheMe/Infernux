@@ -519,6 +519,15 @@ void InxVkCoreModular::InvalidateDrawBufferCaches() noexcept
     m_shadowScratchValid = false;
 }
 
+const std::shared_ptr<InxMaterial> &InxVkCoreModular::GetDrawMaterial(const DrawCall &draw)
+{
+    if (draw.material)
+        return draw.material;
+    if (!m_cachedDefaultLit)
+        m_cachedDefaultLit = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
+    return m_cachedDefaultLit;
+}
+
 void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh)
 {
     if (!forceRefresh && m_drawCallsPtr == drawCalls && m_drawListMetadataSource == drawCalls &&
@@ -538,11 +547,6 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     m_skyboxDrawListSource = drawCalls;
     m_skyboxDrawCallIndices.clear();
 
-    // Refresh cached builtin materials (avoids string-hash lookup per DrawSceneFiltered call)
-    if (!m_cachedDefaultLit) {
-        m_cachedDefaultLit = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
-    }
-
     // Track only the small unique queue set. Sorting one queue value per
     // DrawCall costs more than the empty render-pass scans this replaces.
     m_drawQueueValues.clear();
@@ -556,7 +560,7 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     std::unordered_set<InxMaterial *> preparedMaterials;
     for (size_t drawCallIndex = 0; drawCallIndex < drawCalls->size(); ++drawCallIndex) {
         const DrawCall &drawCall = (*drawCalls)[drawCallIndex];
-        const auto &owner = drawCall.material ? drawCall.material : m_cachedDefaultLit;
+        const auto &owner = GetDrawMaterial(drawCall);
         InxMaterial *material = owner.get();
         // Queue and pass-tag filtering must see the shader's complete defaults
         // before any pass can initialize its GPU pipeline lazily.
@@ -616,7 +620,7 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
     m_shadowListMetadata.reserve(drawCalls->size());
     std::unordered_set<InxMaterial *> preparedMaterials;
     for (const DrawCall &drawCall : *drawCalls) {
-        const auto &owner = drawCall.material ? drawCall.material : m_cachedDefaultLit;
+        const auto &owner = GetDrawMaterial(drawCall);
         InxMaterial *material = owner.get();
         if (material && preparedMaterials.insert(material).second)
             PrepareMaterialRenderState(owner);
@@ -730,11 +734,6 @@ void InxVkCoreModular::DrawSceneFiltered(
     scissor.extent = {width, height};
     vkCmdSetScissor(cmdBuf, 0, 1, &scissor);
 
-    const auto &defaultMaterial = m_cachedDefaultLit;
-    if (!defaultMaterial) {
-        return;
-    }
-
     // Resolve override material (if specified)
     InxMaterial *overrideMatRaw = nullptr;
     std::shared_ptr<InxMaterial> overrideMatOwner; // keeps alive during this scope
@@ -751,8 +750,6 @@ void InxVkCoreModular::DrawSceneFiltered(
             overrideMatOwner = registry.LoadAsset<InxMaterial>(overrideMaterial, ResourceType::Material);
         overrideMatRaw = overrideMatOwner.get();
     }
-
-    InxMaterial *defaultMatRaw = defaultMaterial.get();
 
     // ---- Collect eligible draw calls (queue filter + frustum cull) ----
     m_eligibleScratch.clear();
@@ -803,7 +800,8 @@ void InxVkCoreModular::DrawSceneFiltered(
         if (selection && !parameters)
             continue;
         const DrawListMetadata *metadata = hasListMetadata ? &m_drawListMetadata[drawCallIndex] : nullptr;
-        const InxMaterial *expectedMaterial = dc.material ? dc.material.get() : m_cachedDefaultLit.get();
+        const auto &drawMaterial = GetDrawMaterial(dc);
+        const InxMaterial *expectedMaterial = drawMaterial.get();
         const uint64_t requiredIndexEnd = static_cast<uint64_t>(dc.indexStart) + dc.indexCount;
         if (metadata && (metadata->objectId != dc.objectId || metadata->material != expectedMaterial))
             metadata = nullptr;
@@ -828,7 +826,7 @@ void InxVkCoreModular::DrawSceneFiltered(
             continue;
 
         const std::shared_ptr<InxMaterial> *materialOwner =
-            overrideMatOwner ? &overrideMatOwner : (dc.material ? &dc.material : &defaultMaterial);
+            overrideMatOwner ? &overrideMatOwner : &drawMaterial;
         InxMaterial *material =
             overrideMatRaw ? overrideMatRaw : (metadata ? metadata->material : materialOwner->get());
         if (!material)
@@ -1883,7 +1881,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             const DrawCall &dc = activeShadowDrawCalls[drawCallIndex];
             // Empty renderer slots use DefaultLit in both color and shadow
             // draws, including the first primitive in a fresh project.
-            const auto &material = dc.material ? dc.material : m_cachedDefaultLit;
+            const auto &material = GetDrawMaterial(dc);
             const DrawListMetadata *metadata =
                 hasShadowListMetadata ? &m_shadowListMetadata[drawCallIndex]
                                       : (usesMainDrawListMetadata ? &m_drawListMetadata[drawCallIndex] : nullptr);

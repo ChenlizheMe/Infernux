@@ -182,39 +182,32 @@ class PlayerGUI(InxGUIRenderable):
             (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 5)
             | (1 << 8) | (1 << 16) | (1 << 17) | (1 << 19)
         )
-        ctx.push_style_var_vec2(2, 0.0, 0.0)   # WindowPadding = (0,0)
-        ctx.push_style_var_float(4, 0.0)        # WindowBorderSize = 0
+        splash = self._splash
+        showing_splash = splash is not None and not splash.is_finished
+        if not showing_splash:
+            # Start callbacks may create textures relative to this output.
+            self._prepare_game_target(vp_w, vp_h)
+            self.begin_play_when_ready()
 
-        # ── Splash mode ───────────────────────────────────────────────
-        if self._splash and not self._splash.is_finished:
-            # Black background during splash
-            ctx.push_style_color(2, 0.0, 0.0, 0.0, 1.0)  # ImGuiCol_WindowBg
-            visible = ctx.begin_window("##PlayerFullscreen", True, flags)
-            if visible:
+        ctx.push_style_var_vec2(2, 0.0, 0.0)  # WindowPadding
+        ctx.push_style_var_float(3, 0.0)      # WindowRounding
+        ctx.push_style_var_float(4, 0.0)      # WindowBorderSize
+        ctx.push_style_color(2, 0.0, 0.0, 0.0, 1.0)  # WindowBg
+        if ctx.begin_window("##PlayerFullscreen", True, flags):
+            if showing_splash:
                 native = self._engine.get_native_engine()
                 if native:
-                    self._splash.update(ctx, native, x0, y0, vp_w, vp_h)
-            ctx.end_window()
-            ctx.pop_style_color(1)
-            ctx.pop_style_var(2)
-
-            if self._splash.is_finished:
-                native = self._engine.get_native_engine()
-                if native:
-                    self._splash.cleanup(native)
-                self._splash = None
-            return
-
-        # ── Normal game mode ──────────────────────────────────────────
-        # Component start() may create Game-relative RenderTextures. Publish
-        # the actual output resolution before activating project lifecycle.
-        self._prepare_game_target(vp_w, vp_h)
-        self.begin_play_when_ready()
-        visible = ctx.begin_window("##PlayerFullscreen", True, flags)
-        if visible:
-            self._render_game(ctx, vp_w, vp_h)
+                    splash.update(ctx, native, x0, y0, vp_w, vp_h)
+            else:
+                self._render_game(ctx, vp_w, vp_h)
         ctx.end_window()
-        ctx.pop_style_var(2)  # WindowPadding + WindowBorderSize
+        ctx.pop_style_color(1)
+        ctx.pop_style_var(3)
+        if showing_splash and splash.is_finished:
+            native = self._engine.get_native_engine()
+            if native:
+                splash.cleanup(native)
+            self._splash = None
 
     # ------------------------------------------------------------------
 
@@ -329,12 +322,7 @@ class PlayerGUI(InxGUIRenderable):
         Input.set_game_viewport_size(float(display_w), float(display_h))
 
         game_tex = self._engine.get_game_texture_id()
-        if game_tex == 0:
-            ctx.label("Waiting for camera...")
-            return
-
-        if not self._engine.get_native_engine().game_presentation_ready:
-            ctx.label("Preparing game view...")
+        if not game_tex or not self._engine.get_native_engine().game_presentation_ready:
             return
 
         ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + pad_x)

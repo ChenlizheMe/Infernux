@@ -172,7 +172,6 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(monkeypatch,
                 "_init_engine",
                 "_pump_startup_events",
                 "_load_runtime_asset_catalog",
-                "_prewarm_builtin_pipelines",
             ):
                 monkeypatch.setattr(bootstrap, name, lambda: None)
             run = bootstrap.run
@@ -318,7 +317,6 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
     bootstrap._force_player_mode = lambda: calls.append("force")
     bootstrap._load_runtime_contract = lambda: calls.append("contract")
     bootstrap._init_engine = lambda: calls.append("engine")
-    bootstrap._prewarm_builtin_pipelines = lambda: calls.append("builtin_gpu")
     bootstrap._load_runtime_asset_catalog = lambda: calls.append("catalog")
     bootstrap._create_managers = lambda: calls.append("managers")
     bootstrap._load_plugins = lambda: calls.append("plugins")
@@ -337,7 +335,6 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene(monkeypatch, tmp
         "force",
         "contract",
         "engine",
-        "builtin_gpu",
         "catalog",
         "pump",
         "managers",
@@ -397,14 +394,11 @@ def test_player_first_frame_prewarm_builds_target_before_composition(monkeypatch
     gui._process_mouse_events = lambda *_args, **_kwargs: None
 
     gui._render_game(ctx, 640, 360)
-    assert events == [
-        ("target", 640, 360, False),
-        ("label", "Preparing game view..."),
-    ]
+    assert events == [("target", 640, 360, False)]
 
     native.game_presentation_ready = True
     gui._render_game(ctx, 640, 360)
-    assert events[2:] == [("image", 17, 640.0, 360.0, 0.0, 0.0, 1.0, 1.0)]
+    assert events[1:] == [("image", 17, 640.0, 360.0, 0.0, 0.0, 1.0, 1.0)]
 
 
 def test_player_release_policy_rejects_debug_control_environment(monkeypatch, tmp_path):

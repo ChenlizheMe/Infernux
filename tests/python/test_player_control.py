@@ -100,6 +100,7 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
     class _PlayerEngine:
         game_presentation_ready = False
         readiness_queries = 0
+        texture = 0
 
         def get_native_engine(self):
             self.readiness_queries += 1
@@ -110,7 +111,7 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
             assert point_filter is fixed
 
         def get_game_texture_id(self):
-            return 17
+            return self.texture
 
     class _Context:
         def label(self, value):
@@ -187,6 +188,8 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
     # no desktop hover API because native touchscreen input does not define it.
     try:
         player._render_game(_Context(), 1280.0, 720.0)
+        player._engine.texture = 17
+        player._render_game(_Context(), 1280.0, 720.0)
         assert not images and not dispatched and not samples
         player._engine.game_presentation_ready = True
         player._render_game(_Context(), 1280.0, 720.0)
@@ -225,7 +228,7 @@ def test_standalone_player_dispatches_runtime_ui_without_desktop_hover(monkeypat
 
     assert len(images) == 2
     assert player._engine.readiness_queries == 4
-    assert labels == ["Preparing game view..."] * 2
+    assert not labels
     assert viewport_origins == [(8.0, 12.0)] * 2
     assert dispatched == [((480, 270) if fixed else (1280, 720))] * 2
     assert samples == [0, 0]
@@ -358,12 +361,14 @@ def test_player_profile_wait_keeps_rendering(monkeypatch):
         set_next_window_size=lambda *_args: None,
         push_style_var_vec2=lambda *_args: None,
         push_style_var_float=lambda *_args: None,
+        push_style_color=lambda *color: calls.append(color),
+        pop_style_color=lambda count: calls.append(("color", count)),
         begin_window=lambda *_args: calls.append("begin") or True,
         end_window=lambda: calls.append("end"),
         pop_style_var=lambda count: calls.append(("pop", count)),
     )
     player.on_render(context)
-    assert calls == ["profile", "begin", "game", "end", ("pop", 2)]
+    assert calls == ["profile", (2, 0.0, 0.0, 0.0, 1.0), "begin", "game", "end", ("color", 1), ("pop", 3)]
 
 
 def test_player_control_observation_is_token_authenticated(tmp_path, monkeypatch):

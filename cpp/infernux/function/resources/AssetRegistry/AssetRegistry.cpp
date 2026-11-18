@@ -1165,21 +1165,31 @@ void AssetRegistry::UpdateLoadedAssetPath(const std::string &guid, const std::st
 // Built-in materials (named, no GUID)
 // =============================================================================
 
+std::shared_ptr<InxMaterial> AssetRegistry::BindBuiltinMaterial(std::shared_ptr<InxMaterial> material) const
+{
+    material->SetBuiltin(true);
+    material->BindDependencyGraph(m_assetDb->GetDependencyGraph());
+    return material;
+}
+
 void AssetRegistry::RegisterBuiltinMaterial(const std::string &key, std::shared_ptr<InxMaterial> mat)
 {
     if (!mat) {
         INXLOG_WARN("AssetRegistry::RegisterBuiltinMaterial: null material for key '", key, "'");
         return;
     }
-    mat->SetBuiltin(true);
-    mat->BindDependencyGraph(m_assetDb->GetDependencyGraph());
-    m_builtinMaterials[key] = std::move(mat);
+    m_builtinMaterials[key] = {nullptr, BindBuiltinMaterial(std::move(mat))};
 }
 
 std::shared_ptr<InxMaterial> AssetRegistry::GetBuiltinMaterial(const std::string &key) const
 {
     auto it = m_builtinMaterials.find(key);
-    return it != m_builtinMaterials.end() ? it->second : nullptr;
+    if (it == m_builtinMaterials.end())
+        return nullptr;
+    const auto &entry = it->second;
+    if (!entry.instance)
+        entry.instance = BindBuiltinMaterial(entry.create());
+    return entry.instance;
 }
 
 bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const std::string &matFilePath)
@@ -1212,13 +1222,15 @@ bool AssetRegistry::LoadBuiltinMaterialFromFile(const std::string &key, const st
 
 void AssetRegistry::InitializeBuiltinMaterials()
 {
-    RegisterBuiltinMaterial("DefaultLit", InxMaterial::CreateDefaultLit());
-    RegisterBuiltinMaterial("DefaultUnlit", InxMaterial::CreateDefaultUnlit());
-    RegisterBuiltinMaterial("DefaultLineMaterial", InxMaterial::CreateDefaultLineMaterial());
-    RegisterBuiltinMaterial("ParticleSpriteMaterial", InxMaterial::CreateParticleSpriteMaterial());
-    RegisterBuiltinMaterial("ParticleSixWaySmokeMaterial", InxMaterial::CreateParticleSixWaySmokeMaterial());
-    RegisterBuiltinMaterial("SkyboxProcedural", InxMaterial::CreateSkyboxProceduralMaterial());
-    RegisterBuiltinMaterial("ErrorMaterial", InxMaterial::CreateErrorMaterial());
+    m_builtinMaterials.insert({
+        {"DefaultLit", {InxMaterial::CreateDefaultLit, {}}},
+        {"DefaultUnlit", {InxMaterial::CreateDefaultUnlit, {}}},
+        {"DefaultLineMaterial", {InxMaterial::CreateDefaultLineMaterial, {}}},
+        {"ParticleSpriteMaterial", {InxMaterial::CreateParticleSpriteMaterial, {}}},
+        {"ParticleSixWaySmokeMaterial", {InxMaterial::CreateParticleSixWaySmokeMaterial, {}}},
+        {"SkyboxProcedural", {InxMaterial::CreateSkyboxProceduralMaterial, {}}},
+        {"ErrorMaterial", {InxMaterial::CreateErrorMaterial, {}}},
+    });
 }
 
 void AssetRegistry::InitializeEditorMaterials()
@@ -1254,7 +1266,8 @@ std::vector<std::shared_ptr<InxMaterial>> AssetRegistry::GetAllMaterials() const
     std::unordered_set<InxMaterial *> seen;
 
     // 1. Built-in materials
-    for (const auto &[key, mat] : m_builtinMaterials) {
+    for (const auto &[key, entry] : m_builtinMaterials) {
+        const auto &mat = entry.instance;
         if (mat && seen.find(mat.get()) == seen.end()) {
             result.push_back(mat);
             seen.insert(mat.get());

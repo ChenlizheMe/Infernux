@@ -3158,17 +3158,6 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     m_renderer->GetResourcePreviewManager()->SetMaterialPreviewQuery(
         [this](const std::string &path) { return QueryOrScheduleMaterialPreview("mat|" + path, path, {}, 0, false); });
     startupPhase("prepare_pipeline", phaseBegin);
-    // Material programs require the shared descriptor layouts and the device
-    // program cache established by PreparePipeline. A resident source compiler
-    // can prepare code earlier; GPU publication belongs after these owners.
-    if (!projectPath.empty()) {
-        phaseBegin = StartupClock::now();
-        const auto defaultMaterial = InxMaterial::CreateDefaultLit();
-        const auto defaultProgram = PrepareMaterialShader(defaultMaterial);
-        if (!defaultProgram.success)
-            throw std::runtime_error("Default material program is unavailable: " + defaultProgram.error);
-        startupPhase("default_material_program", phaseBegin);
-    }
     if (!m_renderer->PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");
 

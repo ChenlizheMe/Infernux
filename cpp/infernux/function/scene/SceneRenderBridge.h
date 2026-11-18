@@ -64,10 +64,6 @@ class SceneRenderBridge final
     {
         return m_preparedEditor;
     }
-    void SetMaterialPreparation(SceneRenderExtractor::PrepareMaterial prepare)
-    {
-        m_prepareMaterial = std::move(prepare);
-    }
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> AcquirePreparedGameFrame() const;
     [[nodiscard]] std::shared_ptr<const RenderWorldFrame> CapturePreview(Camera &camera);
     using CaptureViews = std::function<bool(RenderWorldPublication &, const RenderWorldPublication *)>;
@@ -133,7 +129,6 @@ class SceneRenderBridge final
     SceneRenderExtractor m_extractor;
     SceneRenderExtractor m_previewExtractor;
     RenderWorldSnapshot m_previewPublication;
-    SceneRenderExtractor::PrepareMaterial m_prepareMaterial;
     RenderWorldSnapshot m_editorPublication;
     std::unordered_map<uint64_t, std::shared_ptr<RuntimePublication>> m_runtimePublications;
     std::shared_ptr<const RenderWorldFrame> m_preparedEditor;

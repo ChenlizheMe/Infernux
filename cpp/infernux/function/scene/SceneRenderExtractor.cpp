@@ -22,6 +22,8 @@ namespace infernux
 
 namespace
 {
+SceneRenderExtractor::PrepareMaterial prepareMaterial;
+
 std::shared_ptr<const RenderSurfaceRecords> CaptureSurfaceRecords(const DrawCallResult &geometry)
 {
     uint32_t lastSurface = 0;
@@ -129,6 +131,37 @@ size_t SceneRenderExtractor::ExtractEditorFrame(RenderWorldSnapshot &world, bool
 #endif
 }
 
+void SceneRenderExtractor::SetMaterialPreparation(PrepareMaterial prepare)
+{
+    prepareMaterial = std::move(prepare);
+}
+
+void SceneRenderExtractor::PrepareSceneMaterials(const Scene &scene)
+{
+    if (!prepareMaterial)
+        return;
+    const WorldExecutionScope scope(scene.GetRuntimeWorld());
+    std::unordered_set<const InxMaterial *> prepared;
+    const auto prepareOnce = [&](const std::shared_ptr<InxMaterial> &material) {
+        if (material && prepared.insert(material.get()).second)
+            prepareMaterial(material);
+    };
+    // A scene owns these bindings even when the object or camera is inactive.
+    // Use the renderer's slot resolution so implicit and embedded materials
+    // select exactly the same shader pair as the first draw.
+    for (auto *object : scene.GetAllObjects()) {
+        for (const auto &component : object->GetAllComponents()) {
+            auto *renderer = dynamic_cast<MeshRenderer *>(component.get());
+            if (!renderer)
+                continue;
+            const uint32_t count = std::max(1u, renderer->GetMaterialCount());
+            for (uint32_t slot = 0; slot < count; ++slot)
+                prepareOnce(renderer->GetEffectiveMaterial(slot));
+        }
+    }
+    prepareOnce(scene.ResolveSkyboxMaterial());
+}
+
 size_t SceneRenderExtractor::ExtractCameraFrame(RenderWorldSnapshot &world, Camera *camera)
 {
     if (!camera) {
@@ -196,8 +229,8 @@ size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication
                 material->BindDependencyGraph(AssetDependencyGraph::Current());
                 manager.ObservePresentationAsset(material->GetMaterialKey());
             }
-            if (m_prepareMaterial && material && prepared.insert(material.get()).second)
-                m_prepareMaterial(material);
+            if (prepareMaterial && material && prepared.insert(material.get()).second)
+                prepareMaterial(material);
         }
     }
     const uint64_t sourceStructure = manager.GetMeshRendererVersion();
@@ -377,8 +410,8 @@ void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
         sourceSky->BindDependencyGraph(AssetDependencyGraph::Current());
         manager.ObservePresentationAsset(sourceSky->GetMaterialKey());
     }
-    if (sourceSky && m_prepareMaterial)
-        m_prepareMaterial(sourceSky);
+    if (sourceSky && prepareMaterial)
+        prepareMaterial(sourceSky);
     auto capturedSky = sourceSky ? sourceSky->CaptureRenderPublication() : nullptr;
     const auto baseSky = capturedSky;
     if (environment.skyboxMaterialGuid.empty() && sourceSky) {
