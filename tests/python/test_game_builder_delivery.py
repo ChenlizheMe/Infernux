@@ -349,24 +349,19 @@ def test_player_component_inheritance_keeps_cross_script_identity(tmp_path, monk
 def test_player_data_inheritance_survives_cook_and_catalog_publication(
     tmp_path,
     monkeypatch,
+    isolated_author_data_types,
     split_modules,
     data_base,
     explicit_ids,
 ):
     from types import ModuleType
 
-    from infernux.components import serializable_object
     from infernux.engine.runtime_type_registry import (
         clear_runtime_type_registry,
         install_runtime_type_registry,
     )
     from infernux.lib import _Infernux as native
 
-    monkeypatch.setattr(
-        serializable_object,
-        "_SERIALIZABLE_REGISTRY",
-        dict(serializable_object._SERIALIZABLE_REGISTRY),
-    )
     base_module = "Scripts.player_base"
     child_module = "Scripts.player_derived" if split_modules else base_module
     base_source = (

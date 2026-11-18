@@ -52,6 +52,15 @@ from infernux.components._component_lifecycle import RuntimeExecutionScheduler
 from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
 
+@pytest.fixture
+def isolated_author_data_types():
+    from unittest.mock import patch
+    from infernux.components import serializable_object
+
+    with patch.dict(serializable_object._AUTHOR_SERIALIZABLE_REGISTRY):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _reset_editor_interaction_state():
     """Prevent process-wide editor interaction state from leaking across tests."""

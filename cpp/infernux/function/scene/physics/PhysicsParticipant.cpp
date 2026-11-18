@@ -345,6 +345,13 @@ bool PhysicsParticipant::IsActive() const
     return IsReady() && component && component->HasAwake() && component->IsPreparationReady() &&
            component->IsEnabled() && component->GetGameObject() && component->GetGameObject()->IsActiveInHierarchy();
 }
+bool PhysicsParticipant::HasCpuOnlyRigidBindings() const
+{
+    return !m_rigidbodies.empty() && std::all_of(m_rigidbodies.begin(), m_rigidbodies.end(), [](const auto &reference) {
+        const auto *body = dynamic_cast<Rigidbody *>(reference.GetComponent());
+        return body && !body->IsGpuEnabled();
+    });
+}
 void PhysicsParticipant::SetControl(const std::string &name, std::vector<uint8_t> bytes)
 {
     if (IsRetired())
@@ -551,6 +558,73 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
         });
 }
 
+std::optional<JoltGpuControlWork>
+PhysicsParticipant::PrepareClosedRounds(const JPH::GPU::StepParams &params, float fixedDeltaTime,
+                                         uint32_t substep, uint32_t iteration, uint32_t rounds,
+                                         const Prefix &prefix, std::function<void(uint32_t)> done)
+{
+    if (rounds < 2 || !prefix.rigidExchange.closeRounds)
+        return std::nullopt;
+    const auto &bound = m_instances.at("exchange");
+    const auto &recipe = bound.work->GetRecipe();
+    // The native response uses the existing body quantum. Original project
+    // Work retains every dispatch and its complete RHI cost signature.
+    const uint64_t rows = (uint64_t(m_rigidbodies.size()) + 63u) / 64u * 64u;
+    if (!rows || rows * rounds > JPH::GPU::WorkItemLimit(JPH::GPU::Domain::Bodies))
+        return std::nullopt;
+    auto host = recipe.GetHost();
+    auto closed = prefix.rigidExchange.closeRounds(params, m_rigidMotion,
+                                                    bound.work->GetBuffers().at(m_rigidImpulseSlot), rounds);
+    if (!closed)
+        return std::nullopt;
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    const PhysicsParticipantStep timing{params.gravityDt.w, fixedDeltaTime};
+    for (uint32_t round = 0; round < rounds; ++round) {
+        auto inputs = Inputs(recipe, false);
+        // Packet-head updates cannot overwrite one shared indices/step port
+        // repeatedly. Rebind only runtime inputs, preserving canonical state.
+        for (const auto &entry : {std::pair{"step", m_step}, std::pair{"indices", m_indices}}) {
+            const auto input = inputs.find(entry.first);
+            if (input == inputs.end())
+                continue;
+            auto storage = rhi::ComputeBuffer::TryCreatePrivate(host, entry.second->GetDesc());
+            if (!storage)
+                return std::nullopt;
+            input->second = storage;
+            if (entry.first == std::string_view("step"))
+                closed->updates.push_back({storage, 0, Bytes(timing)});
+            else {
+                const PhysicsParticipantIndices values{substep, params.solve.y, iteration + round,
+                                                        params.counts.w, prefix.count,
+                                                        uint32_t(JoltGpuParticipantStage::Exchange)};
+                closed->updates.push_back({storage, 0, Bytes(values)});
+            }
+        }
+        const auto instance = bound.work->Rebind(Bindings(inputs));
+        if (!instance)
+            return std::nullopt;
+        instance->AppendDispatches(dispatches);
+        dispatches.push_back(std::move(closed->responses.at(round)));
+    }
+    auto packet = rhi::PrepareComputeBatch(host, std::move(closed->updates), std::move(dispatches),
+                                            std::move(closed->reads));
+    auto self = shared_from_this();
+    JoltGpuControlWork result{packet, [self, packet, apply = std::move(closed->apply), done, rounds] {
+                                 apply(packet);
+                                 // The canonical step port was not the rebound runtime port.
+                                 self->m_uploadedStep.reset();
+                                 done(rounds);
+                                 return JoltGpuControlWork{};
+                             }};
+    result.prepareMinimum = [self, params, fixedDeltaTime, substep, iteration, &prefix, done] {
+        return ContinueJoltGpuControlWork(
+            self->PrepareStage(JoltGpuParticipantStage::Exchange, params, fixedDeltaTime,
+                                substep, iteration, prefix),
+            [done] { done(1); return JoltGpuControlWork{}; });
+    };
+    return result;
+}
+
 JoltGpuControlWork PhysicsParticipant::PrepareRecipeStage(JoltGpuParticipantStage stage,
                                                           const JPH::GPU::StepParams &params, float fixedDeltaTime,
                                                           uint32_t substep, uint32_t iteration, const Prefix &prefix,
@@ -626,6 +700,16 @@ JoltGpuParticipantStages CapturePhysicsParticipants(const std::vector<std::weak_
     std::sort(stages.rigidBodyIds.begin(), stages.rigidBodyIds.end());
     stages.rigidBodyIds.erase(std::unique(stages.rigidBodyIds.begin(), stages.rigidBodyIds.end()),
                               stages.rigidBodyIds.end());
+    if (batch && batch->byStage[static_cast<size_t>(Stage::Exchange)].size() == 1) {
+        const auto index = batch->byStage[static_cast<size_t>(Stage::Exchange)].front();
+        stages.prepareClosedRounds =
+            [batch, index](const JPH::GPU::StepParams &params, float dt, uint32_t substep,
+                           uint32_t iteration, uint32_t rounds, std::function<void(uint32_t)> done) {
+                const auto &prefix = batch->owners[index];
+                return prefix.owner->PrepareClosedRounds(params, dt, substep, iteration, rounds, prefix,
+                                                          std::move(done));
+            };
+    }
     if (batch)
         stages.prepare = [batch](Stage stage, const JPH::GPU::StepParams &params, float fixedDeltaTime,
                                  uint32_t substep, uint32_t iteration, std::function<void()> done) {

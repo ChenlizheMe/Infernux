@@ -2206,6 +2206,7 @@ class ResourcesManager:
         self._stop_event = threading.Event()
         self._frontend_wake_event = threading.Event()
         self._event_handler = None
+        self._engine_source_scopes = None
         self._frontend_worker_running = False
         self._script_reload_callbacks = {}  # file_path -> [callbacks]
         self._script_catalog_callbacks = []  # [callback(file_path, event_type)]
@@ -2265,6 +2266,34 @@ class ResourcesManager:
             name="InfernuxResourceWatcher",
         )
         self._thread.start()
+
+    def watch_engine_sources(self):
+        """Adopt the declared built-in views into the shared source coordinator."""
+        from infernux.engine.reload.engine_scopes import EngineSourceScopes
+
+        self._engine_source_scopes = EngineSourceScopes(self)
+        # The project watcher may already be running when the editor adopts its
+        # built-in views; attach the new roots to that live observer.
+        with self._observer_lock:
+            observer = self._observer
+        if observer is not None:
+            for root in self._engine_source_scopes.watch_directories:
+                try:
+                    observer.schedule(self._engine_source_scopes, root, recursive=False)
+                except Exception as exc:
+                    from infernux.debug import Debug
+
+                    Debug.log_warning(f"Engine source watch failed for {root}: {exc}")
+
+    def engine_source_restart_required(self) -> tuple[str, ...]:
+        """Core/native engine sources that changed and need a process restart."""
+        if self._engine_source_scopes is None or self._event_handler is None:
+            return ()
+        coordinator = self._event_handler.reload
+        return tuple(
+            path for path in self._engine_source_scopes.restart_paths
+            if (state := coordinator.states.get(path)) is not None and state.status == "restart_required"
+        )
 
     def _ensure_event_handler(self):
         if self._event_handler is None:
@@ -2372,6 +2401,9 @@ class ResourcesManager:
         try:
             for root in existing_roots:
                 observer.schedule(handler, root, recursive=True)
+            if self._engine_source_scopes is not None:
+                for root in self._engine_source_scopes.watch_directories:
+                    observer.schedule(self._engine_source_scopes, root, recursive=False)
             with self._observer_lock:
                 if self._stop_event.is_set():
                     return
@@ -2439,6 +2471,17 @@ class ResourcesManager:
 
     def process_pending_reloads(self, *, force: bool = False) -> int:
         """Commit worker artifacts and asset events on the main thread."""
+        if self._engine_source_scopes is not None:
+            try:
+                self._engine_source_scopes.submit_pending()
+                coordinator = self._event_handler.reload if self._event_handler is not None else None
+                if coordinator is not None:
+                    coordinator.compile_pending()
+                    coordinator.drain()
+            except Exception as exc:
+                from infernux.debug import Debug
+
+                Debug.log_warning(f"Engine source reload failed: {exc}")
         asset_database = self._engine.get_asset_database()
         if self._startup_prepared and bool(
             getattr(asset_database, "refresh_pending", False)

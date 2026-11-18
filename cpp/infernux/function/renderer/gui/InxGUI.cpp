@@ -10,6 +10,8 @@
 #include "InxTextLayout.h"
 #include <function/editor/EditorShortcutInput.h>
 #include <function/editor/EditorTheme.h>
+#include <function/editor/EditorThemeDrawing.h>
+#include <function/editor/EditorSurfacePattern.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/TextureUploadBuilder.h>
 #include <function/renderer/vk/DescriptorBindTrace.h>
@@ -124,6 +126,7 @@ void InxGUI::Init(SDL_Window *window)
     m_imguiContext_ptr = ImGui::CreateContext();
     m_guiContext = std::make_unique<InxGUIContext>();
     m_guiContext->resolveEditorIcon = [this](const std::string &name) { return GetEditorIconId(name); };
+    m_guiContext->SetSurfaceRenderer([this] { DrawThemeSurface(); });
     ImGui::SetCurrentContext(m_imguiContext_ptr);
     m_imguiContext_ptr->ErrorCallback = [](ImGuiContext *context, void *, const char *message) {
         static thread_local bool handlingError = false;
@@ -270,6 +273,124 @@ uint64_t InxGUI::GetEditorIconId(const std::string &name)
         it = m_editorIconTextures.emplace(name, texture).first;
     }
     return GetImGuiTextureId(it->second);
+}
+
+
+void InxGUI::DrawThemeSurface()
+{
+    if (m_playerMode)
+        return;
+    const auto &appearance = theme_drawing::ActiveStyles().panel;
+    const float grain = EditorThemeRegistry::Float("SURFACE_GRAIN_OPACITY");
+    const float hex = EditorThemeRegistry::Float("SURFACE_HEX_OPACITY");
+    const float pattern = EditorThemeRegistry::Float("SURFACE_PATTERN_OPACITY");
+    const int patternKind = static_cast<int>(EditorThemeRegistry::Float("SURFACE_PATTERN_KIND"));
+    if (grain <= 0.0f && hex <= 0.0f && pattern <= 0.0f && !appearance.HasFill() && !appearance.HasBorder())
+        return;
+    ImGuiWindow *window = ImGui::GetCurrentWindow();
+    if (window->Flags & ImGuiWindowFlags_NoBackground)
+        return;
+    if ((window->Flags & ImGuiWindowFlags_ChildWindow) && ImGui::GetStyleColorVec4(ImGuiCol_ChildBg).w <= 0.0f)
+        return;
+
+    // Only top-level windows and explicitly bordered child panes get their
+    // own chrome; transparent layout children do not stack extra frames.
+    const bool framed = !(window->Flags & ImGuiWindowFlags_ChildWindow) ||
+                        (window->ChildFlags & ImGuiChildFlags_Borders);
+    auto *draw = ImGui::GetWindowDrawList();
+    const auto bounds = window->InnerClipRect;
+    draw->PushClipRect(bounds.Min, bounds.Max, true);
+    if (framed)
+        theme_drawing::Fill(draw, bounds, appearance, m_dpiScale);
+
+    // Each procedural mask is published once and reused as a tinted texture.
+    // Drawing underneath the content keeps text, images and hit targets intact.
+    const auto tileSurface = [&](const char *key, const char *tintToken, float opacity, ImVec2 tile) {
+        const uint64_t texture = GetImGuiTextureId(key);
+        if (texture == 0)
+            return; // Publication uses the existing async upload/frame request.
+        auto tint = EditorThemeRegistry::Color(tintToken);
+        tint.w *= opacity;
+        const ImU32 color = theme_drawing::Color(tint);
+        const float left = window->Pos.x + std::floor((bounds.Min.x - window->Pos.x) / tile.x) * tile.x;
+        const float top = window->Pos.y + std::floor((bounds.Min.y - window->Pos.y) / tile.y) * tile.y;
+        for (float y = top; y < bounds.Max.y; y += tile.y)
+            for (float x = left; x < bounds.Max.x; x += tile.x)
+                draw->AddImage(static_cast<ImTextureID>(texture), ImVec2(x, y), ImVec2(x + tile.x, y + tile.y),
+                               ImVec2(0, 0), ImVec2(1, 1), color);
+    };
+    if (grain > 0.0f && m_surfaceGrainUpload == 0) {
+        constexpr int size = 128;
+        std::vector<unsigned char> pixels(size * size * 4, 255);
+        const auto noise = [](uint32_t value) {
+            value ^= value >> 16;
+            value *= 0x7feb352dU;
+            value ^= value >> 15;
+            value *= 0x846ca68bU;
+            return static_cast<float>((value ^ (value >> 16)) & 65535U) / 65535.0f;
+        };
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                const float cloud = std::sin(x * 0.049087385f) * std::sin(y * 0.09817477f);
+                const float fiber = noise(y * 31U) > 0.86f ? noise(x / 7U + y * 71U) * 0.30f : 0.0f;
+                const float density = 0.08f + noise(x + y * size) * 0.40f + cloud * 0.07f + fiber;
+                pixels[(y * size + x) * 4 + 3] = static_cast<unsigned char>(density * 255.0f);
+            }
+        }
+        m_surfaceGrainUpload = SubmitTextureForImGui("EditorTheme/SurfaceGrain", pixels.data(), pixels.size(),
+                                                    size, size, VK_FILTER_LINEAR, true);
+    }
+    if (grain > 0.0f) {
+        const float tile = 256.0f * EditorThemeRegistry::Float("SURFACE_GRAIN_SCALE") * m_dpiScale;
+        tileSurface("EditorTheme/SurfaceGrain", "SURFACE_GRAIN_TINT", grain, ImVec2(tile, tile));
+    }
+    if (hex > 0.0f && m_surfaceHexUpload == 0) {
+        constexpr int width = 256, height = 224;
+        std::vector<unsigned char> pixels(width * height * 4, 255);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                float distance = std::numeric_limits<float>::max();
+                float edge = 0.0f;
+                const int row = static_cast<int>(std::round(y / 56.0f));
+                for (int r = row - 1; r <= row + 1; ++r) {
+                    const float shift = (r % 2 != 0) ? 32.0f : 0.0f;
+                    const float centerX = std::round((x - shift) / 64.0f) * 64.0f + shift;
+                    const float dx = std::abs(x - centerX), dy = std::abs(y - r * 56.0f);
+                    if (dx * dx + dy * dy < distance) {
+                        distance = dx * dx + dy * dy;
+                        edge = std::max(dx / 32.0f, (dy + dx * (7.0f / 12.0f)) / (112.0f / 3.0f));
+                    }
+                }
+                const float line = std::clamp(1.0f - std::abs(edge - 1.0f) * 24.0f, 0.0f, 1.0f);
+                pixels[(y * width + x) * 4 + 3] = static_cast<unsigned char>(line * 255.0f);
+            }
+        }
+        m_surfaceHexUpload = SubmitTextureForImGui("EditorTheme/SurfaceHex", pixels.data(), pixels.size(),
+                                                   width, height, VK_FILTER_LINEAR, true);
+    }
+    if (hex > 0.0f) {
+        const float scale = EditorThemeRegistry::Float("SURFACE_HEX_SCALE") * m_dpiScale;
+        tileSurface("EditorTheme/SurfaceHex", "SURFACE_HEX_TINT", hex, ImVec2(256.0f * scale, 224.0f * scale));
+    }
+    if (pattern > 0.0f && patternKind != 0) {
+        const std::string key = "EditorTheme/SurfacePattern/" + std::to_string(patternKind);
+        if (m_surfacePatternUploads[patternKind] == 0) {
+            const auto pixels = theme_drawing::BuildSurfacePattern(patternKind);
+            m_surfacePatternUploads[patternKind] = SubmitTextureForImGui(
+                key, pixels.data(), pixels.size(), theme_drawing::SurfacePatternSize,
+                theme_drawing::SurfacePatternSize, patternKind == 3 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR, true);
+        }
+        const float tile = theme_drawing::SurfacePatternSize *
+                           EditorThemeRegistry::Float("SURFACE_PATTERN_SCALE") * m_dpiScale;
+        tileSurface(key.c_str(), "SURFACE_PATTERN_TINT", pattern, ImVec2(tile, tile));
+    }
+    draw->PopClipRect();
+    if (framed && appearance.HasBorder()) {
+        const ImVec2 end(window->Pos.x + window->Size.x, window->Pos.y + window->Size.y);
+        draw->PushClipRect(window->OuterRectClipped.Min, window->OuterRectClipped.Max, false);
+        theme_drawing::Border(draw, ImRect(window->Pos, end), appearance, m_dpiScale);
+        draw->PopClipRect();
+    }
 }
 
 void InxGUI::SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjkFontPath,

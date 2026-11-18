@@ -81,6 +81,19 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
         std::function<JoltGpuControlWork(const JPH::GPU::StepParams &, const std::shared_ptr<rhi::ComputeBuffer> &,
                                          const std::shared_ptr<rhi::ComputeBuffer> &, Recipe)>
             exchange;
+        struct ClosedRounds
+        {
+            std::vector<rhi::ComputeBufferUpdate> updates;
+            std::vector<rhi::ComputeBufferRead> reads;
+            std::vector<rhi::ComputeDispatchDesc> responses;
+            std::function<void(const std::shared_ptr<rhi::PreparedComputeBatch> &)> apply;
+        };
+        // No intermediate native consumer: optional preparation may decline
+        // without submitting, changing the accepted cursor or retaining debt.
+        std::function<std::optional<ClosedRounds>(const JPH::GPU::StepParams &,
+                                                  const std::shared_ptr<rhi::ComputeBuffer> &,
+                                                  const std::shared_ptr<rhi::ComputeBuffer> &, uint32_t)>
+            closeRounds;
         explicit operator bool() const noexcept
         {
             return bool(prepare);
@@ -107,6 +120,8 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
         return m_retired || !m_component.GetComponent();
     }
     [[nodiscard]] bool IsActive() const;
+    /// Cold preparation hint only; Fixed routing still resolves accepted body ownership.
+    [[nodiscard]] bool HasCpuOnlyRigidBindings() const;
     void Retire() noexcept;
     [[nodiscard]] std::shared_ptr<PhysicsParticipantOutput> CaptureOutput(const std::string &name, uint64_t offset,
                                                                           std::optional<uint64_t> count);
@@ -120,6 +135,10 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     [[nodiscard]] JoltGpuControlWork PrepareStage(JoltGpuParticipantStage stage, const JPH::GPU::StepParams &params,
                                                   float fixedDeltaTime, uint32_t substep, uint32_t iteration,
                                                   const Prefix &prefix);
+
+    [[nodiscard]] std::optional<JoltGpuControlWork>
+    PrepareClosedRounds(const JPH::GPU::StepParams &, float fixedDeltaTime, uint32_t substep,
+                        uint32_t iteration, uint32_t rounds, const Prefix &, std::function<void(uint32_t)> done);
 
   private:
     void ValidateRigidPorts();

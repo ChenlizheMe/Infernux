@@ -450,6 +450,9 @@ class ComputeWorkInstance final
     /// recipe; reads observe its completed writes. Does not submit work.
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<PreparedComputeBatch>
     PrepareBatch(std::vector<ComputeBufferUpdate> updates = {}, std::vector<ComputeBufferRead> reads = {}) const;
+    /// Append this exact recipe to an owner-prepared ordered packet. No
+    /// storage is resolved or submitted; PrepareComputeBatch owns that boundary.
+    INFERNUX_RENDER_CORE_API void AppendDispatches(std::vector<ComputeDispatchDesc> &dispatches) const;
     [[nodiscard]] const std::vector<std::shared_ptr<ComputeBuffer>> &GetBuffers() const noexcept
     {
         return m_buffers;

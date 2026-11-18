@@ -1378,10 +1378,12 @@ void PushPopupEdgeColor()
 
 // Pushed *before* Begin so the popup window latches padding and edge colour.
 // Pair with PopPopupWindowChrome right after Begin.
+// Context / combo / nested menus share MENU_WIN_PAD (dense). Modal dialogs
+// push MODAL_WIN_PAD themselves before BeginPopupModal.
 void PushPopupWindowChrome()
 {
     const float dpi = InxGUIContext::s_dpiScale;
-    const ImVec2 winPad = EditorThemeRegistry::Vec2("POPUP_WIN_PAD");
+    const ImVec2 winPad = EditorThemeRegistry::Vec2("MENU_WIN_PAD");
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(winPad.x * dpi, winPad.y * dpi));
     PushPopupEdgeColor();
 }
@@ -1393,18 +1395,20 @@ void PopPopupWindowChrome()
 }
 
 // Pushed when the popup is open; popped in the matching End call.
+// Mission Control menu recipe: dense rows, neutral hover, 16% accent press —
+// never the full accent plate (that belongs to selected list rows / play).
 void PushPopupContentStyle()
 {
     PopupContentStyle entry;
     const float dpi = InxGUIContext::s_dpiScale;
-    const ImVec2 itemSpc = EditorThemeRegistry::Vec2("POPUP_ITEM_SPC");
-    const ImVec2 framePad = EditorThemeRegistry::Vec2("POPUP_FRAME_PAD");
+    const ImVec2 itemSpc = EditorThemeRegistry::Vec2("MENU_ITEM_SPC");
+    const ImVec2 framePad = EditorThemeRegistry::Vec2("MENU_FRAME_PAD");
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(itemSpc.x * dpi, itemSpc.y * dpi));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(framePad.x * dpi, framePad.y * dpi));
     entry.styleVars = 2;
 
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorThemeRegistry::Color("ROLE_BG_HOVER"));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("SELECTION_BG"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("ROW_SELECTED"));
     entry.styleColors = 2;
 
     s_popupContentStyleStack.push_back(entry);
@@ -1640,13 +1644,26 @@ bool InxGUIContext::BeginPopupModal(const std::string &title, int flags)
                                           ImGuiViewportFlags_NoDecoration | ImGuiViewportFlags_TopMost;
     ImGui::SetNextWindowClass(&modalClass);
 
+    const float dpi = s_dpiScale;
+    const ImVec2 modalPad = EditorThemeRegistry::Vec2("MODAL_WIN_PAD");
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(modalPad.x * dpi, modalPad.y * dpi));
     PushPopupEdgeColor();
     const bool open = ImGui::BeginPopupModal(title.c_str(), nullptr, static_cast<ImGuiWindowFlags>(flags));
     ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
     if (open) {
-        // Modals are closed through the shared EndPopup wrapper, which pops
-        // one content-style entry — keep the stack balanced.
-        PushPopupContentStyle();
+        // Modals use denser menu hover colours but the wider MODAL item/frame
+        // spacing so primary/danger actions breathe.
+        PopupContentStyle entry;
+        const ImVec2 itemSpc = EditorThemeRegistry::Vec2("MODAL_ITEM_SPC");
+        const ImVec2 framePad = EditorThemeRegistry::Vec2("MODAL_FRAME_PAD");
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(itemSpc.x * dpi, itemSpc.y * dpi));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(framePad.x * dpi, framePad.y * dpi));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorThemeRegistry::Color("ROLE_BG_HOVER"));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("ROW_SELECTED"));
+        entry.styleVars = 2;
+        entry.styleColors = 2;
+        s_popupContentStyleStack.push_back(entry);
         ImGuiWindow *window = ImGui::GetCurrentWindow();
         // Docking preserves the display order of undocked windows even when
         // they are submitted before this popup. A modal must remain above

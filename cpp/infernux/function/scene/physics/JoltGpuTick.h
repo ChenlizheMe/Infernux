@@ -167,6 +167,9 @@ struct JoltGpuParticipantStages
     std::function<JoltGpuControlWork(Stage, const JPH::GPU::StepParams &, float, uint32_t, uint32_t,
                                      std::function<void()>)>
         prepare;
+    std::function<std::optional<JoltGpuControlWork>(const JPH::GPU::StepParams &, float, uint32_t, uint32_t,
+                                                    uint32_t, std::function<void(uint32_t)>)>
+        prepareClosedRounds;
 };
 
 struct JoltGpuTickControl
