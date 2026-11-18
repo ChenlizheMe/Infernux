@@ -55,6 +55,7 @@
 #include <function/resources/RenderTexture/RenderTextureLoader.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderLoader.h>
+#include <function/resources/ShaderAsset/ShaderProgramDiskCache.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/scene/Collider.h>
 #include <function/scene/Component.h>
@@ -109,18 +110,6 @@ namespace
 
 std::mutex g_runtimeOwnerMutex;
 Infernux *g_runtimeOwner = nullptr;
-
-std::string VulkanPipelineCacheDirectory(const std::string &projectPath)
-{
-    const char *player = std::getenv("_INFERNUX_PLAYER_MODE");
-    if (player && std::strcmp(player, "1") == 0) {
-        const char *persistent = std::getenv("_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT");
-        // Packaged content may be read-only. Only the Player host owns its
-        // writable data root; an absent root leaves an in-memory cache.
-        return persistent && *persistent ? FromFsPath(ToFsPath(persistent) / "Cache") : std::string{};
-    }
-    return projectPath.empty() ? std::string{} : FromFsPath(ToFsPath(projectPath) / "Cache");
-}
 
 class ActiveFrameScope
 {
@@ -3092,7 +3081,7 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 #endif
 
     auto phaseBegin = StartupClock::now();
-    m_renderer->Init(width, height, m_metadata, VulkanPipelineCacheDirectory(projectPath));
+    m_renderer->Init(width, height, m_metadata, ProjectCacheDirectory(projectPath));
     m_textureWorkSource = m_renderer->RegisterFrameWork(m_frameWork);
     startupPhase("renderer_init", phaseBegin);
     if (!m_renderer->PumpStartupEvents())
@@ -3253,7 +3242,7 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
     if (gpu) {
         vk::DeviceConfig config;
         config.presentation = false;
-        config.pipelineCacheDirectory = VulkanPipelineCacheDirectory(projectPath);
+        config.pipelineCacheDirectory = ProjectCacheDirectory(projectPath);
 #if INFERNUX_VULKAN_VALIDATION_LAYERS
         config.enableValidationLayers = true;
 #endif
