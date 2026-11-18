@@ -27,6 +27,35 @@ from infernux.renderstack.fullscreen_effect import FullScreenEffect
 from infernux.renderstack.render_pipeline import RenderPipeline
 
 
+def test_pipeline_subclass_only_registers_its_own_name(monkeypatch):
+    from infernux.renderstack.discovery import _collect_subclasses
+
+    monkeypatch.setenv("_INFERNUX_PLAYER_MODE", "1")
+
+    class Base:
+        pass
+
+    class Deferred(Base):
+        name = "Deferred"
+
+    class ProjectImplementation(Deferred):
+        pass
+
+    class Stylized(ProjectImplementation):
+        name = "Stylized"
+
+    catalog = {}
+    assert _collect_subclasses(Base, catalog, "name") == {}
+    assert catalog == {"Deferred": Deferred, "Stylized": Stylized}
+
+    class Duplicate(Base):
+        name = "Stylized"
+
+    catalog = {}
+    assert set(_collect_subclasses(Base, catalog, "name")) == {"Stylized"}
+    assert catalog == {"Deferred": Deferred}
+
+
 def test_pipeline_file_callback_adopts_transactionally_published_module(monkeypatch):
     from infernux.renderstack._render_pipeline_reload import PipelineReloadMixin
     import infernux.renderstack.discovery as discovery

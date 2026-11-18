@@ -506,7 +506,9 @@ def _collect_subclasses(
             continue
         visited.add(cls)
         pending.extend(cls.__subclasses__())
-        name = getattr(cls, name_attr, "")
+        # A derived implementation can be used directly without publishing a
+        # second catalog entry under its parent's name.
+        name = vars(cls).get(name_attr)
         if name and not name.startswith("_") and _is_live_class(cls):
             candidates.setdefault(name, []).append(cls)
     conflicts: dict[str, tuple[str, ...]] = {}
