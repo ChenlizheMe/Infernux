@@ -16,7 +16,7 @@ InxParticleInput vertex_main(uint index : SV_VulkanVertexID)
         {}, {ShaderCodeTarget::SpirV});
     const auto artifact = particle_test::Surface();
     const auto &vertex = geometry.targets.front().entries.front();
-    const auto &fragment = *artifact->FindVariant(ShaderCompileTarget::Forward);
+    const auto &fragment = *artifact->FindPassCode(ShaderCompileTarget::Forward, ShaderCodeTarget::SpirV)->fragment;
     struct Owner
     {
         vk::VkDeviceContext &context;
@@ -69,7 +69,7 @@ InxParticleInput vertex_main(uint index : SV_VulkanVertexID)
                  "Surface snapshot creation failed"))
         return false;
     const auto vertexWords = SpirvWords(vertex.code);
-    const auto fragmentWords = SpirvWords(fragment.fragmentSpirv);
+    const auto fragmentWords = SpirvWords(fragment.code);
     owner.vertex = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(vertexWords.data(), vertexWords.size()));
     owner.fragment =
         device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(fragmentWords.data(), fragmentWords.size()));
@@ -77,7 +77,7 @@ InxParticleInput vertex_main(uint index : SV_VulkanVertexID)
     pipeline.vertexShader = owner.vertex;
     pipeline.fragmentShader = owner.fragment;
     pipeline.vertexEntryPoint = vertex.name.c_str();
-    pipeline.fragmentEntryPoint = fragment.fragmentEntryPoint.c_str();
+    pipeline.fragmentEntryPoint = fragment.name.c_str();
     pipeline.raster.cullMode = rhi::CullMode::None;
     pipeline.bindingLayoutCount = 1;
     pipeline.bindingLayouts[0] = owner.surface.Layout();

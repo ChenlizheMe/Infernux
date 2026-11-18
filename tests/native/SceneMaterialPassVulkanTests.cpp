@@ -61,6 +61,22 @@ struct Parameters { float4 signal; };
     const auto compiled = std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(source));
     auto artifact = std::make_shared<const ShaderProgramArtifact>(
         CreateShaderAuthorMaterial("test/scene", compiled, source.schema, "infernux/standard"));
+    const auto *nativePass = artifact->FindPassCode(ShaderCompileTarget::Forward, ShaderCodeTarget::SpirV);
+    const auto *parallelPass = artifact->FindPassCode(ShaderCompileTarget::ForwardPlus, ShaderCodeTarget::SpirV);
+    Require(nativePass && parallelPass && nativePass->vertex == parallelPass->vertex &&
+                nativePass->fragment == parallelPass->fragment,
+            "Semantic passes must share their compiled entry storage");
+
+    const auto webOnly = std::make_shared<const ShaderCompilation>(
+        SlangCompiler::Get().CompileAuthorProgram(source, {ShaderCodeTarget::Wgsl}));
+    const auto web = CreateShaderAuthorMaterial("test/scene", webOnly, source.schema, "infernux/standard");
+    Require(webOnly->targets.size() == 1 && web.IsValid() &&
+                !web.FindPassCode(ShaderCompileTarget::Forward, ShaderCodeTarget::SpirV),
+            "A Web-only material needs exactly one compiled target");
+    const auto entries = SelectMaterialShaderEntries(web, ShaderCompileTarget::Forward, ShaderCodeTarget::Wgsl);
+    Require(entries.size() == 2 && &entries[0].program == &webOnly->targets.front() &&
+                entries[1].program.entries[entries[1].entry].name == "fragment_main",
+            "Web device must select entries from the original WGSL module");
     InxMaterial material;
     material.SynchronizeShaderPropertyDefaults(*artifact);
     RenderState state;

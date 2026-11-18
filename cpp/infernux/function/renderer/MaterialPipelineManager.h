@@ -130,25 +130,9 @@ class MaterialPipelineManager
      */
     [[nodiscard]] bool ReconfigureSampleCount(VkSampleCountFlagBits sampleCount);
 
-    /**
-     * @brief Get or create render data for a material (new API with shader reflection)
-     *
-     * This version uses shader reflection to automatically create descriptor sets
-     * and pipeline layouts.
-     *
-     * @param material The material to get render data for
-     * @param vertShaderCode SPIR-V code for vertex shader
-     * @param fragShaderCode SPIR-V code for fragment shader
-     * @param programKey Typed vertex/fragment pair and immutable artifact revision
-     * @return Pointer to render
-     * data, or nullptr on failure
-     */
-    MaterialRenderData *GetOrCreateRenderDataWithReflection(std::shared_ptr<InxMaterial> material,
-                                                            const std::vector<char> &vertShaderCode,
-                                                            const std::vector<char> &fragShaderCode,
-                                                            const ShaderProgramKey &programKey,
-                                                            std::shared_ptr<const ShaderProgramArtifact> shaderArtifact,
-                                                            const ShaderProgramMetadata &metadata);
+    /// Build the material's descriptors and pipeline from the same immutable Forward program.
+    MaterialRenderData *GetOrCreateRenderData(std::shared_ptr<InxMaterial> material,
+                                              std::shared_ptr<const ShaderProgramArtifact> shaderArtifact);
 
     /**
      * @brief Get existing render data for a material (doesn't create new)

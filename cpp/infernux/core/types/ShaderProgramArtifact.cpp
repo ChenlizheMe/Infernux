@@ -91,6 +91,18 @@ const ShaderProgramArtifact::PassVariant *ShaderProgramArtifact::FindVariant(Sha
     return nullptr;
 }
 
+const ShaderProgramArtifact::PassCode *ShaderProgramArtifact::FindPassCode(ShaderCompileTarget pass,
+                                                                           ShaderCodeTarget target) const noexcept
+{
+    if (const auto *variant = FindVariant(pass)) {
+        for (const auto &output : variant->outputs) {
+            if (output.module && output.module->target == target)
+                return &output;
+        }
+    }
+    return nullptr;
+}
+
 bool ShaderProgramArtifact::IsValid() const noexcept
 {
     if (!key.IsValid() || key.revision == 0 || compatibilitySignature == 0 || domain >= ShaderProgramDomain::Count ||
@@ -117,10 +129,20 @@ bool ShaderProgramArtifact::IsValid() const noexcept
     uint64_t targets = 0;
     for (const auto &variant : variants) {
         const int targetIndex = static_cast<int>(variant.target);
-        if (targetIndex < 0 || targetIndex >= static_cast<int>(ShaderCompileTarget::Count) || !variant.IsValid() ||
-            (domain != ShaderProgramDomain::ParticleSprite && variant.vertexSpirv.empty()) ||
+        if (targetIndex < 0 || targetIndex >= static_cast<int>(ShaderCompileTarget::Count) || variant.outputs.empty() ||
             variant.compatibilitySignature != compatibilitySignature) {
             return false;
+        }
+        for (const auto &output : variant.outputs) {
+            if (!output.module || !output.fragment || (!output.vertex && domain != ShaderProgramDomain::ParticleSprite))
+                return false;
+            const auto valid = [&](const ShaderEntryPointCode &entry, rhi::ShaderStage stage) {
+                return entry.stage == stage && !entry.code.empty() &&
+                       (output.module->target != ShaderCodeTarget::SpirV || entry.code.size() % sizeof(uint32_t) == 0);
+            };
+            if (!valid(*output.fragment, rhi::ShaderStage::Fragment) ||
+                (output.vertex && !valid(*output.vertex, rhi::ShaderStage::Vertex)))
+                return false;
         }
         const uint64_t targetBit = 1ull << static_cast<uint32_t>(targetIndex);
         if ((targets & targetBit) != 0)
@@ -215,14 +237,14 @@ uint64_t ComputeShaderProgramArtifactRevision(const ShaderProgramArtifact &artif
         const auto target = static_cast<int32_t>(variant->target);
         hash = AppendBytes(hash, &target, sizeof(target));
         hash = AppendBytes(hash, &variant->compatibilitySignature, sizeof(variant->compatibilitySignature));
-        hash = AppendString(hash, variant->vertexEntryPoint);
-        hash = AppendString(hash, variant->fragmentEntryPoint);
-        const uint64_t vertexSize = variant->vertexSpirv.size();
-        hash = AppendBytes(hash, &vertexSize, sizeof(vertexSize));
-        hash = AppendBytes(hash, variant->vertexSpirv.data(), variant->vertexSpirv.size());
-        const uint64_t fragmentSize = variant->fragmentSpirv.size();
-        hash = AppendBytes(hash, &fragmentSize, sizeof(fragmentSize));
-        hash = AppendBytes(hash, variant->fragmentSpirv.data(), variant->fragmentSpirv.size());
+        // The compilation above already includes every entry's bytecode once.
+        // Variants only contribute their link to those entries.
+        for (const auto &output : variant->outputs) {
+            const auto format = static_cast<uint8_t>(output.module->target);
+            hash = AppendBytes(hash, &format, sizeof(format));
+            hash = AppendString(hash, output.vertex ? std::string_view(output.vertex->name) : std::string_view{});
+            hash = AppendString(hash, output.fragment->name);
+        }
     }
     return hash == 0 ? 1 : hash;
 }

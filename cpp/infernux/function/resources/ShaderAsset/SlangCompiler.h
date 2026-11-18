@@ -68,6 +68,8 @@ class SlangCompiler
     /// Compile a frozen author snapshot with the same targets and logical input
     /// contracts used by asset loading, material composition and scene workers.
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderCompilation CompileAuthorProgram(const ShaderAuthorSource &source);
+    [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderCompilation
+    CompileAuthorProgram(const ShaderAuthorSource &source, const std::vector<ShaderCodeTarget> &targets);
 
     /// One logical root block: native push constants and the RHI uniform
     /// address on WGSL. Algorithms and their logical fields stay identical.

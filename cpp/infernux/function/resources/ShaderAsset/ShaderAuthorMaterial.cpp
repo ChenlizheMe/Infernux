@@ -14,15 +14,15 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
                                                  const std::string &schema, std::string vertexKey)
 {
     const auto source = nlohmann::json::parse(schema);
-    const auto target = std::find_if(compilation->targets.begin(), compilation->targets.end(),
-                                     [](const auto &value) { return value.target == ShaderCodeTarget::SpirV; });
-    if (target == compilation->targets.end())
-        throw std::logic_error("Mesh author has no native shader target");
-    const auto entry = [&](const char *name) -> const ShaderEntryPointCode & {
-        const auto found = std::find_if(target->entries.begin(), target->entries.end(),
-                                        [name](const auto &value) { return value.name == name; });
-        if (found == target->entries.end())
-            throw std::logic_error("Mesh author has an incomplete graphics program");
+    if (compilation->targets.empty())
+        throw std::logic_error("Material author has no compiled target");
+    const auto &layout = compilation->targets.front();
+    const auto entry = [](const ShaderTargetCode &module, rhi::ShaderStage stage,
+                          const char *name) -> const ShaderEntryPointCode & {
+        const auto found = std::find_if(module.entries.begin(), module.entries.end(),
+                                        [&](const auto &value) { return value.stage == stage && value.name == name; });
+        if (found == module.entries.end())
+            throw std::logic_error(std::string("Material author is missing a graphics entry: ") + name);
         return *found;
     };
     ShaderProgramArtifact result;
@@ -47,11 +47,11 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
     result.compatibilitySignature =
         ComputeShaderProgramRevision(schema, source.at("domain").get<std::string>(), ShaderCompileTarget::Forward, 0);
     result.materialLayoutSignature = result.compatibilitySignature;
-    const auto uniform = std::find_if(target->resources.begin(), target->resources.end(), [](const auto &resource) {
+    const auto uniform = std::find_if(layout.resources.begin(), layout.resources.end(), [](const auto &resource) {
         return resource.set == 0 && resource.binding.binding == 0 &&
                resource.binding.type == rhi::BindingType::UniformBuffer;
     });
-    if (uniform != target->resources.end())
+    if (uniform != layout.resources.end())
         result.materialBufferSize = static_cast<uint32_t>((uniform->value.byteSize + 15u) & ~uint64_t{15u});
     static const std::unordered_map<std::string, std::string> propertyTypes = {
         {"float", "Float"}, {"int", "Int"},   {"vec2", "Float2"}, {"vec3", "Float3"}, {"vec4", "Float4"},
@@ -71,7 +71,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
             property.textureDefault = parameter.at("default");
             property.textureSlot = textureSlot++;
         } else {
-            if (uniform == target->resources.end())
+            if (uniform == layout.resources.end())
                 throw std::logic_error("Mesh author parameters have no compiler layout");
             const auto field = std::find_if(uniform->value.fields.begin(), uniform->value.fields.end(),
                                             [&](const auto &value) { return value.name == property.name; });
@@ -100,27 +100,20 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
             result.alphaClipThresholdOffset = property.bufferOffset;
         result.properties.push_back(std::move(property));
     }
-    const auto publication = std::shared_ptr<const ShaderTargetCode>(compilation, &*target);
     const auto addVariant = [&](ShaderCompileTarget pass, const char *vertexName, const char *fragmentName) {
-        const auto &fragment = entry(fragmentName);
         ShaderProgramArtifact::PassVariant variant;
         variant.target = pass;
         variant.compatibilitySignature = result.compatibilitySignature;
-        variant.fragmentSpirv = fragment.code;
-        variant.fragmentEntryPoint = fragment.name;
-        if (vertexName) {
-            const auto &vertex = entry(vertexName);
-            variant.vertexSpirv = vertex.code;
-            variant.vertexEntryPoint = vertex.name;
-            variant.vertexTarget = publication;
-        } else {
-            variant.vertexEntryPoint.clear();
+        variant.outputs.reserve(compilation->targets.size());
+        for (const auto &module : compilation->targets) {
+            const auto *vertex = vertexName ? &entry(module, rhi::ShaderStage::Vertex, vertexName) : nullptr;
+            variant.outputs.push_back({std::shared_ptr<const ShaderTargetCode>(compilation, &module), vertex,
+                                       &entry(module, rhi::ShaderStage::Fragment, fragmentName)});
         }
-        variant.fragmentTarget = publication;
         result.variants.push_back(std::move(variant));
     };
     const auto addPartitions = [&](const char *vertexName) {
-        const bool compiled = std::any_of(target->entries.begin(), target->entries.end(),
+        const bool compiled = std::any_of(layout.entries.begin(), layout.entries.end(),
                                           [](const auto &code) { return code.name == "fragment_transparent_behind"; });
         if (compiled) {
             addVariant(ShaderCompileTarget::TransparentBehind, vertexName, "fragment_transparent_behind");

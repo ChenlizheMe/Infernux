@@ -2410,8 +2410,8 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
         pipelineKey.target = *target;
     if (const auto found = m_materialPipelineVariants.find(pipelineKey); found != m_materialPipelineVariants.end())
         return found->second;
-    const auto *forward = artifact->FindVariant(ShaderCompileTarget::Forward);
-    if (!forward || !forward->IsValid())
+    const auto *forward = artifact->FindPassCode(ShaderCompileTarget::Forward, ShaderCodeTarget::SpirV);
+    if (!forward || !forward->vertex)
         throw UIShaderMaterialError("UI material shader is missing its Forward variant for GUID " +
                                     binding.materialGuid);
 
@@ -2419,15 +2419,15 @@ VkPipeline InxScreenUIRenderer::GetMaterialPipeline(const UIShaderMaterialBindin
     VkShaderModule vertex = VK_NULL_HANDLE;
     VkShaderModule fragment = VK_NULL_HANDLE;
     const bool created =
-        CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->vertexSpirv.data()),
-                           forward->vertexSpirv.size(), vertex) &&
-        CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->fragmentSpirv.data()),
-                           forward->fragmentSpirv.size(), fragment) &&
+        CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->vertex->code.data()),
+                           forward->vertex->code.size(), vertex) &&
+        CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(forward->fragment->code.data()),
+                           forward->fragment->code.size(), fragment) &&
         (domain == ShaderProgramDomain::ScreenUI
-             ? CreateScreenPipeline(vertex, fragment, pipeline, target, forward->vertexEntryPoint.c_str(),
-                                    forward->fragmentEntryPoint.c_str())
-             : CreateWorldPipeline(*target, pipeline, alwaysOnTop, vertex, fragment, forward->vertexEntryPoint.c_str(),
-                                   forward->fragmentEntryPoint.c_str()));
+             ? CreateScreenPipeline(vertex, fragment, pipeline, target, forward->vertex->name.c_str(),
+                                    forward->fragment->name.c_str())
+             : CreateWorldPipeline(*target, pipeline, alwaysOnTop, vertex, fragment, forward->vertex->name.c_str(),
+                                   forward->fragment->name.c_str()));
     if (vertex)
         vkDestroyShaderModule(m_device, vertex, nullptr);
     if (fragment)
@@ -2546,8 +2546,8 @@ VkDescriptorSet InxScreenUIRenderer::GetMaterialDescriptor(const UIShaderMateria
     if (artifact.materialBufferSize) {
         MaterialUBOLayout layout{0, artifact.materialBufferSize, {}};
         ShaderReflection reflection;
-        const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
-        reflection.LoadTargetLayout(*forward->fragmentTarget, forward->fragmentEntryPoint);
+        const auto *forward = artifact.FindPassCode(ShaderCompileTarget::Forward, ShaderCodeTarget::SpirV);
+        reflection.LoadTargetLayout(*forward->module, forward->fragment->name);
         for (const auto &buffer : reflection.GetUniformBuffers())
             if (buffer.set == 0 && buffer.binding == 0)
                 layout.members = buffer.members;

@@ -16,7 +16,9 @@ namespace infernux
 {
 
 struct ShaderTargetCode;
+struct ShaderEntryPointCode;
 struct ShaderCompilation;
+enum class ShaderCodeTarget : uint8_t;
 
 struct ShaderStagePair
 {
@@ -174,22 +176,18 @@ struct ShaderProgramArtifact
     // table. The per-domain descriptor set then carries uint texture indices
     // instead of one combined sampler descriptor per property.
     bool usesBindlessTextureABI = false;
+    struct PassCode
+    {
+        // The alias keeps both entry pointers alive when a pass is copied.
+        std::shared_ptr<const ShaderTargetCode> module;
+        const ShaderEntryPointCode *vertex = nullptr;
+        const ShaderEntryPointCode *fragment = nullptr;
+    };
     struct PassVariant
     {
         ShaderCompileTarget target = ShaderCompileTarget::Forward;
         uint64_t compatibilitySignature = 0;
-        std::vector<char> vertexSpirv;
-        std::vector<char> fragmentSpirv;
-        std::string vertexEntryPoint = "main";
-        std::string fragmentEntryPoint = "main";
-        std::shared_ptr<const ShaderTargetCode> vertexTarget;
-        std::shared_ptr<const ShaderTargetCode> fragmentTarget;
-
-        [[nodiscard]] bool IsValid() const noexcept
-        {
-            return compatibilitySignature != 0 && !fragmentSpirv.empty() &&
-                   vertexSpirv.size() % sizeof(uint32_t) == 0 && fragmentSpirv.size() % sizeof(uint32_t) == 0;
-        }
+        std::vector<PassCode> outputs;
     };
     std::vector<PassVariant> variants;
     /// All target layouts/code of an authored module, retained once. Outputs
@@ -197,6 +195,8 @@ struct ShaderProgramArtifact
     std::shared_ptr<const ShaderCompilation> compilation;
 
     [[nodiscard]] INFERNUX_FOUNDATION_API const PassVariant *FindVariant(ShaderCompileTarget target) const noexcept;
+    [[nodiscard]] INFERNUX_FOUNDATION_API const PassCode *FindPassCode(ShaderCompileTarget pass,
+                                                                       ShaderCodeTarget target) const noexcept;
 
     [[nodiscard]] INFERNUX_FOUNDATION_API bool IsValid() const noexcept;
 };

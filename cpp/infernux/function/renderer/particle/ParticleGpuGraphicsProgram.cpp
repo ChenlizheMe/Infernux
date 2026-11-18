@@ -96,13 +96,13 @@ rhi::GraphicsPipelineHandle ParticleGpuGraphicsProgram::Get(const MaterialPassPi
         return existing->handle;
     }
 
-    const auto *variant = m_surface->FindVariant(pass.target);
+    const auto *variant = m_surface->FindPassCode(pass.target, m_surfaceTarget->target);
     if (!variant)
         return {}; // This material has not declared this optional pass.
     const char *vertex = pass.target == ShaderCompileTarget::Motion   ? "vertex_motion"
                          : pass.target == ShaderCompileTarget::Shadow ? "vertex_shadow"
                                                                       : "vertex_main";
-    std::string fragment = variant->fragmentEntryPoint;
+    std::string fragment = variant->fragment->name;
     if (softDepthKind != 0) {
         if (pass.target == ShaderCompileTarget::Forward)
             fragment = "fragment";

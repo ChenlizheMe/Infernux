@@ -158,14 +158,14 @@ std::shared_ptr<const RendererParameterBlock> DrawParameterBlock::Capture(const 
         // The actual device pass checks its binding contract at preparation.
         if (!variant)
             return;
-        const auto hasBinding = [&name](const std::shared_ptr<const ShaderTargetCode> &target) {
-            return target && std::any_of(target->resources.begin(), target->resources.end(),
-                                         [&name](const ShaderResourceLayout &resource) {
-                                             return resource.set == 0 && resource.name == name &&
-                                                    resource.binding.type == rhi::BindingType::StorageBuffer;
-                                         });
+        const auto hasBinding = [&name](const ShaderProgramArtifact::PassCode &code) {
+            return std::any_of(code.module->resources.begin(), code.module->resources.end(),
+                               [&name](const ShaderResourceLayout &resource) {
+                                   return resource.set == 0 && resource.name == name &&
+                                          resource.binding.type == rhi::BindingType::StorageBuffer;
+                               });
         };
-        if (!hasBinding(variant->vertexTarget) && !hasBinding(variant->fragmentTarget))
+        if (std::none_of(variant->outputs.begin(), variant->outputs.end(), hasBinding))
             throw std::invalid_argument("material shader has no storage buffer named '" + name + "'");
     };
 

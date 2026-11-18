@@ -220,22 +220,19 @@ bool VkShaderCache::PrepareProgramArtifact(const ShaderProgramArtifact &artifact
 {
     if (!artifact.IsValid())
         return false;
-    if (artifact.domain == ShaderProgramDomain::ParticleSprite)
-        return true;
-    if (m_programCache.HasProgram({artifact.key, ShaderCompileTarget::Forward}))
-        return true;
-    // Optional semantic passes stay as SPIR-V until their first real consumer.
-    const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
+    const auto *forward = artifact.FindPassCode(ShaderCompileTarget::Forward, ShaderCodeTarget::SpirV);
     if (!forward) {
-        INXLOG_ERROR("VkShaderCache: shader program artifact has no Forward variant");
+        INXLOG_ERROR("VkShaderCache: shader program artifact has no SPIR-V Forward pass");
         return false;
     }
+    if (artifact.domain == ShaderProgramDomain::ParticleSprite ||
+        m_programCache.HasProgram({artifact.key, ShaderCompileTarget::Forward}))
+        return true;
 
     const ShaderProgramVariantKey forwardKey{artifact.key, ShaderCompileTarget::Forward};
-    ShaderProgramPublication forwardProgram =
-        m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv,
-                                          {artifact.domain, forward->vertexEntryPoint, forward->fragmentEntryPoint,
-                                           *forward->vertexTarget, *forward->fragmentTarget});
+    ShaderProgramPublication forwardProgram = m_programCache.GetOrCreateProgram(
+        forwardKey, forward->vertex->code, forward->fragment->code,
+        {artifact.domain, forward->vertex->name, forward->fragment->name, *forward->module, *forward->module});
     if (!forwardProgram || !forwardProgram->IsValid()) {
         INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", forwardKey.ToString(), "'");
         (void)m_programCache.TakePrograms(artifact.key);
@@ -288,8 +285,8 @@ VkShaderCache::MaterializeProgramVariant(const std::shared_ptr<const ShaderProgr
 {
     if (!artifact)
         return nullptr;
-    const auto *variant = artifact->FindVariant(target);
-    if (!variant)
+    const auto *variant = artifact->FindPassCode(target, ShaderCodeTarget::SpirV);
+    if (!variant || !variant->vertex)
         return nullptr;
 
     const bool borrowsForward = target != ShaderCompileTarget::Forward && artifact->domain == ShaderProgramDomain::Mesh;
@@ -301,12 +298,12 @@ VkShaderCache::MaterializeProgramVariant(const std::shared_ptr<const ShaderProgr
     }
     const ShaderProgramVariantKey key{artifact->key, target,
                                       forwardLayoutOwner ? forwardLayoutOwner->GetVariantKey().deviceContract : 0};
-    ShaderProgramMetadata metadata{artifact->domain, variant->vertexEntryPoint, variant->fragmentEntryPoint,
-                                   *variant->vertexTarget, *variant->fragmentTarget};
+    ShaderProgramMetadata metadata{artifact->domain, variant->vertex->name, variant->fragment->name, *variant->module,
+                                   *variant->module};
     if (borrowsForward)
         metadata.materialLayoutOwner = forwardLayoutOwner;
     ShaderProgramPublication program =
-        m_programCache.GetOrCreateProgram(key, variant->vertexSpirv, variant->fragmentSpirv, metadata);
+        m_programCache.GetOrCreateProgram(key, variant->vertex->code, variant->fragment->code, metadata);
     if (!program || !program->IsValid() || program->GetVariantKey().program != artifact->key ||
         program->GetCompileTarget() != target) {
         INXLOG_ERROR("VkShaderCache: failed to materialize committed shader variant '", key.ToString(), "'");

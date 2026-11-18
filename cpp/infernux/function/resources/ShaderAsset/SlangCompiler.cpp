@@ -328,9 +328,14 @@ ShaderCompilation SlangCompiler::CompileRootProgram(ShaderSourceModule source,
 
 ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source)
 {
+    return CompileAuthorProgram(source, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+}
+
+ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source,
+                                                      const std::vector<ShaderCodeTarget> &targets)
+{
     const auto schema = nlohmann::json::parse(source.schema);
     const auto &domain = schema.at("domain");
-    const std::vector<ShaderCodeTarget> targets{ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl};
     auto result = domain == "screen_ui" || domain == "world_ui"
                       ? CompileRootProgram(source.source, source.libraries, targets, false, source.sourceRanges)
                       : Compile(source.source, source.libraries, targets, false, source.sourceRanges);

@@ -117,25 +117,17 @@ ShaderStageLayout LinkShaderStages(const std::vector<ShaderStageSelection> &entr
 std::vector<ShaderStageSelection> SelectMaterialShaderEntries(const ShaderProgramArtifact &program,
                                                               ShaderCompileTarget pass, ShaderCodeTarget target)
 {
-    const auto *variant = program.FindVariant(pass);
-    if (!variant || !program.compilation)
-        throw std::invalid_argument("Material has no compiled pass: " + program.key.ToString());
-    const auto &targets = program.compilation->targets;
-    const auto code =
-        std::find_if(targets.begin(), targets.end(), [target](const auto &value) { return value.target == target; });
-    if (code == targets.end())
-        throw std::invalid_argument("Material publication has no code for this device: " + program.key.ToString());
+    const auto *code = program.FindPassCode(pass, target);
+    if (!code)
+        throw std::invalid_argument("Material has no compiled pass for this device: " + program.key.ToString());
     std::vector<ShaderStageSelection> result;
-    for (const auto stage : {rhi::ShaderStage::Vertex, rhi::ShaderStage::Fragment}) {
-        const auto &name = stage == rhi::ShaderStage::Vertex ? variant->vertexEntryPoint : variant->fragmentEntryPoint;
-        if (name.empty())
-            continue; // Producer-owned geometry, such as particles, supplies its own vertex entry.
-        const auto entry = std::find_if(code->entries.begin(), code->entries.end(),
-                                        [&](const auto &value) { return value.stage == stage && value.name == name; });
-        if (entry == code->entries.end())
-            throw std::invalid_argument("Material publication is missing entry: " + name);
-        result.push_back({*code, static_cast<uint32_t>(entry - code->entries.begin())});
-    }
+    result.reserve(code->vertex ? 2 : 1);
+    const auto indexOf = [&](const ShaderEntryPointCode *entry) {
+        return static_cast<uint32_t>(entry - code->module->entries.data());
+    };
+    if (code->vertex)
+        result.push_back({*code->module, indexOf(code->vertex)});
+    result.push_back({*code->module, indexOf(code->fragment)});
     return result;
 }
 

@@ -571,32 +571,11 @@ VkPipeline MaterialPipelineManager::GetCachedPipeline(size_t pipelineHash) const
 // New Shader Reflection API
 // ============================================================================
 
-MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection(
-    std::shared_ptr<InxMaterial> material, const std::vector<char> &vertShaderCode,
-    const std::vector<char> &fragShaderCode, const ShaderProgramKey &programKey,
-    std::shared_ptr<const ShaderProgramArtifact> shaderArtifact, const ShaderProgramMetadata &metadata)
+MaterialRenderData *
+MaterialPipelineManager::GetOrCreateRenderData(std::shared_ptr<InxMaterial> material,
+                                               std::shared_ptr<const ShaderProgramArtifact> shaderArtifact)
 {
-    if (!material) {
-        INXLOG_ERROR("Cannot create render data for null material");
-        return nullptr;
-    }
-
-    if (shaderArtifact) {
-        const auto *forwardVariant = shaderArtifact->FindVariant(ShaderCompileTarget::Forward);
-        if (shaderArtifact->key != programKey || !forwardVariant || forwardVariant->vertexSpirv != vertShaderCode ||
-            forwardVariant->fragmentSpirv != fragShaderCode || metadata.domain != shaderArtifact->domain ||
-            metadata.vertexEntryPoint != forwardVariant->vertexEntryPoint ||
-            metadata.fragmentEntryPoint != forwardVariant->fragmentEntryPoint ||
-            &metadata.vertexTarget != forwardVariant->vertexTarget.get() ||
-            &metadata.fragmentTarget != forwardVariant->fragmentTarget.get()) {
-            INXLOG_ERROR("Forward material candidate does not belong to its retained shader artifact");
-            return nullptr;
-        }
-    } else if (programKey.revision != 0) {
-        INXLOG_ERROR("Revisioned Forward material requires its complete shader artifact");
-        return nullptr;
-    }
-
+    const auto &programKey = shaderArtifact->key;
     const std::string name = material->GetMaterialKey();
     size_t currentHash = material->GetPipelineHash();
     currentHash = FoldPassPipelineHash(
@@ -665,9 +644,14 @@ MaterialRenderData *MaterialPipelineManager::GetOrCreateRenderDataWithReflection
         return lastKnownGood;
     };
 
-    // Get or create shader program (with reflection)
+    const auto *forward = shaderArtifact->FindPassCode(ShaderCompileTarget::Forward, ShaderCodeTarget::SpirV);
+    if (!forward || !forward->vertex) {
+        INXLOG_ERROR("Material has no SPIR-V Forward graphics program: ", name);
+        return keepLastKnownGood();
+    }
     ShaderProgramPublication program = m_shaderProgramCache->GetOrCreateProgram(
-        {programKey, ShaderCompileTarget::Forward}, vertShaderCode, fragShaderCode, metadata);
+        {programKey, ShaderCompileTarget::Forward}, forward->vertex->code, forward->fragment->code,
+        {shaderArtifact->domain, forward->vertex->name, forward->fragment->name, *forward->module, *forward->module});
     if (!program || !program->IsValid()) {
         INXLOG_ERROR("Failed to get shader program for material: ", name);
         return keepLastKnownGood();

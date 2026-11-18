@@ -498,10 +498,7 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     if (publication && !forward)
         throw ShaderProgramSelectionError("Prepared material artifact has no Forward program");
     if (forward && m_materialPipelineManagerInitialized) {
-        auto *renderData = m_materialPipelineManager.GetOrCreateRenderDataWithReflection(
-            material, forward->vertexSpirv, forward->fragmentSpirv, artifact->key, artifact,
-            {artifact->domain, forward->vertexEntryPoint, forward->fragmentEntryPoint, *forward->vertexTarget,
-             *forward->fragmentTarget});
+        auto *renderData = m_materialPipelineManager.GetOrCreateRenderData(material, artifact);
 
         bool forwardOk = renderData && renderData->isValid;
         if (forwardOk)
