@@ -124,6 +124,40 @@ def _compile_diagnostics(owner_path):
             if entry.diagnostic_owner == "asset.compile" and entry.diagnostic_key == path_key(owner_path)]
 
 
+def test_linked_preload_uses_cooked_pair_until_imported_source_changes(engine, dependency_sources, monkeypatch):
+    from infernux._compiler import shader
+    from test_material_preview_retirement import pump_until
+
+    prefix, create, _ = dependency_sources
+    library, _ = create("Library", ".shaderlib.py", LIBRARY)
+    vertex_id, fragment_id = prefix + "Vertex", prefix + "Fragment"
+    vertex, vertex_guid = create("Vertex", ".vert.py", _vertex_source(vertex_id))
+    fragment, fragment_guid = create("Fragment", ".frag.py", _surface_source(fragment_id, library=library))
+    material = _linked_material(engine, create, "Linked", vertex=(vertex_guid, vertex_id),
+                                fragment=(fragment_guid, fragment_id))
+    compiled = []
+    prepare = shader._prepare_source
+
+    def observe(text, path, *args, **kwargs):
+        if Path(path) in (vertex, fragment) and not kwargs["metadata_only"]:
+            compiled.append((Path(path), kwargs["vertex_source"] is not None))
+        return prepare(text, path, *args, **kwargs)
+
+    monkeypatch.setattr(shader, "_prepare_source", observe)
+    warm = engine.begin_prepare_linked_shader_programs([material.guid])
+    pump_until(engine, lambda _: warm.complete)
+    assert engine.try_commit_linked_shader_programs(warm)
+    assert not compiled
+
+    previous = engine.begin_prepare_linked_shader_programs([material.guid])
+    library.write_text(REVISED_SHARED_COLOR + OPTIONAL_COLOR, encoding="utf-8")
+    changed = engine.begin_prepare_linked_shader_programs([material.guid])
+    pump_until(engine, lambda _: previous.complete and changed.complete)
+    assert not engine.try_commit_linked_shader_programs(previous) and previous.superseded
+    assert engine.try_commit_linked_shader_programs(changed)
+    assert (fragment, True) in compiled and (vertex, False) not in compiled
+
+
 def test_standalone_dependency_failure_preserves_every_published_generation(engine, dependency_sources):
     prefix, create, registry = dependency_sources
     library, _ = create("Library", ".shaderlib.py", LIBRARY)

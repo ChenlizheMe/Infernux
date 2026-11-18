@@ -1,10 +1,12 @@
 #include "Infernux.h"
 
+#include <core/serialization/BinaryCodec.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMaterial.h>
 #include <function/resources/ShaderAsset/ShaderAuthorMetadata.h>
+#include <function/resources/ShaderAsset/ShaderAuthorProgramCache.h>
 #include <function/resources/ShaderAsset/ShaderLoader.h>
 
 #include <algorithm>
@@ -14,9 +16,74 @@
 
 namespace infernux
 {
+namespace
+{
+std::optional<std::string> ReadAuthorText(const AssetDatabase &database, const std::string &path)
+{
+    std::vector<char> bytes;
+    if (!database.ReadFile(path, bytes))
+        return std::nullopt;
+    return std::string(bytes.begin(), bytes.end());
+}
+
+// The owner freezes raw inputs and runs the Python frontend on a miss. The
+// worker receives either immutable target code or fully lowered Slang modules.
+struct FrozenAuthorProgram
+{
+    std::string selection;
+    std::vector<ShaderCacheInput> inputs;
+    ShaderAuthorSource generated;
+    ShaderAuthorProgramRecord record;
+
+    void Compile(const std::string &cacheDirectory)
+    {
+        if (record.compilation)
+            return;
+        record.compilation =
+            std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(generated));
+        StoreShaderAuthorProgram(cacheDirectory, selection, inputs, record);
+    }
+};
+
+FrozenAuthorProgram FreezeAuthorProgram(const AssetDatabase &database, const ShaderSourceModule &source,
+                                        const ShaderSourceModule &vertex = {})
+{
+    FrozenAuthorProgram frozen;
+    const auto vertexGuid = vertex.path.empty() ? std::string{} : database.GetGuidFromPath(vertex.path);
+    frozen.selection =
+        ShaderAuthorProgramSelection(database.GetGuidFromPath(source.path), vertexGuid, RuntimeShaderAuthorTarget());
+    const auto capture = [&](const std::string &path, const std::string &text) {
+        frozen.inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, path), text));
+    };
+    capture(source.path, source.source);
+    if (!vertex.path.empty())
+        capture(vertex.path, vertex.source);
+    if (auto program = FindShaderAuthorProgram(database, frozen.selection, frozen.inputs, &frozen.inputs)) {
+        frozen.record = std::move(*program);
+        return frozen;
+    }
+    const auto read = [&](const std::string &path) {
+        auto text = ReadAuthorText(database, path);
+        if (text)
+            capture(path, *text);
+        return text;
+    };
+    frozen.generated = SlangCompiler::Get().PrepareAuthorSource(source, read, ShaderAuthorPhase::Program, vertex);
+    frozen.record.schema = frozen.generated.schema;
+    for (const auto &library : frozen.generated.libraries) {
+        if (asset_formats::FindShaderSourceKind(library.path)) {
+            auto guid = database.GetGuidFromPath(library.path);
+            if (!guid.empty())
+                frozen.record.dependencies.push_back(std::move(guid));
+        }
+    }
+    return frozen;
+}
+} // namespace
+
 struct LinkedShaderProgramLoadTicket::SourceIdentity
 {
-    uint64_t sourceStamp = 0;
+    uint64_t sourceStamp = binary_codec::Fnv1a64Basis;
     std::vector<std::pair<std::string, std::shared_ptr<const InxResourceMeta>>> inputs;
 
     bool operator==(const SourceIdentity &other) const noexcept
@@ -31,20 +98,18 @@ struct LinkedShaderProgramLoadTicket::State
     {
         std::string guid;
         ShaderSourceModule source;
-        ShaderAuthorSource prepared;
-        std::vector<std::string> dependencies;
+        FrozenAuthorProgram author;
         std::shared_ptr<ShaderAsset> compiled;
     };
     struct Work
     {
         ShaderStagePair stages;
-        ShaderAuthorSource source;
+        std::optional<FrozenAuthorProgram> linked;
         std::shared_ptr<Asset> fragment;
         std::shared_ptr<Asset> vertex;
         ShaderRenderMeta renderMeta;
         std::shared_ptr<const SourceIdentity> identity;
         ShaderProgramArtifact program;
-        bool standardVertex = false;
         std::string error;
         std::vector<ShaderDiagnostic> diagnostics;
     };
@@ -58,6 +123,7 @@ struct LinkedShaderProgramLoadTicket::State
     std::vector<std::shared_ptr<Asset>> assets;
     std::vector<std::pair<ShaderStagePair, std::shared_ptr<const SourceIdentity>>> sources;
     std::vector<MaterialBinding> materials;
+    std::string cacheDirectory;
     const Infernux *owner = nullptr;
     JobHandle job;
     std::exception_ptr failure;
@@ -120,20 +186,15 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
     auto *database = GetAssetDatabase();
     if (!m_renderer || !database)
         return ticket;
+    state->cacheDirectory = ProjectCacheDirectory(database->GetProjectRoot());
 
     const auto pathFor = [database](const ShaderAssetReference &reference, const char *stage) {
         if (!reference.guid.empty())
             return database->GetPathFromGuid(reference.guid);
         return reference.pathHint.empty() ? database->FindShaderPathById(reference.shaderId, stage) : std::string{};
     };
-    const auto read = [database](const std::string &path) -> std::optional<std::string> {
-        std::vector<char> bytes;
-        if (!database->ReadFile(path, bytes))
-            return std::nullopt;
-        return std::string(bytes.begin(), bytes.end());
-    };
     std::unordered_map<std::string, std::shared_ptr<LinkedShaderProgramLoadTicket::State::Asset>> snapshots;
-    const auto freeze = [&](const ShaderSourceModule &source, const ShaderAuthorSource *prepared = nullptr) {
+    const auto freeze = [&](const ShaderSourceModule &source) {
         const auto guid = database->GetGuidFromPath(source.path);
         const auto found = snapshots.find(guid);
         if (found != snapshots.end())
@@ -141,17 +202,14 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
         auto asset = std::make_shared<LinkedShaderProgramLoadTicket::State::Asset>();
         asset->guid = guid;
         asset->source = {"asset_" + guid, source.path, source.source};
-        asset->prepared = prepared ? *prepared : SlangCompiler::Get().PrepareAuthorSource(asset->source, read);
-        for (const auto &library : asset->prepared.libraries) {
-            if (!asset_formats::FindShaderSourceKind(library.path))
-                continue;
-            auto dependency = database->GetGuidFromPath(library.path);
-            if (!dependency.empty())
-                asset->dependencies.push_back(std::move(dependency));
-        }
+        asset->author = FreezeAuthorProgram(*database, asset->source);
         snapshots.emplace(guid, asset);
-        state->assets.push_back(asset);
         return asset;
+    };
+    std::unordered_set<std::string> scheduledAssets;
+    const auto scheduleAsset = [&](const auto &asset) {
+        if (scheduledAssets.insert(asset->guid).second)
+            state->assets.push_back(asset);
     };
     std::unordered_set<ShaderStagePair, ShaderStagePairHash> scheduled;
     auto &registry = AssetRegistry::Instance();
@@ -178,27 +236,26 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
                 stages.vertexKey.empty() ? std::string{} : pathFor(material->GetVertShaderReference(), "vertex");
             remember(fragmentPath);
             remember(vertexPath);
-            const auto fragmentText = read(fragmentPath);
+            auto fragmentText = ReadAuthorText(*database, fragmentPath);
             if (!fragmentText)
                 throw std::invalid_argument("Material fragment source is unavailable: " + fragmentPath);
-            fragment = {"asset_" + database->GetGuidFromPath(fragmentPath), fragmentPath, *fragmentText};
+            fragment = {"asset_" + database->GetGuidFromPath(fragmentPath), fragmentPath, std::move(*fragmentText)};
             const auto vertexMetadata = vertexPath.empty() ? nullptr : database->GetMetaByPath(vertexPath);
-            work.standardVertex =
+            const bool standardVertex =
                 stages.vertexKey == kStandardVertexShaderId ||
                 (vertexMetadata && vertexMetadata->GetDataAs<std::string>("shader_id") == kStandardVertexShaderId);
-            if (!vertexPath.empty() && !work.standardVertex) {
-                const auto source = read(vertexPath);
+            if (!vertexPath.empty() && !standardVertex) {
+                auto source = ReadAuthorText(*database, vertexPath);
                 if (!source)
                     throw std::invalid_argument("Material vertex source is unavailable: " + vertexPath);
-                vertex = {"vertex_" + stages.vertexKey, vertexPath, *source};
+                vertex = {"vertex_" + stages.vertexKey, vertexPath, std::move(*source)};
+                work.linked = FreezeAuthorProgram(
+                    *database, {"material_" + stages.fragmentKey, fragmentPath, fragment.source}, vertex);
+            } else {
+                work.fragment = freeze(fragment);
             }
-            // Static author analysis freezes every generated module and source
-            // range here. The worker receives no interpreter or live reader.
-            work.source = SlangCompiler::Get().PrepareAuthorSource(
-                {work.standardVertex || vertex.path.empty() ? fragment.name : "material_" + stages.fragmentKey,
-                 fragmentPath, *fragmentText},
-                read, ShaderAuthorPhase::Program, vertex);
-            const auto schema = nlohmann::json::parse(work.source.schema);
+            const auto &author = work.linked ? *work.linked : work.fragment->author;
+            const auto schema = nlohmann::json::parse(author.record.schema);
             const auto domain = schema.at("domain").get<std::string>();
             // UI draws own the device publication and release of their
             // programs. Scene preload prepares no UI pipeline or reference.
@@ -212,14 +269,10 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
                     "Particle geometry is provided by its output; remove the material vertex selection: " +
                     fragmentPath);
             work.renderMeta = ReadShaderAuthorRenderMeta(schema.at("info"));
-            identity.sourceStamp = ComputeShaderProgramRevision(work.source.source.source, work.source.schema,
-                                                                ShaderCompileTarget::Forward, 0);
-            for (const auto &library : work.source.libraries) {
-                if (asset_formats::FindShaderSourceKind(library.path))
-                    remember(library.path);
-                identity.sourceStamp = ComputeShaderProgramRevision(library.source, library.path,
-                                                                    ShaderCompileTarget::Forward, identity.sourceStamp);
-            }
+            for (const auto &input : author.inputs)
+                identity.sourceStamp = binary_codec::Fnv1a64(input.id, identity.sourceStamp ^ input.revision);
+            for (const auto &dependency : author.record.dependencies)
+                remember(database->GetPathFromGuid(dependency));
         } catch (const ShaderCompilationError &error) {
             work.error = error.what();
             work.diagnostics = error.diagnostics;
@@ -240,9 +293,12 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
             continue;
         if (work.error.empty()) {
             try {
-                work.fragment = freeze(fragment, vertex.path.empty() ? &work.source : nullptr);
-                if (!vertex.path.empty())
+                if (work.linked) {
+                    work.fragment = freeze(fragment);
                     work.vertex = freeze(vertex);
+                    scheduleAsset(work.vertex);
+                }
+                scheduleAsset(work.fragment);
             } catch (const ShaderCompilationError &error) {
                 work.error = error.what();
                 work.diagnostics = error.diagnostics;
@@ -260,8 +316,9 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
             for (const auto &asset : state->assets) {
                 if (state->cancelRequested.load(std::memory_order_acquire))
                     return;
+                asset->author.Compile(state->cacheDirectory);
                 asset->compiled =
-                    ShaderLoader::CompileAuthorAsset(asset->source, asset->prepared, asset->guid, asset->dependencies);
+                    ShaderLoader::RestoreAuthorAsset(asset->source, asset->guid, std::move(asset->author.record));
             }
             for (auto &work : state->work) {
                 if (state->cancelRequested.load(std::memory_order_acquire))
@@ -269,11 +326,11 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
                 if (!work.error.empty())
                     continue;
                 try {
-                    if (work.vertex) {
-                        const auto compilation = std::make_shared<const ShaderCompilation>(
-                            SlangCompiler::Get().CompileAuthorProgram(work.source));
-                        work.program = CreateShaderAuthorMaterial(work.stages.fragmentKey, compilation,
-                                                                  work.source.schema, work.stages.vertexKey);
+                    if (work.linked) {
+                        work.linked->Compile(state->cacheDirectory);
+                        const auto &record = work.linked->record;
+                        work.program = CreateShaderAuthorMaterial(work.stages.fragmentKey, record.compilation,
+                                                                  record.schema, work.stages.vertexKey);
                     } else {
                         work.program = *work.fragment->compiled->materialProgram;
                     }
