@@ -9,6 +9,7 @@ inline const ShaderSourceModule &GetSlangParticleModule()
 {
     static const ShaderSourceModule module{"inx_particle", "<infernux/shader/particle>", R"slang(import inx_camera;
 import inx_geometry;
+import inx_frame;
 public struct InxParticleInput
 {
     public float4 position : SV_Position;
@@ -65,6 +66,10 @@ public float4 inx_particle_clip(float3 position)
 public float4 inx_particle_previous_clip(float3 position)
 {
     return mul(inx_view.previous_view_projection, float4(position, 1.0));
+}
+public float2 inx_particle_motion(float4 current_clip, float4 previous_clip)
+{
+    return inx_raster_motion(current_clip, previous_clip) - inx_view_jitter_delta_uv();
 }
 public uint2 inx_particle_owner_id()
 {
@@ -158,8 +163,7 @@ InxParticleInput particle_output(InxParticleInstance point, float3 position, flo
         float3 previous = (motion_flags & INX_PARTICLE_MOTION_USE_CURRENT_POSITION) != 0u
             ? position : point.previous_position_history.xyz + position - point.position_size.xyz;
         float4 previous_clip = inx_particle_previous_clip(previous);
-        output.motion_vector = (clip.xy / max(abs(clip.w), 1e-6) -
-            previous_clip.xy / max(abs(previous_clip.w), 1e-6)) * float2(0.5, -0.5);
+        output.motion_vector = inx_particle_motion(clip, previous_clip);
     }
     return output;
 }
@@ -402,8 +406,7 @@ InxParticleInput particle_ribbon_vertex(uint vertex, uint instance, bool motion)
             ? frame.position : ribbon_frame(segment, true).position;
         float4 current_clip = inx_particle_clip(frame.position);
         float4 previous_clip = inx_particle_previous_clip(previous);
-        output.motion_vector = (current_clip.xy / max(abs(current_clip.w), 1e-6) -
-            previous_clip.xy / max(abs(previous_clip.w), 1e-6)) * float2(0.5, -0.5);
+        output.motion_vector = inx_particle_motion(current_clip, previous_clip);
     }
     return output;
 }

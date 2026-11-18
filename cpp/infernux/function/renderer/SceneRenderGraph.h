@@ -782,6 +782,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         if (!m_hasCachedCameraVP)
             return;
         m_previousViewProj = m_cachedProj * m_cachedView;
+        m_previousJitterNdc = m_temporalJitterNdc;
         m_previousShaderTime = m_stagedShaderTime;
         m_cameraHistoryValid = true;
         if (m_pythonGraphValid && m_pythonGraphDesc.temporalJitter)
@@ -1129,6 +1130,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     static constexpr uint32_t kTemporalJitterSampleCount = 8;
     uint32_t m_temporalSampleIndex = 0;
     glm::vec2 m_temporalJitterNdc{0.0f};
+    glm::vec2 m_previousJitterNdc{0.0f};
 
     // Per-graph shadow descriptor sets (set 1) — multi-camera shadow isolation.
     // One set per frame-in-flight to prevent host-side vkUpdateDescriptorSets

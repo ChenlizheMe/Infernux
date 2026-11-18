@@ -18,13 +18,11 @@ class TemporalAA(shader.fullscreen):
             return current
         extent = shader.vec2(shader.dimensions(self.source_tex, 0))
         texel = 1.0 / shader.max(extent, shader.vec2(1.0))
-        motion = shader.sample_level(self.motion_tex, uv, 0.0).xy
-        history_uv = uv - motion
-        if shader.any(history_uv < shader.vec2(0.0)) or shader.any(history_uv > shader.vec2(1.0)):
-            return current
         neighborhood_min = current.rgb
         neighborhood_max = current.rgb
         center_depth = shader.sample_level(self.depth_tex, uv, 0.0)
+        closest_depth = center_depth
+        closest_uv = uv
         max_depth_delta = 0.0
         for y in range(-1, 2):
             for x in range(-1, 2):
@@ -34,9 +32,20 @@ class TemporalAA(shader.fullscreen):
                 neighborhood_max = shader.max(neighborhood_max, sample_color)
                 sample_depth = shader.sample_level(self.depth_tex, sample_uv, 0.0)
                 max_depth_delta = shader.max(max_depth_delta, shader.abs(sample_depth - center_depth))
+                if sample_depth > closest_depth:
+                    closest_depth = sample_depth
+                    closest_uv = sample_uv
+        # Edge coverage follows the nearest moving surface. The motion buffer is jitter-free.
+        motion = shader.sample_level(self.motion_tex, closest_uv, 0.0).xy
+        history_uv = uv - motion
+        if shader.any(history_uv < shader.vec2(0.0)) or shader.any(history_uv >= shader.vec2(1.0)):
+            return current
         history = shader.sample_level(self.history_tex, history_uv, 0.0)
         history.rgb = shader.clamp(history.rgb, neighborhood_min, neighborhood_max)
-        motion_weight = shader.exp2(-shader.length(motion * extent) * self.motion_rejection)
-        depth_weight = shader.exp2(-max_depth_delta * self.depth_rejection)
-        history_weight = shader.clamp(self.feedback * motion_weight * depth_weight, 0.0, self.feedback)
+        pixel_motion = shader.abs(motion * extent)
+        # Subpixel movement stays inside the reconstructed coverage footprint. Fade the
+        # depth-edge penalty in as the previous footprint leaves the current 3x3 neighbourhood.
+        crossing = shader.saturate(shader.max(pixel_motion.x, pixel_motion.y) - 0.5)
+        depth_weight = shader.mix(1.0, shader.exp2(-max_depth_delta * self.depth_rejection), crossing)
+        history_weight = self.feedback * shader.exp2(-shader.length(pixel_motion) * self.motion_rejection) * depth_weight
         return shader.lerp(current, history, history_weight)

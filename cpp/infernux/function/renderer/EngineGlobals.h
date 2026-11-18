@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/packing.hpp>
 
 namespace infernux
 {
@@ -55,18 +56,20 @@ struct EngineGlobalsUBO
     /// x = frame count, y = smoothDeltaTime, z = 1/deltaTime, w = previous view sample time
     alignas(16) glm::vec4 frameParams{0.0f};
 
-    /// x = view flags, y = last presented ray geometry serial, w = accepted view samples.
+    /// x = view flags, y = last accepted ray geometry, z = packed jitter delta in UV, w = accepted view samples.
     alignas(16) glm::uvec4 viewOptions{0u};
 };
 
 static_assert(sizeof(EngineGlobalsUBO) == 144, "EngineGlobalsUBO must contain nine 16-byte rows");
 
 [[nodiscard]] inline glm::uvec4 MakeViewOptions(bool dithering, bool stopNaNs, bool opaqueOutput,
-                                                uint32_t previousRayGeometry = 0, uint32_t sampleIndex = 0)
+                                                uint32_t previousRayGeometry = 0, uint32_t sampleIndex = 0,
+                                                glm::vec2 jitterNdcDelta = {})
 {
     const uint32_t flags = static_cast<uint32_t>(dithering) | (static_cast<uint32_t>(stopNaNs) << 1u) |
                            (static_cast<uint32_t>(opaqueOutput) << 2u);
-    return {flags, previousRayGeometry, 0u, sampleIndex};
+    // Both native projections express positive raster Y down. Convert NDC to top-left texture UV.
+    return {flags, previousRayGeometry, glm::packHalf2x16(jitterNdcDelta * 0.5f), sampleIndex};
 }
 
 /// Frame time is authored once by the native host, then copied into each view.

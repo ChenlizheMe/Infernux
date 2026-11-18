@@ -81,7 +81,10 @@ class RayReconstruct(shader.fullscreen):
             if virtual_clip.w <= 0.0:
                 return fresh
             virtual_uv = virtual_clip.xy / virtual_clip.w * shader.vec2(0.5, -0.5) + shader.vec2(0.5)
-            drift = shader.max(shader.abs(virtual_uv - uv), shader.abs(uv - previous_uv)) * shader.vec2(full)
+            receiver_uv = previous_clip.xy / previous_clip.w * shader.vec2(0.5, -0.5) + shader.vec2(0.5)
+            # Both predictions are in the previous raster, so a jitter change or camera rotation
+            # about a fixed eye cannot masquerade as motion of the receiver or reflected ray.
+            drift = shader.max(shader.abs(virtual_uv - previous_uv), shader.abs(receiver_uv - previous_uv)) * shader.vec2(full)
             still = visibility.y == accepted and shader.max(drift.x, drift.y) < 0.0625
             # With a stationary ray distribution, different random endpoints sample the same integral.
             # While moving, only a matching secondary surface and distance may carry mirror detail.

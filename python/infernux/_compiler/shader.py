@@ -433,8 +433,8 @@ InxMeshInput vertex_motion(InxVertexInput input, uint instance : SV_VulkanInstan
         skin.bone_offset = skin.previous_bone_offset;
         float3 previous_local = inx_skin_vertex(input, skin, inx_bones).position;
         float4 previous_clip = mul(inx_view.previous_view_projection, mul(inx_previous_model(history), float4(previous_local, 1.0)));
-        result.motion_vector = (result.position.xy / max(abs(result.position.w), 1e-6)
-            - float2(previous_clip.x, -previous_clip.y) / max(abs(previous_clip.w), 1e-6)) * 0.5;
+        float4 current_clip = float4(result.position.x, -result.position.y, result.position.zw);
+        result.motion_vector = inx_raster_motion(current_clip, previous_clip);
     }
     inx_clip_device_bounds(result, instance);
     return result;
@@ -464,7 +464,7 @@ uint2 fragment_picking(InxMeshInput input, bool front_facing : SV_IsFrontFace) :
 float2 fragment_motion(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
     inx_evaluate_surface(input, front_facing);
-    return input.motion_vector;
+    return (input.object_flags & 1u) != 0u ? input.motion_vector - inx_view_jitter_delta_uv() : float2(0.0);
 }
 [shader("fragment")]
 float4 fragment_normal(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
@@ -1335,7 +1335,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             if field.name in author.fields:
                 author.error(author.field_nodes[field.name], "World ray input name is reserved: " + field.name,
                              code="author.parameter")
-    if vertex:
+    if vertex or author.is_surface:
         code.append("import inx_frame;")
     if author.domain == "mesh":
         code.append("import inx_camera;")

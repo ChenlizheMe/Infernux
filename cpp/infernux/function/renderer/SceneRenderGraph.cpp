@@ -1230,7 +1230,8 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     globals.zBufferParams = camera.zBufferParams;
     globals.viewOptions =
         MakeViewOptions(m_cameraDithering, m_cameraStopNaNs, m_renderView.kind == rhi::RenderViewKind::Scene,
-                        m_rayHistoryWorld.AcceptedGeometry(), static_cast<uint32_t>(m_executionCount));
+                        m_rayHistoryWorld.AcceptedGeometry(), static_cast<uint32_t>(m_executionCount),
+                        m_cameraHistoryValid ? m_temporalJitterNdc - m_previousJitterNdc : glm::vec2(0.0f));
     if (!rhiDevice.WriteBuffer(frame.globals.buffer, 0, &globals, sizeof(globals))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local globals UBO");
         return false;
