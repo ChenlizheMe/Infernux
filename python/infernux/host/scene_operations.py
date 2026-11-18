@@ -377,6 +377,7 @@ def _resolve_object(name: str = "", path: str = "") -> dict[str, object]:
 
 def _resolve_object_now(name: str, path: str) -> dict[str, object]:
     from infernux.lib import SceneManager
+    from .sim_operations import _world_scope
 
     wanted_name = name.strip()
     wanted_path = path.strip().strip("/")
@@ -386,32 +387,27 @@ def _resolve_object_now(name: str, path: str) -> dict[str, object]:
             "infernux.scene.object.resolve needs a name or a path.",
         )
     native = SceneManager.instance()
-    found = None
-    if wanted_path:
-        scene = active_scene()
-        candidates = [segment for segment in wanted_path.split("/") if segment]
-        roots = list(scene.get_root_objects())
-        found = next((obj for obj in roots if str(obj.name) == candidates[0]), None)
-        for segment in candidates[1:]:
-            if found is None:
-                break
-            found = next((child for child in found.get_children() if str(child.name) == segment), None)
-    else:
-        finder = getattr(native, "find_runtime_object", None)
-        if callable(finder):
-            found = finder(wanted_name)
-    if found is None:
-        return {
-            "found": False,
-            "name": wanted_name or wanted_path,
-            "object_id": 0,
-            "runtime": bool(native.is_playing()),
-        }
+    with _world_scope(native):
+        found = None
+        if wanted_path:
+            scene = native.get_active_scene()
+            candidates = [segment for segment in wanted_path.split("/") if segment]
+            roots = list(scene.get_root_objects()) if scene is not None else []
+            found = next((obj for obj in roots if str(obj.name) == candidates[0]), None)
+            for segment in candidates[1:]:
+                if found is None:
+                    break
+                found = next((child for child in found.get_children() if str(child.name) == segment), None)
+        else:
+            finder = getattr(native, "find_runtime_object", None)
+            if callable(finder):
+                found = finder(wanted_name)
+        playing = bool(native.is_playing())
     return {
         "found": True,
         "name": str(found.name),
         "object_id": int(found.id),
-        "runtime": bool(native.is_playing()),
+        "runtime": playing,
     }
 
 

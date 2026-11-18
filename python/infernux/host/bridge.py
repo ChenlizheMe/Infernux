@@ -145,8 +145,10 @@ class AutomationBridge:
         from infernux.engine.interaction import AssetMutationService
         from .editor import EditorAutomationHost
         native = EditorAutomationHost.instance()._native_engine()
-        native.set_capture_completion_callback(lambda capture_id: emit_signal("capture.completed", capture_id))
-        self._cleanups.append(lambda: native.set_capture_completion_callback(None))
+        capture_callback = getattr(native, "set_capture_completion_callback", None)
+        if callable(capture_callback):
+            capture_callback(lambda capture_id: emit_signal("capture.completed", capture_id))
+            self._cleanups.append(lambda: capture_callback(None))
         console = DebugConsole.instance()
         logged = lambda entry: emit_signal("console.changed")
         console.add_listener(logged)
@@ -164,7 +166,13 @@ class AutomationBridge:
         from infernux.engine.bootstrap import EditorBootstrap
         from infernux.lib import SceneManager
         engine = EditorBootstrap.instance().engine
-        self._attach_runtime_observations(engine.get_runtime_change_journal(), SceneManager.instance(), play)
+        getter = getattr(engine, "get_runtime_change_journal", None)
+        journal = getter() if callable(getter) else None
+        if journal is None:
+            from infernux.engine.runtime_change_journal import runtime_change_journal
+
+            journal = runtime_change_journal()
+        self._attach_runtime_observations(journal, SceneManager.instance(), play)
 
     def _attach_runtime_observations(self, journal, scene_manager, play):
         from infernux.runtime_services import register_update

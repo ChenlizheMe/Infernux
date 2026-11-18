@@ -241,20 +241,10 @@ class MainThreadCommandQueue:
             if can_continue is not None and not can_continue():
                 break
             try:
-                _name, fn, future = self._queue.get_nowait()
+                _name, fn, future, reload_owner, lifetime = self._queue.get_nowait()
             except queue.Empty:
                 break
-            if future is None:
-                try:
-                    fn()
-                except Exception as error:
-                    from infernux.debug import Debug
-                    Debug.log_error(f'Host command {_name} failed: {error}')
-            elif future._begin_execute():
-                try:
-                    future.set_result(fn())
-                except BaseException as exc:
-                    future.set_error(exc)
+            self._execute(fn, future, reload_owner, lifetime)
             processed += 1
         return processed
 
@@ -262,7 +252,7 @@ class MainThreadCommandQueue:
         cancelled = 0
         while True:
             try:
-                _name, _fn, future = self._queue.get_nowait()
+                _name, _fn, future, _owner, _lifetime = self._queue.get_nowait()
             except queue.Empty:
                 break
             if future is not None:

@@ -111,6 +111,18 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         from infernux.host import install_editor_operations
 
         install_editor_operations(self.project_path)
+        # Automation Host transport: the editor owns the loopback bridge and
+        # the operation registry; MCP/yanshi clients discover it through the
+        # project descriptor and never own the world.
+        self.automation_bridge = None
+        try:
+            from infernux.host.bridge import start
+
+            self.automation_bridge = start(self.project_path)
+        except Exception as exc:
+            from infernux.debug import Debug
+
+            Debug.log_warning(f"Automation bridge is unavailable: {exc}")
 
         self._report_progress("Preloading project plugins\u2026")
         self._load_plugins()
@@ -150,6 +162,14 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             self._prewarm_inspector_metadata()
 
         self._finish_progress()
+
+        if self.automation_bridge is not None:
+            try:
+                self.automation_bridge.attach_editor_signals()
+            except Exception as exc:
+                from infernux.debug import Debug
+
+                Debug.log_warning(f"Automation signals are unavailable: {exc}")
 
         if self.engine is None:
             raise RuntimeError("Editor startup completed without an Engine")

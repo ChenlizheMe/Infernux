@@ -67,21 +67,20 @@ def _clock() -> dict[str, object]:
 
 
 def _read_clock() -> dict[str, object]:
-    from infernux.engine.play_mode import PlayModeManager
     from infernux.lib import SceneManager
 
     native = SceneManager.instance()
-    frame = native._frame_time
-    play = PlayModeManager.instance()
-    return {
-        "tick": int(native.published_fixed_step_index),
-        "frame": int(frame.frame_count),
-        "sim_s": float(frame.time),
-        "fixed_dt": float(native.get_fixed_time_step()),
-        "playing": bool(native.is_playing()),
-        "paused": bool(native.is_paused()),
-        "stepping": bool(native.is_stepping()),
-    }
+    with _world_scope(native):
+        frame = native._frame_time
+        return {
+            "tick": int(native.published_fixed_step_index),
+            "frame": int(frame.frame_count),
+            "sim_s": float(frame.time),
+            "fixed_dt": float(native.get_fixed_time_step()),
+            "playing": bool(native.is_playing()),
+            "paused": bool(native.is_paused()),
+            "stepping": bool(native.is_stepping()),
+        }
 
 
 def _pose(object_id: int) -> dict[str, object]:
@@ -92,18 +91,25 @@ def _pose(object_id: int) -> dict[str, object]:
 
 
 def _read_pose(object_id: int) -> dict[str, object]:
-    try:
-        obj = game_object(int(object_id))
-    except Exception as exc:
-        raise OperationError(
-            "sim.object_not_found",
-            f"No live object with id {object_id} exists in the bound world.",
-            details={"object_id": int(object_id)},
-        ) from exc
-    transform = obj.get_transform()
-    position = transform.position
-    rotation = transform.rotation
-    observed = _read_clock()
+    from infernux.lib import SceneManager
+
+    native = SceneManager.instance()
+    with _world_scope(native):
+        try:
+            finder = getattr(native, "find_runtime_object_by_id", None)
+            obj = finder(int(object_id)) if callable(finder) else None
+            if obj is None:
+                obj = game_object(int(object_id))
+        except Exception as exc:
+            raise OperationError(
+                "sim.object_not_found",
+                f"No live object with id {object_id} exists in the bound world.",
+                details={"object_id": int(object_id)},
+            ) from exc
+        transform = obj.get_transform()
+        position = transform.position
+        rotation = transform.rotation
+        observed = _read_clock()
     return {
         "object_id": int(getattr(obj, "id", object_id)),
         "position_m": [float(position.x), float(position.y), float(position.z)],
@@ -129,41 +135,44 @@ def _request_step(delta_time: float | None, expected_tick: int | None) -> dict[s
 
     native = SceneManager.instance()
     play = _play_manager()
-    if play is None or not native.is_playing():
-        raise OperationError(
-            "sim.not_playing",
-            "sim.step requires an active Play Mode world.",
-        )
-    if not native.is_paused():
-        raise OperationError(
-            "sim.not_paused",
-            "sim.step requires Play Mode to be paused; an unpaused world advances on its own.",
-        )
-    fixed = float(native.get_fixed_time_step())
-    delta = fixed if delta_time is None else float(delta_time)
-    if abs(delta - fixed) > 1e-9:
-        raise OperationError(
-            "sim.delta_mismatch",
-            f"Requested delta {delta!r}s does not match the world fixed step {fixed!r}s.",
-            details={"requested": delta, "fixed_dt": fixed},
-        )
-    tick = int(native.published_fixed_step_index)
-    if expected_tick is not None and int(expected_tick) != tick:
-        raise OperationError(
-            "sim.stale_tick",
-            f"Expected tick {int(expected_tick)} but the world is at {tick}.",
-            details={"expected_tick": int(expected_tick), "tick": tick},
-        )
-    # Native paused-step admission: the editor frame loop completes exactly this
-    # one step, and the caller polls sim.clock until target_tick is published.
-    native.step(delta)
+    with _world_scope(native):
+        if play is None or not native.is_playing():
+            raise OperationError(
+                "sim.not_playing",
+                "sim.step requires an active Play Mode world.",
+            )
+        if not native.is_paused():
+            raise OperationError(
+                "sim.not_paused",
+                "sim.step requires Play Mode to be paused; an unpaused world advances on its own.",
+            )
+        fixed = float(native.get_fixed_time_step())
+        delta = fixed if delta_time is None else float(delta_time)
+        if abs(delta - fixed) > 1e-9:
+            raise OperationError(
+                "sim.delta_mismatch",
+                f"Requested delta {delta!r}s does not match the world fixed step {fixed!r}s.",
+                details={"requested": delta, "fixed_dt": fixed},
+            )
+        tick = int(native.published_fixed_step_index)
+        if expected_tick is not None and int(expected_tick) != tick:
+            raise OperationError(
+                "sim.stale_tick",
+                f"Expected tick {int(expected_tick)} but the world is at {tick}.",
+                details={"expected_tick": int(expected_tick), "tick": tick},
+            )
+        # Native paused-step admission: the editor frame loop completes exactly
+        # this one step, and the caller polls sim.clock until target_tick is
+        # published.
+        native.step(delta)
+        frame = int(native._frame_time.frame_count)
     return {
         "accepted": True,
         "target_tick": tick + 1,
         "delta_time": delta,
         "fixed_dt": fixed,
         "tick": tick,
-        "frame": int(native._frame_time.frame_count),
+        "frame": frame,
     }
 
 
@@ -171,3 +180,23 @@ def _play_manager():
     from infernux.engine.play_mode import PlayModeManager
 
     return PlayModeManager.instance()
+
+
+def _world_scope(native):
+    """Run native clock/step reads inside the active Play runtime world.
+
+    Graphical Play runs a runtime world beside the authoring world; native
+    ``is_playing``/``step``/``published_fixed_step_index`` answer for the
+    *current* world, so a host call must select the runtime world first.
+    """
+    from contextlib import nullcontext
+
+    ids = list(getattr(native, "_runtime_world_ids", ()) or ())
+    if not ids:
+        return nullcontext()
+    identity = int(ids[0])
+    if int(getattr(native, "_current_runtime_world_id", 0)) == identity:
+        return nullcontext()
+    from infernux.lib import _Infernux
+
+    return _Infernux._RuntimeWorldScope(identity)
