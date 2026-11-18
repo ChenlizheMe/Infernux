@@ -23,6 +23,8 @@ def evidence(tmp_path):
         trail_points=8,
         cpu_jit_result=84,
         renderer=dict(submission_ready=True),
+        resident_slang=dict(target="spirv", values=[-12, -3, 0, 6, 15],
+                            cold_artifact="fixture.spv", source_write=[0, 0, 1]),
         package_text="Package resource reached UIText on every Player target.",
         managed_guid="8b7148eba8303c90b0589315c16f7cba",
     )
@@ -36,6 +38,13 @@ def test_release_gate_rejects_invalid_physics(evidence, position):
     data = deepcopy(data)
     data["final_position"] = position
     with pytest.raises(RuntimeError, match="physics"):
+        verify_evidence(data, capture)
+
+
+def test_release_gate_requires_gpu_dispatch(evidence):
+    data, capture = evidence
+    data["resident_slang"]["source_write"] = [0, 0, 0]
+    with pytest.raises(RuntimeError, match="Vulkan dispatch"):
         verify_evidence(data, capture)
 
 

@@ -32,6 +32,7 @@ from linux_player_smoke import (  # noqa: E402
     _assert_component_probes,
     ControlClient,
     _axis_delta,
+    _collect_debug_log,
     _fatal_lines,
     _gameplay_control_ready,
     _new_log_text,
@@ -39,7 +40,7 @@ from linux_player_smoke import (  # noqa: E402
     _player_component_probes,
     _position,
     _probe_object_names,
-    _require_minimum_final_y,
+    _published_press_motion,
     _state_log,
 )
 
@@ -194,6 +195,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     outer_log = artifact_root / "player-outer.log"
     state_log = _state_log(game)
     state_start = state_log.stat().st_size if state_log.is_file() else 0
+    launch_time = time.time()
+    debug_text = None
     token = secrets.token_hex(24)
     probes = list(args.component_probe)
     player_probes = _player_component_probes(probes)
@@ -312,15 +315,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 timeout=args.startup_timeout + args.press_duration,
                 process=process,
             )
-            initial = _position(press.get("initial_observation", {}), args.object)
-            final = _position(press.get("final_observation", {}), args.object)
-            delta = _axis_delta(initial, final, args.axis)
-            if abs(delta) < args.minimum_axis_delta:
-                raise RuntimeError(
-                    f"Player input produced only {delta:.6f} movement on {args.axis}; "
-                    f"minimum is {args.minimum_axis_delta:.6f}"
-                )
-            _require_minimum_final_y(final, args.minimum_final_y)
+
+            _write_json_atomic(artifact_root / "key-press.json", press)
 
         feature_deadline = time.monotonic() + args.startup_timeout
         assertion_results: list[dict[str, Any]] = []
@@ -340,6 +336,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 time.sleep(0.05)
                 continue
             try:
+                if not args.capture_only:
+                    initial, final, delta = _published_press_motion(press, feature_observation, args)
                 assertion_results, component_fields = _assert_component_probes(
                     feature_observation, probes
                 )
@@ -389,7 +387,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             state_text, encoding="utf-8", newline="\n"
         )
         combined = outer_log.read_text(encoding="utf-8", errors="replace") + state_text
-        fatals = _fatal_lines(combined)
+        debug_text = _collect_debug_log(state_log, artifact_root, launch_time)
+        fatals = _fatal_lines(combined + "\n" + debug_text)
         if fatals:
             raise RuntimeError("Windows Player emitted fatal or Vulkan diagnostics")
         return SmokeResult(
@@ -415,6 +414,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
         )
     finally:
         _terminate(process)
+        if debug_text is None:
+            _collect_debug_log(state_log, artifact_root, launch_time)
         state_artifact = artifact_root / "player-state.log"
         if not state_artifact.is_file():
             state_artifact.write_text(

@@ -146,6 +146,23 @@ def _require_minimum_final_y(
         )
 
 
+def _published_press_motion(press, observation, args):
+    # The input receipt can precede fixed-step publication. Read the position
+    # and component values from the same subsequent World observation.
+    start = press["initial_observation"]
+    if observation.get("scene_name") != start.get("scene_name"):
+        raise RuntimeError("The scene changed before the input result was published")
+    initial = _position(start, args.object)
+    final = _position(observation, args.object)
+    delta = _axis_delta(initial, final, args.axis)
+    if abs(delta) < args.minimum_axis_delta:
+        raise RuntimeError(
+            f"Player input moved {delta:.6f} on {args.axis}; minimum is {args.minimum_axis_delta:.6f}"
+        )
+    _require_minimum_final_y(final, args.minimum_final_y)
+    return initial, final, delta
+
+
 def _gameplay_control_ready(
     observation: dict[str, Any], *, allow_paused: bool = False
 ) -> bool:
@@ -415,6 +432,16 @@ def _new_log_text(path: Path, start_size: int) -> str:
         return stream.read().decode("utf-8", errors="replace")
 
 
+def _collect_debug_log(state_log: Path, artifacts: Path, started: float) -> str:
+    # Development Players truncate this file on boot, then redirect script stderr to it.
+    path = state_log.with_name(f"{state_log.parent.parent.name}_debug.log")
+    if not path.is_file() or path.stat().st_mtime < started:
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    (artifacts / "player-debug.log").write_text(text, encoding="utf-8")
+    return text
+
+
 def _fatal_lines(text: str) -> list[str]:
     return [
         line
@@ -514,6 +541,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     xvfb_log = artifact_root / "xvfb.log"
     state_log = _state_log(game)
     state_start = state_log.stat().st_size if state_log.is_file() else 0
+    launch_time = time.time()
+    debug_text = None
     token = secrets.token_hex(24)
     probes = list(args.component_probe)
     player_probes = _player_component_probes(probes)
@@ -627,16 +656,7 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             timeout=args.startup_timeout + args.press_duration,
             process=player_process,
         )
-        initial = _position(press.get("initial_observation", {}), args.object)
-        final = _position(press.get("final_observation", {}), args.object)
-        delta = _axis_delta(initial, final, args.axis)
-        if abs(delta) < args.minimum_axis_delta:
-            raise RuntimeError(
-                f"Player input produced only {delta:.6f} movement on {args.axis}; "
-                f"minimum is {args.minimum_axis_delta:.6f}"
-            )
-        _require_minimum_final_y(final, args.minimum_final_y)
-
+        _write_json_atomic(artifact_root / "key-press.json", press)
         feature_deadline = time.monotonic() + args.startup_timeout
         assertion_results: list[dict[str, Any]] = []
         component_fields: dict[str, Any] = {}
@@ -655,6 +675,7 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 time.sleep(0.05)
                 continue
             try:
+                initial, final, delta = _published_press_motion(press, feature_observation, args)
                 assertion_results, component_fields = _assert_component_probes(
                     feature_observation, probes
                 )
@@ -697,7 +718,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             state_text, encoding="utf-8", newline="\n"
         )
         combined = outer_log.read_text(encoding="utf-8", errors="replace") + state_text
-        fatals = _fatal_lines(combined)
+        debug_text = _collect_debug_log(state_log, artifact_root, launch_time)
+        fatals = _fatal_lines(combined + "\n" + debug_text)
         if fatals:
             raise RuntimeError("Linux Player emitted fatal or Vulkan validation diagnostics")
         selected_driver = _selected_video_driver(combined)
@@ -729,6 +751,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     finally:
         _terminate(player_process)
         _terminate(xvfb_process)
+        if debug_text is None:
+            _collect_debug_log(state_log, artifact_root, launch_time)
         state_artifact = artifact_root / "player-state.log"
         if not state_artifact.is_file():
             state_artifact.write_text(
