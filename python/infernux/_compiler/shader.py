@@ -870,9 +870,11 @@ float3 inx_ray_secondary_weight(InxSurfaceData surface, float3 geometric, float3
 // It contains no further reflected scattering at the endpoint.
 InxRayTransportTerm inx_ray_direct_fresh(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
                                           uint4 metadata, InxBuffer_uint4 records, float3 outgoing,
-                                          uint seed, float maximum)
+                                          uint seed, float maximum, float light_roughness = 0.0)
 {
-    float3 radiance = inx_ray_direct_radiance(page, attributes, surface, metadata, records, outgoing, seed);
+    InxSurfaceData light_surface = surface;
+    light_surface.smoothness = min(surface.smoothness, 1.0 - light_roughness);
+    float3 radiance = inx_ray_direct_radiance(page, attributes, light_surface, metadata, records, outgoing, seed);
     float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
     RayDirectionProposal proposal;
     float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0xb5297a4du, proposal);
@@ -1019,7 +1021,7 @@ float3 inx_ray_cached_tail(RayPage page, RayHit hit, RaySurfaceHit attributes, I
 }
 
 InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, InxBuffer_uint4 cache,
-                              uint seed, float3 weight)
+                              uint seed, float3 weight, float light_roughness)
 {
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
@@ -1031,7 +1033,7 @@ InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 record
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
     float maximum = asfloat(inx_buffer_load(cache, 1u).z);
     InxRayTransportTerm direct = inx_ray_direct_fresh(page, attributes, secondary,
-        inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed, maximum);
+        inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed, maximum, light_roughness);
     if (!direct.available)
         return (InxRaySignal)0;
     float3 tail = inx_ray_cached_tail(page, hit, attributes, secondary, records, cache, -ray.direction,
@@ -1052,7 +1054,7 @@ public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxB
                     inx_view.projection_params.y};
     uint2 pixel = uint2(pixel_position);
     uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y) ^ inx_view_sample_index());
-    return inx_ray_radiance(page, ray, records, cache, seed, float3(1.0)).radiance;
+    return inx_ray_radiance(page, ray, records, cache, seed, float3(1.0), 0.0).radiance;
 }
 
 RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,
@@ -1095,7 +1097,14 @@ public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingCo
     if (page.status != ray_page_ready)
         return (InxRaySignal)0;
     TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction, inx_view.projection_params.y};
-    return inx_ray_radiance(page, ray, records, cache, seed, sample.weight);
+    // One of N directions represents solid angle 1/(N*pdf). Project the cap's
+    // half-angle onto microfacet slopes for the next analytic light connection.
+    // alpha = tan(theta/2), perceptual roughness = sqrt(alpha). Emission and
+    // BSDF-sampled endpoints retain the authored material and its matching PDF.
+    float sample_count = specular ? 96.0 : 64.0;
+    float cap = max(4.0 * 3.14159265359 * sample_count * sample.pdf - 1.0, 1.0);
+    float light_roughness = temporal && !sample.delta ? rsqrt(sqrt(cap)) : 0.0;
+    return inx_ray_radiance(page, ray, records, cache, seed, sample.weight, light_roughness);
 }
 
 public uint2 inx_ray_tail_pixel(uint index, uint2 extent)
@@ -1197,6 +1206,18 @@ InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsF
     return inx_pack_gbuffer<INX_GBUFFER_PBR>(inx_evaluate_surface(input, front_facing), input.surface_id);
 }
 
+// Raster depth determines coverage. A ray starts on the original triangle:
+// subpixel snapping can place its unprojected depth on either side of that plane.
+float inx_ray_receiver_depth(InxMeshInput input, float3 plane_normal)
+{
+    float2 ndc = input.position.xy * inx_globals.screen_params.zw * 2.0 - 1.0;
+    float4 point = mul(inx_view.inverse_view_projection, float4(ndc, input.position.z, 1.0));
+    float4 step_z = mul(inx_view.inverse_view_projection, float4(0.0, 0.0, 1.0, 0.0));
+    float residual = dot(plane_normal, input.position_ws * point.w - point.xyz);
+    float slope = dot(plane_normal, step_z.xyz - input.position_ws * step_z.w);
+    return slope != 0.0 ? saturate(input.position.z + residual / slope) : input.position.z;
+}
+
 [shader("fragment")]
 uint4 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
@@ -1209,7 +1230,8 @@ uint4 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFac
     float3 toward_eye = inx_camera_toward_eye(input.position_ws);
     normal *= (dot(normal, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(length_squared);
     float2 encoded = inx_encode_surface_normal(normal);
-    return uint4(input.surface_id, packHalf2x16(encoded), packHalf2x16(input.motion_vector), input.object_flags & 1u);
+    uint depth_and_motion = asuint(inx_ray_receiver_depth(input, normal)) | ((input.object_flags & 1u) << 31u);
+    return uint4(input.surface_id, packHalf2x16(encoded), packHalf2x16(input.motion_vector), depth_and_motion);
 }
 """
 

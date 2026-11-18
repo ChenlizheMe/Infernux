@@ -19,4 +19,6 @@ class RayPrimarySurface(shader.fullscreen):
         if surface == 0 or replay.x != surface or replay_depth != depth:
             return shader.uvec4(0)
         frame = shader.load(self.gbuffer_normal, pixel, 0)
-        return shader.uvec4(surface, shader.as_uint(depth), replay.y, shader.as_uint(frame.z))
+        # Visibility above uses hardware depth. Outgoing rays and their history
+        # use the depth of the original triangle at this camera sample.
+        return shader.uvec4(surface, replay.w & shader.uint(0x7FFFFFFF), replay.y, shader.as_uint(frame.z))

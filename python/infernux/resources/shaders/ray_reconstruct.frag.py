@@ -33,7 +33,7 @@ class RayReconstruct(shader.fullscreen):
         source = ray_grid_pixel(pixel, extent, full) if reduced else pixel
         primary = shader.load(self.primary, source, 0)
         motion = shader.load(self.motion, source, 0)
-        if motion.w == 0 or motion.x != primary.x:
+        if (motion.w >> 31) == 0 or motion.x != primary.x:
             return fresh
         uv = (shader.vec2(source) + shader.vec2(0.5)) / shader.vec2(full)
         previous_uv = uv - shader.unpack_half_2x16(motion.z)
