@@ -1,6 +1,8 @@
 #include "JoltMixedContacts.h"
+#include "JoltCpuContactPublication.h"
 #include "JoltCpuScene.h"
 #include "JoltGpuProgramSources.h"
+#include <function/scene/Rigidbody.h>
 
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseQuery.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
@@ -21,6 +23,8 @@ using Contact = PhysicsContactPublication;
 constexpr uint32_t ResponseProxy = 2;
 constexpr uint32_t DynamicProxy = 4;
 constexpr uint32_t ObservedActive = 8;
+constexpr uint32_t ContinuousProxy = 16;
+constexpr uint32_t DynamicContinuousProxy = 32;
 
 template <class Vector> glm::vec3 Vector3(const Vector &v)
 {
@@ -95,6 +99,7 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
                                  std::vector<BodyPair> suppressed)
 {
     m_scene = &scene;
+    m_cpuDynamicResponse = m_cpuKinematicResponse = m_cpuContinuous = m_cpuDynamicContinuous = false;
     m_proxies.clear();
     m_responses.clear();
     m_fixedJoints = std::move(joints);
@@ -117,7 +122,17 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
         const bool sensor = std::any_of(record.surfaces.begin(), record.surfaces.end(),
                                         [](const auto &surface) { return surface.sensor; });
         m_proxies.push_back({endpoint.body, record.shapeRevision, record.shape, record.bodyTarget, sensor,
-                             endpoint.allowResponse && !body.IsStatic(), body.IsDynamic()});
+                             endpoint.allowResponse && !body.IsStatic(), body.IsDynamic(),
+                             record.collisionDetectionMode});
+        if (m_proxies.back().allowResponse) {
+            m_cpuDynamicResponse |= body.IsDynamic();
+            m_cpuKinematicResponse |= body.IsKinematic();
+            m_cpuContinuous |=
+                body.IsDynamic() && record.collisionDetectionMode != static_cast<int>(CollisionDetectionMode::Discrete);
+            m_cpuDynamicContinuous |=
+                body.IsDynamic() &&
+                record.collisionDetectionMode == static_cast<int>(CollisionDetectionMode::ContinuousDynamic);
+        }
         bodyIds.push_back(endpoint.body);
     }
     if (m_ids != bodyIds) {
@@ -133,6 +148,27 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
         frame.points.clear();
     }
     CaptureCpuBoundary(0);
+}
+
+bool JoltMixedContactStep::NeedsContinuous(const JoltGpuStorage &storage, const JoltGpuScene::Publication &publication,
+                                           uint32_t world) const
+{
+    if (!m_cpuContinuous && !storage.HasSweepBodies(world))
+        return false;
+    const auto &directory = *publication.directory;
+    const auto &models = storage.GetModel().bodies;
+    return std::any_of(m_gpuResponseBodies.begin(), m_gpuResponseBodies.end(), [&](uint32_t id) {
+        const auto slot = directory.FindBodySlot(id);
+        if (slot == UINT32_MAX)
+            return false;
+        const auto &model = models[slot];
+        if (model.meta.y == 0u)
+            return false;
+        const float gpuMode = model.invInertiaDiagonal.w;
+        return (model.meta.z == MotionDynamic && (m_cpuDynamicContinuous || (m_cpuDynamicResponse && gpuMode < 0.0f) ||
+                                                  (m_cpuKinematicResponse && gpuMode != 0.0f))) ||
+               (model.meta.z == MotionKinematic && m_cpuContinuous);
+    });
 }
 
 JoltMixedContactStep::MassFrame JoltMixedContactStep::CpuMassFrame(uint32_t id) const
@@ -315,6 +351,34 @@ const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t su
         }
         bounds.push_back({minimum, maximum});
     }
+    return EncodeBvh(bounds, words);
+}
+
+const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeContinuousTree(JoltCpuContactPublication &cpu)
+{
+    m_continuousTree.clear();
+    m_continuousPose.clear();
+    m_continuousDisplacement.clear();
+    std::vector<spatial::Bounds> bounds;
+    const auto &bodies = m_scene->System().GetBodyLockInterfaceNoLock();
+    for (const auto &proxy : m_proxies) {
+        const auto id = m_scene->NativeBody(proxy.id);
+        const auto &body = *bodies.TryGetBody(id);
+        const auto shapeBounds = proxy.shape->GetWorldSpaceBounds(body.GetCenterOfMassTransform(), JPH::Vec3::sOne());
+        const auto delta = cpu.CoupledDisplacement(id);
+        m_continuousPose.push_back({body.GetCenterOfMassPosition(), body.GetRotation(), body.GetLinearVelocity(),
+                                    body.GetAngularVelocity(), shapeBounds, body.IsActive()});
+        m_continuousDisplacement.push_back(delta);
+        const auto movement = Vector3(delta);
+        bounds.push_back({Vector3(shapeBounds.mMin) + glm::min(movement, glm::vec3(0)),
+                          Vector3(shapeBounds.mMax) + glm::max(movement, glm::vec3(0))});
+    }
+    return bounds.empty() ? m_continuousTree : EncodeBvh(bounds, m_continuousTree);
+}
+
+const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeBvh(const std::vector<spatial::Bounds> &bounds,
+                                                                    std::vector<JPH::GPU::UInt4> &words)
+{
     if (m_tree.nodes.empty()) {
         m_tree = spatial::BuildBvh(bounds);
         const auto count = static_cast<uint32_t>(m_tree.nodes.size());
@@ -334,8 +398,14 @@ const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeTree(uint32_t su
         const uint32_t proxy = m_tree.primitiveOrder[i];
         words[boundsBase + 2 * i] = EncodeBounds(bounds[proxy].minimum, proxy);
         const auto &source = m_proxies[proxy];
-        const uint32_t flags = (source.sensor ? ShapeSensor : 0u) | (source.allowResponse ? ResponseProxy : 0u) |
-                               (source.dynamic ? DynamicProxy : 0u);
+        const uint32_t flags =
+            (source.sensor ? ShapeSensor : 0u) | (source.allowResponse ? ResponseProxy : 0u) |
+            (source.dynamic ? DynamicProxy : 0u) |
+            (source.collisionDetectionMode != static_cast<int>(CollisionDetectionMode::Discrete) ? ContinuousProxy
+                                                                                                 : 0u) |
+            (source.collisionDetectionMode == static_cast<int>(CollisionDetectionMode::ContinuousDynamic)
+                 ? DynamicContinuousProxy
+                 : 0u);
         words[boundsBase + 2 * i + 1] = EncodeBounds(bounds[proxy].maximum, flags);
     }
     return words;
@@ -511,22 +581,25 @@ void JoltMixedContactStep::ClearStep()
 
 JoltGpuMixedContacts::JoltGpuMixedContacts(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
 {
-    const auto entry = std::find_if(target.entries.begin(), target.entries.end(),
-                                    [](const auto &code) { return code.name == "gather_cross_domain_candidates"; });
-    if (entry == target.entries.end() || entry->workgroupSize != std::array<uint32_t, 3>{64, 1, 1})
-        throw std::invalid_argument("Cross-domain candidate shader has a different workgroup layout");
-    std::vector<rhi::ComputeBufferBinding> bindings;
-    for (const auto &resource : target.resources) {
-        const auto &binding = resource.binding;
-        const std::array<uint32_t, 2> key{resource.set, binding.binding};
-        if (std::find(entry->bindings.begin(), entry->bindings.end(), key) == entry->bindings.end())
-            continue;
-        if (resource.set != 0 || binding.binding > 8)
-            throw std::invalid_argument("Cross-domain candidate shader uses an unknown port");
-        m_ports.push_back(binding.binding);
-        bindings.push_back({binding.binding, binding.type, binding.readOnlyStorage});
+    const std::array names{"gather_cross_domain_candidates", "gather_cross_domain_sweep_candidates"};
+    for (size_t index = 0; index < names.size(); ++index) {
+        const auto entry = std::find_if(target.entries.begin(), target.entries.end(),
+                                        [&](const auto &code) { return code.name == names[index]; });
+        if (entry == target.entries.end() || entry->workgroupSize != std::array<uint32_t, 3>{64, 1, 1})
+            throw std::invalid_argument("Cross-domain candidate shader has a different workgroup layout");
+        std::vector<rhi::ComputeBufferBinding> bindings;
+        for (const auto &resource : target.resources) {
+            const auto &binding = resource.binding;
+            const std::array<uint32_t, 2> key{resource.set, binding.binding};
+            if (std::find(entry->bindings.begin(), entry->bindings.end(), key) == entry->bindings.end())
+                continue;
+            if (resource.set != 0 || binding.binding > 8)
+                throw std::invalid_argument("Cross-domain candidate shader uses an unknown port");
+            m_ports[index].push_back(binding.binding);
+            bindings.push_back({binding.binding, binding.type, binding.readOnlyStorage});
+        }
+        m_kernels[index] = PrepareJoltGpuKernel(host, target.target, *entry, std::move(bindings));
     }
-    m_kernel = PrepareJoltGpuKernel(host, target.target, *entry, std::move(bindings));
 }
 
 struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
@@ -561,10 +634,27 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     const JoltGpuModel *responseModel = nullptr;
     std::function<JoltGpuControlWork()> substepReady;
     bool discovery = false;
+    std::function<void(UInt4)> continuous;
+    std::vector<UInt4> continuousDecoded;
     UInt4 range{};
     uint64_t treeOffset = 0;
     uint32_t substep = 0, leafEnd = 0, readWindow = 0, readFirst = 0;
     uint64_t countBytes = 0;
+
+    void AcceptCandidates(rhi::ComputeReadback &read, uint32_t count, uint32_t readCount, uint32_t index)
+    {
+        if (continuous) {
+            continuousDecoded.resize(readCount);
+            read.ReadInto(continuousDecoded.data(), readCount * sizeof(UInt4));
+            for (uint32_t i = 0; i < count; ++i)
+                continuous(continuousDecoded[i]);
+        } else {
+            decoded.resize(readCount);
+            read.ReadInto(decoded.data(), readCount * sizeof(Candidate));
+            for (uint32_t i = 0; i < count; ++i)
+                step.Collect(index, *publication, policy, decoded[i], responseModel);
+        }
+    }
 
     Job(JoltGpuMixedContacts &owner, JoltMixedContactStep &step, const JoltMixedContactStep::Policy &policy,
         std::shared_ptr<const JoltGpuScene::Publication> publication)
@@ -585,13 +675,14 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
                              bool response, std::function<JoltGpuControlWork()> done)
     {
         discovery = response;
-        if (discovery) {
+        if (discovery && !continuous) {
             responseModel = &storage.GetModel();
             step.Responses().clear();
             step.BeginSleepObservation();
             step.CaptureCpuBoundary(index);
         }
-        tree = &step.EncodeTree(index, discovery ? params.gravityDt.w : 0.0f);
+        if (!continuous)
+            tree = &step.EncodeTree(index, discovery ? params.gravityDt.w : 0.0f);
         const uint32_t leaves = params.selectedCounts.y;
         if (!leaves || tree->empty())
             return done();
@@ -633,43 +724,38 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     {
         range.y = std::min(LeavesPerDispatch, leafEnd - range.x);
         range.z = static_cast<uint32_t>(windows.size());
-        if (!Allocate(7, uint64_t(range.y) * sizeof(Candidate)))
+        const auto stride = continuous ? sizeof(UInt4) : sizeof(Candidate);
+        if (!Allocate(7, uint64_t(range.y) * stride))
             return {nullptr, [self = shared_from_this(), updates = std::move(updates)]() mutable {
                         return self->Gather(std::move(updates));
                     }};
         const uint32_t zero = 0;
-        const uint32_t flags = (policy.WantsTriggers() ? 1u : 0u) | (discovery ? 2u : 0u);
+        const uint32_t flags = continuous ? 2u : (policy.WantsTriggers() ? 1u : 0u) | (discovery ? 2u : 0u);
         const std::array<UInt4, 2> uniform{range, UInt4{flags, 0, 0, 0}};
         updates.push_back({buffers[0], 0, Bytes(uniform.data(), sizeof(uniform))});
         updates.push_back({buffers[6], uint64_t(range.z) * sizeof(uint32_t), Bytes(&zero, sizeof(zero))});
 
         rhi::ComputeDispatchDesc dispatch;
-        dispatch.kernel = owner.m_kernel;
+        dispatch.kernel = owner.m_kernels[bool(continuous)];
         dispatch.groupCountX = (range.y + 63u) / 64u;
-        for (const auto port : owner.m_ports) {
+        for (const auto port : owner.m_ports[bool(continuous)]) {
             dispatch.buffers.push_back(buffers[port]);
             dispatch.bufferAccesses.push_back(port == 6   ? rhi::ComputeBufferAccess::ReadWrite
                                               : port == 7 ? rhi::ComputeBufferAccess::Write
                                                           : rhi::ComputeBufferAccess::Read);
         }
-        if (discovery && windows.empty() && range.y <= 32u) {
+        if (discovery && windows.empty() && uint64_t(range.y) * stride <= 4096u) {
             auto packet =
                 rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {std::move(dispatch)},
                                          {{buffers[6], uint64_t(range.z) * sizeof(uint32_t), sizeof(uint32_t)},
-                                          {buffers[7], 0, uint64_t(range.y) * sizeof(Candidate)}});
+                                          {buffers[7], 0, uint64_t(range.y) * stride}});
             return {packet, [self = shared_from_this(), packet] {
                         uint32_t count;
                         packet->Readback(0)->ReadInto(&count, sizeof(count));
                         if (count > self->range.y)
                             throw std::runtime_error("Cross-domain candidate count exceeds its leaf range");
-                        if (count) {
-                            self->decoded.resize(self->range.y);
-                            packet->Readback(1)->ReadInto(self->decoded.data(),
-                                                          self->decoded.size() * sizeof(Candidate));
-                            for (uint32_t i = 0; i < count; ++i)
-                                self->step.Collect(self->substep, *self->publication, self->policy, self->decoded[i],
-                                                   self->responseModel);
-                        }
+                        if (count)
+                            self->AcceptCandidates(*packet->Readback(1), count, self->range.y, self->substep);
                         auto ready = std::move(self->substepReady);
                         return ready();
                     }};
@@ -711,13 +797,14 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
         std::vector<ReadRange> ranges;
         auto nextWindow = readWindow;
         auto nextFirst = readFirst;
-        uint32_t remaining = TransferPerPacket / sizeof(Candidate);
+        const uint64_t stride = continuous ? sizeof(UInt4) : sizeof(Candidate);
+        uint32_t remaining = static_cast<uint32_t>(TransferPerPacket / stride);
         while (nextWindow < windows.size() && remaining) {
             const auto &window = windows[nextWindow];
             const auto count = std::min(remaining, counts[nextWindow] - nextFirst);
             if (count) {
-                const uint64_t bytes = uint64_t(count) * sizeof(Candidate);
-                reads.push_back({window.candidates, uint64_t(nextFirst) * sizeof(Candidate), bytes});
+                const uint64_t bytes = uint64_t(count) * stride;
+                reads.push_back({window.candidates, uint64_t(nextFirst) * stride, bytes});
                 ranges.push_back({window.substep, count});
                 nextFirst += count;
                 remaining -= count;
@@ -737,11 +824,7 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
         return {packet, [self = shared_from_this(), packet, ranges = std::move(ranges), nextWindow, nextFirst] {
                     for (size_t i = 0; i < ranges.size(); ++i) {
                         const auto &range = ranges[i];
-                        self->decoded.resize(range.count);
-                        packet->Readback(i)->ReadInto(self->decoded.data(), range.count * sizeof(Candidate));
-                        for (const auto &candidate : self->decoded)
-                            self->step.Collect(range.substep, *self->publication, self->policy, candidate,
-                                               self->responseModel);
+                        self->AcceptCandidates(*packet->Readback(i), range.count, range.count, range.substep);
                     }
                     self->readWindow = nextWindow;
                     self->readFirst = nextFirst;
@@ -777,5 +860,17 @@ JoltGpuControlWork JoltGpuMixedContacts::Discover(const JoltGpuStorage &storage,
 {
     return std::make_shared<Job>(*this, step, policy, publication)
         ->Begin(storage, params, substep, true, std::move(ready));
+}
+
+JoltGpuControlWork JoltGpuMixedContacts::DiscoverContinuous(
+    const JoltGpuStorage &storage, const JPH::GPU::StepParams &params,
+    const std::shared_ptr<const JoltGpuScene::Publication> &publication, JoltMixedContactStep &step,
+    JoltCpuContactPublication &cpu, const JoltMixedContactStep::Policy &policy, std::function<void(UInt4)> candidate,
+    std::function<JoltGpuControlWork()> ready)
+{
+    auto job = std::make_shared<Job>(*this, step, policy, publication);
+    job->continuous = std::move(candidate);
+    job->tree = &step.EncodeContinuousTree(cpu);
+    return job->Begin(storage, params, 0u, true, std::move(ready));
 }
 } // namespace infernux

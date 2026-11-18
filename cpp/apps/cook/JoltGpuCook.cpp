@@ -81,6 +81,7 @@ std::vector<ShaderSourceModule> LoadProgramLibraries(const std::filesystem::path
             load("jph_gpu_key_sort", "Jolt/GPU/Shaders/key_sort.slang"),
             load("jph_gpu_joint_fields", "Jolt/GPU/JointPayloadFields.inl"),
             load("jph_gpu_physics_types", "Jolt/GPU/PhysicsTypes.h"),
+            load("jph_gpu_continuous_types", "Jolt/GPU/ContinuousTypes.h"),
             load("jph_gpu_articulation_integration_types", "Jolt/GPU/ArticulationIntegrationTypes.h"),
             load("jph_gpu_state_fk_types", "Jolt/GPU/StateFkTypes.h"),
             load("jph_gpu_articulation_dynamics_types", "Jolt/GPU/ArticulationDynamicsTypes.h"),

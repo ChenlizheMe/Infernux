@@ -16,7 +16,7 @@ class JoltGpuNarrowphase final
 
     [[nodiscard]] JoltGpuControlWork Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                              FrameWorkOwner &budget, std::function<void()> completed);
-    [[nodiscard]] JoltGpuControlWork PrepareSweeps(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+    [[nodiscard]] JoltGpuControlWork PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
                                                    FrameWorkOwner &budget, std::function<void()> completed);
 
   private:

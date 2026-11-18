@@ -2,6 +2,7 @@
 #include "JoltCpuContactPublication.h"
 #include "JoltCpuScene.h"
 #include "JoltGpuProgramSources.h"
+#include "JoltMixedContinuousContacts.h"
 
 #include <Jolt/Physics/Body/MotionProperties.h>
 #include <algorithm>
@@ -173,6 +174,7 @@ JoltMixedConstraintSolver::JoltMixedConstraintSolver(rhi::ComputeHost &host, con
     load(m_velocity, "exchange_cross_domain_velocity");
     load(m_position, "exchange_cross_domain_position");
     load(m_wake, "wake_cross_domain_bodies");
+    m_continuous = std::make_shared<JoltMixedContinuousContacts>(host, target);
 }
 
 bool JoltMixedConstraintSolver::TryPreparePrograms(bool velocity, bool position, bool wake)
@@ -813,6 +815,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         velocityInitialized = false;
         params.gravityDt = stepParams.gravityDt;
         params.contact = stepParams.contact;
+        inputs.SetNeedsCoupledSweep(step.NeedsContinuous(storage, *publication, stepParams.selection.x));
         buffers[GpuModels] = storage.Get(Resource::BodyModels);
         buffers[GpuStates] = storage.Get(Resource::BodyStates);
         buffers[Sleep] = storage.Get(Resource::SleepStates);
@@ -1072,10 +1075,20 @@ JoltMixedConstraintSolver::Prepare(const std::shared_ptr<const JoltGpuScene::Pub
         if (stage == JoltGpuCoupledContactStage::WarmVelocity)
             return job->WarmVelocity(inputs, std::move(done));
         if (stage == JoltGpuCoupledContactStage::Integrate) {
+            job->cpu.PrepareCoupledIntegration(false);
             job->cpu.AdvanceCoupledIntegration();
             done(1u);
             return JoltGpuControlWork{};
         }
+        if (stage == JoltGpuCoupledContactStage::PrepareSweep) {
+            job->cpu.PrepareCoupledIntegration(true);
+            done(1u);
+            return JoltGpuControlWork{};
+        }
+        if (stage == JoltGpuCoupledContactStage::Sweep)
+            return job->owner.m_continuous->Prepare(storage, inputs, params, substep, job->publication, job->discovery,
+                                                    job->step, job->cpu, job->policy,
+                                                    [done = std::move(done)] { done(1u); });
         if (stage == JoltGpuCoupledContactStage::Position)
             return job->ExchangePosition(iteration, params.solve.x, maxRounds, std::move(done));
         return job->ExchangeVelocity(iteration, params.counts.w, maxRounds, std::move(done));

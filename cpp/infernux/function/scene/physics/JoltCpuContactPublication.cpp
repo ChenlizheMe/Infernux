@@ -735,11 +735,31 @@ bool JoltCpuContactPublication::AdvanceCoupledVelocity(
     return AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Velocity);
 }
 
-void JoltCpuContactPublication::AdvanceCoupledIntegration()
+void JoltCpuContactPublication::PrepareCoupledIntegration(bool retainMotion)
 {
     auto &fixed = *m_coupled;
-    const auto result = fixed.scene.System().AdvanceCoupledIntegrationUpdate(*fixed.context);
-    AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Integration);
+    fixed.scene.System().PrepareCoupledIntegrationUpdate(*fixed.context, retainMotion);
+}
+
+JPH::Array<JPH::PhysicsSystem::CoupledContinuousContact> JoltCpuContactPublication::CoupledContinuousContacts() const
+{
+    const auto &fixed = *m_coupled;
+    return fixed.scene.System().GetCoupledContinuousContacts(*fixed.context);
+}
+
+JPH::Vec3 JoltCpuContactPublication::CoupledDisplacement(JPH::BodyID body) const
+{
+    const auto &fixed = *m_coupled;
+    return fixed.scene.System().GetCoupledDisplacement(*fixed.context, body);
+}
+
+void JoltCpuContactPublication::AdvanceCoupledIntegration(
+    const std::vector<JPH::PhysicsSystem::CoupledContinuousUpdate> &updates)
+{
+    auto &fixed = *m_coupled;
+    const auto result = fixed.scene.System().AdvanceCoupledIntegrationUpdate(*fixed.context, updates.data(),
+                                                                             static_cast<uint32_t>(updates.size()));
+    AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Continuous);
 }
 
 bool JoltCpuContactPublication::AdvanceCoupledPosition(
@@ -806,6 +826,8 @@ void JoltCpuContactPublication::CancelCoupled() noexcept
             if (context.mCoupledStage == Stage::Position)
                 system.AdvanceCoupledPositionUpdate(context);
             else if (context.mCoupledStage == Stage::Integration)
+                system.PrepareCoupledIntegrationUpdate(context);
+            else if (context.mCoupledStage == Stage::Continuous)
                 system.AdvanceCoupledIntegrationUpdate(context);
             else if (context.mCoupledStage == Stage::Sleep)
                 system.FinishCoupledSleep(context);

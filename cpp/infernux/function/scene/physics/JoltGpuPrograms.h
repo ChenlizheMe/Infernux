@@ -400,6 +400,14 @@ class JoltGpuStepInputs
     {
         return m_externalContactBodies;
     }
+    void SetNeedsCoupledSweep(bool needed) noexcept
+    {
+        m_needsCoupledSweep = needed;
+    }
+    [[nodiscard]] bool NeedsCoupledSweep() const noexcept
+    {
+        return m_needsCoupledSweep;
+    }
     void SetExternalWakePending(bool pending) noexcept
     {
         m_externalWakePending = pending;
@@ -432,6 +440,14 @@ class JoltGpuStepInputs
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetSweepBodies() const noexcept
     {
         return m_sweepBodies;
+    }
+    void SetSweepChoices(std::shared_ptr<rhi::ComputeBuffer> choices) noexcept
+    {
+        m_sweepChoices = std::move(choices);
+    }
+    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetSweepChoices() const noexcept
+    {
+        return m_sweepChoices;
     }
     void SetSweepContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts) noexcept
     {
@@ -471,6 +487,7 @@ class JoltGpuStepInputs
     bool m_hasGenericGeometry = false;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
     std::shared_ptr<rhi::ComputeBuffer> m_sweepBodies;
+    std::shared_ptr<rhi::ComputeBuffer> m_sweepChoices;
     std::shared_ptr<const JoltGpuContactWorkset> m_sweepContacts;
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
     JoltGpuContactHistory m_previousContacts, m_nextContacts;
@@ -479,6 +496,7 @@ class JoltGpuStepInputs
     std::shared_ptr<JoltGpuArticulationState> m_articulations;
     std::vector<uint32_t> m_externalContactBodies;
     bool m_externalWakePending = false;
+    bool m_needsCoupledSweep = false;
     std::function<JoltGpuSleepCoupling()> m_prepareSleepCoupling;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.

@@ -489,7 +489,7 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
     e->buffers[Schedule] = plan->schedule;
     const uint32_t world = inputs.GetParameters().selection.x;
     const auto &h = state->header;
-    const bool sweepsDynamicPairs = storage.HasDynamicSweeps(world);
+    const bool sweepsDynamicPairs = storage.HasDynamicSweeps(world) || inputs.NeedsCoupledSweep();
     // Cross-device contact rows share the same maximal velocity representation as ordinary external contacts.
     std::vector<uint32_t> contactedTrees;
     for (const uint32_t slot : inputs.GetExternalContactBodies()) {

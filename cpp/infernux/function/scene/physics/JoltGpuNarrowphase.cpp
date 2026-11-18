@@ -44,17 +44,17 @@ enum Entry : uint8_t
     SweepProgress,
     FlattenRoots,
     ReduceTimes,
-    StoreCutoffs,
     SelectPair,
+    StoreCutoffs,
     ApplyImpact,
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> EntryNames{
     "narrowphase_init_jobs", "narrowphase_advance_jobs", "narrowphase_job_progress", "sweep_advance_jobs",
     "sweep_initialize_jobs", "sweep_job_progress",       "sweep_flatten_parents",    "sweep_reduce_times",
-    "sweep_store_cutoffs",   "sweep_select_pair",        "sweep_apply_impact"};
+    "sweep_select_pair",     "sweep_store_cutoffs",      "sweep_apply_impact"};
 constexpr std::array<uint32_t, EntryCount> EntryPorts{0x83u,  0xfdu,  0x80u,  0x7f5u, 0x483u, 0x481u,
-                                                      0x402u, 0x403u, 0x603u, 0x423u, 0x737u};
+                                                      0x402u, 0x403u, 0x423u, 0x623u, 0x737u};
 constexpr uint32_t HeaderWords = 4u, MaxSlots = 32u, AdvancesPerPacket = 8u;
 constexpr uint32_t ResolveDispatchesPerPacket = 4u;
 constexpr uint64_t WordBytes = sizeof(UInt4);
@@ -311,7 +311,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             auto &uniform = slot == 0u ? workUniform : resolveUniforms[slot - 1u];
             if (!Allocate(uniform, sizeof(StageWork)))
                 break;
-            const uint32_t length = entry < SelectPair ? bodyCount : contactLease->patchCount;
+            const uint32_t length = entry == SelectPair || entry == ApplyImpact ? contactLease->patchCount : bodyCount;
             const uint32_t count = std::min(length - first, WorkItemLimit(Domain::Bodies));
             const StageWork range{{first, count, 0u, 0u}};
             std::vector<uint8_t> bytes(sizeof(range));
@@ -321,7 +321,9 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             first += count;
             if (first == length) {
                 first = 0u;
-                if (entry != FlattenRoots || --parentPasses == 0u)
+                if (entry == SelectPair && !resolveConnected)
+                    entry = ApplyImpact;
+                else if (entry != FlattenRoots || --parentPasses == 0u)
                     entry = static_cast<Entry>(entry + 1u);
             }
         }
@@ -350,7 +352,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             return {};
         if (phase == Phase::ResolveImpacts)
             return Resolve();
-        if (contactLease->patchCount == 0u) {
+        if (contactLease->patchCount == 0u && !swept) {
             Finish();
             return {};
         }
@@ -358,6 +360,8 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             (swept && !Allocate(frozen[SweepChoice], (uint64_t(bodyCount) * 3u + 1u) * sizeof(uint32_t))) ||
             !AllocateScratch())
             return Retain({nullptr, [self = shared_from_this()] { return self->Next(); }});
+        if (retainChoices)
+            retainChoices(frozen[SweepChoice]);
         if (phase == Phase::InitializeJobs) {
             StageWork work{{0u, contactLease->patchCount, 0u, 0u}};
             std::vector<uint8_t> bytes(sizeof(work));
@@ -366,6 +370,10 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                                                    {Dispatch(swept ? InitializeSweep : Initialize)});
             return Retain({packet,
                            [self = shared_from_this()] {
+                               if (self->contactLease->patchCount == 0u) {
+                                   self->Finish();
+                                   return JoltGpuControlWork{};
+                               }
                                self->phase = Phase::AdvanceJobs;
                                return self->Next();
                            },
@@ -406,7 +414,8 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                      if (self->swept) {
                          self->scratch.reset();
                          self->phase = Phase::ResolveImpacts;
-                         if (result.w) {
+                         self->resolveConnected = result.w != 0u;
+                         if (self->resolveConnected) {
                              self->resolveEntry = FlattenRoots;
                              for (uint32_t links = self->bodyCount; links > 1u; links = 1u + (links - 1u) / 32u)
                                  ++self->resolveParentPasses;
@@ -435,9 +444,11 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
     std::shared_ptr<rhi::ComputeBuffer> scratch, workUniform;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, ResolveDispatchesPerPacket - 1u> resolveUniforms;
     std::function<void()> completed;
+    std::function<void(const std::shared_ptr<rhi::ComputeBuffer> &)> retainChoices;
     const bool swept;
     Phase phase = Phase::InitializeJobs;
     Entry resolveEntry = SelectPair;
+    bool resolveConnected = false;
     uint32_t slots = 0u, scratchWords = 0u, bodyCount = 0u, resolveFirst = 0u, resolveParentPasses = 0u;
 };
 
@@ -452,10 +463,12 @@ JoltGpuControlWork JoltGpuNarrowphase::Prepare(const JoltGpuStorage &storage, co
     return std::make_shared<Impl::Execution>(m_impl, storage, inputs, budget, std::move(completed), false)->Next();
 }
 
-JoltGpuControlWork JoltGpuNarrowphase::PrepareSweeps(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+JoltGpuControlWork JoltGpuNarrowphase::PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
                                                      FrameWorkOwner &budget, std::function<void()> completed)
 {
-    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, budget, std::move(completed), true)->Next();
+    auto execution = std::make_shared<Impl::Execution>(m_impl, storage, inputs, budget, std::move(completed), true);
+    execution->retainChoices = [&inputs](const auto &choices) { inputs.SetSweepChoices(choices); };
+    return execution->Next();
 }
 
 } // namespace infernux

@@ -82,6 +82,8 @@ class JoltMixedContactStep final
     void AcceptSleepLinks();
     void CaptureCpuBoundary(uint32_t boundary);
     [[nodiscard]] const std::vector<JPH::GPU::UInt4> &EncodeTree(uint32_t substep, float predictedInterval);
+    [[nodiscard]] const std::vector<JPH::GPU::UInt4> &EncodeContinuousTree(JoltCpuContactPublication &);
+    [[nodiscard]] bool NeedsContinuous(const JoltGpuStorage &, const JoltGpuScene::Publication &, uint32_t world) const;
     void Collect(uint32_t substep, const JoltGpuScene::Publication &, const Policy &, const Candidate &,
                  const JoltGpuModel *responseModel);
     [[nodiscard]] std::vector<ResponsePatch> &Responses() noexcept
@@ -103,6 +105,7 @@ class JoltMixedContactStep final
 
   private:
     friend class JoltMixedConstraintSolver;
+    friend class JoltMixedContinuousContacts;
     struct MassFrame
     {
         JPH::Vec3 scale, localCOM;
@@ -124,6 +127,7 @@ class JoltMixedContactStep final
         JPH::RefConst<JPH::Shape> shape;
         PhysicsTargetReference target;
         bool sensor, allowResponse, dynamic;
+        int collisionDetectionMode;
     };
     struct Pose
     {
@@ -146,6 +150,12 @@ class JoltMixedContactStep final
     std::vector<SleepingContact> m_sleepLinks;
     size_t m_nextSleepIsland = 0;
     std::shared_ptr<ImpulseHistory> m_impulseHistory;
+    std::vector<Pose> m_continuousPose;
+    std::vector<JPH::Vec3> m_continuousDisplacement;
+    std::vector<JPH::GPU::UInt4> m_continuousTree;
+    bool m_cpuDynamicResponse = false, m_cpuKinematicResponse = false;
+    bool m_cpuContinuous = false, m_cpuDynamicContinuous = false;
+    const std::vector<JPH::GPU::UInt4> &EncodeBvh(const std::vector<spatial::Bounds> &, std::vector<JPH::GPU::UInt4> &);
     std::vector<uint32_t> m_ids, m_escape;
     spatial::Bvh m_tree;
 };
@@ -162,11 +172,17 @@ class JoltGpuMixedContacts final
                                               const std::shared_ptr<const JoltGpuScene::Publication> &,
                                               JoltMixedContactStep &, const JoltMixedContactStep::Policy &,
                                               std::function<JoltGpuControlWork()>);
+    [[nodiscard]] JoltGpuControlWork DiscoverContinuous(const JoltGpuStorage &, const JPH::GPU::StepParams &,
+                                                        const std::shared_ptr<const JoltGpuScene::Publication> &,
+                                                        JoltMixedContactStep &, JoltCpuContactPublication &,
+                                                        const JoltMixedContactStep::Policy &,
+                                                        std::function<void(JPH::GPU::UInt4)>,
+                                                        std::function<JoltGpuControlWork()>);
 
   private:
     struct Job;
     rhi::ComputeHost m_host;
-    std::shared_ptr<rhi::ComputeKernel> m_kernel;
-    std::vector<uint32_t> m_ports;
+    std::array<std::shared_ptr<rhi::ComputeKernel>, 2> m_kernels;
+    std::array<std::vector<uint32_t>, 2> m_ports;
 };
 } // namespace infernux

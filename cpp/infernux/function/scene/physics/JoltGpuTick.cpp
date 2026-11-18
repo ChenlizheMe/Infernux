@@ -326,11 +326,13 @@ class JoltGpuTick::Impl
         ExchangeCoupledContacts,
         ReportContactsAfterVelocity,
         IntegrateCoupledBodies,
+        PrepareCoupledSweep,
         PrepareSweep,
         CaptureSweepMotion,
         BuildSweptBounds,
         SweptBroadphase,
         ResolveSweep,
+        ResolveCoupledSweep,
         ReportSweep,
         Integrate,
         IntegrateSwept,
@@ -745,7 +747,8 @@ class JoltGpuTick::Impl
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
                phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareCoupledContacts ||
-               phase == Phase::IntegrateCoupledBodies || phase == Phase::PrepareContactStore ||
+               phase == Phase::IntegrateCoupledBodies || phase == Phase::PrepareCoupledSweep ||
+               phase == Phase::ResolveCoupledSweep || phase == Phase::PrepareContactStore ||
                phase == Phase::PrepareSweep || phase == Phase::SweptBroadphase || phase == Phase::ResolveSweep ||
                phase == Phase::ReportSweep || CoupledFeedbackPhase(phase);
     }
@@ -816,6 +819,8 @@ class JoltGpuTick::Impl
         case Phase::ReportContactsAfterVelocity:
         case Phase::PrepareCoupledContacts:
         case Phase::IntegrateCoupledBodies:
+        case Phase::PrepareCoupledSweep:
+        case Phase::ResolveCoupledSweep:
         case Phase::WarmCoupledContacts:
         case Phase::ExchangeCoupledContacts:
         case Phase::ProjectCoupledContacts:
@@ -877,8 +882,12 @@ class JoltGpuTick::Impl
         const bool velocity = tickParameters.counts.w && (responding || control.prepareCoupledContacts);
         const bool coupledPositions = control.prepareCoupledContacts && !inputs.GetExternalContactBodies().empty();
         const bool position = tickParameters.solve.x && (responding || coupledPositions);
-        const auto localDrift = storage.HasSweepBodies(selectedRow) ? Phase::PrepareSweep : Phase::Integrate;
-        const auto drift = control.prepareCoupledContacts ? Phase::IntegrateCoupledBodies : localDrift;
+        const bool coupledSweep = inputs.NeedsCoupledSweep();
+        const auto localDrift =
+            storage.HasSweepBodies(selectedRow) || coupledSweep ? Phase::PrepareSweep : Phase::Integrate;
+        const auto drift = control.prepareCoupledContacts
+                               ? (coupledSweep ? Phase::PrepareCoupledSweep : Phase::IntegrateCoupledBodies)
+                               : localDrift;
         next.islandBatchFirst = 0;
         next.islandBatchLanes = 0;
         next.localFirst = 0;
@@ -966,6 +975,9 @@ class JoltGpuTick::Impl
         case Phase::IntegrateCoupledBodies:
             next.phase = localDrift;
             break;
+        case Phase::PrepareCoupledSweep:
+            next.phase = Phase::PrepareSweep;
+            break;
         case Phase::BuildConstraints:
             next.phase = Phase::ClassifyArticulations;
             break;
@@ -1012,9 +1024,14 @@ class JoltGpuTick::Impl
             next.phase = Phase::SweptBroadphase;
             break;
         case Phase::SweptBroadphase:
-            next.phase = inputs.GetSweepContacts()->patchCount ? Phase::ResolveSweep : Phase::Integrate;
+            next.phase = inputs.GetSweepContacts()->patchCount || coupledSweep ? Phase::ResolveSweep : Phase::Integrate;
             break;
         case Phase::ResolveSweep:
+            next.phase = coupledSweep                   ? Phase::ResolveCoupledSweep
+                         : control.prepareContactReport ? Phase::ReportSweep
+                                                        : Phase::IntegrateSwept;
+            break;
+        case Phase::ResolveCoupledSweep:
             next.phase = control.prepareContactReport ? Phase::ReportSweep : Phase::IntegrateSwept;
             break;
         case Phase::ReportSweep:
@@ -1203,6 +1220,7 @@ class JoltGpuTick::Impl
     JoltGpuControlWork PrepareSweep()
     {
         inputs.SetSweepContacts(nullptr);
+        inputs.SetSweepChoices(nullptr);
         if (!inputs.GetSweepBodies()) {
             auto bodies = rhi::ComputeBuffer::TryCreatePrivate(
                 host, {uint64_t(tickParameters.selectedCounts.x) * sizeof(JPH::GPU::SweepBody) / sizeof(uint32_t),
@@ -1306,6 +1324,8 @@ class JoltGpuTick::Impl
         continuationResumeAfter = selected.resumeAfter;
         if (batch)
             batchKind = kind;
+        else if (continuationResumeAfter == JoltGpuControlWork::ResumeAfter::HostWork)
+            submissionBusy = false;
         else if (workContinuation) {
             submissionBusy = true;
             busyOpportunity = work.Opportunity();
@@ -1323,7 +1343,8 @@ class JoltGpuTick::Impl
     static bool CoupledFeedbackPhase(Phase phase)
     {
         return phase == Phase::WarmCoupledContacts || phase == Phase::ExchangeCoupledContacts ||
-               phase == Phase::IntegrateCoupledBodies || phase == Phase::ProjectCoupledContacts;
+               phase == Phase::IntegrateCoupledBodies || phase == Phase::PrepareCoupledSweep ||
+               phase == Phase::ResolveCoupledSweep || phase == Phase::ProjectCoupledContacts;
     }
 
     void ModelAccepted()
@@ -1971,13 +1992,17 @@ class JoltGpuTick::Impl
                 const bool warming = stageCursor.phase == Phase::WarmCoupledContacts;
                 const bool projecting = stageCursor.phase == Phase::ProjectCoupledContacts;
                 const bool integrating = stageCursor.phase == Phase::IntegrateCoupledBodies;
-                const auto phase = preparing     ? CoupledStage::Prepare
-                                   : warming     ? CoupledStage::WarmVelocity
-                                   : projecting  ? CoupledStage::Position
-                                   : integrating ? CoupledStage::Integrate
-                                                 : CoupledStage::Velocity;
+                const bool preparingSweep = stageCursor.phase == Phase::PrepareCoupledSweep;
+                const bool resolvingSweep = stageCursor.phase == Phase::ResolveCoupledSweep;
+                const auto phase = preparing        ? CoupledStage::Prepare
+                                   : warming        ? CoupledStage::WarmVelocity
+                                   : projecting     ? CoupledStage::Position
+                                   : integrating    ? CoupledStage::Integrate
+                                   : preparingSweep ? CoupledStage::PrepareSweep
+                                   : resolvingSweep ? CoupledStage::Sweep
+                                                    : CoupledStage::Velocity;
                 using JPH::GPU::Domain;
-                const bool iterating = !preparing && !warming && !integrating;
+                const bool iterating = !preparing && !warming && !integrating && !preparingSweep && !resolvingSweep;
                 const bool canBatch = iterating && !control.prepareParticipant &&
                                       IslandCount(Domain::IslandPatches) == 0 && IslandCount(Domain::IslandJoints) == 0;
                 const uint32_t iterations = projecting ? tickParameters.solve.x : tickParameters.counts.w;

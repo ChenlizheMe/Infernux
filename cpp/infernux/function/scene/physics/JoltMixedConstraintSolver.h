@@ -4,6 +4,7 @@
 
 namespace infernux
 {
+class JoltMixedContinuousContacts;
 class JoltMixedConstraintSolver final
 {
   public:
@@ -22,5 +23,6 @@ class JoltMixedConstraintSolver final
     };
     rhi::ComputeHost m_host;
     Program m_velocity, m_position, m_wake;
+    std::shared_ptr<JoltMixedContinuousContacts> m_continuous;
 };
 } // namespace infernux

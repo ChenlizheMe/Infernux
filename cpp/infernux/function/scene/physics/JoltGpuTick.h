@@ -20,8 +20,8 @@ struct JoltGpuArticulationState;
 /// The existing tick source alone submits, accounts and observes every packet.
 /// Continuations normally wait for their real receipt. A producer may explicitly
 /// permit pure host preparation after acceptance when GPU dependencies suffice.
-/// A continuation without a packet retains host preparation under capacity pressure;
-/// the owner retries only at a new opportunity or after resource progress.
+/// A continuation without a packet usually waits for capacity to change.
+/// HostWork instead carries the next bounded unit of already ready CPU work.
 /// Neither form may submit, wait or reenter. Both absent means chain complete.
 struct JoltGpuControlWork
 {
@@ -33,7 +33,8 @@ struct JoltGpuControlWork
     enum class ResumeAfter
     {
         Completion,
-        Acceptance
+        Acceptance,
+        HostWork
     };
     ResumeAfter resumeAfter = ResumeAfter::Completion;
     // Optional multi-unit packet contraction before acceptance. It must
@@ -103,6 +104,8 @@ enum class JoltGpuCoupledContactStage
     WarmVelocity,
     Velocity,
     Integrate,
+    PrepareSweep,
+    Sweep,
     Position
 };
 
