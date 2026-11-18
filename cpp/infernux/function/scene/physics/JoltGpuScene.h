@@ -284,8 +284,9 @@ class JoltGpuScene final
     [[nodiscard]] bool TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer = {},
                                        Consumer finalConsumer = {});
     [[nodiscard]] bool TryBeginWork(RuntimeWorld &world, JoltGpuControlWork &work, bool needsSnapshot = true);
-    bool PublishCompletedTick(RuntimeWorld &world);
-    bool PublishCompletedControl(RuntimeWorld &world);
+    // Consume a published serial exactly once; polling a writer is the completion boundary.
+    bool ConsumeCompletedTick(RuntimeWorld &world);
+    bool ConsumeCompletedControl(RuntimeWorld &world);
     [[nodiscard]] const std::shared_ptr<const Publication> &GetPublished(const RuntimeWorld &world) const;
     [[nodiscard]] JoltGpuControlWork PrepareSleepQuery(const std::shared_ptr<const Publication> &publication,
                                                        std::vector<uint32_t> relativeBodies,

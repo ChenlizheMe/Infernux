@@ -980,7 +980,7 @@ void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
         domain.cpuContacts.ValidateCompleted(identity, substeps);
     std::shared_ptr<const JoltGpuScene::Publication> gpu;
     if (domain.gpuRegistered) {
-        if (!m_gpuScene->PublishCompletedTick(domain.owner))
+        if (!m_gpuScene->ConsumeCompletedTick(domain.owner))
             throw std::logic_error("Completed Fixed did not publish its GPU state");
         gpu = m_gpuScene->GetPublished(domain.owner);
         domain.gpuContacts.ValidateCompleted(gpu, substeps);
@@ -1505,7 +1505,7 @@ bool PhysicsWorld::ServiceParticipantOutputs()
     if (domain.controlPending) {
         if (status != JoltGpuTick::Status::Complete)
             return false;
-        if (!m_gpuScene->PublishCompletedControl(domain.owner))
+        if (!m_gpuScene->ConsumeCompletedControl(domain.owner))
             throw std::runtime_error("Participant output could not observe completed control");
         ObserveGpuPublication(domain, domain.controlNumericalChange);
         domain.controlPending = domain.controlNumericalChange = false;
@@ -2104,21 +2104,23 @@ void PhysicsWorld::DrainGpuSource(PhysicsDomain &domain) const
 }
 bool PhysicsWorld::AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const
 {
-    if (!m_gpuScene->IsWriterFor(domain.owner) &&
-        m_gpuScene->GetTickStatus(domain.owner) != JoltGpuTick::Status::Complete)
-        return false;
-    if (synchronous) {
-        DrainGpuSource(domain);
-    } else {
-        if (!m_gpuWork->IsActive())
-            return false;
-        AdmissionScope admission(*m_gpuScene, domain.owner);
-        (void)m_gpuWork->AdvanceDependency(m_gpuScene->GetSourceId(),
-                                           [this, &domain] { return Availability(*m_gpuHost); });
+    // A published World has already released its writer. Its consumer must not
+    // drive the shared GPU source again while another World owns the next job.
+    if (m_gpuScene->IsWriterFor(domain.owner)) {
+        if (synchronous) {
+            DrainGpuSource(domain);
+        } else {
+            if (!m_gpuWork->IsActive())
+                return false;
+            AdmissionScope admission(*m_gpuScene, domain.owner);
+            (void)m_gpuWork->AdvanceDependency(m_gpuScene->GetSourceId(),
+                                               [this] { return Availability(*m_gpuHost); });
+        }
     }
-    if (m_gpuScene->GetTickStatus(domain.owner) == JoltGpuTick::Status::Failed)
+    const auto status = m_gpuScene->GetTickStatus(domain.owner);
+    if (status == JoltGpuTick::Status::Failed)
         throw std::runtime_error("GPU physics step failed; stop the runtime before restarting");
-    return m_gpuScene->GetTickStatus(domain.owner) == JoltGpuTick::Status::Complete;
+    return status == JoltGpuTick::Status::Complete;
 }
 bool PhysicsWorld::BeginGpuControl(PhysicsDomain &domain, bool numericalChange, const JoltGpuScene::Consumer &consumer,
                                    bool requirePublication) const
@@ -2143,7 +2145,7 @@ bool PhysicsWorld::AdvanceGpuControl(PhysicsDomain &domain, bool synchronous) co
         return true;
     if (!AdvanceGpuJob(domain, synchronous))
         return false;
-    if (!m_gpuScene->PublishCompletedControl(domain.owner))
+    if (!m_gpuScene->ConsumeCompletedControl(domain.owner))
         throw std::runtime_error("GPU control failed to publish its complete result");
     ObserveGpuPublication(domain, domain.controlNumericalChange);
     domain.controlPending = false;

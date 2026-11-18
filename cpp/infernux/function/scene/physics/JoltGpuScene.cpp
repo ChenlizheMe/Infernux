@@ -2919,18 +2919,16 @@ void JoltGpuScene::RunPublicationObservation(RuntimeWorld &world, const std::sha
     }
 }
 
-bool JoltGpuScene::PublishCompletedTick(RuntimeWorld &world)
+bool JoltGpuScene::ConsumeCompletedTick(RuntimeWorld &world)
 {
-    m_impl->Service();
     auto &domain = m_impl->Domain(world);
     if (domain.observedTick == domain.tickSerial)
         return false;
     domain.observedTick = domain.tickSerial;
     return true;
 }
-bool JoltGpuScene::PublishCompletedControl(RuntimeWorld &world)
+bool JoltGpuScene::ConsumeCompletedControl(RuntimeWorld &world)
 {
-    m_impl->Service();
     auto &domain = m_impl->Domain(world);
     if (domain.observedControl == domain.controlSerial)
         return false;
@@ -2970,7 +2968,8 @@ bool JoltGpuScene::HasRunningFixedTick(const RuntimeWorld &world) const noexcept
 }
 JoltGpuTick::Status JoltGpuScene::GetTickStatus(const RuntimeWorld &world)
 {
-    m_impl->Service();
+    if (IsWriterFor(world))
+        m_impl->Service();
     return m_impl->Domain(world).status;
 }
 FrameWorkOwner::SourceId JoltGpuScene::GetSourceId() const noexcept
