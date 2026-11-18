@@ -7,6 +7,7 @@ Compiler intermediates stay in the project cache; the Python SDK is not replaced
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import platform
 from pathlib import Path
@@ -105,18 +106,35 @@ def _check_source(root):
     return root
 
 
-def _source_root(cache):
-    configured = os.environ.get("INFERNUX_ENGINE_SOURCE_ROOT")
+def _source_root(cache, request, log):
+    configured = os.environ.get("INFERNUX_ENGINE_SOURCE_ROOT", "")
     if configured:
         return _check_source(Path(configured).resolve())
     checkout = Path(__file__).resolve().parents[3]
-    for root in (checkout, cache / "source"):
-        if (root / "cpp/apps/player/PlayerHost.cpp").is_file():
-            return _check_source(root)
-    raise RuntimeError(
-        f"Offline Player rebuild needs the local engine {ENGINE_RELEASE} source and its "
-        "external submodules. Set INFERNUX_ENGINE_SOURCE_ROOT to the matching checkout."
-    )
+    if (checkout / "cpp/apps/player/PlayerHost.cpp").is_file():
+        return _check_source(checkout)
+    provenance = Path(__file__).resolve().parents[1] / "resources/player-build-source.json"
+    if provenance.is_file():
+        identity = json.loads(provenance.read_text(encoding="utf-8"))
+        if identity["engine_release"] != ENGINE_RELEASE:
+            raise RuntimeError("Installed SDK source provenance does not match its release")
+        if identity.get("dirty"):
+            raise RuntimeError("This development SDK contains uncommitted source changes. "
+                               "Set INFERNUX_ENGINE_SOURCE_ROOT to its original source checkout before rebuilding Players.")
+        revision = identity["revision"]
+    else:
+        raise RuntimeError("The installed SDK has no Player source provenance")
+    source = cache / "source"
+    if not (source / ".git").exists():
+        _run(["git", "clone", "--no-checkout", "--filter=blob:none",
+              "https://github.com/ChenlizheMe/Infernux.git", str(source)],
+             cwd=cache, request=request, log=log)
+    _run(["git", "fetch", "--depth", "1", "origin", revision],
+         cwd=source, request=request, log=log)
+    _run(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=source, request=request, log=log)
+    _run(["git", "submodule", "update", "--init", "--recursive", "--depth", "1"],
+         cwd=source, request=request, log=log)
+    return _check_source(source)
 
 
 def _rebuild(root, destination, build, request, options, log):
@@ -171,62 +189,55 @@ def prepare_player_runtime(request, installed_root, inspect, *, options=None):
     or newly compiled payload can be returned. Failures never publish a partial
     replacement. Build logs survive failure and cancellation.
     """
-    installed = Path(installed_root)
+    installed = Path(installed_root).resolve()
     try:
         inspect(installed)
         return installed
     except (OSError, ValueError, RuntimeError) as mismatch:
         request.report("runtime-rebuild", 0, 1, str(mismatch))
-    if not any((parent / "inx_package.json").is_file() for parent in installed.parents):
-        raise RuntimeError("Install the platform plugin before rebuilding its Player")
+
+    # Compatible authoring/CI payloads are read-only inputs. Only an actual
+    # rebuild publishes files and therefore requires an installed owner.
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+    from infernux.plugins.registry import PluginRegistry
+    from infernux.version import ENGINE_COMPATIBILITY_VERSION
+
+    registry = PluginRegistry(str(request.project_root))
+    package = registry.installed_package_for_path(str(installed))
+    if not package.get("enabled", True):
+        raise RuntimeError(f"The platform plugin is disabled: {package['reference']}")
+    requirement = str(package.get("engine", ""))
+    if Version(ENGINE_COMPATIBILITY_VERSION) not in SpecifierSet(requirement):
+        raise RuntimeError(f"Platform plugin {package['reference']} requires Infernux {requirement}; "
+                           f"the running engine is {ENGINE_COMPATIBILITY_VERSION}")
     identity = f"{ENGINE_RELEASE}/{request.target}/cp{sys.version_info.major}{sys.version_info.minor}/{sys.platform}/{platform.machine()}"
     key = hashlib.sha256(identity.encode()).hexdigest()[:16]
     cache = Path(request.project_root) / "Library/PlayerRuntime" / key
     cache.mkdir(parents=True, exist_ok=True)
     # OS locks release on process exit. Concurrent exports share one compile.
-    with _build_lock(installed.parent / ".player-rebuild.lock", request):
+    with _build_lock(cache / "rebuild.lock", request):
         try:
             inspect(installed)
             return installed
         except (OSError, ValueError, RuntimeError):
             pass
         log = cache / "rebuild.log"
-        source = _source_root(cache)
+        source = _source_root(cache, request, log)
         native_build_root = Path(request.profile.options.get("player_native_build_root") or cache / "build").resolve()
-        # Keep publication on the installed plugin's volume, so the final
-        # directory renames cannot turn into a cross-volume partial copy.
-        work = Path(tempfile.mkdtemp(prefix=".player-candidate-", dir=installed.parent))
-        retain_backup = False
+        # Compiler output remains outside the watched package until its complete
+        # files, identities and ownership can be published together.
+        work = Path(tempfile.mkdtemp(prefix="candidate-", dir=cache))
         try:
             candidate = work / "player"
             _rebuild(source, candidate, native_build_root, request, options or {}, log)
             inspect(candidate)
-            # The installer owns these asset GUIDs. Retain matching sidecars
-            # while replacing the generated bytes, so its ledger stays stable.
-            if installed.is_dir():
-                for metadata in installed.rglob("*.meta"):
-                    relative = metadata.relative_to(installed)
-                    target = candidate / relative
-                    if target.with_suffix("").exists():
-                        shutil.copy2(metadata, target)
             request.cancellation.raise_if_cancelled()
-            previous = work / "previous"
-            if installed.exists():
-                installed.rename(previous)
-            try:
-                candidate.rename(installed)
-            except OSError as publish_error:
-                if previous.exists():
-                    try:
-                        previous.rename(installed)
-                    except OSError as restore_error:
-                        retain_backup = True
-                        raise RuntimeError(f"Player payload restore failed; previous payload retained at {previous}: {restore_error}") from publish_error
-                raise
-            if previous.exists():
-                shutil.rmtree(previous)
+            registry.publish_generated_members(
+                str(installed), str(candidate),
+                expected_transaction_id=str(package["transaction_id"]),
+            )
         finally:
-            if not retain_backup:
-                shutil.rmtree(work)
+            shutil.rmtree(work)
         request.report("runtime-rebuild", 1, 1, "Compatible Player rebuilt", log=str(log))
         return installed
