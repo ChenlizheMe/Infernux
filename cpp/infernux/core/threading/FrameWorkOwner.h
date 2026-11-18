@@ -403,6 +403,7 @@ class FrameWorkOwner
         bool awake = true;
         uint64_t lastIoService = 0;
         size_t profileIndex = 0;
+        std::optional<FrameWorkFacts> lastDescription = std::nullopt;
     };
     struct Choice
     {
@@ -417,7 +418,8 @@ class FrameWorkOwner
     bool DriveRequired(SourceId id, ServiceKind kind, const std::function<FrameGpuAvailability()> &gpuAvailability,
                        const std::function<FrameWorkWaitResult(SourceId, uint64_t)> &waitForProgress);
     std::vector<Choice> DescribeSources();
-    std::optional<FrameWorkFacts> DescribeSource(const std::shared_ptr<Source> &source, bool interactive);
+    std::optional<FrameWorkFacts> DescribeSource(const std::shared_ptr<Source> &source, bool interactive,
+                                                 bool peerQuery = false);
     bool AdvanceChoice(Choice &choice, bool gpu, bool interactive);
     bool Select(std::vector<Choice> &choices, bool gpu, bool interactive = false);
     static bool HasPending(const FrameWorkFacts &facts);

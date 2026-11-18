@@ -403,19 +403,26 @@ std::vector<FrameWorkOwner::Choice> FrameWorkOwner::DescribeSources()
     return choices;
 }
 
-std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_ptr<Source> &source, bool interactive)
+std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_ptr<Source> &source, bool interactive,
+                                                             bool peerQuery)
 {
     if (m_serviceKind == ServiceKind::SynchronousRequired &&
         (m_requiredSources.empty() || source->id != m_requiredSources.back()))
         return std::nullopt;
     if (!source->awake || source->observedOpportunity != m_opportunity)
         return std::nullopt;
+    // A component can submit work from its host callback. Its consumer may
+    // inspect this source's load while that callback still owns its state.
+    if (peerQuery &&
+        std::find(m_callbackSources.begin(), m_callbackSources.end(), source->id) != m_callbackSources.end())
+        return source->lastDescription;
     Scope scope(*this);
     ServiceScope service(*this, interactive);
     CallbackScope callback(*this, *source, FrameWorkSourcePhase::Describe);
     auto facts = source->callbacks.describe();
     if (!source->awake)
         return std::nullopt; // Removed during the callback.
+    source->lastDescription = facts;
     return facts;
 }
 
@@ -440,7 +447,7 @@ FrameWorkPeers FrameWorkOwner::PeerWork(SourceId id)
         if (source->id == id)
             continue;
         peers.ioServiceSerial = std::max(peers.ioServiceSerial, source->lastIoService);
-        const auto facts = DescribeSource(source, source->callbacks.interactive);
+        const auto facts = DescribeSource(source, source->callbacks.interactive, true);
         if (!facts)
             continue;
         peers.otherReady |= facts->gpu.ready || (facts->host.ready && !facts->ioReady);

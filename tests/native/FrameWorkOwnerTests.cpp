@@ -571,6 +571,7 @@ static void ForegroundBeforeBackgroundWithNoReserve()
     FrameWorkOwner owner([&] { return now; });
     owner.Configure(100, 0);
     unsigned completed[2]{}, foreground = 0;
+    FrameWorkOwner::SourceId sourceIds[2]{};
     std::vector<unsigned> order;
     for (unsigned index = 0; index < 2; ++index) {
         FrameWorkSource source;
@@ -582,12 +583,15 @@ static void ForegroundBeforeBackgroundWithNoReserve()
         };
         source.advance = [&, index](bool gpu, uint64_t token) {
             assert(!gpu && token == index);
+            // Work submitted to the other source inside this callback sees
+            // our most recent ready state without reentering our description.
+            assert(owner.PeerWork(sourceIds[1 - index]).otherReady);
             order.push_back(index);
             ++completed[index];
             now += 20; // One indivisible, actually charged background quantum.
             return true;
         };
-        owner.AddSource(std::move(source));
+        sourceIds[index] = owner.AddSource(std::move(source));
     }
     const auto ready = [] { return FrameGpuAvailability::Ready; };
     const auto runtimeContinuation = [&] {
