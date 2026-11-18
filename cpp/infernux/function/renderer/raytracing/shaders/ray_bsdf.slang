@@ -208,3 +208,34 @@ public RayDirectionProposal ray_sample_continuous(float3 uniform, float3 shading
                                     diffuse_probability);
     return {sample.direction, pdf, sample.active};
 }
+
+/// The previous surface viewed from a directional light. A zero width disables this proposal.
+public struct RayReflectedLightLobe
+{
+    public float3 normal;
+    public float alpha;
+    public float3 toward_light;
+};
+
+/// The two proposals share solid-angle measure at the receiver. A rejected hemisphere sample has zero weight.
+public RayDirectionProposal ray_sample_reflected_light(float3 uniform, float3 normal, float3 geometric,
+    float3 outgoing, RayGgxMaterial material, float diffuse_probability, RayReflectedLightLobe guide)
+{
+    RayGgxMaterial reflector = {guide.alpha, float3(1.0), 1.0, 1.0};
+    if (uniform.z < 0.5)
+    {
+        let light_sample = ray_sample_ggx(uniform.xy, guide.normal, guide.normal, guide.toward_light, reflector);
+        float3 direction = -light_sample.direction;
+        bool active = light_sample.active && dot(direction, normal) > 0.0 && dot(direction, geometric) > 0.0 &&
+                      dot(outgoing, normal) > 0.0 && dot(outgoing, geometric) > 0.0;
+        float bsdf_pdf = ray_continuous_pdf(normal, geometric, outgoing, direction, material, diffuse_probability);
+        return {direction, 0.5 * (light_sample.pdf + bsdf_pdf), active};
+    }
+
+    uniform.z = 2.0 * uniform.z - 1.0;
+    let bsdf_sample = ray_sample_continuous(uniform, normal, geometric, outgoing, material, diffuse_probability);
+    float3 reflected = -bsdf_sample.direction;
+    float light_pdf = dot(reflected, guide.normal) > 0.0
+        ? ray_evaluate_ggx(guide.normal, guide.normal, guide.toward_light, reflected, reflector).pdf : 0.0;
+    return {bsdf_sample.direction, 0.5 * (bsdf_sample.pdf + light_pdf), bsdf_sample.active};
+}
