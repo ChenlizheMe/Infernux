@@ -26,6 +26,32 @@ class VertexProbe(shader.frag):
 '''
         source_path = str(SHADERS / 'vertex_probe.frag.py')
     source, libraries, schema, ranges = _prepare_source(text, source_path, 'builtin_stage', None, vertex_source=vertex)
+    if path.name == "particle_six_way_smoke.frag.py":
+        authored = json.loads(schema)
+        fields = {field["name"]: field for field in authored["parameters"]}
+        assert authored["domain"] == "particle"
+        assert authored["vertex_source"] is None
+        assert authored["info"]["shader_id"] == "infernux/particle/six_way_smoke"
+        assert fields["positive_axes_map"]["default"] == "white"
+        assert fields["negative_axes_map"]["default"] == "black"
+        assert fields["ambient_intensity"]["default"] == 0.0
+        assert authored["info"]["render_queue"] == 3000
+        assert authored["info"]["cull_mode"] == "none"
+        assert authored["info"]["depth_write"] is False
+        assert authored["info"]["blend"] == "premultiply"
+        # Exercise the native metadata consumer with the real author defaults.
+        material = native.InxMaterial("SixWaySmokeDefaults")
+        info = authored["info"]
+        material.apply_shader_render_meta(
+            info["cull_mode"], str(info["depth_write"]).lower(),
+            info["depth_test"], info["blend"], info["render_queue"],
+        )
+        state = material.get_render_state()
+        assert state.render_queue == 3000 and state.cull_mode == 0
+        assert state.depth_test_enable and not state.depth_write_enable
+        assert state.blend_enable
+        assert state.src_color_blend_factor == 1
+        assert state.dst_color_blend_factor == 7
     compiled = native._compile_shader_program(source, str(path), 'builtin_stage', libraries, ('spirv', 'wgsl'),
                                               source_ranges=ranges)
     assert {target['target'] for target in compiled['targets']} == {'spirv', 'wgsl'}

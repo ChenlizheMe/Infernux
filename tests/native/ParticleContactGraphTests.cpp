@@ -3,6 +3,7 @@
 #include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/renderer/vk/RenderGraph.h>
+#include <function/renderer/vk/VkDeviceContext.h>
 #include <function/resources/ShaderAsset/SlangNativeModule.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -27,6 +28,8 @@ template<class Tag, typename Tag::type Member> struct AuditAccess {
 #define AUDIT_MEMBER(tag, member, ...) \
     struct tag { using type = __VA_ARGS__; friend type audit_member(tag); }; \
     template struct AuditAccess<tag, &vk::RenderGraph::member>
+AUDIT_MEMBER(ContextTag, m_context, vk::VkDeviceContext* vk::RenderGraph::*);
+AUDIT_MEMBER(IdentityTag, m_deviceId, rhi::DeviceId vk::RenderGraph::*);
 AUDIT_MEMBER(DeviceTag, m_rhiDevice, vk::VulkanRhiDevice* vk::RenderGraph::*);
 AUDIT_MEMBER(PassesTag, m_passes, std::vector<vk::RenderPassData> vk::RenderGraph::*);
 AUDIT_MEMBER(BarrierTag, m_cmdPipelineBarrier2, PFN_vkCmdPipelineBarrier2 vk::RenderGraph::*);
@@ -128,12 +131,18 @@ int main() {
     };
     try {
         RecordingDevice device;
+        // A non-initialized context satisfies the compiler's ownership boundary.
+        // All resources are imported CPU-registry buffers: no Vulkan instance,
+        // VkDevice, allocation or submission is created by full Compile().
+        vk::VkDeviceContext context;
         {
             particle::ParticleGpuRuntime runtime;
             particle::ParticleGpuBounds bounds;
             particle::ParticleGpuGraphSpawnDomain spawn;
             particle::ParticleRenderGraph scheduler;
             vk::RenderGraph graph;
+            graph.*audit_member(ContextTag{}) = &context;
+            graph.*audit_member(IdentityTag{}) = 1;
             graph.*audit_member(DeviceTag{}) = &device.registry;
             graph.*audit_member(BarrierTag{}) = &CaptureBarriers;
             std::array<vk::NativeQueueBinding, static_cast<size_t>(rhi::QueueRole::Count)> topology;
@@ -182,8 +191,8 @@ int main() {
             record("dispatch_declares_particle_state_read", Declares(graph, dispatch.reads, states, rhi::Access::ShaderRead));
             record("solve_reads_particle_generation", Declares(graph, solve.reads, particleStates, rhi::Access::ShaderRead));
             record("dispatch_reads_transforms", Declares(graph, dispatch.reads, transforms, rhi::Access::UniformRead));
-            if (!graph.CompileExecutionOrder())
-                throw std::runtime_error("graph execution order failed to compile");
+            if (!graph.Compile())
+                throw std::runtime_error("production graph failed to compile");
             const auto order = graph.GetExecutionPassNames();
             result["production_execution_order"] = order;
             (graph.*audit_member(PrepareTag{}))();
@@ -211,6 +220,9 @@ int main() {
             // Normal control uses public PassBuilder declarations. It differs
             // only in accurately declaring the two actual writes and reads.
             vk::RenderGraph corrected;
+            corrected.*audit_member(ContextTag{}) = &context;
+            corrected.*audit_member(IdentityTag{}) = 1;
+            corrected.*audit_member(DeviceTag{}) = &device.registry;
             corrected.*audit_member(BarrierTag{}) = &CaptureBarriers;
             corrected.SetQueueTopology(topology);
             vk::ResourceHandle controlRecords, controlStates;
@@ -221,8 +233,11 @@ int main() {
             });
             auto reader = corrected.AddComputePass("CorrectDispatch", [&](vk::PassBuilder& b) {
                 b.ReadStorageBuffer(controlRecords); b.ReadStorageBuffer(controlStates);
+                b.SetSideEffect(); // Keep this read-only observation in the compiled graph.
                 return [](vk::RenderContext&) {};
             });
+            if (!corrected.Compile())
+                throw std::runtime_error("control graph failed to compile");
             (corrected.*audit_member(PrepareTag{}))();
             (corrected.*audit_member(InsertTag{}))(VK_NULL_HANDLE, writer.id);
             captured.clear();

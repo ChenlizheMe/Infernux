@@ -454,6 +454,10 @@ int main()
     manager.Stop();
     manager.UnloadAllScenes();
 
+    auto &viewBridge = SceneRenderBridge::Instance();
+    assert(!viewBridge.GetEditorViewedWorld());
+    viewBridge.SetEditorViewedWorld(manager.AuthoringWorld().id);
+    assert(viewBridge.GetEditorViewedWorld() == &manager.AuthoringWorld());
     TestRetiredCameraMaterials(manager);
 
     Scene *scene = manager.CreateScene("IndependentCameraCulling");

@@ -53,7 +53,7 @@ def main() -> None:
     initial_windows = _owned_window_count()
     package_resources = Path(engine_resources.get_package_resources_path())
     builtin_meta_before = {str(path) for path in package_resources.rglob("*.meta")}
-    builtin_shader = Path(engine_resources.resources_path) / "shaders" / "standard.vert"
+    builtin_shader = Path(engine_resources.resources_path) / "shaders" / "standard.vert.py"
 
     with tempfile.TemporaryDirectory(prefix="infernux-headless-") as root:
         project = Path(root)
@@ -115,34 +115,54 @@ def main() -> None:
             rigidbody.interpolation = RigidbodyInterpolation.Interpolate
             mover.add_component("SphereCollider")
             scene_manager = SceneManager.instance()
-            scene_manager.play()
+            play_mode = engine.get_play_mode_manager()
+            assert play_mode.enter_play_mode()
+            deadline = time.monotonic() + 20.0
+            while not play_mode.is_playing:
+                assert time.monotonic() < deadline, play_mode.state
+                engine.tick(0.0)
+                time.sleep(0.001)
+            # Play owns a clone. Test interpolation in that actual world, rather
+            # than continuing to edit the retained authoring Rigidbody.
+            from infernux.lib import _Infernux
+            with _Infernux._RuntimeWorldScope(scene_manager._runtime_world_ids[0]):
+                runtime_scene = scene_manager.get_active_scene()
+                mover = next(obj for obj in runtime_scene.get_root_objects()
+                             if obj.name == "KinematicInterpolationProbe")
+                rigidbody = mover.get_component("Rigidbody")
 
-            Time.time_scale = 0.5
-            engine.tick(0.02)
-            scaled_profile = scene_manager.get_last_frame_profile()
-            assert scaled_profile["fixed_steps"] == 1.0
-            assert math.isclose(Time.delta_time, 0.01, abs_tol=1e-7)
-            assert math.isclose(Time.fixed_time, 0.01, abs_tol=1e-7)
-            assert math.isclose(Time.fixed_unscaled_time, 0.02, abs_tol=1e-7)
+                Time.time_scale = 0.5
+                engine.tick(0.02)
+                scaled_profile = scene_manager.get_last_frame_profile()
+                assert scaled_profile["fixed_steps"] == 1.0
+                assert math.isclose(Time.delta_time, 0.01, abs_tol=1e-7)
+                assert math.isclose(Time.fixed_time, 0.01, abs_tol=1e-7)
+                assert math.isclose(Time.fixed_unscaled_time, 0.02, abs_tol=1e-7)
 
-            Time.time_scale = 0.0
-            fixed_time_before_pause = Time.fixed_time
-            engine.tick(0.02)
-            assert scene_manager.get_last_frame_profile()["fixed_steps"] == 0.0
-            assert math.isclose(Time.delta_time, 0.0, abs_tol=1e-7)
-            assert math.isclose(Time.fixed_time, fixed_time_before_pause, abs_tol=1e-7)
+                Time.time_scale = 0.0
+                fixed_time_before_pause = Time.fixed_time
+                engine.tick(0.02)
+                assert scene_manager.get_last_frame_profile()["fixed_steps"] == 0.0
+                assert math.isclose(Time.delta_time, 0.0, abs_tol=1e-7)
+                assert math.isclose(Time.fixed_time, fixed_time_before_pause, abs_tol=1e-7)
 
-            Time.time_scale = 1.0
-            engine.tick(0.01)
+                Time.time_scale = 1.0
+                engine.tick(0.01)
 
-            rigidbody.move_position(Vector3(4.0, 2.0, 0.0))
-            assert math.isclose(mover.transform.position.x, 0.0, abs_tol=1e-5)
-            engine.tick(0.01)
-            assert math.isclose(rigidbody.position.x, 4.0, abs_tol=1e-4)
-            assert math.isclose(mover.transform.position.x, 0.0, abs_tol=1e-4)
-            engine.tick(0.005)
-            assert math.isclose(mover.transform.position.x, 2.0, abs_tol=1e-3)
-            scene_manager.stop()
+                rigidbody.move_position(Vector3(4.0, 2.0, 0.0))
+                assert math.isclose(mover.transform.position.x, 0.0, abs_tol=1e-5)
+                engine.tick(0.01)
+                assert math.isclose(rigidbody.position.x, 4.0, abs_tol=1e-4)
+                assert math.isclose(mover.transform.position.x, 0.0, abs_tol=1e-4)
+                engine.tick(0.005)
+                assert math.isclose(mover.transform.position.x, 2.0, abs_tol=1e-3)
+            assert play_mode.exit_play_mode()
+            deadline = time.monotonic() + 20.0
+            while not play_mode.is_edit_mode:
+                assert time.monotonic() < deadline, play_mode.state
+                engine.tick(0.0)
+                time.sleep(0.001)
+
 
             try:
                 engine.tick(math.nan)
@@ -201,7 +221,7 @@ def main() -> None:
         def update(second_engine, frame):
             if frame == 0:
                 active_builtin_shader = (
-                    Path(engine_resources.resources_path) / "shaders" / "standard.vert"
+                    Path(engine_resources.resources_path) / "shaders" / "standard.vert.py"
                 )
                 second_lifetime_guids.append(
                     second_engine.get_asset_database().get_guid_from_path(

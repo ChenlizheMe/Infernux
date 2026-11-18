@@ -395,23 +395,20 @@ void VerifyBuiltinSixWaySmokeMaterial()
     const auto material = InxMaterial::CreateParticleSixWaySmokeMaterial();
     assert(material);
     assert(material->IsBuiltin());
-    assert(material->GetVertShaderName() == "infernux/particle/vertex");
+    // Particle geometry stages are injected by the particle renderer. The
+    // factory authors only the surface, leaving shader-owned defaults derived.
+    assert(!material->GetVertShaderReference().IsAssigned());
     assert(material->GetFragShaderName() == "infernux/particle/six_way_smoke");
-
+    assert(material->GetRenderStateOverrides() == 0);
     const auto document = material->SerializeDocument();
     assert(document.at("builtin").get<bool>());
-    assert(document.at("properties").at("positiveAxesMap").at("guid") == "white");
-    assert(document.at("properties").at("negativeAxesMap").at("guid") == "black");
-    assert(document.at("properties").at("ambientIntensity").at("value") == 0.0f);
-
-    const auto &state = material->GetRenderState();
-    assert(state.renderQueue == 3000);
-    assert(state.cullMode == MaterialCullMode::None);
-    assert(state.depthTestEnable);
-    assert(!state.depthWriteEnable);
-    assert(state.blendEnable);
-    assert(state.srcColorBlendFactor == MaterialBlendFactor::One);
-    assert(state.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha);
+    assert(document.at("properties").empty());
+    auto clone = material->Clone();
+    assert(!clone->GetVertShaderReference().IsAssigned());
+    assert(clone->GetFragShaderReference() == material->GetFragShaderReference());
+    assert(!clone->IsBuiltin());
+    assert(clone->GetRenderStateOverrides() == 0);
+    assert(clone->SerializeDocument().at("properties") == document.at("properties"));
 }
 
 void VerifyBackendNeutralRenderStateSchema()

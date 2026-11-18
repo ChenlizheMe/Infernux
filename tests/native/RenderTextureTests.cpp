@@ -31,6 +31,7 @@ class TestDevice final : public Device
     TestDevice()
     {
         caps.limits.maxTextureDimension2D = 4096;
+        caps.features.partialDepthTextureCopies = true;
         for (size_t i = 1; i < caps.formats.size(); ++i) {
             caps.formats[i] = {
                 static_cast<PixelFormat>(i),
@@ -279,8 +280,21 @@ int main()
         sampledDesc.sampledDepth = false;
         assert(target.Reconfigure(sampledDesc));
         assert(!HasTextureUsage(sampled.images.back().usage, TextureUsageFlags::Sampled));
+        // Devices without depth-region transfer sample the private attachment
+        // in a depth-writing pass, even when public sampled depth is disabled.
+        sampled.caps.features.partialDepthTextureCopies = false;
+        sampledDesc.width += 1;
+        assert(target.Reconfigure(sampledDesc));
+        assert(HasTextureUsage(sampled.images.back().usage, TextureUsageFlags::Sampled));
+        assert(!target.Acquire()->description.sampledDepth);
+        assert(!target.Acquire()->depth->GetSampler().IsValid());
         sampled.caps.formats[static_cast<size_t>(PixelFormat::D32SFloat)].optimalTiling =
-            FormatFeature::DepthStencilAttachment;
+            FormatFeature::DepthStencilAttachment | FormatFeature::TransferSource | FormatFeature::TransferDestination;
+        sampledDesc.width += 1;
+        Reject([&] { target.Reconfigure(sampledDesc); });
+        sampled.caps.features.partialDepthTextureCopies = true;
+        assert(target.Reconfigure(sampledDesc));
+        assert(!HasTextureUsage(sampled.images.back().usage, TextureUsageFlags::Sampled));
         sampledDesc.sampledDepth = true;
         Reject([&] { target.Reconfigure(sampledDesc); });
     }
