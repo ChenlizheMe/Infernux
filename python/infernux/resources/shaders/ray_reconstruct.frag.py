@@ -9,6 +9,7 @@ class RayReconstruct(shader.fullscreen):
     hidden = True
     signal = shader.input("signal", shader.UInt2D)
     primary = shader.input("primary", shader.UInt2D)
+    frame = shader.input("frame", shader.Color2D)
     motion = shader.input("motion", shader.UInt2D)
     previous_signal = shader.input("previous_signal", shader.UInt2D)
     previous_primary = shader.input("previous_primary", shader.UInt2D)
@@ -70,21 +71,42 @@ class RayReconstruct(shader.fullscreen):
         accepted = shader._previous_ray_geometry_serial()
         limit = 32.0
         if self.specular:
-            if fresh.z != previous_packet.z:
-                return fresh
             distance = shader.as_float(fresh.w)
-            previous_distance = shader.as_float(previous_packet.w)
-            if shader.abs(distance - previous_distance) > 0.02 + 0.075 * distance:
+            # The virtual image behind a planar mirror projects along the incident camera ray.
+            # Check camera parallax at that distance as well as motion at the visible receiver.
+            eye = camera.inverse_view_projection_matrix @ shader.vec4(0.0, 0.0, 1.0, 0.0)
+            incident = shader.normalize(position * eye.w - eye.xyz)
+            travel = distance if distance > 0.0 else camera.projection_params.y
+            virtual_clip = camera.previous_view_projection_matrix @ shader.vec4(position + travel * incident, 1.0)
+            if virtual_clip.w <= 0.0:
                 return fresh
-            if visibility.y != accepted:
-                if visibility.y < accepted:
+            virtual_uv = virtual_clip.xy / virtual_clip.w * shader.vec2(0.5, -0.5) + shader.vec2(0.5)
+            drift = shader.max(shader.abs(virtual_uv - uv), shader.abs(uv - previous_uv)) * shader.vec2(full)
+            still = visibility.y == accepted and shader.max(drift.x, drift.y) < 0.0625
+            # With a stationary ray distribution, different random endpoints sample the same integral.
+            # While moving, only a matching secondary surface and distance may carry mirror detail.
+            if not still:
+                if fresh.z != previous_packet.z:
                     return fresh
-                surface_id = fresh.z
-                if surface_id != 0 and surface_id != shader.uint(0xFFFFFFFF):
-                    stamps = self.geometry[visibility.x + (surface_id >> 2)]
-                    if stamps[surface_id & 3] > accepted:
+                previous_distance = shader.as_float(previous_packet.w)
+                if shader.abs(distance - previous_distance) > 0.02 + 0.075 * distance:
+                    return fresh
+                # Reject history when reflected detail moved farther than its projected GGX lobe.
+                roughness = shader.load(self.frame, source, 0).z
+                focal_pixels = 0.5 * shader.float(full.y) * shader.abs(camera.projection_matrix[1][1])
+                cone = focal_pixels * travel * roughness * roughness / virtual_clip.w
+                parallax = shader.abs(virtual_uv - previous_uv) * shader.vec2(full)
+                if shader.max(parallax.x, parallax.y) > 0.5 + cone:
+                    return fresh
+                if visibility.y != accepted:
+                    if visibility.y < accepted:
                         return fresh
-            limit = 8.0
+                    surface_id = fresh.z
+                    if surface_id != 0 and surface_id != shader.uint(0xFFFFFFFF):
+                        stamps = self.geometry[visibility.x + (surface_id >> 2)]
+                        if stamps[surface_id & 3] > accepted:
+                            return fresh
+                limit = 8.0
         elif visibility.y != accepted:
             # A diffuse estimate integrates many directions. The last ray's
             # endpoint cannot certify the other samples after a scene edit.

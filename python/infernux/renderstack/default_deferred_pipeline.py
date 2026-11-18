@@ -277,7 +277,7 @@ def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history, su
         with graph.add_pass(label) as render_pass:
             render_pass.set_textures({
                 "signal": packets[name], "primary": primary, "motion": motion,
-                "previous_signal": previous, "previous_primary": previous_primary,
+                "previous_signal": previous, "previous_primary": previous_primary, "frame": surface_frame,
             })
             render_pass.set_buffer("geometry", geometry)
             render_pass.write_color(output)
