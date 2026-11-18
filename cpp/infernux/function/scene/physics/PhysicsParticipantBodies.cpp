@@ -240,10 +240,10 @@ struct BodyPorts : std::enable_shared_from_this<BodyPorts>
         if (gpuBodies || cpuRows.empty() || !domain.cpuScene || domain.cpuContacts.CoupledHasLocalVelocityRows())
             return std::nullopt;
         const auto count = uint32_t(cpuRows.size());
-        const uint64_t bytes = uint64_t(count) * (sizeof(JPH::GPU::BodyModel) + sizeof(Motion) +
-                                                  uint64_t(rounds) * sizeof(Impulse)) +
-                               uint64_t(rounds) * (sizeof(JPH::GPU::BodyCommandParams) +
-                                                   sizeof(PhysicsParticipantStep) + sizeof(PhysicsParticipantIndices));
+        const uint64_t bytes =
+            uint64_t(count) * (sizeof(JPH::GPU::BodyModel) + sizeof(Motion) + uint64_t(rounds) * sizeof(Impulse)) +
+            uint64_t(rounds) * (sizeof(JPH::GPU::BodyCommandParams) + sizeof(PhysicsParticipantStep) +
+                                sizeof(PhysicsParticipantIndices));
         const auto remaining = work.ResourceRemaining(FrameWorkResource::Transfer);
         const auto budget = remaining ? remaining : work.ResourceState(FrameWorkResource::Transfer).limit;
         if (bytes > budget || bytes > 64u * 1024u)
@@ -285,8 +285,8 @@ struct BodyPorts : std::enable_shared_from_this<BodyPorts>
             std::vector<uint8_t> data(sizeof(values));
             std::memcpy(data.data(), &values, sizeof(values));
             result.updates.push_back({parameters, 0, std::move(data)});
-            result.responses.push_back(gpu.ParticipantCpuResponse(parameters, modelBuffer, motion,
-                                                                   impulses, journal, count, round));
+            result.responses.push_back(
+                gpu.ParticipantCpuResponse(parameters, modelBuffer, motion, impulses, journal, count, round));
         }
         result.apply = [self = shared_from_this(), count, rounds](const auto &packet) {
             std::vector<Impulse> values(size_t(count) * rounds);
@@ -297,8 +297,8 @@ struct BodyPorts : std::enable_shared_from_this<BodyPorts>
                 impulses.clear();
                 for (uint32_t row = 0; row < count; ++row) {
                     const auto &v = values[size_t(round) * count + row];
-                    impulses.push_back({self->cpuRows[row].id, JPH::Vec3(v[0], v[1], v[2]),
-                                       JPH::Vec3(v[3], v[4], v[5])});
+                    impulses.push_back(
+                        {self->cpuRows[row].id, JPH::Vec3(v[0], v[1], v[2]), JPH::Vec3(v[3], v[4], v[5])});
                 }
                 self->domain.cpuContacts.ApplyCoupledVelocityImpulses(impulses);
             }

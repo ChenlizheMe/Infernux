@@ -1886,18 +1886,17 @@ class JoltGpuTick::Impl
             }
             if (const auto stage = ParticipantStage(stageCursor.phase)) {
                 if (*stage == JoltGpuParticipantStage::Exchange && !HasRigidWork() &&
-                    control.participants.prepareClosedRounds &&
-                    tickParameters.counts.w - stageCursor.iteration > 1) {
+                    control.participants.prepareClosedRounds && tickParameters.counts.w - stageCursor.iteration > 1) {
                     // Same finite round cap as the coupled producer. A CPU
                     // owning-context capability decides whether closure is legal.
                     const auto rounds = std::min(tickParameters.counts.w - stageCursor.iteration, 4u);
-                    auto closed = control.participants.prepareClosedRounds(
-                        tickParameters, fixedDeltaTime, stageCursor.substep, stageCursor.iteration, rounds,
-                        [this](uint32_t count) {
-                            stageCursor.iteration += count - 1;
-                            NextSpan(stageCursor);
-                            Normalize(stageCursor);
-                        });
+                    auto closed =
+                        control.participants.prepareClosedRounds(tickParameters, fixedDeltaTime, stageCursor.substep,
+                                                                 stageCursor.iteration, rounds, [this](uint32_t count) {
+                                                                     stageCursor.iteration += count - 1;
+                                                                     NextSpan(stageCursor);
+                                                                     Normalize(stageCursor);
+                                                                 });
                     if (closed) {
                         SelectControlWork(std::move(*closed), PacketKind::NumericalWork);
                         return true;

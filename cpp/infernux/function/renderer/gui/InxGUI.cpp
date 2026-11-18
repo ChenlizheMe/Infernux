@@ -9,9 +9,9 @@
 #include "InxGUISemantics.h"
 #include "InxTextLayout.h"
 #include <function/editor/EditorShortcutInput.h>
+#include <function/editor/EditorSurfacePattern.h>
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeDrawing.h>
-#include <function/editor/EditorSurfacePattern.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/TextureUploadBuilder.h>
 #include <function/renderer/vk/DescriptorBindTrace.h>
@@ -275,7 +275,6 @@ uint64_t InxGUI::GetEditorIconId(const std::string &name)
     return GetImGuiTextureId(it->second);
 }
 
-
 void InxGUI::DrawThemeSurface()
 {
     if (m_playerMode)
@@ -295,8 +294,8 @@ void InxGUI::DrawThemeSurface()
 
     // Only top-level windows and explicitly bordered child panes get their
     // own chrome; transparent layout children do not stack extra frames.
-    const bool framed = !(window->Flags & ImGuiWindowFlags_ChildWindow) ||
-                        (window->ChildFlags & ImGuiChildFlags_Borders);
+    const bool framed =
+        !(window->Flags & ImGuiWindowFlags_ChildWindow) || (window->ChildFlags & ImGuiChildFlags_Borders);
     auto *draw = ImGui::GetWindowDrawList();
     const auto bounds = window->InnerClipRect;
     draw->PushClipRect(bounds.Min, bounds.Max, true);
@@ -337,8 +336,8 @@ void InxGUI::DrawThemeSurface()
                 pixels[(y * size + x) * 4 + 3] = static_cast<unsigned char>(density * 255.0f);
             }
         }
-        m_surfaceGrainUpload = SubmitTextureForImGui("EditorTheme/SurfaceGrain", pixels.data(), pixels.size(),
-                                                    size, size, VK_FILTER_LINEAR, true);
+        m_surfaceGrainUpload = SubmitTextureForImGui("EditorTheme/SurfaceGrain", pixels.data(), pixels.size(), size,
+                                                     size, VK_FILTER_LINEAR, true);
     }
     if (grain > 0.0f) {
         const float tile = 256.0f * EditorThemeRegistry::Float("SURFACE_GRAIN_SCALE") * m_dpiScale;
@@ -365,8 +364,8 @@ void InxGUI::DrawThemeSurface()
                 pixels[(y * width + x) * 4 + 3] = static_cast<unsigned char>(line * 255.0f);
             }
         }
-        m_surfaceHexUpload = SubmitTextureForImGui("EditorTheme/SurfaceHex", pixels.data(), pixels.size(),
-                                                   width, height, VK_FILTER_LINEAR, true);
+        m_surfaceHexUpload = SubmitTextureForImGui("EditorTheme/SurfaceHex", pixels.data(), pixels.size(), width,
+                                                   height, VK_FILTER_LINEAR, true);
     }
     if (hex > 0.0f) {
         const float scale = EditorThemeRegistry::Float("SURFACE_HEX_SCALE") * m_dpiScale;
@@ -377,11 +376,11 @@ void InxGUI::DrawThemeSurface()
         if (m_surfacePatternUploads[patternKind] == 0) {
             const auto pixels = theme_drawing::BuildSurfacePattern(patternKind);
             m_surfacePatternUploads[patternKind] = SubmitTextureForImGui(
-                key, pixels.data(), pixels.size(), theme_drawing::SurfacePatternSize,
-                theme_drawing::SurfacePatternSize, patternKind == 3 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR, true);
+                key, pixels.data(), pixels.size(), theme_drawing::SurfacePatternSize, theme_drawing::SurfacePatternSize,
+                patternKind == 3 ? VK_FILTER_NEAREST : VK_FILTER_LINEAR, true);
         }
-        const float tile = theme_drawing::SurfacePatternSize *
-                           EditorThemeRegistry::Float("SURFACE_PATTERN_SCALE") * m_dpiScale;
+        const float tile =
+            theme_drawing::SurfacePatternSize * EditorThemeRegistry::Float("SURFACE_PATTERN_SCALE") * m_dpiScale;
         tileSurface(key.c_str(), "SURFACE_PATTERN_TINT", pattern, ImVec2(tile, tile));
     }
     draw->PopClipRect();

@@ -193,9 +193,9 @@ JoltGpuBodyCommands::JoltGpuBodyCommands(rhi::ComputeHost &host, const ShaderTar
             if (port == std::end(Ports) || resource.set != 0)
                 throw std::invalid_argument("GPU participant body port has an unknown resource");
             const auto index = uint8_t(port - std::begin(Ports));
-            const bool writer =
-                index == Sleeps || (entry == 1 && index == ParticipantMotion) ||
-                ((entry == 2 || entry == 3) && index == States) || (entry == 3 && index == ParticipantJournal);
+            const bool writer = index == Sleeps || (entry == 1 && index == ParticipantMotion) ||
+                                ((entry == 2 || entry == 3) && index == States) ||
+                                (entry == 3 && index == ParticipantJournal);
             const bool uniform = index == Parameters;
             if (resource.binding.type !=
                     (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
@@ -209,12 +209,12 @@ JoltGpuBodyCommands::JoltGpuBodyCommands(rhi::ComputeHost &host, const ShaderTar
             mask |= 1u << index;
         }
         const uint32_t common = (1u << Parameters) | (1u << ParticipantRows) | (1u << States);
-        const uint32_t expected =
-            entry == 3 ? (1u << Parameters) | (1u << Models) | (1u << States) |
-                             (1u << ParticipantImpulses) | (1u << ParticipantJournal)
-                       : common | (entry == 1 ? (1u << ParticipantMotion)
-                                               : (1u << Models) | (1u << Sleeps) |
-                                                     (entry == 2 ? 1u << ParticipantImpulses : 0u));
+        const uint32_t expected = entry == 3
+                                      ? (1u << Parameters) | (1u << Models) | (1u << States) |
+                                            (1u << ParticipantImpulses) | (1u << ParticipantJournal)
+                                      : common | (entry == 1 ? (1u << ParticipantMotion)
+                                                             : (1u << Models) | (1u << Sleeps) |
+                                                                   (entry == 2 ? 1u << ParticipantImpulses : 0u));
         if (mask != expected)
             throw std::invalid_argument("GPU participant body entry has an unexpected resource set");
         m_participantPrograms[entry].kernel = PrepareJoltGpuKernel(m_host, target.target, *found, std::move(layout));
@@ -383,10 +383,12 @@ bool JoltGpuBodyCommands::TryPrepareParticipantCpuResponse()
     return m_participantPrograms[3].kernel->TryPreparePipeline();
 }
 
-rhi::ComputeDispatchDesc JoltGpuBodyCommands::ParticipantCpuResponse(
-    std::shared_ptr<rhi::ComputeBuffer> parameters, std::shared_ptr<rhi::ComputeBuffer> models,
-    std::shared_ptr<rhi::ComputeBuffer> motion, std::shared_ptr<rhi::ComputeBuffer> impulses,
-    std::shared_ptr<rhi::ComputeBuffer> journal, uint32_t count, uint32_t round) const
+rhi::ComputeDispatchDesc JoltGpuBodyCommands::ParticipantCpuResponse(std::shared_ptr<rhi::ComputeBuffer> parameters,
+                                                                     std::shared_ptr<rhi::ComputeBuffer> models,
+                                                                     std::shared_ptr<rhi::ComputeBuffer> motion,
+                                                                     std::shared_ptr<rhi::ComputeBuffer> impulses,
+                                                                     std::shared_ptr<rhi::ComputeBuffer> journal,
+                                                                     uint32_t count, uint32_t round) const
 {
     const auto &program = m_participantPrograms[3];
     rhi::ComputeDispatchDesc dispatch;
@@ -394,16 +396,20 @@ rhi::ComputeDispatchDesc JoltGpuBodyCommands::ParticipantCpuResponse(
     dispatch.groupCountX = (count + 63u) / 64u;
     dispatch.proof.emplace();
     for (uint8_t port : program.ports) {
-        auto value = port == Parameters ? parameters : port == Models ? models : port == States ? motion
-                   : port == ParticipantImpulses ? impulses : journal;
+        auto value = port == Parameters            ? parameters
+                     : port == Models              ? models
+                     : port == States              ? motion
+                     : port == ParticipantImpulses ? impulses
+                                                   : journal;
         const auto index = uint32_t(dispatch.buffers.size());
         const auto bytes = port == Parameters ? sizeof(JPH::GPU::BodyCommandParams)
-                         : uint64_t(count) * (port == Models ? sizeof(JPH::GPU::BodyModel)
-                                             : port == States ? sizeof(JPH::GPU::BodyState) : 6u * sizeof(float));
+                                              : uint64_t(count) * (port == Models   ? sizeof(JPH::GPU::BodyModel)
+                                                                   : port == States ? sizeof(JPH::GPU::BodyState)
+                                                                                    : 6u * sizeof(float));
         dispatch.buffers.push_back(std::move(value));
-        dispatch.bufferAccesses.push_back(port == States ? rhi::ComputeBufferAccess::ReadWrite
-                                           : port == ParticipantJournal ? rhi::ComputeBufferAccess::Write
-                                                                        : rhi::ComputeBufferAccess::Read);
+        dispatch.bufferAccesses.push_back(port == States               ? rhi::ComputeBufferAccess::ReadWrite
+                                          : port == ParticipantJournal ? rhi::ComputeBufferAccess::Write
+                                                                       : rhi::ComputeBufferAccess::Read);
         if (port != ParticipantJournal)
             dispatch.proof->reads.push_back({index, 0, bytes});
         if (port == States || port == ParticipantJournal)

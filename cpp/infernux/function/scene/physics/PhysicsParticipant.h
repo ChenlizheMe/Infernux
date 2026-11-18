@@ -137,8 +137,8 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
                                                   const Prefix &prefix);
 
     [[nodiscard]] std::optional<JoltGpuControlWork>
-    PrepareClosedRounds(const JPH::GPU::StepParams &, float fixedDeltaTime, uint32_t substep,
-                        uint32_t iteration, uint32_t rounds, const Prefix &, std::function<void(uint32_t)> done);
+    PrepareClosedRounds(const JPH::GPU::StepParams &, float fixedDeltaTime, uint32_t substep, uint32_t iteration,
+                        uint32_t rounds, const Prefix &, std::function<void(uint32_t)> done);
 
   private:
     void ValidateRigidPorts();

@@ -1829,7 +1829,7 @@ ComputeWorkInstance::Rebind(std::vector<ComputeWorkInput> inputs,
 }
 
 std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vector<ComputeBufferUpdate> updates,
-                                                                         std::vector<ComputeBufferRead> reads) const
+                                                                        std::vector<ComputeBufferRead> reads) const
 {
     std::vector<ComputeDispatchDesc> dispatches;
     AppendDispatches(dispatches);

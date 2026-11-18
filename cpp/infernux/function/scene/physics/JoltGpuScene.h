@@ -272,10 +272,8 @@ class JoltGpuScene final
     [[nodiscard]] bool TryPrepareParticipantCpuResponse();
 
     [[nodiscard]] rhi::ComputeDispatchDesc
-    ParticipantCpuResponse(std::shared_ptr<rhi::ComputeBuffer> parameters,
-                           std::shared_ptr<rhi::ComputeBuffer> models,
-                           std::shared_ptr<rhi::ComputeBuffer> motion,
-                           std::shared_ptr<rhi::ComputeBuffer> impulses,
+    ParticipantCpuResponse(std::shared_ptr<rhi::ComputeBuffer> parameters, std::shared_ptr<rhi::ComputeBuffer> models,
+                           std::shared_ptr<rhi::ComputeBuffer> motion, std::shared_ptr<rhi::ComputeBuffer> impulses,
                            std::shared_ptr<rhi::ComputeBuffer> journal, uint32_t count, uint32_t round);
 
     /// Busy preserves the complete per-world FIFO and logical tick identity.
