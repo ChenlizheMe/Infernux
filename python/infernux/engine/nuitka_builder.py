@@ -53,7 +53,6 @@ from infernux.engine.python_abi import (
     player_native_library_filenames,
     stdlib_extension_module_sources,
 )
-from infernux.resources import _MONO_FONT_RESOURCE
 
 _MAX_RUNTIME_PACKS = 4
 _RUNTIME_HASH_STATE_FILENAME = "content-hashes.json"
@@ -1654,9 +1653,6 @@ print(json.dumps({{
                 if relative.parts[0].casefold() == "numpy" and not include_numpy_runtime_file(Path(*relative.parts[1:])):
                     continue
                 portable_path = relative.as_posix()
-                if (sys.platform == "win32"
-                        and portable_path.casefold() == f"infernux/resources/{_MONO_FONT_RESOURCE}".casefold()):
-                    continue
                 # Windows bootstraps Foundation from infernux/lib; the root
                 # copy is only needed while staging the compiler output.
                 if sys.platform == "win32" and relative == Path("InfernuxFoundation.dll"):

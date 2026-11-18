@@ -1853,7 +1853,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 })
                 continue
             if bool(entry.get("read_only", False)) and builtin_relative:
-                if self._content_owns_builtin_resource(builtin_relative, package_builtin_resources):
+                if package_builtin_resources:
                     destination_relative = (
                         f"infernux/resources/{builtin_relative}"
                     )
@@ -1961,29 +1961,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             root = os.path.dirname(root)
         return root
 
-    def _content_owns_builtin_resource(self, relative: str, package_builtin_resources: bool) -> bool:
-        # The Windows runtime font stack omits Maple Mono. An explicit Font GUID
-        # reaches this face through the same Content package as project fonts.
-        return package_builtin_resources or (
-            self._runtime_platform == "windows"
-            and relative.casefold() == _resources._MONO_FONT_RESOURCE.casefold()
-        )
-
-    def _windows_content_font(self):
-        if self._runtime_platform != "windows":
-            return None
-        roots = self._builtin_resource_roots()
-        for entry in self._asset_index_entries():
-            if not entry.get("read_only") or not portable_path(entry["normalized_path"]).casefold().endswith(
-                "/" + _resources._MONO_FONT_RESOURCE.casefold()
-            ):
-                continue
-            source = self._library_source_entry_path(entry)
-            relative = self._builtin_resource_relative_path(source, roots=roots)
-            if self._content_owns_builtin_resource(relative, False):
-                return entry, source, f"infernux/resources/{relative}"
-        return None
-
     @staticmethod
     def _copy_builtin_content_resource(data_dir: str, source: str, relative: str) -> None:
         destination = os.path.join(data_dir, *relative.split("/"))
@@ -2045,17 +2022,12 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             if guid not in editor_guids
             and is_lexical_path_within(source, assets_root, allow_root=False)
         }
-        roots.update(
-            str(entry["guid"])
-            for entry in entries
-            if bool(entry.get("read_only", False))
-            and logical_asset_type(entry) == "shader"
-            and self._builtin_resource_relative_path(
-                source_paths[str(entry["guid"])], roots=builtin_roots
-            )
-            .casefold()
-            .startswith("shaders/")
-        )
+        for guid, entry in by_guid.items():
+            if entry.get("read_only"):
+                relative = self._builtin_resource_relative_path(source_paths[guid], roots=builtin_roots).casefold()
+                if (relative == _resources._MONO_FONT_RESOURCE.casefold()
+                        or (relative.startswith("shaders/") and logical_asset_type(entry) == "shader")):
+                    roots.add(guid)
 
         # The package export policy has already selected these GUIDs. Their
         # imported products and dependencies use the same closure as Assets.
@@ -2230,7 +2202,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             for binding in self._runtime_artifact_bindings.values()
             if isinstance(binding, dict) and binding.get("source_guid")
         }
-        content_font = self._windows_content_font()
 
         def prefab_path_for_guid(prefab_guid):
             entry = self._cooked_asset_entries.get(prefab_guid)
@@ -2344,18 +2315,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     # A Player consumes the resolved tree, not editor inheritance
                     # snapshots or an independent Variant runtime.
                     cooked.pop("variant", None)
-                if content_font is not None:
-                    font_entry, font_source, font_destination = content_font
-                    font_guid = str(font_entry["guid"])
-                    # Raw scenes and prefabs can contribute typed references
-                    # that the source importer did not publish in AssetIndex.
-                    if any(reference == font_guid for reference, _ in _asset_refs(cooked)):
-                        if font_guid not in self._cooked_asset_entries:
-                            self._copy_builtin_content_resource(data_dir, font_source, font_destination)
-                            source_fingerprint(data_dir, {**font_entry, "normalized_path": font_destination})
-                            self._cooked_asset_entries[font_guid] = font_entry
-                        dependencies = set(entry.get("dependencies", ())) | {font_guid}
-                        self._cooked_asset_entries[guid] = dict(entry, dependencies=sorted(dependencies))
+                # Resolved scenes and prefab overrides can add references after import.
+                references = {ref for ref, _ in _asset_refs(cooked) if ref in self._cooked_asset_entries}
+                if references:
+                    dependencies = references.union(entry.get("dependencies", ()))
+                    self._cooked_asset_entries[guid] = dict(entry, dependencies=sorted(dependencies))
                 _write_json_atomic(destination, cooked)
                 self._rewrite_player_document_paths(destination, suffix)
             else:
@@ -2942,7 +2906,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     {
                         "package": (
                             self._CONTENT_ARCHIVE_FILENAME
-                            if self._content_owns_builtin_resource(builtin_relative, package_builtin_resources)
+                            if package_builtin_resources
                             else self._RUNTIME_ARCHIVE_FILENAME
                         ),
                         "runtime_path": f"infernux/resources/{builtin_relative}",
@@ -3361,11 +3325,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     if is_numpy_package and not include_numpy_runtime_file(Path(source_path).relative_to(payload_root)):
                         continue
                     portable_source = relative_path(source_path, final_dir)
-                    resource_prefix = "infernux/resources/"
-                    if portable_source.startswith(resource_prefix) and self._content_owns_builtin_resource(
-                        portable_source.removeprefix(resource_prefix), False
-                    ):
-                        continue
                     if (
                         portable_source.startswith(
                             "infernux/resources/official_packages/"

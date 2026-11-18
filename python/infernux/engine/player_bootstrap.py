@@ -435,7 +435,7 @@ class PlayerBootstrap:
         self.engine.set_gui_fonts(
             _resources.engine_ui_font_path,
             _resources.engine_font_cjk_path,
-            "" if sys.platform == "win32" else _resources.engine_mono_font_path,
+            _resources.engine_mono_font_path,
             18,
         )
         self._pump_startup_events()

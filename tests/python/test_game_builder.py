@@ -1506,7 +1506,7 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert "infernux/lib/InfernuxRendererRuntime.dll" in paths
     assert "infernux/resources/fonts/Inter-VF.ttf" in paths
     assert "infernux/resources/fonts/NotoSansSC-Regular.ttf" in paths
-    assert "infernux/resources/fonts/MapleMono-CN-Regular.ttf" not in paths
+    assert "infernux/resources/fonts/MapleMono-CN-Regular.ttf" in paths
     assert "stdlib/_socket.pyd" in paths
     assert (final_dir / "_InfernuxBootstrap.pyd").is_file()
     assert (final_dir / "InfernuxFoundation.dll").is_file()
@@ -1520,7 +1520,7 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
 
 
 @pytest.mark.parametrize("platform, referenced", [("windows", True), ("windows", False), ("linux", True)])
-def test_desktop_player_cooks_maple_font_through_asset_dependencies(tmp_path, platform, referenced):
+def test_desktop_player_owns_default_gameplay_font_in_runtime(tmp_path, platform, referenced):
     builder = _make_builder(tmp_path, tmp_path / "Output")
     builder._runtime_platform = platform
     project = Path(builder.project_path)
@@ -1549,13 +1549,11 @@ def test_desktop_player_cooks_maple_font_through_asset_dependencies(tmp_path, pl
     builder._write_runtime_asset_records(str(final))
     entries = json.loads((data / "Library/RuntimeAssetRecords.json").read_text(encoding="utf-8"))["entries"]
     record = next((entry for entry in entries if entry["guid"] == guid), None)
-    assert (record is not None) == referenced
     payload = "infernux/resources/fonts/MapleMono-CN-Regular.ttf"
-    if referenced:
-        asset, = record["runtime_artifacts"]
-        assert asset["runtime_path"] == payload
-        assert asset["package"] == ("Content.inxpkg" if platform == "windows" else "Runtime.inxrt")
-    assert (data / payload).is_file() == (platform == "windows" and referenced)
+    asset, = record["runtime_artifacts"]
+    assert asset["runtime_path"] == payload
+    assert asset["package"] == "Runtime.inxrt"
+    assert not (data / payload).is_file()
 
 
 def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
@@ -1586,8 +1584,7 @@ def test_runtime_pack_cache_round_trip(tmp_path, monkeypatch):
     if sys.platform == "win32":
         runtime_files["infernux/lib/InfernuxFoundation.dll"] = b"foundation"
         build_only_files["InfernuxFoundation.dll"] = b"foundation"
-    mono_inputs = build_only_files if sys.platform == "win32" else runtime_files
-    mono_inputs["infernux/resources/fonts/MapleMono-CN-Regular.ttf"] = b"default mono"
+    runtime_files["infernux/resources/fonts/MapleMono-CN-Regular.ttf"] = b"default mono"
     for name, data in (runtime_files | build_only_files).items():
         path = dist / name
         path.parent.mkdir(parents=True, exist_ok=True)
