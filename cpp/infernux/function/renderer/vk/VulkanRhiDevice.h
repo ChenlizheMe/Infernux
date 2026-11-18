@@ -392,6 +392,8 @@ class VulkanRhiDevice final : public rhi::Device
     CreateBindGroup(const rhi::BindGroupDesc &desc) override;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::GraphicsPipelineHandle
     CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc) override;
+    INFERNUX_VULKAN_BACKEND_API VkResult CreateNativeGraphicsPipeline(const VkGraphicsPipelineCreateInfo &info,
+                                                                      VkPipeline &pipeline) const noexcept;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API rhi::ComputePipelineHandle
     CreateComputePipeline(const rhi::ComputePipelineDesc &desc) override;
     [[nodiscard]] rhi::ComputePipelinePreparation PrepareComputePipeline(const rhi::ComputePipelineDesc &desc);

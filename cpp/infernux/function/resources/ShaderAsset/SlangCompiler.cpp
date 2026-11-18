@@ -326,11 +326,6 @@ ShaderCompilation SlangCompiler::CompileRootProgram(ShaderSourceModule source,
     return result;
 }
 
-ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source)
-{
-    return CompileAuthorProgram(source, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
-}
-
 ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source,
                                                       const std::vector<ShaderCodeTarget> &targets)
 {

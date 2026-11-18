@@ -432,7 +432,7 @@ bool InxVkCoreModular::PrepareSurface()
     }
 
     // Initialize pipeline manager
-    m_pipelineManager.Initialize(m_backend.Device().GetDevice());
+    m_pipelineManager.Initialize(m_backend.Device());
 
     // Initialize render graph
     m_renderGraph.Initialize(&m_backend.Device(), &m_deletionQueue, &m_backend.Queues());

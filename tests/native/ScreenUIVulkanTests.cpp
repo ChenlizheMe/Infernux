@@ -117,7 +117,8 @@ struct Parameters {
     author.schema =
         json({{"name", key}, {"domain", domain}, {"surface", false}, {"parameters", fields}, {"inputs", json::array()}})
             .dump();
-    const auto compiled = std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(author));
+    const auto compiled = std::make_shared<const ShaderCompilation>(
+        SlangCompiler::Get().CompileAuthorProgram(author, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}));
     auto artifact =
         std::make_shared<ShaderProgramArtifact>(CreateShaderAuthorMaterial(key, compiled, author.schema, ""));
     assert(artifact->IsValid());
@@ -421,8 +422,8 @@ int main(int argc, char **argv)
     const std::array<VkDescriptorSetLayout, 2> viewLayouts{device.Resolve(cameraLayout), device.Resolve(globalsLayout)};
     const std::array<VkDescriptorSet, 2> viewSets{device.Resolve(cameraGroup), device.Resolve(globalsGroup)};
     InxScreenUIRenderer renderer;
-    assert(renderer.Initialize(context.GetDevice(), context.GetVmaAllocator(), device.GetDescriptorManager(),
-                               VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4, viewLayouts));
+    assert(renderer.Initialize(context, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4,
+                               viewLayouts));
     renderer.SetRetirementQueue(&retirement);
     std::vector<ShaderProgramKey> releasedProgramKeys;
     renderer.SetMaterialProgramRelease([&](const ShaderProgramKey &key) { releasedProgramKeys.push_back(key); });
@@ -2071,9 +2072,8 @@ int main(int argc, char **argv)
         assert(uiOwners.at(sharedKey) == 1);
 
         auto replacementUI = std::make_unique<InxScreenUIRenderer>();
-        assert(replacementUI->Initialize(context.GetDevice(), context.GetVmaAllocator(), device.GetDescriptorManager(),
-                                         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT, 4,
-                                         viewLayouts));
+        assert(replacementUI->Initialize(context, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, VK_SAMPLE_COUNT_1_BIT,
+                                         4, viewLayouts));
         replacementUI->SetRetirementQueue(&retirement);
         replacementUI->SetMaterialProgramAcquire(acquireUI);
         replacementUI->SetMaterialProgramRelease(releaseUI);

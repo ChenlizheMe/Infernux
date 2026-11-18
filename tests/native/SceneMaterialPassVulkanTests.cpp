@@ -58,7 +58,8 @@ struct Parameters { float4 signal; };
 )"};
     source.schema = R"({"domain":"mesh", "inputs":[], "parameters":[
         {"name":"signal","kind":"vec4","default":[0,0,0,1],"hdr":false,"range":null,"stages":["fragment"]}]})";
-    const auto compiled = std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(source));
+    const auto compiled = std::make_shared<const ShaderCompilation>(
+        SlangCompiler::Get().CompileAuthorProgram(source, {ShaderCodeTarget::SpirV}));
     auto artifact = std::make_shared<const ShaderProgramArtifact>(
         CreateShaderAuthorMaterial("test/scene", compiled, source.schema, "infernux/standard"));
     const auto *nativePass = artifact->FindPassCode(ShaderCompileTarget::Forward, ShaderCodeTarget::SpirV);

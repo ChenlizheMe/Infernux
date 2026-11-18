@@ -1,4 +1,3 @@
-#include <core/types/ShaderBuildStatistics.h>
 /**
  * @file VkCoreMaterial.cpp
  * @brief InxVkCoreModular — Material system, lighting, and buffer accessors
@@ -171,12 +170,8 @@ void InxVkCoreModular::InitializeMaterialSystem()
                         "x. Runtime requests remain strict and will not silently downgrade.");
             m_msaaSampleCount = rhi::ToVkSampleCount(ToRhiSampleCount(fallbackSamples));
         }
-        m_materialPipelineManager.Initialize(
-            m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(), colorFormat, depthFormat,
-            m_msaaSampleCount, m_shaderCache.GetProgramCache(), &m_deletionQueue,
-            m_backend.Device().IsDescriptorIndexingEnabled(), &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
-            rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetCapabilities().portable,
-                                                m_backend.Device().GetCapabilities().BackendName()));
+        m_materialPipelineManager.Initialize(m_backend.Device(), colorFormat, depthFormat, m_msaaSampleCount,
+                                             m_shaderCache.GetProgramCache(), &m_deletionQueue);
         m_materialPipelineManagerInitialized = true;
 
         auto &materialDescriptors = m_materialPipelineManager.GetDescriptorManager();
@@ -869,9 +864,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     pipelineInfo.subpass = 0;
 
     VkPipeline shadowPipeline = VK_NULL_HANDLE;
-    VkPipelineCache pipelineCache = m_materialPipelineManager.GetVkPipelineCache();
-    infernux::RecordGraphicsPipelineCreationAttempt();
-    if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
+    if (m_backend.Device().GetRhiDevice().CreateNativeGraphicsPipeline(pipelineInfo, shadowPipeline) != VK_SUCCESS) {
         INXLOG_WARN("Failed to create linked shadow pipeline for '", material->GetName(), "' (program='",
                     stagePair.ToString(), "')");
         return VK_NULL_HANDLE;

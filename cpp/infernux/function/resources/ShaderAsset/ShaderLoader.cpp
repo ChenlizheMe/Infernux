@@ -50,10 +50,11 @@ ShaderSourceModule ReadAuthorSource(const AssetDatabase &database, const std::st
     return {std::move(name), path, std::string(bytes.begin(), bytes.end())};
 }
 
-ShaderAuthorProgramRecord CompileAuthorRecord(const ShaderAuthorSource &prepared, std::vector<std::string> dependencies)
+ShaderAuthorProgramRecord CompileAuthorRecord(const ShaderAuthorSource &prepared, ShaderCodeTarget target,
+                                              std::vector<std::string> dependencies)
 {
     return {prepared.schema,
-            std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(prepared)),
+            std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(prepared, {target})),
             std::move(dependencies)};
 }
 } // namespace
@@ -156,7 +157,8 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
                 {"material_" + stages.fragmentKey, fragment->filePath, fragment->authorSourceText},
                 TrackAuthorReads(*database, inputs), ShaderAuthorPhase::Program,
                 {"vertex_" + stages.vertexKey, vertex->filePath, vertex->authorSourceText});
-            auto record = CompileAuthorRecord(prepared, AuthorDependencies(*database, prepared));
+            auto record =
+                CompileAuthorRecord(prepared, RuntimeShaderAuthorTarget(), AuthorDependencies(*database, prepared));
             result->program = std::make_shared<const ShaderProgramArtifact>(
                 CreateShaderAuthorMaterial(stages.fragmentKey, record.compilation, record.schema, stages.vertexKey));
             StoreShaderAuthorProgram(ProjectCacheDirectory(database->GetProjectRoot()), selection, inputs, record);
@@ -205,7 +207,8 @@ std::shared_ptr<ShaderAsset> ShaderLoader::CompileAuthorAsset(const ShaderSource
                                                               const std::string &guid,
                                                               std::vector<std::string> dependencies)
 {
-    return RestoreAuthorAsset(source, guid, CompileAuthorRecord(prepared, std::move(dependencies)));
+    return RestoreAuthorAsset(source, guid,
+                              CompileAuthorRecord(prepared, RuntimeShaderAuthorTarget(), std::move(dependencies)));
 }
 
 std::shared_ptr<ShaderAsset> ShaderLoader::RestoreAuthorAsset(const ShaderSourceModule &source, const std::string &guid,
@@ -279,7 +282,7 @@ void ShaderLoader::CookAuthorProgram(const AssetDatabase &database, const std::s
         }
         const auto prepared = SlangCompiler::Get().PrepareAuthorSource(source, TrackAuthorReads(database, inputs),
                                                                        ShaderAuthorPhase::Program, vertex);
-        record = CompileAuthorRecord(prepared, AuthorDependencies(database, prepared));
+        record = CompileAuthorRecord(prepared, target, AuthorDependencies(database, prepared));
         // Use the same publication contract as a real material before shipping a cache entry.
         if (vertexGuid.empty())
             (void)RestoreAuthorAsset(source, authorGuid, *record);

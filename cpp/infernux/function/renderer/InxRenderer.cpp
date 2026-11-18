@@ -5607,10 +5607,9 @@ void InxRenderer::EnsureScreenUIRenderer()
         throw std::runtime_error("Screen UI renderer requires the initialized Scene render target");
 
     auto renderer = std::make_unique<InxScreenUIRenderer>();
-    if (!renderer->Initialize(m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                              m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager(),
-                              m_sceneRenderTarget->GetColorFormat(), m_sceneRenderTarget->GetDepthFormat(),
-                              m_sceneRenderTarget->GetMsaaSampleCount(), m_vkCore->GetMaxFramesInFlight(),
+    if (!renderer->Initialize(m_vkCore->GetDeviceContext(), m_sceneRenderTarget->GetColorFormat(),
+                              m_sceneRenderTarget->GetDepthFormat(), m_sceneRenderTarget->GetMsaaSampleCount(),
+                              m_vkCore->GetMaxFramesInFlight(),
                               {m_vkCore->GetPerViewDescSetLayout(), m_vkCore->GetGlobalsDescSetLayout()})) {
         throw std::runtime_error("Failed to initialize the shared Screen UI renderer");
     }
@@ -5720,9 +5719,8 @@ bool InxRenderer::ApplyMsaaSamples(int samples, const char *source)
         const SceneRenderTarget *screenUITarget =
             replacementSceneTarget ? replacementSceneTarget.get() : m_sceneRenderTarget.get();
         if (!replacementScreenUI->Initialize(
-                m_vkCore->GetDevice(), m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                m_vkCore->GetDeviceContext().GetRhiDevice().GetDescriptorManager(), screenUITarget->GetColorFormat(),
-                screenUITarget->GetDepthFormat(), vkSamples, m_vkCore->GetMaxFramesInFlight(),
+                m_vkCore->GetDeviceContext(), screenUITarget->GetColorFormat(), screenUITarget->GetDepthFormat(),
+                vkSamples, m_vkCore->GetMaxFramesInFlight(),
                 {m_vkCore->GetPerViewDescSetLayout(), m_vkCore->GetGlobalsDescSetLayout()})) {
             INXLOG_ERROR("Failed to create the replacement Screen UI pipeline for ", samples,
                          "x MSAA; keeping all current resources.");

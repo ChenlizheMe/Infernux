@@ -44,7 +44,9 @@
 namespace infernux::vk
 {
 class VkDescriptorManager;
-}
+class VkDeviceContext;
+class VulkanRhiDevice;
+} // namespace infernux::vk
 #include <unordered_set>
 #include <vector>
 #include <vk_mem_alloc.h>
@@ -81,14 +83,13 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
 
     /**
      * @brief Initialize the renderer
-     * @param device Vulkan device
-     * @param allocator VMA allocator for buffer management
+     * @param context Vulkan device and its shared rendering resources
      * @param colorFormat Scene color attachment format (e.g. B8G8R8A8_SRGB)
      * @param msaaSamples Scene MSAA sample count (e.g. 4x)
      * @return true if successful
      */
-    bool Initialize(VkDevice device, VmaAllocator allocator, vk::VkDescriptorManager &descriptorManager,
-                    VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount,
+    bool Initialize(vk::VkDeviceContext &context, VkFormat colorFormat, VkFormat depthFormat,
+                    VkSampleCountFlagBits msaaSamples, uint32_t frameCount,
                     const std::array<VkDescriptorSetLayout, 2> &viewLayouts);
 
     void SetRetirementQueue(GpuRetirementQueue *queue)
@@ -517,6 +518,7 @@ class InxScreenUIRenderer : public NativeLifetimeOwner
 
     // Device
     VkDevice m_device = VK_NULL_HANDLE;
+    vk::VulkanRhiDevice *m_rhiDevice = nullptr;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     vk::VkDescriptorManager *m_descriptorManager = nullptr;
 

@@ -90,8 +90,8 @@ float4 evaluate(InxParticleInput input) {
     ShaderAuthorSource author;
     author.source = {"particle_test_surface", "Tests/ParticleSurface.slang", source};
     author.schema = schema.dump();
-    const auto compilation =
-        std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(author));
+    const auto compilation = std::make_shared<const ShaderCompilation>(
+        SlangCompiler::Get().CompileAuthorProgram(author, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}));
     return std::make_shared<const ShaderProgramArtifact>(
         CreateShaderAuthorMaterial("Tests/ParticleSurface", compilation, schema.dump(), ""));
 }

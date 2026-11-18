@@ -16,7 +16,7 @@
  *
  * Usage:
  *   VkPipelineManager pipelines;
- *   pipelines.Initialize(device);
+ *   pipelines.Initialize(deviceContext);
  *
  *   // Create render pass
  *   RenderPassConfig rpConfig;
@@ -44,6 +44,8 @@ namespace infernux
 {
 namespace vk
 {
+class VkDeviceContext;
+class VulkanRhiDevice;
 
 // Forward declarations
 class VkDeviceContext;
@@ -189,9 +191,9 @@ class VkPipelineManager
 
     /**
      * @brief Initialize the pipeline manager
-     * @param device Vulkan device handle
+     * @param context Vulkan device and its shared pipeline cache
      */
-    INFERNUX_VULKAN_BACKEND_API void Initialize(VkDevice device);
+    INFERNUX_VULKAN_BACKEND_API void Initialize(VkDeviceContext &context);
 
     /**
      * @brief Cleanup all managed resources
@@ -353,6 +355,7 @@ class VkPipelineManager
   private:
     bool m_skipWaitIdle = false;
     VkDevice m_device = VK_NULL_HANDLE;
+    VulkanRhiDevice *m_rhiDevice = nullptr;
 
     // Tracked objects for cleanup
     std::vector<VkShaderModule> m_shaderModules;
