@@ -20,10 +20,13 @@ using ShaderCacheRevision = std::function<std::optional<uint64_t>(const std::str
 
 std::string ProjectCacheDirectory(const std::string &projectRoot);
 ShaderCacheInput MakeShaderCacheInput(std::string id, std::string_view originalBytes);
+std::string ShaderProgramCacheRelativePath(std::string_view selection);
 
 // selection is the same program, target and compiler contract used by the cooker.
 // inputs name the original author files, including transitive imports. A cache
 // hit needs their revisions but never a front-end invocation.
+std::optional<std::string> DecodeShaderProgramCacheRecord(std::string_view record, std::string_view selection,
+                                                          const ShaderCacheRevision &currentRevision);
 std::optional<std::string> ReadShaderProgramCache(const std::string &cacheDirectory, std::string_view selection,
                                                   const ShaderCacheRevision &currentRevision);
 bool WriteShaderProgramCache(const std::string &cacheDirectory, std::string_view selection,
