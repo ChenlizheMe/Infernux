@@ -3,25 +3,31 @@
 from infernux.engine.path_utils import resolve_project_path
 
 from .commands import CommandFuture, MainThreadCommandQueue
+from .operations import (
+    Operation,
+    OperationError,
+    OperationJobRegistry,
+    OperationKind,
+    OperationRegistry,
+    OperationSchema,
+    capability_granted,
+)
 
-# Runtime command admission does not import Editor operations or their schema
-# dependencies. Editor callers resolve the same exports when they use them.
+
 _EDITOR_EXPORTS = {
-    "EditorAutomationHost": ".editor",
-    "build_editor_operations": ".editor_operations",
-    "install_editor_operations": ".editor_operations",
-    **dict.fromkeys(("Operation", "OperationError", "OperationJobRegistry",
-                     "OperationKind", "OperationRegistry", "OperationSchema",
-                     "capability_granted"), ".operations"),
+    "EditorAutomationHost": (".editor", "EditorAutomationHost"),
+    "build_editor_operations": (".editor_operations", "build_editor_operations"),
+    "install_editor_operations": (".editor_operations", "install_editor_operations"),
 }
 
 
 def __getattr__(name):
-    module = _EDITOR_EXPORTS.get(name)
-    if module is None:
+    if name not in _EDITOR_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     from importlib import import_module
-    value = getattr(import_module(module, __name__), name)
+
+    module, attribute = _EDITOR_EXPORTS[name]
+    value = getattr(import_module(module, __name__), attribute)
     globals()[name] = value
     return value
 
