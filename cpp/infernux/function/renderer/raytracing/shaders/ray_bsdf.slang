@@ -3,6 +3,35 @@ import inx_lit_scattering;
 static const float ray_bsdf_pi = 3.14159265358979323846;
 static const float ray_bsdf_inverse_pi = 0.31830988618379067154;
 
+public uint inx_ray_sample_hash(uint state)
+{
+    state = state * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+uint3 ray_random_bits3(uint seed)
+{
+    return uint3(inx_ray_sample_hash(seed), inx_ray_sample_hash(seed + 1u), inx_ray_sample_hash(seed + 2u));
+}
+
+public float3 inx_ray_uniform3(uint seed)
+{
+    return float3(ray_random_bits3(seed) >> 8u) * (1.0 / 16777216.0);
+}
+
+// The path seed contains the pixel scramble XOR the sample-index hash.
+// Each coordinate visits all 32 strata once before choosing another permutation.
+public float3 ray_reflected_uniform3(uint path_seed, uint index)
+{
+    uint pixel_seed = path_seed ^ inx_ray_sample_hash(index);
+    uint block = inx_ray_sample_hash(pixel_seed ^ inx_ray_sample_hash(index >> 5u));
+    uint3 permutation = ray_random_bits3(block);
+    uint3 strata = (((permutation >> 5u) | 1u) * (index & 31u) + permutation) & 31u;
+    uint3 jitter = ray_random_bits3(path_seed) >> 13u;
+    return float3((strata << 19u) | jitter) * (1.0 / 16777216.0);
+}
+
 struct RayBsdfFrame
 {
     float3 tangent;
