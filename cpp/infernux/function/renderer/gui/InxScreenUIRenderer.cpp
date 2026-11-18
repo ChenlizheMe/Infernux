@@ -18,6 +18,7 @@
  * pass.
  */
 
+#include "BuiltinUIProgram.h"
 #include "ImageFillDraw.h"
 #include "InxScreenUIRenderer.h"
 #include "InxTextGeometry.h"
@@ -32,8 +33,6 @@
 #include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VkRenderUtils.h>
-#include <function/resources/ShaderAsset/SlangNativeModule.h>
-#include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/SceneManager.h>
 #include <function/scene/WorldUIProjection.h>
@@ -1906,7 +1905,7 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
 bool InxScreenUIRenderer::CreatePipeline()
 {
     // ---- Shader modules ----
-    const auto compiled = CompileSlangNativeModule(GetSlangScreenUIModule(), ShaderCodeTarget::SpirV);
+    const auto compiled = LoadBuiltinUIProgram(BuiltinUIProgram::Screen);
     const auto &vertex = compiled.entries[0].code;
     const auto &fragment = compiled.entries[1].code;
     if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(vertex.data()), vertex.size(), m_vertShader))
@@ -2033,7 +2032,7 @@ bool InxScreenUIRenderer::CreateWorldPipeline()
     if (m_depthFormat == VK_FORMAT_UNDEFINED)
         return false;
 
-    const auto compiled = CompileSlangNativeModule(GetSlangWorldUIModule(), ShaderCodeTarget::SpirV);
+    const auto compiled = LoadBuiltinUIProgram(BuiltinUIProgram::World);
     const auto &vertex = compiled.entries[0].code;
     const auto &fragment = compiled.entries[1].code;
     if (!CreateShaderModule(m_device, reinterpret_cast<const uint32_t *>(vertex.data()), vertex.size(),

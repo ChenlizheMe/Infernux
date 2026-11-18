@@ -1,4 +1,5 @@
 #include "InxGUI.h"
+#include "BuiltinUIProgram.h"
 #include "../ProfileConfig.h"
 #include "EditorWindowBounds.h"
 #include "EditorWindowPresentation.h"
@@ -17,8 +18,6 @@
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxFileLoader/InxTextureLoader.hpp>
 #include <function/resources/InxTexture/TextureDecoder.h>
-#include <function/resources/ShaderAsset/SlangNativeModule.h>
-#include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <SDL3/SDL.h>
@@ -217,7 +216,7 @@ void InxGUI::Init(SDL_Window *window)
     initInfo.Allocator = nullptr;
     initInfo.CheckVkResultFn = nullptr;
 
-    const auto ui = CompileSlangNativeModule(GetSlangEditorUIModule(), ShaderCodeTarget::SpirV);
+    const auto ui = LoadBuiltinUIProgram(BuiltinUIProgram::Host);
     for (const auto &entry : ui.entries) {
         const auto vertex = entry.stage == rhi::ShaderStage::Vertex;
         auto &words = m_shaderBytecode[vertex ? 0 : 1];

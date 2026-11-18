@@ -31,13 +31,7 @@ function(infernux_add_jolt_gpu_cooker)
     endif()
 endfunction()
 
-function(infernux_cook_jolt_gpu_programs target format)
-    get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
-    set(_jolt_gpu "${_root}/external/joltphysics_for_infernux/Jolt/GPU")
-    file(GLOB_RECURSE _shader_sources CONFIGURE_DEPENDS
-        "${_root}/cpp/infernux/function/scene/physics/shaders/*.slang"
-        "${_jolt_gpu}/*.slang" "${_jolt_gpu}/*.h" "${_jolt_gpu}/*.inl")
-    list(APPEND _shader_sources "${_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
+function(infernux_get_shader_cooker executable build_target)
     if(CMAKE_CROSSCOMPILING)
         include(ExternalProject)
         set(_host_build "${CMAKE_BINARY_DIR}/jolt-gpu-cooker")
@@ -45,23 +39,39 @@ function(infernux_cook_jolt_gpu_programs target format)
         if(CMAKE_HOST_WIN32)
             string(APPEND _cooker ".exe")
         endif()
-        ExternalProject_Add(infernux_jolt_gpu_host_cooker
-            SOURCE_DIR "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/jolt-gpu-cook"
-            BINARY_DIR "${_host_build}"
-            DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
-            CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-            BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR>
-                --config Release --target InfernuxJoltGpuCook --parallel 2
-            BUILD_BYPRODUCTS "${_cooker}"
-            BUILD_ALWAYS TRUE
-            INSTALL_COMMAND "")
+        if(NOT TARGET infernux_jolt_gpu_host_cooker)
+            ExternalProject_Add(infernux_jolt_gpu_host_cooker
+                SOURCE_DIR "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/jolt-gpu-cook"
+                BINARY_DIR "${_host_build}"
+                DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
+                CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+                BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR>
+                    --config Release --target InfernuxJoltGpuCook --parallel 2
+                BUILD_BYPRODUCTS "${_cooker}"
+                BUILD_ALWAYS TRUE
+                INSTALL_COMMAND "")
+        endif()
         set(_cooker_target infernux_jolt_gpu_host_cooker)
     else()
-        infernux_add_jolt_gpu_cooker()
+        if(NOT TARGET InfernuxJoltGpuCook)
+            infernux_add_jolt_gpu_cooker()
+        endif()
         set(_cooker "$<TARGET_FILE:InfernuxJoltGpuCook>")
         set(_cooker_target InfernuxJoltGpuCook)
     endif()
 
+    set(${executable} "${_cooker}" PARENT_SCOPE)
+    set(${build_target} "${_cooker_target}" PARENT_SCOPE)
+endfunction()
+
+function(infernux_cook_jolt_gpu_programs target format)
+    get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+    set(_jolt_gpu "${_root}/external/joltphysics_for_infernux/Jolt/GPU")
+    file(GLOB_RECURSE _shader_sources CONFIGURE_DEPENDS
+        "${_root}/cpp/infernux/function/scene/physics/shaders/*.slang"
+        "${_jolt_gpu}/*.slang" "${_jolt_gpu}/*.h" "${_jolt_gpu}/*.inl")
+    list(APPEND _shader_sources "${_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
+    infernux_get_shader_cooker(_cooker _cooker_target)
     set(_directory "${CMAKE_CURRENT_BINARY_DIR}/generated/physics/${format}/$<CONFIG>")
     set(_archive "${_directory}/JoltGpuArchive.c")
     add_custom_command(OUTPUT "${_archive}"
@@ -74,4 +84,19 @@ function(infernux_cook_jolt_gpu_programs target format)
         VERBATIM)
     target_sources(${target} PRIVATE "${_archive}")
     target_compile_features(${target} PRIVATE c_std_11)
+endfunction()
+
+function(infernux_cook_ui_programs target format)
+    infernux_get_shader_cooker(_cooker _cooker_target)
+    set(_directory "${CMAKE_CURRENT_BINARY_DIR}/generated/ui/${format}/$<CONFIG>")
+    set(_archive "${_directory}/UIShaderArchive.c")
+    add_custom_command(OUTPUT "${_archive}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_directory}"
+        COMMAND "${_cooker}" --ui "${format}" "${_archive}.tmp"
+        COMMAND "${CMAKE_COMMAND}" -E rename "${_archive}.tmp" "${_archive}"
+        DEPENDS ${_cooker_target} "${_cooker}"
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../cpp/infernux/function/resources/ShaderAsset/SlangUIModule.h"
+        COMMENT "Cook host, screen and world UI shaders to ${format}"
+        VERBATIM)
+    target_sources(${target} PRIVATE "${_archive}")
 endfunction()

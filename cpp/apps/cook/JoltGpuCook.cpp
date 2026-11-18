@@ -1,6 +1,8 @@
 #include <Jolt/GPU/PhysicsStages.h>
+#include <function/renderer/gui/BuiltinUIProgram.h>
 #include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
+#include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <function/scene/physics/JoltGpuProgramSources.h>
 
 #include <array>
@@ -140,45 +142,65 @@ void WriteArchive(std::ostream &out, unsigned index, std::string_view bytes)
         out.write(literal.data(), static_cast<std::streamsize>(count));
     }
     out << "};\n_Static_assert(sizeof(archive" << index << ") == " << bytes.size()
-        << ", \"GPU physics archive must be contiguous\");\n";
+        << ", \"Shader archive must be contiguous\");\n";
 }
 
-void Cook(const std::filesystem::path &root, ShaderCodeTarget target, const std::filesystem::path &output)
+template <typename Compile>
+void WritePrograms(const std::filesystem::path &output, const char *accessor, unsigned programCount, Compile compile)
 {
-    const auto jolt = root / "external/joltphysics_for_infernux";
-    const auto libraries = LoadProgramLibraries(root, jolt);
-    auto &compiler = SlangCompiler::Get();
     std::ofstream file(output, std::ios::binary | std::ios::trunc);
     file.exceptions(std::ios::failbit | std::ios::badbit);
     // MSVC warns when a C string initializer deliberately fills its array without a terminator.
     file << "#include <stddef.h>\n#ifdef _MSC_VER\n#pragma warning(disable : 4295)\n#endif\n";
-    constexpr unsigned programCount = static_cast<unsigned>(JoltGpuProgram::Count);
     for (unsigned index = 0; index < programCount; ++index) {
-        const auto source = LoadProgramSource(root, jolt, static_cast<JoltGpuProgram>(index));
-        auto compiled = compiler.Compile(source, libraries, {target}, true);
+        auto compiled = compile(index);
         auto &artifact = compiled.targets.front();
         artifact.reflection.clear(); // Keep typed layout and entry bindings.
         WriteArchive(file, index, EncodeShaderTarget(artifact));
     }
 
-    file << "const void *InfernuxJoltGpuArchive(unsigned program, size_t *size)\n{\n"
+    file << "const void *" << accessor << "(unsigned program, size_t *size)\n{\n"
          << "    static const struct { const void *bytes; size_t size; } archives[] = {\n";
     for (unsigned index = 0; index < programCount; ++index)
         file << "        { &archive" << index << ", sizeof(archive" << index << ") },\n";
     file << "    };\n    *size = archives[program].size;\n    return archives[program].bytes;\n}\n";
     file.close();
 }
+
+void CookPhysics(const std::filesystem::path &root, ShaderCodeTarget target, const std::filesystem::path &output)
+{
+    const auto jolt = root / "external/joltphysics_for_infernux";
+    const auto libraries = LoadProgramLibraries(root, jolt);
+    WritePrograms(output, "InfernuxJoltGpuArchive", static_cast<unsigned>(JoltGpuProgram::Count), [&](unsigned index) {
+        const auto source = LoadProgramSource(root, jolt, static_cast<JoltGpuProgram>(index));
+        return SlangCompiler::Get().Compile(source, libraries, {target}, true);
+    });
+}
+
+void CookUI(ShaderCodeTarget target, const std::filesystem::path &output)
+{
+    const ShaderSourceModule *const programs[] = {&GetSlangEditorUIModule(), &GetSlangScreenUIModule(),
+                                                  &GetSlangWorldUIModule()};
+    static_assert(std::size(programs) == static_cast<unsigned>(BuiltinUIProgram::Count));
+    WritePrograms(output, "InfernuxUIShaderArchive", std::size(programs), [&](unsigned index) {
+        return SlangCompiler::Get().CompileRootProgram(*programs[index], {}, {target});
+    });
+}
 } // namespace
 
 int main(int argc, char **argv)
 try {
     if (argc != 4)
-        throw std::invalid_argument("Usage: InfernuxJoltGpuCook <engine-source> <spirv|wgsl> <output.c>");
+        throw std::invalid_argument("Usage: InfernuxJoltGpuCook <engine-source|--ui> <spirv|wgsl> <output.c>");
     const std::string_view format = argv[2];
     if (format != "spirv" && format != "wgsl")
-        throw std::invalid_argument("Unknown GPU physics shader target");
-    Cook(std::filesystem::u8path(argv[1]), format == "spirv" ? ShaderCodeTarget::SpirV : ShaderCodeTarget::Wgsl,
-         std::filesystem::u8path(argv[3]));
+        throw std::invalid_argument("Unknown shader target");
+    const auto target = format == "spirv" ? ShaderCodeTarget::SpirV : ShaderCodeTarget::Wgsl;
+    const auto output = std::filesystem::u8path(argv[3]);
+    if (std::string_view(argv[1]) == "--ui")
+        CookUI(target, output);
+    else
+        CookPhysics(std::filesystem::u8path(argv[1]), target, output);
     return 0;
 } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';
