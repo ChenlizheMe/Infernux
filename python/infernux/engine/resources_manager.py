@@ -197,6 +197,32 @@ def _is_blender_backup_path(file_path: str) -> bool:
     return _BLENDER_BACKUP_PATTERN.search(basename) is not None
 
 
+class _NoOpReloadAdapter:
+    """Baseline adapter for the shared source coordinator.
+
+    Component scripts stay on the resources pipeline; package preloads install
+    their own adapter, so this baseline only needs to satisfy the protocol.
+    """
+
+    def guid_for_path(self, path):
+        return ""
+
+    def prepare(self, modules, owner):
+        return None
+
+    def bind(self, prepared):
+        return None
+
+    def initialize(self, prepared, owner):
+        return None
+
+    def fail(self, paths, error):
+        return None
+
+    def retire(self, paths):
+        return None
+
+
 class ResourceChangeHandler(FileSystemEventHandler):
 
     def __init__(
@@ -207,6 +233,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
         frontend_wake=None,
     ):
         self._engine = engine
+        self._project_path = project_path
+        self._reload = None
         self._script_change_collector = ScriptChangeCollector()
         self._frontend_wake = frontend_wake
         self._frontend_worker_running = False
@@ -232,6 +260,21 @@ class ResourceChangeHandler(FileSystemEventHandler):
         self._asset_database = engine.get_asset_database()
         if self._asset_database is None:
             raise RuntimeError("ResourceChangeHandler requires an initialized AssetDatabase")
+
+    @property
+    def reload(self):
+        """Lazily expose the source coordinator plugins use for preload roots.
+
+        Package sources are owned by the plugin preload manager; the editor
+        resources pipeline keeps its own transaction worker for component
+        scripts. Both share the same coordinator so a package source is admitted,
+        retired and rebuilt exactly once.
+        """
+        if self._reload is None:
+            from infernux.engine.reload.coordinator import ReloadCoordinator
+
+            self._reload = ReloadCoordinator(self._project_path, adapter=_NoOpReloadAdapter())
+        return self._reload
 
     @property
     def dependency_graph(self):
@@ -2175,6 +2218,16 @@ class ResourcesManager:
             self._observer = None
         if observer is None:
             return True
+
+        coordinator = getattr(self, "_reload", None)
+        if coordinator is not None:
+            try:
+                coordinator.close()
+            except Exception as exc:
+                from infernux.debug import Debug
+
+                Debug.log_exception(exc)
+            self._reload = None
 
         observer.stop()
         observer.unschedule_all()
