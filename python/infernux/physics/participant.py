@@ -1,8 +1,4 @@
-"""Public Work declarations for one ordinary component's native physics owner.
-
-This first slice wires state, author controls and native tick stages. Geometry,
-rigidbody response and the common residual adapter are not implemented here.
-"""
+"""Project-defined simulation stages and their bindings to native rigidbodies."""
 from __future__ import annotations
 
 from infernux.compute import Buffer, Work, buffer
@@ -189,17 +185,31 @@ class PhysicsBuildPlan:
         return self._indices
 
     def participant(self, *, initialize, predict=None, prepare=None, exchange=None, accept=None,
-                    controls=None, count):
+                    controls=None, count, rigidbodies=()):
         """Bind multiple named initialize outputs to later Work input ports.
 
         Input names match initialize output names, step/indices, or controls.
         Work owns stage scratch; all stages share each initialized state owner.
         Controls map names to (prototype Buffer, complete initial author value).
+
+        Explicit rigidbodies bind Exchange's read-only rigid_motion f32[16N]
+        and freshly written rigid_impulse_delta f32[6N], in declaration order.
+        Motion consists of world COM, xyzw orientation, world linear velocity
+        and world angular velocity in four float4 blocks. Response is world
+        linear impulse followed by world angular impulse about that COM.
+        Targets are distinct Rigidbodies in this World. Exchange runs while
+        every target is active, dynamic and permits cross-backend interaction.
+        Changing permission takes effect at the next Fixed boundary. The other
+        declared stages and controls continue while Exchange is suspended.
         """
         if self._sealed:
             raise RuntimeError('build_physics has finished')
         if type(count) is not int or not 0 <= count <= 0xffffffff:
             raise ValueError('participant count must be a uint32 batch domain')
+        from infernux.components.builtin.rigidbody import Rigidbody
+        rigidbodies = tuple(rigidbodies)
+        if any(not isinstance(body, Rigidbody) for body in rigidbodies):
+            raise TypeError('participant rigidbodies must contain Rigidbody components')
         recipes = dict(initialize=initialize, predict=predict, prepare=prepare, exchange=exchange, accept=accept)
         recipes = {name: work for name, work in recipes.items() if work is not None}
         if not isinstance(initialize, Work) or any(not isinstance(work, Work) for work in recipes.values()):
@@ -215,7 +225,8 @@ class PhysicsBuildPlan:
             layouts[name] = prototype
         native = _NativePhysics._register_participant(
             self._component._get_bound_native_component(),
-            {name: work._require_open() for name, work in recipes.items()}, decoded, count)
+            {name: work._require_open() for name, work in recipes.items()}, decoded, count,
+            [body._require_cpp_component() for body in rigidbodies])
         result = Participant(native, layouts)
         self._participants.append(result)
         return result

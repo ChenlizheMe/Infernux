@@ -24,13 +24,15 @@ class JoltCpuContactPublication final
                                   ContactStreamIdentity, PhysicsContactPublication::Policy,
                                   std::function<void(uint32_t)> afterSubstep = {});
     void ConfigureCoupledFixed(JoltCpuExecution &, JoltCpuScene &, float deltaTime, uint32_t substeps,
-                               ContactStreamIdentity, PhysicsContactPublication::Policy);
+                               ContactStreamIdentity, PhysicsContactPublication::Policy,
+                               std::function<void(uint32_t)> afterSubstep = {});
     void BeginCoupledSubstep(uint32_t substep, const std::vector<JPH::BodyID> &endpoints,
                              const std::vector<JPH::BodyID> &sleepEndpoints,
                              const std::vector<JPH::BodyID> &wakeEndpoints);
     void ApplyCoupledVelocityImpulses(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses);
     // Each returns true when its phase finishes on this substep.
-    bool AdvanceCoupledVelocity();
+    bool AdvanceCoupledVelocity(bool finishWhenIdle = true);
+    void FinishCoupledVelocity();
     void PrepareCoupledIntegration(bool retainMotion);
     [[nodiscard]] std::optional<float> CoupledImpactTime() const;
     [[nodiscard]] bool HasCoupledImpact(JPH::BodyID body) const;

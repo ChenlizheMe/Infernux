@@ -886,7 +886,9 @@ class JoltGpuTick::Impl
         const bool localRows = plan && (plan->jointIslandCount || plan->contactIslandCount);
         const bool exchange = control.participants.Has(JoltGpuParticipantStage::Exchange, next.substep);
         const bool velocity = tickParameters.counts.w && (localRows || exchange || control.prepareCoupledContacts);
-        const bool coupledPositions = control.prepareCoupledContacts && !inputs.GetExternalContactBodies().empty();
+        const bool participantCpu = control.participants.hasCpuTargets;
+        const bool coupledPositions =
+            control.prepareCoupledContacts && (participantCpu || !inputs.GetExternalContactBodies().empty());
         const bool position = tickParameters.solve.x && (localRows || coupledPositions);
         const bool coupledSweep = inputs.NeedsCoupledSweep();
         const auto localDrift =
@@ -919,12 +921,15 @@ class JoltGpuTick::Impl
         case Phase::ParticipantPrepare:
             next.iteration = 0;
             next.phase = tickParameters.selectedCounts.x ? Phase::BuildTopology
+                         : participantCpu                ? Phase::PrepareCoupledContacts
                          : velocity                      ? Phase::ParticipantExchange
                                                          : Phase::ParticipantAccept;
             break;
         case Phase::ParticipantExchange:
             if (tickParameters.selectedCounts.x)
                 next.phase = Phase::SolveJointVelocity;
+            else if (participantCpu)
+                next.phase = Phase::ExchangeCoupledContacts;
             else
                 next.phase =
                     ++next.iteration < tickParameters.counts.w ? Phase::ParticipantExchange : Phase::ParticipantAccept;
@@ -961,7 +966,10 @@ class JoltGpuTick::Impl
             next.phase = control.prepareCoupledContacts ? Phase::PrepareCoupledContacts : Phase::SetupContacts;
             break;
         case Phase::PrepareCoupledContacts:
-            next.phase = inputs.HasExternalWakePending() ? Phase::WakeExternalComponents : Phase::SetupContacts;
+            if (tickParameters.selectedCounts.x)
+                next.phase = inputs.HasExternalWakePending() ? Phase::WakeExternalComponents : Phase::SetupContacts;
+            else
+                next.phase = velocity ? Phase::WarmCoupledContacts : Phase::IntegrateCoupledBodies;
             break;
         case Phase::WakeExternalComponents:
             next.phase = Phase::SetupContacts;
@@ -979,7 +987,12 @@ class JoltGpuTick::Impl
             next.phase = drift;
             break;
         case Phase::IntegrateCoupledBodies:
-            next.phase = localDrift;
+            if (tickParameters.selectedCounts.x) {
+                next.phase = localDrift;
+            } else {
+                next.iteration = 0;
+                next.phase = position ? Phase::ProjectCoupledContacts : Phase::ParticipantAccept;
+            }
             break;
         case Phase::PrepareCoupledSweep:
             next.phase = Phase::PrepareSweep;
@@ -1017,8 +1030,9 @@ class JoltGpuTick::Impl
         case Phase::ExchangeCoupledContacts:
             next.phase = ++next.iteration < tickParameters.counts.w
                              ? (exchange ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
-                         : control.prepareContactReport ? Phase::ReportContactsAfterVelocity
-                                                        : drift;
+                         : tickParameters.selectedCounts.x && control.prepareContactReport
+                             ? Phase::ReportContactsAfterVelocity
+                             : drift;
             break;
         case Phase::PrepareSweep:
             next.phase = Phase::CaptureSweepMotion;
@@ -1079,7 +1093,12 @@ class JoltGpuTick::Impl
             }
             [[fallthrough]];
         case Phase::ProjectCoupledContacts:
-            next.phase = ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
+            if (tickParameters.selectedCounts.x)
+                next.phase =
+                    ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
+            else
+                next.phase = ++next.iteration < tickParameters.solve.x ? Phase::ProjectCoupledContacts
+                                                                       : Phase::ParticipantAccept;
             break;
         case Phase::FinishJoints:
             if (inputs.NextContactHistory().patchCount) {
@@ -1967,7 +1986,8 @@ class JoltGpuTick::Impl
                 }
                 SelectControlWork(stageCursor.phase == Phase::CaptureArticulationRotors
                                       ? programs.GetArticulations().PrepareRotors(storage, inputs, done)
-                                      : programs.GetArticulations().PrepareClassification(storage, inputs, done),
+                                      : programs.GetArticulations().PrepareClassification(
+                                            storage, inputs, control.participants.gpuBodySlots.get(), done),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -2071,12 +2091,12 @@ class JoltGpuTick::Impl
                                    : settlingSweep  ? CoupledStage::SettleSweep
                                    : resolvingSweep ? CoupledStage::Sweep
                                                     : CoupledStage::Velocity;
-                using JPH::GPU::Domain;
                 const bool iterating = !preparing && !warming && !integrating && !preparingSweep && !resolvingSweep;
                 const bool exchangeBetweenRounds =
                     !projecting && control.participants.Has(JoltGpuParticipantStage::Exchange, stageCursor.substep);
-                const bool canBatch = iterating && !exchangeBetweenRounds && IslandCount(Domain::IslandPatches) == 0 &&
-                                      IslandCount(Domain::IslandJoints) == 0;
+                const auto &local = inputs.GetConstraints();
+                const bool canBatch = iterating && !exchangeBetweenRounds &&
+                                      !(local && (local->contactIslandCount || local->jointIslandCount));
                 const uint32_t iterations = projecting ? tickParameters.solve.x : tickParameters.counts.w;
                 const uint32_t maxRounds = canBatch ? std::min(iterations - stageCursor.iteration, 4u) : 1u;
                 auto phaseParams = tickParameters;

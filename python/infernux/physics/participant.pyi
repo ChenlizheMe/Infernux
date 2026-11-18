@@ -1,4 +1,5 @@
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
+from infernux.components.builtin.rigidbody import Rigidbody
 from infernux.compute import Buffer, BufferSource, Work
 
 class Participant:
@@ -22,4 +23,5 @@ class PhysicsBuildPlan:
         ...
     def participant(self, *, initialize: Work, predict: Work | None = ..., prepare: Work | None = ...,
                     exchange: Work | None = ..., accept: Work | None = ...,
-                    controls: Mapping[str, tuple[Buffer, Any]] | None = ..., count: int) -> Participant: ...
+                    controls: Mapping[str, tuple[Buffer, Any]] | None = ..., count: int,
+                    rigidbodies: Sequence[Rigidbody] = ...) -> Participant: ...

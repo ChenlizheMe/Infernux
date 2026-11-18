@@ -5416,7 +5416,8 @@ class _PhysicsParticipant:
 class Physics:
     @staticmethod
     def _register_participant(component: Component, recipes: dict[str, _ComputeWorkRecipe],
-                              controls: dict[str, tuple[_ComputeBuffer, bytes]], count: int) -> _PhysicsParticipant: ...
+                              controls: dict[str, tuple[_ComputeBuffer, bytes]], count: int,
+                              rigidbodies: list[Rigidbody] = ...) -> _PhysicsParticipant: ...
     @staticmethod
     def _participants_ready() -> bool: ...
     @staticmethod

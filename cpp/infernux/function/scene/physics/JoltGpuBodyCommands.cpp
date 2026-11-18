@@ -1,6 +1,7 @@
 #include "JoltGpuBodyCommands.h"
 #include "JoltGpuProgramSources.h"
 #include "JoltGpuSleepLayout.h"
+#include "JoltGpuTick.h"
 
 #include <algorithm>
 #include <array>
@@ -26,6 +27,9 @@ enum Port : uint8_t
     Forces,
     Targets,
     Sleeps,
+    ParticipantRows,
+    ParticipantMotion,
+    ParticipantImpulses,
     PortCount
 };
 struct PortLayout
@@ -40,7 +44,10 @@ constexpr PortLayout Ports[] = {{"command_params", sizeof(BodyCommandParams)},
                                 {"body_states", sizeof(BodyState)},
                                 {"body_forces", sizeof(BodyForces)},
                                 {"kinematic_targets", sizeof(KinematicTarget)},
-                                {"body_sleep", sizeof(BodySleepRecord)}};
+                                {"body_sleep", sizeof(BodySleepRecord)},
+                                {"participant_rows", 2u * sizeof(uint32_t)},
+                                {"participant_motion", sizeof(float)},
+                                {"participant_impulses", sizeof(float)}};
 
 template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 {
@@ -162,9 +169,207 @@ JoltGpuBodyCommands::JoltGpuBodyCommands(rhi::ComputeHost &host, const ShaderTar
         m_ports.push_back(index);
         actual |= 1u << index;
     }
-    if (actual != (1u << PortCount) - 1)
+    if (actual != (1u << ParticipantRows) - 1)
         throw std::invalid_argument("Jolt GPU command entry has an unexpected resource set");
     m_kernel = PrepareJoltGpuKernel(m_host, target.target, *code, std::move(bindings));
+    const std::array<std::string_view, 3> names{"prepare_participant_bodies", "gather_participant_motion",
+                                                "apply_participant_impulses"};
+    for (size_t entry = 0; entry < names.size(); ++entry) {
+        const auto found = std::find_if(target.entries.begin(), target.entries.end(),
+                                        [&](const auto &value) { return value.name == names[entry]; });
+        if (found == target.entries.end() || found->stage != rhi::ShaderStage::Compute ||
+            found->workgroupSize != std::array<uint32_t, 3>{64, 1, 1})
+            throw std::invalid_argument("GPU participant body port is missing its bounded compute entry");
+        std::vector<rhi::ComputeBufferBinding> layout;
+        uint32_t mask = 0;
+        for (const auto &resource : target.resources) {
+            const std::array<uint32_t, 2> key{resource.set, resource.binding.binding};
+            if (std::find(found->bindings.begin(), found->bindings.end(), key) == found->bindings.end())
+                continue;
+            const auto port = std::find_if(std::begin(Ports), std::end(Ports),
+                                           [&](const auto &p) { return p.name == resource.name; });
+            if (port == std::end(Ports) || resource.set != 0)
+                throw std::invalid_argument("GPU participant body port has an unknown resource");
+            const auto index = uint8_t(port - std::begin(Ports));
+            const bool writer =
+                index == Sleeps || (entry == 1 && index == ParticipantMotion) || (entry == 2 && index == States);
+            const bool uniform = index == Parameters;
+            if (resource.binding.type !=
+                    (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
+                (uniform ? resource.value.byteSize : resource.elementStride) != port->stride ||
+                (writer && resource.binding.readOnlyStorage))
+                throw std::invalid_argument("GPU participant body port differs from its typed layout");
+            if (index == Sleeps)
+                ValidateJoltGpuSleepLayout(resource.value);
+            m_participantPrograms[entry].ports.push_back(index);
+            layout.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
+            mask |= 1u << index;
+        }
+        const uint32_t common = (1u << Parameters) | (1u << ParticipantRows) | (1u << States);
+        const uint32_t expected =
+            common | (entry == 1 ? (1u << ParticipantMotion)
+                                 : (1u << Models) | (1u << Sleeps) | (entry == 2 ? 1u << ParticipantImpulses : 0u));
+        if (mask != expected)
+            throw std::invalid_argument("GPU participant body entry has an unexpected resource set");
+        m_participantPrograms[entry].kernel = PrepareJoltGpuKernel(m_host, target.target, *found, std::move(layout));
+    }
+}
+
+struct JoltGpuBodyCommands::ParticipantExecution : std::enable_shared_from_this<ParticipantExecution>
+{
+    rhi::ComputeHost host;
+    ParticipantProgram program;
+    std::shared_ptr<JoltGpuParticipantBodies> bodies;
+    std::shared_ptr<rhi::ComputeBuffer> values;
+    uint32_t entry, first = 0;
+    uint64_t uploadOffset = 0;
+
+    ParticipantExecution(const JoltGpuBodyCommands &owner, uint32_t entry,
+                         std::shared_ptr<JoltGpuParticipantBodies> bodies,
+                         std::shared_ptr<rhi::ComputeBuffer> values = {})
+        : host(owner.m_host), program(owner.m_participantPrograms[entry]), bodies(std::move(bodies)),
+          values(std::move(values)), entry(entry)
+    {
+    }
+
+    JoltGpuControlWork Next(uint32_t rowLimit = 2048u, uint64_t uploadLimit = 32u * 1024u)
+    {
+        if (!bodies->m_uniform)
+            bodies->m_uniform = rhi::ComputeBuffer::TryCreatePrivate(
+                host, {sizeof(BodyCommandParams) / 4u, rhi::ComputeScalarType::UInt32, 1});
+        if (!bodies->m_mapping)
+            bodies->m_mapping = rhi::ComputeBuffer::TryCreatePrivate(
+                host, {bodies->m_rows.size() * 2u, rhi::ComputeScalarType::UInt32, 1});
+        if (!bodies->m_uniform || !bodies->m_mapping)
+            return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+        if (entry == 0 && uploadOffset < bodies->m_rows.size() * sizeof(JoltGpuParticipantBodies::Row)) {
+            const uint64_t total = bodies->m_rows.size() * sizeof(JoltGpuParticipantBodies::Row);
+            const uint64_t count = std::min(uploadLimit, total - uploadOffset);
+            const auto *bytes = reinterpret_cast<const uint8_t *>(bodies->m_rows.data()) + uploadOffset;
+            auto packet =
+                rhi::PrepareComputeBatch(host, {{bodies->m_mapping, uploadOffset, {bytes, bytes + count}}}, {});
+            JoltGpuControlWork work{packet,
+                                    [self = shared_from_this(), count] {
+                                        self->uploadOffset += count;
+                                        return self->Next();
+                                    },
+                                    JoltGpuControlWork::ResumeAfter::Acceptance};
+            if (count > sizeof(JoltGpuParticipantBodies::Row))
+                work.prepareMinimum = [self = shared_from_this()] {
+                    return self->Next(1u, sizeof(JoltGpuParticipantBodies::Row));
+                };
+            return work;
+        }
+        if (first == bodies->m_rows.size()) {
+            if (entry == 0)
+                bodies->m_ready = true;
+            return {};
+        }
+        const uint32_t count = std::min<uint32_t>(rowLimit, uint32_t(bodies->m_rows.size()) - first);
+        const BodyCommandParams params{{first, count, bodies->m_worldRow, bodies->m_portRows}};
+        rhi::ComputeDispatchDesc dispatch;
+        dispatch.kernel = program.kernel;
+        dispatch.groupCountX = (count + 63u) / 64u;
+        rhi::ComputeDispatchProof proof;
+        for (uint8_t port : program.ports) {
+            auto buffer = port == Parameters        ? bodies->m_uniform
+                          : port == Models          ? bodies->m_models
+                          : port == States          ? bodies->m_states
+                          : port == Sleeps          ? bodies->m_sleeps
+                          : port == ParticipantRows ? bodies->m_mapping
+                                                    : values;
+            const uint32_t binding = uint32_t(dispatch.buffers.size());
+            const bool write =
+                (entry == 1 && port == ParticipantMotion) || (entry == 2 && port == States) || port == Sleeps;
+            const bool read = !(entry == 1 && port == ParticipantMotion);
+            dispatch.buffers.push_back(buffer);
+            dispatch.bufferAccesses.push_back(write && read ? rhi::ComputeBufferAccess::ReadWrite
+                                              : write       ? rhi::ComputeBufferAccess::Write
+                                                            : rhi::ComputeBufferAccess::Read);
+            if (port == Parameters)
+                proof.reads.push_back({binding, 0, sizeof(params)});
+            else if (port == ParticipantRows)
+                proof.reads.push_back({binding, uint64_t(first) * 8u, uint64_t(count) * 8u});
+            else {
+                for (uint32_t i = first; i < first + count; ++i) {
+                    const auto row = bodies->m_rows[i];
+                    const uint64_t stride = port == Models              ? sizeof(BodyModel)
+                                            : port == States            ? sizeof(BodyState)
+                                            : port == Sleeps            ? sizeof(BodySleepRecord)
+                                            : port == ParticipantMotion ? 16u * sizeof(float)
+                                                                        : 6u * sizeof(float);
+                    const uint64_t offset =
+                        uint64_t(port == ParticipantMotion || port == ParticipantImpulses ? row.portRow
+                                                                                          : row.bodySlot) *
+                        stride;
+                    if (read)
+                        proof.reads.push_back({binding, offset, stride});
+                    if (write) {
+                        if (port == Sleeps)
+                            proof.writes.push_back(
+                                {binding, offset + offsetof(BodySleepRecord, runtime), sizeof(BodySleepRuntime)});
+                        else
+                            proof.writes.push_back({binding, offset, stride});
+                    }
+                }
+            }
+        }
+        dispatch.proof = std::move(proof);
+        auto packet =
+            rhi::PrepareComputeBatch(host, {{bodies->m_uniform, 0, Bytes(&params, 1)}}, {std::move(dispatch)});
+        JoltGpuControlWork work{packet,
+                                [self = shared_from_this(), count] {
+                                    self->first += count;
+                                    return self->Next();
+                                },
+                                JoltGpuControlWork::ResumeAfter::Acceptance};
+        if (count > 1u)
+            work.prepareMinimum = [self = shared_from_this()] { return self->Next(1u); };
+        return work;
+    }
+};
+
+JoltGpuControlWork JoltGpuBodyCommands::PrepareParticipantBodies(const JoltGpuStorage &storage,
+                                                                 std::shared_ptr<JoltGpuParticipantBodies> bodies) const
+{
+    if (!bodies || bodies->m_rows.empty() || !m_host.SharesServicesWith(storage.GetHost()))
+        throw std::invalid_argument("GPU participant preparation requires its accepted nonempty body map");
+    // The Fixed writer excludes author/layout changes. Borrow its live endpoints;
+    // accepted packets retain the actual allocations without a plan-held COW reader.
+    bodies->m_models = storage.Get(Resource::BodyModels);
+    bodies->m_states = storage.Get(Resource::BodyStates);
+    bodies->m_sleeps = storage.Get(Resource::SleepStates);
+    return std::make_shared<ParticipantExecution>(*this, 0, std::move(bodies))->Next();
+}
+
+namespace
+{
+void ValidateParticipantValues(const rhi::ComputeHost &host, const std::shared_ptr<rhi::ComputeBuffer> &values,
+                               uint32_t rows, uint32_t stride, bool output)
+{
+    if (!values || !host.SharesServicesWith(values->GetHost()) || (output && values->IsFrozen()) ||
+        values->GetDesc().scalarType != rhi::ComputeScalarType::Float32 || values->GetDesc().lanes != 1 ||
+        values->GetByteSize() < uint64_t(rows) * stride * sizeof(float))
+        throw std::invalid_argument("GPU participant values require their complete scalar f32 port");
+}
+} // namespace
+
+JoltGpuControlWork JoltGpuBodyCommands::PrepareParticipantMotion(std::shared_ptr<JoltGpuParticipantBodies> bodies,
+                                                                 std::shared_ptr<rhi::ComputeBuffer> motion) const
+{
+    if (!bodies || !bodies->m_ready)
+        throw std::logic_error("GPU participant motion precedes accepted body-map preparation");
+    ValidateParticipantValues(m_host, motion, bodies->m_portRows, 16, true);
+    return std::make_shared<ParticipantExecution>(*this, 1, std::move(bodies), std::move(motion))->Next();
+}
+
+JoltGpuControlWork JoltGpuBodyCommands::PrepareParticipantImpulses(std::shared_ptr<JoltGpuParticipantBodies> bodies,
+                                                                   std::shared_ptr<rhi::ComputeBuffer> impulses) const
+{
+    if (!bodies || !bodies->m_ready)
+        throw std::logic_error("GPU participant response precedes accepted body-map preparation");
+    ValidateParticipantValues(m_host, impulses, bodies->m_portRows, 6, false);
+    return std::make_shared<ParticipantExecution>(*this, 2, std::move(bodies), std::move(impulses))->Next();
 }
 
 std::unique_ptr<JoltGpuCommandCursor> JoltGpuBodyCommands::Prepare(const JoltGpuStorage &storage,

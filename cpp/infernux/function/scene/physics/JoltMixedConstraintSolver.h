@@ -12,7 +12,10 @@ class JoltMixedConstraintSolver final
     [[nodiscard]] bool TryPreparePrograms(bool velocity, bool position, bool wake);
     [[nodiscard]] decltype(JoltGpuTickControl::prepareCoupledContacts)
     Prepare(const std::shared_ptr<const JoltGpuScene::Publication> &, JoltGpuMixedContacts &, JoltMixedContactStep &,
-            JoltCpuContactPublication &, const JoltMixedContactStep::Policy &);
+            JoltCpuContactPublication &, const JoltMixedContactStep::Policy &,
+            std::vector<uint32_t> projectCpuIds = {});
+    [[nodiscard]] static decltype(JoltGpuTickControl::prepareCoupledContacts)
+    PrepareParticipantsOnly(JoltCpuContactPublication &, const JoltCpuScene &, std::vector<uint32_t> projectCpuIds);
 
   private:
     struct Job;

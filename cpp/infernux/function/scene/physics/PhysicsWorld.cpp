@@ -31,6 +31,7 @@
 #include "PhysicsDomain.h"
 #include "PhysicsLayers.h"
 #include "PhysicsMass.h"
+#include "PhysicsParticipantBodies.h"
 #include "PhysicsShapeAuthoring.h"
 #include <algorithm>
 #include <array>
@@ -820,8 +821,15 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     std::vector<uint32_t> respondingGpu;
     std::vector<std::shared_ptr<JoltMixedFixedJoint>> mixedFixed;
     std::vector<JoltMixedContactStep::BodyPair> suppressedMixedPairs;
+    // Public IDs survive a queued migration. Choose the owner after the transfer and resolve
+    // native body addresses only after its Fixed control prefix has been applied.
+    std::vector<uint32_t> projectCpuIds;
+    for (const auto id : domain.admittedParticipants.rigidBodyIds)
+        if (m_bodyActors.at(id).backend == Backend::Cpu)
+            projectCpuIds.push_back(id);
+    domain.admittedParticipants.hasCpuTargets = !projectCpuIds.empty();
     bool mixedTriggers = false, coupled = false;
-    if (domain.cpuControl && domain.gpuRegistered) {
+    if (domain.cpuControl && domain.gpuBodyOwners) {
         bool gpuBody = false, sensor = false, respondingCpu = false, dynamicCpu = false, dynamicGpu = false;
         const bool observeTriggers = policy.WantsTriggers();
         const auto &store = PhysicsECSStore::Instance();
@@ -877,15 +885,19 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         if (!m_gpuScene->TryBeginTick(
                 domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime, *domain.admittedParameters,
                 [this, &domain] { return PrepareRenderConsumer(domain, true); },
-                [this, &domain, policy, mixedTriggers,
-                 coupled](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
+                [this, &domain, policy, mixedTriggers, coupled,
+                 projectCpuIds](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
                     auto observer = domain.gpuContacts.Prepare(*m_gpuContactReports, p,
                                                                domain.admittedParameters->Get().solve.y, policy);
                     if (coupled) {
-                        observer.couple =
-                            m_mixedConstraintSolver->Prepare(p, *m_gpuMixedContacts, *domain.mixedContacts,
-                                                             domain.cpuContacts, domain.admittedContactPolicy);
-                    } else if (mixedTriggers) {
+                        observer.couple = m_mixedConstraintSolver->Prepare(p, *m_gpuMixedContacts,
+                                                                           *domain.mixedContacts, domain.cpuContacts,
+                                                                           domain.admittedContactPolicy, projectCpuIds);
+                    } else if (!projectCpuIds.empty()) {
+                        observer.couple = JoltMixedConstraintSolver::PrepareParticipantsOnly(
+                            domain.cpuContacts, *domain.cpuScene, projectCpuIds);
+                    }
+                    if (mixedTriggers && !coupled) {
                         auto mixed =
                             m_gpuMixedContacts->Observe(p, *domain.mixedContacts, domain.admittedContactPolicy);
                         observer.phase = [gather = std::move(mixed.phase), observe = std::move(observer.phase)](
@@ -933,15 +945,15 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         if (mixedTriggers || coupled)
             domain.mixedContacts->Begin(*domain.cpuScene, std::move(cpuEndpoints), std::move(respondingGpu), substeps,
                                         std::move(mixedFixed), std::move(suppressedMixedPairs));
-        if (coupled) {
-            domain.cpuContacts.ConfigureCoupledFixed(m_cpuServices->execution, *domain.cpuScene,
-                                                     domain.admittedDeltaTime, substeps, identity,
-                                                     domain.admittedContactPolicy);
-            return true;
-        }
-        if (mixedTriggers) {
+        if (mixedTriggers && !coupled) {
             auto &mixed = *domain.mixedContacts;
             capture = [&mixed](uint32_t substep) { mixed.CaptureCpuBoundary(substep + 1); };
+        }
+        if (coupled || !projectCpuIds.empty()) {
+            domain.cpuContacts.ConfigureCoupledFixed(m_cpuServices->execution, *domain.cpuScene,
+                                                     domain.admittedDeltaTime, substeps, identity,
+                                                     domain.admittedContactPolicy, std::move(capture));
+            return true;
         }
         const auto error =
             domain.cpuContacts.Step(m_cpuServices->execution, *domain.cpuScene, domain.admittedDeltaTime, substeps,
@@ -1316,10 +1328,23 @@ void PhysicsWorld::RefreshBodySurfaces(PhysicsDomain &domain)
     }
     domain.surfaceRevision = revision;
 }
+JoltGpuParticipantStages PhysicsWorld::CaptureParticipants(PhysicsDomain &domain)
+{
+    std::shared_ptr<std::vector<uint32_t>> slots;
+    auto stages = CapturePhysicsParticipants(domain.participants, [&](auto bodyIds) {
+        if (!slots)
+            slots = std::make_shared<std::vector<uint32_t>>();
+        return BindPhysicsParticipantBodies(domain, EnsureSharedGpuScene(), *m_gpuWork, std::move(bodyIds), slots);
+    });
+    stages.gpuBodySlots = std::move(slots);
+    return stages;
+}
+
 std::shared_ptr<PhysicsParticipant> PhysicsWorld::RegisterParticipant(const Component &component,
                                                                       PhysicsParticipant::Recipes recipes,
                                                                       PhysicsParticipant::Controls controls,
-                                                                      uint32_t count)
+                                                                      uint32_t count,
+                                                                      const std::vector<Rigidbody *> &rigidbodies)
 {
     RequireOwnerThread();
     auto &domain = DomainForComponent(component);
@@ -1327,7 +1352,8 @@ std::shared_ptr<PhysicsParticipant> PhysicsWorld::RegisterParticipant(const Comp
     if (domain.retiring || recipes.empty() || !m_gpuHost ||
         !recipes.begin()->second->GetHost().SharesServicesWith(*m_gpuHost))
         throw std::invalid_argument("Participant requires its live World's engine compute host");
-    auto participant = std::make_shared<PhysicsParticipant>(component, std::move(recipes), std::move(controls), count);
+    auto participant =
+        std::make_shared<PhysicsParticipant>(component, std::move(recipes), std::move(controls), count, rigidbodies);
     domain.participants.push_back(participant);
     return participant;
 }
@@ -1527,7 +1553,7 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
             // later numerical writer, including the next fixed integration.
             if (!ServiceParticipantOutputs())
                 return false;
-            auto participants = CapturePhysicsParticipants(domain.participants);
+            auto participants = CaptureParticipants(domain);
             if ((domain.gpuRegistered || participants) && !EnsureGpuReady(domain))
                 return false;
             RefreshBodySurfaces(domain);

@@ -449,6 +449,7 @@ JoltGpuControlWork JoltGpuArticulations::PrepareRotors(const JoltGpuStorage &sto
 }
 JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStorage &storage,
                                                                const JoltGpuStepInputs &inputs,
+                                                               const std::vector<uint32_t> *participantBodies,
                                                                std::function<void()> completed)
 {
     auto state = inputs.GetArticulations();
@@ -478,14 +479,19 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
     const bool sweepsDynamicPairs = storage.HasDynamicSweeps(world) || inputs.NeedsCoupledSweep();
     // Cross-device contact rows share the same maximal velocity representation as ordinary external contacts.
     std::vector<uint32_t> contactedTrees;
-    for (const uint32_t slot : inputs.GetExternalContactBodies()) {
+    const auto addTree = [&](uint32_t slot) {
         if (slot < h.selected.x || slot - h.selected.x >= h.selected.y)
-            continue;
+            return;
         uint32_t tree;
         std::memcpy(&tree, state->prefix.data() + h.maps.y + 4u * (slot - h.selected.x), sizeof(tree));
         if (tree != ArtControlInvalid)
             contactedTrees.push_back(tree);
-    }
+    };
+    for (const auto slot : inputs.GetExternalContactBodies())
+        addTree(slot);
+    if (participantBodies)
+        for (const auto slot : *participantBodies)
+            addTree(slot);
     std::sort(contactedTrees.begin(), contactedTrees.end());
     contactedTrees.erase(std::unique(contactedTrees.begin(), contactedTrees.end()), contactedTrees.end());
     uint32_t first = 0;

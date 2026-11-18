@@ -9,6 +9,42 @@ namespace infernux
 {
 
 class JoltGpuCommandCursor;
+class JoltGpuScene;
+struct JoltGpuControlWork;
+
+struct JoltGpuParticipantBodyTarget
+{
+    uint32_t bodyId, portRow;
+};
+
+/// One admitted Fixed's immutable sparse GPU-to-project address map.
+/// Public IDs are resolved by Scene; no component pointers or numerical host mirror are retained.
+class JoltGpuParticipantBodies final
+{
+  public:
+    struct Row
+    {
+        uint32_t bodySlot, portRow;
+    };
+    [[nodiscard]] const std::vector<Row> &GetRows() const noexcept
+    {
+        return m_rows;
+    }
+    [[nodiscard]] bool IsReady() const noexcept
+    {
+        return m_ready;
+    }
+
+  private:
+    friend class JoltGpuBodyCommands;
+    friend class JoltGpuScene;
+    std::shared_ptr<const void> m_candidate;
+    uint64_t m_worldId = 0;
+    uint32_t m_worldRow = 0, m_portRows = 0;
+    std::vector<Row> m_rows;
+    std::shared_ptr<rhi::ComputeBuffer> m_mapping, m_uniform, m_models, m_states, m_sleeps;
+    bool m_ready = false;
+};
 
 struct JoltGpuPoseWake
 {
@@ -37,10 +73,24 @@ class JoltGpuBodyCommands final
                                                                 std::vector<JPH::GPU::BodyCommand> commands,
                                                                 JoltGpuPoseWake poseWake = {}) const;
 
+    [[nodiscard]] JoltGpuControlWork PrepareParticipantBodies(const JoltGpuStorage &storage,
+                                                              std::shared_ptr<JoltGpuParticipantBodies> bodies) const;
+    [[nodiscard]] JoltGpuControlWork PrepareParticipantMotion(std::shared_ptr<JoltGpuParticipantBodies> bodies,
+                                                              std::shared_ptr<rhi::ComputeBuffer> motion) const;
+    [[nodiscard]] JoltGpuControlWork PrepareParticipantImpulses(std::shared_ptr<JoltGpuParticipantBodies> bodies,
+                                                                std::shared_ptr<rhi::ComputeBuffer> impulses) const;
+
   private:
     rhi::ComputeHost m_host;
     std::shared_ptr<rhi::ComputeKernel> m_kernel;
     std::vector<uint8_t> m_ports;
+    struct ParticipantExecution;
+    struct ParticipantProgram
+    {
+        std::shared_ptr<rhi::ComputeKernel> kernel;
+        std::vector<uint8_t> ports;
+    };
+    std::array<ParticipantProgram, 3> m_participantPrograms;
 };
 
 /// One retained command plan. Pending batches survive Busy unchanged. Progress

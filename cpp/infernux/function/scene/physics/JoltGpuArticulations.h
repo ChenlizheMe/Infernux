@@ -47,6 +47,7 @@ class JoltGpuArticulations final
                             bool capturedWitness,
                             std::function<void(std::shared_ptr<JoltGpuArticulationState>)> completed);
     [[nodiscard]] JoltGpuControlWork PrepareClassification(const JoltGpuStorage &, const JoltGpuStepInputs &,
+                                                           const std::vector<uint32_t> *participantBodies,
                                                            std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PreparePose(const JoltGpuStorage &, const JoltGpuStepInputs &,
                                                  std::function<void()> completed);

@@ -1687,13 +1687,14 @@ void RegisterPhysicsBindings(py::module_ &m)
     py::class_<PhysicsWorld, std::unique_ptr<PhysicsWorld, py::nodelete>>(m, "Physics")
         .def_static("_register_participant", [](const Component &component, PhysicsParticipant::Recipes recipes,
                                                 const std::map<std::string, std::pair<std::shared_ptr<rhi::ComputeBuffer>, py::bytes>> &controls,
-                                                uint32_t count) {
+                                                uint32_t count, const std::vector<Rigidbody *> &rigidbodies) {
             PhysicsParticipant::Controls decoded;
             for (const auto &[name, value] : controls) {
                 const std::string bytes = value.second;
                 decoded.emplace(name, PhysicsParticipantControl{value.first, {bytes.begin(), bytes.end()}});
             }
-            return PhysicsWorld::Instance().RegisterParticipant(component, std::move(recipes), std::move(decoded), count);
+            return PhysicsWorld::Instance().RegisterParticipant(component, std::move(recipes), std::move(decoded), count,
+                                                                 rigidbodies);
         })
         .def_static("_prepare_startup_programs", [] { return PhysicsWorld::Instance().TryPrepareStartupPrograms(); })
         .def_static("_participants_ready", [] { return PhysicsWorld::Instance().ServiceParticipantPreparation(); })

@@ -279,7 +279,8 @@ class PhysicsWorld
     void SetRigidbodyBackend(const std::vector<Rigidbody *> &bodies, bool gpu);
     std::shared_ptr<PhysicsParticipant> RegisterParticipant(const Component &component,
                                                             PhysicsParticipant::Recipes recipes,
-                                                            PhysicsParticipant::Controls controls, uint32_t count);
+                                                            PhysicsParticipant::Controls controls, uint32_t count,
+                                                            const std::vector<Rigidbody *> &rigidbodies);
     /// Existing Host service / Tick source only; never waits for GPU completion.
     bool TryPrepareStartupPrograms();
     bool ServiceParticipantPreparation();
@@ -879,6 +880,7 @@ class PhysicsWorld
     void StageBodyTransfer(PhysicsDomain &domain);
     bool TryStageBodyTransfer(PhysicsDomain &domain, const std::vector<uint32_t> &bodies, Backend target);
     bool AdvanceBodyTransfer(PhysicsDomain &domain, bool synchronous);
+    JoltGpuParticipantStages CaptureParticipants(PhysicsDomain &domain);
     bool TryBeginFixed(PhysicsDomain &domain);
     void FinishFixed(PhysicsDomain &domain);
     [[nodiscard]] PhysicsContactPublication::Policy CaptureContactPolicy(const PhysicsDomain &domain) const;

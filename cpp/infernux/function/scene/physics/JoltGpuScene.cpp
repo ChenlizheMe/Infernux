@@ -26,6 +26,7 @@
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace infernux
@@ -2421,6 +2422,101 @@ bool JoltGpuScene::TryPrepareStartupPrograms()
     const bool forces = m_impl->programs.TryPrepareStartupPrograms();
     const bool pairs = m_impl->broadphase.TryPrepareSmallPairPipeline();
     return forces && pairs;
+}
+
+void JoltGpuScene::RequireParticipantBodies(RuntimeWorld &world,
+                                            const std::shared_ptr<JoltGpuParticipantBodies> &bodies) const
+{
+    const auto &domain = m_impl->Domain(world);
+    if (!bodies || bodies->m_worldId != world.id || !domain.cursor || domain.closed ||
+        domain.status != JoltGpuTick::Status::Running || !domain.candidate || !domain.candidate->isFixedStep ||
+        bodies->m_candidate.get() != domain.candidate.get())
+        throw std::logic_error("GPU participant body map is outside its admitted Fixed");
+}
+
+JoltGpuControlWork JoltGpuScene::PrepareParticipantBodies(RuntimeWorld &world, const StepParams &selection,
+                                                          std::vector<JoltGpuParticipantBodyTarget> targets,
+                                                          uint32_t portRows,
+                                                          std::shared_ptr<JoltGpuParticipantBodies> &out)
+{
+    auto &domain = m_impl->Domain(world);
+    if (targets.empty() || !portRows || portRows > UINT32_MAX / 16u || targets.size() > portRows || !domain.cursor ||
+        domain.closed || domain.status != JoltGpuTick::Status::Running || !domain.candidate ||
+        !domain.candidate->isFixedStep || domain.row != selection.selection.x)
+        throw std::invalid_argument("GPU participant bodies require a nonempty admitted Fixed selection");
+    const auto &range = m_impl->storage.GetModel().worlds.at(domain.row).bodies;
+    if (range.x != selection.selection.y || range.y != selection.selectedCounts.x ||
+        targets.size() * 8ull > m_impl->storage.GetHost().device.GetCapabilities().portable.maxStorageBufferBinding)
+        throw std::invalid_argument("GPU participant body map exceeds its accepted world or device range");
+    auto bodies = std::shared_ptr<JoltGpuParticipantBodies>(new JoltGpuParticipantBodies());
+    bodies->m_candidate = domain.candidate;
+    bodies->m_worldId = world.id;
+    bodies->m_worldRow = domain.row;
+    bodies->m_portRows = portRows;
+    out = bodies;
+    struct Preparation : std::enable_shared_from_this<Preparation>
+    {
+        std::vector<JoltGpuParticipantBodyTarget> targets;
+        std::unordered_set<uint32_t> slots, rows;
+        size_t next = 0;
+        std::function<uint32_t(const JoltGpuParticipantBodyTarget &)> resolve;
+        std::function<JoltGpuControlWork()> finish;
+        JoltGpuControlWork Next()
+        {
+            const size_t end = std::min(targets.size(), next + 256u);
+            for (; next < end; ++next) {
+                const auto &target = targets[next];
+                // Resolve and reject duplicate destinations before device work is admitted.
+                const uint32_t slot = resolve(target);
+                if (!slots.insert(slot).second || !rows.insert(target.portRow).second)
+                    throw std::invalid_argument("GPU participant targets and project rows must be distinct");
+            }
+            if (next == targets.size())
+                return finish();
+            return {nullptr, [self = shared_from_this()] { return self->Next(); },
+                    JoltGpuControlWork::ResumeAfter::HostWork};
+        }
+    };
+    auto prepare = std::make_shared<Preparation>();
+    prepare->targets = std::move(targets);
+    prepare->resolve = [this, &world, &domain, bodies](const JoltGpuParticipantBodyTarget &target) {
+        RequireParticipantBodies(world, bodies);
+        if (target.portRow >= bodies->m_portRows)
+            throw std::invalid_argument("GPU participant project row exceeds its scalar port");
+        const uint32_t recordIndex = m_impl->RequireSlot(target.bodyId);
+        m_impl->RequireOwnership(recordIndex, target.bodyId);
+        const auto &record = m_impl->slots[recordIndex];
+        if (record.partition != &domain || !record.accepted || record.accepted->bodyId != target.bodyId ||
+            record.accepted->rigidbodyComponentId == 0)
+            throw std::invalid_argument("GPU participant target has no matching accepted Rigidbody identity");
+        const uint32_t slot = m_impl->Packed(recordIndex);
+        const auto &model = m_impl->storage.GetModel().bodies.at(slot);
+        if (model.meta.w != domain.row || model.meta.z != MotionDynamic)
+            throw std::invalid_argument("GPU participant target must be an accepted resident Dynamic GPU body");
+        bodies->m_rows.push_back({slot, target.portRow});
+        return slot;
+    };
+    prepare->finish = [this, &world, bodies] {
+        RequireParticipantBodies(world, bodies);
+        return m_impl->commands.PrepareParticipantBodies(m_impl->storage, bodies);
+    };
+    return prepare->Next();
+}
+
+JoltGpuControlWork JoltGpuScene::PrepareParticipantMotion(RuntimeWorld &world,
+                                                          const std::shared_ptr<JoltGpuParticipantBodies> &bodies,
+                                                          std::shared_ptr<rhi::ComputeBuffer> motion)
+{
+    RequireParticipantBodies(world, bodies);
+    return m_impl->commands.PrepareParticipantMotion(bodies, std::move(motion));
+}
+
+JoltGpuControlWork JoltGpuScene::PrepareParticipantImpulses(RuntimeWorld &world,
+                                                            const std::shared_ptr<JoltGpuParticipantBodies> &bodies,
+                                                            std::shared_ptr<rhi::ComputeBuffer> impulses)
+{
+    RequireParticipantBodies(world, bodies);
+    return m_impl->commands.PrepareParticipantImpulses(bodies, std::move(impulses));
 }
 
 const std::shared_ptr<JoltGpuGeometryStore> &JoltGpuScene::GetGeometryStore() const noexcept

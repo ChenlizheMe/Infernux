@@ -1,18 +1,27 @@
 #include "PhysicsParticipant.h"
 #include "../Component.h"
 #include "../GameObject.h"
+#include "../Rigidbody.h"
 #include "../RuntimeWorld.h"
 #include "../Scene.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <set>
 #include <stdexcept>
 
 namespace infernux
 {
 namespace
 {
+const RuntimeWorld *WorldOf(const Component *component)
+{
+    const auto *owner = component ? component->GetGameObject() : nullptr;
+    const auto *scene = owner ? owner->GetScene() : nullptr;
+    return scene ? scene->GetRuntimeWorld() : nullptr;
+}
+
 const char *StageName(JoltGpuParticipantStage stage)
 {
     switch (stage) {
@@ -80,12 +89,21 @@ JoltGpuControlWork StageChain(std::shared_ptr<const ParticipantBatch> batch, siz
 }
 } // namespace
 
-PhysicsParticipant::PhysicsParticipant(const Component &component, Recipes recipes, Controls controls, uint32_t count)
+PhysicsParticipant::PhysicsParticipant(const Component &component, Recipes recipes, Controls controls, uint32_t count,
+                                       const std::vector<Rigidbody *> &rigidbodies)
     : m_component(&component), m_recipes(std::move(recipes)), m_controls(std::move(controls)), m_count(count),
       m_initialCount(count)
 {
     static std::atomic<uint64_t> nextGeneration{1};
     m_generation = nextGeneration.fetch_add(1, std::memory_order_relaxed);
+    const auto *world = WorldOf(&component);
+    std::set<const Rigidbody *> unique;
+    for (const auto *body : rigidbodies) {
+        if (!world || WorldOf(body) != world || !unique.insert(body).second)
+            throw std::invalid_argument(
+                "Participant rigid bindings require distinct Rigidbody components in the same World");
+        m_rigidbodies.emplace_back(body);
+    }
     const auto initialize = m_recipes.find("initialize");
     if (initialize == m_recipes.end() || !initialize->second)
         throw std::invalid_argument("Participant needs initialize Work");
@@ -110,6 +128,8 @@ PhysicsParticipant::PhysicsParticipant(const Component &component, Recipes recip
         m_initialControls.emplace(name, payload);
         m_pendingControls.emplace(name, std::move(payload));
     }
+    if (!m_rigidbodies.empty())
+        ValidateRigidPorts();
     bool state = false;
     for (const auto &port : initialize->second->GetPorts())
         if (!port.input) {
@@ -121,7 +141,8 @@ PhysicsParticipant::PhysicsParticipant(const Component &component, Recipes recip
         throw std::invalid_argument("Participant initialize must declare persistent outputs");
     for (const auto &[name, recipe] : m_recipes)
         for (const auto &port : recipe->GetPorts()) {
-            if (!port.input || port.name == "step" || port.name == "indices" || m_controls.count(port.name))
+            if (!port.input || port.name == "step" || port.name == "indices" || m_controls.count(port.name) ||
+                (name == "exchange" && !m_rigidbodies.empty() && port.name == "rigid_motion"))
                 continue;
             const auto &outputs = initialize->second->GetPorts();
             const auto found = std::find_if(outputs.begin(), outputs.end(), [&](const auto &output) {
@@ -131,6 +152,61 @@ PhysicsParticipant::PhysicsParticipant(const Component &component, Recipes recip
                 port.range.byteSize > found->range.byteSize)
                 throw std::invalid_argument("Participant state input exceeds its named initialized output");
         }
+}
+
+void PhysicsParticipant::ValidateRigidPorts()
+{
+    const auto exchange = m_recipes.find("exchange");
+    if (exchange == m_recipes.end() || m_controls.count("rigid_motion") || m_controls.count("rigid_impulse_delta"))
+        throw std::invalid_argument(
+            "Participant rigid targets require Exchange with dedicated motion and impulse ports");
+    const uint64_t targets = m_rigidbodies.size();
+    const auto &recipe = *exchange->second;
+    for (const auto &[stage, declared] : m_recipes)
+        for (const auto &port : declared->GetPorts()) {
+            const bool motion = port.name == "rigid_motion";
+            const bool response = port.name == "rigid_impulse_delta";
+            if (!motion && !response)
+                continue;
+            const auto &slot = declared->GetSlots().at(port.range.slot);
+            const uint64_t elements = targets * (motion ? 16u : 6u);
+            if (stage != "exchange" || port.input != motion || slot.external || port.range.offset ||
+                slot.allocation.scalarType != rhi::ComputeScalarType::Float32 || slot.allocation.lanes != 1 ||
+                slot.allocation.elementCount != elements || port.range.byteSize != elements * sizeof(float))
+                throw std::invalid_argument("Participant rigid exchange needs exact private f32[16N] / f32[6N] ports");
+            auto &selected = motion ? m_rigidMotionSlot : m_rigidImpulseSlot;
+            if (selected != UINT32_MAX)
+                throw std::invalid_argument("Participant rigid exchange port is declared more than once");
+            selected = port.range.slot;
+        }
+    if (m_rigidMotionSlot == UINT32_MAX || m_rigidImpulseSlot == UINT32_MAX || m_rigidMotionSlot == m_rigidImpulseSlot)
+        throw std::invalid_argument("Participant rigid exchange requires distinct motion and impulse storage");
+    for (const auto &port : recipe.GetPorts())
+        if ((port.range.slot == m_rigidMotionSlot && port.name != "rigid_motion") ||
+            (port.range.slot == m_rigidImpulseSlot && port.name != "rigid_impulse_delta"))
+            throw std::invalid_argument("Participant rigid ports cannot alias other Work ports");
+
+    std::vector<std::pair<uint64_t, uint64_t>> written;
+    for (const auto &dispatch : recipe.GetDispatches()) {
+        for (const auto &binding : dispatch.bindings)
+            if (binding.range.slot == m_rigidMotionSlot && binding.access != rhi::ComputeBufferAccess::Read)
+                throw std::invalid_argument("Participant rigid motion is read only");
+        if (dispatch.indirectArguments)
+            continue;
+        for (const auto &fact : dispatch.completeWrites)
+            if (dispatch.bindings.at(fact.binding).range.slot == m_rigidImpulseSlot)
+                written.emplace_back(fact.offset, fact.offset + fact.byteSize);
+    }
+    std::sort(written.begin(), written.end());
+    uint64_t covered = 0;
+    for (const auto &[first, end] : written) {
+        if (first > covered)
+            break;
+        covered = std::max(covered, end);
+    }
+    if (covered != targets * 6u * sizeof(float))
+        throw std::invalid_argument(
+            "Participant Exchange must freshly write every rigid impulse row on each invocation");
 }
 
 bool PhysicsParticipantOutput::IsDone() const
@@ -289,7 +365,23 @@ void PhysicsParticipant::AcceptControls(const ControlPayloads &values)
 }
 PhysicsParticipant::Prefix PhysicsParticipant::CapturePrefix()
 {
-    return {shared_from_this(), m_pendingControls, m_count, m_stages};
+    Prefix prefix{shared_from_this(), m_pendingControls, m_count, m_stages, {}, {}};
+    if (m_rigidbodies.empty())
+        return prefix;
+    const auto *world = WorldOf(m_component.GetComponent());
+    prefix.rigidBodyIds.reserve(m_rigidbodies.size());
+    for (const auto &reference : m_rigidbodies) {
+        const auto *body = dynamic_cast<Rigidbody *>(reference.GetComponent());
+        if (!body || WorldOf(body) != world || !body->IsEnabled() || !body->GetGameObject()->IsActiveInHierarchy() ||
+            body->IsKinematic() || body->GetBodyId() == UINT32_MAX || !body->AllowsCrossBackendInteraction()) {
+            prefix.rigidBodyIds.clear();
+            prefix.stages &= ~JoltGpuParticipantStages::Bit(JoltGpuParticipantStage::Exchange);
+            return prefix;
+        }
+        prefix.rigidBodyIds.push_back(body->GetBodyId());
+    }
+    prefix.stages |= JoltGpuParticipantStages::Bit(JoltGpuParticipantStage::Prepare);
+    return prefix;
 }
 void PhysicsParticipant::SetCount(uint32_t count)
 {
@@ -309,6 +401,8 @@ PhysicsParticipant::Inputs(const rhi::ComputeWorkRecipe &recipe, bool initialize
             result.emplace(port.name, m_step);
         else if (port.name == "indices")
             result.emplace(port.name, m_indices);
+        else if (!initialize && !m_rigidbodies.empty() && port.name == "rigid_motion")
+            result.emplace(port.name, m_rigidMotion);
         else if (const auto control = m_controlStorage.find(port.name); control != m_controlStorage.end())
             result.emplace(port.name, control->second);
         else if (!initialize && m_state.count(port.name))
@@ -342,6 +436,12 @@ PhysicsParticipant::BoundStage::BoundStage(std::shared_ptr<rhi::ComputeWorkInsta
 bool PhysicsParticipant::BindInstances()
 {
     auto &host = m_recipes.at("initialize")->GetHost();
+    if (!m_rigidbodies.empty() && !m_rigidMotion) {
+        const auto &layout = m_recipes.at("exchange")->GetSlots().at(m_rigidMotionSlot).allocation;
+        m_rigidMotion = rhi::ComputeBuffer::TryCreatePrivate(host, layout);
+        if (!m_rigidMotion)
+            return false;
+    }
     for (const auto &[name, control] : m_controls)
         if (!m_controlStorage.count(name)) {
             auto buffer = rhi::ComputeBuffer::TryCreatePrivate(host, control.prototype->GetDesc());
@@ -430,6 +530,31 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
                                                     float fixedDeltaTime, uint32_t substep, uint32_t iteration,
                                                     const Prefix &prefix)
 {
+    if (!prefix.rigidExchange ||
+        (stage != JoltGpuParticipantStage::Prepare && stage != JoltGpuParticipantStage::Exchange))
+        return PrepareRecipeStage(stage, params, fixedDeltaTime, substep, iteration, prefix);
+    auto self = shared_from_this();
+    const bool preparing = stage == JoltGpuParticipantStage::Prepare;
+    auto work =
+        prefix.rigidExchange(preparing ? JoltGpuParticipantRigidPort::Prepare : JoltGpuParticipantRigidPort::Motion,
+                             params, preparing ? nullptr : m_rigidMotion);
+    return ContinueJoltGpuControlWork(
+        std::move(work), [self, stage, params, fixedDeltaTime, substep, iteration, &prefix] {
+            auto work = self->PrepareRecipeStage(stage, params, fixedDeltaTime, substep, iteration, prefix);
+            if (stage != JoltGpuParticipantStage::Exchange)
+                return work;
+            return ContinueJoltGpuControlWork(std::move(work), [self, params, &prefix] {
+                const auto &exchange = self->m_instances.at("exchange").work;
+                return prefix.rigidExchange(JoltGpuParticipantRigidPort::Impulses, params,
+                                            exchange->GetBuffers().at(self->m_rigidImpulseSlot));
+            });
+        });
+}
+
+JoltGpuControlWork PhysicsParticipant::PrepareRecipeStage(JoltGpuParticipantStage stage,
+                                                          const JPH::GPU::StepParams &params, float fixedDeltaTime,
+                                                          uint32_t substep, uint32_t iteration, const Prefix &prefix)
+{
     const auto name = StageName(stage);
     const auto found = m_instances.find(name);
     const auto *bound = found != m_instances.end() ? &found->second : nullptr;
@@ -466,7 +591,8 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
     return work;
 }
 
-JoltGpuParticipantStages CapturePhysicsParticipants(const std::vector<std::weak_ptr<PhysicsParticipant>> &participants)
+JoltGpuParticipantStages CapturePhysicsParticipants(const std::vector<std::weak_ptr<PhysicsParticipant>> &participants,
+                                                    const PhysicsParticipant::RigidFactory &bindBodies)
 {
     using Stage = JoltGpuParticipantStage;
     JoltGpuParticipantStages stages;
@@ -488,8 +614,16 @@ JoltGpuParticipantStages CapturePhysicsParticipants(const std::vector<std::weak_
             batch->firstPredict.push_back(index);
         stages.mask |= prefix.stages;
         stages.initialControls |= !prefix.controls.empty();
+        if (!prefix.rigidBodyIds.empty()) {
+            stages.rigidBodyIds.insert(stages.rigidBodyIds.end(), prefix.rigidBodyIds.begin(),
+                                       prefix.rigidBodyIds.end());
+            prefix.rigidExchange = bindBodies(std::move(prefix.rigidBodyIds));
+        }
         batch->owners.push_back(std::move(prefix));
     }
+    std::sort(stages.rigidBodyIds.begin(), stages.rigidBodyIds.end());
+    stages.rigidBodyIds.erase(std::unique(stages.rigidBodyIds.begin(), stages.rigidBodyIds.end()),
+                              stages.rigidBodyIds.end());
     if (batch)
         stages.prepare = [batch](Stage stage, const JPH::GPU::StepParams &params, float fixedDeltaTime,
                                  uint32_t substep, uint32_t iteration, std::function<void()> done) {

@@ -251,6 +251,22 @@ class JoltGpuScene final
     [[nodiscard]] bool CanReserve(const RuntimeWorld &world, size_t count = 1) const;
     [[nodiscard]] bool HasPendingControl(const RuntimeWorld &world) const;
 
+    /// Resolve only the admitted GPU identities; the public interaction owner checks both permissions.
+    /// Complete this before topology/wake/classification, and include GetRows() in external contact bodies.
+    [[nodiscard]] JoltGpuControlWork PrepareParticipantBodies(RuntimeWorld &, const JPH::GPU::StepParams &,
+                                                              std::vector<JoltGpuParticipantBodyTarget> targets,
+                                                              uint32_t portRows,
+                                                              std::shared_ptr<JoltGpuParticipantBodies> &out);
+    /// Write only mapped GPU rows of scalar f32[portRows * 16], preserving interleaved CPU rows.
+    [[nodiscard]] JoltGpuControlWork PrepareParticipantMotion(RuntimeWorld &,
+                                                              const std::shared_ptr<JoltGpuParticipantBodies> &,
+                                                              std::shared_ptr<rhi::ComputeBuffer> motion);
+    /// Consume finite world-space linear/angular-about-COM deltas from scalar f32[portRows * 6].
+    /// Native local constraints redistribute candidate speeds before the ordinary drift applies speed limits.
+    [[nodiscard]] JoltGpuControlWork PrepareParticipantImpulses(RuntimeWorld &,
+                                                                const std::shared_ptr<JoltGpuParticipantBodies> &,
+                                                                std::shared_ptr<rhi::ComputeBuffer> impulses);
+
     /// Busy preserves the complete per-world FIFO and logical tick identity.
     [[nodiscard]] bool TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,
                                     const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer = {},
@@ -288,6 +304,7 @@ class JoltGpuScene final
     friend class PhysicsWorld;
     friend class SceneManager;
     [[nodiscard]] bool HasRunningFixedTick(const RuntimeWorld &world) const noexcept;
+    void RequireParticipantBodies(RuntimeWorld &, const std::shared_ptr<JoltGpuParticipantBodies> &) const;
     bool IsCurrentPublication(const RuntimeWorld &world, const std::shared_ptr<const Publication> &publication) const;
     void RunPublicationObservation(RuntimeWorld &world, const std::shared_ptr<const Publication> &publication,
                                    JoltGpuControlWork work);

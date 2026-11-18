@@ -10,6 +10,7 @@
 namespace infernux
 {
 class Component;
+class Rigidbody;
 class PhysicsParticipant;
 struct RuntimeWorldHandle;
 
@@ -68,14 +69,20 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     using Recipes = std::map<std::string, std::shared_ptr<rhi::ComputeWorkRecipe>>;
     using Controls = std::map<std::string, PhysicsParticipantControl>;
     using ControlPayloads = std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>;
+    using RigidExchange = std::function<JoltGpuControlWork(JoltGpuParticipantRigidPort, const JPH::GPU::StepParams &,
+                                                           const std::shared_ptr<rhi::ComputeBuffer> &)>;
+    using RigidFactory = std::function<RigidExchange(std::vector<uint32_t>)>;
     struct Prefix
     {
         std::shared_ptr<PhysicsParticipant> owner;
         ControlPayloads controls;
         uint32_t count, stages;
+        std::vector<uint32_t> rigidBodyIds;
+        RigidExchange rigidExchange;
     };
 
-    PhysicsParticipant(const Component &component, Recipes recipes, Controls controls, uint32_t count);
+    PhysicsParticipant(const Component &component, Recipes recipes, Controls controls, uint32_t count,
+                       const std::vector<Rigidbody *> &rigidbodies);
     [[nodiscard]] bool IsReady() const noexcept
     {
         return m_ready && !m_retired;
@@ -100,12 +107,17 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
                                                   const Prefix &prefix);
 
   private:
+    void ValidateRigidPorts();
+    [[nodiscard]] JoltGpuControlWork PrepareRecipeStage(JoltGpuParticipantStage stage,
+                                                        const JPH::GPU::StepParams &params, float fixedDeltaTime,
+                                                        uint32_t substep, uint32_t iteration, const Prefix &prefix);
     [[nodiscard]] JoltGpuControlWork PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture,
                                                    uint64_t epoch, uint64_t step, bool isFixedStep);
     bool BindInstances();
     std::map<std::string, std::shared_ptr<rhi::ComputeBuffer>> Inputs(const rhi::ComputeWorkRecipe &recipe,
                                                                       bool initialize) const;
     PhysicsTargetReference m_component;
+    std::vector<PhysicsTargetReference> m_rigidbodies;
     Recipes m_recipes;
     Controls m_controls;
     std::map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_state, m_controlStorage;
@@ -119,7 +131,8 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     };
     std::map<std::string, BoundStage> m_instances;
     std::optional<PhysicsParticipantStep> m_uploadedStep;
-    std::shared_ptr<rhi::ComputeBuffer> m_step, m_indices;
+    std::shared_ptr<rhi::ComputeBuffer> m_step, m_indices, m_rigidMotion;
+    uint32_t m_rigidMotionSlot = UINT32_MAX, m_rigidImpulseSlot = UINT32_MAX;
     std::vector<std::weak_ptr<PhysicsParticipantOutput>> m_outputs;
     uint64_t m_generation = 0, m_nextOutput = 1;
     uint32_t m_count, m_initialCount, m_stages = 0;
@@ -128,5 +141,6 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
 
 /// A frozen author/control prefix, prepared once when the actual tick is admitted.
 [[nodiscard]] JoltGpuParticipantStages
-CapturePhysicsParticipants(const std::vector<std::weak_ptr<PhysicsParticipant>> &participants);
+CapturePhysicsParticipants(const std::vector<std::weak_ptr<PhysicsParticipant>> &participants,
+                           const PhysicsParticipant::RigidFactory &bindBodies);
 } // namespace infernux

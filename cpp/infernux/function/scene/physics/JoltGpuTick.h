@@ -138,6 +138,13 @@ enum class JoltGpuParticipantStage : uint32_t
     Initialize
 };
 
+enum class JoltGpuParticipantRigidPort
+{
+    Prepare,
+    Motion,
+    Impulses
+};
+
 struct JoltGpuParticipantStages
 {
     using Stage = JoltGpuParticipantStage;
@@ -154,7 +161,9 @@ struct JoltGpuParticipantStages
         return bool(prepare);
     }
     uint32_t mask = 0;
-    bool initialControls = false;
+    bool initialControls = false, hasCpuTargets = false;
+    std::vector<uint32_t> rigidBodyIds;
+    std::shared_ptr<std::vector<uint32_t>> gpuBodySlots;
     std::function<JoltGpuControlWork(Stage, const JPH::GPU::StepParams &, float, uint32_t, uint32_t,
                                      std::function<void()>)>
         prepare;

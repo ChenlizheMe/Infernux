@@ -691,9 +691,10 @@ JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execu
 
 void JoltCpuContactPublication::ConfigureCoupledFixed(JoltCpuExecution &execution, JoltCpuScene &scene, float deltaTime,
                                                       uint32_t substeps, ContactStreamIdentity identity,
-                                                      Reports::Policy policy)
+                                                      Reports::Policy policy,
+                                                      std::function<void(uint32_t)> afterSubstep)
 {
-    PrepareObservation(scene, substeps, identity, std::move(policy), {});
+    PrepareObservation(scene, substeps, identity, std::move(policy), std::move(afterSubstep));
     m_coupled = std::make_unique<CoupledStep>(execution, scene, deltaTime, substeps, identity);
     if (m_observing)
         m_coupled->listener.emplace(scene.System(), *m_capture);
@@ -734,11 +735,17 @@ void JoltCpuContactPublication::ApplyCoupledVelocityImpulses(
                                                       static_cast<uint32_t>(impulses.size()));
 }
 
-bool JoltCpuContactPublication::AdvanceCoupledVelocity()
+bool JoltCpuContactPublication::AdvanceCoupledVelocity(bool finishWhenIdle)
 {
     auto &fixed = *m_coupled;
-    const auto result = fixed.scene.System().AdvanceCoupledVelocityUpdate(*fixed.context);
+    const auto result = fixed.scene.System().AdvanceCoupledVelocityUpdate(*fixed.context, finishWhenIdle);
     return AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Velocity);
+}
+
+void JoltCpuContactPublication::FinishCoupledVelocity()
+{
+    while (!AdvanceCoupledVelocity()) {
+    }
 }
 
 void JoltCpuContactPublication::PrepareCoupledIntegration(bool retainMotion)
