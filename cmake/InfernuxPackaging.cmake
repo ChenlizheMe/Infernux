@@ -107,6 +107,8 @@ add_custom_target(package_python
     COMMAND ${CMAKE_COMMAND}
         -DINFERNUX_SOURCE_DIR=${INFERNUX_PYTHON_STAGE_DIR}
         -DINFERNUX_WHEEL_DIR=${INFERNUX_PYTHON_WHEEL_DIR}
+        "-DPE_INSPECTOR=${INFERNUX_PE_INSPECTOR}"
+        "-DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}"
         -P "${CMAKE_SOURCE_DIR}/cmake/verify_python_wheel.cmake"
 
     ${_infernux_repair_linux_wheel}

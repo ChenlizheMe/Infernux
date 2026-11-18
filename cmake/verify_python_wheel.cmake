@@ -176,7 +176,16 @@ if(NOT _bundled_plugin_name STREQUAL "infernux.mcp.inxpkg")
     )
 endif()
 
-if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+if(PE_INSPECTOR)
+    execute_process(COMMAND "${PYTHON_EXECUTABLE}" -I -X utf8
+        "${CMAKE_CURRENT_LIST_DIR}/windows_runtime_dlls.py" "${PE_INSPECTOR}"
+        --wheel-lib "${_verify_root}/infernux/lib" COMMAND_ERROR_IS_FATAL ANY)
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E env
+        "PATH=$ENV{SystemRoot}/System32" --unset=VULKAN_SDK --unset=INFERNUX_NATIVE_MODULE_DIR
+        "${PYTHON_EXECUTABLE}" -I -S "${CMAKE_CURRENT_LIST_DIR}/smoke_windows_wheel.py"
+        "${_verify_root}/infernux/lib" WORKING_DIRECTORY "${_verify_root}"
+        COMMAND_ERROR_IS_FATAL ANY)
+elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     find_program(_infernux_readelf NAMES readelf llvm-readelf REQUIRED)
     file(GLOB _linux_binding_modules
         "${_verify_root}/infernux/lib/_Infernux*.so"

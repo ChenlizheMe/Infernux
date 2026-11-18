@@ -39,9 +39,6 @@ def _register_native_search_dir(path: str) -> None:
     if sys.platform == "win32":
         handle = os.add_dll_directory(_native_loader_path(norm))
         _dll_dir_handles.append(handle)
-        path_entries = os.environ.get("PATH", "").split(";") if os.environ.get("PATH") else []
-        if norm not in path_entries:
-            os.environ["PATH"] = norm + (";" + os.environ["PATH"] if os.environ.get("PATH") else "")
     elif sys.platform == "darwin":
         dyld_path = os.environ.get("DYLD_LIBRARY_PATH", "")
         parts = dyld_path.split(":") if dyld_path else []
@@ -129,6 +126,10 @@ def _export_native_module(module) -> None:
 
 def _iter_dev_native_search_dirs():
     repo_root = os.path.abspath(os.path.join(lib_dir, "..", "..", ".."))
+    if lib_dir != os.path.join(repo_root, "python", "infernux", "lib") or not os.path.isfile(
+        os.path.join(repo_root, "CMakeLists.txt")
+    ):
+        return
     build_root = os.path.join(repo_root, "out", "build")
     configs = ("RelWithDebInfo", "Release", "Debug")
 

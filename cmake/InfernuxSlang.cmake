@@ -131,7 +131,7 @@ if(CMAKE_CROSSCOMPILING)
             -DFETCHCONTENT_FULLY_DISCONNECTED=ON
             "-DSLANG_VERSION_FULL=${INFERNUX_SLANG_VERSION}"
             "-DSLANG_VERSION_NUMERIC=${INFERNUX_SLANG_VERSION}"
-            -DCMAKE_BUILD_TYPE=Release -DSLANG_LIB_TYPE=SHARED
+            -DCMAKE_BUILD_TYPE=Release -DSLANG_LIB_TYPE=SHARED -DBUILD_SHARED_LIBS=OFF
             -DSLANG_SLANG_LLVM_FLAVOR=DISABLE
             -DSLANG_EXCLUDE_DAWN=ON -DSLANG_EXCLUDE_TINT=ON
             -DSLANG_INSTALL_USER_SKILLS=OFF
@@ -159,8 +159,13 @@ if(EMSCRIPTEN)
     # consistent with the resident compiler's Wasm exception ABI.
     add_compile_options(-fwasm-exceptions -sSUPPORT_LONGJMP=wasm)
 endif()
-add_subdirectory("${INFERNUX_EXTERNAL_ROOT}/slang_for_infernux"
-                 "${CMAKE_BINARY_DIR}/external/slang" EXCLUDE_FROM_ALL)
+# The public compiler has its own linkage setting above. Its private libraries
+# also run inside build-time generators, before any SDK or wheel is staged.
+block(SCOPE_FOR VARIABLES)
+    set(BUILD_SHARED_LIBS OFF)
+    add_subdirectory("${INFERNUX_EXTERNAL_ROOT}/slang_for_infernux"
+                     "${CMAKE_BINARY_DIR}/external/slang" EXCLUDE_FROM_ALL)
+endblock()
 set_property(DIRECTORY PROPERTY COMPILE_OPTIONS ${_infernux_compile_options})
 if(TARGET infernux_slang_generators)
     foreach(_generator IN LISTS _infernux_slang_generators)
