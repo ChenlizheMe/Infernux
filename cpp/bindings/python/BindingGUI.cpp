@@ -226,29 +226,42 @@ py::dict EncodePropertyChanges(const std::vector<PropertyChange> &changes)
     return result;
 }
 
-EditorThemeRegistry::Definition DecodeThemeDefinition(const py::dict &item)
+EditorThemeRegistry::Definition DecodeThemeDefinition(const std::string &name, const py::dict &colors,
+                                                      const py::dict &vec2s,
+                                                      const std::unordered_map<std::string, float> &floats)
 {
-    EditorThemeRegistry::Definition definition;
-    definition.name = py::cast<std::string>(item["name"]);
-    for (const auto &entry : py::cast<py::dict>(item["colors"])) {
-        const auto value = py::cast<py::tuple>(entry.second);
-        definition.colors[py::cast<std::string>(py::str(entry.first))] = ImVec4(
-            py::cast<float>(value[0]), py::cast<float>(value[1]), py::cast<float>(value[2]), py::cast<float>(value[3]));
+    EditorThemeRegistry::Definition result;
+    result.name = name;
+    result.floats = floats;
+    for (auto item : colors) {
+        const auto value = py::cast<std::array<float, 4>>(item.second);
+        result.colors.emplace(py::cast<std::string>(item.first), ImVec4(value[0], value[1], value[2], value[3]));
     }
-    for (const auto &entry : py::cast<py::dict>(item["vec2s"])) {
-        const auto value = py::cast<py::tuple>(entry.second);
-        definition.vec2s[py::cast<std::string>(py::str(entry.first))] =
-            ImVec2(py::cast<float>(value[0]), py::cast<float>(value[1]));
+    for (auto item : vec2s) {
+        const auto value = py::cast<std::array<float, 2>>(item.second);
+        result.vec2s.emplace(py::cast<std::string>(item.first), ImVec2(value[0], value[1]));
     }
-    for (const auto &entry : py::cast<py::dict>(item["floats"]))
-        definition.floats[py::cast<std::string>(py::str(entry.first))] = py::cast<float>(entry.second);
-    return definition;
+    return result;
 }
 
 } // anonymous namespace
 
 void RegisterGUIBindings(py::module_ &m)
 {
+    // Registry publications, including C++ callers and owner replacement,
+    // update the Python mirror through the same path. No Python object is
+    // retained across frames.
+    EditorThemeRegistry::SetChangeCallback([] {
+        if (!Py_IsInitialized())
+            return;
+        py::gil_scoped_acquire gil;
+        py::dict modules = py::module_::import("sys").attr("modules");
+        if (modules.contains("infernux.engine.ui.theme")) {
+            py::object mirror = modules["infernux.engine.ui.theme"];
+            if (py::hasattr(mirror, "_apply_native_theme_overrides"))
+                mirror.attr("_apply_native_theme_overrides")();
+        }
+    });
     // Use the compiled ImGui constants as the sole numeric authority. Export
     // ordinary Python integers through IntEnum so all existing style APIs work.
     constexpr std::pair<const char *, int> styleVars[] = {
@@ -445,29 +458,30 @@ void RegisterGUIBindings(py::module_ &m)
         },
         py::arg("name"), "Switch the active editor theme and re-apply the ImGui palette; returns False if unknown");
     m.def(
+        "register_editor_theme",
+        [](const std::string &name, const std::string &owner, const py::dict &colors, const py::dict &vec2s,
+           const std::unordered_map<std::string, float> &floats) {
+            const auto theme = DecodeThemeDefinition(name, colors, vec2s, floats);
+            EditorThemeRegistry::Register(name, owner, theme.colors, theme.vec2s, theme.floats);
+        },
+        py::arg("name"), py::arg("owner"), py::arg("colors"), py::arg("vec2s"), py::arg("floats"));
+    m.def(
+        "remove_editor_themes", [](const std::string &owner) { EditorThemeRegistry::RemoveOwner(owner); },
+        py::arg("owner"));
+    m.def(
         "replace_editor_themes",
         [](const std::string &owner, const py::list &definitions, const std::string &preferred) {
             std::vector<EditorThemeRegistry::Definition> themes;
-            themes.reserve(static_cast<size_t>(py::len(definitions)));
-            for (const auto &value : definitions)
-                themes.push_back(DecodeThemeDefinition(py::cast<py::dict>(value)));
+            for (auto value : definitions) {
+                const auto item = py::cast<py::dict>(value);
+                themes.push_back(
+                    DecodeThemeDefinition(py::cast<std::string>(item["name"]), py::cast<py::dict>(item["colors"]),
+                                          py::cast<py::dict>(item["vec2s"]),
+                                          py::cast<std::unordered_map<std::string, float>>(item["floats"])));
+            }
             EditorThemeRegistry::ReplaceOwner(owner, themes, preferred);
-            if (ImGui::GetCurrentContext() != nullptr)
-                EditorThemeRegistry::ApplyImGuiColors();
         },
-        py::arg("owner"), py::arg("definitions"), py::arg("preferred") = "",
-        "Replace one package's contributed themes; empty preferred keeps the active theme");
-    m.def(
-        "register_editor_themes",
-        [](const std::string &owner, const py::dict &definition) {
-            EditorThemeRegistry::Register(DecodeThemeDefinition(definition), owner);
-            if (ImGui::GetCurrentContext() != nullptr)
-                EditorThemeRegistry::ApplyImGuiColors();
-        },
-        py::arg("owner"), py::arg("definition"), "Add or replace one contributed editor theme");
-    m.def(
-        "remove_editor_themes", [](const std::string &owner) { EditorThemeRegistry::RemoveOwner(owner); },
-        py::arg("owner"), "Remove every editor theme contributed by one package");
+        py::arg("owner"), py::arg("definitions"), py::arg("preferred") = "");
 
     py::class_<PropertyBatchPlan, std::shared_ptr<PropertyBatchPlan>>(m, "PropertyBatchPlan")
         .def_property_readonly("size",
@@ -922,6 +936,15 @@ void RegisterGUIBindings(py::module_ &m)
                 return py::make_tuple(ty, py::cast(s));
             },
             "Accept whatever drag payload is offered (type string + str or uint64). None if none.")
+        .def(
+            "get_drag_drop_payload_type",
+            [](InxGUIContext &) -> py::object {
+                const ImGuiPayload *payload = ImGui::GetDragDropPayload();
+                if (!payload)
+                    return py::none();
+                return py::str(payload->DataType);
+            },
+            "Type string of the payload currently being dragged, or None.")
         .def("end_drag_drop_target", &InxGUIContext::EndDragDropTarget, "End drag-drop target")
         // Mouse cursor
         .def("set_mouse_cursor", &InxGUIContext::SetMouseCursor, py::arg("cursor_type"),

@@ -18,6 +18,7 @@
  */
 
 #include <imgui.h>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +29,13 @@ namespace infernux
 class EditorThemeRegistry
 {
   public:
+    struct Definition
+    {
+        std::string name;
+        std::unordered_map<std::string, ImVec4> colors;
+        std::unordered_map<std::string, ImVec2> vec2s;
+        std::unordered_map<std::string, float> floats;
+    };
     // Active-theme accessors (used by C++ panels and the Python mirror).
     static const std::unordered_map<std::string, ImVec4> &Colors();
     static const std::unordered_map<std::string, ImVec2> &Vec2s();
@@ -35,8 +43,8 @@ class EditorThemeRegistry
 
     /// Look up a required active-theme token. Missing tokens are programming
     /// errors and throw instead of allowing each consumer to invent a value.
-    static ImVec4 Color(const std::string &name);
-    static ImVec2 Vec2(const std::string &name);
+    static const ImVec4 &Color(const std::string &name);
+    static const ImVec2 &Vec2(const std::string &name);
     static float Float(const std::string &name);
 
     // ── Theme switching ────────────────────────────────────────────────
@@ -46,31 +54,33 @@ class EditorThemeRegistry
     static bool SetActiveTheme(const std::string &name);
     /// Bumped whenever the active theme changes — cheap change detection.
     static unsigned long Generation();
-
-    // ── Contributed themes (packages) ──────────────────────────────────
-    /// One package-authored theme. Tokens override the built-in base theme, so
-    /// a package can ship a partial palette without restating every token.
-    struct Definition
-    {
-        std::string name;
-        std::unordered_map<std::string, ImVec4> colors;
-        std::unordered_map<std::string, ImVec2> vec2s;
-        std::unordered_map<std::string, float> floats;
-    };
-
-    /// Register or replace one theme under an owner (package reference).
-    static void Register(const Definition &definition, const std::string &owner);
-    /// Remove every theme contributed by one owner; falls back to the default.
+    static void Register(const std::string &name, const std::string &owner,
+                         const std::unordered_map<std::string, ImVec4> &colors,
+                         const std::unordered_map<std::string, ImVec2> &vec2s,
+                         const std::unordered_map<std::string, float> &floats);
     static void RemoveOwner(const std::string &owner);
-    /// Replace an owner's whole catalog; optionally activate `preferred`.
-    static void ReplaceOwner(const std::string &owner, const std::vector<Definition> &definitions,
-                             const std::string &preferred);
+    /// Validate and replace one owner's complete current contributions in one publication.
+    static void ReplaceOwner(const std::string &owner, const std::vector<Definition> &themes,
+                             const std::string &preferred = "");
+    /// The binding installs a non-owning callback to refresh the Python mirror.
+    static void SetChangeCallback(std::function<void()> callback);
+    static void SetDisplayScale(float scale);
+
+    /// Register (or replace) a theme derived from an existing one. Token
+    /// overrides must name tokens that exist in the base theme. When the
+    /// overrides contain ROLE_ACCENT, the accent-driven tokens are re-derived
+    /// first so a theme plugin can recolor the editor with a single value.
+    /// Throws std::invalid_argument for an unknown base or token.
+    static void RegisterTheme(const std::string &name, const std::unordered_map<std::string, ImVec4> &colors,
+                              const std::unordered_map<std::string, ImVec2> &vec2s,
+                              const std::unordered_map<std::string, float> &floats,
+                              const std::string &base = "infernux");
 
     /// Push the active theme's palette into ImGui's global style colors.
     /// Themes every built-in widget at once (C++ and Python). Cheap; call on
     /// startup and once per theme switch.
     static void ApplyImGuiColors();
-    static void ConfigureImGuiDimensions(ImGuiStyle &style);
+    static void ConfigureImGuiDimensions(ImGuiStyle &style, float scale = 1.0f);
 };
 
 } // namespace infernux

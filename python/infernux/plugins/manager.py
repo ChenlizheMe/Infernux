@@ -71,6 +71,8 @@ from .package import (
 from .preload import PreloadManager
 from .project_index import _asset_database, project_guid_paths
 from .registry import PluginRegistry
+from .source_content import same_source_content
+from .themes import scan_installed_themes
 
 if TYPE_CHECKING:
     from .preload import PreloadState
@@ -408,6 +410,8 @@ class PluginManager:
             self._published_plugin_state = published
             from infernux.host.queries import emit_signal
             emit_signal("plugins.changed")
+        if not self.runtime:
+            scan_installed_themes(str(self.project_root), self.registry)
         return tuple(self.states.values())
 
     def reload(self, reference: str) -> PluginState:

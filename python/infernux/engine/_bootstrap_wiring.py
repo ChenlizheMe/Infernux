@@ -1045,6 +1045,14 @@ class BootstrapWiringMixin:
                 ),
             ),
             EditorCommand(
+                "window.open.themes",
+                lambda _context: wm.open_window_from_user("themes") is not None,
+                display_name="Themes",
+                category="Window",
+                can_execute=lambda _context: "themes" in wm.get_registered_types(),
+                is_checked=lambda _context: wm.is_window_open("themes"),
+            ),
+            EditorCommand(
                 "window.toggle",
                 _toggle_window,
                 display_name="Toggle Window",
