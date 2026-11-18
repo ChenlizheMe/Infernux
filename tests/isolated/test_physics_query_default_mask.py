@@ -23,7 +23,7 @@ QUERY_CASES = (
        for mode in ("none", "empty", "layer0", "layer2", "all")]
 )
 SCREEN_CASES = [(4, mode) for mode in ("default", "none", "empty", "all")]
-MAPPED_CASES = [(4, "combined", mode) for mode in ("default", "none", "empty", "all")] + [
+CPU_STATE_CASES = [(4, "combined", mode) for mode in ("default", "none", "empty", "all")] + [
     (0x80000000, "combined", "default")]
 GPU_CASES = [(4, query, mode) for query in ("box", "combined") for mode in ("default", "empty")] + [
     (0x80000000, "combined", "default"), (4, "box", "all")]
@@ -46,7 +46,7 @@ def observe_masks(tmp_path_factory, cases, gpu=False):
 
 @pytest.fixture(scope="module")
 def observed(tmp_path_factory):
-    return observe_masks(tmp_path_factory, QUERY_CASES + SCREEN_CASES + MAPPED_CASES)
+    return observe_masks(tmp_path_factory, QUERY_CASES + SCREEN_CASES + CPU_STATE_CASES)
 
 
 @pytest.mark.parametrize("configured,api,query,mode", QUERY_CASES)
@@ -65,8 +65,8 @@ def test_screen_ray_uses_configured_mask(observed, configured, mode):
     assert observed["screen"][mode] == observed["results"]["public"]["raycast"][mode]
 
 
-@pytest.mark.parametrize("configured,query,mode", MAPPED_CASES)
-def test_mapped_buffer_query_uses_configured_mask(observed, configured, query, mode):
+@pytest.mark.parametrize("configured,query,mode", CPU_STATE_CASES)
+def test_cpu_snapshot_uses_configured_mask(observed, configured, query, mode):
     assert_buffer_query(observed[configured], query, mode)
 
 
@@ -92,14 +92,11 @@ def assert_buffer_query(observed, query, mode):
         assert row["positions_y"] == expected_y
 
 
-def exercise_buffers(evidence, gpu):
+def exercise_gpu_buffers(evidence):
     import infernux as inx
     import numpy as np
     from infernux.physics import Physics
 
-    # Exercise the engine's actual Web CPU mapping route on the native test host.
-    if not gpu:
-        os.environ["INFERNUX_WEB_RUNTIME"] = "1"
     state = {name: inx.buffer(shape=3, dtype=inx.vector3, device="gpu") for name in
              ("position", "center_of_mass", "linear_velocity", "angular_velocity", "inverse_mass")}
     state["rotation"] = inx.buffer(shape=3, dtype=inx.vector4, device="gpu")
@@ -109,7 +106,7 @@ def exercise_buffers(evidence, gpu):
         ("half_extents", inx.vector3), ("friction", np.float32), ("bounciness", np.float32))}
     try:
         rows = evidence["buffers"] = {}
-        for configured, query, mode in (GPU_CASES if gpu else MAPPED_CASES):
+        for configured, query, mode in GPU_CASES:
             if configured == evidence["configured"]:
                 rows.setdefault(query, {})
                 mask = MODES[mode]
@@ -120,20 +117,17 @@ def exercise_buffers(evidence, gpu):
                     Physics.query_rigidbody_states_and_box_states_in_bounds(
                         (-2, -2, -2), (2, 6, 2), state, boxes, **kwargs)
                 count = boxes["count"]
-                read = lambda buffer: buffer.get_data().numpy() if gpu else buffer.numpy()
                 row = rows[query][mode] = {
                     "owners": sorted(body.game_object.id for body in boxes["rigidbodies"]),
-                    "count": count, "centers_y": sorted(read(boxes["center"])[:count, 1].tolist()),
+                    "count": count, "centers_y": sorted(boxes["center"].get_data().numpy()[:count, 1].tolist()),
                 }
                 if query == "combined":
-                    row["positions_y"] = sorted(read(state["position"])[:count, 1].tolist())
+                    row["positions_y"] = sorted(state["position"].get_data().numpy()[:count, 1].tolist())
     finally:
         for values in (state, boxes):
             for value in values.values():
                 if isinstance(value, inx.compute.Buffer):
                     value.close()
-        if not gpu:
-            del os.environ["INFERNUX_WEB_RUNTIME"]
 
 
 def batch_output():
@@ -173,7 +167,7 @@ def exercise(project, configured, gpu=False):
             evidence["owners"][layer] = owner.id
         Physics.sync_transforms()
         if gpu:
-            exercise_buffers(evidence, gpu=True)
+            exercise_gpu_buffers(evidence)
             return
         origin, direction = Vector3(0, 8, 0), Vector3(0, -1, 0)
         for case_configured, api_name, query, mode in QUERY_CASES:
@@ -219,7 +213,18 @@ def exercise(project, configured, gpu=False):
             kwargs = {} if mode == "default" else {"layer_mask": mask}
             hit = PublicPhysics.raycast_screen(CameraRay(), (32, 32), (64, 64), 12, **kwargs)
             evidence["screen"][mode] = [] if hit is None else [hit.game_object.id]
-        exercise_buffers(evidence, gpu=False)
+        for mask, query, mode in CPU_STATE_CASES:
+            if mask != configured:
+                continue
+            kwargs = {} if mode == "default" else {"layer_mask": MODES[mode]}
+            bodies = PublicPhysics.query_rigidbodies_in_bounds((-2, -2, -2), (2, 6, 2), **kwargs)
+            boxes = PublicPhysics.get_rigidbody_box_states(bodies)
+            state = PublicPhysics.get_rigidbody_states(bodies)
+            evidence.setdefault("buffers", {}).setdefault(query, {})[mode] = {
+                "owners": sorted(body.game_object.id for body in bodies), "count": boxes["count"],
+                "centers_y": sorted(boxes["center"][:, 1].tolist()),
+                "positions_y": sorted(state["position"][:, 1].tolist()),
+            }
     finally:
         engine.exit()
         (project / "query-masks.json").write_text(json.dumps(evidence), encoding="utf-8")
