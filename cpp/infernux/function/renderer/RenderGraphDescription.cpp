@@ -29,6 +29,25 @@ bool GraphUsesForwardPlus(const RenderGraphDescription &graph)
     return false;
 }
 
+GraphRayTailUse ResolveGraphRayTailUse(const RenderGraphDescription &graph)
+{
+    bool prepare = false, merge = false;
+    for (const auto &pass : graph.passes) {
+        if (const auto *command = pass.PrimaryCommand()) {
+            prepare |= command->type == GraphCommandType::RayTailPrepare;
+            merge |= command->type == GraphCommandType::RayTailMerge;
+        }
+    }
+    if (prepare != merge)
+        throw std::invalid_argument("A ray cache update requires both its prepare and merge passes");
+    if (merge)
+        return GraphRayTailUse::Update;
+    const bool reads = std::any_of(graph.buffers.begin(), graph.buffers.end(), [](const GraphBufferDesc &buffer) {
+        return buffer.frameBuffer == GraphFrameBuffer::WorldRayTailRead;
+    });
+    return reads ? GraphRayTailUse::Read : GraphRayTailUse::None;
+}
+
 std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGraphDescription &graph)
 {
     const auto isLitTable = [](const GraphBufferDesc &buffer) {

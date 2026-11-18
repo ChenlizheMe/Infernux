@@ -1631,6 +1631,9 @@ class RenderGraph:
                 return buffer
         return self._create_frame_buffer(name, source)
 
+    def _world_ray_tail_read(self) -> BufferHandle:
+        return self._create_world_buffer("ray_tail_read", _GraphFrameBuffer.WORLD_RAY_TAIL_READ)
+
     def _create_world_ray_tail(self) -> dict[str, BufferHandle]:
         return {
             name: self._create_world_buffer(name, source)

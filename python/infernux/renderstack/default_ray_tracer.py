@@ -85,7 +85,7 @@ class DefaultRayTracer(RayTracer):
             p.write_color(output)
             bind_deferred_material(p, inputs)
             p.set_texture("primary", guides.primary)
-            p.set_buffer("tail_cache", graph._create_world_ray_tail()["ray_tail_read"])
+            p.set_buffer("tail_cache", graph._world_ray_tail_read())
             _bind_world(p, ctx.world.materials)
             p.set_param("specular", specular)
             p.set_param("temporal", ctx.reconstruct)
@@ -281,7 +281,7 @@ def _draw_thin_transparency(graph, capture, surface):
     with graph.add_pass("Thin Surface Reflection") as render_pass:
         render_pass.set_textures({"layer": layer, "optics": optics})
         render_pass.set_buffer("surface_records", surface.sample(SURFACE_RECORDS_BUFFER))
-        render_pass.set_buffer("tail_cache", graph._create_world_ray_tail()["ray_tail_read"])
+        render_pass.set_buffer("tail_cache", graph._world_ray_tail_read())
         _bind_world(render_pass, world)
         render_pass.write_color(reflection)
         render_pass.fullscreen_quad("infernux/internal/ray_thin_reflection")

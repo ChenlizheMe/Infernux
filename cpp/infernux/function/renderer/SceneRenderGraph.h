@@ -1098,6 +1098,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     raytracing::RayTailCacheBinding m_worldRayTail;
     std::weak_ptr<raytracing::RayTailCacheBatch> m_timedRayTail;
     std::weak_ptr<vk::BudgetGpuTiming> m_rayTailTiming;
+    GraphRayTailUse m_worldRayTailUse = GraphRayTailUse::None;
     std::shared_ptr<raytracing::RayTailCacheRequest> m_worldRayTailRequest;
     std::array<vk::ResourceHandle, 4> m_worldRayTailHandles;
     bool m_hasShadowCasterPass = false;

@@ -337,6 +337,22 @@ def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently
         assert not {"DeferredLightingPass", "SkyboxPass", "Thin Surface Capture", "Ray Tail Estimate"} & names
 
 
+def test_custom_specular_trace_reads_world_cache_without_requesting_an_update():
+    class Mirror(DefaultRayTracer):
+        def build(self, ctx):
+            guides = self.prepare_guides(ctx)
+            mirror = self.trace(ctx, guides, specular=True, divisor=0)
+            return ctx.publish(scene_color=mirror.radiance)
+
+    graph = RenderGraph("read-only mirror")
+    pipeline = DefaultDeferredPipeline(Mirror())
+    pipeline.ray_specular = True
+    pipeline.define_topology(graph)
+    graph.build()
+    assert {b.name for b in graph._buffers if "ray_tail_" in b.name} == {"ray_tail_read"}
+    assert all(not p.name.startswith("Ray Tail") for p in graph._passes)
+
+
 @pytest.mark.parametrize("own_guides", [False, True])
 def test_custom_geometry_reuses_registered_surfaces_for_both_lobes(own_guides):
     graph = RenderGraph("Studio")

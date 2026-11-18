@@ -97,7 +97,8 @@ class RayWorldTailCache final
     [[nodiscard]] RayTailCacheBinding Acquire(const std::shared_ptr<const RenderWorldFrame> &world,
                                               const RayWorldGeometryBinding &geometry,
                                               const std::shared_ptr<const RayWorldMaterialPublication> &materials,
-                                              rhi::RenderViewId view, std::shared_ptr<RayTailCacheRequest> &request);
+                                              std::optional<rhi::RenderViewId> updateView,
+                                              std::shared_ptr<RayTailCacheRequest> &request);
     /// The submitter first assigns the receipt its actual queue ticket.
     [[nodiscard]] bool AcceptBatch(const std::shared_ptr<RayTailCacheBatch> &batch) noexcept;
 

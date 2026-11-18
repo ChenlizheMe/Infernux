@@ -328,7 +328,8 @@ uint64_t RayWorldTailCache::AvailableBytes()
 RayTailCacheBinding RayWorldTailCache::Acquire(const std::shared_ptr<const RenderWorldFrame> &world,
                                                const RayWorldGeometryBinding &geometry,
                                                const std::shared_ptr<const RayWorldMaterialPublication> &materials,
-                                               rhi::RenderViewId view, std::shared_ptr<RayTailCacheRequest> &request)
+                                               std::optional<rhi::RenderViewId> updateView,
+                                               std::shared_ptr<RayTailCacheRequest> &request)
 {
     auto &s = *m_state;
     const Key key{world->WorldId(),
@@ -346,7 +347,7 @@ RayTailCacheBinding RayWorldTailCache::Acquire(const std::shared_ptr<const Rende
                 request = std::move(item);
                 break;
             }
-        if (!request) {
+        if (!request && updateView) {
             request = std::make_shared<RayTailCacheRequest>(key, ++s.epoch);
             Control control;
             control.words[0] = s.config.capacity;
@@ -363,9 +364,19 @@ RayTailCacheBinding RayWorldTailCache::Acquire(const std::shared_ptr<const Rende
             s.allocations.emplace_back(request->idleControl);
             s.requests.emplace_back(request);
         }
-        s.owner.Wake(s.source);
+        if (updateView)
+            s.owner.Wake(s.source);
     }
-    auto batch = PrepareBatch(request, view);
+    if (!updateView) {
+        // A view may consume another view's completed cache without owning any work.
+        auto publication = request ? request->published : nullptr;
+        RayTailCacheBinding result{};
+        result.buffers[0] = publication ? publication->entries : s.empty;
+        result.byteSizes[0] = 32 + uint64_t(s.config.capacity) * 128;
+        result.publication = std::move(publication);
+        return result;
+    }
+    auto batch = PrepareBatch(request, *updateView);
     if (!request->write && !request->pending)
         s.owner.Wake(s.source);
     const auto read = request->published ? request->published->entries : s.empty;

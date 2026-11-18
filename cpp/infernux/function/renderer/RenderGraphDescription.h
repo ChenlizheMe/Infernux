@@ -472,6 +472,13 @@ std::optional<GraphPassDesc> ResolveGraphCameraClear(const RenderGraphDescriptio
 /// The view lighting set consumes this graph image outside material set 0.
 std::string ResolveGraphShadowTexture(const RenderGraphDescription &graph);
 bool GraphUsesForwardPlus(const RenderGraphDescription &graph);
+enum class GraphRayTailUse
+{
+    None,
+    Read,
+    Update
+};
+GraphRayTailUse ResolveGraphRayTailUse(const RenderGraphDescription &graph);
 /// The reflected physical table layout is shared by every ray Lit consumer of a World.
 std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGraphDescription &graph);
 std::pair<uint32_t, uint32_t> ResolveGraphPassExtent(const RenderGraphDescription &graph, const GraphPassDesc &pass,

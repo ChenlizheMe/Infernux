@@ -1433,12 +1433,11 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
     }
     if (binding.pending)
         return;
-    const bool tailRequested =
-        std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
-                    [](const auto &buffer) { return buffer.frameBuffer == GraphFrameBuffer::WorldRayTailRead; });
-    if (tailRequested && m_worldRayMaterial && !m_worldRayPending) {
-        auto nextTail = m_vkCore->GetWorldRayTailCache().Acquire(world, binding, m_worldRayMaterial, m_renderView.id,
-                                                                 m_worldRayTailRequest);
+    if (m_worldRayTailUse != GraphRayTailUse::None && m_worldRayMaterial && !m_worldRayPending) {
+        const auto writer =
+            m_worldRayTailUse == GraphRayTailUse::Update ? std::optional(m_renderView.id) : std::nullopt;
+        auto nextTail =
+            m_vkCore->GetWorldRayTailCache().Acquire(world, binding, m_worldRayMaterial, writer, m_worldRayTailRequest);
         if (nextTail.buffers != m_worldRayTail.buffers && m_graphBuilt && !m_needsRebuild) {
             std::vector<vk::RenderGraph::ImportedBufferBinding> replacements;
             for (size_t i = 0; i < 4; ++i)
@@ -1514,6 +1513,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         m_liveBufferInputs.clear();
         m_pythonGraphDesc = std::move(attempted);
         m_worldRayRequested = false;
+        m_worldRayTailUse = GraphRayTailUse::None;
         m_worldRayPending = false;
         m_worldRayHandles = {};
         m_worldRayPublication.reset();
@@ -1537,6 +1537,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     RenderGraphDescription normalizedDesc;
     try {
         normalizedDesc = NormalizeRenderGraphForOutput(desc, HasOutputTexture(), m_renderView.samples);
+        m_worldRayTailUse = ResolveGraphRayTailUse(normalizedDesc);
         SetRayLitProgram(ResolveGraphRayLitProgram(normalizedDesc));
         for (auto &pass : normalizedDesc.passes) {
             for (auto &command : pass.commands) {
