@@ -36,7 +36,6 @@ int main()
     assert(EditorThemeRegistry::Float("SCENE_OVERLAY_ROUNDING") == 0.0f);
 
     const ImVec4 baseLogError = EditorThemeRegistry::Color("LOG_ERROR");
-    const ImVec4 basePrefabText = EditorThemeRegistry::Color("PREFAB_TEXT");
 
     ExpectMissingToken("color", [] { (void)EditorThemeRegistry::Color("INFERNUX_TEST_MISSING_TOKEN"); });
     ExpectMissingToken("vec2", [] { (void)EditorThemeRegistry::Vec2("INFERNUX_TEST_MISSING_TOKEN"); });
@@ -47,10 +46,14 @@ int main()
     EditorThemeRegistry::ApplyImGuiColors();
     const ImVec4 standardSelection = EditorThemeRegistry::Color("SELECTION_BG");
     const ImVec4 variantAccent = EditorThemeRegistry::Color("ROLE_ACCENT");
-    const ImVec4 progressFill = ImGui::GetStyle().Colors[ImGuiCol_PlotHistogram];
-    assert(progressFill.x == variantAccent.x);
-    assert(progressFill.y == variantAccent.y);
-    assert(progressFill.z == variantAccent.z);
+    const ImVec4 text = EditorThemeRegistry::Color("TEXT");
+    const ImVec4 histogram = ImGui::GetStyle().Colors[ImGuiCol_PlotHistogram];
+    const ImVec4 hoveredHistogram = ImGui::GetStyle().Colors[ImGuiCol_PlotHistogramHovered];
+    assert(histogram.x == text.x && histogram.y == text.y && histogram.z == text.z);
+    assert(hoveredHistogram.x == variantAccent.x && hoveredHistogram.y == variantAccent.y &&
+           hoveredHistogram.z == variantAccent.z);
+    const ImVec4 progressFill = EditorThemeRegistry::Color("STATUS_PROGRESS_CLR");
+    assert(progressFill.x == variantAccent.x && progressFill.y == variantAccent.y && progressFill.z == variantAccent.z);
     const ImVec4 focusedPanel = ImGui::GetStyle().Colors[ImGuiCol_TabSelectedOverline];
     const ImVec4 unfocusedPanel = ImGui::GetStyle().Colors[ImGuiCol_TabDimmedSelectedOverline];
     assert(focusedPanel.x == standardSelection.x);
@@ -62,7 +65,8 @@ int main()
     assert(unfocusedPanel.z == variantAccent.z);
     assert(unfocusedPanel.w == 0.60f);
     assert(EditorThemeRegistry::Color("LOG_ERROR").x == baseLogError.x);
-    assert(EditorThemeRegistry::Color("PREFAB_TEXT").x == basePrefabText.x);
+    const ImVec4 prefabText = EditorThemeRegistry::Color("PREFAB_TEXT");
+    assert(prefabText.x == variantAccent.x && prefabText.y == variantAccent.y && prefabText.z == variantAccent.z);
     assert(variantAccent.x != baseLogError.x);
     ImGui::DestroyContext();
 

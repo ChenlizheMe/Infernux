@@ -28,6 +28,10 @@ int main()
         graph.SetAssetDependencies("prefab", {"mesh"});
         graph.SetAssetDependencies("material", {"texture"});
         graph.AddRuntimeDependency("temporary-component", "texture");
+        graph.AddRuntimeDependency("observing-world", "temporary-component");
+        graph.AddRuntimeDependency("observing-world", "mesh");
+        unsigned publications = 0;
+        graph.SetRuntimeContentCallback("observing-world", [&] { ++publications; });
         const auto baseline = graph.GetContentRevision("mesh");
         graph.PublishContentChange("texture");
         const auto changed = graph.GetContentRevision("mesh");
@@ -35,6 +39,8 @@ int main()
         Require(graph.GetContentRevision("prefab") == changed, "nested prefab missed texture edit");
         Require(graph.GetContentRevision("unrelated") == 1, "unrelated content was invalidated");
         Require(graph.GetContentRevision("temporary-component") == 1, "content revisions retained a runtime object");
+        Require(publications == 1, "runtime observer missed or duplicated the transitive content change");
+        Require(graph.GetContentRevision("observing-world") == 1, "runtime observer retained an asset revision");
         for (int i = 0; i < 1000; ++i)
             Require(graph.GetContentRevision("mesh") == changed, "reading revision caused a new publication");
         graph.AddAssetDependency("texture", "prefab");

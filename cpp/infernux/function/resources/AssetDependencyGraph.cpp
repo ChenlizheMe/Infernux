@@ -411,7 +411,10 @@ void AssetDependencyGraph::PublishContentChange(const std::string &guid)
             pending.pop_back();
             if (!visited.insert(current).second)
                 continue;
-            m_contentRevisions[current] = revision;
+            // Runtime consumers still receive the event. Only published content and
+            // assets in the dependency snapshot own a persistent content revision.
+            if (current == guid || snapshot->m_nodes.count(current))
+                m_contentRevisions[current] = revision;
             const auto found = snapshot->m_dependents.find(current);
             if (found != snapshot->m_dependents.end())
                 pending.insert(pending.end(), found->second.begin(), found->second.end());
