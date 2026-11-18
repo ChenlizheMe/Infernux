@@ -753,9 +753,9 @@ bool JoltCpuContactPublication::HasCoupledImpact(JPH::BodyID body) const
     return fixed.scene.System().HasCoupledImpact(*fixed.context, body);
 }
 
-std::optional<uint32_t> JoltCpuContactPublication::GetSweepVelocityIsland(JPH::BodyID body) const
+std::optional<uint32_t> JoltCpuContactPublication::GetSweepVelocityIsland(JPH::BodyID body)
 {
-    const auto &fixed = *m_coupled;
+    auto &fixed = *m_coupled;
     return fixed.scene.System().GetSweepVelocityIsland(*fixed.context, body);
 }
 
