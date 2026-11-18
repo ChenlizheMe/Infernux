@@ -28,6 +28,10 @@ def _assert_motion_samples(description, samples):
     assert description.msaa_samples == samples
     assert description.temporal_jitter is True
     textures = {texture.name: texture for texture in description.textures}
+    resolve, = (p for p in description.passes if p.name.endswith("/TAA_Resolve"))
+    history = dict(resolve.write_colors)[0]
+    assert history.endswith("/_taa_history/write")
+    assert any(history in p.read_textures for p in description.passes)
     motion_passes = [p for p in description.passes if p.name.endswith("/Motion")]
     assert motion_passes
     for p in motion_passes:

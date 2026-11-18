@@ -25,7 +25,7 @@ class TemporalAAEffect(FullScreenEffect):
     modifies = {COLOR_TEXTURE}
 
     feedback: float = serialized_field(
-        default=0.9,
+        default=0.95,
         range=(0.0, 0.98),
         drag_speed=0.005,
         slider=False,
@@ -75,11 +75,6 @@ class TemporalAAEffect(FullScreenEffect):
             "_taa_history",
             format=Format.RGBA16_SFLOAT,
         )
-        color_out = self.get_or_create_texture(
-            graph,
-            "_taa_out",
-            format=Format.RGBA16_SFLOAT,
-        )
         with graph.add_pass("TAA_Resolve") as render_pass:
             render_pass.set_textures(
                 {
@@ -89,14 +84,10 @@ class TemporalAAEffect(FullScreenEffect):
                     "depth_tex": depth,
                 }
             )
-            render_pass.write_color(color_out)
+            render_pass.write_color(history_write)
             render_pass.set_param("feedback", self.feedback)
             render_pass.set_param("motion_rejection", self.motion_rejection)
             render_pass.set_param("depth_rejection", self.depth_rejection)
             render_pass.fullscreen_quad("infernux/post/temporal_aa")
 
-        with graph.add_copy_pass("TAA_CommitHistory") as commit:
-            commit.copy_texture(color_out, history_write)
-            commit.set_side_effect()
-
-        bus.set(COLOR_TEXTURE, color_out)
+        bus.set(COLOR_TEXTURE, history_write)

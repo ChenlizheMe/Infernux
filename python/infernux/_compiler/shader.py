@@ -704,6 +704,14 @@ uint inx_ray_sample_hash(uint state)
 
 float2 inx_ray_primary_uniform(uint index, uint pixel_seed)
 {
+    // Sobol dimension 3 (x^2 + x + 1, initial numerators 1, 3) stratifies
+    // camera phase. These masks invert its leading three bits for this block.
+    // Only the order changes. A surface visible at a single jitter phase
+    // still receives directions from the entire hemisphere over time.
+    uint phase = (countbits(index & 0x79e79e78u) & 1u)
+               | ((countbits(index & 0xa28a28a0u) & 1u) << 1u)
+               | ((countbits(index & 0x14514510u) & 1u) << 2u);
+    index ^= phase;
     // Two base-2 Sobol dimensions. The second direction matrix is Pascal's triangle mod 2.
     uint x = reversebits(index);
     uint y = x;

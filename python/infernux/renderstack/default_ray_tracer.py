@@ -119,9 +119,14 @@ class DefaultRayTracer(RayTracer):
             packet = output
             if not specular:
                 # Spatial estimates never feed back into per-view history.
-                for stride in ((1,) if divisor == 4 else (1, 2)):
-                    output = graph.create_texture(f"{ctx.name}/{name}/spatial_{stride}", format=Format.RGBA32_UINT,
-                                                  size_divisor=divisor, samples=1)
+                filtered = graph.create_texture(f"{ctx.name}/{name}/filtered", format=Format.RGBA32_UINT,
+                                                size_divisor=divisor, samples=1)
+                steps = [(1, filtered)]
+                if divisor != 4:
+                    intermediate = graph.create_texture(f"{ctx.name}/{name}/intermediate", format=Format.RGBA32_UINT,
+                                                        size_divisor=divisor, samples=1)
+                    steps.extend(((2, intermediate), (4, filtered)))
+                for stride, output in steps:
                     with graph.add_pass(f"Ray Diffuse Spatial {stride}") as p:
                         p.set_textures({"signal": packet, "primary": guides.primary,
                                         "frame": guides.surface.sample("surface_frame")})

@@ -865,9 +865,16 @@ int main(int argc, char **argv)
     assert(!ValidateRenderGraphDescription(MakeAttachmentGraph(1, 2, false), 1));
     assert(!ValidateRenderGraphDescription(MakeAttachmentGraph(1, 1, true), 1));
 
-    const glm::vec2 firstJitter = SceneRenderGraph::ComputeTemporalJitterNdc(0, 200, 100);
-    assert(std::abs(firstJitter.x) < 1e-7f);
-    assert(std::abs(firstJitter.y + (1.0f / 300.0f)) < 1e-6f);
+    unsigned occupiedX = 0, occupiedY = 0;
+    for (uint32_t i = 0; i < 8; ++i) {
+        const glm::vec2 jitter = SceneRenderGraph::ComputeTemporalJitterNdc(i, 200, 100);
+        assert(jitter == -SceneRenderGraph::ComputeTemporalJitterNdc(i + 4, 200, 100));
+        const glm::vec2 unit = jitter * glm::vec2(100, 50) + 0.5f;
+        assert(unit.x > 0.0f && unit.x < 1.0f && unit.y > 0.0f && unit.y < 1.0f);
+        occupiedX |= 1u << static_cast<unsigned>(unit.x * 8);
+        occupiedY |= 1u << static_cast<unsigned>(unit.y * 8);
+    }
+    assert(occupiedX == 0xffu && occupiedY == 0xffu);
     assert(SceneRenderGraph::ComputeTemporalJitterNdc(0, 200, 100) ==
            SceneRenderGraph::ComputeTemporalJitterNdc(8, 200, 100));
     assert(SceneRenderGraph::ComputeTemporalJitterNdc(0, 0, 100) == glm::vec2(0.0f));

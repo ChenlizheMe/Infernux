@@ -33,18 +33,12 @@ inline glm::vec2 RenderViewJitterNdc(uint32_t sampleIndex, uint32_t width, uint3
 {
     if (width == 0 || height == 0)
         return glm::vec2(0.0f);
-    const auto halton = [](uint32_t index, uint32_t base) {
-        float value = 0.0f;
-        float fraction = 1.0f;
-        while (index > 0) {
-            fraction /= static_cast<float>(base);
-            value += fraction * static_cast<float>(index % base);
-            index /= base;
-        }
-        return value;
-    };
-    const uint32_t index = sampleIndex % kTemporalJitterSampleCount + 1u;
-    return {2.0f * (halton(index, 2u) - 0.5f) / width, 2.0f * (halton(index, 3u) - 0.5f) / height};
+    // Each axis visits all eight subpixel strata. Opposite phases cancel exactly,
+    // so a completed coverage cycle stays centered on the unjittered pixel.
+    static constexpr int offsets[kTemporalJitterSampleCount][2] = {
+        {-7, -1}, {3, 5}, {1, -7}, {-5, 3}, {7, 1}, {-3, -5}, {-1, 7}, {5, -3}};
+    const auto &offset = offsets[sampleIndex % kTemporalJitterSampleCount];
+    return {static_cast<float>(offset[0]) / (8.0f * width), static_cast<float>(offset[1]) / (8.0f * height)};
 }
 
 inline glm::mat4 JitterRenderViewProjection(glm::mat4 projection, const glm::vec2 &jitterNdc)

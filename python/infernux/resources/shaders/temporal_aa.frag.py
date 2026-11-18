@@ -8,7 +8,7 @@ class TemporalAA(shader.fullscreen):
     history_tex = shader.input("history", shader.History2D, domain="scene_linear_hdr")
     motion_tex = shader.input("motion", shader.Color2D)
     depth_tex = shader.input("depth", shader.Depth2D)
-    feedback = shader.parameter.float(default=0.9, range=(0.0, 0.98))
+    feedback = shader.parameter.float(default=0.95, range=(0.0, 0.98))
     motion_rejection = shader.parameter.float(default=0.08, range=(0.0, 1.0))
     depth_rejection = shader.parameter.float(default=96.0, range=(0.0, 512.0))
 
@@ -45,7 +45,16 @@ class TemporalAA(shader.fullscreen):
         pixel_motion = shader.abs(motion * extent)
         # Subpixel movement stays inside the reconstructed coverage footprint. Fade the
         # depth-edge penalty in as the previous footprint leaves the current 3x3 neighbourhood.
-        crossing = shader.saturate(shader.max(pixel_motion.x, pixel_motion.y) - 0.5)
+        max_motion = shader.max(pixel_motion.x, pixel_motion.y)
+        crossing = shader.saturate(max_motion - 0.5)
         depth_weight = shader.mix(1.0, shader.exp2(-max_depth_delta * self.depth_rejection), crossing)
-        history_weight = self.feedback * shader.exp2(-shader.length(pixel_motion) * self.motion_rejection) * depth_weight
+        # A stationary high-contrast silhouette flickers as successive samples cover
+        # opposite sides. Moving surfaces keep the shorter response.
+        luma = shader.vec3(0.2126, 0.7152, 0.0722)
+        high = shader.dot(neighborhood_max, luma)
+        span = shader.dot(neighborhood_max - neighborhood_min, luma)
+        contrast = shader.saturate(span / shader.max(high, 0.0001))
+        still = shader.saturate(1.0 - 2.0 * max_motion)
+        retention = shader.mix(self.feedback * self.feedback, self.feedback, contrast * still)
+        history_weight = retention * shader.exp2(-shader.length(pixel_motion) * self.motion_rejection) * depth_weight
         return shader.lerp(current, history, history_weight)

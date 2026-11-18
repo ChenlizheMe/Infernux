@@ -249,10 +249,14 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
             if name == "ray_diffuse":
                 filtered = passes[resolve]._write_colors[0]
                 assert (previous.name, filtered) == ("ray/diffuse/read", "ray/diffuse/write")
-                for stride in ((1,) if divisor == 4 else (1, 2)):
+                outputs = []
+                for stride in ((1,) if divisor == 4 else (1, 2, 4)):
                     spatial = passes[f"Ray Diffuse Spatial {stride}"]
                     assert spatial._input_bindings["signal"] == filtered
                     filtered = spatial._write_colors[0]
+                    outputs.append(filtered)
+                if divisor != 4:
+                    assert outputs[0] == outputs[2] != outputs[1]
                 assert lighting._input_bindings[name] == filtered
     graph.build()
 
