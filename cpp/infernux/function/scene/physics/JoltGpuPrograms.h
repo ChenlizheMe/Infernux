@@ -603,6 +603,7 @@ class JoltGpuPrograms
         JPH::GPU::StageDefinition definition;
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<Binding> bindings;
+        std::shared_ptr<rhi::ComputeKernel> directKernel;
     };
     [[nodiscard]] rhi::ComputeDispatchDesc
     BuildDispatch(const Entry &entry, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,

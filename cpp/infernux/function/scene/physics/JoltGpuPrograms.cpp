@@ -1382,7 +1382,7 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
                 std::array<uint32_t, 3>{definition.groupSizeX, definition.groupSizeY, definition.groupSizeZ})
             throw std::invalid_argument("Jolt GPU target is missing a matching stage entry");
 
-        Entry entry{definition, {}, {}};
+        Entry entry{definition, {}, {}, {}};
         std::vector<rhi::ComputeBufferBinding> bindings;
         uint32_t actualResources = 0;
         uint32_t storageBindings = 0, uniformBindings = 0;
@@ -1414,6 +1414,14 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
         if (actualResources != (definition.reads | definition.writes) || storageBindings > 8 || uniformBindings > 2)
             throw std::invalid_argument("Jolt GPU entry resources differ from the stage recipe");
 
+        if (definition.directEntry) {
+            const auto direct = std::find_if(target.entries.begin(), target.entries.end(),
+                                             [&](const auto &entry) { return entry.name == definition.directEntry; });
+            if (direct == target.entries.end() || direct->stage != code->stage ||
+                direct->workgroupSize != code->workgroupSize || direct->bindings != code->bindings)
+                throw std::invalid_argument("Direct and tiled Jolt contact stages require the same resource layout");
+            entry.directKernel = PrepareJoltGpuKernel(m_host, target.target, *direct, bindings);
+        }
         entry.kernel = PrepareJoltGpuKernel(m_host, target.target, *code, std::move(bindings));
         m_entries[static_cast<size_t>(definition.stage)] = std::move(entry);
     }
@@ -1558,10 +1566,14 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
     dispatch.proof = std::move(proof);
     const auto &definition = entry.definition;
     dispatch.groupCountY = dispatch.groupCountZ = 1;
-    if (definition.domain == Domain::IslandPatches && range.y >= ContactParallelMinimum)
+    if (definition.domain == Domain::IslandPatches && range.y < ContactParallelMinimum) {
+        dispatch.kernel = entry.directKernel;
+        dispatch.groupCountX = Groups(range.w, definition.groupSizeX);
+    } else if (definition.domain == Domain::IslandPatches) {
         dispatch.groupCountX = range.w;
-    else
+    } else {
         dispatch.groupCountX = Groups(IslandDomain(definition.domain) ? range.w : range.y, definition.groupSizeX);
+    }
     const auto &maximum = m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount;
     if (!dispatch.groupCountX || !dispatch.groupCountY || !dispatch.groupCountZ || dispatch.groupCountX > maximum[0] ||
         dispatch.groupCountY > maximum[1] || dispatch.groupCountZ > maximum[2])
