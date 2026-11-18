@@ -72,7 +72,7 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     {
         std::shared_ptr<PhysicsParticipant> owner;
         ControlPayloads controls;
-        uint32_t count;
+        uint32_t count, stages;
     };
 
     PhysicsParticipant(const Component &component, Recipes recipes, Controls controls, uint32_t count);
@@ -122,11 +122,11 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     std::shared_ptr<rhi::ComputeBuffer> m_step, m_indices;
     std::vector<std::weak_ptr<PhysicsParticipantOutput>> m_outputs;
     uint64_t m_generation = 0, m_nextOutput = 1;
-    uint32_t m_count, m_initialCount;
+    uint32_t m_count, m_initialCount, m_stages = 0;
     bool m_ready = false, m_retired = false;
 };
 
 /// A frozen author/control prefix, prepared once when the actual tick is admitted.
-[[nodiscard]] decltype(JoltGpuTickControl::prepareParticipant)
+[[nodiscard]] JoltGpuParticipantStages
 CapturePhysicsParticipants(const std::vector<std::weak_ptr<PhysicsParticipant>> &participants);
 } // namespace infernux

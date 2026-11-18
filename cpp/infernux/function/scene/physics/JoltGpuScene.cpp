@@ -2051,8 +2051,8 @@ class JoltGpuScene::Impl
         auto finalConsumer = prepareFinalConsumer();
         auto control = PrepareControl(domain, epoch, step, parameters == nullptr, std::move(consumer),
                                       std::move(finalConsumer), std::move(prepareContacts), clean);
-        control.prepareParticipant =
-            prepareParticipants ? prepareParticipants() : decltype(control.prepareParticipant){};
+        if (prepareParticipants)
+            control.participants = prepareParticipants();
         if (selected == &tick)
             writer = &domain;
         else

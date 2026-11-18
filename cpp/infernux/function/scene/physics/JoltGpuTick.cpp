@@ -883,11 +883,11 @@ class JoltGpuTick::Impl
     void NextSpan(StageCursor &next) const
     {
         const auto &plan = inputs.GetConstraints();
-        const bool responding =
-            bool(control.prepareParticipant) || (plan && (plan->jointIslandCount || plan->contactIslandCount));
-        const bool velocity = tickParameters.counts.w && (responding || control.prepareCoupledContacts);
+        const bool localRows = plan && (plan->jointIslandCount || plan->contactIslandCount);
+        const bool exchange = control.participants.Has(JoltGpuParticipantStage::Exchange, next.substep);
+        const bool velocity = tickParameters.counts.w && (localRows || exchange || control.prepareCoupledContacts);
         const bool coupledPositions = control.prepareCoupledContacts && !inputs.GetExternalContactBodies().empty();
-        const bool position = tickParameters.solve.x && (responding || coupledPositions);
+        const bool position = tickParameters.solve.x && (localRows || coupledPositions);
         const bool coupledSweep = inputs.NeedsCoupledSweep();
         const auto localDrift =
             storage.HasSweepBodies(selectedRow) || coupledSweep ? Phase::PrepareSweep : Phase::Integrate;
@@ -911,7 +911,7 @@ class JoltGpuTick::Impl
             next.phase = Phase::ApplyForces;
             break;
         case Phase::ApplyForces:
-            next.phase = control.prepareParticipant ? Phase::ParticipantPredict : Phase::WakePrescribedBounds;
+            next.phase = control.participants ? Phase::ParticipantPredict : Phase::WakePrescribedBounds;
             break;
         case Phase::ParticipantPredict:
             next.phase = tickParameters.selectedCounts.x ? Phase::WakePrescribedBounds : Phase::ParticipantPrepare;
@@ -947,12 +947,12 @@ class JoltGpuTick::Impl
             next.phase = Phase::CollidePairs;
             break;
         case Phase::CollidePairs:
-            next.phase = inputs.HasGenericGeometry()  ? Phase::CompleteConvexContacts
-                         : control.prepareParticipant ? Phase::ParticipantPrepare
-                                                      : Phase::BuildTopology;
+            next.phase = inputs.HasGenericGeometry() ? Phase::CompleteConvexContacts
+                         : control.participants      ? Phase::ParticipantPrepare
+                                                     : Phase::BuildTopology;
             break;
         case Phase::CompleteConvexContacts:
-            next.phase = control.prepareParticipant ? Phase::ParticipantPrepare : Phase::BuildTopology;
+            next.phase = control.participants ? Phase::ParticipantPrepare : Phase::BuildTopology;
             break;
         case Phase::BuildTopology:
             next.phase = Phase::WakeComponents;
@@ -1003,7 +1003,7 @@ class JoltGpuTick::Impl
             }
             [[fallthrough]];
         case Phase::WarmCoupledContacts:
-            next.phase = control.prepareParticipant ? Phase::ParticipantExchange : Phase::SolveJointVelocity;
+            next.phase = exchange ? Phase::ParticipantExchange : Phase::SolveJointVelocity;
             break;
         case Phase::SolveJointVelocity:
             next.phase = Phase::SolveVelocity;
@@ -1016,7 +1016,7 @@ class JoltGpuTick::Impl
             [[fallthrough]];
         case Phase::ExchangeCoupledContacts:
             next.phase = ++next.iteration < tickParameters.counts.w
-                             ? (control.prepareParticipant ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
+                             ? (exchange ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
                          : control.prepareContactReport ? Phase::ReportContactsAfterVelocity
                                                         : drift;
             break;
@@ -1089,7 +1089,7 @@ class JoltGpuTick::Impl
             }
             [[fallthrough]];
         case Phase::StoreContactHistory:
-            next.phase = control.prepareParticipant ? Phase::ParticipantAccept : Phase::UpdateSleep;
+            next.phase = control.participants ? Phase::ParticipantAccept : Phase::UpdateSleep;
             break;
         case Phase::PrepareContactStore:
             next.phase = Phase::StoreContactHistory;
@@ -1108,9 +1108,30 @@ class JoltGpuTick::Impl
         }
     }
 
+    static std::optional<JoltGpuParticipantStage> ParticipantStage(Phase phase)
+    {
+        switch (phase) {
+        case Phase::ParticipantPredict:
+            return JoltGpuParticipantStage::Predict;
+        case Phase::ParticipantPrepare:
+            return JoltGpuParticipantStage::Prepare;
+        case Phase::ParticipantExchange:
+            return JoltGpuParticipantStage::Exchange;
+        case Phase::ParticipantAccept:
+            return JoltGpuParticipantStage::Accept;
+        default:
+            return {};
+        }
+    }
+
     void Normalize(StageCursor &next) const
     {
         while (next.phase != Phase::Done) {
+            if (const auto stage = ParticipantStage(next.phase);
+                stage && !control.participants.Has(*stage, next.substep)) {
+                NextSpan(next);
+                continue;
+            }
             // CPU Jolt samples sleep history only at the final collision substep.
             if (next.phase == Phase::UpdateSleep && next.substep + 1u < tickParameters.solve.y) {
                 NextSpan(next);
@@ -1181,7 +1202,7 @@ class JoltGpuTick::Impl
     {
         stageCursor = {};
         stageCursor.phase = tickParameters.selectedCounts.x ? Phase::InitializeSleep
-                            : control.prepareParticipant    ? Phase::ParticipantPredict
+                            : control.participants          ? Phase::ParticipantPredict
                                                             : Phase::Done;
         Normalize(stageCursor);
     }
@@ -1189,9 +1210,9 @@ class JoltGpuTick::Impl
     void AcceptContactWorkset(std::shared_ptr<const JoltGpuContactWorkset> contacts)
     {
         inputs.SetContacts(std::move(contacts));
-        stageCursor.phase = inputs.HasGenericGeometry()  ? Phase::CompleteConvexContacts
-                            : control.prepareParticipant ? Phase::ParticipantPrepare
-                                                         : Phase::BuildTopology;
+        stageCursor.phase = inputs.HasGenericGeometry() ? Phase::CompleteConvexContacts
+                            : control.participants      ? Phase::ParticipantPrepare
+                                                        : Phase::BuildTopology;
         stageCursor.localFirst = 0;
         stageCursor.islandBatchFirst = 0;
         stageCursor.islandBatchLanes = 0;
@@ -1822,18 +1843,13 @@ class JoltGpuTick::Impl
                 batchKind = PacketKind::Inputs;
                 return true;
             }
-            if (stageCursor.phase == Phase::ParticipantPredict || stageCursor.phase == Phase::ParticipantPrepare ||
-                stageCursor.phase == Phase::ParticipantExchange || stageCursor.phase == Phase::ParticipantAccept) {
-                const auto stage = stageCursor.phase == Phase::ParticipantPredict    ? JoltGpuParticipantStage::Predict
-                                   : stageCursor.phase == Phase::ParticipantPrepare  ? JoltGpuParticipantStage::Prepare
-                                   : stageCursor.phase == Phase::ParticipantExchange ? JoltGpuParticipantStage::Exchange
-                                                                                     : JoltGpuParticipantStage::Accept;
-                SelectControlWork(control.prepareParticipant(stage, tickParameters, fixedDeltaTime, stageCursor.substep,
-                                                             stageCursor.iteration,
-                                                             [this] {
-                                                                 NextSpan(stageCursor);
-                                                                 Normalize(stageCursor);
-                                                             }),
+            if (const auto stage = ParticipantStage(stageCursor.phase)) {
+                SelectControlWork(control.participants.prepare(*stage, tickParameters, fixedDeltaTime,
+                                                               stageCursor.substep, stageCursor.iteration,
+                                                               [this] {
+                                                                   NextSpan(stageCursor);
+                                                                   Normalize(stageCursor);
+                                                               }),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -2056,8 +2072,10 @@ class JoltGpuTick::Impl
                                                     : CoupledStage::Velocity;
                 using JPH::GPU::Domain;
                 const bool iterating = !preparing && !warming && !integrating && !preparingSweep && !resolvingSweep;
-                const bool canBatch = iterating && !control.prepareParticipant &&
-                                      IslandCount(Domain::IslandPatches) == 0 && IslandCount(Domain::IslandJoints) == 0;
+                const bool exchangeBetweenRounds =
+                    !projecting && control.participants.Has(JoltGpuParticipantStage::Exchange, stageCursor.substep);
+                const bool canBatch = iterating && !exchangeBetweenRounds && IslandCount(Domain::IslandPatches) == 0 &&
+                                      IslandCount(Domain::IslandJoints) == 0;
                 const uint32_t iterations = projecting ? tickParameters.solve.x : tickParameters.counts.w;
                 const uint32_t maxRounds = canBatch ? std::min(iterations - stageCursor.iteration, 4u) : 1u;
                 auto phaseParams = tickParameters;
@@ -2391,8 +2409,8 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     if (!ready(a) || !ready(b) || a->stageCursor.phase != b->stageCursor.phase ||
         a->stageCursor.substep != b->stageCursor.substep || a->stageCursor.iteration != b->stageCursor.iteration ||
         a->fixedDeltaTime != b->fixedDeltaTime || a->tickParameters.counts.w != b->tickParameters.counts.w ||
-        a->tickParameters.selectedCounts.z || b->tickParameters.selectedCounts.z || a->control.prepareParticipant ||
-        b->control.prepareParticipant || a->control.prepareCoupledContacts || b->control.prepareCoupledContacts)
+        a->tickParameters.selectedCounts.z || b->tickParameters.selectedCounts.z || a->control.participants ||
+        b->control.participants || a->control.prepareCoupledContacts || b->control.prepareCoupledContacts)
         return false;
     const auto phase = a->stageCursor.phase;
     if (phase != Phase::PrepareKinematics && phase != Phase::ApplyForces && phase != Phase::Integrate)

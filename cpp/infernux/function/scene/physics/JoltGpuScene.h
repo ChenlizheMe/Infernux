@@ -183,7 +183,7 @@ class JoltGpuScene final
     /// Owner bookkeeping on the exact failed writer; must not throw, drive, wait, or
     /// destroy this scene. Partition ownership retains the World until source retirement.
     using FailureObserver = std::function<void(RuntimeWorld &)>;
-    using ParticipantFactory = std::function<decltype(JoltGpuTickControl::prepareParticipant)()>;
+    using ParticipantFactory = std::function<JoltGpuParticipantStages()>;
 
     /// One shared numerical arena/source, never one scene per RuntimeWorld.
     JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const ShaderTargetCode &stepTarget,

@@ -138,12 +138,32 @@ enum class JoltGpuParticipantStage : uint32_t
     Initialize
 };
 
+struct JoltGpuParticipantStages
+{
+    using Stage = JoltGpuParticipantStage;
+    static constexpr uint32_t Bit(Stage stage) noexcept
+    {
+        return 1u << static_cast<uint32_t>(stage);
+    }
+    [[nodiscard]] bool Has(Stage stage, uint32_t substep) const noexcept
+    {
+        return (mask & Bit(stage)) || (stage == Stage::Predict && substep == 0 && initialControls);
+    }
+    explicit operator bool() const noexcept
+    {
+        return bool(prepare);
+    }
+    uint32_t mask = 0;
+    bool initialControls = false;
+    std::function<JoltGpuControlWork(Stage, const JPH::GPU::StepParams &, float, uint32_t, uint32_t,
+                                     std::function<void()>)>
+        prepare;
+};
+
 struct JoltGpuTickControl
 {
     // Native Work factories only: no project Python or independent submissions.
-    std::function<JoltGpuControlWork(JoltGpuParticipantStage, const JPH::GPU::StepParams &, float, uint32_t, uint32_t,
-                                     std::function<void()>)>
-        prepareParticipant;
+    JoltGpuParticipantStages participants;
     // Captured existing settings; elapsed physical dt is filled by Tick for
     // each actual substep. Never Host time or number of admitted packets.
     JPH::GPU::BodySleepParameters sleepParameters{};

@@ -56,7 +56,7 @@ struct PhysicsDomain final
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::weak_ptr<PhysicsParticipant> participantPreparing;
     bool participantOutputPending = false;
-    decltype(JoltGpuTickControl::prepareParticipant) admittedParticipants;
+    JoltGpuParticipantStages admittedParticipants;
     bool retiring = false;
     Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
     bool reconcilingRagdolls = false;

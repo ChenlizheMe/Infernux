@@ -42,20 +42,37 @@ template <class Value> std::vector<uint8_t> Bytes(const Value &value)
     std::memcpy(result.data(), &value, sizeof(Value));
     return result;
 }
-JoltGpuControlWork StageChain(std::shared_ptr<const std::vector<PhysicsParticipant::Prefix>> owners, size_t cursor,
+struct ParticipantBatch
+{
+    using Stage = JoltGpuParticipantStage;
+    std::vector<PhysicsParticipant::Prefix> owners;
+    std::array<std::vector<size_t>, static_cast<size_t>(Stage::Initialize)> byStage;
+    std::vector<size_t> firstPredict;
+
+    const std::vector<size_t> &OwnersFor(Stage stage, uint32_t substep) const
+    {
+        return stage == Stage::Predict && substep == 0 ? firstPredict : byStage[static_cast<size_t>(stage)];
+    }
+};
+
+JoltGpuControlWork StageChain(std::shared_ptr<const ParticipantBatch> batch, size_t cursor,
                               JoltGpuParticipantStage stage, JPH::GPU::StepParams params, float fixedDeltaTime,
                               uint32_t substep, uint32_t iteration, std::function<void()> done)
 {
-    if (cursor == owners->size()) {
+    const auto &selected = batch->OwnersFor(stage, substep);
+    if (cursor == selected.size()) {
         done();
         return {};
     }
-    auto work =
-        owners->at(cursor).owner->PrepareStage(stage, params, fixedDeltaTime, substep, iteration, owners->at(cursor));
-    auto next = [owners, cursor, stage, params, fixedDeltaTime, substep, iteration, done = std::move(done)] {
-        if (stage == JoltGpuParticipantStage::Predict && substep == 0)
-            owners->at(cursor).owner->AcceptControls(owners->at(cursor).controls);
-        return StageChain(owners, cursor + 1, stage, params, fixedDeltaTime, substep, iteration, done);
+    const size_t index = selected[cursor];
+    const auto &prefix = batch->owners[index];
+    auto work = prefix.owner->PrepareStage(stage, params, fixedDeltaTime, substep, iteration, prefix);
+    auto next = [batch, cursor, index, stage, params, fixedDeltaTime, substep, iteration, done = std::move(done)] {
+        if (stage == JoltGpuParticipantStage::Predict && substep == 0) {
+            const auto &prefix = batch->owners[index];
+            prefix.owner->AcceptControls(prefix.controls);
+        }
+        return StageChain(batch, cursor + 1, stage, params, fixedDeltaTime, substep, iteration, done);
     };
     if (!work.packet && !work.continueWork)
         return {nullptr, std::move(next), JoltGpuControlWork::ResumeAfter::HostWork};
@@ -80,6 +97,10 @@ PhysicsParticipant::PhysicsParticipant(const Component &component, Recipes recip
         if (!recipe || !recipe->GetHost().SharesServicesWith(host))
             throw std::invalid_argument("Participant Work must share one compute host");
     }
+    for (const auto stage : {JoltGpuParticipantStage::Predict, JoltGpuParticipantStage::Prepare,
+                             JoltGpuParticipantStage::Exchange, JoltGpuParticipantStage::Accept})
+        if (m_recipes.count(StageName(stage)))
+            m_stages |= JoltGpuParticipantStages::Bit(stage);
     for (auto &[name, value] : m_controls) {
         if (name == "step" || name == "indices" || !value.prototype ||
             !value.prototype->GetHost().SharesServicesWith(host) ||
@@ -268,7 +289,7 @@ void PhysicsParticipant::AcceptControls(const ControlPayloads &values)
 }
 PhysicsParticipant::Prefix PhysicsParticipant::CapturePrefix()
 {
-    return {shared_from_this(), m_pendingControls, m_count};
+    return {shared_from_this(), m_pendingControls, m_count, m_stages};
 }
 void PhysicsParticipant::SetCount(uint32_t count)
 {
@@ -445,18 +466,35 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
     return work;
 }
 
-decltype(JoltGpuTickControl::prepareParticipant)
-CapturePhysicsParticipants(const std::vector<std::weak_ptr<PhysicsParticipant>> &participants)
+JoltGpuParticipantStages CapturePhysicsParticipants(const std::vector<std::weak_ptr<PhysicsParticipant>> &participants)
 {
-    auto owners = std::make_shared<std::vector<PhysicsParticipant::Prefix>>();
-    for (const auto &entry : participants)
-        if (const auto participant = entry.lock(); participant && participant->IsActive())
-            owners->push_back(participant->CapturePrefix());
-    if (owners->empty())
-        return {};
-    return [owners](JoltGpuParticipantStage stage, const JPH::GPU::StepParams &params, float fixedDeltaTime,
-                    uint32_t substep, uint32_t iteration, std::function<void()> done) {
-        return StageChain(owners, 0, stage, params, fixedDeltaTime, substep, iteration, std::move(done));
-    };
+    using Stage = JoltGpuParticipantStage;
+    JoltGpuParticipantStages stages;
+    std::shared_ptr<ParticipantBatch> batch;
+    for (const auto &entry : participants) {
+        const auto participant = entry.lock();
+        if (!participant || !participant->IsActive())
+            continue;
+        auto prefix = participant->CapturePrefix();
+        if (!prefix.stages && prefix.controls.empty())
+            continue;
+        if (!batch)
+            batch = std::make_shared<ParticipantBatch>();
+        const auto index = batch->owners.size();
+        for (size_t i = 0; i < batch->byStage.size(); ++i)
+            if (prefix.stages & JoltGpuParticipantStages::Bit(static_cast<Stage>(i)))
+                batch->byStage[i].push_back(index);
+        if ((prefix.stages & JoltGpuParticipantStages::Bit(Stage::Predict)) || !prefix.controls.empty())
+            batch->firstPredict.push_back(index);
+        stages.mask |= prefix.stages;
+        stages.initialControls |= !prefix.controls.empty();
+        batch->owners.push_back(std::move(prefix));
+    }
+    if (batch)
+        stages.prepare = [batch](Stage stage, const JPH::GPU::StepParams &params, float fixedDeltaTime,
+                                 uint32_t substep, uint32_t iteration, std::function<void()> done) {
+            return StageChain(batch, 0, stage, params, fixedDeltaTime, substep, iteration, std::move(done));
+        };
+    return stages;
 }
 } // namespace infernux
