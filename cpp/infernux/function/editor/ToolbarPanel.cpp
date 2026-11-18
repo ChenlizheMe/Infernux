@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include "ToolbarPanel.h"
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>
@@ -62,11 +63,11 @@ void ToolbarPanel::PreRender(InxGUIContext *ctx)
     // These authored overrides replace the already-scaled global style.
     const float dpi = ctx->GetDpiScale();
     const auto scaled = [dpi](ImVec2 size) { return ImVec2(size.x * dpi, size.y * dpi); };
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorTheme::TOOLBAR_WIN_PAD));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorTheme::TOOLBAR_FRAME_PAD));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorTheme::TOOLBAR_ITEM_SPC));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, EditorTheme::TOOLBAR_FRAME_RND * dpi);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorTheme::TOOLBAR_FRAME_BRD * dpi);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorThemeRegistry::Vec2("TOOLBAR_WIN_PAD")));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorThemeRegistry::Vec2("TOOLBAR_FRAME_PAD")));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorThemeRegistry::Vec2("TOOLBAR_ITEM_SPC")));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, EditorThemeRegistry::Float("TOOLBAR_FRAME_RND") * dpi);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, EditorThemeRegistry::Float("TOOLBAR_FRAME_BRD") * dpi);
 }
 
 // ════════════════════════════════════════════════════════════════════

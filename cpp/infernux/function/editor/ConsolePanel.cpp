@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include "ConsolePanel.h"
 #include "EditorThemeRegistry.h"
 

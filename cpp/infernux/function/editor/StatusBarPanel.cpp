@@ -1,3 +1,4 @@
+#include <function/editor/EditorThemeRegistry.h>
 #include "StatusBarPanel.h"
 #include "ConsolePanel.h"
 #include <function/editor/EditorThemeRegistry.h>
@@ -95,7 +96,7 @@ void StatusBarPanel::OnRender(InxGUIContext *ctx)
         syncFromEngine();
 
     float dpi = ctx->GetDpiScale();
-    float height = EditorTheme::STATUS_BAR_BASE_HEIGHT * dpi;
+    float height = EditorThemeRegistry::Float("STATUS_BAR_BASE_HEIGHT") * dpi;
     ctx->PushUIFont(EditorThemeRegistry::Float("EDITOR_SMALL_FONT_SIZE"));
 
     ctx->SetNextWindowPos(x0, y0 + dispH - height, ImGuiCond_Always, 0.0f, 0.0f);
@@ -105,11 +106,11 @@ void StatusBarPanel::OnRender(InxGUIContext *ctx)
     ImGui::PushStyleColor(ImGuiCol_WindowBg, EditorThemeRegistry::Color("STATUS_BAR_BG"));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                        ImVec2(EditorTheme::STATUS_BAR_WIN_PAD.x * dpi, EditorTheme::STATUS_BAR_WIN_PAD.y * dpi));
+                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_WIN_PAD").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_WIN_PAD").y * dpi));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2(EditorTheme::STATUS_BAR_ITEM_SPC.x * dpi, EditorTheme::STATUS_BAR_ITEM_SPC.y * dpi));
+                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_ITEM_SPC").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_ITEM_SPC").y * dpi));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(EditorTheme::STATUS_BAR_FRAME_PAD.x * dpi, EditorTheme::STATUS_BAR_FRAME_PAD.y * dpi));
+                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_FRAME_PAD").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_FRAME_PAD").y * dpi));
 
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
@@ -133,7 +134,7 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
 {
     const bool statusActive = !m_statusText.empty();
     const float dpi = ctx->GetDpiScale();
-    const float barHeight = (EditorTheme::STATUS_BAR_BASE_HEIGHT - 8.0f) * dpi;
+    const float barHeight = (EditorThemeRegistry::Float("STATUS_BAR_BASE_HEIGHT") - 8.0f) * dpi;
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float availableWidth = (std::max)(0.0f, ImGui::GetContentRegionAvail().x);
     std::string sessionText;
@@ -174,7 +175,7 @@ void StatusBarPanel::RenderContent(InxGUIContext *ctx, float dispW)
     const float consoleRight = origin.x + consoleWidth;
     const float textY = origin.y + (barHeight - ImGui::GetTextLineHeight()) * 0.5f;
     draw->AddLine(ImVec2(origin.x, origin.y - 4.0f * dpi), ImVec2(right, origin.y - 4.0f * dpi),
-                  ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_BAR_BORDER));
+                  ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_BAR_BORDER")));
     if (consoleHovered)
         draw->AddRectFilled(origin, ImVec2(consoleRight, origin.y + barHeight),
                             ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("BTN_SB_HOVERED")));
@@ -260,9 +261,9 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
     }
 
     ImDrawList *draw = ImGui::GetWindowDrawList();
-    draw->AddLine(ImVec2(x, y), ImVec2(x, y + height), ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_BAR_BORDER));
+    draw->AddLine(ImVec2(x, y), ImVec2(x, y + height), ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_BAR_BORDER")));
     draw->AddRectFilled(ImVec2(x + 1.0f * dpi, y), ImVec2(x + width, y + height),
-                        ImGui::ColorConvertFloat4ToU32(EditorTheme::STATUS_ACTIVITY_BG));
+                        ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_ACTIVITY_BG")));
 
     const float textY = y + (height - ImGui::GetTextLineHeight()) * 0.5f;
     float textX = x + 11.0f * dpi;
