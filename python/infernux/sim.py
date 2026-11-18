@@ -1,20 +1,28 @@
 """Deterministic physics-step clock for manual simulation drivers.
 
 Yanshi binds ``sim.step@1`` to :func:`step` and ``rigid.pose@1`` to
-:func:`pose`. A step advances exactly one fixed physics step - never a
-rendered frame - and a delta that does not match the world's fixed step is
-reported as a contract error instead of silently advancing the world.
+:func:`pose`. A step advances exactly one fixed **physics** step in a paused
+Play Mode world - never a rendered frame - and a request that cannot produce
+exactly one step is reported as a contract error instead of silently
+advancing the world.
 
-The manual driver owns the loop::
+Canonical headless driver::
 
-    engine = inx.Engine(mode=inx.RuntimeMode.Headless)
+    engine = inx.Engine(inx.LogLevel.Warn, inx.RuntimeMode.Headless)
     engine.init_headless(project)
+    # ... build the fixture scene, then enter Play Mode through the host ...
+    inx.sim.settle(engine)             # drain the Play startup frame
+    inx.sim.pause()
+    body = inx.sim.body("Slider")      # runtime object, not the authored one
+    body.velocity = inx.Vector3(0.5, 0, 0)
+    base = inx.sim.clock()
     for k in range(11):
-        inx.sim.step(engine, expected_tick=k)
+        sample = inx.sim.pose(body, tick=base["tick"] + k) if k == 0 else None
+        inx.sim.step(engine, expected_tick=base["tick"] + k)
         sample = inx.sim.pose(body)
 
-Reads are pure: :func:`clock` and :func:`pose` only observe the published
-state, so repeating a read never advances the simulation.
+Reads are pure: :func:`clock` and :func:`pose` only observe published state,
+so repeating a read never advances the simulation.
 """
 
 from __future__ import annotations
@@ -25,9 +33,12 @@ from infernux.lib import SceneManager
 
 __all__ = [
     "SimStepError",
+    "body",
     "clock",
     "fixed_delta_time",
+    "pause",
     "pose",
+    "settle",
     "step",
 ]
 
@@ -73,7 +84,48 @@ def clock() -> dict[str, Any]:
         "sim_s": float(frame.time),
         "fixed_dt": float(native.get_fixed_time_step()),
         "playing": bool(native.is_playing()),
+        "paused": bool(native.is_paused()),
+        "stepping": bool(native.is_stepping()),
     }
+
+
+def pause() -> dict[str, Any]:
+    """Pause the bound world so manual stepping owns the clock."""
+    native = _native()
+    if not native.is_playing():
+        raise SimStepError("sim.not_playing", "sim.pause requires an active Play Mode world.")
+    if not native.is_paused():
+        native.pause()
+    if not native.is_paused():
+        raise SimStepError("sim.pause_rejected", "The world rejected the pause request.")
+    return clock()
+
+
+def settle(engine: Any, *, delta_time: float | None = None, max_ticks: int = 4) -> dict[str, Any]:
+    """Advance the Play startup frame so manual stepping starts from a drained accumulator.
+
+    Play admission can admit one frame before the first fixed step; that frame
+    must be consumed while the fixture still has no velocity, otherwise the
+    first manual step would inherit a partial accumulator. Call this once after
+    Play Mode starts and before applying the fixture's initial conditions.
+    """
+    if engine is None or not hasattr(engine, "tick"):
+        raise SimStepError("sim.invalid_engine", "sim.settle requires an initialized Engine facade.")
+    native = _native()
+    if not native.is_playing():
+        raise SimStepError("sim.not_playing", "sim.settle requires an active Play Mode world.")
+    delta = fixed_delta_time() if delta_time is None else float(delta_time)
+    before = clock()
+    for _ in range(max(1, int(max_ticks))):
+        engine.tick(delta)
+        after = clock()
+        if after["tick"] > before["tick"] and not after["stepping"]:
+            return after
+    raise SimStepError(
+        "sim.settle_timeout",
+        "Play admission did not publish a fixed step within the settle budget.",
+        details={"tick": before["tick"]},
+    )
 
 
 def step(
@@ -81,24 +133,32 @@ def step(
     *,
     expected_tick: int | None = None,
     delta_time: float | None = None,
+    max_ticks: int = 4,
 ) -> dict[str, Any]:
-    """Advance exactly one fixed physics step and return the new clock.
+    """Advance exactly one fixed physics step in a paused Play Mode world.
 
-    ``engine`` is the ``infernux.Engine`` facade in manual (headless) mode.
-    The caller must supply ``delta_time`` equal to the world's live fixed
-    step; passing ``None`` uses that fixed step. A stale ``expected_tick``
-    or any advance other than one step raises :class:`SimStepError`, so a
-    driver can never mistake a partial or duplicated advance for success.
+    The step runs through the engine's native paused-step admission and the
+    caller's frame ticks only complete that admission; no second step can slip
+    into the same request. A stale ``expected_tick`` or any advance other than
+    one step raises :class:`SimStepError`.
     """
     if engine is None or not hasattr(engine, "tick"):
         raise SimStepError("sim.invalid_engine", "sim.step requires an initialized Engine facade.")
-    fixed = fixed_delta_time()
+    native = _native()
+    fixed = float(native.get_fixed_time_step())
     delta = fixed if delta_time is None else float(delta_time)
     if abs(delta - fixed) > 1e-9:
         raise SimStepError(
             "sim.delta_mismatch",
             f"Requested delta {delta!r}s does not match the world fixed step {fixed!r}s.",
             details={"requested": delta, "fixed_dt": fixed},
+        )
+    if not native.is_playing():
+        raise SimStepError("sim.not_playing", "sim.step requires an active Play Mode world.")
+    if not native.is_paused():
+        raise SimStepError(
+            "sim.not_paused",
+            "sim.step requires a paused world; pause before manual stepping.",
         )
     before = clock()
     if expected_tick is not None and int(expected_tick) != before["tick"]:
@@ -107,17 +167,14 @@ def step(
             f"Expected tick {int(expected_tick)} but the world is at {before['tick']}.",
             details={"expected_tick": int(expected_tick), "tick": before["tick"]},
         )
-    # A Play start may admit one startup frame before the first fixed step.
-    # Tick only until the published step advances, then stop: never run a
-    # second step inside one request.
-    advanced = 0
+    native.step(delta)
     after = before
-    for _ in range(2):
+    for _ in range(max(1, int(max_ticks))):
         engine.tick(delta)
         after = clock()
-        advanced = after["tick"] - before["tick"]
-        if advanced:
+        if after["tick"] > before["tick"] and not after["stepping"]:
             break
+    advanced = after["tick"] - before["tick"]
     if advanced != 1:
         raise SimStepError(
             "sim.step_not_exact",
@@ -133,14 +190,25 @@ def step(
     }
 
 
+def body(name: str) -> Any:
+    """Resolve a live object by name in the bound world.
+
+    Play Mode runs a runtime clone, so fixtures must resolve objects after
+    entering Play; the authored object and the runtime object are distinct.
+    """
+    native = _native()
+    found = native.find_runtime_object(str(name))
+    if found is None:
+        raise SimStepError("sim.object_not_found", f"No live runtime object named {name!r}.")
+    return found
+
+
 def _resolve_object(subject: Any, object_id: int | None) -> Any:
     if subject is not None and hasattr(subject, "get_transform"):
         return subject
-    from infernux.lib import SceneManager as _SceneManager
-
-    manager = _SceneManager.instance()
-    if object_id is not None and manager is not None:
-        finder = getattr(manager, "find_runtime_object_by_id", None)
+    native = _native()
+    if object_id is not None:
+        finder = getattr(native, "find_runtime_object_by_id", None)
         if callable(finder):
             found = finder(int(object_id))
             if found is not None:

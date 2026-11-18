@@ -44,24 +44,35 @@ Yanshi 所需的世界绑定、能力发现、回执、证据与确定性步进�
 
 ### 3.1 步进语义
 
-`infernux.sim.step` 推进的是**物理步**，不是游戏帧：
+`infernux.sim.step` 推进的是**物理步**，不是游戏帧，走的是引擎原生的暂停步进通道
+（`SceneManager.step`）：
 
 - 请求的 `delta_time` 必须等于世界当前固定步长（否则 `sim.delta_mismatch`）；
+- 世界必须处于 Play 且已暂停（否则 `sim.not_playing` / `sim.not_paused`）；
 - `expected_tick` 与已发布物理步号不一致时拒绝（`sim.stale_tick`）；
-- 一次请求必须恰好推进 1 步，否则 `sim.step_not_exact`（世界不在独占手动模式）；
-- editor 路径下，`PlayModeManager.step_fixed(delta)` 用显式 delta 覆盖当帧的逻辑时间，
-  再由调用方轮询 `sim.clock` 直到 `tick == target_tick`。
+- 一次请求必须恰好推进 1 步，否则 `sim.step_not_exact`；
+- 调用方的 `engine.tick` 只负责完成这一次原生步进，不会混入第二次步进。
 
-headless 驱动方式：
+完整的手动驱动顺序（Play 进场的启动帧必须先排空，否则第一次步进会带上残留累加器）：
 
 ```python
 engine = inx.Engine(inx.LogLevel.Warn, inx.RuntimeMode.Headless)
 engine.init_headless(project)
-scene.set_playing(True)              # 或 SceneManager.instance().play()
-for k in range(11):
-    inx.sim.step(engine, expected_tick=k)
-    sample = inx.sim.pose(body)
+# ... 建立夹具场景，进入 Play Mode ...
+inx.sim.settle(engine)          # 排空 Play 启动帧
+runtime_body = inx.sim.body("Slider")   # Play 用运行态克隆，必须重新解析
+runtime_body.velocity = inx.Vector3(0.5, 0, 0)
+inx.sim.pause()
+base = inx.sim.clock()
+for k in range(1, 11):
+    inx.sim.step(engine, expected_tick=base["tick"] + k - 1)
+    sample = inx.sim.pose(runtime_body)
 ```
+
+实测（`tools/yanshi/rigid_diagnostics_probe.py`）：base tick=2、sim_s=0.02；
+k=0..10 的 x 从 1.2000000 到 1.2500000，最大位置误差 4.8e-8 m，最大时间误差
+2.3e-9 s，逐点 tick 严格 +1。评分时用 `sim_s - base["sim_s"]` 作为任务相对时间
+（引擎在 Play 进场时已经推进了启动帧）。
 
 前置条件：`ProjectSettings/PhysicsSettings.json` 的 `fixed_delta_time` 必须等于任务卡的 `dt`。
 
