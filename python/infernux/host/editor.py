@@ -6,6 +6,7 @@ import os
 from enum import Enum
 from typing import Any, Iterable
 
+from infernux.debug import DebugConsole
 from infernux.engine.path_utils import resolved_path
 
 from .operations import OperationError
@@ -154,11 +155,20 @@ class EditorAutomationHost:
 
     def runtime_transition(self, method: str) -> dict[str, object]:
         manager = self._play_mode_manager()
+        target_step = None
+        if method == "step_frame":
+            if not manager.is_paused:
+                return {"accepted": False, "runtime": self._runtime_status_value(manager)}
+            target_step = (int(manager.step_sequence) + int(manager.pending_step_requests)
+                           + int(manager._step_completion is not None) + 1)
         result = getattr(manager, str(method))()
-        return {
+        value = {
             "accepted": True if result is None else bool(result),
             "runtime": self._runtime_status_value(manager),
         }
+        if target_step is not None:
+            value["target_step_sequence"] = target_step
+        return value
 
     def set_time_scale(self, value: float) -> dict[str, object]:
         manager = self._play_mode_manager()
@@ -387,22 +397,55 @@ class EditorAutomationHost:
     ) -> dict[str, object]:
         allowed = {self._canonical_level(level) for level in levels}
         panel = self._native_console()
-        if panel is None:
-            raise OperationError("editor.unavailable", "The Editor Console is unavailable.")
-        entries = [dict(item) for item in panel._get_visible_log_snapshot(max(1, int(limit)))]
-        entries = [item for item in entries if not allowed or self._canonical_level(item["level"]) in allowed]
-        message, level, info, warnings, errors, uid = panel._get_status_snapshot()
+        reader = getattr(panel, "_get_visible_log_snapshot", None)
+        if callable(reader):
+            entries = [dict(item) for item in reader(max(1, int(limit)))]
+            entries = [
+                item
+                for item in entries
+                if not allowed
+                or self._canonical_level(item.get("level", "")) in allowed
+            ]
+            status_bar = None
+            try:
+                message, level, info, warnings, errors, uid = panel._get_status_snapshot()
+                status_bar = {
+                    "surface": "status_bar",
+                    "message": message,
+                    "level": self._canonical_level(level),
+                    "counts": {
+                        "info": info,
+                        "warnings": warnings,
+                        "errors": errors,
+                    },
+                    "mirrors_console_uid": uid or None,
+                }
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
+            return {
+                "entries": entries,
+                "source": "native_console",
+                "surface": "console",
+                "status_bar": status_bar,
+            }
+        entries = []
+        for entry in DebugConsole.instance().get_entries()[-max(1, int(limit)) :]:
+            value = {
+                "time": entry.get_formatted_time(),
+                "level": self._canonical_level(entry.log_type),
+                "message": entry.message,
+                "source_file": entry.source_file,
+                "source_line": entry.source_line,
+                "stack_trace": entry.stack_trace,
+                "count": 1,
+            }
+            if not allowed or value["level"] in allowed:
+                entries.append(value)
         return {
             "entries": entries,
-            "source": "native_console",
+            "source": "python_debug_fallback",
             "surface": "console",
-            "status_bar": {
-                "surface": "status_bar",
-                "message": message,
-                "level": self._canonical_level(level),
-                "counts": {"info": info, "warnings": warnings, "errors": errors},
-                "mirrors_console_uid": uid or None,
-            },
+            "status_bar": None,
         }
 
     def create_project_asset(
@@ -1013,11 +1056,11 @@ class EditorAutomationHost:
         )
         return target
 
-    def open_scene(self, path: str) -> bool:
+    def open_scene(self, path: str, *, discard_changes: bool = False) -> bool:
         from infernux.engine.scene_manager import SceneFileManager
 
         manager = SceneFileManager.instance()
-        return bool(manager is not None and manager.open_scene(path))
+        return bool(manager is not None and manager.open_scene(path, discard_changes=discard_changes))
 
     def loaded_scenes(self) -> dict[str, object]:
         from infernux.lib import SceneManager
@@ -1489,6 +1532,8 @@ class EditorAutomationHost:
             "delta_time": float(manager.delta_time),
             "total_play_time": float(manager.total_play_time),
             "step_sequence": int(manager.step_sequence),
+            "pending_step_requests": int(manager.pending_step_requests),
+            "step_in_flight": manager._step_completion is not None,
             "transition_timings_ms": dict(manager.last_transition_timings_ms),
             "transition_pending": transition_task in {
                 "Enter Play Mode",
@@ -1527,9 +1572,13 @@ class EditorAutomationHost:
 
     @staticmethod
     def _native_console():
-        from infernux.engine.bootstrap import EditorBootstrap
-        bootstrap = EditorBootstrap.instance()
-        return bootstrap.console if bootstrap is not None else None
+        try:
+            from infernux.engine.bootstrap import EditorBootstrap
+
+            bootstrap = EditorBootstrap.instance()
+            return getattr(bootstrap, "console", None) if bootstrap else None
+        except (AttributeError, ImportError, RuntimeError):
+            return None
 
     @staticmethod
     def _native_engine():

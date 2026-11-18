@@ -60,6 +60,45 @@ _class_literal_defaults = WeakKeyDictionary()
 _module_literal_defaults = WeakKeyDictionary()
 _NOT_LITERAL = object()
 
+# One retirable lifetime per published script source. 050 keeps its own
+# transactional reload and runtime worlds; the owner only adds attribution so
+# callbacks that outlive their module generation are rejected instead of
+# silently running stale code (048's reload-ownership contract).
+_reload_source_owners: dict = {}
+
+
+def _bind_reload_source_owner(file_path: str, module_name: str, module) -> None:
+    from infernux.engine.path_utils import path_key
+    from infernux.engine.reload.owners import ReloadOwner
+
+    key = path_key(file_path)
+    previous = _reload_source_owners.pop(key, None)
+    owner = ReloadOwner({file_path})
+    module.__dict__["__infernux_reload_owner__"] = owner
+    owner.bind_modules((module_name,))
+    _reload_source_owners[key] = owner
+    if previous is not None:
+        try:
+            previous.close()
+        except Exception as exc:  # cleanup failures must not abort a publish
+            from infernux.debug import Debug
+
+            Debug.log_warning(f"retired script owner cleanup failed: {exc}")
+
+
+def _retire_reload_source_owner(file_path: str) -> None:
+    from infernux.engine.path_utils import path_key
+
+    owner = _reload_source_owners.pop(path_key(file_path), None)
+    if owner is None:
+        return
+    try:
+        owner.close()
+    except Exception as exc:
+        from infernux.debug import Debug
+
+        Debug.log_warning(f"script owner cleanup failed: {exc}")
+
 
 def _module_literal(value, visiting):
     kind = type(value)
@@ -1443,6 +1482,7 @@ def retire_script_module(file_path: str) -> object | None:
     callers invoke this only after the durable asset mutation succeeds.
     """
     from infernux.lib import SceneManager, _Infernux
+    _retire_reload_source_owner(file_path)
     manager = SceneManager.instance()
     if int(manager._current_runtime_world_id) == int(manager._authoring_runtime_world_id):
         from .registry import unregister_component_script
@@ -1937,6 +1977,7 @@ def _load_script_module(
     publish_module_code(file_path, accepted_code)
     _class_literal_defaults.update(_declared_class_literals((module,)))
     _remember_module_literals(module)
+    _bind_reload_source_owner(file_path, module_name, module)
     if code is not None:
         from infernux.engine.script_closure_reload import remember_closure_code
 

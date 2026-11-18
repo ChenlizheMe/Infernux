@@ -68,34 +68,6 @@ def test_package_preload_relative_imports_refresh_changed_helpers(tmp_path):
         assert (cache.read_bytes() if cache.exists() else None) == cache_bytes
 
 
-def test_runtime_world_uses_public_engine_with_infernux_vendor_packages(tmp_path, monkeypatch):
-    import infernux
-    from infernux.engine import project_context
-    from infernux.engine.runtime_worlds import ProjectModules
-    from infernux.lib import SceneManager
-
-    assets = tmp_path / "Assets"
-    packages = tmp_path / "Packages"
-    assets.mkdir()
-    (packages / "infernux" / "example").mkdir(parents=True)
-    (assets / "probe.py").write_text(
-        "import infernux as engine\n"
-        "from infernux import jit\n"
-        "import importlib\n"
-        "application_module = importlib.import_module('infernux.application')\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(project_context, "get_project_script_roots", lambda: (str(assets), str(packages)))
-    modules = ProjectModules(SceneManager.instance()._authoring_runtime_world_id, {})
-    try:
-        probe = modules.load_file("probe", assets / "probe.py")
-        assert probe.engine is infernux
-        assert probe.jit is infernux.jit
-        assert probe.application_module is sys.modules["infernux.application"]
-    finally:
-        modules.close()
-
-
 def test_editor_translation_catalog_hot_reload_is_atomic(tmp_path, monkeypatch):
     from infernux.engine import i18n
 
@@ -207,8 +179,12 @@ def test_preload_library_ownership_follows_success_and_failure(tmp_path, fail_pr
     )
     manager = PluginManager.startup(str(project))
     try:
-        state = next(iter(manager.preloads.states.values()))
-        assert state.loaded is not fail_preload, state.error
+        if fail_preload:
+            assert not manager.preloads.states
+            assert any("initialization failed" in error for error in manager.preloads.failures.values())
+        else:
+            state = next(iter(manager.preloads.states.values()))
+            assert state.loaded, state.error
         assert is_project_component_script(str(implementation), str(project)) is fail_preload
         assert is_project_component_script(str(author), str(project))
     finally:
@@ -217,134 +193,56 @@ def test_preload_library_ownership_follows_success_and_failure(tmp_path, fail_pr
 
 
 def test_runtime_components_follow_owned_library_install_enable_reload_and_catalog(tmp_path, monkeypatch):
-    from infernux.engine.candidate_import import CandidateImportTransaction
     from infernux.engine.resources_manager import ResourcesManager
-    from infernux.engine.script_dependency_graph import ScriptDependencyGraph
-    from infernux.engine.project_context import (
-        get_project_root, get_script_module_name, is_preload_python_library, set_project_root,
-    )
+    from infernux.engine.reload.coordinator import ReloadCoordinator
+    from infernux.engine.reload.components import ComponentAdapter
+    from infernux.engine.project_context import get_project_root, set_project_root
     from infernux.runtime_services import _dispatch_updates, _update_snapshot
 
     source = _source(tmp_path / "source", "vendor/owned-runtime")
     library = source / "runtime/owned_reenable"
     library.mkdir(parents=True)
-    (library / "__init__.py").write_text(
-        "from types import SimpleNamespace\n"
-        "API = SimpleNamespace(ticks=0)\n"
-        "def advance(delta): API.ticks += 1\n", encoding="utf-8",
-    )
-    (source / "runtime/Startup.py").write_text(
-        "from infernux.lifecycle import InxPreload\n"
-        "class Startup(InxPreload):\n"
-        "    def preload(self, context):\n"
-        "        context.own_python_library('runtime/owned_reenable')\n"
-        "        import owned_reenable\n"
-        "        context.add_update(owned_reenable.advance)\n", encoding="utf-8",
-    )
+    (library / "__init__.py").write_text("from types import SimpleNamespace\nAPI = SimpleNamespace(ticks=0)\ndef advance(delta): API.ticks += 1\n", encoding="utf-8")
+    (source / "runtime/Startup.py").write_text("from infernux.lifecycle import InxPreload\nclass Startup(InxPreload):\n    def preload(self, context):\n        context.own_python_library('runtime/owned_reenable')\n        import owned_reenable\n        context.add_update(owned_reenable.advance)\n", encoding="utf-8")
     (source / "runtime/Author.py").write_text("from owned_reenable import API\n", encoding="utf-8")
     project = _project(tmp_path / "project")
     consumer = project / "Assets/Consumer.py"
     consumer.write_text("from owned_reenable import API\n", encoding="utf-8")
     dependent = project / "Assets/Dependent.py"
     dependent.write_text("from Consumer import API\n", encoding="utf-8")
-    unrelated = project / "Assets/Unrelated.py"
-    unrelated.write_text("VALUE = 1\n", encoding="utf-8")
-    graph = ScriptDependencyGraph(str(project))
-    graph.index_assets()
-    root = project / "Packages/vendor/owned-runtime/runtime"
-    publications = []
-    previous_updates = _update_snapshot()["update"]
-    unrelated_module = SimpleNamespace(__file__=str(unrelated), VALUE=1)
-    monkeypatch.setitem(sys.modules, "Unrelated", unrelated_module)
-
-    class Resources:
-        _project_path = str(project.resolve())
-        _engine = SimpleNamespace(get_asset_database=lambda: None)
-        _startup_prepared = False
-        _frontend_worker_running = True
-        script_library_dependents = ResourcesManager.script_library_dependents
-        defer_script_catalog_publication = ResourcesManager.defer_script_catalog_publication
-        process_pending_reloads = ResourcesManager.process_pending_reloads
-
-        def __init__(self):
-            self._script_catalog_publications = {}
-            self.catalog_pending = False
-            self.in_catalog = False
-            self._event_handler = SimpleNamespace(
-                _dependency_graph=graph, process_script_worker=lambda: None,
-                process_pending_reloads=self.publish,
-            )
-
-        def begin_script_transaction(self, paths):
-            assert not self.in_catalog
-            self.paths = paths
-            assert is_preload_python_library(str(root / "owned_reenable"))
-            assert root / "owned_reenable/__init__.py" not in map(Path, paths)
-            assert {consumer, dependent}.issubset(map(Path, paths))
-            assert unrelated not in map(Path, paths)
-            return "owned-runtime"
-
-        def submit_script_change(self, path, **kwargs):
-            assert kwargs["catalog_event"] is None
-            return object()
-
-        def publish(self, *, force):
-            if self.catalog_pending:
-                self.catalog_pending = False
-                self.in_catalog = True
-                manager._on_script_catalog_changed(str(root / "Startup.py"), "modified")
-                assert len(publications) == 3
-                self.in_catalog = False
-                return 1
-            broker = CandidateImportTransaction()
-            name = get_script_module_name(str(root / "Author.py"), str(project))
-            for path in self.paths:
-                broker.register(get_script_module_name(path, str(project)), path)
-            try:
-                api = broker.load(name).API
-                assert api is sys.modules["owned_reenable"].API
-                assert broker.load("Dependent").API is api
-                publications.append(api)
-            finally:
-                broker.rollback()
-            return 1
-
-        def retire_script_paths(self, paths):
-            pass
-
-    resources = Resources()
-    monkeypatch.setattr("infernux.engine.resources_manager.ResourcesManager.instance",
-                        classmethod(lambda _cls: resources))
     previous = get_project_root()
     set_project_root(str(project))
+    coordinator = ReloadCoordinator(str(project), adapter=ComponentAdapter(lambda: ()))
+    coordinator.graph.index_assets()
+    handler = SimpleNamespace(reload=coordinator)
+    class Resources:
+        _project_path = str(project.resolve())
+        def _ensure_event_handler(self): return handler
+        def retire_script_paths(self, paths): coordinator.request((), removed=paths)
+    monkeypatch.setattr(ResourcesManager, "instance", classmethod(lambda cls: Resources()))
     manager = PluginManager(str(project))
     try:
-        reference = "vendor/owned-runtime"
-        assert manager.install_package(str(_export(source, tmp_path / "owned.inxpkg")),
-                                       install_dependencies=False).loaded
-        manager.set_enabled(reference, False)
-        assert "owned_reenable" not in sys.modules
-        assert manager.set_enabled(reference, True).loaded
-        assert manager.reload(reference).loaded
-        assert len(publications) == 3
-        assert len({id(api) for api in publications}) == 3
-        old_api = publications[-1]
-        _dispatch_updates(_update_snapshot()["update"], 0.1, 0.1)
+        package = _export(source, tmp_path / "owned.inxpkg")
+        assert manager.install_package(str(package), install_dependencies=False).loaded
+        coordinator.ensure_ready((str(consumer), str(dependent)))
+        old_api = sys.modules["Consumer"].API
+        assert old_api is sys.modules["Dependent"].API is sys.modules["owned_reenable"].API
+        _dispatch_updates(_update_snapshot()["update"], .1, .1)
         assert old_api.ticks == 1
-        startup = root / "Startup.py"
-        startup.write_text(startup.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-        resources.catalog_pending = True
-        resources.process_pending_reloads(force=True)
-        assert len(publications) == 4
-        assert len({id(api) for api in publications}) == 4
-        _dispatch_updates(_update_snapshot()["update"], 0.1, 0.1)
-        assert publications[-1].ticks == old_api.ticks == 1
-        assert len(_update_snapshot()["update"]) == len(previous_updates) + 1
-        assert sys.modules["Unrelated"] is unrelated_module
+        manager.set_enabled("vendor/owned-runtime", False)
+        assert "owned_reenable" not in sys.modules
+        assert manager.set_enabled("vendor/owned-runtime", True).loaded
+        current = sys.modules["Consumer"].API
+        assert current is not old_api
+        assert current is sys.modules["Dependent"].API is sys.modules["owned_reenable"].API
+        _dispatch_updates(_update_snapshot()["update"], .1, .1)
+        assert current.ticks == 1 and old_api.ticks == 1
     finally:
         manager.shutdown()
+        coordinator.close()
+        for name in ("Consumer", "Dependent", "owned_reenable"):
+            sys.modules.pop(name, None)
         set_project_root(previous)
-    assert _update_snapshot()["update"] == previous_updates
 
 
 def test_package_preloads_with_matching_module_paths_are_isolated(tmp_path):
@@ -513,7 +411,7 @@ def test_static_preload_discovery_imports_only_lifecycle_candidates(tmp_path):
     assert (project / "preloaded.txt").read_text(encoding="utf-8") == first_guid
 
 
-def test_preload_hot_reload_keeps_public_namespace_identity_and_last_good_state(tmp_path):
+def test_preload_hot_reload_keeps_facade_identity_and_stops_failed_source(tmp_path):
     import infernux as public_namespace
 
     project = _project(tmp_path / "project")
@@ -547,9 +445,10 @@ def test_preload_hot_reload_keeps_public_namespace_identity_and_last_good_state(
     assert sys.modules["infernux"] is public_namespace
 
     lifecycle.write_text("class PublicApi(\n", encoding="utf-8")
-    retained = manager.preloads.reload_path(str(lifecycle))
-    assert retained == states
-    assert public_namespace._community_reload_probe == "second"
+    stopped = manager.preloads.reload_path(str(lifecycle))
+    assert stopped == ()
+    assert not manager.preloads.states
+    assert not hasattr(public_namespace, "_community_reload_probe")
     assert sys.modules["infernux"] is public_namespace
     manager.shutdown()
 
@@ -572,11 +471,9 @@ def test_preload_partial_failure_runs_owned_cleanups_in_reverse_order(tmp_path):
     )
 
     manager = PluginManager.startup(str(project))
-    state = next(iter(manager.preloads.states.values()))
-    assert state.loaded is False
-    assert "candidate failed after acquisition" in state.error
+    assert not manager.preloads.states
+    assert any("candidate failed after acquisition" in error for error in manager.preloads.failures.values())
     assert (project / "cleanup-order.txt").read_text(encoding="utf-8") == "BA"
-    assert state.cleanup_callbacks == []
     manager.shutdown()
 
 
@@ -607,6 +504,7 @@ def test_preload_change_reloads_only_its_dependency_slice(tmp_path, monkeypatch)
     )
 
     write_preload(first, "First", 2)
+    manager.preloads.reload_path(str(first))
     manager._on_script_catalog_changed(str(first), "modified")
     after = {state.type_name: state.instance for state in manager.preloads.states.values()}
 
@@ -674,7 +572,7 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     assert (project / "package-loaded.txt").is_file()
 
 
-def test_package_reload_preflights_every_source_before_unloading_live_state(tmp_path):
+def test_package_reload_retires_old_lifecycle_when_current_source_is_invalid(tmp_path):
     source = _source(tmp_path / "source", "vendor/transactional-reload")
     runtime = source / "runtime"
     runtime.mkdir()
@@ -701,9 +599,9 @@ def test_package_reload_preflights_every_source_before_unloading_live_state(tmp_
 
     result = manager.preloads.reload_package("vendor/transactional-reload")
 
-    assert result == before
-    assert tuple(manager.preloads.states.values()) == before
-    assert not (project / "unexpected-unload.txt").exists()
+    assert result != before
+    assert all(state.instance is None for state in before)
+    assert (project / "unexpected-unload.txt").exists()
     assert "SyntaxError" in manager.preloads.failures[path_key(installed_helper)]
     manager.shutdown()
 

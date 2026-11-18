@@ -1,6 +1,7 @@
 """A real installed package never reports success after preload discovery fails."""
 import json
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -8,6 +9,32 @@ from infernux.engine import player_package_native
 from infernux.plugins import InxPackage, PluginManager
 from infernux.plugins.preload import _ensure_script_guid
 from infernux.version import ENGINE_COMPATIBILITY_VERSION
+
+
+def test_player_startup_and_preloads_do_not_import_editor_services(tmp_path, monkeypatch):
+    root = tmp_path / "Player"
+    (root / "Assets").mkdir(parents=True)
+    (root / "ProjectSettings").mkdir()
+    source = root / "Assets/PlayerBoot.py"
+    source.write_text(
+        "from pathlib import Path\n"
+        "from infernux.lifecycle import InxPreload\n"
+        "class PlayerBoot(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        Path(context.project_root, 'player-ready.txt').write_text('ready')\n",
+        encoding="utf-8",
+    )
+    _ensure_script_guid(str(source), str(root))
+    for name in ("infernux.engine.resources_manager", "infernux.engine._play_mode_serialization",
+                 "infernux.engine.reload.components"):
+        monkeypatch.setitem(sys.modules, name, None)
+    manager = PluginManager.startup(str(root), runtime=True)
+    try:
+        assert (root / "player-ready.txt").read_text() == "ready"
+        assert not manager.preloads.failures
+        assert manager.preloads._owns_reload
+    finally:
+        manager.shutdown()
 
 
 @pytest.fixture
@@ -108,7 +135,7 @@ def test_catch_up_publishes_failure_even_when_no_lifecycle_was_created(package_p
     assert state.loaded and not state.error and len(state.lifecycle) == 1
 
 
-def test_failed_reload_preserves_live_service_but_reports_rejected_source(package_project):
+def test_failed_reload_retires_live_service_and_reports_current_source(package_project):
     root, manager, install = package_project
     state = install('test/live-service', {'runtime/startup.py': GOOD_SOURCE})
     identity = state.lifecycle[0]['identity']
@@ -118,8 +145,8 @@ def test_failed_reload_preserves_live_service_but_reports_rejected_source(packag
     for _ in range(2):
         state = manager.reload('test/live-service')
         assert not state.loaded and 'SyntaxError' in state.error
-        assert manager.preloads.states[identity].instance is original
-        assert state.lifecycle[0]['loaded']
+        assert identity not in manager.preloads.states
+        assert not state.lifecycle
     source.write_text(GOOD_SOURCE, encoding='utf-8')
     state = manager.reload('test/live-service')
     assert state.loaded and not state.error

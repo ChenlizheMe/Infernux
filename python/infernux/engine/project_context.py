@@ -463,6 +463,17 @@ def is_project_component_script(
     return not is_preload_python_library(path) and is_project_script(path, project_root)
 
 
+def is_reloadable_script(path: str, project_root: Optional[str] = None) -> bool:
+    """Editor/runtime libraries and component sources share one reload domain."""
+    if is_project_script(path, project_root):
+        return True
+    role = package_script_role(path, project_root)
+    if role != "editor":
+        return False
+    reference = package_script_reference(path, project_root).casefold()
+    return reference not in _disabled_package_references(project_root or get_project_root())
+
+
 def is_project_script(path: str, project_root: Optional[str] = None) -> bool:
     """Include packaged libraries while sharing the same source ownership rules."""
     if is_gpu_source(path):

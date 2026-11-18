@@ -1132,6 +1132,23 @@ class PlayModeManager(PlayModeSerializationMixin):
         self._pending_step_requests += 1
         return True
 
+    def step_fixed(self, delta_time: float) -> bool:
+        """Request one paused step whose logical frame delta is ``delta_time``.
+
+        The next admitted step uses this explicit delta instead of the last
+        wall-clock frame delta, so a manual driver can advance exactly one
+        fixed physics step (the engine manual-step interface). The override is consumed
+        by exactly one request.
+        """
+        if self._state != PlayModeState.PAUSED:
+            return False
+        delta = float(delta_time)
+        if not (delta > 0.0) or delta != delta or delta in (float("inf"), float("-inf")):
+            raise ValueError("step_fixed requires a finite positive delta")
+        self._fixed_step_delta = delta
+        self._pending_step_requests += 1
+        return True
+
     def process_pending_step(self) -> bool:
         """Admit one paused group command; count only all-member completion."""
         if self._state != PlayModeState.PAUSED:
@@ -1180,7 +1197,10 @@ class PlayModeManager(PlayModeSerializationMixin):
                 clock = manager._frame_time
                 # Time is this world's admitted logical clock, never paused wall time.
                 # Preserve the existing first-frame Step default only before any F.
-                source_delta = float(clock.unscaled_delta_time) if clock.frame_count else 1.0 / 60.0
+                override = getattr(self, "_fixed_step_delta", None)
+                self._fixed_step_delta = None
+                source_delta = (float(override) if override else
+                                float(clock.unscaled_delta_time) if clock.frame_count else 1.0 / 60.0)
                 epoch = int(manager.simulation_epoch)
                 members.append((handle, epoch, int(clock.frame_count) + 1))
                 requests.append((int(identity), epoch, source_delta))

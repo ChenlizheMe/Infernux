@@ -22,7 +22,6 @@ from .package import (
     InxPackage,
     InxPackagePreview,
     PACKAGE_EXTENSION,
-    read_entry,
     validate_reference,
 )
 from .registry import PluginRegistry
@@ -332,7 +331,7 @@ def install_bundled_packages(
     resources_root: str | None = None,
     manager: PluginManager | None = None,
 ) -> tuple[PluginState, ...]:
-    """Install wheel-owned defaults while preserving project edits.
+    """Install missing defaults without changing an existing project's pins.
 
     Direct ``*.inxpkg`` children are mandatory in this wheel. Existing external
     installations remain user-owned; built-ins retain their published origins.
@@ -390,11 +389,23 @@ def install_bundled_packages(
     try:
         # Publish the complete local set before installation so one built-in
         # package can resolve another regardless of filename ordering.
-        sources: dict[str, dict[str, object]] = {}
         for package_path, preview in previews:
             metadata = preview.metadata
+            reference = str(metadata["reference"])
+            selected = manager.registry.find(reference)
+            compatible = Version(ENGINE_COMPATIBILITY_VERSION) in SpecifierSet(str(metadata.get("engine", "")))
+            selected_compatible = (selected is not None and Version(ENGINE_COMPATIBILITY_VERSION)
+                                   in SpecifierSet(str(selected.get("engine", ""))))
+            if selected_compatible and (
+                not compatible or Version(str(selected["version"])) > Version(str(metadata["version"]))
+            ):
+                continue
+            if not compatible:
+                if manager.registry.installed_record(reference) is None:
+                    raise OfficialCatalogError(f"No compatible built-in release for {reference} on Infernux {ENGINE_COMPATIBILITY_VERSION}")
+                continue
             _cached, cache_location = manager._cache_package(
-                package_path, str(metadata["reference"]), str(metadata.get("version", ""))
+                package_path, reference, str(metadata.get("version", ""))
             )
             source = official_release_source(
                 str(metadata["reference"]), str(metadata["version"]), resources_root=resources_root,
@@ -402,7 +413,6 @@ def install_bundled_packages(
             if source is None:
                 source = {"type": "local", "location": cache_location}
             source.update(cache_scope="hub", cache_location=cache_location, builtin=True)
-            sources[str(metadata["reference"])] = source
             manager.registry.add_package(
                 str(metadata["reference"]),
                 name=str(metadata.get("name", "")),
@@ -421,78 +431,12 @@ def install_bundled_packages(
             if current is None:
                 installed.append(manager.install_reference(reference))
                 continue
-            source = current.get("source")
-            if not isinstance(source, Mapping) or not bool(source.get("builtin", False)):
-                continue
-            if _bundled_install_matches(project, current, preview):
-                continue
-            installed.append(
-                manager.install_package(
-                    package_path,
-                    source=sources[reference],
-                    update=True,
-                    overwrite_modified=False,
-                )
-            )
+            # Opening or cloning a project reproduces its installed selection.
+            # Local edits and a newer wheel are handled by an explicit update.
         return tuple(installed)
     finally:
         if owned_manager:
             manager.shutdown()
-
-
-def _bundled_install_matches(
-    project_root: str,
-    current: Mapping[str, object],
-    preview: InxPackagePreview,
-) -> bool:
-    """Return whether a built-in's published project payload is current."""
-
-    if str(current.get("version", "")) != str(preview.metadata.get("version", "")):
-        return False
-    control = current.get("control")
-    if not isinstance(control, Mapping) or str(control.get("guid", "")).casefold() != str(
-        preview.metadata.get("control_guid", "")
-    ).casefold():
-        return False
-    control_hint = str(control.get("path_hint", "")).replace("\\", "/").strip("/")
-    if not control_hint:
-        return False
-    control_path = resolved_path(os.path.join(project_root, *control_hint.split("/")))
-    try:
-        with open(control_path, "r", encoding="utf-8") as stream:
-            if json.load(stream) != preview.metadata:
-                return False
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return False
-    installed = {
-        str(item.get("guid", "")).casefold(): item
-        for item in current.get("files", ())
-        if isinstance(item, Mapping) and str(item.get("guid", "")).strip()
-    }
-    incoming = {
-        str(item.get("guid", "")).casefold(): item
-        for item in preview.file_records
-    }
-    if set(installed) != set(incoming):
-        return False
-    for guid, item in incoming.items():
-        existing = installed[guid]
-        if str(existing.get("logical_path", "")) != str(item.get("logical_path", "")):
-            return False
-        hint = str(existing.get("path_hint", "")).replace("\\", "/").strip("/")
-        if not hint:
-            return False
-        destination = resolved_path(os.path.join(project_root, *hint.split("/")))
-        try:
-            with open(destination, "rb") as stream:
-                installed_payload = stream.read()
-        except OSError:
-            return False
-        if installed_payload != read_entry(
-            preview.package_path, str(item["archive_path"])
-        ):
-            return False
-    return True
 
 
 def install_default_libraries(

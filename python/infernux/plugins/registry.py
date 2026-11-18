@@ -9,6 +9,7 @@ import time
 import uuid
 import threading
 import weakref
+from pathlib import Path
 from typing import Iterable, Mapping
 
 from packaging.utils import canonicalize_name
@@ -18,7 +19,12 @@ from infernux.core.file_read_cache import FileReadCache
 from infernux.engine.path_utils import resolved_path, is_path_within, relative_path, portable_path, path_key
 
 from .content import normalize_locale, normalize_page_descriptor
-from .package import validate_reference
+from .categories import normalize_plugin_category
+from .file_transaction import InstallTransaction, prune_package_directories, script_bytecode_paths
+from .package import (
+    InxPackage, PACKAGE_MANIFEST, _guid_from_meta_bytes, current_meta_bytes,
+    package_role, portable_meta_bytes, validate_reference,
+)
 
 
 REGISTRY_RELATIVE_PATH = os.path.join("ProjectSettings", "InxPlugins.json")
@@ -270,6 +276,177 @@ class PluginRegistry:
             None,
         )
 
+    def installed_package_for_path(self, path: str) -> dict[str, object]:
+        """Require a real installed package before compiling into its directory."""
+        with self._publication_lock:
+            return _copy_json(self._package_for_path(path, self._load()))
+
+    def _package_for_path(self, path: str, document: Mapping[str, object]) -> dict:
+        destination = resolved_path(path)
+        packages_root = os.path.join(self.project_root, "Packages")
+        if not is_path_within(destination, packages_root, allow_root=False):
+            raise ValueError(f"Generated package destination is outside Packages: {destination}")
+        matches = []
+        for record in document["installed"]:
+            control = record["control"]
+            control_path = resolved_path(os.path.join(self.project_root, str(control["path_hint"])))
+            if is_path_within(destination, os.path.dirname(control_path), allow_root=False):
+                matches.append((control_path, record))
+        if not matches:
+            raise RuntimeError(f"Install the platform plugin before rebuilding its Player: {destination}")
+        control_path, record = max(matches, key=lambda pair: len(pair[0]))
+        if os.path.basename(control_path) != PACKAGE_MANIFEST or not os.path.isfile(control_path):
+            raise ValueError(f"Installed plugin control is missing: {control_path}")
+        return record
+
+    def publish_generated_members(
+        self, payload_root: str, candidate_root: str, *, expected_transaction_id: str,
+    ) -> dict[str, object]:
+        """Publish validated build output through the package ownership ledger.
+
+        Only existing managed members in this payload are replaced or removed.
+        Other files remain user-owned; new output cannot claim an occupied path.
+        The shared install transaction restores bytes and the ledger if the
+        publication fails. Compilation itself happens before taking this lock.
+        """
+        from .project_index import project_guid_paths
+
+        with self._publication_lock:
+            before = self._load()
+            document = _RegistrySnapshot(_copy_json(dict(before)), before.file_state)
+            record = self._package_for_path(payload_root, document)
+            reference = str(record["reference"])
+            if str(record["transaction_id"]) != expected_transaction_id:
+                raise RuntimeError(f"Plugin installation changed while rebuilding its Player: {reference}")
+            if not record.get("enabled", True):
+                raise RuntimeError(f"The platform plugin is disabled: {reference}")
+            destination_root, source_root = Path(resolved_path(payload_root)), Path(resolved_path(candidate_root))
+            if not source_root.is_dir():
+                raise ValueError(f"Generated Player output is missing: {source_root}")
+            package_root = Path(self.project_root, str(record["control"]["path_hint"])).parent
+            prefix = relative_path(destination_root, package_root)
+            first, separator, remainder = prefix.partition("/")
+            prefix = first.casefold() + separator + remainder
+            package_role(prefix + "/member")
+            old = {str(item["logical_path"]): item for item in record["files"]
+                   if str(item["logical_path"]).startswith(prefix + "/")
+                   or is_path_within(os.path.join(self.project_root, str(item["path_hint"])), destination_root, allow_root=False)}
+            index, _native = project_guid_paths(self.project_root)
+            all_files = [(package, item) for package in document["installed"]
+                         for item in [*package["files"], package["control"]]]
+
+            def users(guid):
+                return [(package, item) for package, item in all_files
+                        if str(package["reference"]).casefold() != reference.casefold()
+                        and str(item["guid"]).casefold() == guid.casefold()]
+
+            def installed_path(item):
+                guid = str(item["guid"]).casefold()
+                path = Path(index.get(guid) or os.path.join(self.project_root, str(item["path_hint"])))
+                if not is_path_within(path, self.project_root, allow_root=False):
+                    raise ValueError(f"Installed member escapes project: {path}")
+                sidecar = Path(str(path) + ".meta")
+                identity = _guid_from_meta_bytes(sidecar.read_bytes()).casefold() if sidecar.is_file() else ""
+                if identity and identity != guid:
+                    raise ValueError(f"Installed member identity changed: {path}")
+                return path
+
+            outputs, writes, removals = [], [], set()
+            generated_guids = set()
+            for source in sorted(source_root.rglob("*")):
+                if source.is_symlink() or not is_path_within(source, source_root, allow_root=False):
+                    raise ValueError(f"Generated Player output contains a redirected path: {source}")
+                if source.is_dir():
+                    continue
+                if source.suffix == ".meta":
+                    if not source.with_suffix("").is_file():
+                        raise ValueError(f"Generated Player output has orphan metadata: {source}")
+                    continue
+                relative = source.relative_to(source_root).as_posix()
+                logical = prefix + "/" + relative
+                destination = destination_root / relative
+                if not is_path_within(destination, destination_root, allow_root=False):
+                    raise ValueError(f"Generated Player destination is redirected: {destination}")
+                previous = old.get(logical)
+                payload = source.read_bytes()
+                if previous is not None:
+                    guid = str(previous["guid"])
+                    previous_path = installed_path(previous)
+                    existing_meta = Path(str(previous_path) + ".meta")
+                    meta = current_meta_bytes(guid, existing=existing_meta.read_bytes() if existing_meta.is_file() else None)
+                    owned = bool(previous.get("owned", True))
+                    shared = bool(users(guid)) or not owned
+                    if shared:
+                        if path_key(previous_path) != path_key(destination) or not destination.is_file() or destination.read_bytes() != payload:
+                            raise ValueError(f"Cannot replace a shared generated member: {destination}")
+                    elif path_key(previous_path) != path_key(destination):
+                        removals.add(str(previous_path))
+                else:
+                    guid, meta = InxPackage._asset_identity(reference, logical, str(source))
+                    owned, shared = True, False
+                    if guid.casefold() in index or any(str(item["guid"]).casefold() == guid.casefold() for _, item in all_files):
+                        raise ValueError(f"Generated member GUID is already in use: {destination} ({guid})")
+                if guid.casefold() in generated_guids:
+                    raise ValueError(f"Generated Player output repeats GUID: {guid}")
+                generated_guids.add(guid.casefold())
+                sidecar = Path(str(destination) + ".meta")
+                if destination.exists() or sidecar.exists():
+                    identity = _guid_from_meta_bytes(sidecar.read_bytes()).casefold() if sidecar.is_file() else ""
+                    if previous is None or path_key(previous_path) != path_key(destination) or (identity and identity != guid.casefold()):
+                        raise ValueError(f"Generated member destination is occupied by another asset: {destination}")
+                hint = relative_path(destination, self.project_root)
+                outputs.append({"logical_path": logical, "path_hint": hint, "guid": guid,
+                                "role": package_role(logical), "owned": owned})
+                if not shared:
+                    writes.append((str(destination), payload, portable_meta_bytes(meta, hint), source.stat().st_mode))
+            if not outputs:
+                raise ValueError(f"Generated Player output contains no files: {source_root}")
+            for previous in old.values():
+                guid = str(previous["guid"]).casefold()
+                if guid in generated_guids or not bool(previous.get("owned", True)):
+                    continue
+                remaining = users(guid)
+                if remaining:
+                    remaining[0][1]["owned"] = True
+                else:
+                    removals.add(str(installed_path(previous)))
+            record["files"] = [item for item in record["files"] if str(item["logical_path"]) not in old] + outputs
+            old_guids = {str(item["guid"]).casefold() for item in old.values()}
+            record["available_files"] = sorted((set(record.get("available_files", ())) - old_guids) | generated_guids)
+            control_path = Path(self.project_root, str(record["control"]["path_hint"]))
+            control_meta = Path(str(control_path) + ".meta")
+            control_identity = _guid_from_meta_bytes(control_meta.read_bytes()).casefold() if control_meta.is_file() else ""
+            control_guid = str(record["control"]["guid"])
+            if control_identity and control_identity != control_guid.casefold():
+                raise ValueError(f"Installed plugin control identity changed: {control_path}")
+            if not control_identity:
+                meta = current_meta_bytes(control_guid, existing=control_meta.read_bytes() if control_meta.is_file() else None)
+                writes.append((str(control_path), control_path.read_bytes(), portable_meta_bytes(meta, str(record["control"]["path_hint"])), control_path.stat().st_mode))
+            transaction = InstallTransaction(self.project_root)
+            record["transaction_id"] = transaction.id
+            registry_changed = False
+            try:
+                for path in sorted(removals):
+                    for bytecode in script_bytecode_paths(path):
+                        transaction.remove(bytecode)
+                    transaction.remove(path)
+                    transaction.remove(path + ".meta")
+                for path, payload, meta, mode in writes:
+                    for bytecode in script_bytecode_paths(path):
+                        transaction.remove(bytecode)
+                    transaction.write(path, payload, mode=mode)
+                    transaction.write(path + ".meta", meta)
+                registry_changed = True
+                self.save(document)
+                transaction.commit()
+            except BaseException:
+                transaction.rollback()
+                if registry_changed:
+                    self.restore(before)
+                raise
+            prune_package_directories(self.project_root, removals)
+            return _copy_json(record)
+
     def owner_for_guid(self, guid: str) -> tuple[dict[str, object], dict[str, object]] | None:
         key = str(guid).casefold()
         for package in self.installed():
@@ -403,6 +580,7 @@ class PluginRegistry:
             "version": str(metadata.get("version", "")),
             "intro": str(metadata.get("intro", "")),
             "intros": _normalize_intros(metadata.get("intros", {})),
+            "category": normalize_plugin_category(metadata.get("category", "other")),
             "requirements": str(metadata.get("requirements", "requirements.txt")),
             "engine": str(metadata.get("engine", "")),
             "pages": [
@@ -417,6 +595,7 @@ class PluginRegistry:
             "python_requirements": normalized_python_requirements,
             "python_changes": normalized_python_changes,
             "files": [dict(file) for file in files],
+            "available_files": [str(file["guid"]).casefold() for file in metadata.get("files", ())],
             "control": dict(control),
         }
         document = self.load()

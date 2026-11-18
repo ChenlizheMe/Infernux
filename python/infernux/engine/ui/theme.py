@@ -920,7 +920,41 @@ def set_editor_theme(name: str) -> bool:
     if ok:
         _apply_native_theme_overrides()
         Theme._NATIVE_THEME_GENERATION = _native_theme_generation()
+        _notify_theme_changed()
     return ok
+
+
+_theme_listeners: list = []
+
+
+def on_theme_changed(callback) -> callable:
+    """Subscribe to editor theme switches; returns an unsubscribe callable."""
+    if not callable(callback):
+        raise TypeError("on_theme_changed expects a callable")
+    _theme_listeners.append(callback)
+
+    def unsubscribe() -> None:
+        try:
+            _theme_listeners.remove(callback)
+        except ValueError:
+            pass
+
+    return unsubscribe
+
+
+def _notify_theme_changed() -> None:
+    for callback in tuple(_theme_listeners):
+        try:
+            callback()
+        except Exception as error:  # a listener must not break the switch
+            from infernux.debug import Debug
+
+            Debug.log_warning(f"editor theme listener failed: {error}")
+
+
+def _set_editor_theme_native(name: str) -> bool:
+    """Explicit native switch used by package theme contributions."""
+    return set_editor_theme(name)
 
 
 def list_editor_themes() -> list:

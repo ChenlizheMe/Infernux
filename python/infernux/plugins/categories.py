@@ -7,6 +7,7 @@ OFFICIAL_PLUGIN_CATEGORIES = (
     "compute_simulation",
     "animation",
     "editor_tools",
+    "theme",
     "online_services",
     "other",
 )

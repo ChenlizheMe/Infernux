@@ -124,6 +124,7 @@ class OperationRegistry:
 
     def __init__(self) -> None:
         self._operations: dict[str, Operation] = {}
+        self._providers = {}
         self._revision = 0
         self._lock = threading.RLock()
         self._listeners: dict[str, Callable[[Mapping[str, object]], None]] = {}
@@ -140,6 +141,10 @@ class OperationRegistry:
             return self._revision
 
     def register(self, operation: Operation) -> bool:
+        from infernux.engine.reload.owners import owner_for
+        provider = owner_for(operation.handler)
+        if provider is not None and provider.closed:
+            raise OperationError("operation.unavailable", "Cannot register a retired source provider")
         try:
             Draft202012Validator.check_schema(_json_value(operation.schema.input_schema))
             Draft202012Validator.check_schema(_json_value(operation.schema.output_schema))
@@ -163,8 +168,11 @@ class OperationRegistry:
                         f"Operation is already owned by {current.owner}: {operation.schema.id}",
                     )
             self._operations[key] = operation
+            self._providers[key] = provider
             self._revision += 1
             revision = self._revision
+        if provider is not None:
+            provider.add_cleanup(lambda: self._retire_operation(operation))
         self._notify(
             {
                 "revision": revision,
@@ -175,12 +183,25 @@ class OperationRegistry:
         )
         return True
 
+    def _retire_operation(self, operation):
+        key = operation.schema.id.casefold()
+        with self._lock:
+            if self._operations.get(key) is not operation:
+                return
+            del self._operations[key]
+            del self._providers[key]
+            self._revision += 1
+            revision = self._revision
+        self._notify({"revision": revision, "action": "unregistered",
+                      "operations": [operation.schema.id], "owner": operation.owner})
+
     def unregister_owner(self, owner: str) -> int:
         with self._lock:
             keys = [key for key, value in self._operations.items() if value.owner == owner]
             operation_ids = [self._operations[key].schema.id for key in keys]
             for key in keys:
                 del self._operations[key]
+                del self._providers[key]
             if keys:
                 self._revision += 1
             revision = self._revision
@@ -201,6 +222,8 @@ class OperationRegistry:
         token = uuid.uuid4().hex
         with self._lock:
             self._listeners[token] = callback
+        from infernux.engine.reload.owners import own_cleanup
+        own_cleanup(callback, lambda: self.unsubscribe(token))
         return token
 
     def unsubscribe(self, token: str) -> bool:
@@ -268,8 +291,13 @@ class OperationRegistry:
         *,
         capabilities: Iterable[str] = (),
         expected_kind: OperationKind | str | None = None,
+        expected_provider: Operation | None = None,
     ) -> object:
-        operation = self.get(operation_id)
+        with self._lock:
+            operation = self.get(operation_id)
+            if expected_provider is not None and operation is not expected_provider:
+                raise OperationError("operation.provider_changed", "The selected operation provider was retired")
+            owner = self._providers[operation.schema.id.casefold()]
         if expected_kind and operation.schema.kind != OperationKind(expected_kind):
             raise OperationError(
                 "operation.kind_mismatch",
@@ -289,12 +317,12 @@ class OperationRegistry:
             )
         payload = dict(arguments or {})
         _validate_arguments(payload, operation.schema.input_schema)
+        from contextlib import nullcontext
+        if owner is not None and not owner.active:
+            raise OperationError("operation.unavailable", f"Current provider is unavailable: {operation_id}")
         try:
-            inspect.signature(operation.handler).bind(**payload)
-        except TypeError as exc:
-            raise OperationError("operation.invalid_arguments", str(exc)) from exc
-        try:
-            result = operation.handler(**payload)
+            with owner.enter() if owner is not None else nullcontext():
+                result = operation.handler(**payload)
             _validate_result(result, operation.schema.output_schema)
             return result
         except OperationError:
@@ -303,6 +331,10 @@ class OperationRegistry:
             raise OperationError(
                 "operation.failed", f"{type(exc).__name__}: {exc}"
             ) from exc
+        finally:
+            if operation.schema.kind is not OperationKind.QUERY:
+                from .queries import emit_signal
+                emit_signal("world.changed", {"operation": operation.schema.id})
 
     def execute_batch(
         self,
@@ -369,6 +401,7 @@ class OperationJobRegistry:
         on_done: Callable[[Future], None] | None = None,
     ) -> str:
         """Preserve caller context and notify retirement, including queued cancellation."""
+        provider = self.registry.get(operation_id)
         with self._lock:
             if not self._accepting:
                 raise OperationError("job.stopped", "Operation job service is stopping")
@@ -397,6 +430,7 @@ class OperationJobRegistry:
                 operation_id,
                 dict(arguments or {}),
                 capabilities=tuple(capabilities),
+                expected_provider=provider,
             )
             self._jobs[job_id] = _Job(job_id, operation_id, time.time(), future)
         if on_done is not None:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from infernux.engine.i18n import t
 from infernux.debug import Debug
-from infernux.plugins import PackageUpdateConflict
+from infernux.plugins import PackageConflictError as PackageUpdateConflict
 
 from .plugin_install_progress import PluginInstallProgressService
 

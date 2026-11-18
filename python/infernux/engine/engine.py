@@ -866,6 +866,20 @@ class Engine(RuntimeWorldHost):
 
         self._engine._require_cleanup_boundary()
 
+        # Release the loopback automation transport before native services are
+        # torn down; queued requests then fail as engine.closed instead of
+        # observing a half-destroyed world.
+        import sys as _sys
+
+        automation = _sys.modules.get("infernux.host.bridge")
+        if automation is not None:
+            try:
+                automation.stop()
+            except Exception as exc:
+                from infernux.debug import Debug
+
+                Debug.log_error(f"Automation stopped with cleanup errors: {exc}")
+
         # Dirty-panel decisions are completed by SceneFileManager's non-blocking
         # Editor modal before native close is confirmed. This call is now only a
         # teardown audit and must never open a platform dialog.

@@ -291,7 +291,11 @@ def _inspect_model(asset_guid: str) -> dict[str, object]:
                     for index, node in enumerate(mesh.model_nodes) if node["node_group"] >= 0
                 ],
                 "material_slots": list(mesh.material_slots),
-                "material_sources": mesh.native.get_material_slot_data(),
+                "material_sources": (
+                    list(mesh.native.get_material_slot_data())
+                    if callable(getattr(mesh.native, "get_material_slot_data", None))
+                    else []
+                ),
                 "morph_target_names": list(mesh.morph_target_names),
                 "bone_count": mesh.native.skinned_bone_count,
                 "animation_names": list(mesh.native.skinned_animation_names),

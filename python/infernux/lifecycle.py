@@ -73,6 +73,13 @@ class PreloadContext:
     runtime: bool = False
     _restart_callback: Callable[[str], None] | None = None
     _cleanup_callback: Callable[[Callable[[], None]], None] | None = None
+    _failure_callback: Callable[[str], None] | None = None
+
+    def fail(self, message: str) -> None:
+        """Report an asynchronous service failure and retire its current source."""
+        if self._failure_callback is None:
+            raise RuntimeError(str(message))
+        self._failure_callback(str(message))
 
     def package_path(self, relative_path: str | os.PathLike[str]) -> str:
         """Resolve one installed-package resource in Editor or Player.
@@ -102,9 +109,9 @@ class PreloadContext:
     def add_cleanup(self, callback: Callable[[], None]) -> None:
         """Register one reversible resource cleanup for this preload.
 
-        Cleanups run in reverse registration order after ``unload()`` and also
-        when ``preload()`` fails partway through. Successful cleanups retire
-        once; failed cleanups remain owned and run on an explicit unload retry.
+        Cleanups run once in reverse registration order after ``unload()`` and
+        when ``preload()`` fails partway through. One failed cleanup does not
+        skip the remaining registrations.
         This is the preferred owner for HTTP servers, worker threads, file
         watches, and callbacks.
         """
@@ -117,9 +124,11 @@ class PreloadContext:
     def own_python_library(self, relative_path: str) -> str:
         """Declare bundled library sources managed by this preload's lifetime.
 
-        These files remain packaged assets, but are not component scripts and
-        do not participate in component hot reload. Load and release the library
-        in preload/unload; native libraries may require an Editor restart.
+        These files remain packaged assets. Source changes retire this preload
+        and its services before rebuilding current code. Files used only by a
+        child process are compiled without executing them in the Editor.
+        Load and release the library in preload/unload; native libraries may
+        require an Editor restart.
         Ordinary package component scripts must stay outside this directory.
         """
         from infernux.engine.project_context import register_preload_python_library

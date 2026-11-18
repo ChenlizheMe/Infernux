@@ -106,6 +106,7 @@ def __getattr__(name: str):
         "rendergraph",
         "renderstack",
         "resources",
+        "sim",
         "ui",
     }:
         module = importlib.import_module(f"infernux.{name}")
@@ -121,6 +122,7 @@ def __getattr__(name: str):
 __all__ = [
     "__version__",
     "editor",
+    "sim",
     "RenderStack",
     # Engine
     "Engine",

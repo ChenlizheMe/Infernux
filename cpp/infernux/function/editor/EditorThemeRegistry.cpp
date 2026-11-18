@@ -1,5 +1,6 @@
 #include "EditorThemeRegistry.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace infernux
@@ -67,6 +68,7 @@ struct Registry
 {
     std::unordered_map<std::string, ThemeData> themes;
     std::vector<std::string> order;
+    std::unordered_map<std::string, std::vector<std::string>> owners;
     std::string active;
     unsigned long generation = 1;
 
@@ -166,6 +168,56 @@ bool EditorThemeRegistry::SetActiveTheme(const std::string &name)
 unsigned long EditorThemeRegistry::Generation()
 {
     return Reg().generation;
+}
+
+void EditorThemeRegistry::Register(const Definition &definition, const std::string &owner)
+{
+    if (definition.name.empty())
+        throw std::invalid_argument("Contributed editor theme needs a name");
+    auto &r = Reg();
+    // A package ships a palette delta; every untouched token keeps the built-in
+    // base so a partial contribution cannot make a panel read a missing token.
+    ThemeData data = r.themes.at("infernux");
+    for (const auto &[token, color] : definition.colors)
+        data.colors[token] = color;
+    for (const auto &[token, value] : definition.vec2s)
+        data.vec2s[token] = value;
+    for (const auto &[token, value] : definition.floats)
+        data.floats[token] = value;
+    if (!r.themes.count(definition.name))
+        r.order.push_back(definition.name);
+    r.themes[definition.name] = std::move(data);
+    auto &owned = r.owners[owner];
+    if (std::find(owned.begin(), owned.end(), definition.name) == owned.end())
+        owned.push_back(definition.name);
+    ++r.generation;
+}
+
+void EditorThemeRegistry::RemoveOwner(const std::string &owner)
+{
+    auto &r = Reg();
+    const auto found = r.owners.find(owner);
+    if (found == r.owners.end())
+        return;
+    for (const auto &name : found->second)
+    {
+        r.themes.erase(name);
+        r.order.erase(std::remove(r.order.begin(), r.order.end(), name), r.order.end());
+    }
+    r.owners.erase(found);
+    if (!r.themes.count(r.active))
+        r.active = "infernux";
+    ++r.generation;
+}
+
+void EditorThemeRegistry::ReplaceOwner(const std::string &owner, const std::vector<Definition> &definitions,
+                                       const std::string &preferred)
+{
+    RemoveOwner(owner);
+    for (const auto &definition : definitions)
+        Register(definition, owner);
+    if (!preferred.empty())
+        SetActiveTheme(preferred);
 }
 
 void EditorThemeRegistry::ConfigureImGuiDimensions(ImGuiStyle &style)

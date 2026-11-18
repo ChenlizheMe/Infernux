@@ -64,6 +64,7 @@ void RegisterAudioBindings(py::module_ &m)
             py::arg("file_path"), "Load WAV, Ogg/Vorbis, MP3 or FLAC using the asset's load type.")
         .def("unload", &AudioClip::Unload, "Unload audio data and free memory")
         .def_property_readonly("is_loaded", &AudioClip::IsLoaded, "Whether the clip has loaded data")
+        .def_property_readonly("load_error", &AudioClip::GetLoadError, "Failure from the most recent decode")
         .def_property_readonly("is_streaming", &AudioClip::IsStreaming)
         .def_property_readonly("duration", &AudioClip::GetDuration, "Duration in seconds (Unity: AudioClip.length)")
         .def_property_readonly("sample_count", &AudioClip::GetSampleCount,

@@ -34,7 +34,7 @@ from infernux.engine.module_classification import is_stdlib_module
 from infernux.engine.project_context import (
     get_project_script_roots,
     get_script_module_name,
-    is_project_component_script,
+    is_reloadable_script,
 )
 
 
@@ -341,6 +341,8 @@ class ScriptDependencyGraph:
         self._module_by_name: dict[str, ModuleId] = {}
         self._sources: dict[str, bytes] = {}
         self._raw_imports: dict[str, tuple[_RawImport, ...]] = {}
+        self._module_names: dict[str, str] = {}
+        self._explicit_sources: dict[str, str] = {}
 
     @property
     def project_root(self) -> str:
@@ -357,7 +359,29 @@ class ScriptDependencyGraph:
     def owns_path(self, path: PathLike) -> bool:
         """Return whether *path* has a canonical gameplay module identity."""
 
-        return is_project_component_script(os.fspath(path), self._project_root)
+        return path_key(path) in self._explicit_sources or is_reloadable_script(os.fspath(path), self._project_root)
+
+    def register_source(self, path: PathLike, module_name: str) -> None:
+        """Register one actual engine/plugin source outside project roots."""
+        if not module_name or any(not item.isidentifier() for item in module_name.split(".")):
+            raise ModuleIdentityError(f"Invalid explicit module identity: {module_name}")
+        display = resolved_path(path)
+        with self._lock:
+            self._assert_live_mutation_thread_locked()
+            existing = self._explicit_sources.get(path_key(display))
+            if existing is not None and existing != module_name:
+                raise ModuleIdentityError(f"Source already registered as {existing}: {display}")
+            self._explicit_sources[path_key(display)] = module_name
+            self._module_names[path_key(display)] = module_name
+
+    def set_module_name(self, path: str, name: str) -> None:
+        """Record the normal public import name selected by a library import."""
+        key = path_key(path)
+        previous = self.module_for_path(path)
+        self._module_names[key] = name
+        if previous is not None and previous.id.module_name != name:
+            source = self.published_source(path)
+            self.commit_transaction(self.stage_transaction({path: source}, removals=(path,)))
 
     @property
     def revision(self) -> int:
@@ -693,6 +717,11 @@ class ScriptDependencyGraph:
         with self._lock:
             return self._modules.get(key)
 
+    def module_name_for_path(self, path: PathLike) -> str | None:
+        """Retain the actual public import identity when its source is removed."""
+        with self._lock:
+            return self._module_names.get(path_key(path)) or get_script_module_name(os.fspath(path), self._project_root)
+
     def published_source(self, path: PathLike) -> bytes | None:
         with self._lock:
             return self._sources.get(path_key(path))
@@ -701,6 +730,30 @@ class ScriptDependencyGraph:
         with self._lock:
             module_id = self._module_by_name.get(str(module_name))
             return self._modules.get(module_id.path_key) if module_id else None
+
+    def record_runtime_imports(self, imports) -> None:
+        """Add actual import edges at import boundaries, including variable names.
+
+        They live with the source's ordinary imports and disappear when that
+        source is replaced. Removing/restoring a provider still resolves these
+        named edges through the same graph, without a second dependency ledger.
+        """
+        with self._lock:
+            self._assert_live_mutation_thread_locked()
+            changed = False
+            for source_name, target_name in imports:
+                source = self._module_by_name.get(source_name)
+                target = self._module_by_name.get(target_name)
+                if source is None or source == target:
+                    continue
+                raw = _RawImport("dynamic", target_name, (), 0, 0, 0, True)
+                previous = self._raw_imports.get(source.path_key, ())
+                if raw not in previous:
+                    self._raw_imports[source.path_key] = (*previous, raw)
+                    changed = True
+            if changed:
+                self._revision += 1
+                self._refresh_edges_locked()
 
     def resolve_module(
         self,
@@ -796,6 +849,27 @@ class ScriptDependencyGraph:
                     visit(node)
             return tuple(sorted(components, key=lambda item: self._module_sort_key(item[0])))
 
+    def ordered_batches(self, paths) -> tuple[tuple[ModuleRecord, ...], ...]:
+        """Return dependency-first SCCs for the requested current sources."""
+        with self._lock:
+            selected = {record.id for path in paths
+                        if (record := self._modules.get(path_key(path))) is not None}
+            return tuple(tuple(self._modules[item.path_key] for item in batch)
+                         for batch in self._dependency_batches_for_maps(self._modules, selected))
+
+    def dependency_paths(self, paths) -> tuple[str, ...]:
+        with self._lock:
+            pending = [path_key(path) for path in paths]
+            visited = set()
+            while pending:
+                key = pending.pop()
+                if key in visited or key not in self._modules:
+                    continue
+                visited.add(key)
+                pending.extend(edge.target.path_key for edge in self._modules[key].dependencies
+                               if edge.target is not None)
+            return tuple(self._modules[key].source_path for key in sorted(visited))
+
     def _make_record(
         self,
         display: str,
@@ -807,7 +881,7 @@ class ScriptDependencyGraph:
         parse_error = ""
         raw: tuple[_RawImport, ...] = ()
         try:
-            tree = ast.parse(_decode_source(payload), filename=display)
+            tree = ast.parse(_decode_source(payload), filename=display) if display.endswith(".py") else ast.Module(body=[], type_ignores=[])
             collector = _ImportCollector()
             collector.visit(tree)
             raw = tuple(collector.items)
@@ -907,6 +981,14 @@ class ScriptDependencyGraph:
         refreshed: dict[str, ModuleRecord] = {}
         for key, record in modules.items():
             edges: list[DependencyEdge] = []
+            # A loaded extension is an opaque dependency. Re-executing its
+            # Python package initializer does not replace the native image.
+            parent = record.id.module_name.rpartition(".")[0] if record.source_path.endswith(".py") else ""
+            while parent:
+                target = module_by_name.get(parent)
+                if target is not None:
+                    edges.append(DependencyEdge(record.id, parent, target, DependencyKind.PROJECT, "package", 0, 0))
+                parent = parent.rpartition(".")[0]
             for raw in raw_imports.get(key, ()):
                 edges.extend(
                     self._resolve_raw_import_locked(
@@ -1224,7 +1306,7 @@ class ScriptDependencyGraph:
         return tuple(sorted(result, key=self._module_sort_key))
 
     def _module_name_for_path(self, path: str) -> tuple[str, bool]:
-        module_name = get_script_module_name(path, self._project_root)
+        module_name = self._module_names.get(path_key(path)) or get_script_module_name(path, self._project_root)
         if not module_name:
             raise ModuleIdentityError(f"script has no project module identity: {path}")
         return module_name, os.path.basename(path) == "__init__.py"
@@ -1232,7 +1314,7 @@ class ScriptDependencyGraph:
     def _assert_asset_file(self, path: str) -> None:
         if not self.owns_path(path):
             raise ModuleIdentityError(f"script is outside project gameplay roots: {path}")
-        if os.path.splitext(path)[1] != ".py":
+        if os.path.splitext(path)[1] != ".py" and path_key(path) not in self._explicit_sources:
             raise ModuleIdentityError(f"not a Python module path: {path}")
 
     @staticmethod

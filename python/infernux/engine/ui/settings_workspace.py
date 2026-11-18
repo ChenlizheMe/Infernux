@@ -43,7 +43,8 @@ def render_settings_workspace(ctx, panel, render_page):
             ctx.table_setup_column("##content", 1 << 3, 1, 1)
             ctx.table_next_row()
             ctx.table_set_column_index(0)
-            ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, 8 * dpi, 8 * dpi)
+            bx, by = Theme.BLEED_PADDING
+            ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, bx * dpi, by * dpi)
             visible = ctx.begin_child("##settings_navigation", 0, height, padding=True)
             ctx.pop_style_var(1)
             try:
