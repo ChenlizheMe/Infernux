@@ -2062,6 +2062,13 @@ rhi::ComputePipelinePreparation VulkanRhiDevice::PrepareComputePipeline(const rh
     return preparation;
 }
 
+VkResult VulkanRhiDevice::CreateNativeGraphicsPipeline(const VkGraphicsPipelineCreateInfo &info,
+                                                       VkPipeline &pipeline) const noexcept
+{
+    infernux::RecordGraphicsPipelineCreationAttempt();
+    return vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &info, nullptr, &pipeline);
+}
+
 rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::GraphicsPipelineDesc &desc)
 {
     if (!desc.vertexInput.IsValid())
@@ -2204,8 +2211,7 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
     pipelineInfo.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    infernux::RecordGraphicsPipelineCreationAttempt();
-    if (vkCreateGraphicsPipelines(m_device, m_pipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+    if (CreateNativeGraphicsPipeline(pipelineInfo, pipeline) != VK_SUCCESS) {
         vkDestroyPipelineLayout(m_device, layout, nullptr);
         return {};
     }

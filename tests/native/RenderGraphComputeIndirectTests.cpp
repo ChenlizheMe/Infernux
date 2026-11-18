@@ -1,5 +1,5 @@
-#include "SlangShaderFixture.h"
 #include "ParticleGraphicsFixtures.h"
+#include "SlangShaderFixture.h"
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/RendererList.h>
 #include <function/renderer/lighting/ForwardPlusLightGrid.h>
@@ -809,7 +809,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     const VkDevice device = resources.context.GetDevice();
-    resources.pipelines.Initialize(device);
+    resources.pipelines.Initialize(resources.context);
     resources.graph.Initialize(&resources.context);
 
     const auto computeTarget = infernux::test::CompileSlangFixture(computePath);

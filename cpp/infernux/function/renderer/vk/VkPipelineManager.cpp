@@ -1,11 +1,12 @@
-#include <core/types/ShaderBuildStatistics.h>
 /**
  * @file VkPipelineManager.cpp
  * @brief Implementation of Vulkan pipeline management
  */
 
 #include "VkPipelineManager.h"
+#include "VkDeviceContext.h"
 #include "VkRenderUtils.h"
+#include "VulkanRhiDevice.h"
 #include <core/error/InxError.h>
 #include <platform/filesystem/InxPath.h>
 
@@ -27,11 +28,12 @@ VkPipelineManager::~VkPipelineManager()
 }
 
 VkPipelineManager::VkPipelineManager(VkPipelineManager &&other) noexcept
-    : m_device(other.m_device), m_shaderModules(std::move(other.m_shaderModules)),
+    : m_device(other.m_device), m_rhiDevice(other.m_rhiDevice), m_shaderModules(std::move(other.m_shaderModules)),
       m_renderPasses(std::move(other.m_renderPasses)), m_pipelineLayouts(std::move(other.m_pipelineLayouts)),
       m_pipelines(std::move(other.m_pipelines)), m_descriptorSetLayouts(std::move(other.m_descriptorSetLayouts))
 {
     other.m_device = VK_NULL_HANDLE;
+    other.m_rhiDevice = nullptr;
 }
 
 VkPipelineManager &VkPipelineManager::operator=(VkPipelineManager &&other) noexcept
@@ -40,6 +42,7 @@ VkPipelineManager &VkPipelineManager::operator=(VkPipelineManager &&other) noexc
         Destroy();
 
         m_device = other.m_device;
+        m_rhiDevice = other.m_rhiDevice;
         m_shaderModules = std::move(other.m_shaderModules);
         m_renderPasses = std::move(other.m_renderPasses);
         m_pipelineLayouts = std::move(other.m_pipelineLayouts);
@@ -47,6 +50,7 @@ VkPipelineManager &VkPipelineManager::operator=(VkPipelineManager &&other) noexc
         m_descriptorSetLayouts = std::move(other.m_descriptorSetLayouts);
 
         other.m_device = VK_NULL_HANDLE;
+        other.m_rhiDevice = nullptr;
     }
     return *this;
 }
@@ -55,9 +59,10 @@ VkPipelineManager &VkPipelineManager::operator=(VkPipelineManager &&other) noexc
 // Initialization
 // ============================================================================
 
-void VkPipelineManager::Initialize(VkDevice device)
+void VkPipelineManager::Initialize(VkDeviceContext &context)
 {
-    m_device = device;
+    m_device = context.GetDevice();
+    m_rhiDevice = &context.GetRhiDevice();
 }
 
 void VkPipelineManager::Destroy() noexcept
@@ -112,6 +117,7 @@ void VkPipelineManager::Destroy() noexcept
     m_descriptorSetLayouts.clear();
 
     m_device = VK_NULL_HANDLE;
+    m_rhiDevice = nullptr;
 }
 
 // ============================================================================
@@ -541,9 +547,7 @@ PipelineResult VkPipelineManager::CreateGraphicsPipeline(const PipelineConfig &c
     pipelineInfo.subpass = config.subpass;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
-    infernux::RecordGraphicsPipelineCreationAttempt();
-    VkResult vkResult =
-        vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &result.pipeline);
+    VkResult vkResult = m_rhiDevice->CreateNativeGraphicsPipeline(pipelineInfo, result.pipeline);
 
     // Cleanup shader modules (no longer needed after pipeline creation)
     DestroyShaderModule(vertModule);

@@ -39,8 +39,8 @@ struct FrozenAuthorProgram
     {
         if (record.compilation)
             return;
-        record.compilation =
-            std::make_shared<const ShaderCompilation>(SlangCompiler::Get().CompileAuthorProgram(generated));
+        record.compilation = std::make_shared<const ShaderCompilation>(
+            SlangCompiler::Get().CompileAuthorProgram(generated, {RuntimeShaderAuthorTarget()}));
         StoreShaderAuthorProgram(cacheDirectory, selection, inputs, record);
     }
 };

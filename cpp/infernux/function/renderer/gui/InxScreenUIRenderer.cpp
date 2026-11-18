@@ -1,4 +1,3 @@
-#include <core/types/ShaderBuildStatistics.h>
 /**
  * @file InxScreenUIRenderer.cpp
  * @brief Implementation of GPU-based 2D screen-space UI renderer
@@ -18,9 +17,9 @@
  * pass.
  */
 
+#include "InxScreenUIRenderer.h"
 #include "BuiltinUIProgram.h"
 #include "ImageFillDraw.h"
-#include "InxScreenUIRenderer.h"
 #include "InxTextGeometry.h"
 #include "InxTextLayout.h"
 #include <algorithm>
@@ -31,8 +30,10 @@
 #include <function/renderer/vk/DescriptorBindTrace.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDescriptorManager.h>
+#include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineHelpers.h>
 #include <function/renderer/vk/VkRenderUtils.h>
+#include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/SceneManager.h>
 #include <function/scene/WorldUIProjection.h>
@@ -1006,17 +1007,17 @@ InxScreenUIRenderer::~InxScreenUIRenderer()
 // Initialization
 // ============================================================================
 
-bool InxScreenUIRenderer::Initialize(VkDevice device, VmaAllocator allocator,
-                                     vk::VkDescriptorManager &descriptorManager, VkFormat colorFormat,
-                                     VkFormat depthFormat, VkSampleCountFlagBits msaaSamples, uint32_t frameCount,
+bool InxScreenUIRenderer::Initialize(vk::VkDeviceContext &context, VkFormat colorFormat, VkFormat depthFormat,
+                                     VkSampleCountFlagBits msaaSamples, uint32_t frameCount,
                                      const std::array<VkDescriptorSetLayout, 2> &viewLayouts)
 {
     if (m_initialized)
         return true;
 
-    m_device = device;
-    m_allocator = allocator;
-    m_descriptorManager = &descriptorManager;
+    m_device = context.GetDevice();
+    m_allocator = context.GetVmaAllocator();
+    m_rhiDevice = &context.GetRhiDevice();
+    m_descriptorManager = &m_rhiDevice->GetDescriptorManager();
     m_viewLayouts = viewLayouts;
     m_colorFormat = colorFormat;
     m_depthFormat = depthFormat;
@@ -1148,6 +1149,7 @@ void InxScreenUIRenderer::Destroy()
     m_worldFragShader = VK_NULL_HANDLE;
     m_fragShader = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
+    m_rhiDevice = nullptr;
     m_allocator = VK_NULL_HANDLE;
     m_descriptorManager = nullptr;
     m_initialized = false;
@@ -2023,8 +2025,7 @@ bool InxScreenUIRenderer::CreateScreenPipeline(VkShaderModule vertex, VkShaderMo
     pipeInfo.renderPass = VK_NULL_HANDLE;
     pipeInfo.subpass = 0;
 
-    infernux::RecordGraphicsPipelineCreationAttempt();
-    return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeInfo, nullptr, &pipeline) == VK_SUCCESS;
+    return m_rhiDevice->CreateNativeGraphicsPipeline(pipeInfo, pipeline) == VK_SUCCESS;
 }
 
 bool InxScreenUIRenderer::CreateWorldPipeline()
@@ -2133,8 +2134,7 @@ bool InxScreenUIRenderer::CreateWorldPipeline(const rhi::GraphicsRenderingSignat
     pipeline.pColorBlendState = &blend;
     pipeline.pDynamicState = &dynamic;
     pipeline.layout = m_worldPipelineLayout;
-    infernux::RecordGraphicsPipelineCreationAttempt();
-    return vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &result) == VK_SUCCESS;
+    return m_rhiDevice->CreateNativeGraphicsPipeline(pipeline, result) == VK_SUCCESS;
 }
 
 VkPipeline InxScreenUIRenderer::GetWorldPipeline(const rhi::GraphicsRenderingSignature &target, bool alwaysOnTop)

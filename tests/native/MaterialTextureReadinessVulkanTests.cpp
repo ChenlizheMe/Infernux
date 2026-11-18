@@ -56,7 +56,8 @@ int main()
     author.source = {"texture_readiness", "<texture readiness>", Source};
     author.schema = R"({"domain":"mesh","inputs":[],"parameters":[
         {"name":"detailTex","kind":"texture_2d"}, {"name":"albedo_map","kind":"texture_2d"}]})";
-    const auto compilation = SlangCompiler::Get().CompileAuthorProgram(author);
+    const auto compilation =
+        SlangCompiler::Get().CompileAuthorProgram(author, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
     for (const auto &code : compilation.targets) {
         assert(code.resources.size() == 4);
         for (const auto &resource : code.resources) {

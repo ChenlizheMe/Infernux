@@ -16,6 +16,12 @@
 namespace infernux
 {
 
+namespace vk
+{
+class VkDeviceContext;
+class VulkanRhiDevice;
+} // namespace vk
+
 // Forward declaration
 class ShaderProgram;
 
@@ -97,18 +103,15 @@ class MaterialPipelineManager
 
     /**
      * @brief Initialize the manager
-     * @param device Vulkan device
-     * @param physicalDevice For memory allocation
+     * @param context Device that owns allocations, descriptors and the driver pipeline cache
      * @param colorFormat Default color attachment format
      * @param depthFormat Default depth attachment format
-
-     * * @param sampleCount MSAA sample count
+     * @param sampleCount MSAA sample count
      * @param shaderProgramCache Externally owned ShaderProgramCache instance
      */
-    void Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice, VkFormat colorFormat,
-                    VkFormat depthFormat, VkSampleCountFlagBits sampleCount, ShaderProgramCache &shaderProgramCache,
-                    GpuRetirementQueue *deletionQueue, bool descriptorIndexingEnabled,
-                    vk::VkDescriptorManager *descriptorManager, uint64_t shaderDeviceContractKey);
+    void Initialize(vk::VkDeviceContext &context, VkFormat colorFormat, VkFormat depthFormat,
+                    VkSampleCountFlagBits sampleCount, ShaderProgramCache &shaderProgramCache,
+                    GpuRetirementQueue *deletionQueue);
 
     /**
      * @brief Cleanup all resources
@@ -300,6 +303,7 @@ class MaterialPipelineManager
 
   private:
     VkDevice m_device = VK_NULL_HANDLE;
+    vk::VulkanRhiDevice *m_rhiDevice = nullptr;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
     VkFormat m_colorFormat = VK_FORMAT_UNDEFINED;
@@ -326,16 +330,6 @@ class MaterialPipelineManager
     // Pipeline hash -> pipeline (for sharing pipelines across materials with same config)
     std::unordered_map<size_t, VkPipeline> m_pipelineCache;
 
-    // Vulkan Pipeline Cache for faster recreation
-    VkPipelineCache m_vkPipelineCache = VK_NULL_HANDLE;
-
-  public:
-    VkPipelineCache GetVkPipelineCache() const
-    {
-        return m_vkPipelineCache;
-    }
-
-  private:
     // Default material render data
     MaterialRenderData *m_defaultRenderData = nullptr;
 

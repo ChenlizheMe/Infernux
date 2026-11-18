@@ -5,12 +5,13 @@
 #include "VertexInputFilter.h"
 #include "vk/GraphicsPipelineStateVulkan.h"
 #include "vk/RhiVulkanTypes.h"
+#include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
+#include "vk/VulkanRhiDevice.h"
 #include <algorithm>
 #include <array>
 #include <core/log/InxLog.h>
-#include <core/types/ShaderBuildStatistics.h>
 #include <platform/filesystem/InxPath.h>
 #include <stdexcept>
 
@@ -105,44 +106,35 @@ MaterialPipelineManager::~MaterialPipelineManager()
     Shutdown();
 }
 
-void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device, VkPhysicalDevice physicalDevice,
-                                         VkFormat colorFormat, VkFormat depthFormat, VkSampleCountFlagBits sampleCount,
-                                         ShaderProgramCache &shaderProgramCache, GpuRetirementQueue *deletionQueue,
-                                         bool descriptorIndexingEnabled, vk::VkDescriptorManager *descriptorManager,
-                                         uint64_t shaderDeviceContractKey)
+void MaterialPipelineManager::Initialize(vk::VkDeviceContext &context, VkFormat colorFormat, VkFormat depthFormat,
+                                         VkSampleCountFlagBits sampleCount, ShaderProgramCache &shaderProgramCache,
+                                         GpuRetirementQueue *deletionQueue)
 {
     ++m_publicationGeneration;
-    m_device = device;
-    m_allocator = allocator;
-    m_physicalDevice = physicalDevice;
+    m_device = context.GetDevice();
+    m_rhiDevice = &context.GetRhiDevice();
+    m_allocator = context.GetVmaAllocator();
+    m_physicalDevice = context.GetPhysicalDevice();
     m_colorFormat = colorFormat;
     m_depthFormat = depthFormat;
     m_sampleCount = sampleCount;
     m_shaderProgramCache = &shaderProgramCache;
-    m_shaderDeviceContractKey = shaderDeviceContractKey;
+    const auto &caps = context.GetCapabilities();
+    m_shaderDeviceContractKey = rhi::ComputeDeviceShaderContractKey(caps.portable, caps.BackendName());
     m_deletionQueue = deletionQueue;
 
     // Initialize shader program cache
-    m_shaderProgramCache->Initialize(device);
+    m_shaderProgramCache->Initialize(m_device);
     m_shaderProgramCache->SetDeviceContractKey(m_shaderDeviceContractKey);
 
     // Material descriptors are immutable copy-on-write publications. Keeping
     // set 0 in the ordinary persistent arena avoids requiring optional
     // per-descriptor-type UPDATE_AFTER_BIND features (notably storage buffers
     // on mobile GPUs) without weakening live-update correctness.
-    (void)descriptorIndexingEnabled;
     ShaderProgram::SetUpdateAfterBindEnabled(false);
     m_descriptorManager.SetUpdateAfterBindEnabled(false);
     m_descriptorManager.SetRetirementQueue(deletionQueue);
-    m_descriptorManager.Initialize(allocator, device, physicalDevice, descriptorManager);
-
-    // Create Vulkan pipeline cache for faster recreation
-    VkPipelineCacheCreateInfo cacheCreateInfo{};
-    cacheCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (vkCreatePipelineCache(m_device, &cacheCreateInfo, nullptr, &m_vkPipelineCache) != VK_SUCCESS) {
-        INXLOG_WARN("Failed to create VkPipelineCache, pipeline recreation may be slower");
-        m_vkPipelineCache = VK_NULL_HANDLE;
-    }
+    m_descriptorManager.Initialize(m_allocator, m_device, m_physicalDevice, &m_rhiDevice->GetDescriptorManager());
 }
 
 void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
@@ -196,16 +188,11 @@ void MaterialPipelineManager::Shutdown(bool skipWaitIdle)
     m_renderDataMap.clear();
     m_failedForwardPipelineHashes.clear();
 
-    // Destroy Vulkan pipeline cache
-    if (m_vkPipelineCache != VK_NULL_HANDLE) {
-        vkDestroyPipelineCache(m_device, m_vkPipelineCache, nullptr);
-        m_vkPipelineCache = VK_NULL_HANDLE;
-    }
-
     m_passRenderDataMap.clear();
 
     m_defaultRenderData = nullptr;
     m_device = VK_NULL_HANDLE;
+    m_rhiDevice = nullptr;
     m_allocator = VK_NULL_HANDLE;
     m_physicalDevice = VK_NULL_HANDLE;
     m_deletionQueue = nullptr;
@@ -816,8 +803,7 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
     VkPipeline pipeline;
-    infernux::RecordGraphicsPipelineCreationAttempt();
-    if (vkCreateGraphicsPipelines(m_device, m_vkPipelineCache, 1, &pipelineInfo, nullptr, &pipeline) != VK_SUCCESS) {
+    if (m_rhiDevice->CreateNativeGraphicsPipeline(pipelineInfo, pipeline) != VK_SUCCESS) {
         INXLOG_ERROR("Failed to create graphics pipeline with shader program");
         return VK_NULL_HANDLE;
     }
