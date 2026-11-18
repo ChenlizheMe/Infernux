@@ -129,6 +129,19 @@ class InxGUIContext
 
     /// All editor surfaces resolve pinned icons through their owning GUI.
     std::function<uint64_t(const std::string &)> resolveEditorIcon;
+
+    /// Chrome surface behind editor windows; installed by the GUI renderer.
+    void SetSurfaceRenderer(std::function<void()> render)
+    {
+        m_surfaceRenderer = std::move(render);
+    }
+    void DrawWindowSurface()
+    {
+        if (m_surfaceRenderer)
+            m_surfaceRenderer();
+    }
+    std::function<void()> m_surfaceRenderer;
+
     uint64_t EditorIcon(const std::string &name) const;
     bool IconButton(const std::string &id, const std::string &icon, const std::string &tooltip, float width,
                     float height);

@@ -225,6 +225,7 @@ class InxGUI
 
   private:
     struct PendingTextureUpload;
+    void DrawThemeSurface();
     uint64_t SubmitCpuTextureForImGui(const std::string &name, std::shared_ptr<const TextureCpuData> pixels,
                                       VkFilter filter, bool pinned, bool displayEncoding,
                                       std::function<bool()> canPublish, std::shared_ptr<FrameCpuStorageClaim> storage);
@@ -333,6 +334,9 @@ class InxGUI
     uint64_t m_textureEvictionCount = 0;
     ResourcePreviewManager m_resourcePreviewManager;
     bool m_playerMode = false;
+    uint64_t m_surfaceGrainUpload = 0;
+    uint64_t m_surfaceHexUpload = 0;
+    std::array<uint64_t, 4> m_surfacePatternUploads{};
     bool m_hasDrawData = false;
     std::vector<uint64_t> m_drawTextureIds;
     std::vector<const ImTextureData *> m_drawManagedTextures;
