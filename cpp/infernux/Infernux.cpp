@@ -3164,6 +3164,23 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
     INXLOG_DEBUG("Prepare pipeline.");
     phaseBegin = StartupClock::now();
     m_renderer->PreparePipeline();
+    // Raw native hosts render frames without the Python bootstrap. Install the
+    // bundled UI faces before any frame can ask ImGui for a default font.
+    {
+        const auto uiFont = JoinPath({builtinResourcePath, "fonts", "Inter-VF.ttf"});
+        const auto cjkFont = JoinPath({builtinResourcePath, "fonts", "NotoSansSC-Regular.ttf"});
+        const auto monoFont = JoinPath({builtinResourcePath, "fonts", "MapleMono-CN-Regular.ttf"});
+        std::error_code fontError;
+        if (std::filesystem::is_regular_file(ToFsPath(uiFont), fontError) &&
+            std::filesystem::is_regular_file(ToFsPath(cjkFont), fontError) &&
+            std::filesystem::is_regular_file(ToFsPath(monoFont), fontError)) {
+            try {
+                m_renderer->SetGUIFonts(uiFont, cjkFont, monoFont, 18.0f);
+            } catch (const std::exception &error) {
+                INXLOG_WARN("Default engine font setup failed: ", error.what());
+            }
+        }
+    }
     m_renderer->SetEditorIconsDirectory(JoinPath({builtinResourcePath, "icons"}));
     m_renderer->GetResourcePreviewManager()->SetMaterialPreviewQuery(
         [this](const std::string &path) { return QueryOrScheduleMaterialPreview("mat|" + path, path, {}, 0, false); });
