@@ -199,20 +199,6 @@ float ClampHingeTarget(const JointAuthor &author, float target)
                                                           : target;
 }
 
-JoltGpuControlWork PrepareJointReadWork(std::function<JoltGpuControlWork()> prepare, std::exception_ptr &error)
-{
-    try {
-        auto work = prepare();
-        if (auto continuation = std::move(work.continueWork))
-            work.continueWork = [continuation = std::move(continuation), &error]() mutable {
-                return PrepareJointReadWork(std::move(continuation), error);
-            };
-        return work;
-    } catch (const JoltGpuQueryRequestError &) {
-        error = std::current_exception();
-        return {};
-    }
-}
 } // namespace
 
 PhysicsWorld::JointBackend PhysicsWorld::SelectJointBackend(Backend owner, Backend connected) noexcept
@@ -721,7 +707,7 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
     JoltGpuPreparedJointMotion prepared;
     std::exception_ptr requestError;
     RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        return PrepareJointReadWork(
+        return PrepareJoltGpuQueryWork(
             [&]() -> JoltGpuControlWork {
                 std::unordered_map<uint64_t, const JoltGpuScene::PublishedJoint *> identities;
                 identities.reserve(publication->GetJoints().size());

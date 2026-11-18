@@ -52,6 +52,25 @@ struct JoltGpuControlWork
     }
 };
 
+/// Append a consumer to both the selected packet and its smaller admissible prefix.
+/// Each producer keeps its own acceptance/completion boundary.
+inline JoltGpuControlWork ContinueJoltGpuControlWork(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
+{
+    if (!work.packet && !work.continueWork)
+        return next();
+    if (work.prepareMinimum) {
+        auto minimum = std::move(work.prepareMinimum);
+        work.prepareMinimum = [minimum = std::move(minimum), next] {
+            return ContinueJoltGpuControlWork(minimum(), next);
+        };
+    }
+    auto continuation = std::move(work.continueWork);
+    work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
+        return continuation ? ContinueJoltGpuControlWork(continuation(), std::move(next)) : next();
+    };
+    return work;
+}
+
 /// One ordered author-model boundary, per-body FIFO commands, then optional
 /// deferred compute work. Factories run after preceding groups are accepted,
 /// so storage never has more than one unaccepted model transaction. A null model result is a

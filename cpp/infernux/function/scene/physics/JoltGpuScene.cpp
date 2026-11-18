@@ -54,21 +54,6 @@ bool FiniteVector(const Float4 &value)
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z) && value.w == 0;
 }
 
-JoltGpuControlWork Then(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
-{
-    if (!work.packet && !work.continueWork)
-        return next();
-    if (work.prepareMinimum) {
-        auto minimum = std::move(work.prepareMinimum);
-        work.prepareMinimum = [minimum = std::move(minimum), next] { return Then(minimum(), next); };
-    }
-    auto continuation = std::move(work.continueWork);
-    work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
-        return continuation ? Then(continuation(), std::move(next)) : next();
-    };
-    return work;
-}
-
 Float4 TransferVector(JPH::Vec3Arg value, float extra = 0.0f)
 {
     return {value.GetX(), value.GetY(), value.GetZ(), extra};
@@ -519,15 +504,15 @@ class JoltGpuScene::Impl
             // Advance this cursor only at completed conversion. Cancellation
             // retains the same origin so a later sweep can resume idempotently.
             pressureDomain = domain;
-            return Then(programs.GetArticulations().PreparePressureDeclined(storage, state, domain->row == witnessWorld,
-                                                                            [this, domain, completed](auto empty) {
-                                                                                domain->articulationCache = empty;
-                                                                                completed(domain->row,
-                                                                                          std::move(empty));
-                                                                                ++pressureCursor;
-                                                                                pressureDomain = nullptr;
-                                                                            }),
-                        [this, witnessWorld, completed] { return PreparePressureRetirement(witnessWorld, completed); });
+            return ContinueJoltGpuControlWork(
+                programs.GetArticulations().PreparePressureDeclined(storage, state, domain->row == witnessWorld,
+                                                                    [this, domain, completed](auto empty) {
+                                                                        domain->articulationCache = empty;
+                                                                        completed(domain->row, std::move(empty));
+                                                                        ++pressureCursor;
+                                                                        pressureDomain = nullptr;
+                                                                    }),
+                [this, witnessWorld, completed] { return PreparePressureRetirement(witnessWorld, completed); });
         }
         pressurePending = false;
         pressureDomain = nullptr;
@@ -1852,26 +1837,27 @@ class JoltGpuScene::Impl
                             leaf.shape && (leaf.shape->GetSubType() == JPH::EShapeSubType::Cylinder ||
                                            leaf.shape->GetSubType() == JPH::EShapeSubType::ConvexHull);
                     }
-            return Then(geometry->PrepareCapture(std::move(records),
-                                                 [this, publication](auto lease) {
-                                                     publication->geometry = lease;
-                                                     storage.SetGeometry(std::move(lease),
-                                                                         publication->hasGenericGeometry);
-                                                 }),
-                        [this, &domain, publication, pairCapture, articulationCapture, acceptedStateIntent] {
-                            return Then(PrepareColliderPairs(domain, publication, pairCapture),
-                                        [this, &domain, publication, articulationCapture, acceptedStateIntent] {
-                                            articulationCapture->preparing = true;
-                                            return programs.GetArticulations().PrepareAccepted(
-                                                storage, domain.row, publication->directory, domain.articulationCache,
-                                                [&domain, articulationCapture](auto state) {
-                                                    articulationCapture->preparing = false;
-                                                    domain.articulationCache = state;
-                                                    articulationCapture->value = std::move(state);
-                                                },
-                                                acceptedStateIntent);
-                                        });
+            return ContinueJoltGpuControlWork(
+                geometry->PrepareCapture(std::move(records),
+                                         [this, publication](auto lease) {
+                                             publication->geometry = lease;
+                                             storage.SetGeometry(std::move(lease), publication->hasGenericGeometry);
+                                         }),
+                [this, &domain, publication, pairCapture, articulationCapture, acceptedStateIntent] {
+                    return ContinueJoltGpuControlWork(
+                        PrepareColliderPairs(domain, publication, pairCapture),
+                        [this, &domain, publication, articulationCapture, acceptedStateIntent] {
+                            articulationCapture->preparing = true;
+                            return programs.GetArticulations().PrepareAccepted(
+                                storage, domain.row, publication->directory, domain.articulationCache,
+                                [&domain, articulationCapture](auto state) {
+                                    articulationCapture->preparing = false;
+                                    domain.articulationCache = state;
+                                    articulationCapture->value = std::move(state);
+                                },
+                                acceptedStateIntent);
                         });
+                });
         };
         if (cleanMember) {
             // Eligibility proved the directory, pair table and geometry are already accepted.
@@ -1964,19 +1950,21 @@ class JoltGpuScene::Impl
             JPH::GPU::StepParams selected{};
             selected.selection = {output.worldRow, output.bodyBase, output.leafBase, output.jointBase};
             selected.selectedCounts = {output.bodyCount, output.leafCount, output.jointCount, 0u};
-            return Then(
+            return ContinueJoltGpuControlWork(
                 programs.GetSleep().PrepareSnapshot(
                     storage, selected,
                     [publication](auto snapshot) { publication->sleepStatus = std::move(snapshot); }),
                 [this, retained, consumer, finalConsumer, reportFinish] {
-                    return Then(joints.PrepareStatus(retained), [retained, consumer, finalConsumer, reportFinish] {
-                        return Then(reportFinish ? reportFinish(retained) : JoltGpuControlWork{}, [retained, consumer,
-                                                                                                   finalConsumer] {
-                            return Then(consumer ? consumer(retained) : JoltGpuControlWork{},
-                                        [retained, finalConsumer] {
-                                            return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
-                                        });
-                        });
+                    return ContinueJoltGpuControlWork(joints.PrepareStatus(retained), [retained, consumer,
+                                                                                       finalConsumer, reportFinish] {
+                        return ContinueJoltGpuControlWork(
+                            reportFinish ? reportFinish(retained) : JoltGpuControlWork{},
+                            [retained, consumer, finalConsumer] {
+                                return ContinueJoltGpuControlWork(
+                                    consumer ? consumer(retained) : JoltGpuControlWork{}, [retained, finalConsumer] {
+                                        return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
+                                    });
+                            });
                     });
                 });
         };

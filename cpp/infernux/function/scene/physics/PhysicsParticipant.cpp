@@ -52,25 +52,14 @@ JoltGpuControlWork StageChain(std::shared_ptr<const std::vector<PhysicsParticipa
     }
     auto work =
         owners->at(cursor).owner->PrepareStage(stage, params, fixedDeltaTime, substep, iteration, owners->at(cursor));
-    // Native Work has one finite, indivisible recipe. No invented row splitting.
-    work.resumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
-    work.continueWork = [owners, cursor, stage, params, fixedDeltaTime, substep, iteration, done = std::move(done)] {
+    auto next = [owners, cursor, stage, params, fixedDeltaTime, substep, iteration, done = std::move(done)] {
         if (stage == JoltGpuParticipantStage::Predict && substep == 0)
             owners->at(cursor).owner->AcceptControls(owners->at(cursor).controls);
         return StageChain(owners, cursor + 1, stage, params, fixedDeltaTime, substep, iteration, done);
     };
-    return work;
-}
-JoltGpuControlWork ContinueOutputs(std::shared_ptr<PhysicsParticipant> owner, JoltGpuControlWork work, uint64_t epoch,
-                                   uint64_t step, bool isFixedStep)
-{
     if (!work.packet && !work.continueWork)
-        return owner->PrepareOutputs(epoch, step, isFixedStep);
-    auto next = std::move(work.continueWork);
-    work.continueWork = [owner, next = std::move(next), epoch, step, isFixedStep]() mutable {
-        return ContinueOutputs(owner, next ? next() : JoltGpuControlWork{}, epoch, step, isFixedStep);
-    };
-    return work;
+        return {nullptr, std::move(next), JoltGpuControlWork::ResumeAfter::HostWork};
+    return ContinueJoltGpuControlWork(std::move(work), std::move(next));
 }
 } // namespace
 
@@ -246,14 +235,9 @@ JoltGpuControlWork PhysicsParticipant::PrepareOutputs(uint64_t epoch, uint64_t s
         if (const auto capture = entry.lock(); capture && !capture->IsDone()) {
             auto self = shared_from_this();
             auto work = PrepareOutput(capture, epoch, step, isFixedStep);
-            // Keep budget-busy retries and the real completion continuation intact.
-            auto next = std::move(work.continueWork);
-            work.continueWork = [self, next = std::move(next), epoch, step, isFixedStep]() mutable {
-                auto follow = next ? next() : JoltGpuControlWork{};
-                // A retry may still contain a packet/continuation: preserve it.
-                return ContinueOutputs(self, std::move(follow), epoch, step, isFixedStep);
-            };
-            return work;
+            return ContinueJoltGpuControlWork(std::move(work), [self, epoch, step, isFixedStep] {
+                return self->PrepareOutputs(epoch, step, isFixedStep);
+            });
         }
     return {};
 }
@@ -422,11 +406,12 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
     if (stage == JoltGpuParticipantStage::Predict && substep == 0)
         for (const auto &[control, value] : prefix.controls)
             updates.push_back({m_controlStorage.at(control), 0, *value});
-    if (found == m_instances.end())
-        return updates.empty() ? JoltGpuControlWork{}
-                               : JoltGpuControlWork{rhi::PrepareComputeBatch(m_recipes.at("initialize")->GetHost(),
-                                                                             std::move(updates), {})};
-    return {found->second->PrepareBatch(std::move(updates))};
+    if (found == m_instances.end() && updates.empty())
+        return {};
+    auto packet = found == m_instances.end()
+                      ? rhi::PrepareComputeBatch(m_recipes.at("initialize")->GetHost(), std::move(updates), {})
+                      : found->second->PrepareBatch(std::move(updates));
+    return {std::move(packet), {}, JoltGpuControlWork::ResumeAfter::Acceptance};
 }
 
 decltype(JoltGpuTickControl::prepareParticipant)

@@ -4,6 +4,7 @@
 #include "JoltGpuScene.h"
 #include <array>
 #include <cstdint>
+#include <exception>
 #include <stdexcept>
 #include <vector>
 
@@ -13,6 +14,10 @@ namespace particle
 {
 struct GpuParticleCollisionDevicePayload;
 }
+/// Keep a rejected read local to its request throughout the selected GPU work.
+[[nodiscard]] JoltGpuControlWork PrepareJoltGpuQueryWork(std::function<JoltGpuControlWork()> prepare,
+                                                         std::exception_ptr &error);
+
 enum class JoltGpuQueryReadback
 {
     Host,

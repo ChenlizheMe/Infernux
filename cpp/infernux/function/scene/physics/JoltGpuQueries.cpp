@@ -430,17 +430,6 @@ struct QueryPolicyCopy : std::enable_shared_from_this<QueryPolicyCopy>
     }
 };
 
-JoltGpuControlWork Then(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
-{
-    if (!work.packet && !work.continueWork)
-        return next();
-    auto continuation = std::move(work.continueWork);
-    work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
-        return Then(continuation ? continuation() : JoltGpuControlWork{}, std::move(next));
-    };
-    return work;
-}
-
 void RequireSuccess(uint32_t status)
 {
     if (status == QueryUnsupported)
@@ -567,6 +556,25 @@ JoltGpuControlWork JoltGpuQueries::Continue(const std::shared_ptr<Execution> &ex
     return work;
 }
 
+JoltGpuControlWork PrepareJoltGpuQueryWork(std::function<JoltGpuControlWork()> prepare, std::exception_ptr &error)
+{
+    try {
+        auto work = prepare();
+        const auto observe = [&error](std::function<JoltGpuControlWork()> &resume) {
+            if (resume)
+                resume = [next = std::move(resume), &error]() mutable {
+                    return PrepareJoltGpuQueryWork(std::move(next), error);
+                };
+        };
+        observe(work.continueWork);
+        observe(work.prepareMinimum);
+        return work;
+    } catch (const JoltGpuQueryRequestError &) {
+        error = std::current_exception();
+        return {};
+    }
+}
+
 JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene::Publication> publication,
                                              const std::vector<QueryInput> &queries,
                                              const std::vector<QueryPrimitive> &primitives,
@@ -604,7 +612,7 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
                               result)
             .work;
     };
-    return {result, Then(std::move(capture), std::move(next))};
+    return {result, ContinueJoltGpuControlWork(std::move(capture), std::move(next))};
 }
 
 JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltGpuScene::Publication> publication,

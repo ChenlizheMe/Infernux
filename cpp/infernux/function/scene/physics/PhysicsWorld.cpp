@@ -85,30 +85,6 @@ glm::vec3 Vector(const Float4 &v)
 {
     return {v.x, v.y, v.z};
 }
-JoltGpuControlWork AfterWork(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
-{
-    if (!work.packet && !work.continueWork)
-        return next();
-    auto continuation = std::move(work.continueWork);
-    work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
-        return continuation ? AfterWork(continuation(), std::move(next)) : next();
-    };
-    return work;
-}
-JoltGpuControlWork PrepareQueryWork(std::function<JoltGpuControlWork()> prepare, std::exception_ptr &error)
-{
-    try {
-        auto work = prepare();
-        if (auto continuation = std::move(work.continueWork))
-            work.continueWork = [continuation = std::move(continuation), &error]() mutable {
-                return PrepareQueryWork(std::move(continuation), error);
-            };
-        return work;
-    } catch (const JoltGpuQueryRequestError &) {
-        error = std::current_exception();
-        return {};
-    }
-}
 PhysicsBodyMotionState DecodeMotion(const JoltGpuScene::Publication &publication, const QueryMotionState &record)
 {
     if (record.meta.x >= publication.directory->actors.size() || !publication.directory->actors[record.meta.x] ||
@@ -919,15 +895,16 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
                             if (stage == JoltGpuContactReportStage::AfterVelocity)
                                 return observe(storage, inputs, params, substep, stage, std::move(done));
                             auto cross = gather(storage, inputs, params, substep, stage, [] {});
-                            return AfterWork(std::move(cross), [observe, &storage, &inputs, params, substep, stage,
-                                                                done = std::move(done)]() mutable {
-                                return observe(storage, inputs, params, substep, stage, std::move(done));
-                            });
+                            return ContinueJoltGpuControlWork(
+                                std::move(cross),
+                                [observe, &storage, &inputs, params, substep, stage, done = std::move(done)]() mutable {
+                                    return observe(storage, inputs, params, substep, stage, std::move(done));
+                                });
                         };
                         observer.finish = [finish = std::move(observer.finish),
                                            mixedFinish = std::move(mixed.finish)](const auto &completed) {
-                            return AfterWork(finish(completed),
-                                             [mixedFinish, completed] { return mixedFinish(completed); });
+                            return ContinueJoltGpuControlWork(
+                                finish(completed), [mixedFinish, completed] { return mixedFinish(completed); });
                         };
                     }
                     return observer;
@@ -1300,7 +1277,7 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
         job->output =
             m_gpuRenderProgram->Prepare(CompactOutput(*publication), job->bindings->nodes, job->bindings->bindings);
         job->publication = publication;
-        return AfterWork(job->output.batch, [job] {
+        return ContinueJoltGpuControlWork(job->output.batch, [job] {
             if (job->output.models)
                 job->output.models = job->output.models->Freeze();
             if (job->output.bounds)
@@ -1513,8 +1490,8 @@ bool PhysicsWorld::ServiceParticipantOutputs()
     for (auto it = observers.rbegin(); it != observers.rend(); ++it) {
         auto tail = std::move(copies);
         copies = {nullptr, [owner = *it, epoch, step, fixed, tail = std::move(tail)]() mutable {
-                      return AfterWork(owner->PrepareOutputs(epoch, step, fixed),
-                                       [tail = std::move(tail)]() mutable { return std::move(tail); });
+                      return ContinueJoltGpuControlWork(owner->PrepareOutputs(epoch, step, fixed),
+                                                        [tail = std::move(tail)]() mutable { return std::move(tail); });
                   }};
     }
     AdmissionScope admission(*m_gpuScene, domain.owner);
@@ -2579,7 +2556,7 @@ PhysicsWorld::RunQuery(PhysicsDomain &domain, const std::shared_ptr<const JoltGp
     JoltGpuPreparedQuery prepared;
     std::exception_ptr requestError;
     ObserveSpatialGpuQuery(domain, publication, [&](const auto &accepted) {
-        return PrepareQueryWork(
+        return PrepareJoltGpuQueryWork(
             [&] {
                 const auto *inputs = &requests;
                 std::vector<QueryInput> sweepInputs;
@@ -2636,7 +2613,7 @@ std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::RunGeometryQuery(PhysicsDomain
     std::exception_ptr requestError;
     {
         FrameWorkOwner::Scope preparation(*m_gpuWork);
-        auto work = PrepareQueryWork(
+        auto work = PrepareJoltGpuQueryWork(
             [&]() {
                 if (!geometry.store)
                     geometry.store = m_gpuScene->GetGeometryStore();
@@ -3502,7 +3479,7 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
     std::shared_ptr<JoltGpuQueryResult> &motion, std::shared_ptr<JoltGpuQueryResult> &shapes,
     std::exception_ptr &requestError, bool deferExport) const
 {
-    return PrepareQueryWork(
+    return PrepareJoltGpuQueryWork(
         [&]() -> JoltGpuControlWork {
             for (const auto &binding : exports)
                 if (binding.field > JoltGpuQueryExportField::ShapeBounciness ||
@@ -3562,29 +3539,29 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
                 second = m_gpuQueries->Prepare(publication, shapeInputs, {}, generation, readback);
                 shapes = second.result;
             }
-            return AfterWork(std::move(first.work), [this, &domain, motionResult = motion, shapeResult = shapes,
-                                                     work = std::move(second.work), &batch, exports,
-                                                     deferExport]() mutable {
-                if (motionResult && motionResult->GetSummary().counts.y != QuerySuccess)
-                    return JoltGpuControlWork{};
-                return AfterWork(std::move(work),
-                                 [this, &domain, motionResult, shapeResult, &batch, exports, deferExport] {
-                                     if (shapeResult) {
-                                         const auto &summary = shapeResult->GetSummary();
-                                         if (summary.counts.y != QuerySuccess)
-                                             return JoltGpuControlWork{};
-                                         batch.boxCount = summary.counts.x;
-                                     }
-                                     if (exports.empty() || deferExport)
-                                         return JoltGpuControlWork{};
-                                     std::vector<std::shared_ptr<JoltGpuQueryResult>> results;
-                                     if (motionResult)
-                                         results.push_back(motionResult);
-                                     if (shapeResult)
-                                         results.push_back(shapeResult);
-                                     return m_gpuQueries->PrepareExport(results, exports);
-                                 });
-            });
+            return ContinueJoltGpuControlWork(
+                std::move(first.work), [this, &domain, motionResult = motion, shapeResult = shapes,
+                                        work = std::move(second.work), &batch, exports, deferExport]() mutable {
+                    if (motionResult && motionResult->GetSummary().counts.y != QuerySuccess)
+                        return JoltGpuControlWork{};
+                    return ContinueJoltGpuControlWork(
+                        std::move(work), [this, &domain, motionResult, shapeResult, &batch, exports, deferExport] {
+                            if (shapeResult) {
+                                const auto &summary = shapeResult->GetSummary();
+                                if (summary.counts.y != QuerySuccess)
+                                    return JoltGpuControlWork{};
+                                batch.boxCount = summary.counts.x;
+                            }
+                            if (exports.empty() || deferExport)
+                                return JoltGpuControlWork{};
+                            std::vector<std::shared_ptr<JoltGpuQueryResult>> results;
+                            if (motionResult)
+                                results.push_back(motionResult);
+                            if (shapeResult)
+                                results.push_back(shapeResult);
+                            return m_gpuQueries->PrepareExport(results, exports);
+                        });
+                });
         },
         requestError);
 }
@@ -3819,8 +3796,8 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
             }
             if (!targets.empty()) {
                 auto projected = m_gpuQueries->PrepareExport(sources, targets);
-                work = AfterWork(std::move(work),
-                                 [projected = std::move(projected)]() mutable { return std::move(projected); });
+                work = ContinueJoltGpuControlWork(
+                    std::move(work), [projected = std::move(projected)]() mutable { return std::move(projected); });
             }
         }
         if (work.packet || work.continueWork)
@@ -4009,7 +3986,7 @@ bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std
     if (job->error)
         std::rethrow_exception(job->error);
     // The accepted Work retains every referenced result/batch even if Stop drops the domain slot.
-    work = AfterWork(std::move(work), [job] { return JoltGpuControlWork{}; });
+    work = ContinueJoltGpuControlWork(std::move(work), [job] { return JoltGpuControlWork{}; });
     if (!m_gpuScene->TryBeginWork(domain.owner, work, false))
         return false;
     domain.presentationPoseReads = std::move(job);
@@ -4138,7 +4115,7 @@ bool PhysicsWorld::ServiceMixedRenderPoses()
                                                           job->bindings->bindings);
             }
             if (job->output.batch) {
-                auto work = AfterWork(job->output.batch, [job] {
+                auto work = ContinueJoltGpuControlWork(job->output.batch, [job] {
                     if (job->output.models)
                         job->output.models = job->output.models->Freeze();
                     if (job->output.bounds)
@@ -4233,7 +4210,7 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
     RunControl(
         domain,
         [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-            return PrepareQueryWork(
+            return PrepareJoltGpuQueryWork(
                 [&]() -> JoltGpuControlWork {
                     const auto slot = publication->directory->FindBodySlot(id);
                     if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
@@ -5195,7 +5172,7 @@ std::shared_ptr<JoltGpuQueryResult> PhysicsWorld::GatherBodyShapes(PhysicsDomain
     JoltGpuPreparedQuery query;
     std::exception_ptr error;
     RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        return PrepareQueryWork(
+        return PrepareJoltGpuQueryWork(
             [&] {
                 const auto slot = publication->directory->FindBodySlot(id);
                 if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
@@ -5287,7 +5264,7 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
     std::vector<RowKey> keys;
     std::exception_ptr error;
     RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        return PrepareQueryWork(
+        return PrepareJoltGpuQueryWork(
             [&]() -> JoltGpuControlWork {
                 std::vector<QueryInput> requests;
                 std::array<std::vector<Row>, 2> rows;
@@ -5345,7 +5322,7 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
                                               domain.queryGeneration.load(std::memory_order_acquire) +
                                                   static_cast<uint64_t>(domain.controlNumericalChange),
                                               JoltGpuQueryReadback::Device);
-                return AfterWork(
+                return ContinueJoltGpuControlWork(
                     std::move(query.work),
                     [this, &domain, source = query.result, mappings = std::move(mappings), previous, hasHistory,
                      staticCount, revision, topology, &exported]() -> JoltGpuControlWork {

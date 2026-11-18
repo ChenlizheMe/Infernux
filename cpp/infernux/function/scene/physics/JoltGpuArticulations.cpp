@@ -14,20 +14,6 @@ namespace infernux
 namespace
 {
 using namespace JPH::GPU;
-JoltGpuControlWork Then(JoltGpuControlWork work, std::function<JoltGpuControlWork()> next)
-{
-    if (!work.packet && !work.continueWork)
-        return next();
-    if (work.prepareMinimum) {
-        auto minimum = std::move(work.prepareMinimum);
-        work.prepareMinimum = [minimum = std::move(minimum), next] { return Then(minimum(), next); };
-    }
-    auto continuation = std::move(work.continueWork);
-    work.continueWork = [continuation = std::move(continuation), next = std::move(next)]() mutable {
-        return continuation ? Then(continuation(), std::move(next)) : next();
-    };
-    return work;
-}
 enum Port : uint8_t
 {
     Params,
@@ -459,7 +445,7 @@ JoltGpuControlWork JoltGpuArticulations::PrepareRotors(const JoltGpuStorage &sto
     e->buffers[Words] = state->control;
     e->buffers[Joints] = storage.Get(Resource::Joints);
     e->Add(Rotors, state->header.selected.z, state->header.selected.w, inputs.GetParameters().selection.x);
-    return Then(e->Next(), std::move(after));
+    return ContinueJoltGpuControlWork(e->Next(), std::move(after));
 }
 JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStorage &storage,
                                                                const JoltGpuStepInputs &inputs,
@@ -521,7 +507,7 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
     e->Add(References, 0, refs.y, world, refs, 0);
     e->Add(References, 0, refs.w, world, refs, 1);
     e->Add(Finalize, 0, h.maps.x, world, {}, inputs.GetParameters().counts.w == 0u ? 1u : 0u);
-    return Then(e->Next(), std::move(after));
+    return ContinueJoltGpuControlWork(e->Next(), std::move(after));
 }
 JoltGpuControlWork JoltGpuArticulations::PreparePose(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                                      std::function<void()> completed)
