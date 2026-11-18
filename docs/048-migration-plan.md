@@ -49,9 +49,9 @@
 | 能力发现 | `operations` / `schema`（能力名 + 模式 + 线程 + 可逆性） | ✅ |
 | `rigid.pose@1` | `sim.pose`（世界坐标 + wxyz + tick + sim_s） | ✅ |
 | `sim.step@1` | `sim.step`（原生暂停步进，恰好 1 步） | ✅ |
-| 玩家输入 | `input.key/key.hold/pointer.*` | ✅（未实机验证） |
+| 玩家输入 | `input.key/key.hold/pointer.*` | ✅（实机 delivered） |
 | Game 视口截图 | `capture.request/status` | ✅（返回 pending_gpu + URI，未实机验证） |
-| 场景加载状态 | `project.info.active_scene.last_load` / `document_state` | ✅ |
+| 场景加载/保存/重载 | `scene.open{discard_changes}` / `scene.save` / `scene.reload` / `project.info` | ✅（实机） |
 | 未知写入不重放 | bridge 断连语义 + client `transport.unknown_outcome` | ✅ |
 | 能力门禁 | 操作 schema 提供 capabilities；传输层未强制 | ⚠️ 适配器预检 |
 | 统一 receipt | 无全局 request_id/duration | ⚠️ 适配器封装 |
