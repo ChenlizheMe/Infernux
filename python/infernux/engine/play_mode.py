@@ -1162,7 +1162,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             return False
         from infernux.lib import _Infernux
         if self._step_completion is not None:
-            pending = cancelled = False
+            cancelled = False
             for handle, epoch, target, frame in self._step_completion:
                 if handle.state != "ready" or handle.destroy_requested:
                     cancelled = True
@@ -1172,11 +1172,10 @@ class PlayModeManager(PlayModeSerializationMixin):
                             or int(manager._step_permission_index) != target):
                         cancelled = True
                     elif manager.is_stepping():
-                        pending = True
+                        # A group cannot publish until its last member finishes.
+                        return False
                     elif int(manager._frame_time.frame_count) < frame:
                         cancelled = True
-            if pending:
-                return False
             if not cancelled:
                 self._step_sequence += 1
             else:
