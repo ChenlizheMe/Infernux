@@ -262,7 +262,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         # Editor typography follows the visual guide; scene UIText keeps its own size.
         self.engine.set_gui_fonts(
-            _resources.engine_font_path,
+            _resources.engine_ui_font_path,
             _resources.engine_font_cjk_path,
             _resources.engine_mono_font_path,
             Theme.EDITOR_FONT_SIZE,

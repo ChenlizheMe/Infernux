@@ -193,6 +193,11 @@ class PlayerBootstrap:
         self._runtime_manifest = runtime_manifest
         self._runtime_manifest_document = manifest
         self._runtime_package_root = required_root
+        # Match the cook layout before the renderer can request its first material.
+        _resources._player_shader_root = (
+            os.path.join(self.project_path, "infernux", "resources", "shaders")
+            if layout == "platform_native_packages" else None
+        )
 
     def _load_runtime_asset_catalog(self) -> None:
         """Load the immutable asset catalog before revealing the game window."""
@@ -428,7 +433,7 @@ class PlayerBootstrap:
         self.engine.set_gui_player_mode(True)
 
         self.engine.set_gui_fonts(
-            _resources.engine_font_path,
+            _resources.engine_ui_font_path,
             _resources.engine_font_cjk_path,
             "" if sys.platform == "win32" else _resources.engine_mono_font_path,
             18,

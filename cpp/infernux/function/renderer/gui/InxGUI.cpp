@@ -446,11 +446,10 @@ bool InxGUI::ReloadGUIFont()
         return false;
     }
 
-    // `ui` is also the engine font for UIText without an explicit Font asset.
-    // Keeping the exact ImFont pointer avoids an ambient ImGui default-font
-    // path and avoids loading the bundled faces twice into the atlas.
-    io.FontDefault = uiFont;
-    textlayout::SetDefaultFont(uiFont);
+    // Editor widgets use the UI face; gameplay text keeps the bundled mono
+    // face unless a UIText component names a Font asset of its own.
+    io.FontDefault = theme_drawing::ActiveStyles().monospace ? monoFont : uiFont;
+    textlayout::SetDefaultFont(monoFont);
     InxGUIContext::s_monoFont = monoFont;
 
     // Clear() may restore the previous current font's size into FontSizeBase
