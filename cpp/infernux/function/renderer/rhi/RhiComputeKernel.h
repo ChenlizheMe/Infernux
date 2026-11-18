@@ -446,9 +446,10 @@ class ComputeWorkInstance final
     Rebind(std::vector<ComputeWorkInput> inputs,
            const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs = {}) const;
     /// Lower the bound recipe through the same batch preparation and writer
-    /// versioning used by individual compute dispatches. Does not submit work.
+    /// versioning used by individual compute dispatches. Updates precede the
+    /// recipe; reads observe its completed writes. Does not submit work.
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<PreparedComputeBatch>
-    PrepareBatch(std::vector<ComputeBufferUpdate> updates = {}) const;
+    PrepareBatch(std::vector<ComputeBufferUpdate> updates = {}, std::vector<ComputeBufferRead> reads = {}) const;
     [[nodiscard]] const std::vector<std::shared_ptr<ComputeBuffer>> &GetBuffers() const noexcept
     {
         return m_buffers;

@@ -69,8 +69,23 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     using Recipes = std::map<std::string, std::shared_ptr<rhi::ComputeWorkRecipe>>;
     using Controls = std::map<std::string, PhysicsParticipantControl>;
     using ControlPayloads = std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>;
-    using RigidExchange = std::function<JoltGpuControlWork(JoltGpuParticipantRigidPort, const JPH::GPU::StepParams &,
-                                                           const std::shared_ptr<rhi::ComputeBuffer> &)>;
+    struct RigidExchange
+    {
+        using Recipe = std::function<JoltGpuControlWork(std::vector<rhi::ComputeBufferUpdate>,
+                                                        std::vector<rhi::ComputeBufferRead>)>;
+        std::function<JoltGpuControlWork(JoltGpuParticipantRigidPort, const JPH::GPU::StepParams &,
+                                         const std::shared_ptr<rhi::ComputeBuffer> &)>
+            prepare;
+        // The body owner may include bounded CPU ports in the same recipe
+        // packet. It owns the original segmented chain when contraction is needed.
+        std::function<JoltGpuControlWork(const JPH::GPU::StepParams &, const std::shared_ptr<rhi::ComputeBuffer> &,
+                                         const std::shared_ptr<rhi::ComputeBuffer> &, Recipe)>
+            exchange;
+        explicit operator bool() const noexcept
+        {
+            return bool(prepare);
+        }
+    };
     using RigidFactory = std::function<RigidExchange(std::vector<uint32_t>)>;
     struct Prefix
     {
@@ -110,7 +125,9 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     void ValidateRigidPorts();
     [[nodiscard]] JoltGpuControlWork PrepareRecipeStage(JoltGpuParticipantStage stage,
                                                         const JPH::GPU::StepParams &params, float fixedDeltaTime,
-                                                        uint32_t substep, uint32_t iteration, const Prefix &prefix);
+                                                        uint32_t substep, uint32_t iteration, const Prefix &prefix,
+                                                        std::vector<rhi::ComputeBufferUpdate> updates = {},
+                                                        std::vector<rhi::ComputeBufferRead> reads = {});
     [[nodiscard]] JoltGpuControlWork PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture,
                                                    uint64_t epoch, uint64_t step, bool isFixedStep);
     bool BindInstances();

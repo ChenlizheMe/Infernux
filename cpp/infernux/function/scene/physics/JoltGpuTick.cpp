@@ -880,6 +880,11 @@ class JoltGpuTick::Impl
         }
     }
 
+    bool HasRigidWork() const noexcept
+    {
+        return control.simulateRigidBodies && tickParameters.selectedCounts.x;
+    }
+
     void NextSpan(StageCursor &next) const
     {
         const auto &plan = inputs.GetConstraints();
@@ -916,17 +921,17 @@ class JoltGpuTick::Impl
             next.phase = control.participants ? Phase::ParticipantPredict : Phase::WakePrescribedBounds;
             break;
         case Phase::ParticipantPredict:
-            next.phase = tickParameters.selectedCounts.x ? Phase::WakePrescribedBounds : Phase::ParticipantPrepare;
+            next.phase = HasRigidWork() ? Phase::WakePrescribedBounds : Phase::ParticipantPrepare;
             break;
         case Phase::ParticipantPrepare:
             next.iteration = 0;
-            next.phase = tickParameters.selectedCounts.x ? Phase::BuildTopology
+            next.phase = HasRigidWork() ? Phase::BuildTopology
                          : participantCpu                ? Phase::PrepareCoupledContacts
                          : velocity                      ? Phase::ParticipantExchange
                                                          : Phase::ParticipantAccept;
             break;
         case Phase::ParticipantExchange:
-            if (tickParameters.selectedCounts.x)
+            if (HasRigidWork())
                 next.phase = Phase::SolveJointVelocity;
             else if (participantCpu)
                 next.phase = Phase::ExchangeCoupledContacts;
@@ -935,7 +940,7 @@ class JoltGpuTick::Impl
                     ++next.iteration < tickParameters.counts.w ? Phase::ParticipantExchange : Phase::ParticipantAccept;
             break;
         case Phase::ParticipantAccept:
-            if (tickParameters.selectedCounts.x)
+            if (HasRigidWork())
                 next.phase = Phase::UpdateSleep;
             else {
                 next.iteration = 0;
@@ -966,7 +971,7 @@ class JoltGpuTick::Impl
             next.phase = control.prepareCoupledContacts ? Phase::PrepareCoupledContacts : Phase::SetupContacts;
             break;
         case Phase::PrepareCoupledContacts:
-            if (tickParameters.selectedCounts.x)
+            if (HasRigidWork())
                 next.phase = inputs.HasExternalWakePending() ? Phase::WakeExternalComponents : Phase::SetupContacts;
             else
                 next.phase = velocity ? Phase::WarmCoupledContacts : Phase::IntegrateCoupledBodies;
@@ -987,7 +992,7 @@ class JoltGpuTick::Impl
             next.phase = drift;
             break;
         case Phase::IntegrateCoupledBodies:
-            if (tickParameters.selectedCounts.x) {
+            if (HasRigidWork()) {
                 next.phase = localDrift;
             } else {
                 next.iteration = 0;
@@ -1030,7 +1035,7 @@ class JoltGpuTick::Impl
         case Phase::ExchangeCoupledContacts:
             next.phase = ++next.iteration < tickParameters.counts.w
                              ? (exchange ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
-                         : tickParameters.selectedCounts.x && control.prepareContactReport
+                         : HasRigidWork() && control.prepareContactReport
                              ? Phase::ReportContactsAfterVelocity
                              : drift;
             break;
@@ -1093,7 +1098,7 @@ class JoltGpuTick::Impl
             }
             [[fallthrough]];
         case Phase::ProjectCoupledContacts:
-            if (tickParameters.selectedCounts.x)
+            if (HasRigidWork())
                 next.phase =
                     ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
             else
@@ -1220,7 +1225,7 @@ class JoltGpuTick::Impl
     void CaptureStageSpans()
     {
         stageCursor = {};
-        stageCursor.phase = tickParameters.selectedCounts.x ? Phase::InitializeSleep
+        stageCursor.phase = HasRigidWork() ? Phase::InitializeSleep
                             : control.participants          ? Phase::ParticipantPredict
                                                             : Phase::Done;
         Normalize(stageCursor);
@@ -1336,6 +1341,10 @@ class JoltGpuTick::Impl
             inputs.SetArticulations(control.articulations ? control.articulations->value : nullptr);
             inputs.SetColliderPairs(control.colliderPairs ? control.colliderPairs->value : nullptr);
             CaptureStageSpans();
+            // This Fixed advances outside the native GPU solver. Its old
+            // contact warm history must not survive across that elapsed time.
+            if (!HasRigidWork())
+                storage.ClearContactHistory(selectedRow);
             for (const auto resource :
                  {JPH::GPU::Resource::BodyModels, JPH::GPU::Resource::ShapeModels, JPH::GPU::Resource::Worlds})
                 inputs.Capture(storage, resource);

@@ -800,6 +800,11 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     if (domain.gpuRegistered && !EnsureStaticBoundaries(domain, Backend::Gpu))
         return false;
     QueueStaticFixedMoves(domain);
+    // Keep query replicas and their publication ranges intact. Native GPU
+    // math is needed for a real Rigidbody or an admitted temporary static drive.
+    const bool simulateRigidBodies = domain.gpuBodyOwners ||
+        std::any_of(domain.pendingStaticMoves.begin(), domain.pendingStaticMoves.end(),
+                    [](const auto &entry) { return entry.second.gpuQueued; });
     if (domain.mixedContacts) {
         const auto responsiveBody = [this](uint32_t id) -> Rigidbody * {
             auto *body = FindRigidbodyByBodyId(id);
@@ -885,10 +890,13 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         if (!m_gpuScene->TryBeginTick(
                 domain.owner, domain.stepEpoch, domain.stepIndex, domain.admittedDeltaTime, *domain.admittedParameters,
                 [this, &domain] { return PrepareRenderConsumer(domain, true); },
-                [this, &domain, policy, mixedTriggers, coupled,
+                [this, &domain, policy, mixedTriggers, coupled, simulateRigidBodies,
                  projectCpuIds](const std::shared_ptr<const JoltGpuScene::Publication> &p) {
-                    auto observer = domain.gpuContacts.Prepare(*m_gpuContactReports, p,
-                                                               domain.admittedParameters->Get().solve.y, policy);
+                    auto observer = simulateRigidBodies
+                        ? domain.gpuContacts.Prepare(*m_gpuContactReports, p,
+                            domain.admittedParameters->Get().solve.y, policy)
+                        : JoltGpuScene::ContactObserver{};
+                    observer.simulateRigidBodies = simulateRigidBodies;
                     if (coupled) {
                         observer.couple = m_mixedConstraintSolver->Prepare(p, *m_gpuMixedContacts,
                                                                            *domain.mixedContacts, domain.cpuContacts,

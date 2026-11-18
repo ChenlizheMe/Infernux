@@ -534,26 +534,28 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
         (stage != JoltGpuParticipantStage::Prepare && stage != JoltGpuParticipantStage::Exchange))
         return PrepareRecipeStage(stage, params, fixedDeltaTime, substep, iteration, prefix);
     auto self = shared_from_this();
-    const bool preparing = stage == JoltGpuParticipantStage::Prepare;
-    auto work =
-        prefix.rigidExchange(preparing ? JoltGpuParticipantRigidPort::Prepare : JoltGpuParticipantRigidPort::Motion,
-                             params, preparing ? nullptr : m_rigidMotion);
+    if (stage == JoltGpuParticipantStage::Exchange) {
+        const auto &exchange = m_instances.at("exchange").work;
+        return prefix.rigidExchange.exchange(
+            params, m_rigidMotion, exchange->GetBuffers().at(m_rigidImpulseSlot),
+            [self, stage, params, fixedDeltaTime, substep, iteration,
+             &prefix](std::vector<rhi::ComputeBufferUpdate> updates, std::vector<rhi::ComputeBufferRead> reads) {
+                return self->PrepareRecipeStage(stage, params, fixedDeltaTime, substep, iteration, prefix,
+                                                std::move(updates), std::move(reads));
+            });
+    }
+    auto work = prefix.rigidExchange.prepare(JoltGpuParticipantRigidPort::Prepare, params, {});
     return ContinueJoltGpuControlWork(
         std::move(work), [self, stage, params, fixedDeltaTime, substep, iteration, &prefix] {
-            auto work = self->PrepareRecipeStage(stage, params, fixedDeltaTime, substep, iteration, prefix);
-            if (stage != JoltGpuParticipantStage::Exchange)
-                return work;
-            return ContinueJoltGpuControlWork(std::move(work), [self, params, &prefix] {
-                const auto &exchange = self->m_instances.at("exchange").work;
-                return prefix.rigidExchange(JoltGpuParticipantRigidPort::Impulses, params,
-                                            exchange->GetBuffers().at(self->m_rigidImpulseSlot));
-            });
+            return self->PrepareRecipeStage(stage, params, fixedDeltaTime, substep, iteration, prefix);
         });
 }
 
 JoltGpuControlWork PhysicsParticipant::PrepareRecipeStage(JoltGpuParticipantStage stage,
                                                           const JPH::GPU::StepParams &params, float fixedDeltaTime,
-                                                          uint32_t substep, uint32_t iteration, const Prefix &prefix)
+                                                          uint32_t substep, uint32_t iteration, const Prefix &prefix,
+                                                          std::vector<rhi::ComputeBufferUpdate> updates,
+                                                          std::vector<rhi::ComputeBufferRead> reads)
 {
     const auto name = StageName(stage);
     const auto found = m_instances.find(name);
@@ -562,7 +564,6 @@ JoltGpuControlWork PhysicsParticipant::PrepareRecipeStage(JoltGpuParticipantStag
     const bool uploadStep = bound && bound->usesStep &&
                             (!m_uploadedStep || m_uploadedStep->substepDeltaTime != timing.substepDeltaTime ||
                              m_uploadedStep->fixedDeltaTime != timing.fixedDeltaTime);
-    std::vector<rhi::ComputeBufferUpdate> updates;
     if (uploadStep)
         updates.push_back({m_step, 0, Bytes(timing)});
     if (bound && bound->usesIndices) {
@@ -576,8 +577,9 @@ JoltGpuControlWork PhysicsParticipant::PrepareRecipeStage(JoltGpuParticipantStag
             updates.push_back({m_controlStorage.at(control), 0, *value});
     if (!bound && updates.empty())
         return {};
-    auto packet = bound ? bound->work->PrepareBatch(std::move(updates))
-                        : rhi::PrepareComputeBatch(m_recipes.at("initialize")->GetHost(), std::move(updates), {});
+    auto packet = bound ? bound->work->PrepareBatch(std::move(updates), std::move(reads))
+                        : rhi::PrepareComputeBatch(m_recipes.at("initialize")->GetHost(), std::move(updates), {},
+                                                   std::move(reads));
     JoltGpuControlWork work{std::move(packet), {}, JoltGpuControlWork::ResumeAfter::Acceptance};
     if (bound && (uploadStep || bound->writesStep)) {
         // The resident value changes only when the packet enters the device queue.

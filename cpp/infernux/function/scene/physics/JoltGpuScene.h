@@ -175,6 +175,8 @@ class JoltGpuScene final
         decltype(JoltGpuTickControl::prepareContactReport) phase;
         Consumer finish;
         decltype(JoltGpuTickControl::prepareCoupledContacts) couple;
+        // A Fixed can retain a static query catalog without native rigid dynamics.
+        bool simulateRigidBodies = true;
     };
     // Called once at successful writer admission, before accepted author
     // capture. The publication directory is populated before the first phase.

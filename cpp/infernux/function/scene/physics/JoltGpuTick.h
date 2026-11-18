@@ -184,6 +184,9 @@ struct JoltGpuTickControl
     bool needsSnapshot = true;
     // Closed partitions release their resources through the regular control cursor.
     bool partitionCleanup = false;
+    // Dispatch eligibility only: selected/publication ranges remain complete.
+    // False is valid for an immutable static query catalog with no rigid drive.
+    bool simulateRigidBodies = true;
     std::shared_ptr<const JoltGpuGeometryLease> acceptedGeometry;
     bool acceptedGenericGeometry = false;
     JoltGpuTickControl() = default;
