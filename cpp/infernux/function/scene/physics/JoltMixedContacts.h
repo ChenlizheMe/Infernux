@@ -2,6 +2,7 @@
 
 #include <Jolt/Jolt.h>
 
+#include <Jolt/GPU/ContinuousTypes.h>
 #include <Jolt/Geometry/AABox.h>
 #include <Jolt/Physics/Body/BodyID.h>
 #include "JoltGpuScene.h"
@@ -106,6 +107,21 @@ class JoltMixedContactStep final
   private:
     friend class JoltMixedConstraintSolver;
     friend class JoltMixedContinuousContacts;
+    struct SweepConstraint
+    {
+        JPH::GPU::ContinuousMixedHit value{};
+        PhysicsContactPublication::Endpoint cpu, gpu;
+        JPH::BodyID native;
+        // Total impulse applied to GPU xyz and the pre-impact normal velocity target w.
+        JPH::GPU::Float4 impulseTarget{};
+        glm::vec3 relative{};
+        float lastNormalVelocity = 0, lastNormalImpulse = 0;
+    };
+    std::vector<SweepConstraint> m_sweepConstraints;
+    bool HasSweepJoint(const JoltGpuScene::Publication &, uint32_t body);
+    std::weak_ptr<const JoltGpuScene::PublicationDirectory> m_sweepJointDirectory;
+    uint32_t m_sweepJointWorld = UINT32_MAX;
+    std::vector<uint32_t> m_sweepJointBodies;
     struct MassFrame
     {
         JPH::Vec3 scale, localCOM;

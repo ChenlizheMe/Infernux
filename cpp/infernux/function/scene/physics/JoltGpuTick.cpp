@@ -333,6 +333,7 @@ class JoltGpuTick::Impl
         SweptBroadphase,
         ResolveSweep,
         ResolveCoupledSweep,
+        SettleCoupledSweep,
         SolveSweepEvent,
         ReportSweep,
         Integrate,
@@ -753,9 +754,10 @@ class JoltGpuTick::Impl
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
                phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareCoupledContacts ||
                phase == Phase::IntegrateCoupledBodies || phase == Phase::PrepareCoupledSweep ||
-               phase == Phase::ResolveCoupledSweep || phase == Phase::PrepareContactStore ||
-               phase == Phase::PrepareSweep || phase == Phase::SweptBroadphase || phase == Phase::ResolveSweep ||
-               phase == Phase::SolveSweepEvent || phase == Phase::ReportSweep || CoupledFeedbackPhase(phase);
+               phase == Phase::ResolveCoupledSweep || phase == Phase::SettleCoupledSweep ||
+               phase == Phase::PrepareContactStore || phase == Phase::PrepareSweep || phase == Phase::SweptBroadphase ||
+               phase == Phase::ResolveSweep || phase == Phase::SolveSweepEvent || phase == Phase::ReportSweep ||
+               CoupledFeedbackPhase(phase);
     }
 
     StageSpan Span(Phase phase) const
@@ -827,6 +829,7 @@ class JoltGpuTick::Impl
         case Phase::IntegrateCoupledBodies:
         case Phase::PrepareCoupledSweep:
         case Phase::ResolveCoupledSweep:
+        case Phase::SettleCoupledSweep:
         case Phase::WarmCoupledContacts:
         case Phase::ExchangeCoupledContacts:
         case Phase::ProjectCoupledContacts:
@@ -1046,7 +1049,17 @@ class JoltGpuTick::Impl
             }
             [[fallthrough]];
         case Phase::ReportSweep:
+            if (inputs.SweepSettlementPending()) {
+                next.phase = Phase::SettleCoupledSweep;
+                break;
+            }
             next.phase = next.sweepRemaining > 0.0f ? Phase::BuildSweptBounds : Phase::IntegrateSwept;
+            break;
+        case Phase::SettleCoupledSweep:
+            next.localSweepImpact.reset();
+            next.phase = inputs.SweepImpactTime()     ? Phase::SolveSweepEvent
+                         : next.sweepRemaining > 0.0f ? Phase::BuildSweptBounds
+                                                      : Phase::IntegrateSwept;
             break;
         case Phase::Integrate:
         case Phase::IntegrateSwept:
@@ -1359,7 +1372,8 @@ class JoltGpuTick::Impl
     {
         return phase == Phase::WarmCoupledContacts || phase == Phase::ExchangeCoupledContacts ||
                phase == Phase::IntegrateCoupledBodies || phase == Phase::PrepareCoupledSweep ||
-               phase == Phase::ResolveCoupledSweep || phase == Phase::ProjectCoupledContacts;
+               phase == Phase::ResolveCoupledSweep || phase == Phase::SettleCoupledSweep ||
+               phase == Phase::ProjectCoupledContacts;
     }
 
     void ModelAccepted()
@@ -2030,12 +2044,14 @@ class JoltGpuTick::Impl
                 const bool projecting = stageCursor.phase == Phase::ProjectCoupledContacts;
                 const bool integrating = stageCursor.phase == Phase::IntegrateCoupledBodies;
                 const bool preparingSweep = stageCursor.phase == Phase::PrepareCoupledSweep;
-                const bool resolvingSweep = stageCursor.phase == Phase::ResolveCoupledSweep;
+                const bool settlingSweep = stageCursor.phase == Phase::SettleCoupledSweep;
+                const bool resolvingSweep = stageCursor.phase == Phase::ResolveCoupledSweep || settlingSweep;
                 const auto phase = preparing        ? CoupledStage::Prepare
                                    : warming        ? CoupledStage::WarmVelocity
                                    : projecting     ? CoupledStage::Position
                                    : integrating    ? CoupledStage::Integrate
                                    : preparingSweep ? CoupledStage::PrepareSweep
+                                   : settlingSweep  ? CoupledStage::SettleSweep
                                    : resolvingSweep ? CoupledStage::Sweep
                                                     : CoupledStage::Velocity;
                 using JPH::GPU::Domain;

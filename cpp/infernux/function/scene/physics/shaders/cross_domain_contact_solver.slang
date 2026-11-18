@@ -468,18 +468,47 @@ void apply_cross_domain_sweep(uint3 tid : SV_DispatchThreadID)
     if (!jph_dynamic(mb)) mb.meta.z = MotionKinematic;
     float3 ra = hit.pointRestitution.xyz - (sa.positionCOM.xyz + hit.fraction * a.displacement.xyz);
     float3 rb = hit.pointRestitution.xyz - (sb.positionCOM.xyz + hit.fraction * b.displacement.xyz);
-    float3 incoming;
-    float3 impulse = jph_solve_sweep_impact(ma, sa, ra, mb, sb, rb, hit.normalFriction.xyz,
-        hit.normalFriction.w, hit.pointRestitution.w, hit.minRestitutionSpeed, incoming);
+    float3 n = hit.normalFriction.xyz;
+    float3 incoming, impulse;
+    float target;
+    if (params.range.w == 0u)
+    {
+        impulse = jph_solve_sweep_impact(ma, sa, ra, mb, sb, rb, n,
+            hit.normalFriction.w, hit.pointRestitution.w, hit.minRestitutionSpeed, incoming);
+        float speed = dot(incoming, n);
+        target = speed > hit.minRestitutionSpeed ? -hit.pointRestitution.w * speed : 0.0f;
+    }
+    else
+    {
+        // A joint or another contact changed the response at this same instant.
+        // Keep the original restitution velocity and project the accumulated impulse.
+        float4 previous = continuous_receipts[row].linear;
+        target = previous.w;
+        incoming = jph_point_velocity(ma, sa, ra) - jph_point_velocity(mb, sb, rb);
+        float oldNormal = max(0.0f, dot(previous.xyz, n));
+        float observedMass = continuous_receipts[row].angular.w;
+        float normalMass = observedMass > 0.0f ? observedMass : jph_effective_mass(ma, sa, ra, mb, sb, rb, n);
+        float normal = max(0.0f, oldNormal + (dot(incoming, n) - target) * normalMass);
+        jph_apply_impulse(ma, sa, ra, mb, sb, rb, n, normal - oldNormal);
+        impulse = (normal - oldNormal) * n;
+        if (hit.normalFriction.w > 0.0f)
+        {
+            float3 t1, t2;
+            jph_tangents(n, t1, t2);
+            float2 before = float2(dot(previous.xyz, t1), dot(previous.xyz, t2));
+            float2 tangents = before;
+            jph_solve_friction(ma, sa, ra, mb, sb, rb, n, hit.normalFriction.w * normal, tangents);
+            impulse += (tangents.x - before.x) * t1 + (tangents.y - before.y) * t2;
+        }
+    }
     if (jph_dynamic(mb))
     {
-        continuous_motion[local].linearResponse = float4(
-            jph_clamp_speed(sb.linearVelocity.xyz, mb.damping.z) - b.linearVelocity.xyz, 1.0f);
-        continuous_motion[local].angularResponse = float4(
-            jph_clamp_speed(sb.angularVelocity.xyz, mb.damping.w) - b.angularVelocity.xyz, 1.0f);
+        // The event solver distributes this impulse before the continuation clamps the actual velocity.
+        continuous_motion[local].linearResponse = float4(sb.linearVelocity.xyz - b.linearVelocity.xyz, 1.0f);
+        continuous_motion[local].angularResponse = float4(sb.angularVelocity.xyz - b.angularVelocity.xyz, 1.0f);
     }
     ContinuousReceipt receipt;
-    receipt.linear = float4(-impulse, 0.0f);
+    receipt.linear = float4(-impulse, target);
     receipt.angular = float4(-cross(ra, impulse), 0.0f);
     receipt.relative = float4(-incoming, 0.0f);
     continuous_receipts[row] = receipt;

@@ -408,6 +408,14 @@ class JoltGpuStepInputs
     {
         return m_needsCoupledSweep;
     }
+    void SetSweepSettlementPending(bool pending) noexcept
+    {
+        m_sweepSettlementPending = pending;
+    }
+    [[nodiscard]] bool SweepSettlementPending() const noexcept
+    {
+        return m_sweepSettlementPending;
+    }
     void SetSweepImpactTime(std::optional<float> fraction) noexcept
     {
         m_sweepImpactTime = fraction;
@@ -505,6 +513,7 @@ class JoltGpuStepInputs
     std::vector<uint32_t> m_externalContactBodies;
     bool m_externalWakePending = false;
     bool m_needsCoupledSweep = false;
+    bool m_sweepSettlementPending = false;
     std::optional<float> m_sweepImpactTime;
     std::function<JoltGpuSleepCoupling()> m_prepareSleepCoupling;
     // Immutable range values, not additional frozen model/input ports. Capture

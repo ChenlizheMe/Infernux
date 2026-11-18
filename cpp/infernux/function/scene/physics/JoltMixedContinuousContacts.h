@@ -10,11 +10,10 @@ class JoltMixedContinuousContacts final
 {
   public:
     JoltMixedContinuousContacts(rhi::ComputeHost &, const ShaderTargetCode &);
-    [[nodiscard]] JoltGpuControlWork Prepare(const JoltGpuStorage &, JoltGpuStepInputs &, const JPH::GPU::StepParams &,
-                                             uint32_t substep, const std::shared_ptr<const JoltGpuScene::Publication> &,
-                                             JoltGpuMixedContacts &, JoltMixedContactStep &,
-                                             JoltCpuContactPublication &, const JoltMixedContactStep::Policy &,
-                                             std::function<void()>);
+    [[nodiscard]] JoltGpuControlWork
+    Prepare(const JoltGpuStorage &, JoltGpuStepInputs &, const JPH::GPU::StepParams &, uint32_t substep, bool settle,
+            const std::shared_ptr<const JoltGpuScene::Publication> &, JoltGpuMixedContacts &, JoltMixedContactStep &,
+            JoltCpuContactPublication &, const JoltMixedContactStep::Policy &, std::function<void()>);
 
   private:
     struct Job;

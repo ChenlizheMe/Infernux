@@ -753,6 +753,12 @@ bool JoltCpuContactPublication::HasCoupledImpact(JPH::BodyID body) const
     return fixed.scene.System().HasCoupledImpact(*fixed.context, body);
 }
 
+bool JoltCpuContactPublication::HasSweepVelocityRows(JPH::BodyID body) const
+{
+    const auto &fixed = *m_coupled;
+    return fixed.scene.System().HasSweepVelocityRows(*fixed.context, body);
+}
+
 JPH::Vec3 JoltCpuContactPublication::CoupledDisplacement(JPH::BodyID body) const
 {
     const auto &fixed = *m_coupled;

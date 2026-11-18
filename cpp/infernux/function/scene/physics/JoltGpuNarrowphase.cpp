@@ -67,7 +67,7 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{
     "sweep_event_progress",      "sweep_report_event",
     "sweep_resume_motion"};
 constexpr std::array<uint32_t, EntryCount> EntryPorts{0x83u,  0xfdu,  0x80u,  0x7d7u, 0x483u, 0x481u,
-                                                      0x402u, 0x202u, 0x7f5u, 0xd03u, 0x523u, 0xd03u,
+                                                      0x603u, 0x202u, 0x7f5u, 0xd03u, 0x523u, 0xd03u,
                                                       0x721u, 0xf21u, 0x481u, 0x333u, 0x303u};
 constexpr uint32_t HeaderWords = 4u, MaxSlots = 32u, AdvancesPerPacket = 8u;
 constexpr uint32_t ResolveDispatchesPerPacket = 4u;
@@ -280,7 +280,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                 scratchWords = words;
                 return true;
             }
-            if (count == 1u)
+            if (count <= 1u)
                 return false;
             count = (count + 1u) / 2u;
         }
@@ -341,6 +341,8 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                 resolveEntry = FlattenRoots;
             for (uint32_t links = bodyCount; links > 1u; links = 1u + (links - 1u) / 32u)
                 ++resolveParentPasses;
+            if (jointCount)
+                resolveParentPasses = std::max(1u, resolveParentPasses);
         }
     }
 
@@ -362,6 +364,8 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             StageWork range{{first, count, 0u, 0u}};
             if (entry == MoveToEvent || entry == ResumeMotion)
                 range.range.z = motionFraction;
+            if (entry == FlattenRoots && parentPasses == 1u && jointCount)
+                range.range.z = 1u;
             if (entry == ResumeMotion)
                 std::memcpy(&range.range.w, &sweepSeconds, sizeof(float));
             std::vector<uint8_t> bytes(sizeof(range));
@@ -381,7 +385,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                     entry = ResumeMotion;
                 else if (entry == FlattenRoots) {
                     if (--parentPasses == 0u)
-                        entry = LinkEvent;
+                        entry = contactLease->patchCount ? LinkEvent : LinkEventJoints;
                 }
             }
         }
@@ -421,11 +425,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             return {};
         if (phase == Phase::MoveEvent || phase == Phase::LinkEvent || phase == Phase::FinishEvent)
             return Resolve();
-        if (contactLease->patchCount == 0u) {
-            if (phase == Phase::InitializeEvent) {
-                BeginResolve(Phase::FinishEvent, ResumeMotion);
-                return Resolve();
-            }
+        if (contactLease->patchCount == 0u && phase == Phase::InitializeJobs) {
             Finish();
             return {};
         }
@@ -448,6 +448,10 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                                                    {Dispatch(swept ? InitializeSweep : Initialize)});
             return Retain({packet,
                            [self = shared_from_this(), eventInitialize] {
+                               if (eventInitialize && self->contactLease->patchCount == 0u) {
+                                   self->BeginResolve(Phase::LinkEvent, JoinEventJoints, true);
+                                   return self->Resolve();
+                               }
                                self->phase = eventInitialize ? Phase::DiscoverEvent : Phase::AdvanceJobs;
                                return self->Next();
                            },
@@ -498,14 +502,16 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                          if (self->expectLocalContact && result.z == 0u)
                              throw std::runtime_error("GPU continuous cast reached its impact time without a contact");
                          self->scratch.reset();
-                         self->BeginResolve(Phase::FinishEvent, self->reportImpacts ? ReportEvent : ResumeMotion);
+                         self->BeginResolve(Phase::FinishEvent, (self->reportImpacts && self->contactLease->patchCount)
+                                                                    ? ReportEvent
+                                                                    : ResumeMotion);
                          return self->Resolve();
                      }
                      if (result.y != self->slots)
                          throw std::runtime_error("GPU convex completion omitted an active job slot");
                      if (findingContacts) {
                          self->BeginResolve(Phase::LinkEvent, self->jointCount ? JoinEventJoints : LinkEvent,
-                                            self->bodyCount > 1u);
+                                            self->bodyCount > 1u || self->jointCount > 0u);
                          return self->Resolve();
                      }
                      if (self->swept) {

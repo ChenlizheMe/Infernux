@@ -881,6 +881,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         velocityInitialized = false;
         params.gravityDt = stepParams.gravityDt;
         params.contact = stepParams.contact;
+        inputs.SetSweepSettlementPending(false);
         inputs.SetNeedsCoupledSweep(step.NeedsContinuous(storage, *publication, stepParams.selection.x));
         buffers[GpuModels] = storage.Get(Resource::BodyModels);
         buffers[GpuStates] = storage.Get(Resource::BodyStates);
@@ -1151,10 +1152,10 @@ JoltMixedConstraintSolver::Prepare(const std::shared_ptr<const JoltGpuScene::Pub
             done(1u);
             return JoltGpuControlWork{};
         }
-        if (stage == JoltGpuCoupledContactStage::Sweep)
-            return job->owner.m_continuous->Prepare(storage, inputs, params, substep, job->publication, job->discovery,
-                                                    job->step, job->cpu, job->policy,
-                                                    [done = std::move(done)] { done(1u); });
+        if (stage == JoltGpuCoupledContactStage::Sweep || stage == JoltGpuCoupledContactStage::SettleSweep)
+            return job->owner.m_continuous->Prepare(
+                storage, inputs, params, substep, stage == JoltGpuCoupledContactStage::SettleSweep, job->publication,
+                job->discovery, job->step, job->cpu, job->policy, [done = std::move(done)] { done(1u); });
         if (stage == JoltGpuCoupledContactStage::Position)
             return job->ExchangePosition(iteration, params.solve.x, maxRounds, std::move(done));
         return job->ExchangeVelocity(iteration, params.counts.w, maxRounds, std::move(done));

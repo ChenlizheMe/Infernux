@@ -106,6 +106,7 @@ enum class JoltGpuCoupledContactStage
     Integrate,
     PrepareSweep,
     Sweep,
+    SettleSweep,
     Position
 };
 

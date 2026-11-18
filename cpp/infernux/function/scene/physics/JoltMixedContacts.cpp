@@ -99,6 +99,7 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
                                  std::vector<BodyPair> suppressed)
 {
     m_scene = &scene;
+    m_sweepConstraints.clear();
     m_cpuDynamicResponse = m_cpuKinematicResponse = m_cpuContinuous = m_cpuDynamicContinuous = false;
     m_proxies.clear();
     m_responses.clear();
@@ -148,6 +149,25 @@ void JoltMixedContactStep::Begin(const JoltCpuScene &scene, std::vector<CpuEndpo
         frame.points.clear();
     }
     CaptureCpuBoundary(0);
+}
+
+bool JoltMixedContactStep::HasSweepJoint(const JoltGpuScene::Publication &published, uint32_t body)
+{
+    if (published.jointCount == 0)
+        return false;
+    if (m_sweepJointWorld != published.worldRow || m_sweepJointDirectory.lock() != published.directory) {
+        m_sweepJointDirectory = published.directory;
+        m_sweepJointWorld = published.worldRow;
+        m_sweepJointBodies.clear();
+        for (const auto &joint : published.GetJoints()) {
+            m_sweepJointBodies.push_back(joint.bodyIdA);
+            m_sweepJointBodies.push_back(joint.bodyIdB);
+        }
+        std::sort(m_sweepJointBodies.begin(), m_sweepJointBodies.end());
+        m_sweepJointBodies.erase(std::unique(m_sweepJointBodies.begin(), m_sweepJointBodies.end()),
+                                 m_sweepJointBodies.end());
+    }
+    return std::binary_search(m_sweepJointBodies.begin(), m_sweepJointBodies.end(), body);
 }
 
 bool JoltMixedContactStep::NeedsContinuous(const JoltGpuStorage &storage, const JoltGpuScene::Publication &publication,
@@ -568,6 +588,7 @@ void JoltMixedContactStep::AppendFrame(uint32_t substep, Frame &destination)
 void JoltMixedContactStep::ClearStep()
 {
     m_scene = nullptr;
+    m_sweepConstraints.clear();
     m_proxies.clear();
     m_gpuResponseBodies.clear();
     m_responses.clear();
