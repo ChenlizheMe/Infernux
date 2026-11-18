@@ -201,12 +201,31 @@ def _read_library_source(path):
     return source.read_text(encoding="utf-8-sig")
 
 
-def _link_libraries(item, autodiff_mode):
+def _load_library(graph, reference, owner, location):
     from infernux.engine.project_context import get_project_root
 
+    declaring_path = Path(reference.declaring_path)
+    project_root = get_project_root()
+    if project_root and not declaring_path.is_absolute():
+        declaring_path = Path(project_root) / declaring_path
+    return graph.load_reference(reference.module, reference.level, owner, location, declaring_path=declaring_path)
+
+
+def scalar_library_definition(reference, entry_point):
+    """Freeze one typed ShaderLib function for the existing scalar row ABI."""
+    graph = LibraryGraph(_read_library_source, compute_autodiff="reverse")
+    owner = SlangEmitter("", reference.declaring_path)
+    location = ast.Constant(value=None, lineno=1, col_offset=0)
+    module = _load_library(graph, reference, owner, location)
+    function = graph.scalar_function(module, entry_point, owner, location)
+    source = (f"import {module.name};\n[Differentiable]\n"
+              f"public float {entry_point}(float value) {{ return {function.symbol}(value); }}\n")
+    return source, graph.sources()
+
+
+def _link_libraries(item, autodiff_mode):
     graph = LibraryGraph(_read_library_source, compute_autodiff=autodiff_mode)
     functions = {}
-    project_root = get_project_root()
     definitions = ((item.definition, item.origin),
                    *((helper, item.helper_origins[helper.name]) for helper in item.helpers))
     for definition, origin in definitions:
@@ -219,11 +238,7 @@ def _link_libraries(item, autodiff_mode):
             if name in functions or name not in item.library_calls:
                 continue
             reference, export = item.library_calls[name]
-            declaring_path = Path(reference.declaring_path)
-            if project_root and not declaring_path.is_absolute():
-                declaring_path = Path(project_root) / declaring_path
-            module = graph.load_reference(reference.module, reference.level, owner, node,
-                                          declaring_path=declaring_path)
+            module = _load_library(graph, reference, owner, node)
             if export not in module.functions:
                 owner.error(node, f"ShaderLib {reference.module!r} has no export {export!r}",
                             code="author.reference")

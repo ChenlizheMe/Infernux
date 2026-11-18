@@ -562,6 +562,19 @@ class LibraryGraph:
         self.ordered.append(module)
         return module
 
+    def scalar_function(self, module, name, owner, location):
+        function = module.functions.get(name)
+        if function is None:
+            owner.error(location, f"ShaderLib {module.path!r} has no export {name!r}", code="author.reference")
+        if function.arguments != ("float",) or function.result != "float":
+            library = next(item for item in self._derivative_sources if item.module is module)
+            definition = next(item for item in library.definitions if item.name == name)
+            ShaderEmitter(library.text, module.path).error(
+                definition, "A scalar ShaderLib export must have one float parameter and return float",
+                code="author.type")
+        self.prepare_derivatives((function,))
+        return function
+
     def prepare_derivatives(self, roots):
         """Emit Slang derivatives for the resolved helper call closure."""
         calls = {}

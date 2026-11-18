@@ -519,16 +519,25 @@ class SlangUnary(_Activation):
     closure. The source and its libraries are captured when this module is
     created and travel with the fixed model definition. Ordinary forward,
     first-order backward and ``autograd.jvp`` share the existing GPU Work.
+    A ``compute.library(...)`` reference selects the same typed float function
+    used by Shader and Compute; ``entry_point`` names its exported function.
     """
 
     _kind = "slang_unary"
 
     def __init__(self, source, *, entry_point="forward", libraries=None):
         from ._primitives import scalar_slang_definition
+        from infernux import compute
 
         super().__init__()
         modules = ()
-        if libraries:
+        if isinstance(source, compute._LibraryReference):
+            if libraries is not None:
+                raise TypeError("ShaderLib imports are declared by the referenced library")
+            from infernux._compiler.slang import scalar_library_definition
+
+            source, modules = scalar_library_definition(source, entry_point)
+        elif libraries:
             from infernux._compiler.kernel_contract import slang_asset_path
             from infernux._compiler.slang import read_slang_libraries
 
