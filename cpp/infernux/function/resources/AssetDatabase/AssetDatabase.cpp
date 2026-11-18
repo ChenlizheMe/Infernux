@@ -5382,7 +5382,7 @@ void AssetDatabase::QueueModelCook(const std::shared_ptr<PendingModelReimport> &
             if (textureSource) {
                 worker.request.source = nullptr;
                 textureSource->source.reset();
-                if (textureSource->storage && !pending->IsDiscarded())
+                if (textureSource->storage && !pending->IsDiscarded() && !pending->repairTicket)
                     StageTextureArtifact(worker, std::move(textureSource->storage));
             }
         } catch (const std::exception &exception) {
