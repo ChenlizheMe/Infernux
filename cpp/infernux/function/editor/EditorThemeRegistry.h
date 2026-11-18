@@ -17,8 +17,8 @@
  * counter, and (via the binding) re-applies the ImGui palette once.
  */
 
-#include <imgui.h>
 #include <functional>
+#include <imgui.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
