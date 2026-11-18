@@ -425,13 +425,18 @@ class OperationJobRegistry:
                     f"Operation job service reached its {self._max_jobs}-job capacity",
                 )
             job_id = uuid.uuid4().hex
+            callback = self.registry.execute if execute is None else execute
+            keywords = {"capabilities": tuple(capabilities)}
+            # External gateways may target an older Host callback shape. Only
+            # pass the provider identity when the callback can receive it.
+            if _accepts_keyword(callback, "expected_provider"):
+                keywords["expected_provider"] = provider
             future = self._executor.submit(
                 copy_context().run,
-                self.registry.execute if execute is None else execute,
+                callback,
                 operation_id,
                 dict(arguments or {}),
-                capabilities=tuple(capabilities),
-                expected_provider=provider,
+                **keywords,
             )
             self._jobs[job_id] = _Job(job_id, operation_id, time.time(), future)
         if on_done is not None:
@@ -489,6 +494,18 @@ class OperationJobRegistry:
                     break
                 time.sleep(0.01)
         return sum(not future.done() for future in futures)
+
+
+def _accepts_keyword(callback: Callable[..., object], name: str) -> bool:
+    import inspect
+
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return False
+    if name in parameters:
+        return True
+    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
 
 
 def _json_value(value):
