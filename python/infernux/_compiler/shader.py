@@ -763,33 +763,51 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
                                uint4 metadata, InxBuffer_uint4 records, float3 outgoing, uint seed)
 {
     uint2 counts = inx_transport_light_counts();
-    float3 radiance = float3(0.0);
-    if (counts.x + counts.y == 0u)
-        return radiance;
+    uint count = counts.x + counts.y;
+    if (count == 0u)
+        return float3(0.0);
     float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
-    float3 origin = inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws);
     InxPbrLightResponse response = inx_secondary_light_response(surface, surface.normal_ws, outgoing);
-    InxRayLitHitPolicy material = {0.0};
-    InxRayShadowHitPolicy caster = {records, material};
-    float uniform = float(inx_ray_sample_hash(seed ^ 0x91e10da5u) >> 8u) * (1.0 / 16777216.0);
-    uint selected = uint(uniform * float(counts.y));
-    uint corner = inx_ray_sample_hash(seed ^ 0x68bc21ebu) & 3u;
-    for (uint i = 0u; i < counts.x + min(counts.y, 1u); ++i)
+    uint strata = min(count, 4u);
+    float3 radiance = float3(0.0);
+    float total = 0.0;
+    float3 selected_color = float3(0.0);
+    InxTransportLight selected = (InxTransportLight)0;
+    for (uint i = 0u; i < strata; ++i)
     {
-        // Every directional light contributes. One local candidate is weighted by its selection PDF.
-        bool local = i == counts.x;
-        uint index = local ? i + min(selected, counts.y - 1u) : i;
+        // Each stratum estimates its own sum. Only the shadow-dependent part needs a ray.
+        uint begin = i * count / strata;
+        uint width = (i + 1u) * count / strata - begin;
+        uint stream = inx_ray_sample_hash(seed + i);
+        float sample_u = float(inx_ray_sample_hash(stream ^ 0x91e10da5u) >> 8u) * (1.0 / 16777216.0);
+        uint index = begin + min(uint(sample_u * float(width)), width - 1u);
+        uint corner = inx_ray_sample_hash(stream ^ 0x68bc21ebu) & 3u;
         InxTransportLight light = inx_transport_light(index, attributes.position_ws, corner);
         if ((light.layer_mask & metadata.x) == 0u || light.sample.attenuation <= 0.0 ||
             dot(geometric, light.sample.direction) <= 0.0 || dot(surface.normal_ws, light.sample.direction) <= 0.0)
             continue;
-        if (metadata.z != 0u && light.shadow_strength > 0.0)
+        float3 contribution = float(width) * response.evaluate(light.sample);
+        float strength = metadata.z != 0u ? light.shadow_strength : 0.0;
+        radiance += (1.0 - strength) * contribution;
+        float3 shadowed = strength * contribution;
+        float3 magnitude = abs(shadowed);
+        float weight = max(magnitude.x, max(magnitude.y, magnitude.z));
+        total += weight;
+        float replace_u = float(inx_ray_sample_hash(stream ^ 0xc2b2ae35u) >> 8u) * (1.0 / 16777216.0);
+        if (weight > replace_u * total)
         {
-            TraceRay shadow_ray = inx_ray_light_visibility(origin, light);
-            if (shadow_ray.maximum > 0.0 && !trace_visibility(page, shadow_ray, light.layer_mask, caster))
-                light.sample.shadow = 1.0 - light.shadow_strength;
+            selected = light;
+            selected_color = shadowed / weight;
         }
-        radiance += response.evaluate(light.sample) * (local ? float(counts.y) : 1.0);
+    }
+    if (total > 0.0)
+    {
+        float3 origin = inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws);
+        TraceRay shadow_ray = inx_ray_light_visibility(origin, selected);
+        InxRayLitHitPolicy material = {0.0};
+        InxRayShadowHitPolicy caster = {records, material};
+        if (shadow_ray.maximum <= 0.0 || trace_visibility(page, shadow_ray, selected.layer_mask, caster))
+            radiance += total * selected_color;
     }
     return radiance;
 }
