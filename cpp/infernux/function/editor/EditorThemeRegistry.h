@@ -47,6 +47,25 @@ class EditorThemeRegistry
     /// Bumped whenever the active theme changes — cheap change detection.
     static unsigned long Generation();
 
+    // ── Contributed themes (packages) ──────────────────────────────────
+    /// One package-authored theme. Tokens override the built-in base theme, so
+    /// a package can ship a partial palette without restating every token.
+    struct Definition
+    {
+        std::string name;
+        std::unordered_map<std::string, ImVec4> colors;
+        std::unordered_map<std::string, ImVec2> vec2s;
+        std::unordered_map<std::string, float> floats;
+    };
+
+    /// Register or replace one theme under an owner (package reference).
+    static void Register(const Definition &definition, const std::string &owner);
+    /// Remove every theme contributed by one owner; falls back to the default.
+    static void RemoveOwner(const std::string &owner);
+    /// Replace an owner's whole catalog; optionally activate `preferred`.
+    static void ReplaceOwner(const std::string &owner, const std::vector<Definition> &definitions,
+                             const std::string &preferred);
+
     /// Push the active theme's palette into ImGui's global style colors.
     /// Themes every built-in widget at once (C++ and Python). Cheap; call on
     /// startup and once per theme switch.

@@ -226,6 +226,28 @@ py::dict EncodePropertyChanges(const std::vector<PropertyChange> &changes)
     return result;
 }
 
+EditorThemeRegistry::Definition DecodeThemeDefinition(const py::dict &item)
+{
+    EditorThemeRegistry::Definition definition;
+    definition.name = py::cast<std::string>(item["name"]);
+    for (const auto &entry : py::cast<py::dict>(item["colors"]))
+    {
+        const auto value = py::cast<py::tuple>(entry.second);
+        definition.colors[py::cast<std::string>(py::str(entry.first))] =
+            ImVec4(py::cast<float>(value[0]), py::cast<float>(value[1]), py::cast<float>(value[2]),
+                   py::cast<float>(value[3]));
+    }
+    for (const auto &entry : py::cast<py::dict>(item["vec2s"]))
+    {
+        const auto value = py::cast<py::tuple>(entry.second);
+        definition.vec2s[py::cast<std::string>(py::str(entry.first))] =
+            ImVec2(py::cast<float>(value[0]), py::cast<float>(value[1]));
+    }
+    for (const auto &entry : py::cast<py::dict>(item["floats"]))
+        definition.floats[py::cast<std::string>(py::str(entry.first))] = py::cast<float>(entry.second);
+    return definition;
+}
+
 } // anonymous namespace
 
 void RegisterGUIBindings(py::module_ &m)
@@ -420,11 +442,35 @@ void RegisterGUIBindings(py::module_ &m)
         "set_editor_theme",
         [](const std::string &name) {
             bool ok = EditorThemeRegistry::SetActiveTheme(name);
-            if (ok)
+            if (ok && ImGui::GetCurrentContext() != nullptr)
                 EditorThemeRegistry::ApplyImGuiColors(); // re-skin all built-in widgets at once
             return ok;
         },
         py::arg("name"), "Switch the active editor theme and re-apply the ImGui palette; returns False if unknown");
+    m.def(
+        "replace_editor_themes",
+        [](const std::string &owner, const py::list &definitions, const std::string &preferred) {
+            std::vector<EditorThemeRegistry::Definition> themes;
+            themes.reserve(static_cast<size_t>(py::len(definitions)));
+            for (const auto &value : definitions)
+                themes.push_back(DecodeThemeDefinition(py::cast<py::dict>(value)));
+            EditorThemeRegistry::ReplaceOwner(owner, themes, preferred);
+            if (ImGui::GetCurrentContext() != nullptr)
+                EditorThemeRegistry::ApplyImGuiColors();
+        },
+        py::arg("owner"), py::arg("definitions"), py::arg("preferred") = "",
+        "Replace one package's contributed themes; empty preferred keeps the active theme");
+    m.def(
+        "register_editor_themes",
+        [](const std::string &owner, const py::dict &definition) {
+            EditorThemeRegistry::Register(DecodeThemeDefinition(definition), owner);
+            if (ImGui::GetCurrentContext() != nullptr)
+                EditorThemeRegistry::ApplyImGuiColors();
+        },
+        py::arg("owner"), py::arg("definition"), "Add or replace one contributed editor theme");
+    m.def(
+        "remove_editor_themes", [](const std::string &owner) { EditorThemeRegistry::RemoveOwner(owner); },
+        py::arg("owner"), "Remove every editor theme contributed by one package");
 
     py::class_<PropertyBatchPlan, std::shared_ptr<PropertyBatchPlan>>(m, "PropertyBatchPlan")
         .def_property_readonly("size",

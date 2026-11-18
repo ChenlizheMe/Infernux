@@ -282,6 +282,17 @@ class PluginManager:
         self._content_reads = FileReadCache()
         self._content_asset_reads = FileReadCache()
         self._archive_reads = FileReadCache()
+        self.themes = None
+        if not self.runtime:
+            try:
+                from infernux.engine.editor_themes import EditorThemes
+
+                self.themes = EditorThemes(self.project_root, self.registry, guid_paths=self._guid_index)
+            except Exception as exc:
+                # Theme contribution is optional: a headless host or an older
+                # native build must not block plugin startup.
+                self.themes = None
+                Debug.log_warning(f"Editor theme contributions are unavailable: {exc}")
 
     def _package_cache(self) -> SharedPackageCache:
         if self._shared_package_cache is None:
@@ -371,6 +382,11 @@ class PluginManager:
                 + "; ".join(state.error for state in failures)
             )
         self.states.clear()
+        if self.themes is not None:
+            try:
+                self.themes.close()
+            finally:
+                self.themes = None
         if PluginManager._instance is self:
             PluginManager._instance = None
 
