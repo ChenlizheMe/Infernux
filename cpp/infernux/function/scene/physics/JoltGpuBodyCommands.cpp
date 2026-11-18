@@ -189,11 +189,14 @@ std::unique_ptr<JoltGpuCommandCursor> JoltGpuBodyCommands::Prepare(const JoltGpu
         if (pose == commands.cend())
             break;
 
-        // A pose can affect other bodies' sleep state. Keep its old bounds,
-        // command, and each neighbor sweep in FIFO before the next command.
+        // Keep the neighbor wake before commands for other bodies or another pose edit.
+        // Momentum commands on this source neither change its bounds nor observe its neighbors.
         const uint32_t source = pose->meta.x;
         cursor->m_dispatches.emplace_back(JoltGpuPoseWake::Work{source, 0, 1, true});
         first = pose + 1;
+        while (first != commands.cend() && first->meta.x == source && first->meta.y >= CommandSetLinearVelocity &&
+               first->meta.y <= CommandAddForceAtPosition)
+            ++first;
         cursor->AppendCommands(pose, first);
         if (cursor->m_poseWake.bodyCount)
             cursor->m_dispatches.emplace_back(JoltGpuPoseWake::Work{source, 0, cursor->m_poseWake.bodyCount, false});
@@ -210,12 +213,14 @@ void JoltGpuCommandCursor::AppendCommands(CommandIterator commands, CommandItera
     const auto commandCount = static_cast<uint32_t>(end - commands);
     if (!commandCount)
         return;
-    if (commandCount == 1) {
+    const auto firstBody = commands->meta.x;
+    if (commandCount <= MaxCommandsPerBodyDispatch &&
+        std::all_of(commands + 1, end, [firstBody](const auto &command) { return command.meta.x == firstBody; })) {
         const auto first = static_cast<uint32_t>(m_commands.size());
-        const auto body = commands->meta.x;
-        m_dispatches.emplace_back(BodyDispatch{first, 1, static_cast<uint32_t>(m_spans.size()), 1, body});
-        m_spans.push_back({{body, first, 1, 0}});
-        m_commands.push_back(*commands);
+        m_dispatches.emplace_back(
+            BodyDispatch{first, commandCount, static_cast<uint32_t>(m_spans.size()), 1, firstBody});
+        m_spans.push_back({{firstBody, first, commandCount, 0}});
+        m_commands.insert(m_commands.end(), commands, end);
         return;
     }
     // Sort indices, retaining FIFO with the original ordinal and copying each
