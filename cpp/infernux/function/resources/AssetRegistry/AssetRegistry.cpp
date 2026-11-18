@@ -322,6 +322,15 @@ void AssetRegistry::RefreshEntryBytes(AssetEntry &entry)
 bool AssetRegistry::NotifySourceImported(const std::string &guid, ResourceType type,
                                          const std::shared_ptr<AssetLoadTicket> &repairTicket)
 {
+    // Material, audio, PhysicMaterial and similar loaders reload their resident
+    // payload in place; the payload identity and version must advance without
+    // a second load, matching the imported source that was just published.
+    const auto resident = m_loadedAssets.find(guid);
+    if (type != ResourceType::Mesh && resident != m_loadedAssets.end() &&
+        m_loaders.at(resident->second.type)->GetReloadMode() == AssetReloadMode::InPlace) {
+        ReloadAsset(guid);
+        return false;
+    }
     const bool repairIsCurrent = repairTicket && IsAssetLoadContentCurrent(repairTicket);
     ++m_assetContentGenerations[guid];
     ++m_assetMutationGenerations[guid];
@@ -363,6 +372,8 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::GetPendingMeshReload(const std::
 
 bool AssetRegistry::ReloadAsset(const std::string &guid)
 {
+    if (m_assetDb && !m_assetDb->GetImportError(guid).empty())
+        return false;
     if (auto pending = GetPendingMeshReload(guid)) {
         if (!m_frameWork->IsActive()) {
             pending->Wait();

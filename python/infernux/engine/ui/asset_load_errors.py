@@ -18,14 +18,18 @@ class _AssetLoadErrorDialog:
     def __init__(self, presenter):
         from infernux.engine.interaction import EditorInteractionCore
         self.presenter = presenter
-        self.modals = EditorInteractionCore.instance().modals
+        core = EditorInteractionCore.instance()
+        self.modals = core.modals if core is not None else None
         self.entry = None
         self.requested = False
-        self.modals.register(self.MODAL_ID, is_active=lambda: self.entry is not None,
-                             render=self.render, cancel=self.cancel)
+        if self.modals is not None:
+            self.modals.register(self.MODAL_ID, is_active=lambda: self.entry is not None,
+                                 render=self.render, cancel=self.cancel)
 
     def request(self, entry):
-        if self.entry is not None or not self.modals.activate(self.MODAL_ID, owner_id="project"):
+        if self.modals is None or self.entry is not None:
+            return False
+        if not self.modals.activate(self.MODAL_ID, owner_id="project"):
             return False
         self.entry = entry
         self.requested = True
@@ -34,7 +38,8 @@ class _AssetLoadErrorDialog:
     def cancel(self):
         self.entry = None
         self.requested = False
-        self.modals.deactivate(self.MODAL_ID)
+        if self.modals is not None:
+            self.modals.deactivate(self.MODAL_ID)
 
     def close(self, ctx):
         ctx.close_current_popup()

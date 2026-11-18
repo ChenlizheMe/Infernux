@@ -5,6 +5,8 @@
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
+#include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <platform/filesystem/AssetDocument.h>
 
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -160,6 +162,11 @@ class PhysicMaterialImporter final : public AssetImporter
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override
     {
+        // Metadata acceptance must not claim a decodable document: parse the
+        // source now so an invalid current file fails the import instead of
+        // publishing a payload that only fails on first load.
+        PhysicMaterial material;
+        material.DeserializeDocument(ReadAssetDocument(request.sourcePath));
         return ImportArtifact(request.metadata);
     }
 };
