@@ -4,11 +4,21 @@ from infernux.shader.lib.surface import decode_octahedral_normal
 
 
 def unpack_ray_signal(packet: shader.uvec4) -> shader.vec4:
-    return shader.vec4(shader.unpack_half_2x16(packet.x), shader.unpack_half_2x16(packet.y))
+    # Three signed 19-bit floats (8 exponent bits, 10 fraction bits) and a 7-bit sample count.
+    red = packet.x & shader.uint(0x7FFFF)
+    green = (packet.x >> 19) | ((packet.y & shader.uint(63)) << 13)
+    blue = (packet.y >> 6) & shader.uint(0x7FFFF)
+    rgb = shader.as_float(shader.uvec3(red, green, blue) << 13)
+    return shader.vec4(rgb, shader.float(packet.y >> 25))
 
 
 def pack_ray_signal(signal: shader.vec4, witness: shader.uvec2) -> shader.uvec4:
-    return shader.uvec4(shader.pack_half_2x16(signal.rg), shader.pack_half_2x16(signal.ba), witness)
+    # Keep the FP32 exponent through temporal averaging. Round the fraction to nearest even.
+    bits = shader.as_uint(signal.rgb)
+    rgb = (bits + shader.uvec3(0xFFF) + ((bits >> 13) & shader.uint(1))) >> 13
+    low = rgb.r | (rgb.g << 19)
+    high = (rgb.g >> 13) | (rgb.b << 6) | (shader.uint(signal.a) << 25)
+    return shader.uvec4(low, high, witness)
 
 
 def ray_grid_pixel(pixel: shader.ivec2, source: shader.ivec2, target: shader.ivec2) -> shader.ivec2:

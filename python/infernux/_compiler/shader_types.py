@@ -60,11 +60,18 @@ STRUCT_FIELDS["InxUIContext"] = {"position": "float4", "uv": "float2", "color": 
                                 "texture_color": "float4", "material_color": "float4"}
 STRUCT_FIELDS["InxWorldUIContext"] = dict(STRUCT_FIELDS["InxUIContext"], local_position="float2")
 STRUCT_FIELDS["InxRayTailRequest"] = {name: "uint4" for name in ("identity", "anchor", "outgoing", "normal")}
+STRUCT_FIELDS["InxRaySignal"] = {"radiance": "float4", "witness": "uint2"}
 
 # A logical image carries its sampler through typed library calls. Slang
 # flattens the pair for each target; neither authors nor helpers name slots.
 RESOURCE_MODULE = ("inx_resource_types", "<infernux/shader/resources>", """
 import inx_geometry;
+
+public struct InxRaySignal
+{
+    public float4 radiance;
+    public uint2 witness;
+};
 
 public struct InxRayTailRequest
 {

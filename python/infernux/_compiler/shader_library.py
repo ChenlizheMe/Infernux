@@ -28,7 +28,7 @@ _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceH
                   "ray._tail_thin_request": ("inx_ray_tail_thin_request", "InxRayTailRequest", ("float3", "float3")),
                   "ray._tail_estimate": ("inx_ray_tail_estimate", "float4", (
                       "InxBuffer_uint4", "InxBuffer_uint4", "InxBuffer_uint4", "uint")),
-                  "ray._indirect_signal": ("inx_ray_indirect_signal", "uint4", (
+                  "ray._indirect_signal": ("inx_ray_indirect_signal", "InxRaySignal", (
                       "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool", "InxBuffer_uint4"))}
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
                      "frame_delta_time": ("inx_frame_delta_time", "float", ()),

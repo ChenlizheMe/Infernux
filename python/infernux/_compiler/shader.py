@@ -915,9 +915,9 @@ public float4 inx_ray_radiance_parts(float3 origin, float3 direction, InxBuffer_
     return float4(term.radiance + (part == 0 ? surface.emission : float3(0.0)), term.available ? 1.0 : 0.0);
 }
 
-uint4 inx_ray_signal_output(float3 signal, uint2 witness)
+InxRaySignal inx_ray_signal_output(float3 signal, uint2 witness)
 {
-    return uint4(packHalf2x16(signal.rg), packHalf2x16(float2(signal.b, 1.0)), witness);
+    return {float4(signal, 1.0), witness};
 }
 
 float inx_ray_tail_cone(InxSurfaceData surface)
@@ -989,14 +989,14 @@ float3 inx_ray_cached_tail(RayPage page, RayHit hit, RaySurfaceHit attributes, I
     return float3(0.0);
 }
 
-uint4 inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, InxBuffer_uint4 cache,
-                        uint seed, float3 weight)
+InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, InxBuffer_uint4 cache,
+                              uint seed, float3 weight)
 {
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return inx_ray_signal_output(inx_environment_radiance(ray.direction) * weight, uint2(0u));
     if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
-        return uint4(0u);
+        return (InxRaySignal)0;
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData secondary;
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
@@ -1004,7 +1004,7 @@ uint4 inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, InxB
     InxRayTransportTerm direct = inx_ray_direct_fresh(page, attributes, secondary,
         inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed, maximum);
     if (!direct.available)
-        return uint4(0u);
+        return (InxRaySignal)0;
     float3 tail = inx_ray_cached_tail(page, hit, attributes, secondary, records, cache, -ray.direction,
                                       seed, maximum);
     return inx_ray_signal_output((secondary.emission + direct.radiance + tail) * weight,
@@ -1023,8 +1023,7 @@ public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxB
                     inx_view.projection_params.y};
     uint2 pixel = uint2(pixel_position);
     uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y) ^ inx_view_sample_index());
-    uint4 packet = inx_ray_radiance(page, ray, records, cache, seed, float3(1.0));
-    return float4(unpackHalf2x16ToFloat(packet.x), unpackHalf2x16ToFloat(packet.y));
+    return inx_ray_radiance(page, ray, records, cache, seed, float3(1.0)).radiance;
 }
 
 RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,
@@ -1053,19 +1052,19 @@ RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingC
     return sample;
 }
 
-public uint4 inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
-                                    InxBuffer_uint4 records, uint model_id, bool specular, bool temporal,
-                                    InxBuffer_uint4 cache)
+public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
+                                            InxBuffer_uint4 records, uint model_id, bool specular, bool temporal,
+                                            InxBuffer_uint4 cache)
 {
     if (model_id != INX_PBR_MODEL_ID)
-        return uint4(0u);
+        return (InxRaySignal)0;
     uint seed;
     RayDirectionSample sample = inx_ray_primary_direction(surface, context, geometric_normal, specular, temporal, seed);
     if (!sample.active)
         return inx_ray_signal_output(float3(0.0), uint2(ray_invalid_index, 0u));
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
-        return uint4(0u);
+        return (InxRaySignal)0;
     TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction, inx_view.projection_params.y};
     return inx_ray_radiance(page, ray, records, cache, seed, sample.weight);
 }

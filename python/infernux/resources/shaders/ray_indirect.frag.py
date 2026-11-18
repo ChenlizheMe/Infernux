@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_shading_context
-from infernux.shader.lib.ray_signal import ray_grid_pixel
+from infernux.shader.lib.ray_signal import pack_ray_signal, ray_grid_pixel
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -42,7 +42,8 @@ class RayIndirect(shader.fullscreen):
         if depth <= 0.0 or primary.x == 0:
             return shader.uvec4(0)
         geometric_normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
-        return shader.ray._indirect_signal(
+        sample = shader.ray._indirect_signal(
             surface, context, geometric_normal, self.surface_records, metadata.y, self.specular, self.temporal,
             self.tail_cache,
         )
+        return pack_ray_signal(sample.radiance, sample.witness)
