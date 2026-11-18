@@ -2113,8 +2113,7 @@ bool PhysicsWorld::AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const
             if (!m_gpuWork->IsActive())
                 return false;
             AdmissionScope admission(*m_gpuScene, domain.owner);
-            (void)m_gpuWork->AdvanceDependency(m_gpuScene->GetSourceId(),
-                                               [this] { return Availability(*m_gpuHost); });
+            (void)m_gpuWork->AdvanceDependency(m_gpuScene->GetSourceId(), [this] { return Availability(*m_gpuHost); });
         }
     }
     const auto status = m_gpuScene->GetTickStatus(domain.owner);
