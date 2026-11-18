@@ -113,6 +113,9 @@ def _create_support(root: Path) -> None:
     gradle = root / "gradle/bin" / ("gradle.bat" if sys.platform == "win32" else "gradle")
     gradle.parent.mkdir(parents=True)
     gradle.write_bytes(b"gradle")
+    gradle_module = root / "gradle-dependencies/modules-2/files-2.1/com.android.tools.build/gradle/8.10.1/gradle.jar"
+    gradle_module.parent.mkdir(parents=True)
+    gradle_module.write_bytes(b"Android Gradle plugin")
 
     for abi in android_support.ANDROID_PYTHON_ABIS:
         prefix = root / "python" / abi
@@ -157,6 +160,7 @@ def _create_support(root: Path) -> None:
                     "sdk": "sdk",
                     "jdk": "jdk",
                     "gradle": "gradle",
+                    "gradle_dependencies": "gradle-dependencies",
                     "python": {
                         "arm64-v8a": "python/arm64-v8a",
                         "x86_64": "python/x86_64",
@@ -195,9 +199,23 @@ def test_installs_one_shared_android_support_archive_and_exports_environment(
     assert Path(os.environ["INFERNUX_ANDROID_SUPPORT_ROOT"]) == manager.root
     environment = android_support.android_support_environment(manager.root)
     assert environment["ANDROID_SDK_ROOT"] == str(manager.root / "sdk")
+    assert environment["GRADLE_RO_DEP_CACHE"] == str(manager.root / "gradle-dependencies")
     assert environment["INFERNUX_ANDROID_PYTHON_PREFIX_ARM64"].endswith(
         "python\\arm64-v8a" if sys.platform == "win32" else "python/arm64-v8a"
     )
+
+
+def test_online_install_uses_receipt_for_current_host_kit(monkeypatch):
+    archive = android_support.archive_name()
+    url = f"{android_support.DISTRIBUTION_BASE_URL}/android-support/{android_support.ANDROID_SUPPORT_VERSION}/{archive}"
+    receipt = {"sha256": "1" * 64, "size": 1024}
+
+    def open_receipt(request, timeout):
+        assert request == url + ".json"
+        return io.BytesIO(json.dumps(receipt).encode())
+
+    monkeypatch.setattr(android_support.urllib.request, "urlopen", open_receipt)
+    assert android_support.AndroidSupportManager._release_asset() == (url, receipt["sha256"], 1024)
 
 
 def test_invalid_reinstall_preserves_the_current_platform_kit(tmp_path: Path) -> None:
@@ -360,6 +378,8 @@ def test_release_packager_creates_the_exact_hub_installable_asset(tmp_path: Path
         str(source / "jdk"),
         "--gradle",
         str(source / "gradle"),
+        "--gradle-dependencies",
+        str(source / "gradle-dependencies"),
         "--python-arm64",
         str(source / "python/arm64-v8a"),
         "--python-x86-64",

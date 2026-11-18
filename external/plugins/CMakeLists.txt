@@ -17,9 +17,15 @@ option(INFERNUX_REFRESH_EDITOR_PLUGIN_RESOURCES
     ON
 )
 
-foreach(_infernux_plugin IN LISTS INFERNUX_OFFICIAL_PLUGIN_NAMES)
-    infernux_require_dependency("${_infernux_plugin}" "official plugin source")
+file(READ "${INFERNUX_OFFICIAL_PLUGIN_CATALOG}" _catalog)
+string(JSON _count LENGTH "${_catalog}" plugins)
+math(EXPR _last "${_count} - 1")
+set(_plugin_manifests)
+foreach(_index RANGE 0 ${_last})
+    string(JSON _path GET "${_catalog}" plugins ${_index} path)
+    list(APPEND _plugin_manifests "${_path}/package/inx_package.json")
 endforeach()
+infernux_require_sources("${INFERNUX_PLUGIN_ROOT}" ${_plugin_manifests})
 
 set(INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR
     "${CMAKE_BINARY_DIR}/official-plugins"

@@ -14,7 +14,6 @@
         "ANDROID_PLATFORM": "android-26",
         "Python3_EXECUTABLE": "$env{CONDA_PREFIX}/python.exe",
         "INFERNUX_HOST_PYTHON_EXECUTABLE": "$env{CONDA_PREFIX}/python.exe",
-        "pybind11_DIR": "$env{CONDA_PREFIX}/Lib/site-packages/pybind11/share/cmake/pybind11",
         "INFERNUX_USE_TARGET_PYTHON": "ON",
         "INFERNUX_TARGET_PYTHON_INCLUDE_DIR": "$env{INFERNUX_ANDROID_PYTHON_PREFIX_ARM64}/include/python3.13",
         "INFERNUX_TARGET_PYTHON_LIBRARY": "$env{INFERNUX_ANDROID_PYTHON_PREFIX_ARM64}/lib/libpython3.13.so",

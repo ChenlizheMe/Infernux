@@ -2,11 +2,22 @@ cmake_minimum_required(VERSION 3.25)
 
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxDependencyLayout.cmake")
 
-# Stop at the dependency boundary with an actionable error instead of letting
-# a nested third-party project report a misleading missing-file failure.
-foreach(_infernux_dependency IN LISTS INFERNUX_THIRD_PARTY_SUBMODULES)
-    infernux_require_dependency("${_infernux_dependency}" "external dependency")
-endforeach()
+infernux_require_sources("${INFERNUX_EXTERNAL_ROOT}"
+    assimp/CMakeLists.txt
+    dr_libs/dr_wav.h
+    glm/glm/glm.hpp
+    imgui_for_infernux/imgui.cpp
+    joltphysics_for_infernux/Build/CMakeLists.txt
+    lunasvg_for_infernux/plutovg/CMakeLists.txt
+    MikkTSpace/mikktspace.c
+    nlohmann/json.hpp
+    sdl_for_infernux/CMakeLists.txt
+    stb/stb_image.h
+    stb/stb_vorbis.c
+    utf8proc_for_infernux/utf8proc.c
+    volk_for_infernux/volk.c
+    VulkanMemoryAllocator/include/vk_mem_alloc.h
+    zstd_for_infernux/build/cmake/CMakeLists.txt)
 
 # ------------------------------------------------------------------------------
 # Build Configuration
@@ -37,13 +48,13 @@ set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
 # (C2065 "_Ty1" in <map> from IFCUtil.h) — disable it; IFC (building
 # CAD) is not needed for game asset pipelines.
 set(ASSIMP_BUILD_IFC_IMPORTER OFF CACHE BOOL "" FORCE)
-if(APPLE OR UNIX)
-    # Use system zlib on macOS/Linux — assimp's bundled old zlib has
-    # compilation issues with modern Apple Clang system headers.
-    set(ASSIMP_BUILD_ZLIB OFF CACHE BOOL "" FORCE)
-else()
-    set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)
-endif()
+include("${INFERNUX_SOURCE_ROOT}/cmake/InfernuxZlib.cmake")
+# Assimp consumes the supplied target when ZLIB_FOUND is set. Suppress both its
+# system lookup and its older private copy; minizip sources ship with Assimp.
+set(ASSIMP_BUILD_ZLIB ON CACHE BOOL "" FORCE)
+set(ZLIB_FOUND TRUE)
+set(ZLIB_LIBRARIES ZLIB::ZLIBSTATIC)
+set(ASSIMP_BUILD_MINIZIP ON)
 set(ASSIMP_INSTALL OFF CACHE BOOL "" FORCE)
 
 # GLM configuration
@@ -216,6 +227,12 @@ add_subdirectory(glm)
 # stb (header-only)
 add_library(stb INTERFACE)
 target_include_directories(stb INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/stb)
+
+add_library(stb_vorbis STATIC stb/stb_vorbis.c)
+
+add_library(mikktspace STATIC MikkTSpace/mikktspace.c)
+target_include_directories(mikktspace PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/MikkTSpace")
+set_target_properties(stb_vorbis mikktspace PROPERTIES C_VISIBILITY_PRESET hidden)
 
 # dr_libs (header-only declarations; implementations live in AudioDecoders.cpp)
 add_library(dr_libs INTERFACE)

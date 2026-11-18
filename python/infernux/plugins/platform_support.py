@@ -16,7 +16,7 @@ from infernux.engine.user_data import get_infernux_shared_data_root
 
 ANDROID_SUPPORT_SCHEMA = "infernux.android_support"
 ANDROID_SUPPORT_KIND = "infernux-android-support"
-ANDROID_SUPPORT_VERSION = "0.1.0"
+ANDROID_SUPPORT_VERSION = "0.1.1"
 ANDROID_SUPPORT_MANIFEST = "infernux-android-support.json"
 _manifest_reads = FileReadCache(capacity=8)
 
@@ -94,6 +94,7 @@ class _SupportLayout:
     sdk: Path
     jdk: Path
     gradle: Path
+    gradle_dependencies: Path
     arm64: Path
     x64: Path
     directories: tuple[Path, ...]
@@ -128,7 +129,7 @@ def _support_layout(root: Path) -> _SupportLayout | None:
             or document.get("version") != ANDROID_SUPPORT_VERSION
             or document.get("host") != host
             or type(paths) is not dict
-            or set(paths) != {"sdk", "jdk", "gradle", "python"}
+            or set(paths) != {"sdk", "jdk", "gradle", "gradle_dependencies", "python"}
         ):
             return None
         python_paths = paths["python"]
@@ -137,13 +138,15 @@ def _support_layout(root: Path) -> _SupportLayout | None:
         sdk = root / _relative(paths["sdk"])
         jdk = root / _relative(paths["jdk"])
         gradle = root / _relative(paths["gradle"])
+        dependencies = root / _relative(paths["gradle_dependencies"])
         arm64 = root / _relative(python_paths["arm64-v8a"])
         x64 = root / _relative(python_paths["x86_64"])
         executable = ".exe" if os.name == "nt" else ""
         gradle_name = "gradle.bat" if os.name == "nt" else "gradle"
         return _SupportLayout(
-            sdk, jdk, gradle, arm64, x64,
-            directories=(sdk / "platforms/android-36", sdk / "build-tools/36.0.0"),
+            sdk, jdk, gradle, dependencies, arm64, x64,
+            directories=(sdk / "platforms/android-36", sdk / "build-tools/36.0.0",
+                         dependencies / "modules-2/files-2.1/com.android.tools.build/gradle"),
             files=(
                 sdk / "ndk/29.0.14206865/build/cmake/android.toolchain.cmake",
                 sdk / "platform-tools" / f"adb{executable}",
@@ -195,6 +198,7 @@ def android_support_environment(
         "ANDROID_HOME": environment_path(layout.sdk),
         "JAVA_HOME": environment_path(layout.jdk),
         "INFERNUX_GRADLE_HOME": environment_path(layout.gradle),
+        "GRADLE_RO_DEP_CACHE": environment_path(layout.gradle_dependencies),
         "INFERNUX_ANDROID_PYTHON_PREFIX_ARM64": environment_path(layout.arm64),
         "INFERNUX_ANDROID_PYTHON_PREFIX_X86_64": environment_path(layout.x64),
     }

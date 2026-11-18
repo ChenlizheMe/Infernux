@@ -64,3 +64,9 @@
 	path = external/slang_for_infernux
 	url = https://github.com/InfernuxEngine/slang_for_infernux.git
 	branch = infernux-support
+[submodule "external/pybind11"]
+	path = external/pybind11
+	url = https://github.com/pybind/pybind11.git
+[submodule "external/zlib"]
+	path = external/zlib
+	url = https://github.com/madler/zlib.git

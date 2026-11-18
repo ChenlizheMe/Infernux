@@ -46,25 +46,8 @@ else()
     set(INFERNUX_PYTHON_INCLUDE_DIRS "${Python3_INCLUDE_DIRS}")
 endif()
 
-# pybind11 is a build dependency. Resolve its CMake package with the host
-# interpreter even when the produced module links to a different target Python.
-execute_process(
-    COMMAND "${INFERNUX_HOST_PYTHON_EXECUTABLE}" -m pybind11 --cmakedir
-    OUTPUT_VARIABLE _pybind11_cmakedir
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-    RESULT_VARIABLE _pybind11_result
-)
-if(_pybind11_result EQUAL 0 AND _pybind11_cmakedir)
-    # pybind11 is a host-side header/build dependency. Android and other cross
-    # toolchains commonly root CMAKE_PREFIX_PATH in the target sysroot, so an
-    # appended host path can become invisible. Search the directory reported by
-    # the host interpreter explicitly instead.
-    find_package(pybind11 3.1.0 EXACT CONFIG REQUIRED
-        PATHS "${_pybind11_cmakedir}"
-        NO_DEFAULT_PATH
-        NO_CMAKE_FIND_ROOT_PATH
-    )
-else()
-    find_package(pybind11 3.1.0 EXACT CONFIG REQUIRED)
-endif()
+# Cross builds supply the target Python headers and library above. All builds
+# use the same pinned smart-holder headers, including the Web binding modules.
+infernux_require_sources("${INFERNUX_EXTERNAL_ROOT}" pybind11/CMakeLists.txt)
+set(PYBIND11_NOPYTHON ${INFERNUX_USE_TARGET_PYTHON})
+add_subdirectory("${INFERNUX_EXTERNAL_ROOT}/pybind11" "${CMAKE_BINARY_DIR}/external/pybind11" EXCLUDE_FROM_ALL)

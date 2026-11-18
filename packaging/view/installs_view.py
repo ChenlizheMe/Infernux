@@ -217,6 +217,7 @@ class _RuntimeCard(_ModuleCard):
 
 class _AndroidSupportCard(_ModuleCard):
     install_clicked = Signal()
+    locate_clicked = Signal()
 
     def __init__(self, manager: AndroidSupportManager, parent=None, *, queue=None):
         status = manager.status()
@@ -241,6 +242,9 @@ class _AndroidSupportCard(_ModuleCard):
         )
         install.clicked.connect(self.install_clicked.emit)
         self.actions.addWidget(install)
+        locate = _action_button(tr("Locate"), "android", False)
+        locate.clicked.connect(self.locate_clicked.emit)
+        self.actions.addWidget(locate)
         if queue is not None:
             self.attach_job(queue, "android")
 
@@ -1007,8 +1011,17 @@ class AndroidSupportView(_ModuleView):
         self._clear_cards()
         card = _AndroidSupportCard(self._manager, queue=self._queue)
         card.install_clicked.connect(self.install)
+        card.locate_clicked.connect(self._locate)
         self._cards.addWidget(card)
         self._update_actions()
+
+    def _locate(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("Select Android support kit"), "", "Infernux Android (*.inxkit)",
+        )
+        if path:
+            self._queue.submit("android", tr("Android support"),
+                               lambda report: self._manager.install_archive(path))
 
     def install(self):
         manager = self._manager

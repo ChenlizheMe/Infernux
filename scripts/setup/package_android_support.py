@@ -43,6 +43,8 @@ def _parser(module) -> argparse.ArgumentParser:
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--jdk", type=Path, required=True)
     parser.add_argument("--gradle", type=Path, required=True)
+    parser.add_argument("--gradle-dependencies", type=Path, required=True,
+                        help="Prepared Gradle cache directory containing modules-2")
     parser.add_argument("--python-arm64", type=Path, required=True)
     parser.add_argument("--python-x86-64", type=Path, required=True)
     parser.add_argument(
@@ -64,6 +66,7 @@ def _input_trees(arguments, module) -> tuple[tuple[str, Path], ...]:
         ("sdk/licenses", sdk / "licenses"),
         ("jdk", arguments.jdk.expanduser().resolve()),
         ("gradle", arguments.gradle.expanduser().resolve()),
+        ("gradle-dependencies/modules-2", arguments.gradle_dependencies.resolve() / "modules-2"),
         ("python/arm64-v8a", arguments.python_arm64.expanduser().resolve()),
         ("python/x86_64", arguments.python_x86_64.expanduser().resolve()),
     )
@@ -80,6 +83,8 @@ def _files(roots: tuple[tuple[str, Path], ...]):
     for prefix, source_root in roots:
         for source in sorted(source_root.rglob("*"), key=lambda path: path.as_posix()):
             if not source.is_file():
+                continue
+            if prefix == "gradle-dependencies/modules-2" and (source.suffix == ".lock" or source.name == "gc.properties"):
                 continue
             relative = source.relative_to(source_root).as_posix()
             archive_path = f"{prefix}/{relative}"

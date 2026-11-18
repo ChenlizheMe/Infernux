@@ -27,7 +27,7 @@ from hub_utils import get_hub_shared_data_dir
 
 ANDROID_SUPPORT_SCHEMA = "infernux.android_support"
 ANDROID_SUPPORT_KIND = "infernux-android-support"
-ANDROID_SUPPORT_VERSION = "0.1.0"
+ANDROID_SUPPORT_VERSION = "0.1.1"
 ANDROID_API = 36
 ANDROID_BUILD_TOOLS = "36.0.0"
 ANDROID_CMAKE = "3.30.5"
@@ -39,16 +39,6 @@ ANDROID_PYTHON_SERIES = "3.13"
 ANDROID_PYTHON_ABIS = ("arm64-v8a", "x86_64")
 MANIFEST_NAME = "infernux-android-support.json"
 DISTRIBUTION_BASE_URL = "https://downloads.infernux-engine.com"
-_ANDROID_SUPPORT_ASSETS = {
-    "linux-x64": (
-        1_742_442_640,
-        "11491f135074ab3c11ddeb03f9f4982e561f13012362144d821cdf5a81ff1c43",
-    ),
-    "windows-x64": (
-        1_370_034_693,
-        "72463aac19438d756e958834fe2773bfee2248ce4b5afc7348c755aebb997155",
-    ),
-}
 
 
 class AndroidSupportError(RuntimeError):
@@ -116,6 +106,7 @@ def create_android_support_manifest(*, total_bytes: int) -> dict[str, object]:
             "sdk": "sdk",
             "jdk": "jdk",
             "gradle": "gradle",
+            "gradle_dependencies": "gradle-dependencies",
             "python": {
                 "arm64-v8a": "python/arm64-v8a",
                 "x86_64": "python/x86_64",
@@ -188,6 +179,7 @@ def _read_manifest(root: Path) -> dict[str, object]:
         "sdk",
         "jdk",
         "gradle",
+        "gradle_dependencies",
         "python",
     }:
         raise AndroidSupportError(
@@ -249,6 +241,9 @@ def validate_android_support(root: Path) -> dict[str, object]:
         gradle / "bin" / ("gradle.bat" if os.name == "nt" else "gradle"),
         "Gradle",
     )
+    dependencies = root / _portable_relative(paths["gradle_dependencies"], label="Gradle dependencies")
+    _require_directory(dependencies / "modules-2/files-2.1/com.android.tools.build/gradle",
+                       "offline Android Gradle plugin")
 
     for abi in ANDROID_PYTHON_ABIS:
         prefix = root / _portable_relative(python_paths[abi], label=f"Python {abi}")
@@ -292,6 +287,7 @@ def android_support_environment(root: Path) -> dict[str, str]:
         "INFERNUX_GRADLE_HOME": str(
             root / _portable_relative(paths["gradle"], label="Gradle")
         ),
+        "GRADLE_RO_DEP_CACHE": str(root / _portable_relative(paths["gradle_dependencies"], label="Gradle dependencies")),
         "INFERNUX_ANDROID_PYTHON_PREFIX_ARM64": str(
             root / _portable_relative(python_paths["arm64-v8a"], label="Python arm64")
         ),
@@ -460,16 +456,14 @@ class AndroidSupportManager:
 
     @staticmethod
     def _release_asset() -> tuple[str, str, int]:
-        try:
-            size, digest = _ANDROID_SUPPORT_ASSETS[host_id()]
-        except KeyError as exc:
-            raise AndroidSupportError(
-                f"No compatible Android support asset is published: {archive_name()}"
-            ) from exc
-        url = (
-            f"{DISTRIBUTION_BASE_URL}/android-support/"
-            f"{ANDROID_SUPPORT_VERSION}/{archive_name()}"
-        )
+        # Only the explicit Hub install uses the release receipt. Starting an
+        # editor or accepting a local kit reads the installed manifest directly.
+        url = f"{DISTRIBUTION_BASE_URL}/android-support/{ANDROID_SUPPORT_VERSION}/{archive_name()}"
+        with urllib.request.urlopen(url + ".json", timeout=30) as response:
+            receipt = json.load(response)
+        digest, size = receipt["sha256"], receipt["size"]
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or type(size) is not int or size <= 0:
+            raise AndroidSupportError(f"Invalid Android support release receipt for {archive_name()}")
         return url, digest, size
 
 

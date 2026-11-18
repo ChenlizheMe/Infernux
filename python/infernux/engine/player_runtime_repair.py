@@ -7,7 +7,6 @@ Compiler intermediates stay in the project cache; the Python SDK is not replaced
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import platform
 from pathlib import Path
@@ -106,35 +105,18 @@ def _check_source(root):
     return root
 
 
-def _source_root(cache, request, log):
-    configured = os.environ.get("INFERNUX_ENGINE_SOURCE_ROOT", "")
+def _source_root(cache):
+    configured = os.environ.get("INFERNUX_ENGINE_SOURCE_ROOT")
     if configured:
         return _check_source(Path(configured).resolve())
     checkout = Path(__file__).resolve().parents[3]
-    if (checkout / "cpp/apps/player/PlayerHost.cpp").is_file():
-        return _check_source(checkout)
-    provenance = Path(__file__).resolve().parents[1] / "resources/player-build-source.json"
-    if provenance.is_file():
-        identity = json.loads(provenance.read_text(encoding="utf-8"))
-        if identity["engine_release"] != ENGINE_RELEASE:
-            raise RuntimeError("Installed SDK source provenance does not match its release")
-        if identity.get("dirty"):
-            raise RuntimeError("This development SDK contains uncommitted source changes. "
-                               "Set INFERNUX_ENGINE_SOURCE_ROOT to its original source checkout before rebuilding Players.")
-        revision = identity["revision"]
-    else:
-        raise RuntimeError("The installed SDK has no Player source provenance")
-    source = cache / "source"
-    if not (source / ".git").exists():
-        _run(["git", "clone", "--no-checkout", "--filter=blob:none",
-              "https://github.com/ChenlizheMe/Infernux.git", str(source)],
-             cwd=cache, request=request, log=log)
-    _run(["git", "fetch", "--depth", "1", "origin", revision],
-         cwd=source, request=request, log=log)
-    _run(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=source, request=request, log=log)
-    _run(["git", "submodule", "update", "--init", "--recursive", "--depth", "1"],
-         cwd=source, request=request, log=log)
-    return _check_source(source)
+    for root in (checkout, cache / "source"):
+        if (root / "cpp/apps/player/PlayerHost.cpp").is_file():
+            return _check_source(root)
+    raise RuntimeError(
+        f"Offline Player rebuild needs the local engine {ENGINE_RELEASE} source and its "
+        "external submodules. Set INFERNUX_ENGINE_SOURCE_ROOT to the matching checkout."
+    )
 
 
 def _rebuild(root, destination, build, request, options, log):
@@ -209,7 +191,7 @@ def prepare_player_runtime(request, installed_root, inspect, *, options=None):
         except (OSError, ValueError, RuntimeError):
             pass
         log = cache / "rebuild.log"
-        source = _source_root(cache, request, log)
+        source = _source_root(cache)
         native_build_root = Path(request.profile.options.get("player_native_build_root") or cache / "build").resolve()
         # Keep publication on the installed plugin's volume, so the final
         # directory renames cannot turn into a cross-volume partial copy.

@@ -7,9 +7,11 @@ on:
       - .github/workflows/platform-plugin-release.yml
       - packaging/android_support.py
       - scripts/setup/package_android_support.py
+      - scripts/release/publish_android_support.py
       - scripts/setup/build_android_python_runtime.sh
       - scripts/setup/android_python_runtime.py
       - scripts/setup/android_numpy_cross.ini
+      - external/plugins/infernux_android
   release:
     types: [published]
   workflow_dispatch:
@@ -138,6 +140,9 @@ jobs:
         with:
           ref: ${{ needs.resolve-release.outputs.source-ref }}
 
+      - name: Check out Android build support
+        run: git submodule update --init external/plugins/infernux_android
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -182,6 +187,11 @@ jobs:
           tar -C out/android-python -xzf \
             out/android-python-download/android-python-support.tar.gz
 
+      - name: Prepare portable Gradle dependencies
+        run: >
+          python external/plugins/infernux_android/external/gradle/prepare.py
+          --fetch --cache out/android-gradle-home
+
       - name: Assemble the Hub Android Platform Kit
         id: android-kit
         shell: bash
@@ -195,6 +205,7 @@ jobs:
             --sdk "$sdk_root" \
             --jdk "$JAVA_HOME" \
             --gradle "$gradle_home" \
+            --gradle-dependencies out/android-gradle-home/caches \
             --python-arm64 out/android-python/arm64-v8a \
             --python-x86-64 out/android-python/x86_64 \
             --output "out/$asset_name"
@@ -213,7 +224,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          R2_UPLOAD_TOKEN: ${{ secrets.R2_UPLOAD_TOKEN }}
         run: |
+          python scripts/release/publish_android_support.py '${{ steps.android-kit.outputs.asset }}'
           gh release upload '${{ needs.resolve-release.outputs.release-tag }}' \
             --repo '${{ github.repository }}' \
             '${{ steps.android-kit.outputs.asset }}'

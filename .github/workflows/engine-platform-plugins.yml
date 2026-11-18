@@ -255,7 +255,7 @@ jobs:
         path: |
           engine/out/toolchains/web
           engine/out/build/web-precompiled-player
-        key: web-runtime-${{ runner.os }}-${{ hashFiles('engine/scripts/setup/build_web_toolchain.sh', 'engine/external/plugins/infernux_web/native/**')
+        key: web-runtime-${{ runner.os }}-${{ hashFiles('engine/scripts/setup/build_web_toolchain.sh', 'engine/external/plugins/infernux_web/native/**', 'engine/external/plugins/infernux_web/external/**')
           }}
         restore-keys: web-runtime-${{ runner.os }}-
     - name: Prepare release-engineering tools
@@ -263,7 +263,7 @@ jobs:
         conda activate infernux
         sudo apt-get update
         sudo apt-get install --yes --no-install-recommends ninja-build pkg-config libssl-dev libffi-dev zlib1g-dev libbz2-dev libsqlite3-dev liblzma-dev
-        python -m pip install cmake pybind11
+        python -m pip install cmake
         engine/scripts/setup/build_web_toolchain.sh "$PWD/engine/out/toolchains/web"
         mkdir -p engine/out/build
         bash engine/external/plugins/infernux_web/native/python_runtime/build_numpy_static_runtime.sh \

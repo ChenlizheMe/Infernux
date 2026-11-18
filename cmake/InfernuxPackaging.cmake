@@ -93,12 +93,6 @@ add_custom_target(update_native_platform_plugin
     USES_TERMINAL VERBATIM)
 
 add_custom_target(package_python
-    COMMAND ${CMAKE_COMMAND} -E echo "Ensuring Python packaging tools are available..."
-    COMMAND ${CMAKE_COMMAND}
-        -DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}
-        -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
-        -P "${CMAKE_SOURCE_DIR}/cmake/ensure_python_packaging_tools.cmake"
-
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/build"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/python/infernux.egg-info"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_WHEEL_DIR}"

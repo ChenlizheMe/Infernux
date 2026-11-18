@@ -11,9 +11,18 @@ runtime, tests, or wheel. The submodule revision is pinned by the superproject
 gitlink. `external/CMakeLists.txt` configures those dependencies and exposes
 their CMake targets; it does not publish plugin packages.
 
-The engine-maintained forks are named `<library>_for_infernux` and use the
-single `infernux-support` branch. The branch name controls intentional updates;
-normal builds still use the gitlink pinned by the main repository.
+Prepare a checkout with `git submodule update --init --recursive` before
+taking it offline, or copy an already populated checkout. Gitlinks select the
+exact sources. CMake compiles those sources locally, including Slang and its
+host generators. Native and Web bindings share the pinned pybind11 headers.
+Asset import and screenshot encoding share the pinned zlib target used by
+the Web Player. Header-only libraries expose include targets.
+
+The operating system and its SDK provide Vulkan, the C/C++ runtime and the
+native window system. CPython and its Python packages come from the prepared
+Python environment or platform kit. Prepare these tools and the checkout once
+before building offline. The Hub Android kit includes the Gradle artifacts
+needed for the first APK or App Bundle export.
 
 `external/plugins/` contains official plugin checkouts. They are packaging
 inputs, not editor link dependencies. Its CMake target builds the catalog and
@@ -21,10 +30,10 @@ the bundled MCP package into the build tree. Platform plugins own their Player
 release workflows. A platform native CMake file is included only by the
 platform build that needs it (for example, the Android export path).
 
-`cmake/InfernuxDependencyLayout.cmake` is the canonical path and ownership
-map. New CMake code should use its dependency helper instead of reconstructing
-`external/...` or `external/plugins/...` paths. It also fails early when a
-required submodule is not initialized.
+`cmake/InfernuxDependencyLayout.cmake` publishes the engine and plugin source
+roots and checks the files required by each build. Each platform plugin owns
+its private libraries under its own `external/`. The Web plugin uses the
+pinned local Emdawnwebgpu port to build its Player.
 
 Set `INFERNUX_REFRESH_EDITOR_PLUGIN_RESOURCES=OFF` for a strictly out-of-source
 package build. The default remains `ON` for editor development, where the
@@ -33,7 +42,7 @@ live editor resources.
 
 ## Output ownership
 
-Generated files belong under the build tree (`official-plugins`, `_deps`, and
+Generated files belong under the build tree (`official-plugins` and
 `out/stage`). The wheel install component consumes those staged outputs. The
 editor source checkout may receive the bundled MCP/catalog refresh as an
 explicit convenience side effect of the official-plugin target; platform

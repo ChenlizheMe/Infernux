@@ -112,9 +112,7 @@ endif()
 set(INFERNUX_PREBUILT_RUNTIME_DIR "${CMAKE_BINARY_DIR}/platform-player/runtime-packs")
 set(INFERNUX_PREBUILT_RUNTIME_MODULE_DIR "${CMAKE_BINARY_DIR}/platform-player/_runtime_modules")
 string(TOLOWER "${CMAKE_SYSTEM_NAME}" _infernux_player_platform)
-infernux_dependency_path(
-    _infernux_player_plugin
-    "infernux_${_infernux_player_platform}")
+set(_infernux_player_plugin "${INFERNUX_PLUGIN_ROOT}/infernux_${_infernux_player_platform}")
 set(INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR
     "${_infernux_player_plugin}/package/editor/infernux_${_infernux_player_platform}/player"
     CACHE PATH "Compatible desktop Player payload destination")
@@ -238,6 +236,10 @@ endif()
 install(FILES "${CMAKE_SOURCE_DIR}/external/slang_for_infernux/LICENSE"
     DESTINATION "python/infernux/resources/licenses/slang"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
+foreach(_dependency IN ITEMS pybind11 zlib)
+    install(FILES "${INFERNUX_EXTERNAL_ROOT}/${_dependency}/LICENSE"
+        DESTINATION "external/${_dependency}" COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
+endforeach()
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/external/slang_for_infernux/LICENSES/"
     DESTINATION "python/infernux/resources/licenses/slang/LICENSES"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})

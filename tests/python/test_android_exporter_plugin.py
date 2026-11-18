@@ -268,12 +268,13 @@ def test_android_build_discovers_a_kit_installed_after_plugin_startup(monkeypatc
     missing = exporter.doctor(request)
     assert not missing.available and missing.details["android_support_root"] == str(root)
     _toolchain(root)
+    (root / "gradle-dependencies/modules-2/files-2.1/com.android.tools.build/gradle").mkdir(parents=True)
     for abi in ("arm64-v8a", "x86_64"):
         _stamp_android_python_prefix(module, root / "python" / abi, abi=abi)
     (root / platform_support.ANDROID_SUPPORT_MANIFEST).write_text(json.dumps({
         "$schema": platform_support.ANDROID_SUPPORT_SCHEMA, "kind": platform_support.ANDROID_SUPPORT_KIND,
         "version": platform_support.ANDROID_SUPPORT_VERSION, "host": platform_support._host_id(),
-        "paths": {"sdk": "sdk", "jdk": "jdk", "gradle": "gradle",
+        "paths": {"sdk": "sdk", "jdk": "jdk", "gradle": "gradle", "gradle_dependencies": "gradle-dependencies",
                   "python": {"arm64-v8a": "python/arm64-v8a", "x86_64": "python/x86_64"}},
     }), encoding="utf-8")
     _write_native_payload(tmp_path / "player", abi="arm64-v8a")
