@@ -1690,7 +1690,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 manager = ResourcesManager.instance()
                 if manager is not None:
                     manager.notify_script_catalog_changed(path, "created")
-        elif self._is_editor_translation_change(path):
+        elif self._is_editor_translation_change(path) or path.lower().endswith(".theme.json"):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "created")
@@ -1829,7 +1829,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 manager = ResourcesManager.instance()
                 if manager is not None:
                     manager.notify_script_catalog_changed(path, "modified")
-        elif self._is_editor_translation_change(path):
+        elif self._is_editor_translation_change(path) or path.lower().endswith(".theme.json"):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "modified")
@@ -1912,6 +1912,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # The source has already left the script domain. Even a rejected
             # import of its new asset type must not keep the old code alive.
             self._publish_script_path_move(old_path, new_path, origin="watchdog")
+        if old_path.lower().endswith(".theme.json"):
+            # The old source has already moved. Retire/resolve its contribution
+            # even if the destination importer cannot publish the new type.
+            manager = ResourcesManager.instance()
+            if manager is not None:
+                manager.notify_script_catalog_changed(old_path, "deleted")
         if not result:
             _reject_failed_asset_import(new_path, result)
             raise RuntimeError(f"moved asset runtime publication failed: {new_path}: {result.error}")
@@ -1935,6 +1941,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(old_path, "deleted")
+                manager.notify_script_catalog_changed(new_path, "moved")
+        elif new_path.lower().endswith(".theme.json"):
+            manager = ResourcesManager.instance()
+            if manager is not None:
                 manager.notify_script_catalog_changed(new_path, "moved")
         elif new_path.lower().endswith((".vert", ".frag")):
             result = AssetManager.reimport_asset(

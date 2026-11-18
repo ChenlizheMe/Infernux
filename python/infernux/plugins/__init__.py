@@ -19,6 +19,13 @@ from .package import (
 )
 from .registry import PluginRegistry
 from .categories import OFFICIAL_PLUGIN_CATEGORIES, normalize_plugin_category
+from .themes import (
+    THEMES_DIRECTORY,
+    is_theme_package,
+    scan_installed_themes,
+    theme_package_errors,
+    theme_packages,
+)
 
 __all__ = [
     "InxPackage",
@@ -41,4 +48,9 @@ __all__ = [
     "player_file_exported",
     "OFFICIAL_PLUGIN_CATEGORIES",
     "normalize_plugin_category",
+    "THEMES_DIRECTORY",
+    "is_theme_package",
+    "scan_installed_themes",
+    "theme_package_errors",
+    "theme_packages",
 ]

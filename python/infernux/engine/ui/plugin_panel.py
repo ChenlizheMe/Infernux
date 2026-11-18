@@ -12,6 +12,7 @@ from infernux.plugins import (
     OFFICIAL_PLUGIN_CATEGORIES,
     InxPackage,
     PluginManager,
+    is_theme_package,
     localized_intro,
     markdown_to_plain_text,
     parse_markdown_blocks,
@@ -265,13 +266,27 @@ class PluginPanel(_PluginFeedback, EditorPanel):
             str(item.get("reference", "")).casefold(): dict(item)
             for item in manager.registry.installed_metadata()
         }
+        def row_category(key, value):
+            record = manager.registry.installed_record(key) or {}
+            for source in (value, record):
+                if normalize_plugin_category(source.get("category", "")) == "theme":
+                    return "theme"
+            if is_theme_package(key):
+                return "theme"
+            for member in record.get("files", ()) or ():
+                logical = str(member.get("logical_path", "")).replace("\\", "/")
+                if logical.startswith("themes/") and logical.endswith(".json"):
+                    return "theme"
+            return normalize_plugin_category(value.get("category", "other"))
+
         rows: list[dict[str, object]] = []
         known: set[str] = set()
         for value in manager.registry.available():
             row = dict(value)
             key = str(row.get("reference", "")).casefold()
+            theme_package = is_theme_package(key)
             row["_registry"] = True
-            row["_category_key"] = normalize_plugin_category(row.get("category", "other"))
+            row["_category_key"] = row_category(key, row)
             source = row.get("source", {})
             row["_official"] = bool(
                 isinstance(source, Mapping) and source.get("official", False)
@@ -299,7 +314,7 @@ class PluginPanel(_PluginFeedback, EditorPanel):
             value["_registry"] = False
             value["_installed"] = True
             value["_official"] = False
-            value["_category_key"] = normalize_plugin_category(value.get("category", "other"))
+            value["_category_key"] = row_category(key, value)
             value["_cached"] = False
             value["_installed_version"] = str(value.get("version", "")).strip()
             rows.append(value)
@@ -982,6 +997,17 @@ class PluginPanel(_PluginFeedback, EditorPanel):
             complete=complete,
         ):
             self._set_message(t("plugins.install_progress.busy"), "info")
+
+    def _on_install_finished(self, reference, message):
+        if reference:
+            self._selected_reference = reference
+        self._message = message
+
+    def select_category(self, category: str) -> None:
+        """Reveal a package category when navigating from a related tool."""
+        self._scope_index = 0
+        self._category_index = OFFICIAL_PLUGIN_CATEGORIES.index(category) + 1
+        self._search = ""
 
     def _run(self, callback, action: str) -> None:
         """Run a package mutation after the native UI frame has retired.

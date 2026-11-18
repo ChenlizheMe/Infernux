@@ -202,6 +202,16 @@ class Theme:
     ROLE_ACCENT       : RGBA = (0.847, 0.263, 0.310, 1.0)  # Accent #D8434F
     ROLE_TEXT         : RGBA = (0.914, 0.894, 0.855, 1.0)  # Warm white #E9E4DA
 
+    # -- Graph node headers -----------------------------------------
+    GRAPH_NODE_HEADER        : RGBA = (0.255, 0.263, 0.282, 1.0)
+    GRAPH_HEADER_UNAVAILABLE : RGBA = (0.478, 0.192, 0.192, 1.0)
+    GRAPH_STAGE_SPAWN        : RGBA = (0.204, 0.322, 0.282, 1.0)
+    GRAPH_STAGE_INIT         : RGBA = (0.208, 0.290, 0.365, 1.0)
+    GRAPH_STAGE_UPDATE       : RGBA = (0.345, 0.294, 0.196, 1.0)
+    GRAPH_STAGE_OUTPUT       : RGBA = (0.361, 0.208, 0.224, 1.0)
+    GRAPH_STAGE_EVENT        : RGBA = (0.314, 0.243, 0.353, 1.0)
+    GRAPH_EVENT_DOT          : RGBA = (0.620, 0.518, 0.698, 1.0)
+
     # -- Text Colors ------------------------------------------------
     TEXT              : RGBA = (0.914, 0.894, 0.855, 1.0)  # Primary text (warm white #E9E4DA)
     TEXT_DISABLED     : RGBA = (0.435, 0.424, 0.400, 1.0)  # Disabled text (#6F6C66)
@@ -428,9 +438,22 @@ class Theme:
     #  Popup Spacing ( Gizmos/Camera )
     # ══════════════════════════════════════════════════════════════════════
 
-    POPUP_WIN_PAD     = (12.0, 10.0)  # Popup window padding
-    POPUP_ITEM_SPC    = (10.0, 8.0)  # Popup item spacing
-    POPUP_FRAME_PAD   = (8.0, 6.0)  # Popup frame padding
+    # Dense menus / context / combo (SSOT: EditorThemeTable.inl). Modal dialogs use MODAL_*.
+    POPUP_WIN_PAD     = (8.0, 6.0)
+    POPUP_ITEM_SPC    = (8.0, 2.0)
+    POPUP_FRAME_PAD   = (8.0, 3.0)
+    MENU_WIN_PAD      = (8.0, 6.0)
+    MENU_ITEM_SPC     = (8.0, 2.0)
+    MENU_FRAME_PAD    = (8.0, 3.0)
+    MENU_ITEM_HEIGHT  : float = 22.0
+    BLEED_PADDING     = (8.0, 8.0)  # Docked panel edge inset (= PANEL_PADDING)
+    MODAL_WIN_PAD     = (16.0, 14.0)
+    MODAL_ITEM_SPC    = (10.0, 8.0)
+    MODAL_FRAME_PAD   = (10.0, 6.0)
+    TOPBAR_ZONE_GAP   : float = 12.0
+    TOPBAR_DIVIDER_H  : float = 18.0
+    TOPBAR_UTIL_BTN_H : float = 28.0
+    TOPBAR_UTIL_BTN_W : float = 28.0
 
     # -- Add Component Popup
     POPUP_ADD_COMP_PAD  = (10.0, 8.0)  # Padding
@@ -446,7 +469,6 @@ class Theme:
     TREE_INDENT       : float = 14.0  # Tree indent per level (Unity: ~14px)
     TREE_ROW_ALT_BG   : RGBA = (0.0, 0.0, 0.0, 0.08)  # Alternating row tint
     TREE_DND_LINE_CLR : RGBA = (0.847, 0.263, 0.310, 1.0)  # Drag insertion line (accent)
-    PREFAB_ICON       : str  = "\u25C6"  # Prefab icon (diamond)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Console Panel Spacing
@@ -501,6 +523,8 @@ class Theme:
     SCENE_OVERLAY_COMBO_BG    : RGBA = (0.110, 0.114, 0.122, 0.85)  # Background (surface)
     SCENE_OVERLAY_COMBO_HOVER : RGBA = (0.247, 0.180, 0.196, 0.90)  # Hover (accent tint)
     SCENE_OVERLAY_COMBO_ACTIVE: RGBA = (0.208, 0.153, 0.169, 0.95)  # Active (accent tint)
+    SCENE_OVERLAY_PILL_BG     : RGBA = (0.055, 0.059, 0.063, 0.82)  # Viewport pill plate
+    SCENE_OVERLAY_PILL_EDGE   : RGBA = (1.0, 1.0, 1.0, 0.08)  # Viewport pill hairline
     SCENE_OVERLAY_ROUNDING    : float = 0.0  # Rounding (zero-rounding rule)
     SCENE_OVERLAY_BORDER_SIZE : float = 0.0  # Border size
 
@@ -745,12 +769,30 @@ class Theme:
 
     @staticmethod
     def push_popup_vars(ctx) -> int:
-        """
-        Push popup spacing preset. Returns 3."""
-        ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, *Theme.POPUP_WIN_PAD)
-        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing,   *Theme.POPUP_ITEM_SPC)
-        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding,  *Theme.POPUP_FRAME_PAD)
+        """Dense menu / context / combo padding (Mission Control). Returns 3."""
+        ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, *Theme.MENU_WIN_PAD)
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing,   *Theme.MENU_ITEM_SPC)
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding,  *Theme.MENU_FRAME_PAD)
         return 3
+
+    @staticmethod
+    def push_menu_vars(ctx) -> int:
+        """Alias of push_popup_vars — one recipe for all menus."""
+        return Theme.push_popup_vars(ctx)
+
+    @staticmethod
+    def push_modal_vars(ctx) -> int:
+        """Larger padding for confirmation / load-error dialogs. Returns 3."""
+        ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, *Theme.MODAL_WIN_PAD)
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing,   *Theme.MODAL_ITEM_SPC)
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding,  *Theme.MODAL_FRAME_PAD)
+        return 3
+
+    @staticmethod
+    def push_bleed_vars(ctx) -> int:
+        """Docked panel content bleed (PANEL/BLEED padding). Returns 1."""
+        ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, *Theme.BLEED_PADDING)
+        return 1
 
     @staticmethod
     def push_status_bar_button_style(ctx) -> int:
@@ -881,6 +923,46 @@ class Theme:
 # ║  Editor startup contract; this module does not provide a second theme.    ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
+_theme_listeners = {}
+
+
+def on_theme_changed(callback) -> callable:
+    """Subscribe to editor theme switches; returns an unsubscribe callable."""
+    from infernux.engine.runtime_dispatch import ReloadableCallbackRef
+
+    if not callable(callback):
+        raise TypeError("on_theme_changed expects a callable")
+    reference = ReloadableCallbackRef.normalize(callback)
+    _theme_listeners[callback] = reference
+
+    def unsubscribe() -> None:
+        if _theme_listeners.get(callback) is reference:
+            del _theme_listeners[callback]
+
+    from infernux.engine.reload.owners import own_cleanup
+
+    own_cleanup(callback, unsubscribe)
+    return unsubscribe
+
+
+def _notify_theme_changed() -> None:
+    for callback, reference in tuple(_theme_listeners.items()):
+        if _theme_listeners.get(callback) is not reference:
+            continue
+        try:
+            reference.invoke(propagate_exceptions=True)
+        except Exception as error:  # a listener must not break the switch
+            from infernux.debug import Debug
+
+            Debug.log_exception(error)
+
+
+def _native_theme_generation() -> int:
+    from infernux.lib import editor_theme_generation
+
+    return int(editor_theme_generation())
+
+
 def _apply_native_theme_overrides() -> None:
     from infernux.lib import (
         get_editor_theme_colors,
@@ -888,6 +970,9 @@ def _apply_native_theme_overrides() -> None:
         get_editor_theme_vec2s,
     )
 
+    generation = _native_theme_generation()
+    if Theme._NATIVE_THEME_GENERATION == generation:
+        return
     applied = 0
     for name, value in get_editor_theme_colors().items():
         setattr(Theme, name, tuple(value))
@@ -899,62 +984,55 @@ def _apply_native_theme_overrides() -> None:
         setattr(Theme, name, float(value))
         applied += 1
     Theme._NATIVE_OVERRIDES_APPLIED = applied
-
-
-def _native_theme_generation() -> int:
-    from infernux.lib import editor_theme_generation
-
-    return int(editor_theme_generation())
-
-
-def set_editor_theme(name: str) -> bool:
-    """Switch the active editor theme.
-
-    The C++ registry re-skins every built-in ImGui widget (C++ and Python
-    panels) in one call; we then refresh the Python-side ``Theme`` tokens used
-    by custom drawing. Returns ``True`` on success.
-    """
-    from infernux.lib import set_editor_theme as _native_set
-
-    ok = bool(_native_set(name))
-    if ok:
-        _apply_native_theme_overrides()
-        Theme._NATIVE_THEME_GENERATION = _native_theme_generation()
-        _notify_theme_changed()
-    return ok
-
-
-_theme_listeners: list = []
-
-
-def on_theme_changed(callback) -> callable:
-    """Subscribe to editor theme switches; returns an unsubscribe callable."""
-    if not callable(callback):
-        raise TypeError("on_theme_changed expects a callable")
-    _theme_listeners.append(callback)
-
-    def unsubscribe() -> None:
-        try:
-            _theme_listeners.remove(callback)
-        except ValueError:
-            pass
-
-    return unsubscribe
-
-
-def _notify_theme_changed() -> None:
-    for callback in tuple(_theme_listeners):
-        try:
-            callback()
-        except Exception as error:  # a listener must not break the switch
-            from infernux.debug import Debug
-
-            Debug.log_warning(f"editor theme listener failed: {error}")
+    Theme._NATIVE_THEME_GENERATION = generation
+    _notify_theme_changed()
 
 
 def _set_editor_theme_native(name: str) -> bool:
-    """Explicit native switch used by package theme contributions."""
-    return set_editor_theme(name)
+    """Apply a theme without changing the user's preferred selection."""
+    from infernux.lib import set_editor_theme as _native_set
+
+    ok = bool(_native_set(name))
+    if ok and Theme._NATIVE_THEME_GENERATION != _native_theme_generation():
+        _apply_native_theme_overrides()
+    return ok
+
+
+def set_editor_theme(name: str) -> bool:
+    """Switch the active editor theme and retain the editor selection.
+
+    The C++ registry re-skins every built-in ImGui widget (C++ and Python
+    panels) in one call. An active editor theme service also saves the user's
+    preference. Without an editor, only the native and mirrored tokens change.
+    Returns ``True`` on success, including an already selected theme.
+    """
+    import sys
+
+    module = sys.modules.get("infernux.engine.editor_themes")
+    service = module.EditorThemes.instance() if module is not None else None
+    if service is not None:
+        if name not in list_editor_themes():
+            return False
+        service.select(name)
+        return True
+    return _set_editor_theme_native(name)
+
+
+def register_editor_theme(name: str, colors: dict | None = None, vec2s: dict | None = None,
+                          floats: dict | None = None, *, owner: str | None = None) -> None:
+    """Register (or replace) a package theme as token overrides.
+
+    ``owner`` is the package reference used to retire the theme again; it
+    defaults to ``theme:<name>``. Overrides are applied to the canonical base
+    theme and semantic ROLE_* tokens derive their dependent tokens. Unknown
+    token names or out-of-range surface dimensions raise ``ValueError``.
+    """
+    from infernux.lib import register_editor_theme as _native_register
+
+    reference = str(owner or ("theme:" + str(name)))
+    _native_register(str(name), reference, colors or {}, vec2s or {}, floats or {})
+    if active_editor_theme() == name:
+        _apply_native_theme_overrides()
 
 
 def list_editor_themes() -> list:
@@ -976,6 +1054,7 @@ Theme.set_theme = staticmethod(set_editor_theme)
 Theme.list_themes = staticmethod(list_editor_themes)
 Theme.active_theme = staticmethod(active_editor_theme)
 Theme.refresh = staticmethod(_apply_native_theme_overrides)
+Theme.register_theme = staticmethod(register_editor_theme)
 
 Theme._NATIVE_OVERRIDES_APPLIED = 0
 Theme._NATIVE_THEME_GENERATION = 0
