@@ -2264,9 +2264,6 @@ print(json.dumps({{
 
         if sys.platform == "win32" and not _has_msvc_toolchain():
             raise RuntimeError("Compiling a Player runtime requires Microsoft Visual C++ Build Tools (MSVC).")
-        if sys.platform.startswith("linux") and shutil.which("gcc") is None and shutil.which("clang") is None:
-            raise RuntimeError("Compiling a Player runtime requires a C compiler (gcc or clang).")
-
         alias = _windows_ascii_build_alias(self._build_cache_root)
         process_build_root = alias or self._build_cache_root
         try:
@@ -2344,6 +2341,18 @@ print(json.dumps({{
 
         if sys.platform == "win32":
             env = _ensure_windows_msvc_environment(env)
+        elif sys.platform.startswith("linux"):
+            requested = env.get("CC")
+            compiler = (
+                _which_in_env(requested, env) if requested
+                else _which_in_env("gcc", env) or _which_in_env("clang", env)
+            )
+            if compiler:
+                # GCC's LTO objects must reach its own linker even when a cross SDK is on PATH.
+                env["CC"] = compiler
+                _set_env_paths(env, "PATH", [os.path.dirname(compiler), *_split_env_paths(env["PATH"])])
+            elif not requested:
+                raise RuntimeError("Compiling a Player runtime requires a C compiler (gcc or clang).")
 
         from infernux.runtime_utf8 import apply_utf8_defaults
 
