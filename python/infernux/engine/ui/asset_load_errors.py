@@ -183,6 +183,10 @@ class AssetLoadErrors:
             self._pending = {guid: entry for guid, entry in self._pending.items() if guid in current}
             self._seen = {guid: stamp for guid, stamp in self._seen.items() if guid in current}
             self._publish_changes()
+            if self._dialog is not None and not self.errors:
+                # Repairs end the failure dialog instead of leaving it on the
+                # modal stack and blocking later editor progress dialogs.
+                self._dialog.cancel()
             for entry in entries:
                 stamp = (entry["modified_ns"], entry["size"], entry["error"])
                 if not entry["path"].casefold().endswith(".scene") and self._seen.get(entry["guid"]) != stamp:

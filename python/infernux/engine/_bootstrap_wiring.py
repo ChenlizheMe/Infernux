@@ -1381,6 +1381,16 @@ class BootstrapWiringMixin:
         _asset_load_errors = AssetLoadErrors(
             engine.get_asset_database(), self.interaction_core.project_assets
         )
+        # The plugin manager may start before this presenter exists. Let it
+        # observe asset-failure repairs now instead of silently losing the
+        # listener registration.
+        try:
+            from infernux.plugins import PluginManager
+            _plugin_manager = PluginManager.instance()
+            if _plugin_manager is not None:
+                _plugin_manager._attach_resource_events()
+        except (ImportError, AttributeError):
+            pass
         from infernux.engine.ui.command_palette import CommandPalettePresenter
 
         self._command_palette_presenter = CommandPalettePresenter(

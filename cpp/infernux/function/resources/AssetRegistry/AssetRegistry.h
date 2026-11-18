@@ -419,6 +419,10 @@ class AssetRegistry
 
 template <typename T> std::shared_ptr<T> AssetRegistry::GetAsset(const std::string &guid) const
 {
+    // A failed current source owns no payload, even if a previous generation
+    // is still resident.
+    if (m_assetDb && !m_assetDb->GetImportError(guid).empty())
+        return nullptr;
     auto it = m_loadedAssets.find(guid);
     if (it != m_loadedAssets.end()) {
         it->second.lastAccessSerial = ++m_accessSerial;
@@ -429,6 +433,9 @@ template <typename T> std::shared_ptr<T> AssetRegistry::GetAsset(const std::stri
 
 template <typename T> std::shared_ptr<T> AssetRegistry::LoadAsset(const std::string &guid, ResourceType type)
 {
+    // A failed current source must not resolve a resident previous generation.
+    if (m_assetDb && !m_assetDb->GetImportError(guid).empty())
+        return nullptr;
     // 1. Cache hit with strict resource and C++ type validation.
     const auto cached = m_loadedAssets.find(guid);
     if (cached != m_loadedAssets.end()) {

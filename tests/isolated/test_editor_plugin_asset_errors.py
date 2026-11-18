@@ -40,6 +40,7 @@ def exercise(workspace):
     project = workspace / "project"
     (project / "Assets").mkdir(parents=True)
     (project / "ProjectSettings").mkdir()
+    (project / "ProjectSettings" / "requirements.txt").write_text("", encoding="utf-8")
     bootstrap = EditorBootstrap(str(project), LogLevel.Warn)
     try:
         bootstrap.run()
