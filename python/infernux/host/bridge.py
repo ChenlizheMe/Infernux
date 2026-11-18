@@ -145,10 +145,8 @@ class AutomationBridge:
         from infernux.engine.interaction import AssetMutationService
         from .editor import EditorAutomationHost
         native = EditorAutomationHost.instance()._native_engine()
-        capture_callback = getattr(native, "set_capture_completion_callback", None)
-        if callable(capture_callback):
-            capture_callback(lambda capture_id: emit_signal("capture.completed", capture_id))
-            self._cleanups.append(lambda: capture_callback(None))
+        native.set_capture_completion_callback(lambda capture_id: emit_signal("capture.completed", capture_id))
+        self._cleanups.append(lambda: native.set_capture_completion_callback(None))
         console = DebugConsole.instance()
         logged = lambda entry: emit_signal("console.changed")
         console.add_listener(logged)
@@ -166,13 +164,7 @@ class AutomationBridge:
         from infernux.engine.bootstrap import EditorBootstrap
         from infernux.lib import SceneManager
         engine = EditorBootstrap.instance().engine
-        getter = getattr(engine, "get_runtime_change_journal", None)
-        journal = getter() if callable(getter) else None
-        if journal is None:
-            from infernux.engine.runtime_change_journal import runtime_change_journal
-
-            journal = runtime_change_journal()
-        self._attach_runtime_observations(journal, SceneManager.instance(), play)
+        self._attach_runtime_observations(engine.get_runtime_change_journal(), SceneManager.instance(), play)
 
     def _attach_runtime_observations(self, journal, scene_manager, play):
         from infernux.runtime_services import register_update
@@ -187,11 +179,8 @@ class AutomationBridge:
                     previous["world"] = stamp
                     emit_signal("world.changed", {"revision": stamp[0], "transform_serial": stamp[1]})
             if self.queries.has_subscribers("runtime.changed"):
-                frame_count = int(getattr(scene_manager, "runtime_frame_count",
-                                           scene_manager._frame_time.frame_count))
-                step_sequence = int(getattr(play, "step_sequence", 0)) if play else 0
-                stamp = (int(scene_manager.simulation_epoch), frame_count,
-                         int(scene_manager.published_fixed_step_index), step_sequence)
+                stamp = (int(scene_manager.simulation_epoch), int(scene_manager.runtime_frame_count),
+                         int(scene_manager.published_fixed_step_index), int(play.step_sequence) if play else 0)
                 if stamp != previous["clock"]:
                     previous["clock"] = stamp
                     emit_signal("runtime.changed", {"epoch": stamp[0], "frame": stamp[1],

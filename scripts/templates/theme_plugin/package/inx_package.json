@@ -1,0 +1,8 @@
+{
+  "reference": "example/studio-theme",
+  "name": "Studio Theme",
+  "version": "0.1.0",
+  "intro": "An editor theme package.",
+  "category": "theme",
+  "engine": ">=0.4.8"
+}
