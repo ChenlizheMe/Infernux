@@ -54,6 +54,7 @@ class AudioClip
     /// @return true on success
     /// Catalog metadata takes precedence over sidecars (Player ships no .meta files).
     bool LoadFromFile(const std::string &filePath, const InxResourceMeta *metadata = nullptr);
+    [[nodiscard]] const std::string &GetLoadError() const noexcept { return m_loadError; }
 
     /// Update the descriptor used by future streaming voices; keep decoded
     /// PCM and already-open voices intact during a catalog relocation.
@@ -145,6 +146,7 @@ class AudioClip
     std::string m_filePath;
     std::string m_name;
     std::string m_guid;
+    std::string m_loadError;
 
     SDL_AudioSpec m_spec = {};
     std::vector<uint8_t> m_data; ///< Decoded PCM data (owned copy)

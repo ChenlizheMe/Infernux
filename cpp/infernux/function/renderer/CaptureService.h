@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <function/renderer/rhi/RenderViewContext.h>
 #include <memory>
+#include <functional>
 #include <string>
 
 namespace infernux
@@ -80,11 +81,13 @@ class CaptureService
     /// capture is independent of later source resizes while its file is written.
     void InvalidateSource(CaptureSource source, uint64_t sourceGeneration);
     [[nodiscard]] bool HasPending() const noexcept;
+    void SetCompletionCallback(std::function<void(uint64_t)> callback);
 
   private:
     void Poll();
     struct Impl;
     std::unique_ptr<Impl> m_impl;
+    std::function<void(uint64_t)> m_completion;
 };
 
 } // namespace infernux
