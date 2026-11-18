@@ -791,7 +791,7 @@ class JoltGpuTick::Impl
         case Phase::SolveJointPosition:
             return {Stage::SolveJointPosition, Domain::IslandJoints};
         case Phase::SolvePosition:
-            return {Stage::SolvePosition, Domain::IslandContacts};
+            return {Stage::SolvePosition, Domain::IslandPatches};
         case Phase::FinishJoints:
             return {Stage::FinishJoints, Domain::Joints};
         case Phase::FinishTick:
@@ -833,7 +833,7 @@ class JoltGpuTick::Impl
     static bool IslandDomain(JPH::GPU::Domain domain)
     {
         using JPH::GPU::Domain;
-        return domain == Domain::IslandJoints || domain == Domain::IslandPatches || domain == Domain::IslandContacts;
+        return domain == Domain::IslandJoints || domain == Domain::IslandPatches;
     }
 
     uint32_t IslandCount(JPH::GPU::Domain domain) const
@@ -849,10 +849,7 @@ class JoltGpuTick::Impl
         const auto &plan = inputs.GetConstraints();
         if (!plan)
             throw std::logic_error("Island phase requires its installed constraint plan");
-        if (domain == JPH::GPU::Domain::IslandJoints)
-            return plan->maxJointItems;
-        return domain == JPH::GPU::Domain::IslandContacts ? plan->maxPatchItems * JPH::GPU::MaxContactPointsPerPair
-                                                          : plan->maxPatchItems;
+        return domain == JPH::GPU::Domain::IslandJoints ? plan->maxJointItems : plan->maxPatchItems;
     }
 
     uint32_t ItemCount(JPH::GPU::Domain domain) const

@@ -35,16 +35,16 @@ struct MixedPatch
 
 [[vk::binding(0, 0)]] ConstantBuffer<CouplingParams> params;
 [[vk::binding(1, 0)]] StructuredBuffer<BodyModel> gpu_models;
-[[vk::binding(2, 0)]] RWStructuredBuffer<BodyState> gpu_states;
+[[vk::binding(2, 0)]] globallycoherent RWStructuredBuffer<BodyState> gpu_states;
 [[vk::binding(3, 0)]] StructuredBuffer<CpuBoundary> cpu_models;
-[[vk::binding(4, 0)]] RWStructuredBuffer<Velocity> cpu_velocities;
+[[vk::binding(4, 0)]] globallycoherent RWStructuredBuffer<Velocity> cpu_velocities;
 [[vk::binding(5, 0)]] StructuredBuffer<uint4> groups;
 [[vk::binding(6, 0)]] RWStructuredBuffer<MixedPatch> patches;
-[[vk::binding(7, 0)]] RWStructuredBuffer<Velocity> cpu_impulses;
+[[vk::binding(7, 0)]] globallycoherent RWStructuredBuffer<Velocity> cpu_impulses;
 [[vk::binding(8, 0)]] RWStructuredBuffer<BodySleepRecord> gpu_sleep;
 [[vk::binding(9, 0)]] StructuredBuffer<BodyForces> gpu_forces;
 [[vk::binding(10, 0)]] StructuredBuffer<uint> wake_slots;
-[[vk::binding(11, 0)]] RWStructuredBuffer<Pose> cpu_poses;
+[[vk::binding(11, 0)]] globallycoherent RWStructuredBuffer<Pose> cpu_poses;
 [[vk::binding(12, 0)]] StructuredBuffer<PositionAnchors> anchors;
 [[vk::binding(13, 0)]] StructuredBuffer<MixedPatch> previous_patches;
 [[vk::binding(14, 0)]] StructuredBuffer<uint> continuous_slots;

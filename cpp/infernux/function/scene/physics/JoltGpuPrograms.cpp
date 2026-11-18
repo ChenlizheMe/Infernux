@@ -647,7 +647,7 @@ uint32_t Groups(uint32_t count, uint32_t width)
 
 bool IslandDomain(Domain domain)
 {
-    return domain == Domain::IslandPatches || domain == Domain::IslandContacts || domain == Domain::IslandJoints;
+    return domain == Domain::IslandPatches || domain == Domain::IslandJoints;
 }
 
 const JoltGpuContactWorkset &RequireContacts(const JoltGpuStepInputs &inputs)
@@ -670,9 +670,7 @@ bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs
             throw std::invalid_argument("Jolt GPU island work requires its validated substep plan");
         const bool joints = definition.domain == Domain::IslandJoints;
         const uint32_t tableCount = joints ? constraints->jointIslandCount : constraints->contactIslandCount;
-        uint64_t maximum = joints ? constraints->maxJointItems : constraints->maxPatchItems;
-        if (definition.domain == Domain::IslandContacts)
-            maximum *= MaxContactPointsPerPair;
+        const uint64_t maximum = joints ? constraints->maxJointItems : constraints->maxPatchItems;
         if (range.z > tableCount || range.w > tableCount - range.z)
             throw std::invalid_argument("Jolt GPU island work addresses outside its installed island table");
         if (uint64_t(range.w) * range.y > quantum)
@@ -1560,11 +1558,10 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
     dispatch.proof = std::move(proof);
     const auto &definition = entry.definition;
     dispatch.groupCountY = dispatch.groupCountZ = 1;
-    if (IslandDomain(definition.domain)) {
-        dispatch.groupCountX = Groups(range.w, definition.groupSizeX);
-    } else {
-        dispatch.groupCountX = Groups(range.y, definition.groupSizeX);
-    }
+    if (definition.domain == Domain::IslandPatches && range.y >= ContactParallelMinimum)
+        dispatch.groupCountX = range.w;
+    else
+        dispatch.groupCountX = Groups(IslandDomain(definition.domain) ? range.w : range.y, definition.groupSizeX);
     const auto &maximum = m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount;
     if (!dispatch.groupCountX || !dispatch.groupCountY || !dispatch.groupCountZ || dispatch.groupCountX > maximum[0] ||
         dispatch.groupCountY > maximum[1] || dispatch.groupCountZ > maximum[2])
