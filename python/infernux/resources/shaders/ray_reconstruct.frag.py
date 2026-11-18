@@ -21,6 +21,10 @@ class RayReconstruct(shader.fullscreen):
         current = unpack_ray_signal(fresh)
         if current.a <= 0.0:
             return fresh
+        # The diffuse history's last word stores luminance variance. The raw
+        # ray and the specular history carry the secondary distance there.
+        if not self.specular:
+            fresh = shader.uvec4(fresh.xyz, 0)
 
         extent = shader.ivec2(shader.dimensions(self.signal, 0))
         full = shader.ivec2(shader.dimensions(self.primary, 0))
@@ -59,27 +63,44 @@ class RayReconstruct(shader.fullscreen):
 
         previous_packet = shader.load(self.previous_signal, previous_pixel, 0)
         previous = unpack_ray_signal(previous_packet)
-        if previous.a <= 0.0 or fresh.z != previous_packet.z:
+        if previous.a <= 0.0:
             return fresh
 
-        # Stamps travel with the immutable TLAS. Comparing to the submitted
-        # view catches changes even when it never rendered intermediate pages.
         visibility = self.geometry[1]
         accepted = shader._previous_ray_geometry_serial()
-        if visibility.y != accepted:
-            if visibility.y < accepted:
+        limit = 32.0
+        if self.specular:
+            if fresh.z != previous_packet.z:
                 return fresh
-            surface_id = fresh.z
-            if surface_id != 0 and surface_id != shader.uint(0xFFFFFFFF):
-                stamps = self.geometry[visibility.x + (surface_id >> 2)]
-                if stamps[surface_id & 3] > accepted:
+            distance = shader.as_float(fresh.w)
+            previous_distance = shader.as_float(previous_packet.w)
+            if shader.abs(distance - previous_distance) > 0.02 + 0.075 * distance:
+                return fresh
+            if visibility.y != accepted:
+                if visibility.y < accepted:
                     return fresh
-        distance = shader.as_float(fresh.w)
-        previous_distance = shader.as_float(previous_packet.w)
-        relative_tolerance = 0.075 if self.specular else 0.25
-        if shader.abs(distance - previous_distance) > 0.02 + relative_tolerance * distance:
-            return fresh
+                surface_id = fresh.z
+                if surface_id != 0 and surface_id != shader.uint(0xFFFFFFFF):
+                    stamps = self.geometry[visibility.x + (surface_id >> 2)]
+                    if stamps[surface_id & 3] > accepted:
+                        return fresh
+            limit = 8.0
+        elif visibility.y != accepted:
+            # A diffuse estimate integrates many directions. The last ray's
+            # endpoint cannot certify the other samples after a scene edit.
+            if visibility.y < accepted or visibility.z != primary.x or visibility.w > accepted:
+                return fresh
+            projected_uv = previous_clip.xy / previous_clip.w * shader.vec2(0.5, -0.5) + shader.vec2(0.5)
+            displacement = shader.abs(projected_uv - previous_uv)
+            if shader.any(displacement > shader.vec2(0.03)):
+                return fresh
+            limit = 4.0
 
-        count = shader.min(previous.a + 1.0, 8.0)
+        count = shader.min(previous.a + 1.0, limit)
         estimate = shader.mix(previous.rgb, current.rgb, 1.0 / count)
-        return pack_ray_signal(shader.vec4(estimate, count), fresh.zw)
+        witness = fresh.zw
+        if not self.specular:
+            delta = shader.dot(current.rgb - previous.rgb, shader.vec3(0.2126, 0.7152, 0.0722))
+            variance = (1.0 - 1.0 / count) * (shader.as_float(previous_packet.w) + delta * delta / count)
+            witness = shader.uvec2(fresh.z, shader.as_uint(variance))
+        return pack_ray_signal(shader.vec4(estimate, count), witness)

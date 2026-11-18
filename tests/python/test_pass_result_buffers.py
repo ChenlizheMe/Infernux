@@ -244,6 +244,14 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
             assert previous.size_divisor == divisor
             assert passes[f"Decode {name} diagnostic"]._write_colors == {0: result.sample(name).name}
             assert lighting._input_bindings[name] == reconstructed.sample(name).name
+            if name == "ray_diffuse":
+                filtered = passes[resolve]._write_colors[0]
+                assert (previous.name, filtered) == ("_ray_diffuse/read", "_ray_diffuse/write")
+                for stride in ((1,) if divisor == 4 else (1, 2)):
+                    spatial = passes[f"Ray Diffuse Spatial {stride}"]
+                    assert spatial._input_bindings["signal"] == filtered
+                    filtered = spatial._write_colors[0]
+                assert lighting._input_bindings[name] == filtered
 
 
 def test_deferred_thin_sheet_preserves_background_and_partitions_transparency():

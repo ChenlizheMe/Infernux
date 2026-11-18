@@ -26,7 +26,7 @@ struct RayShadowInstance
 
 struct RayShadowState
 {
-    uint32_t serial = 1;
+    RayVisibilityRevision revision{1u};
     uint64_t lightingGeneration = 0;
     std::vector<RayShadowInstance> instances;
     std::vector<std::array<uint32_t, 4>> stamps;
@@ -46,8 +46,8 @@ class RayShadowChanges
         m_state.lightingGeneration = lighting.generation;
         m_state.stamps.reserve(m_stampCount);
         if (m_previous) {
-            const bool wrapped = m_previous->serial == UINT32_MAX;
-            m_state.serial = wrapped ? 1u : m_previous->serial + 1;
+            const bool wrapped = m_previous->revision.serial == UINT32_MAX;
+            m_state.revision.serial = wrapped ? 1u : m_previous->revision.serial + 1;
             m_resetSlots = wrapped || m_previous->lightingGeneration != m_state.lightingGeneration ||
                            m_previous->instances.size() != m_state.instances.size() ||
                            m_previous->stamps.size() != m_stampCount;
@@ -83,7 +83,7 @@ class RayShadowChanges
                     m_phase = Phase::Done;
                     break;
                 }
-                m_state.stamps[m_cursor++].fill(m_state.serial);
+                m_state.stamps[m_cursor++].fill(m_state.revision.serial);
                 --budget;
                 break;
             case Phase::Lights:
@@ -119,6 +119,17 @@ class RayShadowChanges
 
     [[nodiscard]] RayShadowState Take()
     {
+        // This window spans publications skipped by a view. A changed shadow
+        // policy, mesh or second mover ends the single translating surface's run.
+        auto &revision = m_state.revision;
+        if (!m_previous || m_resetSlots || m_mover == kInvalidRayIndex) {
+            revision.otherChangeSerial = revision.serial;
+        } else {
+            const auto &prior = m_previous->revision;
+            revision.translatedSurface = m_mover ? m_mover : prior.translatedSurface;
+            revision.otherChangeSerial =
+                revision.translatedSurface == prior.translatedSurface ? prior.otherChangeSerial : prior.serial;
+        }
         return std::move(m_state);
     }
 
@@ -268,8 +279,16 @@ class RayShadowChanges
         }
         const bool moved = current.objectToWorld != prior.objectToWorld;
         const bool changedLayer = current.layerMask != prior.layerMask;
+        const bool changedPolicy = changedLayer || current.receivesShadows != prior.receivesShadows ||
+                                   current.castsShadows != prior.castsShadows;
+        if (moved || changedPolicy) {
+            const bool translation = !changedPolicy && current.objectToWorld[0] == prior.objectToWorld[0] &&
+                                     current.objectToWorld[1] == prior.objectToWorld[1] &&
+                                     current.objectToWorld[2] == prior.objectToWorld[2];
+            m_mover = translation && (!m_mover || m_mover == current.surfaceId) ? current.surfaceId : kInvalidRayIndex;
+        }
         if (moved || changedLayer || current.receivesShadows != prior.receivesShadows)
-            Stamp(current.surfaceId) = m_state.serial;
+            Stamp(current.surfaceId) = m_state.revision.serial;
         if ((current.castsShadows || prior.castsShadows) &&
             (moved || changedLayer || current.castsShadows != prior.castsShadows))
             m_changedCasters.push_back(index);
@@ -344,9 +363,9 @@ class RayShadowChanges
         for (uint32_t i = node.first; i < node.first + count; ++i) {
             const auto &receiver = m_state.instances[m_page.topology->primitiveOrder[i]];
             auto &stamp = Stamp(receiver.surfaceId);
-            if (stamp != m_state.serial && receiver.receivesShadows &&
+            if (stamp != m_state.revision.serial && receiver.receivesShadows &&
                 (receiver.layerMask & m_queryLight->layers) != 0u && MayReach(PaddedBox(receiver.bounds)))
-                stamp = m_state.serial;
+                stamp = m_state.revision.serial;
         }
     }
 
@@ -356,6 +375,7 @@ class RayShadowChanges
     const size_t m_stampCount;
     RayShadowState m_state;
     bool m_resetSlots = false;
+    uint32_t m_mover = 0;
     Phase m_phase = Phase::CopyStamps;
     size_t m_cursor = 0;
     std::vector<size_t> m_changedCasters;

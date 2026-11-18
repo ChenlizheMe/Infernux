@@ -206,12 +206,12 @@ class RayWorldGeometryBuild final
         }
         deformation = std::make_shared<RayDeformation>(
             device, page->deformationProgram, page->refit, instancePage, world->DrawCalls().drawCalls,
-            RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.serial, shadowHistory.stamps),
+            RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.revision, shadowHistory.stamps),
             page->buffer);
     }
     [[nodiscard]] uint32_t VisibilitySerial() const noexcept
     {
-        return shadowHistory.serial;
+        return shadowHistory.revision.serial;
     }
     [[nodiscard]] uint64_t DecodeWorkspace() const
     {
@@ -573,17 +573,19 @@ void RayWorldGeometryBuild::Run(uint32_t window)
         case Step::UpdateShadows:
             if (shadowChanges->Advance(window)) {
                 shadowHistory = shadowChanges->Take();
-                if (NeedsDeformation() || !deformed.empty())
+                if (NeedsDeformation() || !deformed.empty()) {
+                    shadowHistory.revision = {shadowHistory.revision.serial, 0u, shadowHistory.revision.serial};
                     for (auto &stamp : shadowHistory.stamps)
-                        stamp.fill(shadowHistory.serial);
+                        stamp.fill(shadowHistory.revision.serial);
+                }
                 shadowChanges.reset();
                 if (sharedMeshes && NeedsDeformation()) {
                     step = Step::Deform;
                     break;
                 }
                 StartUpload(meshCandidate ? RayPageUpload(meshPage)
-                                          : RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.serial,
-                                                          shadowHistory.stamps));
+                                          : RayPageUpload(instancePage, RayGeometryStatus::Ready,
+                                                          shadowHistory.revision, shadowHistory.stamps));
                 step = Step::Upload;
             }
             break;
@@ -654,7 +656,8 @@ bool RayWorldGeometryBuild::Upload(rhi::Device &device, uint64_t bytes)
                                      std::string(RayDeformationSource())};
             return false;
         }
-        StartUpload(RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.serial, shadowHistory.stamps));
+        StartUpload(
+            RayPageUpload(instancePage, RayGeometryStatus::Ready, shadowHistory.revision, shadowHistory.stamps));
         return false;
     }
     return true;

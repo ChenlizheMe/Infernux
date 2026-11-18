@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_shading_context
-from infernux.shader.lib.ray_signal import resolve_ray_spatial, resolve_reduced_ray
+from infernux.shader.lib.ray_signal import resolve_ray_spatial, resolve_reduced_ray, unpack_ray_signal
 
 
 class DeferredRayLighting(shader.fullscreen):
@@ -38,8 +38,7 @@ class DeferredRayLighting(shader.fullscreen):
                 diffuse = resolve_reduced_ray(self.ray_diffuse, self.primary_tex, self.normal_tex, pixel, full,
                                               extent, packed.x, depth, surface.normal_ws, frame.z)
             else:
-                diffuse = resolve_ray_spatial(self.ray_diffuse, self.primary_tex, self.normal_tex, pixel, packed.x,
-                                              depth, surface.normal_ws, frame.z, False)
+                diffuse = unpack_ray_signal(shader.load(self.ray_diffuse, pixel, 0))
         specular = shader.vec4(0.0)
         if self.specular_enabled:
             specular = resolve_ray_spatial(self.ray_specular, self.primary_tex, self.normal_tex, pixel, packed.x,

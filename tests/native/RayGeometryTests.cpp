@@ -1,5 +1,6 @@
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/raytracing/RayGeometry.h>
+#include <function/renderer/raytracing/RayShadowChanges.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -80,6 +81,35 @@ void CheckHierarchy(const std::vector<Bounds> &bounds)
     assert(incremental.size() == repeat.nodes.size());
     assert(std::memcmp(incremental.data(), repeat.nodes.data(), incremental.size() * sizeof(BvhNode)) == 0);
 }
+
+void CheckReceiverMotionHistory(const RayInstancePage &page)
+{
+    const RenderLightingSource lights;
+    std::vector<RayShadowInstance> instances{{1u, 1u, true, true, glm::mat4(1.0f), {}},
+                                             {2u, 1u, true, true, glm::mat4(1.0f), {}}};
+    const auto publish = [&](const RayShadowState *previous) {
+        RayShadowChanges changes(previous, instances, page, lights, 3);
+        uint32_t budget = 1024;
+        assert(changes.Advance(budget));
+        return changes.Take();
+    };
+    const auto initial = publish(nullptr);
+    instances[0].objectToWorld[3].x += 0.1f;
+    const auto moved = publish(&initial);
+    instances[0].objectToWorld[3].x += 0.1f;
+    const auto skipped = publish(&moved);
+    assert(skipped.revision.translatedSurface == 1 && skipped.revision.otherChangeSerial == initial.revision.serial);
+    instances[1].objectToWorld[3].x += 0.1f;
+    const auto switched = publish(&skipped);
+    assert(switched.revision.translatedSurface == 2 && switched.revision.otherChangeSerial == skipped.revision.serial);
+    instances[1].objectToWorld[3].x += 0.1f;
+    instances[0].objectToWorld[3].x += 0.1f;
+    const auto both = publish(&switched);
+    assert(both.revision.translatedSurface == 0 && both.revision.otherChangeSerial == both.revision.serial);
+    instances[0].objectToWorld[0].x = 2.0f;
+    const auto scale = publish(&both);
+    assert(scale.revision.translatedSurface == 0 && scale.revision.otherChangeSerial == scale.revision.serial);
+}
 } // namespace
 
 int main()
@@ -140,6 +170,7 @@ int main()
     while (!top.Advance(1u)) {
     }
     const auto page = top.Take();
+    CheckReceiverMotionHistory(page);
     assert(page.nodes.size() == 1u && page.instances.size() == 2u);
     assert(page.instances[0].root == page.instances[1].root);
     assert(page.instances[1].worldToObjectX[0] == -0.5f && page.instances[1].worldToObjectX[3] == 2.0f);
@@ -152,7 +183,7 @@ int main()
 
     const RayPageUpload meshUpload(meshPage);
     const std::vector<RayGeometryWord> shadowStamps{{0u, 17u, 0u, 0u}};
-    const RayPageUpload instanceUpload(page, RayGeometryStatus::Ready, 17u, shadowStamps);
+    const RayPageUpload instanceUpload(page, RayGeometryStatus::Ready, {17u, 3u, 12u}, shadowStamps);
     const auto header = [](const RayPageUpload &upload) {
         return *static_cast<const RayGeometryWord *>(upload.Section(0).data);
     };
@@ -160,7 +191,7 @@ int main()
     assert(header(meshUpload)[3] + 4 * meshPage.attributes.size() == meshUpload.bytes / sizeof(RayGeometryWord));
     assert((header(instanceUpload) == RayGeometryWord{0u, 2u, 4u, 1u}));
     const auto *instanceHeaders = static_cast<const RayGeometryWord *>(instanceUpload.Section(0).data);
-    assert((instanceHeaders[1] == RayGeometryWord{4u + 2u * kRayInstanceWords, 17u, 0u, 0u}));
+    assert((instanceHeaders[1] == RayGeometryWord{4u + 2u * kRayInstanceWords, 17u, 3u, 12u}));
     assert(instanceUpload.Section(3).data == shadowStamps.data());
     assert(instanceUpload.bytes == 48u + sizeof(BvhNode) + 2 * sizeof(RayInstance));
 

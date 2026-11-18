@@ -265,7 +265,7 @@ def _draw_thin_transparency(graph, surface_records, capture):
         )
 
 
-def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history):
+def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history, surface_frame):
     previous_primary, primary = primary_history
     motion = graph.get_texture(_ray_replay_name(source))
     geometry = graph._create_world_ray_geometry()
@@ -283,6 +283,18 @@ def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history):
             render_pass.write_color(output)
             render_pass.set_param("specular", specular)
             render_pass.fullscreen_quad("infernux/internal/ray_reconstruct")
+        if not specular:
+            # Filter at the trace resolution. Only the temporal estimate feeds
+            # the next frame, so spatially filtered neighbours never feed back.
+            for stride in ((1,) if divisor == 4 else (1, 2)):
+                filtered = graph.create_texture(f"_{name}/spatial_{stride}", format=Format.RGBA32_UINT,
+                                                size_divisor=divisor, samples=1)
+                with graph.add_pass(f"Ray Diffuse Spatial {stride}") as render_pass:
+                    render_pass.set_textures({"signal": output, "primary": primary, "frame": surface_frame})
+                    render_pass.write_color(filtered)
+                    render_pass.set_param("stride", stride)
+                    render_pass.fullscreen_quad("infernux/internal/ray_diffuse_filter")
+                output = filtered
         signals[name] = output
     return signals
 
@@ -469,7 +481,8 @@ class DefaultDeferredPipeline(RenderPipeline):
             current = graph.derive_pass_result("ray_indirect", current, _decode_raw_signals(graph, packets))
             signals = packets
             if temporal:
-                signals = _reconstruct_ray_indirect(graph, raw_gbuffer.source, lobes, packets, primary_history)
+                signals = _reconstruct_ray_indirect(graph, raw_gbuffer.source, lobes, packets, primary_history,
+                                                    ray_source.sample("surface_frame"))
                 current = graph.derive_pass_result("ray_reconstructed", current, signals)
 
         # ---- Pass 2: Deferred lighting (fullscreen) ----
