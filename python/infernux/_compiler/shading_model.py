@@ -6,15 +6,11 @@ import ast
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .shader_library import Module, ShaderEmitter, declarations, engine_imports
+from .shader_library import Module, ShaderEmitter, builtin_shader_root, declarations, engine_imports
 from .slang_ast import qualified
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 
 
-def _builtin_root():
-    from infernux.resources import resources_path
-
-    return Path(resources_path) / "shaders"
 _LIGHTING = {
     "lighting.pbr": ("inx_shade_pbr<tiled_lighting>", "float3", ("InxSurfaceData", "InxShadingContext")),
     "lighting.pbr_indirect": ("inx_pbr_indirect", "float3", ("InxSurfaceData", "InxShadingContext")),
@@ -156,14 +152,14 @@ def read_shading_model(path, graph, owner, location, *, source=None, namespace="
     if direct_calls:
         code.append(_DIRECT_RESPONSE)
     code.append("}")
-    builtin_models = {_builtin_root().joinpath(name + ".shadingmodel.py").resolve(): model
+    builtin_models = {builtin_shader_root().joinpath(name + ".shadingmodel.py").resolve(): model
                       for name, model in (("pbr", "PBR"), ("unlit", "Unlit"), ("toon", "Toon"))}
     return ShadingModel(declaration.name, str(path), contract, "\n".join(code), dependencies, tuple(ranges),
                         builtin_models.get(path), read_shader_info(source, str(path)))
 
 
 def default_shading_model():
-    return _builtin_root() / "pbr.shadingmodel.py"
+    return builtin_shader_root() / "pbr.shadingmodel.py"
 
 
 def surface_lighting_module(graph, owner, location):
@@ -175,7 +171,7 @@ def surface_lighting_module(graph, owner, location):
     imports, branches = [], []
     for name in ("pbr", "unlit", "toon"):
         namespace = "inx_response_" + name
-        model = read_shading_model(_builtin_root() / (name + ".shadingmodel.py"), graph, owner, location,
+        model = read_shading_model(builtin_shader_root() / (name + ".shadingmodel.py"), graph, owner, location,
                                    namespace=namespace)
         response = Module(namespace, model.path, model.source, {}, model.source_ranges)
         graph.ordered.append(response)

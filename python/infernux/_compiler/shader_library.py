@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -13,6 +15,26 @@ from .shader_types import (
     RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS,
 )
 from .diagnostics import parse_gpu_module
+
+
+# A package build can run alongside an open Editor with a different catalog.
+_cook_catalog = ContextVar("shader_cook_catalog", default=None)
+
+
+@contextmanager
+def using_cooked_shader_sources(resource_root, paths_by_id):
+    token = _cook_catalog.set((Path(resource_root), paths_by_id))
+    try:
+        yield
+    finally:
+        _cook_catalog.reset(token)
+
+
+def builtin_shader_root():
+    from infernux.resources import resources_path
+
+    catalog = _cook_catalog.get()
+    return (catalog[0] if catalog is not None else Path(resources_path)) / "shaders"
 
 
 _RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
@@ -440,7 +462,11 @@ class LibraryGraph:
         from infernux.core._shader_catalog import get_shader_file_path
 
         try:
-            resolved = get_shader_file_path(reference, suffix[:-3])
+            catalog = _cook_catalog.get()
+            if catalog is None:
+                resolved = get_shader_file_path(reference, suffix[:-3])
+            else:
+                resolved = catalog[1].get((reference, suffix))
         except (RuntimeError, ValueError) as error:
             owner.error(call, str(error), code="author.reference")
         if not resolved:
@@ -454,9 +480,7 @@ class LibraryGraph:
                 base = base.parent
             return base.joinpath(*(module or "").split("."))
         if module and module.startswith("infernux.shader.lib."):
-            from infernux.resources import resources_path
-
-            return Path(resources_path, "shaders", "lib", *module.split(".")[3:])
+            return builtin_shader_root().joinpath("lib", *module.split(".")[3:])
         owner.error(location, "ShaderLib imports use a relative path or infernux.shader.lib")
 
     def load_reference(self, module, level, owner, location, *, declaring_path=None):

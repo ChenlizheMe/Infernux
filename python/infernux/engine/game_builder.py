@@ -550,6 +550,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 final_dir,
                 package_builtin_resources=True,
             )
+            self._stage_scene_shader_programs(final_dir, package_builtin_resources=True)
             self._process_build_icon(final_dir)
             self._process_splash_items(final_dir)
             self._relativize_scenes(final_dir)
@@ -626,6 +627,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             source_snapshots=self._player_python_source_texts,
         )
         self._write_runtime_asset_records(final_dir)
+        self._stage_scene_shader_programs(final_dir)
 
         _p(t("build.step.processing_splash"), 0.93)
         self._process_build_icon(final_dir)
@@ -3010,6 +3012,15 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 "entries": records,
             },
         )
+
+    def _stage_scene_shader_programs(self, final_dir, *, package_builtin_resources=False):
+        from infernux.engine.build.shader_programs import stage_scene_shader_programs
+
+        data_root = Path(final_dir, "Data")
+        resources = data_root / "infernux" / "resources" if package_builtin_resources else _resources.resources_path
+        stage_scene_shader_programs(data_root, data_root / "Library" / self._RUNTIME_ASSET_RECORDS_FILENAME,
+                                    self._cooked_asset_entries, self._build_scene_guids(), resources,
+                                    Path(self.project_path, "Cache"), self._runtime_platform == "web")
 
     @staticmethod
     def _runtime_artifact_reason(runtime_path: str) -> str:
