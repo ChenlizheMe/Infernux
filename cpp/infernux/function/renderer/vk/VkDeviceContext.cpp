@@ -35,8 +35,8 @@ std::string PipelineCachePath(const DeviceConfig &config, const VkPhysicalDevice
 {
     if (config.pipelineCacheDirectory.empty())
         return {};
-    std::string name = "VulkanPipelineCache-" + std::to_string(properties.vendorID) + "-" +
-                       std::to_string(properties.deviceID) + "-";
+    std::string name =
+        "VulkanPipelineCache-" + std::to_string(properties.vendorID) + "-" + std::to_string(properties.deviceID) + "-";
     constexpr char hex[] = "0123456789abcdef";
     for (const auto byte : properties.pipelineCacheUUID) {
         name += hex[byte >> 4];

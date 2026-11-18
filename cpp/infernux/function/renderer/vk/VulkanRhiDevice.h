@@ -235,13 +235,10 @@ class VulkanRhiDevice final : public rhi::Device
 {
   public:
     INFERNUX_VULKAN_BACKEND_API VulkanRhiDevice();
-    INFERNUX_VULKAN_BACKEND_API explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
-                                                         const rhi::DeviceCaps &capabilities = {},
-                                                         uint32_t graphicsQueueFamily = 0,
-                                                         uint32_t computeQueueFamily = 0,
-                                                         uint32_t transferQueueFamily = 0,
-                                                         const vk::VulkanFeatureState &capabilityState = {},
-                                                         std::string pipelineCachePath = {});
+    INFERNUX_VULKAN_BACKEND_API explicit VulkanRhiDevice(
+        VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE, const rhi::DeviceCaps &capabilities = {},
+        uint32_t graphicsQueueFamily = 0, uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
+        const vk::VulkanFeatureState &capabilityState = {}, std::string pipelineCachePath = {});
 
     VulkanRhiDevice(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice &operator=(const VulkanRhiDevice &) = delete;

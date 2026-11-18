@@ -517,7 +517,7 @@ void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData, const 
     }
 
     if (!m_vkCore->Init(m_appMetadata, m_rendererMetadata, extCount, const_cast<const char **>(ext),
-                       pipelineCacheDirectory)) {
+                        pipelineCacheDirectory)) {
         throw std::runtime_error("Failed to initialize Vulkan instance");
     }
     if (!PumpStartupEvents())
