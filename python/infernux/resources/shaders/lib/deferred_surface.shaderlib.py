@@ -19,8 +19,5 @@ def deferred_shading_context(uv: shader.vec2, pixel: shader.vec2, depth: float,
     camera = shader.camera()
     position_ws = world_position(uv, depth, camera)
     view_depth = shader.abs((camera.view_matrix @ shader.vec4(position_ws, 1.0)).z)
-    return shader.ShadingContext(
-        position_ws=position_ws, geometric_normal_ws=normal_ws,
-        view_depth=view_depth, pixel_position=pixel,
-        layer_mask=metadata.x, receives_shadows=metadata.z != 0,
-    )
+    return shader._resolved_shading_context(position_ws, normal_ws, view_depth, pixel,
+                                            metadata.x, metadata.z != 0, 0.0)

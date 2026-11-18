@@ -18,15 +18,19 @@ public struct InxLitScattering
     public float f90;
 };
 
+public float inx_footprint_ggx_alpha(float perceptual, float normal_variance)
+{
+    float alpha = perceptual * perceptual;
+    return sqrt(alpha * alpha + min(normal_variance, 0.18));
+}
+
 public InxLitScattering inx_prepare_lit_scattering(float3 authored_albedo, float authored_metallic,
                                                     float smoothness, float normal_variance)
 {
     float3 albedo = clamp(authored_albedo, 0.0, 1.0);
     float metallic = clamp(authored_metallic, 0.0, 1.0);
     float perceptual = clamp(1.0 - smoothness, 0.045, 1.0);
-    float alpha = perceptual * perceptual;
-    float kernel_roughness = min(normal_variance, 0.18);
-    alpha = max(alpha, sqrt(alpha * alpha + kernel_roughness));
+    float alpha = inx_footprint_ggx_alpha(perceptual, normal_variance);
     perceptual = max(perceptual, sqrt(alpha));
     float3 f0 = lerp(float3(0.04), albedo, metallic);
     float f90 = saturate(50.0 * dot(f0, float3(0.33333)));

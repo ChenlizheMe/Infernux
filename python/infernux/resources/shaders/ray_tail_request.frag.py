@@ -35,7 +35,6 @@ class RayTailRequest(shader.fullscreen):
         surface = decode_deferred_surface(base, frame, emission, packed.y)
         context = deferred_shading_context(uv, shader.vec2(pixel) + shader.vec2(0.5), depth,
                                            surface.normal_ws, metadata)
-        # Evaluate quad derivatives before individual requests leave the fragment entry.
         if index >= self.requests[0].y:
             return (shader.uvec4(0), shader.uvec4(0))
         primary = shader.load(self.primary, pixel, 0)

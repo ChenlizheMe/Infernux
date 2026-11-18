@@ -702,6 +702,20 @@ uint inx_ray_sample_hash(uint state)
     return (word >> 22u) ^ word;
 }
 
+float2 inx_ray_primary_uniform(uint index, uint pixel_seed)
+{
+    // Two base-2 Sobol dimensions. The second direction matrix is Pascal's triangle mod 2.
+    uint x = reversebits(index);
+    uint y = x;
+    y ^= (y & 0x55555555u) << 1u;
+    y ^= (y & 0x33333333u) << 2u;
+    y ^= (y & 0x0f0f0f0fu) << 4u;
+    y ^= (y & 0x00ff00ffu) << 8u;
+    y ^= y << 16u;
+    uint2 shift = uint2(inx_ray_sample_hash(pixel_seed), inx_ray_sample_hash(pixel_seed + 1u));
+    return float2((uint2(x, y) ^ shift) >> 8u) * (1.0 / 16777216.0);
+}
+
 float inx_ray_offset(float position, float normal)
 {
     if (abs(position) < 1.0 / 32.0)
@@ -1034,10 +1048,10 @@ RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingC
     seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
     if (specular)
         seed = inx_ray_sample_hash(seed);
+    uint index = temporal ? inx_view_sample_index() : 0u;
+    float2 uniform = inx_ray_primary_uniform(index, seed);
     if (temporal)
-        seed ^= inx_ray_sample_hash(inx_view_sample_index());
-    float2 uniform = float2(inx_ray_sample_hash(seed) >> 8u, inx_ray_sample_hash(seed + 1u) >> 8u)
-                   * (1.0 / 16777216.0);
+        seed ^= inx_ray_sample_hash(index);
     float3 shading_normal = normalize(surface.normal_ws);
     RayDirectionSample sample;
     if (specular)
@@ -1165,7 +1179,7 @@ _SURFACE_GBUFFER = """
 [shader("fragment")]
 InxGBufferOutput fragment_gbuffer(InxMeshInput input, bool front_facing : SV_IsFrontFace)
 {
-    return inx_pack_gbuffer(inx_evaluate_surface(input, front_facing), input.surface_id);
+    return inx_pack_gbuffer<INX_GBUFFER_PBR>(inx_evaluate_surface(input, front_facing), input.surface_id);
 }
 
 [shader("fragment")]
@@ -1396,6 +1410,8 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                 "inx_shade_surface<true>(inx_evaluate_surface(input, front_facing), input)", front,
                 "input.position.z"))
         if model.deferred_model:
+            pbr = "true" if model.deferred_model == "PBR" else "false"
+            code.append(f"static const bool INX_GBUFFER_PBR = {pbr};")
             code.append(_SURFACE_GBUFFER)
         if thin is not None:
             code.append(_SURFACE_THIN)

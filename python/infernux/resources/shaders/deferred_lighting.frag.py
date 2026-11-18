@@ -22,7 +22,6 @@ class DeferredLighting(shader.fullscreen):
         metadata = self.surface_records[packed.x * 3]
         surface = decode_deferred_surface(base, frame, emission, packed.y)
         context = deferred_shading_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata)
-        # Derivatives belong to the full pixel quad, before coverage and model selection.
         if depth <= 0.0 or packed.x == 0 or metadata.y == 0:
             return shader.vec4(0.0)
         return shader.vec4(shader.lighting.shade(surface, context, metadata.y), 1.0)

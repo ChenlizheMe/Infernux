@@ -8,7 +8,7 @@ followed by a fullscreen lighting pass, then transparent forward pass.
 Private GBuffer layout (MRT)::
 
     Slot 0 — Base color and metallic (RGBA16_SFLOAT)
-    Slot 1 — Octahedral normal, roughness and AO (RGBA16_SFLOAT)
+    Slot 1 — Octahedral normal, footprint-filtered PBR roughness and AO (RGBA16_SFLOAT)
     Slot 2 — Emission and specular strength (RGBA16_SFLOAT)
     Slot 3 — Surface ID and two packed model scalars (RG32_UINT)
     Depth  — Scene depth        (D32_SFLOAT)
@@ -277,7 +277,7 @@ def _reconstruct_ray_indirect(graph, source, lobes, packets, primary_history, su
         with graph.add_pass(label) as render_pass:
             render_pass.set_textures({
                 "signal": packets[name], "primary": primary, "motion": motion,
-                "previous_signal": previous, "previous_primary": previous_primary, "frame": surface_frame,
+                "previous_signal": previous, "previous_primary": previous_primary,
             })
             render_pass.set_buffer("geometry", geometry)
             render_pass.write_color(output)

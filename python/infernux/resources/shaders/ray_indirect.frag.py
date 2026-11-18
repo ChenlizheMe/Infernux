@@ -38,7 +38,6 @@ class RayIndirect(shader.fullscreen):
         metadata = self.surface_records[packed.x * 3]
         surface = decode_deferred_surface(base, frame, emission, packed.y)
         context = deferred_shading_context(uv, full_pixel, depth, surface.normal_ws, metadata)
-        # The shared roughness policy derives variance before rejecting uncovered lanes.
         if depth <= 0.0 or primary.x == 0:
             return shader.uvec4(0)
         geometric_normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))

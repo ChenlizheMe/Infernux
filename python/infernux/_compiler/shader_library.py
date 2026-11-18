@@ -33,6 +33,9 @@ _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceH
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
                      "frame_delta_time": ("inx_frame_delta_time", "float", ()),
                      "_previous_ray_geometry_serial": ("inx_previous_ray_geometry_serial", "uint", ()),
+                     "_view_jitter_delta_uv": ("inx_view_jitter_delta_uv", "float2", ()),
+                     "_resolved_shading_context": ("inx_shading_context", "InxShadingContext",
+                                                   ("float3", "float3", "float", "float2", "uint", "bool", "float")),
                      "view": ("inx_view_context", "InxViewContext", ()),
                      "camera": ("inx_camera_context", "InxCameraContext", ()), **_RAY_FUNCTIONS}
 _ENGINE_FUNCTIONS.update({
@@ -45,7 +48,8 @@ _ENGINE_FUNCTIONS.update({
 _ENGINE_MODULES = {"inx_ui_context": ("UIContext", "WorldUIContext"),
                    "inx_particle": ("ParticleContext",),
                    "inx_particle_lighting": ("lighting.particle_pbr", "lighting.six_way_smoke"),
-                   "inx_frame": ("frame_time", "frame_delta_time", "_previous_ray_geometry_serial", "view", "ViewContext"),
+                   "inx_frame": ("frame_time", "frame_delta_time", "_previous_ray_geometry_serial",
+                                 "_view_jitter_delta_uv", "view", "ViewContext"),
                    "inx_camera": ("camera", "CameraContext")}
 _CONSTRUCTORS = {"ShadingContext": ("InxShadingContext", "inx_shading_context"),
                  "FragmentOutput": ("InxFragmentOutput", "inx_fragment_output"),

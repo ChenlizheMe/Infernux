@@ -11,7 +11,7 @@ namespace infernux
 inline const ShaderSourceModule &GetSlangGeometryModule()
 {
     static const ShaderSourceModule module{"inx_geometry", "<infernux/shader/geometry>",
-                                           R"slang(
+                                           R"slang(import inx_lit_scattering;
 public struct InxFragmentOutput
 {
     public float4 color : SV_Target0;
@@ -133,7 +133,7 @@ public float inx_normal_variance(float3 normal_ws)
 }
 public InxShadingContext inx_shading_context(float3 position_ws, float3 geometric_normal_ws,
                                             float view_depth, float2 pixel_position,
-                                            uint layer_mask, bool receives_shadows)
+                                            uint layer_mask, bool receives_shadows, float normal_variance)
 {
     InxShadingContext result;
     result.light_domain = 1u;
@@ -143,8 +143,15 @@ public InxShadingContext inx_shading_context(float3 position_ws, float3 geometri
     result.pixel_position = pixel_position;
     result.layer_mask = layer_mask;
     result.receives_shadows = receives_shadows;
-    result.normal_variance = inx_normal_variance(geometric_normal_ws);
+    result.normal_variance = normal_variance;
     return result;
+}
+public InxShadingContext inx_shading_context(float3 position_ws, float3 geometric_normal_ws,
+                                            float view_depth, float2 pixel_position,
+                                            uint layer_mask, bool receives_shadows)
+{
+    return inx_shading_context(position_ws, geometric_normal_ws, view_depth, pixel_position,
+                               layer_mask, receives_shadows, inx_normal_variance(geometric_normal_ws));
 }
 public struct InxLight
 {
@@ -323,12 +330,17 @@ public float2 inx_encode_surface_normal(float3 normal)
     float2 sign_xy = float2(normal.x >= 0.0 ? 1.0 : -1.0, normal.y >= 0.0 ? 1.0 : -1.0);
     return normal.z >= 0.0 ? normal.xy : (1.0 - abs(normal.yx)) * sign_xy;
 }
-public InxGBufferOutput inx_pack_gbuffer(InxSurfaceData surface, uint surface_id)
+public InxGBufferOutput inx_pack_gbuffer<let pbr : bool>(InxSurfaceData surface, uint surface_id)
 {
     InxGBufferOutput result;
+    float roughness = saturate(1.0 - surface.smoothness);
+    // Raster quad helper lanes interpolate this primitive, even at its silhouette.
+    // Lighting and sparse ray requests subsequently consume the same filtered footprint.
+    if (pbr)
+        roughness = saturate(sqrt(inx_footprint_ggx_alpha(roughness, inx_normal_variance(surface.normal_ws))));
     result.albedo_metallic = float4(surface.albedo, saturate(surface.metallic));
     result.oct_normal_roughness_ao = float4(inx_encode_surface_normal(surface.normal_ws),
-                                            saturate(1.0 - surface.smoothness), saturate(surface.occlusion));
+                                            roughness, saturate(surface.occlusion));
     result.emission_specular = float4(surface.emission, saturate(surface.specular_highlights));
     result.surface = uint2(surface_id, packHalf2x16(float2(surface.shading_param0, surface.shading_param1)));
     return result;
