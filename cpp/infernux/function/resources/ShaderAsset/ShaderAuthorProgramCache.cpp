@@ -4,6 +4,7 @@
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <platform/filesystem/InxPath.h>
 #include <algorithm>
+#include <nlohmann/json.hpp>
 #include <unordered_map>
 
 namespace infernux
@@ -11,12 +12,57 @@ namespace infernux
 namespace
 {
 using namespace shader_target_archive;
+constexpr std::string_view AuthorProgramMagic = "INXSAUTH2";
 
-void AppendDiagnostic(std::string &out, const ShaderDiagnostic &diagnostic)
+const ShaderCacheInput *PathInput(const std::string &path, const std::vector<ShaderCacheInput> &inputs)
+{
+    if (path.empty())
+        return nullptr;
+    const auto key = LexicalFilesystemPathKey(NormalizePortablePath(path));
+    const auto found = std::find_if(inputs.begin(), inputs.end(), [&](const auto &input) {
+        return !input.path.empty() && LexicalFilesystemPathKey(NormalizePortablePath(input.path)) == key;
+    });
+    return found == inputs.end() ? nullptr : &*found;
+}
+
+using InputPaths = std::unordered_map<std::string, std::string>;
+
+std::string RestoredPath(const std::string &id, const InputPaths &paths)
+{
+    const auto found = paths.find(id);
+    if (found == paths.end() || found->second.empty())
+        throw std::invalid_argument("shader author cache source identity is unavailable");
+    return found->second;
+}
+
+std::string StoredSchema(const std::string &schema, const std::vector<ShaderCacheInput> &inputs)
+{
+    auto value = nlohmann::json::parse(schema);
+    const auto vertex = value.find("vertex_source");
+    if (vertex != value.end() && vertex->is_string())
+        if (const auto *input = PathInput(vertex->get<std::string>(), inputs))
+            *vertex = nlohmann::json{{"shader_cache_input", input->id}};
+    return value.dump();
+}
+
+std::string RestoredSchema(const std::string &schema, const InputPaths &paths)
+{
+    auto value = nlohmann::json::parse(schema);
+    const auto vertex = value.find("vertex_source");
+    if (vertex != value.end() && vertex->is_object() && vertex->size() == 1 &&
+        vertex->contains("shader_cache_input"))
+        *vertex = RestoredPath(vertex->at("shader_cache_input").get<std::string>(), paths);
+    return value.dump();
+}
+
+void AppendDiagnostic(std::string &out, const ShaderDiagnostic &diagnostic,
+                      const std::vector<ShaderCacheInput> &inputs)
 {
     AppendString(out, diagnostic.code);
     AppendString(out, diagnostic.severity);
-    AppendString(out, diagnostic.path);
+    const auto *input = PathInput(diagnostic.path, inputs);
+    binary_codec::AppendUnsigned(out, static_cast<uint8_t>(input != nullptr));
+    AppendString(out, input ? input->id : diagnostic.path);
     AppendU32(out, diagnostic.line);
     AppendU32(out, diagnostic.column);
     AppendU32(out, diagnostic.endLine);
@@ -26,12 +72,17 @@ void AppendDiagnostic(std::string &out, const ShaderDiagnostic &diagnostic)
     AppendString(out, diagnostic.target);
 }
 
-ShaderDiagnostic ReadDiagnostic(Reader &in)
+ShaderDiagnostic ReadDiagnostic(Reader &in, const InputPaths &paths)
 {
     ShaderDiagnostic diagnostic;
     diagnostic.code = in.ReadString();
     diagnostic.severity = in.ReadString();
+    const auto sourceReference = in.ReadUnsigned<uint8_t>();
+    if (sourceReference > 1)
+        throw std::invalid_argument("shader author cache has an invalid source reference");
     diagnostic.path = in.ReadString();
+    if (sourceReference)
+        diagnostic.path = RestoredPath(diagnostic.path, paths);
     diagnostic.line = in.ReadU32();
     diagnostic.column = in.ReadU32();
     diagnostic.endLine = in.ReadU32();
@@ -42,15 +93,21 @@ ShaderDiagnostic ReadDiagnostic(Reader &in)
     return diagnostic;
 }
 
-std::optional<ShaderAuthorProgramRecord> DecodeProgram(const std::string &bytes)
+std::optional<ShaderAuthorProgramRecord> DecodeProgram(const std::string &bytes, const InputPaths &paths)
 {
     try {
         Reader in(bytes);
+        // Older author payloads embedded cooker-machine paths. They must be
+        // rebuilt; the shared cache envelope and target archive stay unchanged.
+        if (in.ReadString(false) != AuthorProgramMagic)
+            return std::nullopt;
         ShaderAuthorProgramRecord record;
-        record.schema = in.ReadString(false);
+        record.schema = RestoredSchema(in.ReadString(false), paths);
         record.dependencies = ReadVector<std::string>(in, [](Reader &source) { return source.ReadString(false); });
         auto compiled = std::make_shared<ShaderCompilation>();
-        compiled->diagnostics = ReadVector<ShaderDiagnostic>(in, ReadDiagnostic);
+        compiled->diagnostics = ReadVector<ShaderDiagnostic>(in, [&paths](Reader &source) {
+            return ReadDiagnostic(source, paths);
+        });
         compiled->targets = ReadVector<ShaderTargetCode>(
             in, [](Reader &source) { return DecodeShaderTarget(source.ReadString(false)); });
         if (!in.AtEnd() || compiled->targets.empty())
@@ -58,6 +115,8 @@ std::optional<ShaderAuthorProgramRecord> DecodeProgram(const std::string &bytes)
         record.compilation = std::move(compiled);
         return record;
     } catch (const std::invalid_argument &) {
+        return std::nullopt;
+    } catch (const nlohmann::json::exception &) {
         return std::nullopt;
     }
 }
@@ -112,12 +171,16 @@ std::optional<ShaderAuthorProgramRecord> FindShaderAuthorProgram(const AssetData
     if (project.empty())
         return std::nullopt;
     std::unordered_map<std::string, std::optional<uint64_t>> revisions;
-    for (const auto &input : loadedInputs)
+    InputPaths paths;
+    for (const auto &input : loadedInputs) {
         revisions.emplace(input.id, input.revision);
+        if (!input.path.empty())
+            paths.emplace(input.id, input.path);
+    }
     std::vector<ShaderCacheInput> verified;
     const auto revision = [&](const std::string &id) -> std::optional<uint64_t> {
         auto [it, inserted] = revisions.try_emplace(id);
-        if (inserted) {
+        if (inserted || paths.find(id) == paths.end()) {
             const auto location = id.find('@');
             const bool byPath = id.compare(0, 5, "path:") == 0;
             std::string relative;
@@ -127,12 +190,17 @@ std::optional<ShaderAuthorProgramRecord> FindShaderAuthorProgram(const AssetData
                                      : database.GetPathFromGuid(id.substr(0, location));
             if (!byPath && location != std::string::npos && (path.empty() || ShaderAuthorInputId(database, path) != id))
                 return std::nullopt;
-            std::vector<char> bytes;
-            if (!path.empty() && database.ReadFile(path, bytes))
-                it->second = binary_codec::Fnv1a64({bytes.data(), bytes.size()});
+            if (!path.empty()) {
+                paths.emplace(id, path);
+                if (inserted) {
+                    std::vector<char> bytes;
+                    if (database.ReadFile(path, bytes))
+                        it->second = binary_codec::Fnv1a64({bytes.data(), bytes.size()});
+                }
+            }
         }
-        if (matchedInputs && it->second)
-            verified.push_back({id, *it->second});
+        if (it->second)
+            verified.push_back({id, *it->second, paths[id]});
         return it->second;
     };
     for (const auto &root : {buildCache.empty() ? ProjectCacheDirectory(project) : buildCache,
@@ -140,7 +208,12 @@ std::optional<ShaderAuthorProgramRecord> FindShaderAuthorProgram(const AssetData
         verified.clear();
         auto bytes = ReadShaderProgramCache(root, selection, revision);
         if (bytes) {
-            if (auto record = DecodeProgram(*bytes)) {
+            // Only dependencies proven by this exact envelope can restore a
+            // source reference, including inputs needed only by diagnostics.
+            InputPaths verifiedPaths;
+            for (const auto &input : verified)
+                verifiedPaths.emplace(input.id, input.path);
+            if (auto record = DecodeProgram(*bytes, verifiedPaths)) {
                 if (matchedInputs)
                     *matchedInputs = std::move(verified);
                 return record;
@@ -157,9 +230,12 @@ bool StoreShaderAuthorProgram(const std::string &cacheDirectory, std::string_vie
     if (inputs.empty() || std::any_of(inputs.begin(), inputs.end(), [](const auto &input) { return input.id.empty(); }))
         return false;
     std::string out;
-    AppendString(out, record.schema);
+    AppendString(out, AuthorProgramMagic);
+    AppendString(out, StoredSchema(record.schema, inputs));
     AppendVector(out, record.dependencies, [](auto &bytes, const auto &id) { AppendString(bytes, id); });
-    AppendVector(out, record.compilation->diagnostics, AppendDiagnostic);
+    AppendVector(out, record.compilation->diagnostics, [&inputs](auto &bytes, const auto &diagnostic) {
+        AppendDiagnostic(bytes, diagnostic, inputs);
+    });
     AppendVector(out, record.compilation->targets,
                  [](auto &bytes, const auto &target) { AppendString(bytes, EncodeShaderTarget(target)); });
     return WriteShaderProgramCache(cacheDirectory, selection, inputs, out);

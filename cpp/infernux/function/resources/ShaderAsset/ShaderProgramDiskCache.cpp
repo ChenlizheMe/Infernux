@@ -73,9 +73,9 @@ std::string ProjectCacheDirectory(const std::string &projectRoot)
     return projectRoot.empty() ? std::string{} : FromFsPath(ToFsPath(projectRoot) / "Cache");
 }
 
-ShaderCacheInput MakeShaderCacheInput(std::string id, std::string_view originalBytes)
+ShaderCacheInput MakeShaderCacheInput(std::string id, std::string_view originalBytes, std::string path)
 {
-    return {std::move(id), binary_codec::Fnv1a64(originalBytes)};
+    return {std::move(id), binary_codec::Fnv1a64(originalBytes), std::move(path)};
 }
 
 std::string ShaderProgramCacheRelativePath(std::string_view selection)

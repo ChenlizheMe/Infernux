@@ -10,6 +10,8 @@ class AssetDatabase;
 
 struct ShaderAuthorProgramRecord
 {
+    // In-memory paths remain usable by tools. Only the private persisted author
+    // payload replaces known source paths with verified shader-input identities.
     std::string schema;
     std::shared_ptr<const ShaderCompilation> compilation;
     std::vector<std::string> dependencies;

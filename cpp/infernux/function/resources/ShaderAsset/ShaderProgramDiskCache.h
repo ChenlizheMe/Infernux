@@ -14,12 +14,15 @@ struct ShaderCacheInput
 {
     std::string id;
     uint64_t revision;
+    // Owner-resolved source location for author payloads. Never serialized in
+    // the shared disk-cache envelope; workers retain this frozen value only.
+    std::string path;
 };
 
 using ShaderCacheRevision = std::function<std::optional<uint64_t>(const std::string &)>;
 
 std::string ProjectCacheDirectory(const std::string &projectRoot);
-ShaderCacheInput MakeShaderCacheInput(std::string id, std::string_view originalBytes);
+ShaderCacheInput MakeShaderCacheInput(std::string id, std::string_view originalBytes, std::string path = {});
 std::string ShaderProgramCacheRelativePath(std::string_view selection);
 
 // selection is the same program, target and compiler contract used by the cooker.

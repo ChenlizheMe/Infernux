@@ -53,7 +53,7 @@ FrozenAuthorProgram FreezeAuthorProgram(const AssetDatabase &database, const Sha
     frozen.selection =
         ShaderAuthorProgramSelection(database.GetGuidFromPath(source.path), vertexGuid, RuntimeShaderAuthorTarget());
     const auto capture = [&](const std::string &path, const std::string &text) {
-        frozen.inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, path), text));
+        frozen.inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, path), text, path));
     };
     capture(source.path, source.source);
     if (!vertex.path.empty())

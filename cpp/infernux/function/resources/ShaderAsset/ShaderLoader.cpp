@@ -24,7 +24,7 @@ ShaderTextReader TrackAuthorReads(const AssetDatabase &database, std::vector<Sha
         if (!database.ReadFile(path, bytes))
             return std::nullopt;
         std::string text(bytes.begin(), bytes.end());
-        inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, path), text));
+        inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, path), text, path));
         return text;
     };
 }
@@ -140,8 +140,9 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
                                             fragment->filePath);
             const auto fragmentId = ShaderAuthorInputId(*database, fragment->filePath);
             const auto vertexId = ShaderAuthorInputId(*database, vertex->filePath);
-            std::vector<ShaderCacheInput> inputs{MakeShaderCacheInput(fragmentId, fragment->authorSourceText),
-                                                 MakeShaderCacheInput(vertexId, vertex->authorSourceText)};
+            std::vector<ShaderCacheInput> inputs{
+                MakeShaderCacheInput(fragmentId, fragment->authorSourceText, fragment->filePath),
+                MakeShaderCacheInput(vertexId, vertex->authorSourceText, vertex->filePath)};
             const auto selection = ShaderAuthorProgramSelection(database->GetGuidFromPath(fragment->filePath),
                                                                database->GetGuidFromPath(vertex->filePath),
                                                                RuntimeShaderAuthorTarget());
@@ -248,7 +249,8 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     if (!asset_formats::FindShaderSourceKind(filePath))
         throw std::invalid_argument("Shader assets use typed Python GPU source: " + filePath);
     const auto source = ReadAuthorSource(*database, filePath, "asset_" + guid);
-    std::vector<ShaderCacheInput> inputs{MakeShaderCacheInput(ShaderAuthorInputId(*database, filePath), source.source)};
+    std::vector<ShaderCacheInput> inputs{
+        MakeShaderCacheInput(ShaderAuthorInputId(*database, filePath), source.source, filePath)};
     const auto selection = ShaderAuthorProgramSelection(guid, {}, RuntimeShaderAuthorTarget());
     if (auto cached = FindShaderAuthorProgram(*database, selection, inputs))
         return ShaderLoader::RestoreAuthorAsset(source, guid, std::move(*cached));
@@ -269,11 +271,11 @@ void ShaderLoader::CookAuthorProgram(const AssetDatabase &database, const std::s
     if (!record) {
         const auto source = ReadAuthorSource(database, database.GetPathFromGuid(authorGuid),
                                              (vertexGuid.empty() ? "asset_" : "material_") + authorGuid);
-        inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, source.path), source.source));
+        inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, source.path), source.source, source.path));
         ShaderSourceModule vertex;
         if (!vertexGuid.empty()) {
             vertex = ReadAuthorSource(database, database.GetPathFromGuid(vertexGuid), "vertex_" + vertexGuid);
-            inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, vertex.path), vertex.source));
+            inputs.push_back(MakeShaderCacheInput(ShaderAuthorInputId(database, vertex.path), vertex.source, vertex.path));
         }
         const auto prepared = SlangCompiler::Get().PrepareAuthorSource(source, TrackAuthorReads(database, inputs),
                                                                        ShaderAuthorPhase::Program, vertex);
