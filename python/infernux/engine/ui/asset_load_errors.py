@@ -99,11 +99,35 @@ class AssetLoadErrors:
         self._seen = {}
         self._pending = {}
         self._dialog = None
+        self._listeners = []
+        self._published_errors = ()
         AssetLoadErrors._instance = self
 
     @classmethod
     def instance(cls):
         return cls._instance
+
+    def add_listener(self, callback) -> None:
+        if callback not in self._listeners:
+            self._listeners.append(callback)
+
+    def remove_listener(self, callback) -> None:
+        if callback in self._listeners:
+            self._listeners.remove(callback)
+
+    def _publish_changes(self) -> None:
+        current = tuple(sorted((key, str(entry.get("guid", "")), entry["error"])
+                               for key, entry in self.errors.items()))
+        if current == self._published_errors:
+            return
+        self._published_errors = current
+        for callback in tuple(self._listeners):
+            callback()
+        try:
+            from infernux.host.queries import emit_signal
+        except ImportError:
+            return
+        emit_signal("assets.changed")
 
     def report(self, path: str, error: str) -> None:
         guid = self.database.get_guid_from_path(path)
@@ -116,6 +140,15 @@ class AssetLoadErrors:
         if not path.casefold().endswith(".scene"):
             self._pending[guid or key] = entry
         self._publish_diagnostic(entry)
+        self._publish_changes()
+
+    def clear(self, path: str) -> None:
+        """A successful import or deletion ends a path-only failure."""
+        key = lexical_path_key(path)
+        self.errors.pop(key, None)
+        self._pending.pop(key, None)
+        self._seen.pop(key, None)
+        self._publish_changes()
 
     @staticmethod
     def _publish_diagnostic(entry) -> None:
@@ -149,6 +182,7 @@ class AssetLoadErrors:
                 self._publish_diagnostic(entry)
             self._pending = {guid: entry for guid, entry in self._pending.items() if guid in current}
             self._seen = {guid: stamp for guid, stamp in self._seen.items() if guid in current}
+            self._publish_changes()
             for entry in entries:
                 stamp = (entry["modified_ns"], entry["size"], entry["error"])
                 if not entry["path"].casefold().endswith(".scene") and self._seen.get(entry["guid"]) != stamp:
