@@ -42,6 +42,8 @@ from infernux.engine.player_package_native import read_entry
 from infernux.engine.python_abi import PYTHON_RUNTIME_DIRECTORY
 from infernux.version import ENGINE_COMPATIBILITY_VERSION, ENGINE_VERSION
 
+from .file_transaction import InstallTransaction as _InstallTransaction
+
 from .content import (
     PAGE_EXTENSIONS,
     discover_plugin_pages,
@@ -3081,57 +3083,6 @@ def _script_bytecode_paths(source: str) -> tuple[str, ...]:
         if same_path(cached_source, source):
             result.append(entry.path)
     return tuple(sorted(result))
-
-
-class _InstallTransaction:
-    def __init__(self, project_root: str) -> None:
-        self.project_root = project_root
-        self.id = uuid.uuid4().hex
-        self.root = os.path.join(
-            project_root, "Cache", "Plugins", ".transactions", self.id
-        )
-        self.backups: list[tuple[str, str | None]] = []
-        self.committed = False
-        os.makedirs(self.root, exist_ok=True)
-
-    def write(self, destination: str, payload: bytes) -> None:
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
-        backup = None
-        if os.path.exists(destination):
-            backup = os.path.join(self.root, f"backup-{len(self.backups)}")
-            shutil.copy2(destination, backup)
-        temporary = os.path.join(self.root, f"write-{len(self.backups)}")
-        with open(temporary, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, destination)
-        self.backups.append((destination, backup))
-
-    def remove(self, destination: str) -> None:
-        if not os.path.exists(destination):
-            return
-        backup = os.path.join(self.root, f"backup-{len(self.backups)}")
-        shutil.copy2(destination, backup)
-        self.backups.append((destination, backup))
-        os.remove(destination)
-
-    def commit(self) -> None:
-        self.committed = True
-        shutil.rmtree(self.root, ignore_errors=True)
-
-    def rollback(self) -> None:
-        if self.committed:
-            return
-        for destination, backup in reversed(self.backups):
-            if backup and os.path.isfile(backup):
-                os.replace(backup, destination)
-            else:
-                try:
-                    os.remove(destination)
-                except FileNotFoundError:
-                    pass
-        shutil.rmtree(self.root, ignore_errors=True)
 
 
 def _python_environment_changes(
