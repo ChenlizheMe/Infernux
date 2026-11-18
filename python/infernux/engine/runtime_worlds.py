@@ -538,9 +538,15 @@ class RuntimeWorldSession:
                 tokens.clear()
                 domain.scheduler.bind_native_bridge(manager)
             if self._player_startup_records:
-                from infernux.engine.startup_warmup import PlayerStartupWarmup
+                from infernux.engine.project_context import get_project_root
+                from infernux.engine.startup_warmup import PlayerStartupWarmup, create_player_startup_warmup
 
-                warmup = PlayerStartupWarmup(self._player_startup_records, scope=f"player-world-{identity}")
+                project_root = get_project_root()
+                warmup = (
+                    create_player_startup_warmup(project_path=project_root, scope=f"player-world-{identity}")
+                    if project_root
+                    else PlayerStartupWarmup(self._player_startup_records, scope=f"player-world-{identity}")
+                )
                 try:
                     while True:
                         with _Infernux._RuntimeWorldScope(identity):

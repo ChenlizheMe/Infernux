@@ -9,6 +9,7 @@ import os
 import platform
 import sys
 import tempfile
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -21,19 +22,162 @@ from infernux.engine.path_utils import lexical_path
 _SCHEMA = "infernux.startup-warmup"
 _FILENAME = "StartupWarmup.json"
 _GPU_PUMP_BUDGET_SECONDS = 0.004
+_cpu_runtime_preload_lock = threading.Lock()
+_cpu_runtime_preload_thread: threading.Thread | None = None
+_cpu_runtime_preload_done = threading.Event()
+_cpu_runtime_preload_error: Exception | None = None
+
+
+def start_cpu_runtime_preload() -> None:
+    """Load the packaged CPU compiler while native startup owns the main thread."""
+    global _cpu_runtime_preload_thread
+    # Web and Android Players are cooked without the desktop Numba/llvmlite
+    # runtime. Their CPU kernels are already lowered to ordinary Python during
+    # Cook, so importing the desktop JIT facade here only competes with Vulkan
+    # and scene startup for CPU and storage bandwidth.
+    if _platform_identity() in {"web", "android"}:
+        _cpu_runtime_preload_done.set()
+        return
+    with _cpu_runtime_preload_lock:
+        if _cpu_runtime_preload_thread is not None:
+            return
+        _cpu_runtime_preload_thread = threading.Thread(
+            target=_preload_cpu_runtime,
+            name="InfernuxCpuRuntimePreload",
+            daemon=True,
+        )
+        _cpu_runtime_preload_thread.start()
+
+
+def _preload_cpu_runtime() -> None:
+    global _cpu_runtime_preload_error
+    started = time.perf_counter()
+    try:
+        from infernux import jit
+
+        if jit.JIT_AVAILABLE:
+            from infernux._jit_cache import cpu_cache_root
+
+            cpu_cache_root()
+        from infernux.engine.player_log import write_player_log
+
+        write_player_log(
+            "[Startup.Warmup] CPU runtime preloaded: "
+            f"{(time.perf_counter() - started) * 1000.0:.1f} ms"
+        )
+    except Exception as exc:
+        _cpu_runtime_preload_error = exc
+    finally:
+        _cpu_runtime_preload_done.set()
+
+
+def wait_cpu_runtime_preload() -> None:
+    """Join the compiler-only preload before publishing authored CPU code."""
+    start_cpu_runtime_preload()
+    _cpu_runtime_preload_done.wait()
+    if _cpu_runtime_preload_error is not None:
+        raise RuntimeError("Player CPU runtime preload failed") from _cpu_runtime_preload_error
 
 
 class PlayerStartupWarmup:
-    """Resolve declarations and install GPU pipelines on the Player thread."""
+    """Materialize GPU work on the owner thread and CPU work in parallel."""
 
-    def __init__(self, records: tuple[dict, ...], *, scope: str):
-        self._records = deque(records)
+    def __init__(
+        self,
+        records: tuple[dict, ...] = (),
+        *,
+        cpu_records: tuple[dict, ...] = (),
+        project_path: str = "",
+        scope: str,
+    ):
+        self._project_path = project_path
         self._scope = scope
+        self._records = deque(records)
+        self._cpu_records = list(cpu_records)
+        self._cpu_jobs: list[tuple[dict, object, float]] = []
+        self._cpu_records_resolved = False
         self._prepares = deque()
         self._pending_gpu = None
         self._started = time.perf_counter()
         self._completed = False
         self._prepare_count = 0
+        self._cpu_count = 0
+        self._cpu_elapsed_ms = 0.0
+        self._cpu_thread: threading.Thread | None = None
+        self._cpu_done = threading.Event()
+        self._cpu_error: BaseException | None = None
+        if self._cpu_records:
+            start_cpu_runtime_preload()
+
+    def start_cpu(self) -> None:
+        """Start already-resolved CPU hooks without delaying the owner thread."""
+        if self._cpu_thread is not None or self._cpu_done.is_set():
+            return
+        if not self._cpu_records_resolved:
+            raise RuntimeError("CPU warmup hooks must be resolved on the owner thread")
+        if not self._cpu_jobs:
+            self._cpu_done.set()
+            return
+        self._cpu_thread = threading.Thread(
+            target=self._prepare_cpu_worker,
+            name="InfernuxProjectCpuWarmup",
+            daemon=True,
+        )
+        self._cpu_thread.start()
+
+    def _prepare_cpu_worker(self) -> None:
+        try:
+            self._prepare_cpu_records()
+        except BaseException as exc:
+            self._cpu_error = exc
+        finally:
+            self._cpu_done.set()
+
+    def prepare_cpu(self) -> None:
+        """Wait for CPU declarations when an explicit synchronous gate needs them."""
+        self._resolve_cpu_records()
+        self.start_cpu()
+        self._cpu_done.wait()
+        if self._cpu_error is not None:
+            raise RuntimeError("Player CPU startup warmup failed") from self._cpu_error
+
+    def _prepare_cpu_records(self) -> None:
+        """Publish build-selected CPU-only declarations on the warmup worker."""
+        if not self._cpu_jobs:
+            return
+        wait_cpu_runtime_preload()
+        started = time.perf_counter()
+        from infernux import compute
+        from infernux.engine.player_log import write_player_log
+
+        while self._cpu_jobs:
+            record, hook, resolution_elapsed = self._cpu_jobs.pop(0)
+            with compute.defer_prepares() as pending:
+                hook_elapsed, declaration_elapsed = _run_resolved_player_warmup_record(
+                    record, hook, resolution_elapsed
+                )
+            if pending:
+                raise RuntimeError(
+                    "CPU startup warmup queued GPU work from a module without "
+                    f"GPU AOT artifacts: {record['module']}.{record['qualname']}"
+                )
+            self._cpu_count += 1
+            write_player_log(
+                "[Startup.Warmup] CPU declaration "
+                f"{record['module']}.{record['qualname']}: "
+                f"{declaration_elapsed:.1f} ms, hook={hook_elapsed:.1f} ms"
+            )
+        self._cpu_elapsed_ms += (time.perf_counter() - started) * 1000.0
+
+    def _resolve_cpu_records(self) -> None:
+        """Resolve components on the runtime owner before worker execution."""
+        if self._cpu_records_resolved:
+            return
+        while self._cpu_records:
+            record = self._cpu_records.pop(0)
+            hook, resolution_elapsed = _resolve_player_warmup_record(record)
+            self._cpu_jobs.append((record, hook, resolution_elapsed))
+        self._cpu_records_resolved = True
 
     @property
     def completed(self) -> bool:
@@ -45,6 +189,8 @@ class PlayerStartupWarmup:
             pending.cancel()
         self._prepares.clear()
         self._records.clear()
+        self._cpu_records.clear()
+        self._cpu_jobs.clear()
         self._completed = True
 
     def _pump_gpu(self) -> None:
@@ -75,6 +221,10 @@ class PlayerStartupWarmup:
         """Run one bounded warmup unit; return true when all work is complete."""
         if self._completed:
             return True
+        self._resolve_cpu_records()
+        self.start_cpu()
+        if self._cpu_done.is_set() and self._cpu_error is not None:
+            raise RuntimeError("Player CPU startup warmup failed") from self._cpu_error
         if self._pending_gpu is not None or self._prepares:
             self._pump_gpu()
             return False
@@ -99,12 +249,16 @@ class PlayerStartupWarmup:
                 f"elapsed_ms={hook_elapsed:.1f}"
             )
             return False
+        if not self._cpu_done.is_set():
+            return False
         self._completed = True
         from infernux.engine.player_log import write_player_log
 
         elapsed_ms = (time.perf_counter() - self._started) * 1000.0
         write_player_log(
             "[Startup.Warmup] ready "
+            f"cpu_declarations={self._cpu_count} "
+            f"cpu_elapsed_ms={self._cpu_elapsed_ms:.1f} "
             f"gpu_specializations={self._prepare_count} elapsed_ms={elapsed_ms:.1f}"
         )
         Debug.log_debug(
@@ -199,6 +353,73 @@ def _runtime_warmup_records(root: Path) -> tuple[dict, ...]:
         for record in registry["types"]
         if isinstance(record, dict) and record.get("startup_warmup") is True
     )
+
+
+def create_player_startup_warmup(
+    *, project_path: str, scope: str = "player-startup"
+) -> PlayerStartupWarmup:
+    """Create the exact build-authored warmup queue without importing scripts."""
+    root = Path(lexical_path(project_path))
+    records = tuple(sorted(
+        _runtime_warmup_records(root),
+        key=lambda record: (
+            str(record["runtime_path"]).casefold(),
+            str(record["qualname"]).casefold(),
+        ),
+    ))
+    # Emscripten owns one browser execution thread. Its build-selected CPU
+    # compute path is already source lowered, so declarations remain in the
+    # bounded owner queue. Native Players can overlap pure CPU JIT publication
+    # with scene activation, while every module represented by the GPU AOT
+    # manifest stays on the RHI owner thread.
+    if _platform_identity() == "web":
+        return PlayerStartupWarmup(records, project_path=str(root), scope=scope)
+
+    gpu_modules = _gpu_aot_modules(root)
+    gpu_records = tuple(
+        record for record in records if str(record["module"]) in gpu_modules
+    )
+    cpu_records = tuple(
+        record for record in records if str(record["module"]) not in gpu_modules
+    )
+    return PlayerStartupWarmup(
+        gpu_records, cpu_records=cpu_records, project_path=str(root), scope=scope
+    )
+
+
+def _gpu_aot_modules(root: Path) -> frozenset[str]:
+    """Read the exact project modules represented by packaged GPU artifacts."""
+    manifest_path = root / "Library" / "Artifacts" / "Compute" / "AotManifest.json"
+    if not manifest_path.is_file():
+        return frozenset()
+    with manifest_path.open("r", encoding="utf-8") as stream:
+        document = json.load(stream)
+    if not isinstance(document, dict) or set(document) != {"artifacts"}:
+        raise RuntimeError(f"Invalid GPU AOT manifest: {manifest_path}")
+    artifacts = document["artifacts"]
+    if not isinstance(artifacts, list):
+        raise RuntimeError(f"GPU AOT manifest artifacts are invalid: {manifest_path}")
+
+    functions: list[str] = []
+    for index, record in enumerate(artifacts):
+        if not isinstance(record, dict):
+            raise RuntimeError(
+                f"GPU AOT manifest artifact {index} is invalid: {manifest_path}"
+            )
+        function_name = record.get("function")
+        if not isinstance(function_name, str) or not function_name:
+            raise RuntimeError(
+                f"GPU AOT manifest artifact {index} has no function: {manifest_path}"
+            )
+        functions.append(function_name)
+
+    modules: set[str] = set()
+    for record in _runtime_warmup_records(root):
+        module_name = str(record["module"])
+        prefix = module_name + "."
+        if any(name == module_name or name.startswith(prefix) for name in functions):
+            modules.add(module_name)
+    return frozenset(modules)
 
 
 def _platform_identity() -> str:
