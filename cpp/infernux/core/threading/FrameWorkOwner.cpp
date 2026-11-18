@@ -155,8 +155,8 @@ void FrameWorkOwner::BeginSourceProfile()
 {
     ++m_sourceProfileSequence;
     m_sourceProfile.clear();
-    m_sourceProfile.reserve(m_sources.size());
-    for (const auto &source : m_sources) {
+    m_sourceProfile.reserve(m_sources->size());
+    for (const auto &source : *m_sources) {
         source->profileIndex = m_sourceProfile.size();
         m_sourceProfile.push_back({source->id});
     }
@@ -173,14 +173,22 @@ std::vector<FrameWorkSourceProfile> FrameWorkOwner::GetSourceProfile() const
     return m_sourceProfile;
 }
 
+FrameWorkOwner::SourceList &FrameWorkOwner::MutableSources()
+{
+    if (m_sources.use_count() != 1)
+        m_sources = std::make_shared<SourceList>(*m_sources);
+    return *m_sources;
+}
+
 FrameWorkOwner::SourceId FrameWorkOwner::AddSource(FrameWorkSource source)
 {
     if (!source.describe || !source.advance)
         throw std::invalid_argument("A frame work source requires describe and advance callbacks");
     const auto id = m_nextSource++;
-    m_sources.push_back(std::make_shared<Source>(Source{id, std::move(source)}));
+    auto &sources = MutableSources();
+    sources.push_back(std::make_shared<Source>(Source{id, std::move(source)}));
     if (m_sourceProfileActive) {
-        m_sources.back()->profileIndex = m_sourceProfile.size();
+        sources.back()->profileIndex = m_sourceProfile.size();
         m_sourceProfile.push_back({id});
     }
     return id;
@@ -188,19 +196,17 @@ FrameWorkOwner::SourceId FrameWorkOwner::AddSource(FrameWorkSource source)
 
 void FrameWorkOwner::RemoveSource(SourceId id)
 {
-    m_sources.erase(std::remove_if(m_sources.begin(), m_sources.end(),
-                                   [id](const auto &source) {
-                                       if (source->id != id)
-                                           return false;
-                                       source->awake = false;
-                                       return true;
-                                   }),
-                    m_sources.end());
+    auto &sources = MutableSources();
+    const auto it = std::find_if(sources.begin(), sources.end(), [id](const auto &source) { return source->id == id; });
+    if (it != sources.end()) {
+        (*it)->awake = false;
+        sources.erase(it);
+    }
 }
 
 void FrameWorkOwner::Wake(SourceId id)
 {
-    for (const auto &source : m_sources)
+    for (const auto &source : *m_sources)
         if (source->id == id)
             source->awake = true;
 }
@@ -372,7 +378,7 @@ int64_t FrameWorkOwner::ServiceRemaining() const
 void FrameWorkOwner::ObserveSources()
 {
     const auto sources = m_sources;
-    for (const auto &source : sources)
+    for (const auto &source : *sources)
         ObserveSource(source);
 }
 
@@ -388,11 +394,10 @@ void FrameWorkOwner::ObserveSource(const std::shared_ptr<Source> &source)
     }
 }
 
-std::vector<FrameWorkOwner::Choice> FrameWorkOwner::DescribeSources()
+void FrameWorkOwner::DescribeSources(std::vector<Choice> &choices)
 {
-    std::vector<Choice> choices;
     const auto sources = m_sources;
-    for (const auto &source : sources) {
+    for (const auto &source : *sources) {
         auto description = DescribeSource(source, source->callbacks.interactive);
         if (!description)
             continue;
@@ -400,7 +405,6 @@ std::vector<FrameWorkOwner::Choice> FrameWorkOwner::DescribeSources()
         source->awake = facts.observe || HasPending(facts);
         choices.push_back({source, facts});
     }
-    return choices;
 }
 
 std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_ptr<Source> &source, bool interactive,
@@ -429,7 +433,7 @@ std::optional<FrameWorkFacts> FrameWorkOwner::DescribeSource(const std::shared_p
 void FrameWorkOwner::RefreshSources()
 {
     const auto sources = m_sources;
-    for (const auto &source : sources) {
+    for (const auto &source : *sources) {
         if (!source->awake || source->observedOpportunity != m_opportunity || !source->callbacks.refresh)
             continue;
         Scope scope(*this);
@@ -443,7 +447,7 @@ FrameWorkPeers FrameWorkOwner::PeerWork(SourceId id)
     Scope scope(*this);
     FrameWorkPeers peers;
     const auto sources = m_sources;
-    for (const auto &source : sources) {
+    for (const auto &source : *sources) {
         if (source->id == id)
             continue;
         peers.ioServiceSerial = std::max(peers.ioServiceSerial, source->lastIoService);
@@ -566,7 +570,9 @@ bool FrameWorkOwner::Drive(const std::function<FrameGpuAvailability()> &gpuAvail
 {
     bool first = true;
     bool advancedEarlyGpu = false;
+    std::vector<Choice> choices;
     for (;;) {
+        choices.clear();
         const auto roundProgress = m_progressSerial;
         ObserveSources(); // Newly registered sources get their first host observation.
         if (m_late) {
@@ -576,7 +582,7 @@ bool FrameWorkOwner::Drive(const std::function<FrameGpuAvailability()> &gpuAvail
         if (!first || m_late)
             RefreshSources();
         first = false;
-        auto choices = DescribeSources();
+        DescribeSources(choices);
         const bool pending = HasPending(choices);
         if (!IsAccepting())
             return pending;
@@ -686,8 +692,8 @@ bool FrameWorkOwner::DriveRequired(SourceId id, ServiceKind kind,
     if (!gpuAvailability)
         throw std::invalid_argument("Required frame work needs a GPU availability callback");
     const auto found =
-        std::find_if(m_sources.begin(), m_sources.end(), [id](const auto &source) { return source->id == id; });
-    if (found == m_sources.end())
+        std::find_if(m_sources->begin(), m_sources->end(), [id](const auto &source) { return source->id == id; });
+    if (found == m_sources->end())
         throw std::invalid_argument("Required work source is not registered");
     const auto source = *found;
     const auto blocked = [id](const std::string &reason) {
@@ -790,9 +796,12 @@ void FrameWorkOwner::EndOpportunity() noexcept
 
 void FrameWorkOwner::ClearSources()
 {
-    for (const auto &source : m_sources)
+    for (const auto &source : *m_sources)
         source->awake = false;
-    m_sources.clear();
+    if (m_sources.use_count() == 1)
+        m_sources->clear();
+    else
+        m_sources = std::make_shared<SourceList>();
 }
 
 } // namespace infernux

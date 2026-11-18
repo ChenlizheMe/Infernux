@@ -417,7 +417,7 @@ class FrameWorkOwner
     bool Drive(const std::function<FrameGpuAvailability()> &gpuAvailability = {});
     bool DriveRequired(SourceId id, ServiceKind kind, const std::function<FrameGpuAvailability()> &gpuAvailability,
                        const std::function<FrameWorkWaitResult(SourceId, uint64_t)> &waitForProgress);
-    std::vector<Choice> DescribeSources();
+    void DescribeSources(std::vector<Choice> &choices);
     std::optional<FrameWorkFacts> DescribeSource(const std::shared_ptr<Source> &source, bool interactive,
                                                  bool peerQuery = false);
     bool AdvanceChoice(Choice &choice, bool gpu, bool interactive);
@@ -428,7 +428,10 @@ class FrameWorkOwner
     uint64_t RunningNanoseconds() const;
     uint64_t Now() const;
 
-    std::vector<std::shared_ptr<Source>> m_sources;
+    // Callbacks can change registrations. All readers share the table until a writer changes its membership.
+    using SourceList = std::vector<std::shared_ptr<Source>>;
+    SourceList &MutableSources();
+    std::shared_ptr<SourceList> m_sources = std::make_shared<SourceList>();
     std::vector<FrameWorkSourceProfile> m_sourceProfile;
     uint64_t m_sourceProfileSequence = 0;
     bool m_sourceProfileActive = false;
