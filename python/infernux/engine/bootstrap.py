@@ -150,6 +150,14 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         self._report_progress("Refreshing project resources\u2026")
         if self.engine:
+            resources = getattr(self.engine, "_resources_manager", None)
+            if resources is not None:
+                try:
+                    resources.watch_engine_sources()
+                except Exception as exc:
+                    from infernux.debug import Debug
+
+                    Debug.log_warning(f"Engine source reload is unavailable: {exc}")
             self.engine.prepare_startup_refresh()
             # Lifecycle scripts created without a .meta sidecar only enter the
             # GUID catalog with this refresh commit; load them now instead of
