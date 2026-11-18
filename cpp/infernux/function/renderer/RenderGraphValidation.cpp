@@ -36,6 +36,11 @@ bool TextureExtentsMatch(const GraphTextureDesc &a, const GraphTextureDesc &b, u
 
 using Intervals = intervals::Set;
 
+bool IsRayTailOutput(GraphFrameBuffer source)
+{
+    return source == GraphFrameBuffer::WorldRayTailWrite || source == GraphFrameBuffer::WorldRayTailRequests;
+}
+
 Intervals RectangleIntervals(uint32_t stride, uint32_t width, uint32_t height)
 {
     if (width == 0 || height == 0)
@@ -110,8 +115,9 @@ void ValidateWorkDataflow(const RenderGraphDescription &graph,
     for (const auto &buffer : graph.buffers) {
         if (!buffer.workBinding.empty())
             continue;
+        const bool readOnlyFrame = buffer.HasFrameBuffer() && !IsRayTailOutput(buffer.frameBuffer);
         auto identity = buffer.computeBuffer ? importedIdentity(buffer.computeBuffer)
-                                             : Identity{nextIdentity++, buffer.HasFrameBuffer(), false};
+                                             : Identity{nextIdentity++, readOnlyFrame, false};
         identity.work = buffer.exportLayout.has_value();
         identities.emplace(buffer.name, identity);
         if (buffer.computeBuffer)
@@ -773,11 +779,10 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                              "' does not declare the required usage");
                 return false;
             }
-            const bool tailWrite =
-                (buffer->second->frameBuffer == GraphFrameBuffer::WorldRayTailWrite ||
-                 buffer->second->frameBuffer == GraphFrameBuffer::WorldRayTailRequests) &&
-                pass.rayTailBatch == 1 && command &&
-                (command->type == GraphCommandType::RayTailPrepare || command->type == GraphCommandType::RayTailMerge);
+            const bool tailWrite = access.type == GraphBufferAccessType::StorageWrite &&
+                                   IsRayTailOutput(buffer->second->frameBuffer) && pass.rayTailBatch == 1 && command &&
+                                   (command->type == GraphCommandType::RayTailPrepare ||
+                                    command->type == GraphCommandType::RayTailMerge);
             if (buffer->second->HasFrameBuffer() && access.type != GraphBufferAccessType::StorageRead && !tailWrite) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: frame buffer '", access.resource, "' is read-only");
                 return false;

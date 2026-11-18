@@ -346,6 +346,46 @@ void CheckGraphBufferValidation()
     assert(!valid(broken));
 }
 
+void CheckRayCacheWithExport()
+{
+    RenderGraphDescription graph;
+    graph.textures.push_back({"lighting", rhi::PixelFormat::RGBA32SFloat, 1, 1});
+    graph.outputTexture = "lighting";
+    graph.buffers.push_back({"cache", 16, static_cast<uint32_t>(GraphBufferUsage::Storage)});
+    graph.buffers.push_back({"features", 16, static_cast<uint32_t>(GraphBufferUsage::TransferDestination)});
+    auto &output = graph.buffers.back();
+    output.exportLayout = rhi::ComputeBufferDesc{4};
+    output.exportShape = {1, 4};
+
+    auto &light = graph.passes.emplace_back();
+    light.name = "lighting";
+    light.writeColors = {{0, "lighting"}};
+    light.clearColor = true;
+    auto &update = graph.passes.emplace_back();
+    update.name = "cache update";
+    update.type = GraphPassType::Compute;
+    update.rayTailBatch = 1;
+    update.commands.emplace_back().type = GraphCommandType::RayTailMerge;
+    update.bufferAccesses = {{"cache", GraphBufferAccessType::StorageWrite}};
+    auto &capture = graph.passes.emplace_back();
+    capture.name = "model input";
+    capture.type = GraphPassType::Copy;
+    capture.readTextures = {"lighting"};
+    capture.bufferAccesses = {{"features", GraphBufferAccessType::TransferWrite}};
+    auto &copy = capture.commands.emplace_back();
+    copy.type = GraphCommandType::CopyTextureToBuffer;
+    copy.sourceResource = "lighting";
+    copy.destinationResource = "features";
+    copy.copyWidth = copy.copyHeight = 1;
+
+    for (auto role : {GraphFrameBuffer::WorldRayTailWrite, GraphFrameBuffer::WorldRayTailRequests}) {
+        graph.buffers.front().frameBuffer = role;
+        assert(ValidateRenderGraphDescription(graph, 1, 1, 1));
+    }
+    graph.passes[1].rayTailBatch = 0;
+    assert(!ValidateRenderGraphDescription(graph, 1, 1, 1));
+}
+
 void CheckViewLightListValidation()
 {
     RenderGraphDescription graph;
@@ -763,12 +803,14 @@ int main(int argc, char **argv)
 {
     if (argc == 2 && std::string_view(argv[1]) == "--graph-buffer-contract") {
         CheckGraphBufferValidation();
+        CheckRayCacheWithExport();
         return 0;
     }
     CheckCameraHistoryResetIsolation();
     CheckFullscreenState();
     CheckFullscreenOutputs();
     CheckGraphBufferValidation();
+    CheckRayCacheWithExport();
     CheckViewLightListValidation();
     CheckSampledAssetTextureValidation();
     CheckWorldUIPassAttachments();
