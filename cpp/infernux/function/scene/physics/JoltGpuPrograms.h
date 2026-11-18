@@ -83,6 +83,7 @@ struct JoltGpuStageWork
 struct JoltGpuContactWorkset
 {
     uint32_t patchCount = 0, maxPatchesPerWorld = 0;
+    bool collisionDispatched = false;
     std::shared_ptr<rhi::ComputeBuffer> parameters, worlds, contacts, patches;
 };
 

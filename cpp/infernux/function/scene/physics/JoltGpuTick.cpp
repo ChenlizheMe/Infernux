@@ -1209,10 +1209,11 @@ class JoltGpuTick::Impl
 
     void AcceptContactWorkset(std::shared_ptr<const JoltGpuContactWorkset> contacts)
     {
+        const bool collisionDispatched = contacts->collisionDispatched;
         inputs.SetContacts(std::move(contacts));
-        stageCursor.phase = inputs.HasGenericGeometry() ? Phase::CompleteConvexContacts
-                            : control.participants      ? Phase::ParticipantPrepare
-                                                        : Phase::BuildTopology;
+        stageCursor.phase = Phase::CollidePairs;
+        if (collisionDispatched)
+            NextSpan(stageCursor);
         stageCursor.localFirst = 0;
         stageCursor.islandBatchFirst = 0;
         stageCursor.islandBatchLanes = 0;

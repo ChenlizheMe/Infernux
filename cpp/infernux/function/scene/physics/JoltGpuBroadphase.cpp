@@ -406,6 +406,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         parameters.counts.z = n;
         parameters.solve.z = parameters.solve.w = 0;
         workset = std::make_shared<JoltGpuContactWorkset>();
+        // A world with a contact history can run collision inline before the usual count receipt.
+        // Otherwise the tick dispatches only the candidates reported by that same receipt.
+        workset->collisionDispatched = !swept && storage.GetContactHistory(settings.selection.x).patchCount != 0;
         // A single group knows its complete pair upper bound from this World.
         ConfigureCapacity(smallPairs ? std::max(1u, leaves * (leaves - 1u) / 2u)
                                      : implementation->recentCapacity[config.round.y]);
@@ -991,7 +994,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 if (!Emit(PublishResidentCount, 0, 1, config, uploads, dispatches))
                     return true;
                 if (config.round.w) {
-                    phase = config.round.y ? Phase::Done : Phase::Collide;
+                    phase = workset->collisionDispatched ? Phase::Collide : Phase::Done;
                     return true;
                 }
                 BeginActive(true);
@@ -1030,7 +1033,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 if (!Emit(SetCandidateBank, 0, 1, config, uploads, dispatches))
                     return true;
                 item = 0;
-                phase = capacity && !config.round.y ? Phase::Collide : Phase::Done;
+                phase = capacity && workset->collisionDispatched ? Phase::Collide : Phase::Done;
                 return true;
             case Phase::Collide: {
                 if (item == capacity) {
