@@ -263,7 +263,7 @@ particle::GpuParticleGraphicsPrograms CompileParticleGraphicsPrograms()
     const auto &modules = GetSlangParticleGraphicsModules();
     for (size_t index = 0; index < modules.size(); ++index)
         programs[index] = std::make_shared<const ShaderCompilation>(
-            SlangCompiler::Get().Compile(modules[index].module, {}, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}));
+            SlangCompiler::Get().Compile(modules[index].module, {}, {ShaderCodeTarget::SpirV}));
     return programs;
 }
 
