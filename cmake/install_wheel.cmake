@@ -91,7 +91,7 @@ if(NOT _purge_result EQUAL 0)
 endif()
 
 execute_process(
-    COMMAND "${PYTHON_EXECUTABLE}" -m pip --disable-pip-version-check install --no-deps --no-cache-dir
+    COMMAND "${PYTHON_EXECUTABLE}" -m pip --disable-pip-version-check install --no-index --no-deps --no-cache-dir
             "${WHEEL_TO_INSTALL}"
     RESULT_VARIABLE _pip_install_result
     COMMAND_ECHO STDOUT

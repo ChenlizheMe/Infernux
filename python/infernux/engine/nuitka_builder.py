@@ -157,15 +157,6 @@ def _find_player_module_output(staging_dir: str) -> str:
         )
     return str(candidates[0])
 
-_AUTO_INSTALLABLE_PACKAGES = {
-    "nuitka": "nuitka",
-    "ordered_set": "ordered-set",
-    "PIL": "Pillow",
-    "numba": "numba",
-    "llvmlite": "llvmlite",
-}
-
-
 _BuildCancelled = BuildCancelled
 
 
@@ -930,108 +921,16 @@ def _resolve_builder_python() -> str:
     )
 
 
-def _ensure_python_packages(python_exe: str, *module_names: str) -> None:
-    import time as _time
-    missing_packages: list[str] = []
-    _check_t0 = _time.perf_counter()
-
-    # Check all modules in a single subprocess instead of one per module.
-    check_script = (
-        "import importlib.util, sys; "
-        "mods = sys.argv[1:]; "
-        "print(','.join(str(int(importlib.util.find_spec(m) is not None)) for m in mods))"
-    )
-    completed = _run_python(
+def _check_builder_packages(python_exe: str, modules, requirement_files=()) -> None:
+    """Check dependencies in the interpreter that will compile the Player."""
+    checker = os.path.join(os.path.dirname(__file__), "project_requirements.py")
+    result = _run_python(
         python_exe,
-        ["-c", check_script, *module_names],
+        [checker, json.dumps(list(modules)), *requirement_files],
         timeout=30,
     )
-    if completed.returncode == 0 and (completed.stdout or "").strip():
-        results = (completed.stdout or "").strip().split(",")
-        for module_name, available in zip(module_names, results):
-            if available.strip() != "1":
-                package_name = _AUTO_INSTALLABLE_PACKAGES.get(module_name)
-                if package_name and package_name not in missing_packages:
-                    missing_packages.append(package_name)
-    else:
-        # Fallback: treat all as potentially missing
-        for module_name in module_names:
-            package_name = _AUTO_INSTALLABLE_PACKAGES.get(module_name)
-            if package_name and package_name not in missing_packages:
-                missing_packages.append(package_name)
-
-    Debug.log_internal(
-        f"  package availability check for {len(module_names)} modules in "
-        f"{_time.perf_counter() - _check_t0:.2f}s"
-    )
-
-    if not missing_packages:
-        return
-
-    Debug.log_internal(
-        "Missing build packages detected — installing automatically: "
-        + ", ".join(missing_packages)
-    )
-    _pip_t0 = _time.perf_counter()
-    subprocess.check_call(
-        [python_exe, "-m", "pip", "install", *missing_packages, "--quiet"],
-        executable=process_executable_path(python_exe),
-    )
-    Debug.log_internal(
-        f"  pip install completed in {_time.perf_counter() - _pip_t0:.2f}s"
-    )
-
-
-def _install_requirements_files(
-    python_exe: str,
-    requirement_files: List[str],
-    state_dir: str,
-) -> None:
-    os.makedirs(state_dir, exist_ok=True)
-    interpreter_key = hashlib.sha256(path_key(python_exe).encode("utf-8")).hexdigest()[:24]
-    state_path = os.path.join(state_dir, f"{interpreter_key}.json")
-    try:
-        with open(state_path, "r", encoding="utf-8") as state_file:
-            state = json.load(state_file)
-        if not isinstance(state, dict):
-            state = {}
-    except (OSError, json.JSONDecodeError):
-        state = {}
-
-    changed = False
-    for requirement_file in requirement_files:
-        if not requirement_file or not os.path.isfile(requirement_file):
-            continue
-        with open(requirement_file, "rb") as source:
-            requirement_hash = hashlib.sha256(source.read()).hexdigest()
-        state_key = path_key(requirement_file)
-        if state.get(state_key) == requirement_hash:
-            Debug.log_internal(f"Project requirements unchanged; reusing builder environment: {requirement_file}")
-            continue
-        Debug.log_internal(
-            f"Installing project requirements into builder Python: {requirement_file}"
-        )
-        subprocess.check_call(
-            [
-                python_exe,
-                "-m",
-                "pip",
-                "install",
-                "--disable-pip-version-check",
-                "-r",
-                requirement_file,
-                "--quiet",
-            ],
-            executable=process_executable_path(python_exe),
-        )
-        state[state_key] = requirement_hash
-        changed = True
-
-    if changed:
-        temporary = state_path + f".{os.getpid()}.tmp"
-        with open(temporary, "w", encoding="utf-8") as state_file:
-            json.dump(state, state_file, indent=2, sort_keys=True)
-        os.replace(temporary, state_path)
+    if result.returncode:
+        raise RuntimeError(f"Builder Python {python_exe}: {(result.stderr or result.stdout).strip()}")
 
 
 class NuitkaBuilder:
@@ -1198,10 +1097,6 @@ class NuitkaBuilder:
         self._staging_root = os.path.join(self._build_cache_root, "Staging")
         self._nuitka_cache_dir = os.path.join(self._build_cache_root, "Nuitka")
         self._runtime_pack_dir = os.path.join(self._build_cache_root, "RuntimePacks")
-        self._requirements_state_dir = os.path.join(
-            self._build_cache_root,
-            "Requirements",
-        )
         # Platform-normalized executable name: the Windows-style ".exe"
         # default is stripped on Linux/macOS so callers don't need to care.
         if sys.platform != "win32" and output_filename.lower().endswith(".exe"):
@@ -2114,38 +2009,10 @@ print(json.dumps({{
     # ------------------------------------------------------------------
 
     def _check_nuitka(self):
-        """Ensure Nuitka and build-time project dependencies are installed."""
-        import time as _time
-        try:
-            _t0 = _time.perf_counter()
-            _ensure_python_packages(
-                self._builder_python,
-                "nuitka",
-                "ordered_set",
-                *self.extra_include_packages,
-                *self.raw_copy_packages,
-                *getattr(self, "runtime_support_packages", []),
-            )
-            Debug.log_internal(
-                f"  _ensure_python_packages in {_time.perf_counter() - _t0:.2f}s"
-            )
-            _t1 = _time.perf_counter()
-            _install_requirements_files(
-                self._builder_python,
-                self.extra_requirements_files,
-                self._requirements_state_dir,
-            )
-            Debug.log_internal(
-                f"  _install_requirements_files in {_time.perf_counter() - _t1:.2f}s"
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to prepare the builder Python environment.  "
-                f"Builder Python: {self._builder_python}\n"
-                "Please run manually:\n"
-                "    pip install nuitka ordered-set\n"
-                "and install the project's requirements.txt if needed."
-            ) from exc
+        _check_builder_packages(
+            self._builder_python, ("nuitka", "ordered_set"),
+            [path for path in self.extra_requirements_files if os.path.isfile(path)],
+        )
 
     # ------------------------------------------------------------------
     # Staging directory
@@ -2182,7 +2049,6 @@ print(json.dumps({{
         cmd = [
             self._builder_python, "-m", "nuitka",
             "--module" if player_module else "--standalone",
-            "--assume-yes-for-downloads",
             f"--output-dir={self._staging_dir}",
             # Disable Nuitka's deployment-time hard-crash when an excluded
             # module is imported.  Some modules are legitimately excluded
@@ -2493,6 +2359,7 @@ print(json.dumps({{
         proc = subprocess.Popen(
             process_cmd,
             executable=process_executable_path(process_cmd[0]),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -3612,7 +3479,6 @@ print(json.dumps({{
             return icon_path
 
         try:
-            _ensure_python_packages(self._builder_python, "PIL")
             from PIL import Image
         except ImportError:
             Debug.log_warning(

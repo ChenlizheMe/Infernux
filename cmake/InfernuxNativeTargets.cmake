@@ -100,7 +100,7 @@ target_compile_definitions(InfernuxFoundation
 )
 
 target_link_libraries(InfernuxAudioRuntime PUBLIC InfernuxFoundation SDL3::SDL3)
-target_link_libraries(InfernuxAudioRuntime PRIVATE dr_libs)
+target_link_libraries(InfernuxAudioRuntime PRIVATE dr_libs stb_vorbis)
 target_compile_definitions(InfernuxAudioRuntime PRIVATE INFERNUX_AUDIO_RUNTIME_EXPORTS=1)
 target_link_libraries(InfernuxAssetRuntime PUBLIC InfernuxFoundation)
 target_compile_definitions(InfernuxAssetRuntime PRIVATE INFERNUX_ASSET_RUNTIME_EXPORTS=1)
@@ -140,8 +140,7 @@ target_link_libraries(InfernuxRuntime PUBLIC
     InfernuxRendererRuntime
     InfernuxVulkanBackend
 )
-target_include_directories(InfernuxRuntime PRIVATE "${CMAKE_SOURCE_DIR}/external/MikkTSpace")
-target_link_libraries(InfernuxRuntime PRIVATE lunasvg::lunasvg stb)
+target_link_libraries(InfernuxRuntime PRIVATE lunasvg::lunasvg mikktspace stb)
 if(INFERNUX_USE_TARGET_PYTHON)
     target_link_libraries(InfernuxRuntime PRIVATE pybind11::headers InfernuxTargetPython)
 else()
@@ -250,14 +249,7 @@ target_link_libraries(InfernuxRuntime PUBLIC
     Jolt
     GPUOpen::VulkanMemoryAllocator
 )
-# The screenshot encoder uses the same deflate library as the mesh importer.
-if(TARGET zlibstatic)
-    target_link_libraries(InfernuxRuntime PRIVATE zlibstatic)
-    target_include_directories(InfernuxRuntime PRIVATE "${zlib_SOURCE_DIR}" "${zlib_BINARY_DIR}")
-else()
-    find_package(ZLIB REQUIRED)
-    target_link_libraries(InfernuxRuntime PRIVATE ZLIB::ZLIB)
-endif()
+target_link_libraries(InfernuxRuntime PRIVATE ZLIB::ZLIBSTATIC)
 target_link_libraries(InfernuxFoundation PUBLIC glm::glm)
 target_link_libraries(InfernuxRenderCore PUBLIC glm::glm)
 target_link_libraries(InfernuxRendererRuntime PUBLIC glm::glm)

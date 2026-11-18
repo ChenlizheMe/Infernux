@@ -295,10 +295,13 @@ function json(document, status = 200) {
   return Response.json(document, { status });
 }
 function requireKey(key) {
-  if (!ALLOWED_KEYS.has(key) && !isHubReleaseKey(key) && !platformPluginSource(key) && !engineWheelSource(key)) {
+  if (!ALLOWED_KEYS.has(key) && !isHubReleaseKey(key) && !isAndroidKitKey(key) && !platformPluginSource(key) && !engineWheelSource(key)) {
     throw new RangeError("Object key is not authorized");
   }
   return key;
+}
+function isAndroidKitKey(key) {
+  return /^android-support\/(\d+\.\d+\.\d+)\/infernux-android-support-\1-(?:windows|linux)-x64\.inxkit(?:\.json)?$/.test(key ?? "");
 }
 function platformPluginSource(key) {
   const match = /^platform-plugins\/(\d+\.\d+\.\d+(?:-v[1-9]\d*)?)\/(registry\.json|infernux\.platform-[a-z][a-z0-9-]*\.(?:inxpkg|release\.json))$/.exec(key ?? "");

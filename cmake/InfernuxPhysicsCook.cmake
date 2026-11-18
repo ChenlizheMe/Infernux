@@ -40,7 +40,6 @@ function(infernux_cook_jolt_gpu_programs target format)
     list(APPEND _shader_sources "${_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
     if(CMAKE_CROSSCOMPILING)
         include(ExternalProject)
-        set(INFERNUX_HOST_SLANG_ROOT "" CACHE PATH "Prepared native Slang SDK for cross-build shader cooking")
         set(_host_build "${CMAKE_BINARY_DIR}/jolt-gpu-cooker")
         set(_cooker "${_host_build}/bin/InfernuxJoltGpuCook")
         if(CMAKE_HOST_WIN32)
@@ -49,7 +48,8 @@ function(infernux_cook_jolt_gpu_programs target format)
         ExternalProject_Add(infernux_jolt_gpu_host_cooker
             SOURCE_DIR "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/jolt-gpu-cook"
             BINARY_DIR "${_host_build}"
-            CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release "-DINFERNUX_SLANG_ROOT=${INFERNUX_HOST_SLANG_ROOT}"
+            DOWNLOAD_COMMAND "" UPDATE_COMMAND ""
+            CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release -DFETCHCONTENT_FULLY_DISCONNECTED=ON
             BUILD_COMMAND "${CMAKE_COMMAND}" --build <BINARY_DIR>
                 --config Release --target InfernuxJoltGpuCook --parallel 2
             BUILD_BYPRODUCTS "${_cooker}"

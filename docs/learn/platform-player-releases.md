@@ -58,6 +58,14 @@ python scripts/release/build_platform_plugins.py build --targets linux android w
 
 Windows/Linux 桌面目标分别需要对应宿主编译器。一个 Windows 命令不能直接替代 Linux 原生工具链；跨宿主的完整集合由 CI 收集。Android 需要 `ANDROID_SDK_ROOT`、`INFERNUX_ANDROID_PYTHON_PREFIX_ARM64` 和 `INFERNUX_ANDROID_PYTHON_PREFIX_X86_64`。Web 需要 `INFERNUX_EMSDK_ROOT`、`INFERNUX_WEB_CPYTHON_ROOT`、`INFERNUX_WEB_PYTHON_RUNTIME_MANIFEST`、`INFERNUX_WEB_NUMPY_PAYLOAD_ROOT`，以及同时包含两个宿主工具的 `--tools` 目录。这些是源码构建条件，匹配的预编译插件不要求用户重新配置它们。
 
+### 离线导出与运行
+
+开发机准备好引擎、项目依赖和目标平台插件后，可以断开互联网导出游戏。Windows 和 Linux 使用已安装插件里的桌面 Player。Web 插件用自己仓库的 `external/emdawnwebgpu` 编译浏览器运行时，导出项目时复用这个运行时。浏览器可通过本机 `localhost` 服务加载导出目录中的网页、脚本、Wasm 和游戏资源。
+
+Android 在 Hub 安装一次对应宿主的「Android 支持」即可。工具包包含 JDK、SDK、NDK、Gradle、Android Gradle 插件及生成 APK/AAB 所需的依赖。每个项目在自己的构建目录写入增量产物，Gradle 从 Hub 工具包读取公共依赖，第一次导出也使用离线模式。隔离机器可以复制已经解压的完整工具包，或通过 Hub 的本地安装入口导入同一份 `.inxkit`。
+
+重新编译已安装的平台插件时，请提供与引擎版本匹配的本地源码检出（含递归子模块），并设置 `INFERNUX_ENGINE_SOURCE_ROOT`。Web 源码构建还需要准备好的 Emscripten 和目标 CPython 工具链。匹配的插件直接使用已有载荷。
+
 已有正确版本的原生载荷，可以只执行最终打包：
 
 ```powershell

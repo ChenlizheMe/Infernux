@@ -1,82 +1,37 @@
-# Canonical dependency layout for the engine build.
-#
-# Git submodules remain the source of truth for pinned dependency revisions.
-# This file describes where those checkouts live and which ones are maintained
-# forks versus official platform/editor plugins. A plugin is a packaging input,
-# not a link-time dependency of the editor runtime.
-
+# Source checkouts are prepared by Git before configuration. This also applies
+# when the Web Player or a native host generator includes the engine modules.
 include_guard(GLOBAL)
+get_filename_component(INFERNUX_SOURCE_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+set(INFERNUX_EXTERNAL_ROOT "${INFERNUX_SOURCE_ROOT}/external")
+set(INFERNUX_PLUGIN_ROOT "${INFERNUX_EXTERNAL_ROOT}/plugins")
+set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE INTERNAL "Build from the prepared source tree")
 
-set(INFERNUX_SOURCE_ROOT "${CMAKE_SOURCE_DIR}" CACHE INTERNAL
-    "Infernux source checkout root")
-set(INFERNUX_EXTERNAL_ROOT "${INFERNUX_SOURCE_ROOT}/external" CACHE INTERNAL
-    "Infernux external dependency root")
-set(INFERNUX_PLUGIN_ROOT "${INFERNUX_EXTERNAL_ROOT}/plugins" CACHE INTERNAL
-    "Infernux official plugin checkout root")
-
-# These are the engine-maintained dependency forks. Their submodules track the
-# single `infernux-support` branch; the superproject still builds the exact
-# gitlink recorded in the checkout.
-set(INFERNUX_MAINTAINED_FORKS
-    slang_for_infernux
-    imgui_for_infernux
-    sdl_for_infernux
-    joltphysics_for_infernux
-    llvmlite_for_infernux
-    zstd_for_infernux
-    lunasvg_for_infernux
-    volk_for_infernux
-    utf8proc_for_infernux
-)
-
-# Official plugins are packaged inputs. Their platform-native export projects
-# are entered explicitly by platform workflows, not through this dependency
-# list.
-set(INFERNUX_OFFICIAL_PLUGIN_NAMES
-    infernux_mcp
-    infernux_windows
-    infernux_linux
-    infernux_android
-    infernux_web
-)
-
-set(INFERNUX_THIRD_PARTY_SUBMODULES
-    slang_for_infernux
-    assimp
-    glm
-    imgui_for_infernux
-    sdl_for_infernux
-    stb
-    joltphysics_for_infernux
-    VulkanMemoryAllocator
-    MikkTSpace
-    zstd_for_infernux
-    lunasvg_for_infernux
-    volk_for_infernux
-    utf8proc_for_infernux
-)
-
-# Source-only Python dependency fork. It has no CMake project and is consumed
-# by the CPU-JIT packaging target instead of add_subdirectory().
-set(INFERNUX_PYTHON_DEPENDENCY_FORKS
-    llvmlite_for_infernux
-)
-
-function(infernux_dependency_path OUT_VAR DEPENDENCY_NAME)
-    if(DEPENDENCY_NAME MATCHES "^infernux_(mcp|windows|linux|android|web)$")
-        set(_path "${INFERNUX_PLUGIN_ROOT}/${DEPENDENCY_NAME}")
-    else()
-        set(_path "${INFERNUX_EXTERNAL_ROOT}/${DEPENDENCY_NAME}")
+function(infernux_require_sources root)
+    set(missing)
+    foreach(source IN LISTS ARGN)
+        if(NOT EXISTS "${root}/${source}")
+            list(APPEND missing "${root}/${source}")
+        endif()
+    endforeach()
+    if(missing)
+        list(JOIN missing "\n  " paths)
+        message(FATAL_ERROR
+            "Missing external source files:\n  ${paths}\n"
+            "From the engine checkout, run: git submodule update --init --recursive")
     endif()
-    set(${OUT_VAR} "${_path}" PARENT_SCOPE)
 endfunction()
 
-function(infernux_require_dependency DEPENDENCY_NAME DESCRIPTION)
-    infernux_dependency_path(_dependency_path "${DEPENDENCY_NAME}")
-    file(GLOB _dependency_entries "${_dependency_path}/*")
-    if(NOT _dependency_entries)
-        message(FATAL_ERROR
-            "Missing ${DESCRIPTION} at '${_dependency_path}'. "
-            "Initialize it with: git submodule update --init --recursive -- '${_dependency_path}'")
-    endif()
+function(infernux_require_slang_sources)
+    infernux_require_sources("${INFERNUX_EXTERNAL_ROOT}/slang_for_infernux"
+        CMakeLists.txt
+        external/cmark/CMakeLists.txt
+        external/fast_float/include/fast_float/fast_float.h
+        external/lua/lua.h
+        external/lz4/build/cmake/CMakeLists.txt
+        external/mimalloc/CMakeLists.txt
+        external/miniz/CMakeLists.txt
+        external/spirv-headers/CMakeLists.txt
+        external/spirv-tools/CMakeLists.txt
+        external/unordered_dense/CMakeLists.txt
+        external/vulkan/include/vulkan/vulkan.h)
 endfunction()

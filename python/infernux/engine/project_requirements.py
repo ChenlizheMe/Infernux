@@ -131,3 +131,18 @@ def ensure_project_requirements(
         "or run 'python -m infernux_editor <project>': %s", names,
     )
     return False
+
+
+if __name__ == "__main__":
+    # Nuitka can use a different Python from the editor. Run this file in that
+    # interpreter to read its installed metadata without importing the engine.
+    import json
+    import sys
+
+    missing = [name for name in json.loads(sys.argv[1]) if not _has_module(name)]
+    for filename in sys.argv[2:]:
+        for spec, module in _parse_requirements(filename):
+            if not _has_requirement(spec, module):
+                missing.append(spec)
+    if missing:
+        sys.exit("Prepare these packages in the local build environment: " + ", ".join(missing))

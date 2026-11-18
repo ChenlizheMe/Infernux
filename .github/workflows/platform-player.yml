@@ -335,7 +335,7 @@ jobs:
             out/toolchains/web-numpy-static
             out/cache/web
             out/build/linux-clang-headless
-          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'external/plugins/infernux_web/native/**', 'external/plugins/infernux_web/package/editor/infernux_web/**', 'cmake/**', 'CMakeLists.txt') }}
+          key: web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-${{ hashFiles('scripts/setup/build_web_toolchain.sh', 'external/plugins/infernux_web/native/**', 'external/plugins/infernux_web/external/**', 'external/plugins/infernux_web/package/editor/infernux_web/**', 'cmake/**', 'CMakeLists.txt') }}
           restore-keys: |
             web-player-${{ runner.os }}-${{ hashFiles('scripts/setup/install_linux_dependencies.sh') }}-
 
@@ -722,6 +722,9 @@ jobs:
             --python-prefix "$INFERNUX_ANDROID_RUNTIME" \
             --abi x86_64 \
             --build-root "$INFERNUX_ANDROID_BUILD_CACHE/AndroidEngine/x86_64/Release"
+
+      - name: Provision Android Gradle dependencies before offline export
+        run: python external/plugins/infernux_android/external/gradle/prepare.py --fetch --cache out/cache/gradle
 
       - name: Build Android Player and input instrumentation
         run: |

@@ -22,6 +22,7 @@ _ZH = {
     "Only needed to build Android games. Install from the official channel; Hub manages the shared build tools for all projects.": "仅在需要构建安卓游戏时安装。通过官方渠道获取，Hub 会统一管理所有项目共用的构建工具。",
     "Python runtimes": "Python 运行环境",
     "Android support": "Android 支持",
+    "Select Android support kit": "选择 Android 支持安装包",
     "Model authoring": "模型创作",
     "Blender {version}": "Blender {version}",
     "Blender authoring support": "Blender 创作支持",

@@ -88,9 +88,8 @@ config_path.write_text(
 )
 PY
 export EM_CONFIG="$cpython_em_config"
-# CPython requests ports before its first emcc invocation. Initialize their
-# destination explicitly so a cold or relocated SDK cache is also valid.
-embuilder build sysroot
+# Populate the same system ports used to compile and link the production Player.
+embuilder build sysroot zlib bzip2 sqlite3
 
 cpython_archive="$downloads/Python-${CPYTHON_VERSION}.tar.xz"
 fetch_and_verify "$CPYTHON_URL" "$CPYTHON_SHA256" "$cpython_archive"
@@ -115,7 +114,6 @@ fi
 wasm_root="$cpython_root/builddir/emscripten-browser"
 for path in \
     "$emsdk_root/upstream/emscripten/emcc" \
-    "$emsdk_root/upstream/emscripten/tools/ports/emdawnwebgpu.py" \
     "$wasm_root/python.wasm" \
     "$wasm_root/python.data" \
     "$wasm_root/libpython3.13.a"; do
@@ -140,7 +138,6 @@ from pathlib import Path
 ) = map(Path, sys.argv[1:])
 files = {
     "emcc": emsdk_root / "upstream/emscripten/emcc",
-    "emdawn_port": emsdk_root / "upstream/emscripten/tools/ports/emdawnwebgpu.py",
     "python_wasm": cpython_root / "builddir/emscripten-browser/python.wasm",
     "python_data": cpython_root / "builddir/emscripten-browser/python.data",
     "python_library": cpython_root / "builddir/emscripten-browser/libpython3.13.a",

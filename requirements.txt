@@ -1,13 +1,12 @@
 # Infernux Engine - Python Dependencies
 
 # Build dependencies
-# Native borrower retirement uses the audited smart-holder instance contract.
-pybind11==3.1.0
 cmake>=3.25
-build>=1.0.0
-wheel>=0.41.0
-setuptools>=61.0
+build>=1.2
+wheel>=0.43
+setuptools>=77
 nuitka[onefile]
+ordered-set
 auditwheel>=6.5; sys_platform == "linux"
 patchelf>=0.17; sys_platform == "linux"
 

@@ -1,7 +1,6 @@
 # Source ownership for the native runtime and Python bindings.
 
 file(GLOB_RECURSE INFERNUX_RUNTIME_SOURCES CONFIGURE_DEPENDS cpp/infernux/*.cpp cpp/infernux/*.h)
-list(APPEND INFERNUX_RUNTIME_SOURCES "${CMAKE_SOURCE_DIR}/external/MikkTSpace/mikktspace.c")
 
 # Runtime implementation and Python bindings are separate binary layers.
 
@@ -30,7 +29,6 @@ set(INFERNUX_AUDIO_RUNTIME_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioDecoders.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioStreamDecoder.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioStreamBuffer.cpp"
-    "${CMAKE_SOURCE_DIR}/external/stb/stb_vorbis.c"
 )
 
 # Asset identity, metadata, and dependency publication form one native ABI.
