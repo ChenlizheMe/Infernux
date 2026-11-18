@@ -45,10 +45,7 @@ class RayReconstruct(shader.fullscreen):
         previous_pixel = shader.ivec2(history_uv * shader.vec2(extent))
         previous_source = ray_grid_pixel(previous_pixel, extent, full) if reduced else previous_pixel
         previous_primary = shader.load(self.previous_primary, previous_source, 0)
-        roughness = shader.as_float(primary.w)
-        previous_roughness = shader.as_float(previous_primary.w)
-        # The normal footprint on a curved surface changes slightly between subpixel samples.
-        if primary.x != previous_primary.x or shader.abs(roughness - previous_roughness) > 0.015 + 0.08 * roughness:
+        if primary.x != previous_primary.x:
             return fresh
         normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
         previous_normal = decode_octahedral_normal(shader.unpack_half_2x16(previous_primary.z))
@@ -77,6 +74,12 @@ class RayReconstruct(shader.fullscreen):
         accepted = shader._previous_ray_geometry_serial()
         limit = 64.0
         if self.specular:
+            # Irradiance is independent of receiver roughness. Only a changed reflection lobe
+            # invalidates the history of its material-weighted signal.
+            roughness = shader.as_float(primary.w)
+            previous_roughness = shader.as_float(previous_primary.w)
+            if shader.abs(roughness - previous_roughness) > 0.015 + 0.08 * roughness:
+                return fresh
             # The virtual image behind a planar mirror projects along the incident camera ray.
             # Check camera parallax at that distance as well as motion at the visible receiver.
             eye = camera.inverse_view_projection_matrix @ shader.vec4(0.0, 0.0, 1.0, 0.0)
