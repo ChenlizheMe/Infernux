@@ -1,6 +1,6 @@
 #include "InxGUI.h"
-#include "BuiltinUIProgram.h"
 #include "../ProfileConfig.h"
+#include "BuiltinUIProgram.h"
 #include "EditorWindowBounds.h"
 #include "EditorWindowPresentation.h"
 #include "GuiPresentationGeometry.h"

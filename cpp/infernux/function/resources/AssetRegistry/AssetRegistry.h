@@ -395,7 +395,8 @@ class AssetRegistry
     std::vector<std::shared_ptr<TextureReadTask>> m_textureReads;
     std::shared_ptr<TextureReadProfile> m_textureReadProfile;
     std::unordered_map<ResourceType, std::unique_ptr<IAssetLoader>> m_loaders; // type → loader
-    struct BuiltinMaterial {
+    struct BuiltinMaterial
+    {
         std::shared_ptr<InxMaterial> (*create)();
         mutable std::shared_ptr<InxMaterial> instance;
     };

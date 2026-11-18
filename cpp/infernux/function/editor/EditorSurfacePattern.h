@@ -61,8 +61,7 @@ inline std::vector<unsigned char> BuildSurfacePattern(int kind)
                 if (y % 64 == 0)
                     density = 0.7f;
             }
-            pixels[(y * size + x) * 4 + 3] =
-                static_cast<unsigned char>(std::clamp(density, 0.0f, 1.0f) * 255.0f);
+            pixels[(y * size + x) * 4 + 3] = static_cast<unsigned char>(std::clamp(density, 0.0f, 1.0f) * 255.0f);
         }
     }
     return pixels;

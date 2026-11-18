@@ -467,10 +467,11 @@ CaptureService::CaptureService(FrameWorkOwner &owner, std::chrono::milliseconds 
     work.describe = [this] {
         FrameWorkFacts facts;
         facts.pending = HasPending();
-        facts.observe = m_impl->active.job.IsValid() || (m_completion && std::any_of(
-            m_impl->records.begin(), m_impl->records.end(), [](const auto &entry) {
-                return IsTerminal(entry.second.snapshot.status) && !entry.second.completionNotified;
-            }));
+        facts.observe =
+            m_impl->active.job.IsValid() ||
+            (m_completion && std::any_of(m_impl->records.begin(), m_impl->records.end(), [](const auto &entry) {
+                 return IsTerminal(entry.second.snapshot.status) && !entry.second.completionNotified;
+             }));
         facts.workerBusy = m_impl->active.job.IsValid() && !m_impl->active.job.IsComplete();
         if (!facts.observe) {
             if (const auto ready = m_impl->ReadyEncode())
@@ -692,9 +693,9 @@ void CaptureService::SetCompletionCallback(std::function<void(uint64_t)> callbac
 bool CaptureService::HasPending() const noexcept
 {
     return m_impl->active.job.IsValid() ||
-           std::any_of(m_impl->records.begin(), m_impl->records.end(),
-                       [this](const auto &entry) { return !IsTerminal(entry.second.snapshot.status) ||
-                           (m_completion && !entry.second.completionNotified); });
+           std::any_of(m_impl->records.begin(), m_impl->records.end(), [this](const auto &entry) {
+               return !IsTerminal(entry.second.snapshot.status) || (m_completion && !entry.second.completionNotified);
+           });
 }
 
 } // namespace infernux

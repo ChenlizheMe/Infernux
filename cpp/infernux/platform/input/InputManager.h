@@ -198,10 +198,11 @@ class InputManager
     /// Only equivalent, transient-free external samples may share one
     /// automatic World service demand. Explicit frames retain their samples.
     [[nodiscard]] static bool CanCoalesceFrames(const InputFrameSample &left, const InputFrameSample &right) noexcept;
-    [[nodiscard]] static bool CanShareContinuousFrame(const InputFrameSample &left, const InputFrameSample &right) noexcept;
+    [[nodiscard]] static bool CanShareContinuousFrame(const InputFrameSample &left,
+                                                      const InputFrameSample &right) noexcept;
     [[nodiscard]] InputFrameLease ComposeWorldInput(uint64_t worldId, InputFrameLease held,
-                                                     const std::vector<InputFrameLease> &events,
-                                                     uint64_t logicalFrameIndex);
+                                                    const std::vector<InputFrameLease> &events,
+                                                    uint64_t logicalFrameIndex);
     void SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcast,
                                  std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs,
                                  std::vector<std::array<float, 4>> imageRects);

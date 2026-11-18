@@ -1,7 +1,7 @@
-#include <function/editor/EditorThemeRegistry.h>
 #include "HierarchyPanel.h"
 #include "EditorObjectIcon.h"
 #include "EditorThemeRegistry.h"
+#include <function/editor/EditorThemeRegistry.h>
 
 #include <function/renderer/gui/InxGUISemantics.h>
 #include <function/scene/GameObject.h>
@@ -1041,8 +1041,9 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     const bool dragged = m_draggedSceneWorldId == worldId;
     const bool selectedOrDragged = m_selectedSceneWorldId == worldId || dragged;
     const ImVec2 sceneRowMin = ImGui::GetCursorScreenPos();
-    const float sceneRowHeight = ImGui::GetFontSize() * EditorThemeRegistry::Float("INSPECTOR_HEADER_PRIMARY_FONT_SCALE") +
-                                 2.0f * EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").y * dpi;
+    const float sceneRowHeight =
+        ImGui::GetFontSize() * EditorThemeRegistry::Float("INSPECTOR_HEADER_PRIMARY_FONT_SCALE") +
+        2.0f * EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").y * dpi;
     const ImVec2 sceneRowMax{sceneRowMin.x + ImGui::GetContentRegionAvail().x, sceneRowMin.y + sceneRowHeight};
     const bool dragTargetHovered =
         ImGui::GetDragDropPayload() != nullptr && ImGui::IsMouseHoveringRect(sceneRowMin, sceneRowMax, false);
@@ -1057,12 +1058,13 @@ void HierarchyPanel::RenderSceneHeader(InxGUIContext *ctx, Scene *scene)
     ctx->PushStyleColor(ImGuiCol_HeaderHovered, hovered.x, hovered.y, hovered.z, hovered.w);
     ctx->PushStyleColor(ImGuiCol_HeaderActive, pressed.x, pressed.y, pressed.z, pressed.w);
     const float rowSpacing = EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC").y * dpi;
-    ctx->PushStyleVarVec2(ImGuiStyleVar_FramePadding, EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").x * dpi,
-                          (EditorThemeRegistry::Float("EDITOR_ROW_HEIGHT") * dpi - rowSpacing - ImGui::GetFontSize()) *
-                              0.5f);
+    ctx->PushStyleVarVec2(
+        ImGuiStyleVar_FramePadding, EditorThemeRegistry::Vec2("INSPECTOR_HEADER_PRIMARY_FRAME_PAD").x * dpi,
+        (EditorThemeRegistry::Float("EDITOR_ROW_HEIGHT") * dpi - rowSpacing - ImGui::GetFontSize()) * 0.5f);
     ctx->PushStyleVarVec2(ImGuiStyleVar_ItemSpacing, EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC").x * dpi,
                           EditorThemeRegistry::Vec2("INSPECTOR_HEADER_ITEM_SPC").y * dpi);
-    ctx->PushStyleVarFloat(ImGuiStyleVar_FrameBorderSize, EditorThemeRegistry::Float("INSPECTOR_HEADER_BORDER_SIZE") * dpi);
+    ctx->PushStyleVarFloat(ImGuiStyleVar_FrameBorderSize,
+                           EditorThemeRegistry::Float("INSPECTOR_HEADER_BORDER_SIZE") * dpi);
     ImGui::SetWindowFontScale(EditorThemeRegistry::Float("INSPECTOR_HEADER_PRIMARY_FONT_SCALE"));
 
     const bool wasOpen = m_collapsedSceneWorldIds.count(worldId) == 0;
@@ -1751,8 +1753,9 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
                     !m_flatItems.back().sceneHeader && m_flatItems.back().obj) {
                     const FlatItem &lastItem = m_flatItems.back();
                     const int rootDepth = IsPrefabModeActive() ? 0 : 1;
-                    const int pointerDepth = static_cast<int>(
-                        std::floor((ImGui::GetMousePos().x - tailMinX) / (EditorThemeRegistry::Float("TREE_INDENT") * dpi) + 0.5f));
+                    const int pointerDepth = static_cast<int>(std::floor(
+                        (ImGui::GetMousePos().x - tailMinX) / (EditorThemeRegistry::Float("TREE_INDENT") * dpi) +
+                        0.5f));
                     const int desiredDepth = (std::max)(rootDepth, (std::min)(lastItem.depth, pointerDepth));
                     tailAfterObject = lastItem.obj;
                     int afterDepth = lastItem.depth;

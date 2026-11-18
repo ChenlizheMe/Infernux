@@ -101,8 +101,9 @@ std::optional<std::string> ReadShaderProgramCache(const std::string &cacheDirect
     try {
         FileInput file(ToFsPath(cacheDirectory) / ShaderProgramCacheRelativePath(selection),
                        FileInput::Sharing::Snapshot);
-        return ReadRecord(file.Size(), [&file](char *destination, size_t length) { file.Read(destination, length); },
-                          selection, currentRevision);
+        return ReadRecord(
+            file.Size(), [&file](char *destination, size_t length) { file.Read(destination, length); }, selection,
+            currentRevision);
     } catch (const std::runtime_error &) {
         return std::nullopt;
     }

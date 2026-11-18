@@ -13,7 +13,9 @@ namespace infernux
 // input. Check the source container before giving it ownership of project data.
 inline void ValidateFontSource(std::string_view bytes)
 {
-    const auto fail = [](const char *reason) { throw std::runtime_error(std::string("Invalid font source: ") + reason); };
+    const auto fail = [](const char *reason) {
+        throw std::runtime_error(std::string("Invalid font source: ") + reason);
+    };
     const auto u16 = [&](size_t offset) -> uint16_t {
         if (offset > bytes.size() || bytes.size() - offset < 2)
             fail("truncated table");
@@ -23,13 +25,15 @@ inline void ValidateFontSource(std::string_view bytes)
         return (static_cast<uint32_t>(u16(offset)) << 16) | u16(offset + 2);
     };
     if (bytes.size() <= 100 || bytes.size() > static_cast<size_t>((std::numeric_limits<int>::max)()) ||
-        (u32(0) != 0x00010000 && bytes.substr(0, 4) != "OTTO" &&
-                               bytes.substr(0, 4) != "true"))
+        (u32(0) != 0x00010000 && bytes.substr(0, 4) != "OTTO" && bytes.substr(0, 4) != "true"))
         fail("expected a complete TrueType/OpenType SFNT file");
     const size_t count = u16(4);
     if (!count || count > (bytes.size() - 12) / 16)
         fail("truncated SFNT directory");
-    struct Table { size_t offset, size; };
+    struct Table
+    {
+        size_t offset, size;
+    };
     std::unordered_map<std::string_view, Table> tables;
     for (size_t index = 0; index < count; ++index) {
         const size_t record = 12 + index * 16;
@@ -67,8 +71,8 @@ inline void ValidateFontSource(std::string_view bytes)
         if (length > cmap.size - relative || length < (format == 14 ? 10u : format >= 8 ? 12u : 6u))
             fail("invalid character map range");
         if ((format == 0 && length < 262) ||
-            (format == 4 && (length < 16 || !u16(offset + 6) || u16(offset + 6) % 2 ||
-                             u16(offset + 6) / 2 > (length - 16) / 8)) ||
+            (format == 4 &&
+             (length < 16 || !u16(offset + 6) || u16(offset + 6) % 2 || u16(offset + 6) / 2 > (length - 16) / 8)) ||
             (format == 6 && (length < 10 || u16(offset + 8) > (length - 10) / 2)) ||
             ((format == 12 || format == 13) && (length < 16 || u32(offset + 12) > (length - 16) / 12)))
             fail("truncated character map entries");

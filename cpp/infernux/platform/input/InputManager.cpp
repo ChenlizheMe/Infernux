@@ -232,8 +232,8 @@ void InputManager::RouteWorldInput(uint64_t worldId, InputFrameSample &value)
         const auto output = std::lower_bound(routing->outputs.begin(), routing->outputs.end(), worldId,
                                              [](const auto &entry, uint64_t id) { return std::get<0>(entry) < id; });
         value.gameplayRenderSize = output != routing->outputs.end() && std::get<0>(*output) == worldId
-                                        ? std::array<float, 2>{float(std::get<1>(*output)), float(std::get<2>(*output))}
-                                        : std::array<float, 2>{0, 0};
+                                       ? std::array<float, 2>{float(std::get<1>(*output)), float(std::get<2>(*output))}
+                                       : std::array<float, 2>{0, 0};
         if (!routing->broadcast && routing->selectedWorld != worldId) {
             value.gameplayFocused = false;
             value.keys.fill(0);
@@ -288,7 +288,8 @@ InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameL
 InputFrameLease InputManager::GetWorldExternalInput(uint64_t worldId) const noexcept
 {
     const auto found = m_worldReadStates.find(worldId);
-    return found != m_worldReadStates.end() && !found->second->retired ? found->second->externalValue : InputFrameLease{};
+    return found != m_worldReadStates.end() && !found->second->retired ? found->second->externalValue
+                                                                       : InputFrameLease{};
 }
 
 bool InputManager::CanCoalesceFrames(const InputFrameSample &left, const InputFrameSample &right) noexcept
@@ -296,7 +297,8 @@ bool InputManager::CanCoalesceFrames(const InputFrameSample &left, const InputFr
     return CanCompareFrames(left, right, false);
 }
 
-bool InputManager::CanCompareFrames(const InputFrameSample &left, const InputFrameSample &right, bool continuous) noexcept
+bool InputManager::CanCompareFrames(const InputFrameSample &left, const InputFrameSample &right,
+                                    bool continuous) noexcept
 {
     const auto allZero = [](const auto &values) {
         return std::all_of(values.begin(), values.end(), [](const auto &value) { return value == 0; });
@@ -306,15 +308,17 @@ bool InputManager::CanCompareFrames(const InputFrameSample &left, const InputFra
             !allZero(value.mouseDown) || !allZero(value.mouseUp) || value.anyKeyDown || value.syntheticInputFrame ||
             (!continuous && (value.mouseDX != 0 || value.mouseDY != 0)) || value.scrollX != 0 || value.scrollY != 0 ||
             value.gameScroll.first != 0 || value.gameScroll.second != 0 || !value.inputString.empty() ||
-            !value.gameInputString.empty() || (!continuous && !value.accelerationEvents.empty()) || !value.droppedFiles.empty())
+            !value.gameInputString.empty() || (!continuous && !value.accelerationEvents.empty()) ||
+            !value.droppedFiles.empty())
             return false;
         for (const auto &mouse : value.gameMouseFrames)
             if (std::get<2>(mouse) != 0 || std::get<3>(mouse) != 0 || std::get<5>(mouse) || std::get<6>(mouse))
                 return false;
         return std::all_of(value.touches.begin(), value.touches.end(), [continuous](const auto &touch) {
-            return !touch.beganThisFrame && (continuous
-                ? touch.phase == TouchPhase::Stationary || touch.phase == TouchPhase::Moved
-                : touch.phase == TouchPhase::Stationary && touch.deltaX == 0 && touch.deltaY == 0 && touch.deltaTime == 0);
+            return !touch.beganThisFrame &&
+                   (continuous ? touch.phase == TouchPhase::Stationary || touch.phase == TouchPhase::Moved
+                               : touch.phase == TouchPhase::Stationary && touch.deltaX == 0 && touch.deltaY == 0 &&
+                                     touch.deltaTime == 0);
         });
     };
     if (!stationary(left) || !stationary(right))
@@ -338,8 +342,11 @@ bool InputManager::CanCompareFrames(const InputFrameSample &left, const InputFra
            left.gameMouseOwned == right.gameMouseOwned &&
            std::equal(left.gameMouseFrames.begin(), left.gameMouseFrames.end(), right.gameMouseFrames.begin(),
                       [continuous](const auto &a, const auto &b) {
-                          return continuous ? std::tie(std::get<2>(a), std::get<3>(a), std::get<4>(a), std::get<5>(a), std::get<6>(a)) ==
-                                              std::tie(std::get<2>(b), std::get<3>(b), std::get<4>(b), std::get<5>(b), std::get<6>(b)) : a == b;
+                          return continuous ? std::tie(std::get<2>(a), std::get<3>(a), std::get<4>(a), std::get<5>(a),
+                                                       std::get<6>(a)) == std::tie(std::get<2>(b), std::get<3>(b),
+                                                                                   std::get<4>(b), std::get<5>(b),
+                                                                                   std::get<6>(b))
+                                            : a == b;
                       }) &&
            (continuous || (left.mouseX == right.mouseX && left.mouseY == right.mouseY)) &&
            left.syntheticGameplayInput == right.syntheticGameplayInput && left.syntheticHeld == right.syntheticHeld &&
@@ -348,7 +355,8 @@ bool InputManager::CanCompareFrames(const InputFrameSample &left, const InputFra
            left.gameplayViewportSize == right.gameplayViewportSize &&
            left.gameplayRenderSize == right.gameplayRenderSize &&
            left.gameplayTouchViewport == right.gameplayTouchViewport &&
-           (continuous || (left.acceleration == right.acceleration && left.gyroscopeRotationRate == right.gyroscopeRotationRate)) &&
+           (continuous ||
+            (left.acceleration == right.acceleration && left.gyroscopeRotationRate == right.gyroscopeRotationRate)) &&
            left.accelerometerAvailable == right.accelerometerAvailable &&
            left.gyroscopeAvailable == right.gyroscopeAvailable && screen(left.screen) == screen(right.screen) &&
            left.touches.size() == right.touches.size() &&
@@ -356,8 +364,9 @@ bool InputManager::CanCompareFrames(const InputFrameSample &left, const InputFra
                       [&](const auto &a, const auto &b) {
                           return continuous ? std::tie(a.touchId, a.fingerId, a.windowId, a.isPrimary, a.beganThisFrame,
                                                        a.beginX, a.beginY, a.cancelReason) ==
-                                              std::tie(b.touchId, b.fingerId, b.windowId, b.isPrimary, b.beganThisFrame,
-                                                       b.beginX, b.beginY, b.cancelReason) : touchState(a) == touchState(b);
+                                                  std::tie(b.touchId, b.fingerId, b.windowId, b.isPrimary,
+                                                           b.beganThisFrame, b.beginX, b.beginY, b.cancelReason)
+                                            : touchState(a) == touchState(b);
                       });
 }
 
@@ -367,8 +376,7 @@ bool InputManager::CanShareContinuousFrame(const InputFrameSample &left, const I
 }
 
 InputFrameLease InputManager::ComposeWorldInput(uint64_t worldId, InputFrameLease held,
-                                                const std::vector<InputFrameLease> &events,
-                                                uint64_t logicalFrameIndex)
+                                                const std::vector<InputFrameLease> &events, uint64_t logicalFrameIndex)
 {
     auto value = std::make_shared<InputFrameSample>(*held);
     ClearSampleTransients(*value);
@@ -402,14 +410,14 @@ InputFrameLease InputManager::ComposeWorldInput(uint64_t worldId, InputFrameLeas
         value->syntheticInputFrame |= event.syntheticInputFrame;
         value->syntheticGameplayInput |= event.syntheticGameplayInput;
         for (const auto &touch : event.touches) {
-            if (touch.phase == TouchPhase::Stationary && !touch.beganThisFrame &&
-                touch.deltaX == 0 && touch.deltaY == 0 && touch.deltaTime == 0)
+            if (touch.phase == TouchPhase::Stationary && !touch.beganThisFrame && touch.deltaX == 0 &&
+                touch.deltaY == 0 && touch.deltaTime == 0)
                 continue;
             auto found = std::find_if(touches.rbegin(), touches.rend(), [&](const auto &existing) {
                 return existing.touchId == touch.touchId && existing.fingerId == touch.fingerId;
             });
-            const bool terminal = found != touches.rend() &&
-                (found->phase == TouchPhase::Ended || found->phase == TouchPhase::Canceled);
+            const bool terminal =
+                found != touches.rend() && (found->phase == TouchPhase::Ended || found->phase == TouchPhase::Canceled);
             if (found == touches.rend() || terminal || touch.phase == TouchPhase::Began || touch.beganThisFrame) {
                 touches.push_back(touch);
                 continue;

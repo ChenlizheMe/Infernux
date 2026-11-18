@@ -1335,12 +1335,10 @@ void SceneManager::RecordHostFrame(float deltaTime, bool automaticHost)
         (world.scenes.loaded.empty() && !world.scenes.persistent))
         return;
     auto input = InputManager::Instance().CaptureFrame();
-    const auto previous = !world.frame.pending.empty()
-                              ? world.frame.pending.back().input
-                              : InputManager::Instance().GetWorldExternalInput(world.id);
-    const bool inputBoundary = !previous ||
-                               (previous->sampleIdentity != input->sampleIdentity &&
-                                !InputManager::CanCoalesceFrames(*previous, *input));
+    const auto previous = !world.frame.pending.empty() ? world.frame.pending.back().input
+                                                       : InputManager::Instance().GetWorldExternalInput(world.id);
+    const bool inputBoundary = !previous || (previous->sampleIdentity != input->sampleIdentity &&
+                                             !InputManager::CanCoalesceFrames(*previous, *input));
     // Explicit calls, including dt=0, remain independent frame requests.
     // Automatic neutral zero-time polling creates no new logical demand.
     if (automaticHost && deltaTime == 0.0f && !inputBoundary)
@@ -1410,8 +1408,8 @@ void SceneManager::AdmitRuntimeFrame(RuntimeWorld::FrameAdmission admission)
             initial.push_back(first);
         timeline.lastInitialSource = first->sampleIdentity;
         world.frame.input = input.ComposeWorldInput(world.id, first, initial, world.simulation.frameTime.frameCount);
-        timeline.updateInput = input.ComposeWorldInput(world.id, timeline.latest, updates,
-                                                       world.simulation.frameTime.frameCount);
+        timeline.updateInput =
+            input.ComposeWorldInput(world.id, timeline.latest, updates, world.simulation.frameTime.frameCount);
         world.simulation.frameTime.time += admission.automaticScaledDebt - admission.deltaTime;
         world.simulation.frameTime.unscaledTime += admission.automaticUnscaledDebt - admission.unscaledDeltaTime;
     } else {
@@ -1795,8 +1793,9 @@ bool SceneManager::IsRuntimeFrameWaitingForPhysics(const RuntimeWorld &world) co
 
 bool SceneManager::AdvanceRunningPhysics(RuntimeWorld &world)
 {
-    const InputReadScope inputScope(world.inputTimeline && world.inputTimeline->fixedInput
-                                        ? world.inputTimeline->fixedInput : world.frame.input, world.id);
+    const InputReadScope inputScope(
+        world.inputTimeline && world.inputTimeline->fixedInput ? world.inputTimeline->fixedInput : world.frame.input,
+        world.id);
     auto &physics = PhysicsWorld::Instance();
     const auto started = ProfileClock::now();
     bool complete;
@@ -2184,7 +2183,7 @@ void SceneManager::StopCurrentWorld()
     AudioEngine::Instance().RefreshWorldState(world);
 #endif
     world.simulation.fixedTimeAccumulator = 0.0f;
-        world.inputTimeline.reset();
+    world.inputTimeline.reset();
     world.simulation.fixedTime = 0.0;
     world.simulation.fixedUnscaledTime = 0.0;
     ResetFrameTime();
@@ -2562,7 +2561,7 @@ void SceneManager::PrepareActiveSceneReplacement()
     // boundary. Discard both wall-clock loading time and old-scene fixed-step
     // remainder before the new graph is allowed to tick.
     world.simulation.fixedTimeAccumulator = 0.0f;
-        world.inputTimeline.reset();
+    world.inputTimeline.reset();
     world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
     world.simulation.pausedStepPending = false;
     world.simulation.stepFrameOpen = false;
@@ -2711,12 +2710,13 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
             timeline.lastFixedSource = sample->sampleIdentity;
             timeline.held = std::move(sample);
         }
-        timeline.fixedInput = InputManager::Instance().ComposeWorldInput(
-            world.id, timeline.held, events, world.simulation.frameTime.frameCount);
+        timeline.fixedInput = InputManager::Instance().ComposeWorldInput(world.id, timeline.held, events,
+                                                                         world.simulation.frameTime.frameCount);
     }
-    const InputReadScope fixedInputScope(
-        world.inputTimeline && world.inputTimeline->automaticFrame ? world.inputTimeline->fixedInput : world.frame.input,
-        world.id);
+    const InputReadScope fixedInputScope(world.inputTimeline && world.inputTimeline->automaticFrame
+                                             ? world.inputTimeline->fixedInput
+                                             : world.frame.input,
+                                         world.id);
     FixedSimulationExecutionScope executionScope(world.simulation.fixedExecuting);
     const auto validWorld = [&] {
         return world.simulation.simulationEpoch == std::get<0>(admittedState) && world.simulation.isPlaying &&

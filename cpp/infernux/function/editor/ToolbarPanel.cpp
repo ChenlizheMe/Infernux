@@ -1,4 +1,3 @@
-#include <function/editor/EditorThemeRegistry.h>
 #include "ToolbarPanel.h"
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/gui/InxGUISemantics.h>

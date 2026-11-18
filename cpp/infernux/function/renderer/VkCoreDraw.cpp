@@ -825,8 +825,7 @@ void InxVkCoreModular::DrawSceneFiltered(
         if (skyboxPass != (dc.identity.domain == RenderDomain::Skybox))
             continue;
 
-        const std::shared_ptr<InxMaterial> *materialOwner =
-            overrideMatOwner ? &overrideMatOwner : &drawMaterial;
+        const std::shared_ptr<InxMaterial> *materialOwner = overrideMatOwner ? &overrideMatOwner : &drawMaterial;
         InxMaterial *material =
             overrideMatRaw ? overrideMatRaw : (metadata ? metadata->material : materialOwner->get());
         if (!material)

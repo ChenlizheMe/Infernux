@@ -388,18 +388,20 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         }
     });
     m.def("_shader_author_contract", [] { return std::string(SlangCompiler::GetAuthorContract()); });
-    m.def("_cook_shader_author_programs",
-          [](const std::string &contentRoot, const std::string &resourceRoot, const std::string &buildCache,
-             const std::string &catalog, bool web, const std::vector<std::pair<std::string, std::string>> &selections) {
-              AssetDatabase database;
-              database.InitializeRuntime(contentRoot);
-              database.AddReadOnlyScanRoot(resourceRoot);
-              database.InstallRuntimeAssetCatalog(catalog, true);
-              const auto library = FromFsPath(ToFsPath(contentRoot) / "Library");
-              const auto target = web ? ShaderCodeTarget::Wgsl : ShaderCodeTarget::SpirV;
-              for (const auto &[author, vertex] : selections)
-                  ShaderLoader::CookAuthorProgram(database, author, vertex, target, buildCache, library);
-          }, py::call_guard<py::gil_scoped_release>());
+    m.def(
+        "_cook_shader_author_programs",
+        [](const std::string &contentRoot, const std::string &resourceRoot, const std::string &buildCache,
+           const std::string &catalog, bool web, const std::vector<std::pair<std::string, std::string>> &selections) {
+            AssetDatabase database;
+            database.InitializeRuntime(contentRoot);
+            database.AddReadOnlyScanRoot(resourceRoot);
+            database.InstallRuntimeAssetCatalog(catalog, true);
+            const auto library = FromFsPath(ToFsPath(contentRoot) / "Library");
+            const auto target = web ? ShaderCodeTarget::Wgsl : ShaderCodeTarget::SpirV;
+            for (const auto &[author, vertex] : selections)
+                ShaderLoader::CookAuthorProgram(database, author, vertex, target, buildCache, library);
+        },
+        py::call_guard<py::gil_scoped_release>());
     m.def(
         "_check_shader_source",
         [](const std::string &path, const std::optional<std::string> &text) {

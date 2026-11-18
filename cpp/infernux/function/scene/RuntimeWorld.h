@@ -7,8 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <memory>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <platform/input/InputManager.h>
 #include <string>
@@ -117,8 +117,7 @@ class RuntimeWorld final
 
         [[nodiscard]] bool HasAutomaticDemand() const noexcept
         {
-            return automaticUnscaledDebt > 0.0 || automaticScaledDebt > 0.0 ||
-                   automaticInputPending;
+            return automaticUnscaledDebt > 0.0 || automaticScaledDebt > 0.0 || automaticInputPending;
         }
 
         FrameAdmission TakeNextAutomatic(double unscaledLimit = std::numeric_limits<double>::infinity(),
@@ -128,8 +127,10 @@ class RuntimeWorld final
             // otherwise cheap no-Fixed/one-Fixed frames can consume the late
             // budget faster than physics can catch up with a fast Host.
             const double frameLimit = sampledMaximumDeltaTime;
-            const double unscaledQuantum = (std::min)(unscaledLimit, (std::max)(static_cast<double>(unscaledDeltaTime), frameLimit));
-            const double scaledQuantum = (std::min)(scaledLimit, (std::max)(static_cast<double>(deltaTime), frameLimit));
+            const double unscaledQuantum =
+                (std::min)(unscaledLimit, (std::max)(static_cast<double>(unscaledDeltaTime), frameLimit));
+            const double scaledQuantum =
+                (std::min)(scaledLimit, (std::max)(static_cast<double>(deltaTime), frameLimit));
             double fraction = 1.0;
             if (automaticUnscaledDebt > 0.0)
                 fraction = (std::min)(fraction, unscaledQuantum / automaticUnscaledDebt);
@@ -168,8 +169,8 @@ class RuntimeWorld final
 
         bool TryAppendAutomatic(FrameAdmission &next)
         {
-            if (!automaticHost || !next.automaticHost ||
-                sampledTimeScale != next.sampledTimeScale || sampledMaximumDeltaTime != next.sampledMaximumDeltaTime ||
+            if (!automaticHost || !next.automaticHost || sampledTimeScale != next.sampledTimeScale ||
+                sampledMaximumDeltaTime != next.sampledMaximumDeltaTime ||
                 sampledFixedTimeStep != next.sampledFixedTimeStep ||
                 (input->sampleIdentity != next.input->sampleIdentity &&
                  !InputManager::CanCoalesceFrames(*input, *next.input)))
@@ -317,7 +318,12 @@ class RuntimeWorld final
 
     struct InputTimeline
     {
-        struct Point { double time; InputFrameLease input; bool deliverEvents = true; };
+        struct Point
+        {
+            double time;
+            InputFrameLease input;
+            bool deliverEvents = true;
+        };
         std::deque<Point> points;
         double acceptedTime = 0, fixedTime = 0;
         uint64_t lastInitialSource = 0, lastUpdateSource = 0, lastFixedSource = 0;

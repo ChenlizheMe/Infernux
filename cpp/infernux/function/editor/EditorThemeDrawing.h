@@ -15,8 +15,14 @@ struct FrameStyle
     ImVec4 top, bottom, frame, inner, highlight, glow;
     float width, inset, cut, radius, roughness, bevel, fasteners;
 
-    bool HasFill() const { return top.w > 0.0f || bottom.w > 0.0f; }
-    bool HasBorder() const { return width > 0.0f && frame.w > 0.0f; }
+    bool HasFill() const
+    {
+        return top.w > 0.0f || bottom.w > 0.0f;
+    }
+    bool HasBorder() const
+    {
+        return width > 0.0f && frame.w > 0.0f;
+    }
 };
 
 struct Styles
@@ -48,7 +54,8 @@ inline const Styles &ActiveStyles()
     static unsigned long generation = 0;
     static Styles styles;
     if (generation != EditorThemeRegistry::Generation()) {
-        styles = {ReadFrameStyle("PANEL"), ReadFrameStyle("BUTTON"),
+        styles = {ReadFrameStyle("PANEL"),
+                  ReadFrameStyle("BUTTON"),
                   EditorThemeRegistry::Color("BUTTON_HOVER_GRADIENT_TOP"),
                   EditorThemeRegistry::Color("BUTTON_HOVER_GRADIENT_BOTTOM"),
                   EditorThemeRegistry::Color("BUTTON_ACTIVE_GRADIENT_TOP"),
@@ -95,8 +102,8 @@ inline void Fill(ImDrawList *draw, const ImRect &rect, const FrameStyle &style, 
     }
 }
 
-inline void Outline(ImDrawList *draw, const std::array<ImVec2, 8> &points, ImU32 color,
-                    float width, float roughness, float scale)
+inline void Outline(ImDrawList *draw, const std::array<ImVec2, 8> &points, ImU32 color, float width, float roughness,
+                    float scale)
 {
     if (roughness <= 0.0f) {
         draw->AddPolyline(points.data(), static_cast<int>(points.size()), color, ImDrawFlags_Closed, width);
@@ -112,8 +119,7 @@ inline void Outline(ImDrawList *draw, const std::array<ImVec2, 8> &points, ImU32
             const float t = static_cast<float>(index) / segments;
             const float wobble = std::sin(t * 19.0f + edge * 7.0f) * roughness * scale;
             const float inverse = length > 0 ? 1.0f / length : 0.0f;
-            contour.emplace_back(a.x + dx * t - dy * inverse * wobble,
-                                 a.y + dy * t + dx * inverse * wobble);
+            contour.emplace_back(a.x + dx * t - dy * inverse * wobble, a.y + dy * t + dx * inverse * wobble);
         }
     }
     draw->AddPolyline(contour.data(), static_cast<int>(contour.size()), color, ImDrawFlags_Closed, width);

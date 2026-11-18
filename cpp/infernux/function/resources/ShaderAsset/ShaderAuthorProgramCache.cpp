@@ -1,10 +1,10 @@
 #include "ShaderAuthorProgramCache.h"
 #include "SlangCompiler.h"
+#include <algorithm>
 #include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
-#include <platform/filesystem/InxPath.h>
-#include <algorithm>
 #include <nlohmann/json.hpp>
+#include <platform/filesystem/InxPath.h>
 #include <unordered_map>
 
 namespace infernux
@@ -49,14 +49,12 @@ std::string RestoredSchema(const std::string &schema, const InputPaths &paths)
 {
     auto value = nlohmann::json::parse(schema);
     const auto vertex = value.find("vertex_source");
-    if (vertex != value.end() && vertex->is_object() && vertex->size() == 1 &&
-        vertex->contains("shader_cache_input"))
+    if (vertex != value.end() && vertex->is_object() && vertex->size() == 1 && vertex->contains("shader_cache_input"))
         *vertex = RestoredPath(vertex->at("shader_cache_input").get<std::string>(), paths);
     return value.dump();
 }
 
-void AppendDiagnostic(std::string &out, const ShaderDiagnostic &diagnostic,
-                      const std::vector<ShaderCacheInput> &inputs)
+void AppendDiagnostic(std::string &out, const ShaderDiagnostic &diagnostic, const std::vector<ShaderCacheInput> &inputs)
 {
     AppendString(out, diagnostic.code);
     AppendString(out, diagnostic.severity);
@@ -105,9 +103,8 @@ std::optional<ShaderAuthorProgramRecord> DecodeProgram(const std::string &bytes,
         record.schema = RestoredSchema(in.ReadString(false), paths);
         record.dependencies = ReadVector<std::string>(in, [](Reader &source) { return source.ReadString(false); });
         auto compiled = std::make_shared<ShaderCompilation>();
-        compiled->diagnostics = ReadVector<ShaderDiagnostic>(in, [&paths](Reader &source) {
-            return ReadDiagnostic(source, paths);
-        });
+        compiled->diagnostics =
+            ReadVector<ShaderDiagnostic>(in, [&paths](Reader &source) { return ReadDiagnostic(source, paths); });
         compiled->targets = ReadVector<ShaderTargetCode>(
             in, [](Reader &source) { return DecodeShaderTarget(source.ReadString(false)); });
         if (!in.AtEnd() || compiled->targets.empty())
@@ -233,9 +230,8 @@ bool StoreShaderAuthorProgram(const std::string &cacheDirectory, std::string_vie
     AppendString(out, AuthorProgramMagic);
     AppendString(out, StoredSchema(record.schema, inputs));
     AppendVector(out, record.dependencies, [](auto &bytes, const auto &id) { AppendString(bytes, id); });
-    AppendVector(out, record.compilation->diagnostics, [&inputs](auto &bytes, const auto &diagnostic) {
-        AppendDiagnostic(bytes, diagnostic, inputs);
-    });
+    AppendVector(out, record.compilation->diagnostics,
+                 [&inputs](auto &bytes, const auto &diagnostic) { AppendDiagnostic(bytes, diagnostic, inputs); });
     AppendVector(out, record.compilation->targets,
                  [](auto &bytes, const auto &target) { AppendString(bytes, EncodeShaderTarget(target)); });
     return WriteShaderProgramCache(cacheDirectory, selection, inputs, out);

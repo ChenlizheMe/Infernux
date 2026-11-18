@@ -1,4 +1,3 @@
-#include <function/editor/EditorThemeRegistry.h>
 #include "StatusBarPanel.h"
 #include "ConsolePanel.h"
 #include <function/editor/EditorThemeRegistry.h>
@@ -105,12 +104,12 @@ void StatusBarPanel::OnRender(InxGUIContext *ctx)
     // Style overrides (before Begin)
     ImGui::PushStyleColor(ImGuiCol_WindowBg, EditorThemeRegistry::Color("STATUS_BAR_BG"));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_WIN_PAD").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_WIN_PAD").y * dpi));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_ITEM_SPC").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_ITEM_SPC").y * dpi));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_FRAME_PAD").x * dpi, EditorThemeRegistry::Vec2("STATUS_BAR_FRAME_PAD").y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_WIN_PAD").x * dpi,
+                                                            EditorThemeRegistry::Vec2("STATUS_BAR_WIN_PAD").y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_ITEM_SPC").x * dpi,
+                                                          EditorThemeRegistry::Vec2("STATUS_BAR_ITEM_SPC").y * dpi));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(EditorThemeRegistry::Vec2("STATUS_BAR_FRAME_PAD").x * dpi,
+                                                           EditorThemeRegistry::Vec2("STATUS_BAR_FRAME_PAD").y * dpi));
 
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
@@ -261,7 +260,8 @@ void StatusBarPanel::RenderEngineStatus(float x, float y, float width, float hei
     }
 
     ImDrawList *draw = ImGui::GetWindowDrawList();
-    draw->AddLine(ImVec2(x, y), ImVec2(x, y + height), ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_BAR_BORDER")));
+    draw->AddLine(ImVec2(x, y), ImVec2(x, y + height),
+                  ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_BAR_BORDER")));
     draw->AddRectFilled(ImVec2(x + 1.0f * dpi, y), ImVec2(x + width, y + height),
                         ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("STATUS_ACTIVITY_BG")));
 

@@ -230,15 +230,12 @@ EditorThemeRegistry::Definition DecodeThemeDefinition(const py::dict &item)
 {
     EditorThemeRegistry::Definition definition;
     definition.name = py::cast<std::string>(item["name"]);
-    for (const auto &entry : py::cast<py::dict>(item["colors"]))
-    {
+    for (const auto &entry : py::cast<py::dict>(item["colors"])) {
         const auto value = py::cast<py::tuple>(entry.second);
-        definition.colors[py::cast<std::string>(py::str(entry.first))] =
-            ImVec4(py::cast<float>(value[0]), py::cast<float>(value[1]), py::cast<float>(value[2]),
-                   py::cast<float>(value[3]));
+        definition.colors[py::cast<std::string>(py::str(entry.first))] = ImVec4(
+            py::cast<float>(value[0]), py::cast<float>(value[1]), py::cast<float>(value[2]), py::cast<float>(value[3]));
     }
-    for (const auto &entry : py::cast<py::dict>(item["vec2s"]))
-    {
+    for (const auto &entry : py::cast<py::dict>(item["vec2s"])) {
         const auto value = py::cast<py::tuple>(entry.second);
         definition.vec2s[py::cast<std::string>(py::str(entry.first))] =
             ImVec2(py::cast<float>(value[0]), py::cast<float>(value[1]));

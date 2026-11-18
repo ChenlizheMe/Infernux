@@ -925,10 +925,10 @@ class JoltGpuTick::Impl
             break;
         case Phase::ParticipantPrepare:
             next.iteration = 0;
-            next.phase = HasRigidWork() ? Phase::BuildTopology
-                         : participantCpu                ? Phase::PrepareCoupledContacts
-                         : velocity                      ? Phase::ParticipantExchange
-                                                         : Phase::ParticipantAccept;
+            next.phase = HasRigidWork()   ? Phase::BuildTopology
+                         : participantCpu ? Phase::PrepareCoupledContacts
+                         : velocity       ? Phase::ParticipantExchange
+                                          : Phase::ParticipantAccept;
             break;
         case Phase::ParticipantExchange:
             if (HasRigidWork())
@@ -1035,9 +1035,8 @@ class JoltGpuTick::Impl
         case Phase::ExchangeCoupledContacts:
             next.phase = ++next.iteration < tickParameters.counts.w
                              ? (exchange ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
-                         : HasRigidWork() && control.prepareContactReport
-                             ? Phase::ReportContactsAfterVelocity
-                             : drift;
+                         : HasRigidWork() && control.prepareContactReport ? Phase::ReportContactsAfterVelocity
+                                                                          : drift;
             break;
         case Phase::PrepareSweep:
             next.phase = Phase::CaptureSweepMotion;
@@ -1225,9 +1224,9 @@ class JoltGpuTick::Impl
     void CaptureStageSpans()
     {
         stageCursor = {};
-        stageCursor.phase = HasRigidWork() ? Phase::InitializeSleep
-                            : control.participants          ? Phase::ParticipantPredict
-                                                            : Phase::Done;
+        stageCursor.phase = HasRigidWork()         ? Phase::InitializeSleep
+                            : control.participants ? Phase::ParticipantPredict
+                                                   : Phase::Done;
         Normalize(stageCursor);
     }
 

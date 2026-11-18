@@ -199,8 +199,7 @@ void EditorThemeRegistry::RemoveOwner(const std::string &owner)
     const auto found = r.owners.find(owner);
     if (found == r.owners.end())
         return;
-    for (const auto &name : found->second)
-    {
+    for (const auto &name : found->second) {
         r.themes.erase(name);
         r.order.erase(std::remove(r.order.begin(), r.order.end(), name), r.order.end());
     }

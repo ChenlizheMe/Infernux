@@ -1929,8 +1929,8 @@ class JoltGpuScene::Impl
         // Retained reduced representation/history must still take its original
         // conversion path even after the last Rigidbody migrated away.
         const auto &rigidCache = domain.articulationCache;
-        control.simulateRigidBodies = reports.simulateRigidBodies ||
-            (rigidCache && (rigidCache->numeric || !rigidCache->trees.empty()));
+        control.simulateRigidBodies =
+            reports.simulateRigidBodies || (rigidCache && (rigidCache->numeric || !rigidCache->trees.empty()));
         control.prepareContactReport = std::move(reports.phase);
         control.prepareCoupledContacts = std::move(reports.couple);
         control.groups = TakeControlGroups(domain);

@@ -34,12 +34,11 @@ class ShaderLoader final : public IAssetLoader
                                                                          const ShaderAuthorSource &prepared,
                                                                          const std::string &guid,
                                                                          std::vector<std::string> dependencies);
-    [[nodiscard]] static std::shared_ptr<ShaderAsset> RestoreAuthorAsset(const ShaderSourceModule &source,
-                                                                        const std::string &guid,
-                                                                        ShaderAuthorProgramRecord record);
+    [[nodiscard]] static std::shared_ptr<ShaderAsset>
+    RestoreAuthorAsset(const ShaderSourceModule &source, const std::string &guid, ShaderAuthorProgramRecord record);
     static void CookAuthorProgram(const AssetDatabase &database, const std::string &authorGuid,
-                                  const std::string &vertexGuid, ShaderCodeTarget target,
-                                  const std::string &buildCache, const std::string &library);
+                                  const std::string &vertexGuid, ShaderCodeTarget target, const std::string &buildCache,
+                                  const std::string &library);
     [[nodiscard]] static std::shared_ptr<const ShaderMaterialPreparation>
     CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragment, const std::shared_ptr<ShaderAsset> &vertex,
                            const ShaderStagePair &stages, AssetDatabase *database);
