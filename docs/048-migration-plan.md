@@ -37,7 +37,9 @@
 - Yanshi 任务卡（Python 路径）：`tools/yanshi/rigid_diagnostics_probe.py` → x(10)=1.25 m，位置最大误差 4.8e-8 m，时间最大误差 2.3e-9 s，tick 逐点 +1。
 - Yanshi 任务卡（宿主 handler 路径）：`tools/yanshi/host_contract_probe.py` → `scene.object.resolve` 在 Play 中解析到运行态 id，`sim.step` 每次恰好 +1 tick，x(10)=1.25 m。
 - 插件：`test_plugin_updates.py` + `test_inxpackage_plugins.py` + `test_plugin_preload_packages.py` 77 passed。
-- 截图：`infernux.capture.request` 返回 `{capture_id, status: "pending_gpu", artifact_uri}`，与设计 §4.3 的 pending_gpu/URI 生命周期一致。`n- 主题贡献：`tools/yanshi/theme_contribution_probe.py` → 注册/选择/移除/回退与文档校验全部通过；插件+sim 套件 82 passed。`n- 音频：`test_audio_listener_selection.py` + `test_audio_streaming.py` 17 passed。
+- 截图：`infernux.capture.request` 返回 `{capture_id, status: "pending_gpu", artifact_uri}`，与设计 §4.3 的 pending_gpu/URI 生命周期一致。
+- 主题贡献：`tools/yanshi/theme_contribution_probe.py` → 注册/选择/移除/回退与文档校验全部通过；插件+sim 套件 82 passed。
+- 音频：`test_audio_listener_selection.py` + `test_audio_streaming.py` 17 passed。
 
 ## Yanshi 契约覆盖（引擎侧）
 
@@ -54,3 +56,10 @@
 | 能力门禁 | 操作 schema 提供 capabilities；传输层未强制 | ⚠️ 适配器预检 |
 | 统一 receipt | 无全局 request_id/duration | ⚠️ 适配器封装 |
 
+
+## 编辑器视觉刷新评估（2026-11-18）
+
+- 048 的 `EditorThemeTable.inl` 有 **401** 个主题 token，050 有 **240** 个，且 050 的集合是 048 的子集（`only ours = 空`），说明 048 的视觉刷新是同一谱系上的**增量**，不是另一套设计。
+- 但 050 在 `function/editor`、`renderer/gui` 上另有 4.3k 行改动（面板、文本布局、预览），与 048 的面板刷新逐文件冲突；在没有 GUI 截图 QA 的前提下整体替换会回退 050 的编辑器工作。
+- 结论：绘制辅助（`EditorThemeDrawing.h`/`EditorSurfacePattern.h`）与主题贡献系统已迁；面板/排版刷新保留 050，待 GUI 对照后逐项移植。
+- 另：`tests/acceptance/headless_project_smoke.py` 在 050 上失败（`Play requires a prepared runtime scene graph`），原因是该脚本直接调用原生 `play()`，早于 050 的 runtime-world 契约（050 由 `PlayModeManager` 准备世界）；与本次合并无关。
