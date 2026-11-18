@@ -31,9 +31,12 @@ class JoltCpuContactPublication final
     // Each returns true when its phase finishes on this substep.
     bool AdvanceCoupledVelocity(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses = {});
     void PrepareCoupledIntegration(bool retainMotion);
-    [[nodiscard]] JPH::Array<JPH::PhysicsSystem::CoupledContinuousContact> CoupledContinuousContacts() const;
+    [[nodiscard]] std::optional<float> CoupledImpactTime() const;
+    [[nodiscard]] bool HasCoupledImpact(JPH::BodyID body) const;
     [[nodiscard]] JPH::Vec3 CoupledDisplacement(JPH::BodyID body) const;
-    void AdvanceCoupledIntegration(const std::vector<JPH::PhysicsSystem::CoupledContinuousUpdate> &updates = {});
+    void AdvanceCoupledSweep(float fraction, float remaining,
+                             const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses);
+    void AdvanceCoupledIntegration();
     bool AdvanceCoupledPosition(const std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> &, uint32_t rounds);
     [[nodiscard]] JPH::PhysicsUpdateContext::CoupledFreeVelocity CoupledFreeVelocity(JPH::BodyID body) const;
     [[nodiscard]] bool CoupledHasLocalVelocityRows() const noexcept;

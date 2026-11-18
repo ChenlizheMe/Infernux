@@ -49,14 +49,10 @@ struct MixedPatch
 [[vk::binding(13, 0)]] StructuredBuffer<MixedPatch> previous_patches;
 [[vk::binding(14, 0)]] StructuredBuffer<uint> continuous_slots;
 [[vk::binding(15, 0)]] RWStructuredBuffer<SweepBody> continuous_motion;
-[[vk::binding(16, 0)]] StructuredBuffer<uint> continuous_choices;
 [[vk::binding(17, 0)]] RWStructuredBuffer<ContinuousSample> continuous_samples;
-[[vk::binding(18, 0)]] StructuredBuffer<ContinuousRootPolicy> continuous_policies;
 [[vk::binding(19, 0)]] StructuredBuffer<ContinuousCpuBody> continuous_cpu;
 [[vk::binding(20, 0)]] StructuredBuffer<ContinuousMixedHit> continuous_hits;
 [[vk::binding(21, 0)]] RWStructuredBuffer<ContinuousReceipt> continuous_receipts;
-[[vk::binding(22, 0)]] RWStructuredBuffer<ContactPatch> continuous_patches;
-[[vk::binding(23, 0)]] StructuredBuffer<Contact> continuous_contacts;
 
 static const uint SolverLanes = 64u;
 groupshared uint4 shared_group;
@@ -452,60 +448,9 @@ void gather_continuous_boundaries(uint3 tid : SV_DispatchThreadID)
     uint row = params.range.x + tid.x;
     uint slot = continuous_slots[row];
     uint local = slot - params.range.z;
-    uint root = continuous_choices[local];
-    uint ordinal = continuous_choices[2u * params.range.w + root];
     SweepBody motion = continuous_motion[local];
-    uint first = 0xffffffffu;
-    if (ordinal != 0xffffffffu)
-        first = asuint(continuous_contacts[ordinal].impulse.w);
-    ContinuousSample sample = {jph_sweep_state(motion), motion.displacement, uint4(slot, root, first, 0u)};
+    ContinuousSample sample = {jph_sweep_state(motion), float4(motion.displacement.xyz, motion.positionCOM.w)};
     continuous_samples[row] = sample;
-}
-
-uint continuous_policy(uint root)
-{
-    uint lo = 0u, hi = params.range.w;
-    while (lo < hi)
-    {
-        uint mid = lo + (hi - lo) / 2u;
-        if (continuous_policies[mid].decision.x < root) lo = mid + 1u;
-        else hi = mid;
-    }
-    return lo < params.range.w && continuous_policies[lo].decision.x == root ? lo : 0xffffffffu;
-}
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void restrict_continuous_motion(uint3 tid : SV_DispatchThreadID)
-{
-    if (tid.x >= params.range.y) return;
-    uint local = params.range.x + tid.x;
-    uint policy = continuous_policy(continuous_choices[local]);
-    if (policy == 0xffffffffu) return;
-    SweepBody motion = continuous_motion[local];
-    if (motion.displacement.w == 0.0f) return; // Prescribed boundaries keep their full motion.
-    motion.linearResponse = float4(0.0f, 0.0f, 0.0f,
-        min(motion.linearResponse.w, asfloat(continuous_policies[policy].decision.y)));
-    motion.angularResponse = float4(0.0f);
-    continuous_motion[local] = motion;
-}
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void restrict_continuous_reports(uint3 tid : SV_DispatchThreadID)
-{
-    if (tid.x >= params.range.y) return;
-    uint ordinal = params.range.x + tid.x;
-    uint address = continuous_patches[0].leaves.x + ordinal;
-    ContactPatch patch = continuous_patches[address];
-    if ((patch.leaves.z & PatchActive) == 0u) return;
-    Contact hit = continuous_contacts[ordinal];
-    uint policy = continuous_policy(continuous_choices[hit.meta.x - params.range.z]);
-    if (policy != 0xffffffffu)
-    {
-        patch.leaves.zw = uint2(0u);
-        continuous_patches[address] = patch;
-    }
 }
 
 [shader("compute")]
@@ -515,21 +460,21 @@ void apply_cross_domain_sweep(uint3 tid : SV_DispatchThreadID)
     if (tid.x >= params.range.y) return;
     uint row = params.range.x + tid.x;
     ContinuousMixedHit hit = continuous_hits[row];
-    ContinuousCpuBody a = continuous_cpu[hit.bodies.x];
-    uint slot = hit.bodies.y, local = slot - params.range.z;
+    ContinuousCpuBody a = continuous_cpu[hit.cpuRow];
+    uint slot = hit.gpuSlot, local = slot - params.range.z;
     SweepBody b = continuous_motion[local];
     BodyModel ma = a.model, mb = gpu_models[slot];
     BodyState sa = a.state, sb = jph_sweep_state(b);
     if (!jph_dynamic(mb)) mb.meta.z = MotionKinematic;
-    float3 ra = hit.pointRestitution.xyz - (sa.positionCOM.xyz + hit.time.x * a.displacement.xyz);
-    float3 rb = hit.pointRestitution.xyz - (sb.positionCOM.xyz + hit.time.x * b.displacement.xyz);
+    float3 ra = hit.pointRestitution.xyz - (sa.positionCOM.xyz + hit.fraction * a.displacement.xyz);
+    float3 rb = hit.pointRestitution.xyz - (sb.positionCOM.xyz + hit.fraction * b.displacement.xyz);
     float3 incoming;
     float3 impulse = jph_solve_sweep_impact(ma, sa, ra, mb, sb, rb, hit.normalFriction.xyz,
-        hit.normalFriction.w, hit.pointRestitution.w, hit.time.z, incoming);
+        hit.normalFriction.w, hit.pointRestitution.w, hit.minRestitutionSpeed, incoming);
     if (jph_dynamic(mb))
     {
         continuous_motion[local].linearResponse = float4(
-            jph_clamp_speed(sb.linearVelocity.xyz, mb.damping.z) - b.linearVelocity.xyz, hit.time.y);
+            jph_clamp_speed(sb.linearVelocity.xyz, mb.damping.z) - b.linearVelocity.xyz, 1.0f);
         continuous_motion[local].angularResponse = float4(
             jph_clamp_speed(sb.angularVelocity.xyz, mb.damping.w) - b.angularVelocity.xyz, 1.0f);
     }

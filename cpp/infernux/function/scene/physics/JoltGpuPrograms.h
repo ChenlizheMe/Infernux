@@ -408,6 +408,14 @@ class JoltGpuStepInputs
     {
         return m_needsCoupledSweep;
     }
+    void SetSweepImpactTime(std::optional<float> fraction) noexcept
+    {
+        m_sweepImpactTime = fraction;
+    }
+    [[nodiscard]] std::optional<float> SweepImpactTime() const noexcept
+    {
+        return m_sweepImpactTime;
+    }
     void SetExternalWakePending(bool pending) noexcept
     {
         m_externalWakePending = pending;
@@ -497,6 +505,7 @@ class JoltGpuStepInputs
     std::vector<uint32_t> m_externalContactBodies;
     bool m_externalWakePending = false;
     bool m_needsCoupledSweep = false;
+    std::optional<float> m_sweepImpactTime;
     std::function<JoltGpuSleepCoupling()> m_prepareSleepCoupling;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.

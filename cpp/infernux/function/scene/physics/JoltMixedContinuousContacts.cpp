@@ -11,11 +11,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <map>
-#include <numeric>
-#include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace infernux
 {
@@ -25,8 +23,6 @@ using namespace JPH::GPU;
 enum Entry : uint32_t
 {
     Gather,
-    RestrictMotion,
-    RestrictReports,
     Apply
 };
 constexpr uint32_t PortCount = 24;
@@ -41,18 +37,6 @@ template <typename T> std::vector<uint8_t> Bytes(const std::vector<T> &values)
     std::vector<uint8_t> bytes(values.size() * sizeof(T));
     std::memcpy(bytes.data(), values.data(), bytes.size());
     return bytes;
-}
-uint32_t TimeBits(float time)
-{
-    uint32_t bits;
-    std::memcpy(&bits, &time, sizeof(bits));
-    return bits;
-}
-float ImpactTime(uint32_t bits)
-{
-    float time;
-    std::memcpy(&time, &bits, sizeof(time));
-    return time;
 }
 template <typename V> Float4 Pack(const V &value)
 {
@@ -95,8 +79,7 @@ template <typename Accept> class CastCollector final : public JPH::CastShapeColl
 JoltMixedContinuousContacts::JoltMixedContinuousContacts(rhi::ComputeHost &host, const ShaderTargetCode &target)
     : m_host(host)
 {
-    const std::array names{"gather_continuous_boundaries", "restrict_continuous_motion", "restrict_continuous_reports",
-                           "apply_cross_domain_sweep"};
+    const std::array names{"gather_continuous_boundaries", "apply_cross_domain_sweep"};
     for (size_t i = 0; i < names.size(); ++i) {
         const auto entry = std::find_if(target.entries.begin(), target.entries.end(),
                                         [&](const auto &code) { return code.name == names[i]; });
@@ -139,19 +122,18 @@ struct JoltMixedContinuousContacts::Job : std::enable_shared_from_this<Job>
         ContinuousMixedHit value;
         PhysicsContactPublication::Endpoint cpu, gpu;
         JPH::BodyID native;
-        uint32_t sample;
     };
     std::vector<Hit> hits, selected;
     std::vector<ContinuousCpuBody> cpuBodies;
     std::vector<ContinuousMixedHit> deviceHits;
-    std::vector<ContinuousRootPolicy> policies;
-    std::vector<JPH::PhysicsSystem::CoupledContinuousUpdate> updates;
+    std::optional<float> eventTime;
+    std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> impulses;
     std::unordered_map<uint32_t, uint32_t> cpuRows;
     std::vector<rhi::ComputeBufferUpdate> uploads;
     using AfterUpload = JoltGpuControlWork (Job::*)(std::vector<rhi::ComputeBufferUpdate>);
     size_t uploadIndex = 0;
     uint64_t uploadOffset = 0;
-    uint32_t gatherFirst = 0, restrictFirst = 0, reportFirst = 0, applyFirst = 0;
+    uint32_t gatherFirst = 0, applyFirst = 0;
     uint32_t leafCursor = 0, nodeCursor = 0, proxyCursor = 0, proxyEnd = 0;
     bool leafReady = false;
     glm::vec3 leafMin{}, leafMax{};
@@ -166,9 +148,9 @@ struct JoltMixedContinuousContacts::Job : std::enable_shared_from_this<Job>
     {
         buffers[1] = inputs.GetCaptured(Resource::BodyModels);
         buffers[15] = inputs.GetSweepBodies();
-        buffers[16] = inputs.GetSweepChoices();
-        buffers[22] = inputs.GetSweepContacts()->patches;
-        buffers[23] = inputs.GetSweepContacts()->contacts;
+        eventTime = inputs.SweepImpactTime();
+        if (const auto native = cpu.CoupledImpactTime())
+            eventTime = std::min(eventTime.value_or(*native), *native);
     }
     const JPH::Body &Body(JPH::BodyID id) const
     {
@@ -201,8 +183,7 @@ struct JoltMixedContinuousContacts::Job : std::enable_shared_from_this<Job>
             const uint32_t index = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffer);
             const bool output = (entry == Gather && port == 17u) || (entry == Entry::Apply && port == 21u);
-            const bool mutablePort = (entry == RestrictMotion || entry == Entry::Apply) && port == 15u ||
-                                     entry == RestrictReports && port == 22u;
+            const bool mutablePort = entry == Entry::Apply && port == 15u;
             dispatch.bufferAccesses.push_back(output        ? rhi::ComputeBufferAccess::Write
                                               : mutablePort ? rhi::ComputeBufferAccess::ReadWrite
                                                             : rhi::ComputeBufferAccess::Read);
@@ -292,12 +273,15 @@ struct JoltMixedContinuousContacts::Job : std::enable_shared_from_this<Job>
     void Arbitrate();
     uint32_t CpuRow(JPH::BodyID);
     JoltGpuControlWork PrepareDecisions();
-    JoltGpuControlWork Restrict(std::vector<rhi::ComputeBufferUpdate> pending = {});
-    JoltGpuControlWork RestrictLocalReports();
     JoltGpuControlWork Apply(std::vector<rhi::ComputeBufferUpdate> pending = {});
     JoltGpuControlWork Finish()
     {
-        cpu.AdvanceCoupledIntegration(updates);
+        inputs.SetSweepImpactTime(eventTime);
+        const float remaining = eventTime ? params.gravityDt.w * (1.0f - *eventTime) : 0.0f;
+        if (eventTime)
+            cpu.AdvanceCoupledSweep(*eventTime, remaining, impulses);
+        if (remaining == 0.0f)
+            cpu.AdvanceCoupledIntegration();
         auto done = std::move(completed);
         done();
         return {};
@@ -349,24 +333,29 @@ void JoltMixedContinuousContacts::Job::CastPair(uint32_t index)
     const bool gpuDynamic = model.meta.z == MotionDynamic;
     if (!proxy.dynamic && !gpuDynamic)
         return;
-    const bool cpuContinuous = proxy.collisionDetectionMode != static_cast<int>(CollisionDetectionMode::Discrete);
+    const auto &sample = samples[leafSample];
+    const bool cpuCarried = step.m_continuousPose[index].fromEarlierImpact;
+    const bool gpuCarried = sample.displacement.w != 0.0f;
+    const bool cpuContinuous =
+        cpuCarried || proxy.collisionDetectionMode != static_cast<int>(CollisionDetectionMode::Discrete);
     const bool cpuDynamicContinuous =
-        proxy.collisionDetectionMode == static_cast<int>(CollisionDetectionMode::ContinuousDynamic);
+        cpuCarried || proxy.collisionDetectionMode == static_cast<int>(CollisionDetectionMode::ContinuousDynamic);
     const float gpuRadius = model.invInertiaDiagonal.w;
-    if (proxy.dynamic && gpuDynamic ? !cpuDynamicContinuous && gpuRadius >= 0.0f
+    if (proxy.dynamic && gpuDynamic ? !cpuDynamicContinuous && gpuRadius >= 0.0f && !gpuCarried
         : proxy.dynamic             ? !cpuContinuous
-                                    : gpuRadius == 0.0f)
+                                    : gpuRadius == 0.0f && !gpuCarried)
         return;
     const auto &a = step.m_continuousPose[index];
     const auto da = step.m_continuousDisplacement[index];
-    const auto &sample = samples[leafSample];
     const auto &b = sample.state;
     const auto db = Vector(sample.displacement);
     float radius = proxy.dynamic && cpuContinuous ? proxy.shape->GetInnerRadius() : std::abs(gpuRadius);
     if (proxy.dynamic && cpuContinuous && gpuRadius != 0.0f)
         radius = std::min(radius, std::abs(gpuRadius));
     const auto relative = da - db;
-    if (relative.LengthSq() <= JPH::Square(radius * params.restitution.y))
+    const bool continuing = cpuCarried || gpuCarried || params.gravityDt.w < inputs.GetParameters().gravityDt.w;
+    const float minimumTravel = continuing ? JPH::cDefaultCollisionTolerance : radius * params.restitution.y;
+    if (relative.LengthSq() <= JPH::Square(minimumTravel))
         return;
     const JPH::Quat bodyRotation(b.rotation.x, b.rotation.y, b.rotation.z, b.rotation.w);
     const JPH::Quat leafRotation(shape.localRotation.x, shape.localRotation.y, shape.localRotation.z,
@@ -425,7 +414,9 @@ void JoltMixedContinuousContacts::Job::CastPair(uint32_t index)
         const auto armB = JPH::Vec3(point - (JPH::RVec3(Vector(b.positionCOM)) + result.mFraction * db));
         const auto incoming =
             a.linear + a.angular.Cross(armA) - Vector(b.linearVelocity) - Vector(b.angularVelocity).Cross(armB);
-        if (incoming.Dot(n) <= 0.0f)
+        const float closingSpeed = incoming.Dot(n);
+        if (closingSpeed <= 0.0f ||
+            (continuing && closingSpeed * params.gravityDt.w <= JPH::cDefaultCollisionTolerance))
             return false;
         Hit hit{};
         hit.cpu = {proxy.id,           cpuSubshape.GetValue(), surface.colliderId,
@@ -433,8 +424,7 @@ void JoltMixedContinuousContacts::Job::CastPair(uint32_t index)
         hit.gpu = {actor.bodyId,       leaf.subShapeId, leaf.colliderId, leaf.colliderGeneration,
                    leaf.surfaceTarget, actor.bodyTarget};
         hit.native = step.Scene().NativeBody(proxy.id);
-        hit.sample = leafSample;
-        hit.value.bodies = {0u, address.bodySlot, 0, 0};
+        hit.value.gpuSlot = address.bodySlot;
         const auto normal = Pack(n);
         hit.value.normalFriction = {normal.x, normal.y, normal.z,
                                     JoltCpuScene::CombineSurface(surface.friction, other.friction,
@@ -443,13 +433,23 @@ void JoltMixedContinuousContacts::Job::CastPair(uint32_t index)
         hit.value.pointRestitution = {position.x, position.y, position.z,
                                       JoltCpuScene::CombineSurface(surface.restitution, other.restitution,
                                                                    surface.bounceCombine, other.bounceCombine)};
-        hit.value.time = {result.mFraction, result.mFraction, params.restitution.x, 0};
+        hit.value.fraction = result.mFraction;
+        hit.value.minRestitutionSpeed = params.restitution.x;
         best = std::move(hit);
         return true;
     });
     target.CastShape(cast, settings, base, collector);
-    if (best)
-        hits.push_back(std::move(*best));
+    if (best) {
+        const float time = best->value.fraction;
+        // The other domains have offered their earliest times. Only a hit at
+        // or before that boundary can be consumed in this interval.
+        if (!eventTime || time < *eventTime) {
+            eventTime = time;
+            hits.clear();
+        }
+        if (time == *eventTime)
+            hits.push_back(std::move(*best));
+    }
 }
 
 JoltGpuControlWork JoltMixedContinuousContacts::Job::CastNext()
@@ -514,158 +514,40 @@ void JoltMixedContinuousContacts::Job::Arbitrate()
 {
     if (hits.empty())
         return;
-    std::map<uint64_t, size_t> nodes;
-    std::vector<size_t> parents;
-    const auto node = [&](uint64_t key) {
-        const auto [found, added] = nodes.emplace(key, parents.size());
-        if (added)
-            parents.push_back(parents.size());
-        return found->second;
-    };
-    const auto root = [&](size_t index) {
-        while (parents[index] != index) {
-            parents[index] = parents[parents[index]];
-            index = parents[index];
-        }
-        return index;
-    };
-    const auto join = [&](size_t a, size_t b) { parents[root(b)] = root(a); };
-    const auto cpuKey = [](JPH::BodyID id) { return uint64_t(id.GetIndexAndSequenceNumber()) * 2u; };
-    const auto gpuKey = [](uint32_t id) { return uint64_t(id) * 2u + 1u; };
-    enum Kind
-    {
-        Cpu,
-        Gpu,
-        Mixed
-    };
-    struct Choice
-    {
-        Kind kind;
-        size_t node, index;
-        float time;
-    };
-    std::vector<Choice> choices;
-    const auto nativeContacts = cpu.CoupledContinuousContacts();
-    for (size_t i = 0; i < nativeContacts.size(); ++i) {
-        const auto &contact = nativeContacts[i];
-        const auto a = node(cpuKey(contact.mBody1));
-        if (Body(contact.mBody2).IsDynamic())
-            join(a, node(cpuKey(contact.mBody2)));
-        choices.push_back({Cpu, a, i, contact.mFraction});
-    }
-    std::map<uint32_t, size_t> localGpu;
-    for (size_t i = 0; i < samples.size(); ++i) {
-        const auto &sample = samples[i];
-        if (storage.GetModel().bodies[sample.identity.x].meta.z != MotionDynamic || sample.identity.z == UINT32_MAX ||
-            !localGpu.emplace(sample.identity.y, i).second)
+    std::sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) {
+        return std::make_pair(a.cpu.Key(), a.gpu.Key()) < std::make_pair(b.cpu.Key(), b.gpu.Key());
+    });
+    // Rows in this dispatch must be independent. A shared dynamic endpoint
+    // is reconsidered at the same physical time with its new velocity.
+    std::unordered_set<uint32_t> activeCpu, activeGpu;
+    for (auto &hit : hits) {
+        const auto gpu = hit.value.gpuSlot;
+        const auto native = hit.native.GetIndexAndSequenceNumber();
+        const bool cpuDynamic = Body(hit.native).IsDynamic();
+        const bool gpuDynamic = storage.GetModel().bodies[gpu].meta.z == MotionDynamic;
+        if ((cpuDynamic && activeCpu.count(native)) || (gpuDynamic && activeGpu.count(gpu)))
             continue;
-        choices.push_back({Gpu, node(gpuKey(sample.identity.y)), i, ImpactTime(sample.identity.z)});
+        if (cpuDynamic)
+            activeCpu.insert(native);
+        if (gpuDynamic)
+            activeGpu.insert(gpu);
+        hit.value.cpuRow = CpuRow(hit.native);
+        deviceHits.push_back(hit.value);
+        selected.push_back(std::move(hit));
     }
-    for (size_t i = 0; i < hits.size(); ++i) {
-        const auto &hit = hits[i];
-        const bool dynamicCpu = Body(hit.native).IsDynamic();
-        const bool dynamicGpu = storage.GetModel().bodies[hit.value.bodies.y].meta.z == MotionDynamic;
-        size_t endpoint = dynamicCpu ? node(cpuKey(hit.native)) : node(gpuKey(samples[hit.sample].identity.y));
-        if (dynamicCpu && dynamicGpu)
-            join(endpoint, node(gpuKey(samples[hit.sample].identity.y)));
-        choices.push_back({Mixed, endpoint, i, hit.value.time.x});
-    }
-    std::map<size_t, size_t> best;
-    std::set<size_t> touched;
-    for (size_t i = 0; i < choices.size(); ++i) {
-        const auto &choice = choices[i];
-        const auto component = root(choice.node);
-        if (choice.kind == Mixed)
-            touched.insert(component);
-        const auto [previous, added] = best.emplace(component, i);
-        if (!added) {
-            const auto &old = choices[previous->second];
-            if (std::tie(choice.time, choice.kind, choice.index) < std::tie(old.time, old.kind, old.index))
-                previous->second = i;
-        }
-    }
-    for (const auto &[key, index] : nodes) {
-        const auto component = root(index);
-        if (touched.find(component) == touched.end())
-            continue;
-        const auto &winner = choices[best.at(component)];
-        if (key & 1u) {
-            const uint32_t gpuRoot = static_cast<uint32_t>(key / 2u);
-            const bool keep = winner.kind == Gpu && samples[winner.index].identity.y == gpuRoot;
-            // The mixed impact itself writes an untouched singleton's response.
-            const bool direct = winner.kind == Mixed && samples[hits[winner.index].sample].identity.y == gpuRoot &&
-                                samples[hits[winner.index].sample].identity.z == UINT32_MAX;
-            if (!keep && !direct)
-                policies.push_back({{gpuRoot, TimeBits(winner.time), 0, 0}});
-        } else {
-            const JPH::BodyID id(static_cast<uint32_t>(key / 2u));
-            const bool keep = winner.kind == Cpu && nativeContacts[winner.index].mBody1 == id;
-            updates.push_back({id, keep ? nativeContacts[winner.index].mTravelFraction : winner.time, !keep,
-                               JPH::Vec3::sZero(), JPH::Vec3::sZero()});
-        }
-    }
-    for (const auto component : touched) {
-        const auto &winner = choices[best.at(component)];
-        if (winner.kind == Mixed) {
-            selected.push_back(hits[winner.index]);
-            deviceHits.push_back(selected.back().value);
-            deviceHits.back().bodies.x = CpuRow(selected.back().native);
-        }
-    }
-    std::sort(policies.begin(), policies.end(),
-              [](const auto &a, const auto &b) { return a.decision.x < b.decision.x; });
 }
 
 JoltGpuControlWork JoltMixedContinuousContacts::Job::PrepareDecisions()
 {
-    if (policies.empty() && selected.empty())
+    if (selected.empty())
         return Finish();
-    if ((!policies.empty() && !Allocate(18, policies.size() * sizeof(ContinuousRootPolicy))) ||
-        (!selected.empty() && (!Allocate(19, cpuBodies.size() * sizeof(ContinuousCpuBody)) ||
-                               !Allocate(20, deviceHits.size() * sizeof(ContinuousMixedHit)) ||
-                               !Allocate(21, selected.size() * sizeof(ContinuousReceipt)))))
+    if (!Allocate(19, cpuBodies.size() * sizeof(ContinuousCpuBody)) ||
+        !Allocate(20, deviceHits.size() * sizeof(ContinuousMixedHit)) ||
+        !Allocate(21, selected.size() * sizeof(ContinuousReceipt)))
         return {nullptr, [self = shared_from_this()] { return self->PrepareDecisions(); }};
-    if (!policies.empty())
-        uploads.push_back({buffers[18], 0, Bytes(policies)});
-    if (!selected.empty()) {
-        uploads.push_back({buffers[19], 0, Bytes(cpuBodies)});
-        uploads.push_back({buffers[20], 0, Bytes(deviceHits)});
-    }
-    return Upload(&Job::Restrict);
-}
-
-JoltGpuControlWork JoltMixedContinuousContacts::Job::Restrict(std::vector<rhi::ComputeBufferUpdate> pending)
-{
-    if (policies.empty())
-        return Apply(std::move(pending));
-    if (restrictFirst == params.selectedCounts.x)
-        return RestrictLocalReports();
-    const auto count = std::min(params.selectedCounts.x - restrictFirst, WorkItemLimit(Domain::Bodies));
-    pending.push_back(Uniform({restrictFirst, count, params.selection.y, static_cast<uint32_t>(policies.size())}));
-    auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(pending), {Dispatch(RestrictMotion, count)});
-    return {packet,
-            [self = shared_from_this(), count] {
-                self->restrictFirst += count;
-                return self->Restrict();
-            },
-            Boundary::Acceptance};
-}
-
-JoltGpuControlWork JoltMixedContinuousContacts::Job::RestrictLocalReports()
-{
-    const auto total = inputs.GetSweepContacts()->patchCount;
-    if (policies.empty() || reportFirst == total)
-        return Apply();
-    const auto count = std::min(total - reportFirst, WorkItemLimit(Domain::Bodies));
-    auto packet = rhi::PrepareComputeBatch(
-        owner.m_host, {Uniform({reportFirst, count, params.selection.y, static_cast<uint32_t>(policies.size())})},
-        {Dispatch(RestrictReports, count)});
-    return {packet,
-            [self = shared_from_this(), count] {
-                self->reportFirst += count;
-                return self->RestrictLocalReports();
-            },
-            Boundary::Acceptance};
+    uploads.push_back({buffers[19], 0, Bytes(cpuBodies)});
+    uploads.push_back({buffers[20], 0, Bytes(deviceHits)});
+    return Upload(&Job::Apply);
 }
 
 JoltGpuControlWork JoltMixedContinuousContacts::Job::Apply(std::vector<rhi::ComputeBufferUpdate> pending)
@@ -685,13 +567,8 @@ JoltGpuControlWork JoltMixedContinuousContacts::Job::Apply(std::vector<rhi::Comp
                 for (uint32_t i = 0; i < count; ++i) {
                     const auto &hit = self->selected[self->applyFirst + i];
                     const auto &receipt = receipts[i];
-                    if (self->Body(hit.native).IsDynamic()) {
-                        auto update =
-                            std::lower_bound(self->updates.begin(), self->updates.end(), hit.native,
-                                             [](const auto &value, JPH::BodyID id) { return value.mBody < id; });
-                        update->mLinearImpulse += Vector(receipt.linear);
-                        update->mAngularImpulse += Vector(receipt.angular);
-                    }
+                    if (self->Body(hit.native).IsDynamic())
+                        self->impulses.push_back({hit.native, Vector(receipt.linear), Vector(receipt.angular)});
                     if (self->policy.Observes(hit.cpu.SurfaceKey(), hit.gpu.SurfaceKey(), false)) {
                         auto &frame = self->step.ContactFrame(self->substep);
                         frame.manifolds.push_back({hit.cpu, hit.gpu, false, frame.points.size(), 1});

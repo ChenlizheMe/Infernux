@@ -757,9 +757,9 @@ bool JoltCpuScene::ShouldCollide(const JPH::Body &a, const JPH::Shape *shapeA, c
 }
 
 JPH::ValidateResult JoltCpuScene::OnCCDContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg origin,
-                                                       const JPH::CollideShapeResult &hit)
+                                                       const JPH::CollideShapeResult &hit, bool fromEarlierImpact)
 {
-    if (a.IsDynamic() && b.IsDynamic() &&
+    if (!fromEarlierImpact && a.IsDynamic() && b.IsDynamic() &&
         m_bodies.at(static_cast<uint32_t>(a.GetUserData())).collisionDetectionMode !=
             static_cast<int>(CollisionDetectionMode::ContinuousDynamic) &&
         m_bodies.at(static_cast<uint32_t>(b.GetUserData())).collisionDetectionMode !=

@@ -367,17 +367,18 @@ const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeContinuousTree(J
         const auto shapeBounds = proxy.shape->GetWorldSpaceBounds(body.GetCenterOfMassTransform(), JPH::Vec3::sOne());
         const auto delta = cpu.CoupledDisplacement(id);
         m_continuousPose.push_back({body.GetCenterOfMassPosition(), body.GetRotation(), body.GetLinearVelocity(),
-                                    body.GetAngularVelocity(), shapeBounds, body.IsActive()});
+                                    body.GetAngularVelocity(), shapeBounds, body.IsActive(), cpu.HasCoupledImpact(id)});
         m_continuousDisplacement.push_back(delta);
         const auto movement = Vector3(delta);
         bounds.push_back({Vector3(shapeBounds.mMin) + glm::min(movement, glm::vec3(0)),
                           Vector3(shapeBounds.mMax) + glm::max(movement, glm::vec3(0))});
     }
-    return bounds.empty() ? m_continuousTree : EncodeBvh(bounds, m_continuousTree);
+    return bounds.empty() ? m_continuousTree : EncodeBvh(bounds, m_continuousTree, m_continuousPose);
 }
 
 const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeBvh(const std::vector<spatial::Bounds> &bounds,
-                                                                    std::vector<JPH::GPU::UInt4> &words)
+                                                                    std::vector<JPH::GPU::UInt4> &words,
+                                                                    const std::vector<Pose> &sweepPoses)
 {
     if (m_tree.nodes.empty()) {
         m_tree = spatial::BuildBvh(bounds);
@@ -398,12 +399,14 @@ const std::vector<JPH::GPU::UInt4> &JoltMixedContactStep::EncodeBvh(const std::v
         const uint32_t proxy = m_tree.primitiveOrder[i];
         words[boundsBase + 2 * i] = EncodeBounds(bounds[proxy].minimum, proxy);
         const auto &source = m_proxies[proxy];
+        const bool carried = !sweepPoses.empty() && sweepPoses[proxy].fromEarlierImpact;
         const uint32_t flags =
             (source.sensor ? ShapeSensor : 0u) | (source.allowResponse ? ResponseProxy : 0u) |
             (source.dynamic ? DynamicProxy : 0u) |
-            (source.collisionDetectionMode != static_cast<int>(CollisionDetectionMode::Discrete) ? ContinuousProxy
-                                                                                                 : 0u) |
-            (source.collisionDetectionMode == static_cast<int>(CollisionDetectionMode::ContinuousDynamic)
+            (carried || source.collisionDetectionMode != static_cast<int>(CollisionDetectionMode::Discrete)
+                 ? ContinuousProxy
+                 : 0u) |
+            (carried || source.collisionDetectionMode == static_cast<int>(CollisionDetectionMode::ContinuousDynamic)
                  ? DynamicContinuousProxy
                  : 0u);
         words[boundsBase + 2 * i + 1] = EncodeBounds(bounds[proxy].maximum, flags);

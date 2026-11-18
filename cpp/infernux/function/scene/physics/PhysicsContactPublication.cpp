@@ -173,18 +173,23 @@ void State::Publish(ContactStreamIdentity identity, const Policy &policy, uint32
     for (uint32_t substep = 0; substep < substeps; ++substep) {
         auto frame = readFrame(substep);
         // Read impulse samples in the same canonical pair order as stream events.
-        std::sort(frame.manifolds.begin(), frame.manifolds.end(),
-                  [](const Manifold &a, const Manifold &b) { return CanonicalKey(a) < CanonicalKey(b); });
+        std::stable_sort(frame.manifolds.begin(), frame.manifolds.end(),
+                         [](const Manifold &a, const Manifold &b) { return CanonicalKey(a) < CanonicalKey(b); });
         std::map<PairKey, Pair> current;
+        uint32_t nextPointIndex = 0;
         for (const auto &manifold : frame.manifolds) {
             const auto offset = manifold.pointOffset;
             if (manifold.a.body == manifold.b.body || !manifold.pointCount || offset > frame.points.size() ||
                 manifold.pointCount > frame.points.size() - offset)
                 throw std::runtime_error("Invalid contact pair");
             const auto key = CanonicalKey(manifold);
-            if (!policy.Observes(manifold.a.SurfaceKey(), manifold.b.SurfaceKey(), manifold.trigger) ||
-                (!current.empty() && current.rbegin()->first == key))
-                throw std::runtime_error("Duplicate/unrequested contact pair");
+            if (!policy.Observes(manifold.a.SurfaceKey(), manifold.b.SurfaceKey(), manifold.trigger))
+                throw std::runtime_error("Unrequested contact pair");
+            // One substep can revisit a pair. Its lifecycle uses the first manifold;
+            // each later solved point keeps its own direction, impulse and order.
+            const bool firstManifold = current.empty() || current.rbegin()->first != key;
+            if (firstManifold)
+                nextPointIndex = 0;
 
             const bool reverse = manifold.a.Key() != std::get<0>(key);
             const auto orient = [reverse](const glm::vec3 &value) { return reverse ? -value : value; };
@@ -204,13 +209,15 @@ void State::Publish(ContactStreamIdentity identity, const Policy &policy, uint32
                     ContactImpulse impulse;
                     Identity(impulse, pair, identity, substep);
                     impulse.feature = point.feature;
-                    impulse.pointIndex = i;
+                    impulse.pointIndex = nextPointIndex + i;
                     impulse.contactPoint = point.position;
                     impulse.contactNormal = orient(point.normal);
                     impulse.impulse = orient(point.impulse);
                     output->impulses.push_back(impulse);
                 }
-            current.emplace_hint(current.end(), key, pair);
+            nextPointIndex += manifold.pointCount;
+            if (firstManifold)
+                current.emplace_hint(current.end(), key, pair);
         }
         for (const auto &[key, pair] : previous)
             if (!current.count(key))

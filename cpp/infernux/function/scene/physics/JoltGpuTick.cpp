@@ -333,6 +333,7 @@ class JoltGpuTick::Impl
         SweptBroadphase,
         ResolveSweep,
         ResolveCoupledSweep,
+        SolveSweepEvent,
         ReportSweep,
         Integrate,
         IntegrateSwept,
@@ -359,6 +360,7 @@ class JoltGpuTick::Impl
         float sweepRemaining = 0.0f;
         uint64_t sameTimeImpacts = 0;
         bool sweepAdvanced = false;
+        std::optional<float> localSweepImpact;
     };
     struct StageSpan
     {
@@ -753,7 +755,7 @@ class JoltGpuTick::Impl
                phase == Phase::IntegrateCoupledBodies || phase == Phase::PrepareCoupledSweep ||
                phase == Phase::ResolveCoupledSweep || phase == Phase::PrepareContactStore ||
                phase == Phase::PrepareSweep || phase == Phase::SweptBroadphase || phase == Phase::ResolveSweep ||
-               phase == Phase::ReportSweep || CoupledFeedbackPhase(phase);
+               phase == Phase::SolveSweepEvent || phase == Phase::ReportSweep || CoupledFeedbackPhase(phase);
     }
 
     StageSpan Span(Phase phase) const
@@ -806,6 +808,7 @@ class JoltGpuTick::Impl
         case Phase::PrepareSweep:
         case Phase::SweptBroadphase:
         case Phase::ResolveSweep:
+        case Phase::SolveSweepEvent:
         case Phase::ReportSweep:
         case Phase::InitializeSleep:
         case Phase::CapturePrescribedBounds:
@@ -1032,17 +1035,18 @@ class JoltGpuTick::Impl
                 next.phase = Phase::ResolveCoupledSweep;
                 break;
             }
-            if (next.sweepAdvanced && control.prepareContactReport) {
+            [[fallthrough]];
+        case Phase::ResolveCoupledSweep:
+            next.phase = inputs.SweepImpactTime() ? Phase::SolveSweepEvent : Phase::IntegrateSwept;
+            break;
+        case Phase::SolveSweepEvent:
+            if (control.prepareContactReport && inputs.GetSweepContacts()->patchCount) {
                 next.phase = Phase::ReportSweep;
                 break;
             }
             [[fallthrough]];
         case Phase::ReportSweep:
-            next.phase =
-                next.sweepAdvanced && next.sweepRemaining > 0.0f ? Phase::BuildSweptBounds : Phase::IntegrateSwept;
-            break;
-        case Phase::ResolveCoupledSweep:
-            next.phase = control.prepareContactReport ? Phase::ReportSweep : Phase::IntegrateSwept;
+            next.phase = next.sweepRemaining > 0.0f ? Phase::BuildSweptBounds : Phase::IntegrateSwept;
             break;
         case Phase::Integrate:
         case Phase::IntegrateSwept:
@@ -1228,6 +1232,7 @@ class JoltGpuTick::Impl
     {
         inputs.SetSweepContacts(nullptr);
         inputs.SetSweepChoices(nullptr);
+        inputs.SetSweepImpactTime({});
         if (!inputs.GetSweepBodies()) {
             auto bodies = rhi::ComputeBuffer::TryCreatePrivate(
                 host, {uint64_t(tickParameters.selectedCounts.x) * sizeof(JPH::GPU::SweepBody) / sizeof(uint32_t),
@@ -1844,23 +1849,33 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::ResolveSweep) {
-                SelectControlWork(narrowphase.PrepareSweeps(
-                                      storage, inputs, work, stageCursor.sweepRemaining, stageCursor.sweepAdvanced,
-                                      bool(control.prepareContactReport),
-                                      [this](std::optional<float> remaining) {
-                                          stageCursor.sweepAdvanced = remaining.has_value();
-                                          if (remaining) {
-                                              if (*remaining < stageCursor.sweepRemaining)
-                                                  stageCursor.sameTimeImpacts = 0;
-                                              else if (++stageCursor.sameTimeImpacts >
-                                                       64u + 4u * uint64_t(tickParameters.selectedCounts.x))
-                                                  throw std::runtime_error(
-                                                      "GPU continuous impacts did not settle at the current time");
-                                              stageCursor.sweepRemaining = *remaining;
-                                          }
-                                          NextSpan(stageCursor);
-                                          Normalize(stageCursor);
-                                      }),
+                SelectControlWork(narrowphase.PrepareSweeps(storage, inputs, work, stageCursor.sweepRemaining,
+                                                            stageCursor.sweepAdvanced,
+                                                            [this](std::optional<float> fraction) {
+                                                                stageCursor.localSweepImpact = fraction;
+                                                                inputs.SetSweepImpactTime(fraction);
+                                                                NextSpan(stageCursor);
+                                                                Normalize(stageCursor);
+                                                            }),
+                                  PacketKind::NumericalWork);
+                return true;
+            }
+            if (stageCursor.phase == Phase::SolveSweepEvent) {
+                const float fraction = *inputs.SweepImpactTime();
+                const float remaining = stageCursor.sweepRemaining * (1.0f - fraction);
+                if (remaining < stageCursor.sweepRemaining)
+                    stageCursor.sameTimeImpacts = 0;
+                else if (++stageCursor.sameTimeImpacts > 64u + 4u * uint64_t(tickParameters.selectedCounts.x))
+                    throw std::runtime_error("Continuous impacts did not settle at the current time");
+                SelectControlWork(narrowphase.PrepareSweepEvent(storage, inputs, work, fraction, remaining,
+                                                                stageCursor.localSweepImpact == fraction,
+                                                                bool(control.prepareContactReport),
+                                                                [this, remaining] {
+                                                                    stageCursor.sweepRemaining = remaining;
+                                                                    stageCursor.sweepAdvanced = true;
+                                                                    NextSpan(stageCursor);
+                                                                    Normalize(stageCursor);
+                                                                }),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -2029,7 +2044,10 @@ class JoltGpuTick::Impl
                                       IslandCount(Domain::IslandPatches) == 0 && IslandCount(Domain::IslandJoints) == 0;
                 const uint32_t iterations = projecting ? tickParameters.solve.x : tickParameters.counts.w;
                 const uint32_t maxRounds = canBatch ? std::min(iterations - stageCursor.iteration, 4u) : 1u;
-                SelectControlWork(control.prepareCoupledContacts(storage, inputs, tickParameters, stageCursor.substep,
+                auto phaseParams = tickParameters;
+                if (resolvingSweep)
+                    phaseParams.gravityDt.w = stageCursor.sweepRemaining;
+                SelectControlWork(control.prepareCoupledContacts(storage, inputs, phaseParams, stageCursor.substep,
                                                                  stageCursor.iteration, phase, maxRounds,
                                                                  [this, iterating](uint32_t rounds) {
                                                                      if (iterating)

@@ -89,11 +89,6 @@ State::Manifold DecodeManifold(const JoltGpuScene::Publication &p, const Contact
     return {a, b, trigger, offset, r.meta.z};
 }
 
-State::PairKey PairKey(const State::Manifold &manifold)
-{
-    const auto a = manifold.a.Key(), b = manifold.b.Key();
-    return {std::min(a, b), std::max(a, b), manifold.trigger};
-}
 } // namespace
 
 struct JoltGpuContactPublication::Pending
@@ -157,54 +152,19 @@ void JoltGpuContactPublication::AppendFrame(uint32_t substep, State::Frame &dest
             sweepRecords += frame.records.size();
     destination.manifolds.reserve(destination.manifolds.size() + ordinary.records.size() + sweepRecords);
     destination.points.reserve(destination.points.size() + ordinary.records.size() * MaxPatchPoints + sweepRecords);
-    std::map<size_t, std::vector<State::Point>> extra;
-    const auto append = [&](const auto &frame, std::map<State::PairKey, size_t> *existing) {
+    const auto append = [&](const auto &frame) {
         if (frame.substep != substep || !frame.finished || !frame.seeded)
             throw std::logic_error("Contact frame sequence mismatch");
         for (const auto &record : frame.records) {
             if (record.meta.w >= frame.capacity)
                 throw std::runtime_error("Contact source ordinal exceeds retained workset");
-            auto manifold = DecodeManifold(*report.publication, record, substep, destination.points);
-            if (existing) {
-                const auto [found, inserted] = existing->emplace(PairKey(manifold), destination.manifolds.size());
-                if (!inserted) {
-                    const auto &prior = destination.manifolds[found->second];
-                    auto point = destination.points.back();
-                    destination.points.pop_back();
-                    if (prior.a.Key() != manifold.a.Key()) {
-                        point.normal = -point.normal;
-                        point.relativeVelocity = -point.relativeVelocity;
-                        point.impulse = -point.impulse;
-                    }
-                    extra[found->second].push_back(point);
-                    continue;
-                }
-            }
-            destination.manifolds.push_back(std::move(manifold));
+            destination.manifolds.push_back(DecodeManifold(*report.publication, record, substep, destination.points));
         }
     };
-    const auto ordinaryFirst = destination.manifolds.size();
-    append(ordinary, nullptr);
-    if (swept != report.sweepFrames.end()) {
-        std::map<State::PairKey, size_t> existing;
-        for (size_t i = ordinaryFirst; i < destination.manifolds.size(); ++i)
-            existing.emplace(PairKey(destination.manifolds[i]), i);
+    append(ordinary);
+    if (swept != report.sweepFrames.end())
         for (const auto &frame : swept->second)
-            append(frame, &existing);
-    }
-    size_t joinedPoints = destination.points.size();
-    for (const auto &[index, points] : extra)
-        joinedPoints += destination.manifolds[index].pointCount + points.size();
-    destination.points.reserve(joinedPoints);
-    for (const auto &[index, points] : extra) {
-        auto &manifold = destination.manifolds[index];
-        const auto offset = destination.points.size();
-        for (uint32_t i = 0; i < manifold.pointCount; ++i)
-            destination.points.push_back(destination.points[manifold.pointOffset + i]);
-        destination.points.insert(destination.points.end(), points.begin(), points.end());
-        manifold.pointOffset = offset;
-        manifold.pointCount += static_cast<uint32_t>(points.size());
-    }
+            append(frame);
 }
 
 void JoltGpuContactPublication::AcceptCompleted(std::shared_ptr<const Publication> publication) noexcept

@@ -225,7 +225,7 @@ class JoltCpuScene final : private JPH::ContactListener,
     JPH::ValidateResult OnContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg,
                                           const JPH::CollideShapeResult &hit) override;
     JPH::ValidateResult OnCCDContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg origin,
-                                             const JPH::CollideShapeResult &hit) override;
+                                             const JPH::CollideShapeResult &hit, bool fromEarlierImpact) override;
     void OnContactAdded(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &manifold,
                         JPH::ContactSettings &settings) override;
     void OnContactPersisted(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &manifold,

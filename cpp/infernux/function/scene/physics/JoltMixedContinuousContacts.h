@@ -24,6 +24,6 @@ class JoltMixedContinuousContacts final
         std::vector<uint32_t> ports;
     };
     rhi::ComputeHost m_host;
-    std::array<Program, 4> m_programs;
+    std::array<Program, 2> m_programs;
 };
 } // namespace infernux

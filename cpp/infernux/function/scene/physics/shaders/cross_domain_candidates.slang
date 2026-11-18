@@ -34,7 +34,7 @@ bool accepts_continuous_pair(uint cpuFlags, uint gpuMotion, float gpuRadius)
     return cpuDynamic ? (cpuFlags & ContinuousProxy) != 0u : gpuRadius != 0.0f;
 }
 
-bool has_proxy(float3 lo, float3 hi, uint flags, uint motion, bool continuous, float radius)
+bool has_proxy(float3 lo, float3 hi, uint flags, uint motion, bool checkCcdMode, float radius)
 {
     uint4 layout = cpu_tree[0]; // node count, escape base, ordered bounds base, proxy count.
     uint node = 0u;
@@ -59,7 +59,7 @@ bool has_proxy(float3 lo, float3 hi, uint flags, uint motion, bool continuous, f
             bool responds = (cross_domain.policy.x & 2u) != 0u && (flags & ShapeSensor) == 0u
                 && (proxy_max.w & ResponseProxy) != 0u
                 && (motion == MotionDynamic || (proxy_max.w & DynamicProxy) != 0u)
-                && (!continuous || accepts_continuous_pair(proxy_max.w, motion, radius));
+                && (!checkCcdMode || accepts_continuous_pair(proxy_max.w, motion, radius));
             if ((observes || responds) && inside_range(lo, hi, asfloat(proxy_min.xyz), asfloat(proxy_max.xyz)))
                 return true;
         }
@@ -116,7 +116,9 @@ void gather_cross_domain_sweep_candidates(uint3 id : SV_DispatchThreadID)
     uint motion = body.meta.z;
     if (motion != MotionDynamic && motion != MotionKinematic) return;
     Aabb swept = gpu_bounds[leaf];
-    if (!has_proxy(swept.minimum.xyz, swept.maximum.xyz, shape.meta.w, motion, true, body.invInertiaDiagonal.w)) return;
+    // A prior impulse makes this trajectory a CCD source for the rest of this substep.
+    bool checkCcdMode = swept.maximum.w == 0.0f;
+    if (!has_proxy(swept.minimum.xyz, swept.maximum.xyz, shape.meta.w, motion, checkCcdMode, body.invInertiaDiagonal.w)) return;
     uint output = candidate_count[cross_domain.range.z].add(1u);
     candidates[output] = uint4(leaf, shape.surface.xy, motion);
 }

@@ -136,6 +136,7 @@ class JoltMixedContactStep final
         JPH::Vec3 linear, angular;
         JPH::AABox bounds;
         bool active;
+        bool fromEarlierImpact = false;
     };
     const JoltCpuScene *m_scene = nullptr;
     std::vector<CpuProxy> m_proxies;
@@ -155,7 +156,8 @@ class JoltMixedContactStep final
     std::vector<JPH::GPU::UInt4> m_continuousTree;
     bool m_cpuDynamicResponse = false, m_cpuKinematicResponse = false;
     bool m_cpuContinuous = false, m_cpuDynamicContinuous = false;
-    const std::vector<JPH::GPU::UInt4> &EncodeBvh(const std::vector<spatial::Bounds> &, std::vector<JPH::GPU::UInt4> &);
+    const std::vector<JPH::GPU::UInt4> &EncodeBvh(const std::vector<spatial::Bounds> &, std::vector<JPH::GPU::UInt4> &,
+                                                  const std::vector<Pose> &sweepPoses = {});
     std::vector<uint32_t> m_ids, m_escape;
     spatial::Bvh m_tree;
 };

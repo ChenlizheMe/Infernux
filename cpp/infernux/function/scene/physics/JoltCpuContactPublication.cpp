@@ -217,9 +217,9 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
     }
 
     JPH::ValidateResult OnCCDContactValidate(const JPH::Body &a, const JPH::Body &b, JPH::RVec3Arg base,
-                                             const JPH::CollideShapeResult &hit) override
+                                             const JPH::CollideShapeResult &hit, bool fromEarlierImpact) override
     {
-        return m_material->OnCCDContactValidate(a, b, base, hit);
+        return m_material->OnCCDContactValidate(a, b, base, hit, fromEarlierImpact);
     }
 
     void OnContactAdded(const JPH::Body &a, const JPH::Body &b, const JPH::ContactManifold &manifold,
@@ -741,10 +741,16 @@ void JoltCpuContactPublication::PrepareCoupledIntegration(bool retainMotion)
     fixed.scene.System().PrepareCoupledIntegrationUpdate(*fixed.context, retainMotion);
 }
 
-JPH::Array<JPH::PhysicsSystem::CoupledContinuousContact> JoltCpuContactPublication::CoupledContinuousContacts() const
+std::optional<float> JoltCpuContactPublication::CoupledImpactTime() const
 {
     const auto &fixed = *m_coupled;
-    return fixed.scene.System().GetCoupledContinuousContacts(*fixed.context);
+    return fixed.scene.System().GetCoupledImpactTime(*fixed.context);
+}
+
+bool JoltCpuContactPublication::HasCoupledImpact(JPH::BodyID body) const
+{
+    const auto &fixed = *m_coupled;
+    return fixed.scene.System().HasCoupledImpact(*fixed.context, body);
 }
 
 JPH::Vec3 JoltCpuContactPublication::CoupledDisplacement(JPH::BodyID body) const
@@ -753,12 +759,18 @@ JPH::Vec3 JoltCpuContactPublication::CoupledDisplacement(JPH::BodyID body) const
     return fixed.scene.System().GetCoupledDisplacement(*fixed.context, body);
 }
 
-void JoltCpuContactPublication::AdvanceCoupledIntegration(
-    const std::vector<JPH::PhysicsSystem::CoupledContinuousUpdate> &updates)
+void JoltCpuContactPublication::AdvanceCoupledSweep(float fraction, float remaining,
+                                                    const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses)
 {
     auto &fixed = *m_coupled;
-    const auto result = fixed.scene.System().AdvanceCoupledIntegrationUpdate(*fixed.context, updates.data(),
-                                                                             static_cast<uint32_t>(updates.size()));
+    fixed.scene.System().AdvanceCoupledSweep(*fixed.context, fraction, remaining, impulses.data(),
+                                             static_cast<uint32_t>(impulses.size()));
+}
+
+void JoltCpuContactPublication::AdvanceCoupledIntegration()
+{
+    auto &fixed = *m_coupled;
+    const auto result = fixed.scene.System().AdvanceCoupledIntegrationUpdate(*fixed.context);
     AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Continuous);
 }
 
