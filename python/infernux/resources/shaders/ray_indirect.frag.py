@@ -11,7 +11,6 @@ class RayIndirect(shader.fullscreen):
     normal_tex = shader.input("gbuffer_normal", shader.Color2D)
     emission_tex = shader.input("gbuffer_emission", shader.Color2D)
     surface_tex = shader.input("gbuffer_surface", shader.UInt2D)
-    depth_tex = shader.input("depth", shader.Depth2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
     tail_cache = shader.input("ray_tail_read", shader.Buffer[shader.uvec4])
     primary = shader.input("ray_primary_surface", shader.UInt2D)
@@ -29,17 +28,17 @@ class RayIndirect(shader.fullscreen):
             pixel = ray_grid_pixel(pixel, extent, full)
             full_pixel = shader.vec2(pixel) + shader.vec2(0.5)
             uv = full_pixel / shader.vec2(full)
-        depth = shader.load(self.depth_tex, pixel, 0)
+        primary = shader.load(self.primary, pixel, 0)
+        if primary.x == 0:
+            return shader.uvec4(0)
+        depth = shader.as_float(primary.y)
         packed = shader.load(self.surface_tex, pixel, 0)
         base = shader.load(self.albedo_tex, pixel, 0)
         frame = shader.load(self.normal_tex, pixel, 0)
         emission = shader.load(self.emission_tex, pixel, 0)
-        primary = shader.load(self.primary, pixel, 0)
-        metadata = self.surface_records[packed.x * 3]
+        metadata = self.surface_records[primary.x * 3]
         surface = decode_deferred_surface(base, frame, emission, packed.y)
         context = deferred_shading_context(uv, full_pixel, depth, surface.normal_ws, metadata)
-        if depth <= 0.0 or primary.x == 0:
-            return shader.uvec4(0)
         geometric_normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
         sample = shader.ray._indirect_signal(
             surface, context, geometric_normal, self.surface_records, metadata.y, self.specular, self.temporal,

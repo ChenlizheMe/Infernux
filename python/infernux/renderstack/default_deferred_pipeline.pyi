@@ -6,6 +6,7 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.renderstack.ray_tracer import RayTracer, RayTracingQuality as RayTracingQuality
 
 if TYPE_CHECKING:
     from infernux.rendergraph.graph import RenderGraph
@@ -24,12 +25,11 @@ class DefaultDeferredPipeline(RenderPipeline):
 
     GBuffer layout::
 
-        Slot 0 — Base Color         (RGBA16_SFLOAT)
-        Slot 1 — World Normals      (RGBA16_SFLOAT)
-        Slot 2 — Material Params    (RGBA8_UNORM)
-        Slot 3 — Emission           (RGBA16_SFLOAT)
-        Slot 4 — Object Metadata    (RGBA32_UINT: layer, model, receive shadows, reserved)
-        Depth  — Scene depth        (D32_SFLOAT)
+        Slot 0 — Base color and metallic (RGBA16_SFLOAT)
+        Slot 1 — Octahedral normal, roughness and ambient occlusion (RGBA16_SFLOAT)
+        Slot 2 — Emission and specular strength (RGBA16_SFLOAT)
+        Slot 3 — Surface ID and packed model parameters (RG32_UINT)
+        Depth  — Scene depth (D32_SFLOAT)
 
     Injection points:
 
@@ -49,5 +49,12 @@ class DefaultDeferredPipeline(RenderPipeline):
 
     name: str
     shadow_resolution: int
+    ray_diffuse: bool
+    ray_specular: bool
+    ray_transparency: bool
+    ray_quality: RayTracingQuality
+    ray_tracer: RayTracer
+
+    def __init__(self, ray_tracer: RayTracer | None = None) -> None: ...
 
     def define_topology(self, graph: RenderGraph) -> None: ...

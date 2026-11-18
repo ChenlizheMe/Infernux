@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_shading_context
-from infernux.shader.lib.ray_signal import resolve_ray_specular, resolve_reduced_ray, unpack_ray_signal
+from infernux.shader.lib.ray_signal import resolve_ray_diffuse, resolve_ray_specular
 
 
 class DeferredRayLighting(shader.fullscreen):
@@ -22,23 +22,20 @@ class DeferredRayLighting(shader.fullscreen):
         pixel = shader.ivec2(ctx.position.xy)
         depth = shader.load(self.depth_tex, pixel, 0)
         packed = shader.load(self.surface_tex, pixel, 0)
+        if depth <= 0.0 or packed.x == 0:
+            return shader.vec4(0.0)
+        metadata = self.surface_records[packed.x * 3]
+        if metadata.y == 0:
+            return shader.vec4(0.0)
         base = shader.load(self.albedo_tex, pixel, 0)
         frame = shader.load(self.normal_tex, pixel, 0)
         emission = shader.load(self.emission_tex, pixel, 0)
-        metadata = self.surface_records[packed.x * 3]
         surface = decode_deferred_surface(base, frame, emission, packed.y)
         context = deferred_shading_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata)
-        if depth <= 0.0 or packed.x == 0 or metadata.y == 0:
-            return shader.vec4(0.0)
         diffuse = shader.vec4(0.0)
         if self.diffuse_enabled:
-            full = shader.ivec2(shader.dimensions(self.primary_tex, 0))
-            extent = shader.ivec2(shader.dimensions(self.ray_diffuse, 0))
-            if shader.any(full != extent):
-                diffuse = resolve_reduced_ray(self.ray_diffuse, self.primary_tex, self.normal_tex, pixel, full,
-                                              extent, packed.x, depth, surface.normal_ws, frame.z)
-            else:
-                diffuse = unpack_ray_signal(shader.load(self.ray_diffuse, pixel, 0))
+            diffuse = resolve_ray_diffuse(self.ray_diffuse, self.primary_tex, self.normal_tex, pixel, packed.x,
+                                          depth, surface.normal_ws, frame.z)
         specular = shader.vec4(0.0)
         if self.specular_enabled:
             specular = resolve_ray_specular(self.ray_specular, self.primary_tex, self.normal_tex, pixel, packed.x,

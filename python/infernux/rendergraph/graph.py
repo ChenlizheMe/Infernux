@@ -1108,7 +1108,7 @@ class RenderGraph:
     def needs_geometry_buffer(self, semantic: str) -> bool:
         return str(semantic or "").strip().lower() in self._geometry_buffer_requirements
 
-    def publish_pass_result(self, source: str, buffers, *, materialize=None):
+    def publish_pass_result(self, source: str, buffers, *, materialize=None, providers=None):
         """Publish the named buffers available after one stage or pass."""
         from infernux.renderstack.pass_result import PassResult
 
@@ -1138,6 +1138,7 @@ class RenderGraph:
             buffers=buffers,
             _materialize=materialize,
             _owner_graph=self,
+            _providers=providers or {},
         )
         self._pass_results[source_name] = result
         return result
@@ -1156,6 +1157,7 @@ class RenderGraph:
             source,
             merged,
             materialize=parent._materialize,
+            providers={name: (lambda name=name: parent.sample(name)) for name in parent._providers},
         )
 
     def write_buffer(self, source: str, parent, name: str, texture):

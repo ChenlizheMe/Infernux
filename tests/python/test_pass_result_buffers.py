@@ -8,6 +8,7 @@ from infernux.renderstack.geometry_buffers import (
     geometry_buffer,
 )
 from infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.renderstack import DefaultRayTracer, RayTracer, RayTracingContext
 from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline, RayTracingQuality
@@ -211,8 +212,8 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
     graph.build()
 
     passes = {render_pass.name: render_pass for render_pass in graph._passes}
-    result = graph.get_pass_result("ray_indirect")
-    reconstructed = graph.get_pass_result("ray_reconstructed")
+    result = graph.get_pass_result("ray/raw")
+    reconstructed = graph.get_pass_result("ray/denoised")
     lighting = passes["DeferredLightingPass"]
     if not (diffuse or specular):
         assert result is None
@@ -223,65 +224,117 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
 
     assert lighting._shader_name == "infernux/internal/deferred_ray_lighting"
     assert lighting._parameters == {"diffuse_enabled": diffuse, "specular_enabled": specular}
-    assert lighting._input_bindings["primary_tex"] == result.sample("ray_primary_surface").name
-    assert result.sample("ray_primary_surface").size_divisor == 0
-    for enabled, name, label, resolve, divisor in (
-        (diffuse, "ray_diffuse", "Ray Diffuse Irradiance", "Ray Diffuse Reconstruction", diffuse_divisor),
-        (specular, "ray_specular", "Ray Specular Radiance", "Ray Specular Reconstruction", 0),
+    primary = graph.get_pass_result("gbuffer").sample("ray_primary_surface")
+    assert lighting._input_bindings["primary_tex"] == primary.name and primary.size_divisor == 0
+    assert not any(name.startswith(("Decode ", "Resolve ")) for name in passes)
+    for enabled, name, semantic, label, resolve, divisor in (
+        (diffuse, "ray_diffuse", "diffuse_irradiance", "Ray Diffuse Irradiance", "Ray Diffuse Reconstruction", diffuse_divisor),
+        (specular, "ray_specular", "specular_radiance", "Ray Specular Radiance", "Ray Specular Reconstruction", 0),
     ):
-        assert result.has(name) == (label in passes) == enabled
+        assert result.has(semantic) == reconstructed.has(semantic) == (label in passes) == enabled
         if enabled:
             trace = passes[label]
-            assert trace._input_bindings["primary"] == result.sample("ray_primary_surface").name
+            assert trace._input_bindings["primary"] == primary.name
             assert trace._input_bindings["world_ray_meshes"] == graph.get_buffer("world_ray_meshes").name
             packet = graph.get_texture(trace._write_colors[0])
             assert packet.format == Format.RGBA32_UINT and packet.size_divisor == divisor
             assert trace._parameters["resolution_divisor"] == (divisor or 1)
-            assert result.sample(name).size_divisor == divisor
-            assert reconstructed.sample(name).size_divisor == divisor
+            raw, resolved = result.sample(semantic), reconstructed.sample(semantic)
+            assert raw.size_divisor == divisor and resolved.size_divisor == 0
+            assert raw.format == resolved.format == Format.RGBA32_SFLOAT
+            assert result.sample(semantic) is raw and reconstructed.sample(semantic) is resolved
             assert passes[resolve]._input_bindings["signal"] == trace._write_colors[0]
             previous = graph.get_texture(passes[resolve]._input_bindings["previous_signal"])
             assert previous.size_divisor == divisor
-            assert passes[f"Decode {name} diagnostic"]._write_colors == {0: result.sample(name).name}
-            assert lighting._input_bindings[name] == reconstructed.sample(name).name
             if name == "ray_diffuse":
                 filtered = passes[resolve]._write_colors[0]
-                assert (previous.name, filtered) == ("_ray_diffuse/read", "_ray_diffuse/write")
+                assert (previous.name, filtered) == ("ray/diffuse/read", "ray/diffuse/write")
                 for stride in ((1,) if divisor == 4 else (1, 2)):
                     spatial = passes[f"Ray Diffuse Spatial {stride}"]
                     assert spatial._input_bindings["signal"] == filtered
                     filtered = spatial._write_colors[0]
                 assert lighting._input_bindings[name] == filtered
-
-
-def test_deferred_thin_sheet_preserves_background_and_partitions_transparency():
-    graph = RenderGraph("Deferred thin sheets")
-    pipeline = DefaultDeferredPipeline()
-    pipeline.ray_transparency = True
-    pipeline.define_topology(graph)
     graph.build()
 
-    passes = {render_pass.name: render_pass for render_pass in graph._passes}
-    capture = passes["Thin Surface Capture"]
-    before = passes["Transparent Behind Thin Surface"]
-    after = passes["Transparent In Front Of Thin Surface"]
-    compose = passes["Thin Surface Composite"]
-    saved = passes["Thin Surface Background"]
-    layer = graph.get_texture("_ray_thin_layer")
-    assert layer.format == Format.RGBA32_UINT
-    assert capture._write_colors == {0: layer.name, 1: "_ray_thin_optics"}
-    assert capture._material_filter == "thin_sheet"
-    assert capture._clear_depth is None
-    assert passes["Thin Surface Depth"]._destination_resource == capture._write_depth
-    assert before._material_filter == after._material_filter == "ordinary_transparent"
-    assert before._input_bindings["transparent_layer"] == after._input_bindings["transparent_layer"] == layer.name
-    assert before._write_depth == after._write_depth == ""
-    assert saved._input_bindings["source_tex"] == "color"
-    assert compose._input_bindings["background"] == saved._write_colors[0] != compose._write_colors[0]
-    order = list(passes)
-    assert order.index(capture.name) < order.index(before.name) < order.index(saved.name)
-    assert order.index(saved.name) < order.index(compose.name) < order.index(after.name)
-    assert "TransparentPass" not in passes
+
+def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently():
+    class CustomMirror(DefaultRayTracer):
+        def reconstruct_specular(self, ctx, raw, guides):
+            # Replace just the specular denoiser with the raw outgoing radiance.
+            return raw.radiance
+
+    pipeline = DefaultDeferredPipeline(CustomMirror())
+    pipeline.ray_diffuse = pipeline.ray_specular = True
+    graph = RenderGraph("custom mirror")
+    pipeline.define_topology(graph)
+    graph.build()
+    passes = {p.name: p for p in graph._passes}
+    assert "Ray Diffuse Reconstruction" in passes and "Ray Specular Reconstruction" not in passes
+    assert passes["DeferredLightingPass"]._shader_name == "infernux/internal/deferred_linear_lighting"
+    assert passes["DeferredLightingPass"]._parameters == {"diffuse_mode": 2, "specular_mode": 1}
+    assert "Resolve diffuse_irradiance" not in passes
+    assert passes["DeferredLightingPass"]._input_bindings["specular_radiance"] == graph.get_pass_result("ray/raw").sample("specular_radiance").name
+
+    def scene_image(self, ctx):
+        hdr = ctx.graph.create_texture("project/hdr", format=Format.RGBA16_SFLOAT)
+        p = ctx.graph.add_pass("project renderer")
+        p.write_color(hdr)
+        p.set_clear(color=(0.25, 0.5, 0.75, 1))
+        return ctx.publish(scene_color=hdr)
+
+    for base in (RayTracer, DefaultRayTracer):
+        pipeline.ray_tracer = type("ProjectRenderer", (base,), {"build": scene_image})()
+        pipeline.ray_transparency = True
+        graph = RenderGraph("whole scene")
+        pipeline.define_topology(graph)
+        graph.build()
+        assert graph.get_buffer("world_ray_geometry") is None
+        assert not any(t.temporal_key for t in graph._textures)
+        names = {p.name for p in graph._passes}
+        assert {"project renderer", "Ray Scene Color", "TransparentPass"} <= names
+        assert not {"DeferredLightingPass", "SkyboxPass", "Thin Surface Capture", "Ray Tail Estimate"} & names
+
+
+@pytest.mark.parametrize("own_guides", [False, True])
+def test_custom_geometry_reuses_registered_surfaces_for_both_lobes(own_guides):
+    graph = RenderGraph("Studio")
+    ctx = RayTracingContext(graph, name="studio")
+    hdr = graph.create_texture("project/camera", camera_target=True)
+    layout = {"base_color": Format.RGBA16_SFLOAT, "surface": Format.RG32_UINT,
+              "emission": Format.RGBA16_SFLOAT, "depth": Format.D32_SFLOAT}
+    inputs = {key: graph.create_texture(f"project/{key}", format=fmt) for key, fmt in layout.items()}
+    inputs["surface_records"] = ctx.world.surface_records
+    normal = graph.create_texture("project/normals", format=Format.RGBA16_SFLOAT)
+    if own_guides:
+        previous, current = ctx.view.history("primary", format=Format.RGBA32_UINT)
+        inputs.update(ray_previous_primary_surface=previous, ray_primary_surface=current,
+                      ray_surface_motion=graph.create_texture("project/motion", format=Format.RGBA32_UINT))
+
+    class StudioPipeline(RenderPipeline):
+        @geometry_buffer("surface_frame")
+        def normals(self, provider):
+            return normal
+
+    surface = StudioPipeline().geometry_stage(graph, "studio_meshes", buffers=inputs, queue_range=(0, 2500))
+    ctx.geometry = ctx.surface = surface
+    frame = DefaultRayTracer().build(ctx)
+    ctx.shade_deferred(frame, hdr)
+    passes = {p.name: p for p in graph._passes}
+    primary = surface.sample("ray_primary_surface")
+    for name in ("Ray Diffuse Irradiance", "Ray Specular Radiance"):
+        assert passes[name]._input_bindings["primary"] == primary.name
+        assert passes[name]._input_bindings["normal_tex"] == normal.name
+    assert passes["DeferredLightingPass"]._input_bindings["surface_tex"] == inputs["surface"].name
+    assert len([name for name in passes if "Ray Surface Replay" in name]) == int(not own_guides)
+    assert len([name for name in passes if "Ray Surface Witness" in name]) == int(not own_guides)
+    assert not any("Record Ray Primary" in name or name.startswith("Resolve ") for name in passes)
+    if own_guides:
+        assert primary is current
+        assert passes["Ray Specular Reconstruction"]._input_bindings["previous_primary"] == previous.name
+    else:
+        assert surface.sample("ray_surface_depth").name == passes["studio_meshes/Ray Surface Replay"]._write_depth
+        assert primary.temporal_key == surface.sample("ray_previous_primary_surface").temporal_key
+    assert sum(p.name == "studio_meshes/Ray Surface Replay" for p in graph._passes) == int(not own_guides)
 
 
 @pytest.mark.parametrize("pipeline_type", [DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline])
@@ -374,6 +427,7 @@ def test_deferred_thin_sheet_preserves_background_and_partitions_transparency():
     capture = passes["Thin Surface Capture"]
     assert capture._material_pass == "thin_surface"
     assert capture._material_filter == "thin_sheet"
+    assert capture._write_colors == {0: layer.name, 1: optics.name}
     assert capture._clear_depth is None
     assert capture._write_depth == "_ray_thin_depth"
     for phase, label in (
@@ -388,6 +442,9 @@ def test_deferred_thin_sheet_preserves_background_and_partitions_transparency():
     background = passes["Thin Surface Background"]
     assert background._input_bindings["source_tex"] == "color"
     assert background._write_colors == {0: "_ray_thin_background"}
+    assert passes["Thin Surface Depth"]._destination_resource == capture._write_depth
+    compose = passes["Thin Surface Composite"]
+    assert compose._input_bindings["background"] == background._write_colors[0] != compose._write_colors[0]
     names = list(passes)
     assert names.index("Thin Surface Capture") < names.index("Transparent Behind Thin Surface")
     assert names.index("Transparent Behind Thin Surface") < names.index("Thin Surface Background")

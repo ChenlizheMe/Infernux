@@ -15,6 +15,11 @@ from infernux.renderstack.render_stack_pipeline import RenderStackPipeline as Re
 from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline as DefaultForwardPipeline
 from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline as DefaultForwardPlusPipeline
 from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline as DefaultDeferredPipeline
+from infernux.renderstack.default_ray_tracer import DefaultRayTracer as DefaultRayTracer, RaySurfaceGuides as RaySurfaceGuides
+from infernux.renderstack.ray_tracer import (
+    RayTracer as RayTracer, RayTracingContext as RayTracingContext, RayTracingQuality as RayTracingQuality,
+    RayTracingResult as RayTracingResult, RayTracingSignal as RayTracingSignal,
+)
 from infernux.renderstack.injection_point import InjectionPoint as InjectionPoint
 from infernux.renderstack.effect_stage import EffectStage as EffectStage
 from infernux.renderstack.effect_stage import EffectScope as EffectScope
@@ -78,6 +83,13 @@ __all__ = [
     "DefaultForwardPipeline",
     "DefaultForwardPlusPipeline",
     "DefaultDeferredPipeline",
+    "RayTracer",
+    "DefaultRayTracer",
+    "RayTracingContext",
+    "RayTracingQuality",
+    "RayTracingResult",
+    "RayTracingSignal",
+    "RaySurfaceGuides",
     "InjectionPoint",
     "EffectStage",
     "EffectScope",

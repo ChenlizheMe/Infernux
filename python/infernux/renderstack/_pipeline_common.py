@@ -111,14 +111,36 @@ def write_deferred_gbuffer(render_pass: RenderPassBuilder, buffers: Mapping[str,
         render_pass.write_color(buffers[semantic], slot=slot)
 
 
+def bind_deferred_material(
+    render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle | BufferHandle],
+) -> None:
+    render_pass.set_textures({port: buffers[semantic] for semantic, _, port in _GBUFFER_ATTACHMENTS})
+    render_pass.set_buffer(SURFACE_RECORDS_BUFFER, buffers[SURFACE_RECORDS_BUFFER])
+
+
 def bind_deferred_surface(
     render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle | BufferHandle],
 ) -> None:
-    render_pass.set_textures({
-        **{port: buffers[semantic] for semantic, _, port in _GBUFFER_ATTACHMENTS},
-        "depth_tex": buffers[DEPTH_TEXTURE],
-    })
-    render_pass.set_buffer(SURFACE_RECORDS_BUFFER, buffers[SURFACE_RECORDS_BUFFER])
+    bind_deferred_material(render_pass, buffers)
+    render_pass.set_texture("depth_tex", buffers[DEPTH_TEXTURE])
+
+
+def deferred_surface_inputs(surface):
+    """Request each material input from the author's geometry stage before its consumer."""
+    return {key: surface.sample(key) for key in (
+        *(semantic for semantic, _, _ in _GBUFFER_ATTACHMENTS), DEPTH_TEXTURE, SURFACE_RECORDS_BUFFER,
+    )}
+
+
+def draw_deferred_geometry(render_pass, depth, queue_range, sort_mode, material_pass):
+    render_pass.write_depth(depth)
+    render_pass.set_clear(color=DEFERRED_GBUFFER_CLEAR_COLOR, depth=0.0)
+    render_pass.draw_renderers(
+        queue_range=queue_range,
+        sort_mode=sort_mode,
+        material_pass=material_pass,
+        material_filter="deferred_compatible",
+    )
 
 
 def draw_deferred_lighting(

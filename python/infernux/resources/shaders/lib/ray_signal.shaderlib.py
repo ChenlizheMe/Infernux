@@ -151,3 +151,13 @@ def resolve_ray_specular(signal: shader.UInt2D, primary: shader.UInt2D, frame: s
         radiance += weight * estimate.rgb
         total += weight
     return shader.vec4(radiance / total, center.a)
+
+
+def resolve_ray_diffuse(signal: shader.UInt2D, primary: shader.UInt2D, frame: shader.Color2D,
+                        pixel: shader.ivec2, surface_id: shader.uint, depth: float,
+                        normal: shader.vec3, roughness: float) -> shader.vec4:
+    full = shader.ivec2(shader.dimensions(primary, 0))
+    extent = shader.ivec2(shader.dimensions(signal, 0))
+    if shader.any(full != extent):
+        return resolve_reduced_ray(signal, primary, frame, pixel, full, extent, surface_id, depth, normal, roughness)
+    return unpack_ray_signal(shader.load(signal, pixel, 0))

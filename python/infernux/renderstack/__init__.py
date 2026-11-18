@@ -100,7 +100,13 @@ _PIPELINE_EXPORTS = {
     "DefaultForwardPipeline": "default_forward_pipeline",
     "DefaultForwardPlusPipeline": "default_forward_plus_pipeline",
     "DefaultDeferredPipeline": "default_deferred_pipeline",
-    "RayTracingQuality": "default_deferred_pipeline",
+    "RayTracer": "ray_tracer",
+    "DefaultRayTracer": "default_ray_tracer",
+    "RayTracingContext": "ray_tracer",
+    "RayTracingResult": "ray_tracer",
+    "RayTracingSignal": "ray_tracer",
+    "RayTracingQuality": "ray_tracer",
+    "RaySurfaceGuides": "default_ray_tracer",
 }
 
 
@@ -135,6 +141,12 @@ __all__ = [
     "DefaultForwardPipeline",
     "DefaultForwardPlusPipeline",
     "DefaultDeferredPipeline",
+    "RayTracer",
+    "DefaultRayTracer",
+    "RayTracingContext",
+    "RayTracingResult",
+    "RayTracingSignal",
+    "RaySurfaceGuides",
     "RayTracingQuality",
     # Injection points
     "InjectionPoint",

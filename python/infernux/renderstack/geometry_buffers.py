@@ -93,6 +93,7 @@ class GeometryBufferProviderContext:
         msaa_samples: int,
         sort_mode: str,
         clear: bool,
+        publish_resource=None,
     ) -> None:
         self.pipeline = pipeline
         self.graph = graph
@@ -102,6 +103,7 @@ class GeometryBufferProviderContext:
         self.msaa_samples = int(msaa_samples)
         self.sort_mode = str(sort_mode)
         self.clear = bool(clear)
+        self._publish_resource = publish_resource
         self._buffers = {
             _semantic(name): texture
             for name, texture in dict(seed).items()
@@ -116,12 +118,19 @@ class GeometryBufferProviderContext:
         return _semantic(semantic) in self._buffers
 
     def sample(self, semantic: str):
-        return PassResult(self.source, -1, self._buffers).sample(semantic)
+        name = _semantic(semantic)
+        try:
+            return self._buffers[name]
+        except KeyError as exc:
+            raise GeometryBufferTopologyError(f"geometry source {self.source!r} does not provide {name!r}") from exc
 
     def publish(self, semantic: str, texture):
         if texture is None:
             raise ValueError("geometry buffer provider cannot publish None")
-        self._buffers[_semantic(semantic)] = texture
+        name = _semantic(semantic)
+        if self._publish_resource is not None:
+            self._publish_resource(name, texture)
+        self._buffers[name] = texture
         return texture
 
     def build(self) -> PassResult:

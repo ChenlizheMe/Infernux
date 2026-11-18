@@ -48,6 +48,7 @@ class PassResult:
         compare=False,
     )
     _owner_graph: object | None = field(default=None, repr=False, compare=False)
+    _providers: Mapping[str, Callable[[], object]] = field(default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         source = str(self.source or "").strip()
@@ -60,18 +61,23 @@ class PassResult:
             for name, texture in dict(self.buffers).items()
             if texture is not None
         }
+        self._providers = {normalize_buffer_name(name): make for name, make in self._providers.items()}
 
     def has(self, name: str | BufferHandle) -> bool:
-        return _buffer_name(name) in self.buffers
+        semantic = _buffer_name(name)
+        return semantic in self.buffers or semantic in self._providers
 
     def sample(self, name: str | BufferHandle):
         semantic = _buffer_name(name)
-        if semantic not in self.buffers and self._materialize is not None:
-            self._materialize(self, semantic)
+        if semantic not in self.buffers:
+            if semantic in self._providers:
+                self._publish_materialized(semantic, self._providers[semantic]())
+            elif self._materialize is not None:
+                self._materialize(self, semantic)
         try:
             return self.buffers[semantic]
         except KeyError as exc:
-            available = ", ".join(sorted(self.buffers)) or "none"
+            available = ", ".join(sorted(self.buffers.keys() | self._providers.keys())) or "none"
             raise RuntimeError(
                 f"pass result {self.source!r} does not provide {semantic!r}; "
                 f"available buffers: {available}"

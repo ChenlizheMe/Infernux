@@ -231,6 +231,39 @@ class RenderPipeline(SerializedFieldCollectorMixin):
             msaa_samples=context.msaa_samples,
         )
 
+    @geometry_buffer("ray_surface_motion")
+    def _provide_ray_surface_motion(self, context):
+        from infernux.renderstack.default_ray_tracer import draw_surface_replay
+
+        return draw_surface_replay(context)
+
+    @geometry_buffer("ray_surface_depth", dependencies={"ray_surface_motion"})
+    def _provide_ray_surface_depth(self, context):
+        # The standard motion producer also publishes its matching depth. Only
+        # a project supplying motion alone reaches this separate depth request.
+        from infernux.renderstack.default_ray_tracer import draw_surface_replay
+
+        draw_surface_replay(context)
+        return context.sample("ray_surface_depth")
+
+    @geometry_buffer("ray_primary_surface", dependencies={"depth", "surface", "surface_frame", "ray_surface_motion", "ray_surface_depth"})
+    def _provide_ray_primary_surface(self, context):
+        from infernux.renderstack.default_ray_tracer import provide_ray_primary_surface
+
+        return provide_ray_primary_surface(context)
+
+    @geometry_buffer("ray_previous_primary_surface")
+    def _provide_previous_ray_surface(self, context):
+        from infernux.rendergraph.graph import Format
+
+        graph = context.graph
+        previous, target = graph.create_temporal_history(f"_result/{context.source}/ray_primary", format=Format.RGBA32_UINT)
+        primary = graph.get_pass_result(context.source).sample("ray_primary_surface")
+        if primary is not target:
+            # The author may have produced the surface before temporal history was requested.
+            graph.add_copy_pass(f"{context.source}/Record Ray Primary").copy_texture(primary, target)
+        return previous
+
     def _required_geometry_buffers(
         self, graph, *, phase: GeometryStagePhase | str = GeometryStagePhase.OPAQUE,
     ) -> frozenset[str]:
@@ -273,6 +306,7 @@ class RenderPipeline(SerializedFieldCollectorMixin):
                 msaa_samples=msaa_samples,
                 sort_mode=sort_mode,
                 clear=clear,
+                publish_resource=_result._publish_materialized,
             )
             order = topological_provider_order(
                 {semantic},
@@ -282,6 +316,8 @@ class RenderPipeline(SerializedFieldCollectorMixin):
                 source=_result.source,
             )
             for spec in order:
+                if context.has(spec.semantic):
+                    continue
                 value = getattr(self, spec.method_name)(context)
                 if value is None:
                     raise GeometryBufferTopologyError(
@@ -289,7 +325,6 @@ class RenderPipeline(SerializedFieldCollectorMixin):
                         f"resource for {spec.semantic!r} in source {_result.source!r}"
                     )
                 context.publish(spec.semantic, value)
-                _result._publish_materialized(spec.semantic, value)
             return _result.sample(semantic)
 
         result = graph.publish_pass_result(

@@ -839,13 +839,28 @@ float3 inx_ray_uniform3(uint seed)
                   inx_ray_sample_hash(seed + 2u) >> 8u) * (1.0 / 16777216.0);
 }
 
+// Proposal selection only. Both lobes are evaluated with the same mixture PDF below.
+float inx_ray_diffuse_probability(InxSurfaceData surface, RayGgxMaterial material, float nov)
+{
+    const float3 luminance = float3(0.2126, 0.7152, 0.0722);
+    float diffuse = dot(saturate(surface.albedo), luminance) * (1.0 - saturate(surface.metallic));
+    float grazing = 1.0 - saturate(nov);
+    float grazing2 = grazing * grazing;
+    float glossy = lerp(dot(material.f0, luminance), material.f90, grazing2 * grazing2 * grazing) * material.strength;
+    if (diffuse == 0.0) return 0.0;
+    if (glossy == 0.0) return 1.0;
+    // Keep both proposals represented for mixed materials and coloured incident light.
+    return clamp(diffuse / (diffuse + glossy), 0.05, 0.95);
+}
+
 float3 inx_ray_secondary_weight(InxSurfaceData surface, float3 geometric, float3 outgoing, uint seed,
                                  out RayDirectionProposal proposal)
 {
     float3 normal = normalize(surface.normal_ws);
     RayGgxMaterial material = ray_lit_ggx(surface.albedo, surface.metallic, surface.smoothness,
                                           0.0, surface.specular_highlights);
-    proposal = ray_sample_continuous(inx_ray_uniform3(seed), normal, geometric, outgoing, material, 0.5);
+    float diffuse_probability = inx_ray_diffuse_probability(surface, material, dot(normal, outgoing));
+    proposal = ray_sample_continuous(inx_ray_uniform3(seed), normal, geometric, outgoing, material, diffuse_probability);
     if (!proposal.active)
         return float3(0.0);
     return inx_secondary_projected_bsdf(surface, normal, outgoing, proposal.direction) / proposal.pdf;

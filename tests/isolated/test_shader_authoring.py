@@ -142,6 +142,7 @@ class Grid(shader.frag):
     for target in definition.compile()["targets"]:
         assert {(entry["name"], entry["stage"]) for entry in target["entries"]} == {
             ("vertex_main", "vertex"), ("fragment_main", "fragment"),
+            ("fragment_transparent_behind", "fragment"), ("fragment_transparent_front", "fragment"),
         }
         locations = {(resource["set"], resource["binding"]): resource for resource in target["resources"]}
         assert {(0, 0), (1, 5), (2, 1), (2, 2), (2, 3)} <= locations.keys()
@@ -421,12 +422,14 @@ def test_depth_and_integer_ports_keep_their_value_types_and_reject_filtered_ids(
 class ReadBuffers(shader.fullscreen):
     depth = shader.input("depth", shader.Depth2D)
     identity = shader.input("object", shader.UInt2D)
+    radiance = shader.input("radiance", shader.Color2D)
+    color = shader.input("color", shader.Color2D)
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
         pixel = shader.ivec2(ctx.position.xy)
         z = shader.load(self.depth, pixel, 0)
         identity = shader.load(self.identity, pixel, 0)
         size = shader.dimensions(self.identity, 0)
-        return shader.vec4(z, float(identity.x), float(size.x), 1.0)
+        return shader.vec4(z, float(identity.x), float(size.x), 1.0) + shader.load(self.radiance, pixel, 0) + shader.sample(self.color, ctx.uv)
 '''
     for target in parse_shader(source, "场景缓冲.frag.py", "read_buffers").compile()["targets"]:
         images = {(resource["name"], resource["type"]): resource for resource in target["resources"]}
@@ -435,6 +438,8 @@ class ReadBuffers(shader.fullscreen):
         assert images["depth", 4]["sampler_type"] == 1  # Nearest sampling on every backend.
         assert images["identity", 2]["sample_type"] == 3  # Uint, never a filtered float image.
         assert ("identity", 4) not in images
+        assert images["radiance", 2]["sample_type"] == 1  # HDR32 texel loads work on baseline WebGPU.
+        assert images["color", 2]["sample_type"] == 0  # The authored sampler still filters color.
     with pytest.raises(SyntaxError, match="pixel coordinates"):
         parse_shader(source.replace("shader.load(self.identity, pixel, 0)", "shader.sample(self.identity, ctx.uv)"),
                      "场景缓冲.frag.py", "read_buffers")
@@ -528,7 +533,8 @@ def test_sky_projection_belongs_to_the_selected_vertex_asset():
         assert definition.info["depth_write"] is False
         assert definition.vertex_source == str(vertex.resolve())
         for target in definition.compile()["targets"]:
-            assert {entry["name"] for entry in target["entries"]} == {"vertex_main", "fragment_main"}
+            assert {entry["name"] for entry in target["entries"] if entry["stage"] == "vertex"} == {"vertex_main"}
+            assert "fragment_main" in {entry["name"] for entry in target["entries"]}
             camera = next(resource for resource in target["resources"] if resource["name"] == "inx_view")
             assert (camera["set"], camera["binding"]) == (1, 5)
 
@@ -586,8 +592,11 @@ class Depth(shader.{domain}):
 '''
     definition = parse_shader(source, "depth.frag.py", "depth_" + domain)
     assert "InxFragmentOutput fragment_main(" in definition.generated_source
+    expected = {"vertex_main", "fragment_main"}
+    if domain == "frag":
+        expected.update(("fragment_transparent_behind", "fragment_transparent_front"))
     for target in definition.compile()["targets"]:
-        assert {entry["name"] for entry in target["entries"]} == {"vertex_main", "fragment_main"}
+        assert {entry["name"] for entry in target["entries"]} == expected
     with pytest.raises(SyntaxError, match="FragmentOutput.depth requires float"):
         parse_shader(source.replace("depth=0.625", "depth=shader.vec2(0.5)"), "depth.frag.py", "bad_depth")
 
