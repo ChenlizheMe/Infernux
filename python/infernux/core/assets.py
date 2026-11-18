@@ -831,12 +831,24 @@ class AssetManager:
         if not result:
             if not result.database_committed:
                 cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
+            cls._report_import_failure(path, result.error)
             return result
 
         return cls._publish_import_result(
             path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
             write_scope=write_scope,
         )
+
+    @classmethod
+    def _report_import_failure(cls, path, error) -> None:
+        """Publish a failed import through the shared asset-error presenter."""
+        from infernux.engine.ui.asset_resource_preview import invalidate_resource_preview
+
+        invalidate_resource_preview(path)
+        cls._invalidate_font_ui_cache(path)
+        from infernux.engine.ui.asset_load_errors import report_asset_load_error
+
+        report_asset_load_error(path, error)
 
     @classmethod
     def _publish_import_result(cls, path, result, *, database, suppress_watcher_echo, write_scope=None):
@@ -903,18 +915,29 @@ class AssetManager:
         # first and could abort reimport (and meta rebuild) on transient IO races
         # while DocumentStore was still publishing the asset or its .meta sidecar.
         cls._suppress_meta_watcher(path)
+        registry = cls._get_registry()
+        before_version = None
+        if registry is not None and registry.is_loaded(guid):
+            before_version = registry.get_asset_residency(guid).runtime_version
         result = (asset_database.reimport_asset(path) if import_settings is None
                   else asset_database.reimport_asset(path, settings=import_settings))
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
+            cls._report_import_failure(path, result.error)
             return result
+        runtime_already_reloaded = bool(
+            before_version is not None and registry is not None
+            and registry.is_loaded(guid)
+            and registry.get_asset_residency(guid).runtime_version != before_version
+        )
 
         if "::subtex:" in path:
             path = result.path
             cls._suppress_meta_watcher(path)
         return cls._publish_reimport_result(
             path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
-            model_baseline=model_baseline, source_unchanged=import_settings is not None, **runtime,
+            model_baseline=model_baseline, source_unchanged=import_settings is not None,
+            runtime_already_reloaded=runtime_already_reloaded, **runtime,
         )
 
     @classmethod
@@ -931,7 +954,8 @@ class AssetManager:
     @classmethod
     def _publish_reimport_result(cls, path, result, *, database, suppress_watcher_echo=True,
                                  native=None, has_shader_runtime=False, previous_shader_id="",
-                                 model_baseline=(0, None), source_unchanged=False, capture_file_state=True):
+                                 model_baseline=(0, None), source_unchanged=False, capture_file_state=True,
+                                 runtime_already_reloaded=False):
         from infernux.lib import ResourceType
 
         guid = result.guid
@@ -997,7 +1021,8 @@ class AssetManager:
             # exception: their immutable volume generation is owned by the
             # loaded registry object and must advance in place on reimport.
             registry = cls._get_registry()
-            if registry and registry.is_loaded(guid) and not registry.reload_asset(guid):
+            if (registry and not runtime_already_reloaded and registry.is_loaded(guid)
+                    and not registry.reload_asset(guid)):
                 from infernux.lib import AssetMutationErrorCode
                 result.succeeded = False
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED

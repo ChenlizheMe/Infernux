@@ -107,15 +107,14 @@ class AssetLoadErrors:
 
     def report(self, path: str, error: str) -> None:
         guid = self.database.get_guid_from_path(path)
-        if not guid:
-            return
-        self.database.report_asset_load_failure(guid, error)
+        if guid:
+            self.database.report_asset_load_failure(guid, error)
         key = lexical_path_key(path)
         entry = dict(self.errors.get(key, {}))
         entry.update(guid=guid, path=path, error=error)
         self.errors[key] = entry
         if not path.casefold().endswith(".scene"):
-            self._pending[guid] = entry
+            self._pending[guid or key] = entry
         self._publish_diagnostic(entry)
 
     @staticmethod

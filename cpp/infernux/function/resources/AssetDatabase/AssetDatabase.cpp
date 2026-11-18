@@ -4557,10 +4557,11 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &requestedPath,
     const auto writeScope = PathWriteScope::BeginWrite({path, InxResourceMeta::GetMetaFilePath(path)}, parentScope);
     const auto &authorization = parentScope.IsOpen() ? parentScope : writeScope;
     std::string guid = CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath, &expectedMetadata,
-                                            authorization, textureSource);
+                                            authorization, textureSource, &result.error);
     if (guid.empty()) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
-        result.error = capture.error.empty() ? "asset metadata could not be created or loaded" : capture.error;
+        if (result.error.empty())
+            result.error = capture.error.empty() ? "asset metadata could not be created or loaded" : capture.error;
         return result;
     }
     result.guid = guid;
@@ -6569,7 +6570,8 @@ ResourceType AssetDatabase::GetResourceTypeForPath(const std::string &filePath) 
 std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                                 bool persistMetadata, const std::string &identityKey,
                                                 std::optional<AtomicFileState> *expectedMetadata,
-                                                const PathWriteScope &writeScope, TextureSourceSnapshot *textureSource)
+                                                const PathWriteScope &writeScope, TextureSourceSnapshot *textureSource,
+                                                std::string *failure)
 {
     if (filePath.empty()) {
         INXLOG_ERROR("Received empty filePath!");
@@ -6592,6 +6594,8 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     candidate.loader = loader->second;
     candidate.fallbackGuid = GetGuidFromPath(filePath);
     if (!ReadFingerprint(ToFsPath(filePath), candidate.file.source)) {
+        if (failure)
+            *failure = "Metadata preparation could not inspect source: " + filePath;
         INXLOG_ERROR("Failed to inspect source for resource registration: ", filePath);
         return "";
     }
@@ -6600,6 +6604,8 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
         PrepareMetadata(candidate, textureSource);
     }
     if (!candidate.error.empty()) {
+        if (failure)
+            *failure = "Metadata preparation failed: " + candidate.error;
         INXLOG_ERROR("Failed to prepare resource metadata: ", filePath, ": ", candidate.error);
         return "";
     }

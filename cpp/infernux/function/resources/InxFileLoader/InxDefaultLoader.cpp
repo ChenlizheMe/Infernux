@@ -1,6 +1,9 @@
 #include "InxDefaultLoader.hpp"
 #include <function/resources/AssetRegistry/AssetBytes.h>
+#include <function/resources/FontSourceValidation.h>
 #include <platform/filesystem/InxPath.h>
+#include <algorithm>
+#include <cctype>
 
 namespace infernux
 {
@@ -14,6 +17,11 @@ InxDefaultLoader::InxDefaultLoader(ResourceType resourceType) : m_resourceType(r
 
 void InxDefaultLoader::CreateMeta(AssetSource &source, InxResourceMeta &metadata) const
 {
+    auto extension = FromFsPath(ToFsPath(source.Path()).extension());
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (extension == ".ttf" || extension == ".otf")
+        ValidateFontSource(source.Bytes());
     metadata.InitFromSource(source, m_resourceType);
 }
 
