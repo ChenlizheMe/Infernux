@@ -10,6 +10,7 @@ mixins; it is the single owner of revision-aware dispatch state.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from functools import partial
 from types import FunctionType, MappingProxyType, MethodType
 import inspect
@@ -385,6 +386,7 @@ class ReloadableCallbackRef:
     python_binding: _PublishedPythonCallback | None = None
     partial_source: weakref.ReferenceType | None = None
     partial_arguments: _PartialArguments = ()
+    reload_owner: Any = None
 
     @property
     def is_direct(self) -> bool:
@@ -401,6 +403,9 @@ class ReloadableCallbackRef:
         if not callable(callback):
             raise TypeError("callback must be callable")
         original = callback
+        from infernux.engine.reload.owners import owner_for
+
+        reload_owner = owner_for(callback)
         callback, partial_arguments = _partial_callback_target(callback)
         partial_source = weakref.ref(original) if partial_arguments else None
         selected_epoch = current_runtime_epoch() if epoch is None else epoch
@@ -425,6 +430,7 @@ class ReloadableCallbackRef:
                 direct_callable=original if binding is None else None,
                 python_binding=binding,
                 execution_scope=capture_execution_scope(),
+                reload_owner=reload_owner,
                 partial_source=partial_source if binding is not None else None,
                 partial_arguments=partial_arguments if binding is not None else (),
             )
@@ -460,9 +466,12 @@ class ReloadableCallbackRef:
             execution_scope=capture_execution_scope(owner),
             partial_source=partial_source,
             partial_arguments=partial_arguments,
+            reload_owner=reload_owner,
         )
 
     def resolve(self, epoch: Optional[RuntimeRevisionEpoch] = None) -> CallbackResolution:
+        if self.reload_owner is not None and not self.reload_owner.active:
+            return CallbackResolution("owner_invalid" if self.reload_owner.closed else "owner_pending")
         if self.is_direct:
             return CallbackResolution("direct", self.direct_callable)
         if self.python_binding is not None:
@@ -521,7 +530,8 @@ class ReloadableCallbackRef:
             if state == 'paused':
                 return CallbackInvocation(self, 'owner_paused', 'callback execution scope is paused')
         try:
-            with component_execution(self.execution_scope):
+            owner = self.reload_owner
+            with (owner.enter() if owner is not None else nullcontext()), component_execution(self.execution_scope):
                 resolution.callback(*args)
         except Exception as exc:
             if propagate_exceptions:

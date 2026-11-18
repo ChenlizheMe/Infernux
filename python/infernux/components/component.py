@@ -193,10 +193,17 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         from infernux.engine.reload.owners import owner_for
         reload_owner = owner_for(type(self))
         self._reload_owner = reload_owner.child() if reload_owner is not None else None
-        if reload_owner is not None and reload_owner.coordinator is not None:
-            source = reload_owner.coordinator.graph.module_for_name(type(self).__module__)
-            if source is not None:
-                self._script_path = source.source_path
+        self._script_path = ""
+        if reload_owner is not None:
+            if reload_owner.coordinator is not None:
+                source = reload_owner.coordinator.graph.module_for_name(type(self).__module__)
+                if source is not None:
+                    self._script_path = source.source_path
+            if not self._script_path:
+                # 050 binds a source owner per published script without a
+                # coordinator; the owner still carries the canonical path.
+                paths = getattr(reload_owner, "paths", ())
+                self._script_path = next(iter(paths), "") if paths else ""
         # Generate stable component ID immediately (thread-safe)
         with InxComponent._id_lock:
             self._component_id = InxComponent._next_component_id

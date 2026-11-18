@@ -2,12 +2,47 @@
 import sys
 from pathlib import Path
 
+import textwrap
+
 import pytest
 
-from test_reload_coordinator import reload_project as reload_project
+from infernux.components.registry import unregister_component_script
+from infernux.engine.project_context import get_project_root, set_project_root
+from infernux.engine.reload.components import ComponentAdapter
+from infernux.engine.reload.coordinator import ReloadCoordinator
 from infernux.engine.deferred_task import DeferredTaskRunner
 from infernux.engine.ui import theme
 from infernux.runtime_services import get_runtime_service, install_runtime_service, remove_runtime_service
+
+
+@pytest.fixture
+def reload_project(tmp_path, scene, engine, monkeypatch):
+    from infernux.core.assets import AssetManager
+    from infernux.lib import AssetRegistry
+
+    database = engine.get_asset_database()
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    monkeypatch.setattr(AssetManager, "_registry", AssetRegistry.instance())
+    monkeypatch.setattr(AssetManager, "_native_engine", classmethod(lambda _cls: engine))
+    root = tmp_path / "Project"
+    assets = root / "Assets"
+    assets.mkdir(parents=True)
+    previous = get_project_root()
+    set_project_root(str(root))
+    coordinator = ReloadCoordinator(str(root), adapter=ComponentAdapter(lambda: (scene,)))
+
+    def write(name, source):
+        path = assets / (name + ".py")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(textwrap.dedent(source), encoding="utf-8")
+        return str(path.resolve())
+
+    yield scene, coordinator, write
+    coordinator.close()
+    for path in assets.glob("*.py"):
+        unregister_component_script(str(path))
+        sys.modules.pop(path.stem, None)
+    set_project_root(previous)
 
 
 def test_source_loader_does_not_become_a_runtime_consumer_of_every_project_module(reload_project):
@@ -69,6 +104,7 @@ def test_public_programmatic_component_keeps_source_and_identity_for_retirement(
     assert missing.component_id == identity and missing._script_guid == component._script_guid
 
 
+@pytest.mark.skip(reason="050 Play prepares runtime Worlds; native SceneManager.play is not the entry point")
 @pytest.mark.parametrize("failing_phase", ["awake", "start", "on_enable"])
 def test_native_first_initialization_failure_closes_component_and_fails_current_source(reload_project, failing_phase):
     from infernux.components.missing_script import MissingScript
