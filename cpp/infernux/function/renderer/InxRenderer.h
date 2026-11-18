@@ -345,7 +345,7 @@ class InxRenderer
     InxAppMetadata GetAppMetadata();
     InxAppMetadata GetRendererMetadata();
 
-    void Init(int width, int height, InxAppMetadata appMetaData);
+    void Init(int width, int height, InxAppMetadata appMetaData, const std::string &pipelineCacheDirectory = {});
     void PreparePipeline();
     RenderFrameResult DrawFrame(bool pace);
     [[nodiscard]] bool IsDrawingFrame() const noexcept

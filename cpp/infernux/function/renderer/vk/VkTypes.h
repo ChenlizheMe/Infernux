@@ -117,6 +117,8 @@ struct DeviceConfig
     /// Headless compute still uses a graphics/compute-capable adapter, without
     /// requiring a window surface, presentation queue or rendering features.
     bool presentation = true;
+    /// Native host's writable Cache directory. Empty keeps the cache in memory.
+    std::string pipelineCacheDirectory;
     const char *appName = "Infernux App"; ///< Application name
     uint32_t appVersionMajor = 1;         ///< Application major version
     uint32_t appVersionMinor = 0;         ///< Application minor version

@@ -305,9 +305,10 @@ InxVkCoreModular::~InxVkCoreModular()
 // ============================================================================
 
 bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererMetaData, uint32_t vkWindowExtCount,
-                            const char **vkWindowExts)
+                            const char **vkWindowExts, const std::string &pipelineCacheDirectory)
 {
     vk::DeviceConfig config;
+    config.pipelineCacheDirectory = pipelineCacheDirectory;
     config.appName = appMetaData.appName ? appMetaData.appName : "Infernux App";
     config.engineName = rendererMetaData.appName ? rendererMetaData.appName : "Infernux";
     if (vkWindowExtCount == 0 || vkWindowExts == nullptr) {

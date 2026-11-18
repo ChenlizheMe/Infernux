@@ -10,6 +10,7 @@
 #include "VulkanBindlessTextureTable.h"
 #include "VulkanRhiDevice.h"
 #include <core/error/InxError.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -30,6 +31,20 @@ namespace vk
 
 namespace
 {
+std::string PipelineCachePath(const DeviceConfig &config, const VkPhysicalDeviceProperties &properties)
+{
+    if (config.pipelineCacheDirectory.empty())
+        return {};
+    std::string name = "VulkanPipelineCache-" + std::to_string(properties.vendorID) + "-" +
+                       std::to_string(properties.deviceID) + "-";
+    constexpr char hex[] = "0123456789abcdef";
+    for (const auto byte : properties.pipelineCacheUUID) {
+        name += hex[byte >> 4];
+        name += hex[byte & 15];
+    }
+    return FromFsPath(ToFsPath(config.pipelineCacheDirectory) / (name + ".bin"));
+}
+
 bool ForceBoundedDescriptors() noexcept
 {
     const char *value = std::getenv("INFERNUX_FORCE_BOUNDED_DESCRIPTORS");
@@ -390,7 +405,8 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
     }
     m_rhiDevice = std::make_unique<VulkanRhiDevice>(
         m_device, m_vmaAllocator, m_capabilities, m_queueIndices.graphicsFamily.value(),
-        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value(), m_vulkanFeatures);
+        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value(), m_vulkanFeatures,
+        PipelineCachePath(config, m_deviceProperties));
 
     INXLOG_INFO("Vulkan device context initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -458,7 +474,8 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
     }
     m_rhiDevice = std::make_unique<VulkanRhiDevice>(
         m_device, m_vmaAllocator, m_capabilities, m_queueIndices.graphicsFamily.value(),
-        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value(), m_vulkanFeatures);
+        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value(), m_vulkanFeatures,
+        PipelineCachePath(config, m_deviceProperties));
 
     INXLOG_INFO("Vulkan device initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);

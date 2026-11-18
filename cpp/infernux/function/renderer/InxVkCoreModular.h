@@ -149,7 +149,7 @@ class InxVkCoreModular
      * @param vkWindowExts Window extension names
      */
     [[nodiscard]] bool Init(InxAppMetadata appMetaData, InxAppMetadata rendererMetaData, uint32_t vkWindowExtCount,
-                            const char **vkWindowExts);
+                            const char **vkWindowExts, const std::string &pipelineCacheDirectory = {});
 
     /**
      * @brief Prepare surface for rendering

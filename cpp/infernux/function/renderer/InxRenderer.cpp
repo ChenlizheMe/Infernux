@@ -483,7 +483,7 @@ InxAppMetadata InxRenderer::GetRendererMetadata()
     return m_rendererMetadata;
 }
 
-void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData)
+void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData, const std::string &pipelineCacheDirectory)
 {
     SetAppMetadata(appMetaData);
     if (!m_vkCore) {
@@ -516,7 +516,8 @@ void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData)
         INXLOG_DEBUG("Vulkan extension: ", ext[i]);
     }
 
-    if (!m_vkCore->Init(m_appMetadata, m_rendererMetadata, extCount, const_cast<const char **>(ext))) {
+    if (!m_vkCore->Init(m_appMetadata, m_rendererMetadata, extCount, const_cast<const char **>(ext),
+                       pipelineCacheDirectory)) {
         throw std::runtime_error("Failed to initialize Vulkan instance");
     }
     if (!PumpStartupEvents())

@@ -9,6 +9,8 @@
 #include <core/log/InxLog.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/renderer/rhi/RhiUpload.h>
+#include <platform/filesystem/AtomicFile.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <algorithm>
 #include <array>
@@ -17,7 +19,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <mutex>
 #include <new>
 
@@ -725,12 +726,14 @@ VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
 
 VulkanRhiDevice::VulkanRhiDevice(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                                  uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
-                                 uint32_t transferQueueFamily, const vk::VulkanFeatureState &capabilityState)
+                                 uint32_t transferQueueFamily, const vk::VulkanFeatureState &capabilityState,
+                                 std::string pipelineCachePath)
     : m_deviceId(rhi::AllocateDeviceId()), m_device(device), m_allocator(allocator), m_capabilities(capabilities),
       m_graphicsQueueFamily(graphicsQueueFamily), m_computeQueueFamily(computeQueueFamily),
       m_transferQueueFamily(transferQueueFamily), m_capabilityState(capabilityState),
       m_descriptorManager(device, m_deviceId)
 {
+    m_pipelineCachePath = std::move(pipelineCachePath);
     CreatePipelineCache();
 }
 
@@ -757,7 +760,7 @@ void VulkanRhiDevice::UseSubmissionSerials(std::function<rhi::SubmissionSerial()
 
 void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                             uint32_t graphicsQueueFamily, uint32_t computeQueueFamily, uint32_t transferQueueFamily,
-                            const vk::VulkanFeatureState &capabilityState) noexcept
+                            const vk::VulkanFeatureState &capabilityState, std::string pipelineCachePath) noexcept
 {
     m_stagingPool.clear();
     m_stagingStats = {};
@@ -779,6 +782,7 @@ void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::
     m_computeQueueFamily = computeQueueFamily;
     m_transferQueueFamily = transferQueueFamily;
     m_descriptorManager.Reset(device, m_deviceId);
+    m_pipelineCachePath = std::move(pipelineCachePath);
     CreatePipelineCache();
     ResetSlots(m_buffers, m_freeBuffer);
     ResetSlots(m_textures, m_freeTexture);
@@ -795,26 +799,22 @@ void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::
 void VulkanRhiDevice::CreatePipelineCache() noexcept
 {
     m_pipelineCache = VK_NULL_HANDLE;
-    m_pipelineCachePath.clear();
     if (m_device == VK_NULL_HANDLE)
         return;
 
-    const char *root = std::getenv("_INFERNUX_PLAYER_PERSISTENT_DATA_ROOT");
     std::vector<char> initialData;
-    if (root != nullptr && *root != '\0') {
+    if (!m_pipelineCachePath.empty()) {
         try {
-            const auto directory = std::filesystem::path(root) / "Cache";
-            std::filesystem::create_directories(directory);
-            m_pipelineCachePath = (directory / "VulkanPipelineCache.bin").string();
-            std::ifstream input(m_pipelineCachePath, std::ios::binary | std::ios::ate);
-            if (input) {
-                const auto size = input.tellg();
+            const auto path = ToFsPath(m_pipelineCachePath);
+            std::filesystem::create_directories(path.parent_path());
+            if (std::filesystem::exists(path)) {
+                // Retain one file object while another process replaces its
+                // name. Windows readers must also share delete access.
+                FileInput input(path, FileInput::Sharing::Snapshot);
+                const auto size = input.Size();
                 if (size > 0) {
                     initialData.resize(static_cast<size_t>(size));
-                    input.seekg(0);
-                    input.read(initialData.data(), static_cast<std::streamsize>(size));
-                    if (!input)
-                        initialData.clear();
+                    input.Read(initialData.data(), initialData.size());
                 }
             }
         } catch (const std::exception &error) {
@@ -854,16 +854,12 @@ void VulkanRhiDevice::SaveAndDestroyPipelineCache() noexcept
             if (vkGetPipelineCacheData(m_device, m_pipelineCache, &size, nullptr) == VK_SUCCESS && size > 0) {
                 std::vector<char> data(size);
                 if (vkGetPipelineCacheData(m_device, m_pipelineCache, &size, data.data()) == VK_SUCCESS) {
-                    const auto temporary = m_pipelineCachePath + ".tmp";
-                    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-                    output.write(data.data(), static_cast<std::streamsize>(size));
-                    output.close();
-                    if (output) {
-                        std::filesystem::remove(m_pipelineCachePath);
-                        std::filesystem::rename(temporary, m_pipelineCachePath);
-                    } else {
-                        std::filesystem::remove(temporary);
-                    }
+                    // Each process owns an exclusive sibling temporary. Readers
+                    // see either complete cache; the last publisher wins.
+                    // Buffered output also works after runtime IO workers stop.
+                    AtomicFileWriter output(m_pipelineCachePath);
+                    output.Append(std::string_view(data.data(), size));
+                    (void)output.Publish();
                 }
             }
         } catch (const std::exception &error) {
