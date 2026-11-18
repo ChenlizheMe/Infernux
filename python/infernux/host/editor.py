@@ -1056,11 +1056,11 @@ class EditorAutomationHost:
         )
         return target
 
-    def open_scene(self, path: str) -> bool:
+    def open_scene(self, path: str, *, discard_changes: bool = False) -> bool:
         from infernux.engine.scene_manager import SceneFileManager
 
         manager = SceneFileManager.instance()
-        return bool(manager is not None and manager.open_scene(path))
+        return bool(manager is not None and manager.open_scene(path, discard_changes=discard_changes))
 
     def loaded_scenes(self) -> dict[str, object]:
         from infernux.lib import SceneManager

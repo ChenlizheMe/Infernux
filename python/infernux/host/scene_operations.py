@@ -276,7 +276,10 @@ def build_scene_operations() -> tuple[Operation, ...]:
             "Schedule a scene asset load by GUID. The returned scheduled flag confirms that loading was queued.",
             _open_scene,
             capability="scene.write",
-            input_properties={"asset_guid": {"type": "string"}},
+            input_properties={
+                "asset_guid": {"type": "string"},
+                "discard_changes": {"type": "boolean", "default": False},
+            },
             required=("asset_guid",),
             side_effects=("Replaces the active scene document.",),
             tags=("scene", "document", "open", "asset"),
@@ -580,10 +583,10 @@ def _assign_mesh(object_id: int, component_id: int, asset_guid: str, node_path=N
     return on_editor("infernux.scene.mesh.assign", edit)
 
 
-def _open_scene(asset_guid: str) -> dict[str, object]:
+def _open_scene(asset_guid: str, discard_changes: bool = False) -> dict[str, object]:
     def open_document():
         path = asset_path(asset_guid, suffix=".scene")
-        if not EditorAutomationHost.instance().open_scene(path):
+        if not EditorAutomationHost.instance().open_scene(path, discard_changes=bool(discard_changes)):
             raise OperationError("scene.open_rejected", "The scene could not be opened.")
         return {"asset_guid": asset_guid, "path": path, "scheduled": True}
 

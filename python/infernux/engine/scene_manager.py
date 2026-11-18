@@ -1015,15 +1015,23 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
     # Prefab instance refresh
     # ------------------------------------------------------------------
 
-    def open_scene(self, path: str) -> bool:
+    def open_scene(self, path: str, *, discard_changes: bool = False) -> bool:
         """Load a .scene file, replacing the current scene.
 
         If the current scene is dirty, shows a save-confirmation popup first.
+        ``discard_changes=True`` is the automation path: the popup cannot be
+        answered by a client, so the current documents are replaced directly.
         The actual load is deferred to the next frame so the scene view can
         stop rendering old 3D content first.
         """
         if not self._can_replace_scene():
             return False
+        if discard_changes:
+            self._stage_scene_navigation()
+            if self._current_scene_path:
+                self._save_camera_state(self._current_scene_path)
+            self._begin_deferred_open(resolved_path(path))
+            return True
         if self.is_prefab_mode:
             return self._request_prefab_exit(
                 on_complete=lambda: self._continue_open_scene(path),
