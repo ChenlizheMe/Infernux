@@ -153,7 +153,7 @@ struct JoltGpuContactReports::Impl
         JoltGpuContactReportResult::Frame *frame = nullptr;
         uint32_t stage = 0, first = 0, initFirst = 0;
         bool swept = false;
-        std::function<void()> done;
+        std::function<JoltGpuControlWork()> done;
         ContactReportParams params{};
         std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> ports;
         std::shared_ptr<rhi::ComputeBuffer> uniform;
@@ -168,9 +168,7 @@ struct JoltGpuContactReports::Impl
                     f.finished = true;
                     f.parameters.reset();
                 }
-                auto cb = std::move(done);
-                cb();
-                return {};
+                return done();
             }
             if (stage != 0 && !f.parameters)
                 throw std::logic_error("Contact velocity report lost its admitted pre-velocity parameters");
@@ -256,8 +254,17 @@ struct JoltGpuContactReports::Impl
         std::shared_ptr<Impl> impl;
         std::shared_ptr<JoltGpuContactReportResult> result;
         std::vector<JoltGpuContactReportResult::Frame *> frames;
+        std::function<void()> done;
         size_t next = 0;
         uint32_t prefixFirst = 0;
+        void RetireFrame()
+        {
+            auto &frame = *frames[next++];
+            frame.interest.reset();
+            frame.indices.reset();
+            frame.words.reset();
+            prefixFirst = 0;
+        }
         JoltGpuControlWork Prefix()
         {
             auto &frame = *frames[next];
@@ -274,8 +281,7 @@ struct JoltGpuContactReports::Impl
                         s->prefixFirst += static_cast<uint32_t>(count);
                         if (s->prefixFirst < v.size())
                             return s->Prefix();
-                        ++s->next;
-                        s->prefixFirst = 0;
+                        s->RetireFrame();
                         return s->Next();
                     }};
         }
@@ -284,7 +290,7 @@ struct JoltGpuContactReports::Impl
             while (next < frames.size() && !frames[next]->capacity)
                 ++next;
             if (next == frames.size()) {
-                result->complete = true;
+                done();
                 return {};
             }
             auto &f = *frames[next];
@@ -301,7 +307,7 @@ struct JoltGpuContactReports::Impl
                         if (h[1] || h[0] > frame.capacity)
                             throw std::runtime_error("GPU contact report count/status rejected");
                         if (!h[0]) {
-                            ++s->next;
+                            s->RetireFrame();
                             return s->Next();
                         }
                         frame.records.resize(h[0]);
@@ -347,10 +353,9 @@ JoltGpuContactReports::Capture JoltGpuContactReports::Prepare(std::shared_ptr<co
                 throw std::logic_error("Repeated/out-of-order contact seed");
             result->frames.push_back({substep, lease->patchCount});
         }
-        if (swept &&
-            !result->sweepFrames.emplace(substep, JoltGpuContactReportResult::Frame{substep, lease->patchCount}).second)
-            throw std::logic_error("Repeated contact sweep report");
-        auto &frame = swept ? result->sweepFrames.at(substep) : result->frames.at(substep);
+        auto &frame = swept ? result->sweepFrames[substep].emplace_back(
+                                  JoltGpuContactReportResult::Frame{substep, lease->patchCount})
+                            : result->frames.at(substep);
         if (frame.capacity != lease->patchCount ||
             (stage == JoltGpuContactReportStage::AfterVelocity && (!frame.seeded || frame.finished)))
             throw std::logic_error("Contact phase lease mismatch");
@@ -361,7 +366,20 @@ JoltGpuContactReports::Capture JoltGpuContactReports::Prepare(std::shared_ptr<co
         job->frame = &frame;
         job->swept = swept;
         job->stage = stage == JoltGpuContactReportStage::AfterVelocity ? 1 : 0;
-        job->done = std::move(done);
+        job->done = [impl, result, swept, frame = &frame, done = std::move(done)]() mutable -> JoltGpuControlWork {
+            if (!swept) {
+                done();
+                return {};
+            }
+            // The next sweep reuses the collision workset. Keep its compact
+            // witnesses and retire the GPU capture before continuing motion.
+            auto reader = std::make_shared<Impl::Reader>();
+            reader->impl = impl;
+            reader->result = result;
+            reader->frames.push_back(frame);
+            reader->done = std::move(done);
+            return reader->Next();
+        };
         job->params = {{0, 0, frame.capacity, substep},
                        {params.selection.x, params.selection.y, params.selectedCounts.x, params.selection.z},
                        {params.selectedCounts.y, flags, uint32_t(swept), 0}};
@@ -391,12 +409,9 @@ JoltGpuContactReports::Capture JoltGpuContactReports::Prepare(std::shared_ptr<co
         auto reader = std::make_shared<Impl::Reader>();
         reader->impl = impl;
         reader->result = result;
-        for (auto &frame : result->frames) {
+        reader->done = [result] { result->complete = true; };
+        for (auto &frame : result->frames)
             reader->frames.push_back(&frame);
-            const auto swept = result->sweepFrames.find(frame.substep);
-            if (swept != result->sweepFrames.end())
-                reader->frames.push_back(&swept->second);
-        }
         return reader->Next();
     };
     return capture;

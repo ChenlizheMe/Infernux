@@ -2,6 +2,8 @@
 
 #include "JoltGpuTick.h"
 
+#include <optional>
+
 namespace infernux
 {
 
@@ -17,7 +19,9 @@ class JoltGpuNarrowphase final
     [[nodiscard]] JoltGpuControlWork Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                              FrameWorkOwner &budget, std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
-                                                   FrameWorkOwner &budget, std::function<void()> completed);
+                                                   FrameWorkOwner &budget, float remainingSeconds, bool continuing,
+                                                   bool reportImpacts,
+                                                   std::function<void(std::optional<float>)> completed);
 
   private:
     class Impl;

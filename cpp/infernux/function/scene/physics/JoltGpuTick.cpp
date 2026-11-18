@@ -356,6 +356,9 @@ class JoltGpuTick::Impl
         uint32_t islandBatchFirst = 0;
         uint32_t islandBatchLanes = 0;
         uint32_t localFirst = 0;
+        float sweepRemaining = 0.0f;
+        uint64_t sameTimeImpacts = 0;
+        bool sweepAdvanced = false;
     };
     struct StageSpan
     {
@@ -1021,18 +1024,25 @@ class JoltGpuTick::Impl
             next.phase = Phase::SweptBroadphase;
             break;
         case Phase::SweptBroadphase:
-            next.phase = inputs.GetSweepContacts()->patchCount || coupledSweep ? Phase::ResolveSweep : Phase::Integrate;
+            next.phase =
+                inputs.GetSweepContacts()->patchCount || coupledSweep ? Phase::ResolveSweep : Phase::IntegrateSwept;
             break;
         case Phase::ResolveSweep:
-            next.phase = coupledSweep                   ? Phase::ResolveCoupledSweep
-                         : control.prepareContactReport ? Phase::ReportSweep
-                                                        : Phase::IntegrateSwept;
+            if (coupledSweep) {
+                next.phase = Phase::ResolveCoupledSweep;
+                break;
+            }
+            if (next.sweepAdvanced && control.prepareContactReport) {
+                next.phase = Phase::ReportSweep;
+                break;
+            }
+            [[fallthrough]];
+        case Phase::ReportSweep:
+            next.phase =
+                next.sweepAdvanced && next.sweepRemaining > 0.0f ? Phase::BuildSweptBounds : Phase::IntegrateSwept;
             break;
         case Phase::ResolveCoupledSweep:
             next.phase = control.prepareContactReport ? Phase::ReportSweep : Phase::IntegrateSwept;
-            break;
-        case Phase::ReportSweep:
-            next.phase = Phase::IntegrateSwept;
             break;
         case Phase::Integrate:
         case Phase::IntegrateSwept:
@@ -1226,6 +1236,9 @@ class JoltGpuTick::Impl
                 return {nullptr, [this] { return PrepareSweep(); }};
             inputs.SetSweepBodies(std::move(bodies));
         }
+        stageCursor.sweepRemaining = tickParameters.gravityDt.w;
+        stageCursor.sameTimeImpacts = 0;
+        stageCursor.sweepAdvanced = false;
         NextSpan(stageCursor);
         Normalize(stageCursor);
         return {};
@@ -1831,11 +1844,23 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::ResolveSweep) {
-                SelectControlWork(narrowphase.PrepareSweeps(storage, inputs, work,
-                                                            [this] {
-                                                                NextSpan(stageCursor);
-                                                                Normalize(stageCursor);
-                                                            }),
+                SelectControlWork(narrowphase.PrepareSweeps(
+                                      storage, inputs, work, stageCursor.sweepRemaining, stageCursor.sweepAdvanced,
+                                      bool(control.prepareContactReport),
+                                      [this](std::optional<float> remaining) {
+                                          stageCursor.sweepAdvanced = remaining.has_value();
+                                          if (remaining) {
+                                              if (*remaining < stageCursor.sweepRemaining)
+                                                  stageCursor.sameTimeImpacts = 0;
+                                              else if (++stageCursor.sameTimeImpacts >
+                                                       64u + 4u * uint64_t(tickParameters.selectedCounts.x))
+                                                  throw std::runtime_error(
+                                                      "GPU continuous impacts did not settle at the current time");
+                                              stageCursor.sweepRemaining = *remaining;
+                                          }
+                                          NextSpan(stageCursor);
+                                          Normalize(stageCursor);
+                                      }),
                                   PacketKind::NumericalWork);
                 return true;
             }

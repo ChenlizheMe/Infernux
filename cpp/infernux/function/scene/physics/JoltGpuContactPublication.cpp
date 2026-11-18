@@ -149,11 +149,18 @@ void JoltGpuContactPublication::AppendFrame(uint32_t substep, State::Frame &dest
     if (!m_pending)
         return;
     const auto &report = *m_pending->report;
+    const auto &ordinary = report.frames.at(substep);
+    const auto swept = report.sweepFrames.find(substep);
+    size_t sweepRecords = 0;
+    if (swept != report.sweepFrames.end())
+        for (const auto &frame : swept->second)
+            sweepRecords += frame.records.size();
+    destination.manifolds.reserve(destination.manifolds.size() + ordinary.records.size() + sweepRecords);
+    destination.points.reserve(destination.points.size() + ordinary.records.size() * MaxPatchPoints + sweepRecords);
+    std::map<size_t, std::vector<State::Point>> extra;
     const auto append = [&](const auto &frame, std::map<State::PairKey, size_t> *existing) {
         if (frame.substep != substep || !frame.finished || !frame.seeded)
             throw std::logic_error("Contact frame sequence mismatch");
-        destination.manifolds.reserve(destination.manifolds.size() + frame.records.size());
-        destination.points.reserve(destination.points.size() + frame.records.size() * MaxPatchPoints);
         for (const auto &record : frame.records) {
             if (record.meta.w >= frame.capacity)
                 throw std::runtime_error("Contact source ordinal exceeds retained workset");
@@ -161,7 +168,7 @@ void JoltGpuContactPublication::AppendFrame(uint32_t substep, State::Frame &dest
             if (existing) {
                 const auto [found, inserted] = existing->emplace(PairKey(manifold), destination.manifolds.size());
                 if (!inserted) {
-                    auto &prior = destination.manifolds[found->second];
+                    const auto &prior = destination.manifolds[found->second];
                     auto point = destination.points.back();
                     destination.points.pop_back();
                     if (prior.a.Key() != manifold.a.Key()) {
@@ -169,13 +176,7 @@ void JoltGpuContactPublication::AppendFrame(uint32_t substep, State::Frame &dest
                         point.relativeVelocity = -point.relativeVelocity;
                         point.impulse = -point.impulse;
                     }
-                    const auto offset = destination.points.size();
-                    destination.points.reserve(offset + prior.pointCount + 1u);
-                    for (uint32_t i = 0; i < prior.pointCount; ++i)
-                        destination.points.push_back(destination.points[prior.pointOffset + i]);
-                    destination.points.push_back(point);
-                    prior.pointOffset = offset;
-                    ++prior.pointCount;
+                    extra[found->second].push_back(point);
                     continue;
                 }
             }
@@ -183,13 +184,26 @@ void JoltGpuContactPublication::AppendFrame(uint32_t substep, State::Frame &dest
         }
     };
     const auto ordinaryFirst = destination.manifolds.size();
-    append(report.frames.at(substep), nullptr);
-    if (const auto swept = report.sweepFrames.find(substep);
-        swept != report.sweepFrames.end() && !swept->second.records.empty()) {
+    append(ordinary, nullptr);
+    if (swept != report.sweepFrames.end()) {
         std::map<State::PairKey, size_t> existing;
         for (size_t i = ordinaryFirst; i < destination.manifolds.size(); ++i)
             existing.emplace(PairKey(destination.manifolds[i]), i);
-        append(swept->second, &existing);
+        for (const auto &frame : swept->second)
+            append(frame, &existing);
+    }
+    size_t joinedPoints = destination.points.size();
+    for (const auto &[index, points] : extra)
+        joinedPoints += destination.manifolds[index].pointCount + points.size();
+    destination.points.reserve(joinedPoints);
+    for (const auto &[index, points] : extra) {
+        auto &manifold = destination.manifolds[index];
+        const auto offset = destination.points.size();
+        for (uint32_t i = 0; i < manifold.pointCount; ++i)
+            destination.points.push_back(destination.points[manifold.pointOffset + i]);
+        destination.points.insert(destination.points.end(), points.begin(), points.end());
+        manifold.pointOffset = offset;
+        manifold.pointCount += static_cast<uint32_t>(points.size());
     }
 }
 
