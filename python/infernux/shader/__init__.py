@@ -348,6 +348,94 @@ class _Value:
         self.components = components
 
 
+class float(_Value):
+    """Scalar floating-point value."""
+
+
+class int(_Value):
+    """Signed scalar integer."""
+
+
+class uint(_Value):
+    """Unsigned scalar integer."""
+
+
+class bool(_Value):
+    """Scalar boolean."""
+
+
+class f32(_Value):
+    """32-bit floating-point value."""
+
+
+class i32(_Value):
+    """32-bit signed integer."""
+
+
+class u32(_Value):
+    """32-bit unsigned integer."""
+
+
+class vec2(_Value):
+    """Two floating-point components."""
+
+
+class vec3(_Value):
+    """Three floating-point components."""
+
+
+class vec4(_Value):
+    """Four floating-point components."""
+
+
+class ivec2(_Value):
+    """Two signed integer components."""
+
+
+class ivec3(_Value):
+    """Three signed integer components."""
+
+
+class ivec4(_Value):
+    """Four signed integer components."""
+
+
+class uvec2(_Value):
+    """Two unsigned integer components."""
+
+
+class uvec3(_Value):
+    """Three unsigned integer components."""
+
+
+class uvec4(_Value):
+    """Four unsigned integer components."""
+
+
+class bvec2(_Value):
+    """Two boolean components."""
+
+
+class bvec3(_Value):
+    """Three boolean components."""
+
+
+class bvec4(_Value):
+    """Four boolean components."""
+
+
+class mat2(_Value):
+    """2 by 2 floating-point matrix."""
+
+
+class mat3(_Value):
+    """3 by 3 floating-point matrix."""
+
+
+class mat4(_Value):
+    """4 by 4 floating-point matrix."""
+
+
 @dataclass(frozen=True)
 class _Parameter:
     kind: str
@@ -416,8 +504,6 @@ def _gpu_intrinsic(name):
     return intrinsic
 
 
-for _name in TYPES:
-    globals()[_name] = type(_name, (_Value,), {"__module__": __name__})
 for _name in INTRINSICS:
     globals()[_name] = _gpu_intrinsic(_name)
 for _name in ("sample", "sample_level", "sample_bias", "sample_grad", "load", "dimensions", "sample_count", "clip", "frame_time", "frame_delta_time", "view", "camera"):
