@@ -184,6 +184,6 @@ class JoltGpuQueries final
         std::vector<uint8_t> ports;
     };
     rhi::ComputeHost m_host;
-    std::array<Program, 11> m_programs;
+    std::array<Program, 12> m_programs;
 };
 } // namespace infernux

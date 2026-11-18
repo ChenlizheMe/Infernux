@@ -56,6 +56,7 @@ enum Stage : uint8_t
     InitJobs,
     AdvanceJobs,
     JobProgress,
+    ReadMotion,
     StageCount
 };
 struct ParticleExportParameters
@@ -112,7 +113,8 @@ constexpr std::array<std::string_view, StageCount> Entries{"query_evaluate",
                                                            "query_resume_casts",
                                                            "query_init_jobs",
                                                            "query_advance_jobs",
-                                                           "query_job_progress"};
+                                                           "query_job_progress",
+                                                           "query_read_motion"};
 constexpr uint32_t Bit(Port port)
 {
     return 1u << port;
@@ -133,7 +135,8 @@ constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Control),
     Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(Shapes) | Bit(States) | Bit(Candidates) |
         Bit(Control) | Bit(CastParameters) | Bit(Geometry),
-    Bit(Parameters) | Bit(Control) | Bit(Summary)};
+    Bit(Parameters) | Bit(Control) | Bit(Summary),
+    Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(States) | Bit(Control) | Bit(Hits)};
 
 uint64_t CheckedBytes(uint64_t count, uint64_t stride)
 {
@@ -353,6 +356,8 @@ rhi::ComputeBufferAccess Access(uint8_t stage, uint8_t port)
     if (stage == AdvanceJobs && (port == Candidates || port == Control))
         return rhi::ComputeBufferAccess::ReadWrite;
     if (stage == JobProgress && port == Summary)
+        return rhi::ComputeBufferAccess::Write;
+    if (stage == ReadMotion && (port == Hits || port == Control))
         return rhi::ComputeBufferAccess::Write;
     if (stage == Evaluate && (port == Candidates || port == Control))
         return rhi::ComputeBufferAccess::Write;
@@ -714,7 +719,10 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     static_assert(sizeof(QuerySpan) == sizeof(QueryRecordWord));
     static_assert(sizeof(QueryCastState) == 4 * sizeof(QueryRecordWord));
     static_assert(sizeof(QueryInput) >= sizeof(QuerySpan) + sizeof(QueryCastState));
-    const uint64_t prefixBytes = CheckedBytes(queries.size(), sizeof(QuerySpan) + sizeof(QueryCastState));
+    const bool motion = format == QueryOutputMotion;
+    const uint64_t spanBytes = CheckedBytes(queries.size(), sizeof(QuerySpan));
+    const uint64_t prefixBytes =
+        motion ? spanBytes : CheckedBytes(queries.size(), sizeof(QuerySpan) + sizeof(QueryCastState));
     const uint64_t prefixWords = prefixBytes / sizeof(UInt4);
     // Tail header4 + up to32 fixed2048-word workers coexist with all spans/CA states.
     // Fewer workers change scheduling only, never request/candidate capacity.
@@ -730,7 +738,6 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     const uint64_t controlWords = prefixWords + (generic ? 4u + uint64_t(workers) * 2048u : 0u);
     if (controlWords > UINT32_MAX)
         throw JoltGpuQueryRequestError("Jolt GPU query control exceeds device indexing");
-    const uint64_t spanBytes = CheckedBytes(queries.size(), sizeof(QuerySpan));
     result->publication = std::move(publication);
     result->numericalGeneration = numericalGeneration;
     result->queryCount = static_cast<uint32_t>(queries.size());
@@ -814,9 +821,6 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     }
     allocate(BodyIdentities, identityPrefix + pairCount64 * 2u);
     updates.push_back({buffers[BodyIdentities], 0, Bytes(identities.data(), identities.size())});
-    const QueryCastParams castParameters{{generic ? std::min(32u, castIterationQuantum) : castIterationQuantum,
-                                          bodyCount, static_cast<uint32_t>(identityPrefix), pairCount}};
-    upload(CastParameters, Bytes(&castParameters, 1));
     const QueryParams parameters{
         {result->queryCount, bodyBase, bodyCount, leafCount},
         {static_cast<uint32_t>(primitives.size()), stride, capacity, format},
@@ -831,10 +835,15 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     if (primitiveBytes)
         std::memcpy(requestData.data() + inputBytes, primitives.data(), static_cast<size_t>(primitiveBytes));
     upload(Inputs, std::move(requestData));
-    allocate(Candidates, uint64_t(capacity) * words);
+    if (!motion) {
+        const QueryCastParams castParameters{{generic ? std::min(32u, castIterationQuantum) : castIterationQuantum,
+                                              bodyCount, static_cast<uint32_t>(identityPrefix), pairCount}};
+        upload(CastParameters, Bytes(&castParameters, 1));
+        allocate(Candidates, uint64_t(capacity) * words);
+        buffers[Geometry] = result->geometry->buffer;
+    }
     allocate(Control, controlWords);
     allocate(Summary, 1);
-    buffers[Geometry] = result->geometry->buffer;
     allocate(Hits, uint64_t(capacity) * words);
     const auto dispatch = [&](uint8_t stage) {
         const auto &program = m_programs[stage];
@@ -882,10 +891,13 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         dispatch.proof = std::move(proof);
         return dispatch;
     };
-    std::vector<rhi::ComputeDispatchDesc> dispatches =
-        generic ? std::vector<rhi::ComputeDispatchDesc>{dispatch(Evaluate), dispatch(InitJobs), dispatch(AdvanceJobs),
-                                                        dispatch(JobProgress)}
-                : std::vector<rhi::ComputeDispatchDesc>{dispatch(Evaluate), dispatch(Scan), dispatch(Compact)};
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    if (motion)
+        dispatches = {dispatch(ReadMotion), dispatch(Scan)};
+    else if (generic)
+        dispatches = {dispatch(Evaluate), dispatch(InitJobs), dispatch(AdvanceJobs), dispatch(JobProgress)};
+    else
+        dispatches = {dispatch(Evaluate), dispatch(Scan), dispatch(Compact)};
     std::vector<rhi::ComputeDispatchDesc> finalize;
     if (generic)
         finalize = {dispatch(Scan), dispatch(Compact)};
