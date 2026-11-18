@@ -9,6 +9,7 @@ _UI_FONT = "Inter-VF.ttf"
 # select a variation, so the CJK merge uses the static Regular face.
 _UI_CJK_FONT = "NotoSansSC-Regular.ttf"
 _MONO_FONT = "MapleMono-CN-Regular.ttf"
+_MONO_FONT_RESOURCE = f"fonts/{_MONO_FONT}"
 
 # Default to package directory; overridden by activate_library() at launch.
 icon_path = os.path.join(_package_dir, "icons", "icon.png")
