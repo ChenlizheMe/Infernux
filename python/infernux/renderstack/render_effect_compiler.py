@@ -911,7 +911,10 @@ class CompiledEffectBinding:
                 return True, []
             pass_values = _pass_parameter_values(mappings)
         else:
-            passes, structure = self.parameter_context.record(self.source, self.feature, self.binding_id)
+            recording = self.parameter_context.record(self.source, self.feature, self.binding_id)
+            if recording is None:
+                return True, []
+            passes, structure = recording
             if structure != self.graph_structure:
                 return True, []
             pass_values = tuple(tuple(render_pass._parameters.items()) for render_pass in passes)
@@ -962,31 +965,28 @@ def _compile_effect(
     _prepare_runtime_dependencies(source)
     feature = get_render_effect_feature(source.feature_type)
     instance = feature.instantiate(source)
-    first_pass = len(graph._passes)
-    graph_lengths = tuple((items, len(items)) for items in (
-        graph._passes, graph._textures, graph._buffers,
-        graph._topology, graph._work_bindings,
-    ))
-    previous_temporal_jitter = graph._temporal_jitter
     bus_snapshot = bus.snapshot()
-    from infernux.renderstack._effect_parameter_context import EffectParameterContext, graph_structure
+    from infernux.renderstack._effect_parameter_context import EffectParameterContext, EffectGraphCheckpoint, graph_structure
+
+    scope = graph._scoped_name(f"effects/{binding_id}")
+    checkpoint = EffectGraphCheckpoint(graph, scope)
 
     get_parameters = getattr(instance, "get_pass_parameters", None)
     mappings = get_parameters() if get_parameters is not None else None
-    parameter_context = EffectParameterContext(graph, bus) if mappings is None else None
+    parameter_context = None
     try:
         with graph.name_scope(f"effects/{binding_id}"):
             instance.setup_passes(graph, bus)
-        generated = graph._passes[first_pass:]
+        generated = checkpoint.passes(graph)
         pass_values = tuple(tuple(render_pass._parameters.items()) for render_pass in generated)
         if mappings is not None and _pass_parameter_values(mappings) != pass_values:
             raise RenderEffectCompileError(f"{feature.type_id!r} pass parameters do not match setup_passes")
     except Exception:
-        for items, length in graph_lengths:
-            del items[length:]
-        graph.set_temporal_jitter(previous_temporal_jitter)
+        checkpoint.discard_mount(graph)
         bus._resources = bus_snapshot
         raise
+    if mappings is None:
+        parameter_context = EffectParameterContext(graph, bus_snapshot, checkpoint)
     structure = graph_structure(graph) if parameter_context is not None else ()
     blocks = []
     for pass_index, values in enumerate(pass_values):

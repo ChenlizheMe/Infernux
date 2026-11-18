@@ -372,6 +372,70 @@ def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_pa
     assert any(dict(update.values).get("intensity") == pytest.approx(1.5) for update in updates)
 
 
+def test_effect_replay_uses_published_lighting_and_rebuilds_for_a_new_input():
+    from infernux.components.fields import serialized_field
+    from infernux.rendergraph.graph import RenderGraph
+    from infernux.renderstack.fullscreen_effect import FullScreenEffect
+    from infernux.renderstack.ray_tracer import RayTracingSignal
+    from infernux.renderstack.render_effect_compiler import _compile_effect, register_render_effect_feature
+    from infernux.renderstack.resource_bus import ResourceBus
+
+    graph = RenderGraph("Project lighting")
+    target = graph.create_texture("color", camera_target=True)
+    bus = ResourceBus({"color": target}, graph=graph)
+    calls = []
+
+    def light(name):
+        calls.append(name)
+        image = graph.create_texture(name)
+        with graph.add_pass(name) as p:
+            p.write_color(image)
+            p.set_param("gain", 1.0)
+            p.fullscreen_quad("test/light")
+        return image
+
+    signal = RayTracingSignal(lambda: light("diffuse"))
+    graph.publish_pass_result("lighting", {}, providers={
+        "diffuse": lambda: signal.radiance, "mirror": lambda: light("mirror"),
+    })
+
+    class Tint(FullScreenEffect):
+        name = "Tint"
+        injection_point = "before_post_process"
+        default_order = 1
+        gain: float = serialized_field(default=1.0)
+
+        def setup_passes(self, graph, bus):
+            graph.injection_point("tint_input")
+            graph.effect_stage("tint_output")
+            with graph.add_pass("Tint") as p:
+                layer = "mirror" if self.gain > 2.0 else "diffuse"
+                p.set_texture("light", graph.get_pass_result("lighting").sample(layer))
+                p.set_param("gain", self.gain)
+                p.write_color(bus.require_texture("color"))
+                p.fullscreen_quad("test/tint")
+            if self.gain < 0.0:
+                raise ValueError("negative gain")
+
+    feature = "tests.post.lazy_input"
+    register_render_effect_feature(feature, Tint)
+    source = RenderEffect(RenderEffectAsset(feature, parameters={"gain": -1.0}))
+    with pytest.raises(ValueError, match="negative gain"):
+        _compile_effect(source, graph, bus, binding_id="post/tint")
+    assert not graph.has_injection_point("tint_input")
+    assert not graph.has_effect_stage("tint_output")
+    source.set_float("gain", 1.0)
+    binding = _compile_effect(source, graph, bus, binding_id="post/tint")
+    assert [p.name for p in graph.build().passes] == ["diffuse", "effects/post/tint/Tint"]
+    assert len(binding.blocks) == 1
+    source.set_float("gain", 2.0)
+    rebuild, updates = binding.collect_updates()
+    assert not rebuild and dict(updates[0].values) == {"gain": 2.0}
+    source.set_float("gain", 3.0)
+    assert binding.collect_updates() == (True, [])
+    assert calls == ["diffuse"]
+
+
 def test_failed_effect_compile_rolls_back_partial_graph_mutation():
     from infernux.renderstack.fullscreen_effect import FullScreenEffect
     from infernux.renderstack.render_effect_compiler import register_render_effect_feature
