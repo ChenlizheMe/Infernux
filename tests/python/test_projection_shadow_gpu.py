@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from infernux.lib import ConsolePanel
+from infernux.lib import ConsolePanel, SceneManager
 from tests.gpu.projection_shadow_case import ProjectionShadowCase
 
 
@@ -15,20 +15,22 @@ def test_effective_projection_shadow_pixels(engine, scene, tmp_path, path, kind)
     engine.resize_game_render_target(240, 180)
     engine.set_render_pipeline(case.pipeline)
     engine.set_game_camera_enabled(True)
-    phase, phase_execution, ticket = 0, 0, None
+    world = SceneManager.instance()._authoring_runtime_world_id
+    phase, ticket = 0, None
+    phase_sequence = engine._game_screen_status(world)['accepted_sequence']
     failures, observations = [], []
     deadline = time.monotonic() + 60
     try:
         def tick():
-            nonlocal phase, phase_execution, ticket
+            nonlocal phase, phase_sequence, ticket
             try:
                 engine.request_full_speed_frame()
                 assert time.monotonic() < deadline
                 if ticket is None:
-                    execution = engine.renderer_frame_snapshot['game_render_graph_execution_count']
+                    screen = engine._game_screen_status(world)
                     if phase == 0 and engine.pending_mesh_gpu_upload_count:
-                        phase_execution = execution
-                    elif engine.game_presentation_ready and execution > phase_execution:
+                        phase_sequence = screen['accepted_sequence']
+                    elif engine.game_presentation_ready and screen['completed_sequence'] > phase_sequence:
                         ticket = engine.request_render_target_readback(True)
                 elif ticket.done:
                     assert not ticket.error, ticket.error
@@ -38,7 +40,7 @@ def test_effective_projection_shadow_pixels(engine, scene, tmp_path, path, kind)
                         engine.exit()
                     else:
                         case.change(phase)
-                        phase_execution = engine.renderer_frame_snapshot['game_render_graph_execution_count']
+                        phase_sequence = engine._game_screen_status(world)['accepted_sequence']
                         ticket = None
             except BaseException as error:
                 failures.append(error)
@@ -99,17 +101,18 @@ def test_shadow_receiver_crossing_camera_plane_is_independent_of_tessellation(en
     engine.set_render_pipeline(case.pipeline)
     engine.set_game_camera_enabled(True)
     images, failures = [], []
-    mesh_ready_execution, ticket = None, None
+    world = SceneManager.instance()._authoring_runtime_world_id
+    mesh_ready_sequence, ticket = None, None
     deadline = time.monotonic() + 60
 
     def tick():
-        nonlocal mesh_ready_execution, ticket
+        nonlocal mesh_ready_sequence, ticket
         try:
             engine.request_full_speed_frame()
             assert time.monotonic() < deadline
             if ticket is None:
-                execution = engine.renderer_frame_snapshot['game_render_graph_execution_count']
-                if mesh_ready_execution is None:
+                screen = engine._game_screen_status(world)
+                if mesh_ready_sequence is None:
                     if engine.pending_mesh_gpu_upload_count:
                         return
                     try:
@@ -120,8 +123,8 @@ def test_shadow_receiver_crossing_camera_plane_is_independent_of_tessellation(en
                     index_bytes = 2 if info['format'] == 'uint16' else 4
                     if info['bytes'] != 6 * subdivisions ** 2 * index_bytes:
                         return
-                    mesh_ready_execution = execution
-                elif engine.game_presentation_ready and execution > mesh_ready_execution:
+                    mesh_ready_sequence = screen['accepted_sequence']
+                elif engine.game_presentation_ready and screen['completed_sequence'] > mesh_ready_sequence:
                     ticket = engine.request_render_target_readback(True)
             elif ticket.done:
                 assert not ticket.error, ticket.error
@@ -133,7 +136,7 @@ def test_shadow_receiver_crossing_camera_plane_is_independent_of_tessellation(en
                         case.light.shadows = LightShadows.NoShadows
                     else:
                         ground(30 if len(images) == 1 else 1)
-                    mesh_ready_execution, ticket = None, None
+                    mesh_ready_sequence, ticket = None, None
         except BaseException as error:
             failures.append(error)
             engine.exit()

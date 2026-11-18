@@ -1042,6 +1042,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             value["gui_recorded_sequence"] = status.guiRecordedSequence;
             value["gui_recording_count"] = status.guiRecordingCount;
             value["pending"] = status.pendingSamples;
+            value["accepted_sequence"] = status.accepted ? status.accepted->sequence : 0;
+            value["completed_sequence"] = status.completed ? status.completed->sequence : 0;
             value["allocated_slots"] = status.allocatedSlots;
             value["slot_stalls"] = status.slotStalls;
             value["consumers"] = status.consumers;
