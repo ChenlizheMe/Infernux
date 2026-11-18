@@ -31,6 +31,7 @@ _EXPORTS = {
     "PreferencesPanel": (".preferences_panel", "PreferencesPanel"),
     "HistoryPanel": (".history_panel", "HistoryPanel"),
     "PluginPanel": (".plugin_panel", "PluginPanel"),
+    "ThemePanel": (".theme_panel", "ThemePanel"),
     "InxPackageImportPanel": (".plugin_panel", "InxPackageImportPanel"),
     "EnvironmentSettingsPanel": (".environment_settings_panel", "EnvironmentSettingsPanel"),
     "ViewportInfo": (".viewport_utils", "ViewportInfo"),
