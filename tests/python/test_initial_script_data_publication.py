@@ -14,9 +14,8 @@ from infernux.engine.project_context import get_project_root, set_project_root
 
 
 @pytest.fixture
-def project(tmp_path):
+def project(tmp_path, isolated_author_data_types):
     previous_root = get_project_root()
-    previous_types = dict(serializable_object._SERIALIZABLE_REGISTRY)
     previous_components = registry.snapshot_component_registry_state()
     previous_diagnostics = _snapshot_script_diagnostics()
     names = ("initial_data_owner", "initial_data_other")
@@ -27,8 +26,6 @@ def project(tmp_path):
     try:
         yield assets
     finally:
-        serializable_object._SERIALIZABLE_REGISTRY.clear()
-        serializable_object._SERIALIZABLE_REGISTRY.update(previous_types)
         registry.restore_component_registry_state(previous_components)
         _restore_script_diagnostics(previous_diagnostics)
         for name,module in previous_modules.items():
@@ -159,7 +156,7 @@ def test_failure_after_data_publication_restores_live_owner(scene, project, monk
     from infernux.renderstack import render_effect_compiler
     path = project / "initial_data_owner.py"
     path.write_text(source("initial-test:payload"),encoding="utf-8")
-    old_type, = load_all_components_from_file(str(path),source_only=True)
+    old_type = type(load(path, "create"))
     old_module = sys.modules["initial_data_owner"]
     instance = scene.create_game_object("Retained data").add_component(old_type)
     instance.payload.health = 87
