@@ -35,6 +35,18 @@ def build_scene_operations() -> tuple[Operation, ...]:
             tags=("scene", "hierarchy", "component", "inspect"),
         ),
         operation(
+            "infernux.scene.object.resolve",
+            OperationKind.QUERY,
+            "Resolve a live object id by name or Root/Child path; use after entering Play Mode to rebind authored references.",
+            _resolve_object,
+            capability="scene.read",
+            input_properties={
+                "name": {"type": "string", "default": ""},
+                "path": {"type": "string", "default": ""},
+            },
+            tags=("scene", "object", "resolve", "runtime", "rebind"),
+        ),
+        operation(
             "infernux.scene.loaded.get",
             OperationKind.QUERY,
             "List every Scene currently resident in the editor World.",
@@ -348,6 +360,59 @@ def _hierarchy(include_mesh_data: bool = False, include_ui_layout: bool = False)
         }
 
     return on_editor("infernux.scene.hierarchy.get", read)
+
+
+def _resolve_object(name: str = "", path: str = "") -> dict[str, object]:
+    """Resolve a live object by name or ``Root/Child`` path.
+
+    Yanshi binds authored references once and must re-resolve them after
+    entering Play Mode, because Play runs a separate runtime world with new
+    object ids. This query returns the live id without mutating the world.
+    """
+    return on_editor(
+        "infernux.scene.object.resolve",
+        lambda: _resolve_object_now(str(name or ""), str(path or "")),
+    )
+
+
+def _resolve_object_now(name: str, path: str) -> dict[str, object]:
+    from infernux.lib import SceneManager
+
+    wanted_name = name.strip()
+    wanted_path = path.strip().strip("/")
+    if not wanted_name and not wanted_path:
+        raise OperationError(
+            "scene.selector_required",
+            "infernux.scene.object.resolve needs a name or a path.",
+        )
+    native = SceneManager.instance()
+    found = None
+    if wanted_path:
+        scene = active_scene()
+        candidates = [segment for segment in wanted_path.split("/") if segment]
+        roots = list(scene.get_root_objects())
+        found = next((obj for obj in roots if str(obj.name) == candidates[0]), None)
+        for segment in candidates[1:]:
+            if found is None:
+                break
+            found = next((child for child in found.get_children() if str(child.name) == segment), None)
+    else:
+        finder = getattr(native, "find_runtime_object", None)
+        if callable(finder):
+            found = finder(wanted_name)
+    if found is None:
+        return {
+            "found": False,
+            "name": wanted_name or wanted_path,
+            "object_id": 0,
+            "runtime": bool(native.is_playing()),
+        }
+    return {
+        "found": True,
+        "name": str(found.name),
+        "object_id": int(found.id),
+        "runtime": bool(native.is_playing()),
+    }
 
 
 def _loaded_scene_snapshot() -> dict[str, object]:

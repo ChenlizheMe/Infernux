@@ -79,7 +79,8 @@ def _read_clock() -> dict[str, object]:
         "sim_s": float(frame.time),
         "fixed_dt": float(native.get_fixed_time_step()),
         "playing": bool(native.is_playing()),
-        "paused": bool(play is not None and play.is_paused),
+        "paused": bool(native.is_paused()),
+        "stepping": bool(native.is_stepping()),
     }
 
 
@@ -124,21 +125,20 @@ def _step(delta_time: float | None = None, expected_tick: int | None = None) -> 
 
 
 def _request_step(delta_time: float | None, expected_tick: int | None) -> dict[str, object]:
-    from infernux.engine.play_mode import PlayModeManager
     from infernux.lib import SceneManager
 
-    play = PlayModeManager.instance()
-    if play is None or not play.is_playing:
+    native = SceneManager.instance()
+    play = _play_manager()
+    if play is None or not native.is_playing():
         raise OperationError(
             "sim.not_playing",
             "sim.step requires an active Play Mode world.",
         )
-    if not play.is_paused:
+    if not native.is_paused():
         raise OperationError(
             "sim.not_paused",
             "sim.step requires Play Mode to be paused; an unpaused world advances on its own.",
         )
-    native = SceneManager.instance()
     fixed = float(native.get_fixed_time_step())
     delta = fixed if delta_time is None else float(delta_time)
     if abs(delta - fixed) > 1e-9:
@@ -154,11 +154,9 @@ def _request_step(delta_time: float | None, expected_tick: int | None) -> dict[s
             f"Expected tick {int(expected_tick)} but the world is at {tick}.",
             details={"expected_tick": int(expected_tick), "tick": tick},
         )
-    if not play.step_fixed(delta):
-        raise OperationError(
-            "sim.step_rejected",
-            "The Play Mode step request was rejected; the world changed state before admission.",
-        )
+    # Native paused-step admission: the editor frame loop completes exactly this
+    # one step, and the caller polls sim.clock until target_tick is published.
+    native.step(delta)
     return {
         "accepted": True,
         "target_tick": tick + 1,
@@ -167,3 +165,9 @@ def _request_step(delta_time: float | None, expected_tick: int | None) -> dict[s
         "tick": tick,
         "frame": int(native._frame_time.frame_count),
     }
+
+
+def _play_manager():
+    from infernux.engine.play_mode import PlayModeManager
+
+    return PlayModeManager.instance()
