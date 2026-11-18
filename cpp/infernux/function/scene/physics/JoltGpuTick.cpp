@@ -891,11 +891,12 @@ class JoltGpuTick::Impl
         const auto &plan = inputs.GetConstraints();
         const bool localRows = plan && (plan->jointIslandCount || plan->contactIslandCount);
         const bool exchange = control.participants.Has(JoltGpuParticipantStage::Exchange, next.substep);
-        const bool velocity = tickParameters.counts.w && (localRows || exchange || control.prepareCoupledContacts);
         const bool participantCpu = control.participants.hasCpuTargets;
-        const bool coupledPositions =
+        // Discovery runs each substep. Only its actual rows or a CPU participant need a round boundary.
+        const bool coupledRows =
             control.prepareCoupledContacts && (participantCpu || !inputs.GetExternalContactBodies().empty());
-        const bool position = tickParameters.solve.x && (localRows || coupledPositions);
+        const bool velocity = tickParameters.counts.w && (localRows || exchange || coupledRows);
+        const bool position = tickParameters.solve.x && (localRows || coupledRows);
         const bool coupledSweep = inputs.NeedsCoupledSweep();
         const auto localDrift =
             storage.HasSweepBodies(selectedRow) || coupledSweep ? Phase::PrepareSweep : Phase::Integrate;
@@ -1016,7 +1017,7 @@ class JoltGpuTick::Impl
             next.phase = Phase::WarmContacts;
             break;
         case Phase::WarmContacts:
-            if (control.prepareCoupledContacts) {
+            if (coupledRows) {
                 next.phase = Phase::WarmCoupledContacts;
                 break;
             }
@@ -1028,7 +1029,7 @@ class JoltGpuTick::Impl
             next.phase = Phase::SolveVelocity;
             break;
         case Phase::SolveVelocity:
-            if (control.prepareCoupledContacts) {
+            if (coupledRows) {
                 next.phase = Phase::ExchangeCoupledContacts;
                 break;
             }
@@ -1092,7 +1093,7 @@ class JoltGpuTick::Impl
             next.phase = Phase::SolvePosition;
             break;
         case Phase::SolvePosition:
-            if (coupledPositions) {
+            if (coupledRows) {
                 next.phase = Phase::ProjectCoupledContacts;
                 break;
             }
