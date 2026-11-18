@@ -82,9 +82,10 @@ def resolve_reduced_ray(signal: shader.UInt2D, primary: shader.UInt2D, frame: sh
         depth_band = 0.005 + 0.017 * shader.min(depth, sample_depth)
         depth_weight = shader.saturate(1.0 - shader.abs(depth - sample_depth) / depth_band)
         normal_weight = shader.saturate((shader.dot(normal, sample_normal) - 0.94) / 0.06)
-        roughness_weight = shader.saturate(1.0 - shader.abs(roughness - sample_frame.z) / 0.15)
         offset = shader.vec2(pixel - source)
-        weight = depth_weight * normal_weight * roughness_weight / (1.0 + shader.dot(offset, offset))
+        # Diffuse irradiance is incident light. A roughness texture on the receiver
+        # must not discard irradiance samples from the same geometric surface.
+        weight = depth_weight * normal_weight / (1.0 + shader.dot(offset, offset))
         if weight <= 0.0:
             continue
 

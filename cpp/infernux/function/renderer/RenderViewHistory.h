@@ -35,8 +35,8 @@ inline glm::vec2 RenderViewJitterNdc(uint32_t sampleIndex, uint32_t width, uint3
         return glm::vec2(0.0f);
     // Each axis visits all eight subpixel strata. Opposite phases cancel exactly,
     // so a completed coverage cycle stays centered on the unjittered pixel.
-    static constexpr int offsets[kTemporalJitterSampleCount][2] = {
-        {-7, -1}, {3, 5}, {1, -7}, {-5, 3}, {7, 1}, {-3, -5}, {-1, 7}, {5, -3}};
+    static constexpr int offsets[kTemporalJitterSampleCount][2] = {{-7, -1}, {3, 5},   {1, -7}, {-5, 3},
+                                                                   {7, 1},   {-3, -5}, {-1, 7}, {5, -3}};
     const auto &offset = offsets[sampleIndex % kTemporalJitterSampleCount];
     return {static_cast<float>(offset[0]) / (8.0f * width), static_cast<float>(offset[1]) / (8.0f * height)};
 }
