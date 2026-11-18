@@ -119,25 +119,43 @@ struct RayCursor
     uint2 current;
 };
 
-bool ray_box_entry(TraceRay ray, RayNode node, float maximum, out float entry)
+// Precompute each axis once in the instance's coordinate system. Keep exactly
+// parallel axes explicit so rays in a slab face work the same on WGSL and SPIR-V.
+struct RayBoundsQuery
 {
-    const float rounding = 3.57628e-7f;
-    bool3 parallel = ray.direction == float3(0.0f);
-    float3 direction = select(parallel, float3(1.0f), ray.direction);
-    float3 a = (node.minimum - ray.origin) / direction;
-    float3 b = (node.maximum - ray.origin) / direction;
-    float3 low = max(min(a, b), ray.minimum);
-    float3 high = min(max(a, b), maximum);
-    bool3 outside = (ray.origin < node.minimum) | (ray.origin > node.maximum);
-    bool3 disjoint = (low > maximum) | (high < ray.minimum);
-    bool3 missed = select(parallel, outside, disjoint);
-    float3 near_distance = select(parallel, float3(ray.minimum), low - abs(low) * rounding);
-    float3 far_distance = select(parallel, float3(maximum), high + abs(high) * rounding);
-    entry = max(ray.minimum, max(near_distance.x, max(near_distance.y, near_distance.z)));
-    return !any(missed) && entry <= min(maximum, min(far_distance.x, min(far_distance.y, far_distance.z)));
+    float3 origin;
+    float minimum;
+    float3 inverse_direction;
+    bool3 parallel;
+};
+
+RayBoundsQuery ray_bounds_query(TraceRay ray)
+{
+    // Components below the binary32 normal range cannot reliably be inverted
+    // on all targets. Open those slabs conservatively and test the actual triangle.
+    bool3 invertible = abs(ray.direction) >= asfloat(0x00800000u);
+    float3 inverse = 1.0f / select(invertible, ray.direction, float3(1.0f));
+    return {ray.origin, ray.minimum, select(invertible, inverse, float3(0.0f)), ray.direction == float3(0.0f)};
 }
 
-void ray_begin<let MeshNodes : bool, let Dynamic : bool>(uint nodes, out RayCursor cursor, TraceRay ray, uint root, float maximum)
+bool ray_box_entry(RayBoundsQuery ray, RayNode node, float maximum, out float entry)
+{
+    const float rounding = 3.57628e-7f;
+    float3 a = (node.minimum - ray.origin) * ray.inverse_direction;
+    float3 b = (node.maximum - ray.origin) * ray.inverse_direction;
+    bool3 open_slab = ray.inverse_direction == float3(0.0f);
+    float3 low = select(open_slab, float3(ray.minimum), min(a, b));
+    float3 high = select(open_slab, float3(maximum), max(a, b));
+    float near_distance = max(ray.minimum, max(low.x, max(low.y, low.z)));
+    float far_distance = min(maximum, min(high.x, min(high.y, high.z)));
+    entry = max(ray.minimum, near_distance * (near_distance < 0.0f ? 1.0f + rounding : 1.0f - rounding));
+    bool3 outside = (ray.origin < node.minimum) | (ray.origin > node.maximum);
+    float exit = far_distance * (far_distance < 0.0f ? 1.0f - rounding : 1.0f + rounding);
+    return !any(ray.parallel & outside) && entry <= min(maximum, exit);
+}
+
+void ray_begin<let MeshNodes : bool, let Dynamic : bool>(uint nodes, out RayCursor cursor, RayBoundsQuery ray,
+                                                        uint root, float maximum)
 {
     cursor.count = 0u;
     float entry = ray.minimum;
@@ -154,7 +172,8 @@ uint2 ray_continue(inout RayCursor cursor)
     return cursor.pending[cursor.count];
 }
 
-uint2 ray_next_leaf<let MeshNodes : bool, let Dynamic : bool>(uint nodes, inout RayCursor cursor, TraceRay ray, float maximum)
+uint2 ray_next_leaf<let MeshNodes : bool, let Dynamic : bool>(uint nodes, inout RayCursor cursor, RayBoundsQuery ray,
+                                                             float maximum)
 {
     while (cursor.current.x != ray_invalid_index)
     {
@@ -309,10 +328,11 @@ void trace_instance<let Dynamic : bool, Policy : RayHitPolicy>(
     TraceRay local_ray = ray_to_object(world_ray, instance);
     RayProjection projection = ray_projection(local_ray.direction);
     RayCursor local;
-    ray_begin<true, Dynamic>(page.mesh_nodes, local, local_ray, Dynamic ? 0u : instance.root, hit.distance);
+    RayBoundsQuery local_bounds = ray_bounds_query(local_ray);
+    ray_begin<true, Dynamic>(page.mesh_nodes, local, local_bounds, Dynamic ? 0u : instance.root, hit.distance);
     for (;;)
     {
-        uint2 span = ray_next_leaf<true, Dynamic>(page.mesh_nodes, local, local_ray, hit.distance);
+        uint2 span = ray_next_leaf<true, Dynamic>(page.mesh_nodes, local, local_bounds, hit.distance);
         if (span.y == 0u)
             return;
         for (uint primitive = span.x; primitive < span.x + span.y; ++primitive)
@@ -349,10 +369,11 @@ RayHit trace_ray<Policy : RayHitPolicy>(RayPage page, TraceRay world_ray, uint l
     hit.surface_id = ray_invalid_index;
 
     RayCursor world;
-    ray_begin<false, false>(page.top_nodes, world, world_ray, page.root, hit.distance);
+    RayBoundsQuery world_bounds = ray_bounds_query(world_ray);
+    ray_begin<false, false>(page.top_nodes, world, world_bounds, page.root, hit.distance);
     for (;;)
     {
-        uint2 leaf = ray_next_leaf<false, false>(page.top_nodes, world, world_ray, hit.distance);
+        uint2 leaf = ray_next_leaf<false, false>(page.top_nodes, world, world_bounds, hit.distance);
         if (leaf.y == 0u)
             return hit;
         for (uint index = leaf.x; index < leaf.x + leaf.y; ++index)
