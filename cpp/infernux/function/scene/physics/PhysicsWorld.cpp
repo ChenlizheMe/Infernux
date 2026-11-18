@@ -1441,6 +1441,14 @@ bool PhysicsWorld::ServiceParticipantPreparation()
         return false;
     AdmissionScope admission(*m_gpuScene, domain.owner);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
+    // Use the existing asynchronous scene-preparation window, not the first
+    // Fixed's feedback boundary. Pure CPU scenes without participants returned
+    // above and never construct or prepare this pipeline.
+    const bool cpuRigidBindings = std::any_of(values.begin(), values.end(), [](const auto &entry) {
+        const auto owner = entry.lock();
+        return owner && !owner->IsRetired() && owner->HasCpuOnlyRigidBindings();
+    });
+    const bool responseReady = !cpuRigidBindings || m_gpuScene->TryPrepareParticipantCpuResponse();
     if (preparing) {
         const auto status = m_gpuScene->GetTickStatus(domain.owner);
         if (status == JoltGpuTick::Status::Failed)
@@ -1463,7 +1471,7 @@ bool PhysicsWorld::ServiceParticipantPreparation()
         // source; a session preparation callback never recursively drives it.
         return false;
     }
-    return true;
+    return responseReady;
 }
 bool PhysicsWorld::ServiceParticipantOutputs()
 {

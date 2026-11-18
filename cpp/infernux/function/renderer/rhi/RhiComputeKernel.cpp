@@ -1829,10 +1829,17 @@ ComputeWorkInstance::Rebind(std::vector<ComputeWorkInput> inputs,
 }
 
 std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vector<ComputeBufferUpdate> updates,
-                                                                        std::vector<ComputeBufferRead> reads) const
+                                                                         std::vector<ComputeBufferRead> reads) const
 {
     std::vector<ComputeDispatchDesc> dispatches;
-    dispatches.reserve(m_recipe->GetDispatches().size());
+    AppendDispatches(dispatches);
+    auto host = m_recipe->m_host;
+    return PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+}
+
+void ComputeWorkInstance::AppendDispatches(std::vector<ComputeDispatchDesc> &dispatches) const
+{
+    dispatches.reserve(dispatches.size() + m_recipe->GetDispatches().size());
     for (const auto &operation : m_recipe->GetDispatches()) {
         ComputeDispatchDesc dispatch;
         dispatch.kernel = operation.kernel;
@@ -1857,8 +1864,6 @@ std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vec
         }
         dispatches.push_back(std::move(dispatch));
     }
-    auto host = m_recipe->m_host;
-    return PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
 }
 
 std::vector<ComputeWorkRange> ComputeWorkRecipe::GetRequiredInputs() const

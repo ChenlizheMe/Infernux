@@ -80,6 +80,15 @@ class JoltGpuBodyCommands final
     [[nodiscard]] JoltGpuControlWork PrepareParticipantImpulses(std::shared_ptr<JoltGpuParticipantBodies> bodies,
                                                                 std::shared_ptr<rhi::ComputeBuffer> impulses) const;
 
+    [[nodiscard]] bool TryPrepareParticipantCpuResponse();
+
+    [[nodiscard]] rhi::ComputeDispatchDesc
+    ParticipantCpuResponse(std::shared_ptr<rhi::ComputeBuffer> parameters,
+                           std::shared_ptr<rhi::ComputeBuffer> models,
+                           std::shared_ptr<rhi::ComputeBuffer> motion,
+                           std::shared_ptr<rhi::ComputeBuffer> impulses,
+                           std::shared_ptr<rhi::ComputeBuffer> journal, uint32_t count, uint32_t round) const;
+
   private:
     rhi::ComputeHost m_host;
     std::shared_ptr<rhi::ComputeKernel> m_kernel;
@@ -90,7 +99,7 @@ class JoltGpuBodyCommands final
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<uint8_t> ports;
     };
-    std::array<ParticipantProgram, 3> m_participantPrograms;
+    std::array<ParticipantProgram, 4> m_participantPrograms;
 };
 
 /// One retained command plan. Pending batches survive Busy unchanged. Progress

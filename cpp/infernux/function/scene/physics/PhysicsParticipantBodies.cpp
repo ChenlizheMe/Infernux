@@ -232,6 +232,80 @@ struct BodyPorts : std::enable_shared_from_this<BodyPorts>
         return result;
     }
 
+    std::optional<PhysicsParticipant::RigidExchange::ClosedRounds>
+    CloseRounds(const JPH::GPU::StepParams &, const Buffer &motion, const Buffer &impulses, uint32_t rounds)
+    {
+        // Resolve already ran after CPU commands and warm preparation. These
+        // actual owning-solver facts exclude contacts/joints/intermediate sweeps.
+        if (gpuBodies || cpuRows.empty() || !domain.cpuScene || domain.cpuContacts.CoupledHasLocalVelocityRows())
+            return std::nullopt;
+        const auto count = uint32_t(cpuRows.size());
+        const uint64_t bytes = uint64_t(count) * (sizeof(JPH::GPU::BodyModel) + sizeof(Motion) +
+                                                  uint64_t(rounds) * sizeof(Impulse)) +
+                               uint64_t(rounds) * (sizeof(JPH::GPU::BodyCommandParams) +
+                                                   sizeof(PhysicsParticipantStep) + sizeof(PhysicsParticipantIndices));
+        const auto remaining = work.ResourceRemaining(FrameWorkResource::Transfer);
+        const auto budget = remaining ? remaining : work.ResourceState(FrameWorkResource::Transfer).limit;
+        if (bytes > budget || bytes > 64u * 1024u)
+            return std::nullopt;
+        std::vector<JPH::GPU::BodyModel> models(count);
+        const auto &bodies = domain.cpuScene->System().GetBodyLockInterfaceNoLock();
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto *body = bodies.TryGetBody(cpuRows[i].id);
+            if (!body || !body->IsDynamic() || cpuRows[i].port != i)
+                return std::nullopt;
+            const auto *properties = body->GetMotionProperties();
+            const auto locks = ~uint32_t(properties->GetAllowedDOFs());
+            models[i].meta.z = JPH::GPU::MotionDynamic;
+            models[i].mass = {properties->GetInverseMass(), float(locks & 7u), float((locks >> 3) & 7u), 0};
+            const auto diagonal = properties->GetInverseInertiaDiagonal();
+            const auto rotation = properties->GetInertiaRotation();
+            models[i].invInertiaDiagonal = {diagonal.GetX(), diagonal.GetY(), diagonal.GetZ(), 0};
+            models[i].inertiaRotation = {rotation.GetX(), rotation.GetY(), rotation.GetZ(), rotation.GetW()};
+        }
+        auto host = motion->GetHost();
+        auto modelBuffer = rhi::ComputeBuffer::TryCreatePrivate(
+            host, {uint64_t(count) * sizeof(JPH::GPU::BodyModel) / 4u, rhi::ComputeScalarType::Float32, 1});
+        auto journal = rhi::ComputeBuffer::TryCreatePrivate(
+            host, {uint64_t(count) * rounds * 6u, rhi::ComputeScalarType::Float32, 1});
+        if (!modelBuffer || !journal)
+            return std::nullopt;
+        PhysicsParticipant::RigidExchange::ClosedRounds result;
+        std::vector<uint8_t> modelBytes(models.size() * sizeof(models.front()));
+        std::memcpy(modelBytes.data(), models.data(), modelBytes.size());
+        result.updates.push_back({modelBuffer, 0, std::move(modelBytes)});
+        result.updates.push_back({motion, 0, MotionBytes({0, cpuRows.size()})});
+        result.reads.push_back({journal, 0, uint64_t(count) * rounds * sizeof(Impulse)});
+        for (uint32_t round = 0; round < rounds; ++round) {
+            auto parameters = rhi::ComputeBuffer::TryCreatePrivate(
+                host, {sizeof(JPH::GPU::BodyCommandParams) / 4u, rhi::ComputeScalarType::UInt32, 1});
+            if (!parameters)
+                return std::nullopt;
+            const JPH::GPU::BodyCommandParams values{{0, count, round, 0}};
+            std::vector<uint8_t> data(sizeof(values));
+            std::memcpy(data.data(), &values, sizeof(values));
+            result.updates.push_back({parameters, 0, std::move(data)});
+            result.responses.push_back(gpu.ParticipantCpuResponse(parameters, modelBuffer, motion,
+                                                                   impulses, journal, count, round));
+        }
+        result.apply = [self = shared_from_this(), count, rounds](const auto &packet) {
+            std::vector<Impulse> values(size_t(count) * rounds);
+            packet->Readback(0)->ReadInto(values.data(), values.size() * sizeof(Impulse));
+            std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> impulses;
+            impulses.reserve(count);
+            for (uint32_t round = 0; round < rounds; ++round) {
+                impulses.clear();
+                for (uint32_t row = 0; row < count; ++row) {
+                    const auto &v = values[size_t(round) * count + row];
+                    impulses.push_back({self->cpuRows[row].id, JPH::Vec3(v[0], v[1], v[2]),
+                                       JPH::Vec3(v[3], v[4], v[5])});
+                }
+                self->domain.cpuContacts.ApplyCoupledVelocityImpulses(impulses);
+            }
+        };
+        return result;
+    }
+
     JoltGpuControlWork Exchange(const JPH::GPU::StepParams &params, const Buffer &motion, const Buffer &impulses,
                                 PhysicsParticipant::RigidExchange::Recipe recipe)
     {
@@ -268,6 +342,9 @@ PhysicsParticipant::RigidExchange BindPhysicsParticipantBodies(PhysicsDomain &do
             [ports](const JPH::GPU::StepParams &params, const Buffer &motion, const Buffer &impulses,
                     PhysicsParticipant::RigidExchange::Recipe recipe) {
                 return ports->Exchange(params, motion, impulses, std::move(recipe));
+            },
+            [ports](const JPH::GPU::StepParams &params, const Buffer &motion, const Buffer &impulses, uint32_t rounds) {
+                return ports->CloseRounds(params, motion, impulses, rounds);
             }};
 }
 } // namespace infernux
