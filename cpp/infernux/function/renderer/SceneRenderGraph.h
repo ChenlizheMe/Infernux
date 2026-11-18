@@ -152,7 +152,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
      */
     void Destroy();
 
-    [[nodiscard]] uint64_t GetTransientResidentBytes() const;
+    [[nodiscard]] uint64_t GetResidentBytes() const;
 
     /// Invalidate the compiled graph before replacing its imported target views.
     void InvalidateBeforeTargetReplacement();

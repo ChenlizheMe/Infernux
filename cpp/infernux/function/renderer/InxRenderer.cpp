@@ -2436,13 +2436,13 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     snapshot.asyncGraphicsSubmissionCount = m_vkCore->GetResourceManager().GetAsyncGraphicsSubmissionCount();
     snapshot.renderTargetBytes = (m_sceneRenderTarget ? m_sceneRenderTarget->GetResidentBytes() : 0) +
                                  (m_gameScreenOutputs ? m_gameScreenOutputs->ResidentBytes() : 0);
-    snapshot.renderGraphBytes = m_sceneRenderGraph ? m_sceneRenderGraph->GetTransientResidentBytes() : 0;
+    snapshot.renderGraphBytes = m_sceneRenderGraph ? m_sceneRenderGraph->GetResidentBytes() : 0;
     for (const auto &[cameraId, graph] : m_gameRenderGraphs) {
         (void)cameraId;
-        snapshot.renderGraphBytes += graph->GetTransientResidentBytes();
+        snapshot.renderGraphBytes += graph->GetResidentBytes();
     }
     for (const auto &graph : m_retiringGameGraphs)
-        snapshot.renderGraphBytes += graph->GetTransientResidentBytes();
+        snapshot.renderGraphBytes += graph->GetResidentBytes();
     // Legacy telemetry field; temporary image ownership is in each RenderGraph.
     snapshot.transientPoolBytes = 0;
     const MaterialGpuResidencySnapshot materialResidency = m_vkCore->GetMaterialGpuResidency();

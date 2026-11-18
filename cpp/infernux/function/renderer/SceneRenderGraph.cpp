@@ -164,9 +164,12 @@ SceneRenderGraph::~SceneRenderGraph()
     Destroy();
 }
 
-uint64_t SceneRenderGraph::GetTransientResidentBytes() const
+uint64_t SceneRenderGraph::GetResidentBytes() const
 {
-    return m_renderGraph ? m_renderGraph->GetTransientResidentBytes() : 0;
+    uint64_t bytes = m_renderGraph ? m_renderGraph->GetTransientResidentBytes() : 0;
+    for (const auto &[key, history] : m_temporalHistories)
+        bytes += history.residentBytes;
+    return bytes;
 }
 
 // ============================================================================

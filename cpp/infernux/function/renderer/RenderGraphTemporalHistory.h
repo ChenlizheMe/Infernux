@@ -17,6 +17,7 @@ struct GraphTemporalHistory
     rhi::PixelFormat format = rhi::PixelFormat::Undefined;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint64_t residentBytes = 0;
     uint32_t readIndex = 0;
     bool valid = false;
 
@@ -76,6 +77,8 @@ void PrepareGraphTemporalHistory(HistoryMap &histories, rhi::Device &device, con
             for (uint32_t index = 0; index < targets.size(); ++index)
                 targets[index] = std::make_shared<rhi::RenderTexture>(
                     device, "History/" + key + "/" + std::to_string(index), allocation);
+            history.residentBytes =
+                targets[0]->Acquire()->GetResidentBytes() + targets[1]->Acquire()->GetResidentBytes();
             history.targets = std::move(targets);
             history.width = targetWidth;
             history.height = targetHeight;
