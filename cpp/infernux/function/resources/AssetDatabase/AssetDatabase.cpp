@@ -4747,6 +4747,9 @@ void AssetDatabase::FinishReimport(AssetMutationResult &result, const CachedFile
     const auto previous = LoadQuerySnapshot();
     const auto changedSubAssets = PublishQuerySnapshotForPaths({result.path});
     if (notify) {
+        m_runtimeLoadFailures.erase(result.guid);
+        m_importResults[result.guid] = {true, {}};
+        ClearRuntimeLoadFailuresForDependents(result.guid);
         PublishModelSubAssetEvents(previous, &changedSubAssets);
         auto *registry = BoundRegistry();
         const bool meshPublication =
@@ -6107,6 +6110,9 @@ void AssetDatabase::ReportAssetLoadFailure(const std::string &guid, const std::s
         return;
     if (GetImportError(guid) == error)
         return;
+    if (const auto runtime = m_runtimeLoadFailures.find(guid);
+        runtime != m_runtimeLoadFailures.end() && runtime->second != error)
+        m_runtimeLoadFailures.erase(runtime);
     m_importResults[guid] = {false, error};
     if (const auto indexed = m_assetIndex.Find(FilesystemPathKey(path->second))) {
         auto entry = *indexed;
@@ -6118,6 +6124,55 @@ void AssetDatabase::ReportAssetLoadFailure(const std::string &guid, const std::s
     PublishQuerySnapshot();
     // Author identities and dependency edges stay intact, including Model-owned resources.
     PublishUnavailableAssetBindings(*this, BoundRegistry(), guid);
+}
+
+void AssetDatabase::ReportRuntimeLoadFailure(const std::string &guid, const std::string &error)
+{
+    AssertMutationThread("ReportRuntimeLoadFailure");
+    m_runtimeLoadFailures[guid] = error;
+    ReportAssetLoadFailure(guid, error);
+    if (error.empty() || GetImportError(guid) != error)
+        m_runtimeLoadFailures.erase(guid);
+}
+
+bool AssetDatabase::ClearRuntimeLoadFailure(const std::string &guid)
+{
+    AssertMutationThread("ClearRuntimeLoadFailure");
+    const auto failure = m_runtimeLoadFailures.find(guid);
+    if (failure == m_runtimeLoadFailures.end())
+        return false;
+    const bool matches = GetImportError(guid) == failure->second;
+    m_runtimeLoadFailures.erase(failure);
+    if (!matches)
+        return false;
+    m_importResults[guid] = {true, {}};
+    if (const auto path = m_guidToPath.find(guid); path != m_guidToPath.end())
+        if (const auto indexed = m_assetIndex.Find(FilesystemPathKey(path->second))) {
+            auto entry = *indexed;
+            entry.importSucceeded = true;
+            entry.importError.clear();
+            m_assetIndex.Upsert(std::move(entry));
+            m_assetIndexDirty = true;
+        }
+    PublishQuerySnapshot();
+    return true;
+}
+
+void AssetDatabase::ClearRuntimeLoadFailuresForDependents(const std::string &guid)
+{
+    AssertMutationThread("ClearRuntimeLoadFailuresForDependents");
+    std::vector<std::string> pending{guid};
+    std::unordered_set<std::string> visited{guid};
+    while (!pending.empty()) {
+        auto current = std::move(pending.back());
+        pending.pop_back();
+        for (const auto &dependent : m_dependencyGraph->GetDependents(current)) {
+            if (!visited.insert(dependent).second)
+                continue;
+            ClearRuntimeLoadFailure(dependent);
+            pending.push_back(dependent);
+        }
+    }
 }
 
 uint64_t AssetDatabase::GetQueryGeneration() const

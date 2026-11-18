@@ -224,6 +224,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("get_all_asset_paths", &AssetDatabase::GetAllAssetPaths, py::call_guard<py::gil_scoped_release>(),
              "Get all asset paths in one published generation")
         .def("get_import_error", &AssetDatabase::GetImportError, py::arg("guid"))
+        .def("report_runtime_load_failure", &AssetDatabase::ReportRuntimeLoadFailure, py::arg("guid"), py::arg("error"))
+        .def("clear_runtime_load_failure", &AssetDatabase::ClearRuntimeLoadFailure, py::arg("guid"))
         .def("report_asset_load_failure", &AssetDatabase::ReportAssetLoadFailure, py::arg("guid"), py::arg("error"))
         .def("get_import_failures",
              [](const AssetDatabase &database) {

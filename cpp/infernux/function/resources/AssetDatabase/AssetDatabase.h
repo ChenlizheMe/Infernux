@@ -299,6 +299,12 @@ class AssetDatabase : public NativeLifetimeOwner
     [[nodiscard]] std::string GetImportError(const std::string &guid) const;
     [[nodiscard]] std::vector<AssetCatalogEntry> GetImportFailures() const;
     void ReportAssetLoadFailure(const std::string &guid, const std::string &error);
+    /// Record a current runtime decode/publication failure for one identity.
+    void ReportRuntimeLoadFailure(const std::string &guid, const std::string &error);
+    /// Retire a recorded runtime failure after a successful load or repair.
+    bool ClearRuntimeLoadFailure(const std::string &guid);
+    /// Clear runtime failures of every asset that depends on this identity.
+    void ClearRuntimeLoadFailuresForDependents(const std::string &guid);
 
     /// @brief Published query snapshot generation and asset count.
     [[nodiscard]] uint64_t GetQueryGeneration() const;
@@ -1062,6 +1068,7 @@ class AssetDatabase : public NativeLifetimeOwner
     std::string m_assetStartupCachePath;
     std::string m_assetTransactionJournalPath;
     std::unordered_map<std::string, ImportResultState> m_importResults;
+    std::unordered_map<std::string, std::string> m_runtimeLoadFailures;
     size_t m_lastRefreshReusedCount = 0;
     size_t m_lastRefreshImportedCount = 0;
     std::vector<std::string> m_lastRefreshImportedPaths;

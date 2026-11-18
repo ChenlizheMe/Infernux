@@ -165,12 +165,17 @@ RuntimeAssetPayload AssetRegistry::LoadAssetInternal(const std::string &filePath
         return nullptr;
     }
 
-    auto payload = loaderIt->second->Load(filePath, guid, m_assetDb.get());
-    if (!payload) {
-        INXLOG_WARN("AssetRegistry: loader returned nullptr for '", filePath, "' (GUID: ", guid, ")");
-        return nullptr;
+    RuntimeAssetPayload payload;
+    try {
+        payload = loaderIt->second->Load(filePath, guid, m_assetDb.get());
+        if (!payload)
+            throw std::runtime_error("Runtime loader returned an empty payload: " + filePath);
+    } catch (const std::exception &error) {
+        m_assetDb->ReportRuntimeLoadFailure(guid, std::string("Runtime load failed: ") + error.what());
+        return {};
     }
-
+    // Publication validation errors belong to the caller (for example a
+    // material that resolved a shader with the wrong stage) and stay visible.
     loaderIt->second->PreparePublication(payload, guid, m_assetDb.get());
     InsertEntry(guid, payload, type);
     loaderIt->second->OnPublished(payload, guid, m_assetDb.get());
@@ -1000,6 +1005,13 @@ bool AssetRegistry::CommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &tick
     const bool contentCurrent = IsAssetLoadContentCurrent(ticket);
     if (contentCurrent && ticket->m_failure) {
         ticket->m_rejected = true;
+        try {
+            std::rethrow_exception(ticket->m_failure);
+        } catch (const std::exception &error) {
+            if (m_assetDb->GetImportError(ticket->m_guid).empty())
+                m_assetDb->ReportRuntimeLoadFailure(ticket->m_guid,
+                                                    std::string("Runtime load failed: ") + error.what());
+        }
         std::rethrow_exception(ticket->m_failure);
     }
     if (contentCurrent && ticket->m_rejected)
