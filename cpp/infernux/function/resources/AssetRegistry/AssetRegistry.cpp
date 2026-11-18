@@ -159,6 +159,23 @@ RuntimeAssetPayload AssetRegistry::LoadAssetInternal(const std::string &filePath
             return pending->m_payload;
         }
     }
+    // Artifact-backed resources load through admission so a damaged Library
+    // product can be rebuilt once from its current source before publishing.
+    if ((!m_frameWork || !m_frameWork->IsActive()) &&
+        (type == ResourceType::Mesh || type == ResourceType::Texture || type == ResourceType::RenderTexture)) {
+        try {
+            auto ticket = BeginLoadAsset(guid, type);
+            ticket->Wait();
+            TryCommitAssetLoad(ticket);
+            return ticket->m_payload;
+        } catch (const AssetLoadSuperseded &) {
+            return {};
+        } catch (const std::exception &error) {
+            if (m_assetDb->GetImportError(guid).empty())
+                m_assetDb->ReportRuntimeLoadFailure(guid, std::string("Runtime load failed: ") + error.what());
+            return {};
+        }
+    }
     auto loaderIt = m_loaders.find(type);
     if (loaderIt == m_loaders.end()) {
         INXLOG_WARN("AssetRegistry: no loader registered for ResourceType ", static_cast<int>(type));
@@ -335,11 +352,16 @@ bool AssetRegistry::NotifySourceImported(const std::string &guid, ResourceType t
     ++m_assetContentGenerations[guid];
     ++m_assetMutationGenerations[guid];
     const auto entry = m_loadedAssets.find(guid);
+    // A repair reimport publishes the artifact this ticket was waiting for;
+    // its expected generations must follow the publication for every imported
+    // artifact type, not only Mesh.
+    if (repairIsCurrent) {
+        repairTicket->m_expectedContentGeneration = m_assetContentGenerations[guid];
+        repairTicket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
+    }
     if (type == ResourceType::Mesh) {
         m_meshReloads.erase(guid);
         if (repairIsCurrent) {
-            repairTicket->m_expectedContentGeneration = m_assetContentGenerations[guid];
-            repairTicket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
             repairTicket->m_replaceMesh = true;
             m_meshReloads.emplace(guid, repairTicket);
             return true;
@@ -734,10 +756,11 @@ bool AssetRegistry::AdvanceMeshArtifactRepair(const std::shared_ptr<AssetLoadTic
             if (m_assetDb->IsModelReimportPending())
                 m_assetDb->CompletePendingModelReimport();
             if (!IsAssetLoadContentCurrent(ticket))
-                throw AssetLoadSuperseded("Mesh load was superseded before artifact repair");
+                throw AssetLoadSuperseded("Imported artifact load was superseded before repair");
         } else if (!m_assetDb->CanBeginMeshArtifactRepair()) {
             return false;
         }
+        ticket->m_artifactRepairAttempted = true;
         m_assetDb->BeginMeshArtifactRepair(ticket);
         ticket->m_repairNeeded = false;
         ticket->m_repairPending = true;
@@ -841,7 +864,21 @@ bool AssetRegistry::SubmitAssetLoad(const std::shared_ptr<AssetLoadTicket> &tick
                     if (!ticket->m_payload && !ticket->m_workerPlan.advance && !ticket->m_repairNeeded)
                         throw std::runtime_error("AssetRegistry worker loader returned an empty payload");
                 } catch (...) {
-                    ticket->m_failure = std::current_exception();
+                    const bool importedArtifact = ticket->m_resourceType == ResourceType::Mesh ||
+                                                  ticket->m_resourceType == ResourceType::Texture ||
+                                                  ticket->m_resourceType == ResourceType::RenderTexture;
+                    const auto meta = ticket->m_database->GetMetaByGuid(ticket->m_guid);
+                    if (importedArtifact && !ticket->m_artifactRepairAttempted &&
+                        !ticket->m_database->m_cookedRuntimeCatalogInstalled &&
+                        !ticket->m_database->IsReadOnlyPath(FilesystemPathKey(ticket->m_sourcePath)) &&
+                        meta && !meta->HasKey("import_owner_guid")) {
+                        // Library products are reproducible. Rebuild once from
+                        // current source through the existing import queue.
+                        ticket->m_workerPlan = {};
+                        ticket->m_repairNeeded = true;
+                    } else {
+                        ticket->m_failure = std::current_exception();
+                    }
                 }
                 ticket->m_executionNanoseconds = static_cast<uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started)

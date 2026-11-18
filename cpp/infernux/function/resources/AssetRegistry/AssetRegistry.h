@@ -101,6 +101,7 @@ class AssetLoadTicket final : public std::enable_shared_from_this<AssetLoadTicke
     uint64_t m_token = 0;
     bool m_repairNeeded = false;
     bool m_repairPending = false;
+    bool m_artifactRepairAttempted = false;
     std::shared_ptr<FrameCpuStorageClaim> m_storageClaim;
     WorkerAssetLoadPlan m_workerPlan;
     JobHandle m_job;

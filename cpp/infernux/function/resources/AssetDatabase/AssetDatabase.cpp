@@ -5284,8 +5284,9 @@ void AssetDatabase::BeginMeshArtifactRepair(const std::shared_ptr<AssetLoadTicke
 {
     const auto path = GetPathFromGuid(ticket->GetGuid());
     if (!m_importerRegistry.GetImporterForExtension(asset_formats::SourceExtension(path)))
-        throw std::runtime_error("Cooked mesh artifacts are unavailable for " + path);
-    StartModelReimport(path, {}, nlohmann::json::object(), {}, ticket);
+        throw std::runtime_error("Imported runtime artifact is unavailable for " + path);
+    const auto settings = ticket->GetResourceType() == ResourceType::Mesh ? nlohmann::json::object() : nlohmann::json{};
+    StartModelReimport(path, {}, settings, {}, ticket);
 }
 
 void AssetDatabase::StartModelReimport(const std::string &sourcePath, const std::string &textureGuid,
