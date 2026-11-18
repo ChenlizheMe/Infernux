@@ -108,7 +108,7 @@ def test_matching_pin_installs_and_then_reloads_without_acquisition(package_proj
 
 
 @pytest.mark.parametrize("modified", [False, True])
-def test_builtin_release_updates_with_an_empty_original_cache(package_project, tmp_path, monkeypatch, modified):
+def test_builtin_reopen_preserves_pin_and_explicit_update_needs_no_original_cache(package_project, tmp_path, monkeypatch, modified):
     from infernux.plugins.official import install_bundled_packages
 
     root, manager, _ = package_project
@@ -141,22 +141,18 @@ def test_builtin_release_updates_with_an_empty_original_cache(package_project, t
             {"reference": reference, "version": "2.0.0", "source": {"type": "url", "location": published}},
         ]}
         (resources / "official_packages/official-registry.json").write_text(json.dumps(catalog), encoding="utf-8")
-        if modified:
-            from infernux.plugins import PackageUpdateConflict
-
-            with pytest.raises(PackageUpdateConflict, match="runtime/entry.py"):
-                install_bundled_packages(str(root), resources_root=str(resources), manager=manager)
-            assert manager.registry.installed_record(reference) == before
-            assert authored.read_text(encoding="utf-8").endswith("LOCAL_EDIT = True\n")
-            assert not new_marker.exists()
-        else:
-            install_bundled_packages(str(root), resources_root=str(resources), manager=manager)
-            record = manager.registry.installed_record(reference)
-            assert record["version"] == "2.0.0" and new_marker.read_text() == "executed"
-            assert record["control"]["guid"] == before["control"]["guid"]
-            assert record["source"]["location"] == published and record["source"]["builtin"]
-            assert install_bundled_packages(str(root), resources_root=str(resources), manager=manager) == ()
-        assert requests == ["/1.0.0/plugin.inxpkg"] and baseline.is_file()
+        assert install_bundled_packages(str(root), resources_root=str(resources), manager=manager) == ()
+        assert manager.registry.installed_record(reference) == before
+        assert authored.read_text(encoding="utf-8").endswith("LOCAL_EDIT = True\n") is modified
+        assert not new_marker.exists()
+        manager.install_reference(reference, install_dependencies=False)
+        record = manager.registry.installed_record(reference)
+        assert record["version"] == "2.0.0" and new_marker.read_text() == "executed"
+        assert record["control"]["guid"] == before["control"]["guid"]
+        assert record["source"]["location"] == published and record["source"]["builtin"]
+        assert "LOCAL_EDIT" not in authored.read_text(encoding="utf-8")
+        assert install_bundled_packages(str(root), resources_root=str(resources), manager=manager) == ()
+        assert requests == [] and not baseline.exists()
 
 
 @pytest.mark.parametrize("mismatch", ["reference", "version"])
@@ -322,3 +318,34 @@ def test_offline_catalog_keeps_newest_discovery_without_upgrading_installed_pack
         entries = sync_official_registry(manager.project_root, resources_root=str(catalog.parent))
         assert entries[0]["version"] == expected
         assert manager.registry.installed_record(reference)["version"] == "1.0.0"
+
+
+def test_bundled_first_install_keeps_the_highest_compatible_catalog_release(package_project, tmp_path):
+    from infernux.plugins.official import install_bundled_packages, sync_official_registry
+
+    root, manager, _install = package_project
+    reference = "test/bundled-selection"
+    old_marker, selected_marker = tmp_path / "bundled-ran", tmp_path / "selected-ran"
+    old_archive, _ = archive_at(tmp_path, reference, "1.0.0", old_marker)
+    selected_archive, _ = archive_at(tmp_path, reference, "2.0.0", selected_marker)
+    resources = tmp_path / "selection-resources"
+    catalog = resources / "official_packages"
+    catalog.mkdir(parents=True)
+    (resources / "bundled.inxpkg").write_bytes(old_archive.read_bytes())
+    with local_archive_server(selected_archive) as (url, requests):
+        entries = [{
+            "reference": reference, "version": version,
+            "engine": ">999" if version == "9.0.0" else "==" + ENGINE_COMPATIBILITY_VERSION,
+            "artifact": version + ".inxpkg", "source": {"type": "url", "location": url},
+        } for version in ("1.0.0", "9.0.0", "2.0.0")]
+        (catalog / "official-registry.json").write_text(json.dumps({
+            "$schema": "infernux.official_plugin_registry", "packages": entries,
+        }), encoding="utf-8")
+        sync_official_registry(str(root), resources_root=str(resources))
+        assert manager.registry.find(reference)["version"] == "2.0.0"
+        install_bundled_packages(str(root), resources_root=str(resources), manager=manager)
+        assert manager.registry.installed_record(reference)["version"] == "2.0.0"
+        assert selected_marker.read_text() == "executed" and not old_marker.exists()
+        assert manager.registry.find(reference)["version"] == "2.0.0"
+        assert install_bundled_packages(str(root), resources_root=str(resources), manager=manager) == ()
+        assert requests == ["/plugin.inxpkg"]

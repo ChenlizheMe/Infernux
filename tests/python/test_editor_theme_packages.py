@@ -1,6 +1,7 @@
 """Theme data participates in normal plugin installation and retirement."""
 
 import json
+import pytest
 from pathlib import Path
 from infernux.plugins import PluginManager
 from infernux.engine.preferences_store import PreferencesStore
@@ -17,7 +18,7 @@ def test_theme_install_edit_failure_disable_and_user_preference(tmp_path, monkey
     themes = source / "editor/themes"
     themes.mkdir(parents=True)
     document = {"id": "sky", "name": "青空", "colors": {"ROLE_ACCENT": [0.2, 0.5, 0.8, 1.0]},
-                "vec2s": {"GLOBAL_ITEM_SPC": [9, 7]}}
+                "vec2s": {"CONTENT_SPACING": [9, 7]}}
     (themes / "sky.theme.json").write_text(json.dumps(document), encoding="utf-8")
     manager = PluginManager(str(project))
     try:
@@ -28,8 +29,8 @@ def test_theme_install_edit_failure_disable_and_user_preference(tmp_path, monkey
         manager.themes.select("vendor/sky/sky")
         assert active_editor_theme() == "vendor/sky/sky"
         assert preferences["editor_theme"] == "vendor/sky/sky"
-        assert Theme.APPLY_BUTTON[:3] == Theme.ROLE_ACCENT[:3]
-        assert Theme.GLOBAL_ITEM_SPC == (9.0, 7.0)
+        assert tuple(Theme.ROLE_ACCENT[:3]) == pytest.approx((0.2, 0.5, 0.8), abs=1e-6)
+        assert Theme.CONTENT_SPACING == (9.0, 7.0)
         path = project / "Packages/vendor/sky/editor/themes/sky.theme.json"
         path.write_text("{ broken", encoding="utf-8")
         manager.themes.resource_changed(str(path))

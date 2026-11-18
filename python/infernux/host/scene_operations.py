@@ -368,7 +368,7 @@ def _hierarchy(include_mesh_data: bool = False, include_ui_layout: bool = False)
 def _resolve_object(name: str = "", path: str = "") -> dict[str, object]:
     """Resolve a live object by name or ``Root/Child`` path.
 
-    Yanshi binds authored references once and must re-resolve them after
+    Authored references must be re-resolved after
     entering Play Mode, because Play runs a separate runtime world with new
     object ids. This query returns the live id without mutating the world.
     """

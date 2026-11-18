@@ -1137,7 +1137,7 @@ class PlayModeManager(PlayModeSerializationMixin):
 
         The next admitted step uses this explicit delta instead of the last
         wall-clock frame delta, so a manual driver can advance exactly one
-        fixed physics step (Yanshi ``sim.step@1``). The override is consumed
+        fixed physics step (the engine manual-step interface). The override is consumed
         by exactly one request.
         """
         if self._state != PlayModeState.PAUSED:

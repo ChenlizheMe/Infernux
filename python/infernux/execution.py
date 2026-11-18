@@ -88,13 +88,23 @@ class ExecutionScope:
         self._component_state = None
         self._requests = weakref.WeakSet()
         self._resources = weakref.WeakSet()
+        # Work created under an admitted source retires with that source even
+        # when no simulation World is involved.
+        from infernux.engine.reload.owners import own_cleanup
+
+        self._reload_owner = own_cleanup(None, self.close)
 
     @property
     def state(self):
-        if self._component_state is not None:
-            return self._component_state.state(self, _active_step.get())
         if self._closed:
             return 'closed'
+        if self._reload_owner is not None:
+            if self._reload_owner.closed:
+                return 'closed'
+            if not self._reload_owner.active:
+                return 'paused'
+        if self._component_state is not None:
+            return self._component_state.state(self, _active_step.get())
         if self._paused:
             return 'paused'
         if self._world_id is not None:
@@ -132,6 +142,14 @@ class ExecutionScope:
             request.cancel()
         for resource in tuple(self._resources):
             resource.cancel()
+        owner = self._reload_owner
+        if owner is not None:
+            try:
+                owner.close()
+            except Exception as exc:
+                from infernux.debug import Debug
+
+                Debug.log_exception(exc)
 
     def cancel(self):
         """A World scope cancels this component child through its weak resources."""
@@ -153,12 +171,14 @@ def component_execution(component):
     from infernux.engine.runtime_worlds import component_world_id
     identity = (component._world_id if isinstance(component, ExecutionScope)
                 else component_world_id(component) if component is not None else None)
-    token = _current_owner.set(component)
-    try:
-        with value_world(identity) if identity else nullcontext():
-            yield
-    finally:
-        _current_owner.reset(token)
+    reload_owner = getattr(component, "_reload_owner", None)
+    with reload_owner.enter() if reload_owner is not None else nullcontext():
+        token = _current_owner.set(component)
+        try:
+            with value_world(identity) if identity else nullcontext():
+                yield
+        finally:
+            _current_owner.reset(token)
 
 
 def component_scope(component):
@@ -206,6 +226,16 @@ def capture_execution_scope(default_owner=None):
         from infernux.engine.runtime_worlds import current_world_runtime
         domain = current_world_runtime()
         scope = domain.scope if domain is not None else None
+    if scope is None:
+        from infernux.engine.reload.owners import current_owner
+
+        source = current_owner()
+        if source is not None:
+            scope = getattr(source, '_execution_scope', None)
+            if scope is None:
+                # Preloads and ordinary service callbacks share the work
+                # lifetime of components without inheriting simulation Pause.
+                scope = source._execution_scope = ExecutionScope()
     if scope is not None and scope.state == 'closed':
         raise RuntimeError('the calling execution owner has retired')
     return scope
@@ -481,6 +511,14 @@ def close_component_execution(component):
     stored = component.__dict__.pop('_runtime_execution_scope', None)
     if stored is not None:
         stored[1].close()
+    owner = component.__dict__.get('_reload_owner')
+    if owner is not None:
+        try:
+            owner.close()
+        except Exception as exc:
+            from infernux.debug import Debug
+
+            Debug.log_exception(exc)
 
 
 def simulation_state():

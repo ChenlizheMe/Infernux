@@ -1,10 +1,10 @@
 """Manual physics-step operations for deterministic simulation drivers.
 
-Yanshi's ``sim.step@1`` and ``rigid.pose@1`` bind here when the bound host is
-a graphical Infernux Editor. The deterministic manual path for headless work
-is :mod:`infernux.sim`; these operations expose the same clock and pose
-contract through the Automation Host, and a paused Play Mode step that is
-requested with an explicit fixed delta instead of the last wall-clock frame.
+These operations bind the deterministic step/clock/pose contract when the host
+is a graphical Infernux Editor. The manual path for headless work is
+:mod:`infernux.sim`; the host operations expose the same clock and pose
+behavior, with a paused Play Mode step requested with an explicit fixed delta
+instead of the last wall-clock frame.
 """
 
 from __future__ import annotations

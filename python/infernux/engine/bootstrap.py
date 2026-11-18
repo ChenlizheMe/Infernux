@@ -112,7 +112,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
         install_editor_operations(self.project_path)
         # Automation Host transport: the editor owns the loopback bridge and
-        # the operation registry; MCP/yanshi clients discover it through the
+        # the operation registry; automation clients discover it through the
         # project descriptor and never own the world.
         self.automation_bridge = None
         try:

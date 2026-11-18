@@ -1,10 +1,8 @@
 """Deterministic physics-step clock for manual simulation drivers.
 
-Yanshi binds ``sim.step@1`` to :func:`step` and ``rigid.pose@1`` to
-:func:`pose`. A step advances exactly one fixed **physics** step in a paused
-Play Mode world - never a rendered frame - and a request that cannot produce
-exactly one step is reported as a contract error instead of silently
-advancing the world.
+A step advances exactly one fixed **physics** step in a paused Play Mode world
+- never a rendered frame - and a request that cannot produce exactly one step
+is reported as a contract error instead of silently advancing the world.
 
 Canonical headless driver::
 
