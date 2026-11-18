@@ -437,8 +437,11 @@ template <typename T> std::shared_ptr<T> AssetRegistry::LoadAsset(const std::str
         return cached->second.payload.Get<T>();
     }
 
-    // 2. GUID → path via AssetDatabase
+    // 2. GUID → path via AssetDatabase. A failed current source must not
+    // resolve the retained payload or re-read the broken file.
     if (!m_assetDb)
+        return nullptr;
+    if (!m_assetDb->GetImportError(guid).empty())
         return nullptr;
     std::string path = m_assetDb->GetPathFromGuid(guid);
     if (path.empty())
@@ -452,6 +455,9 @@ template <typename T> std::shared_ptr<T> AssetRegistry::LoadAsset(const std::str
 template <typename T> std::shared_ptr<T> AssetRegistry::LoadAssetByPath(const std::string &path, ResourceType type)
 {
     if (!m_assetDb)
+        return nullptr;
+    const std::string pathGuid = m_assetDb->GetGuidFromPath(path);
+    if (!pathGuid.empty() && !m_assetDb->GetImportError(pathGuid).empty())
         return nullptr;
     std::string guid = m_assetDb->GetGuidFromPath(path);
     if (guid.empty())

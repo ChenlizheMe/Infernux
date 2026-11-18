@@ -254,6 +254,34 @@ template <typename Visit> void VisitModelSubAssets(const InxResourceMeta &owner,
     }
 }
 
+// A failed current source must stop serving the last good runtime payload.
+// Retained instances keep their own lease, but new requests resolve nothing
+// until the source imports successfully again.
+void PublishUnavailableAssetBindings(AssetDatabase &database, AssetRegistry *registry, const std::string &guid)
+{
+    std::vector<std::pair<std::string, ResourceType>> unavailable;
+    const auto metadata = database.GetMetaByGuid(guid);
+    if (!metadata)
+        return;
+    unavailable.emplace_back(guid, metadata->GetResourceType());
+    VisitModelSubAssets(*metadata, [&](const nlohmann::json &record) {
+        const auto child = record.at("guid").get<std::string>();
+        if (const auto childMetadata = database.GetMetaByGuid(child))
+            unavailable.emplace_back(child, childMetadata->GetResourceType());
+    });
+    for (const auto &[identity, type] : unavailable)
+        if (registry)
+            registry->InvalidateAsset(identity);
+    for (const auto &[identity, type] : unavailable) {
+        try {
+            database.GetDependencyGraph()->NotifyEvent(identity, type, AssetEvent::Deleted);
+        } catch (const std::exception &error) {
+            INXLOG_ERROR("Asset unavailable notification failed for '", database.GetPathFromGuid(identity),
+                         "': ", error.what());
+        }
+    }
+}
+
 std::shared_ptr<InxResourceMeta> ModelSubAssetMetadata(const nlohmann::json &record, const std::string &owner,
                                                        const std::string &sourcePath)
 {
@@ -6088,6 +6116,8 @@ void AssetDatabase::ReportAssetLoadFailure(const std::string &guid, const std::s
         m_assetIndexDirty = true;
     }
     PublishQuerySnapshot();
+    // Author identities and dependency edges stay intact, including Model-owned resources.
+    PublishUnavailableAssetBindings(*this, BoundRegistry(), guid);
 }
 
 uint64_t AssetDatabase::GetQueryGeneration() const
