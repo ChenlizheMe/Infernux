@@ -21,10 +21,11 @@ using namespace JPH::GPU;
 using Contact = PhysicsContactPublication;
 using Patch = JoltMixedContactStep::ResponsePatch;
 using PatchKey = std::pair<Contact::EndpointKey, Contact::EndpointKey>;
+constexpr uint32_t SolverLanes = 64;
 
 struct Parameters
 {
-    UInt4 range;               // First group, group count, rounds, clear accumulated CPU impulses.
+    UInt4 range;               // Serial groups, cooperative groups, rounds, clear accumulated CPU impulses.
     Float4 gravityDt, contact; // Warm-start scale, penetration slop, maximum correction, Baumgarte.
 };
 struct CpuBoundary
@@ -158,7 +159,7 @@ JoltMixedConstraintSolver::JoltMixedConstraintSolver(rhi::ComputeHost &host, con
     const auto load = [&](Program &program, std::string_view name) {
         const auto entry = std::find_if(target.entries.begin(), target.entries.end(),
                                         [&](const auto &code) { return code.name == name; });
-        if (entry == target.entries.end() || entry->workgroupSize != std::array<uint32_t, 3>{64, 1, 1})
+        if (entry == target.entries.end() || entry->workgroupSize != std::array<uint32_t, 3>{SolverLanes, 1, 1})
             throw std::invalid_argument("Cross-domain solver shader has a different entry layout");
         std::vector<rhi::ComputeBufferBinding> bindings;
         for (const auto &resource : target.resources) {
@@ -255,6 +256,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> impulses;
     std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> corrections;
     uint32_t substep = 0, substepCount = 0;
+    uint32_t serialGroupCount = 0, cooperativeGroupCount = 0;
     uint32_t largestGroupPatchCount = 0;
     bool solveVelocity = false;
     bool solvePosition = false;
@@ -404,6 +406,61 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 response.cpuDynamic, response.gpuDynamic, response.wakeGpu};
     }
 
+    void BuildGroupSchedule(const std::vector<UInt4> &connectedGroups)
+    {
+        // Headers precede the level ranges and packed patch ordinals. The stable
+        // patch buffer order is still used by warm start and contact publication.
+        groups.resize(connectedGroups.size());
+        serialGroupCount = cooperativeGroupCount = 0;
+        for (const auto &group : connectedGroups) {
+            if (group.y < SolverLanes / 2) {
+                groups[serialGroupCount++] = group;
+                continue;
+            }
+
+            std::vector<uint32_t> nextCpuLevel(group.w);
+            std::unordered_map<uint32_t, uint32_t> nextGpuLevel;
+            std::vector<uint32_t> rowLevels(group.y), levelCounts;
+            for (uint32_t row = 0; row < group.y; ++row) {
+                const uint32_t patch = group.x + row;
+                const auto pair = Endpoints(order[patch]);
+                auto *cpuLevel = pair.cpuDynamic ? &nextCpuLevel[patches[patch].endpoints.x - group.z] : nullptr;
+                auto *gpuLevel = pair.gpuDynamic ? &nextGpuLevel[pair.gpuSlot] : nullptr;
+                const uint32_t level = std::max(cpuLevel ? *cpuLevel : 0u, gpuLevel ? *gpuLevel : 0u);
+                if (cpuLevel)
+                    *cpuLevel = level + 1u;
+                if (gpuLevel)
+                    *gpuLevel = level + 1u;
+                rowLevels[row] = level;
+                if (level == levelCounts.size())
+                    levelCounts.push_back(0u);
+                ++levelCounts[level];
+            }
+            // Preserve the dependency order at each writer. A chain with little
+            // independent work uses one lane, like the small connected groups.
+            if (levelCounts.size() > group.y / 2u) {
+                groups[serialGroupCount++] = group;
+                continue;
+            }
+            const auto firstLevel = static_cast<uint32_t>(groups.size());
+            const auto levelCount = static_cast<uint32_t>(levelCounts.size());
+            const auto patchWords = firstLevel + levelCount;
+            groups[connectedGroups.size() - ++cooperativeGroupCount] = {firstLevel, levelCount, group.z, group.w};
+            groups.resize(patchWords + (group.y + 3u) / 4u);
+            uint32_t offset = 0;
+            for (uint32_t level = 0; level < levelCount; ++level) {
+                const uint32_t count = levelCounts[level];
+                groups[firstLevel + level] = {patchWords * 4u + offset, count, 0, 0};
+                levelCounts[level] = offset;
+                offset += count;
+            }
+            std::vector<uint32_t> orderedPatches(group.y);
+            for (uint32_t row = 0; row < group.y; ++row)
+                orderedPatches[levelCounts[rowLevels[row]]++] = group.x + row;
+            std::memcpy(groups.data() + patchWords, orderedPatches.data(), group.y * sizeof(uint32_t));
+        }
+    }
+
     void BuildWorkset(JoltGpuStepInputs &inputs)
     {
         auto &responses = step.Responses();
@@ -441,7 +498,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         const auto dynamicCount = cpuLinks.size();
         native.clear();
         prescribed.clear();
-        groups.clear();
+        std::vector<UInt4> connectedGroups;
         patches.clear();
         wakeSlots.clear();
         largestGroupPatchCount = 0;
@@ -452,13 +509,14 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         for (const size_t index : order) {
             if (parents[index] != previous) {
                 previous = parents[index];
-                groups.push_back({static_cast<uint32_t>(patches.size()), 0, static_cast<uint32_t>(native.size()), 0});
+                connectedGroups.push_back(
+                    {static_cast<uint32_t>(patches.size()), 0, static_cast<uint32_t>(native.size()), 0});
             }
             const auto pair = Endpoints(index);
             gpuContactBodies.push_back(pair.gpuSlot);
             if (pair.wakeGpu)
                 wakeSlots.push_back(pair.gpuSlot);
-            auto &group = groups.back();
+            auto &group = connectedGroups.back();
             const size_t slot = pair.cpuDynamic ? native.size() : dynamicCount + prescribed.size();
             const auto [mapped, added] = cpuLinks.try_emplace(pair.cpuBody, slot);
             if (added) {
@@ -482,6 +540,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             ++group.y;
             largestGroupPatchCount = std::max(largestGroupPatchCount, group.y);
         }
+        BuildGroupSchedule(connectedGroups);
         std::sort(gpuContactBodies.begin(), gpuContactBodies.end());
         gpuContactBodies.erase(std::unique(gpuContactBodies.begin(), gpuContactBodies.end()), gpuContactBodies.end());
         inputs.SetExternalContactBodies(std::move(gpuContactBodies));
@@ -743,11 +802,18 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         return bool(buffer);
     }
 
-    rhi::ComputeDispatchDesc Dispatch(const Program &program) const
+    uint32_t SolverWorkgroups() const
+    {
+        return (serialGroupCount + SolverLanes - 1u) / SolverLanes + cooperativeGroupCount;
+    }
+
+    rhi::ComputeDispatchDesc Dispatch(const Program &program, uint32_t workgroups) const
     {
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = program.kernel;
-        dispatch.groupCountX = (params.range.y + 63u) / 64u;
+        const auto width = owner.m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0];
+        dispatch.groupCountX = std::min(workgroups, width);
+        dispatch.groupCountY = static_cast<uint32_t>((uint64_t(workgroups) + width - 1u) / width);
         for (const auto port : program.ports) {
             dispatch.buffers.push_back(buffers[port]);
             const bool modifies =
@@ -796,7 +862,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         params.range = {0, static_cast<uint32_t>(wakeSlots.size()), 0, 0};
         auto packet = rhi::PrepareComputeBatch(
             owner.m_host, {{buffers[Params], 0, Bytes(&params, 1)}, {buffers[WakeSlots], 0, Bytes(wakeSlots)}},
-            {Dispatch(owner.m_wake)});
+            {Dispatch(owner.m_wake, (params.range.y + SolverLanes - 1u) / SolverLanes)});
         return {packet,
                 [done = std::move(done)] {
                     done();
@@ -943,7 +1009,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             }
         }
         // An island with no native rows can keep the updated shadow and impulse sum on the GPU.
-        params.range = {0, static_cast<uint32_t>(groups.size()), rounds, newVelocities ? 1u : 0u};
+        params.range = {serialGroupCount, cooperativeGroupCount, rounds, newVelocities ? 1u : 0u};
         params.contact.x = first ? warmStartScale : 0.0f;
         const bool readFeedback = !native.empty() && (interleaveCpu || last);
         const bool readImpulses = last && (policy.impulses || solveFixed);
@@ -960,8 +1026,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             updates.push_back({buffers[CpuVelocities], 0, Bytes(velocities.data(), velocityCount)});
         if (first)
             UploadWorkset(updates);
-        auto packet =
-            rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {Dispatch(owner.m_velocity)}, std::move(reads));
+        auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(updates),
+                                               {Dispatch(owner.m_velocity, SolverWorkgroups())}, std::move(reads));
         velocityInitialized = true;
         return {packet,
                 [self = shared_from_this(), packet, last, readFeedback, readImpulses, contactRead, rounds, cpuRounds,
@@ -1012,7 +1078,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         const bool last = iteration + rounds == iterations;
         const bool readFeedback = !native.empty() && (interleaveCpu || last);
         const uint32_t cpuRounds = interleaveCpu ? rounds : iterations;
-        params.range = {0, static_cast<uint32_t>(groups.size()), rounds, 0};
+        params.range = {serialGroupCount, cooperativeGroupCount, rounds, 0};
         std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)}};
         if (poseCount)
             updates.push_back({buffers[CpuPoses], 0, Bytes(poses.data(), poseCount)});
@@ -1029,8 +1095,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             reads.push_back({buffers[Patches], 0, patches.size() * sizeof(DevicePatch)});
         const auto resume =
             reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
-        auto packet =
-            rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {Dispatch(owner.m_position)}, std::move(reads));
+        auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(updates),
+                                               {Dispatch(owner.m_position, SolverWorkgroups())}, std::move(reads));
         return {
             packet,
             [self = shared_from_this(), packet, last, readFeedback, readJoints, rounds, cpuRounds,

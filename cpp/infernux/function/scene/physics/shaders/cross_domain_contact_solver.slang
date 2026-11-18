@@ -4,7 +4,7 @@
 
 struct CouplingParams
 {
-    uint4 range; // First group or wake slot, count, rounds, clear accumulated CPU impulses.
+    uint4 range; // Serial groups, cooperative groups, rounds, clear impulses. Wake/sweep use first and count.
     float4 gravityDt;
     float4 contact; // Warm-start scale, penetration slop, max correction, Baumgarte.
 };
@@ -57,6 +57,55 @@ struct MixedPatch
 [[vk::binding(21, 0)]] RWStructuredBuffer<ContinuousReceipt> continuous_receipts;
 [[vk::binding(22, 0)]] RWStructuredBuffer<ContactPatch> continuous_patches;
 [[vk::binding(23, 0)]] StructuredBuffer<Contact> continuous_contacts;
+
+static const uint SolverLanes = 64u;
+groupshared uint4 shared_group;
+groupshared uint shared_group_index;
+
+uint solver_group_index(uint3 id, uint lane)
+{
+    if (id.y == 0u) return id.x;
+    const uint index = id.x + id.y * WorkgroupCount().x;
+    __target_switch
+    {
+    case wgsl:
+        // WGSL must see a uniform value before branching to a storage barrier.
+        if (lane == 0u)
+            shared_group_index = index;
+        return workgroupUniformLoad(shared_group_index);
+    default:
+        return index;
+    }
+}
+
+uint serial_workgroups()
+{
+    return (params.range.x + SolverLanes - 1u) / SolverLanes;
+}
+
+uint4 cooperative_group(uint group, uint lane)
+{
+    if (lane == 0u)
+        shared_group = groups[params.range.x + group - serial_workgroups()];
+    GroupMemoryBarrierWithGroupSync();
+    return workgroupUniformLoad(shared_group);
+}
+
+uint scheduled_patch(uint ordinal)
+{
+    return groups[ordinal / 4u][ordinal % 4u];
+}
+
+void finish_contact_level()
+{
+    // Only storage buffers cross levels. The portable WGSL barrier requires
+    // no storage texture feature.
+    __target_switch
+    {
+    case wgsl: __intrinsic_asm "storageBarrier()";
+    default: DeviceMemoryBarrierWithGroupSync();
+    }
+}
 
 void store_velocity_result(uint a, uint b, bool dynamic_a, bool dynamic_b,
                            BodyState sa, BodyState sb, float3 impulse, float3 torqueA)
@@ -155,8 +204,8 @@ JointFixedAuthor fixed_author()
     return author;
 }
 
-// A thread owns every CPU and GPU endpoint of one connected cross-domain
-// group. Local constraint solvers have completed their current velocity round.
+// Both dynamic endpoints are exclusive to this patch for the current level.
+// Local constraint solvers have completed their current velocity round.
 void solve_patch(uint index)
 {
     MixedPatch patch = patches[index];
@@ -243,24 +292,63 @@ void solve_patch(uint index)
     patches[index] = patch;
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void exchange_cross_domain_velocity(uint3 id : SV_DispatchThreadID)
+void clear_group_impulses(uint4 group, uint lane, uint stride)
 {
-    if (id.x >= params.range.y) return;
-    uint4 group = groups[params.range.x + id.x];
+    const Velocity zero = {float4(0), float4(0)};
+    for (uint i = lane; i < group.w; i += stride)
+        cpu_impulses[group.z + i] = zero;
+}
+
+void solve_serial_velocity(uint4 group)
+{
     if (params.range.w != 0u)
-    {
-        const Velocity zero = {float4(0), float4(0)};
-        for (uint i = group.z; i < group.z + group.w; ++i)
-            cpu_impulses[i] = zero;
-    }
+        clear_group_impulses(group, 0u, 1u);
     if (params.contact.x > 0.0f)
         for (uint i = group.x; i < group.x + group.y; ++i)
             warm_patch(i);
     for (uint round = 0; round < params.range.z; ++round)
         for (uint i = group.x; i < group.x + group.y; ++i)
             solve_patch(i);
+}
+
+[shader("compute")]
+[numthreads(SolverLanes, 1, 1)]
+void exchange_cross_domain_velocity(uint3 id : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const uint group_index = solver_group_index(id, lane);
+    const uint serial = serial_workgroups();
+    if (group_index < serial)
+    {
+        const uint group = group_index * SolverLanes + lane;
+        if (group < params.range.x)
+            solve_serial_velocity(groups[group]);
+        return;
+    }
+    if (group_index - serial >= params.range.y) return;
+
+    const uint4 group = cooperative_group(group_index, lane);
+    if (params.range.w != 0u)
+    {
+        clear_group_impulses(group, lane, SolverLanes);
+        finish_contact_level();
+    }
+    const uint warm = params.contact.x > 0.0f ? 1u : 0u;
+    for (uint round = 0; round < params.range.z + warm; ++round)
+    {
+        for (uint level = 0; level < group.y; ++level)
+        {
+            const uint4 span = groups[group.x + level];
+            for (uint i = lane; i < span.y; i += SolverLanes)
+            {
+                const uint patch = scheduled_patch(span.x + i);
+                if (round < warm)
+                    warm_patch(patch);
+                else
+                    solve_patch(patch);
+            }
+            finish_contact_level();
+        }
+    }
 }
 
 void project_patch(uint index)
@@ -305,22 +393,45 @@ void project_patch(uint index)
 }
 
 [shader("compute")]
-[numthreads(64, 1, 1)]
-void exchange_cross_domain_position(uint3 id : SV_DispatchThreadID)
+[numthreads(SolverLanes, 1, 1)]
+void exchange_cross_domain_position(uint3 id : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    if (id.x >= params.range.y) return;
-    const uint4 group = groups[params.range.x + id.x];
+    const uint group_index = solver_group_index(id, lane);
+    const uint serial = serial_workgroups();
+    if (group_index < serial)
+    {
+        const uint index = group_index * SolverLanes + lane;
+        if (index < params.range.x)
+        {
+            const uint4 group = groups[index];
+            for (uint round = 0; round < params.range.z; ++round)
+                for (uint i = group.x; i < group.x + group.y; ++i)
+                    project_patch(i);
+        }
+        return;
+    }
+    if (group_index - serial >= params.range.y) return;
+
+    const uint4 group = cooperative_group(group_index, lane);
     for (uint round = 0; round < params.range.z; ++round)
-        for (uint i = group.x; i < group.x + group.y; ++i)
-            project_patch(i);
+    {
+        for (uint level = 0; level < group.y; ++level)
+        {
+            const uint4 span = groups[group.x + level];
+            for (uint i = lane; i < span.y; i += SolverLanes)
+                project_patch(scheduled_patch(span.x + i));
+            finish_contact_level();
+        }
+    }
 }
 
 [shader("compute")]
-[numthreads(64, 1, 1)]
-void wake_cross_domain_bodies(uint3 id : SV_DispatchThreadID)
+[numthreads(SolverLanes, 1, 1)]
+void wake_cross_domain_bodies(uint3 id : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    if (id.x >= params.range.y) return;
-    uint slot = wake_slots[params.range.x + id.x];
+    const uint index = (id.x + id.y * WorkgroupCount().x) * SolverLanes + lane;
+    if (index >= params.range.y) return;
+    uint slot = wake_slots[params.range.x + index];
     BodySleepRecord record = gpu_sleep[slot];
     if (record.runtime.state.x != 0u) return;
     BodyState state = gpu_states[slot];
