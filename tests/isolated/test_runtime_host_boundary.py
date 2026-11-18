@@ -8,6 +8,7 @@ import sys
 def test_runtime_host_imports_do_not_load_editor_operations():
     code = """
 import sys
+sys.modules['jsonschema'] = None  # The standard Player does not ship editor schema tooling.
 from infernux.host import MainThreadCommandQueue, OperationRegistry
 from infernux.host.queries import emit_signal
 from infernux.engine.reload.owners import ReloadOwner

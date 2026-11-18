@@ -15,9 +15,6 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Callable, Iterable, Mapping
 
-from jsonschema import Draft202012Validator, SchemaError, ValidationError
-
-
 OPERATION_SCHEMA_ID = "infernux.operation"
 ENGINE_OPERATION_OWNER = "infernux/engine"
 
@@ -141,7 +138,9 @@ class OperationRegistry:
             return self._revision
 
     def register(self, operation: Operation) -> bool:
+        from jsonschema import Draft202012Validator, SchemaError
         from infernux.engine.reload.owners import owner_for
+
         provider = owner_for(operation.handler)
         if provider is not None and provider.closed:
             raise OperationError("operation.unavailable", "Cannot register a retired source provider")
@@ -500,6 +499,8 @@ def _json_value(value):
 
 
 def _validate_arguments(arguments: Mapping[str, object], schema: Mapping[str, object]) -> None:
+    from jsonschema import Draft202012Validator, ValidationError
+
     try:
         Draft202012Validator(_json_value(schema)).validate(_json_value(arguments))
     except ValidationError as exc:

@@ -876,8 +876,6 @@ class Engine(RuntimeWorldHost):
             try:
                 automation.stop()
             except Exception as exc:
-                from infernux.debug import Debug
-
                 Debug.log_error(f"Automation stopped with cleanup errors: {exc}")
 
         # Dirty-panel decisions are completed by SceneFileManager's non-blocking
