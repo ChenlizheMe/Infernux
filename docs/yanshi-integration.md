@@ -89,6 +89,8 @@ python tools/yanshi/rigid_diagnostics_probe.py
 `tools/yanshi/rigid_diagnostics_probe.py` 构造无重力、无碰撞、无阻尼的单体，
 以 0.5 m/s 沿 +X 运动，逐步采样并断言 0.1 mm / 1 μs 容差。
 
+在真实图形编辑器上的端到端验证（`tools/yanshi/editor_automation_probe.py`）：编辑器启动后自动打开回环 Automation Host（112 个操作），通过 SDK 完成 object.kinds → object.create → runtime.play → runtime.pause → sim.step（恰好 +1 tick、sim_s +0.02）→ scene.object.resolve（运行态 id）→ sim.pose → capture.request/status（1920×1080 PNG，175 KB）。截图证据：`E:\project\Yanshi\editor_smoke.png`（编辑器界面），`_editor_smoke_p1\Cache\Automation\artifacts\...\review\yanshi_probe.png`（Game 视口）。
+
 ## 5. 与设计稿的已知缺口
 
 1. **Edit/Play 对象重绑**：宿主查询返回运行态对象 id，但 050 的 runtime world
