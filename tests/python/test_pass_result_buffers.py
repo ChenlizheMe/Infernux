@@ -17,6 +17,44 @@ from infernux.renderstack.pipeline_dsl import PipelineBuilder
 from infernux.renderstack.resource_bus import ResourceBus
 
 
+def test_lazy_result_orders_nested_producers_before_the_pass_that_first_samples_them():
+    graph = RenderGraph("Lazy lighting")
+    target = graph.create_texture("color", camera_target=True)
+    requested = []
+
+    def produce_raw():
+        requested.append("raw")
+        image = graph.create_texture("raw")
+        graph.add_pass("Trace").write_color(image)
+        return image
+
+    with graph.name_scope("lighting"):
+        raw = graph.publish_pass_result("sampled", {}, providers={"light": produce_raw})
+
+        def reconstruct():
+            requested.append("denoised")
+            output = graph.create_texture("denoised")
+            with graph.add_pass("Denoise") as p:
+                p.set_texture("incoming", raw.sample("light"))
+                p.write_color(output)
+                p.fullscreen_quad("test/denoise")
+            return output
+
+        result = graph.publish_pass_result("filtered", {}, providers={"light": reconstruct})
+
+    assert requested == []
+    with graph.name_scope("project"):
+        view = graph.add_pass("View")
+        view.set_texture("light", result.sample("light"))
+        view.write_color(target)
+        view.fullscreen_quad("test/display")
+    assert result.sample("light") is result.sample("light")
+    assert requested == ["denoised", "raw"]
+    expected = ["lighting/Trace", "lighting/Denoise", "project/View"]
+    assert [name for kind, name in graph.topology_sequence if kind == "pass"] == expected
+    assert [p.name for p in graph.build().passes] == expected
+
+
 def test_pass_resources_reject_foreign_graph_handles_even_with_matching_names():
     view = RenderGraph("Scene View")
     other_view = RenderGraph("Game View")

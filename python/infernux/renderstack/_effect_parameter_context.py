@@ -85,9 +85,9 @@ def graph_structure(graph):
         tuple(freeze({
             key: tuple(value) if key == "_parameters" else value
             for key, value in vars(render_pass).items()
-            if key not in {"_graph", "_parameter_block"}
+            if key not in {"_graph", "_order", "_parameter_block"}
         }) for render_pass in graph._passes),
-        tuple(graph._topology),
+        tuple(graph.topology_sequence),
         graph._output, graph._linear_output, graph._msaa_samples,
         graph._temporal_jitter,
     )
