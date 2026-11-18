@@ -360,9 +360,9 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             const uint32_t length = patchDomain ? contactLease->patchCount : jointDomain ? jointCount : bodyCount;
             const uint32_t count = std::min(length - first, WorkItemLimit(Domain::Bodies));
             StageWork range{{first, count, 0u, 0u}};
-            if (entry == MoveToEvent)
-                range.range.z = earliestImpact;
-            else if (entry == ResumeMotion)
+            if (entry == MoveToEvent || entry == ResumeMotion)
+                range.range.z = motionFraction;
+            if (entry == ResumeMotion)
                 std::memcpy(&range.range.w, &sweepSeconds, sizeof(float));
             std::vector<uint8_t> bytes(sizeof(range));
             std::memcpy(bytes.data(), &range, sizeof(range));
@@ -385,12 +385,15 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                 }
             }
         }
+        if (dispatches.empty())
+            return Retain({nullptr, [self = shared_from_this(), maximum] { return self->Resolve(maximum); }});
         const bool canSplit = dispatches.size() > 1;
         auto packet = rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches));
         auto work = Retain({packet,
                             [self = shared_from_this(), first, entry, parentPasses]() -> JoltGpuControlWork {
                                 if (entry == EntryCount) {
                                     if (self->phase == Phase::MoveEvent) {
+                                        self->motionFraction = 0u;
                                         self->phase = Phase::InitializeEvent;
                                         return self->Next();
                                     }
@@ -543,7 +546,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
     const bool continuing;
     const bool reportImpacts;
     bool expectLocalContact = false;
-    uint32_t earliestImpact = UINT32_MAX;
+    uint32_t motionFraction = 0u;
     Phase phase = Phase::InitializeJobs;
     Entry resolveEntry = EntryCount;
     uint32_t slots = 0u, scratchWords = 0u, bodyCount = 0u, jointCount = 0u, resolveFirst = 0u,
@@ -582,9 +585,13 @@ JoltGpuControlWork JoltGpuNarrowphase::PrepareSweepEvent(const JoltGpuStorage &s
         m_impl, storage, inputs, budget, [done = std::move(completed)](std::optional<float>) { done(); }, true,
         remainingSeconds, false, reportImpacts);
     execution->expectLocalContact = localImpact;
-    std::memcpy(&execution->earliestImpact, &fraction, sizeof(fraction));
+    std::memcpy(&execution->motionFraction, &fraction, sizeof(fraction));
     execution->retainChoices = [&inputs](const auto &choices) { inputs.SetSweepChoices(choices); };
-    execution->BeginResolve(Impl::Execution::Phase::MoveEvent, MoveToEvent);
+    // Without local rows, each body can reach the event and rebase its motion in one invocation.
+    if (execution->contactLease->patchCount || execution->jointCount)
+        execution->BeginResolve(Impl::Execution::Phase::MoveEvent, MoveToEvent);
+    else
+        execution->BeginResolve(Impl::Execution::Phase::FinishEvent, ResumeMotion);
     return execution->Next();
 }
 
