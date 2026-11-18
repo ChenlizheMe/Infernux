@@ -779,10 +779,10 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                              "' does not declare the required usage");
                 return false;
             }
-            const bool tailWrite = access.type == GraphBufferAccessType::StorageWrite &&
-                                   IsRayTailOutput(buffer->second->frameBuffer) && pass.rayTailBatch == 1 && command &&
-                                   (command->type == GraphCommandType::RayTailPrepare ||
-                                    command->type == GraphCommandType::RayTailMerge);
+            const bool tailWrite =
+                access.type == GraphBufferAccessType::StorageWrite && IsRayTailOutput(buffer->second->frameBuffer) &&
+                pass.rayTailBatch == 1 && command &&
+                (command->type == GraphCommandType::RayTailPrepare || command->type == GraphCommandType::RayTailMerge);
             if (buffer->second->HasFrameBuffer() && access.type != GraphBufferAccessType::StorageRead && !tailWrite) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: frame buffer '", access.resource, "' is read-only");
                 return false;
