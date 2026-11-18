@@ -28,8 +28,9 @@ class JoltCpuContactPublication final
     void BeginCoupledSubstep(uint32_t substep, const std::vector<JPH::BodyID> &endpoints,
                              const std::vector<JPH::BodyID> &sleepEndpoints,
                              const std::vector<JPH::BodyID> &wakeEndpoints);
+    void ApplyCoupledVelocityImpulses(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses);
     // Each returns true when its phase finishes on this substep.
-    bool AdvanceCoupledVelocity(const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses = {});
+    bool AdvanceCoupledVelocity();
     void PrepareCoupledIntegration(bool retainMotion);
     [[nodiscard]] std::optional<float> CoupledImpactTime() const;
     [[nodiscard]] bool HasCoupledImpact(JPH::BodyID body) const;

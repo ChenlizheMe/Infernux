@@ -1044,7 +1044,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                                                       JPH::Vec3(value.angular.x, value.angular.y, value.angular.z)});
                         }
                         // With no local rows the final response advances all the empty sweeps together.
-                        bool velocityComplete = self->cpu.AdvanceCoupledVelocity(self->impulses);
+                        self->cpu.ApplyCoupledVelocityImpulses(self->impulses);
+                        bool velocityComplete = self->cpu.AdvanceCoupledVelocity();
                         for (uint32_t i = 1; i < cpuRounds; ++i)
                             velocityComplete = self->cpu.AdvanceCoupledVelocity();
                         if (velocityComplete != last)

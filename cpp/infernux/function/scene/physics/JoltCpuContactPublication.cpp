@@ -726,12 +726,18 @@ void JoltCpuContactPublication::BeginCoupledSubstep(uint32_t substep, const std:
         system.DeferCoupledSleep(*fixed.context, sleepEndpoints.data(), static_cast<uint32_t>(sleepEndpoints.size()));
 }
 
-bool JoltCpuContactPublication::AdvanceCoupledVelocity(
+void JoltCpuContactPublication::ApplyCoupledVelocityImpulses(
     const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses)
 {
     auto &fixed = *m_coupled;
-    const auto result = fixed.scene.System().AdvanceCoupledVelocityUpdate(*fixed.context, impulses.data(),
-                                                                          static_cast<uint32_t>(impulses.size()));
+    fixed.scene.System().ApplyCoupledVelocityImpulses(*fixed.context, impulses.data(),
+                                                      static_cast<uint32_t>(impulses.size()));
+}
+
+bool JoltCpuContactPublication::AdvanceCoupledVelocity()
+{
+    auto &fixed = *m_coupled;
+    const auto result = fixed.scene.System().AdvanceCoupledVelocityUpdate(*fixed.context);
     return AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Velocity);
 }
 
