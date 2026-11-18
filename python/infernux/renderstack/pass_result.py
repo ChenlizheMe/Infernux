@@ -8,6 +8,7 @@ want and sample a semantic from that result.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Callable, Mapping
@@ -49,6 +50,8 @@ class PassResult:
     )
     _owner_graph: object | None = field(default=None, repr=False, compare=False)
     _providers: Mapping[str, Callable[[], object]] = field(default_factory=dict, repr=False, compare=False)
+    _order: tuple[int, ...] = field(default=(), repr=False, compare=False)
+    _name_scopes: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     def __post_init__(self) -> None:
         source = str(self.source or "").strip()
@@ -70,10 +73,12 @@ class PassResult:
     def sample(self, name: str | BufferHandle):
         semantic = _buffer_name(name)
         if semantic not in self.buffers:
-            if semantic in self._providers:
-                self._publish_materialized(semantic, self._providers[semantic]())
-            elif self._materialize is not None:
-                self._materialize(self, semantic)
+            scope = self._owner_graph._materialize_at(self) if self._owner_graph is not None else nullcontext()
+            with scope:
+                if semantic in self._providers:
+                    self._publish_materialized(semantic, self._providers[semantic]())
+                elif self._materialize is not None:
+                    self._materialize(self, semantic)
         try:
             return self.buffers[semantic]
         except KeyError as exc:

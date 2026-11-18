@@ -1026,7 +1026,9 @@ class RenderGraph:
         self._msaa_samples: int = output_samples  # 0 = pipeline-owned screen MSAA
         self._temporal_jitter = False
         # Topology auto-recording
-        self._topology: List[Tuple[str, str]] = []
+        self._topology: list[tuple[tuple[int, ...], str, str]] = []
+        self._topology_serial = 0
+        self._order_prefix: tuple[int, ...] = ()
         self._injection_points_list: List = []  # List[InjectionPoint]
         self._effect_stages_list: List = []  # List[EffectStage]
         # Optional callback invoked at each injection_point() (set by RenderStack)
@@ -1078,7 +1080,27 @@ class RenderGraph:
     @property
     def topology_sequence(self) -> List[Tuple[str, str]]:
         """Auto-recorded topology using stable IDs for user effect stages."""
-        return list(self._topology)
+        return [(kind, label) for _, kind, label in sorted(self._topology)]
+
+    def _next_order(self) -> tuple[int, ...]:
+        self._topology_serial += 1
+        return (*self._order_prefix, self._topology_serial)
+
+    def _record_topology(self, kind: str, label: str) -> tuple[int, ...]:
+        order = self._next_order()
+        self._topology.append((order, kind, label))
+        return order
+
+    @contextmanager
+    def _materialize_at(self, result):
+        # A deferred producer belongs to the stage which published the result.
+        # It can itself request earlier outputs while recording its own passes.
+        prefix, scopes = self._order_prefix, self._name_scopes
+        self._order_prefix, self._name_scopes = result._order, list(result._name_scopes)
+        try:
+            yield
+        finally:
+            self._order_prefix, self._name_scopes = prefix, scopes
 
     @property
     def injection_points(self) -> list:
@@ -1139,6 +1161,8 @@ class RenderGraph:
             _materialize=materialize,
             _owner_graph=self,
             _providers=providers or {},
+            _order=self._next_order(),
+            _name_scopes=tuple(self._name_scopes),
         )
         self._pass_results[source_name] = result
         return result
@@ -1796,7 +1820,7 @@ class RenderGraph:
             resource_state=resources if resources is not None else {"color", "depth"},
         )
         self._injection_points_list.append(ip)
-        self._topology.append(("ip", ip.display_name))
+        self._record_topology("ip", ip.display_name)
 
         if self._injection_callback is not None:
             self._injection_callback(name)
@@ -1840,7 +1864,7 @@ class RenderGraph:
             )
 
         self._effect_stages_list.append(stage)
-        self._topology.append(("effect_stage", stage.stable_id))
+        self._record_topology("effect_stage", stage.stable_id)
         if self._effect_stage_callback is not None:
             self._effect_stage_callback(stage)
         return stage
@@ -1996,7 +2020,7 @@ class RenderGraph:
         pass_name = self._scoped_name(name)
         builder = RenderPassBuilder(pass_name, graph=self, pass_type=pass_type)
         self._passes.append(builder)
-        self._topology.append(("pass", pass_name))
+        builder._order = self._record_topology("pass", pass_name)
         return builder
 
     def add_copy_pass(self, name: str) -> RenderPassBuilder:
@@ -2022,7 +2046,7 @@ class RenderGraph:
                 removed = self._passes.pop(i)
                 break
         if removed is not None:
-            for i, (kind, label) in enumerate(self._topology):
+            for i, (_, kind, label) in enumerate(self._topology):
                 if kind == "pass" and label == name:
                     self._topology.pop(i)
                     break
@@ -2033,7 +2057,7 @@ class RenderGraph:
         if not isinstance(builder, RenderPassBuilder) or builder._graph is not self:
             raise ValueError("RenderPassBuilder does not belong to this RenderGraph")
         self._passes.append(builder)
-        self._topology.append(("pass", builder._name))
+        builder._order = self._record_topology("pass", builder._name)
 
     # ---- Output ----
 
@@ -2072,7 +2096,7 @@ class RenderGraph:
         The new API forbids IPs before the very first pass (use
         ``after_opaque`` etc. instead).
         """
-        for kind, _label in self._topology:
+        for kind, _label in self.topology_sequence:
             if kind == "pass":
                 return  # first entry is a pass — OK
             if kind in {"ip", "effect_stage"}:
@@ -2081,7 +2105,7 @@ class RenderGraph:
                     "pass. This user extension point requires an upstream result."
                 )
 
-    def _validate_graph(self) -> None:
+    def _validate_graph(self, passes) -> None:
         self.validate_no_ip_before_first_pass()
 
         texture_map = {tex.name: tex for tex in self._textures}
@@ -2099,7 +2123,7 @@ class RenderGraph:
                 )
 
         produced = set()
-        for p in self._passes:
+        for p in passes:
             if p._name in pass_names:
                 raise ValueError(
                     f"Graph '{self._name}' contains duplicate pass name '{p._name}'"
@@ -2401,8 +2425,6 @@ class RenderGraph:
         if not self._passes:
             raise ValueError(f"Graph '{self._name}' has no passes")
 
-        self._validate_graph()
-
         # Auto-inject before/after_post_process injection points when the
         # pipeline didn't declare them.  Uses has_injection_point() so
         # pipelines that already define these (e.g. via screen_ui_section)
@@ -2412,6 +2434,9 @@ class RenderGraph:
             self.injection_point("before_post_process", resources=_auto_res)
         if not self.has_injection_point("after_post_process"):
             self.injection_point("after_post_process", resources=_auto_res)
+
+        passes = sorted(self._passes, key=lambda p: p._order)
+        self._validate_graph(passes)
 
         if self._output is None:
             # Auto-set output to camera_target if exists
@@ -2426,9 +2451,9 @@ class RenderGraph:
                 "Call graph.set_output(texture)."
             )
 
-        return self._build_native()
+        return self._build_native(passes)
 
-    def _build_native(self):
+    def _build_native(self, passes):
         """Build using native C++ types."""
         desc = RenderGraphDescription()
         desc.name = self._name
@@ -2472,7 +2497,7 @@ class RenderGraph:
         }
 
         pass_list = []
-        for p in self._passes:
+        for p in passes:
             pd = GraphPassDesc()
             pd.name = p._name
             pd.type, commands = _PASS_TYPES[p._pass_type]
@@ -2547,7 +2572,7 @@ class RenderGraph:
         desc.output_display_encoded = self._output in self._display_encoded_outputs
         # RenderStack can remove/re-append passes while composing effects.
         # Resolve the boundary from the finished topology, not an earlier size.
-        boundary = next((i for i, p in enumerate(self._passes)
+        boundary = next((i for i, p in enumerate(passes)
                          if p._name == "_DisplayEncode"), None)
         desc.linear_output_texture = (self._linear_output or "") if boundary is not None else ""
         desc.linear_output_pass_count = boundary if boundary is not None else 0
@@ -2571,7 +2596,7 @@ class RenderGraph:
             lines.append(f"    - {buffer.name} ({buffer.byte_size} bytes, usage={buffer.usage})")
 
         lines.append(f"  Passes ({len(self._passes)}):")
-        for i, p in enumerate(self._passes):
+        for i, p in enumerate(sorted(self._passes, key=lambda p: p._order)):
             lines.append(f"    [{i}] {p._name} [{p._pass_type}] -> {p._action}")
             if p._reads:
                 lines.append(f"          reads: {', '.join(p._reads)}")
