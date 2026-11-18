@@ -42,7 +42,7 @@
 - 插件：`test_plugin_updates` + `test_inxpackage_plugins` + `test_plugin_preload_packages` **76 passed**（048 插件栈）。
 - reload：`test_play_mode_multi_world_reload` **1 passed**；`test_runtime_updates` / `test_play_mode_component_body_reload` / `test_sim_step` / `test_native_console` **84 passed**。
 - 主题：`test_editor_theme_packages` 通过（按 050 的扁平 token 表调整断言）。
-- 基线说明：`test_script_inheritance_reload`、`test_ui_font_reload`、`test_runtime_reload_stress_matrix` 在**干净的 050 worktree** 上同样失败（16/2/9），是 050 既有状态，不是本次迁移引入。
+- 编辑器：048 插件栈 + reload bridge 启动成功（DoorScene2 加载、控制台干净、61 FPS）；`ThemePanel` 已注册进 050 的面板 registry。`n- 基线说明：`test_script_inheritance_reload`、`test_ui_font_reload`、`test_runtime_reload_stress_matrix` 在**干净的 050 worktree** 上同样失败（16/2/9），是 050 既有状态，不是本次迁移引入。
 
 ## 编辑器视觉刷新评估
 
@@ -52,6 +52,6 @@
 
 ## 下一步
 
-1. 048 面板层（theme/catalog/settings/asset toolbar）挂载到 050 的 bootstrap，并做 GUI 冒烟。
+1. 048 面板层（theme 已注册；catalog/settings/asset toolbar）挂载到 050 的 bootstrap，并做 GUI 交互冒烟。
 2. 048 视觉刷新逐文件移植：先 `EditorThemeTable` 增量 token，再面板绘制。
 3. 剩余 048 专属 UI 模块接线（`catalog_browser`、`settings_workspace`、`documentation_panel` 等）。
