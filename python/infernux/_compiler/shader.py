@@ -917,7 +917,82 @@ struct InxRayBounce
     float3 throughput;
 };
 
-// D owns analytic-light NEE and the disjoint BSDF-sampled environment/emission endpoints.
+float inx_ray_mis_weight(float own_pdf, float other_pdf)
+{
+    if (!(own_pdf > 0.0))
+        return 0.0;
+    float relative = other_pdf / own_pdf;
+    return 1.0 / (1.0 + relative * relative);
+}
+
+struct InxRayEmitterSample
+{
+    RaySurfaceHit attributes;
+    float3 direction;
+    float3 emission;
+    float pdf;
+    bool active;
+};
+
+InxRayEmitterSample inx_ray_emitter_sample(RayPage page, float3 position, float3 uniform, float maximum)
+{
+    InxRayEmitterSample sample = (InxRayEmitterSample)0;
+    let selection = ray_sample_emissive(page, uniform);
+    if (!selection.active)
+        return sample;
+    TraceRay ray = {position, 0.0, float3(0.0), maximum};
+    sample.attributes = ray_surface_at_hit(page, ray, selection.hit);
+    float3 delta = sample.attributes.position_ws - position;
+    float distance = length(delta);
+    if (!(distance > 0.0 && distance <= maximum))
+        return sample;
+    sample.direction = delta / distance;
+    sample.attributes.front_face = dot(sample.direction, sample.attributes.geometric_normal_ws) < 0.0;
+    sample.pdf = ray_emissive_solid_angle_pdf(selection.pmf, sample.attributes, position);
+    if (!(sample.pdf > 0.0))
+        return sample;
+    InxSurfaceData surface;
+    if (!inx_evaluate_ray_lit_hit(sample.attributes, selection.hit.surface_id, 0.0, surface))
+        return sample;
+    sample.emission = ray_lit_materials[selection.hit.surface_id].participation == inx_ray_material_unlit
+        ? inx_ray_unlit_radiance(sample.attributes, surface) : surface.emission;
+    sample.active = true;
+    return sample;
+}
+
+bool inx_ray_emitter_visible(RayPage page, float3 origin, InxRayEmitterSample sample)
+{
+    float3 normal = sample.attributes.front_face ? sample.attributes.geometric_normal_ws
+                                                : -sample.attributes.geometric_normal_ws;
+    float3 target = inx_ray_origin(sample.attributes.position_ws, normal, sample.attributes.position_error_ws);
+    float3 delta = target - origin;
+    float distance = length(delta);
+    if (!(distance > 0.0))
+        return false;
+    TraceRay visibility = {origin, 0.0, delta / distance, asfloat(asuint(distance) - 1u)};
+    return inx_trace_lit_visibility(page, visibility, 0xffffffffu, 0.0);
+}
+
+float3 inx_ray_emissive_direct(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
+    float3 outgoing, float3 geometric, uint seed, float maximum, RayReflectedLightLobe guide)
+{
+    let sample = inx_ray_emitter_sample(page, attributes.position_ws, inx_ray_uniform3(seed ^ 0x39aa145du), maximum);
+    if (!sample.active || dot(geometric, sample.direction) <= 0.0)
+        return float3(0.0);
+    float3 normal = normalize(surface.normal_ws);
+    RayGgxMaterial material = ray_lit_ggx(surface.albedo, surface.metallic, surface.smoothness,
+                                          0.0, surface.specular_highlights);
+    float probability = inx_ray_diffuse_probability(surface, material, dot(normal, outgoing));
+    float bsdf_pdf = ray_reflected_light_pdf(normal, geometric, outgoing, sample.direction, material,
+                                              probability, guide);
+    float3 response = inx_secondary_projected_bsdf(surface, normal, outgoing, sample.direction);
+    if (!inx_ray_emitter_visible(page, inx_ray_origin(attributes.position_ws, geometric,
+                                                     attributes.position_error_ws), sample))
+        return float3(0.0);
+    return sample.emission * response * (inx_ray_mis_weight(sample.pdf, bsdf_pdf) / sample.pdf);
+}
+
+// D owns analytic NEE and MIS-combined emissive/BSDF endpoint samples.
 // It contains no further reflected scattering at the endpoint.
 InxRayTransportTerm inx_ray_direct_sample(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
     uint4 metadata, InxBuffer_uint4 records, float3 outgoing, uint seed, float maximum, float light_roughness,
@@ -929,6 +1004,7 @@ InxRayTransportTerm inx_ray_direct_sample(RayPage page, RaySurfaceHit attributes
     light_surface.smoothness = min(surface.smoothness, 1.0 - light_roughness);
     float3 radiance = inx_ray_direct_radiance(page, attributes, light_surface, metadata, records, outgoing, seed);
     float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
+    radiance += inx_ray_emissive_direct(page, attributes, surface, outgoing, geometric, seed, maximum, guide);
     RayDirectionProposal proposal;
     float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0xb5297a4du, sample_index, proposal, guide);
     if (!proposal.active || max(weight.r, max(weight.g, weight.b)) <= 0.0)
@@ -943,12 +1019,14 @@ InxRayTransportTerm inx_ray_direct_sample(RayPage page, RaySurfaceHit attributes
         return {float3(0.0), false, hit.distance};
     bounce.attributes = ray_surface_at_hit(page, endpoint, hit);
     inx_evaluate_ray_lit_hit(bounce.attributes, hit.surface_id, 0.0, bounce.surface);
+    float emission_weight = inx_ray_mis_weight(proposal.pdf,
+        ray_emissive_pdf(hit, bounce.attributes, attributes.position_ws));
     if (kind == inx_ray_material_unlit)
-        return {radiance + weight * inx_ray_unlit_radiance(bounce.attributes, bounce.surface), true, hit.distance};
+        return {radiance + emission_weight * weight * inx_ray_unlit_radiance(bounce.attributes, bounce.surface), true, hit.distance};
     bounce.hit = hit;
     bounce.outgoing = -endpoint.direction;
     bounce.throughput = weight;
-    return {radiance + weight * bounce.surface.emission, true, hit.distance};
+    return {radiance + emission_weight * weight * bounce.surface.emission, true, hit.distance};
 }
 
 InxRayTransportTerm inx_ray_direct_fresh(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
@@ -1087,7 +1165,8 @@ float3 inx_ray_cached_tail(RayPage page, RayHit hit, RaySurfaceHit attributes, I
 }
 
 InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, InxBuffer_uint4 cache,
-                              uint seed, float3 weight, float light_roughness, float4 reflector, uint sample_index)
+                              uint seed, float3 weight, float light_roughness, float4 reflector, uint sample_index,
+                              float emission_pdf = 0.0, float3 emitter_origin = float3(0.0))
 {
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
@@ -1098,8 +1177,11 @@ InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 record
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData secondary;
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
+    // A delta ray has no competing continuous area-sampling path.
+    float emission_weight = emission_pdf > 0.0 ? inx_ray_mis_weight(emission_pdf,
+        ray_emissive_pdf(hit, attributes, emitter_origin)) : 1.0;
     if (kind == inx_ray_material_unlit)
-        return inx_ray_signal_output(weight * inx_ray_unlit_radiance(attributes, secondary),
+        return inx_ray_signal_output(emission_weight * weight * inx_ray_unlit_radiance(attributes, secondary),
                                      uint2(hit.surface_id, asuint(hit.distance)));
     float maximum = asfloat(inx_buffer_load(cache, 1u).z);
     InxRayBounce bounce;
@@ -1121,7 +1203,7 @@ InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 record
         if (next.available)
             tail = bounce.throughput * next.radiance;
     }
-    return inx_ray_signal_output((secondary.emission + direct.radiance + tail) * weight,
+    return inx_ray_signal_output((emission_weight * secondary.emission + direct.radiance + tail) * weight,
                                   uint2(hit.surface_id, asuint(hit.distance)));
 }
 
@@ -1168,6 +1250,33 @@ RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingC
     return sample;
 }
 
+float3 inx_ray_primary_emissive(RayPage page, InxSurfaceData surface, InxShadingContext context,
+    float3 geometric, bool specular, uint seed, uint index)
+{
+    float3 normal = normalize(surface.normal_ws);
+    float3 outgoing = normalize(inx_camera_toward_eye(context.position_ws));
+    RayGgxMaterial material = ray_lit_ggx(surface.albedo, surface.metallic, surface.smoothness,
+                                          context.normal_variance, surface.specular_highlights);
+    if (specular && material.alpha == 0.0)
+        return float3(0.0);
+    let sample = inx_ray_emitter_sample(page, context.position_ws,
+        ray_reflected_uniform3(seed ^ 0xa9d53e47u, index), inx_view.projection_params.y);
+    if (!sample.active || dot(geometric, sample.direction) <= 0.0)
+        return float3(0.0);
+    float cosine = max(dot(normal, sample.direction), 0.0);
+    float bsdf_pdf = cosine * 0.31830988618379067154;
+    float3 response = float3(cosine);
+    if (specular)
+    {
+        let terms = ray_evaluate_ggx(normal, geometric, outgoing, sample.direction, material);
+        bsdf_pdf = terms.pdf;
+        response = terms.projected_bsdf;
+    }
+    if (!inx_ray_emitter_visible(page, inx_ray_origin(context.position_ws, geometric), sample))
+        return float3(0.0);
+    return sample.emission * response * (inx_ray_mis_weight(sample.pdf, bsdf_pdf) / sample.pdf);
+}
+
 public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
                                             InxBuffer_uint4 records, uint model_id, bool specular, bool temporal,
                                             InxBuffer_uint4 cache)
@@ -1178,11 +1287,13 @@ public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingCo
     float4 reflector;
     RayDirectionSample sample = inx_ray_primary_direction(surface, context, geometric_normal, specular,
                                                           temporal, seed, reflector);
-    if (!sample.active)
-        return inx_ray_signal_output(float3(0.0), uint2(ray_invalid_index, 0u));
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
         return (InxRaySignal)0;
+    uint index = temporal ? inx_view_sample_index() : 0u;
+    float3 emission = inx_ray_primary_emissive(page, surface, context, geometric_normal, specular, seed, index);
+    if (!sample.active)
+        return inx_ray_signal_output(emission, uint2(ray_invalid_index, 0u));
     TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction, inx_view.projection_params.y};
     // One of N directions represents solid angle 1/(N*pdf). Project the cap's
     // half-angle onto microfacet slopes for the next analytic light connection.
@@ -1191,8 +1302,10 @@ public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingCo
     float sample_count = specular ? 96.0 : 64.0;
     float cap = max(4.0 * 3.14159265359 * sample_count * sample.pdf - 1.0, 1.0);
     float light_roughness = temporal && !sample.delta ? rsqrt(sqrt(cap)) : 0.0;
-    return inx_ray_radiance(page, ray, records, cache, seed, sample.weight, light_roughness, reflector,
-                            temporal ? inx_view_sample_index() : 0u);
+    InxRaySignal signal = inx_ray_radiance(page, ray, records, cache, seed, sample.weight, light_roughness, reflector,
+                                           index, sample.delta ? 0.0 : sample.pdf, context.position_ws);
+    signal.radiance.rgb += emission;
+    return signal;
 }
 
 public uint2 inx_ray_tail_pixel(uint index, uint2 extent)

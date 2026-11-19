@@ -100,6 +100,8 @@ struct RayInstancePage
     std::vector<RayInstance> instances;
     std::shared_ptr<const spatial::BvhTopology> topology;
     std::vector<spatial::Bounds> sourceBounds;
+    std::vector<RayGeometryWord> emissiveRanges;
+    std::vector<RayGeometryWord> emissiveTriangles;
 };
 
 /// The draw's streams remain alive and unchanged until the last continuation.
@@ -176,11 +178,11 @@ struct RayPageUpload
     RayPageUpload(const RayInstancePage &page, RayGeometryStatus status, RayVisibilityRevision revision = {},
                   const std::vector<RayGeometryWord> &visibility = {});
     [[nodiscard]] RayGeometryBytes Section(size_t index) const noexcept;
-    static constexpr size_t sectionCount = 5;
+    static constexpr size_t sectionCount = 6;
     uint64_t bytes = 0;
 
   private:
-    std::array<RayGeometryWord, 2> m_header{};
+    std::array<RayGeometryWord, 3> m_header{};
     size_t m_headerBytes = sizeof(RayGeometryWord);
     std::array<RayGeometryBytes, sectionCount - 1> m_sections{};
 };

@@ -2,12 +2,15 @@
 
 #include "RayDeformation.h"
 #include "RayDeformationSource.h"
+#include "RayEmissive.h"
 #include "RayGeometry.h"
 #include "RayShadowChanges.h"
 
 #include <core/error/InxError.h>
+#include <core/types/ColorSpace.h>
 #include <function/renderer/RenderSurfaceRecords.h>
 #include <function/renderer/RenderWorld.h>
+#include <function/renderer/RendererParameterBlock.h>
 #include <function/renderer/rhi/RhiBuffer.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
@@ -113,7 +116,33 @@ struct DrawMeshPlacement
     uint64_t version;
     std::shared_ptr<const std::vector<glm::mat4>> palette;
     bool deviceVertices;
+    uint32_t triangleStart;
+    uint32_t triangleCount;
 };
+
+// A selection proxy only: the shader evaluates emission and the current world
+// triangle area. Uniform mixing keeps every triangle in the supported domain.
+float RayEmissivePower(const InxMaterial &material, const RendererParameterBlock *parameters)
+{
+    const auto &shader = material.GetFragShaderName();
+    const bool lit = shader == "infernux/lit";
+    if (material.GetRenderState().blendEnable || (!lit && shader != "infernux/unlit"))
+        return 0.0f;
+    const std::string property = lit ? "emission_color" : "base_color";
+    const auto *declared = material.GetProperty(property);
+    if (!declared)
+        return 0.0f;
+    const auto *value = declared;
+    if (parameters) {
+        const auto found = parameters->properties.find(property);
+        if (found != parameters->properties.end() && MaterialPropertyOverrideCompatible(*declared, found->second))
+            value = &found->second;
+    }
+    const auto color = std::get<glm::vec4>(value->value);
+    const auto linear = declared->type == MaterialPropertyType::Color ? inx::color::SrgbToLinear(color) : color;
+    const auto magnitude = glm::abs(glm::vec3(linear));
+    return std::max({magnitude.x, magnitude.y, magnitude.z}) * (lit ? std::abs(color.w) : 1.0f);
+}
 
 struct RaySkinTopology
 {
@@ -125,6 +154,7 @@ struct RaySkinTopology
 struct RayWorldMeshPage
 {
     std::vector<DrawMeshPlacement> draws;
+    std::vector<float> referenceAreas;
     std::shared_ptr<const rhi::BufferResource> buffer;
     std::shared_ptr<FrameCpuStorageClaim> storage;
     std::map<uint32_t, RaySkinTopology> skins;
@@ -174,9 +204,11 @@ class RayWorldGeometryBuild final
         BuildRecovered,
         BuildResident,
         PackMeshes,
+        BuildReferenceAreas,
         CollectInstances,
         BuildInstances,
         UpdateShadows,
+        BuildEmissiveTable,
         Upload,
         CompileDeformation,
         Deform,
@@ -227,7 +259,7 @@ class RayWorldGeometryBuild final
     std::shared_ptr<FrameCpuStorageClaim> decodeStorage;
     std::shared_ptr<const rhi::BufferResource> buffer;
     std::exception_ptr failure;
-    uint64_t workspace = 2 * sizeof(RayGeometryWord);
+    uint64_t workspace = 3 * sizeof(RayGeometryWord);
     uint64_t elapsed = 0;
     std::shared_ptr<RayDeformation> deformation;
     bool deformationSubmitted = false;
@@ -269,6 +301,8 @@ class RayWorldGeometryBuild final
     std::unique_ptr<RayMeshBuild> meshBuild;
     std::unique_ptr<RayMeshPageBuild> meshPageBuild;
     RayMeshPage meshPage;
+    std::vector<std::array<uint32_t, 2>> triangleRanges;
+    size_t nextReferenceArea = 0;
     std::shared_ptr<RayWorldMeshPage> meshCandidate;
     std::vector<RayDeformedMesh> deformed;
     bool reusesSources = true;
@@ -281,6 +315,8 @@ class RayWorldGeometryBuild final
     RayInstancePage instancePage;
     std::unique_ptr<RayShadowChanges> shadowChanges;
     RayShadowState shadowHistory;
+    std::vector<RayEmissiveSource> emissiveSources;
+    std::unique_ptr<RayEmissiveBuild> emissiveBuild;
     std::optional<RayPageUpload> layout;
     uint64_t uploadedBytes = 0;
     size_t uploadSection = 0;
@@ -346,10 +382,13 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         auto [entry, inserted] = sliceIndices.try_emplace(key, sliceIndices.size());
         const Slice slice{&draw, entry->second};
         instances.push_back(slice);
-        workspace = AddStorage(workspace, 512 + sizeof(RayShadowInstance));
+        workspace = AddStorage(workspace, 512 + sizeof(RayShadowInstance) + sizeof(RayEmissiveSource) +
+                                              uint64_t{draw.indexCount / 3u} * sizeof(RayGeometryWord));
         if (inserted) {
             // Covers the compact-index map, BLAS, and its contribution to the final page.
-            workspace = AddStorage(workspace, uint64_t{draw.indexCount} * 352);
+            workspace =
+                AddStorage(workspace, uint64_t{draw.indexCount} * 352 + uint64_t{draw.indexCount / 3u} * sizeof(float) +
+                                          sizeof(std::array<uint32_t, 2>));
             if (draw.skinBoneMatrices || draw.meshVertexBuffer)
                 workspace = AddStorage(workspace, 256 + uint64_t{draw.indexCount} * sizeof(spatial::BvhLink));
             meshes.emplace_back();
@@ -358,6 +397,7 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         }
     }
     if (nextDraw == draws.size()) {
+        workspace = AddStorage(workspace, (sizeof(uint32_t) + sizeof(RayGeometryWord)) * (surfaceCount + 3u));
         if (skinBasis && reusesSources && skinBasis->draws.size() == instances.size()) {
             sharedMeshes = std::move(skinBasis);
             step = Step::CollectInstances;
@@ -365,7 +405,6 @@ bool RayWorldGeometryBuild::Plan(uint32_t window)
         }
         rays.reserve(instances.size());
         shadowInstances.reserve(instances.size());
-        workspace = AddStorage(workspace, sizeof(uint32_t) * (surfaceCount + 3u));
         meshCandidate = std::make_shared<RayWorldMeshPage>();
         if (skinBasis)
             meshCandidate->deformationProgram = skinBasis->deformationProgram;
@@ -385,9 +424,11 @@ FrameWorkResource RayWorldGeometryBuild::Resource() const
     case Step::BuildRecovered:
     case Step::BuildResident:
     case Step::PackMeshes:
+    case Step::BuildReferenceAreas:
     case Step::CollectInstances:
     case Step::BuildInstances:
     case Step::UpdateShadows:
+    case Step::BuildEmissiveTable:
     case Step::CompileDeformation:
         return FrameWorkResource::Cpu;
     case Step::Upload:
@@ -492,9 +533,12 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                     // The packed page keeps the original slice order.
                     std::sort(deformed.begin(), deformed.end(),
                               [](const auto &a, const auto &b) { return a.meshIndex < b.meshIndex; });
-                    uint32_t vertexBase = 0;
+                    uint32_t vertexBase = 0, triangleBase = 0;
                     size_t dynamic = 0;
                     for (size_t mesh = 0; mesh < meshes.size(); ++mesh) {
+                        const auto count = static_cast<uint32_t>(meshes[mesh].triangles.size());
+                        triangleRanges.push_back({triangleBase, count});
+                        triangleBase += count;
                         if (dynamic < deformed.size() && deformed[dynamic].meshIndex == mesh) {
                             auto &deformationLayout = deformed[dynamic++];
                             deformationLayout.root = meshPage.placements[mesh].root;
@@ -503,13 +547,34 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                         vertexBase += static_cast<uint32_t>(meshes[mesh].positions.size());
                     }
                     meshes.clear();
-                    step = Step::CollectInstances;
+                    meshCandidate->referenceAreas.resize(meshPage.triangles.size());
+                    step = Step::BuildReferenceAreas;
                     break;
                 }
             } while (window == FullBuild);
             if (window != FullBuild)
                 break;
             [[fallthrough]];
+        case Step::BuildReferenceAreas: {
+            const auto end =
+                nextReferenceArea + std::min<size_t>(window, meshPage.triangles.size() - nextReferenceArea);
+            for (; nextReferenceArea != end; ++nextReferenceArea) {
+                const auto &triangle = meshPage.triangles[nextReferenceArea];
+                const auto point = [&](uint32_t index) {
+                    const auto &p = meshPage.positions[index];
+                    return glm::vec3(p.x, p.y, p.z);
+                };
+                meshCandidate->referenceAreas[nextReferenceArea] =
+                    0.5f * glm::length(glm::cross(point(triangle.b) - point(triangle.a),
+                                                  point(triangle.c) - point(triangle.a)));
+            }
+            if (nextReferenceArea != meshPage.triangles.size())
+                break;
+            step = Step::CollectInstances;
+            if (window != FullBuild)
+                break;
+            [[fallthrough]];
+        }
         case Step::CollectInstances: {
             const auto &draws = world->DrawCalls().drawCalls;
             const auto &records = world->SurfaceRecords();
@@ -523,16 +588,21 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                 if (!draw.indexCount)
                     continue;
                 RayMeshPlacement placement;
+                std::array<uint32_t, 2> triangles;
                 if (sharedMeshes) {
                     if (nextPlacement == sharedMeshes->draws.size() ||
                         sharedMeshes->draws[nextPlacement].surfaceId != draw.surfaceId)
                         throw std::logic_error("World mesh revision reused with a different frozen draw order");
                     placement = sharedMeshes->draws[nextPlacement].placement;
+                    triangles = {sharedMeshes->draws[nextPlacement].triangleStart,
+                                 sharedMeshes->draws[nextPlacement].triangleCount};
                 } else {
-                    placement = meshPage.placements[instances[nextPlacement].mesh];
+                    const auto mesh = instances[nextPlacement].mesh;
+                    placement = meshPage.placements[mesh];
+                    triangles = triangleRanges[mesh];
                     meshCandidate->draws.push_back({draw.surfaceId, placement, GetMeshSlice(draw), draw.meshDataOwner,
                                                     draw.meshRuntimeVersion, draw.skinBoneMatrices,
-                                                    bool(draw.meshVertexBuffer)});
+                                                    bool(draw.meshVertexBuffer), triangles[0], triangles[1]});
                 }
                 ++nextPlacement;
                 if (placement.root != kInvalidRayIndex) {
@@ -541,6 +611,12 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                     const glm::uvec4 lighting = records ? records->Lighting(draw.surfaceId) : glm::uvec4(0u);
                     shadowInstances.push_back(
                         {draw.surfaceId, draw.layerMask, lighting.w != 0u, lighting.z != 0u, draw.worldMatrix, {}});
+                    if (draw.material) {
+                        const auto power = RayEmissivePower(*draw.material, draw.parameterBlock.get());
+                        if (power > 0.0f) {
+                            emissiveSources.push_back({draw.surfaceId, triangles[0], triangles[1], power});
+                        }
+                    }
                 }
             }
             if (nextInstanceDraw != draws.size())
@@ -579,6 +655,15 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                         stamp.fill(shadowHistory.revision.serial);
                 }
                 shadowChanges.reset();
+                emissiveBuild = std::make_unique<RayEmissiveBuild>(
+                    emissiveSources, (meshCandidate ? meshCandidate : sharedMeshes)->referenceAreas, instancePage,
+                    surfaceCount);
+                step = Step::BuildEmissiveTable;
+            }
+            break;
+        case Step::BuildEmissiveTable:
+            if (emissiveBuild->Advance(window)) {
+                emissiveBuild.reset();
                 if (sharedMeshes && NeedsDeformation()) {
                     step = Step::Deform;
                     break;
@@ -674,7 +759,8 @@ std::shared_ptr<const RayWorldMeshPage> RayWorldGeometryBuild::PublishedMeshes()
         for (const auto &mesh : meshCandidate->refit.meshes)
             refitBytes += mesh.levels.capacity() * sizeof(RayRefitRange);
         storage->ReduceTo(meshCandidate->draws.capacity() * (sizeof(DrawMeshPlacement) + topologyBytesPerDraw) +
-                          shadowBytes + meshCandidate->skinStorage + refitBytes);
+                          meshCandidate->referenceAreas.capacity() * sizeof(float) + shadowBytes +
+                          meshCandidate->skinStorage + refitBytes);
         meshCandidate->storage = std::move(storage);
         sharedMeshes = std::move(meshCandidate);
     }
@@ -864,8 +950,12 @@ bool RayWorldGeometry::Advance(bool gpu)
             if (build->sharedMeshes) {
                 build->step = RayWorldGeometryBuild::Step::CollectInstances;
                 build->workspace = AddStorage(
-                    build->workspace, build->sharedMeshes->draws.size() * (512u + sizeof(RayShadowInstance)) +
-                                          build->sharedMeshes->shadowHistory.stamps.size() * sizeof(RayGeometryWord));
+                    build->workspace,
+                    build->sharedMeshes->draws.size() * (512u + sizeof(RayShadowInstance) + sizeof(RayEmissiveSource)) +
+                        build->sharedMeshes->shadowHistory.stamps.size() * 2u * sizeof(RayGeometryWord));
+                for (const auto &draw : build->sharedMeshes->draws)
+                    build->workspace =
+                        AddStorage(build->workspace, uint64_t{draw.triangleCount} * sizeof(RayGeometryWord));
             }
             m_active = std::move(build);
         }

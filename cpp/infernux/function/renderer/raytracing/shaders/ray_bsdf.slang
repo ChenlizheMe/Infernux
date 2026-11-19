@@ -246,6 +246,19 @@ public struct RayReflectedLightLobe
     public float3 toward_light;
 };
 
+public float ray_reflected_light_pdf(float3 normal, float3 geometric, float3 outgoing, float3 incoming,
+    RayGgxMaterial material, float diffuse_probability, RayReflectedLightLobe guide)
+{
+    float bsdf_pdf = ray_continuous_pdf(normal, geometric, outgoing, incoming, material, diffuse_probability);
+    if (guide.alpha <= 0.0)
+        return bsdf_pdf;
+    RayGgxMaterial reflector = {guide.alpha, float3(1.0), 1.0, 1.0};
+    float3 reflected = -incoming;
+    float light_pdf = dot(reflected, guide.normal) > 0.0
+        ? ray_evaluate_ggx(guide.normal, guide.normal, guide.toward_light, reflected, reflector).pdf : 0.0;
+    return 0.5 * (bsdf_pdf + light_pdf);
+}
+
 /// The two proposals share solid-angle measure at the receiver. A rejected hemisphere sample has zero weight.
 public RayDirectionProposal ray_sample_reflected_light(float3 uniform, float3 normal, float3 geometric,
     float3 outgoing, RayGgxMaterial material, float diffuse_probability, RayReflectedLightLobe guide)

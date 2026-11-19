@@ -1,4 +1,5 @@
 #include <function/renderer/InxRenderStruct.h>
+#include <function/renderer/raytracing/RayEmissive.h>
 #include <function/renderer/raytracing/RayGeometry.h>
 #include <function/renderer/raytracing/RayShadowChanges.h>
 
@@ -189,11 +190,33 @@ int main()
     };
     assert(header(meshUpload)[0] == 1u);
     assert(header(meshUpload)[3] + 4 * meshPage.attributes.size() == meshUpload.bytes / sizeof(RayGeometryWord));
-    assert((header(instanceUpload) == RayGeometryWord{0u, 2u, 4u, 1u}));
+    assert((header(instanceUpload) == RayGeometryWord{0u, 3u, 5u, 1u}));
     const auto *instanceHeaders = static_cast<const RayGeometryWord *>(instanceUpload.Section(0).data);
-    assert((instanceHeaders[1] == RayGeometryWord{4u + 2u * kRayInstanceWords, 17u, 3u, 12u}));
+    assert((instanceHeaders[1] == RayGeometryWord{5u + 2u * kRayInstanceWords, 17u, 3u, 12u}));
+    assert((instanceHeaders[2] == RayGeometryWord{6u + 2u * kRayInstanceWords, 6u + 2u * kRayInstanceWords, 0u, 0u}));
     assert(instanceUpload.Section(3).data == shadowStamps.data());
-    assert(instanceUpload.bytes == 48u + sizeof(BvhNode) + 2 * sizeof(RayInstance));
+    assert(instanceUpload.bytes == 64u + sizeof(BvhNode) + 2 * sizeof(RayInstance));
+
+    auto emissive = page;
+    const std::vector<RayEmissiveSource> sources{{2u, 0u, 2u, 4.0f}, {1u, 0u, 2u, 1.0f}};
+    const std::vector<float> areas{1.0f, 3.0f};
+    RayEmissiveBuild distribution(sources, areas, emissive, 3u);
+    while (!distribution.Advance(1u)) {
+    }
+    assert((emissive.emissiveRanges[2] == RayGeometryWord{0u, 2u, 0u, 1u}));
+    assert((emissive.emissiveRanges[1] == RayGeometryWord{2u, 2u, 0u, 0u}));
+    assert(emissive.emissiveTriangles.size() == 4u);
+    const std::array<float, 4> expected{0.2f, 0.8f, 0.85f, 1.0f};
+    for (size_t i = 0; i != expected.size(); ++i) {
+        float cdf;
+        std::memcpy(&cdf, &emissive.emissiveTriangles[i][3], sizeof(cdf));
+        assert(cdf == expected[i]);
+    }
+    const RayPageUpload emitterUpload(emissive, RayGeometryStatus::Ready);
+    const auto *emitterHeaders = static_cast<const RayGeometryWord *>(emitterUpload.Section(0).data);
+    assert(emitterHeaders[2][2] == 4u && emitterHeaders[2][3] == 3u);
+    assert(emitterUpload.Section(4).data == emissive.emissiveRanges.data());
+    assert(emitterUpload.Section(5).data == emissive.emissiveTriangles.data());
 
     instances[1].objectToWorld[3].z += 7.0f;
     RayInstancePageBuild moving(instances, page.topology);
@@ -244,6 +267,6 @@ int main()
     const RayInstancePage empty;
     const RayPageUpload unavailable(empty, RayGeometryStatus::Unavailable);
     const RayPageUpload emptyReady(empty, RayGeometryStatus::Ready);
-    assert((header(unavailable) == RayGeometryWord{kInvalidRayIndex, 2u, 2u, 2u}));
+    assert((header(unavailable) == RayGeometryWord{kInvalidRayIndex, 3u, 3u, 2u}));
     assert(header(emptyReady)[3] == 1u);
 }

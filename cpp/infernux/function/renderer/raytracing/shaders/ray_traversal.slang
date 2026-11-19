@@ -569,3 +569,79 @@ RaySurfaceHit ray_surface_at_hit(RayPage page, TraceRay ray, RayHit hit)
         return ray_surface_at_hit_impl<true>(page, ray, hit);
     return ray_surface_at_hit_impl<false>(page, ray, hit);
 }
+
+struct RayEmissiveSelection
+{
+    RayHit hit;
+    float pmf;
+    bool active;
+};
+
+float ray_emissive_pmf(uint4 header, uint index)
+{
+    float previous = index == 0u ? 0.0 : asfloat(world_ray_geometry[header.y + index - 1u].w);
+    float current = asfloat(world_ray_geometry[header.y + index].w);
+    return 0.5 / float(header.z) + 0.5 * (current - previous);
+}
+
+// The discrete distribution uses a frozen radiance/area proxy. Its uniform
+// component keeps support when a GPU-deformed triangle changes its area.
+RayEmissiveSelection ray_sample_emissive(RayPage page, float3 uniform)
+{
+    uint4 header = world_ray_geometry[2u];
+    if (header.z == 0u)
+        return (RayEmissiveSelection)0;
+    uint index;
+    if (uniform.x < 0.5)
+        index = min(uint(uniform.x * 2.0 * float(header.z)), header.z - 1u);
+    else
+    {
+        float target = uniform.x * 2.0 - 1.0;
+        uint first = 0u, count = header.z;
+        while (count > 0u)
+        {
+            uint half = count >> 1u;
+            uint middle = first + half;
+            if (asfloat(world_ray_geometry[header.y + middle].w) <= target)
+            {
+                first = middle + 1u;
+                count -= half + 1u;
+            }
+            else
+                count = half;
+        }
+        index = min(first, header.z - 1u);
+    }
+    uint4 selected = world_ray_geometry[header.y + index];
+    float root = sqrt(uniform.y);
+    RayHit hit = (RayHit)0;
+    hit.barycentrics = float2(1.0 - root, uniform.z * root);
+    hit.instance_index = selected.x;
+    hit.triangle_index = selected.y;
+    hit.primitive = world_ray_meshes[page.triangles + selected.y].w;
+    hit.surface_id = selected.z;
+    return {hit, ray_emissive_pmf(header, index), ray_instance(page, selected.x).layer_mask != 0u};
+}
+
+float ray_emissive_solid_angle_pdf(float pmf, RaySurfaceHit surface, float3 origin)
+{
+    float3 delta = surface.position_ws - origin;
+    float distance_squared = dot(delta, delta);
+    float area = 0.5 * length(cross(surface.edge_u_ws, surface.edge_v_ws));
+    float cosine = distance_squared > 0.0 ? abs(dot(surface.geometric_normal_ws, -delta * rsqrt(distance_squared))) : 0.0;
+    return area > 0.0 && cosine > 0.0 ? pmf * distance_squared / (area * cosine) : 0.0;
+}
+
+// Surface IDs and the packed triangle slice identify the area-sampling path.
+// Re-evaluate actual current-pose area below; no stale world-area PDF is stored.
+float ray_emissive_pdf(RayHit hit, RaySurfaceHit surface, float3 origin)
+{
+    uint4 header = world_ray_geometry[2u];
+    if (header.z == 0u || hit.surface_id >= header.w)
+        return 0.0;
+    uint4 range = world_ray_geometry[header.x + hit.surface_id];
+    if (range.y == 0u)
+        return 0.0;
+    uint index = range.x + hit.triangle_index - range.z;
+    return ray_emissive_solid_angle_pdf(ray_emissive_pmf(header, index), surface, origin);
+}
