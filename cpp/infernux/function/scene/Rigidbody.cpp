@@ -438,6 +438,7 @@ void Rigidbody::SetInterpolation(int mode)
     if (d.interpolation == mode)
         return;
     d.interpolation = mode;
+    ForEachBody([](PhysicsWorld &world, uint32_t id) { world.InvalidateBodyInterpolation(id); });
 }
 
 void Rigidbody::SetMaxAngularVelocity(float vel)

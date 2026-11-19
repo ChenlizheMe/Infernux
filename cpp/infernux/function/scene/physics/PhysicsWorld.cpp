@@ -67,10 +67,6 @@ JPH::Quat CpuRotation(const Float4 &q)
 {
     return JPH::Quat(q.x, q.y, q.z, q.w);
 }
-[[noreturn]] void Unsupported(const char *operation)
-{
-    throw std::runtime_error(std::string("GPU physics has not implemented ") + operation);
-}
 bool Finite(const glm::vec3 &v)
 {
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
@@ -972,10 +968,16 @@ void PhysicsWorld::RebaseCpuPoseDescendants(const GameObject &parent) const
         rebase(rebase, *child);
 }
 
-bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain, float alpha) const
+void PhysicsWorld::InvalidateBodyInterpolation(uint32_t bodyId) const
 {
-    if (domain.cpuPoses.empty() && domain.cpuInterpolated.empty())
-        return false;
+    DomainForBody(bodyId).publishedCpuInterpolationAlpha.reset();
+}
+
+PhysicsPosePublication PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain, float alpha) const
+{
+    const bool advanceInterpolation = domain.publishedCpuInterpolationAlpha != alpha;
+    if (domain.cpuPoses.empty() && (domain.cpuInterpolated.empty() || !advanceInterpolation))
+        return {};
 
     auto &store = PhysicsECSStore::Instance();
     TransformECSStore::PhysicsPoseReadScope publishing(TransformECSStore::Instance());
@@ -997,16 +999,18 @@ bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain, float alpha) const
     for (const auto &update : domain.cpuPoses)
         if (const auto *body = FindCpuPoseBody(domain, update.pose.bodyId))
             collect(*body);
-    for (auto it = domain.cpuInterpolated.begin(); it != domain.cpuInterpolated.end();) {
-        if (const auto *body = FindCpuPoseBody(domain, *it)) {
-            if (!pending(*it))
-                collect(*body);
-            ++it;
-        } else {
-            it = domain.cpuInterpolated.erase(it);
+    if (advanceInterpolation) {
+        for (auto it = domain.cpuInterpolated.begin(); it != domain.cpuInterpolated.end();) {
+            if (const auto *body = FindCpuPoseBody(domain, *it)) {
+                if (!pending(*it))
+                    collect(*body);
+                ++it;
+            } else {
+                it = domain.cpuInterpolated.erase(it);
+            }
         }
     }
-    bool published = false;
+    PhysicsPosePublication publication;
     std::unordered_set<GameObject *> visited;
     visited.reserve(domain.cpuPoses.size() + domain.cpuInterpolated.size());
     const auto apply = [&](auto &&self, GameObject *object, bool ancestorMoved) -> void {
@@ -1019,7 +1023,9 @@ bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain, float alpha) const
             if (auto *body = FindCpuPoseBody(domain, id)) {
                 const bool interpolate =
                     body->GetInterpolation() == static_cast<int>(RigidbodyInterpolation::Interpolate);
-                if (const auto *sample = pending(id)) {
+                const auto *sample = pending(id);
+                if (sample) {
+                    ++publication.syncedBodies;
                     const auto &[pose, sleeping, fixed] = *sample;
                     PhysicsBodyMotionState state;
                     state.bodyId = id;
@@ -1031,7 +1037,8 @@ bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain, float alpha) const
                     else
                         domain.cpuInterpolated.erase(id);
                 }
-                if (domain.cpuInterpolated.count(id)) {
+                if ((sample || advanceInterpolation) && domain.cpuInterpolated.count(id)) {
+                    ++publication.interpolatedBodies;
                     moved |= body->ApplyInterpolatedTransform(alpha);
                     if (!interpolate)
                         domain.cpuInterpolated.erase(id);
@@ -1040,7 +1047,7 @@ bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain, float alpha) const
                     moved |= body->RebaseCpuPhysicsPose();
             }
         }
-        published |= moved;
+        publication.changed |= moved;
         if (ancestorMoved || moved)
             for (const auto &child : object->GetChildren())
                 self(self, child.get(), true);
@@ -1049,24 +1056,25 @@ bool PhysicsWorld::PublishCpuPoses(PhysicsDomain &domain, float alpha) const
         for (auto *object : level)
             apply(apply, object, false);
     domain.cpuPoses.clear();
-    return published;
+    domain.publishedCpuInterpolationAlpha = alpha;
+    return publication;
 }
 
-bool PhysicsWorld::PublishRenderPoses() const
+PhysicsPosePublication PhysicsWorld::PublishRenderPoses() const
 {
     auto &domain = CurrentDomain();
     RequireOwnerThread();
     if (!m_initialized || domain.retiring || domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
-        return false;
+        return {};
     try {
         auto &rendering = domain.rendering;
         if (!domain.UsesGpu())
             return PublishCpuPoses(domain, CpuPresentationAlpha(domain));
         if (!domain.gpuRegistered || !m_gpuRenderProgram)
-            return false;
+            return {};
         const auto &job = rendering.ready;
         if (!job)
-            return false;
+            return {};
         FrameWorkOwner::Scope publication(*m_gpuWork);
         const bool gpuPublished = rendering.bindings.Publish(*job->bindings, job->output.models, job->output.bounds,
                                                              job->numericalGeneration);
@@ -1075,7 +1083,7 @@ bool PhysicsWorld::PublishRenderPoses() const
         else
             rendering.checkedKeys.reset();
         rendering.ready.reset();
-        return gpuPublished;
+        return {gpuPublished};
     } catch (...) {
         const_cast<PhysicsWorld *>(this)->FailStep(domain);
         throw;
@@ -3782,13 +3790,6 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
     auto &domain = *scene->GetRuntimeWorld()->physics;
     RequireOwnerThread();
     FlushAuthoring(domain);
-}
-const std::vector<uint32_t> &PhysicsWorld::GetPoseReadbackBodyIds() const
-{
-    if (GetBodyCount())
-        Unsupported("automatic bulk CPU pose readback");
-    static const std::vector<uint32_t> empty;
-    return empty;
 }
 void PhysicsWorld::SetContactEventStreamEnabled(bool enabled, bool includeTriggers)
 {

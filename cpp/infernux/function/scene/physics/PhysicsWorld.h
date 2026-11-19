@@ -213,6 +213,14 @@ struct PhysicsStepProfile
     uint64_t finishNs = 0;
 };
 
+/// CPU Transform work performed while publishing the selected world's physics poses.
+struct PhysicsPosePublication
+{
+    bool changed = false;
+    size_t syncedBodies = 0;
+    size_t interpolatedBodies = 0;
+};
+
 /// Optional diagnostic counters for one RaycastBatch call. Timings inside
 /// parallel workers are summed CPU time; dispatchWallNs is caller wall time.
 /// A null profile pointer keeps the hot path free of clock reads.
@@ -301,7 +309,7 @@ class PhysicsWorld
     void ServiceGpuWork();
     /// Promote a complete immutable export after the fixed publication gate.
     /// Control-only callers promote immediately when no fixed gate is pending.
-    [[nodiscard]] bool PublishRenderPoses() const;
+    [[nodiscard]] PhysicsPosePublication PublishRenderPoses() const;
     [[nodiscard]] bool HasPendingStep() const noexcept;
     [[nodiscard]] bool HasPendingControl() const noexcept;
     /// Whole-runtime Stop only; never cancel other loaded actors for a Scene swap.
@@ -311,15 +319,6 @@ class PhysicsWorld
     /// Transfer a surviving object's final pose before detaching its Rigidbody.
     /// Destruction of the whole object does not require this CPU consumer.
     void MaterializeCpuPoseForRelease(Transform &transform);
-
-    /// Bodies that were active immediately before or after the latest step.
-    /// The union includes bodies that entered sleep during the step so their
-    /// final solver pose is still read back exactly once.
-    [[nodiscard]] const std::vector<uint32_t> &GetPoseReadbackBodyIds() const;
-    [[nodiscard]] size_t GetLastDynamicCCDSplitCount() const
-    {
-        return 0;
-    }
 
     /// Enable the engine contact stream used by custom solvers and tooling.
     /// When enabled, resolved collision/trigger events remain available after
@@ -868,7 +867,8 @@ class PhysicsWorld
     void CaptureCpuPoses(PhysicsDomain &domain, bool fixed) const;
     [[nodiscard]] Rigidbody *FindCpuPoseBody(const PhysicsDomain &domain, uint32_t id) const;
     void RebaseCpuPoseDescendants(const GameObject &parent) const;
-    [[nodiscard]] bool PublishCpuPoses(PhysicsDomain &domain, float alpha) const;
+    void InvalidateBodyInterpolation(uint32_t bodyId) const;
+    [[nodiscard]] PhysicsPosePublication PublishCpuPoses(PhysicsDomain &domain, float alpha) const;
     [[nodiscard]] bool
     ServicePresentationPoseReads(PhysicsDomain &domain, const std::vector<Rigidbody *> &bodies,
                                  const std::shared_ptr<const JoltGpuScene::Publication> &publication);

@@ -625,7 +625,10 @@ void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
 
 void SceneManager::PublishPhysicsStateToRenderer()
 {
-    if (PhysicsWorld::Instance().PublishRenderPoses())
+    const auto publication = PhysicsWorld::Instance().PublishRenderPoses();
+    m_lastFrameProfile.rigidbodySyncCandidates += static_cast<double>(publication.syncedBodies);
+    m_lastFrameProfile.interpolationCandidates += static_cast<double>(publication.interpolatedBodies);
+    if (publication.changed)
         NotifyPhysicsPresentation();
 }
 
@@ -2877,8 +2880,6 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
             m_lastFrameProfile.physicsCCDMs += profile.ccdNs * 1e-6;
             m_lastFrameProfile.physicsJoltMs += profile.joltNs * 1e-6;
             m_lastFrameProfile.physicsFinishMs += profile.finishNs * 1e-6;
-            m_lastFrameProfile.dynamicCCDSplits +=
-                static_cast<double>(PhysicsWorld::Instance().GetLastDynamicCCDSplitCount());
             if (!completed)
                 return false;
         }

@@ -66,7 +66,6 @@ class SceneManager
         double rigidbodySyncCandidates = 0.0;
         double interpolationCandidates = 0.0;
         double contactEvents = 0.0;
-        double dynamicCCDSplits = 0.0;
     };
 
     // Singleton access

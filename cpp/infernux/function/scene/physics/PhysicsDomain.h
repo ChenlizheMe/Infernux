@@ -47,6 +47,7 @@ struct PhysicsDomain final
     };
     std::vector<CpuPose> cpuPoses;
     std::unordered_set<uint32_t> cpuInterpolated;
+    std::optional<float> publishedCpuInterpolationAlpha;
     bool cpuFixedAdmitted = false;
     bool gpuRegistered = false;
     size_t gpuBodyOwners = 0;

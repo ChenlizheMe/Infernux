@@ -29,13 +29,6 @@ from infernux.lib import (
 )
 
 
-def _step_frames(n: int = 60, dt: float = 1.0 / 60.0):
-    """Advance the physics simulation by *n* frames."""
-    sm = SceneManager.instance()
-    for _ in range(n):
-        sm.step(dt)
-
-
 def _assign_physic_material(collider, *, friction=0.4, bounciness=0.0,
                             friction_combine=0, bounce_combine=0):
     material = InxPhysicMaterial()
@@ -81,33 +74,31 @@ def _rotate_vector(rotation, vector):
     )
 
 
-def test_additive_scene_rigidbody_collides_with_other_scene_ground(scene):
-    """All loaded Scenes contribute to the one authoritative Jolt World."""
-    manager = SceneManager.instance()
-    _make_ground(scene)
-    additive = manager.create_scene("additive_physics")
-    try:
-        ball, rigidbody = _make_ball(
-            additive, pos=Vector3(0.0, 4.0, 0.0), radius=0.5
-        )
-        # Keep A active: activation chooses default authoring/camera policy and
-        # must not decide whether B participates in simulation or queries.
-        manager.set_active_scene(scene)
-        manager.play()
-        manager.pause()
-        _step_frames(180)
+def test_additive_scene_rigidbody_collides_with_other_scene_ground(scene, _collider_authoring_project, _physics_play):
+    """The two loaded scenes in one Play world share their selected CPU solver."""
+    from infernux.world import WorldManager
 
-        assert rigidbody.position.y == pytest.approx(1.0, abs=0.08)
-        hit = Physics.raycast(
-            Vector3(0.0, 3.0, 0.0), Vector3(0.0, -1.0, 0.0), 10.0
-        )
-        assert hit is not None
-        assert hit.game_object.id == ball.id
-    finally:
-        if manager.is_playing():
-            manager.stop()
-        manager.unload_scene(additive)
-        manager.set_active_scene(scene)
+    state = _collider_authoring_project
+    _make_ground(scene)
+    additive = state.native.create_scene("additive_physics")
+    _make_ball(additive, pos=Vector3(0, 4, 0), radius=0.5)
+    path = state.path.parent / "AdditivePhysics.scene"
+    path.write_text(additive.serialize_asset(), encoding="utf-8")
+    assert state.manager._asset_database.import_asset(str(path)).succeeded
+    state.files.register_loaded_scene(additive, str(path))
+    assert state.files.activate_loaded_scene(scene)
+
+    primary = _physics_play.start()
+    with _physics_play.scope():
+        world = WorldManager.get_current_world()
+        assert world.get_active_scene() is primary
+        other, = (loaded for loaded in world.get_scenes() if loaded is not primary)
+        ball = other.find("Ball")
+        assert ball is not None
+        _physics_play.frames(180)
+        assert ball.get_component("Rigidbody").position.y == pytest.approx(1.0, abs=0.08)
+        hit = Physics.raycast(Vector3(0, 3, 0), Vector3(0, -1, 0), 10)
+        assert hit is not None and hit.game_object.id == ball.id
 
 
 class TestHingeJoint:
@@ -144,7 +135,7 @@ class TestHingeJoint:
             assert abs(hinge.current_angle) > 20.0
             assert abs(rigidbody.position.z) < 0.025
 
-    def test_connected_body_reference_and_serialized_contract(self, scene):
+    def test_connected_body_reference_and_serialized_contract(self, scene, _physics_play):
         support = scene.create_game_object("HingeSupport")
         support.transform.position = Vector3(0.0, 3.0, 0.0)
         support_body = support.add_component("Rigidbody")
@@ -166,16 +157,19 @@ class TestHingeJoint:
         assert document["connected_body_component_id"] == support_body.component_id
         assert document["anchor"] == [-0.5, 0.0, 0.0]
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(120)
-        assert math.isfinite(hinge.current_angle)
-        rotated_anchor = _rotate_vector(rigidbody.rotation, Vector3(-0.5, 0.0, 0.0))
-        world_anchor = rigidbody.position + rotated_anchor
-        assert world_anchor.x == pytest.approx(0.5, abs=0.025)
-        assert world_anchor.y == pytest.approx(3.0, abs=0.025)
-        assert world_anchor.z == pytest.approx(0.0, abs=0.025)
+        runtime = _physics_play.start()
+        with _physics_play.scope():
+            body = runtime.find("ConnectedHinge")
+            rigidbody = body.get_component("Rigidbody")
+            hinge = body.get_component("HingeJoint")
+            assert hinge.connected_body.component_id == runtime.find("HingeSupport").get_component("Rigidbody").component_id
+            _physics_play.frames(120)
+            assert math.isfinite(hinge.current_angle)
+            rotated_anchor = _rotate_vector(rigidbody.rotation, Vector3(-0.5, 0.0, 0.0))
+            world_anchor = rigidbody.position + rotated_anchor
+            assert world_anchor.x == pytest.approx(0.5, abs=0.025)
+            assert world_anchor.y == pytest.approx(3.0, abs=0.025)
+            assert world_anchor.z == pytest.approx(0.0, abs=0.025)
 
     def test_cloned_hierarchy_remaps_connected_body(self, scene):
         root = scene.create_game_object("HingeGraph")
@@ -231,7 +225,7 @@ class TestHingeJoint:
             manager.unload_scene(copied_scene)
             manager.set_active_scene(scene)
 
-    def test_connected_collision_switch_controls_pair_filter(self, scene):
+    def test_connected_collision_switch_controls_pair_filter(self, simulation):
         class CollisionProbe(InxComponent):
             events = None
 
@@ -241,13 +235,13 @@ class TestHingeJoint:
             def on_collision_enter(self, collision):
                 self.events.append(collision)
 
-        support = scene.create_game_object("CollisionSupport")
+        support = simulation.scene.create_game_object("CollisionSupport")
         support.transform.position = Vector3(0.0, 3.0, 0.0)
         support_body = support.add_component("Rigidbody")
         support_body.is_kinematic = True
         support.add_component("BoxCollider")
 
-        body = scene.create_game_object("CollisionDoor")
+        body = simulation.scene.create_game_object("CollisionDoor")
         body.transform.position = Vector3(0.75, 3.0, 0.0)
         rigidbody = body.add_component("Rigidbody")
         rigidbody.use_gravity = False
@@ -258,18 +252,15 @@ class TestHingeJoint:
         hinge.connected_body = support_body
         probe = body.add_component(CollisionProbe)
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(3)
+        simulation.frames(3)
         assert probe.events == []
 
         hinge.enable_collision = True
-        _step_frames(3)
+        simulation.frames(3)
         assert len(probe.events) == 1
 
-    def test_disable_releases_and_reenable_recreates_world_constraint(self, scene):
-        body = scene.create_game_object("LifecycleHinge")
+    def test_disable_releases_and_reenable_recreates_world_constraint(self, simulation):
+        body = simulation.scene.create_game_object("LifecycleHinge")
         body.transform.position = Vector3(1.0, 4.0, 0.0)
         rigidbody = body.add_component("Rigidbody")
         body.add_component("BoxCollider")
@@ -277,20 +268,17 @@ class TestHingeJoint:
         hinge.anchor = Vector3(-1.0, 0.0, 0.0)
         hinge.axis = Vector3(0.0, 0.0, 1.0)
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(30)
+        simulation.frames(30)
         hinge.enabled = False
         released_y = rigidbody.position.y
-        _step_frames(30)
+        simulation.frames(30)
         assert rigidbody.position.y < released_y - 0.5
 
         hinge.enabled = True
         recreated_anchor = rigidbody.position + _rotate_vector(
             rigidbody.rotation, Vector3(-1.0, 0.0, 0.0)
         )
-        _step_frames(30)
+        simulation.frames(30)
         held_anchor = rigidbody.position + _rotate_vector(
             rigidbody.rotation, Vector3(-1.0, 0.0, 0.0)
         )
@@ -298,7 +286,7 @@ class TestHingeJoint:
         assert held_anchor.y == pytest.approx(recreated_anchor.y, abs=0.03)
         assert held_anchor.z == pytest.approx(recreated_anchor.z, abs=0.03)
 
-    def test_destroy_and_play_stop_restore_do_not_retain_stale_constraint(self, scene):
+    def test_destroy_and_play_stop_restore_do_not_retain_stale_constraint(self, scene, _physics_play):
         body = scene.create_game_object("RestoredHinge")
         body.transform.position = Vector3(1.0, 4.0, 0.0)
         body.add_component("Rigidbody")
@@ -306,25 +294,21 @@ class TestHingeJoint:
         hinge = body.add_component("HingeJoint")
         hinge.anchor = Vector3(-1.0, 0.0, 0.0)
         hinge.axis = Vector3(0.0, 0.0, 1.0)
-        authored_document = scene.serialize_document()
+        runtime = _physics_play.start()
+        with _physics_play.scope():
+            _physics_play.frames(2)
+            runtime.destroy_game_object(runtime.find("RestoredHinge"))
+            runtime.process_pending_destroys()
+            _physics_play.frames(1)
+            assert runtime.find("RestoredHinge") is None
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(2)
-        scene.destroy_game_object(body)
-        scene.process_pending_destroys()
-        _step_frames(1)
-
-        manager.stop()
-        assert scene._commit_document(authored_document)
-        restored = scene.find("RestoredHinge")
-        assert restored is not None
-        manager.play()
-        manager.pause()
-        _step_frames(5)
-        restored_hinge = manager.get_active_scene().find("RestoredHinge").get_component("HingeJoint")
-        assert math.isfinite(restored_hinge.current_angle)
+        _physics_play.stop()
+        assert scene.find("RestoredHinge").id == body.id
+        resumed = _physics_play.start()
+        with _physics_play.scope():
+            _physics_play.frames(5)
+            restored_hinge = resumed.find("RestoredHinge").get_component("HingeJoint")
+            assert math.isfinite(restored_hinge.current_angle)
 
     @pytest.mark.parametrize(
         "attribute,value",
@@ -344,8 +328,8 @@ class TestHingeJoint:
 
 
 class TestSliderJoint:
-    def test_world_slider_locks_rotation_and_all_but_authored_axis(self, scene):
-        plate = scene.create_game_object("PressurePlate")
+    def test_world_slider_locks_rotation_and_all_but_authored_axis(self, simulation):
+        plate = simulation.scene.create_game_object("PressurePlate")
         plate.transform.position = Vector3(0.0, 3.0, 0.0)
         rigidbody = plate.add_component("Rigidbody")
         rigidbody.angular_drag = 0.0
@@ -355,12 +339,9 @@ class TestSliderJoint:
         slider.minimum_distance = -1.0
         slider.maximum_distance = 0.5
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
         rigidbody.add_force(Vector3(1000.0, 0.0, 700.0), ForceMode.Force)
         rigidbody.add_torque(Vector3(100.0, 200.0, 300.0), ForceMode.Force)
-        _step_frames(240)
+        simulation.frames(240)
 
         assert rigidbody.position.x == pytest.approx(0.0, abs=0.02)
         assert rigidbody.position.z == pytest.approx(0.0, abs=0.02)
@@ -744,25 +725,27 @@ class TestRigidbodyStateBatch:
         exited = separated["contact_separation"][separated["type"] == 2]
         assert exited.size == 1 and np.isnan(exited[0])
 
-    def test_contact_impulse_stream_publishes_actual_solver_impulses(self, scene):
+    def test_contact_impulse_stream_publishes_actual_solver_impulses(self, simulation):
         """Expose the solved Jolt lambda without making custom solvers guess it."""
         import numpy as np
         from infernux.physics import Physics as PublicPhysics
 
-        _make_ground(scene)
-        _, ball = _make_ball(scene, pos=Vector3(0, 2, 0), radius=0.5)
+        _make_ground(simulation.scene)
+        _, ball = _make_ball(simulation.scene, pos=Vector3(0, 2, 0), radius=0.5)
         sm = SceneManager.instance()
         PublicPhysics.set_contact_impulse_stream_enabled(True)
         try:
-            sm.play()
-            sm.pause()
-            _step_frames(40, sm.get_fixed_time_step())
+            simulation.frames(40, sm.get_fixed_time_step())
             impulses = PublicPhysics.get_contact_impulses()
         finally:
             PublicPhysics.set_contact_impulse_stream_enabled(False)
 
-        assert set(impulses) == {"body_ids", "sub_shape_ids", "contact_point",
-                                  "contact_normal", "impulse"}
+        assert set(impulses) == {"world_id", "simulation_epoch", "fixed_step_index", "collider_ids",
+                                 "collider_generations", "substep", "feature", "point_index", "body_ids",
+                                 "sub_shape_ids", "contact_point", "contact_normal", "impulse"}
+        assert impulses["fixed_step_index"] == sm.published_fixed_step_index
+        assert impulses["simulation_epoch"] == sm.simulation_epoch
+        assert impulses["world_id"] == simulation.scene._runtime_world_id
         assert impulses["body_ids"].dtype == np.uint32
         assert impulses["body_ids"].shape[1] == 2
         assert impulses["sub_shape_ids"].dtype == np.uint32
@@ -775,12 +758,12 @@ class TestRigidbodyStateBatch:
         assert np.all(np.isfinite(impulses["contact_normal"]))
         assert np.all(np.isfinite(impulses["impulse"]))
         assert np.any(np.linalg.norm(impulses["impulse"], axis=1) > 0.0)
-    def test_box_descriptors_are_flattened_and_reuse_capacity(self, scene):
+    def test_box_descriptors_are_flattened_and_reuse_capacity(self, simulation):
         import infernux as inx
         import numpy as np
         from infernux.physics import Physics as PublicPhysics
 
-        box_object = scene.create_game_object("box descriptor")
+        box_object = simulation.scene.create_game_object("box descriptor")
         box_object.transform.position = Vector3(3, 4, 5)
         box_object.transform.local_scale = Vector3(2, 3, 4)
         box_object.transform.rotation = quatf(0, 0, 0.70710678, 0.70710678)
@@ -789,11 +772,9 @@ class TestRigidbodyStateBatch:
         box = box_object.add_component("BoxCollider")
         box.center = Vector3(0.5, 0, 0)
         box.size = Vector3(1, 2, 3)
-        sphere_body = _make_ball(scene, pos=Vector3(8, 4, 0))[1]
+        sphere_body = _make_ball(simulation.scene, pos=Vector3(8, 4, 0))[1]
         manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(1, manager.get_fixed_time_step())
+        simulation.frames(1, manager.get_fixed_time_step())
 
         created = PublicPhysics.get_rigidbody_box_states([box_body, sphere_body])
         assert created["count"] == 1
@@ -815,19 +796,17 @@ class TestRigidbodyStateBatch:
         assert out["body_index"][0] == 0
         np.testing.assert_allclose(out["half_extents"].numpy()[0], [1, 3, 6])
 
-    def test_broadphase_bounds_query_returns_only_nearby_rigidbodies(self, scene):
+    def test_broadphase_bounds_query_returns_only_nearby_rigidbodies(self, simulation):
         from infernux.physics import Physics as PublicPhysics
 
-        nearby = [_make_ball(scene, pos=Vector3(index * 1.5, 2, 0))[1] for index in range(3)]
+        nearby = [_make_ball(simulation.scene, pos=Vector3(index * 1.5, 2, 0))[1] for index in range(3)]
         for index in range(128):
-            _make_ball(scene, pos=Vector3(1000 + index * 3, 2, 0))
-        static = scene.create_game_object("near static collider")
+            _make_ball(simulation.scene, pos=Vector3(1000 + index * 3, 2, 0))
+        static = simulation.scene.create_game_object("near static collider")
         static.transform.position = Vector3(0, 2, 0)
         static.add_component("BoxCollider")
         manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(1, manager.get_fixed_time_step())
+        simulation.frames(1, manager.get_fixed_time_step())
 
         candidates = PublicPhysics.query_rigidbodies_in_bounds((-1, 0, -2), (5, 4, 2))
         assert {body.component_id for body in candidates} == {body.component_id for body in nearby}
@@ -839,19 +818,17 @@ class TestRigidbodyStateBatch:
         with pytest.raises(ValueError, match="minimum must not exceed maximum"):
             PublicPhysics.query_rigidbodies_in_bounds((1, 0, 0), (0, 1, 1))
 
-    def test_reuses_engine_cpu_buffers_for_snapshot_and_feedback(self, scene):
+    def test_reuses_engine_cpu_buffers_for_snapshot_and_feedback(self, simulation):
         import infernux as inx
         import numpy as np
         from infernux.physics import Physics as PublicPhysics
 
-        bodies = [_make_ball(scene, pos=Vector3(index * 2, 4, 0), mass=2)[1]
+        bodies = [_make_ball(simulation.scene, pos=Vector3(index * 2, 4, 0), mass=2)[1]
                   for index in range(3)]
         for body in bodies:
             body.use_gravity = False
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
 
+        simulation.fixed()
         capacity = 8
         state = {
             "position": inx.buffer(shape=capacity, dtype=inx.vector3, device="cpu"),
@@ -873,17 +850,16 @@ class TestRigidbodyStateBatch:
         np.testing.assert_allclose(state["linear_velocity"].numpy()[:3], np.full((3, 3), 0.125), atol=1e-6)
 
 
-    def test_aggregated_impulse_batch_and_boundary_validation(self, scene):
+    def test_aggregated_impulse_batch_and_boundary_validation(self, simulation):
         import numpy as np
         from infernux.physics import Physics as PublicPhysics
 
-        bodies = [_make_ball(scene, pos=Vector3(i * 3, 4, 0), mass=2 + i * 2)[1]
+        bodies = [_make_ball(simulation.scene, pos=Vector3(i * 3, 4, 0), mass=2 + i * 2)[1]
                   for i in range(2)]
         for rb in bodies:
             rb.use_gravity = False
         sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
+        simulation.fixed()
         impulse = np.array([[0.2, 0.4, 0.6], [-0.1, 0.3, 0.5]], dtype=np.float32)
         torque = np.array([[0.1, -0.2, 0.3], [0.2, 0.1, -0.1]], dtype=np.float32)
         before = PublicPhysics.get_rigidbody_states(bodies)
@@ -901,16 +877,16 @@ class TestRigidbodyStateBatch:
         np.testing.assert_allclose(after["linear_velocity"], before["inverse_mass"] * impulse, atol=1e-6)
         np.testing.assert_allclose(after["angular_velocity"],
                                    np.einsum("nij,nj->ni", before["inverse_inertia"], torque), atol=1e-6)
-        _step_frames(1, sm.get_fixed_time_step())
+        simulation.frames(1, sm.get_fixed_time_step())
         assert all(rb.velocity.y > 0 for rb in bodies)
 
     @pytest.mark.parametrize("constraints", [0,
         int(RigidbodyConstraints.FreezePositionX) | int(RigidbodyConstraints.FreezeRotationY)])
-    def test_snapshot_predicts_actual_off_center_impulse(self, scene, constraints):
+    def test_snapshot_predicts_actual_off_center_impulse(self, simulation, constraints):
         import numpy as np
         from infernux.physics import Physics as PublicPhysics
 
-        obj = scene.create_game_object("rotated body snapshot")
+        obj = simulation.scene.create_game_object("rotated body snapshot")
         obj.transform.position = Vector3(3, 4, 5)
         obj.transform.rotation = quatf(0.38268343, 0, 0, 0.92387953)
         rb = obj.add_component("Rigidbody")
@@ -920,9 +896,7 @@ class TestRigidbodyStateBatch:
         collider = obj.add_component("BoxCollider")
         collider.size = Vector3(1, 2, 3)
         collider.center = Vector3(0.5, 0, 0)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
+        simulation.fixed()
         state = PublicPhysics.get_rigidbody_states([rb])
         assert set(state) == {"position", "rotation", "center_of_mass", "linear_velocity",
                               "angular_velocity", "inverse_mass", "inverse_inertia"}
@@ -950,16 +924,14 @@ class TestRigidbodyStateBatch:
                                    state["inverse_inertia"][0] @ np.cross(offset, impulse), atol=1e-5)
         np.testing.assert_array_equal(state["linear_velocity"], 0)  # Owned snapshot, not live storage.
 
-    def test_kinematic_and_empty_batches(self, scene):
+    def test_kinematic_and_empty_batches(self, simulation):
         import numpy as np
         from infernux.physics import Physics as PublicPhysics
 
-        _, rb = _make_ball(scene)
+        _, rb = _make_ball(simulation.scene)
         rb.is_kinematic = True
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
         rb.velocity = Vector3(1, 2, 3)
+        simulation.fixed()
         state = PublicPhysics.get_rigidbody_states([rb])
         np.testing.assert_array_equal(state["inverse_mass"], 0)
         np.testing.assert_array_equal(state["inverse_inertia"], 0)
@@ -969,32 +941,30 @@ class TestRigidbodyStateBatch:
         assert empty["rotation"].shape == (0, 4)
         assert empty["inverse_inertia"].shape == (0, 3, 3)
 
-    def test_unpublished_body_has_no_synthetic_physics_state(self, scene):
+    def test_unpublished_body_has_no_synthetic_physics_state(self, scene, _physics_play):
         import numpy as np
-        from infernux.physics import Physics as PublicPhysics
 
         rb = scene.create_game_object("no collider").add_component("Rigidbody")
-        with pytest.raises(RuntimeError, match="active physics body"):
+        with pytest.raises(ValueError, match="registered Rigidbody identities"):
             PublicPhysics.get_rigidbody_states([rb])
-        _, valid = _make_ball(scene)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        PublicPhysics.apply_rigidbody_impulses([valid, rb], np.ones((2, 3), np.float32),
-                                              np.zeros((2, 3), np.float32))
-        np.testing.assert_array_equal(PublicPhysics.get_rigidbody_states([valid, rb])["linear_velocity"], 1)
+        rb.use_gravity = False
+        _make_ball(scene)[1].use_gravity = False
+        runtime = _physics_play.start()
+        with _physics_play.scope():
+            _physics_play.frames(1, SceneManager.instance().get_fixed_time_step())
+            bodies = [runtime.find(name).get_component("Rigidbody") for name in ("Ball", "no collider")]
+            PublicPhysics.apply_rigidbody_impulses(bodies, np.ones((2, 3), np.float32), np.zeros((2, 3), np.float32))
+            np.testing.assert_array_equal(PublicPhysics.get_rigidbody_states(bodies)["linear_velocity"], 1)
 
-    def test_zero_feedback_preserves_sleep_and_kinematics_ignore_impulses(self, scene):
+    def test_zero_feedback_preserves_sleep_and_kinematics_ignore_impulses(self, simulation):
         import numpy as np
         from infernux.physics import Physics as PublicPhysics
 
-        _, dynamic = _make_ball(scene, pos=Vector3(0, 4, 0))
-        _, kinematic = _make_ball(scene, pos=Vector3(4, 4, 0))
+        _, dynamic = _make_ball(simulation.scene, pos=Vector3(0, 4, 0))
+        _, kinematic = _make_ball(simulation.scene, pos=Vector3(4, 4, 0))
         kinematic.is_kinematic = True
         dynamic.use_gravity = False
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
+        simulation.fixed()
         dynamic.sleep()
         kinematic.velocity = Vector3(1, 0, 0)
         impulses = np.array([[0, 0, 0], [1, 1, 1]], np.float32)
@@ -1006,39 +976,35 @@ class TestRigidbodyStateBatch:
 
 
 class TestPointVelocity:
-    def test_off_center_feedback_impulse_changes_linear_and_angular_motion(self, scene):
-        _, rb = _make_ball(scene, pos=Vector3(3, 4, 5), mass=2, radius=0.5)
+    def test_off_center_feedback_impulse_changes_linear_and_angular_motion(self, simulation):
+        _, rb = _make_ball(simulation.scene, pos=Vector3(3, 4, 5), mass=2, radius=0.5)
         rb.use_gravity = False
         rb.drag = rb.angular_drag = 0
         sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
+        simulation.fixed()
         center = rb.world_center_of_mass
         point = Vector3(center.x + 0.5, center.y, center.z)
         rb.add_force_at_position(Vector3(0, 0, 1), point, ForceMode.Impulse)
         # A published Jolt body receives an impulse immediately, exactly once.
         # The coupling solver must therefore submit at its chosen fixed boundary.
         assert rb.velocity.z == pytest.approx(0.5, abs=1e-4)
-        _step_frames(1, sm.get_fixed_time_step())
+        simulation.frames(1, sm.get_fixed_time_step())
         assert rb.velocity.z == pytest.approx(0.5, abs=1e-4)
         # Sphere inertia = 2/5 * mass * radius^2 = 0.2 kg m^2.
         assert rb.angular_velocity.y == pytest.approx(-2.5, abs=1e-4)
         center = rb.world_center_of_mass
         velocity = rb.get_point_velocity(Vector3(center.x + 0.5, center.y, center.z))
         assert velocity.z == pytest.approx(1.75, abs=1e-4)
-        _step_frames(1, sm.get_fixed_time_step())
+        simulation.frames(1, sm.get_fixed_time_step())
         assert rb.velocity.z == pytest.approx(0.5, abs=1e-4)
         assert rb.angular_velocity.y == pytest.approx(-2.5, abs=1e-4)
 
-    def test_world_points_include_rotation_about_offset_center_of_mass(self, scene):
+    def test_world_points_include_rotation_about_offset_center_of_mass(self, simulation):
         import numpy as np
 
-        ball, rb = _make_ball(scene, pos=Vector3(3, 4, 5))
+        ball, rb = _make_ball(simulation.scene, pos=Vector3(3, 4, 5))
         rb.use_gravity = False
         ball.get_component("SphereCollider").center = Vector3(0.5, 0, 0)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
         rb.velocity = Vector3(1, 2, 3)
         rb.angular_velocity = Vector3(0, 0, 2)
         center = rb.world_center_of_mass
@@ -1054,13 +1020,10 @@ class TestPointVelocity:
         assert rb.get_point_velocities(points, points) is points
         np.testing.assert_allclose(points, output)
 
-    def test_batch_uses_caller_owned_numpy_output(self, scene):
+    def test_batch_uses_caller_owned_numpy_output(self, simulation):
         import numpy as np
 
-        _, rb = _make_ball(scene)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
+        _, rb = _make_ball(simulation.scene)
         points = np.zeros((2, 3), dtype=np.float32)
         output = np.full_like(points, 17)
         with pytest.raises(ValueError):
@@ -1083,67 +1046,48 @@ class TestPointVelocity:
 
 
 class TestGravity:
-    def test_player_style_scene_rebuild_preserves_static_collisions(self, scene):
-        """A full native graph rebuild must still publish physics bodies on Play."""
+    def test_player_style_scene_rebuild_preserves_static_collisions(self, scene, _physics_play):
+        """A full scene document rebuild must still publish its static colliders in Play."""
         Physics.set_gravity(Vector3(0, -9.81, 0))
         _make_ground(scene)
         _make_ball(scene, pos=Vector3(0, 4, 0))
+        transaction = SceneDocumentTransaction(scene, document=scene.serialize_document())
+        assert transaction.run_to_completion()
 
-        snapshot = scene.serialize_document()
-        transaction = SceneDocumentTransaction(
-            scene,
-            document=snapshot,
-            after_publish=lambda: scene.set_playing(True),
-        )
-        assert transaction.run_to_completion() is True
+        runtime = _physics_play.start()
+        with _physics_play.scope():
+            _physics_play.frames(180)
+            assert runtime.find("Ball").transform.position.y > 0.9
 
-        restored_ball = scene.find("Ball")
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(180)
-
-        assert restored_ball.transform.position.y > 0.9
-
-
-    def test_no_gravity_ball_stays(self, scene):
+    def test_no_gravity_ball_stays(self, simulation):
         """With gravity off a dynamic body should not fall."""
-        _make_ground(scene)
-        ball, rb = _make_ball(scene, pos=Vector3(0, 10, 0))
+        _make_ground(simulation.scene)
+        ball, rb = _make_ball(simulation.scene, pos=Vector3(0, 10, 0))
         rb.use_gravity = False
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
         y0 = ball.transform.position.y
-        _step_frames(30)
+        simulation.frames(30)
         y1 = ball.transform.position.y
 
         assert y1 == pytest.approx(y0, abs=0.1)
 
 
 class TestRigidbodyPose:
-    def test_velocity_set_before_deferred_body_creation_is_applied(self, scene):
+    def test_velocity_set_before_deferred_body_creation_is_applied(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        _, rb = _make_ball(scene, pos=Vector3(0, 5, 0))
+        _, rb = _make_ball(simulation.scene, pos=Vector3(0, 5, 0))
         rb.velocity = Vector3(2, 3, 4)
         rb.angular_velocity = Vector3(0.25, 0.5, 0.75)
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
+        simulation.frames(1)
 
         assert tuple(rb.velocity) == pytest.approx((2, 3, 4))
         assert tuple(rb.angular_velocity) == pytest.approx((0.25, 0.5, 0.75), abs=0.001)
 
-    def test_pose_assignment_preserves_velocity(self, scene):
+    def test_pose_assignment_preserves_velocity(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        ball, rb = _make_ball(scene, pos=Vector3(0, 5, 0))
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
+        ball, rb = _make_ball(simulation.scene, pos=Vector3(0, 5, 0))
+        simulation.frames(1)
 
         rb.velocity = Vector3(3, 4, 5)
         rb.angular_velocity = Vector3(0.5, 1.0, 1.5)
@@ -1155,7 +1099,7 @@ class TestRigidbodyPose:
         assert tuple(rb.position) == pytest.approx((7, 8, 9))
         # During simulation the solver publishes the owner Transform at its
         # physics-to-transform boundary, after the body pose has changed.
-        _step_frames(1)
+        simulation.frames(1)
         assert tuple(ball.transform.position) == pytest.approx(tuple(rb.position))
 
     def test_pose_assignment_rejects_invalid_values(self, scene):
@@ -1167,9 +1111,9 @@ class TestRigidbodyPose:
         with pytest.raises(ValueError, match="finite"):
             rb.velocity = Vector3(1, 0, 0) / 0.0
 
-    def test_kinematic_move_does_not_teleport_transform_before_step(self, scene):
+    def test_kinematic_move_does_not_teleport_transform_before_step(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        body, rigidbody = _make_ball(scene, pos=Vector3(0, 5, 0))
+        body, rigidbody = _make_ball(simulation.scene, pos=Vector3(0, 5, 0))
         rigidbody.is_kinematic = True
 
         class KinematicMoveProbe(InxComponent):
@@ -1185,10 +1129,7 @@ class TestRigidbodyPose:
                 self.did_move = True
 
         probe = body.add_component(KinematicMoveProbe)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        simulation.fixed()
 
         assert probe.position_during_move == pytest.approx((0, 5, 0))
         assert tuple(rigidbody.position) == pytest.approx((4, 5, 0), abs=0.001)
@@ -1285,30 +1226,50 @@ def _physics_play(_collider_authoring_project):
             assert not runtime.physics_backend_writable
             return runtime
 
-    def frames(count, delta=1.0 / 60.0):
-        # Each request advances the specified amount of simulation time.
-        # Host opportunities only drain the admitted step; they add no time.
+    def frames(count, delta=1.0 / 60.0, *, observe=None):
+        # Resume an admitted step until the world completes it. Each host tick
+        # can publish different work, including a final presentation-only tick.
         for _ in range(count):
             state.native.step(delta)
-            until(lambda: not state.native.is_stepping(),
-                  "Paused simulation frame did not complete")
+            deadline = time.monotonic() + 60
+            while state.native.is_stepping():
+                assert time.monotonic() < deadline, "Paused simulation frame did not complete"
+                tick_host()
+                if observe is not None:
+                    observe(state.native.get_last_frame_profile())
         with _Infernux._RuntimeWorldScope(world.id):
             assert not state.native.fixed_step_pending
             assert state.native.completed_fixed_step_index == state.native.published_fixed_step_index
 
+    def stop():
+        if state.manager.is_playing:
+            assert state.manager.exit_play_mode()
+            until(lambda: state.manager.is_edit_mode and not state.host._world_runtimes
+                  and state.host._runtime_world_session is None,
+                  "Normal Stop did not retire the runtime worlds")
+
     try:
-        yield SimpleNamespace(start=start, frames=frames, add_probe=add_probe,
+        yield SimpleNamespace(start=start, stop=stop, frames=frames, add_probe=add_probe,
                               tick_host=tick_host, host_opportunities=lambda: host_opportunities,
                               scope=lambda: _Infernux._RuntimeWorldScope(world.id))
     finally:
         try:
-            if state.manager.is_playing:
-                assert state.manager.exit_play_mode()
-                until(lambda: state.manager.is_edit_mode and not state.host._world_runtimes
-                      and state.host._runtime_world_session is None,
-                      "Normal Stop did not retire the runtime worlds")
+            stop()
         finally:
             state.host._engine.set_render_pipeline(None)
+
+
+@pytest.fixture
+def simulation(_physics_play):
+    """Create runtime objects in the same paused Play world that executes the assertions."""
+    from types import SimpleNamespace
+
+    scene = _physics_play.start()
+    with _physics_play.scope():
+        def fixed(*, observe=None):
+            _physics_play.frames(1, SceneManager.instance().get_fixed_time_step(), observe=observe)
+
+        yield SimpleNamespace(scene=scene, frames=_physics_play.frames, fixed=fixed)
 
 
 class _PreparedPhysicsPlay:
@@ -1467,35 +1428,32 @@ class TestFixedTiming(_PreparedPhysicsPlay):
 
 class TestCollision:
 
-    def test_bounce_combine_mode_changes_contact_response(self, scene):
-        ground = _make_ground(scene)
+    def test_bounce_combine_mode_changes_contact_response(self, simulation):
+        ground = _make_ground(simulation.scene)
         ground_collider = ground.get_component("BoxCollider")
         _assign_physic_material(ground_collider, bounciness=0.0, bounce_combine=0)
 
-        maximum_ball, _ = _make_ball(scene, pos=Vector3(-2, 3, 0))
+        maximum_ball, _ = _make_ball(simulation.scene, pos=Vector3(-2, 3, 0))
         maximum_collider = maximum_ball.get_component("SphereCollider")
         _assign_physic_material(maximum_collider, bounciness=1.0, bounce_combine=3)
 
-        minimum_ball, _ = _make_ball(scene, pos=Vector3(2, 3, 0))
+        minimum_ball, _ = _make_ball(simulation.scene, pos=Vector3(2, 3, 0))
         minimum_collider = minimum_ball.get_component("SphereCollider")
         _assign_physic_material(minimum_collider, bounciness=1.0, bounce_combine=1)
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(40)
+        simulation.frames(40)
 
         maximum_peak = maximum_ball.transform.position.y
         minimum_peak = minimum_ball.transform.position.y
         for _ in range(50):
-            sm.step(1.0 / 60.0)
+            simulation.frames(1, 1.0 / 60.0)
             maximum_peak = max(maximum_peak, maximum_ball.transform.position.y)
             minimum_peak = max(minimum_peak, minimum_ball.transform.position.y)
 
         assert maximum_peak > minimum_peak + 0.75
 
-    def test_compound_material_uses_contacted_subshape(self, scene):
-        ground = scene.create_game_object("CompoundMaterialGround")
+    def test_compound_material_uses_contacted_subshape(self, simulation):
+        ground = simulation.scene.create_game_object("CompoundMaterialGround")
         primary = ground.add_component("BoxCollider")
         primary.size = Vector3(1, 1, 1)
         primary.center = Vector3(20, 0, 0)
@@ -1505,34 +1463,31 @@ class TestCollision:
         contacted.size = Vector3(10, 1, 10)
         _assign_physic_material(contacted, bounciness=0.0, bounce_combine=1)
 
-        ball, _ = _make_ball(scene, pos=Vector3(0, 3, 0))
+        ball, _ = _make_ball(simulation.scene, pos=Vector3(0, 3, 0))
         ball_collider = ball.get_component("SphereCollider")
         _assign_physic_material(ball_collider, bounciness=1.0, bounce_combine=0)
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(40)
+        simulation.frames(40)
 
         peak_after_contact = ball.transform.position.y
         for _ in range(50):
-            sm.step(1.0 / 60.0)
+            simulation.frames(1, 1.0 / 60.0)
             peak_after_contact = max(peak_after_contact, ball.transform.position.y)
 
         assert peak_after_contact < 1.5
 
-    def test_box_stack_settles_without_lateral_drift(self, scene, monkeypatch):
+    def test_box_stack_settles_without_lateral_drift(self, simulation, monkeypatch):
         # A tall stack with the strict sleep threshold needs finer contact steps.
         monkeypatch.setattr(EngineConfig.get(), "physics_collision_steps", 2)
         Physics.set_gravity(Vector3(0, -9.81, 0))
-        ground = scene.create_game_object("StackGround")
+        ground = simulation.scene.create_game_object("StackGround")
         ground.transform.position = Vector3(0, -0.5, 0)
         ground_collider = ground.add_component("BoxCollider")
         ground_collider.size = Vector3(20, 1, 20)
 
         boxes = []
         for index in range(8):
-            box = scene.create_game_object(f"StackBox{index}")
+            box = simulation.scene.create_game_object(f"StackBox{index}")
             box.transform.position = Vector3(0, 0.5 + index * 1.01, 0)
             rigidbody = box.add_component("Rigidbody")
             collider = box.add_component("BoxCollider")
@@ -1540,12 +1495,10 @@ class TestCollision:
             boxes.append((box, rigidbody))
 
         manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
         fixed_dt = manager.get_fixed_time_step()
         # Contact ordering affects settling time; require natural, bounded rest.
         for _ in range(math.ceil(30.0 / fixed_dt)):
-            manager.step(fixed_dt)
+            simulation.frames(1, fixed_dt)
             if all(rigidbody.is_sleeping() for _, rigidbody in boxes):
                 break
 
@@ -1559,25 +1512,25 @@ class TestCollision:
             (tuple(box.transform.position), tuple(rigidbody.rotation))
             for box, rigidbody in boxes
         ]
-        _step_frames(60, fixed_dt)
+        simulation.frames(60, fixed_dt)
         assert all(rigidbody.is_sleeping() for _, rigidbody in boxes)
         assert [
             (tuple(box.transform.position), tuple(rigidbody.rotation))
             for box, rigidbody in boxes
         ] == resting_poses
 
-    def test_contact_friction_slows_non_rotating_box(self, scene):
+    def test_contact_friction_slows_non_rotating_box(self, simulation):
         Physics.set_gravity(Vector3(0, -9.81, 0))
 
         rigidbodies = []
         for name, z, friction in (("Frictionless", -3.0, 0.0), ("HighFriction", 3.0, 1.0)):
-            floor = scene.create_game_object(f"{name}Floor")
+            floor = simulation.scene.create_game_object(f"{name}Floor")
             floor.transform.position = Vector3(0, -0.5, z)
             floor_collider = floor.add_component("BoxCollider")
             floor_collider.size = Vector3(30, 1, 4)
             _assign_physic_material(floor_collider, friction=friction, friction_combine=3)
 
-            box = scene.create_game_object(f"{name}Box")
+            box = simulation.scene.create_game_object(f"{name}Box")
             box.transform.position = Vector3(-8, 0.5, z)
             rigidbody = box.add_component("Rigidbody")
             rigidbody.constraints = int(RigidbodyConstraints.FreezeRotation)
@@ -1588,10 +1541,7 @@ class TestCollision:
             rigidbody.velocity = Vector3(5, 0, 0)
             rigidbodies.append(rigidbody)
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(90)
+        simulation.frames(90)
 
         frictionless, high_friction = rigidbodies
         assert frictionless.velocity.x > 4.5
@@ -1617,9 +1567,9 @@ class TestRigidbodyInScene:
 
 
 class TestRigidbodyNumerics:
-    def test_start_force_survives_deferred_body_creation(self, scene):
+    def test_start_force_survives_deferred_body_creation(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        body, rigidbody = _make_ball(scene, pos=Vector3(0, 5, 0), mass=4.0)
+        body, rigidbody = _make_ball(simulation.scene, pos=Vector3(0, 5, 0), mass=4.0)
         rigidbody.use_gravity = False
         rigidbody.drag = 0.0
         rigidbody.angular_drag = 0.0
@@ -1631,10 +1581,7 @@ class TestRigidbodyNumerics:
                 rigidbody.add_torque(Vector3(0, 0, 1), ForceMode.VelocityChange)
 
         body.add_component(StartForceProbe)
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        simulation.fixed()
 
         assert tuple(rigidbody.velocity) == pytest.approx((3, 0, 0), abs=1e-4)
         assert tuple(rigidbody.angular_velocity) == pytest.approx((0, 0, 1), abs=1e-4)
@@ -1648,31 +1595,28 @@ class TestRigidbodyNumerics:
             (ForceMode.VelocityChange, 10.0, 10.0),
         ],
     )
-    def test_linear_force_modes_follow_mass_contract(self, scene, mode, expected_light, expected_heavy):
+    def test_linear_force_modes_follow_mass_contract(self, simulation, mode, expected_light, expected_heavy):
         Physics.set_gravity(Vector3(0, 0, 0))
-        _, light = _make_ball(scene, pos=Vector3(-2, 5, 0), mass=1.0)
-        _, heavy = _make_ball(scene, pos=Vector3(2, 5, 0), mass=10.0)
+        _, light = _make_ball(simulation.scene, pos=Vector3(-2, 5, 0), mass=1.0)
+        _, heavy = _make_ball(simulation.scene, pos=Vector3(2, 5, 0), mass=10.0)
         for rigidbody in (light, heavy):
             rigidbody.use_gravity = False
             rigidbody.drag = 0.0
             rigidbody.max_linear_velocity = 100.0
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        simulation.fixed()
 
         force = Vector3(10, 0, 0)
         light.add_force(force, mode)
         heavy.add_force(force, mode)
-        manager.step()
+        simulation.fixed()
 
         assert light.velocity.x == pytest.approx(expected_light, abs=1e-4)
         assert heavy.velocity.x == pytest.approx(expected_heavy, abs=1e-4)
 
-    def test_continuous_force_integrates_over_half_second(self, scene):
+    def test_continuous_force_integrates_over_half_second(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        body = scene.create_game_object("ContinuousForceBox")
+        body = simulation.scene.create_game_object("ContinuousForceBox")
         body.transform.position = Vector3(0, 2, 0)
         body.transform.local_scale = Vector3(1.8, 0.7, 3.5)
         body.add_component("BoxCollider")
@@ -1682,14 +1626,11 @@ class TestRigidbodyNumerics:
         rigidbody.drag = 0.0
         rigidbody.max_linear_velocity = 500.0
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        simulation.fixed()
         start_z = body.transform.position.z
         for _ in range(25):
             rigidbody.add_force(Vector3(0, 0, 28), ForceMode.Force)
-            manager.step()
+            simulation.fixed()
 
         assert rigidbody.velocity.z == pytest.approx(14.0, abs=0.05)
         assert body.transform.position.z - start_z == pytest.approx(3.64, abs=0.15)
@@ -1702,33 +1643,30 @@ class TestRigidbodyNumerics:
         ],
     )
     def test_angular_mass_independent_modes_survive_partial_rotation_constraints(
-        self, scene, mode, input_value, expected_velocity
+        self, simulation, mode, input_value, expected_velocity
     ):
         Physics.set_gravity(Vector3(0, 0, 0))
-        _, light = _make_ball(scene, pos=Vector3(-2, 5, 0), mass=1.0)
-        _, heavy = _make_ball(scene, pos=Vector3(2, 5, 0), mass=10.0)
+        _, light = _make_ball(simulation.scene, pos=Vector3(-2, 5, 0), mass=1.0)
+        _, heavy = _make_ball(simulation.scene, pos=Vector3(2, 5, 0), mass=10.0)
         for rigidbody in (light, heavy):
             rigidbody.use_gravity = False
             rigidbody.angular_drag = 0.0
             rigidbody.max_angular_velocity = 100.0
             rigidbody.constraints = int(RigidbodyConstraints.FreezeRotationX)
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        simulation.fixed()
 
         torque = Vector3(0, 0, input_value)
         light.add_torque(torque, mode)
         heavy.add_torque(torque, mode)
-        manager.step()
+        simulation.fixed()
 
         assert tuple(light.angular_velocity) == pytest.approx((0, 0, expected_velocity), abs=1e-4)
         assert tuple(heavy.angular_velocity) == pytest.approx((0, 0, expected_velocity), abs=1e-4)
 
-    def test_angular_acceleration_inverts_coupled_allowed_inertia_subspace(self, scene):
+    def test_angular_acceleration_inverts_coupled_allowed_inertia_subspace(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        body = scene.create_game_object("CoupledInertiaBox")
+        body = simulation.scene.create_game_object("CoupledInertiaBox")
         body.transform.position = Vector3(0, 5, 0)
         body.transform.rotation = quatf(0.38268343, 0, 0, 0.92387953)
         rigidbody = body.add_component("Rigidbody")
@@ -1741,20 +1679,18 @@ class TestRigidbodyNumerics:
         collider.size = Vector3(1, 2, 4)
 
         manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        simulation.fixed()
         rigidbody.add_torque(Vector3(0, 1, 2), ForceMode.Acceleration)
-        manager.step()
+        simulation.fixed()
 
         fixed_delta = manager.get_fixed_time_step()
         assert tuple(rigidbody.angular_velocity) == pytest.approx(
             (0, fixed_delta, fixed_delta * 2.0), abs=1e-4
         )
 
-    def test_drag_uses_configured_collision_substeps(self, scene):
+    def test_drag_uses_configured_collision_substeps(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        _, rigidbody = _make_ball(scene, pos=Vector3(0, 5, 0))
+        _, rigidbody = _make_ball(simulation.scene, pos=Vector3(0, 5, 0))
         rigidbody.use_gravity = False
         rigidbody.drag = 5.0
         rigidbody.angular_drag = 4.0
@@ -1762,12 +1698,10 @@ class TestRigidbodyNumerics:
         rigidbody.max_angular_velocity = 100.0
 
         manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        simulation.fixed()
         rigidbody.velocity = Vector3(10, 0, 0)
         rigidbody.angular_velocity = Vector3(0, 10, 0)
-        manager.step()
+        simulation.fixed()
 
         fixed_delta = manager.get_fixed_time_step()
         substeps = EngineConfig.get().physics_collision_steps
@@ -1776,19 +1710,16 @@ class TestRigidbodyNumerics:
         assert rigidbody.velocity.x == pytest.approx(expected_linear, abs=1e-4)
         assert rigidbody.angular_velocity.y == pytest.approx(expected_angular, abs=1e-4)
 
-    def test_velocity_limits_apply_to_direct_assignment_and_impulses(self, scene):
+    def test_velocity_limits_apply_to_direct_assignment_and_impulses(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        _, rigidbody = _make_ball(scene, pos=Vector3(0, 5, 0))
+        _, rigidbody = _make_ball(simulation.scene, pos=Vector3(0, 5, 0))
         rigidbody.use_gravity = False
         rigidbody.drag = 0.0
         rigidbody.angular_drag = 0.0
         rigidbody.max_linear_velocity = 3.0
         rigidbody.max_angular_velocity = 2.0
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        simulation.fixed()
         rigidbody.velocity = Vector3(30, 0, 0)
         rigidbody.angular_velocity = Vector3(0, 20, 0)
 
@@ -1797,7 +1728,7 @@ class TestRigidbodyNumerics:
 
         rigidbody.add_force(Vector3(30, 0, 0), ForceMode.Impulse)
         rigidbody.add_torque(Vector3(0, 20, 0), ForceMode.Impulse)
-        manager.step()
+        simulation.fixed()
         assert tuple(rigidbody.velocity) == pytest.approx((3, 0, 0), abs=1e-4)
         assert tuple(rigidbody.angular_velocity) == pytest.approx((0, 2, 0), abs=1e-4)
 
@@ -1811,25 +1742,22 @@ class TestContinuousCollisionDetection:
             (CollisionDetectionMode.ContinuousDynamic, False),
         ],
     )
-    def test_fast_sphere_against_thin_static_wall(self, scene, mode, should_cross_wall):
+    def test_fast_sphere_against_thin_static_wall(self, simulation, mode, should_cross_wall):
         Physics.set_gravity(Vector3(0, 0, 0))
 
-        wall = scene.create_game_object("ThinWall")
+        wall = simulation.scene.create_game_object("ThinWall")
         wall.transform.position = Vector3(0, 0, 0)
         wall.transform.local_scale = Vector3(0.1, 10, 10)
         wall.add_component("BoxCollider")
 
-        projectile, rigidbody = _make_ball(scene, pos=Vector3(-4, 0, 0), radius=0.25)
+        projectile, rigidbody = _make_ball(simulation.scene, pos=Vector3(-4, 0, 0), radius=0.25)
         rigidbody.use_gravity = False
         rigidbody.drag = 0.0
         rigidbody.max_linear_velocity = 1000.0
         rigidbody.collision_detection_mode = mode
         rigidbody.velocity = Vector3(600, 0, 0)
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        simulation.fixed()
 
         if should_cross_wall:
             assert projectile.transform.position.x > 1.0
@@ -1845,12 +1773,12 @@ class TestContinuousCollisionDetection:
             (CollisionDetectionMode.ContinuousDynamic, False),
         ],
     )
-    def test_fast_dynamic_spheres_respect_collision_mode(self, scene, mode, should_cross):
+    def test_fast_dynamic_spheres_respect_collision_mode(self, simulation, mode, should_cross):
         Physics.set_gravity(Vector3(0, 0, 0))
 
         pair = []
         for side, velocity in ((-1, 600.0), (1, -600.0)):
-            body = scene.create_game_object(f"DynamicPair{side}")
+            body = simulation.scene.create_game_object(f"DynamicPair{side}")
             body.transform.position = Vector3(side * 4.0, 0, 0)
             rigidbody = body.add_component("Rigidbody")
             rigidbody.use_gravity = False
@@ -1863,17 +1791,14 @@ class TestContinuousCollisionDetection:
             pair.append((body, rigidbody))
 
         manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
-        profile = manager.get_last_frame_profile()
+        before = manager.published_fixed_step_index
+        simulation.fixed()
+        assert manager.completed_fixed_step_index == manager.published_fixed_step_index == before + 1
 
         if should_cross:
-            assert profile["dynamic_ccd_splits"] == 0
             assert pair[0][0].transform.position.x > 1.0
             assert pair[1][0].transform.position.x < -1.0
         else:
-            assert profile["dynamic_ccd_splits"] >= 1
             assert pair[0][0].transform.position.x < 0.0
             assert pair[1][0].transform.position.x > 0.0
             assert pair[0][1].velocity.x < 1.0
@@ -1913,17 +1838,14 @@ class TestRaycast:
         assert (hit.normal.x, hit.normal.y, hit.normal.z) == pytest.approx((0, 1, 0), abs=2e-2)
 
 
-    def test_raycast_all_returns_multiple(self, scene):
-        _make_ground(scene)
+    def test_raycast_all_returns_multiple(self, simulation):
+        _make_ground(simulation.scene)
         # Create floating box collider above ground
-        box = scene.create_game_object("FloatingBox")
+        box = simulation.scene.create_game_object("FloatingBox")
         box.transform.position = Vector3(0, 5, 0)
         box.add_component("BoxCollider")
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
+        simulation.frames(1)
 
         hits = Physics.raycast_all(Vector3(0, 50, 0), Vector3(0, -1, 0), 100.0)
         assert len(hits) >= 2  # at least ground + floating box
@@ -2022,14 +1944,11 @@ class TestRaycast:
 class TestOverlapQueries:
 
 
-    def test_overlap_box_honors_orientation(self, scene):
-        target = scene.create_game_object("OrientedQueryTarget")
+    def test_overlap_box_honors_orientation(self, simulation):
+        target = simulation.scene.create_game_object("OrientedQueryTarget")
         target.transform.position = Vector3(0, 3, 0)
         target.add_component("SphereCollider")
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
+        simulation.frames(1)
 
         extents = Vector3(4, 0.25, 0.25)
         collider_id = target.get_component("SphereCollider").component_id
@@ -2043,15 +1962,12 @@ class TestOverlapQueries:
 class TestShapeCasts:
 
 
-    def test_raycast_flushes_moved_static_collider_without_fixed_step(self, scene):
-        target = scene.create_game_object("MovedStaticQueryTarget")
+    def test_raycast_flushes_moved_static_collider_without_fixed_step(self, simulation):
+        target = simulation.scene.create_game_object("MovedStaticQueryTarget")
         target.transform.position = Vector3(0, 0, 0)
         target.add_component("BoxCollider")
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        simulation.fixed()
 
         target.transform.position = Vector3(12, 0, 0)
         hit = Physics.raycast(Vector3(12, 5, 0), Vector3(0, -1, 0), 10.0)
@@ -2061,7 +1977,7 @@ class TestShapeCasts:
 
 
 class TestContactCallbacks:
-    def test_trigger_enter_stay_exit_lifecycle(self, scene):
+    def test_trigger_enter_stay_exit_lifecycle(self, simulation):
         class TriggerProbe(InxComponent):
             events = None
 
@@ -2077,43 +1993,37 @@ class TestContactCallbacks:
             def on_trigger_exit(self, other):
                 self.events.append("exit")
 
-        trigger_object = scene.create_game_object("LifecycleTrigger")
+        trigger_object = simulation.scene.create_game_object("LifecycleTrigger")
         trigger = trigger_object.add_component("BoxCollider")
         trigger.size = Vector3(4, 4, 4)
         trigger.is_trigger = True
 
-        mover = scene.create_game_object("LifecycleMover")
+        mover = simulation.scene.create_game_object("LifecycleMover")
         mover.transform.position = Vector3(8, 0, 0)
         mover.add_component("SphereCollider")
         rigidbody = mover.add_component("Rigidbody")
         rigidbody.is_kinematic = True
         probe = mover.add_component(TriggerProbe)
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        simulation.fixed()
 
         mover.transform.position = Vector3(0, 0, 0)
         Physics.sync_transforms()
-        sm.step()
+        simulation.fixed()
         assert "enter" in probe.events
 
-        sm.step()
+        simulation.fixed()
         assert "stay" in probe.events
 
         mover.transform.position = Vector3(8, 0, 0)
         Physics.sync_transforms()
-        sm.step()
+        simulation.fixed()
         assert "exit" in probe.events
 
 
 class TestLayerCollision:
-    def test_ignore_layer_collision_round_trip(self, scene):
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(1)
+    def test_ignore_layer_collision_round_trip(self, simulation):
+        simulation.fixed()
 
         Physics.ignore_layer_collision(10, 11, True)
         assert Physics.get_ignore_layer_collision(10, 11) is True
@@ -2842,60 +2752,57 @@ class TestIncrementalTransformSync:
         assert mesh.shape_error == ""
 
 
-    def test_pose_readback_only_visits_active_bodies(self, scene):
+    def test_pose_readback_only_visits_active_bodies(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
         rigidbodies = [
-            _make_ball(scene, pos=Vector3(index * 3.0, 5, 0), radius=0.5)[1]
+            _make_ball(simulation.scene, pos=Vector3(index * 3.0, 5, 0), radius=0.5)[1]
             for index in range(24)
         ]
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        simulation.fixed()
 
         for rigidbody in rigidbodies:
             rigidbody.sleep()
-        sm.step()
-        assert sm.get_last_rigidbody_sync_candidate_count() == 0
-        assert sm.get_last_interpolation_candidate_count() == 0
+        simulation.fixed()
+        sleeping = []
+        simulation.fixed(observe=sleeping.append)
+        assert max(item["rigidbody_sync_candidates"] for item in sleeping) == 0
+        assert max(item["interpolation_candidates"] for item in sleeping) == 0
 
-        rigidbodies[7].wake_up()
-        sm.step()
-        assert sm.get_last_rigidbody_sync_candidate_count() == 1
-        assert sm.get_last_interpolation_candidate_count() == 1
+        from infernux.lib import RigidbodyInterpolation
+        rigidbodies[7].interpolation = RigidbodyInterpolation.Interpolate
+        rigidbodies[7].velocity = Vector3(1, 0, 0)
+        moving = []
+        simulation.fixed(observe=moving.append)
+        assert max(item["rigidbody_sync_candidates"] for item in moving) == 1
+        assert max(item["interpolation_candidates"] for item in moving) == 1
+        assert rigidbodies[7].position.x > 21
 
-    def test_only_changed_collider_is_considered(self, scene):
+    def test_only_changed_collider_is_considered(self, simulation):
         objects = []
         for index in range(64):
-            game_object = scene.create_game_object(f"StaticCollider{index}")
+            game_object = simulation.scene.create_game_object(f"StaticCollider{index}")
             game_object.transform.position = Vector3(float(index * 2), 0, 0)
             game_object.add_component("BoxCollider")
             objects.append(game_object)
 
         sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
         Physics.sync_transforms()
 
-        sm.step()
+        simulation.fixed()
         assert sm.get_last_collider_sync_candidate_count() == 0
 
         objects[17].transform.position = Vector3(34, 3, 0)
-        sm.step()
-        # A static-only world skips simulation. Its query boundary consumes
-        # dirty poses on demand; a fixed step need not synchronize them.
+        frames = []
+        simulation.fixed(observe=frames.append)
         hit = Physics.raycast(Vector3(34, 6, 0), Vector3(0, -1, 0), 10)
         assert hit is not None
         assert hit.point.y == pytest.approx(3.5)
-        assert sm.get_last_collider_sync_candidate_count() == 1
+        assert sum(frame["collider_sync_candidates"] for frame in frames) == 1
 
-    def test_dynamic_scale_change_rebuilds_shape_through_dirty_actor(self, scene):
+    def test_dynamic_scale_change_rebuilds_shape_through_dirty_actor(self, simulation):
         Physics.set_gravity(Vector3(0, 0, 0))
-        game_object, rigidbody = _make_ball(scene, pos=Vector3(0, 5, 0), radius=0.5)
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        game_object, rigidbody = _make_ball(simulation.scene, pos=Vector3(0, 5, 0), radius=0.5)
+        simulation.fixed()
 
         collider_id = game_object.get_component("SphereCollider").component_id
         assert collider_id in {
@@ -2908,7 +2815,7 @@ class TestIncrementalTransformSync:
         }
         assert collider_id not in initial
         game_object.transform.local_scale = Vector3(4, 4, 4)
-        sm.step()
+        simulation.fixed()
         scaled = {
             collider.component_id
             for collider in Physics.overlap_sphere(Vector3(1.5, 5, 0), 0.1)
@@ -2917,18 +2824,15 @@ class TestIncrementalTransformSync:
 
 
 class TestPrimitiveColliderAlignment:
-    def test_cylinder_uses_y_as_its_height_axis(self, scene):
-        cylinder = scene.create_primitive(PrimitiveType.Cylinder, "VerticalCylinder")
+    def test_cylinder_uses_y_as_its_height_axis(self, simulation):
+        cylinder = simulation.scene.create_primitive(PrimitiveType.Cylinder, "VerticalCylinder")
         cylinder.transform.position = Vector3(8, 1, 0)
         collider = cylinder.get_component("CylinderCollider")
         collider.height = 3.0
         collider.radius = 0.5
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
         Physics.sync_transforms()
-        sm.step()
+        simulation.fixed()
 
         top_hit = Physics.raycast(Vector3(8, 4, 0), Vector3(0, -1, 0), 4.0)
         assert top_hit is not None
@@ -2940,19 +2844,16 @@ class TestPrimitiveColliderAlignment:
         assert side_hit.game_object.name == "VerticalCylinder"
         assert side_hit.distance == pytest.approx(1.5, abs=0.02)
 
-    def test_sphere_and_capsule_native_shapes_match_builtin_mesh_dimensions(self, scene):
-        sphere = scene.create_primitive(PrimitiveType.Sphere, "AlignedSphere")
+    def test_sphere_and_capsule_native_shapes_match_builtin_mesh_dimensions(self, simulation):
+        sphere = simulation.scene.create_primitive(PrimitiveType.Sphere, "AlignedSphere")
         assert sphere.get_component("SphereCollider") is not None
 
-        capsule = scene.create_primitive(PrimitiveType.Capsule, "AlignedCapsule")
+        capsule = simulation.scene.create_primitive(PrimitiveType.Capsule, "AlignedCapsule")
         capsule.transform.position = Vector3(3, 0, 0)
         assert capsule.get_component("CapsuleCollider") is not None
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
         Physics.sync_transforms()
-        sm.step()
+        simulation.fixed()
 
         sphere_hit = Physics.raycast(Vector3(-2, 0, 0), Vector3(1, 0, 0), 4.0)
         assert sphere_hit is not None
@@ -2989,17 +2890,14 @@ class TestCompoundCollider:
         assert compound.remove_component(primary) is True
         assert Physics.get_actor_count() == initial_count
 
-    def test_non_primary_collider_geometry_rebuilds_shared_shape(self, scene):
-        game_object = scene.create_game_object("Compound")
+    def test_non_primary_collider_geometry_rebuilds_shared_shape(self, simulation):
+        game_object = simulation.scene.create_game_object("Compound")
         game_object.add_component("BoxCollider")
         sphere = game_object.add_component("SphereCollider")
         sphere.radius = 0.5
         sphere.center = Vector3(5, 0, 0)
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        simulation.fixed()
 
         initial = Physics.raycast(Vector3(5, 5, 0), Vector3(0, -1, 0), 10.0)
         assert initial is not None
@@ -3010,18 +2908,15 @@ class TestCompoundCollider:
         assert moved is not None
         assert moved.collider.component_id == sphere.component_id
 
-    def test_mixed_trigger_query_filters_per_subshape(self, scene):
-        game_object = scene.create_game_object("MixedCompound")
+    def test_mixed_trigger_query_filters_per_subshape(self, simulation):
+        game_object = simulation.scene.create_game_object("MixedCompound")
         solid = game_object.add_component("BoxCollider")
         trigger = game_object.add_component("SphereCollider")
         trigger.center = Vector3(8, 0, 0)
         trigger.radius = 1.0
         trigger.is_trigger = True
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        simulation.fixed()
 
         solid_hit = Physics.raycast(
             Vector3(0, 5, 0), Vector3(0, -1, 0), 10.0,
@@ -3036,8 +2931,8 @@ class TestCompoundCollider:
         )
         assert trigger_hit is None
 
-    def test_mixed_trigger_preserves_solid_response(self, scene):
-        compound = scene.create_game_object("MixedResponse")
+    def test_mixed_trigger_preserves_solid_response(self, simulation):
+        compound = simulation.scene.create_game_object("MixedResponse")
         solid = compound.add_component("BoxCollider")
         solid.size = Vector3(4, 1, 4)
         trigger = compound.add_component("SphereCollider")
@@ -3045,50 +2940,41 @@ class TestCompoundCollider:
         trigger.radius = 2.0
         trigger.is_trigger = True
 
-        landing_ball, _ = _make_ball(scene, pos=Vector3(0, 5, 0))
-        passing_ball, _ = _make_ball(scene, pos=Vector3(8, 6, 0))
+        landing_ball, _ = _make_ball(simulation.scene, pos=Vector3(0, 5, 0))
+        passing_ball, _ = _make_ball(simulation.scene, pos=Vector3(8, 6, 0))
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        _step_frames(120)
+        simulation.frames(120)
 
         assert landing_ball.transform.position.y > 0.0
         assert passing_ball.transform.position.y < 0.0
 
-    def test_reenable_non_primary_collider_takes_actor_ownership(self, scene):
-        compound = scene.create_game_object("ReenabledCompound")
+    def test_reenable_non_primary_collider_takes_actor_ownership(self, simulation):
+        compound = simulation.scene.create_game_object("ReenabledCompound")
         primary = compound.add_component("BoxCollider")
         secondary = compound.add_component("SphereCollider")
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        simulation.fixed()
 
         primary.enabled = False
         secondary.enabled = False
         compound.transform.position = Vector3(12, 0, 0)
         secondary.enabled = True
-        sm.step()
+        simulation.fixed()
 
         hit = Physics.raycast(Vector3(12, 5, 0), Vector3(0, -1, 0), 10.0)
         assert hit is not None
         assert hit.collider.component_id == secondary.component_id
 
-    def test_removing_secondary_collider_keeps_actor_body_alive(self, scene):
-        compound = scene.create_game_object("RemovedCompoundChild")
+    def test_removing_secondary_collider_keeps_actor_body_alive(self, simulation):
+        compound = simulation.scene.create_game_object("RemovedCompoundChild")
         primary = compound.add_component("BoxCollider")
         secondary = compound.add_component("SphereCollider")
         secondary.center = Vector3(6, 0, 0)
 
-        sm = SceneManager.instance()
-        sm.play()
-        sm.pause()
-        sm.step()
+        simulation.fixed()
 
         assert compound.remove_component(secondary) is True
-        sm.step()
+        simulation.fixed()
 
         primary_hit = Physics.raycast(Vector3(0, 5, 0), Vector3(0, -1, 0), 10.0)
         removed_hit = Physics.raycast(Vector3(6, 5, 0), Vector3(0, -1, 0), 10.0)

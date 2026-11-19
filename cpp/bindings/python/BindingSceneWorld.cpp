@@ -671,9 +671,9 @@ void BindSceneManager(py::module_ &m)
         .def("get_last_collider_sync_candidate_count", &SceneManager::GetLastColliderSyncCandidateCount,
              "Number of dirty collider handles considered by the most recent simulation frame")
         .def("get_last_rigidbody_sync_candidate_count", &SceneManager::GetLastRigidbodySyncCandidateCount,
-             "Number of active physics bodies considered for pose readback in the most recent simulation frame")
+             "Number of published body poses consumed by CPU Transforms in the most recent host frame")
         .def("get_last_interpolation_candidate_count", &SceneManager::GetLastInterpolationCandidateCount,
-             "Number of physics bodies considered for presentation interpolation in the most recent frame")
+             "Number of CPU body poses processed for presentation interpolation in the most recent host frame")
         .def("get_global_transform_serial", &SceneManager::GetGlobalTransformSerial,
              "Get the monotonic native Transform storage revision")
         .def(
@@ -704,7 +704,6 @@ void BindSceneManager(py::module_ &m)
                 result["rigidbody_sync_candidates"] = profile.rigidbodySyncCandidates;
                 result["interpolation_candidates"] = profile.interpolationCandidates;
                 result["contact_events"] = profile.contactEvents;
-                result["dynamic_ccd_splits"] = profile.dynamicCCDSplits;
                 result["queued_host_frames"] = manager.GetPendingRuntimeFrameCount();
                 result["queued_simulation_seconds"] = manager.GetQueuedSimulationSeconds();
                 return result;
