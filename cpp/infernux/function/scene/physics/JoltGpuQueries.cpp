@@ -158,7 +158,7 @@ constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(Shapes) | Bit(States) | Bit(Candidates) |
         Bit(Control) | Bit(CastParameters) | Bit(Geometry),
     Bit(Parameters) | Bit(Control) | Bit(Summary),
-    Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(States) | Bit(Control) | Bit(Hits),
+    Bit(Parameters) | Bit(Inputs) | Bit(Models) | Bit(States) | Bit(Control) | Bit(Hits),
     Bit(RayParameters) | Bit(RayOrigins) | Bit(RayDirections) | Bit(RayInputs)};
 
 uint64_t CheckedBytes(uint64_t count, uint64_t stride)
@@ -673,7 +673,9 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     if (rays && (queries.size() != 1 || queries.front().meta.x != QueryRay || queries.front().meta.y != QueryClosest ||
                  !primitives.empty()))
         throw JoltGpuQueryRequestError("GPU ray inputs require one closest-ray template without explicit primitives");
-    const auto inputBytes = CheckedBytes(queryCount, sizeof(QueryInput));
+    const uint32_t format = queries.empty() ? QueryOutputHit : OutputFormat(queries.front());
+    const bool motion = format == QueryOutputMotion;
+    const auto inputBytes = CheckedBytes(queryCount, motion ? sizeof(QueryMotionInput) : sizeof(QueryInput));
     const auto primitiveBytes = CheckedBytes(primitives.size(), sizeof(QueryPrimitive));
     const auto requestWords = inputBytes / sizeof(QueryRecordWord) + primitiveBytes / sizeof(QueryRecordWord);
     if (requestWords > std::numeric_limits<uint32_t>::max())
@@ -732,7 +734,6 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         ValidateGeometry(primitive.meta.x, primitive.geometry, primitive.rotation, primitive.geometryReference,
                          result->geometry, primitive.meta.y);
     }
-    const uint32_t format = queries.empty() ? QueryOutputHit : OutputFormat(queries.front());
     const uint32_t recordBytes = RecordBytes(format);
     for (const auto &query : queries) {
         ValidateInput(query, primitives.size(), bodyBase, bodyCount, bool(publication), result->geometry);
@@ -811,7 +812,6 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     static_assert(sizeof(QuerySpan) == sizeof(QueryRecordWord));
     static_assert(sizeof(QueryCastState) == 4 * sizeof(QueryRecordWord));
     static_assert(sizeof(QueryInput) >= sizeof(QuerySpan) + sizeof(QueryCastState));
-    const bool motion = format == QueryOutputMotion;
     const uint64_t spanBytes = CheckedBytes(queryCount, sizeof(QuerySpan));
     const uint64_t prefixBytes =
         motion ? spanBytes : CheckedBytes(queryCount, sizeof(QuerySpan) + sizeof(QueryCastState));
@@ -873,46 +873,10 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         const BodyState state{};
         upload(States, Bytes(&state, 1));
     }
-    if (!totalLeaves) {
+    if (!totalLeaves && !motion) {
         const ShapeModel shape{};
         upload(Shapes, Bytes(&shape, 1));
     }
-    const bool hasSweep = std::any_of(queries.begin(), queries.end(),
-                                      [](const auto &query) { return (query.meta.w & QuerySweepPolicy) != 0; });
-    // Identity records are compact for this retained publication's world.
-    // Author model/shape addresses and query result addresses remain global.
-    const bool hasPairPolicy = std::any_of(
-        queries.begin(), queries.end(), [](const auto &query) { return (query.meta.w & QuerySweepPairPolicy) != 0; });
-    const auto pairs = result->publication ? result->publication->colliderPairs : nullptr;
-    if (hasPairPolicy && !pairs)
-        throw JoltGpuQueryRequestError("GPU source sweep requires its retained collider policy");
-    const uint64_t pairCount64 = hasPairPolicy ? pairs->keys.size() : 0;
-    const uint64_t identityPrefix = std::max<uint64_t>(1, uint64_t(bodyCount) + (hasSweep ? leafCount : 0u));
-    if (identityPrefix > UINT32_MAX || pairCount64 > (UINT32_MAX - identityPrefix) / 2u)
-        throw JoltGpuQueryRequestError("Jolt GPU query identity words exceed device indexing");
-    const uint32_t pairCount = static_cast<uint32_t>(pairCount64);
-    if (pairCount &&
-        (!pairs->buffer || !pairs->buffer->IsFrozen() || !host.SharesServicesWith(pairs->buffer->GetHost()) ||
-         pairs->buffer->GetByteSize() != CheckedBytes(pairCount, sizeof(ColliderPairKey))))
-        throw JoltGpuQueryRequestError("GPU source sweep policy differs from its exact frozen generation");
-    std::vector<QueryBodyIdentity> identities(static_cast<size_t>(identityPrefix));
-    identities.front().ids.x = InvalidQueryBodySlot;
-    for (uint32_t local = 0; local < bodyCount; ++local) {
-        const auto &actor = result->publication->directory->actors[bodyBase + local];
-        const uint64_t rigidbodyId = actor ? actor->rigidbodyComponentId : 0;
-        identities[local].ids = {actor ? actor->bodyId : InvalidQueryBodySlot, rigidbodyId ? 1u : 0u,
-                                 static_cast<uint32_t>(rigidbodyId), static_cast<uint32_t>(rigidbodyId >> 32)};
-    }
-    if (hasSweep) {
-        for (uint32_t local = 0; local < leafCount; ++local) {
-            const auto &address = result->publication->directory->leaves[leafBase + local];
-            const auto &actor = result->publication->directory->actors[address.bodySlot];
-            const auto id = actor->leaves[address.actorLeaf].surfaceGameObjectId;
-            identities[bodyCount + local].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
-        }
-    }
-    allocate(BodyIdentities, identityPrefix + pairCount64 * 2u);
-    updates.push_back({buffers[BodyIdentities], 0, Bytes(identities.data(), identities.size())});
     const QueryParams parameters{
         {result->queryCount, bodyBase, bodyCount, leafCount},
         {static_cast<uint32_t>(primitives.size()), stride, capacity, format},
@@ -921,9 +885,19 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         {bodyCount, leafCount, result->publication ? result->publication->jointCount : 0u,
          projectedMotionBlocks | (knownCount && IsDeviceResult(readback) ? QueryFixedRowMapping : 0u)}};
     upload(Parameters, Bytes(&parameters, 1));
-    // Requests and explicit primitives share one immutable word stream. This
-    // removes an upload/binding without changing either public input layout.
-    if (rays) {
+    if (motion) {
+        // Motion requests name one retained actor each, including duplicate rows.
+        // Carry its identity beside the slot so other actors never enter this upload.
+        std::vector<uint8_t> data(static_cast<size_t>(inputBytes));
+        for (size_t row = 0; row < queries.size(); ++row) {
+            const auto &request = queries[row];
+            const auto slot = request.source.y;
+            const QueryMotionInput input{{slot, result->publication->directory->actors[slot]->bodyId, 0u, 0u},
+                                         request.geometry};
+            std::memcpy(data.data() + row * sizeof(input), &input, sizeof(input));
+        }
+        upload(Inputs, std::move(data));
+    } else if (rays) {
         allocate(Inputs, requestWords);
         buffers[RayInputs] = buffers[Inputs];
         buffers[RayOrigins] = rays->origins.buffer;
@@ -935,13 +909,59 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
                                                {queries.front().positionMaximum.w, 0, 0, 0}};
         upload(RayParameters, Bytes(&rayParameters, 1));
     } else {
+        // Geometric requests and their explicit primitives share one immutable word stream.
         std::vector<uint8_t> requestData(static_cast<size_t>(CheckedBytes(requestWords, sizeof(QueryRecordWord))));
         std::memcpy(requestData.data(), queries.data(), static_cast<size_t>(inputBytes));
         if (primitiveBytes)
             std::memcpy(requestData.data() + inputBytes, primitives.data(), static_cast<size_t>(primitiveBytes));
         upload(Inputs, std::move(requestData));
     }
+    std::shared_ptr<QueryPolicyCopy> copy;
     if (!motion) {
+        const bool hasSweep = std::any_of(queries.begin(), queries.end(),
+                                          [](const auto &query) { return (query.meta.w & QuerySweepPolicy) != 0; });
+        // Identity records are compact for this retained publication's world.
+        // Author model/shape addresses and query result addresses remain global.
+        const bool hasPairPolicy = std::any_of(queries.begin(), queries.end(), [](const auto &query) {
+            return (query.meta.w & QuerySweepPairPolicy) != 0;
+        });
+        const auto pairs = result->publication ? result->publication->colliderPairs : nullptr;
+        if (hasPairPolicy && !pairs)
+            throw JoltGpuQueryRequestError("GPU source sweep requires its retained collider policy");
+        const uint64_t pairCount64 = hasPairPolicy ? pairs->keys.size() : 0;
+        const uint64_t identityPrefix = std::max<uint64_t>(1, uint64_t(bodyCount) + (hasSweep ? leafCount : 0u));
+        if (identityPrefix > UINT32_MAX || pairCount64 > (UINT32_MAX - identityPrefix) / 2u)
+            throw JoltGpuQueryRequestError("Jolt GPU query identity words exceed device indexing");
+        const uint32_t pairCount = static_cast<uint32_t>(pairCount64);
+        if (pairCount &&
+            (!pairs->buffer || !pairs->buffer->IsFrozen() || !host.SharesServicesWith(pairs->buffer->GetHost()) ||
+             pairs->buffer->GetByteSize() != CheckedBytes(pairCount, sizeof(ColliderPairKey))))
+            throw JoltGpuQueryRequestError("GPU source sweep policy differs from its exact frozen generation");
+        std::vector<QueryBodyIdentity> identities(static_cast<size_t>(identityPrefix));
+        identities.front().ids.x = InvalidQueryBodySlot;
+        for (uint32_t local = 0; local < bodyCount; ++local) {
+            const auto &actor = result->publication->directory->actors[bodyBase + local];
+            const uint64_t rigidbodyId = actor ? actor->rigidbodyComponentId : 0;
+            identities[local].ids = {actor ? actor->bodyId : InvalidQueryBodySlot, rigidbodyId ? 1u : 0u,
+                                     static_cast<uint32_t>(rigidbodyId), static_cast<uint32_t>(rigidbodyId >> 32)};
+        }
+        if (hasSweep) {
+            for (uint32_t local = 0; local < leafCount; ++local) {
+                const auto &address = result->publication->directory->leaves[leafBase + local];
+                const auto &actor = result->publication->directory->actors[address.bodySlot];
+                const auto id = actor->leaves[address.actorLeaf].surfaceGameObjectId;
+                identities[bodyCount + local].ids = {static_cast<uint32_t>(id), static_cast<uint32_t>(id >> 32), 0, 0};
+            }
+        }
+        allocate(BodyIdentities, identityPrefix + pairCount64 * 2u);
+        updates.push_back({buffers[BodyIdentities], 0, Bytes(identities.data(), identities.size())});
+        if (pairCount) {
+            copy = std::make_shared<QueryPolicyCopy>(host);
+            copy->source = pairs->buffer;
+            copy->target = buffers[BodyIdentities];
+            copy->count = pairCount;
+            copy->targetBase = static_cast<uint32_t>(identityPrefix);
+        }
         const QueryCastParams castParameters{{generic ? std::min(32u, castIterationQuantum) : castIterationQuantum,
                                               bodyCount, static_cast<uint32_t>(identityPrefix), pairCount}};
         upload(CastParameters, Bytes(&castParameters, 1));
@@ -1031,14 +1051,8 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         resume = {dispatch(AdvanceJobs), dispatch(JobProgress)};
     else if (hasCasts)
         resume = {dispatch(ResumeCasts), dispatch(Scan), dispatch(Compact)};
-    auto copy = pairCount ? std::make_shared<QueryPolicyCopy>(host) : nullptr;
-    if (copy) {
-        copy->source = pairs->buffer;
-        copy->target = buffers[BodyIdentities];
+    if (copy)
         copy->uploads = std::move(updates);
-        copy->count = pairCount;
-        copy->targetBase = static_cast<uint32_t>(identityPrefix);
-    }
     auto ready = [host, result, updates = std::move(updates), dispatches = std::move(dispatches),
                   reads = std::move(reads), resume = std::move(resume), finalize = std::move(finalize), generic,
                   payload = !generic && (knownCount || IsDeviceResult(readback))]() mutable -> JoltGpuControlWork {
