@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.camera import linear_eye_depth
+from infernux.shader.lib.camera import linear_eye_depth, world_position
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -58,9 +58,9 @@ def ray_grid_pixel(pixel: shader.ivec2, source: shader.ivec2, target: shader.ive
 
 def resolve_reduced_ray(signal: shader.UInt2D, primary: shader.UInt2D, frame: shader.Color2D,
                         pixel: shader.ivec2, full: shader.ivec2, extent: shader.ivec2,
-                        surface_id: shader.uint, device_depth: float,
-                        normal: shader.vec3, roughness: float) -> shader.vec4:
-    if shader.load(primary, pixel, 0).x != surface_id:
+                        surface_id: shader.uint, normal: shader.vec3) -> shader.vec4:
+    receiver = shader.load(primary, pixel, 0)
+    if receiver.x != surface_id:
         return shader.vec4(0.0)
 
     center = ray_grid_pixel(pixel, full, extent)
@@ -70,7 +70,12 @@ def resolve_reduced_ray(signal: shader.UInt2D, primary: shader.UInt2D, frame: sh
 
     first = center - shader.ivec2(pixel < representative)
     camera = shader.camera()
-    depth = linear_eye_depth(device_depth, camera)
+    inv_size = shader.vec2(1.0) / shader.vec2(full)
+    uv = (shader.vec2(pixel) + shader.vec2(0.5)) * inv_size
+    receiver_depth = shader.as_float(receiver.y)
+    position = world_position(uv, receiver_depth, camera)
+    plane_normal = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))
+    plane_band = 0.001 + 0.002 * linear_eye_depth(receiver_depth, camera)
     radiance = shader.vec3(0.0)
     total = 0.0
     for tap in range(4):
@@ -88,9 +93,11 @@ def resolve_reduced_ray(signal: shader.UInt2D, primary: shader.UInt2D, frame: sh
 
         sample_frame = shader.load(frame, source, 0)
         sample_normal = decode_octahedral_normal(sample_frame.xy)
-        sample_depth = linear_eye_depth(shader.as_float(witness.y), camera)
-        depth_band = 0.005 + 0.017 * shader.min(depth, sample_depth)
-        depth_weight = shader.saturate(1.0 - shader.abs(depth - sample_depth) / depth_band)
+        sample_uv = (shader.vec2(source) + shader.vec2(0.5)) * inv_size
+        sample_position = world_position(sample_uv, shader.as_float(witness.y), camera)
+        # A tilted floor can span many depth values inside one trace cell.
+        plane_delta = shader.abs(shader.dot(sample_position - position, plane_normal))
+        depth_weight = shader.saturate(1.0 - plane_delta / plane_band)
         normal_weight = shader.saturate((shader.dot(normal, sample_normal) - 0.94) / 0.06)
         offset = shader.vec2(pixel - source)
         # Diffuse irradiance is incident light. A roughness texture on the receiver
@@ -170,5 +177,5 @@ def resolve_ray_diffuse(signal: shader.UInt2D, primary: shader.UInt2D, frame: sh
     full = shader.ivec2(shader.dimensions(primary, 0))
     extent = shader.ivec2(shader.dimensions(signal, 0))
     if shader.any(full != extent):
-        return resolve_reduced_ray(signal, primary, frame, pixel, full, extent, surface_id, depth, normal, roughness)
+        return resolve_reduced_ray(signal, primary, frame, pixel, full, extent, surface_id, normal)
     return unpack_ray_signal(shader.load(signal, pixel, 0))
