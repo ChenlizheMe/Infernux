@@ -224,6 +224,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     std::vector<PositionAnchors> anchors;
     std::vector<DevicePatch> patches;
     std::vector<UInt4> groups;
+    std::vector<uint32_t> jointStatus;
     // Dynamic slots form the compact readback prefix. Prescribed boundaries are inputs only.
     std::vector<JPH::BodyID> native, prescribed;
     std::vector<uint32_t> projectCpuIds;
@@ -265,7 +266,6 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     bool solvePosition = false;
     bool interleaveCpu = false;
     bool velocityInitialized = false;
-    bool solveFixed = false;
     float warmStartScale = 0.0f;
     Parameters params{};
 
@@ -519,7 +519,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         std::vector<UInt4> connectedGroups;
         patches.clear();
         wakeSlots.clear();
-        solveFixed = false;
+        jointStatus.clear();
         patches.reserve(order.size());
         cpuLinks.clear();
         size_t previous = SIZE_MAX;
@@ -551,7 +551,6 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 value.normalFriction = responses[index].normalFriction;
             } else {
                 value.points = fixedRows[index - responses.size()].geometry;
-                solveFixed = true;
             }
             patches.push_back(value);
             ++group.y;
@@ -794,10 +793,15 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         const float minImpact = step.Scene().System().GetPhysicsSettings().mMinVelocityForRestitution;
         auto &responses = step.Responses();
         for (size_t i = 0; i < order.size(); ++i) {
-            if (order[i] >= responses.size())
-                continue;
-            auto &response = responses[order[i]];
             auto &patch = patches[i];
+            if (order[i] >= responses.size()) {
+                // Each active joint owns a status word following the immutable solver schedule.
+                patch.endpoints.w =
+                    static_cast<uint32_t>(groups.size() * sizeof(UInt4) + jointStatus.size() * sizeof(uint32_t));
+                jointStatus.emplace_back(JPH::GPU::JointStatusSuccess);
+                continue;
+            }
+            auto &response = responses[order[i]];
             const auto &free = velocities[patch.endpoints.x];
             const auto v = XYZ(free.linear);
             const auto w = XYZ(free.angular);
@@ -845,8 +849,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         dispatch.groupCountY = static_cast<uint32_t>((uint64_t(workgroups) + width - 1u) / width);
         for (const auto port : program.ports) {
             dispatch.buffers.push_back(buffers[port]);
-            const bool modifies =
-                port == GpuStates || port == CpuVelocities || port == CpuPoses || port == Patches || port == Sleep;
+            const bool modifies = port == GpuStates || port == CpuVelocities || port == CpuPoses || port == Patches ||
+                                  port == Sleep || (port == Groups && !jointStatus.empty());
             using Access = rhi::ComputeBufferAccess;
             if (port == Impulses)
                 dispatch.bufferAccesses.push_back(params.range.w ? Access::Write : Access::ReadWrite);
@@ -860,7 +864,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     {
         const auto velocityBytes = models.size() * sizeof(Velocity);
         return Allocate(CpuModels, models.size() * sizeof(CpuBoundary)) && Allocate(CpuVelocities, velocityBytes) &&
-               Allocate(Groups, groups.size() * sizeof(UInt4)) &&
+               Allocate(Groups, groups.size() * sizeof(UInt4) + jointStatus.size() * sizeof(uint32_t)) &&
                Allocate(Patches, patches.size() * sizeof(DevicePatch)) &&
                (!solveVelocity || (Allocate(PreviousPatches, sizeof(DevicePatch)) &&
                                    Allocate(Impulses, std::max(size_t{1}, native.size()) * sizeof(Velocity)))) &&
@@ -954,13 +958,17 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         return Install(std::move(done));
     }
 
-    void ReadSolvedPatches(rhi::ComputeReadback &receipt)
+    rhi::ComputeBufferRead JointStatusRead() const
     {
-        receipt.ReadInto(patches.data(), patches.size() * sizeof(DevicePatch));
-        if (solveFixed)
-            for (const auto &patch : patches)
-                if (patch.endpoints.z == 0 && patch.endpoints.w != JPH::GPU::JointStatusSuccess)
-                    throw std::runtime_error("Cross-backend FixedJoint produced an invalid impulse or correction");
+        return {buffers[Groups], groups.size() * sizeof(UInt4), jointStatus.size() * sizeof(uint32_t)};
+    }
+
+    void CheckJointStatus(rhi::ComputeReadback &receipt)
+    {
+        receipt.ReadInto(jointStatus.data(), jointStatus.size() * sizeof(uint32_t));
+        if (std::any_of(jointStatus.begin(), jointStatus.end(),
+                        [](uint32_t status) { return status != JPH::GPU::JointStatusSuccess; }))
+            throw std::runtime_error("Cross-backend FixedJoint produced an invalid impulse or correction");
     }
 
     void PublishContacts()
@@ -1000,7 +1008,9 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     void UploadWorkset(std::vector<rhi::ComputeBufferUpdate> &updates) const
     {
         updates.push_back({buffers[CpuModels], 0, Bytes(models)});
-        updates.push_back({buffers[Groups], 0, Bytes(groups)});
+        std::vector<uint8_t> schedule(groups.size() * sizeof(UInt4) + jointStatus.size() * sizeof(uint32_t));
+        std::memcpy(schedule.data(), groups.data(), groups.size() * sizeof(UInt4));
+        updates.push_back({buffers[Groups], 0, std::move(schedule)});
         updates.push_back({buffers[Patches], 0, Bytes(patches)});
     }
 
@@ -1053,13 +1063,16 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         params.range = {serialGroupCount, cooperativeGroupCount, rounds, newVelocities ? 1u : 0u};
         params.contact.x = first ? warmStartScale : 0.0f;
         const bool readFeedback = !native.empty() && (interleaveCpu || last || !projectCpuIds.empty());
-        const bool readImpulses = last && (policy.impulses || solveFixed);
+        const bool readContacts = last && policy.impulses && !step.Responses().empty();
+        const bool readJoints = last && !jointStatus.empty();
         std::vector<rhi::ComputeBufferRead> reads;
         if (readFeedback)
             reads.push_back({buffers[Impulses], 0, native.size() * sizeof(Velocity)});
         const auto contactRead = reads.size();
-        if (readImpulses)
+        if (readContacts)
             reads.push_back({buffers[Patches], 0, patches.size() * sizeof(DevicePatch)});
+        if (readJoints)
+            reads.push_back(JointStatusRead());
         const auto resume =
             reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
         std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)}};
@@ -1071,8 +1084,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                                                {Dispatch(owner.m_velocity, SolverWorkgroups())}, std::move(reads));
         velocityInitialized = true;
         return {packet,
-                [self = shared_from_this(), packet, last, readFeedback, readImpulses, contactRead, rounds, cpuRounds,
-                 done = std::move(done)] {
+                [self = shared_from_this(), packet, last, readFeedback, readJoints, readContacts, contactRead, rounds,
+                 cpuRounds, done = std::move(done)] {
                     if (readFeedback) {
                         self->receipts.resize(self->native.size());
                         packet->Readback(0)->ReadInto(self->receipts.data(), self->receipts.size() * sizeof(Velocity));
@@ -1100,11 +1113,13 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                         if (last)
                             self->cpu.FinishCoupledVelocity();
                     }
-                    if (readImpulses) {
-                        self->ReadSolvedPatches(*packet->Readback(contactRead));
-                        if (self->policy.impulses)
-                            self->PublishContacts();
-                    }
+                    if (readJoints)
+                        self->CheckJointStatus(*packet->Readback(contactRead + readContacts));
+                    if (readContacts)
+                        packet->Readback(contactRead)
+                            ->ReadInto(self->patches.data(), self->patches.size() * sizeof(DevicePatch));
+                    if (last && self->policy.impulses)
+                        self->PublishContacts();
                     if (last)
                         self->RetainImpulses();
                     done(rounds);
@@ -1147,9 +1162,9 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         std::vector<rhi::ComputeBufferRead> reads;
         if (readFeedback)
             reads.push_back({buffers[CpuPoses], 0, native.size() * sizeof(Pose)});
-        const bool readJoints = last && solveFixed;
+        const bool readJoints = last && !jointStatus.empty();
         if (readJoints)
-            reads.push_back({buffers[Patches], 0, patches.size() * sizeof(DevicePatch)});
+            reads.push_back(JointStatusRead());
         const auto resume =
             reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
         auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(updates),
@@ -1159,7 +1174,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             [self = shared_from_this(), packet, last, readFeedback, readJoints, rounds, cpuRounds,
              done = std::move(done)] {
                 if (readJoints)
-                    self->ReadSolvedPatches(*packet->Readback(readFeedback ? 1 : 0));
+                    self->CheckJointStatus(*packet->Readback(readFeedback ? 1 : 0));
                 if (readFeedback) {
                     self->projected.resize(self->native.size());
                     packet->Readback(0)->ReadInto(self->projected.data(), self->projected.size() * sizeof(Pose));

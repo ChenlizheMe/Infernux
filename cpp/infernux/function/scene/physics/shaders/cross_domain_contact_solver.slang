@@ -27,7 +27,7 @@ struct PositionAnchors
 };
 struct MixedPatch
 {
-    uint4 endpoints; // CPU address, GPU slot, point count, previous manifold + 1 or joint status.
+    uint4 endpoints; // CPU address, GPU slot, point count, previous manifold + 1 or joint status byte address.
     float4 normalFriction;
     float4 points[4]; // Contact midpoint/bias, or two COM arms and two frames for a fixed joint (zero points).
     float4 normalLambda, frictionLambda;
@@ -38,7 +38,8 @@ struct MixedPatch
 [[vk::binding(2, 0)]] globallycoherent RWStructuredBuffer<BodyState> gpu_states;
 [[vk::binding(3, 0)]] StructuredBuffer<CpuBoundary> cpu_models;
 [[vk::binding(4, 0)]] globallycoherent RWStructuredBuffer<Velocity> cpu_velocities;
-[[vk::binding(5, 0)]] StructuredBuffer<uint4> groups;
+// Immutable group descriptors and packed ordinals, followed by one status word per active fixed joint.
+[[vk::binding(5, 0)]] RWByteAddressBuffer solver_schedule;
 [[vk::binding(6, 0)]] RWStructuredBuffer<MixedPatch> patches;
 [[vk::binding(7, 0)]] globallycoherent RWStructuredBuffer<Velocity> cpu_impulses;
 [[vk::binding(8, 0)]] RWStructuredBuffer<BodySleepRecord> gpu_sleep;
@@ -80,17 +81,22 @@ uint serial_workgroups()
     return (params.range.x + SolverLanes - 1u) / SolverLanes;
 }
 
+uint4 load_group(uint index)
+{
+    return solver_schedule.Load4(16u * index);
+}
+
 uint4 cooperative_group(uint group, uint lane)
 {
     if (lane == 0u)
-        shared_group = groups[params.range.x + group - serial_workgroups()];
+        shared_group = load_group(params.range.x + group - serial_workgroups());
     GroupMemoryBarrierWithGroupSync();
     return workgroupUniformLoad(shared_group);
 }
 
 uint scheduled_patch(uint ordinal)
 {
-    return groups[ordinal / 4u][ordinal % 4u];
+    return solver_schedule.Load(4u * ordinal);
 }
 
 void finish_contact_level()
@@ -183,7 +189,7 @@ void warm_patch(uint index)
 JointFixedState fixed_state(MixedPatch patch)
 {
     JointFixedState state = (JointFixedState)0;
-    state.flags = uint4(1u, patch.endpoints.w, 0u, 0u);
+    state.flags = uint4(1u, solver_schedule.Load(patch.endpoints.w), 0u, 0u);
     state.anchor1 = patch.points[0];
     state.anchor2 = patch.points[1];
     state.frame1 = patch.points[2];
@@ -221,8 +227,7 @@ void solve_patch(uint index)
         jph_joint_solve_velocity(author, fixed, ma, sa, mb, sb, params.gravityDt.w);
         if (fixed.flags.y != JointStatusSuccess)
         {
-            patch.endpoints.w = fixed.flags.y;
-            patches[index] = patch;
+            solver_schedule.Store(patch.endpoints.w, fixed.flags.y);
             return;
         }
         const float3 j = fixed.pointImpulse.xyz;
@@ -318,7 +323,7 @@ void exchange_cross_domain_velocity(uint3 id : SV_GroupID, uint lane : SV_GroupI
     {
         const uint group = group_index * SolverLanes + lane;
         if (group < params.range.x)
-            solve_serial_velocity(groups[group]);
+            solve_serial_velocity(load_group(group));
         return;
     }
     if (group_index - serial >= params.range.y) return;
@@ -334,7 +339,7 @@ void exchange_cross_domain_velocity(uint3 id : SV_GroupID, uint lane : SV_GroupI
     {
         for (uint level = 0; level < group.y; ++level)
         {
-            const uint4 span = groups[group.x + level];
+            const uint4 span = load_group(group.x + level);
             for (uint i = lane; i < span.y; i += SolverLanes)
             {
                 const uint patch = scheduled_patch(span.x + i);
@@ -363,8 +368,7 @@ void project_patch(uint index)
         jph_joint_solve_position(fixed_author(), fixed, ma, sa, mb, sb, params.contact.w);
         if (fixed.flags.y != JointStatusSuccess)
         {
-            patch.endpoints.w = fixed.flags.y;
-            patches[index] = patch;
+            solver_schedule.Store(patch.endpoints.w, fixed.flags.y);
             return;
         }
     }
@@ -400,7 +404,7 @@ void exchange_cross_domain_position(uint3 id : SV_GroupID, uint lane : SV_GroupI
         const uint index = group_index * SolverLanes + lane;
         if (index < params.range.x)
         {
-            const uint4 group = groups[index];
+            const uint4 group = load_group(index);
             for (uint round = 0; round < params.range.z; ++round)
                 for (uint i = group.x; i < group.x + group.y; ++i)
                     project_patch(i);
@@ -414,7 +418,7 @@ void exchange_cross_domain_position(uint3 id : SV_GroupID, uint lane : SV_GroupI
     {
         for (uint level = 0; level < group.y; ++level)
         {
-            const uint4 span = groups[group.x + level];
+            const uint4 span = load_group(group.x + level);
             for (uint i = lane; i < span.y; i += SolverLanes)
                 project_patch(scheduled_patch(span.x + i));
             finish_contact_level();
