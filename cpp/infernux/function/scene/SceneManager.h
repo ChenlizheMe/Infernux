@@ -296,8 +296,11 @@ class SceneManager
     /// Unadmitted input/time records. One automatic record may hold multiple fixed steps.
     [[nodiscard]] size_t GetPendingRuntimeFrameCount() const noexcept
     {
-        const auto *world = QueryWorld();
-        return world ? world->frame.pending.size() : 0;
+        size_t count = 0;
+        if (const auto *world = QueryWorld())
+            for (const auto &record : world->frame.pending)
+                count += record.explicitFrames;
+        return count;
     }
     [[nodiscard]] double GetQueuedSimulationSeconds() const noexcept;
 
@@ -787,6 +790,10 @@ class SceneManager
     std::optional<RuntimeWorldInitialSettings> m_initialRuntimeWorldSettings;
     std::unique_ptr<RuntimeWorld> m_authoringWorld;
     std::vector<std::unique_ptr<RuntimeWorld>> m_runtimeWorlds;
+    std::unordered_map<uint64_t, size_t> m_publishedWorldSlots;
+    uint64_t m_publishedWorldOrderRevision = 0;
+    [[nodiscard]] size_t PublishedWorldSlot(uint64_t id) const noexcept;
+    void RefreshPublishedWorldSlots(size_t first);
     std::vector<std::unique_ptr<RuntimeWorld>> m_preparingWorlds;
     // Preparing identities that have not materialized a graph/domain yet.
     // This is the native collection's reservation phase, never a Python world table.

@@ -21,6 +21,7 @@ from infernux.engine.runtime_dispatch import (
     RUNTIME_PHASE_NAMES as _RUNTIME_PHASE_NAMES,
     RUNTIME_SCHEDULER_PHASES as _RUNTIME_SCHEDULER_PHASES,
 )
+from infernux.engine.runtime_change_journal import RuntimeFrameBarrier as _RuntimeFrameBarrier
 _MISSING = object()
 _runtime_phase_presence_fn = None
 _structure_change_domains = None
@@ -903,6 +904,20 @@ class RuntimeExecutionScheduler:
             self._last_completed_frame_changes = dict(frame.barrier_changes)
             self._last_completed_barrier_sequence = tuple(frame.barrier_sequence)
             frame.close()
+
+    def _prepare_world_frame(self, world_scope) -> None:
+        """An unchanged plan can record its safe point without entering native World scope."""
+        if (not self._registry_scan_pending and not self._dispatch_types_dirty and not self._native_work_dirty
+                and self._plan_revision == self._structure_revision):
+            unchanged = self._change_journal._unchanged_at_barrier(self._change_cursor)
+            if unchanged is not None:
+                self._last_barrier_changes[_RuntimeFrameBarrier.SAFE_POINT] = unchanged
+                self._counters["change_barriers"] += 1
+                self._counters["plan_hits"] += 1
+                self._counters["plan_prepare_calls"] += 1
+                return
+        with world_scope(self.world_id):
+            self.prepare_frame()
 
     def prepare_frame(self) -> dict[str, tuple[Any, ...]]:
         """Explicitly build or return the plan for the current revision."""

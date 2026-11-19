@@ -209,8 +209,7 @@ class RuntimeWorldHost(WorkRuntime):
             with _Infernux._RuntimeWorldScope(manager._authoring_runtime_world_id):
                 self._authoring_scheduler.prepare_frame()
         for identity in identities:
-            with _Infernux._RuntimeWorldScope(identity):
-                self._world_runtimes[int(identity)].scheduler.prepare_frame()
+            self._world_runtimes[identity].scheduler._prepare_world_frame(_Infernux._RuntimeWorldScope)
         return bool(identities) or author_only
 
     def _retire_world_presentation(self, identity):

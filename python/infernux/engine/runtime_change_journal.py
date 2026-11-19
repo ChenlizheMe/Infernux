@@ -449,6 +449,15 @@ class RuntimeChangeJournal:
             empty_change_set,
         )
 
+    def _unchanged_at_barrier(self, cursor: RuntimeChangeCursor):
+        """Return the cursor's last empty result when there is nothing to flush."""
+        with self._lock:
+            cached = cursor._empty_change_set
+            if (cached is not None and cached.revision == self._revision == cursor.revision
+                    and not self._pending and not getattr(self._local, "transactions", None)):
+                return cached
+        return None
+
     def consume(
         self,
         cursor: RuntimeChangeCursor,

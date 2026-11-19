@@ -214,11 +214,27 @@ RuntimeWorld *SceneManager::FindRuntimeWorld(uint64_t id) const noexcept
 {
     if (m_authoringWorld && m_authoringWorld->id == id)
         return m_authoringWorld.get();
-    for (const auto *worlds : {&m_runtimeWorlds, &m_preparingWorlds, &m_retiringWorlds})
+    const size_t slot = PublishedWorldSlot(id);
+    if (slot < m_runtimeWorlds.size())
+        return m_runtimeWorlds[slot].get();
+    for (const auto *worlds : {&m_preparingWorlds, &m_retiringWorlds})
         for (const auto &world : *worlds)
             if (world->id == id)
                 return world.get();
     return nullptr;
+}
+
+size_t SceneManager::PublishedWorldSlot(uint64_t id) const noexcept
+{
+    const auto it = m_publishedWorldSlots.find(id);
+    return it == m_publishedWorldSlots.end() ? m_runtimeWorlds.size() : it->second;
+}
+
+void SceneManager::RefreshPublishedWorldSlots(size_t first)
+{
+    for (size_t slot = first; slot < m_runtimeWorlds.size(); ++slot)
+        m_publishedWorldSlots[m_runtimeWorlds[slot]->id] = slot;
+    ++m_publishedWorldOrderRevision;
 }
 
 void SceneManager::RefreshThreadDefaultRandomStorage() const
@@ -394,14 +410,13 @@ bool SceneManager::PublishRuntimeWorld(uint64_t id)
         throw std::logic_error("RuntimeWorld persistent Python graph must be attached before publication");
     auto &world = **it;
     m_runtimeWorlds.push_back(std::move(*it));
+    RefreshPublishedWorldSlots(m_runtimeWorlds.size() - 1);
     m_preparingWorlds.erase(it);
     RefreshThreadDefaultRandomStorage();
     const WorldExecutionScope scope(&world);
     const auto admittedState = GetSimulationState();
     const auto current = [&] {
-        return GetSimulationState() == admittedState &&
-               std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
-                           [id](const auto &candidate) { return candidate->id == id; });
+        return GetSimulationState() == admittedState && PublishedWorldSlot(id) < m_runtimeWorlds.size();
     };
     world.handle->state = "ready";
     std::vector<std::pair<uint64_t, std::vector<ObjectHandle>>> published;
@@ -428,11 +443,14 @@ bool SceneManager::PublishRuntimeWorld(uint64_t id)
 void SceneManager::SetPrimaryRuntimeWorld(uint64_t id)
 {
     Scene::RequireNoWorldRetirement();
-    const auto it = std::find_if(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
-                                 [id](const auto &world) { return world->id == id; });
-    if (it == m_runtimeWorlds.end())
+    const size_t slot = PublishedWorldSlot(id);
+    if (slot == m_runtimeWorlds.size())
         throw std::invalid_argument("primary RuntimeWorld must be published");
-    std::rotate(m_runtimeWorlds.begin(), it, std::next(it));
+    if (slot != 0) {
+        const auto it = m_runtimeWorlds.begin() + slot;
+        std::rotate(m_runtimeWorlds.begin(), it, std::next(it));
+        RefreshPublishedWorldSlots(0);
+    }
     (*m_runtimeWorlds.begin())->handle->pendingPrimary = false;
     RefreshThreadDefaultRandomStorage();
 }
@@ -472,7 +490,11 @@ void SceneManager::BeginRuntimeWorldRetirement(uint64_t id)
         world.simulation.pausedStepPending = false;
         ++world.simulation.simulationEpoch;
         m_retiringWorlds.push_back(std::move(*it));
-        worlds->erase(it);
+        const auto next = worlds->erase(it);
+        if (worlds == &m_runtimeWorlds) {
+            m_publishedWorldSlots.erase(id);
+            RefreshPublishedWorldSlots(static_cast<size_t>(next - worlds->begin()));
+        }
         RefreshThreadDefaultRandomStorage();
         const bool playing = std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
                                          [](const auto &candidate) { return candidate->simulation.isPlaying; });
@@ -1147,8 +1169,7 @@ FrameWorkFacts SceneManager::DescribeRuntimeFrames()
                physics.m_gpuScene->HasRunningFixedTick(*world);
     };
     const auto end = m_runtimeWorlds.end();
-    const auto cursor = std::find_if(m_runtimeWorlds.begin(), end,
-                                     [this](const auto &world) { return world->id == m_nextRuntimeWorldId; });
+    const auto cursor = m_runtimeWorlds.begin() + PublishedWorldSlot(m_nextRuntimeWorldId);
     const auto first = cursor == end ? m_runtimeWorlds.begin() : cursor;
     auto selected = std::find_if(first, end, eligible);
     if (selected == end) {
@@ -1167,23 +1188,20 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
     auto *work = m_runtimeFrameWork;
     if (gpu || !work || !work->IsActive() || !work->IsAccepting() || work->ServiceRemaining() <= 0)
         return false;
-    // A blocked World must not hide ready peers behind this aggregate source.
-    // Probe this stable published-ID snapshot at most once; return immediately
-    // after the first real quantum, never after cursor rotation alone.
-    auto ids = GetRuntimeWorldIds();
-    auto first = std::find(ids.begin(), ids.end(), worldId);
-    if (first == ids.end())
-        first = std::find(ids.begin(), ids.end(), m_nextRuntimeWorldId);
-    if (first != ids.end())
-        std::rotate(ids.begin(), first, ids.end());
-    for (auto selected = ids.begin(); selected != ids.end(); ++selected) {
+    // Visit each published peer at most once. A membership change during a
+    // callback ends this probe and the next service uses the new order.
+    const auto revision = m_publishedWorldOrderRevision;
+    const size_t count = m_runtimeWorlds.size();
+    size_t slot = PublishedWorldSlot(worldId);
+    if (slot == count)
+        slot = PublishedWorldSlot(m_nextRuntimeWorldId);
+    if (slot == count)
+        slot = 0;
+    for (size_t remaining = count; remaining != 0; --remaining) {
         if (m_runtimeFrameWork != work || !work->IsActive() || !work->IsAccepting() || work->ServiceRemaining() <= 0)
             return false;
-        const auto live = std::find_if(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
-                                       [id = *selected](const auto &candidate) { return candidate->id == id; });
-        if (live == m_runtimeWorlds.end())
-            continue;
-        auto *world = live->get();
+        auto *world = m_runtimeWorlds[slot].get();
+        slot = slot + 1 == count ? 0 : slot + 1;
         if (!world->simulation.isPlaying || world->handle->state == "failed")
             continue;
         if (world->simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed) {
@@ -1219,8 +1237,7 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
         const WorldExecutionScope scope(world);
         if (!work->IsLate() && !IsRuntimeFrameWaitingForPhysics(*world))
             continue;
-        const auto next = std::next(selected);
-        m_nextRuntimeWorldId = next == ids.end() ? ids.front() : *next;
+        m_nextRuntimeWorldId = m_runtimeWorlds[slot]->id;
         const auto cursor = [&] {
             return std::make_tuple(
                 world->frame.phase, world->frame.generation, world->frame.sceneCursor, world->frame.pending.size(),
@@ -1234,12 +1251,10 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
         const auto progress = work->ProgressSerial();
         const bool published = work->IsLate() ? ServiceCurrentWorldFrame() : AdvanceRunningPhysics(*world);
         const bool accepted = published || work->ProgressSerial() != progress;
-        // Callbacks may Stop/retire this owner or detach the source. Do not
-        // inspect the old World cursor after it leaves the published collection.
-        const bool stillPublished = std::any_of(m_runtimeWorlds.begin(), m_runtimeWorlds.end(),
-                                                [world](const auto &candidate) { return candidate.get() == world; });
-        if (!stillPublished || m_runtimeFrameWork != work || !work->IsAccepting())
-            return accepted || !stillPublished;
+        if (revision != m_publishedWorldOrderRevision)
+            return true;
+        if (m_runtimeFrameWork != work || !work->IsAccepting())
+            return accepted;
         if (accepted || cursor() != before)
             return true;
         // No retained change: try the next World while the same credit remains.
@@ -1258,7 +1273,8 @@ double SceneManager::GetQueuedSimulationSeconds() const noexcept
     double seconds = 0.0;
     if (const auto *world = QueryWorld())
         for (const auto &record : world->frame.pending)
-            seconds += record.automaticHost ? record.automaticScaledDebt : record.deltaTime;
+            seconds +=
+                record.automaticHost ? record.automaticScaledDebt : double(record.deltaTime) * record.explicitFrames;
     return seconds;
 }
 
@@ -1409,7 +1425,7 @@ void SceneManager::RecordHostFrame(float deltaTime, bool automaticHost)
         admission.InitializeAutomatic(inputBoundary);
     // Coalesce only continuous identical input. A real input/routing boundary
     // seals the preceding time segment, so new controls never drive old debt.
-    if (!world.frame.pending.empty() && world.frame.pending.back().TryAppendAutomatic(admission))
+    if (!world.frame.pending.empty() && world.frame.pending.back().TryAppend(admission))
         return;
     world.frame.pending.push_back(std::move(admission));
 }
@@ -1607,6 +1623,10 @@ void SceneManager::ContinueRuntimeUpdate()
                             : pending.TakeNextAutomatic();
             if (!pending.HasAutomaticDemand())
                 world.frame.pending.pop_front();
+        } else if (pending.explicitFrames > 1) {
+            --pending.explicitFrames;
+            admission = pending;
+            admission.explicitFrames = 1;
         } else {
             admission = std::move(pending);
             world.frame.pending.pop_front();

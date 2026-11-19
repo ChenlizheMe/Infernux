@@ -1273,10 +1273,11 @@ class PlayModeManager(PlayModeSerializationMixin):
             return
         from infernux.lib import _Infernux
         manager = self._get_scene_manager()
+        domains = self._runtime_world_session.engine._world_runtimes
         for identity in manager._runtime_world_ids:
-            with _Infernux._RuntimeWorldScope(identity):
-                state = self._scene_manager_api._load_state()
-                if state._pending_scene_load is not None or state._active_scene_transaction is not None:
+            state = domains[identity].scene_loads
+            if state._pending_scene_load is not None or state._active_scene_transaction is not None:
+                with _Infernux._RuntimeWorldScope(identity):
                     self._scene_manager_api.process_pending_load()
 
     def _rebuild_active_scene(

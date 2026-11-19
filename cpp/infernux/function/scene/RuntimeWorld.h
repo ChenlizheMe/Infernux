@@ -108,6 +108,7 @@ class RuntimeWorld final
         std::vector<TimedInputSpan> inputSpans;
         double automaticSampleDelay = 0;
         bool automaticSamplePending = true;
+        size_t explicitFrames = 1;
 
         void InitializeAutomatic(bool inputBoundary)
         {
@@ -180,13 +181,24 @@ class RuntimeWorld final
             return admitted;
         }
 
-        bool TryAppendAutomatic(FrameAdmission &next)
+        bool TryAppend(const FrameAdmission &next)
         {
-            if (!automaticHost || !next.automaticHost || sampledTimeScale != next.sampledTimeScale ||
+            if (automaticHost != next.automaticHost || sampledTimeScale != next.sampledTimeScale ||
                 sampledMaximumDeltaTime != next.sampledMaximumDeltaTime ||
-                sampledFixedTimeStep != next.sampledFixedTimeStep ||
-                (input->sampleIdentity != next.input->sampleIdentity &&
-                 !InputManager::CanCoalesceFrames(*input, *next.input)))
+                sampledFixedTimeStep != next.sampledFixedTimeStep)
+                return false;
+            if (!automaticHost) {
+                // Retain every explicit Tick. Repeated requests on one sealed input
+                // sample need only one copy of the request and its World projection.
+                if (unscaledDeltaTime != next.unscaledDeltaTime || deltaTime != next.deltaTime ||
+                    input->sampleIdentity != next.input->sampleIdentity ||
+                    (input != next.input && !InputManager::CanCoalesceFrames(*input, *next.input)))
+                    return false;
+                ++explicitFrames;
+                return true;
+            }
+            if (input->sampleIdentity != next.input->sampleIdentity &&
+                !InputManager::CanCoalesceFrames(*input, *next.input))
                 return false;
             automaticUnscaledDebt += next.automaticUnscaledDebt;
             automaticScaledDebt += next.automaticScaledDebt;
