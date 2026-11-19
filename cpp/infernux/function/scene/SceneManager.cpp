@@ -1074,6 +1074,19 @@ bool SceneManager::CanContinueRuntimeFrame() const noexcept
                                     m_runtimeFrameWork->ServiceRemaining() > 0));
 }
 
+std::optional<float> SceneManager::PendingRuntimeServiceInterval() const noexcept
+{
+    std::optional<float> interval;
+    for (const auto &world : m_runtimeWorlds) {
+        if (world->simulation.isPlaying && !world->simulation.isPaused &&
+            (world->frame.phase != RuntimeWorld::FramePhase::Idle || !world->frame.pending.empty())) {
+            const float step = world->simulation.fixedTimeStep;
+            interval = interval ? std::min(*interval, step) : step;
+        }
+    }
+    return interval;
+}
+
 void SceneManager::ReportRuntimeFrameProgress() noexcept
 {
     if (m_runtimeFrameWork && m_runtimeFrameWork->IsActive())

@@ -211,6 +211,9 @@ class SceneManager
 
     /// One Host admission, then all ready logical phases within the existing allowance.
     void ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta = false);
+    /// Earliest fixed interval among running Worlds with already admitted work.
+    /// Event-driven hosts can service it between presentation opportunities.
+    [[nodiscard]] std::optional<float> PendingRuntimeServiceInterval() const noexcept;
     void BindRuntimeFrameWork(FrameWorkOwner &work);
     void SetRuntimeFramePublicationCallbacks(std::function<bool(RuntimeWorld &)> publish,
                                              std::function<void(uint64_t)> retire,
