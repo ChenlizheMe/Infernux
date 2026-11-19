@@ -127,7 +127,12 @@ def _prepare_engine(*, installed: bool) -> dict[str, str]:
     return origins
 
 
-def _installed_exporter_registry(project: Path, target: str):
+def _installed_exporter_registry(
+    project: Path,
+    target: str,
+    *,
+    editor_root_override: Path | None = None,
+):
     """Prepare runtime declarations and load only the selected exporter.
 
     A command-line build is not an Editor process.  Project Runtime preloads
@@ -135,11 +140,15 @@ def _installed_exporter_registry(project: Path, target: str):
     exporter is imported directly from its Editor directory.  This keeps MCP,
     tool windows, and unrelated Editor preload lifecycles out of build hosts.
     """
-    _prepare_project_registry(project, runtime_host=True)
     plugin, _, _ = EXPORTERS[target]
+    # Runtime preloads can enter the project directory. Resolve CLI paths at
+    # their call site before loading any project code.
     editor_root = (
-        project / "Packages" / "infernux" / f"platform-{plugin}" / "editor"
+        editor_root_override.expanduser().resolve()
+        if editor_root_override is not None
+        else project / "Packages" / "infernux" / f"platform-{plugin}" / "editor"
     )
+    _prepare_project_registry(project, runtime_host=True)
     exporter = _load_exporter(target, editor_root_override=editor_root)
     from infernux.engine.build import BuildExporterRegistry
 
@@ -322,7 +331,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     engine_origins = _prepare_engine(installed=arguments.installed)
     from infernux.engine.build import (
         BuildConfiguration,
-        BuildExporterRegistry,
         BuildProfile,
         BuildRequest,
         BuildService,
@@ -372,16 +380,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         progress=on_progress,
     )
-    if arguments.installed:
-        registry = _installed_exporter_registry(project, arguments.target)
-    else:
-        _prepare_project_registry(project)
-        exporter = _load_exporter(
-            arguments.target,
-            editor_root_override=arguments.plugin_editor_root,
-        )
-        registry = BuildExporterRegistry()
-        registry.register("tests/acceptance/build-player", exporter)
+    selected_editor = arguments.plugin_editor_root
+    if not arguments.installed and selected_editor is None:
+        platform_name = EXPORTERS[arguments.target][0]
+        selected_editor = PLUGIN_EDITORS[platform_name]
+    registry = _installed_exporter_registry(
+        project, arguments.target, editor_root_override=selected_editor,
+    )
     service = BuildService(registry)
     try:
         plan = service.create_plan(request)

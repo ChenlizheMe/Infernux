@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import textwrap
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tests" / "acceptance" / "build_player.py"
@@ -35,33 +37,34 @@ def test_invalid_project_fails_closed_and_writes_atomic_evidence(tmp_path):
     assert not tuple(report.parent.glob(".*.tmp"))
 
 
-def test_installed_build_loads_runtime_preloads_and_only_selected_exporter(tmp_path, monkeypatch):
+@pytest.mark.parametrize("explicit_editor", [False, True])
+def test_installed_build_loads_runtime_preloads_and_only_selected_exporter(tmp_path, monkeypatch, explicit_editor):
     module = _module()
     calls = []
     target = module.DESKTOP_TARGET
     exporter = module._load_exporter(target)
-    monkeypatch.setattr(
-        module,
-        "_prepare_project_registry",
-        lambda project, *, runtime_host: calls.append((project, runtime_host)),
-    )
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    def preload(root, *, runtime_host):
+        calls.append((root, runtime_host))
+        monkeypatch.chdir(root)
+
+    monkeypatch.setattr(module, "_prepare_project_registry", preload)
 
     def load(target, *, editor_root_override):
         calls.append((target, editor_root_override))
         return exporter
 
     monkeypatch.setattr(module, "_load_exporter", load)
-    registry = module._installed_exporter_registry(tmp_path, target)
+    override = Path("release-engineering/editor") if explicit_editor else None
+    registry = module._installed_exporter_registry(project, target, editor_root_override=override)
 
     plugin = module.EXPORTERS[target][0]
-
-    assert calls == [
-        (tmp_path, True),
-        (
-            target,
-            tmp_path / "Packages" / "infernux" / f"platform-{plugin}" / "editor",
-        ),
-    ]
+    expected_root = (tmp_path / override if explicit_editor
+                     else project / "Packages" / "infernux" / f"platform-{plugin}" / "editor")
+    assert calls == [(project, True), (target, expected_root)]
     assert registry.resolve(target)[0] is exporter
 
 
