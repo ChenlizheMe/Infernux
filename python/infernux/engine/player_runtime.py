@@ -98,11 +98,8 @@ class PlayerRuntimeSession(WorkRuntime):
             self._native_engine.request_full_speed_frame()
 
     def configure_startup_warmup(self, project_path: str) -> None:
-        from infernux.engine.startup_warmup import player_startup_warmup_records, start_cpu_runtime_preload
+        from infernux.engine.startup_warmup import player_startup_warmup_records
 
-        # Load the packaged CPU compiler while native startup still owns the
-        # main thread; the declaration worker joins it before publishing.
-        start_cpu_runtime_preload()
         self._startup_warmup_records = player_startup_warmup_records(project_path)
 
     def _refresh_execution_membership(self) -> None:

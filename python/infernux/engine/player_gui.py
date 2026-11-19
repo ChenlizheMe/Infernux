@@ -49,29 +49,34 @@ class _FrameProfileWindow:
     """Collect native simulation work only while Player frame profiling is enabled."""
 
     def __init__(self):
-        self._last_runtime_frame = None
+        self._world_epoch = None
         self._start_runtime_frame = None
         self._start_fixed_time = None
         self._start_scheduler_counters = None
-        self._fixed_steps = 0
+        self._start_fixed_counts = None
+
+    @staticmethod
+    def _fixed_counts(scene_manager):
+        return (
+            scene_manager.fixed_step_index,
+            scene_manager.completed_fixed_step_index,
+            scene_manager.published_fixed_step_index,
+        )
 
     def sample(self, scene_manager, scheduler) -> None:
-        frame = int(scene_manager.runtime_frame_count)
-        if self._last_runtime_frame is None or frame < self._last_runtime_frame:
-            self._last_runtime_frame = frame
-            self._start_runtime_frame = frame
+        world_epoch = (scene_manager._current_runtime_world_id, scene_manager.simulation_epoch)
+        if self._world_epoch != world_epoch:
+            self._world_epoch = world_epoch
+            self._start_runtime_frame = int(scene_manager.runtime_frame_count)
             self._start_fixed_time = float(scene_manager.fixed_time)
             self._start_scheduler_counters = scheduler.profiler_snapshot()
-            self._fixed_steps = 0
-            return
-        if frame == self._last_runtime_frame:
-            return
-        self._fixed_steps += int(scene_manager.get_last_frame_profile()["fixed_steps"])
-        self._last_runtime_frame = frame
+            self._start_fixed_counts = self._fixed_counts(scene_manager)
 
     def finish(self, scene_manager, scheduler) -> dict:
         frame = int(scene_manager.runtime_frame_count)
         fixed_time = float(scene_manager.fixed_time)
+        fixed_counts = self._fixed_counts(scene_manager)
+        admitted, integrated, published = (end - start for start, end in zip(self._start_fixed_counts, fixed_counts))
         phases = scheduler.phase_plan_snapshot()
         counters = scheduler.profiler_snapshot()
         counter_names = (
@@ -86,7 +91,10 @@ class _FrameProfileWindow:
         result = {
             "runtime_frame_count": frame,
             "runtime_frames_window": frame - self._start_runtime_frame,
-            "fixed_steps_window": self._fixed_steps,
+            "fixed_steps_window": published,
+            "fixed_steps_admitted_window": admitted,
+            "fixed_steps_integrated_window": integrated,
+            # The simulation clock advances when a fixed step is admitted.
             "fixed_seconds_window": fixed_time - self._start_fixed_time,
             "fixed_seconds_total": fixed_time,
             "fixed_time_step": float(scene_manager.get_fixed_time_step()),
@@ -108,7 +116,7 @@ class _FrameProfileWindow:
         self._start_runtime_frame = frame
         self._start_fixed_time = fixed_time
         self._start_scheduler_counters = counters
-        self._fixed_steps = 0
+        self._start_fixed_counts = fixed_counts
         return result
 
 
@@ -363,6 +371,9 @@ class PlayerGUI(InxGUIRenderable):
     def _process_mouse_events(self, game_w: int, game_h: int, *, scene_hit=None, mouse_frame=None) -> None:
         pointer = self._pointer_state
         dispatcher = pointer.mouse
+        if not dispatcher.needs_scene_hit():
+            dispatcher.discard()
+            return
         from infernux.lib import SceneManager
         scene = SceneManager.instance().get_active_scene()
         camera = _get_native_game_camera(scene) if scene is not None else None
@@ -415,11 +426,13 @@ class PlayerGUI(InxGUIRenderable):
             Input.get_game_mouse_frame_state(0) if mouse_frame is None else mouse_frame
         )
 
-        mouse_positions, scene_hit = map_runtime_ui_pointer(
-            surfaces, camera, gx, gy, game_w, game_h,
-            include_scene_hit=True,
-        )
-        pointer.mouse_query_shared = True
+        def map_pointer(x, y, pick_scene):
+            mapped = map_runtime_ui_pointer(surfaces, camera, x, y, game_w, game_h, include_scene_hit=pick_scene)
+            return mapped if pick_scene else (mapped, None)
+
+        pick_scene = pointer.mouse.needs_scene_hit()
+        pointer.mouse_query_shared = pick_scene and pointer.touch_frame is None
+        mouse_positions, scene_hit = map_pointer(gx, gy, pointer.mouse_query_shared)
 
         pointers = _mouse_pointer_frames(
             mouse_positions,
@@ -436,22 +449,15 @@ class PlayerGUI(InxGUIRenderable):
             0 if touches else None,
         )
         if len(touches) == 1:
-            positions, pointer.touch_hit = map_runtime_ui_pointer(
-                surfaces, camera, touch_points[0][0], touch_points[0][1],
-                game_w, game_h, include_scene_hit=True,
-            )
+            positions, pointer.touch_hit = map_pointer(*touch_points[0], pick_scene)
             touch_positions = (positions,)
-            pointer.touch_query_shared = True
+            pointer.touch_query_shared = pick_scene
         else:
             touch_positions = map_runtime_ui_pointers(
                 surfaces, camera, touch_points, game_w, game_h
             )
-            if primary_index is not None:
-                _positions, pointer.touch_hit = map_runtime_ui_pointer(
-                    surfaces, camera,
-                    touch_points[primary_index][0], touch_points[primary_index][1],
-                    game_w, game_h, include_scene_hit=True,
-                )
+            if primary_index is not None and pick_scene:
+                _positions, pointer.touch_hit = map_pointer(*touch_points[primary_index], True)
                 pointer.touch_query_shared = True
         same_frame_terminal = tuple(
             touch.began_this_frame and touch.phase in (TouchPhase.ENDED, TouchPhase.CANCELED)

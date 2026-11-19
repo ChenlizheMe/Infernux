@@ -2553,6 +2553,17 @@ std::shared_ptr<const JoltGpuScene::Publication> PhysicsWorld::ReadGpuQueryPubli
     return publication;
 }
 
+std::shared_ptr<const JoltGpuScene::Publication>
+PhysicsWorld::ReadGpuSpatialQueryPublication(PhysicsDomain &domain) const
+{
+    auto publication = ReadGpuQueryPublication(domain);
+    // Test the accepted per-world layout only after sealing query sources and
+    // validating their World/epoch. GPU participants and shapeless bodies can
+    // publish numerical state without any collision leaves. Keep their source
+    // available to state gathers, but do not run an empty spatial query on it.
+    return publication && publication->leafCount ? publication : nullptr;
+}
+
 void PhysicsWorld::ObserveSpatialGpuQuery(PhysicsDomain &domain,
                                           const std::shared_ptr<const JoltGpuScene::Publication> &publication,
                                           const JoltGpuScene::Consumer &consumer) const
@@ -2678,7 +2689,7 @@ std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, cons
                                                      const JoltCpuQueries::Shape &shape) const
 {
     SealSpatialQuery(domain);
-    const auto gpu = ReadGpuQueryPublication(domain);
+    const auto gpu = ReadGpuSpatialQueryPublication(domain);
     auto colliders = domain.cpuScene ? JoltCpuQueries(*domain.cpuScene).Overlap(shape, CpuSpatialFilter(request, gpu))
                                      : std::vector<Collider *>{};
     if (!gpu)
@@ -2707,7 +2718,7 @@ bool PhysicsWorld::QueryClosestCast(PhysicsDomain &domain, const QueryInput &req
                                     const JoltCpuQueries::Shape &shape, RaycastHit &hit) const
 {
     SealSpatialQuery(domain);
-    const auto gpu = ReadGpuQueryPublication(domain);
+    const auto gpu = ReadGpuSpatialQueryPublication(domain);
     hit = {};
     if (gpu) {
         const auto result = RunQuery(domain, gpu, {request});
@@ -3866,7 +3877,7 @@ PhysicsWorld::GatherRigidbodyStatesInBounds(const glm::vec3 &minimum, const glm:
 {
     auto &domain = CurrentDomain();
     SealSpatialQuery(domain);
-    const auto gpu = ReadGpuQueryPublication(domain);
+    const auto gpu = ReadGpuSpatialQueryPublication(domain);
 
     const auto bodies = QueryRigidbodyCandidatesInBounds(domain, gpu, minimum, maximum, layers, triggers);
     return GatherRigidbodyStateRows(bodies, fields, includeBoxes, triggers, exports, true, gpu);
@@ -4381,7 +4392,7 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
     if (!origins || !directions || !hits || !mask || count > UINT32_MAX)
         throw std::invalid_argument("Raycast batch requires valid arrays within the query index range");
 
-    const auto gpu = ReadGpuQueryPublication(domain);
+    const auto gpu = ReadGpuSpatialQueryPublication(domain);
     const auto request = Query(QueryRay, QueryClosest, layers, triggers);
     if (gpu) {
         std::vector<QueryInput> requests;
@@ -5004,7 +5015,7 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
     auto request = Query(QueryRay, QueryAll, layers, triggers);
     QueryRayInput(request, origin, direction, maximum);
     SealSpatialQuery(domain);
-    const auto gpu = ReadGpuQueryPublication(domain);
+    const auto gpu = ReadGpuSpatialQueryPublication(domain);
     auto hits =
         domain.cpuScene
             ? JoltCpuQueries(*domain.cpuScene).RaycastAll(origin, direction, maximum, CpuSpatialFilter(request, gpu))
@@ -5084,7 +5095,7 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
 {
     auto &domain = CurrentDomain();
     SealSpatialQuery(domain);
-    return QueryRigidbodyCandidatesInBounds(domain, ReadGpuQueryPublication(domain), minimum, maximum, layers,
+    return QueryRigidbodyCandidatesInBounds(domain, ReadGpuSpatialQueryPublication(domain), minimum, maximum, layers,
                                             triggers);
 }
 bool PhysicsWorld::SphereCast(const glm::vec3 &center, float radius, const glm::vec3 &direction, float maximum,
@@ -5122,7 +5133,7 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
     if (distance > std::numeric_limits<float>::max())
         throw std::invalid_argument("BoxCollider sweep displacement exceeds device coordinates");
     SealSpatialQuery(domain);
-    const auto gpu = ReadGpuQueryPublication(domain);
+    const auto gpu = ReadGpuSpatialQueryPublication(domain);
     auto *object = box.GetGameObject();
     if (!object)
         return false;
