@@ -11,6 +11,7 @@ class RayReconstruct(shader.fullscreen):
     shader_id = "infernux/internal/ray_reconstruct"
     hidden = True
     signal = shader.input("signal", shader.UInt2D)
+    local_estimate = shader.input("local_estimate", shader.UInt2D)
     primary = shader.input("primary", shader.UInt2D)
     motion = shader.input("motion", shader.UInt2D)
     previous_signal = shader.input("previous_signal", shader.UInt2D)
@@ -26,7 +27,14 @@ class RayReconstruct(shader.fullscreen):
             return fresh
         # The incoming fourth word holds ray distance for specular, or uncertainty for diffuse.
         signal_aux = shader.as_float(fresh.w)
-        fresh = shader.uvec4(fresh.xyz, specular_witness(signal_aux, 0.0) if self.specular else shader.uint(0))
+        current_error = 0.0
+        if self.specular:
+            # Two estimates of this receiver already exist before and after spatial reuse.
+            # Their disagreement measures color noise even on a newly exposed surface.
+            local = unpack_ray_signal(shader.load(self.local_estimate, pixel, 0))
+            innovation = current.rgb - local.rgb
+            current_error = shader.dot(innovation * innovation, shader.vec3(0.2126, 0.7152, 0.0722))
+        fresh = shader.uvec4(fresh.xyz, specular_witness(signal_aux, current_error) if self.specular else shader.uint(0))
 
         extent = shader.ivec2(shader.dimensions(self.signal, 0))
         full = shader.ivec2(shader.dimensions(self.primary, 0))

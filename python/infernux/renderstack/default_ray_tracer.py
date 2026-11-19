@@ -29,9 +29,10 @@ class RaySurfaceGuides:
 
 
 class _PackedSignal(RayTracingSignal):
-    def __init__(self, packet, resolve):
+    def __init__(self, packet, resolve, *, local_estimate=None):
         super().__init__(resolve)
         self.packet = packet
+        self.local_estimate = packet if local_estimate is None else local_estimate
 
 
 def _linear_raw(graph, packet):
@@ -133,7 +134,8 @@ class DefaultRayTracer(RayTracer):
                 p.set_param("resolution_divisor", divisor or 1)
                 p.write_color(output)
                 p.fullscreen_quad("infernux/internal/ray_indirect")
-        return _PackedSignal(output, partial(_linear_raw, graph, output))
+        return _PackedSignal(output, partial(_linear_raw, graph, output),
+                             local_estimate=estimates if ctx.reconstruct and specular else output)
 
     def reconstruct_diffuse(self, ctx, raw, guides):
         """Return full-resolution irradiance. Custom filters read raw.radiance on demand."""
@@ -157,7 +159,8 @@ class DefaultRayTracer(RayTracer):
             previous, output = ctx.view.history(name, format=Format.RGBA32_UINT, size_divisor=divisor)
             label = "Ray Specular Reconstruction" if specular else "Ray Diffuse Reconstruction"
             with graph.add_pass(label) as p:
-                p.set_textures({"signal": packet, "primary": guides.primary, "motion": guides.motion,
+                p.set_textures({"signal": packet, "local_estimate": raw.local_estimate if specular else packet,
+                                "primary": guides.primary, "motion": guides.motion,
                                 "previous_signal": previous, "previous_primary": guides.previous_primary})
                 p.set_buffer("geometry", ctx.world.geometry)
                 p.write_color(output)
