@@ -1,6 +1,5 @@
 """Two real cameras must filter one resident ParticleSystem independently."""
 import json
-import time
 
 import numpy as np
 import pytest
@@ -9,13 +8,17 @@ import infernux as inx
 from infernux.components import ParticleSystem
 from infernux.core.asset_ref import ParticleGraphRef
 from infernux.core.assets import AssetManager
-from infernux.lib import CameraClearFlags, ConsolePanel, SceneManager, Vector3, vec4f
+from infernux.lib import CameraClearFlags, ConsolePanel, Vector3, vec4f
 from infernux.particle import ParticleScriptCompiler
 from infernux.rendergraph import Format
 from infernux.renderstack import RenderPipeline
 from infernux.runtime_services import install_runtime_service, remove_runtime_service
 from tests.gpu.shared_camera_gpu_test import MONITOR, Monitor, Router
 from tests.python.test_particle_motion_pass import MOTION_DISPLAY, motion_source
+from tests.python.test_play_enter_recovery import authoring_project
+from tests.python.particle_gpu_fixture import playing_particle_world, particle_callback, run_particle_frames
+from tests.gpu.renderer_fixture import GameFrames
+from contextlib import ExitStack
 
 
 class ParticleLayerPipeline(RenderPipeline):
@@ -39,14 +42,21 @@ class ParticleLayerPipeline(RenderPipeline):
             motion = graph.create_texture('motion', format=Format.RG16_SFLOAT, samples=1)
             graph.add_pass('Motion').read(depth).write_color(motion).set_clear(color=(0, 0, 0, 0)).draw_renderers(
                 material_pass='motion')
-            graph.add_pass('MotionMask').write_color(color).set_texture('motionTex', motion).fullscreen_quad(
-                'Particle Motion Readback')
+            graph.add_pass('MotionMask').write_color(color).set_texture('motion_tex', motion).fullscreen_quad(
+                'tests/particle/motion_readback')
         graph.screen_ui_overlay_section(resources={'color'})
         graph.set_output(color)
 
-    def render_camera(self, context, camera, culling):
-        self.views[camera.component_id] = int(context.graph_instance_id)
-        super().render_camera(context, camera, culling)
+    def render_view(self, context, camera, culling):
+        self.views[camera.camera_id] = int(context.graph_instance_id)
+        super().render_view(context, camera, culling)
+
+
+
+class ParticleLayerRouter(Router):
+    def render(self, context, view):
+        pipeline = self.monitor if view.name == "Particle Layer Monitor" else self.shared
+        pipeline.render(context, view)
 
 
 def layer_source(kind, sort):
@@ -64,12 +74,12 @@ def layer_source(kind, sort):
     ('mesh', 'none'), ('mesh', 'back_to_front'),
 ])
 def test_particle_camera_masks_and_owner_layer_change_without_restart(
-        engine, scene, tmp_path, monkeypatch, kind, sort, material_pass):
+        engine, scene, tmp_path, monkeypatch, kind, sort, material_pass, authoring_project):
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, '_engine', engine)
     monkeypatch.setattr(AssetManager, '_asset_database', database)
     assets = []
-    for name, text in [('Monitor.frag', MONITOR), ('Motion.frag', MOTION_DISPLAY)]:
+    for name, text in [('Monitor.frag.py', MONITOR), ('Motion.frag.py', MOTION_DISPLAY)]:
         path = tmp_path / name
         path.write_text(text, encoding='utf-8')
         result = AssetManager.import_asset(str(path), database=database)
@@ -106,16 +116,15 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
     monitor.culling_mask = 0
     monitor.depth = -1
     scene.main_camera = monitor
-    router = Router()
+    router = ParticleLayerRouter()
     router.shared = ParticleLayerPipeline(material_pass)
     router.monitor = Monitor()
     router.monitor.builds = 0
     router.monitor.targets = targets
-    router.monitor_id = monitor.component_id
     owner = scene.create_game_object('Resident Layer Particles')
     owner.layer = 7
     component = owner.add_py_component(ParticleSystem())
-    manager, console = SceneManager.instance(), ConsolePanel()
+    console = ConsolePanel()
     install_runtime_service('gpu-particles', engine)
     # Both cameras keep rendering throughout. Only masks/owner layer change.
     phases = [
@@ -134,6 +143,10 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
     initial_batch = initial_views = None
     view_tickets = []
     simulation_tickets = []
+    game_frames = GameFrames(engine)
+    runtime = ExitStack()
+    component.play_on_awake = False
+    component.graph = ParticleGraphRef(guid=graph_guid)
 
     def apply_phase(index):
         _, first, second, layer, _ = phases[index]
@@ -143,30 +156,24 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
             camera_owner.transform.position = Vector3(1000 if phases[index][0] == 'outside_frustum' else 0, 0, -5)
 
     try:
-        engine.set_render_pipeline(router)
         engine.resize_game_render_target(128, 64)
         engine.set_game_camera_enabled(True)
         engine.set_scene_view_visible(False)
-        manager.play()
-        manager.pause()
-        engine.set_play_mode_rendering(True)
-        component.graph = ParticleGraphRef(guid=graph_guid)
-        component.awake()
+        runtime_scene = runtime.enter_context(playing_particle_world(authoring_project, 128, 64, router))
+        owners = [runtime_scene.find(f'Particle Camera {index}') for index in range(2)]
+        cameras = [owner.get_component('Camera') for owner in owners]
+        owner = runtime_scene.find('Resident Layer Particles')
+        component = owner.get_component(ParticleSystem)
+        assert component.game_object.scene.world_id == runtime_scene.world_id
         apply_phase(0)
-        if not component.play():
-            # Cold mesh publication is driven by frame opportunities.
-            deadline = time.monotonic() + 5.0
-            while component._has_unpublished_candidate() and time.monotonic() < deadline:
-                engine.tick(0.0)
-                component.update(0.0)
-            assert component.play(), component.last_compile_error or component.runtime_diagnostics()
+        assert component.play(), component.last_compile_error or component.runtime_diagnostics()
 
-        def update(_delta):
-            component.update(1. / 120.)
-
+        @particle_callback(authoring_project)
         def after_draw():
             nonlocal frame, changed, ticket, initial_batch, initial_views
             try:
+                if not game_frames.advance():
+                    return
                 frame += 1
                 assert frame < 250, results
                 execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
@@ -223,31 +230,26 @@ def test_particle_camera_masks_and_owner_layer_change_without_restart(
                     assert not [entry for entry in console._get_visible_log_snapshot(1000)
                                 if entry['level'] in ('ERROR', 'FATAL', 'WARN', 'WARNING')]
                     if len(results) == len(phases):
-                        engine.exit()
                         return
                     apply_phase(len(results))
                     changed, ticket = execution, None
             except BaseException as error:
                 failures.append(error)
-                engine.exit()
+                return
 
-        engine.set_pre_scene_update_callback(update)
         engine.set_post_draw_callback(after_draw)
-        engine.run()
+        run_particle_frames(authoring_project, lambda: failures or len(results) == len(phases))
         if failures:
             raise failures[0]
         assert len(results) == len(phases)
     finally:
-        engine.set_pre_scene_update_callback(None)
         engine.set_post_draw_callback(None)
         component._remove_native_batch()
-        engine.set_render_pipeline(None)
-        engine.set_play_mode_rendering(False)
-        router.dispose()
-        manager.stop()
-        assert remove_runtime_service('gpu-particles', engine)
         for camera in cameras:
             camera.render_to_texture = False
             camera.target_texture = None
+        runtime.close()
+        router.dispose()
+        assert remove_runtime_service('gpu-particles', engine)
         for path in assets:
             assert database.delete_asset(str(path))

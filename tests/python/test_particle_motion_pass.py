@@ -7,27 +7,29 @@ import pytest
 from infernux.components import ParticleSystem
 from infernux.core.asset_ref import ParticleGraphRef
 from infernux.core.assets import AssetManager
-from infernux.lib import ConsolePanel, SceneManager, Vector3
+from infernux.lib import ConsolePanel, Vector3
 from infernux.particle import ParticleScriptCompiler
 from infernux.rendergraph import Format
 from infernux.renderstack import RenderPipeline
 from infernux.runtime_services import install_runtime_service, remove_runtime_service
+from tests.python.test_play_enter_recovery import authoring_project
+from tests.python.particle_gpu_fixture import playing_particle_world, particle_callback, run_particle_frames
+from tests.gpu.renderer_fixture import GameFrames
+from contextlib import ExitStack
 
 
-MOTION_DISPLAY = '''#version 450
-ShaderInfo {
-    Name "Particle Motion Readback"
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources { Texture2D motionTex }
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() {
-    vec2 motion = texelFetch(motionTex, ivec2(gl_FragCoord.xy), 0).xy;
-    outColor = vec4(length(motion) > 0.00001 ? 1.0 : 0.0, 0, 0, 1);
-}
+MOTION_DISPLAY = '''import infernux.shader as shader
+
+class ParticleMotionReadback(shader.fullscreen):
+    shader_id = "tests/particle/motion_readback"
+    hidden = True
+    motion_tex = shader.input("motion", shader.Color2D)
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        motion = shader.load(self.motion_tex, shader.ivec2(ctx.position.xy), 0).xy
+        return shader.vec4(1.0 if shader.length(motion) > 0.00001 else 0.0, 0, 0, 1)
 '''
+
 
 
 class ParticleMotionPipeline(RenderPipeline):
@@ -45,8 +47,8 @@ class ParticleMotionPipeline(RenderPipeline):
             color=(0, 0, 0, 0),
         ).draw_renderers(material_pass="motion")
         color = graph.create_texture("color", camera_target=True)
-        graph.add_pass("MotionReadback").set_texture("motionTex", motion).write_color(color).fullscreen_quad(
-            "Particle Motion Readback",
+        graph.add_pass("MotionReadback").set_texture("motion_tex", motion).write_color(color).fullscreen_quad(
+            "tests/particle/motion_readback",
         )
         graph.screen_ui_overlay_section(resources={"color"})
         graph.set_output(color)
@@ -76,11 +78,11 @@ class Motion(ParticleScript):
 
 
 @pytest.mark.parametrize("kind", ["sprite", "ribbon"])
-def test_particle_motion_pass_records_valid_bindings_and_camera_motion(engine, scene, tmp_path, monkeypatch, kind):
+def test_particle_motion_pass_records_valid_bindings_and_camera_motion(engine, scene, tmp_path, monkeypatch, kind, authoring_project):
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_engine", engine)
     monkeypatch.setattr(AssetManager, "_asset_database", database)
-    shader = tmp_path / "MotionReadback.frag"
+    shader = tmp_path / "MotionReadback.frag.py"
     shader.write_text(MOTION_DISPLAY, encoding="utf-8")
     result = AssetManager.import_asset(str(shader), database=database)
     assert result.succeeded, result.error
@@ -92,28 +94,31 @@ def test_particle_motion_pass_records_valid_bindings_and_camera_motion(engine, s
     camera.transform.position = Vector3(0, 0, -5)
     camera.add_component("Camera")
     component = scene.create_game_object("Motion Particles").add_py_component(ParticleSystem())
-    manager, console = SceneManager.instance(), ConsolePanel()
+    console = ConsolePanel()
     pipeline = ParticleMotionPipeline()
     install_runtime_service("gpu-particles", engine)
     phases = ("static", "camera_motion", "particle_motion", "stopped")
     failures, results = [], []
     frame, phase_frame, phase_execution, ticket = 0, 0, 0, None
+    runtime = ExitStack()
+    component.play_on_awake = False
+    component.graph = ParticleGraphRef(guid=result.guid)
+    game_frames = GameFrames(engine)
     try:
-        engine.set_render_pipeline(pipeline)
         engine.resize_game_render_target(96, 96)
         engine.set_game_camera_enabled(True)
-        manager.play()
-        manager.pause()
-        component.graph = ParticleGraphRef(guid=result.guid)
-        component.awake()
+        runtime_scene = runtime.enter_context(playing_particle_world(authoring_project, 96, 96, pipeline))
+        component = runtime_scene.find("Motion Particles").get_component(ParticleSystem)
+        camera = runtime_scene.find("Motion Camera")
+        assert component.game_object.scene.world_id == runtime_scene.world_id
         assert component.play(), component.last_compile_error
 
-        def update(_delta):
-            component.update(1. / 120.)
-
+        @particle_callback(authoring_project)
         def after_draw():
             nonlocal frame, phase_frame, phase_execution, ticket
             try:
+                if not game_frames.advance():
+                    return
                 frame += 1
                 assert frame < 150, results
                 execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
@@ -134,7 +139,6 @@ def test_particle_motion_pass_records_valid_bindings_and_camera_motion(engine, s
                               if item["level"] in ("ERROR", "FATAL", "WARN", "WARNING")]
                     assert not issues, issues
                     if len(results) == len(phases):
-                        engine.exit()
                         return
                     component.set_parameter("drift", .5 if phases[len(results)] == "particle_motion" else 0.0)
                     phase_frame, phase_execution, ticket = frame, execution, None
@@ -142,20 +146,17 @@ def test_particle_motion_pass_records_valid_bindings_and_camera_motion(engine, s
                     camera.transform.position = Vector3((frame - phase_frame) * .01, 0, -5)
             except BaseException as error:
                 failures.append(error)
-                engine.exit()
+                return
 
-        engine.set_pre_scene_update_callback(update)
         engine.set_post_draw_callback(after_draw)
-        engine.run()
+        run_particle_frames(authoring_project, lambda: failures or len(results) == len(phases))
         if failures:
             raise failures[0]
         assert len(results) == len(phases)
     finally:
-        engine.set_pre_scene_update_callback(None)
         engine.set_post_draw_callback(None)
         component._remove_native_batch()
-        engine.set_render_pipeline(None)
-        manager.stop()
+        runtime.close()
         assert remove_runtime_service("gpu-particles", engine)
         for path in (graph, shader):
             assert database.delete_asset(str(path))

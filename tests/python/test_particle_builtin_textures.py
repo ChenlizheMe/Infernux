@@ -7,30 +7,30 @@ import pytest
 from infernux.components import ParticleSystem
 from infernux.core.asset_ref import ParticleGraphRef
 from infernux.core.assets import AssetManager
-from infernux.lib import ConsolePanel, SceneManager, Vector3
+from infernux.lib import ConsolePanel, Vector3
 from infernux.particle import AssetReference, ParticleScriptCompiler
 from infernux.renderstack import RenderStackPipeline
 from infernux.runtime_services import install_runtime_service, remove_runtime_service
+from tests.python.test_play_enter_recovery import authoring_project
+from tests.python.particle_gpu_fixture import playing_particle_world, particle_callback, run_particle_frames
+from tests.gpu.renderer_fixture import GameFrames
+from contextlib import ExitStack
 
 
 def shader_source(name, property_name, default="white"):
-    return f'''#version 450
-ShaderInfo {{
-    Name "{name}"
-    ShadingModel Unlit
-    Queue 3000
-    Cull None
-    DepthWrite Off
-    Blend Alpha
-    Properties {{ Texture2D {property_name} = {default} }}
-}}
-void surface(out SurfaceData s) {{
-    s = InitSurfaceData();
-    vec4 texel = sampleAlbedoAlpha({property_name});
-    s.albedo = texel.rgb;
-    s.alpha = texel.a;
-}}
+    return f'''import infernux.shader as shader
+
+class BuiltinTexture(shader.particle):
+    shader_id = {name!r}
+    surface_type = "transparent"
+    cull_mode = "none"
+    depth_write = False
+    {property_name} = shader.material.texture_2d(default={default!r})
+
+    def main(self, ctx: shader.ParticleContext) -> shader.vec4:
+        return shader.sample(self.{property_name}, ctx.uv0)
 '''
+
 
 
 def particle_source(shader_name, property_name, initial):
@@ -54,7 +54,7 @@ class BuiltinTextures(ParticleScript):
 
 
 def test_connected_numeric_output_parameter_uses_graph_default():
-    source = particle_source("Particle Unlit", "glow", "white")
+    source = particle_source("infernux/particle/unlit", "glow", "white")
     source = source.replace('"texture2d", AssetReference(guid=\'white\')', '"f32", 2.5')
     compiled = ParticleScriptCompiler().compile(source)
     output = compiled.emitters[0].render_plan.outputs[0]
@@ -82,7 +82,7 @@ def test_connected_numeric_output_parameter_uses_graph_default():
 def test_connected_numeric_output_matches_compiled_port_shape(
     source_type, default, override, property_name, expected_default, expected_override,
 ):
-    source = particle_source("Particle Unlit", property_name, "white")
+    source = particle_source("infernux/particle/unlit", property_name, "white")
     source = source.replace('"texture2d", AssetReference(guid=\'white\')', f'{source_type!r}, {default!r}')
     compiled = ParticleScriptCompiler().compile(source)
     output = compiled.emitters[0].render_plan.outputs[0]
@@ -99,31 +99,31 @@ def test_connected_numeric_output_matches_compiled_port_shape(
 
 
 def test_six_way_smoke_material_keeps_independent_axis_defaults():
-    source = particle_source("Particle Six-Way Smoke", "negativeAxesMap", "black")
+    source = particle_source("infernux/particle/six_way_smoke", "negative_axes_map", "black")
     compiled = ParticleScriptCompiler().compile(source)
     output = compiled.emitters[0].render_plan.outputs[0]
     component = ParticleSystem()
     component._ensure_runtime_state()
     material = component._gpu_material_binding(output, "emitter", compiled.parameters)["native"]
-    assert material.serialize_document()["properties"]["positiveAxesMap"]["guid"] == "white"
-    assert material.serialize_document()["properties"]["negativeAxesMap"]["guid"] == "black"
+    assert material.serialize_document()["properties"]["positive_axes_map"]["guid"] == "white"
+    assert material.serialize_document()["properties"]["negative_axes_map"]["guid"] == "black"
     component._parameter_overrides["surface"] = AssetReference(guid="normal").to_dict()
     component._gpu_material_binding(output, "emitter", compiled.parameters)
-    assert material.serialize_document()["properties"]["positiveAxesMap"]["guid"] == "white"
-    assert material.serialize_document()["properties"]["negativeAxesMap"]["guid"] == "normal"
+    assert material.serialize_document()["properties"]["positive_axes_map"]["guid"] == "white"
+    assert material.serialize_document()["properties"]["negative_axes_map"]["guid"] == "normal"
     component._parameter_overrides.clear()
     component._gpu_material_binding(output, "emitter", compiled.parameters)
-    assert material.serialize_document()["properties"]["positiveAxesMap"]["guid"] == "white"
-    assert material.serialize_document()["properties"]["negativeAxesMap"]["guid"] == "black"
+    assert material.serialize_document()["properties"]["positive_axes_map"]["guid"] == "white"
+    assert material.serialize_document()["properties"]["negative_axes_map"]["guid"] == "black"
 
 
-@pytest.mark.parametrize("property_name", ["albedo_map", "normalNamedSurface"])
+@pytest.mark.parametrize("property_name", ["albedo_map", "normal_named_surface"])
 @pytest.mark.parametrize("declared_default, initial", [
     ("white", ""), ("black", ""), ("normal", ""),
     ("white", "black"), ("black", "normal"), ("normal", "white"),
 ])
 def test_particle_builtin_texture_values_and_live_changes(
-    engine, scene, tmp_path, monkeypatch, property_name, initial, declared_default,
+    engine, scene, tmp_path, monkeypatch, property_name, initial, declared_default, authoring_project,
 ):
     from infernux.engine import project_context
 
@@ -133,8 +133,8 @@ def test_particle_builtin_texture_values_and_live_changes(
     monkeypatch.setattr(AssetManager, "_asset_database", database)
     assets = tmp_path / "Assets"
     assets.mkdir()
-    shader_name = f"Builtin Particle {property_name} {initial or 'empty'} {declared_default}"
-    shader = assets / "BuiltinSurface.frag"
+    shader_name = f"tests/particle/builtin_{property_name}_{initial or 'empty'}_{declared_default}"
+    shader = assets / "BuiltinSurface.frag.py"
     shader.write_text(shader_source(shader_name, property_name, declared_default), encoding="utf-8")
     result = AssetManager.import_asset(str(shader), database=database)
     assert result.succeeded, result.error
@@ -146,7 +146,7 @@ def test_particle_builtin_texture_values_and_live_changes(
     camera.transform.position = Vector3(0, 0, -5)
     camera.add_component("Camera")
     component = scene.create_game_object("Particle").add_py_component(ParticleSystem())
-    manager, console = SceneManager.instance(), ConsolePanel()
+    console = ConsolePanel()
     pipeline = RenderStackPipeline()
     install_runtime_service("gpu-particles", engine)
     # Every case already visits all built-ins, the shader default and reset.
@@ -157,23 +157,25 @@ def test_particle_builtin_texture_values_and_live_changes(
     expected[""] = expected[declared_default]
     failures, colors = [], []
     frame, changed, ticket = 0, 0, None
+    runtime = ExitStack()
+    component.play_on_awake = False
+    component.graph = ParticleGraphRef(guid=result.guid)
+    game_frames = GameFrames(engine)
     try:
-        engine.set_render_pipeline(pipeline)
         engine.resize_game_render_target(64, 64)
         engine.set_game_camera_enabled(True)
-        manager.play()
-        manager.pause()
-        component.graph = ParticleGraphRef(guid=result.guid)
-        component.awake()
+        runtime_scene = runtime.enter_context(playing_particle_world(authoring_project, 64, 64, pipeline))
+        component = runtime_scene.find("Particle").get_component(ParticleSystem)
+        assert component.game_object.scene.world_id == runtime_scene.world_id
         assert component.play(), component.last_compile_error
         batch_id = component._batch_id
 
-        def update(_delta):
-            component.update(1. / 120.)
-
+        @particle_callback(authoring_project)
         def after_draw():
             nonlocal frame, changed, ticket
             try:
+                if not game_frames.advance():
+                    return
                 frame += 1
                 assert frame < 200, colors
                 execution = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
@@ -198,7 +200,7 @@ def test_particle_builtin_texture_values_and_live_changes(
                     assert not issues, issues
                     if len(colors) == len(phases):
                         np.testing.assert_array_equal(colors[0]["rgba"], colors[-1]["rgba"])
-                        engine.exit()
+                        return
                     else:
                         next_token = phases[len(colors)]
                         if next_token == "reset":
@@ -208,20 +210,17 @@ def test_particle_builtin_texture_values_and_live_changes(
                         changed, ticket = execution, None
             except BaseException as error:
                 failures.append(error)
-                engine.exit()
+                return
 
-        engine.set_pre_scene_update_callback(update)
         engine.set_post_draw_callback(after_draw)
-        engine.run()
+        run_particle_frames(authoring_project, lambda: failures or len(colors) == len(phases))
         if failures:
             raise failures[0]
         assert len(colors) == len(phases)
     finally:
-        engine.set_pre_scene_update_callback(None)
         engine.set_post_draw_callback(None)
         component._remove_native_batch()
-        engine.set_render_pipeline(None)
-        manager.stop()
+        runtime.close()
         assert remove_runtime_service("gpu-particles", engine)
         for path in (graph, shader):
             assert database.delete_asset(str(path))
