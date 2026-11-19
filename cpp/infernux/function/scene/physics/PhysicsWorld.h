@@ -447,38 +447,35 @@ class PhysicsWorld
     /// Create a world-space hinge between body A and body B, or body A and
     /// the fixed world when body B is invalid. Limits are radians.
     uint64_t CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                   const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                   const JoltJointImport *imported);
+                                   const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor);
     /// Create a prismatic constraint that permits only translation along one
     /// captured owner-local axis. Limits are metres relative to the creation pose.
     uint64_t CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                     const glm::vec3 &localBakedAnchor, const glm::vec3 &ownerAxis,
                                     const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
-                                    float maximumDistance, bool enableCollision, const JoltJointImport *imported);
+                                    float maximumDistance, bool enableCollision);
     void DestroyConstraint(uint64_t constraintId);
     uint64_t CreateFixedConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                    const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                   bool enableCollision, const JoltJointImport *imported);
+                                   bool enableCollision);
     void SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled);
     uint64_t CreateDistanceConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                       const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
                                       const glm::vec3 &connectedBakedAnchor, const glm::vec3 &connectedLocalAnchor,
                                       bool autoDistance, float minimum, float maximum, float stiffness, float damping,
-                                      bool enableCollision, const JoltJointImport *imported);
+                                      bool enableCollision);
     void UpdateDistanceConstraintSettings(uint64_t constraintId, bool updateLimits, float minimum, float maximum,
                                           float stiffness, float damping, bool enableCollision);
     float GetDistanceConstraintLength(uint64_t constraintId) const;
     uint64_t CreateSwingTwistConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                         const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                        const SwingTwistJointSettings &settings, bool enableCollision,
-                                        const JoltJointImport *imported);
+                                        const SwingTwistJointSettings &settings, bool enableCollision);
     void UpdateSwingTwistConstraint(uint64_t constraintId, const SwingTwistJointSettings &settings,
                                     bool enableCollision, bool claimTarget = false);
     glm::quat GetAngularConstraintOrientation(uint64_t constraintId) const;
     uint64_t CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                     const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                    const SixDOFJointSettings &settings, bool enableCollision,
-                                    const JoltJointImport *imported);
+                                    const SixDOFJointSettings &settings, bool enableCollision);
     void UpdateSixDOFConstraint(uint64_t constraintId, const SixDOFJointSettings &settings, bool enableCollision,
                                 bool claimTarget = false);
     glm::vec3 GetSixDOFConstraintPosition(uint64_t constraintId) const;

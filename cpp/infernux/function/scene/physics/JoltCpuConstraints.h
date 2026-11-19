@@ -3,7 +3,6 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/Constraints/TwoBodyConstraint.h>
 #include "JointSettings.h"
-#include "JoltJointTransfer.h"
 #include <cstdint>
 #include <optional>
 #include <unordered_map>
@@ -62,13 +61,11 @@ class JoltCpuConstraints final
 
     /// Both bodies must exist. The native joint only solves while both endpoints are resident.
     /// ID allocation and component lifetime stay with the owner.
-    void Create(uint64_t id, const Binding &binding, const Settings &settings, bool enableCollision,
-                const JoltJointTransfer *restored = nullptr);
-    [[nodiscard]] JoltJointTransfer ReadTransfer(uint64_t id) const;
+    void Create(uint64_t id, const Binding &binding, const Settings &settings, bool enableCollision);
     void Update(uint64_t id, const Settings &settings, bool enableCollision, bool clearPoseDrive = false);
     void SetPoseDrive(uint64_t id, const std::optional<JPH::Quat> &relative);
     void SetCollisionEnabled(uint64_t id, bool enabled);
-    bool Retire(uint64_t id, bool wake = true);
+    bool Retire(uint64_t id);
     /// The owner completes retirement for these public IDs before destroying the body.
     std::vector<uint64_t> RetireBody(uint32_t bodyId);
     [[nodiscard]] bool HasBodyConstraints(uint32_t bodyId) const;
@@ -122,7 +119,7 @@ class JoltCpuConstraints final
     static void ApplyPoseDrive(Record &joint);
     void EraseBodyIndex(uint32_t bodyId, uint64_t id);
     bool ChangeCollision(Record &joint, bool enabled);
-    void UpdateEndpoints(const Record &joint, bool invalidateContacts, bool wake = true);
+    void UpdateEndpoints(const Record &joint, bool invalidateContacts);
 
     JoltCpuScene &m_scene;
     std::unordered_map<uint64_t, Record> m_joints;

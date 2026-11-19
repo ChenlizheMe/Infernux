@@ -4,7 +4,6 @@
 
 #include "JoltGpuActor.h"
 #include "JoltGpuTick.h"
-#include "JoltJointTransfer.h"
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsECSStore.h"
 #include "PhysicsTargetReference.h"
@@ -18,8 +17,6 @@
 namespace infernux
 {
 class JoltGpuJoints;
-struct JoltBodyTransfer;
-struct JoltBodyImport;
 class JoltGpuGeometryStore;
 struct JoltGpuGeometryHandle;
 struct JoltGpuGeometryLease;
@@ -210,17 +207,9 @@ class JoltGpuScene final
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);
     PhysicsTargetSource QueueCommand(uint32_t bodyId, JPH::GPU::BodyCommand command,
                                      const PhysicsTargetAuthor *author = nullptr);
-    void QueueTransferReads(RuntimeWorld &world, const std::vector<JoltBodyImport> &bodies,
-                            std::vector<JoltJointImport> joints);
-    void QueueTransferRestore(uint32_t bodyId, const JoltBodyTransfer &);
-    void QueueJointTransferRestore(RuntimeWorld &world, std::vector<JoltJointImport> joints);
-    void StageRetire(uint32_t bodyId, bool transferDrive = false);
-    void StageRetireBodies(RuntimeWorld &world, const std::vector<uint32_t> &ids, bool transferDrive,
-                           std::vector<std::pair<uint32_t, uint32_t>> wakeExclusions);
-    void QueueBoundsWake(RuntimeWorld &, JPH::GPU::Float4 low, JPH::GPU::Float4 high);
-    void QueueStaticWake(uint32_t bodyId);
+    void StageRetire(uint32_t bodyId);
     uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
-                         JPH::GPU::JointAuthor author, uint64_t importedId = 0);
+                         JPH::GPU::JointAuthor author);
     void UpdateJoint(uint64_t id, const std::function<void(JPH::GPU::JointAuthor &)> &update,
                      uint32_t runtimeIntent = 0);
     void UpdateJoints(std::vector<JointUpdate> updates);
@@ -233,7 +222,6 @@ class JoltGpuScene final
     };
     void QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents);
     void DestroyJoint(uint64_t id);
-    void TransferJointsOut(RuntimeWorld &world, const std::vector<uint64_t> &ids);
     [[nodiscard]] bool HasJointForBody(uint32_t bodyId) const noexcept;
     void SetColliderPairs(RuntimeWorld &world, std::shared_ptr<const PhysicsColliderPairs> pairs);
     void DestroyJointsForBody(uint32_t bodyId);

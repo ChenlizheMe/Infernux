@@ -8,12 +8,12 @@
 #include <Jolt/Physics/Collision/SimShapeFilter.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include "InfernuxJoltJobSystemAdapter.h"
-#include "JoltBodyTransfer.h"
 #include "JoltCpuActor.h"
 #include "JoltCpuConstraints.h"
 #include "JoltCpuTempAllocator.h"
 #include "PhysicsBodyState.h"
 #include "PhysicsContactTypes.h"
+#include "PhysicsTargetReference.h"
 
 #include <cstdint>
 #include <exception>
@@ -99,7 +99,7 @@ class JoltCpuScene final : private JPH::ContactListener,
     /// goes through the owner's body/constraint replacement.
     JPH::Vec3 UpdateBody(uint32_t bodyId, const PreparedCpuActor &actor);
     /// Caller has detached this body's constraints before destruction.
-    void DestroyBody(uint32_t bodyId, const std::vector<uint32_t> &wakeExclusions = {});
+    void DestroyBody(uint32_t bodyId);
     [[nodiscard]] JPH::BodyID NativeBody(uint32_t bodyId) const;
     [[nodiscard]] bool HasBody(uint32_t bodyId) const noexcept;
     [[nodiscard]] const PreparedBodyMass &GetAcceptedMass(uint32_t bodyId) const;
@@ -209,14 +209,11 @@ class JoltCpuScene final : private JPH::ContactListener,
         void ReuseQueryGeometry(const BodyRecord &previous);
     };
     static BodyRecord CaptureBodyRecord(const PreparedCpuActor &actor);
-    [[nodiscard]] JoltBodyTransfer ReadBodyTransfer(uint32_t bodyId) const;
-    void RestoreBodyTransfers(const std::vector<JoltBodyImport> &);
     static PhysicsBodyMotionState SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,
                                                     PhysicsStateFields fields, bool *sleeping = nullptr);
     static bool AcceptedAwake(const BodyRecord &record, const JPH::Body &body);
     void WakeBody(BodyRecord &record, JPH::Body &body);
-    void WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude = {},
-                            const std::vector<uint32_t> &wakeExclusions = {});
+    void WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude = {});
     void MarkPoseUpdate(uint32_t bodyId, BodyRecord &record);
     void MarkActivePoseUpdates();
     void OnBodyActivated(const JPH::BodyID &, JPH::uint64) noexcept override

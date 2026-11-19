@@ -75,13 +75,12 @@ const bool registeredHingeJoint = ComponentFactory::Register(
     HingeJoint::GetTypeConstraints(), DescribeHingeJoint);
 } // namespace
 
-uint64_t HingeJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId,
-                                      const JoltJointImport *imported)
+uint64_t HingeJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
 {
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     const auto *transform = GetTransform();
     const auto localBakedAnchor = glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(m_anchor);
-    return world.CreateHingeConstraint(*this, bodyId, connectedBodyId, localBakedAnchor, m_anchor, imported);
+    return world.CreateHingeConstraint(*this, bodyId, connectedBodyId, localBakedAnchor, m_anchor);
 }
 
 void HingeJoint::SetAxis(const glm::vec3 &axis)

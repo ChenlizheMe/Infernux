@@ -31,15 +31,13 @@ const JoltGpuScene::PublishedJoint &RequireGpuJoint(const JoltGpuScene *scene, u
 }
 
 uint64_t StageCpuJoint(PhysicsDomain &domain, std::unordered_map<uint64_t, PhysicsDomain *> &routes,
-                       PhysicsConstraintOwner &owner, Cpu::Binding binding, Cpu::Settings settings, bool collision,
-                       const JoltJointImport *imported)
+                       PhysicsConstraintOwner &owner, Cpu::Binding binding, Cpu::Settings settings, bool collision)
 {
-    const auto id = imported ? imported->id : PhysicsECSStore::Instance().AllocateJointIdentity();
+    const auto id = PhysicsECSStore::Instance().AllocateJointIdentity();
     if (!routes.emplace(id, &domain).second)
         throw std::logic_error("CPU joint route already owns its public identity");
     try {
-        domain.cpuControl->CreateJoint(id, owner, {std::move(binding), std::move(settings), collision},
-                                       imported ? imported->state : nullptr);
+        domain.cpuControl->CreateJoint(id, owner, {std::move(binding), std::move(settings), collision});
     } catch (...) {
         routes.erase(id);
         throw;
@@ -252,8 +250,7 @@ void PhysicsWorld::RetireCpuJointRoutes(PhysicsDomain &domain) noexcept
 }
 
 uint64_t PhysicsWorld::CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                             const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                             const JoltJointImport *imported)
+                                             const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor)
 {
     auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
@@ -272,7 +269,7 @@ uint64_t PhysicsWorld::CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA
     if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner,
                              {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, settings,
-                             owner.GetEnableCollision(), imported);
+                             owner.GetEnableCollision());
     JointAuthor author{};
     author.SetKind(JPH::GPU::JointHinge);
     author.bodies.w = JPH::GPU::JointEnabled | (owner.GetEnableCollision() ? JPH::GPU::JointCollisionEnabled : 0) |
@@ -285,14 +282,13 @@ uint64_t PhysicsWorld::CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA
     author.motor() = {settings.targetAngle, settings.stiffness, settings.damping, settings.maxTorque};
     author.passive() = {settings.jointDamping, settings.frictionTorque, settings.armature, 0.0f};
     RequireGpu(domain);
-    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author), imported ? imported->id : 0);
+    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author));
 }
 
 uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                               const glm::vec3 &localBakedAnchor, const glm::vec3 &ownerAxis,
                                               const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
-                                              float maximumDistance, bool enableCollision,
-                                              const JoltJointImport *imported)
+                                              float maximumDistance, bool enableCollision)
 {
     auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
@@ -301,9 +297,9 @@ uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uin
     if (glm::dot(ownerAxis, ownerAxis) <= 1e-12f)
         throw std::invalid_argument("Slider axis must be non-zero");
     if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == JointBackend::Cpu)
-        return StageCpuJoint(
-            domain, m_cpuJointDomains, owner, {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}},
-            Cpu::Slider{ownerAxis, useLimits, minimumDistance, maximumDistance}, enableCollision, imported);
+        return StageCpuJoint(domain, m_cpuJointDomains, owner,
+                             {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}},
+                             Cpu::Slider{ownerAxis, useLimits, minimumDistance, maximumDistance}, enableCollision);
     JointAuthor author{};
     author.SetKind(JPH::GPU::JointSlider);
     author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0) |
@@ -313,27 +309,26 @@ uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uin
     author.ownerLocalAnchor() = JointVector(localAnchor);
     author.limits() = {minimumDistance, maximumDistance, 0.0f, 0.0f};
     RequireGpu(domain);
-    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author), imported ? imported->id : 0);
+    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author));
 }
 
 uint64_t PhysicsWorld::CreateFixedConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                              const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                             bool enableCollision, const JoltJointImport *imported)
+                                             bool enableCollision)
 {
     auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
     const auto route = PrepareJointEndpoints(domain, bodyIdA, bodyIdB);
     if (route == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner,
-                             {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, Cpu::Fixed{}, enableCollision,
-                             imported);
+                             {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, Cpu::Fixed{}, enableCollision);
     JointAuthor author{};
     author.SetKind(JPH::GPU::JointFixed);
     author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0);
     author.ownerAnchor() = JointVector(localBakedAnchor);
     author.ownerLocalAnchor() = JointVector(localAnchor);
     RequireGpu(domain);
-    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author), imported ? imported->id : 0);
+    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author));
 }
 
 void PhysicsWorld::SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled)
@@ -354,8 +349,7 @@ uint64_t PhysicsWorld::CreateDistanceConstraint(PhysicsConstraintOwner &owner, u
                                                 const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
                                                 const glm::vec3 &connectedBakedAnchor,
                                                 const glm::vec3 &connectedLocalAnchor, bool autoDistance, float minimum,
-                                                float maximum, float stiffness, float damping, bool enableCollision,
-                                                const JoltJointImport *imported)
+                                                float maximum, float stiffness, float damping, bool enableCollision)
 {
     auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
@@ -367,7 +361,7 @@ uint64_t PhysicsWorld::CreateDistanceConstraint(PhysicsConstraintOwner &owner, u
         return StageCpuJoint(
             domain, m_cpuJointDomains, owner,
             {bodyIdA, bodyIdB, localBakedAnchor, connectedBakedAnchor, localAnchor, connectedLocalAnchor},
-            Cpu::Distance{autoDistance, minimum, maximum, stiffness, damping}, enableCollision, imported);
+            Cpu::Distance{autoDistance, minimum, maximum, stiffness, damping}, enableCollision);
     JointAuthor author{};
     author.SetKind(JPH::GPU::JointDistance);
     author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0) |
@@ -379,7 +373,7 @@ uint64_t PhysicsWorld::CreateDistanceConstraint(PhysicsConstraintOwner &owner, u
     author.limits() = {minimum, maximum, 0.0f, 0.0f};
     author.linearSpring() = {stiffness, damping, 0.0f, 0.0f};
     RequireGpu(domain);
-    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author), imported ? imported->id : 0);
+    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author));
 }
 
 void PhysicsWorld::UpdateDistanceConstraintSettings(uint64_t constraintId, bool updateLimits, float minimum,
@@ -767,15 +761,13 @@ float PhysicsWorld::GetSliderConstraintPosition(uint64_t constraintId) const
 
 uint64_t PhysicsWorld::CreateSwingTwistConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
                                                   const glm::vec3 &localBakedAnchor, const glm::vec3 &localAnchor,
-                                                  const SwingTwistJointSettings &settings, bool enableCollision,
-                                                  const JoltJointImport *imported)
+                                                  const SwingTwistJointSettings &settings, bool enableCollision)
 {
     auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
     if (PrepareJointEndpoints(domain, bodyIdA, bodyIdB) == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner,
-                             {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, settings, enableCollision,
-                             imported);
+                             {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, settings, enableCollision);
     JointAuthor author{};
     author.SetKind(JPH::GPU::JointSwingTwist);
     author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0);
@@ -783,7 +775,7 @@ uint64_t PhysicsWorld::CreateSwingTwistConstraint(PhysicsConstraintOwner &owner,
     author.ownerLocalAnchor() = JointVector(localAnchor);
     ApplySwingSettings(author, settings);
     RequireGpu(domain);
-    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author), imported ? imported->id : 0);
+    return m_gpuScene->CreateJoint(owner, bodyIdA, bodyIdB, std::move(author));
 }
 
 void PhysicsWorld::UpdateSwingTwistConstraint(uint64_t constraintId, const SwingTwistJointSettings &settings,
@@ -848,21 +840,20 @@ glm::quat PhysicsWorld::GetAngularConstraintOrientation(uint64_t id) const
 
 uint64_t PhysicsWorld::CreateSixDOFConstraint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
                                               const glm::vec3 &baked, const glm::vec3 &raw,
-                                              const SixDOFJointSettings &settings, bool collision,
-                                              const JoltJointImport *imported)
+                                              const SixDOFJointSettings &settings, bool collision)
 {
     RequireOwnerThread();
     auto &domain = DomainForBody(ownerBody);
     if (PrepareJointEndpoints(domain, ownerBody, connectedBody) == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner, {ownerBody, connectedBody, baked, {}, raw, {}}, settings,
-                             collision, imported);
+                             collision);
     JointAuthor author(JPH::GPU::JointSixDOF);
     author.bodies.w = JPH::GPU::JointEnabled | (collision ? JPH::GPU::JointCollisionEnabled : 0u);
     author.ownerAnchor() = JointVector(baked);
     author.ownerLocalAnchor() = JointVector(raw);
     ApplySixSettings(author, settings);
     RequireGpu(domain);
-    return m_gpuScene->CreateJoint(owner, ownerBody, connectedBody, std::move(author), imported ? imported->id : 0);
+    return m_gpuScene->CreateJoint(owner, ownerBody, connectedBody, std::move(author));
 }
 void PhysicsWorld::UpdateSixDOFConstraint(uint64_t id, const SixDOFJointSettings &settings, bool collision,
                                           bool claimTarget)

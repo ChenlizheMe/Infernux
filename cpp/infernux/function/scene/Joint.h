@@ -11,7 +11,6 @@ class PhysicsECSStore;
 class PhysicsWorld;
 class Rigidbody;
 class RuntimeWorld;
-struct JoltJointImport;
 struct SemanticTypeDescriptor;
 
 /// Shared body participation and lifetime for Jolt two-body constraints.
@@ -62,8 +61,7 @@ class Joint : public Component, protected PhysicsConstraintOwner
   protected:
     void RebuildConstraint();
     void ReleaseConstraint();
-    virtual uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId,
-                                      const JoltJointImport *imported = nullptr) = 0;
+    virtual uint64_t CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId) = 0;
     virtual void UpdateConstraintSettings() = 0;
     virtual void OnConstraintCreated()
     {

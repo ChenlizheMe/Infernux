@@ -64,18 +64,8 @@ class JoltCpuControl final
     /// An invalid actor handle denotes a static replica; the owner commits the shared author metadata.
     void StageActor(uint32_t bodyId, PhysicsActorHandle actor, PreparedCpuActor prepared, bool resetMotion = false);
     [[nodiscard]] bool HasStagedRigidbody(uint32_t bodyId, PhysicsECSStore::RigidbodyHandle rigidbody) const;
-    // The native target is allocated detached before the GPU prefix is sealed.
-    // Import is the first command of its author FIFO and waits for that prefix
-    // through the world's fixed admission, not by polling from CPU Jolt.
-    struct BodyTransfer
-    {
-        JoltBodyImport import;
-        PreparedCpuActor actor;
-    };
-    void StageTransfers(const std::vector<BodyTransfer> &bodies);
-    [[nodiscard]] JoltBodyTransfer ReadBodyTransfer(uint32_t bodyId) const;
     void AddBodies(std::vector<uint32_t> bodyIds);
-    void RetireActor(uint32_t bodyId, bool transferDrive = false, std::vector<uint32_t> wakeExclusions = {});
+    void RetireActor(uint32_t bodyId);
     void Queue(uint32_t bodyId, Command command);
     PhysicsTargetSource QueueMove(uint32_t bodyId, KinematicMove command, const PhysicsTargetAuthor *author = nullptr);
     void QueueTemporaryStaticMove(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
@@ -99,13 +89,11 @@ class JoltCpuControl final
         std::optional<JPH::Quat> relative; // Empty restores the accepted authored target.
     };
 
-    void CreateJoint(uint64_t id, PhysicsConstraintOwner &, AuthoredJoint,
-                     std::shared_ptr<std::optional<JoltJointTransfer>> transfer = {});
+    void CreateJoint(uint64_t id, PhysicsConstraintOwner &, AuthoredJoint);
     [[nodiscard]] const AuthoredJoint *FindJoint(uint64_t id) const noexcept;
     void UpdateJoints(std::vector<JointUpdate> updates);
     void QueueJointPoseDrives(std::vector<JointPoseDrive> drives);
     void DestroyJoint(uint64_t id);
-    void TransferJointsOut(const std::vector<uint64_t> &ids);
     [[nodiscard]] bool HasJointForBody(uint32_t bodyId) const noexcept;
     [[nodiscard]] std::vector<uint64_t> DestroyJointsForBody(uint32_t bodyId);
 

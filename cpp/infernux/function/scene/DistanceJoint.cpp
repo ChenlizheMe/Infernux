@@ -45,8 +45,7 @@ SemanticTypeDescriptor DistanceJoint::DescribeSemanticType()
     return type;
 }
 
-uint64_t DistanceJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId,
-                                         const JoltJointImport *imported)
+uint64_t DistanceJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, uint32_t connectedBodyId)
 {
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     const auto *transform = GetTransform();
@@ -58,7 +57,7 @@ uint64_t DistanceJoint::CreateConstraint(PhysicsWorld &world, uint32_t bodyId, u
     }
     return world.CreateDistanceConstraint(*this, bodyId, connectedBodyId, baked, m_anchor, connectedBaked,
                                           m_connectedAnchor, m_autoDistance, m_minimumDistance, m_maximumDistance,
-                                          m_stiffness, m_damping, m_enableCollision, imported);
+                                          m_stiffness, m_damping, m_enableCollision);
 }
 
 void DistanceJoint::UpdateConstraintSettings()

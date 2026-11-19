@@ -201,7 +201,7 @@ bool JoltCpuScene::IsBodyInBroadphase(uint32_t bodyId) const
     return found != m_bodies.end() && m_system.GetBodyInterface().IsAdded(found->second.native);
 }
 
-void JoltCpuScene::DestroyBody(uint32_t bodyId, const std::vector<uint32_t> &wakeExclusions)
+void JoltCpuScene::DestroyBody(uint32_t bodyId)
 {
     if (m_constraints.HasBodyConstraints(bodyId))
         throw std::logic_error("Retire the CPU body's constraints before destroying it");
@@ -225,11 +225,10 @@ void JoltCpuScene::DestroyBody(uint32_t bodyId, const std::vector<uint32_t> &wak
     }
     m_bodies.erase(bodyId);
     if (added)
-        WakeBodiesInBounds(oldBounds, {}, wakeExclusions);
+        WakeBodiesInBounds(oldBounds);
 }
 
-void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude,
-                                      const std::vector<uint32_t> &wakeExclusions)
+void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude)
 {
     bounds.ExpandBy(JPH::Vec3::sReplicate(m_system.GetPhysicsSettings().mSpeculativeContactDistance));
     JPH::AllHitCollisionCollector<JPH::CollideShapeBodyCollector> collector;
@@ -242,8 +241,7 @@ void JoltCpuScene::WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude,
                                       return true;
                                   const auto id = static_cast<uint32_t>(lock.GetBody().GetUserData());
                                   auto &record = m_bodies.at(id);
-                                  if (!record.authoredDynamic ||
-                                      std::binary_search(wakeExclusions.begin(), wakeExclusions.end(), id))
+                                  if (!record.authoredDynamic)
                                       return true;
                                   if (!lock.GetBody().IsActive())
                                       MarkPoseUpdate(id, record);
@@ -294,49 +292,6 @@ PhysicsBodyMotionState JoltCpuScene::ReadMotionState(uint32_t bodyId, PhysicsSta
     const auto &record = m_bodies.at(bodyId);
     JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), record.native);
     return SampleMotionState(bodyId, record, lock.GetBody(), fields, sleeping);
-}
-
-JoltBodyTransfer JoltCpuScene::ReadBodyTransfer(uint32_t bodyId) const
-{
-    const auto &record = m_bodies.at(bodyId);
-    JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), record.native);
-    const auto &body = lock.GetBody();
-    const auto *motion = body.GetMotionPropertiesUnchecked();
-    return {body.GetPosition(),
-            body.GetRotation(),
-            body.GetLinearVelocity(),
-            body.GetAngularVelocity(),
-            motion ? motion->GetAccumulatedForce() : JPH::Vec3::sZero(),
-            motion ? motion->GetAccumulatedTorque() : JPH::Vec3::sZero(),
-            {},
-            record.shapeRevision,
-            body.IsInBroadPhase(),
-            AcceptedAwake(record, body)};
-}
-
-void JoltCpuScene::RestoreBodyTransfers(const std::vector<JoltBodyImport> &imports)
-{
-    std::vector<uint32_t> resident;
-    resident.reserve(imports.size());
-    for (const auto &[id, state] : imports) {
-        const auto &value = state->value();
-        SetBodyOriginPose(id, value.position, value.rotation);
-        if (value.resident)
-            resident.push_back(id);
-    }
-    AddBodiesBatch(resident);
-    // Establish broadphase residence for the group before restoring sleep.
-    // Adding later members can otherwise wake already restored neighbours.
-    for (const auto &[id, state] : imports) {
-        const auto &value = state->value();
-        SetBodyVelocity(id, value.linearVelocity, value.angularVelocity);
-        SetBodyAwake(id, value.awake);
-        auto &record = m_bodies.at(id);
-        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
-        if (auto *motion = lock.GetBody().GetMotionPropertiesUnchecked())
-            motion->SetAccumulatedForceAndTorque(value.force, value.torque);
-        MarkPoseUpdate(id, record);
-    }
 }
 
 PhysicsBodyMotionState JoltCpuScene::SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,
