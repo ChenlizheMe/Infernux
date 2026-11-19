@@ -3,6 +3,16 @@ from infernux.shader.lib.camera import linear_eye_depth
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
+def ray_receiver_depth_bits(raster_depth: float, motion_depth: shader.uint) -> shader.uint:
+    if (motion_depth >> 31) == 0:
+        return motion_depth
+    return shader.as_uint(raster_depth) + (motion_depth & shader.uint(0xFFFF)) - shader.uint(0x8000)
+
+
+def ray_previous_eye_depth(motion_depth: shader.uint) -> float:
+    return shader.as_float(motion_depth & shader.uint(0x7FFF0000))
+
+
 def unpack_ray_signal(packet: shader.uvec4) -> shader.vec4:
     # Three signed 19-bit floats (8 exponent bits, 10 fraction bits) and a 7-bit sample count.
     red = packet.x & shader.uint(0x7FFFF)

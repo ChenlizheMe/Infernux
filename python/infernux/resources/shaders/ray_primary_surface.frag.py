@@ -1,4 +1,5 @@
 import infernux.shader as shader
+from infernux.shader.lib.ray_signal import ray_receiver_depth_bits
 
 
 class RayPrimarySurface(shader.fullscreen):
@@ -21,4 +22,4 @@ class RayPrimarySurface(shader.fullscreen):
         frame = shader.load(self.gbuffer_normal, pixel, 0)
         # Visibility above uses hardware depth. Outgoing rays and their history
         # use the depth of the original triangle at this camera sample.
-        return shader.uvec4(surface, replay.w & shader.uint(0x7FFFFFFF), replay.y, shader.as_uint(frame.z))
+        return shader.uvec4(surface, ray_receiver_depth_bits(replay_depth, replay.w), replay.y, shader.as_uint(frame.z))

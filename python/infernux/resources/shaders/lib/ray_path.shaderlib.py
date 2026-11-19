@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth
-from infernux.shader.lib.ray_signal import ray_grid_pixel
+from infernux.shader.lib.ray_signal import ray_grid_pixel, ray_previous_eye_depth
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -18,19 +18,15 @@ def related_receiver(primary: shader.uvec4, other: shader.uvec4, expected_depth:
 
 
 def previous_path(primary: shader.uvec4, motion: shader.uvec4, previous_surface: shader.UInt2D,
-                  paths: shader.UInt2D, position: shader.vec3, uv: shader.vec2,
+                  paths: shader.UInt2D, uv: shader.vec2,
                   extent: shader.ivec2, full: shader.ivec2) -> shader.uvec4:
     if (motion.w >> 31) == 0 or motion.x != primary.x:
         return shader.uvec4(0)
     prev_uv = uv - shader.unpack_half_2x16(motion.z) + shader._view_jitter_delta_uv()
     if shader.any(prev_uv < shader.vec2(0.0)) or shader.any(prev_uv >= shader.vec2(1.0)):
         return shader.uvec4(0)
-    camera = shader.camera()
-    clip = camera.previous_view_projection_matrix @ shader.vec4(position, 1.0)
-    if clip.w <= 0.0:
-        return shader.uvec4(0)
     cell = shader.ivec2(prev_uv * shader.vec2(extent))
     other = shader.load(previous_surface, path_pixel(cell, extent, full), 0)
-    if related_receiver(primary, other, linear_eye_depth(clip.z / clip.w, camera)):
+    if related_receiver(primary, other, ray_previous_eye_depth(motion.w)):
         return shader.load(paths, cell, 0)
     return shader.uvec4(0)

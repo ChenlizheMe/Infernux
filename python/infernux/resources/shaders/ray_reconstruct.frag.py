@@ -1,7 +1,7 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
 from infernux.shader.lib.ray_signal import (
-    pack_ray_signal, ray_grid_pixel, specular_color_variance, specular_hit_distance,
+    pack_ray_signal, ray_grid_pixel, ray_previous_eye_depth, specular_color_variance, specular_hit_distance,
     specular_witness, unpack_ray_signal,
 )
 from infernux.shader.lib.surface import decode_octahedral_normal
@@ -63,14 +63,9 @@ class RayReconstruct(shader.fullscreen):
             return fresh
 
         camera = shader.camera()
-        position = world_position(uv, shader.as_float(primary.y), camera)
-        previous_clip = camera.previous_view_projection_matrix @ shader.vec4(position, 1.0)
-        if previous_clip.w <= 0.0 or previous_clip.z <= 0.0 or previous_clip.z > previous_clip.w:
-            return fresh
-        expected_depth = linear_eye_depth(previous_clip.z / previous_clip.w, camera)
+        expected_depth = ray_previous_eye_depth(motion.w)
         previous_depth = linear_eye_depth(shader.as_float(previous_primary.y), camera)
-        # Rigid motion within the previous depth band can reuse history. Depth motion,
-        # newly revealed surfaces, and projections crossing the frustum restart the estimate.
+        # Compare the same surface in its previous pose, including motion toward the camera.
         if shader.abs(expected_depth - previous_depth) > 0.01 + 0.015 * expected_depth:
             return fresh
 
@@ -92,6 +87,10 @@ class RayReconstruct(shader.fullscreen):
                 return fresh
             # The virtual image behind a planar mirror projects along the incident camera ray.
             # Check camera parallax at that distance as well as motion at the visible receiver.
+            position = world_position(uv, shader.as_float(primary.y), camera)
+            previous_clip = camera.previous_view_projection_matrix @ shader.vec4(position, 1.0)
+            if previous_clip.w <= 0.0:
+                return fresh
             eye = camera.inverse_view_projection_matrix @ shader.vec4(0.0, 0.0, 1.0, 0.0)
             incident = shader.normalize(position * eye.w - eye.xyz)
             travel = distance if distance > 0.0 else camera.projection_params.y
