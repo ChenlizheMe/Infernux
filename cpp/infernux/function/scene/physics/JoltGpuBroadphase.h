@@ -12,7 +12,7 @@ class JoltGpuBroadphase final
 {
   public:
     JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetCode &target);
-    [[nodiscard]] bool TryPrepareSmallPairPipeline();
+    [[nodiscard]] bool TryPrepareStartupPrograms();
 
     [[nodiscard]] JoltGpuControlWork
     Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,

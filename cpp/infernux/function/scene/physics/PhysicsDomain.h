@@ -46,11 +46,11 @@ struct PhysicsDomain final
     bool cpuFixedAdmitted = false;
     bool gpuRegistered = false;
     size_t gpuBodyOwners = 0;
-    enum class StartupPrograms
+    struct StartupPrograms
     {
-        None,
-        GpuBodies,
-        MixedFixed
+        bool gpuBodies = false;
+        bool gpuContacts = false;
+        bool mixedFixed = false;
     };
     std::optional<StartupPrograms> startupPrograms;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;

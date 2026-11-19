@@ -1286,9 +1286,13 @@ JoltGpuBroadphase::JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetC
 {
 }
 
-bool JoltGpuBroadphase::TryPrepareSmallPairPipeline()
+bool JoltGpuBroadphase::TryPrepareStartupPrograms()
 {
-    return m_impl->programs[BuildSmallPairs].kernel->TryPreparePipeline();
+    bool ready = true;
+    for (const auto entry :
+         {InitWords, InitCandidates, InitContacts, BuildWorldRanges, BuildSmallPairs, PublishResidentCount})
+        ready &= m_impl->programs[entry].kernel->TryPreparePipeline();
+    return ready;
 }
 
 JoltGpuControlWork

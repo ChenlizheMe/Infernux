@@ -468,6 +468,15 @@ JoltGpuSleep::JoltGpuSleep(rhi::ComputeHost &host, const ShaderTargetCode &targe
     : m_impl(std::make_shared<Impl>(host, target))
 {
 }
+
+bool JoltGpuSleep::TryPrepareStartupPrograms()
+{
+    bool ready = true;
+    for (const auto entry : {Initialize, Clear, Update, Commit, Export})
+        ready &= m_impl->entries[entry].kernel->TryPreparePipeline();
+    return ready;
+}
+
 JoltGpuControlWork JoltGpuSleep::PrepareInitialize(const JoltGpuStorage &s, const StepParams &selection,
                                                    std::function<void()> done)
 {

@@ -2422,11 +2422,11 @@ JoltGpuScene::JoltGpuScene(rhi::ComputeHost &host, FrameWorkOwner &work, const S
 }
 JoltGpuScene::~JoltGpuScene() = default;
 
-bool JoltGpuScene::TryPrepareStartupPrograms()
+bool JoltGpuScene::TryPrepareStartupPrograms(bool hasLocalContacts)
 {
-    const bool forces = m_impl->programs.TryPrepareStartupPrograms();
-    const bool pairs = m_impl->broadphase.TryPrepareSmallPairPipeline();
-    return forces && pairs;
+    const bool bodies = m_impl->programs.TryPrepareStartupPrograms(hasLocalContacts);
+    const bool pairs = m_impl->broadphase.TryPrepareStartupPrograms();
+    return bodies && pairs;
 }
 
 void JoltGpuScene::RequireParticipantBodies(RuntimeWorld &world,

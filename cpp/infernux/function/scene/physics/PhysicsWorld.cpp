@@ -1377,49 +1377,61 @@ bool PhysicsWorld::TryPrepareStartupPrograms()
 {
     RequireOwnerThread();
     auto &domain = CurrentDomain();
-    using StartupPrograms = PhysicsDomain::StartupPrograms;
     if (!domain.startupPrograms) {
-        bool gpuBodies = false;
-        const auto visitObject = [&](auto &&visit, const GameObject &object) -> bool {
+        PhysicsDomain::StartupPrograms programs;
+        auto &store = PhysicsECSStore::Instance();
+        size_t localColliderOwners = 0;
+        bool gpuCollider = false;
+        const auto visitObject = [&](auto &&visit, const GameObject &object) -> void {
             if (!object.IsActive())
-                return false;
-            if (const auto *body = object.GetComponent<Rigidbody>(); body && body->IsEnabled()) {
-                gpuBodies |= body->IsGpuEnabled();
-                if (body->AllowsCrossBackendInteraction()) {
-                    const auto *joint = object.GetComponent<FixedJoint>();
-                    const auto *connected = joint && joint->IsEnabled() ? joint->GetConnectedBody() : nullptr;
-                    if (connected && connected->IsEnabled() && connected->AllowsCrossBackendInteraction() &&
-                        body->IsGpuEnabled() != connected->IsGpuEnabled() &&
-                        (!body->IsKinematic() || !connected->IsKinematic())) {
-                        const auto *endpoint = connected->GetGameObject();
-                        const auto *scene = endpoint ? endpoint->GetScene() : nullptr;
-                        if (scene && scene->GetRuntimeWorld() == &domain.owner && endpoint->IsActiveInHierarchy())
-                            return true;
+                return;
+            const auto *body = object.GetComponent<Rigidbody>();
+            const bool gpu = body && body->IsEnabled() && body->IsGpuEnabled();
+            programs.gpuBodies |= gpu;
+            if (!body || gpu) {
+                const auto actor = store.FindActor(&object);
+                if (store.IsValid(actor)) {
+                    const auto &shapes = store.GetActor(actor).colliders;
+                    if (std::any_of(shapes.begin(), shapes.end(), [](const auto *shape) {
+                            return shape->IsEnabled() && shape->GetGameObject()->IsActiveInHierarchy();
+                        })) {
+                        ++localColliderOwners;
+                        gpuCollider |= gpu;
                     }
                 }
             }
-            const auto &children = object.GetChildren();
-            return std::any_of(children.begin(), children.end(),
-                               [&](const auto &child) { return visit(visit, *child); });
+            if (body && body->IsEnabled() && body->AllowsCrossBackendInteraction() && !programs.mixedFixed) {
+                const auto *joint = object.GetComponent<FixedJoint>();
+                const auto *connected = joint && joint->IsEnabled() ? joint->GetConnectedBody() : nullptr;
+                if (connected && connected->IsEnabled() && connected->AllowsCrossBackendInteraction() &&
+                    body->IsGpuEnabled() != connected->IsGpuEnabled() &&
+                    (!body->IsKinematic() || !connected->IsKinematic())) {
+                    const auto *endpoint = connected->GetGameObject();
+                    const auto *scene = endpoint ? endpoint->GetScene() : nullptr;
+                    if (scene && scene->GetRuntimeWorld() == &domain.owner && endpoint->IsActiveInHierarchy())
+                        programs.mixedFixed = true;
+                }
+            }
+            for (const auto &child : object.GetChildren())
+                visit(visit, *child);
         };
-        const auto hasMixedFixed = [&](const std::unique_ptr<Scene> &scene) {
-            if (!scene)
-                return false;
-            const auto &roots = scene->GetRootObjects();
-            return std::any_of(roots.begin(), roots.end(),
-                               [&](const auto &root) { return visitObject(visitObject, *root); });
+        const auto visitScene = [&](const std::unique_ptr<Scene> &scene) {
+            if (scene)
+                for (const auto &root : scene->GetRootObjects())
+                    visitObject(visitObject, *root);
         };
         const auto &scenes = domain.owner.scenes;
-        const bool mixed =
-            std::any_of(scenes.loaded.begin(), scenes.loaded.end(), hasMixedFixed) || hasMixedFixed(scenes.persistent);
-        domain.startupPrograms =
-            mixed ? StartupPrograms::MixedFixed : (gpuBodies ? StartupPrograms::GpuBodies : StartupPrograms::None);
+        for (const auto &scene : scenes.loaded)
+            visitScene(scene);
+        visitScene(scenes.persistent);
+        programs.gpuContacts = gpuCollider && localColliderOwners > 1;
+        domain.startupPrograms = programs;
     }
-    if (*domain.startupPrograms == StartupPrograms::None)
+    const auto &programs = *domain.startupPrograms;
+    if (!programs.gpuBodies)
         return true;
-    const bool gpuReady = EnsureSharedGpuScene().TryPrepareStartupPrograms();
-    const bool mixedReady = *domain.startupPrograms != StartupPrograms::MixedFixed ||
-                            EnsureMixedConstraintSolver().TryPreparePrograms(true, true, true);
+    const bool gpuReady = EnsureSharedGpuScene().TryPrepareStartupPrograms(programs.gpuContacts);
+    const bool mixedReady = !programs.mixedFixed || EnsureMixedConstraintSolver().TryPreparePrograms(true, true, true);
     return gpuReady && mixedReady;
 }
 bool PhysicsWorld::ServiceParticipantPreparation()

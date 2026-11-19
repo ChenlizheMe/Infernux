@@ -546,7 +546,7 @@ class JoltGpuPrograms
   public:
     JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode &target,
                     const ShaderTargetCode *captureTarget = nullptr, const ShaderTargetCode *dynamicsTarget = nullptr);
-    [[nodiscard]] bool TryPrepareStartupPrograms();
+    [[nodiscard]] bool TryPrepareStartupPrograms(bool hasLocalContacts);
     [[nodiscard]] JoltGpuSleep &GetSleep() const noexcept
     {
         return *m_sleep;
