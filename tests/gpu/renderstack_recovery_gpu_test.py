@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import numpy as np
+from renderer_fixture import GameFrames
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.core.asset_ref import RenderEffectRef
@@ -85,8 +86,8 @@ def main():
             native.set_scene_view_visible(False);native.set_editor_fps_cap(240.);native.set_editor_idle_fps(0.)
             database=frontend.get_asset_database()
             for name,color in zip(('A','B'),COLORS):
-                path=project/'Assets'/('Recovery'+name+'.frag')
-                path.write_text('#version 450\nShaderInfo { Name "Recovery '+name+'" Hidden On Capabilities [Fullscreen] Inputs { Float2 inUV } Outputs { Float4 outColor } }\nvoid main() { outColor=vec4('+','.join(map(str,color))+',1); }\n',encoding='utf-8')
+                path=project/'Assets'/('Recovery'+name+'.frag.py')
+                path.write_text('import infernux.shader as shader\nclass Recovery(shader.fullscreen):\n    shader_id = "Recovery '+name+'"\n    hidden = True\n    def main(self, uv: shader.vec2) -> shader.vec4:\n        return shader.vec4('+','.join(map(str,color))+',1.0)\n', encoding='utf-8')
                 imported=AssetManager.import_asset(str(path),database=database)
                 assert imported,imported.error
             scene=SceneManager.instance().get_active_scene()
@@ -96,9 +97,13 @@ def main():
             effects={key:RenderEffect(RenderEffectAsset('audit.recovery.'+key)) for key in ('missing_probe','allocate_then_fail')}
             phases=('baseline','missing_probe_guard','allocation_failure_rolled_back','duplicate_topology_retains_accepted_output','repaired_topology_changes_output','clean_restored')
             phase=frames=changed=0;ticket=None;last_builds=None
+            game_frames = GameFrames(native)
+
             def after_draw():
                 nonlocal phase,frames,changed,ticket,complete,last_builds
                 try:
+                    if not game_frames.advance():
+                        return
                     frames+=1
                     if ticket is None and frames>=changed+12:
                         ticket=frontend.request_render_target_readback(True)

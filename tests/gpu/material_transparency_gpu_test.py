@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from renderer_fixture import GameFrames
 from infernux import Engine
 from infernux.core.assets import AssetManager
 from infernux.lib import CameraClearFlags, ConsolePanel, InxMaterial, SceneManager, Vector3, vec4f
@@ -12,22 +13,18 @@ from infernux.renderstack.forward_parameters import MSAASamples
 from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 
-SHADER = '''#version 450
-ShaderInfo {
-    Name "Tutorial Transparent"
-    ShadingModel Unlit
-    Surface Transparent
-    Cull Off
-    Blend MODE
-    CastShadows Off
-    ReceiveShadows Off
-    Properties { Color base_color = [1.0, 0.0, 0.0, 0.5] }
-}
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    s.albedo = material.base_color.rgb MULTIPLY;
-    s.alpha = material.base_color.a;
-}
+SHADER = '''import infernux.shader as shader
+class Transparent(shader.surface):
+    shader_id = "Tutorial Transparent"
+    shading_model = shader.ref("infernux/shading/unlit")
+    surface_type = "transparent"
+    cull_mode = "none"
+    blend = "MODE"
+    cast_shadows = False
+    receive_shadows = False
+    base_color = shader.material.color(default=(1.0, 0.0, 0.0, 0.5))
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=self.base_color.rgb MULTIPLY, alpha=self.base_color.a)
 '''
 
 def encode(value):
@@ -46,14 +43,14 @@ def main():
         mesh = project/'Assets/Quad.obj'
         mesh.write_text('v -1 -1 0\nv 1 -1 0\nv 1 1 0\nv -1 1 0\n'
                         'vn 0 0 -1\nf 1//1 3//1 2//1\nf 1//1 4//1 3//1\n', encoding='ascii')
-        shader = project/'Assets/Transparent.frag'
+        shader = project/'Assets/Transparent.frag.py'
         def source(mode):
-            text = SHADER.replace('MULTIPLY','* material.base_color.a' if mode=='Premultiplied' else '')
+            text = SHADER.replace('MULTIPLY','* self.base_color.a' if mode=='Premultiplied' else '')
             if mode == 'Alpha':
-                return text.replace('    Blend MODE\n','')
+                return text.replace('    blend = "MODE"\n','')
             if mode == 'Opaque':
-                return text.replace('Surface Transparent','Surface Opaque').replace('MODE','Off')
-            return text.replace('MODE',mode)
+                return text.replace('surface_type = "transparent"','surface_type = "opaque"').replace('MODE','off')
+            return text.replace('MODE', {'Premultiplied':'premultiply','Additive':'additive','Alpha':'alpha'}[mode])
         shader.write_text(source('Alpha'),encoding='ascii')
         frontend = Engine()
         engine = frontend.get_native_engine()
@@ -86,7 +83,7 @@ def main():
                 renderer = obj.add_component('MeshRenderer')
                 renderer.set_mesh_asset_guid(imported.guid)
                 material = InxMaterial()
-                material.vert_shader_name = 'Standard'
+                material.vert_shader_name = 'infernux/standard'
                 material.frag_shader_name = 'Tutorial Transparent'
                 material.set_color('base_color',*rgb,.5)
                 renderer.set_material(0,material)
@@ -111,9 +108,13 @@ def main():
                 shader.write_text(source(mode),encoding='ascii')
                 result = AssetManager.reimport_asset(str(shader),database=db)
                 assert result,result.error
+            game_frames = GameFrames(engine)
+
             def after_draw():
                 nonlocal phase,frame,changed,ticket,completed
                 try:
+                    if not game_frames.advance():
+                        return
                     frame += 1
                     if ticket is None and frame >= changed+8:
                         ticket = frontend.request_render_target_readback(True)
@@ -133,7 +134,13 @@ def main():
                                     (1,1,0),(1,0,0),(0,0,1),(.5,.25,0))[phase]
                         np.testing.assert_allclose(center[:3],encode(expected),atol=.005,
                                                    err_msg=f'{args.path}: {phases[phase]}')
-                        np.testing.assert_allclose(center[3],1.0 if phase in (4,6) else .5 if phase==5 else .75,atol=.001)
+                        # Deferred GBuffer alpha is opaque coverage; transparent
+                        # source-over alpha is shared with both Forward paths.
+                        opaque_alpha = 1.0 if args.path == 'deferred' else .5
+                        expected_alpha = (.75, .75, .75, .75, 1., opaque_alpha, 1., .75)[phase]
+                        np.testing.assert_allclose(center[3], expected_alpha, atol=.001)
+                        expected_samples = 1 if args.path == 'deferred' else args.samples
+                        assert engine.msaa_state['game_requested_samples'] == expected_samples
                         if phase == len(phases)-1:
                             for name in ('alpha_restored','premultiplied','restored'):
                                 np.testing.assert_allclose(images[name],images['alpha_red_near'],atol=.005)

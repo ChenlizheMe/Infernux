@@ -5,6 +5,7 @@ import tempfile
 
 import infernux as inx
 import numpy as np
+from renderer_fixture import GameFrames
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, SceneManager, Vector3
 from infernux.rendergraph import Format
@@ -12,55 +13,54 @@ from infernux.renderstack import RenderPipeline
 from shared_camera_gpu_test import Monitor, Router
 
 
-SURFACE = '''#version 450
-ShaderInfo {
-    Name "View Globals Probe" ShadingModel Unlit Cull Off
-    Imports ["Lib Camera"]
-    Properties { Float mode = 0 }
-}
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    if (material.mode < 0.5)
-        s.albedo = vec3(_Globals._ProjectionParams.x,
-                        _Globals._ProjectionParams.y / 1000.0,
-                        -_Globals._WorldSpaceCameraPos.z / 20.0);
-    else if (material.mode < 1.5)
-        s.albedo = vec3(_Globals._ScreenParams.xy / 200.0,
-                        _Globals._ScreenParams.z * 20.0);
-    else
-        s.albedo = vec3(getCameraNear(), getCameraFar() / 1000.0,
-                        linearEyeDepth(gl_FragCoord.z) / 20.0);
-}
+SURFACE = '''import infernux.shader as shader
+from infernux.shader.lib.camera import linear_eye_depth
+class ViewGlobals(shader.surface):
+    shader_id = "View Globals Probe"
+    shading_model = shader.ref("infernux/shading/unlit")
+    cull_mode = "none"
+    mode = shader.material.float(default=0.0)
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        view = shader.view()
+        camera = shader.camera()
+        if self.mode < 0.5:
+            color = shader.vec3(view.near_clip, view.far_clip / 1000.0, -view.camera_position_ws.z / 20.0)
+        elif self.mode < 1.5:
+            color = shader.vec3(view.size / 200.0, view.pixel_size.x * 20.0)
+        else:
+            color = shader.vec3(camera.projection_params.x, camera.projection_params.y / 1000.0, linear_eye_depth(ctx.position.z, camera) / 20.0)
+        return shader.SurfaceData(albedo=color)
 '''
 
-POST = '''#version 450
-ShaderInfo {
-    Name "View Globals Post" Hidden On Capabilities [Fullscreen, CameraMatrices, EngineGlobals]
-    Resources { Texture2D sourceTex }
-    Inputs { Float2 inUV } Outputs { Float4 outColor }
-}
-void main() {
-    bool ownView = all(lessThan(abs(_Globals._ProjectionParams - ubo.projectionParams), vec4(0.0001)))
-        && all(lessThan(abs(_Globals._WorldSpaceCameraPos.xyz - inverse(ubo.view)[3].xyz), vec3(0.0001)))
-        && all(lessThan(abs(_Globals._ScreenParams.xy - vec2(textureSize(sourceTex, 0))), vec2(0.01)));
-    outColor = ownView ? texture(sourceTex, inUV) : vec4(1, 0, 1, 1);
-}
+POST = '''import infernux.shader as shader
+class ViewGlobalsPost(shader.fullscreen):
+    shader_id = "View Globals Post"
+    hidden = True
+    sourceTex = shader.input("Source", shader.Color2D)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        view = shader.view()
+        camera = shader.camera()
+        origin = camera.inverse_view_projection_matrix @ (camera.projection_matrix @ shader.vec4(0.0, 0.0, 0.0, 1.0))
+        own_view = shader.all(shader.abs(shader.vec2(view.near_clip, view.far_clip) - camera.projection_params.xy) < shader.vec2(0.0001)) and shader.all(shader.abs(view.camera_position_ws - origin.xyz) < shader.vec3(0.0001)) and shader.all(shader.abs(view.size - shader.vec2(shader.dimensions(self.sourceTex, 0))) < shader.vec2(0.01))
+        if own_view:
+            return shader.sample(self.sourceTex, uv)
+        return shader.vec4(1.0, 0.0, 1.0, 1.0)
 '''
 
-MONITOR = '''#version 450
-ShaderInfo {
-    Name "Tutorial Shared View Monitor" Hidden On Capabilities [Fullscreen, EngineGlobals]
-    Resources { Texture2D leftTex Texture2D rightTex }
-    Inputs { Float2 inUV } Outputs { Float4 outColor }
-}
-void main() {
-    bool ownView = all(lessThan(abs(_Globals._ProjectionParams.xy - vec2(0.7, 900)), vec2(0.0001)))
-        && all(lessThan(abs(_Globals._WorldSpaceCameraPos.xyz - vec3(0, 0, -14)), vec3(0.0001)))
-        && all(lessThan(abs(_Globals._ScreenParams.xy - vec2(160, 120)), vec2(0.01)));
-    outColor = !ownView ? vec4(1, 0, 1, 1)
-        : inUV.x < 0.5 ? texture(leftTex, vec2(inUV.x * 2, inUV.y))
-                       : texture(rightTex, vec2(inUV.x * 2 - 1, inUV.y));
-}
+MONITOR = '''import infernux.shader as shader
+class ViewGlobalsMonitor(shader.fullscreen):
+    shader_id = "tests/shared_view/monitor"
+    hidden = True
+    left = shader.input("Left", shader.Color2D)
+    right = shader.input("Right", shader.Color2D)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        view = shader.view()
+        own_view = shader.abs(view.near_clip - 0.7) < 0.0001 and shader.abs(view.far_clip - 900.0) < 0.0001 and shader.all(shader.abs(view.camera_position_ws - shader.vec3(0.0, 0.0, -14.0)) < shader.vec3(0.0001)) and shader.all(shader.abs(view.size - shader.vec2(160.0, 120.0)) < shader.vec2(0.01))
+        if not own_view:
+            return shader.vec4(1.0, 0.0, 1.0, 1.0)
+        if uv.x < 0.5:
+            return shader.sample(self.left, shader.vec2(uv.x * 2.0, uv.y))
+        return shader.sample(self.right, shader.vec2(uv.x * 2.0 - 1.0, uv.y))
 '''
 
 
@@ -85,7 +85,7 @@ def main():
         project = Path(folder)
         for directory in ('Assets', 'Packages', 'ProjectSettings'):
             (project / directory).mkdir()
-        for name, source in (('Probe.frag', SURFACE), ('Post.frag', POST), ('Monitor.frag', MONITOR)):
+        for name, source in (('Probe.frag.py', SURFACE), ('Post.frag.py', POST), ('Monitor.frag.py', MONITOR)):
             (project / 'Assets' / name).write_text(source, encoding='ascii')
 
         engine = inx.Engine()
@@ -110,7 +110,7 @@ def main():
             editor.restore_state(0, 0, -12, 0, 0, 0, 12, 0, 0)
             editor.near_clip, editor.far_clip = .3, 700
             database = engine.get_asset_database()
-            for name in ('Probe.frag', 'Post.frag', 'Monitor.frag'):
+            for name in ('Probe.frag.py', 'Post.frag.py', 'Monitor.frag.py'):
                 result = AssetManager.import_asset(str(project / 'Assets' / name), database=database)
                 assert result, result.error
             scene = SceneManager.instance().get_active_scene()
@@ -163,9 +163,13 @@ def main():
                     return False
                 return True
 
+            game_frames = GameFrames(native)
+
             def after_draw():
                 nonlocal phase, frame, changed, tickets, complete, initial_images
                 try:
+                    if not game_frames.advance():
+                        return
                     frame += 1
                     if tickets is None and frame >= changed + 8 and (phase != 0 or probe_geometry_published()):
                         tickets = [engine.request_render_target_readback(False), engine.request_render_target_readback(True)]

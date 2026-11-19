@@ -7,6 +7,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
+from renderer_fixture import GameFrames
 
 from infernux import Engine
 from infernux.core.asset_ref import RenderEffectRef
@@ -159,9 +160,13 @@ def main():
                     return False
                 return True
 
+            game_frames = GameFrames(engine)
+
             def after_draw():
                 nonlocal frame, changed_frame, stage, ticket, baseline, blue, completed, sample_index, first_order
                 try:
+                    if not game_frames.advance():
+                        return
                     frame += 1
                     if (
                         stage in ("baseline", "zero_bloom", "zero_chain", "active_bloom",

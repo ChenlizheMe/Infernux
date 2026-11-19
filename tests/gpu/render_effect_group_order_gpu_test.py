@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
+from renderer_fixture import GameFrames
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.core.asset_ref import RenderEffectRef
@@ -28,23 +29,36 @@ def display(value):
 
 BASE=np.array([.08,.12,.2])
 
-SHADERS={
- 'Baseline': '''#version 450
-ShaderInfo { Name "Group Order Baseline" Hidden On Capabilities [Fullscreen]
- Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() { outColor=vec4(0.08,0.12,0.2,1); }
+SHADERS = {
+    'Baseline': '''import infernux.shader as shader
+
+class Probe(shader.fullscreen):
+    shader_id = 'Group Order Baseline'
+    hidden = True
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(0.08, 0.12, 0.2, 1.0)
 ''',
- 'Scale': '''#version 450
-ShaderInfo { Name "Group Order Scale" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor }
- PushConstants pc { Float multiplier } }
-void main() { vec4 c=texture(source_tex,inUV); outColor=vec4(c.rgb*pc.multiplier,c.a); }
+    'Scale': '''import infernux.shader as shader
+
+class Probe(shader.fullscreen):
+    shader_id = 'Group Order Scale'
+    hidden = True
+    source_tex = shader.input("Source", shader.Color2D)
+    multiplier = shader.parameter.float(default=1.0)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        color = shader.sample(self.source_tex, uv)
+        return shader.vec4(color.rgb * self.multiplier, color.a)
 ''',
- 'Offset': '''#version 450
-ShaderInfo { Name "Group Order Offset" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor }
- PushConstants pc { Float bias } }
-void main() { vec4 c=texture(source_tex,inUV); outColor=vec4(c.rgb+pc.bias,c.a); }
+    'Offset': '''import infernux.shader as shader
+
+class Probe(shader.fullscreen):
+    shader_id = 'Group Order Offset'
+    hidden = True
+    source_tex = shader.input("Source", shader.Color2D)
+    bias = shader.parameter.float(default=0.0)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        color = shader.sample(self.source_tex, uv)
+        return shader.vec4(color.rgb + self.bias, color.a)
 ''',
 }
 
@@ -115,7 +129,7 @@ def main():
             database=frontend.get_asset_database()
             dependencies=[]
             for name,source in SHADERS.items():
-                path=project/'Assets'/(name+'.frag');path.write_text(source,encoding='utf-8')
+                path=project/'Assets'/(name+'.frag.py');path.write_text(source,encoding='utf-8')
                 result=AssetManager.import_asset(str(path),database=database)
                 assert result,result.error
                 if name!='Baseline':
@@ -179,9 +193,13 @@ def main():
                 host.stack.effect_slots=values
                 host.stack.invalidate_graph()
             mount([])
+            game_frames = GameFrames(native)
+
             def after_draw():
                 nonlocal phase,frames,changed,ticket,complete
                 try:
+                    if not game_frames.advance():
+                        return
                     frames+=1
                     if ticket is None and frames>=changed+8:
                         ticket=frontend.request_render_target_readback(True)

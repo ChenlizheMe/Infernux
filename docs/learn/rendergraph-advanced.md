@@ -116,9 +116,9 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
 
         color = graph.create_texture("color", camera_target=True)
         with graph.add_pass("CopyToCamera") as render_pass:
-            render_pass.set_texture("_SourceTex", preview)
+            render_pass.set_texture("source_tex", preview)
             render_pass.write_color(color)
-            render_pass.fullscreen_quad("Fullscreen Blit")
+            render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
 
         camera_result = self.write_buffer(
             opaque,
@@ -220,9 +220,9 @@ copied = graph.create_texture(
     format=inx.rendergraph.Format.RGBA16_SFLOAT,
 )
 with graph.add_pass("CopyColor") as render_pass:
-    render_pass.set_texture("_SourceTex", before.sample("color"))
+    render_pass.set_texture("source_tex", before.sample("color"))
     render_pass.write_color(copied)
-    render_pass.fullscreen_quad("Fullscreen Blit")
+    render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
 
 after = self.write_buffer(
     before,
@@ -498,8 +498,8 @@ To write a processed image back to the Camera and continue drawing later passes,
 ```python
 with graph.add_pass("CommitGrade") as render_pass:
     render_pass.write_color(camera_color)
-    render_pass.set_texture("_SourceTex", graded)
-    render_pass.fullscreen_quad("Fullscreen Blit")
+    render_pass.set_texture("source_tex", graded)
+    render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
 ```
 
 Here `graded` is a separately produced, single-sample color texture; `camera_color` is the graph's camera target. Do not sample and write the same image in this pass. Use `present()` when exporting the final image instead of continuing to draw into the Camera target.
@@ -642,9 +642,9 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
 
         color = graph.create_texture("color", camera_target=True)
         with graph.add_pass("CopyToCamera") as render_pass:
-            render_pass.set_texture("_SourceTex", preview)
+            render_pass.set_texture("source_tex", preview)
             render_pass.write_color(color)
-            render_pass.fullscreen_quad("Fullscreen Blit")
+            render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
 
         camera_result = self.write_buffer(
             opaque,
@@ -746,9 +746,9 @@ copied = graph.create_texture(
     format=inx.rendergraph.Format.RGBA16_SFLOAT,
 )
 with graph.add_pass("CopyColor") as render_pass:
-    render_pass.set_texture("_SourceTex", before.sample("color"))
+    render_pass.set_texture("source_tex", before.sample("color"))
     render_pass.write_color(copied)
-    render_pass.fullscreen_quad("Fullscreen Blit")
+    render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
 
 after = self.write_buffer(
     before,
@@ -1033,8 +1033,8 @@ with graph.add_pass("DepthAwareOverlay") as p:
 ```python
 with graph.add_pass("CommitGrade") as render_pass:
     render_pass.write_color(camera_color)
-    render_pass.set_texture("_SourceTex", graded)
-    render_pass.fullscreen_quad("Fullscreen Blit")
+    render_pass.set_texture("source_tex", graded)
+    render_pass.fullscreen_quad("infernux/internal/fullscreen_blit")
 ```
 
 这里的 `graded` 是前序 Pass 产出的独立单采样颜色纹理，`camera_color` 是图中的相机目标。这个 Pass 不能同时采样和写入同一张纹理。如果只是导出最终画面，不再向相机目标追加绘制，则使用 `present()`。

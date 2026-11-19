@@ -3,6 +3,7 @@
 import argparse,json,re,tempfile
 from pathlib import Path
 import numpy as np
+from renderer_fixture import GameFrames
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel,SceneManager,Vector3
@@ -12,10 +13,13 @@ ROOT=Path(resolved_path(__file__)).parents[2]
 blocks=re.findall(r'```python\n(.*?)```',(ROOT/'docs/learn/rendergraph-advanced.md').read_text(encoding='utf-8'),re.S)
 commit=[block for block in blocks if block.startswith('with graph.add_pass("CommitGrade")')]
 assert len(commit)==2 and commit[0]==commit[1]
-GRADE='''#version 450
-ShaderInfo { Name "Tutorial Commit Grade Source" Hidden On Capabilities [Fullscreen]
- Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() { outColor=vec4(0.25,0.5,0.75,1); }
+GRADE = '''import infernux.shader as shader
+
+class Probe(shader.fullscreen):
+    shader_id = 'Tutorial Commit Grade Source'
+    hidden = True
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(0.25, 0.5, 0.75, 1.0)
 '''
 
 class GradePipeline(inx.renderstack.RenderPipeline):
@@ -29,9 +33,9 @@ class GradePipeline(inx.renderstack.RenderPipeline):
         depth=g.create_texture('depth',format=f.D32_SFLOAT, camera_target=True)
         g.add_pass('DrawAfterCommit').write_color(color).write_depth(depth).set_clear(depth=0.0).draw_renderers(queue_range=(0,2500))
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
-    def render_camera(self,context,camera,culling):
-        self.views[camera.component_id]={'graph_instance_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'output_samples':int(context.output_samples),'visible_objects':int(culling.visible_object_count)}
-        super().render_camera(context,camera,culling)
+    def render_view(self,context,camera,culling):
+        self.views[camera.camera_id]={'graph_instance_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'output_samples':int(context.output_samples),'visible_objects':int(culling.visible_object_count)}
+        super().render_view(context,camera,culling)
 
 class MonitorPipeline(inx.renderstack.RenderPipeline):
     name='Tutorial Saved Camera Monitor'
@@ -41,16 +45,16 @@ class MonitorPipeline(inx.renderstack.RenderPipeline):
         color=g.create_texture('color',camera_target=True)
         g.add_pass('ReadCurrentCameraOutput').write_color(color).set_texture('source_tex',sampled).fullscreen_quad('infernux/internal/fullscreen_blit')
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)
-    def render_camera(self,context,camera,culling):
-        self.views[camera.component_id]={'graph_instance_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'output_samples':int(context.output_samples),'visible_objects':int(culling.visible_object_count)}
-        super().render_camera(context,camera,culling)
+    def render_view(self,context,camera,culling):
+        self.views[camera.camera_id]={'graph_instance_id':int(context.graph_instance_id),'source_revision':int(self._standalone_desc.source_revision),'output_samples':int(context.output_samples),'visible_objects':int(culling.visible_object_count)}
+        super().render_view(context,camera,culling)
 
 class CameraRouter(inx.renderstack.RenderPipeline):
     name='Tutorial Camera Router'
     def render(self,context,camera):
-        if camera.component_id==self.producer_id:self.grade.render(context,camera)
+        if camera.camera_id==self.producer_id:self.grade.render(context,camera)
         else:
-            assert camera.component_id==self.monitor_id,camera.component_id
+            assert camera.camera_id==self.monitor_id,camera.camera_id
             self.monitor.render(context,camera)
     def dispose(self):
         self.grade.dispose()
@@ -62,7 +66,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='infernux-camera-commit-grade-') as folder:
         project=Path(folder)
         for name in ('Assets','Packages','ProjectSettings'):(project/name).mkdir()
-        (project/'Assets/Grade.frag').write_text(GRADE,encoding='ascii')
+        (project/'Assets/Grade.frag.py').write_text(GRADE,encoding='ascii')
         mesh=project/'Assets/Quad.obj';mesh.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvn 0 0 -1\nf 1//1 3//1 2//1\nf 1//1 4//1 3//1\n',encoding='ascii')
         rt_path=project/'Assets/CameraOutput.rendertexture'
         rt_path.write_text(json.dumps({'$type':'render_texture','size':{'width':53,'height':29},'format':'rgba16_sfloat','depth_format':'d32_sfloat','samples':1,'filter':'nearest','storage':False,'sampled_depth':False}),encoding='utf-8')
@@ -72,7 +76,7 @@ def main():
             frontend.init_renderer(160,120,str(project));frontend.resize_game_render_target(160,120)
             native.set_scene_view_visible(False);native.set_editor_fps_cap(240);native.set_editor_idle_fps(0)
             database=frontend.get_asset_database()
-            for path in (mesh,project/'Assets/Grade.frag'):
+            for path in (mesh,project/'Assets/Grade.frag.py'):
                 imported=AssetManager.import_asset(str(path),database=database);assert imported,imported.error
                 if path==mesh:mesh_guid=imported.guid
             scene=SceneManager.instance().get_active_scene()
@@ -94,9 +98,13 @@ def main():
             frontend.set_render_pipeline(router);native.set_game_camera_enabled(True)
             phases=('initial','moved_right','restored') if args.target=='screen' else ('consumer_first','producer_moved','producer_first','resized_target','restored')
             frame=0;changed=0;phase=0;ticket=None;initial=None
+            game_frames = GameFrames(native)
+
             def after_draw():
                 nonlocal frame,changed,phase,ticket,initial,complete
                 try:
+                    if not game_frames.advance():
+                        return
                     frame+=1
                     if ticket is None and frame>=changed+8:ticket=frontend.request_render_target_readback(True)
                     elif ticket is not None and ticket.done:

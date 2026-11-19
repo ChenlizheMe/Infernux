@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from renderer_fixture import GameFrames
 from PIL import Image
 from infernux import Engine
 from infernux.core.assets import AssetManager
@@ -11,16 +12,14 @@ from infernux.lib import AssetRegistry, ConsolePanel, SceneManager, Vector3
 from infernux.renderstack import RenderPipeline
 from infernux.rendergraph import Format
 
-SHADER = '''#version 450
-ShaderInfo {
-    Name "Tutorial Texture Swatch"
-    Hidden On
-    Capabilities [Fullscreen]
-    Resources { Texture2D source_tex }
-    Inputs { Float2 inUV }
-    Outputs { Float4 outColor }
-}
-void main() { outColor = texture(source_tex, inUV); }
+SHADER = '''import infernux.shader as shader
+
+class Probe(shader.fullscreen):
+    shader_id = 'Tutorial Texture Swatch'
+    hidden = True
+    source_tex = shader.input("Source", shader.Color2D)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.sample(self.source_tex, uv)
 '''
 
 class SwatchPipeline(RenderPipeline):
@@ -50,7 +49,7 @@ def main():
         project = Path(root)
         for directory in ('Assets', 'Packages', 'ProjectSettings'):
             (project / directory).mkdir()
-        shader = project / 'Assets/Swatch.frag'
+        shader = project / 'Assets/Swatch.frag.py'
         shader.write_text(SHADER, encoding='ascii')
         texture_path = project / 'Assets/Gray.png'
         Image.new('RGBA', (8,8), (128,128,128,64)).save(texture_path)
@@ -85,9 +84,13 @@ def main():
             frontend.set_render_pipeline(pipeline)
             phases = ('srgb', 'linear', 'data', 'normal')
             phase, frame, changed, ticket, builds = 0, 0, 0, None, None
+            game_frames = GameFrames(engine)
+
             def after_draw():
                 nonlocal phase, frame, changed, ticket, completed, builds
                 try:
+                    if not game_frames.advance():
+                        return
                     frame += 1
                     # This standalone loop replaces the Editor post-draw callback;
                     # retain its authoritative queued GPU publication service.

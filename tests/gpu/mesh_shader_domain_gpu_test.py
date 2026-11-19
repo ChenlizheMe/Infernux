@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
+from renderer_fixture import GameFrames
 import infernux as inx
 from infernux.lib import ConsolePanel, InxMaterial, LightShadows, SceneManager, Vector3
 
@@ -16,7 +17,7 @@ def main():
     parser.add_argument('--pipeline', choices=('forward', 'forward_plus', 'deferred'), default='forward')
     parser.add_argument('--proof', type=Path)
     args = parser.parse_args()
-    wrong_pair = ('Fullscreen Triangle', 'infernux/internal/fullscreen_blit') if args.domain == 'Fullscreen' else ('Particle Sprite', 'Particle Unlit')
+    wrong_pair = ('infernux/standard', 'infernux/internal/fullscreen_blit') if args.domain == 'Fullscreen' else ('infernux/standard', 'infernux/particle/unlit')
     proof = {'package': inx.__file__, 'domain': args.domain, 'pipeline': args.pipeline, 'phases': [],
              'scope': 'Independent temporary project GPU readbacks, cold rejection, valid Mesh recovery and rejected edit with previous valid pipeline. No live Editor pixels.'}
     failures = []
@@ -66,9 +67,13 @@ def main():
             phase = frames = changed = 0
             ticket = baseline = None
 
+            game_frames = GameFrames(native)
+
             def after_draw():
                 nonlocal phase, frames, changed, ticket, baseline, completed
                 try:
+                    if not game_frames.advance():
+                        return
                     frames += 1
                     if ticket is None and frames >= changed + 10:
                         ticket = frontend.request_render_target_readback(True)
@@ -76,9 +81,12 @@ def main():
                         pixels = ticket.result_numpy().copy().astype(np.float32)
                         entries = console._get_visible_log_snapshot(2000)
                         diagnostics = [e for e in entries if 'Material shader domain mismatch:' in e['message']]
-                        expected = "uses domain '" + args.domain + "', but MeshRenderer geometry requires domain 'Mesh'"
-                        assert len(diagnostics) == 1 and expected in diagnostics[0]['message'], diagnostics[:3]
-                        assert diagnostics[0]['count'] == 1, diagnostics
+                        expected = "expected Mesh, got " + args.domain
+                        rejected = phases[phase] in ('cold_rejection', 'rejected_edit')
+                        assert len(diagnostics) == int(rejected), diagnostics[:3]
+                        if rejected:
+                            assert expected in diagnostics[0]['message'], diagnostics
+                            assert diagnostics[0]['count'] == 1, diagnostics
                         unexpected = [e for e in entries if e['level'] in ('ERROR', 'FATAL', 'WARN', 'WARNING')
                                       and e not in diagnostics]
                         assert not unexpected, unexpected[:5]
@@ -105,7 +113,7 @@ def main():
                             native.exit()
                             return
                         phase += 1
-                        pair = wrong_pair if phases[phase] == 'rejected_edit' else ('Standard', 'Unlit')
+                        pair = wrong_pair if phases[phase] == 'rejected_edit' else ('infernux/standard', 'infernux/unlit')
                         material.vert_shader_name, material.frag_shader_name = pair
                         changed = frames
                         ticket = None

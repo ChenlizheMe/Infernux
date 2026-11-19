@@ -557,6 +557,11 @@ class MeshRenderer(BuiltinComponent):
         storage = np.zeros((capacity, data.shape[1]), dtype=np.float32)
         storage[:vertex_count] = data
         result = buffer(shape=storage.shape, dtype=np.float32, device="gpu", data=storage)
+        if auto_normals or auto_tangents:
+            _enable_automatic_mesh_attributes(
+                result, data[:, :3], np.asarray(cpp.get_indices(), dtype=np.int32),
+                normals=auto_normals, tangents=auto_tangents,
+            )
         return result
 
     def set_pose_buffer(self, source, element=0, *, continuity=0) -> None:

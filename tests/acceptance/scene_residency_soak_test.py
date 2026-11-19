@@ -21,6 +21,7 @@ from infernux.lib import (
     PrimitiveType,
     SceneManager,
     Vector3,
+    _Infernux,
 )
 from _process_memory import process_memory_bytes as _process_memory_bytes
 
@@ -111,7 +112,11 @@ def main() -> int:
             texture_guid = database.get_guid_from_path(str(texture_path))
             assert mesh_guid and texture_guid
 
+            frontend._initialize_headless_authoring(str(project))
+            scene_files = frontend._headless_scene_file_manager
+            scene_path = assets / "Soak.scene"
             manager = SceneManager.instance()
+            play_mode = frontend.get_play_mode_manager()
             initial_scene = manager.get_active_scene()
             if initial_scene is not None:
                 manager.unload_scene(initial_scene)
@@ -183,23 +188,39 @@ def main() -> int:
                         runtime_material.set_texture_guid("albedo_map", texture_guid)
                         primitive_renderer.set_material(0, runtime_material)
 
-                    manager.play()
+                    # Reopen the same authored resource each cycle. Editor
+                    # document identity must not grow with the runtime cycle ID.
+                    scene_path.write_text(scene.serialize_asset(), encoding="utf-8")
+                    assert database.import_asset(str(scene_path)).succeeded
+                    scene_files.register_loaded_scene(scene, str(scene_path))
+                    assert scene_files.activate_loaded_scene(scene)
+                    assert play_mode.enter_play_mode()
                     state["scene"] = scene
                     state["settle_frames"] = 3
-                    state["phase"] = "settle"
+                    state["phase"] = "entering"
+                    return
+
+                if phase == "entering":
+                    if play_mode.is_playing:
+                        state["phase"] = "settle"
                     return
 
                 if phase == "settle":
-                    peak_physics_body_count = max(
-                        peak_physics_body_count, int(Physics.body_count)
-                    )
+                    with _Infernux._RuntimeWorldScope(manager._runtime_world_ids[0]):
+                        peak_physics_body_count = max(
+                            peak_physics_body_count, int(Physics.body_count)
+                        )
                     remaining = int(state["settle_frames"]) - 1
                     state["settle_frames"] = remaining
                     if remaining == 0:
-                        manager.stop()
-                        active_scene = manager.get_active_scene()
-                        if active_scene is not None:
-                            manager.unload_scene(active_scene)
+                        assert play_mode.exit_play_mode()
+                        state["phase"] = "exiting"
+                    return
+
+                if phase == "exiting":
+                    if play_mode.is_edit_mode:
+                        scene_files.unregister_loaded_scene(state["scene"])
+                        manager.unload_scene(state["scene"])
                         state["scene"] = None
                         state["phase"] = "empty_frame"
                     return
@@ -360,7 +381,7 @@ def main() -> int:
             print(f"Scene residency soak passed: cycles={CYCLES}")
             return 0
         finally:
-            engine.cleanup()
+            frontend.exit()
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import traceback
 import numpy as np
 
 import infernux as inx
-from infernux.lib import SceneManager, Vector3
+from infernux.lib import SceneManager, Vector3, _Infernux
 from infernux.physics import Physics
 
 
@@ -25,6 +25,8 @@ def main() -> int:
         manager = SceneManager.instance()
         scene = None
         linear = angular = scale = None
+        runtime_scope = None
+        play_mode = None
         failure = None
         try:
             try:
@@ -33,6 +35,13 @@ def main() -> int:
                 print(f"Compute physics exchange test skipped: {exception}")
                 return 77
 
+            # The renderer-only fixture still enters Play through the normal
+            # document/lifecycle owner, without creating editor windows.
+            engine._initialize_headless_authoring(str(project))
+            scene_files = engine._headless_scene_file_manager
+            initial_scene = manager.get_active_scene()
+            if initial_scene is not None:
+                manager.unload_scene(initial_scene)
             scene = manager.create_scene("ComputePhysicsExchange")
             manager.set_active_scene(scene)
             bodies = []
@@ -46,8 +55,24 @@ def main() -> int:
                 body.angular_drag = 0.0
                 game_object.add_component("BoxCollider")
                 bodies.append(body)
-            manager.play()
-            manager.pause()
+            scene_files.register_loaded_scene(scene, "")
+            assert scene_files.activate_loaded_scene(scene)
+            play_mode = engine.get_play_mode_manager()
+            assert play_mode.enter_play_mode()
+            deadline = time.monotonic() + 30.0
+            while not play_mode.is_playing:
+                assert time.monotonic() < deadline, play_mode.state
+                engine.tick(0.0)
+            assert play_mode.pause()
+            # Runtime bodies belong to the prepared Play clone, not the retained
+            # authoring scene. Resolve and exchange them in that world's scope.
+            runtime_scope = _Infernux._RuntimeWorldScope(manager._runtime_world_ids[0])
+            runtime_scope.__enter__()
+            runtime_scene = manager.get_active_scene()
+            runtime_objects = {obj.name: obj for obj in runtime_scene.get_root_objects()}
+            bodies = [runtime_objects[name].get_component("Rigidbody")
+                      for name in ("Body 0", "Body 1")]
+
 
             rigidbody_state = {
                 "position": inx.buffer(shape=4, dtype=inx.vector3, device="gpu"),
@@ -118,7 +143,12 @@ def main() -> int:
             np.testing.assert_allclose(state["linear_velocity"], expected, rtol=1e-6, atol=1e-6)
             np.testing.assert_array_equal(state["angular_velocity"], 0)
             before_step = state["position"].copy()
-            manager.step()
+            sequence = play_mode.step_sequence
+            assert play_mode.step_fixed(manager.get_fixed_time_step())
+            deadline = time.monotonic() + 30.0
+            while play_mode.step_sequence == sequence:
+                assert time.monotonic() < deadline, "Paused physics Step did not complete"
+                engine.tick(0.0)
             after_step = Physics.get_rigidbody_states(bodies)["position"]
             np.testing.assert_allclose(
                 after_step,
@@ -136,12 +166,20 @@ def main() -> int:
             failure = traceback.format_exc()
         finally:
             try:
-                if manager.is_playing():
-                    manager.stop()
+                if runtime_scope is not None:
+                    runtime_scope.__exit__(None, None, None)
+                    runtime_scope = None
+                if play_mode is not None and not play_mode.is_edit_mode:
+                    assert play_mode.exit_play_mode()
+                    deadline = time.monotonic() + 30.0
+                    while not play_mode.is_edit_mode:
+                        assert time.monotonic() < deadline, play_mode.state
+                        engine.tick(0.0)
                 if scene is not None:
+                    engine._headless_scene_file_manager.unregister_loaded_scene(scene)
                     manager.unload_scene(scene)
                 inx.compute._release_engine_resources()
-                native.cleanup()
+                engine.exit()
             except BaseException:
                 if failure is None:
                     failure = traceback.format_exc()

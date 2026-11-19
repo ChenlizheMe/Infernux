@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from renderer_fixture import GameFrames
 
 from infernux import Engine
 from infernux.core.assets import AssetManager
@@ -90,9 +91,13 @@ def main():
                     return False
                 return True
 
+            game_frames = GameFrames(engine)
+
             def after_draw():
                 nonlocal frame, switched_frame, stage, ticket, completed
                 try:
+                    if not game_frames.advance():
+                        return
                     frame += 1
                     if stage == "baseline" and frame >= 8 and probe_geometry_published():
                         ticket = frontend.request_render_target_readback(True)

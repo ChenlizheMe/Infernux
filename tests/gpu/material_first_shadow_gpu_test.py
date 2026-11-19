@@ -56,23 +56,17 @@ def main() -> int:
                     frame += 1
                     if frame == 2:
                         initial_descriptors = engine.gpu_residency_snapshot["material_descriptor_set_count"]
-                        fragment = assets / "FirstShadow.frag"
-                        fragment.write_text('''#version 450
-ShaderInfo {
-    Name "First Shadow Surface"
-    ShadingModel Unlit
-    AlphaClip 0.5
-    Properties {
-        Color base_color = [1.0, 0.2, 0.1, 1.0]
-        Texture2D mainTexture = white
-    }
-}
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    vec4 texel = sampleAlbedoAlpha(mainTexture);
-    s.albedo = texel.rgb * material.base_color.rgb;
-    s.alpha = texel.a * material.base_color.a;
-}
+                        fragment = assets / "FirstShadow.frag.py"
+                        fragment.write_text('''import infernux.shader as shader
+class FirstShadow(shader.surface):
+    shader_id = "First Shadow Surface"
+    shading_model = shader.ref("infernux/shading/unlit")
+    alpha_clip = 0.5
+    base_color = shader.material.color(default=(1.0, 0.2, 0.1, 1.0))
+    mainTexture = shader.material.texture_2d(default="white")
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        texel = shader.sample(self.mainTexture, ctx.uv0)
+        return shader.SurfaceData(albedo=texel.rgb * self.base_color.rgb, alpha=texel.a * self.base_color.a)
 ''', encoding="utf-8")
                         imported = AssetManager.import_asset(str(fragment), database=frontend.get_asset_database())
                         assert imported, imported.error

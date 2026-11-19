@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
+from renderer_fixture import GameFrames
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.core.asset_ref import RenderEffectRef
@@ -86,12 +87,32 @@ def main():
             native.set_editor_idle_fps(0.)
             database = frontend.get_asset_database()
             sources = {
-                "Baseline": '#version 450\nShaderInfo { Name "Stage Baseline GPU" Hidden On Capabilities [Fullscreen] Inputs { Float2 inUV } Outputs { Float4 outColor } }\nvoid main() { outColor=vec4(.03,.04,.05,1); }\n',
-                "Effect": '#version 450\nShaderInfo { Name "Stage Context GPU" Hidden On Capabilities [Fullscreen] Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor } PushConstants pc { Float strength Float bytes Float depth Float samples } }\nvoid main() { outColor=vec4(texture(source_tex,inUV).rgb*pc.strength+vec3(pc.bytes,pc.depth,pc.samples),1); }\n',
+                'Baseline': '''import infernux.shader as shader
+
+class Probe(shader.fullscreen):
+    shader_id = 'Stage Baseline GPU'
+    hidden = True
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        return shader.vec4(0.03, 0.04, 0.05, 1.0)
+''',
+                'Effect': '''import infernux.shader as shader
+
+class Probe(shader.fullscreen):
+    shader_id = 'Stage Context GPU'
+    hidden = True
+    source_tex = shader.input("Source", shader.Color2D)
+    strength = shader.parameter.float(default=1.0)
+    bytes = shader.parameter.float(default=0.0)
+    depth = shader.parameter.float(default=0.0)
+    samples = shader.parameter.float(default=0.0)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        color = shader.sample(self.source_tex, uv)
+        return shader.vec4(color.rgb * self.strength + shader.vec3(self.bytes, self.depth, self.samples), 1.0)
+''',
             }
             shader_guid = None
             for name, text in sources.items():
-                path = project / "Assets" / (name + ".frag")
+                path = project / "Assets" / (name + ".frag.py")
                 path.write_text(text, encoding="utf-8")
                 result = AssetManager.import_asset(str(path), database=database)
                 assert result, result.error
@@ -116,9 +137,13 @@ def main():
             phase = frames = changed = 0
             ticket = None
 
+            game_frames = GameFrames(native)
+
             def after_draw():
                 nonlocal phase, frames, changed, ticket, completed
                 try:
+                    if not game_frames.advance():
+                        return
                     frames += 1
                     if ticket is None and frames >= changed + 8:
                         ticket = frontend.request_render_target_readback(True)

@@ -4,6 +4,7 @@ import tempfile
 import argparse
 
 import numpy as np
+from renderer_fixture import GameFrames
 from infernux import Engine
 from infernux.lib import PrimitiveType, SceneManager, Vector3
 from infernux.renderstack import DefaultForwardPipeline
@@ -47,9 +48,13 @@ def main(multiple_cameras=False):
             indices = np.array([0, 1, 2], dtype=np.uint32)
             initial_evictions = engine.mesh_gpu_eviction_count
 
+            game_frames = GameFrames(engine)
+
             def after_draw():
                 nonlocal frames, settled, baseline_frame, baseline_count, baseline_bytes
                 try:
+                    if multiple_cameras and not game_frames.advance():
+                        return
                     frames += 1
                     if baseline_frame is None:
                         frame = engine.renderer_frame_snapshot
