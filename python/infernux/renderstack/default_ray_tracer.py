@@ -46,6 +46,17 @@ def _linear_raw(graph, packet):
     return output
 
 
+def _hit_distance(graph, packet):
+    """Distance in world units along the fresh secondary ray, zero without a finite hit."""
+    output = graph.create_texture(f"{packet.name}/hit_distance", format=Format.R32_SFLOAT,
+                                  size_divisor=packet.size_divisor, samples=1)
+    with graph.add_pass(f"Decode {packet.name} hit distance") as p:
+        p.set_texture("signal", packet)
+        p.write_color(output)
+        p.fullscreen_quad("infernux/internal/ray_hit_distance")
+    return output
+
+
 def _linear_resolve(graph, packet, guides, specular):
     name = "specular_radiance" if specular else "diffuse_irradiance"
     output = graph.create_texture(f"{packet.name}/resolved", format=Format.RGBA32_SFLOAT, samples=1)
@@ -146,6 +157,11 @@ class DefaultRayTracer(RayTracer):
         raw = {name: self.trace(ctx, guides, specular=specular, divisor=divisor)
                for name, specular, divisor, _ in lobes}
         denoised = {name: reconstruct(ctx, raw[name], guides) for name, _, _, reconstruct in lobes}
+        for name, specular, _, _ in lobes:
+            sample = raw[name]
+            if isinstance(sample, _PackedSignal):
+                guide = "specular_hit_distance" if specular else "diffuse_hit_distance"
+                raw[guide] = partial(_hit_distance, ctx.graph, sample.packet)
         frame = ctx.publish(raw=raw, denoised=denoised)
         frame._packets = {name: signal.packet for name, signal in denoised.items() if isinstance(signal, _PackedSignal)}
         if frame._packets:

@@ -270,6 +270,8 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
         (specular, "ray_specular", "specular_radiance", "Ray Specular Radiance", "Ray Specular Reconstruction", 0),
     ):
         assert result.has(semantic) == reconstructed.has(semantic) == (label in passes) == enabled
+        guide = "specular_hit_distance" if name == "ray_specular" else "diffuse_hit_distance"
+        assert result.has(guide) == enabled
         if enabled:
             trace = passes[label]
             assert trace._input_bindings["primary"] == primary.name
@@ -277,6 +279,9 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
             packet = graph.get_texture(trace._write_colors[0])
             assert packet.format == Format.RGBA32_UINT and packet.size_divisor == divisor
             assert trace._parameters["resolution_divisor"] == (divisor or 1)
+            distance = result.sample(guide)
+            assert distance is result.sample(guide)
+            assert distance.format == Format.R32_SFLOAT and distance.size_divisor == divisor
             raw, resolved = result.sample(semantic), reconstructed.sample(semantic)
             assert raw.size_divisor == divisor and resolved.size_divisor == 0
             assert raw.format == resolved.format == Format.RGBA32_SFLOAT

@@ -120,6 +120,8 @@ class RayTracingContext:
         for name, value in (layers or {}).items():
             if isinstance(value, RayTracingSignal):
                 providers[name] = lambda signal=value: signal.radiance
+            elif callable(value):
+                providers[name] = value
             else:
                 textures[name] = value
 
@@ -167,7 +169,7 @@ class RayTracingContext:
             p.fullscreen_quad(f"infernux/internal/{shader}")
 
     def publish(
-        self, *, raw: Mapping[str, TextureHandle | RayTracingSignal] | None = None,
+        self, *, raw: Mapping[str, TextureHandle | RayTracingSignal | Callable[[], TextureHandle]] | None = None,
         denoised: Mapping[str, TextureHandle | RayTracingSignal] | None = None,
         scene_color: TextureHandle | None = None,
     ) -> RayTracingResult:
@@ -176,6 +178,8 @@ class RayTracingContext:
         diffuse_irradiance is incident irradiance before albedo and 1/pi.
         specular_radiance is outgoing reflected radiance including the material
         response. Denoised layers and scene_color use the full camera pixel grid.
+        Raw guides can be supplied as zero-argument texture providers. A consumer
+        materializes a guide once by sampling its name on the raw pass result.
         """
         if scene_color is None:
             for requested, name in ((self.diffuse, "diffuse_irradiance"), (self.specular, "specular_radiance")):
