@@ -329,6 +329,7 @@ float inx_ray_mis_weight(float own_pdf, float other_pdf)
 struct InxRayEmitterSample
 {
     RaySurfaceHit attributes;
+    uint2 endpoint;
     float3 direction;
     float3 emission;
     float pdf;
@@ -341,6 +342,7 @@ InxRayEmitterSample inx_ray_emitter_sample(RayPage page, float3 position, float3
     let selection = ray_sample_emissive(page, uniform);
     if (!selection.active)
         return sample;
+    sample.endpoint = uint2(selection.hit.instance_index, selection.hit.triangle_index);
     TraceRay ray = {position, 0.0, float3(0.0), maximum};
     sample.attributes = ray_surface_at_hit(page, ray, selection.hit);
     float3 delta = sample.attributes.position_ws - position;
@@ -361,17 +363,31 @@ InxRayEmitterSample inx_ray_emitter_sample(RayPage page, float3 position, float3
     return sample;
 }
 
+struct InxRayEndpointHitPolicy : RayHitPolicy
+{
+    uint2 endpoint;
+
+    bool accepts(RayPage page, TraceRay ray, RayHit candidate)
+    {
+        // Rounding can put the sampled triangle just inside the open segment.
+        // A straight segment ending on that triangle cannot cross it earlier.
+        if (all(uint2(candidate.instance_index, candidate.triangle_index) == endpoint))
+            return false;
+        InxRayLitHitPolicy material = {0.0};
+        return material.accepts(page, ray, candidate);
+    }
+};
+
 bool inx_ray_emitter_visible(RayPage page, float3 origin, InxRayEmitterSample sample)
 {
-    float3 normal = sample.attributes.front_face ? sample.attributes.geometric_normal_ws
-                                                : -sample.attributes.geometric_normal_ws;
-    float3 target = inx_ray_origin(sample.attributes.position_ws, normal, sample.attributes.position_error_ws);
-    float3 delta = target - origin;
-    float distance = length(delta);
-    if (!(distance > 0.0))
+    float3 segment = sample.attributes.position_ws - origin;
+    if (all(segment == float3(0.0)))
         return false;
-    TraceRay visibility = {origin, 0.0, delta / distance, asfloat(asuint(distance) - 1u)};
-    return inx_trace_lit_visibility(page, visibility, 0xffffffffu, 0.0);
+    // t is a fraction of the segment, so its open endpoint has the same
+    // representation at every length. Keep the ray aimed at the sampled point.
+    TraceRay visibility = {origin, 0.0, segment, asfloat(0x3f7fffffu)};
+    InxRayEndpointHitPolicy material = {sample.endpoint};
+    return trace_visibility(page, visibility, 0xffffffffu, material);
 }
 
 float3 inx_ray_emissive_direct(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
