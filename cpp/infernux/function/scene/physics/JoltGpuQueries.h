@@ -21,7 +21,8 @@ struct GpuParticleCollisionDevicePayload;
 enum class JoltGpuQueryReadback
 {
     Host,
-    Device
+    Device,
+    HostProjected // Host motion fields use compact physical blocks; other families retain Host layout.
 };
 enum class JoltGpuQueryExportField : uint32_t
 {
@@ -105,6 +106,7 @@ struct JoltGpuQueryResult
     std::vector<JPH::GPU::QueryShapeState> hostShapes;
     std::vector<JPH::GPU::QueryMotionState> hostMotion;
     std::vector<JPH::GPU::QuerySpan> hostSpans;
+    std::vector<uint32_t> projectedMotionBlocks;
 };
 
 struct JoltGpuPreparedQuery

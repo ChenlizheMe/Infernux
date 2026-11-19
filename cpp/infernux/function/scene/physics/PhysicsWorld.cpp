@@ -3645,7 +3645,7 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
                 {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex, generation}};
             batch.sourceForBody.assign(bodies.size(), 0u);
             const auto readback =
-                (exports.empty() && !deferExport) ? JoltGpuQueryReadback::Host : JoltGpuQueryReadback::Device;
+                (exports.empty() && !deferExport) ? JoltGpuQueryReadback::HostProjected : JoltGpuQueryReadback::Device;
             JoltGpuPreparedQuery first, second;
             if (!motionInputs.empty()) {
                 first = m_gpuQueries->Prepare(publication, motionInputs, {}, generation, readback);
@@ -3689,7 +3689,6 @@ void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbody
 {
     FrameWorkOwner::Scope materialize(*m_gpuWork);
     if (motion) {
-        (void)motion->ReadSpans();
         if (numerical) {
             const auto &records = motion->ReadMotion();
             if (records.size() != batch.bodies.size())
@@ -3702,6 +3701,8 @@ void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbody
                 domain.requestedMotion[batch.states[index].bodyId] = {motion->numericalGeneration, batch.states[index],
                                                                       cachedFields};
             }
+        } else {
+            (void)motion->ReadSpans();
         }
     }
     if (shapes) {
@@ -3845,7 +3846,7 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
             }
             if (error)
                 std::rethrow_exception(error);
-            MaterializeStateBatch(domain, group.batch, group.motion, group.shapes, exports.empty());
+            MaterializeStateBatch(domain, group.batch, group.motion, group.shapes, exports.empty(), fields);
             const auto &p = *group.publication;
             const uint64_t generation = group.motion   ? group.motion->numericalGeneration
                                         : group.shapes ? group.shapes->numericalGeneration
