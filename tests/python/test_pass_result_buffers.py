@@ -315,12 +315,11 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
                 assert fresh._input_bindings["signal"] == packet.name
                 assert reconstruction._input_bindings["signal"] == fresh._write_colors[0]
                 assert (previous.name, filtered) == ("ray/diffuse/read", "ray/diffuse/write")
-                if divisor != 4:
-                    wider, widest = (passes[f"Ray Diffuse Spatial {stride}"] for stride in (2, 4))
-                    assert wider._input_bindings["signal"] == filtered
-                    assert widest._input_bindings["signal"] == wider._write_colors[0]
-                    filtered = widest._write_colors[0]
-                    assert filtered == fresh._write_colors[0] != wider._write_colors[0]
+                wider, widest = (passes[f"Ray Diffuse Spatial {stride}"] for stride in (2, 4))
+                assert wider._input_bindings["signal"] == filtered
+                assert widest._input_bindings["signal"] == wider._write_colors[0]
+                filtered = widest._write_colors[0]
+                assert filtered == fresh._write_colors[0] != wider._write_colors[0]
             assert lighting._input_bindings[name] == filtered
     graph.build()
 

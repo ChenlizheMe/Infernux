@@ -172,7 +172,7 @@ class DefaultRayTracer(RayTracer):
                 p.set_param("specular", specular)
                 p.fullscreen_quad("infernux/internal/ray_reconstruct")
             packet = output
-            if not specular and divisor != 4:
+            if not specular:
                 intermediate = graph.create_texture(f"{ctx.name}/{name}/intermediate", format=Format.RGBA32_UINT,
                                                     size_divisor=divisor, samples=1)
                 _filter_diffuse(ctx, guides, packet, intermediate, 2)
