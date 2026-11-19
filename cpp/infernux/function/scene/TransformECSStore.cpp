@@ -503,6 +503,8 @@ void TransformECSStore::ScatterLocalScales(Transform *const *transforms, const f
         auto h = transforms[i]->GetECSHandle();
         uint32_t idx = h.index;
         m_localScales[idx] = glm::vec3(in[i * 3], in[i * 3 + 1], in[i * 3 + 2]);
+        if (m_frameCacheActive)
+            MarkFrameCacheDirty(idx, 0x48);
         m_dirty[idx] = 1;
         MarkWorldMatrixDirty(idx);
     }

@@ -553,20 +553,17 @@ glm::vec3 Transform::GetWorldScale() const
 
 void Transform::SetWorldScale(const glm::vec3 &worldScale)
 {
-    auto &store = TransformECSStore::Instance();
     Transform *parentTransform = GetParentTransformSafe();
     if (!parentTransform) {
-        store.SetLocalScale(m_ecsHandle, worldScale);
+        SetLocalScale(worldScale);
     } else {
         glm::vec3 parentScale = parentTransform->GetWorldScale();
         glm::vec3 local;
         local.x = (std::abs(parentScale.x) > 1e-6f) ? worldScale.x / parentScale.x : worldScale.x;
         local.y = (std::abs(parentScale.y) > 1e-6f) ? worldScale.y / parentScale.y : worldScale.y;
         local.z = (std::abs(parentScale.z) > 1e-6f) ? worldScale.z / parentScale.z : worldScale.z;
-        store.SetLocalScale(m_ecsHandle, local);
+        SetLocalScale(local);
     }
-    store.SetDirty(m_ecsHandle, true);
-    InvalidateWorldMatrix(false);
 }
 
 // ============================================================================
