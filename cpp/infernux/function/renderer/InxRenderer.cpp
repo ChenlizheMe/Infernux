@@ -3412,13 +3412,17 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
     snapshot.sceneViewVisible = m_sceneViewVisible;
     snapshot.gameCameraEnabled = m_gameCameraEnabled;
     const auto &gameCameras = FindGameCamerasCached();
+    const auto findGameGraph = [this](uint64_t cameraId) -> const SceneRenderGraph * {
+        const auto found = m_gameRenderGraphs.find(cameraId);
+        return found == m_gameRenderGraphs.end() ? nullptr : found->second.get();
+    };
     snapshot.gameCameraAvailable = !gameCameras.empty();
     snapshot.gameCameraCount = gameCameras.size();
     snapshot.gameCameraIds.reserve(gameCameras.size());
     snapshot.gameRenderViewIds.reserve(gameCameras.size());
     for (const auto *camera : gameCameras) {
         snapshot.gameCameraIds.push_back(camera->cameraId);
-        if (SceneRenderGraph *graph = EnsureGameRenderGraph(camera))
+        if (const auto *graph = findGameGraph(camera->cameraId))
             snapshot.gameRenderViewIds.push_back(graph->GetRenderViewContext().id);
     }
     snapshot.sceneTargetReady = m_sceneRenderTarget && m_sceneRenderTarget->IsReady();
@@ -3475,7 +3479,7 @@ RendererFrameTelemetrySnapshot InxRenderer::GetFrameTelemetrySnapshot()
         snapshot.gameShadowViewCount = 0;
         snapshot.gameShadowAssignmentCount = 0;
         for (const auto *camera : gameCameras) {
-            SceneRenderGraph *graph = EnsureGameRenderGraph(camera);
+            const auto *graph = findGameGraph(camera->cameraId);
             if (!graph)
                 continue;
             snapshot.gameTemporalHistoryCount += graph->GetTemporalHistoryCount();

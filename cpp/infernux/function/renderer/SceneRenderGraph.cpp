@@ -3579,7 +3579,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
     if (currentViewFrame.EditorOverlaySet() != VK_NULL_HANDLE)
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.EditorOverlaySet());
     currentViewFrame.shadowBinding = {};
-    currentViewFrame.shadowBinding.usesDefaultTexture = true;
 
     // Graph topology and material pipeline compatibility are independent.
     // Effect-stack edits commonly rebuild transient graph resources while the
