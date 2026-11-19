@@ -382,6 +382,7 @@ class JoltGpuTick::Impl
     using UnitCostKey = std::tuple<JPH::GPU::Stage, uint32_t, uint32_t>;
     using NumericalCostKey = std::vector<UnitCostKey>;
     using CostKey = std::tuple<std::vector<uint64_t>, uint64_t, NumericalCostKey>;
+    using CostView = std::tuple<const std::vector<uint64_t> &, uint64_t, const NumericalCostKey &>;
     struct Receipt
     {
         rhi::ComputeCompletion completion;
@@ -438,18 +439,17 @@ class JoltGpuTick::Impl
         return key;
     }
 
-    static CostKey Key(const rhi::PreparedComputeBatch &batch, const NumericalCostKey &numerical = {})
+    static CostView Key(const rhi::PreparedComputeBatch &batch, const NumericalCostKey &numerical)
     {
         // Keep the physical loop counts separate from the RHI signature. In a
         // island solver dispatch, local item count does not appear in its group counts.
         return {batch.GetExecutionSignature(), batch.GetTransferBytes(), numerical};
     }
 
-    CostKey SubmissionKey(const rhi::PreparedComputeBatch &packet) const
+    CostView SubmissionKey(const rhi::PreparedComputeBatch &packet) const
     {
-        if (!preservation && batchKind == PacketKind::Stages)
-            return Key(packet, batchNumericalKey);
-        return Key(packet);
+        static const NumericalCostKey empty;
+        return Key(packet, !preservation && batchKind == PacketKind::Stages ? batchNumericalKey : empty);
     }
 
     static void ObserveUnitCost(UnitHistory &history, size_t count, uint64_t nanoseconds)
@@ -469,7 +469,7 @@ class JoltGpuTick::Impl
         return cost;
     }
 
-    uint64_t Prediction(const CostKey &key) const
+    uint64_t Prediction(const CostView &key) const
     {
         const auto found = costs.find(key);
         return found == costs.end() ? 0 : *std::max_element(found->second.begin(), found->second.end());
@@ -2297,7 +2297,8 @@ class JoltGpuTick::Impl
         if (!CanSubmit())
             return false;
         const auto packet = preservation ? preservation : batch;
-        auto key = SubmissionKey(*packet);
+        // Readiness only borrows the signature. Own it before submission so the receipt survives the packet.
+        CostKey key = SubmissionKey(*packet);
         const auto prediction = Prediction(key);
         const auto started = NowNanoseconds();
         try {
@@ -2408,7 +2409,7 @@ class JoltGpuTick::Impl
     uint64_t busyOpportunity = 0, busyProgress = 0, busySubmissions = 0;
     uint64_t earlyFeedbackOpportunity = 0;
     std::deque<Receipt> receipts;
-    std::map<CostKey, std::deque<uint64_t>> costs;
+    std::map<CostKey, std::deque<uint64_t>, std::less<>> costs;
     size_t lastCommandCount = 0;
     uint64_t lastCommandEstimate = 0;
 
@@ -2568,8 +2569,8 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     auto packet = a->programs.PrepareBodyBatch(a->storage, {{&a->inputs, unitA}, {&b->inputs, unitB}}, bodyBatchInputs);
     if (!packet)
         return false; // Managed defer accepts/cancels neither member's existing singleton.
-    stage->key = Impl::Key(*packet, Impl::NumericalKey({unitA, unitB}));
     auto numericalKey = Impl::NumericalKey({unitA, unitB});
+    stage->key = Impl::Key(*packet, numericalKey);
     // Any old packets are exact, unaccepted singletons at these same
     // accepted cursors. Finish all fallible preparation before replacing them;
     // their accepted receipts and the numerical cursors remain untouched.
