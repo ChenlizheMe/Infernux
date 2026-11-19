@@ -8,18 +8,23 @@ import numpy as np
 import infernux as inx
 from infernux.core.asset_ref import RenderEffectRef
 from infernux.core.assets import AssetManager
+from renderer_fixture import GameFrames
 from infernux.lib import ConsolePanel, InxMaterial, RenderPipelineCallback, SceneManager, Vector3
 from infernux.renderstack import DefaultDeferredPipeline, DefaultForwardPipeline, DefaultForwardPlusPipeline
 from infernux.renderstack.render_effect import RenderEffect
 from infernux.renderstack.render_effect_asset import EffectAssetReference, RenderEffectAsset
 
 
-SCALE_SHADER = '''#version 450
-ShaderInfo {
- Name "HDR Parity Scale" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D source_tex } Inputs { Float2 inUV } Outputs { Float4 outColor }
-}
-void main() { vec4 c = texture(source_tex, inUV); outColor = vec4(c.rgb * 0.125, c.a); }
+SCALE_SHADER = '''import infernux.shader as shader
+
+class HdrParityScale(shader.fullscreen):
+    shader_id = "tests/hdr_parity/scale"
+    hidden = True
+    source_tex = shader.input("color", shader.Color2D)
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        color = shader.sample(self.source_tex, ctx.uv)
+        return shader.vec4(color.rgb * 0.125, color.a)
 '''
 
 
@@ -31,7 +36,7 @@ class ScaleEffect(inx.renderstack.FullScreenEffect):
 
     def setup_passes(self, graph, bus):
         self.apply_single_source_effect(graph, bus, output_name='scaled', pass_name='Scale',
-            shader_name='HDR Parity Scale', format=inx.rendergraph.Format.RGBA16_SFLOAT)
+            shader_name='tests/hdr_parity/scale', format=inx.rendergraph.Format.RGBA16_SFLOAT)
 
 
 class StackHost(RenderPipelineCallback):
@@ -56,7 +61,7 @@ def main():
         project = Path(folder)
         for name in ('Assets', 'Packages', 'ProjectSettings'):
             (project / name).mkdir()
-        shader = project / 'Assets/Scale.frag'
+        shader = project / 'Assets/Scale.frag.py'
         shader.write_text(SCALE_SHADER, encoding='utf-8')
         mesh = project / 'Assets/Quad.obj'
         mesh.write_text('v -1 -1 0\nv 1 -1 0\nv 1 1 0\nv -1 1 0\nvn 0 0 -1\nf 1//1 3//1 2//1\nf 1//1 4//1 3//1\n', encoding='ascii')
@@ -93,6 +98,7 @@ def main():
             renderer.set_material(0, material)
             plan = phase = frame = changed = 0
             ticket = baseline = None
+            game_frames = GameFrames(native)
 
             def switch_pipeline():
                 base, samples = plans[plan]
@@ -110,6 +116,8 @@ def main():
             def after_draw():
                 nonlocal plan, phase, frame, changed, ticket, baseline, complete
                 try:
+                    if not game_frames.advance():
+                        return
                     frame += 1
                     if ticket is None and frame >= changed + 10:
                         ticket = frontend.request_render_target_readback(True)

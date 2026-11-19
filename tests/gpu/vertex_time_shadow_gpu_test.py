@@ -1,4 +1,4 @@
-"""Legacy time-driven hooks: static shadow control versus animated mask."""
+"""Typed time-driven hooks: static shadow control versus animated mask."""
 import argparse
 import json
 from pathlib import Path
@@ -7,6 +7,7 @@ import time
 import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
+from renderer_fixture import GameFrames
 from infernux.lib import ConsolePanel,InxMaterial,LightShadows,SceneManager,Vector3
 
 
@@ -14,66 +15,64 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--proof',type=Path)
     args=parser.parse_args()
-    wave = '''#version 450
+    wave = '''import infernux.shader as shader
 
-ShaderInfo {
-    Name "Wave"
-}
+class Wave(shader.vert):
+    shader_id = "tests/time/wave"
 
-void vertex(inout VertexInput v) {
-    float phase = v.position.x * 4.0 + _Globals._Time.x * 2.0;
-    v.position.y += sin(phase) * 0.1;
-}
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        phase = vertex.position_os.x * 4.0 + ctx.time * 2.0
+        vertex.position_os.y += shader.sin(phase) * 0.1
+        return vertex
 '''
-    wind = '''#version 450
+    wind = '''import infernux.shader as shader
 
-ShaderInfo {
-    Name "Wind Bent"
-    Outputs {
-        Smooth Float2 detailUV Semantic(TexCoord7)
-        Smooth Float windMask
-    }
-}
+class Wind(shader.vert):
+    shader_id = "tests/time/wind"
 
-VertexOutput vertex(inout VertexInput v) {
-    VertexOutput result;
-    float phase = v.position.x * 4.0 + _Globals._Time.x * 2.0;
-    float bend = sin(phase) * 0.1;
-    v.position.y += bend;
-    result.detailUV = v.texCoord * 2.0;
-    result.windMask = clamp(abs(bend) * 10.0, 0.0, 1.0);
-    return result;
-}
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        phase = vertex.position_os.x * 4.0 + ctx.time * 2.0
+        bend = shader.sin(phase) * 0.1
+        vertex.position_os.y += bend
+        vertex.uv1 = vertex.uv0 * 2.0
+        vertex.color = shader.vec3(shader.clamp(shader.abs(bend) * 10.0, 0.0, 1.0))
+        return vertex
 '''
-    wind_fragment = '''#version 450
+    wind_fragment = '''import infernux.shader as shader
 
-ShaderInfo {
-    Name "Wind Surface"
-    ShadingModel Unlit
-    Inputs {
-        Smooth Float2 detailUV Semantic(TexCoord7)
-        Smooth Float windMask
-    }
-}
+class WindSurface(shader.surface):
+    shader_id = "tests/time/wind_surface"
+    shading_model = shader.ref("infernux/shading/unlit")
 
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    s.albedo = vec3(fragmentInput.detailUV, fragmentInput.windMask);
-}
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(ctx.uv1, ctx.color.x))
 '''
-    control=wind.replace('Name "Wind Bent"','Name "Wind Static Control"').replace('float bend = sin(phase) * 0.1;', 'float bend = 0.0;')
+    control=wind.replace('"tests/time/wind"', '"tests/time/control"').replace('bend = shader.sin(phase) * 0.1', 'bend = 0.0')
     assert control!=wind
-    sources={'Wave.vert':wave,'Wind.vert':wind,'Control.vert':control,'Wind.frag':wind_fragment,
-        'Red.frag':'''#version 450
-ShaderInfo { Name "Wave Shadow Red" ShadingModel Unlit Cull Off }
-void surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(1,0,0); }
-''', 'Receiver.frag':'''#version 450
-ShaderInfo { Name "Wave Shadow Receiver" ShadingModel PBR Cull Off }
-void surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(.5); s.smoothness=0.; }
+    sources={'Wave.vert.py':wave, 'Wind.vert.py':wind, 'Control.vert.py':control,
+             'Wind.frag.py':wind_fragment, 'Red.frag.py':'''import infernux.shader as shader
+
+class WaveRed(shader.surface):
+    shader_id = "tests/time/red"
+    shading_model = shader.ref("infernux/shading/unlit")
+    cull_mode = "none"
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(1, 0, 0))
+''',
+             'Receiver.frag.py':'''import infernux.shader as shader
+
+class TimeShadowReceiver(shader.surface):
+    shader_id = "tests/time/receiver"
+    cull_mode = "none"
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(0.5), smoothness=0.0)
 '''}
     plans=[inx.renderstack.DefaultForwardPipeline,inx.renderstack.DefaultForwardPlusPipeline,inx.renderstack.DefaultDeferredPipeline]
-    stages=[('wave','Standard','Wave','Wave Shadow Red'),('wind','Wind Static Control','Wind Bent','Wind Surface')]
-    proof={'package':inx.__file__,'scope':'Legacy Wave and Wind fixtures. Fixed camera/light/model/CPU bounds. Four static shadow masks must be identical before four animated masks change, outside a conservative caster screen region. Forward, Forward+ and Deferred. Independent temporary project GPU readbacks; no live Editor pixels.','cases':[]}
+    stages=[('wave','infernux/standard','tests/time/wave','tests/time/red'),
+            ('wind','tests/time/control','tests/time/wind','tests/time/wind_surface')]
+    proof={'package':inx.__file__,'scope':'Typed Wave and Wind fixtures. Fixed camera/light/model/CPU bounds. Four static shadow masks must be identical before four animated masks change, outside a conservative caster screen region. Forward, Forward+ and Deferred. Independent temporary project GPU readbacks; no live Editor pixels.','cases':[]}
     with tempfile.TemporaryDirectory(prefix='infernux-exact-shadow-') as folder:
         project=Path(folder)
         for name in ('Assets','Packages','ProjectSettings'):
@@ -116,7 +115,7 @@ void surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(.5); s.smoo
             receiver=receiver_obj.add_component('MeshRenderer')
             receiver.set_mesh_asset_guid(mesh.guid)
             receiver_mat=InxMaterial.create_default_lit()
-            receiver_mat.frag_shader_name='Wave Shadow Receiver'
+            receiver_mat.frag_shader_name='tests/time/receiver'
             receiver.set_material(0,receiver_mat)
             caster_obj=scene.create_game_object('Caster')
             caster_obj.transform.position=Vector3(-.5,0,-1.5)
@@ -127,6 +126,7 @@ void surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(.5); s.smoo
             expected_bounds=caster.get_world_bounds()
             plan=stage=phase=frame=requested=0
             ticket=baseline=None
+            game_frames=GameFrames(native, timeout=45.0)
             started=time.perf_counter()
             last_sample_time=float(native.get_shader_time_seconds())
             masks=[]
@@ -156,6 +156,7 @@ void surface(out SurfaceData s) { s=InitSurfaceData(); s.albedo=vec3(.5); s.smoo
             def after_draw():
                 nonlocal plan,stage,phase,frame,requested,ticket,baseline,complete,last_sample_time
                 try:
+                    if not game_frames.advance():return
                     frame+=1
                     if ticket is None and frame>=requested+12 and native.get_shader_time_seconds()>=last_sample_time+.3:
                         ticket=frontend.request_render_target_readback(True)

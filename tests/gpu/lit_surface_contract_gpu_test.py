@@ -4,20 +4,28 @@ import numpy as np
 from PIL import Image
 import infernux as inx
 from infernux.core.assets import AssetManager
+from renderer_fixture import GameFrames
 from infernux.core.asset_types import TextureImportSettings,TextureType,TextureCompression,read_mesh_import_settings
 from infernux.lib import ConsolePanel, InxMaterial, SceneManager, Vector3
 SOURCE=(Path(inx.__file__).parent/'resources/shaders/lit.frag.py').read_text(encoding='utf-8').replace('class Lit(', 'class LitContract(').replace('"infernux/lit"', '"tests/lit_contract"')
-CHECK='''#version 450
-ShaderInfo { Name "Tutorial Lit Contract Consumer" Hidden On Capabilities [Fullscreen]
- Resources { Texture2D colorTex Texture2D normalTex Texture2D baseTex }
- Inputs { Float2 inUV } Outputs { Float4 outColor } }
-void main() {
- ivec2 p=ivec2(gl_FragCoord.xy);
- vec4 color=texelFetch(colorTex,p,0), normal=texelFetch(normalTex,p,0), base=texelFetch(baseTex,p,0);
- bool a=color.a>0.9,b=normal.a>0.9,c=base.a>0.9;
- if(a!=b || a!=c || (a && any(greaterThan(abs(base.rgb-vec3(1)),vec3(0.002))))) outColor=vec4(1,0,1,1);
- else outColor=a ? vec4(normal.rgb,1) : vec4(0,0,0,0);
-}
+CHECK='''import infernux.shader as shader
+
+class LitContractConsumer(shader.fullscreen):
+    shader_id = "tests/lit_contract/consumer"
+    hidden = True
+    color_tex = shader.input("color_data", shader.Color2D)
+    normal_tex = shader.input("normal", shader.Color2D)
+    base_tex = shader.input("base", shader.Color2D)
+
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        pixel = shader.ivec2(ctx.position.xy)
+        color = shader.load(self.color_tex, pixel, 0)
+        normal = shader.load(self.normal_tex, pixel, 0)
+        base = shader.load(self.base_tex, pixel, 0)
+        covered = color.a > 0.9
+        if covered != (normal.a > 0.9) or covered != (base.a > 0.9) or (covered and shader.any(shader.abs(base.rgb - shader.vec3(1)) > shader.vec3(0.002))):
+            return shader.vec4(1, 0, 1, 1)
+        return shader.vec4(normal.rgb, 1) if covered else shader.vec4(0)
 '''
 class ContractPipeline(inx.renderstack.RenderPipeline):
     name='Exact Lit Surface Contract'
@@ -34,8 +42,8 @@ class ContractPipeline(inx.renderstack.RenderPipeline):
             g.add_pass(name).read(depth).write_color(texture).set_clear(color=(0,0,0,0)).draw_renderers(queue_range=(0,2500),material_pass=material_pass)
         target=g.create_texture('color',camera_target=True)
         p=g.add_pass('CompareLitContract').write_color(target)
-        for key,texture in [('colorTex',color),('normalTex',normal),('baseTex',base)]:p.set_texture(key,texture)
-        p.fullscreen_quad('Tutorial Lit Contract Consumer')
+        for key,texture in [('color_tex',color),('normal_tex',normal),('base_tex',base)]:p.set_texture(key,texture)
+        p.fullscreen_quad('tests/lit_contract/consumer')
         g.screen_ui_overlay_section(resources={'color'})
         g.set_output(target)
 
@@ -50,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix='infernux-exact-lit-surface-') as folder
     Image.new('RGBA',(8,8),(128,218,218,255)).save(normal_path)
     fragment=project/'Assets/lit_contract.frag.py'
     fragment.write_text(SOURCE,encoding='utf-8')
-    consumer=project/'Assets/Check.frag'
+    consumer=project/'Assets/Check.frag.py'
     consumer.write_text(CHECK,encoding='ascii')
     frontend=inx.Engine();native=frontend.get_native_engine();console=ConsolePanel();pipeline=ContractPipeline();pipeline.builds=0
     proof={'scope':'Builtin typed Lit surface: flat and non-unit world normal, tangent normal map, mirrored UV handedness, rotated world TBN and exact restore. Measured normal buffers compared with analytical world normals.','phases':[]}
@@ -73,12 +81,14 @@ with tempfile.TemporaryDirectory(prefix='infernux-exact-lit-surface-') as folder
         for obj in scene.get_root_objects():scene.destroy_game_object(obj)
         camera=scene.create_game_object('Lit Contract Camera');camera.transform.position=Vector3(0,0,-5);camera.add_component('Camera')
         obj=scene.create_game_object('Lit Contract Quad');renderer=obj.add_component('MeshRenderer');renderer.set_mesh_asset_guid(mesh_guid)
-        material=InxMaterial.create_default_lit();material.vert_shader_name='Standard';material.frag_shader_name='tests/lit_contract';renderer.set_material(0,material)
+        material=InxMaterial.create_default_lit();material.vert_shader_name='infernux/standard';material.frag_shader_name='tests/lit_contract';renderer.set_material(0,material)
         frontend.set_render_pipeline(pipeline);native.set_game_camera_enabled(True)
         frame=0;changed=0;phase=0;ticket=None;initial=None
+        game_frames=GameFrames(native)
         def after_draw():
             global frame,changed,phase,ticket,initial,complete
             try:
+                if not game_frames.advance():return
                 frame+=1
                 if ticket is None and frame>=changed+8:ticket=frontend.request_render_target_readback(True)
                 elif ticket is not None and ticket.done:
@@ -107,8 +117,9 @@ with tempfile.TemporaryDirectory(prefix='infernux-exact-lit-surface-') as folder
                     proof['phases'].append(record);print(record,flush=True)
                     if phase==5:complete=True;proof['passed']=True;native.exit();return
                     phase+=1
-                    body=SOURCE.replace('normal_ws=sample_normal(self.normal_map, normal_uv, self.normal_uv_set, self.normal_scale, ctx),',
+                    body=SOURCE.replace('normal_ws=normal_ws,',
                                         'normal_ws=shader.vec3(0.0, 0.0, -4.0),') if phase==1 else SOURCE
+                    if phase==1:assert body!=SOURCE, 'Nonunit normal fixture did not alter the authored source'
                     fragment.write_text(body,encoding='utf-8')
                     assert inx.Shader.reload(str(fragment))
                     if phase==2:
