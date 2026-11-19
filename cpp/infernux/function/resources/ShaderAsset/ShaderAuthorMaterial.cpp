@@ -158,7 +158,7 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
         if (source.at("thin_sheet").get<bool>())
             addVariant(ShaderCompileTarget::ThinSurface, "vertex_motion", "fragment_thin_surface");
         if (source.at("info").at("cast_shadows").get<bool>())
-            addVariant(ShaderCompileTarget::Shadow, "vertex_shadow", "fragment_depth");
+            addVariant(ShaderCompileTarget::Shadow, "vertex_shadow", "fragment_shadow");
         if (!source.at("deferred_model").is_null()) {
             addVariant(ShaderCompileTarget::GBuffer, "vertex_main", "fragment_gbuffer");
             addVariant(ShaderCompileTarget::RaySurface, "vertex_motion", "fragment_ray_surface");

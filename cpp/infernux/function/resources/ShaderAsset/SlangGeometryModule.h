@@ -209,7 +209,7 @@ public struct InxCameraData
 public struct InxShadowParameters
 {
     public float4 light_vector;
-    public float4 bias;
+    public float4 atlas_viewport;
 };
 public struct InxModelMatrix { public column_major float4x4 value; };
 public struct InxInstanceData

@@ -1835,10 +1835,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         view.model = view.view = glm::mat4(1.0f);
         view.proj = view.previousViewProj = shadowView.viewProjection;
         view.inverseViewProj = glm::inverse(shadowView.viewProjection);
-        ShadowPassParameters parameters;
-        parameters.lightVector = glm::vec4(shadowView.lightVector, shadowView.lightVectorIsPosition ? 1.0f : 0.0f);
-        parameters.bias = glm::vec4(shadowView.depthBiasTexels, shadowView.normalBiasTexels,
-                                    shadowView.worldUnitsPerTexel, shadowView.farPlane);
+        const auto parameters = shadowView.PassParameters();
         auto *mapped = static_cast<char *>(cameraResources.mappedPointers[bufferIndex]);
         std::memcpy(mapped, &view, sizeof(view));
         std::memcpy(mapped + m_shadowUniformParametersOffset, &parameters, sizeof(parameters));

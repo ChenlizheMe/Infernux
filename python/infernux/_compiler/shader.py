@@ -419,6 +419,9 @@ InxMeshInput vertex_shadow(InxVertexInput input, uint instance : SV_VulkanInstan
         result.position.z = min(result.position.z, result.position.w);
     result.view_depth = 0.0;
     inx_clip_device_bounds(result, instance, inx_shadow_parameters.light_vector.w < 0.5);
+    float4 p = result.position;
+    float4 viewport = inx_shadow_parameters.atlas_viewport;
+    result.motion_current_clip = float4(float2(p.x, -p.y) * viewport.xy + p.w * viewport.zw, p.zw);
     return result;
 }
 [shader("vertex")]
@@ -453,6 +456,17 @@ float4 fragment_forward_plus(InxMeshInput input, bool front_facing : SV_IsFrontF
 void fragment_depth(InxMeshInput input, bool front_facing : SV_IsFrontFace)
 {
     inx_evaluate_surface(input, front_facing);
+}
+[shader("fragment")]
+float fragment_shadow(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Depth
+{
+    // Evaluate the projected caster plane at the atlas texel center, even on grazing triangles.
+    float3 projected = input.motion_current_clip.xyz / input.motion_current_clip.w;
+    float3 plane = cross(ddx(projected), ddy(projected));
+    float depth = plane.z != 0.0
+        ? projected.z - dot(plane.xy, input.position.xy - projected.xy) / plane.z : input.position.z;
+    inx_evaluate_surface(input, front_facing);
+    return saturate(depth);
 }
 [shader("fragment")]
 uint2 fragment_picking(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0

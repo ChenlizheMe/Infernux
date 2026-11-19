@@ -25,7 +25,7 @@ constexpr uint32_t DirectionalCascadeCount = 4;
 struct alignas(16) ShadowPassParameters
 {
     glm::vec4 lightVector{};
-    glm::vec4 bias{};
+    glm::vec4 atlasViewport{};
 };
 static_assert(sizeof(ShadowPassParameters) == 32);
 
@@ -195,6 +195,14 @@ struct ShadowView
     glm::vec3 viewRight{1.0f, 0.0f, 0.0f};
     glm::vec3 viewUp{0.0f, 1.0f, 0.0f};
     uint32_t cullingMask = 0xffffffffu;
+
+    [[nodiscard]] ShadowPassParameters PassParameters() const noexcept
+    {
+        const float halfExtent = 0.5f * static_cast<float>(atlas.InnerSize());
+        return {glm::vec4(lightVector, lightVectorIsPosition ? 1.0f : 0.0f),
+                {halfExtent, halfExtent, static_cast<float>(atlas.x + atlas.guard) + halfExtent,
+                 static_cast<float>(atlas.y + atlas.guard) + halfExtent}};
+    }
 };
 
 struct ShadowLightAssignment
