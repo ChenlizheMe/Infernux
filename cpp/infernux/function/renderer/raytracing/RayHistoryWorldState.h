@@ -61,8 +61,8 @@ class RayHistoryWorldState
 
 template <class Histories> void InvalidateRayHistories(Histories &histories)
 {
-    for (auto &[name, history] : histories)
-        if (name.rfind("_ray_", 0) == 0)
+    for (auto &[key, history] : histories)
+        if (history.dependsOnRayWorld)
             history.Invalidate();
 }
 } // namespace infernux::raytracing

@@ -55,8 +55,11 @@ class RayTracingView:
         return self._ctx.graph.create_view_light_list(f"{self._ctx.name}/lights")
 
     def history(self, name: str, *, format: Format, size_divisor: int = 0):
-        """A read/write pair private to this tracer and the executing camera."""
-        return self._ctx.graph.create_temporal_history(f"{self._ctx.name}/{name}", format=format, size_divisor=size_divisor)
+        """A per-camera history of this tracer's world, cleared when its lighting inputs change."""
+        read, write = self._ctx.graph.create_temporal_history(
+            f"{self._ctx.name}/{name}", format=format, size_divisor=size_divisor)
+        read._depends_on_ray_world = write._depends_on_ray_world = True
+        return read, write
 
 
 class RayTracingSignal:

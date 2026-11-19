@@ -457,7 +457,8 @@ bool GraphTextureDesc::operator==(const GraphTextureDesc &other) const
            sizeDivisor == other.sizeDivisor && samples == other.samples && role == other.role &&
            temporalKey == other.temporalKey && renderTexture == other.renderTexture && attachment == other.attachment &&
            requireCurrentWrite == other.requireCurrentWrite && assetGuid == other.assetGuid && depth == other.depth &&
-           isVolume == other.isVolume && renderTextureLayout == other.renderTextureLayout;
+           isVolume == other.isVolume && dependsOnRayWorld == other.dependsOnRayWorld &&
+           renderTextureLayout == other.renderTextureLayout;
 }
 
 rhi::PixelFormat GraphTextureDesc::EffectiveFormat(const rhi::RenderViewContext &view) const noexcept

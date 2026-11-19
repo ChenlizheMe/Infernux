@@ -289,6 +289,7 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
             assert passes[resolve]._input_bindings["signal"] == trace._write_colors[0]
             previous = graph.get_texture(passes[resolve]._input_bindings["previous_signal"])
             assert previous.size_divisor == divisor
+            assert previous._depends_on_ray_world
             if name == "ray_diffuse":
                 filtered = passes[resolve]._write_colors[0]
                 assert (previous.name, filtered) == ("ray/diffuse/read", "ray/diffuse/write")
@@ -370,6 +371,7 @@ def test_custom_geometry_reuses_registered_surfaces_for_both_lobes(own_guides):
     normal = graph.create_texture("project/normals", format=Format.RGBA16_SFLOAT)
     if own_guides:
         previous, current = ctx.view.history("primary", format=Format.RGBA32_UINT)
+        assert previous._depends_on_ray_world and current._depends_on_ray_world
         inputs.update(ray_previous_primary_surface=previous, ray_primary_surface=current,
                       ray_surface_motion=graph.create_texture("project/motion", format=Format.RGBA32_UINT))
 

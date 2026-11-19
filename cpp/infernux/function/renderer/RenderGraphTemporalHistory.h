@@ -20,6 +20,7 @@ struct GraphTemporalHistory
     uint64_t residentBytes = 0;
     uint32_t readIndex = 0;
     bool valid = false;
+    bool dependsOnRayWorld = false;
 
     [[nodiscard]] auto Read() const
     {
@@ -83,6 +84,10 @@ void PrepareGraphTemporalHistory(HistoryMap &histories, rhi::Device &device, con
             history.width = targetWidth;
             history.height = targetHeight;
             history.format = desc.format;
+            history.Invalidate();
+        }
+        if (history.dependsOnRayWorld != desc.dependsOnRayWorld) {
+            history.dependsOnRayWorld = desc.dependsOnRayWorld;
             history.Invalidate();
         }
         history.readName = pair.read->name;

@@ -139,6 +139,19 @@ void CheckWorldUIDepthReplay()
     assert(replay->draw.queueMax == 2999);
 }
 
+void CheckRayHistoryOwnership()
+{
+    std::unordered_map<std::string, GraphTemporalHistory> histories;
+    auto &lighting = histories["studio/indirect"];
+    auto &exposure = histories["_ray_named_exposure"];
+    lighting.dependsOnRayWorld = true;
+    lighting.Accept();
+    exposure.Accept();
+    raytracing::InvalidateRayHistories(histories);
+    assert(!lighting.valid && lighting.readIndex == 0);
+    assert(exposure.valid && exposure.readIndex == 1);
+}
+
 void CheckCameraHistoryResetIsolation()
 {
     Camera source, other;
@@ -815,6 +828,7 @@ int main(int argc, char **argv)
     CheckSampledAssetTextureValidation();
     CheckWorldUIPassAttachments();
     CheckWorldUIDepthReplay();
+    CheckRayHistoryOwnership();
     CheckViewResourceSchedule();
     CheckViewMaterialContracts();
     const auto invalidTarget = MakeShadowGraph(ShaderCompileTarget::Forward);

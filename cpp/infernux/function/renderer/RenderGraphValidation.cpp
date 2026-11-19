@@ -540,7 +540,8 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
         const auto &pair = temporalEntry.second;
         if (!pair.read || !pair.write || pair.read->format != pair.write->format ||
             pair.read->width != pair.write->width || pair.read->height != pair.write->height ||
-            pair.read->sizeDivisor != pair.write->sizeDivisor) {
+            pair.read->sizeDivisor != pair.write->sizeDivisor ||
+            pair.read->dependsOnRayWorld != pair.write->dependsOnRayWorld) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: temporal history '", key,
                          "' requires one matching read/write pair");
             return false;
