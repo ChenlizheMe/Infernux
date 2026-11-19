@@ -25,7 +25,7 @@ def specular_hit_distance(witness: shader.uint) -> float:
     return shader.as_float(witness & shader.uint(0xFFFF0000))
 
 
-def specular_luminance_variance(witness: shader.uint) -> float:
+def specular_color_variance(witness: shader.uint) -> float:
     return shader.as_float(witness << 16)
 
 
@@ -111,7 +111,7 @@ def resolve_ray_specular(signal: shader.UInt2D, primary: shader.UInt2D, frame: s
     camera = shader.camera()
     depth = linear_eye_depth(device_depth, camera)
     distance = specular_hit_distance(packet.w)
-    variance = specular_luminance_variance(packet.w) / shader.max(center.a - 1.0, 1.0)
+    variance = specular_color_variance(packet.w) / shader.max(center.a - 1.0, 1.0)
     footprint_weight = 0.25 * roughness * roughness
     radiance = center.rgb
     total = 1.0
@@ -141,7 +141,7 @@ def resolve_ray_specular(signal: shader.UInt2D, primary: shader.UInt2D, frame: s
         distance_weight = shader.saturate(1.0 - shader.abs(distance - sample_distance) / distance_band)
         tap_weight = footprint_weight
         if center.a >= 4.0 and estimate.a >= 4.0 and variance > 0.0:
-            sample_variance = specular_luminance_variance(candidate.w) / (estimate.a - 1.0)
+            sample_variance = specular_color_variance(candidate.w) / (estimate.a - 1.0)
             uncertainty = variance + sample_variance
             difference = center.rgb - estimate.rgb
             # Reject detailed texture on the same reflected surface, including isoluminant edges.

@@ -1,7 +1,7 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
 from infernux.shader.lib.ray_signal import (
-    pack_ray_signal, ray_grid_pixel, specular_hit_distance, specular_luminance_variance,
+    pack_ray_signal, ray_grid_pixel, specular_color_variance, specular_hit_distance,
     specular_witness, unpack_ray_signal,
 )
 from infernux.shader.lib.surface import decode_octahedral_normal
@@ -133,9 +133,14 @@ class RayReconstruct(shader.fullscreen):
 
         count = shader.min(previous.a + 1.0, limit)
         estimate = shader.mix(previous.rgb, current.rgb, 1.0 / count)
-        delta = shader.dot(current.rgb - previous.rgb, shader.vec3(0.2126, 0.7152, 0.0722))
-        prior_variance = (specular_luminance_variance(previous_packet.w) if self.specular
+        difference = current.rgb - previous.rgb
+        weights = shader.vec3(0.2126, 0.7152, 0.0722)
+        delta = shader.dot(difference, weights)
+        # The reflection filter measures squared RGB distance. Equal-luminance
+        # changes between colored lights contribute to its uncertainty as well.
+        deviation2 = shader.dot(difference * difference, weights) if self.specular else delta * delta
+        prior_variance = (specular_color_variance(previous_packet.w) if self.specular
                           else shader.as_float(previous_packet.w))
-        variance = (1.0 - 1.0 / count) * (prior_variance + delta * delta / count)
+        variance = (1.0 - 1.0 / count) * (prior_variance + deviation2 / count)
         witness = specular_witness(signal_aux, variance) if self.specular else shader.as_uint(variance)
         return pack_ray_signal(shader.vec4(estimate, count), shader.uvec2(fresh.z, witness))
