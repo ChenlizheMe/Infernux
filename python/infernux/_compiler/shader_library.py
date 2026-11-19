@@ -19,15 +19,27 @@ from .diagnostics import parse_gpu_module
 
 # A package build can run alongside an open Editor with a different catalog.
 _cook_catalog = ContextVar("shader_cook_catalog", default=None)
+_cook_surface_reader = ContextVar("shader_cook_surface_reader", default=None)
 
 
 @contextmanager
-def using_cooked_shader_sources(resource_root, paths_by_id):
+def using_cooked_shader_sources(resource_root, paths_by_id, *, ray_surfaces=None):
     token = _cook_catalog.set((Path(resource_root), paths_by_id))
+    surface_token = _cook_surface_reader.set(ray_surfaces)
     try:
         yield
     finally:
+        _cook_surface_reader.reset(surface_token)
         _cook_catalog.reset(token)
+
+
+def project_surface_sources():
+    reader = _cook_surface_reader.get()
+    if reader is not None:
+        return reader()
+    from infernux.lib import _Infernux
+
+    return _Infernux._shader_project_surface_sources()
 
 
 def builtin_shader_root():
@@ -424,6 +436,15 @@ class _ComputeLibraryEmitter(ShaderEmitter):
         return super().visit_Call(node)
 
 
+class _GraphComputeLibraryEmitter(_ComputeLibraryEmitter):
+    def visit_Call(self, node):
+        name = qualified(node.func)
+        operation = self.symbol(name)
+        if operation != name and operation in _RAY_FUNCTIONS:
+            return ShaderEmitter.visit_Call(self, node)
+        return super().visit_Call(node)
+
+
 def declarations(source, path):
     """Separate GPU declarations without importing or executing their Python module."""
     emitter = ShaderEmitter(source, path)
@@ -549,7 +570,9 @@ class LibraryGraph:
         source = source.removeprefix("\ufeff")
         alias, imports, body = declarations(source, str(path))
         numeric_only = self.compute_autodiff is not None
-        emitter_type = _ComputeLibraryEmitter if numeric_only else ShaderEmitter
+        graph_compute = numeric_only and self.allow_world_rays
+        emitter_type = (_GraphComputeLibraryEmitter if graph_compute else
+                        _ComputeLibraryEmitter if numeric_only else ShaderEmitter)
         emitter = emitter_type(source, str(path), aliases=(alias,))
         module = Module(self.module_prefix + str(len(self.modules)), str(path), "", {})
         self.modules[path] = module
@@ -566,8 +589,11 @@ class LibraryGraph:
             module.functions[definition.name] = functions[definition.name] = function
         functions = function_effects(body, functions, emitter)
         module.functions = {definition.name: functions[definition.name] for definition in body}
-        code = ["import inx_geometry;"] if numeric_only else [
-            "import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *engine_imports(body, alias, graph=self, owner=emitter)]
+        code = ["import inx_geometry;"] if numeric_only else ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;"]
+        if not numeric_only or graph_compute:
+            code.extend(engine_imports(body, alias, graph=self, owner=emitter))
+        if graph_compute and self.ray_lit is not None:
+            code.insert(0, "import " + RESOURCE_MODULE[0] + ";")
         code.extend("import " + name + ";" for name in dependencies)
         code.append("namespace " + module.name + " {")
         library = _LibrarySource(module, source, alias, body, functions, code)
@@ -612,7 +638,7 @@ class LibraryGraph:
         self._derivative_sources.clear()
 
     def sources(self):
-        builtins = () if self.compute_autodiff is not None else (RESOURCE_MODULE,)
+        builtins = () if self.compute_autodiff is not None and self.ray_lit is None else (RESOURCE_MODULE,)
         return (*builtins, *((module.name, module.path, module.source) for module in self.ordered))
 
     def ranges(self):

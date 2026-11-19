@@ -400,14 +400,14 @@ class WorkItem:
             body=definition.body, orelse=[])]
         return ast.fix_missing_locations(definition)
 
-    def analyze(self, *, argument_types=None):
+    def analyze(self, *, argument_types=None, value_calls=()):
         from infernux.jit_hir import TypeRef, ValueType, analyze_source
 
         types = {name: TypeRef(ValueType.ARRAY) for name, value in self.globals_map.items()
                  if isinstance(value, (np.ndarray, list, tuple, dict))}
         types.update(argument_types or {})
         return analyze_source(ast.unparse(self.loop_definition()), call_bindings=self.globals_map,
-                              argument_types=types if argument_types is not None else None)
+                              argument_types=types if argument_types is not None else None, value_calls=value_calls)
 
     def reduction_variants(self, plan, parameter_kinds):
         """Finite backend-independent programs from one ordered region."""

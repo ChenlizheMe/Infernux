@@ -1014,11 +1014,12 @@ def analyze_buffer_aliases(hir: FunctionHIR, groups: tuple[tuple[str, ...], ...]
 class _Analyzer:
     def __init__(self, tree: ast.Module, source: str, function: ast.FunctionDef | ast.AsyncFunctionDef,
                  call_bindings: Mapping[str, object] | None = None,
-                 argument_types: Mapping[str, TypeRef] | None = None):
+                 argument_types: Mapping[str, TypeRef] | None = None, *, value_calls=()):
         self.tree = tree
         self.source = source
         self.function = function
         self.call_bindings = call_bindings
+        self.value_calls = frozenset(value_calls)
         self.bound_arguments = argument_types is not None
         self.local_names = {node.id for node in ast.walk(function)
                             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
@@ -1147,6 +1148,10 @@ class _Analyzer:
 
     def _is_pure_call(self, node: ast.Call) -> bool:
         name, attr = _call_name(node)
+        # The compiler may prove an opaque POD-value export. It is never an
+        # affine index intrinsic and grants no fixed instruction-cost claim.
+        if attr is None and name in self.value_calls and name not in self.arg_types and name not in self.local_names:
+            return True
         if self.call_bindings is not None:
             if name in self.arg_types or name in self.local_names:
                 return False
@@ -1939,20 +1944,22 @@ def _definite_row_writes(statements, index_name, outputs, *, known_calls=None):
 
 def build_hir(source: str, function_name: str | None = None, *,
               call_bindings: Mapping[str, object] | None = None,
-              argument_types: Mapping[str, TypeRef] | None = None) -> FunctionHIR:
+              argument_types: Mapping[str, TypeRef] | None = None, value_calls=()) -> FunctionHIR:
     """Parse source and build the minimal typed HIR for one function."""
 
     tree = _parse(source)
     function = _find_function(tree, function_name)
-    return _Analyzer(tree, textwrap.dedent(source), function, call_bindings, argument_types).build()
+    return _Analyzer(tree, textwrap.dedent(source), function, call_bindings, argument_types,
+                     value_calls=value_calls).build()
 
 
 def analyze_source(source: str, function_name: str | None = None, *,
                    call_bindings: Mapping[str, object] | None = None,
-                   argument_types: Mapping[str, TypeRef] | None = None) -> FunctionHIR:
+                   argument_types: Mapping[str, TypeRef] | None = None, value_calls=()) -> FunctionHIR:
     """Alias for :func:`build_hir`, named for analysis-oriented callers."""
 
-    return build_hir(source, function_name, call_bindings=call_bindings, argument_types=argument_types)
+    return build_hir(source, function_name, call_bindings=call_bindings, argument_types=argument_types,
+                     value_calls=value_calls)
 
 
 def analyze_function(function: Any, *, function_name: str | None = None) -> FunctionHIR:

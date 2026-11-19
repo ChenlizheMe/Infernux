@@ -16,7 +16,8 @@ _IMPLICIT_FRAGMENT = {
 }
 
 
-def stage_scene_shader_programs(data_root, catalog_path, source_entries, scenes, resource_root, build_cache, web):
+def _cooked_shader_sources(data_root, catalog_path, resource_root):
+    """Resolve IDs from this publication, independent of any open Editor."""
     data_root, resource_root = Path(data_root), Path(resource_root)
     records = {r["guid"]: r for r in json.loads(Path(catalog_path).read_bytes())["entries"]}
     paths, shader_paths, shader_ids = {}, {}, {}
@@ -33,6 +34,13 @@ def stage_scene_shader_programs(data_root, catalog_path, source_entries, scenes,
             # A GUID remains usable when two authors have the same symbolic ID.
             shader_ids[key] = guid if key not in shader_ids else None
             shader_paths[key] = str(paths[guid]) if shader_ids[key] else None
+
+    return records, paths, shader_paths, shader_ids
+
+
+def stage_scene_shader_programs(data_root, catalog_path, source_entries, scenes, resource_root, build_cache, web):
+    data_root, resource_root = Path(data_root), Path(resource_root)
+    records, paths, shader_paths, shader_ids = _cooked_shader_sources(data_root, catalog_path, resource_root)
 
     selections = set()
 

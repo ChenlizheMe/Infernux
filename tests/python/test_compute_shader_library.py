@@ -68,6 +68,28 @@ def load_kernel(path):
     return module.solve
 
 
+def test_cooked_world_surface_catalog_is_independent_of_editor_directories(tmp_path):
+    root = tmp_path / 'Data'
+    root.mkdir()
+    authored = 'Assets/Shaders/custom.frag.py'
+    cooked = 'Library/Artifacts/Blob/' + authored
+    guid = '0123456789abcdef0123456789abcdef'
+    metadata = {'metadata': {
+        'guid': {'type': 'string', 'value': guid},
+        'file_path': {'type': 'string', 'value': authored},
+        'resource_type': {'type': 'enum infernux::ResourceType', 'value': 'Shader'},
+    }}
+    catalog = root / 'RuntimeAssetRecords.json'
+    catalog.write_text(json.dumps({'$schema': 'infernux.runtime_asset_records', 'entries': [{
+        'guid': guid, 'runtime_path': authored, 'metadata': metadata,
+        'primary_runtime_artifact_id': 'custom-source', 'runtime_artifacts': [{
+            'runtime_artifact_id': 'custom-source', 'runtime_path': cooked, 'package': 'Content.inxpkg',
+        }],
+    }]}), encoding='utf-8')
+    sources = _Infernux._shader_project_surface_sources(str(root), str(root / 'infernux/resources'), str(catalog))
+    assert [(identity, Path(path)) for identity, path in sources] == [(guid, root / cooked)]
+
+
 def test_transitive_shaderlib_links_graphics_and_compute_targets(project):
     root, scripts = project
     preview = scripts / 'Preview.frag.py'
@@ -135,6 +157,54 @@ def scale(value: float) -> float:
     assert any(Path(row['path']) == leaf and row['phase'] == 'compile' and row['severity'] == 'error'
                and (row['line'], row['column']) == (3, 5) and row['end_column'] > 5
                for row in failure.value.diagnostics), failure.value.diagnostics
+
+
+WORLD_LIBRARY = '''import infernux.shader as shader
+def damp(value: float) -> float:
+    hit = shader.ray.trace_closest(shader.vec3(0.0), shader.vec3(0.0, 0.0, 1.0),
+                                  0.0, 10.0, shader.uint(0xffffffff), 0.0)
+    return hit.surface.albedo.x + value
+'''
+
+
+@pytest.mark.parametrize('vector', [False, True])
+def test_world_shaderlib_freezes_graph_reads_without_claiming_continuation(project, vector):
+    root, scripts = project
+    source = WORLD_LIBRARY if not vector else WORLD_LIBRARY.replace('-> float:', '-> shader.vec4:').replace(
+        'return hit.surface.albedo.x + value', 'return shader.vec4(hit.surface.albedo, hit.surface.metallic)')
+    (scripts / 'forces.shaderlib.py').write_text(source, encoding='utf-8')
+    (scripts / 'Work.py').write_text('''import infernux as inx
+forces = inx.compute.library(".forces")
+@inx.compute.kernel
+def solve(values):
+    i = inx.compute.index(values)
+    values[i] = forces.damp(0.0)
+''', encoding='utf-8')
+    declaration = load_kernel(scripts / 'Work.py')
+    with using_project_root(root):
+        for target in ('spirv', 'wgsl'):
+            dtype = compute.vec4 if vector else np.float32
+            artifact = frontend.compile_kernel(declaration.function, (_gpu_buffer_descriptor((4,), dtype),),
+                                               target=target)
+            assert artifact.graph_dispatch and not artifact.native_dispatch
+            assert not artifact.continuation.eligible
+            assert artifact.continuation.fully_written_output_parameters == (0,)
+            assert artifact.task_metadata[0]['graph_metadata']
+
+
+def test_world_shaderlib_value_cannot_be_assumed_to_be_a_row_index(project):
+    root, scripts = project
+    (scripts / 'forces.shaderlib.py').write_text(WORLD_LIBRARY, encoding='utf-8')
+    (scripts / 'Work.py').write_text('''import infernux as inx
+forces = inx.compute.library(".forces")
+@inx.compute.kernel
+def solve(values):
+    i = inx.compute.index(values)
+    values[int(forces.damp(float(i)))] = 1.0
+''', encoding='utf-8')
+    with using_project_root(root), pytest.raises(TypeError, match='row memory contract'):
+        frontend.compile_kernel(load_kernel(scripts / 'Work.py').function,
+                                (_gpu_buffer_descriptor((4,), np.float32),))
 
 
 def test_reverse_kernel_differentiates_transitive_shaderlib_calls(project, engine, monkeypatch):

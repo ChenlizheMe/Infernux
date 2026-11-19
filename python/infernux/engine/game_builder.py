@@ -529,6 +529,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             report("Compiling project scripts", 0.45)
             self._compile_user_scripts(final_dir)
             self._compile_player_plugin_scripts(final_dir)
+            self._write_runtime_asset_records(final_dir, package_builtin_resources=True)
             if gpu_compute_aot:
                 from infernux.engine.build.compute_aot import stage_compute_artifacts
 
@@ -545,11 +546,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     os.path.join(final_dir, "Data"),
                     target=target_name,
                     source_snapshots=self._player_python_source_texts,
+                    resource_root=Path(final_dir, "Data", "infernux", "resources"),
                 )
-            self._write_runtime_asset_records(
-                final_dir,
-                package_builtin_resources=True,
-            )
             self._stage_scene_shader_programs(final_dir, package_builtin_resources=True)
             self._process_build_icon(final_dir)
             self._process_splash_items(final_dir)
@@ -611,6 +609,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         _p(t("build.step.compiling_scripts"), 0.91)
         self._compile_user_scripts(final_dir)
         self._compile_player_plugin_scripts(final_dir)
+        self._write_runtime_asset_records(final_dir)
         _p(t("build.step.collecting_deps"), 0.915)
         user_packages = self._collect_user_dependencies()
         from infernux.engine.build.compute_aot import stage_compute_artifacts
@@ -625,8 +624,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 else "Player/Linux"
             ),
             source_snapshots=self._player_python_source_texts,
+            resource_root=_resources.resources_path,
         )
-        self._write_runtime_asset_records(final_dir)
         self._stage_scene_shader_programs(final_dir)
 
         _p(t("build.step.processing_splash"), 0.93)

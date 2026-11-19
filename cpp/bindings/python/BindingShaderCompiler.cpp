@@ -1,6 +1,7 @@
 #include "BindingRegistration.h"
 #include "ShaderDiagnosticPyBridge.h"
 #include <core/threading/JobSystem.h>
+#include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetFormatRegistry.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -13,6 +14,7 @@
 #include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <platform/filesystem/InxPath.h>
 
+#include <algorithm>
 #include <atomic>
 #include <exception>
 #include <memory>
@@ -119,6 +121,7 @@ struct ShaderCompileRequest
     std::optional<std::string> entryPoint;
     bool precise = false;
     bool rootConstants = false;
+    std::string authorSchema;
 };
 
 ShaderCompileRequest MakeCompileRequest(const std::string &source, const std::string &sourcePath,
@@ -126,9 +129,10 @@ ShaderCompileRequest MakeCompileRequest(const std::string &source, const std::st
                                         const std::vector<std::string> &targetNames, bool precise,
                                         const std::vector<SourceRangeTuple> &sourceRanges,
                                         const ShaderInputKinds &inputKinds, bool rootConstants,
-                                        const std::optional<std::string> &entryPoint)
+                                        const std::optional<std::string> &entryPoint, const std::string &authorSchema)
 {
     ShaderCompileRequest request;
+    request.authorSchema = authorSchema;
     request.module = {moduleName, sourcePath, source};
     request.libraries.reserve(libraries.size());
     for (const auto &[name, path, text] : libraries)
@@ -176,6 +180,8 @@ ShaderCompileResult CompileProgram(const ShaderCompileRequest &request)
             compiler.Compile(request.module, request.libraries, request.targets, request.precise, request.ranges);
     }
     ApplyShaderAuthorResources(result.compilation, request.inputKinds);
+    if (!request.authorSchema.empty())
+        SlangCompiler::ApplyAuthorMetadata(result.compilation, request.authorSchema);
     return result;
 }
 
@@ -252,6 +258,19 @@ py::dict CompileResultToPython(const ShaderCompileResult &resultData)
             entries.append(std::move(item));
         }
         program["entries"] = std::move(entries);
+        const bool graphCompute =
+            std::any_of(target.entries.begin(), target.entries.end(),
+                        [](const auto &entry) { return entry.stage == rhi::ShaderStage::Compute; }) &&
+            std::any_of(target.resources.begin(), target.resources.end(), [](const auto &resource) {
+                return resource.name == "world_ray_geometry" || resource.name == "world_ray_meshes" ||
+                       resource.name == "ray_lit_materials";
+            });
+        if (graphCompute) {
+            auto metadata = target;
+            for (auto &entry : metadata.entries)
+                entry.code.clear();
+            program["graph_metadata"] = py::bytes(EncodeShaderTarget(metadata));
+        }
         targetPrograms.append(std::move(program));
     }
     result["targets"] = std::move(targetPrograms);
@@ -476,6 +495,22 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         },
         py::arg("guid"), py::call_guard<py::gil_scoped_release>());
     m.def("_slang_version", [] { return SlangCompiler::Get().GetVersion(); }, py::call_guard<py::gil_scoped_release>());
+    m.def(
+        "_shader_project_surface_sources",
+        [](const std::string &contentRoot, const std::string &resourceRoot, const std::string &catalog) {
+            if (!contentRoot.empty()) {
+                AssetDatabase database;
+                database.InitializeRuntime(contentRoot);
+                database.AddReadOnlyScanRoot(resourceRoot);
+                database.InstallRuntimeAssetCatalog(catalog, true);
+                return ShaderAuthorSurfaceSources(ShaderProjectSurfaceReader(database)());
+            }
+            const auto *database = AssetRegistry::Instance().GetAssetDatabase();
+            return database ? ShaderAuthorSurfaceSources(ShaderProjectSurfaceReader(*database)())
+                            : ShaderAuthorSurfaceSources{};
+        },
+        py::arg("content_root") = "", py::arg("resource_root") = "", py::arg("catalog") = "",
+        py::call_guard<py::gil_scoped_release>());
 
     m.def("_shader_ui_author_source", &GetSlangUIAuthorSource, py::arg("world"), py::arg("depth"),
           py::call_guard<py::gil_scoped_release>());
@@ -493,15 +528,16 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                       const std::vector<LibraryTuple> &libraries, const std::vector<std::string> &targetNames,
                       bool precise, const std::vector<SourceRangeTuple> &sourceRanges,
                       const ShaderInputKinds &inputKinds, bool rootConstants,
-                      const std::optional<std::string> &entryPoint) {
+                      const std::optional<std::string> &entryPoint, const std::string &authorSchema) {
                 return compile(MakeCompileRequest(source, sourcePath, moduleName, libraries, targetNames, precise,
-                                                  sourceRanges, inputKinds, rootConstants, entryPoint));
+                                                  sourceRanges, inputKinds, rootConstants, entryPoint, authorSchema));
             },
             py::arg("source"), py::arg("source_path"), py::arg("module_name"),
             py::arg("libraries") = std::vector<LibraryTuple>{},
             py::arg("targets") = std::vector<std::string>{"spirv", "wgsl"}, py::arg("precise") = false,
             py::arg("source_ranges") = std::vector<SourceRangeTuple>{}, py::arg("input_kinds") = ShaderInputKinds{},
-            py::arg("root_constants") = false, py::arg("entry_point") = py::none());
+            py::arg("root_constants") = false, py::arg("entry_point") = py::none(),
+            py::arg("author_schema") = std::string{});
     };
     bindCompile("_compile_shader_program", [](const ShaderCompileRequest &request) {
         ShaderCompileResult result;

@@ -12,6 +12,50 @@
 namespace infernux::rhi
 {
 
+struct ComputeKernel::GraphBindingGroup
+{
+    ComputeHost host;
+    BindGroupDesc description;
+    BindGroupHandle group;
+    std::vector<std::shared_ptr<ComputeBufferAllocation>> allocations;
+    std::shared_ptr<const ComputeGraphReads> reads;
+
+    GraphBindingGroup(ComputeHost &owner, BindGroupDesc bindings,
+                      std::vector<std::shared_ptr<ComputeBufferAllocation>> storage,
+                      std::shared_ptr<const ComputeGraphReads> publications)
+        : host(owner), description(std::move(bindings)), allocations(std::move(storage)), reads(std::move(publications))
+    {
+        group = host.device.CreateBindGroup(description);
+        if (!group.IsValid())
+            throw std::runtime_error("Failed to create graph compute read bindings");
+    }
+
+    ~GraphBindingGroup()
+    {
+        if (host.IsAlive())
+            host.device.Release(group);
+    }
+
+    [[nodiscard]] bool Matches(const BindGroupDesc &value) const noexcept
+    {
+        if (description.bufferCount != value.bufferCount || description.textureCount != value.textureCount)
+            return false;
+        for (size_t i = 0; i < value.bufferCount; ++i) {
+            const auto &a = description.buffers[i], &b = value.buffers[i];
+            if (a.binding != b.binding || a.type != b.type || a.buffer != b.buffer || a.offset != b.offset ||
+                a.byteSize != b.byteSize)
+                return false;
+        }
+        for (size_t i = 0; i < value.textureCount; ++i) {
+            const auto &a = description.textures[i], &b = value.textures[i];
+            if (a.binding != b.binding || a.type != b.type || a.texture != b.texture || a.sampler != b.sampler ||
+                a.depthRead != b.depthRead)
+                return false;
+        }
+        return true;
+    }
+};
+
 namespace
 {
 bool Writes(ComputeBufferAccess access) noexcept
@@ -135,8 +179,8 @@ ComputeKernel::ComputeKernel(ComputeHost &host, const uint32_t *spirvWords, size
 
 ComputeKernel::ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shaderDesc, const std::string &entryPoint,
                              std::vector<ComputeBufferBinding> bufferBindings, uint32_t pushConstantBytes,
-                             PipelineCreation creation)
-    : m_host(host), m_pushConstantBytes(pushConstantBytes)
+                             PipelineCreation creation, std::shared_ptr<const ShaderTargetCode> graphProgram)
+    : m_host(host), m_graphProgram(std::move(graphProgram)), m_pushConstantBytes(pushConstantBytes)
 {
     if (!m_host.IsAlive())
         throw std::runtime_error("Compute kernel device is retired");
@@ -166,6 +210,35 @@ ComputeKernel::ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shaderDe
         layoutDesc.entries[index].readOnlyStorage = bufferBindings[index].readOnlyStorage;
     }
     layoutDesc.entryCount = static_cast<uint32_t>(m_bufferBindings.size());
+    if (m_graphProgram) {
+        const auto entry = std::find_if(m_graphProgram->entries.begin(), m_graphProgram->entries.end(),
+                                        [&](const auto &value) { return value.name == entryPoint; });
+        if (entry == m_graphProgram->entries.end())
+            throw std::invalid_argument("Graph compute metadata is missing its entry: " + entryPoint);
+        for (const auto &address : entry->bindings) {
+            if (address[0] == 0 &&
+                std::find(m_bufferBindings.begin(), m_bufferBindings.end(), address[1]) != m_bufferBindings.end())
+                continue;
+            const auto resource = std::find_if(
+                m_graphProgram->resources.begin(), m_graphProgram->resources.end(),
+                [&](const auto &value) { return value.set == address[0] && value.binding.binding == address[1]; });
+            if (resource == m_graphProgram->resources.end() || resource->set != 0)
+                throw std::invalid_argument("Graph compute reads must use reflected descriptors in group 0");
+            const auto &binding = resource->binding;
+            if ((binding.type != BindingType::StorageBuffer || !binding.readOnlyStorage) &&
+                binding.type != BindingType::SampledTexture && binding.type != BindingType::Sampler)
+                throw std::invalid_argument("Graph compute input must be a read-only buffer, texture or sampler: " +
+                                            resource->name);
+            if (layoutDesc.entryCount == BindingLayoutDesc::MaxEntries)
+                throw std::invalid_argument("Graph compute exceeds the descriptor layout capacity");
+            layoutDesc.entries[layoutDesc.entryCount++] = binding;
+            m_graphReadBindings.push_back(*resource);
+        }
+    }
+    if (std::count_if(m_graphReadBindings.begin(), m_graphReadBindings.end(), [](const auto &resource) {
+            return resource.binding.type != BindingType::StorageBuffer;
+        }) > BindGroupDesc::MaxTextureBindings)
+        throw std::invalid_argument("Graph compute exceeds the sampled descriptor capacity");
     if (creation == PipelineCreation::FirstDispatch) {
         if (!shaderDesc.code || !shaderDesc.byteSize)
             throw std::invalid_argument("Compute kernel requires shader code");
@@ -279,14 +352,20 @@ void ComputeKernel::Dispatch(std::vector<std::shared_ptr<ComputeBuffer>> buffers
 ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
     std::vector<std::shared_ptr<ComputeBuffer>> buffers, std::vector<ComputeBufferAccess> bufferAccesses,
     std::vector<uint8_t> pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
-    std::optional<ComputeDispatchProof> proof, std::optional<ComputeIndirectArguments> indirectArguments)
+    std::optional<ComputeDispatchProof> proof, std::optional<ComputeIndirectArguments> indirectArguments,
+    std::shared_ptr<const ComputeGraphReads> graphReads)
 {
     auto result = CaptureDispatch(std::move(buffers), std::move(bufferAccesses), std::move(pushConstants), groupCountX,
-                                  groupCountY, groupCountZ, std::move(proof), std::move(indirectArguments));
+                                  groupCountY, groupCountZ, std::move(proof), std::move(indirectArguments), graphReads);
     if (!result.pipeline.IsValid()) {
         (void)PreparePipeline(true);
         result.pipeline = m_pipeline;
-        result.group = ResolveBindGroup(result.allocations);
+        if (m_graphReadBindings.empty())
+            result.group = ResolveBindGroup(result.allocations);
+        else {
+            result.graphGroup = ResolveGraphBindGroup(result.allocations, std::move(graphReads));
+            result.group = result.graphGroup->group;
+        }
     }
     return result;
 }
@@ -294,8 +373,11 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(
 ComputeKernel::PreparedDispatch ComputeKernel::CaptureDispatch(
     std::vector<std::shared_ptr<ComputeBuffer>> buffers, std::vector<ComputeBufferAccess> bufferAccesses,
     std::vector<uint8_t> pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
-    std::optional<ComputeDispatchProof> proof, std::optional<ComputeIndirectArguments> indirectArguments)
+    std::optional<ComputeDispatchProof> proof, std::optional<ComputeIndirectArguments> indirectArguments,
+    std::shared_ptr<const ComputeGraphReads> graphReads)
 {
+    if (!m_graphReadBindings.empty() && !graphReads)
+        throw std::invalid_argument("This compute kernel reads graph resources; record its Work in a RenderGraph");
     if (bufferAccesses.size() != buffers.size())
         throw std::invalid_argument("Compute kernel buffer access count does not match its resource bindings");
     ValidateDispatch(bufferAccesses, pushConstants.size(), groupCountX, groupCountY, groupCountZ,
@@ -350,7 +432,12 @@ ComputeKernel::PreparedDispatch ComputeKernel::CaptureDispatch(
     }
     if (m_pipeline.IsValid()) {
         result.pipeline = m_pipeline;
-        result.group = ResolveBindGroup(result.allocations);
+        if (m_graphReadBindings.empty())
+            result.group = ResolveBindGroup(result.allocations);
+        else {
+            result.graphGroup = ResolveGraphBindGroup(result.allocations, std::move(graphReads));
+            result.group = result.graphGroup->group;
+        }
     }
     result.bufferAccesses = std::move(bufferAccesses);
     result.pushConstants = std::move(pushConstants);
@@ -1389,6 +1476,47 @@ BindGroupHandle ComputeKernel::ResolveBindGroup(const std::vector<std::shared_pt
     return group;
 }
 
+std::shared_ptr<const ComputeKernel::GraphBindingGroup>
+ComputeKernel::ResolveGraphBindGroup(const std::vector<std::shared_ptr<ComputeBufferAllocation>> &buffers,
+                                     std::shared_ptr<const ComputeGraphReads> reads)
+{
+    BindGroupDesc description;
+    description.layout = m_layout;
+    for (size_t i = 0; i < m_bufferBindings.size(); ++i)
+        description.buffers[description.bufferCount++] = {m_bufferBindings[i], m_bufferBindingTypes[i],
+                                                          buffers[i]->GetBuffer(), 0, buffers[i]->GetByteSize()};
+    for (const auto &resource : m_graphReadBindings) {
+        const auto &binding = resource.binding;
+        if (binding.type == BindingType::StorageBuffer) {
+            const auto &value = reads->buffers.at(resource.name);
+            if (!value.owner)
+                throw std::invalid_argument("Graph compute buffer has no retained publication: " + resource.name);
+            description.buffers[description.bufferCount++] = {binding.binding, binding.type, value.handle, value.offset,
+                                                              value.byteSize};
+        } else {
+            const auto &value = reads->textures.at(resource.name);
+            if (!value.owner)
+                throw std::invalid_argument("Graph compute texture has no retained publication: " + resource.name);
+            description.textures[description.textureCount++] = {binding.binding, binding.type, value.view,
+                                                                value.sampler, binding.depthRead};
+        }
+    }
+    auto cached = m_graphGroups.begin();
+    while (cached != m_graphGroups.end()) {
+        const auto group = cached->lock();
+        if (!group)
+            cached = m_graphGroups.erase(cached);
+        else {
+            if (group->Matches(description))
+                return group;
+            ++cached;
+        }
+    }
+    auto group = std::make_shared<GraphBindingGroup>(m_host, std::move(description), buffers, std::move(reads));
+    m_graphGroups.push_back(group);
+    return group;
+}
+
 void ComputeKernel::CollectBindingGroups()
 {
     auto entry = m_groups.begin();
@@ -1814,15 +1942,16 @@ const std::vector<ComputeKernel::PreparedDispatch> &ComputeWorkInstance::GetDisp
                                                  dispatch.indirectArguments->offset};
         prepared.push_back(dispatch.kernel->PrepareDispatch(
             std::move(resources), std::move(accesses), dispatch.pushConstants, dispatch.groupCountX,
-            dispatch.groupCountY, dispatch.groupCountZ, {}, std::move(arguments)));
+            dispatch.groupCountY, dispatch.groupCountZ, {}, std::move(arguments), m_graphReads));
     }
     m_dispatches = std::move(prepared);
     return m_dispatches;
 }
 
 ComputeWorkInstance::ComputeWorkInstance(std::shared_ptr<const ComputeWorkRecipe> recipe,
-                                         std::vector<std::shared_ptr<ComputeBuffer>> buffers)
-    : m_recipe(std::move(recipe)), m_buffers(std::move(buffers))
+                                         std::vector<std::shared_ptr<ComputeBuffer>> buffers,
+                                         std::shared_ptr<const ComputeGraphReads> graphReads)
+    : m_recipe(std::move(recipe)), m_buffers(std::move(buffers)), m_graphReads(std::move(graphReads))
 {
 }
 
@@ -1831,6 +1960,12 @@ ComputeWorkInstance::Rebind(std::vector<ComputeWorkInput> inputs,
                             const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs) const
 {
     return m_recipe->Bind(std::move(inputs), m_buffers, externalInputs);
+}
+
+std::shared_ptr<ComputeWorkInstance>
+ComputeWorkInstance::WithGraphReads(std::shared_ptr<const ComputeGraphReads> reads) const
+{
+    return std::shared_ptr<ComputeWorkInstance>(new ComputeWorkInstance(m_recipe, m_buffers, std::move(reads)));
 }
 
 std::shared_ptr<PreparedComputeBatch> ComputeWorkInstance::PrepareBatch(std::vector<ComputeBufferUpdate> updates,

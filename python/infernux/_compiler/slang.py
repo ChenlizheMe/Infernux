@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import copy
 from dataclasses import asdict, dataclass, field, replace
 import hashlib
@@ -14,7 +15,7 @@ from typing import Callable
 import numpy as np
 
 from .slang_ast import SlangEmitter, common_type, qualified
-from .shader_library import Function, LibraryGraph, typed_function_call
+from .shader_library import Function, LibraryGraph, project_surface_sources, typed_function_call
 from .value_types import SCALAR_STORAGE_TYPES
 from .work_item import WorkItem, normalize_work_item
 from .cache import compiler_cache_root, prune_cache_files
@@ -41,9 +42,10 @@ class KernelCompilationPlan:
     source_locations: tuple[dict, ...] = ()
     libraries: tuple[tuple[str, str, str], ...] = ()
     library_functions: dict = field(default_factory=dict)
+    author_schema: str = ""
 
 
-def _work_item_proof(work_item, params):
+def _work_item_proof(work_item, params, *, value_calls=()):
     from infernux.compute import Buffer
     from infernux.jit_hir import TypeRef, ValueType
 
@@ -51,7 +53,7 @@ def _work_item_proof(work_item, params):
     types = {name: TypeRef(ValueType.ARRAY if isinstance(value, Buffer) else
                            ValueType.FLOAT if isinstance(value, (float, np.floating)) else ValueType.INT)
              for name, value in zip(names, params)}
-    return work_item.analyze(argument_types=types).continuation_plan
+    return work_item.analyze(argument_types=types, value_calls=value_calls).continuation_plan
 
 
 def _continuation_contract(work_item, params, *, autodiff_mode, gradient_parameters, proof=None):
@@ -82,6 +84,25 @@ def _continuation_contract(work_item, params, *, autodiff_mode, gradient_paramet
         resource_extents=proof.resource_extents if not diagnostics else (),
         gathered=proof.gathered if not diagnostics else False,
         inner_range=inner if not diagnostics else None)
+
+
+def _graph_memory_contract(item, params, continuation):
+    """Prove row storage separately from the unknown cost of a World query.
+
+    ShaderLib exports accept POD values and reflected World inputs are read-only.
+    An opaque pure call therefore preserves argument reads without exposing its
+    result as an affine index or pretending traversal has a fixed row cost.
+    """
+    proof = _work_item_proof(item, params, value_calls=item.library_calls)
+    if not proof.eligible:
+        raise TypeError("Graph compute requires an independent row memory contract: " +
+                        "; ".join(diagnostic.format() for diagnostic in proof.diagnostics))
+    names = tuple(argument.arg for argument in (*item.definition.args.posonlyargs, *item.definition.args.args))
+    return replace(continuation,
+                   input_parameters=tuple(sorted(names.index(name) for name in proof.inputs if name in names)),
+                   output_parameters=tuple(sorted(names.index(name) for name in proof.outputs if name in names)),
+                   fully_written_output_parameters=tuple(sorted(names.index(name) for name in proof.fully_written_outputs)),
+                   resource_extents=proof.resource_extents, gathered=proof.gathered, inner_range=proof.inner_range)
 
 
 def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, autodiff_mode="none", gradient_parameters=(),
@@ -116,6 +137,12 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
     if item.library_calls:
         graph, plan.library_functions = _link_libraries(item, autodiff_mode)
         plan.libraries = graph.sources()
+        if graph.ray_lit is not None:
+            plan.continuation = _graph_memory_contract(item, params, continuation)
+            continuation = plan.continuation
+            plan.author_schema = json.dumps({"domain": "compute", "inputs": [], "parameters": [],
+                                            "ray_surfaces": graph.ray_lit.manifests,
+                                            "ray_surface_catalog": [guid for guid, _ in graph.ray_surfaces]})
         plan.source_locations += tuple({"role": "library", "path": module.path, "line": 1, "column": 1}
                                        for module in graph.ordered)
     if _scalar_slang is not None:
@@ -131,6 +158,8 @@ def prepare_kernel(function, params, *, target="spirv", receiver_fields=None, au
     }
     if plan.libraries:
         identity["libraries"] = plan.libraries
+    if plan.author_schema:
+        identity["author_schema"] = plan.author_schema
     if item.library_calls:
         plan.lowering.source_ranges.extend(graph.ranges())
     plan.artifact_key = hashlib.blake2b(json.dumps(identity, sort_keys=True).encode(), digest_size=16).hexdigest()
@@ -224,7 +253,9 @@ def scalar_library_definition(reference, entry_point):
 
 
 def _link_libraries(item, autodiff_mode):
-    graph = LibraryGraph(_read_library_source, compute_autodiff=autodiff_mode)
+    graph = LibraryGraph(_read_library_source, compute_autodiff=autodiff_mode,
+                         allow_world_rays=autodiff_mode == "none",
+                         ray_surfaces=project_surface_sources)
     functions = {}
     definitions = ((item.definition, item.origin),
                    *((helper, item.helper_origins[helper.name]) for helper in item.helpers))
@@ -798,6 +829,10 @@ def _artifact(compiled, emitter, plan, params):
     metadata = {"entry_point": entry["name"], "threads_per_group": entry["workgroup_size"][0], "buffer_bindings": bindings,
                 "task_type": "range_for", "range": {"begin_source": "constant", "begin": 0, "const_begin": True,
                                                        "const_end": False, "end_source": "arguments"}}
+    active = {tuple(address) for address in entry["bindings"]}
+    numerical = {(0, binding["binding"]) for binding in bindings}
+    if active - numerical:
+        metadata["graph_metadata"] = base64.b64encode(compiled["graph_metadata"]).decode("ascii")
     if plan.work_item.count_parameter is not None:
         metadata.update(count_parameter=plan.work_item.count_parameter, workgroup_size=entry["workgroup_size"])
     locations = tuple({**location, "entry_point": entry["name"]} for location in plan.source_locations)
@@ -823,10 +858,12 @@ class _ArtifactRequest:
     finalize: Callable[[dict], CompilerArtifact]
     source_ranges: tuple = ()
     entry_point: str | None = None
+    author_schema: str = ""
 
     def _invoke(self, compiler):
+        author = {"author_schema": self.author_schema} if self.author_schema else {}
         return compiler(self.source, self.path, "inx_kernel", libraries=self.libraries, targets=[self.target],
-                        precise=True, source_ranges=self.source_ranges, entry_point=self.entry_point)
+                        precise=True, source_ranges=self.source_ranges, entry_point=self.entry_point, **author)
 
     def compile(self):
         from infernux.lib import _Infernux
@@ -885,7 +922,8 @@ def _prepare_kernel_artifact(function, params, *, target="spirv", receiver_field
         return artifact
 
     request = _ArtifactRequest(plan.generated_source, plan.work_item.origin.path, target,
-                               plan.libraries, finalize, tuple(plan.lowering.source_ranges))
+                               plan.libraries, finalize, tuple(plan.lowering.source_ranges),
+                               author_schema=plan.author_schema)
     return _CachedArtifactRequest(request, specialization, compiler_cache_root() / (plan.artifact_key + ".inxgpu"))
 
 

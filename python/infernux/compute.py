@@ -12,6 +12,7 @@ WGSL follows its finite-f32 contract and makes no such IEEE-value guarantee.
 """
 
 from collections import OrderedDict, deque
+import base64
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache, wraps
@@ -2649,7 +2650,10 @@ class _KernelExecutable:
             for code, metadata in zip(artifact.tasks, artifact.task_metadata):
                 bindings = sorted(metadata["buffer_bindings"], key=lambda binding: binding["binding"])
                 layout = [(binding["binding"], binding["binding_type"]) for binding in bindings]
-                native = host._create_kernel_from_compiler(code, layout, entry_point=metadata["entry_point"], target=artifact.target)
+                graph = ({"graph_metadata": base64.b64decode(metadata["graph_metadata"])}
+                         if "graph_metadata" in metadata else {})
+                native = host._create_kernel_from_compiler(code, layout, entry_point=metadata["entry_point"],
+                                                           target=artifact.target, **graph)
                 self.tasks.append((native, bindings, int(metadata["threads_per_group"])))
         except Exception:
             # A failed constructor is not registered in the declaration cache.
@@ -2735,6 +2739,7 @@ class _KernelExecutable:
         native = resources = None
         try:
             native_dispatch = self.artifact.native_dispatch
+            graph_dispatch = self.artifact.graph_dispatch
             dense_writes = self.artifact.count_parameter is None
             if not native_dispatch:
                 prepared.argument_buffer = self.host.create_buffer(max(1, (len(prepared.arguments) + 3) // 4), "uint32")
@@ -2749,7 +2754,7 @@ class _KernelExecutable:
                     if kind == "arguments":
                         resources.append(prepared.argument_buffer)
                         accesses.append("read")
-                        if contract.eligible:
+                        if contract.eligible or graph_dispatch:
                             reads.append((position, 0, int(prepared.argument_buffer.byte_size)))
                     elif kind == "external_buffer":
                         index = self._argument_index(binding)
@@ -2768,17 +2773,17 @@ class _KernelExecutable:
                             accesses.append("read_write")
                         else:
                             raise RuntimeError("GPU compiler omitted an external buffer access declaration")
-                        if native_dispatch or (contract.eligible and index in contract.input_parameters):
+                        if native_dispatch or ((contract.eligible or graph_dispatch) and index in contract.input_parameters):
                             reads.append((position, value._byte_offset, value.nbytes))
-                        if dense_writes and contract.eligible and index in contract.fully_written_output_parameters:
-                            first, last = bounds
+                        if dense_writes and (contract.eligible or graph_dispatch) and index in contract.fully_written_output_parameters:
+                            first, last = (0, domain.element_count) if graph_dispatch else bounds
                             writes.append((position, value._byte_offset + first * value._dtype.itemsize,
                                            (last - first) * value._dtype.itemsize))
                     else:
                         raise RuntimeError(f"Unsupported GPU compiler resource kind: {kind}")
                 count = domain.element_count if bounds is None else bounds[1] - bounds[0]
                 groups = (count + threads_per_group - 1) // threads_per_group
-                proof = (reads, writes) if contract.eligible or native_dispatch else None
+                proof = (reads, writes) if contract.eligible or native_dispatch or graph_dispatch else None
                 prepared.dispatches.append((native, resources, accesses, b"", groups, 1, 1, proof))
             return prepared
         except Exception:
@@ -3405,6 +3410,11 @@ def prepare_work(operations, *, private_buffers, inputs, outputs) -> Work:
     External resources retain their actual owners and must have accepted
     producers. Their valid contents remain a caller/producer precondition.
 
+    ShaderLib World queries run in a render graph compute pass. Bind the
+    corresponding ports from ``RayTracingContext(graph).world.materials``
+    with the pass's ``set_buffer`` and ``set_texture`` methods. Each pass
+    captures its World publications; the numerical recipe stays reusable.
+
     Cold argument initialization is ordered through the existing strict FIFO.
     This can wait for admission when that queue is full, but does not wait for
     the prepared work to execute, dispatch inference or read GPU results.
@@ -3477,7 +3487,7 @@ def _prepare_work(operations, *, private_buffers, inputs, outputs, argument_port
             artifact = executable.artifact
             count_parameter = artifact.count_parameter
             ranged = artifact.continuation.eligible
-            if ((not ranged and not artifact.native_dispatch)
+            if ((not ranged and not artifact.native_dispatch and not artifact.graph_dispatch)
                     or artifact.autodiff_mode != "none" or artifact.gradient_parameters):
                 diagnostics = "; ".join(artifact.continuation.diagnostics)
                 raise TypeError("compute work requires the shared forward row contract" +

@@ -9,15 +9,23 @@ struct RenderViewAccess;
 namespace rhi
 {
 class ComputeBufferAllocation;
+class BufferResource;
 class ComputeHost;
 class ComputeWorkInstance;
+struct ComputeGraphReads;
 } // namespace rhi
+namespace raytracing
+{
+struct RayWorldMaterialPublication;
+}
 
 /// Allocations and immutable dispatch bindings prepared for one graph.
 /// The submitter retains them through the last GPU use.
 struct RenderGraphWorkStorage
 {
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeWorkInstance>> instances;
+    /// Pass-local read publications share the recipe's private allocations.
+    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeWorkInstance>> passInstances;
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> buffers;
 
     void Publish() const;
@@ -26,6 +34,16 @@ struct RenderGraphWorkStorage
 [[nodiscard]] std::optional<RenderGraphWorkStorage> PrepareRenderGraphWork(rhi::ComputeHost &host,
                                                                            const RenderGraphDescription &graph,
                                                                            const RenderGraphWorkStorage &previous);
+
+/// Resolve active reflected inputs once during resource preparation. An
+/// unavailable World publication defers this execution without allocating
+/// another set of Work outputs.
+[[nodiscard]] bool BindRenderGraphWorkReads(const RenderGraphDescription &graph, RenderGraphWorkStorage &storage,
+                                            const rhi::ComputeGraphReads &publications);
+[[nodiscard]] rhi::ComputeGraphReads
+WorldRayGraphReadPublications(const RenderGraphDescription &graph,
+                              const std::array<std::shared_ptr<const rhi::BufferResource>, 2> &geometry,
+                              const std::shared_ptr<const raytracing::RayWorldMaterialPublication> &materials);
 
 /// Names for complete Work slots. Aliases retain their own authored ranges.
 [[nodiscard]] std::vector<std::string> GraphWorkSlotNames(const RenderGraphDescription &graph,

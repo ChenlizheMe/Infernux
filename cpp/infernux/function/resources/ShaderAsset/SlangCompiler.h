@@ -73,6 +73,9 @@ class SlangCompiler
     /// Compile a frozen author snapshot for the targets its consumer will use.
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderCompilation
     CompileAuthorProgram(const ShaderAuthorSource &source, const std::vector<ShaderCodeTarget> &targets);
+    /// Keep typed author metadata identical for graphics and numerical consumers.
+    static INFERNUX_SHADER_COMPILER_API void ApplyAuthorMetadata(ShaderCompilation &compiled,
+                                                                 const std::string &schema);
 
     /// One logical root block: native push constants and the RHI uniform
     /// address on WGSL. Algorithms and their logical fields stay identical.

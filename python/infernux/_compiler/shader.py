@@ -1760,9 +1760,17 @@ def _prepare_ray_lit(reader=None, *, _graph=None):
 
 def _world_ray_module(graph, owner, location):
     if not graph.allow_world_rays:
-        owner.error(location, "World ray queries require a fullscreen shader", code="author.stage")
+        owner.error(location, "World ray queries require a graphics or graph compute program", code="author.stage")
     if graph.ray_lit is None:
-        lit = _prepare_ray_lit(_graph=graph)
+        # Materials keep the graphics author contract. Their dependencies share
+        # this graph's module identities; only the calling numerical library is
+        # constrained to compute operations.
+        numerical_context = graph.compute_autodiff
+        graph.compute_autodiff = None
+        try:
+            lit = _prepare_ray_lit(_graph=graph)
+        finally:
+            graph.compute_autodiff = numerical_context
         library_paths = {module.path for module in graph.ordered}
         ranges = tuple(span for span in lit.source_ranges if span[0] not in library_paths)
         graph.ray_lit = Module(lit.module_name, lit.source_path, lit.generated_source, {}, ranges)

@@ -546,7 +546,11 @@ lighting = _Lighting()
 
 
 class _RayQueries:
-    """Fullscreen queries using shared world geometry and secondary surface evaluators."""
+    """Graph queries using shared world geometry and secondary surface evaluators.
+
+    Fullscreen and prepared compute passes bind the same named World resources.
+    CPU functions and standalone numerical dispatches do not own a World.
+    """
 
     @staticmethod
     def trace_closest(origin_ws: vec3, direction_ws: vec3, min_distance: float, max_distance: float,

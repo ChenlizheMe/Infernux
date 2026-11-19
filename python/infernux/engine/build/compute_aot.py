@@ -535,6 +535,7 @@ def stage_compute_artifacts(
     *,
     target: str = "Player/AOT",
     source_snapshots: dict[str, str] | None = None,
+    resource_root: str | Path | None = None,
 ) -> ComputeAotResult:
     """Stage matching prewarmed kernels plus engine compute primitives.
 
@@ -562,9 +563,22 @@ def stage_compute_artifacts(
 
     shader_target = "wgsl" if target == "Web/Player" else None
     engine_elapsed_ms = ensure_engine_compute_artifacts(root, target=shader_target)
-    selected, manifest_records, runtime_kernels, kernel_count = _select_current_artifacts(
-        root, data, snapshots, expected, native_names, shader_target=shader_target,
-    )
+    from infernux._compiler.shader_library import using_cooked_shader_sources
+    from infernux.lib import _Infernux
+    from infernux.resources import resources_path
+
+    resources = Path(resources_path) if resource_root is None else Path(resource_root)
+    catalog = data / "Library" / "RuntimeAssetRecords.json"
+    shader_paths = {}
+    if resource_root is not None:
+        from infernux.engine.build.shader_programs import _cooked_shader_sources
+
+        _, _, shader_paths, _ = _cooked_shader_sources(data, catalog, resources)
+    with using_cooked_shader_sources(resources, shader_paths, ray_surfaces=lambda: _Infernux._shader_project_surface_sources(
+            str(data), str(resources), str(catalog))):
+        selected, manifest_records, runtime_kernels, kernel_count = _select_current_artifacts(
+            root, data, snapshots, expected, native_names, shader_target=shader_target,
+        )
 
     _clear_staged_gpu_artifacts(destination)
     destination.mkdir(parents=True, exist_ok=True)

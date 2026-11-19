@@ -94,11 +94,17 @@ class AssetCatalogSnapshot final
     {
         return m_directories;
     }
+    /// Compiler inputs exist in Player snapshots without constructing Project-panel directories.
+    [[nodiscard]] const std::vector<std::pair<std::string, std::string>> &GetShaderSources() const noexcept
+    {
+        return m_shaderSources;
+    }
 
   private:
     friend class AssetDatabase;
     uint64_t m_generation = 0;
     std::unordered_map<std::string, std::vector<AssetCatalogEntry>> m_directories;
+    std::vector<std::pair<std::string, std::string>> m_shaderSources;
 };
 
 /**

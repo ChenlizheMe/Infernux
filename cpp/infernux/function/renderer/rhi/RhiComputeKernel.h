@@ -5,6 +5,7 @@
 #include "RhiComputeHost.h"
 #include "RhiDescriptors.h"
 #include "RhiSubmission.h"
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 #include <array>
 #include <cstddef>
@@ -30,6 +31,28 @@ struct ComputeBufferBinding
     uint32_t slot = 0;
     BindingType type = BindingType::StorageBuffer;
     bool readOnlyStorage = false;
+};
+
+/// Read-only publications resolved by a frame graph, independent of the
+/// numerical allocations owned by Work. The captured owners live until the
+/// graphics submission that recorded their dispatch actually completes.
+struct ComputeGraphReads
+{
+    struct Buffer
+    {
+        BufferHandle handle;
+        uint64_t offset = 0;
+        uint64_t byteSize = 0;
+        std::shared_ptr<const void> owner;
+    };
+    struct Texture
+    {
+        TextureViewHandle view;
+        SamplerHandle sampler;
+        std::shared_ptr<const void> owner;
+    };
+    std::unordered_map<std::string, Buffer> buffers;
+    std::unordered_map<std::string, Texture> textures;
 };
 
 enum class ComputeBufferAccess : uint8_t
@@ -128,6 +151,8 @@ SubmitComputeBatchAndRead(ComputeHost &host, std::vector<ComputeBufferUpdate> up
 /// Kernels are shared-owned so submissions can retain them through completion.
 class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
 {
+    struct GraphBindingGroup;
+
   public:
     enum class PipelineCreation
     {
@@ -144,7 +169,8 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
     INFERNUX_RENDER_CORE_API ComputeKernel(ComputeHost &host, const ShaderModuleDesc &shader,
                                            const std::string &entryPoint,
                                            std::vector<ComputeBufferBinding> bufferBindings, uint32_t pushConstantBytes,
-                                           PipelineCreation creation = PipelineCreation::Immediate);
+                                           PipelineCreation creation = PipelineCreation::Immediate,
+                                           std::shared_ptr<const ShaderTargetCode> graphProgram = {});
     INFERNUX_RENDER_CORE_API ~ComputeKernel();
 
     ComputeKernel(const ComputeKernel &) = delete;
@@ -152,6 +178,14 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API uint32_t GetBufferBindingCount() const noexcept;
     [[nodiscard]] INFERNUX_RENDER_CORE_API const std::vector<uint32_t> &GetBufferBindings() const noexcept;
+    [[nodiscard]] const std::vector<ShaderResourceLayout> &GetGraphReadBindings() const noexcept
+    {
+        return m_graphReadBindings;
+    }
+    [[nodiscard]] const std::shared_ptr<const ShaderTargetCode> &GetGraphProgram() const noexcept
+    {
+        return m_graphProgram;
+    }
     [[nodiscard]] INFERNUX_RENDER_CORE_API uint32_t GetPushConstantBytes() const noexcept;
     [[nodiscard]] ComputeHost &GetHost() noexcept
     {
@@ -211,6 +245,7 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
         std::shared_ptr<ComputeKernel> kernel;
         ComputePipelineHandle pipeline;
         BindGroupHandle group;
+        std::shared_ptr<const GraphBindingGroup> graphGroup;
         std::vector<std::shared_ptr<ComputeBufferAllocation>> allocations;
         std::vector<std::shared_ptr<ComputeBufferState>> states;
         std::vector<ComputeBufferAccess> bufferAccesses;
@@ -228,7 +263,8 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
     [[nodiscard]] INFERNUX_RENDER_CORE_API PreparedDispatch PrepareDispatch(
         std::vector<std::shared_ptr<ComputeBuffer>> buffers, std::vector<ComputeBufferAccess> bufferAccesses,
         std::vector<uint8_t> pushConstants, uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
-        std::optional<ComputeDispatchProof> proof = {}, std::optional<ComputeIndirectArguments> indirectArguments = {});
+        std::optional<ComputeDispatchProof> proof = {}, std::optional<ComputeIndirectArguments> indirectArguments = {},
+        std::shared_ptr<const ComputeGraphReads> graphReads = {});
 
   private:
     struct BatchDispatch
@@ -284,12 +320,16 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
 
     [[nodiscard]] BindGroupHandle
     ResolveBindGroup(const std::vector<std::shared_ptr<ComputeBufferAllocation>> &allocations);
+    [[nodiscard]] std::shared_ptr<const GraphBindingGroup>
+    ResolveGraphBindGroup(const std::vector<std::shared_ptr<ComputeBufferAllocation>> &allocations,
+                          std::shared_ptr<const ComputeGraphReads> reads);
     [[nodiscard]] PreparedDispatch CaptureDispatch(std::vector<std::shared_ptr<ComputeBuffer>> buffers,
                                                    std::vector<ComputeBufferAccess> bufferAccesses,
                                                    std::vector<uint8_t> pushConstants, uint32_t groupCountX,
                                                    uint32_t groupCountY, uint32_t groupCountZ,
                                                    std::optional<ComputeDispatchProof> proof,
-                                                   std::optional<ComputeIndirectArguments> indirectArguments);
+                                                   std::optional<ComputeIndirectArguments> indirectArguments,
+                                                   std::shared_ptr<const ComputeGraphReads> graphReads = {});
     void ValidateDispatch(const std::vector<ComputeBufferAccess> &accesses, size_t pushConstantBytes,
                           uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ,
                           bool indirect = false) const;
@@ -328,6 +368,9 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
     std::optional<DeferredPipeline> m_deferredPipeline;
     std::optional<PendingPipeline> m_pendingPipeline;
     std::vector<BindingGroupEntry> m_groups;
+    std::vector<std::weak_ptr<const GraphBindingGroup>> m_graphGroups;
+    std::shared_ptr<const ShaderTargetCode> m_graphProgram;
+    std::vector<ShaderResourceLayout> m_graphReadBindings;
     std::vector<uint32_t> m_bufferBindings;
     std::vector<BindingType> m_bufferBindingTypes;
     std::vector<ComputeBufferAccess> m_defaultBufferAccesses;
@@ -453,6 +496,10 @@ class ComputeWorkInstance final
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeWorkInstance>
     Rebind(std::vector<ComputeWorkInput> inputs,
            const std::vector<std::shared_ptr<ComputeBuffer>> &externalInputs = {}) const;
+    /// One pass's immutable borrowed publications, sharing this instance's
+    /// exact private allocations rather than cloning another set of outputs.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeWorkInstance>
+    WithGraphReads(std::shared_ptr<const ComputeGraphReads> reads) const;
     /// Lower the bound recipe through the same batch preparation and writer
     /// versioning used by individual compute dispatches. Updates precede the
     /// recipe; reads observe its completed writes. Does not submit work.
@@ -477,9 +524,11 @@ class ComputeWorkInstance final
   private:
     friend class ComputeWorkRecipe;
     ComputeWorkInstance(std::shared_ptr<const ComputeWorkRecipe> recipe,
-                        std::vector<std::shared_ptr<ComputeBuffer>> buffers);
+                        std::vector<std::shared_ptr<ComputeBuffer>> buffers,
+                        std::shared_ptr<const ComputeGraphReads> graphReads = {});
     std::shared_ptr<const ComputeWorkRecipe> m_recipe;
     std::vector<std::shared_ptr<ComputeBuffer>> m_buffers;
+    std::shared_ptr<const ComputeGraphReads> m_graphReads;
     mutable std::vector<ComputeKernel::PreparedDispatch> m_dispatches;
 };
 

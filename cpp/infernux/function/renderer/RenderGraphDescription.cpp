@@ -72,7 +72,8 @@ std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGr
     const ShaderResourceLayout *layout = nullptr;
     for (const auto &pass : graph.passes) {
         const auto *command = pass.PrimaryCommand();
-        if (!command || command->type != GraphCommandType::FullscreenQuad)
+        if (!command ||
+            (command->type != GraphCommandType::FullscreenQuad && command->type != GraphCommandType::ComputeWork))
             continue;
         const bool readsTables =
             std::any_of(command->inputBindings.begin(), command->inputBindings.end(), [&](const auto &binding) {
@@ -99,26 +100,36 @@ std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGr
                              [&](const auto &item) { return item.role == source && item.name == resource; }))
                 throw std::invalid_argument("World ray Lit pass must bind its World page: " + std::string(name));
         }
-        if (!command->fullscreenProgram)
-            throw std::invalid_argument("World ray Lit pass has no captured shader: " + pass.name);
-        const auto &candidate = command->fullscreenProgram->code;
-        const auto reflected =
-            std::find_if(candidate->resources.begin(), candidate->resources.end(), [](const auto &r) {
-                return r.name == "ray_lit_materials" && r.set == 0 &&
-                       r.binding.type == rhi::BindingType::StorageBuffer && r.binding.readOnlyStorage;
-            });
-        if (reflected == candidate->resources.end())
-            throw std::invalid_argument("World ray Lit pass must read its material table: " + pass.name);
-        if (!program) {
-            program = candidate;
-            layout = &*reflected;
-            continue;
+        std::vector<std::shared_ptr<const ShaderTargetCode>> candidates;
+        if (command->type == GraphCommandType::FullscreenQuad) {
+            if (!command->fullscreenProgram)
+                throw std::invalid_argument("World ray Lit pass has no captured shader: " + pass.name);
+            candidates.push_back(command->fullscreenProgram->code);
+        } else {
+            const auto *work = FindGraphWorkBinding(graph, command->workBinding);
+            for (const auto &dispatch : work->recipe->GetDispatches())
+                if (dispatch.kernel->GetGraphProgram())
+                    candidates.push_back(dispatch.kernel->GetGraphProgram());
         }
-        if (reflected->elementStride != layout->elementStride || !(reflected->value == layout->value))
-            throw std::invalid_argument("World ray Lit pass uses a different table layout: " + pass.name);
+        for (const auto &candidate : candidates) {
+            const auto reflected =
+                std::find_if(candidate->resources.begin(), candidate->resources.end(), [](const auto &r) {
+                    return r.name == "ray_lit_materials" && r.set == 0 &&
+                           r.binding.type == rhi::BindingType::StorageBuffer && r.binding.readOnlyStorage;
+                });
+            if (reflected == candidate->resources.end())
+                throw std::invalid_argument("World ray Lit pass must read its material table: " + pass.name);
+            if (!program) {
+                program = candidate;
+                layout = &*reflected;
+                continue;
+            }
+            if (reflected->elementStride != layout->elementStride || !(reflected->value == layout->value))
+                throw std::invalid_argument("World ray Lit pass uses a different table layout: " + pass.name);
+        }
     }
     if (!program)
-        throw std::invalid_argument("World ray Lit resources require a fullscreen consumer");
+        throw std::invalid_argument("World ray Lit resources require a captured graphics or compute consumer");
     return program;
 }
 

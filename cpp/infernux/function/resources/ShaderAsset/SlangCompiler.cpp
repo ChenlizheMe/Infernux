@@ -327,14 +327,10 @@ ShaderCompilation SlangCompiler::CompileRootProgram(ShaderSourceModule source,
     return result;
 }
 
-ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source,
-                                                      const std::vector<ShaderCodeTarget> &targets)
+namespace
 {
-    const auto schema = nlohmann::json::parse(source.schema);
-    const auto &domain = schema.at("domain");
-    auto result = domain == "screen_ui" || domain == "world_ui"
-                      ? CompileRootProgram(source.source, source.libraries, targets, false, source.sourceRanges)
-                      : Compile(source.source, source.libraries, targets, false, source.sourceRanges);
+void ApplyAuthorMetadata(ShaderCompilation &result, const nlohmann::json &schema)
+{
     std::vector<std::pair<std::string, std::string>> fields;
     for (const auto &input : schema.at("inputs"))
         fields.emplace_back(input.at("name").get<std::string>(), input.at("kind").get<std::string>());
@@ -353,6 +349,23 @@ ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &
             reflection["infernux_ray_surfaces"] = schema.at("ray_surfaces");
             target.reflection = reflection.dump();
         }
+}
+} // namespace
+
+void SlangCompiler::ApplyAuthorMetadata(ShaderCompilation &compiled, const std::string &schema)
+{
+    infernux::ApplyAuthorMetadata(compiled, nlohmann::json::parse(schema));
+}
+
+ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &source,
+                                                      const std::vector<ShaderCodeTarget> &targets)
+{
+    const auto schema = nlohmann::json::parse(source.schema);
+    const auto &domain = schema.at("domain");
+    auto result = domain == "screen_ui" || domain == "world_ui"
+                      ? CompileRootProgram(source.source, source.libraries, targets, false, source.sourceRanges)
+                      : Compile(source.source, source.libraries, targets, false, source.sourceRanges);
+    infernux::ApplyAuthorMetadata(result, schema);
     return result;
 }
 

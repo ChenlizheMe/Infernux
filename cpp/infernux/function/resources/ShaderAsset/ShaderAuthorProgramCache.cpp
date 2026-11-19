@@ -157,22 +157,19 @@ ShaderAuthorSurfaceReader ShaderProjectSurfaceReader(const AssetDatabase &databa
                 return *sources;
             }
         auto result = std::make_shared<ShaderAuthorSurfaceSources>();
-        for (const auto &[directory, entries] : snapshot->GetDirectories())
-            for (const auto &entry : entries) {
-                if (entry.resourceType != ResourceType::Shader)
-                    continue;
-                const auto *kind = asset_formats::FindShaderSourceKind(entry.path);
-                if (!kind || std::string_view(kind->stage) != "fragment")
-                    continue;
-                std::string relative;
-                if (!TryMakeRelativeFilesystemPath(entry.path, database.GetProjectRoot(), relative))
-                    continue;
-                constexpr std::string_view cookedPrefix = "Library/Artifacts/Blob/";
-                if (relative.compare(0, cookedPrefix.size(), cookedPrefix) == 0)
-                    relative.erase(0, cookedPrefix.size());
-                if (relative.compare(0, 7, "Assets/") == 0 || relative.compare(0, 9, "Packages/") == 0)
-                    result->emplace_back(entry.guid, entry.path);
-            }
+        for (const auto &[guid, path] : snapshot->GetShaderSources()) {
+            const auto *kind = asset_formats::FindShaderSourceKind(path);
+            if (!kind || std::string_view(kind->stage) != "fragment")
+                continue;
+            std::string relative;
+            if (!TryMakeRelativeFilesystemPath(path, database.GetProjectRoot(), relative))
+                continue;
+            constexpr std::string_view cookedPrefix = "Library/Artifacts/Blob/";
+            if (relative.compare(0, cookedPrefix.size(), cookedPrefix) == 0)
+                relative.erase(0, cookedPrefix.size());
+            if (relative.compare(0, 7, "Assets/") == 0 || relative.compare(0, 9, "Packages/") == 0)
+                result->emplace_back(guid, path);
+        }
         std::sort(result->begin(), result->end());
         sources = std::move(result);
         cache.push_back({snapshot, sources});

@@ -4,6 +4,7 @@
 #include <function/renderer/RenderPoseBuffer.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/rhi/RhiUpload.h>
+#include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <map>
 #include <pybind11/numpy.h>
@@ -746,9 +747,14 @@ void infernux::RegisterComputeBindings(py::module_ &m)
         .def(
             "_create_kernel_from_compiler",
             [](rhi::ComputeHost &host, py::bytes code, const std::vector<std::pair<uint32_t, std::string>> &bindings,
-               uint32_t pushConstantBytes, const std::string &entryPoint, const std::string &target) {
+               uint32_t pushConstantBytes, const std::string &entryPoint, const std::string &target,
+               const std::optional<py::bytes> &graphMetadata) {
                 host.Queue().RecordNativeBoundary();
                 std::vector<rhi::ComputeBufferBinding> bufferBindings;
+                std::shared_ptr<const ShaderTargetCode> program;
+                if (graphMetadata)
+                    program = std::make_shared<const ShaderTargetCode>(
+                        DecodeShaderTarget(py::cast<std::string>(*graphMetadata)));
                 bufferBindings.reserve(bindings.size());
                 for (const auto &[slot, type] : bindings) {
                     if (type == "uniform")
@@ -765,17 +771,19 @@ void infernux::RegisterComputeBindings(py::module_ &m)
                     const auto words = bindings::DecodeSpirvBytes(code, "compiled compute kernel");
                     return std::make_shared<rhi::ComputeKernel>(
                         host, rhi::ShaderModuleDesc::FromSpirV(words.data(), words.size()), entryPoint,
-                        std::move(bufferBindings), pushConstantBytes);
+                        std::move(bufferBindings), pushConstantBytes, rhi::ComputeKernel::PipelineCreation::Immediate,
+                        std::move(program));
                 }
                 if (target != "wgsl")
                     throw py::value_error("Compiler target must be spirv or wgsl");
                 const std::string text = code;
-                return std::make_shared<rhi::ComputeKernel>(host,
-                                                            rhi::ShaderModuleDesc::FromWgsl(text.data(), text.size()),
-                                                            entryPoint, std::move(bufferBindings), pushConstantBytes);
+                return std::make_shared<rhi::ComputeKernel>(
+                    host, rhi::ShaderModuleDesc::FromWgsl(text.data(), text.size()), entryPoint,
+                    std::move(bufferBindings), pushConstantBytes, rhi::ComputeKernel::PipelineCreation::Immediate,
+                    std::move(program));
             },
             py::arg("code"), py::arg("bindings"), py::arg("push_constant_bytes") = 0, py::arg("entry_point") = "main",
-            py::arg("target") = "spirv", py::keep_alive<0, 1>())
+            py::arg("target") = "spirv", py::arg("graph_metadata") = py::none(), py::keep_alive<0, 1>())
         .def(
             "prepare_batch",
             [](rhi::ComputeHost &host, py::iterable values, py::iterable updateValues, py::iterable readValues,

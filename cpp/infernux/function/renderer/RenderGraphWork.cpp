@@ -1,5 +1,7 @@
 #include "RenderGraphWork.h"
 #include "RenderViewSchedule.h"
+#include "raytracing/RayWorldMaterials.h"
+#include "rhi/RhiBuffer.h"
 #include "rhi/RhiComputeBuffer.h"
 #include "rhi/RhiComputeKernel.h"
 
@@ -71,10 +73,88 @@ std::optional<RenderGraphWorkStorage> PrepareRenderGraphWork(rhi::ComputeHost &h
         for (const auto &buffer : graph.buffers)
             if (buffer.workBinding == binding.name)
                 next.buffers.emplace(buffer.name, instance->GetBuffers()[buffer.workSlot]);
-        (void)instance->GetDispatches();
         next.instances.emplace(binding.name, std::move(instance));
     }
     return next;
+}
+
+bool BindRenderGraphWorkReads(const RenderGraphDescription &graph, RenderGraphWorkStorage &storage,
+                              const rhi::ComputeGraphReads &publications)
+{
+    decltype(storage.passInstances) next;
+    for (const auto &pass : graph.passes) {
+        const auto *command = pass.PrimaryCommand();
+        if (!command || command->type != GraphCommandType::ComputeWork)
+            continue;
+        const auto &base = storage.instances.at(command->workBinding);
+        std::shared_ptr<rhi::ComputeGraphReads> reads;
+        for (const auto &operation : base->GetRecipe().GetDispatches())
+            for (const auto &resource : operation.kernel->GetGraphReadBindings()) {
+                if (!reads)
+                    reads = std::make_shared<rhi::ComputeGraphReads>();
+                auto port = resource.name;
+                if (port == "ray_color_sampler")
+                    port = "ray_color_pages";
+                else if (port == "ray_data_sampler")
+                    port = "ray_data_pages";
+                const auto binding = std::find_if(command->inputBindings.begin(), command->inputBindings.end(),
+                                                  [&](const auto &item) { return item.first == port; });
+                if (binding == command->inputBindings.end())
+                    throw std::invalid_argument("Graph compute input is not bound: " + pass.name + "." + port);
+                if (resource.binding.type == rhi::BindingType::StorageBuffer) {
+                    const auto found = publications.buffers.find(binding->second);
+                    if (found == publications.buffers.end())
+                        return false;
+                    reads->buffers.emplace(resource.name, found->second);
+                } else {
+                    const auto found = publications.textures.find(binding->second);
+                    if (found == publications.textures.end())
+                        return false;
+                    reads->textures.emplace(resource.name, found->second);
+                }
+            }
+        auto instance = reads ? base->WithGraphReads(std::move(reads)) : base;
+        (void)instance->GetDispatches();
+        next.emplace(pass.name, std::move(instance));
+    }
+    storage.passInstances = std::move(next);
+    return true;
+}
+
+rhi::ComputeGraphReads
+WorldRayGraphReadPublications(const RenderGraphDescription &graph,
+                              const std::array<std::shared_ptr<const rhi::BufferResource>, 2> &geometry,
+                              const std::shared_ptr<const raytracing::RayWorldMaterialPublication> &materials)
+{
+    rhi::ComputeGraphReads result;
+    for (const auto &buffer : graph.buffers) {
+        std::shared_ptr<const rhi::BufferResource> owner;
+        switch (buffer.frameBuffer) {
+        case GraphFrameBuffer::WorldRayGeometry:
+            owner = geometry[0];
+            break;
+        case GraphFrameBuffer::WorldRayMeshes:
+            owner = geometry[1];
+            break;
+        case GraphFrameBuffer::WorldRayLitMaterials:
+            owner = materials ? materials->materials : nullptr;
+            break;
+        default:
+            continue;
+        }
+        if (owner)
+            result.buffers.emplace(buffer.name,
+                                   rhi::ComputeGraphReads::Buffer{owner->GetBuffer(), buffer.byteOffset,
+                                                                  owner->GetByteSize() - buffer.byteOffset, owner});
+    }
+    if (materials)
+        for (const auto &texture : graph.textures)
+            if (texture.IsWorldRayPage()) {
+                const auto &owner = materials->pages[texture.role == GraphTextureRole::WorldRayDataPages ? 1 : 0];
+                result.textures.emplace(texture.name,
+                                        rhi::ComputeGraphReads::Texture{owner->GetView(), owner->GetSampler(), owner});
+            }
+    return result;
 }
 
 void RenderGraphWorkStorage::Publish() const

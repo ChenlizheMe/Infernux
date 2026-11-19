@@ -1762,6 +1762,18 @@ std::unordered_set<std::string> AssetDatabase::PublishQuerySnapshotForPaths(cons
     for (const auto &owner : modelOwners)
         UpdateModelSubAssets(owner, *previous, *snapshot, changedSubAssets);
 
+    auto &shaderSources = catalog->m_shaderSources;
+    shaderSources.erase(
+        std::remove_if(shaderSources.begin(), shaderSources.end(),
+                       [&touchedGuids](const auto &source) { return touchedGuids.count(source.first); }),
+        shaderSources.end());
+    for (const auto &guid : touchedGuids) {
+        const auto metadata = snapshot->metas.find(guid);
+        if (metadata != snapshot->metas.end() && metadata->second->GetResourceType() == ResourceType::Shader)
+            catalog->m_shaderSources.emplace_back(guid, snapshot->guidToPath.at(guid));
+    }
+    std::sort(catalog->m_shaderSources.begin(), catalog->m_shaderSources.end());
+
     for (const std::string &directory : touchedDirectories) {
         auto &entries = catalog->m_directories[directory];
         entries.erase(std::remove_if(entries.begin(), entries.end(),
@@ -4286,6 +4298,10 @@ std::shared_ptr<AssetDatabase::QuerySnapshot> AssetDatabase::BuildQuerySnapshotA
 
     auto catalog = std::make_shared<AssetCatalogSnapshot>();
     catalog->m_generation = generation;
+    for (const auto &[guid, path] : guidToPath)
+        if (metas.at(guid)->GetResourceType() == ResourceType::Shader)
+            catalog->m_shaderSources.emplace_back(guid, path);
+    std::sort(catalog->m_shaderSources.begin(), catalog->m_shaderSources.end());
     if (!includeCatalog) {
         snapshot->catalog = std::move(catalog);
         return snapshot;

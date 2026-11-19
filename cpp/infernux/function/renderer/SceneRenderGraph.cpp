@@ -743,6 +743,12 @@ bool SceneRenderGraph::PrepareGraphBuffers()
             m_graphStorageDeferred = true;
             return false;
         }
+        if (!BindRenderGraphWorkReads(
+                m_pythonGraphDesc, *storage,
+                WorldRayGraphReadPublications(m_pythonGraphDesc, m_worldRayBuffers, m_worldRayMaterial))) {
+            m_graphStorageDeferred = true;
+            return false;
+        }
         RetireWorkInstances();
         m_graphWork = std::move(*storage);
         m_computeBufferReads = CaptureComputeBufferReads();
@@ -1418,6 +1424,13 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
         rebound = replacements.empty() || m_renderGraph->RebindImportedBuffers(replacements);
     }
     m_worldRayBuffers = std::move(next);
+    if (rebound && !m_graphWork.passInstances.empty()) {
+        auto retired = std::move(m_graphWork.passInstances);
+        rebound = BindRenderGraphWorkReads(
+            m_pythonGraphDesc, m_graphWork,
+            WorldRayGraphReadPublications(m_pythonGraphDesc, m_worldRayBuffers, m_worldRayMaterial));
+        m_vkCore->GetRetirementQueue().Retire([retired = std::move(retired)]() mutable { retired.clear(); });
+    }
     m_needsRebuild |= !rebound;
 }
 
@@ -4493,7 +4506,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             }
 
             if (passDesc.type == GraphPassType::Compute && command) {
-                const auto instance = m_graphWork.instances.at(command->workBinding);
+                const auto instance = m_graphWork.passInstances.at(passDesc.name);
                 const auto &recipe = instance->GetRecipe();
                 const auto slotNames = GraphWorkSlotNames(
                     m_pythonGraphDesc, *FindGraphWorkBinding(m_pythonGraphDesc, command->workBinding));
@@ -4538,12 +4551,18 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                                 if (access.write)
                                     written.push_back(builder.WriteStorageBuffer(access.handle));
                             }
+                            for (const auto &access : passDesc.bufferAccesses)
+                                if (access.type == GraphBufferAccessType::StorageRead)
+                                    builder.ReadStorageBuffer(bufferHandles.at(access.resource),
+                                                              rhi::PipelineStage::ComputeShader);
+                            for (const auto &name : passDesc.readTextures)
+                                builder.Read(resolveTextureHandle(name), rhi::PipelineStage::ComputeShader);
                             if (operation.indirectArguments)
                                 builder.ReadIndirectBuffer(
                                     bufferHandles.at(slotNames[operation.indirectArguments->slot]));
                             builder.SetSideEffect(passDesc.sideEffect);
-                            return [this, workName = command->workBinding, index](vk::RenderContext &ctx) {
-                                const auto &current = *m_graphWork.instances.at(workName);
+                            return [this, passName = passDesc.name, index](vk::RenderContext &ctx) {
+                                const auto &current = *m_graphWork.passInstances.at(passName);
                                 if (!current.GetDispatches()[index].RecordOne(ctx.GetComputeCommandEncoder()))
                                     throw std::runtime_error("Prepared common graph work could not record");
                                 const auto &dispatch = current.GetRecipe().GetDispatches()[index];

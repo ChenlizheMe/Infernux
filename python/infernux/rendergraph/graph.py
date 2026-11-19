@@ -626,9 +626,9 @@ class RenderPassBuilder:
         return self
 
     def set_buffer(self, resource_name: str, buffer) -> "RenderPassBuilder":
-        """Bind a read-only graph buffer to a fullscreen ``BufferFloat`` or ``BufferUInt`` resource.
+        """Bind a read-only graph buffer to a reflected graphics or compute input.
 
-        Shader Resources and the pass's input calls use the same binding order.
+        Logical input names select resources; the compiler owns their layout.
         """
         handle = self._resolve_buffer(buffer)
         if resource_name in self._input_bindings:
@@ -2398,8 +2398,8 @@ class RenderGraph:
                 raise ValueError(
                     f"Pass '{p._name}' input '{sampler_name}' references unknown resource '{tex_name}'"
                 )
-            if tex_name in buffer_map and p._action != "fullscreen_quad":
-                raise ValueError(f"Pass '{p._name}' binds a buffer outside a fullscreen pass")
+            if tex_name in buffer_map and p._action not in {"fullscreen_quad", "compute_work"}:
+                raise ValueError(f"Pass '{p._name}' binds a buffer outside a graphics or compute program")
 
         if p._action == "draw_shadow_casters" and p._write_depth is None:
             raise ValueError(

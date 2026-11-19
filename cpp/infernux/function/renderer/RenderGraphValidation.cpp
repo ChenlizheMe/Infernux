@@ -502,9 +502,10 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
                     return pass.WritesTexture(tex.name) ||
                            (pass.ReadsTexture(tex.name) &&
                             (!pass.PrimaryCommand() ||
-                             pass.PrimaryCommand()->type != GraphCommandType::FullscreenQuad));
+                             (pass.PrimaryCommand()->type != GraphCommandType::FullscreenQuad &&
+                              pass.PrimaryCommand()->type != GraphCommandType::ComputeWork)));
                 })) {
-                INXLOG_ERROR("World ray texture pages are sampled fullscreen inputs: ", tex.name);
+                INXLOG_ERROR("World ray texture pages are read-only graphics or compute inputs: ", tex.name);
                 return false;
             }
             continue;
@@ -1138,8 +1139,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
         if (!command)
             continue;
         for (const auto &[samplerName, textureName] : command->inputBindings) {
-            if (textures.find(textureName) == textures.end() &&
-                (command->type != GraphCommandType::FullscreenQuad || buffers.find(textureName) == buffers.end())) {
+            if (textures.find(textureName) == textures.end() && buffers.find(textureName) == buffers.end()) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' input '", samplerName,
                              "' references unknown resource '", textureName, "'");
                 return false;

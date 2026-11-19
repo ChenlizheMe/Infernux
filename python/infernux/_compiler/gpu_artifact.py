@@ -80,6 +80,10 @@ class CompilerArtifact:
         return len(self.task_metadata) == 1 and self.task_metadata[0].get("task_type") == "native_dispatch"
 
     @property
+    def graph_dispatch(self) -> bool:
+        return len(self.task_metadata) == 1 and "graph_metadata" in self.task_metadata[0]
+
+    @property
     def count_parameter(self) -> int | None:
         return self.task_metadata[0].get("count_parameter") if len(self.task_metadata) == 1 else None
 
@@ -137,7 +141,7 @@ class CompilerArtifact:
                     raise ValueError(f"Slang binding '{name}' requires the full GPU buffer allocation")
             return
         contract = self.continuation
-        if not contract.eligible:
+        if not contract.eligible and not self.graph_dispatch:
             return
         if self.count_parameter is not None:
             _validate_device_count(params[self.count_parameter])
@@ -153,7 +157,7 @@ class CompilerArtifact:
                 else:
                     value._require_open()
                 if (value.device != "gpu" or len(value.shape) != 1 or str(value._dtype.scalar) not in ARRAY_KINDS
-                        or value._dtype.lanes != 1):
+                        or (value._dtype.lanes != 1 and not self.graph_dispatch)):
                     raise ValueError("GPU continuation requires one-dimensional float32/int32/uint32/int64 buffers")
                 if value._host is None or value._host.identity != owner_identity:
                     raise ValueError("GPU continuation buffers must belong to the executable's host")
