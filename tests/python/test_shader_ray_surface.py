@@ -36,6 +36,26 @@ def sources(tmp_path):
     return path, lambda value: Path(value).read_text(encoding="utf-8")
 
 
+def test_surface_replay_and_history_readers_track_the_same_depth_layout(tmp_path):
+    from infernux._compiler.shader import parse_shader
+    from infernux._compiler.shader_library import builtin_shader_root
+
+    surface, read = sources(tmp_path)
+    root = builtin_shader_root()
+    depth_layout = (root / "lib/ray_surface_depth.shaderlib.py").resolve()
+    for path in (surface, root / "lit.frag.py", root / "ray_primary_surface.frag.py",
+                 root / "ray_path_temporal.frag.py", root / "ray_reconstruct.frag.py"):
+        reads = set()
+
+        def tracked_read(location):
+            reads.add(Path(location).resolve())
+            return read(location)
+
+        definition = parse_shader(read(path), str(path), "depth_layout_test", reader=tracked_read)
+        assert depth_layout in reads, path.name
+        assert depth_layout in {Path(source) for _, source, _ in definition.libraries}, path.name
+
+
 @pytest.mark.parametrize("target", ["spirv", "wgsl"])
 def test_secondary_surface_has_reflected_payload_without_extra_active_buffer(tmp_path, target):
     path, read = sources(tmp_path)

@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.ray_signal import ray_receiver_depth_bits
+from infernux.shader.lib.ray_surface_depth import ray_receiver_depth_bits
 
 
 class RayPrimarySurface(shader.fullscreen):

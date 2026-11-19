@@ -1515,22 +1515,6 @@ float inx_ray_receiver_depth(InxMeshInput input, float3 plane_normal)
     return slope != 0.0 ? saturate(input.position.z + residual / slope) : input.position.z;
 }
 
-uint inx_pack_ray_motion_depth(InxMeshInput input, float receiver_depth)
-{
-    // The replay already owns a D32 attachment. Store the exact offset from its float
-    // bits so the other half of this word can carry the previous pose's eye depth.
-    uint receiver = asuint(receiver_depth);
-    uint offset = receiver - asuint(input.position.z) + 0x8000u;
-    float4 previous = input.motion_previous_clip;
-    if (!inx_mesh_has_motion_history(input) || previous.z <= 0.0 || previous.z > previous.w || offset > 0xffffu)
-        return receiver;
-    float eye_depth = inx_view.projection[3][3] == 0.0 ? previous.w :
-        lerp(inx_view.projection_params.y, inx_view.projection_params.x, previous.z / previous.w);
-    // Positive bfloat16 covers the full eye-depth range. Its sign bit marks valid motion.
-    uint eye_bits = asuint(eye_depth);
-    return 0x80000000u | ((eye_bits + 0x7fffu + ((eye_bits >> 16u) & 1u)) & 0x7fff0000u) | offset;
-}
-
 [shader("fragment")]
 uint4 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
@@ -1543,7 +1527,8 @@ uint4 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFac
     float3 toward_eye = inx_camera_toward_eye(input.position_ws);
     normal *= (dot(normal, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(length_squared);
     float2 encoded = inx_encode_surface_normal(normal);
-    uint depth_and_motion = inx_pack_ray_motion_depth(input, inx_ray_receiver_depth(input, normal));
+    uint depth_and_motion = $depth::pack_ray_surface_depth(input.position.z, inx_ray_receiver_depth(input, normal),
+                                                          input.motion_previous_clip, inx_mesh_has_motion_history(input));
     return uint4(input.surface_id, packHalf2x16(encoded), packHalf2x16(inx_mesh_motion(input)), depth_and_motion);
 }
 """
@@ -1757,9 +1742,11 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                 "inx_shade_surface<true>(input, front_facing)", front,
                 "input.position.z"))
         if model.deferred_model:
+            depth_layout = graph.load_reference("infernux.shader.lib.ray_surface_depth", 0, author, declaration)
+            code.insert(0, "import " + depth_layout.name + ";")
             pbr = "true" if model.deferred_model == "PBR" else "false"
             code.append(f"static const bool INX_GBUFFER_PBR = {pbr};")
-            code.append(_SURFACE_GBUFFER)
+            code.append(_SURFACE_GBUFFER.replace("$depth", depth_layout.name))
         if fragment.thin is not None:
             code.append(_SURFACE_THIN)
     libraries = graph.sources()

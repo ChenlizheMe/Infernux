@@ -334,13 +334,17 @@ class Material(shader.frag):
 
 def test_active_resource_tree_owns_builtin_models_and_libraries(tmp_path, monkeypatch):
     from pathlib import Path
+    from shutil import copyfile
     from infernux.resources import get_package_resources_path
 
     root = tmp_path / "resources"
     library = root / "shaders" / "lib"
     library.mkdir(parents=True)
-    pbr = Path(get_package_resources_path()) / "shaders" / "pbr.shadingmodel.py"
-    (root / "shaders" / pbr.name).write_text(pbr.read_text(encoding="utf8"), encoding="utf8")
+    shaders = Path(get_package_resources_path()) / "shaders"
+    pbr = root / "shaders/pbr.shadingmodel.py"
+    depth = library / "ray_surface_depth.shaderlib.py"
+    copyfile(shaders / pbr.name, pbr)
+    copyfile(shaders / "lib" / depth.name, depth)
     (library / "active.shaderlib.py").write_text('''import infernux.shader as shader
 def color() -> shader.vec3:
     return shader.vec3(0.2, 0.4, 0.6)
@@ -355,7 +359,8 @@ class Paint(shader.surface):
     definition = parse_shader(source, str(tmp_path / "paint.frag.py"), "active_resources")
     assert definition.deferred_model == "PBR"
     paths = {path for _, path, _ in definition.libraries}
-    assert str((root / "shaders" / pbr.name).resolve()) in paths
+    assert str(pbr.resolve()) in paths
+    assert str(depth.resolve()) in paths
     assert str((library / "active.shaderlib.py").resolve()) in paths
     assert len(definition.compile()["targets"]) == 2
 
@@ -787,8 +792,8 @@ class Reflection(shader.fullscreen):
     assert len({module for module, _, _ in libraries}) == len(libraries)
     assert [Path(path).name for module, path, _ in libraries if module == "inx_ray_lit"] == ["lit.frag.py"]
     assert any(Path(span[0]).name == "lit.frag.py" for span in ranges)
-    buffer_strides = {"world_ray_geometry": 16, "world_ray_meshes": 16,
-                      "ray_lit_materials": 272}
+    # Material headers point into a byte-addressed stream of variable-size payloads.
+    buffer_strides = {"world_ray_geometry": 16, "world_ray_meshes": 16, "ray_lit_materials": 4}
     array_names = {"ray_color_pages", "ray_data_pages"}
     samplers = {"ray_color_sampler", "ray_data_sampler"}
     inputs = {field["name"]: field["kind"] for field in json.loads(schema_text)["inputs"]}

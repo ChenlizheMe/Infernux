@@ -1,9 +1,10 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
 from infernux.shader.lib.ray_signal import (
-    pack_ray_signal, ray_grid_pixel, ray_previous_eye_depth, specular_color_variance, specular_hit_distance,
+    pack_ray_signal, ray_grid_pixel, specular_color_variance, specular_hit_distance,
     specular_witness, unpack_ray_signal,
 )
+from infernux.shader.lib.ray_surface_depth import ray_previous_eye_depth
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 

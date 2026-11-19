@@ -1,6 +1,7 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth
-from infernux.shader.lib.ray_signal import ray_grid_pixel, ray_previous_eye_depth
+from infernux.shader.lib.ray_signal import ray_grid_pixel
+from infernux.shader.lib.ray_surface_depth import ray_previous_eye_depth
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
