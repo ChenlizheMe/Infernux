@@ -178,7 +178,8 @@ class DefaultRayTracer(RayTracer):
             packet = output
             if not specular:
                 _filter_diffuse(ctx, guides, packet, filtered, 4)
-                packet = filtered
+                _filter_diffuse(ctx, guides, filtered, intermediate, 8)
+                packet = intermediate
         return _PackedSignal(packet, partial(_linear_resolve, graph, packet, guides, specular))
 
     def build(self, ctx: RayTracingContext):

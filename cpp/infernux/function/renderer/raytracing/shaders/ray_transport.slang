@@ -752,6 +752,10 @@ public InxRayPathEstimate inx_ray_path_temporal(InxSurfaceData surface, InxShadi
     InxBuffer_uint4 records, uint model_id, bool specular, InxBuffer_uint4 cache, uint4 history, uint2 trace_pixel)
 {
     uint2 key = inx_ray_path_key(specular ? context.pixel_position : float2(trace_pixel), specular, true);
+    // Without a reprojected diffuse proposal, evaluate the complementary Sobol
+    // direction in the same two-candidate budget. A fresh proposal has unit mass.
+    if (!specular && history.w == 0u)
+        history = uint4(key ^ uint2(0u, 1u), asuint(1.0), 1u);
     uint represented = min(history.w, 4u);
     uint count = 1u + represented;
     uint2 selected = key;

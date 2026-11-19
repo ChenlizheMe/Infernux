@@ -18,7 +18,7 @@ class RayDiffuseFilter(shader.fullscreen):
         pixel = shader.ivec2(ctx.position.xy)
         packet = shader.load(self.signal, pixel, 0)
         center = unpack_ray_signal(packet)
-        if center.a <= 0.0:
+        if center.a <= 0.0 or (self.stride == 8 and center.a >= 8.0):
             return packet
 
         extent = shader.ivec2(shader.dimensions(self.signal, 0))
@@ -43,12 +43,14 @@ class RayDiffuseFilter(shader.fullscreen):
         # Separable binomial weights over a 3x3 atrous stencil.
         radiance = center.rgb * 4.0
         total = 4.0
-        # The first two scales measure current-frame irradiance. The final scale uses temporal statistics.
+        # The first two scales measure current-frame irradiance. Wider taps use the reconstructed moments.
         raw_samples = self.stride == 1
         local_means = self.stride == 2
         squared_sum = 4.0 * shader.dot(center.rgb, center.rgb)
         squared_weights = 16.0
         mean_error_sum = 4.0 * shader.as_float(packet.w)
+        # Widen support after disocclusion or relighting, then taper the outer taps as samples accumulate.
+        wide_weight = shader.saturate((8.0 - center.a) / 7.0) if self.stride == 8 else 1.0
         for tap in range(9):
             if tap == 4:
                 continue
@@ -86,6 +88,7 @@ class RayDiffuseFilter(shader.fullscreen):
                 sigma = 4.0 * shader.sqrt(variance + sample_variance)
                 sigma += 0.001 + 0.02 * shader.max(center_luma, sample_luma)
                 weight *= sigma / (sigma + shader.abs(sample_luma - center_luma))
+            weight *= wide_weight
             radiance += weight * estimate.rgb
             total += weight
         mean = radiance / total
