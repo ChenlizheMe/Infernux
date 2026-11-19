@@ -31,7 +31,7 @@ inline void ApplyShaderAuthorResources(ShaderCompilation &compilation,
 {
     std::unordered_map<std::string, const std::pair<std::string, std::string> *> roots;
     for (const auto &field : fields)
-        roots.emplace("inx_" + field.first, &field);
+        roots.emplace("inx_author_resource_" + field.first, &field);
     for (auto &target : compilation.targets) {
         std::unordered_set<std::string_view> sampled;
         std::vector<ShaderResourceLayout *> colorImages;

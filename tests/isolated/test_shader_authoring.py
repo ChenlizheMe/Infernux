@@ -247,6 +247,75 @@ class Temporal(shader.fullscreen):
                      str(tmp_path / "invalid.frag.py"), "invalid")
 
 
+def test_resource_fields_do_not_shadow_engine_symbols_or_each_other():
+    def compile_fields(names):
+        history, color, buffer, globals, prefixed = names
+        source = f'''import infernux.shader as shader
+class Resources(shader.fullscreen):
+    {history} = shader.input("previous_color", shader.History2D)
+    {color} = shader.input("source_color", shader.Color2D)
+    {buffer} = shader.input("samples", shader.Buffer[shader.vec4])
+    {globals} = shader.input("auxiliary_color", shader.Color2D)
+    {prefixed} = shader.input("previous_auxiliary", shader.History2D)
+    gain = shader.parameter.float(default=0.5)
+    def main(self, uv: shader.vec2) -> shader.vec4:
+        result = shader.sample_level(self.{color}, uv, 0.0) + self.{buffer}[0]
+        result += shader.sample_level(self.{globals}, uv, 0.0)
+        if self.{history}.valid:
+            result += shader.sample_level(self.{history}, uv, 0.0)
+        if self.{prefixed}.valid:
+            result += shader.sample_level(self.{prefixed}, uv, 0.0)
+        return result * self.gain + shader.vec4(shader.frame_delta_time())
+'''
+        definition = parse_shader(source, "resource_names.frag.py", "resource_names")
+        assert [(field.name, field.semantic) for field in definition.inputs] == list(zip(names, (
+            "previous_color", "source_color", "samples", "auxiliary_color", "previous_auxiliary")))
+        compiled = definition.compile()
+        result = {}
+        for target in compiled["targets"]:
+            resources = target["resources"]
+            # Engine state retains its own name; only authored resources are
+            # restored to their public field names by native reflection.
+            assert any(resource["name"] == "inx_globals" for resource in resources)
+            assert {resource["name"] for resource in resources} == {*names, "inx_parameters", "inx_globals"}
+            logical = {name: str(index) for index, name in enumerate(names)}
+            result[target["target"]] = [dict(resource, name=logical.get(resource["name"], resource["name"]))
+                                        for resource in resources]
+            parameters = next(resource for resource in resources if resource["name"] == "inx_parameters")
+            fields = parameters["value"]["fields"]
+            assert [field["name"] for field in fields] == ["gain", "_inx_history_valid_" + history,
+                "_inx_history_valid_" + prefixed, "_inx_buffer_offset_" + buffer, "_inx_buffer_count_" + buffer]
+            # Uniform metadata is logical too; normalize those field names
+            # before comparing the descriptor/layout contract to safe names.
+            aliases = {prefix + name: prefix + replacement for name, replacement in logical.items()
+                       for prefix in ("_inx_history_valid_", "_inx_buffer_offset_", "_inx_buffer_count_")}
+            for field in fields:
+                field["name"] = aliases.get(field["name"], field["name"])
+        return result
+
+    collisions = compile_fields(("history", "parameters", "buffer_float4", "globals", "author_resource_history"))
+    ordinary = compile_fields(("previous", "source", "values", "auxiliary", "previous_auxiliary"))
+    assert collisions == ordinary
+    assert collisions.keys() == {"spirv", "wgsl"}
+
+
+def test_material_texture_fields_keep_bindings_when_named_like_engine_symbols():
+    definition = parse_shader('''import infernux.shader as shader
+class Material(shader.frag):
+    parameters = shader.material.texture_2d(default="white")
+    history = shader.material.texture_2d(default="normal")
+    gain = shader.material.float(default=0.5)
+    def main(self, ctx: shader.mesh_input) -> shader.vec4:
+        return (shader.sample(self.parameters, ctx.uv0) + shader.sample(self.history, ctx.uv0)) * self.gain
+''', "resource_material.frag.py", "resource_material")
+    for target in definition.compile()["targets"]:
+        resources = {resource["name"]: resource for resource in target["resources"]
+                     if resource["type"] == 2 and resource["set"] == 0}
+        assert resources.keys() == {"parameters", "history"}
+        assert [(resources[name]["set"], resources[name]["binding"]) for name in ("parameters", "history")] == [
+            (0, 1), (0, 3)]
+
+
 def test_active_resource_tree_owns_builtin_models_and_libraries(tmp_path, monkeypatch):
     from pathlib import Path
     from infernux.resources import get_package_resources_path

@@ -543,13 +543,13 @@ Output fragment_main(Vertex input, uint sample : SV_SampleIndex) {
         R"slang(
 struct Color { Texture2DMS<float4> texture; };
 struct Depth { Texture2DMS<float> texture; };
-Color inx_owners;
-Depth inx_depths;
+Color inx_author_resource_owners;
+Depth inx_author_resource_depths;
 [shader("fragment")]
 float4 fragment_main(Vertex input, uint sample : SV_SampleIndex) : SV_Target0 {
     int2 pixel = int2(input.position.xy);
-    float owner = inx_owners.texture.Load(pixel, sample).x;
-    float depth = inx_depths.texture.Load(pixel, sample);
+    float owner = inx_author_resource_owners.texture.Load(pixel, sample).x;
+    float depth = inx_author_resource_depths.texture.Load(pixel, sample);
     bool correct = abs(owner - (sample < 2 ? 1.0 : 9.0)) < 0.01 &&
                    abs(depth - (0.2 + 0.15 * float(sample))) < 0.001;
     return !correct ? float4(0,1,0,1) : owner == 1.0 ? float4(1,0,0,1) : float4(0,0,1,1);
@@ -718,10 +718,10 @@ static void CheckFullscreenStorageRead(vk::VkDeviceContext &context, VkCommandBu
 {
     const auto program = CompileFullscreen(
         R"slang(
-ByteAddressBuffer inx_values;
+ByteAddressBuffer inx_author_resource_values;
 [shader("fragment")]
 float4 fragment_main(Vertex input) : SV_Target0 {
-    return float4(float(inx_values.Load(0)) / 255.0, 0.0, 0.0, 1.0);
+    return float4(float(inx_author_resource_values.Load(0)) / 255.0, 0.0, 0.0, 1.0);
 }
 )slang",
         R"({"domain":"fullscreen","inputs":[{"name":"values","kind":"Buffer","element":"uint"}],"parameters":[]})");
@@ -908,11 +908,11 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
     const auto program =
         CompileFullscreen(R"slang(
 struct Image { Texture3D<float4> texture; SamplerState sampler; };
-Image inx_volume;
+Image inx_author_resource_volume;
 [shader("fragment")]
 float4 fragment_main(Vertex input) : SV_Target0 {
     float z = input.position.x < 1.0 ? 0.25 : 0.75;
-    return inx_volume.texture.Sample(inx_volume.sampler, float3(0.25, 0.25, z));
+    return inx_author_resource_volume.texture.Sample(inx_author_resource_volume.sampler, float3(0.25, 0.25, z));
 }
 )slang",
                           R"({"domain":"fullscreen","inputs":[{"name":"volume","kind":"Color3D"}],"parameters":[]})");

@@ -39,6 +39,14 @@ _DEFAULTS = {"float": 0.0, "int": 0, "uint": 0, "bool": False, "color": (1.0, 1.
              "mat4": tuple(tuple(float(row == column) for column in range(4)) for row in range(4))}
 
 
+def resource_symbol(name: str) -> str:
+    """Keep author resources separate from imported engine symbols.
+
+    ShaderAuthorInputs.h restores the logical field name after reflection.
+    """
+    return "inx_author_resource_" + name
+
+
 def material_properties(parameters):
     """Expose logical author fields to material and graph authoring."""
     kinds = {"texture_2d": "Texture2D", "float": "Float", "int": "Int", "uint": "UInt", "bool": "Bool",
@@ -178,12 +186,12 @@ class ParameterAuthor(ShaderEmitter):
         if isinstance(node.value, ast.Name) and node.value.id == "self":
             field = self.fields.get(node.attr)
             if isinstance(field, ShaderInput) and field.kind == "History2D":
-                return f"inx_history(inx_{node.attr}, inx_parameters._inx_history_valid_{node.attr} != 0u)"
+                return f"inx_history({resource_symbol(node.attr)}, inx_parameters._inx_history_valid_{node.attr} != 0u)"
             if isinstance(field, ShaderInput) and field.kind == "Buffer":
-                return (f"inx_buffer_{field.element}(inx_{node.attr}, "
+                return (f"inx_buffer_{field.element}({resource_symbol(node.attr)}, "
                         f"inx_parameters._inx_buffer_offset_{node.attr}, inx_parameters._inx_buffer_count_{node.attr})")
             if isinstance(field, ShaderInput) or (isinstance(field, ShaderParameter) and field.kind == "texture_2d"):
-                return "inx_" + node.attr
+                return resource_symbol(node.attr)
             if field is None:
                 self.error(node, "Unknown shader parameter: " + node.attr)
             name = "inx_parameters." + node.attr
@@ -203,7 +211,7 @@ class ParameterAuthor(ShaderEmitter):
         for index, field in enumerate(field for field in parameters if field.kind == "texture_2d"):
             owner, node = self.field_sources[field.name]
             code.extend([owner.source_directive(node),
-                         f"[[vk::binding({1 + 2 * index}, {descriptor_set})]] InxColor2D inx_{field.name};"])
+                         f"[[vk::binding({1 + 2 * index}, {descriptor_set})]] InxColor2D {resource_symbol(field.name)};"])
         uniforms = tuple(field for field in parameters if field.kind != "texture_2d")
         histories = tuple(field for field in self.fields.values() if isinstance(field, ShaderInput) and field.kind == "History2D")
         buffers = tuple(field for field in self.fields.values() if isinstance(field, ShaderInput) and field.kind == "Buffer")
