@@ -1,7 +1,7 @@
 import infernux.shader as shader
 from infernux.shader.lib.deferred_surface import deferred_shading_context, load_deferred_surface
 from infernux.shader.lib.ray_path import path_pixel, previous_path
-from infernux.shader.lib.ray_signal import pack_ray_gradient, pack_ray_signal, unpack_ray_gradient
+from infernux.shader.lib.ray_signal import pack_ray_gradient, pack_ray_signal, unpack_ray_gradient, unpack_ray_signal
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -15,6 +15,7 @@ class RayPathTemporal(shader.fullscreen):
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
     tail_cache = shader.input("ray_tail_read", shader.Buffer[shader.uvec4])
     primary = shader.input("ray_primary_surface", shader.UInt2D)
+    fresh = shader.input("fresh", shader.UInt2D)
     motion = shader.input("motion", shader.UInt2D)
     previous_surface = shader.input("previous_surface", shader.UInt2D)
     previous_paths = shader.input("previous_paths", shader.UInt2D)
@@ -37,8 +38,11 @@ class RayPathTemporal(shader.fullscreen):
         if self.specular or not shader._ray_proposals_changed():
             history = previous_path(primary, shader.load(self.motion, pixel, 0), self.previous_surface,
                                     self.previous_paths, uv, extent, full)
+        cell = shader.ivec2(ctx.position.xy)
+        fresh = shader.load(self.fresh, cell, 0)
         result = shader.ray._path_temporal(surface, context, normal, self.surface_records, metadata.y,
-                                           self.specular, self.tail_cache, history, shader.uvec2(ctx.position.xy))
+                                           self.specular, self.tail_cache, history, shader.uvec2(cell),
+                                           unpack_ray_signal(fresh), fresh.zw)
         packet = pack_ray_signal(result.signal.radiance, result.signal.witness)
         reservoir = result.reservoir
         if not self.specular:

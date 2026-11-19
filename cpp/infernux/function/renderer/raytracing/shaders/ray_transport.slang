@@ -750,10 +750,11 @@ public InxRaySignal inx_ray_replay_path(InxSurfaceData surface, InxShadingContex
 
 public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
                                             InxBuffer_uint4 records, uint model_id, bool specular, bool temporal,
-                                            InxBuffer_uint4 cache)
+                                            InxBuffer_uint4 cache, uint2 trace_pixel)
 {
+    float2 position = specular || !temporal ? context.pixel_position : float2(trace_pixel);
     return inx_ray_replay_path(surface, context, geometric_normal, records, model_id, specular, temporal, cache,
-                               inx_ray_path_key(context.pixel_position, specular, temporal));
+                               inx_ray_path_key(position, specular, temporal));
 }
 
 // A positive target leaves support for directions that were black before a lighting or visibility change.
@@ -765,53 +766,38 @@ float inx_ray_path_target(float3 radiance)
 }
 
 public InxRayPathEstimate inx_ray_path_temporal(InxSurfaceData surface, InxShadingContext context, float3 normal,
-    InxBuffer_uint4 records, uint model_id, bool specular, InxBuffer_uint4 cache, uint4 history, uint2 trace_pixel)
+    InxBuffer_uint4 records, uint model_id, bool specular, InxBuffer_uint4 cache, uint4 history, uint2 trace_pixel,
+    float4 fresh_radiance, uint2 fresh_witness)
 {
     uint2 key = inx_ray_path_key(specular ? context.pixel_position : float2(trace_pixel), specular, true);
-    uint previous_count = history.w & 7u;
-    float3 selected_radiance = float3(0.0);
-    float3 replayed_radiance = float3(0.0);
-    // Without a reprojected diffuse proposal, evaluate the complementary Sobol
-    // direction in the same two-candidate budget. A fresh proposal has unit mass.
-    if (!specular && previous_count == 0u)
+    InxRaySignal fresh = {fresh_radiance, fresh_witness};
+    if (fresh.radiance.w <= 0.0)
+        return {fresh, uint4(0), float3(0.0), float3(0.0)};
+
+    if ((history.w & 7u) == 0u)
+    {
+        if (specular)
+            return {fresh, uint4(key, asuint(1.0), 1u), fresh.radiance.rgb, float3(0.0)};
+        // A disoccluded diffuse pixel uses the complementary Sobol direction as a unit-mass proposal.
         history = uint4(key ^ uint2(0u, 1u), asuint(1.0), 1u);
+    }
+
+    InxRaySignal replay = inx_ray_replay_path(surface, context, normal, records, model_id, specular, true,
+                                              cache, history.xy);
     uint represented = min(history.w & 7u, 4u);
     uint count = 1u + represented;
-    uint2 selected = key;
-    float selected_target = 1.0;
-    float total = 0.0;
-    float3 estimate = float3(0.0);
-    InxRaySignal result = (InxRaySignal)0;
-    // Use one traversal call site for the bounded stream on both the native and browser GPU compilers.
-    for (uint i = 0u; i < (represented == 0u ? 1u : 2u); ++i)
-    {
-        uint2 candidate = i == 0u ? key : history.xy;
-        InxRaySignal sample = inx_ray_replay_path(surface, context, normal, records, model_id, specular, true,
-                                                  cache, candidate);
-        if (i == 0u)
-        {
-            result = sample;
-            if (result.radiance.w <= 0.0)
-                return {result, uint4(0), float3(0.0), float3(0.0)};
-        }
-        else
-            replayed_radiance = sample.radiance.rgb;
-        float mass = i == 0u ? 1.0 : float(represented) * asfloat(history.z);
-        float target = inx_ray_path_target(sample.radiance.rgb);
-        float score = mass * target;
-        total += score;
-        uint bits = inx_ray_sample_hash(key.x ^ inx_ray_sample_hash(key.y) ^ ((i + 1u) * 0xb92367d5u));
-        if (float(bits >> 8u) * (1.0 / 16777216.0) * total < score)
-        {
-            selected_radiance = sample.radiance.rgb;
-            selected = candidate;
-            selected_target = target;
-        }
-        estimate += mass * sample.radiance.rgb;
-    }
-    result.radiance.rgb = estimate / float(count);
-    return {result, uint4(selected, asuint(total / (float(count) * selected_target)), count),
-            selected_radiance, replayed_radiance};
+    float mass = float(represented) * asfloat(history.z);
+    float3 initial = fresh.radiance.rgb;
+    float initial_target = inx_ray_path_target(initial);
+    float replay_target = inx_ray_path_target(replay.radiance.rgb);
+    float replay_score = mass * replay_target;
+    float total = initial_target + replay_score;
+    uint bits = inx_ray_sample_hash(key.x ^ inx_ray_sample_hash(key.y) ^ (2u * 0xb92367d5u));
+    bool take_replay = float(bits >> 8u) * (1.0 / 16777216.0) * total < replay_score;
+    float target = take_replay ? replay_target : initial_target;
+    uint4 reservoir = uint4(take_replay ? history.xy : key, asuint(total / (float(count) * target)), count);
+    fresh.radiance.rgb = (initial + mass * replay.radiance.rgb) / float(count);
+    return {fresh, reservoir, take_replay ? replay.radiance.rgb : initial, replay.radiance.rgb};
 }
 
 public int2 inx_ray_path_neighbor(uint2 cell)

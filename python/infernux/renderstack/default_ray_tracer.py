@@ -112,6 +112,13 @@ class DefaultRayTracer(RayTracer):
         stem = f"{ctx.name}/{name}"
         output = graph.create_texture(f"{stem}_packet", format=Format.RGBA32_UINT, size_divisor=divisor, samples=1)
         label = "Ray Specular Radiance" if specular else "Ray Diffuse Irradiance"
+        # Keep fresh traversal and history replay in separate draws. Spatial reuse can overwrite this packet.
+        with graph.add_pass(f"{label} Samples" if ctx.reconstruct else label) as p:
+            _bind_transport(p, ctx, guides, specular)
+            p.set_param("temporal", ctx.reconstruct)
+            p.set_param("resolution_divisor", divisor or 1)
+            p.write_color(output)
+            p.fullscreen_quad("infernux/internal/ray_indirect")
         if ctx.reconstruct:
             # These keys generate paths in the current scene, including after a light changes.
             # Only the temporal selection recurs. The spatial result is consumed once.
@@ -121,7 +128,7 @@ class DefaultRayTracer(RayTracer):
                                              size_divisor=divisor, samples=1)
             with graph.add_pass(f"{label} Path Candidates") as p:
                 _bind_transport(p, ctx, guides, specular)
-                p.set_textures({"motion": guides.motion, "previous_surface": guides.previous_primary,
+                p.set_textures({"fresh": output, "motion": guides.motion, "previous_surface": guides.previous_primary,
                                 "previous_paths": previous})
                 p.write_color(estimates)
                 p.write_color(current, slot=1)
@@ -131,13 +138,6 @@ class DefaultRayTracer(RayTracer):
                 p.set_textures({"paths": current, "estimates": estimates})
                 p.write_color(output)
                 p.fullscreen_quad("infernux/internal/ray_path_spatial")
-        else:
-            with graph.add_pass(label) as p:
-                _bind_transport(p, ctx, guides, specular)
-                p.set_param("temporal", False)
-                p.set_param("resolution_divisor", divisor or 1)
-                p.write_color(output)
-                p.fullscreen_quad("infernux/internal/ray_indirect")
         return _PackedSignal(output, partial(_linear_raw, graph, output),
                              local_estimate=estimates if ctx.reconstruct and specular else output)
 

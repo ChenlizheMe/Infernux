@@ -38,6 +38,6 @@ class RayIndirect(shader.fullscreen):
         geometric_normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
         sample = shader.ray._indirect_signal(
             surface, context, geometric_normal, self.surface_records, metadata.y, self.specular, self.temporal,
-            self.tail_cache,
+            self.tail_cache, shader.uvec2(ctx.position.xy),
         )
         return pack_ray_signal(sample.radiance, sample.witness)

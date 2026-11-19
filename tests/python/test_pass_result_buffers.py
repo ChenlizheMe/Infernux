@@ -291,6 +291,9 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
             packet = graph.get_texture(trace._write_colors[0])
             assert packet.format == Format.RGBA32_UINT and packet.size_divisor == divisor
             candidates = passes[label + " Path Candidates"]
+            samples = passes[label + " Samples"]
+            assert samples._write_colors[0] == candidates._input_bindings["fresh"] == packet.name
+            assert graph._passes.index(samples) < graph._passes.index(candidates) < graph._passes.index(trace)
             paths = graph.get_texture(candidates._write_colors[1])
             previous_paths = graph.get_texture(candidates._input_bindings["previous_paths"])
             assert paths.temporal_key == previous_paths.temporal_key and paths.size_divisor == divisor
