@@ -470,7 +470,7 @@ bool ValidateRenderGraphDescription(const RenderGraphDescription &desc, const rh
 std::optional<GraphPassDesc> ResolveGraphCameraClear(const RenderGraphDescription &graph, CameraClearFlags flags,
                                                      const glm::vec4 &linearBackground, bool preview = false);
 /// The first shadow caster supplies the camera atlas used by the view lighting set.
-const GraphPassDesc *FindViewShadowCaster(const RenderGraphDescription &graph) noexcept;
+const GraphTextureDesc *FindViewShadowAtlas(const RenderGraphDescription &graph) noexcept;
 bool ReadsViewShadow(const GraphCommandDesc &command) noexcept;
 bool GraphUsesForwardPlus(const RenderGraphDescription &graph);
 enum class GraphRayTailUse

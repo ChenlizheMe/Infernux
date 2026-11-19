@@ -122,12 +122,15 @@ std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGr
     return program;
 }
 
-const GraphPassDesc *FindViewShadowCaster(const RenderGraphDescription &graph) noexcept
+const GraphTextureDesc *FindViewShadowAtlas(const RenderGraphDescription &graph) noexcept
 {
     for (const auto &pass : graph.passes) {
         const auto *command = pass.PrimaryCommand();
-        if (command && command->type == GraphCommandType::DrawShadowCasters)
-            return &pass;
+        if (command && command->type == GraphCommandType::DrawShadowCasters) {
+            const auto texture = std::find_if(graph.textures.begin(), graph.textures.end(),
+                                              [&](const auto &entry) { return entry.name == pass.writeDepth; });
+            return texture == graph.textures.end() ? nullptr : &*texture;
+        }
     }
     return nullptr;
 }

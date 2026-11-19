@@ -571,7 +571,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     /// @brief True when the current Python graph contains a shadow-caster pass.
     [[nodiscard]] bool HasShadowCasterPass() const
     {
-        return m_hasShadowCasterPass;
+        return m_viewShadowAtlas != nullptr;
     }
 
     // ========================================================================
@@ -738,7 +738,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         m_hasPythonGraph = false;
         m_pythonGraphValid = false;
         m_rejectedFullscreenSourceRevision.reset();
-        m_hasShadowCasterPass = false;
+        m_viewShadowAtlas = nullptr;
         m_parameterBlocks.clear();
         m_submittedParameterBlocks.clear();
         ++m_parameterBlockGeneration;
@@ -1102,7 +1102,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     GraphRayTailUse m_worldRayTailUse = GraphRayTailUse::None;
     std::shared_ptr<raytracing::RayTailCacheRequest> m_worldRayTailRequest;
     std::array<vk::ResourceHandle, 4> m_worldRayTailHandles;
-    bool m_hasShadowCasterPass = false;
+    const GraphTextureDesc *m_viewShadowAtlas = nullptr; // Owned by the current graph description.
     // Shadow attachments belong to one camera graph and survive across graph
     // executions. Static scenes can therefore preserve the atlas until an
     // input generation changes instead of clearing and redrawing every view.

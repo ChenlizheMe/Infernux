@@ -1476,7 +1476,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         m_pythonMaterialPasses.clear();
         m_materialTextureReads.clear();
         m_materialBufferReads.clear();
-        m_hasShadowCasterPass = false;
+        m_viewShadowAtlas = nullptr;
         m_parameterBlocks.clear();
         m_submittedParameterBlocks.clear();
         ++m_resourceAccessRevision;
@@ -1601,7 +1601,6 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 
     m_pythonCallbacks.clear();
     m_pythonMaterialPasses.clear();
-    m_hasShadowCasterPass = false;
 
     InxVkCoreModular *vkCore = m_vkCore;
     for (const auto &passDesc : normalizedDesc.passes) {
@@ -1615,9 +1614,6 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             continue;
         }
         const auto commandType = command->type;
-        if (commandType == GraphCommandType::DrawShadowCasters) {
-            m_hasShadowCasterPass = true;
-        }
         const int queueMin = command->queueMin;
         const int queueMax = command->queueMax;
         const int screenUIListIndex = command->screenUIList;
@@ -1761,6 +1757,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         m_importedTextureBindings.clear();
     }
     m_pythonGraphDesc = std::move(normalizedDesc);
+    m_viewShadowAtlas = FindViewShadowAtlas(m_pythonGraphDesc);
     m_worldRayRequested =
         std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(), [](const auto &buffer) {
             return buffer.frameBuffer == GraphFrameBuffer::WorldRayGeometry ||
@@ -1830,12 +1827,9 @@ bool SceneRenderGraph::IsPythonGraphCurrent(uint64_t sourceRevision) const
 
 uint32_t SceneRenderGraph::GetShadowMapResolution() const
 {
-    if (m_hasPythonGraph && !m_pythonGraphValid)
+    if (!m_pythonGraphValid || !m_viewShadowAtlas)
         return 0;
-    const auto *caster = FindViewShadowCaster(m_pythonGraphDesc);
-    if (!caster)
-        return 0;
-    const auto [width, height] = ResolveGraphPassExtent(m_pythonGraphDesc, *caster, m_width, m_height);
+    const auto [width, height] = m_viewShadowAtlas->ResolveExtent(m_width, m_height);
     return width == height ? width : 0u;
 }
 
@@ -2752,7 +2746,7 @@ uint64_t SceneRenderGraph::ComputeShadowContentSignature(bool &hasDynamicCaster)
 
 void SceneRenderGraph::RefreshShadowAtlasUpdateState()
 {
-    if (!m_hasShadowCasterPass || m_viewLighting.Lights().GetShadowFrame().views.empty()) {
+    if (!m_viewShadowAtlas || m_viewLighting.Lights().GetShadowFrame().views.empty()) {
         m_pendingShadowContentSignature = 0;
         m_shadowAtlasUpdateRequired = false;
         return;
@@ -4215,7 +4209,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             }
         }
 
-        const auto *shadowCaster = FindViewShadowCaster(m_pythonGraphDesc);
         // Camera clear settings remain active across frames. Consumption is
         // local to this graph build so only the first color-clearing pass is
         // overridden without disabling later per-frame color updates.
@@ -4250,8 +4243,8 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     m_authorPassIndices.emplace(pass.id, AuthorPass{passIndex, dispatch});
             };
             const GraphCommandDesc *command = passDesc.PrimaryCommand();
-            const auto viewShadowInput = shadowCaster && command && ReadsViewShadow(*command)
-                                             ? customRTHandles.at(shadowCaster->writeDepth)
+            const auto viewShadowInput = m_viewShadowAtlas && command && ReadsViewShadow(*command)
+                                             ? customRTHandles.at(m_viewShadowAtlas->name)
                                              : vk::ResourceHandle{};
             if (viewShadowInput.IsValid())
                 m_shadowMapInputHandle = viewShadowInput;
