@@ -3,8 +3,12 @@
 
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/shader/MaterialUniformLayout.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
+#include <nlohmann/json.hpp>
+#include <unordered_map>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -59,32 +63,70 @@ RayMaterialParticipation ClassifyRayMaterial(const InxMaterial &material) noexce
         return RayMaterialParticipation::Lit;
     if (shader == "infernux/unlit")
         return RayMaterialParticipation::Unlit;
-    return RayMaterialParticipation::Unknown;
+    const auto &program = material.GetSelectedShaderArtifact();
+    return program && program->hasRaySurface ? RayMaterialParticipation::Lit : RayMaterialParticipation::Unknown;
 }
 
 struct RayLitMaterialLayout::State
 {
-    explicit State(const ShaderResourceLayout &materials)
-        : materialStride(materials.elementStride), values(Field(materials.value, "values")), uniforms(values.fields),
-          participation(UIntOffset(Field(materials.value, "participation")))
+    struct Payload
     {
-        if (values.kind != ShaderValueKind::Struct ||
-            Field(values, "_alpha_clip_threshold").scalar != ShaderScalarKind::Float32)
-            throw std::invalid_argument("Ray Lit needs the reflected material values block and alpha clip threshold");
-        for (const auto &field : materials.value.fields)
-            if (field.name != "values" && field.name != "participation")
-                textureFields.emplace_back(field.name, UIntOffset(field));
+        Payload(const ShaderResourceLayout &record, bool authored, uint32_t index,
+                const std::vector<std::string> &textureNames = {})
+            : stride(record.elementStride), entry(index)
+        {
+            std::vector<ShaderValueLayout> fields;
+            if (authored) {
+                for (const auto &slot : record.value.fields) {
+                    auto value = Field(slot, "value");
+                    value.name = slot.name;
+                    value.offset += slot.offset;
+                    if (std::find(textureNames.begin(), textureNames.end(), slot.name) != textureNames.end())
+                        textures.emplace_back(slot.name, UIntOffset(value));
+                    else
+                        fields.push_back(std::move(value));
+                }
+            } else {
+                const auto &values = Field(record.value, "values");
+                for (const auto &slot : values.fields) {
+                    auto field = Field(slot, "value");
+                    field.name = slot.name;
+                    field.offset += values.offset + slot.offset;
+                    fields.push_back(std::move(field));
+                }
+                for (const auto &field : record.value.fields)
+                    if (field.name != "values" && field.name != "participation")
+                        textures.emplace_back(field.name, UIntOffset(field));
+            }
+            uniforms = MaterialUniformLayout(fields);
+        }
+        uint64_t stride;
+        uint32_t entry;
+        MaterialUniformLayout uniforms;
+        std::vector<std::pair<std::string, size_t>> textures;
+    };
+
+    explicit State(const ShaderTargetCode &program)
+        : builtin(Buffer(program.resources, "inx_ray_schema_builtin"), false, 0)
+    {
+        const auto manifest =
+            nlohmann::json::parse(program.reflection).value("infernux_ray_surfaces", nlohmann::json::array());
+        for (const auto &surface : manifest) {
+            std::vector<std::string> textureNames;
+            for (const auto &parameter : surface.at("parameters"))
+                if (parameter.at("kind") == "texture_2d")
+                    textureNames.push_back(parameter.at("name").get<std::string>());
+            authored.emplace(surface.at("guid").get<std::string>(),
+                             Payload(Buffer(program.resources, surface.at("schema_resource").get<std::string>()), true,
+                                     surface.at("entry_index").get<uint32_t>(), textureNames));
+        }
     }
 
-    const uint64_t materialStride;
-    const ShaderValueLayout values;
-    const MaterialUniformLayout uniforms;
-    const size_t participation;
-    std::vector<std::pair<std::string, size_t>> textureFields;
+    Payload builtin;
+    std::unordered_map<std::string, Payload> authored;
 };
 
-RayLitMaterialLayout::RayLitMaterialLayout(const std::vector<ShaderResourceLayout> &resources)
-    : m_state(std::make_unique<State>(Buffer(resources, "ray_lit_materials")))
+RayLitMaterialLayout::RayLitMaterialLayout(const ShaderTargetCode &program) : m_state(std::make_unique<State>(program))
 {
 }
 
@@ -125,39 +167,52 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
     for (const auto &draw : world.drawCalls)
         if (draw.indexCount)
             maxSurface = std::max(maxSurface, draw.surfaceId);
-    input.materials = Rows(layout.materialStride, uint64_t{maxSurface} + 1);
+    // One compact header per SurfaceID, followed by target-reflected payloads.
+    // Header: family, byte address, actual compiled author entry, alpha threshold bits.
+    constexpr uint64_t headerStride = 16;
+    input.materials = Rows(headerStride, uint64_t{maxSurface} + 1);
     for (const auto &draw : world.drawCalls) {
         if (!draw.indexCount || !draw.surfaceId || !draw.material)
             continue;
-        auto *row = input.materials.data() + draw.surfaceId * layout.materialStride;
         const auto &material = *draw.material;
-        const auto &renderState = material.GetRenderState();
-        const auto participation = ClassifyRayMaterial(material);
-        const auto kind = static_cast<uint32_t>(participation);
-        std::memcpy(row + layout.participation, &kind, sizeof(kind));
-        if (participation != RayMaterialParticipation::Lit && participation != RayMaterialParticipation::Unlit)
-            continue;
-        auto *values = row + layout.values.offset;
-        layout.uniforms.Write(values, material);
-        if (draw.parameterBlock)
-            layout.uniforms.Apply(values, material, *draw.parameterBlock);
-        const float alpha = renderState.alphaClipEnabled ? renderState.alphaClipThreshold : 0.0f;
-        layout.uniforms.WriteValue(values, "_alpha_clip_threshold", &alpha);
-
-        for (const auto &[name, offset] : layout.textureFields) {
-            if (participation == RayMaterialParticipation::Unlit && !material.HasProperty(name))
-                continue;
-            auto texture = resolve(material, draw.parameterBlock.get(), name);
-            if (!texture)
-                return std::nullopt;
-            if (auto *source = std::get_if<RayTexturePageSource>(&*texture)) {
-                input.textureOffsets.push_back(static_cast<size_t>(row - input.materials.data()) + offset);
-                input.sources.push_back(std::move(*source));
-            } else {
-                const auto value = static_cast<uint32_t>(std::get<RayLitSolidTexture>(*texture));
-                std::memcpy(row + offset, &value, sizeof(value));
+        auto participation = ClassifyRayMaterial(material);
+        const auto custom = layout.authored.find(material.GetShaderStages().fragmentKey);
+        const bool authored = custom != layout.authored.end();
+        const auto &program = material.GetSelectedShaderArtifact();
+        if (program && program->hasRaySurface && !authored)
+            participation = RayMaterialParticipation::Unknown;
+        const auto *payload = authored ? &custom->second : &layout.builtin;
+        const float alpha =
+            material.GetRenderState().alphaClipEnabled ? material.GetRenderState().alphaClipThreshold : 0.0f;
+        std::array<uint32_t, 4> header{
+            static_cast<uint32_t>(participation), 0,
+            authored ? payload->entry : uint32_t(participation == RayMaterialParticipation::Unlit), 0};
+        std::memcpy(&header[3], &alpha, sizeof(alpha));
+        if (participation == RayMaterialParticipation::Lit || participation == RayMaterialParticipation::Unlit) {
+            const auto offset = (input.materials.size() + 15u) & ~size_t{15u};
+            header[1] = static_cast<uint32_t>(offset);
+            input.materials.resize(offset + payload->stride);
+            auto *values = input.materials.data() + offset;
+            payload->uniforms.Write(values, material);
+            if (draw.parameterBlock)
+                payload->uniforms.Apply(values, material, *draw.parameterBlock);
+            payload->uniforms.WriteValue(values, "_alpha_clip_threshold", &alpha);
+            for (const auto &[name, field] : payload->textures) {
+                if (participation == RayMaterialParticipation::Unlit && !material.HasProperty(name))
+                    continue;
+                auto texture = resolve(material, draw.parameterBlock.get(), name);
+                if (!texture)
+                    return std::nullopt;
+                if (auto *source = std::get_if<RayTexturePageSource>(&*texture)) {
+                    input.textureOffsets.push_back(offset + field);
+                    input.sources.push_back(std::move(*source));
+                } else {
+                    const auto value = static_cast<uint32_t>(std::get<RayLitSolidTexture>(*texture));
+                    std::memcpy(values + field, &value, sizeof(value));
+                }
             }
         }
+        std::memcpy(input.materials.data() + draw.surfaceId * headerStride, header.data(), headerStride);
     }
     return input;
 }

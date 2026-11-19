@@ -51,8 +51,12 @@ enum class ShaderAuthorPhase
     Metadata,
     Program
 };
-using ShaderAuthorFrontend = std::function<ShaderAuthorSource(const ShaderSourceModule &, const ShaderTextReader &,
-                                                              ShaderAuthorPhase, const ShaderSourceModule &)>;
+/// Project source identities captured by the exact author/cooker owner.
+using ShaderAuthorSurfaceSources = std::vector<std::pair<std::string, std::string>>;
+using ShaderAuthorSurfaceReader = std::function<const ShaderAuthorSurfaceSources &()>;
+using ShaderAuthorFrontend =
+    std::function<ShaderAuthorSource(const ShaderSourceModule &, const ShaderTextReader &, ShaderAuthorPhase,
+                                     const ShaderSourceModule &, const ShaderAuthorSurfaceReader &)>;
 
 /// The process owns one compiler and its loaded standard library. Each
 /// accepted source revision gets a separate module session, so editing a
@@ -64,7 +68,8 @@ class SlangCompiler
     INFERNUX_SHADER_COMPILER_API void SetAuthorFrontend(ShaderAuthorFrontend frontend);
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderAuthorSource
     PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader,
-                        ShaderAuthorPhase phase = ShaderAuthorPhase::Program, const ShaderSourceModule &vertex = {});
+                        ShaderAuthorPhase phase = ShaderAuthorPhase::Program, const ShaderSourceModule &vertex = {},
+                        const ShaderAuthorSurfaceReader &raySurfaces = {});
     /// Compile a frozen author snapshot for the targets its consumer will use.
     [[nodiscard]] INFERNUX_SHADER_COMPILER_API ShaderCompilation
     CompileAuthorProgram(const ShaderAuthorSource &source, const std::vector<ShaderCodeTarget> &targets);

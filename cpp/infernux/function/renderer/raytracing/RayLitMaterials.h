@@ -15,6 +15,7 @@
 namespace infernux
 {
 struct DrawCallResult;
+struct ShaderTargetCode;
 class InxMaterial;
 struct RendererParameterBlock;
 } // namespace infernux
@@ -56,7 +57,7 @@ using ResolveRayLitTexture =
 class RayLitMaterialLayout final
 {
   public:
-    explicit RayLitMaterialLayout(const std::vector<ShaderResourceLayout> &resources);
+    explicit RayLitMaterialLayout(const ShaderTargetCode &program);
     ~RayLitMaterialLayout();
     [[nodiscard]] std::optional<RayLitMaterialInput> Capture(const DrawCallResult &world,
                                                              const ResolveRayLitTexture &resolve) const;

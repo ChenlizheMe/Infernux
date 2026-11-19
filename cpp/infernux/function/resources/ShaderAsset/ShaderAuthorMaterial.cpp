@@ -37,6 +37,10 @@ ShaderProgramArtifact CreateShaderAuthorMaterial(std::string guid,
                     : particle ? ShaderProgramDomain::ParticleSprite
                                : ShaderProgramDomain::Mesh;
     const bool surface = source.value("surface", false);
+    if (const auto ray = source.find("ray_surface"); ray != source.end() && ray->is_object()) {
+        result.hasRaySurface = true;
+        result.raySurfaceMayEmit = ray->at("may_emit").get<bool>();
+    }
     result.shadingModel = surface ? source.at("shading_model").get<std::string>() : "";
     if (surface) {
         const auto &deferredModel = source.at("deferred_model");

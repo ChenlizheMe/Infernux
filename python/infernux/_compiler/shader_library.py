@@ -449,16 +449,27 @@ def declarations(source, path):
 
 
 class LibraryGraph:
-    def __init__(self, reader=None, *, compute_autodiff=None, allow_world_rays=False):
+    def __init__(self, reader=None, *, compute_autodiff=None, allow_world_rays=False,
+                 module_prefix="inx_library_", ray_surfaces=()):
         self.modules: dict[Path, Module] = {}
         self.ordered: list[Module] = []
         self.loading: set[Path] = set()
         self.lighting_registry: Module | None = None
         self.ray_lit: Module | None = None
         self.allow_world_rays = allow_world_rays
+        self._ray_surface_reader = ray_surfaces
+        self._ray_surface_catalog = None
         self.reader = reader or (lambda path: Path(path).read_text(encoding="utf-8-sig"))
         self.compute_autodiff = compute_autodiff
+        self.module_prefix = module_prefix
         self._derivative_sources: list[_LibrarySource] = []
+
+    @property
+    def ray_surfaces(self):
+        if self._ray_surface_catalog is None:
+            source = self._ray_surface_reader
+            self._ray_surface_catalog = tuple(source() if callable(source) else source)
+        return self._ray_surface_catalog
 
     def reference(self, call, owner, *, stage, suffix):
         if (not isinstance(call, ast.Call) or owner.qualified(call.func) != owner.alias + ".ref"
@@ -540,7 +551,7 @@ class LibraryGraph:
         numeric_only = self.compute_autodiff is not None
         emitter_type = _ComputeLibraryEmitter if numeric_only else ShaderEmitter
         emitter = emitter_type(source, str(path), aliases=(alias,))
-        module = Module("inx_library_" + str(len(self.modules)), str(path), "", {})
+        module = Module(self.module_prefix + str(len(self.modules)), str(path), "", {})
         self.modules[path] = module
         self.loading.add(path)
         functions, dependencies = self.imports(imports, emitter)

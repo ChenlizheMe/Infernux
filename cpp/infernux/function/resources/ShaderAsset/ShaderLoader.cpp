@@ -131,10 +131,11 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
             std::vector<ShaderCacheInput> inputs{
                 MakeShaderCacheInput(fragmentId, fragment->authorSourceText, fragment->filePath),
                 MakeShaderCacheInput(vertexId, vertex->authorSourceText, vertex->filePath)};
+            const auto surfaces = ShaderProjectSurfaceReader(*database);
             const auto selection =
                 ShaderAuthorProgramSelection(database->GetGuidFromPath(fragment->filePath),
                                              database->GetGuidFromPath(vertex->filePath), RuntimeShaderAuthorTarget());
-            if (auto record = FindShaderAuthorProgram(*database, selection, inputs)) {
+            if (auto record = FindShaderAuthorProgram(*database, selection, surfaces, inputs)) {
                 result->program = std::make_shared<const ShaderProgramArtifact>(CreateShaderAuthorMaterial(
                     stages.fragmentKey, record->compilation, record->schema, stages.vertexKey));
                 return result;
@@ -143,7 +144,7 @@ ShaderLoader::CompileMaterialProgram(const std::shared_ptr<ShaderAsset> &fragmen
             const auto prepared = compiler.PrepareAuthorSource(
                 {"material_" + stages.fragmentKey, fragment->filePath, fragment->authorSourceText},
                 TrackAuthorReads(*database, inputs), ShaderAuthorPhase::Program,
-                {"vertex_" + stages.vertexKey, vertex->filePath, vertex->authorSourceText});
+                {"vertex_" + stages.vertexKey, vertex->filePath, vertex->authorSourceText}, surfaces);
             auto record =
                 CompileAuthorRecord(prepared, RuntimeShaderAuthorTarget(), ShaderAuthorDependencies(*database, inputs));
             result->program = std::make_shared<const ShaderProgramArtifact>(
@@ -240,10 +241,12 @@ static std::shared_ptr<ShaderAsset> CompileShaderAsset(const std::string &filePa
     const auto source = ReadAuthorSource(*database, filePath, "asset_" + guid);
     std::vector<ShaderCacheInput> inputs{
         MakeShaderCacheInput(ShaderAuthorInputId(*database, filePath), source.source, filePath)};
+    const auto surfaces = ShaderProjectSurfaceReader(*database);
     const auto selection = ShaderAuthorProgramSelection(guid, {}, RuntimeShaderAuthorTarget());
-    if (auto cached = FindShaderAuthorProgram(*database, selection, inputs))
+    if (auto cached = FindShaderAuthorProgram(*database, selection, surfaces, inputs))
         return ShaderLoader::RestoreAuthorAsset(source, guid, std::move(*cached));
-    const auto prepared = SlangCompiler::Get().PrepareAuthorSource(source, TrackAuthorReads(*database, inputs));
+    const auto prepared = SlangCompiler::Get().PrepareAuthorSource(source, TrackAuthorReads(*database, inputs),
+                                                                   ShaderAuthorPhase::Program, {}, surfaces);
     auto asset = ShaderLoader::CompileAuthorAsset(source, prepared, guid, ShaderAuthorDependencies(*database, inputs));
     StoreShaderAuthorProgram(ProjectCacheDirectory(database->GetProjectRoot()), selection, inputs,
                              {asset->authoringSchema, asset->program, asset->sourceDependencies});
@@ -254,9 +257,10 @@ void ShaderLoader::CookAuthorProgram(const AssetDatabase &database, const std::s
                                      const std::string &vertexGuid, ShaderCodeTarget target,
                                      const std::string &buildCache, const std::string &library)
 {
+    const auto surfaces = ShaderProjectSurfaceReader(database);
     const auto selection = ShaderAuthorProgramSelection(authorGuid, vertexGuid, target);
     std::vector<ShaderCacheInput> inputs;
-    auto record = FindShaderAuthorProgram(database, selection, {}, &inputs, buildCache);
+    auto record = FindShaderAuthorProgram(database, selection, surfaces, {}, &inputs, buildCache);
     if (!record) {
         const auto source = ReadAuthorSource(database, database.GetPathFromGuid(authorGuid),
                                              (vertexGuid.empty() ? "asset_" : "material_") + authorGuid);
@@ -268,7 +272,7 @@ void ShaderLoader::CookAuthorProgram(const AssetDatabase &database, const std::s
                 MakeShaderCacheInput(ShaderAuthorInputId(database, vertex.path), vertex.source, vertex.path));
         }
         const auto prepared = SlangCompiler::Get().PrepareAuthorSource(source, TrackAuthorReads(database, inputs),
-                                                                       ShaderAuthorPhase::Program, vertex);
+                                                                       ShaderAuthorPhase::Program, vertex, surfaces);
         record = CompileAuthorRecord(prepared, target, ShaderAuthorDependencies(database, inputs));
         // Use the same publication contract as a real material before shipping a cache entry.
         if (vertexGuid.empty())

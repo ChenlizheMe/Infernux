@@ -126,6 +126,11 @@ struct DrawMeshPlacement
 float RayEmissivePower(const InxMaterial &material, const RendererParameterBlock *parameters)
 {
     const auto kind = ClassifyRayMaterial(material);
+    if (kind == RayMaterialParticipation::Lit) {
+        const auto &program = material.GetSelectedShaderArtifact();
+        if (program && program->hasRaySurface)
+            return program->raySurfaceMayEmit ? 1.0f : 0.0f;
+    }
     const bool lit = kind == RayMaterialParticipation::Lit;
     if (!lit && kind != RayMaterialParticipation::Unlit)
         return 0.0f;

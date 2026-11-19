@@ -6,6 +6,7 @@
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 #include <function/resources/ShaderAsset/ShaderAuthorInputs.h>
+#include <function/resources/ShaderAsset/ShaderAuthorProgramCache.h>
 #include <function/resources/ShaderAsset/ShaderLoader.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/resources/ShaderAsset/SlangParticleModule.h>
@@ -362,16 +363,18 @@ void RegisterShaderCompilerBindings(py::module_ &m)
         SlangCompiler::Get();
     }
     SlangCompiler::Get().SetAuthorFrontend([](const ShaderSourceModule &source, const ShaderTextReader &reader,
-                                              ShaderAuthorPhase phase, const ShaderSourceModule &vertex) {
+                                              ShaderAuthorPhase phase, const ShaderSourceModule &vertex,
+                                              const ShaderAuthorSurfaceReader &surfaces) {
         py::gil_scoped_acquire acquire;
         try {
             const auto prepare = py::module_::import("infernux._compiler.shader").attr("_prepare_source");
-            const auto prepared =
-                prepare(source.source, source.path, source.name, py::cpp_function(reader),
-                        py::arg("metadata_only") = phase == ShaderAuthorPhase::Metadata,
-                        py::arg("vertex_source") = vertex.path.empty()
-                                                       ? py::object(py::none())
-                                                       : py::object(py::make_tuple(vertex.path, vertex.source)));
+            const auto prepared = prepare(
+                source.source, source.path, source.name, py::cpp_function(reader),
+                py::arg("ray_surfaces") = surfaces ? py::object(py::cpp_function(surfaces)) : py::object(py::tuple()),
+                py::arg("metadata_only") = phase == ShaderAuthorPhase::Metadata,
+                py::arg("vertex_source") = vertex.path.empty()
+                                               ? py::object(py::none())
+                                               : py::object(py::make_tuple(vertex.path, vertex.source)));
             const auto fields = py::cast<py::tuple>(prepared);
             ShaderAuthorSource result;
             result.source = {source.name, source.path, py::cast<std::string>(fields[0])};
@@ -424,10 +427,11 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                     throw std::invalid_argument("GPU author source could not be read: " + path);
                 auto &compiler = SlangCompiler::Get();
                 try {
-                    prepared = compiler.PrepareAuthorSource({"check_program", path, *source}, reader);
-                    auto compiled = compiler.Compile(prepared.source, prepared.libraries,
-                                                     {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl}, false,
-                                                     prepared.sourceRanges);
+                    prepared = compiler.PrepareAuthorSource({"check_program", path, *source}, reader,
+                                                            ShaderAuthorPhase::Program, {},
+                                                            ShaderProjectSurfaceReader(*database));
+                    auto compiled =
+                        compiler.CompileAuthorProgram(prepared, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
                     diagnostics = std::move(compiled.diagnostics);
                     valid = true;
                 } catch (const ShaderCompilationError &error) {
@@ -465,7 +469,10 @@ void RegisterShaderCompilerBindings(py::module_ &m)
             const auto source = reader(path);
             if (!source)
                 throw std::invalid_argument("GPU author source could not be read: " + path);
-            return SlangCompiler::Get().PrepareAuthorSource({"schema_" + guid, path, *source}, reader).schema;
+            return SlangCompiler::Get()
+                .PrepareAuthorSource({"schema_" + guid, path, *source}, reader, ShaderAuthorPhase::Program, {},
+                                     ShaderProjectSurfaceReader(*database))
+                .schema;
         },
         py::arg("guid"), py::call_guard<py::gil_scoped_release>());
     m.def("_slang_version", [] { return SlangCompiler::Get().GetVersion(); }, py::call_guard<py::gil_scoped_release>());

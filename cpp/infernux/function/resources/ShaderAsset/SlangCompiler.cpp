@@ -291,7 +291,8 @@ void SlangCompiler::SetAuthorFrontend(ShaderAuthorFrontend frontend)
 }
 
 ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &source, const ShaderTextReader &reader,
-                                                      ShaderAuthorPhase phase, const ShaderSourceModule &vertex)
+                                                      ShaderAuthorPhase phase, const ShaderSourceModule &vertex,
+                                                      const ShaderAuthorSurfaceReader &raySurfaces)
 {
     ShaderAuthorFrontend frontend;
     {
@@ -302,7 +303,7 @@ ShaderAuthorSource SlangCompiler::PrepareAuthorSource(const ShaderSourceModule &
         throw std::logic_error("Static GPU authoring frontend is not registered");
     // Frontend work may acquire the host interpreter. Never hold a compiler
     // lock across that boundary; only the returned C++ snapshot enters Slang.
-    return frontend(source, reader, phase, vertex);
+    return frontend(source, reader, phase, vertex, raySurfaces);
 }
 
 ShaderCompilation SlangCompiler::CompileRootProgram(ShaderSourceModule source,
@@ -341,6 +342,17 @@ ShaderCompilation SlangCompiler::CompileAuthorProgram(const ShaderAuthorSource &
         if (parameter.at("kind") == "texture_2d")
             fields.emplace_back(parameter.at("name").get<std::string>(), "texture_2d");
     ApplyShaderAuthorResources(result, fields);
+    if (const auto warning = schema.find("ray_surface_diagnostic"); warning != schema.end() && warning->is_object())
+        result.diagnostics.push_back(
+            {warning->at("code").get<std::string>(), "warning", warning->at("path").get<std::string>(),
+             warning->value("line", 1u), warning->value("column", 1u), warning->value("end_line", 1u),
+             warning->value("end_column", 1u), warning->at("message").get<std::string>(), "secondary_surface", ""});
+    if (schema.contains("ray_surfaces"))
+        for (auto &target : result.targets) {
+            auto reflection = nlohmann::json::parse(target.reflection);
+            reflection["infernux_ray_surfaces"] = schema.at("ray_surfaces");
+            target.reflection = reflection.dump();
+        }
     return result;
 }
 

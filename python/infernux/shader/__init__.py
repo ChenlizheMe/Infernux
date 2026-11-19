@@ -272,11 +272,19 @@ class ThinSheetData:
 
 
 class RaySurfaceHit:
-    """The closest accepted world ray hit and its Lit surface properties.
+    """The closest accepted world ray hit and its supported authored surface.
 
-    ``available`` is true for a resolved Lit hit or a definite miss.
+    ``available`` is true for a resolved supported surface or a definite miss.
     Unprepared world data and possible hits with unavailable surface data
     leave the query unavailable.
+
+    Built-in Lit/Unlit and static PBR ``shader.surface`` authors use their
+    actual material values, typed ShaderLib functions and explicit
+    ``sample_level`` reads from the same published ray texture pages. The
+    compiler assigns their layouts; no separate ray material is required.
+    Raster derivatives, frame/view-dependent expressions, custom lighting
+    models and unsupported parameter types retain a located secondary-surface
+    authoring diagnostic. A possible hit on one leaves ``available`` false.
     """
 
     available: bool
@@ -538,7 +546,7 @@ lighting = _Lighting()
 
 
 class _RayQueries:
-    """World-space queries for fullscreen passes using the view's Lit ray geometry."""
+    """Fullscreen queries using shared world geometry and secondary surface evaluators."""
 
     @staticmethod
     def trace_closest(origin_ws: vec3, direction_ws: vec3, min_distance: float, max_distance: float,

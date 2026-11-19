@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ShaderProgramDiskCache.h"
+#include "SlangCompiler.h"
 #include <function/renderer/shader/ShaderProgramCode.h>
 #include <memory>
 
@@ -20,11 +21,14 @@ struct ShaderAuthorProgramRecord
 ShaderCodeTarget RuntimeShaderAuthorTarget() noexcept;
 std::string ShaderAuthorProgramSelection(std::string_view authorGuid, std::string_view vertexGuid,
                                          ShaderCodeTarget target);
+/// Project-owned fragment identities and paths, in stable asset order.
+ShaderAuthorSurfaceReader ShaderProjectSurfaceReader(const AssetDatabase &database);
 std::string ShaderAuthorInputId(const AssetDatabase &database, const std::string &path);
 std::vector<std::string> ShaderAuthorDependencies(const AssetDatabase &database,
                                                   const std::vector<ShaderCacheInput> &inputs);
 std::optional<ShaderAuthorProgramRecord> FindShaderAuthorProgram(const AssetDatabase &database,
                                                                  std::string_view selection,
+                                                                 const ShaderAuthorSurfaceReader &surfaces,
                                                                  const std::vector<ShaderCacheInput> &loadedInputs = {},
                                                                  std::vector<ShaderCacheInput> *matchedInputs = nullptr,
                                                                  const std::string &buildCache = {});

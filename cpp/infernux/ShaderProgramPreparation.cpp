@@ -49,6 +49,7 @@ FrozenAuthorProgram FreezeAuthorProgram(const AssetDatabase &database, const Sha
                                         const ShaderSourceModule &vertex = {})
 {
     FrozenAuthorProgram frozen;
+    const auto surfaces = ShaderProjectSurfaceReader(database);
     const auto vertexGuid = vertex.path.empty() ? std::string{} : database.GetGuidFromPath(vertex.path);
     frozen.selection =
         ShaderAuthorProgramSelection(database.GetGuidFromPath(source.path), vertexGuid, RuntimeShaderAuthorTarget());
@@ -58,7 +59,7 @@ FrozenAuthorProgram FreezeAuthorProgram(const AssetDatabase &database, const Sha
     capture(source.path, source.source);
     if (!vertex.path.empty())
         capture(vertex.path, vertex.source);
-    if (auto program = FindShaderAuthorProgram(database, frozen.selection, frozen.inputs, &frozen.inputs)) {
+    if (auto program = FindShaderAuthorProgram(database, frozen.selection, surfaces, frozen.inputs, &frozen.inputs)) {
         frozen.record = std::move(*program);
         return frozen;
     }
@@ -68,7 +69,8 @@ FrozenAuthorProgram FreezeAuthorProgram(const AssetDatabase &database, const Sha
             capture(path, *text);
         return text;
     };
-    frozen.generated = SlangCompiler::Get().PrepareAuthorSource(source, read, ShaderAuthorPhase::Program, vertex);
+    frozen.generated =
+        SlangCompiler::Get().PrepareAuthorSource(source, read, ShaderAuthorPhase::Program, vertex, surfaces);
     frozen.record.schema = frozen.generated.schema;
     frozen.record.dependencies = ShaderAuthorDependencies(database, frozen.inputs);
     return frozen;

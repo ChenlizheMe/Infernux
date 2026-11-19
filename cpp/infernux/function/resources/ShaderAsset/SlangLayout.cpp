@@ -251,6 +251,9 @@ void ReflectValue(slang::TypeLayoutReflection *layout, BindingOffset offset, con
                     resource.value = ValueLayout(type->getElementTypeLayout());
                     auto *contents = type->getContentVarLayout()->getTypeLayout();
                     resource.elementStride = contents->getElementStride(SLANG_PARAMETER_CATEGORY_UNIFORM);
+                } else if ((type->getResourceShape() & SLANG_RESOURCE_BASE_SHAPE_MASK) == SLANG_BYTE_ADDRESS_BUFFER) {
+                    // Slang lowers byte-addressed storage to 32-bit words on both targets.
+                    resource.elementStride = sizeof(uint32_t);
                 }
                 break;
             case slang::BindingType::CombinedTextureSampler:

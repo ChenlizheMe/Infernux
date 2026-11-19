@@ -164,6 +164,9 @@ struct ShaderProgramArtifact
     std::string shadingModel;
     uint32_t deferredModel = 0;
     bool receivesShadows = true;
+    /// Authored, statically evaluable secondary PBR entry; never inferred from parameter names.
+    bool hasRaySurface = false;
+    bool raySurfaceMayEmit = false;
     uint32_t materialBufferSize = 0;
     std::optional<uint32_t> alphaClipThresholdOffset;
     std::vector<ShaderProgramPropertyBinding> properties;

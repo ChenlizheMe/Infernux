@@ -9,6 +9,7 @@
 #include <cassert>
 #include <chrono>
 #include <exception>
+#include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
 
@@ -37,13 +38,22 @@ MaterialRevision RevisionOf(const RenderWorldFrame &world, uint64_t textureConte
 
 bool SameMaterialRecords(const ShaderTargetCode &a, const ShaderTargetCode &b)
 {
-    const auto table = [](const auto &resources) {
-        return std::find_if(resources.begin(), resources.end(),
-                            [](const auto &resource) { return resource.name == "ray_lit_materials"; });
+    const auto recordResources = [](const auto &resources) {
+        std::vector<const ShaderResourceLayout *> result;
+        for (const auto &resource : resources)
+            if (resource.set == 3)
+                result.push_back(&resource);
+        return result;
     };
-    const auto left = table(a.resources), right = table(b.resources);
-    return left != a.resources.end() && right != b.resources.end() && left->elementStride == right->elementStride &&
-           left->value == right->value;
+    const auto left = recordResources(a.resources), right = recordResources(b.resources);
+    if (left.size() != right.size())
+        return false;
+    for (size_t i = 0; i < left.size(); ++i)
+        if (left[i]->name != right[i]->name || left[i]->elementStride != right[i]->elementStride ||
+            !(left[i]->value == right[i]->value))
+            return false;
+    return nlohmann::json::parse(a.reflection).value("infernux_ray_surfaces", nlohmann::json::array()) ==
+           nlohmann::json::parse(b.reflection).value("infernux_ray_surfaces", nlohmann::json::array());
 }
 
 std::shared_ptr<const rhi::BufferResource> AllocateTable(rhi::Device &device, uint64_t bytes)
@@ -196,7 +206,7 @@ RayWorldMaterialBinding RayWorldMaterials::Acquire(const std::shared_ptr<const R
                 break;
             }
         if (!layout)
-            layout = std::make_shared<RayLitMaterialLayout>(program->resources);
+            layout = std::make_shared<RayLitMaterialLayout>(*program);
         m_layouts.push_back({program, layout});
     }
     const auto key = RevisionOf(*world, textureContentGeneration);

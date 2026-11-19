@@ -4,6 +4,7 @@
 #include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetFormatRegistry.h>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <platform/filesystem/InxPath.h>
 #include <unordered_map>
@@ -129,6 +130,56 @@ ShaderCodeTarget RuntimeShaderAuthorTarget() noexcept
 #endif
 }
 
+ShaderAuthorSurfaceReader ShaderProjectSurfaceReader(const AssetDatabase &database)
+{
+    return [&database,
+            sources =
+                std::shared_ptr<const ShaderAuthorSurfaceSources>{}]() mutable -> const ShaderAuthorSurfaceSources & {
+        if (sources)
+            return *sources;
+        // The database already owns a stable, immutable asset index. Rebuild this
+        // shader-only view once per index, shared by all actual ray consumers.
+        struct Entry
+        {
+            std::weak_ptr<const AssetCatalogSnapshot> snapshot;
+            std::shared_ptr<const ShaderAuthorSurfaceSources> sources;
+        };
+        static std::mutex mutex;
+        static std::vector<Entry> cache;
+        const auto snapshot = database.GetCatalogSnapshot();
+        const std::lock_guard lock(mutex);
+        cache.erase(
+            std::remove_if(cache.begin(), cache.end(), [](const auto &entry) { return entry.snapshot.expired(); }),
+            cache.end());
+        for (const auto &entry : cache)
+            if (entry.snapshot.lock() == snapshot) {
+                sources = entry.sources;
+                return *sources;
+            }
+        auto result = std::make_shared<ShaderAuthorSurfaceSources>();
+        for (const auto &[directory, entries] : snapshot->GetDirectories())
+            for (const auto &entry : entries) {
+                if (entry.resourceType != ResourceType::Shader)
+                    continue;
+                const auto *kind = asset_formats::FindShaderSourceKind(entry.path);
+                if (!kind || std::string_view(kind->stage) != "fragment")
+                    continue;
+                std::string relative;
+                if (!TryMakeRelativeFilesystemPath(entry.path, database.GetProjectRoot(), relative))
+                    continue;
+                constexpr std::string_view cookedPrefix = "Library/Artifacts/Blob/";
+                if (relative.compare(0, cookedPrefix.size(), cookedPrefix) == 0)
+                    relative.erase(0, cookedPrefix.size());
+                if (relative.compare(0, 7, "Assets/") == 0 || relative.compare(0, 9, "Packages/") == 0)
+                    result->emplace_back(entry.guid, entry.path);
+            }
+        std::sort(result->begin(), result->end());
+        sources = std::move(result);
+        cache.push_back({snapshot, sources});
+        return *sources;
+    };
+}
+
 std::string ShaderAuthorProgramSelection(std::string_view authorGuid, std::string_view vertexGuid,
                                          ShaderCodeTarget target)
 {
@@ -178,11 +229,10 @@ std::vector<std::string> ShaderAuthorDependencies(const AssetDatabase &database,
     return dependencies;
 }
 
-std::optional<ShaderAuthorProgramRecord> FindShaderAuthorProgram(const AssetDatabase &database,
-                                                                 std::string_view selection,
-                                                                 const std::vector<ShaderCacheInput> &loadedInputs,
-                                                                 std::vector<ShaderCacheInput> *matchedInputs,
-                                                                 const std::string &buildCache)
+std::optional<ShaderAuthorProgramRecord>
+FindShaderAuthorProgram(const AssetDatabase &database, std::string_view selection,
+                        const ShaderAuthorSurfaceReader &surfaces, const std::vector<ShaderCacheInput> &loadedInputs,
+                        std::vector<ShaderCacheInput> *matchedInputs, const std::string &buildCache)
 {
     const auto &project = database.GetProjectRoot();
     if (project.empty())
@@ -231,6 +281,17 @@ std::optional<ShaderAuthorProgramRecord> FindShaderAuthorProgram(const AssetData
             for (const auto &input : verified)
                 verifiedPaths.emplace(input.id, input.path);
             if (auto record = DecodeProgram(*bytes, verifiedPaths)) {
+                const auto schema = nlohmann::json::parse(record->schema);
+                const auto catalog = schema.find("ray_surface_catalog");
+                if (catalog != schema.end() && catalog->is_array()) {
+                    const auto &current = surfaces();
+                    bool same = catalog->size() == current.size();
+                    for (size_t i = 0; same && i < current.size(); ++i)
+                        same = catalog->at(i).get<std::string>() == current[i].first;
+                    if (!same)
+                        continue;
+                }
+
                 if (matchedInputs)
                     *matchedInputs = std::move(verified);
                 return record;
