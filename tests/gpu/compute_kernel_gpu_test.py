@@ -31,9 +31,9 @@ def _integer_period(value, divisor):
 
 
 @inx.compute.kernel
-def _helper_kernel(domain_values, output_values, scale, bias):
-    namespace = inx.compute.index(domain_values)
-    output_values[namespace] = _affine_term(domain_values[namespace], scale, bias)
+def _helper_kernel(new, 结果, uniform, inx_range_begin):
+    namespace = inx.compute.index(new)
+    结果[namespace] = _affine_term(new[namespace], uniform, inx_range_begin)
 
 
 @inx.compute.function

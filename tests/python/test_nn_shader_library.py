@@ -50,7 +50,7 @@ def test_nn_shaderlib_freezes_transitive_source_and_compiles_supported_derivativ
         modules = {Path(path): source for _, path, source in original[2]}
         assert set(modules) == {entry, leaf}
         assert all('[Differentiable]' in source for source in modules.values())
-        assert 'sin(value)' in modules[leaf]
+        assert 'return sin(' in modules[leaf]
         descriptor = _gpu_buffer_descriptor((17,), np.float32)
         for mode in ('none', 'reverse'):
             artifact = slang.compile_kernel(

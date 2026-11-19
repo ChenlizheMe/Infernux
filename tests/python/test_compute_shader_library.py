@@ -143,8 +143,12 @@ def test_reverse_kernel_differentiates_transitive_shaderlib_calls(project, engin
     source = leaf.read_text(encoding='utf-8').replace('value * 2.0', 'value * value')
     leaf.write_text(source + '\ndef cell(value: float) -> float:\n    return shader.floor(value)\n', encoding='utf-8')
     work = scripts / 'Work.py'
-    work.write_text(KERNEL.replace('solve(values):', 'solve(values, output):')
-                    .replace('values[i] = adjust', 'output[i] = adjust'), encoding='utf-8')
+    helpers = KERNEL[:KERNEL.index('@inx.compute.kernel')]
+    work.write_text(helpers + '''@inx.compute.kernel
+def solve(new, 结果):
+    i = inx.compute.index(new)
+    结果[i] = adjust(new[i])
+''', encoding='utf-8')
     declaration = load_kernel(work)
     values = np.linspace(-2.0, 2.0, 67, dtype=np.float32)
     seeds = np.resize(np.array([0.0, 0.5, -1.25], dtype=np.float32), values.size)

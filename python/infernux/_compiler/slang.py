@@ -342,30 +342,32 @@ class _KernelEmitter(_NumericalEmitter):
         self.accesses = {}
         self.gradient_accesses = {}
         self.argument_fields = []
-        self.argument_names = []
         self.constants = []
         self.constant_arrays = {}
+        self.constant_symbols = {}
         self.helpers = {function.name: function for function in plan.helpers}
         self.helper_sources = {}
         self.helper_return_types = {}
         names = [arg.arg for arg in (*plan.definition.args.posonlyargs, *plan.definition.args.args)]
         self.names = names
+        # Reflection is positional. Keep Python arguments out of the Slang resource namespace.
+        self.argument_symbols = {name: f"inx_arg_{i}" for i, name in enumerate(names)}
         for index, (name, value) in enumerate(zip(names, params)):
+            symbol = self.argument_symbols[name]
             fields = []
             if isinstance(value, Buffer):
                 self.buffers[name] = (index, _BufferSchema(value._dtype.itemsize, len(value.shape),
                                                          _SCALAR_TYPES[value._dtype.scalar.name], value._dtype.scalar.itemsize))
                 self.types[name] = _element_type(value)
-                fields.extend(("int", f"{name}_shape_{axis}") for axis in range(len(value.shape)))
-                fields.append(("uint", name + "_byte_offset"))
+                fields.extend(("int", f"{symbol}_shape_{axis}") for axis in range(len(value.shape)))
+                fields.append(("uint", symbol + "_byte_offset"))
                 if index in plan.gradient_parameters:
-                    fields.append(("uint", name + "_grad_byte_offset"))
+                    fields.append(("uint", symbol + "_grad_byte_offset"))
             else:
                 kind = "int" if isinstance(value, (bool, int, np.integer)) else "float"
                 self.types[name] = kind
-                fields.append((kind, name))
+                fields.append((kind, symbol))
             self.argument_fields.extend(fields)
-            self.argument_names.append(name)
         if plan.continuation.eligible:
             self.argument_fields.extend([("int", "inx_range_begin"), ("int", "inx_range_end")])
         self.types[plan.work_item.index_name] = "int"
@@ -382,14 +384,16 @@ class _KernelEmitter(_NumericalEmitter):
             if isinstance(value, (bool, int, float, np.number)):
                 kind = "bool" if isinstance(value, (bool, np.bool_)) else "int" if isinstance(value, (int, np.integer)) else "float"
                 self.types[name] = kind
-                self.constants.append(f"static const {kind} {name} = {_constant(value)};")
+                symbol = self.constant_symbols[name] = self.bind_value(name)
+                self.constants.append(f"static const {kind} {symbol} = {_constant(value)};")
             elif isinstance(value, (tuple, list, np.ndarray)):
                 values = np.asarray(value)
                 kind = "float" if values.dtype.kind == "f" else "int"
                 self.types[name] = kind
                 self.constant_arrays[name] = values.shape
+                symbol = self.constant_symbols[name] = self.bind_value(name)
                 payload = ", ".join(_constant(item) for item in values.ravel())
-                self.constants.append(f"static const {kind} {name}[{values.size}] = {{{payload}}};")
+                self.constants.append(f"static const {kind} {symbol}[{values.size}] = {{{payload}}};")
 
     def infer(self, node):
         if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
@@ -409,33 +413,35 @@ class _KernelEmitter(_NumericalEmitter):
 
     def visit_Name(self, node):
         name = node.id
-        if name in self.argument_names and name not in self.buffers:
-            return "inx_args." + name
+        if name in self.argument_symbols and name not in self.buffers:
+            return "inx_args." + self.argument_symbols[name]
         return super().visit_Name(node)
 
     def _address(self, name, indices, *, derivative=False):
         _, value = self.buffers[name]
+        symbol = self.argument_symbols[name]
         indices = indices.elts if isinstance(indices, ast.Tuple) else [indices]
         linear = "0"
         for axis, index in enumerate(indices):
             if self.infer(index) not in {"int", "uint", "int64_t"}:
                 self.error(index, "GPU buffer indices must be integers")
-            linear = f"(({linear}) * inx_args.{name}_shape_{axis} + ({self.visit(index)}))"
-        field = name + ("_grad_byte_offset" if derivative else "_byte_offset")
+            linear = f"(({linear}) * inx_args.{symbol}_shape_{axis} + ({self.visit(index)}))"
+        field = symbol + ("_grad_byte_offset" if derivative else "_byte_offset")
         return f"(inx_args.{field} + uint({linear}) * {value.itemsize}u)"
 
     def visit_Subscript(self, node):
         if isinstance(node.value, ast.Name) and node.value.id in self.buffers:
             name = node.value.id
+            symbol = self.argument_symbols[name]
             address = self._address(name, node.slice)
             self.accesses[name] = self.accesses.get(name, 0) | 1
             if name in self.atomic_buffers:
-                return f"inx_atomic_load_{self.types[name]}({name}, {address})"
-            return f"{name}.Load<{self.types[name]}>({address})"
+                return f"inx_atomic_load_{self.types[name]}({symbol}, {address})"
+            return f"{symbol}.Load<{self.types[name]}>({address})"
         if isinstance(node.value, ast.Attribute) and node.value.attr == "shape" and isinstance(node.value.value, ast.Name):
             name = node.value.value.id
             axis = ast.literal_eval(node.slice)
-            return f"inx_args.{name}_shape_{axis}"
+            return f"inx_args.{self.argument_symbols[name]}_shape_{axis}"
         return super().visit_Subscript(node)
 
     def assign(self, target, value):
@@ -446,16 +452,17 @@ class _KernelEmitter(_NumericalEmitter):
                 schema = self.buffers[name][1]
                 address = self._address(name, element.slice)
                 self.accesses[name] = self.accesses.get(name, 0) | 2
-                self.line(f"{name}.Store<{schema.scalar_type}>({address} + uint({self.visit(target.slice)}) * {schema.scalar_bytes}u, {schema.scalar_type}({value}));")
+                self.line(f"{self.argument_symbols[name]}.Store<{schema.scalar_type}>({address} + uint({self.visit(target.slice)}) * {schema.scalar_bytes}u, {schema.scalar_type}({value}));")
                 return
         if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and target.value.id in self.buffers:
             name = target.value.id
+            symbol = self.argument_symbols[name]
             address = self._address(name, target.slice)
             self.accesses[name] = self.accesses.get(name, 0) | 2
             if name in self.atomic_buffers:
-                self.line(f"inx_atomic_store_{self.types[name]}({name}, {address}, {self.types[name]}({value}));")
+                self.line(f"inx_atomic_store_{self.types[name]}({symbol}, {address}, {self.types[name]}({value}));")
             else:
-                self.line(f"{name}.Store<{self.types[name]}>({address}, {self.types[name]}({value}));")
+                self.line(f"{symbol}.Store<{self.types[name]}>({address}, {self.types[name]}({value}));")
         else:
             super().assign(target, value)
 
@@ -489,7 +496,7 @@ class _KernelEmitter(_NumericalEmitter):
             result = results[0]
             for kind in results[1:]:
                 result = common_type(result, kind)
-            name = function.name + "_" + str(len(self.helper_sources))
+            name = "inx_helper_" + str(len(self.helper_sources))
             attributes = ["[Differentiable]"] if self.plan.autodiff_mode != "none" else []
             self.helper_sources[key] = "\n".join([*attributes, emitter.source_directive(function),
                                                   f"{result} {name}({parameter_list}) {{", *emitter.lines, "}"])
@@ -515,9 +522,9 @@ class _KernelEmitter(_NumericalEmitter):
             buffer, indices = self._atomic_target(node)
             address = self._address(buffer, indices)
             self.accesses[buffer] = 3
-            return f"inx_atomic_add({buffer}, {address}, {self.types[buffer]}({self.visit(node.args[1])}))"
+            return f"inx_atomic_add({self.argument_symbols[buffer]}, {address}, {self.types[buffer]}({self.visit(node.args[1])}))"
         if name == "len" and len(node.args) == 1 and isinstance(node.args[0], ast.Name) and node.args[0].id in self.buffers:
-            return "inx_args." + node.args[0].id + "_shape_0"
+            return "inx_args." + self.argument_symbols[node.args[0].id] + "_shape_0"
         if name in self.helpers:
             symbol, _, arguments = self._helper(node)
             return symbol + "(" + ", ".join(self.visit(arg) for arg in arguments) + ")"
@@ -527,14 +534,15 @@ class _KernelEmitter(_NumericalEmitter):
         fields = "\n".join("    " + kind + " " + name + ";" for kind, name in self.argument_fields)
         result = ["struct Arguments {\n" + fields + "\n};", "ConstantBuffer<Arguments> inx_args;", *self.constants]
         for name, access in self.accesses.items():
+            symbol = self.argument_symbols[name]
             if name in self.atomic_buffers:
-                result.append(f"RWStructuredBuffer<Atomic<uint>> {name};")
+                result.append(f"RWStructuredBuffer<Atomic<uint>> {symbol};")
             else:
                 prefix = "RW" if access & 2 else ""
-                result.append(f"{prefix}ByteAddressBuffer {name};")
+                result.append(f"{prefix}ByteAddressBuffer {symbol};")
         for name, access in self.gradient_accesses.items():
             prefix = "RW" if access & 2 else ""
-            result.append(f"{prefix}ByteAddressBuffer inx_grad_{name};")
+            result.append(f"{prefix}ByteAddressBuffer inx_grad_{self.argument_symbols[name]};")
         return result
 
 
@@ -546,6 +554,7 @@ class _HelperEmitter(_NumericalEmitter):
                          library_functions=parent.library_functions)
         self.line_offset = origin.line_offset
         self.parent = parent
+        self.value_names.update(parent.constant_symbols)
 
     def infer(self, node):
         if isinstance(node, ast.Call) and qualified(node.func) in self.parent.helpers:
@@ -565,14 +574,14 @@ class _LocalEmitter(_KernelEmitter):
         if isinstance(node.value, ast.Name) and node.value.id in self.buffers:
             if not isinstance(node.slice, ast.Name) or node.slice.id != self.plan.work_item.index_name:
                 self.error(node, "Local differentiation reads the current row", code="author.derivative")
-            return "inx_local_" + node.value.id
+            return "inx_local_" + self.argument_symbols[node.value.id]
         return super().visit_Subscript(node)
 
     def assign(self, target, value):
         if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and target.value.id in self.buffers:
             if not isinstance(target.slice, ast.Name) or target.slice.id != self.plan.work_item.index_name:
                 self.error(target, "Local differentiation writes the current row", code="author.derivative")
-            self.line("inx_local_" + target.value.id + " = " + value + ";")
+            self.line("inx_local_" + self.argument_symbols[target.value.id] + " = " + value + ";")
         else:
             base = target
             while isinstance(base, (ast.Subscript, ast.Attribute)):
@@ -611,25 +620,27 @@ def _local_derivative_source(plan, params, primal):
     local.declare_locals(plan.definition.body)
     local.local_declarations()
     types = primal.types
+    symbols = primal.argument_symbols
     for name in outputs:
-        local.line(f"{types[name]} inx_local_{name};")
+        local.line(f"{types[name]} inx_local_{symbols[name]};")
     local.block(plan.definition.body)
     local.line("LocalOutputs result;")
     for name in outputs:
-        local.line("result." + name + " = inx_local_" + name + ";")
+        local.line(f"result.{symbols[name]} = inx_local_{symbols[name]};")
     local.line("return result;")
     # The discrete row index has no differential.
     parameters = ["no_diff int " + local.value_names[index]]
     for name in inputs:
         qualifier = "" if name in selected else "no_diff "
-        parameters.append(f"{qualifier}{types[name]} inx_local_{name}")
-    fields = " ".join(f"{types[name]} {name};" for name in outputs)
+        parameters.append(f"{qualifier}{types[name]} inx_local_{symbols[name]}")
+    fields = " ".join(f"{types[name]} {symbols[name]};" for name in outputs)
     local_function = "struct LocalOutputs : IDifferentiable { " + fields + " };\n[Differentiable]\nLocalOutputs inx_primal(" + ", ".join(parameters) + ") {\n" + "\n".join(local.lines) + "\n}"
     primal.lines.clear()
     primal.accesses.clear()
     index_node = ast.Name(id=index, ctx=ast.Load())
     arguments = [primal.value_names[index]]
     for name in inputs:
+        symbol = symbols[name]
         kind = types[name]
         address = primal._address(name, index_node)
         primal.accesses[name] = 1
@@ -637,40 +648,43 @@ def _local_derivative_source(plan, params, primal):
             tangent = f"{kind}(0.0)"
             if forward:
                 tangent_address = primal._address(name, index_node, derivative=True)
-                tangent = f"inx_grad_{name}.Load<{kind}>({tangent_address})"
+                tangent = f"inx_grad_{symbol}.Load<{kind}>({tangent_address})"
                 primal.gradient_accesses[name] = 1
-            primal.line(f"DifferentialPair<{kind}> inx_pair_{name} = diffPair({name}.Load<{kind}>({address}), {tangent});")
-            arguments.append("inx_pair_" + name)
+            primal.line(f"DifferentialPair<{kind}> inx_pair_{symbol} = diffPair({symbol}.Load<{kind}>({address}), {tangent});")
+            arguments.append("inx_pair_" + symbol)
         else:
-            arguments.append(f"{name}.Load<{kind}>({address})")
+            arguments.append(f"{symbol}.Load<{kind}>({address})")
     if forward:
         primal.line("let inx_result = fwd_diff(inx_primal)(" + ", ".join(arguments) + ");")
         for name in outputs:
+            symbol = symbols[name]
             kind = types[name]
             address = primal._address(name, index_node)
             primal.accesses[name] = 2
-            primal.line(f"{name}.Store<{kind}>({address}, inx_result.p.{name});")
+            primal.line(f"{symbol}.Store<{kind}>({address}, inx_result.p.{symbol});")
             if name in selected:
                 tangent_address = primal._address(name, index_node, derivative=True)
                 primal.gradient_accesses[name] = 2
-                primal.line(f"inx_grad_{name}.Store<{kind}>({tangent_address}, inx_result.d.{name});")
+                primal.line(f"inx_grad_{symbol}.Store<{kind}>({tangent_address}, inx_result.d.{symbol});")
     else:
         primal.line("LocalOutputs.Differential seed;")
         for name in outputs:
+            symbol = symbols[name]
             kind = types[name]
             seed = f"{kind}(0.0)"
             if name in selected:
                 address = primal._address(name, index_node, derivative=True)
                 primal.gradient_accesses[name] = 1
-                seed = f"inx_grad_{name}.Load<{kind}>({address})"
-            primal.line(f"seed.{name} = {seed};")
+                seed = f"inx_grad_{symbol}.Load<{kind}>({address})"
+            primal.line(f"seed.{symbol} = {seed};")
         primal.line("bwd_diff(inx_primal)(" + ", ".join([*arguments, "seed"]) + ");")
         for name in inputs:
             if name in selected:
+                symbol = symbols[name]
                 kind = types[name]
                 address = primal._address(name, index_node, derivative=True)
                 primal.gradient_accesses[name] = 3
-                primal.line(f"inx_grad_{name}.Store<{kind}>({address}, inx_grad_{name}.Load<{kind}>({address}) + inx_pair_{name}.d);")
+                primal.line(f"inx_grad_{symbol}.Store<{kind}>({address}, inx_grad_{symbol}.Load<{kind}>({address}) + inx_pair_{symbol}.d);")
     primal.required_modules.update(local.required_modules)
     primal.helper_sources.update(local.helper_sources)
     primal.source_ranges.extend(local.source_ranges)
@@ -728,7 +742,7 @@ def _source(plan, params):
     emitter.block(plan.definition.body)
     derivative = _local_derivative_source(plan, params, emitter) if plan.autodiff_mode != "none" else ""
     index = emitter.value_names[plan.work_item.index_name]
-    domain = plan.work_item.domain_name
+    domain = emitter.argument_symbols[plan.work_item.domain_name]
     first = "inx_args.inx_range_begin" if plan.continuation.eligible else "0"
     last = "inx_args.inx_range_end" if plan.continuation.eligible else f"inx_args.{domain}_shape_0"
     extent = f"uint(({last}) - ({first}))"
@@ -761,23 +775,24 @@ def _artifact(compiled, emitter, plan, params):
     fields = {field["name"]: field for field in arguments["fields"]}
     layouts = []
     for index, (name, value) in enumerate(zip(emitter.names, params)):
+        symbol = emitter.argument_symbols[name]
         if isinstance(value, Buffer):
-            layout = {"kind": "external_buffer", "shape_offsets": [fields[f"{name}_shape_{axis}"]["offset"] for axis in range(len(value.shape))],
-                            "byte_offset_offset": fields[name + "_byte_offset"]["offset"], "byte_offset_width": 4,
+            layout = {"kind": "external_buffer", "shape_offsets": [fields[f"{symbol}_shape_{axis}"]["offset"] for axis in range(len(value.shape))],
+                            "byte_offset_offset": fields[symbol + "_byte_offset"]["offset"], "byte_offset_width": 4,
                             "needs_grad": index in plan.gradient_parameters}
             if index in plan.gradient_parameters:
-                layout["grad_byte_offset_offset"] = fields[name + "_grad_byte_offset"]["offset"]
+                layout["grad_byte_offset_offset"] = fields[symbol + "_grad_byte_offset"]["offset"]
             layouts.append(layout)
         else:
-            layouts.append({"kind": "int32" if emitter.types[name] == "int" else "float32", "offset": fields[name]["offset"]})
+            layouts.append({"kind": "int32" if emitter.types[name] == "int" else "float32", "offset": fields[symbol]["offset"]})
     if plan.continuation.eligible:
         layouts.extend({"kind": "int32", "offset": fields[name]["offset"]} for name in ("inx_range_begin", "inx_range_end"))
     bindings = [{"binding": resources["inx_args"]["binding"], "binding_type": "uniform", "resource_kind": "arguments", "access": 1}]
     for name, access in emitter.accesses.items():
-        bindings.append({"binding": resources[name]["binding"], "binding_type": "storage" if access & 2 else "read_only_storage",
+        bindings.append({"binding": resources[emitter.argument_symbols[name]]["binding"], "binding_type": "storage" if access & 2 else "read_only_storage",
                          "resource_kind": "external_buffer", "argument_indices": [emitter.names.index(name)], "is_grad": False, "access": access})
     for name, access in emitter.gradient_accesses.items():
-        bindings.append({"binding": resources["inx_grad_" + name]["binding"], "binding_type": "storage" if access & 2 else "read_only_storage",
+        bindings.append({"binding": resources["inx_grad_" + emitter.argument_symbols[name]]["binding"], "binding_type": "storage" if access & 2 else "read_only_storage",
                          "resource_kind": "external_buffer", "argument_indices": [emitter.names.index(name)], "is_grad": True, "access": access})
     entry = compiled["entries"][0]
     metadata = {"entry_point": entry["name"], "threads_per_group": entry["workgroup_size"][0], "buffer_bindings": bindings,
