@@ -22,7 +22,8 @@ enum class JoltGpuQueryReadback
 {
     Host,
     Device,
-    HostProjected // Host motion fields use compact physical blocks; other families retain Host layout.
+    DeviceWithSpans, // A host consumer needs the per-input offsets of a variable-size device result.
+    HostProjected    // Host motion fields use compact physical blocks; other families retain Host layout.
 };
 enum class JoltGpuQueryExportField : uint32_t
 {
@@ -53,6 +54,7 @@ struct JoltGpuQueryExportBinding
     uint32_t recordFirst = 0;
     uint32_t recordCount = UINT32_MAX;
     uint32_t bodyIndex = UINT32_MAX; // Aggregate input row for shape body-index projection.
+    uint64_t byteEnd = UINT64_MAX;   // Exclusive end of the caller's writable view.
 };
 
 /// Native explicit operands use the same immutable geometry arena as the publication.
@@ -88,6 +90,7 @@ struct JoltGpuQueryResult
     /// ReadSpans materializes metadata only. Device requests never transfer
     /// numerical records; their typed accessors reject an implicit roundtrip.
     [[nodiscard]] const JPH::GPU::QuerySummary &GetSummary();
+    [[nodiscard]] uint32_t GetRecordCount();
     [[nodiscard]] const std::vector<JPH::GPU::QueryHit> &ReadHits();
     [[nodiscard]] const std::vector<JPH::GPU::QueryShapeState> &ReadShapes();
     [[nodiscard]] const std::vector<JPH::GPU::QueryMotionState> &ReadMotion();
@@ -96,6 +99,7 @@ struct JoltGpuQueryResult
   private:
     friend class JoltGpuQueries;
     void ReadSummary();
+    [[nodiscard]] bool NeedsHostSpans() const;
     void Materialize();
     template <class T> const std::vector<T> &ReadTyped(uint32_t format, std::vector<T> &records);
     uint32_t hitReadbackIndex = 0;

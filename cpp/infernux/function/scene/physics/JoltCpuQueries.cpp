@@ -22,6 +22,7 @@
 #include "PhysicsLayers.h"
 #include "PhysicsWorld.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <function/scene/BoxCollider.h>
 #include <function/scene/GameObject.h>
@@ -165,7 +166,65 @@ JPH::TransformedShape UnwrapDecorated(JPH::TransformedShape shape)
     return shape;
 }
 
-std::optional<glm::vec3> ClosestPointOnShape(const JPH::TransformedShape &shape, JPH::RVec3Arg point)
+class MeshInteriorCollector final : public JPH::CastRayCollector
+{
+  public:
+    MeshInteriorCollector(const JPH::MeshShape &mesh, JPH::Vec3Arg point) : m_mesh(mesh), m_point(point)
+    {
+    }
+
+    void AddHit(const JPH::RayCastResult &hit) override
+    {
+        JPH::Shape::SupportingFace triangle;
+        m_mesh.GetSupportingFace(hit.mSubShapeID2, JPH::Vec3::sAxisY(), JPH::Vec3::sOne(), JPH::Mat44::sIdentity(),
+                                 triangle);
+        const auto orient = [](JPH::Vec3Arg a, JPH::Vec3Arg b, JPH::Vec3Arg p) {
+            return (double(b.GetX()) - a.GetX()) * (double(p.GetZ()) - a.GetZ()) -
+                   (double(b.GetZ()) - a.GetZ()) * (double(p.GetX()) - a.GetX());
+        };
+        const double area = orient(triangle[0], triangle[1], triangle[2]);
+        if (area == 0.0)
+            return; // A face parallel to the ray is not a crossing.
+        if (area < 0.0)
+            std::swap(triangle[1], triangle[2]);
+        for (int edge = 0; edge < 3; ++edge) {
+            const auto a = triangle[edge], b = triangle[(edge + 1) % 3];
+            const double side = orient(a, b, m_point);
+            const double dx = double(b.GetX()) - a.GetX(), dz = double(b.GetZ()) - a.GetZ();
+            // One half-open convention for every projected triangle. A shared
+            // edge belongs to exactly one adjacent face; a tangent fold counts
+            // either twice or zero times, preserving even parity at vertices too.
+            const bool inclusive = dz > 0.0 || (dz == 0.0 && dx < 0.0);
+            if (side < 0.0 || (side == 0.0 && !inclusive))
+                return;
+        }
+        ++m_crossings;
+    }
+
+    [[nodiscard]] bool IsInside() const noexcept
+    {
+        return (m_crossings & 1u) != 0;
+    }
+
+  private:
+    const JPH::MeshShape &m_mesh;
+    JPH::Vec3 m_point;
+    uint64_t m_crossings = 0;
+};
+
+bool MeshContainsPoint(const JPH::MeshShape &mesh, JPH::Vec3Arg point)
+{
+    const auto bounds = mesh.GetLocalBounds();
+    if (!bounds.Contains(point))
+        return false;
+    JPH::RayCastSettings settings;
+    settings.SetBackFaceMode(JPH::EBackFaceMode::CollideWithBackFaces);
+    MeshInteriorCollector crossings(mesh, point);
+    mesh.CastRay(JPH::RayCast(point, 1.1f * bounds.GetSize().GetY() * JPH::Vec3::sAxisY()), settings, {}, crossings);
+    return crossings.IsInside();
+}
+
+std::optional<glm::vec3> ClosestPointOnShape(const JPH::TransformedShape &shape, JPH::RVec3Arg point, bool closedMesh)
 {
     const JPH::Vec3 local(shape.GetInverseCenterOfMassTransform() * point);
     const auto scale = shape.GetShapeScale();
@@ -186,6 +245,8 @@ std::optional<glm::vec3> ClosestPointOnShape(const JPH::TransformedShape &shape,
             throw std::runtime_error("Closest-point query exceeds native numerical range");
     } else if (shape.mShape->GetSubType() == JPH::EShapeSubType::Mesh) {
         const auto &mesh = static_cast<const JPH::MeshShape &>(*shape.mShape);
+        if (closedMesh && MeshContainsPoint(mesh, local / scale))
+            return Vector(point);
         if (!mesh.GetClosestSurfacePoint(local, scale, nearest))
             return std::nullopt;
     } else {
@@ -242,13 +303,17 @@ class QueryBodyFilter final : public JPH::BodyFilter
 template <typename Collector> class SurfaceCollector : public Collector
 {
   public:
-    SurfaceCollector(const JoltCpuScene &scene, const JoltCpuQueries::Filter &filter) : m_scene(scene), m_filter(filter)
+    SurfaceCollector(const JoltCpuScene &scene, const JoltCpuQueries::Filter &filter,
+                     RaycastBatchProfile *profile = nullptr)
+        : m_scene(scene), m_filter(filter), m_profile(profile)
     {
     }
 
     void OnBody(const JPH::Body &body) override
     {
         m_bodyId = static_cast<uint32_t>(body.GetUserData());
+        if (m_profile)
+            ++m_profile->broadphaseCandidates;
     }
 
   protected:
@@ -264,6 +329,7 @@ template <typename Collector> class SurfaceCollector : public Collector
     }
 
     uint32_t m_bodyId = UINT32_MAX;
+    RaycastBatchProfile *m_profile;
 
   private:
     const JoltCpuScene &m_scene;
@@ -347,15 +413,18 @@ template <typename Collector> class CastCollector final : public SurfaceCollecto
 {
   public:
     CastCollector(const JoltCpuScene &scene, const JoltCpuQueries::Filter &filter, const JPH::RRayCast &ray,
-                  float maximum, bool all, float collisionTolerance = 0.0f, const SweepPolicy *sweep = nullptr)
-        : SurfaceCollector<Collector>(scene, filter), m_ray(ray), m_maximum(maximum), m_all(all), m_sweep(sweep),
-          m_earlyOutSlack(std::numeric_limits<float>::epsilon() +
-                          float(std::min(1.0, double(collisionTolerance) / maximum)))
+                  float maximum, bool all, float collisionTolerance = 0.0f, const SweepPolicy *sweep = nullptr,
+                  RaycastBatchProfile *profile = nullptr)
+        : SurfaceCollector<Collector>(scene, filter, profile), m_ray(ray), m_maximum(maximum), m_all(all),
+          m_sweep(sweep), m_earlyOutSlack(std::numeric_limits<float>::epsilon() +
+                                          float(std::min(1.0, double(collisionTolerance) / maximum)))
     {
     }
 
     void AddHit(const typename Collector::ResultType &result) override
     {
+        if (this->m_profile)
+            ++this->m_profile->narrowphaseHits;
         const uint32_t subshape = result.mSubShapeID2.GetValue();
         const auto order = std::tuple(result.mFraction, this->m_bodyId, subshape);
         if (!(result.mFraction >= 0.0f && result.mFraction <= 1.0f) || (!m_all && order >= m_closestOrder))
@@ -369,6 +438,7 @@ template <typename Collector> class CastCollector final : public SurfaceCollecto
         hit.subShapeId = subshape;
         hit.distance = result.mFraction * m_maximum;
         hit.colliderId = surface->colliderId;
+        hit.gameObjectId = surface->gameObjectId;
         hit.target = surface->target;
         const auto &target = *this->GetContext();
         SetHitGeometry(hit, result, target, m_ray);
@@ -391,12 +461,13 @@ template <typename Collector> class CastCollector final : public SurfaceCollecto
         }
     }
 
-    bool ClosestHit(RaycastHit &hit) const
+    bool ClosestHit(RaycastHit &hit, bool resolveTarget = true) const
     {
         hit = m_closest;
         if (hit.bodyId == UINT32_MAX)
             return false;
-        ResolveTarget(hit);
+        if (resolveTarget)
+            ResolveTarget(hit);
         return true;
     }
 
@@ -423,9 +494,10 @@ template <typename Collector> class CastCollector final : public SurfaceCollecto
 };
 
 CastCollector<JPH::CastRayCollector> CastRay(const JoltCpuScene &scene, const JPH::RRayCast &ray, float maximum,
-                                             const JoltCpuQueries::Filter &filter, bool all)
+                                             const JoltCpuQueries::Filter &filter, bool all,
+                                             RaycastBatchProfile *profile = nullptr)
 {
-    CastCollector<JPH::CastRayCollector> collector(scene, filter, ray, maximum, all);
+    CastCollector<JPH::CastRayCollector> collector(scene, filter, ray, maximum, all, 0.0f, nullptr, profile);
     if (filter.layers != 0)
         scene.System().GetNarrowPhaseQuery().CastRay(ray, {}, collector, {}, QueryLayerFilter(filter.layers),
                                                      QueryBodyFilter(filter));
@@ -472,20 +544,31 @@ bool JoltCpuQueries::Raycast(const glm::vec3 &origin, const glm::vec3 &direction
 }
 
 void JoltCpuQueries::RaycastBatch(const float *origins, const float *directions, size_t count, float maximum,
-                                  RaycastHit *hits, uint8_t *mask, const Filter &filter) const
+                                  RaycastHit *hits, uint8_t *mask, const Filter &filter,
+                                  RaycastBatchProfile *profile) const
 {
     if (count == 0)
         return;
     if (!origins || !directions || !hits || !mask || count > UINT32_MAX)
         throw std::invalid_argument("Raycast batch requires valid arrays within the query index range");
+    const auto start = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     std::vector<JPH::RRayCast> rays;
     rays.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         const auto *p = origins + i * 3, *d = directions + i * 3;
         rays.emplace_back(Position({p[0], p[1], p[2]}), CastDisplacement({d[0], d[1], d[2]}, maximum));
     }
-    for (size_t i = 0; i < count; ++i)
-        mask[i] = CastRay(m_scene, rays[i], maximum, filter, false).ClosestHit(hits[i]) ? 1 : 0;
+    const auto queryStart = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    for (size_t i = 0; i < count; ++i) {
+        mask[i] = CastRay(m_scene, rays[i], maximum, filter, false, profile).ClosestHit(hits[i], false) ? 1 : 0;
+        if (profile)
+            profile->publishedHits += mask[i];
+    }
+    if (profile) {
+        const auto end = std::chrono::steady_clock::now();
+        profile->dispatchWallNs = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        profile->joltQueryCpuNs = std::chrono::duration_cast<std::chrono::nanoseconds>(end - queryStart).count();
+    }
 }
 
 bool JoltCpuQueries::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
@@ -571,6 +654,8 @@ std::optional<glm::vec3> JoltCpuQueries::ClosestPoint(uint32_t bodyId, ColliderI
     });
     if (surface == record.surfaces.end())
         return std::nullopt;
+    const auto *mesh = dynamic_cast<const MeshCollider *>(surface->target.GetCollider());
+    const bool closedMesh = mesh && mesh->IsPublishedMeshClosed();
 
     JPH::TransformedShape shape;
     {
@@ -586,11 +671,12 @@ std::optional<glm::vec3> JoltCpuQueries::ClosestPoint(uint32_t bodyId, ColliderI
             if (compound->GetCompoundUserData(i) == member) {
                 const auto id = compound->GetSubShapeIDFromIndex(static_cast<int>(i), {}).GetID();
                 JPH::SubShapeID remainder;
-                return ClosestPointOnShape(UnwrapDecorated(shape.GetSubShapeTransformedShape(id, remainder)), position);
+                return ClosestPointOnShape(UnwrapDecorated(shape.GetSubShapeTransformedShape(id, remainder)), position,
+                                           closedMesh);
             }
         return std::nullopt;
     }
-    return ClosestPointOnShape(shape, position);
+    return ClosestPointOnShape(shape, position, closedMesh);
 }
 
 std::optional<PhysicsPenetrationResult>

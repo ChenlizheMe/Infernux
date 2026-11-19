@@ -86,6 +86,7 @@ class MeshCollider : public Collider
     [[nodiscard]] std::shared_ptr<const CookedGeometry> CaptureCookedGeometry() const;
     void PublishCookedGeometry(std::shared_ptr<const CookedGeometry> geometry) noexcept;
     [[nodiscard]] JPH::RefConst<JPH::Shape> GetPublishedConvexQueryShape() const;
+    [[nodiscard]] bool IsPublishedMeshClosed() const noexcept;
     void RequestShapeUpdate();
     void InvalidatePendingCooking() const;
 

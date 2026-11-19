@@ -3001,6 +3001,7 @@ void SceneManager::SyncTransforms()
     MeshCollider::FlushCompletedCooking(true);
     FlushPendingBroadphase();
     SyncCollidersToPhysics(0.0f);
+    PhysicsWorld::Instance().PrepareRaycastBatchQuery();
 }
 
 void SceneManager::ForceAllBodiesToCurrentTransform()

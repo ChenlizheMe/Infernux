@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -176,6 +177,11 @@ class JoltCpuScene final : private JPH::ContactListener,
         return m_system;
     }
 
+    [[nodiscard]] std::shared_mutex &QueryMutex() const noexcept
+    {
+        return m_queryMutex;
+    }
+
   private:
     friend class JoltCpuContactPublication;
     friend class JoltCpuConstraints;
@@ -231,6 +237,7 @@ class JoltCpuScene final : private JPH::ContactListener,
     bool ShouldCollide(const JPH::Body &a, const JPH::Shape *shapeA, const JPH::SubShapeID &subshapeA,
                        const JPH::Body &b, const JPH::Shape *shapeB, const JPH::SubShapeID &subshapeB) const override;
     JPH::PhysicsSystem m_system;
+    mutable std::shared_mutex m_queryMutex;
     std::unordered_map<uint32_t, BodyRecord> m_bodies;
     std::vector<uint32_t> m_poseUpdates;
     struct DeactivatedPose

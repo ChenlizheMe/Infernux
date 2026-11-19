@@ -179,9 +179,9 @@ PrepareCpuStateExports(const PhysicsRigidbodyStateBatch &batch, const std::vecto
         const uint64_t count = motion ? batch.states.size() : batch.boxCount;
         const uint64_t bytes = count * width * sizeof(uint32_t);
         const auto offset = binding.byteOffset;
-        if (desc.scalarType != scalar || desc.lanes != lanes || offset > buffer->GetByteSize() ||
-            bytes > buffer->GetByteSize() - offset || offset / sizeof(uint32_t) > UINT32_MAX ||
-            count * width > UINT32_MAX - offset / sizeof(uint32_t))
+        const auto end = std::min(binding.byteEnd, buffer->GetByteSize());
+        if (desc.scalarType != scalar || desc.lanes != lanes || offset > end || bytes > end - offset ||
+            offset / sizeof(uint32_t) > UINT32_MAX || count * width > UINT32_MAX - offset / sizeof(uint32_t))
             throw JoltGpuQueryRequestError("Physics aggregate export destination has invalid type or prefix capacity");
         for (size_t i = 0; i < targetSizes.size(); ++i) {
             const auto &previous = bindings[i];
@@ -509,6 +509,21 @@ JoltGpuTickOutput CompactOutput(const JoltGpuScene::Publication &p)
             p.bodyStates, p.jointStream, p.jointLayout, p.geometryStore, p.geometry,  p.hasGenericGeometry};
 }
 } // namespace
+
+struct PhysicsCpuRaycastEpoch
+{
+    std::shared_ptr<JoltCpuScene> scene;
+    std::shared_lock<std::shared_mutex> read;
+    uint64_t generation;
+
+    PhysicsCpuRaycastEpoch(std::shared_ptr<JoltCpuScene> accepted, const std::atomic<uint64_t> &publishedGeneration)
+        : scene(std::move(accepted)),
+          read(scene ? std::shared_lock(scene->QueryMutex()) : std::shared_lock<std::shared_mutex>{}),
+          generation(publishedGeneration.load(std::memory_order_acquire))
+    {
+    }
+};
+
 PhysicsWorld &PhysicsWorld::Instance()
 {
     static PhysicsWorld *world = new PhysicsWorld();
@@ -580,7 +595,7 @@ void PhysicsWorld::EnsureCpuReady(PhysicsDomain &domain)
     if (!m_cpuServices)
         m_cpuServices = std::make_unique<CpuServices>(EngineConfig::Get());
     if (!domain.cpuScene) {
-        auto scene = std::make_unique<JoltCpuScene>(EngineConfig::Get(), m_cpuServices->layers,
+        auto scene = std::make_shared<JoltCpuScene>(EngineConfig::Get(), m_cpuServices->layers,
                                                     m_cpuServices->broadphaseFilter, m_cpuServices->pairFilter);
         auto control = std::make_unique<JoltCpuControl>(*scene);
         scene->SetIgnoredPairs(CaptureColliderPairs(domain));
@@ -699,6 +714,7 @@ void PhysicsWorld::Shutdown()
         domain->cpuContacts.Close();
         RetireRagdolls(*domain);
         RetireCpuJointRoutes(*domain);
+        domain->cpuFixedQueryWrite.reset();
         domain->cpuControl.reset();
         domain->cpuScene.reset();
         domain->cpuPublication = {};
@@ -790,6 +806,7 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     SealStaticFixedMoves(domain);
     domain.cpuFixedAdmitted = bool(domain.cpuControl);
     if (domain.cpuFixedAdmitted) {
+        domain.cpuFixedQueryWrite.emplace(domain.cpuScene->QueryMutex());
         domain.cpuControl->SealFixed();
         domain.cpuControl->ApplyFixed([this](uint32_t, const auto &ids) { RetireCpuJointRoutes(ids); });
         auto &system = domain.cpuScene->System();
@@ -844,6 +861,7 @@ void PhysicsWorld::FinishFixed(PhysicsDomain &domain)
         domain.requestedMotion.clear();
     }
     domain.stepCompleted = true;
+    domain.cpuFixedQueryWrite.reset();
 }
 void PhysicsWorld::ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const
 {
@@ -1727,6 +1745,7 @@ void PhysicsWorld::CancelPendingStep() noexcept
     SuspendRagdolls(domain);
     domain.contacts.Close();
     RetireCpuJointRoutes(domain);
+    domain.cpuFixedQueryWrite.reset();
     domain.cpuControl.reset();
     domain.cpuScene.reset();
     domain.cpuPublication = {};
@@ -1797,6 +1816,7 @@ void PhysicsWorld::RunCpuControl(PhysicsDomain &domain) const
 void PhysicsWorld::ApplyCpuControl(PhysicsDomain &domain) const
 {
     if (domain.cpuControl) {
+        const std::unique_lock queryWrite(domain.cpuScene->QueryMutex());
         const bool pairsChanged = domain.cpuScene->SetIgnoredPairs(CaptureColliderPairs(domain));
         const bool commandsChanged = domain.cpuControl->ApplyControl(
             [this](uint32_t, const auto &ids) { const_cast<PhysicsWorld *>(this)->RetireCpuJointRoutes(ids); });
@@ -2933,8 +2953,9 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
             batch.sources = {
                 {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex, generation}};
             batch.sourceForBody.assign(bodies.size(), 0u);
-            const auto readback =
-                (exports.empty() && !deferExport) ? JoltGpuQueryReadback::HostProjected : JoltGpuQueryReadback::Device;
+            const auto readback = deferExport       ? JoltGpuQueryReadback::DeviceWithSpans
+                                  : exports.empty() ? JoltGpuQueryReadback::HostProjected
+                                                    : JoltGpuQueryReadback::Device;
             JoltGpuPreparedQuery first, second;
             if (!motionInputs.empty()) {
                 first = m_gpuQueries->Prepare(publication, motionInputs, {}, generation, readback);
@@ -2991,12 +3012,12 @@ void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbody
                                                                       cachedFields};
             }
         } else {
-            (void)motion->ReadSpans();
+            (void)motion->GetRecordCount();
         }
     }
     if (shapes) {
-        const auto &spans = shapes->ReadSpans();
         if (numerical) {
+            const auto &spans = shapes->ReadSpans();
             const auto &records = shapes->ReadShapes();
             batch.boxes.reserve(records.size());
             for (size_t input = 0; input < spans.size(); ++input)
@@ -3016,6 +3037,8 @@ void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbody
                     box.bounciness = record.material.y;
                     batch.boxes.push_back({static_cast<uint32_t>(input), box});
                 }
+        } else {
+            batch.boxCount = shapes->GetRecordCount();
         }
     }
 }
@@ -3035,12 +3058,8 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
                                        const std::shared_ptr<const JoltGpuScene::Publication> &gpu) const
 {
     RequireOwnerThread();
-    PhysicsRigidbodyStateBatch batch;
-    batch.bodies = bodies;
-    batch.states.resize(bodies.size());
-    batch.sourceForBody.resize(bodies.size());
     if (bodies.empty())
-        return batch;
+        return {};
     struct Group
     {
         PhysicsDomain *domain;
@@ -3084,8 +3103,15 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
         }
         group.indices.push_back(row);
     }
-    std::vector<uint32_t> shapeCounts(bodies.size(), 0u);
-    std::vector<std::vector<PhysicsRigidbodyBoxState>> boxes(bodies.size());
+    const bool directGpu = groups.size() == 1 && groups.front().backend == Backend::Gpu;
+    const auto aggregateRows = directGpu ? size_t{0} : bodies.size();
+    PhysicsRigidbodyStateBatch batch;
+    if (!directGpu)
+        batch.bodies = bodies;
+    batch.states.resize(aggregateRows);
+    batch.sourceForBody.resize(aggregateRows);
+    std::vector<uint32_t> shapeCounts(aggregateRows, 0u);
+    std::vector<std::vector<PhysicsRigidbodyBoxState>> boxes(aggregateRows);
     for (auto &group : groups) {
         auto &domain = *group.domain;
         const uint32_t source = static_cast<uint32_t>(batch.sources.size());
@@ -3105,7 +3131,8 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
             const auto prepare = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
                 group.publication = publication;
                 return PrepareStateBatch(domain, publication, group.bodies, fields, includeBoxes, triggers, exports,
-                                         group.batch, group.motion, group.shapes, error, !exports.empty());
+                                         group.batch, group.motion, group.shapes, error,
+                                         !directGpu && !exports.empty());
             };
             if (sealed) {
                 ObserveSpatialGpuQuery(domain, gpu, prepare);
@@ -3115,6 +3142,10 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
             if (error)
                 std::rethrow_exception(error);
             MaterializeStateBatch(domain, group.batch, group.motion, group.shapes, exports.empty(), fields);
+            // One world's query rows already follow caller order. The device can export
+            // the entire batch, including the owning body of each compound shape.
+            if (directGpu)
+                return std::move(group.batch);
             const auto &p = *group.publication;
             const uint64_t generation = group.motion   ? group.motion->numericalGeneration
                                         : group.shapes ? group.shapes->numericalGeneration
@@ -3149,8 +3180,7 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
     batch.boxCount = static_cast<size_t>(boxCount);
     if (exports.empty())
         return batch;
-    auto cpuTransfers =
-        !cpuRows.empty() ? PrepareCpuStateExports(batch, cpuRows, boxes, shapeFirst, exports, includeBoxes) : nullptr;
+    auto cpuTransfers = PrepareCpuStateExports(batch, cpuRows, boxes, shapeFirst, exports, includeBoxes);
     std::vector<std::pair<PhysicsDomain *, JoltGpuControlWork>> plannedExports;
     for (auto &group : groups) {
         if (group.backend == Backend::Cpu)
@@ -3533,8 +3563,18 @@ glm::mat3 PhysicsWorld::GetBodyWorldSpaceInertiaTensor(uint32_t id) const
 
 bool PhysicsWorld::PrepareRaycastBatchQuery() const
 {
+    if (m_ownerThreadId != std::thread::id{} && m_ownerThreadId != std::this_thread::get_id())
+        return false;
     SealSpatialQuery(CurrentDomain());
     return true;
+}
+std::shared_ptr<PhysicsCpuRaycastEpoch> PhysicsWorld::CaptureCpuRaycastBatchQuery() const
+{
+    auto &domain = CurrentDomain();
+    RequireHealthyStep(domain);
+    if (domain.UsesGpu())
+        return {};
+    return std::make_shared<PhysicsCpuRaycastEpoch>(domain.cpuScene, domain.queryGeneration);
 }
 void PhysicsWorld::RaycastBatch(const float *origins, const float *directions, size_t count, float maximum,
                                 RaycastHit *hits, uint8_t *mask, uint32_t layers, bool triggers, uint64_t *generation,
@@ -3542,15 +3582,38 @@ void PhysicsWorld::RaycastBatch(const float *origins, const float *directions, s
 {
     if (count)
         SealSpatialQuery(CurrentDomain());
-    RaycastBatchPublished(origins, directions, count, maximum, hits, mask, layers, triggers, generation, profile);
+    const auto cpuEpoch = count != 0 ? CaptureCpuRaycastBatchQuery() : nullptr;
+    RaycastBatchPublished(origins, directions, count, maximum, hits, mask, layers, triggers, generation, profile, false,
+                          cpuEpoch);
 }
 void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *directions, size_t count, float maximum,
                                          RaycastHit *hits, uint8_t *mask, uint32_t layers, bool triggers,
-                                         uint64_t *generation, RaycastBatchProfile *profile, bool) const
+                                         uint64_t *generation, RaycastBatchProfile *profile, bool,
+                                         const std::shared_ptr<PhysicsCpuRaycastEpoch> &cpuEpoch) const
 {
-    auto &domain = CurrentDomain();
     if (profile)
         *profile = {};
+    if (cpuEpoch) {
+        if (cpuEpoch->scene) {
+            JoltCpuQueries(*cpuEpoch->scene)
+                .RaycastBatch(origins, directions, count, maximum, hits, mask, {layers, triggers}, profile);
+        } else {
+            if (count && (!origins || !directions || !hits || !mask || count > UINT32_MAX))
+                throw std::invalid_argument("Raycast batch requires valid arrays within the query index range");
+            for (size_t i = 0; i < count; ++i) {
+                auto input = Query(QueryRay, QueryClosest, layers, triggers);
+                const auto offset = i * 3;
+                QueryRayInput(input, {origins[offset], origins[offset + 1], origins[offset + 2]},
+                              {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
+            }
+            std::fill_n(hits, count, RaycastHit{});
+            std::fill_n(mask, count, uint8_t{0});
+        }
+        if (generation)
+            *generation = cpuEpoch->generation;
+        return;
+    }
+    auto &domain = CurrentDomain();
     if (count == 0) {
         if (generation)
             *generation = domain.queryGeneration.load(std::memory_order_acquire);
@@ -3563,8 +3626,9 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
 
     const auto request = Query(QueryRay, QueryClosest, layers, triggers);
     if (domain.cpuScene) {
+        const std::shared_lock queryRead(domain.cpuScene->QueryMutex());
         JoltCpuQueries(*domain.cpuScene)
-            .RaycastBatch(origins, directions, count, maximum, hits, mask, {layers, triggers});
+            .RaycastBatch(origins, directions, count, maximum, hits, mask, {layers, triggers}, profile);
     } else if (const auto gpu = ReadGpuSpatialQueryPublication(domain)) {
         std::vector<QueryInput> requests;
         requests.reserve(count);
@@ -3583,6 +3647,8 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
         for (size_t i = 0; i < count; ++i) {
             hits[i] = DecodeQueryHit(*result, records[i]);
             mask[i] = static_cast<uint8_t>(records[i].meta.y != 0);
+            if (profile)
+                profile->publishedHits += mask[i];
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
@@ -3634,10 +3700,7 @@ PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const float *origins, cons
             [&] {
                 auto query = m_gpuQueries->Prepare(accepted, requests, {}, generation, JoltGpuQueryReadback::Device);
                 return ContinueJoltGpuControlWork(std::move(query.work), [this, result = query.result, &exports] {
-                    // Report failed status through the existing validated consumer.
-                    // Successful fixed-row exports need no allocated host span array.
-                    if (result->GetSummary().counts.y != QuerySuccess)
-                        (void)result->ReadSpans();
+                    (void)result->GetRecordCount();
                     return m_gpuQueries->PrepareExport({result}, exports);
                 });
             },
@@ -3654,6 +3717,10 @@ bool PhysicsWorld::Raycast(const glm::vec3 &origin, const glm::vec3 &direction, 
     uint8_t mask = 0;
     const float origins[]{origin.x, origin.y, origin.z}, directions[]{direction.x, direction.y, direction.z};
     RaycastBatch(origins, directions, 1, maximum, &hit, &mask, layers, triggers);
+    if (mask) {
+        hit.collider = hit.target.GetCollider();
+        hit.gameObject = hit.target.GetGameObject();
+    }
     return mask != 0;
 }
 
@@ -4604,7 +4671,7 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
     if (error)
         std::rethrow_exception(error);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    (void)query.result->ReadSpans();
+    (void)query.result->GetRecordCount();
     // A recognized read-only numerical failure is reported outside the world's
     // source, so a failed export does not poison subsequent simulation steps.
     exported->Validate();

@@ -428,6 +428,7 @@ bool JoltCpuControl::HasStagedRigidbody(uint32_t bodyId, PhysicsECSStore::Rigidb
 void JoltCpuControl::StageTransfers(const std::vector<BodyTransfer> &bodies)
 {
     auto &state = *m_state;
+    const std::unique_lock queryWrite(state.scene.QueryMutex());
     const auto &system = state.scene.System();
     if (bodies.size() > system.GetMaxBodies() - system.GetNumBodies())
         throw std::length_error("CPU physics body capacity is insufficient for the transfer");
@@ -677,6 +678,7 @@ void JoltCpuControl::PublishApplied()
 void JoltCpuControl::Close() noexcept
 {
     auto &state = *m_state;
+    const std::unique_lock queryWrite(state.scene.QueryMutex());
     state.pending.clear();
     state.fixed.reset();
     state.drives.clear();

@@ -39,13 +39,14 @@ def _gpu_state_output(out, names, *, flush: bool = True):
     if not all(isinstance(value, Buffer) and value.device == "gpu" for value in values):
         raise TypeError("GPU physics state outputs must all be resident GPU inx.buffer values")
     for value in values:
-        value._require_open()
+        value._require_writable()
     host = values[0]._host
     if any(int(value._host.identity) != int(host.identity) for value in values[1:]):
         raise ValueError("GPU physics state outputs must use the same compute host")
     if flush:
         _flush_commands(host)
-    return {name: value._native for name, value in zip(names, values)}
+    return {name: (value._native, value._byte_offset, value.element_count)
+            for name, value in zip(names, values)}
 
 
 class _PhysicsMeta(type):
@@ -106,8 +107,8 @@ class Physics(metaclass=_PhysicsMeta):
 
         Returns owned, C-contiguous float32 NumPy arrays in input order by
         default. ``out`` may provide reusable CPU/GPU ``inx.buffer`` values or
-        matching NumPy arrays under the returned keys. A complete GPU output
-        set is filled directly by C++ in one asynchronous transfer submission:
+        matching NumPy arrays under the returned keys. In a GPU scene a
+        complete GPU output set receives the state directly on the device.
         position, center_of_mass, linear_velocity, angular_velocity and
         inverse_mass have shape (N, 3); rotation is (N, 4), xyzw;
         inverse_inertia is (N, 3, 3), row-major and world-space about the COM.
@@ -238,8 +239,8 @@ class Physics(metaclass=_PhysicsMeta):
         ``friction`` and ``bounciness`` carry material values. ``count`` is the
         valid prefix length. An ``out`` dictionary may use larger reusable CPU
         or GPU buffers/NumPy arrays, avoiding allocation when the candidate
-        count moves. A complete GPU output set is uploaded directly from C++ in
-        one asynchronous transfer submission.
+        count moves. In a GPU scene the native projection writes a complete
+        GPU output set directly on the device.
 
         This deliberately describes boxes only. Other collider families receive
         their own typed batches instead of an untyped union with guessed fields.
@@ -536,9 +537,10 @@ class Physics(metaclass=_PhysicsMeta):
         unless the ray hit a non-convex MeshCollider triangle.
 
         Call on the engine owner thread. Native execution publishes pending
-        authored collider state and runs the batch on the current Scene's
-        selected physics backend against one retained publication. CPU is the
-        default; GPU scenes explicitly read the batch results back. The same
+        authored collider state and runs the batch on the current World's
+        physics backend against one retained publication. Authoring queries
+        use CPU. Runtime Worlds use their Scene's selection, defaulting to CPU;
+        GPU Worlds explicitly read the batch results back. The same
         dictionary and arrays are returned unchanged. Misses use
         ``hit=0``, infinite distance and zero object/component identities.
         ``Physics.query_generation`` exposes the monotonic published-world
@@ -559,7 +561,9 @@ class Physics(metaclass=_PhysicsMeta):
                      layer_mask: Optional[int] = None, query_triggers: bool = True):
         """Cast closest-hit rays directly into resident GPU compute buffers.
 
-        The current Scene must select GPU physics. Inputs are C-contiguous
+        The current runtime World must use GPU physics. Selecting GPU on an
+        authoring Scene takes effect when Play creates its runtime World.
+        Inputs are C-contiguous
         float32 NumPy arrays of shape ``(N, 3)``; directions are normalized
         with the same rules as ``raycast_batch``. ``out`` contains GPU
         ``infernux.compute.Buffer`` values: ``hit`` (uint32 scalar), ``point``
@@ -581,10 +585,6 @@ class Physics(metaclass=_PhysicsMeta):
         gpu_output = _gpu_state_output(out, names)
         if gpu_output is None:
             raise TypeError("raycast_into requires resident GPU compute buffers")
-        for name in names:
-            value = out[name]
-            value._require_writable()
-            gpu_output[name] = (value._native, value._byte_offset, value.element_count)
         result = _CppPhysics.raycast_into(
             origins, directions, gpu_output, float(max_distance),
             _query_layer_mask(layer_mask), bool(query_triggers),

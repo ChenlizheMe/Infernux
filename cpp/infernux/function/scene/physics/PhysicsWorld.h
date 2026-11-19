@@ -230,6 +230,8 @@ struct RaycastBatchProfile
     uint64_t publishedHits = 0;
 };
 
+struct PhysicsCpuRaycastEpoch;
+
 /**
  * @brief Singleton physics world wrapping Jolt Physics.
  */
@@ -601,13 +603,17 @@ class PhysicsWorld
     /// @return true when the synchronization boundary has completed.
     bool PrepareRaycastBatchQuery() const;
 
+    /// Retain the accepted CPU scene and read epoch before releasing the calling language's lock.
+    [[nodiscard]] std::shared_ptr<PhysicsCpuRaycastEpoch> CaptureCpuRaycastBatchQuery() const;
+
     /// Dispatch against a complete publication on the engine owner thread.
     /// Results retain the common publication identity used by both backends.
     void RaycastBatchPublished(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
                                RaycastHit *outHits, uint8_t *outHitMask,
                                uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true,
                                uint64_t *outQueryGeneration = nullptr, RaycastBatchProfile *outProfile = nullptr,
-                               bool directionsNormalized = false) const;
+                               bool directionsNormalized = false,
+                               const std::shared_ptr<PhysicsCpuRaycastEpoch> &cpuEpoch = {}) const;
 
     /// Monotonic identity of the currently published query world. The value
     /// changes whenever body membership, pose, layer/trigger state, or a

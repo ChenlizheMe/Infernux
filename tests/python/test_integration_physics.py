@@ -571,19 +571,56 @@ class TestColliderRaycast:
         inside = mesh.closest_point(Vector3(0.1, 0, 0))
         assert (inside.x, inside.y, inside.z) == pytest.approx((0.1, 0, 0), abs=1e-6)
 
-    def test_closest_point_supports_ready_static_non_convex_mesh(self, scene):
+    @pytest.mark.parametrize("scale, angle, position", [
+        ((1, 1, 1), 0.0, (0, 0, 0)),
+        ((-2, .5, 3), math.pi / 4, (3, 2, -1)),
+    ], ids=["plain", "mirrored_scaled_rotated"])
+    def test_closest_point_supports_ready_static_non_convex_mesh(self, scene, scale, angle, position):
+        import numpy as np
+
         obj = scene.create_primitive(PrimitiveType.Cube, "closest triangle mesh")
+        obj.transform.position = Vector3(*position)
+        obj.transform.local_scale = Vector3(*scale)
+        obj.transform.rotation = quatf(0, 0, math.sin(angle / 2), math.cos(angle / 2))
         mesh = obj.add_component("MeshCollider")
+
+        def world(point):
+            scaled = Vector3(*(point[index] * scale[index] for index in range(3)))
+            return obj.transform.position + _rotate_vector(obj.transform.rotation, scaled)
+
+        def check(point, expected, tolerance):
+            closest = mesh.closest_point(world(point))
+            assert tuple(closest) == pytest.approx(tuple(world(expected)), abs=tolerance)
+
         assert mesh.convex is False
         Physics.sync_transforms()
 
-        closest = mesh.closest_point(Vector3(3, 0, 0))
-        assert closest.x == pytest.approx(0.5, abs=2e-2)
-        assert closest.y == pytest.approx(0, abs=2e-2)
-        assert closest.z == pytest.approx(0, abs=2e-2)
+        check((3, 0, 0), (.5, 0, 0), 2e-2)
+        for point in ((.1, 0, 0), (0, 0, 0), (0, .25, 0)):
+            check(point, point, 1e-6)
+        check((.5, 0, 0), (.5, 0, 0), 2e-5)
+        check((.5, .6, 0), (.5, .5, 0), 2e-2)
+        check((.5, .5, .5), (.5, .5, .5), 2e-5)
 
-        inside = mesh.closest_point(Vector3(0.1, 0, 0))
-        assert (inside.x, inside.y, inside.z) == pytest.approx((0.1, 0, 0), abs=1e-6)
+        # Opening the bottom keeps the upward ray crossing the top. Such an
+        # open surface has no solid interior, even when ray parity is odd.
+        vertices = np.array([
+            [-.5, -.5, -.5], [.5, -.5, -.5], [.5, -.5, .5], [-.5, -.5, .5],
+            [-.5, .5, -.5], [.5, .5, -.5], [.5, .5, .5], [-.5, .5, .5],
+        ], dtype=np.float32)
+        indices = np.array([
+            4, 7, 6, 4, 6, 5,
+            0, 4, 5, 0, 5, 1,
+            1, 5, 6, 1, 6, 2,
+            2, 6, 7, 2, 7, 3,
+            3, 7, 4, 3, 4, 0,
+        ], dtype=np.uint32)
+        renderer = obj.get_component("MeshRenderer")
+        renderer.set_inline_mesh_data(vertices, np.tile([0, 1, 0], (8, 1)).astype(np.float32),
+                                      np.zeros((8, 2), dtype=np.float32), indices)
+        mesh.recook()
+        Physics.sync_transforms()
+        check((.4, 0, 0), (.5, 0, 0), 2e-2)
 
     def test_kinematic_non_convex_mesh_query_follows_published_transform(self, scene):
         import numpy as np
@@ -599,9 +636,10 @@ class TestColliderRaycast:
         uvs = np.zeros((4, 2), dtype=np.float32)
         indices = np.array([0, 1, 2, 2, 1, 3], dtype=np.uint32)
         renderer.set_inline_mesh_data(positions, normals, uvs, indices)
-        mesh = obj.add_component("MeshCollider")
         body = obj.add_component("Rigidbody")
         body.is_kinematic = True
+        mesh = obj.add_component("MeshCollider")
+        assert mesh.convex is False
         Physics.sync_transforms()
         initial_collision_revision = int(mesh.collision_geometry_revision)
         assert initial_collision_revision > 0
@@ -1169,12 +1207,19 @@ def _physics_play(_collider_authoring_project):
     pipeline = RenderStackPipeline()
     state.host._engine.set_render_pipeline(pipeline)
 
+    host_opportunities = 0
+
+    def tick_host():
+        nonlocal host_opportunities
+        state.runner.tick()
+        state.host.tick(0.0)
+        host_opportunities += 1
+
     def until(predicate, label):
         deadline = time.monotonic() + 60.0
         while not predicate():
             assert time.monotonic() < deadline, label
-            state.runner.tick()
-            state.host.tick(0.0)
+            tick_host()
 
     def add_probe(owner):
         path = state.path.parent / "ColliderIgnoreProbe.py"
@@ -1237,6 +1282,7 @@ def _physics_play(_collider_authoring_project):
 
     try:
         yield SimpleNamespace(start=start, frames=frames, add_probe=add_probe,
+                              tick_host=tick_host, host_opportunities=lambda: host_opportunities,
                               scope=lambda: _Infernux._RuntimeWorldScope(world.id))
     finally:
         try:
@@ -1256,7 +1302,8 @@ class _PreparedPhysicsPlay:
 
 
 class TestFixedTiming(_PreparedPhysicsPlay):
-    def test_manual_step_is_exclusive_and_runs_one_shared_fixed_frame(self, scene, _normal_play):
+    @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
+    def test_manual_step_is_exclusive_and_runs_one_shared_fixed_frame(self, scene, _normal_play, backend):
         """Manual stepping must be the paused form of the automatic path.
 
         Calling ``step`` while Play is running is intentionally a no-op, so a
@@ -1264,7 +1311,10 @@ class TestFixedTiming(_PreparedPhysicsPlay):
         accumulator. Once paused, stepping by the configured fixed interval
         runs one fixed bundle and the normal script phases around it.
         """
-        scene.create_game_object("ManualStepProbe")
+        scene.physics_backend = backend
+        owner = scene.create_game_object("ManualStepProbe")
+        owner.add_component("BoxCollider")
+        owner.add_component("Rigidbody").use_gravity = False
 
         class ManualStepProbe(InxComponent):
             def awake(self):
@@ -1295,6 +1345,8 @@ class TestFixedTiming(_PreparedPhysicsPlay):
 
             before_fixed = manager.fixed_time
             before_frame = manager.runtime_frame_count
+            before_fixed_index = manager.completed_fixed_step_index
+            before_hosts = _normal_play.host_opportunities()
 
             # Automatic Play owns the World while unpaused; the manual request
             # cannot create a second simulation or run a duplicate script frame.
@@ -1309,8 +1361,21 @@ class TestFixedTiming(_PreparedPhysicsPlay):
             assert manager.fixed_time == pytest.approx(before_fixed + fixed_delta)
             assert manager.runtime_frame_count == before_frame + 1
             assert probe.calls == ["fixed", "pre", "post", "update", "late"]
+            assert manager.completed_fixed_step_index == before_fixed_index + 1
+            assert manager.published_fixed_step_index == manager.completed_fixed_step_index
+            opportunities = _normal_play.host_opportunities() - before_hosts
+            assert opportunities > 0
+            print(f"INFERNUX_PAUSED_FIXED_HOST_OPPORTUNITIES[{backend}]={opportunities}")
+            # Host continuations after completion must not replay a paused Step.
+            _normal_play.tick_host()
+            _normal_play.tick_host()
+            assert manager.completed_fixed_step_index == before_fixed_index + 1
+            assert manager.runtime_frame_count == before_frame + 1
+            assert probe.calls == ["fixed", "pre", "post", "update", "late"]
 
-    def test_public_physics_stages_bridge_the_same_jolt_step(self, scene, _normal_play):
+    @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
+    def test_public_physics_stages_bridge_the_same_jolt_step(self, scene, _normal_play, backend):
+        scene.physics_backend = backend
         Physics.set_gravity(Vector3(0, 0, 0))
         body, rigidbody = _make_ball(scene, pos=Vector3(0, 5, 0))
         rigidbody.use_gravity = False
@@ -1356,7 +1421,9 @@ class TestFixedTiming(_PreparedPhysicsPlay):
                 3.0 * manager.get_fixed_time_step(), abs=1e-3
             )
 
-    def test_fixed_time_is_current_inside_fixed_update(self, scene, _normal_play):
+    @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
+    def test_fixed_time_is_current_inside_fixed_update(self, scene, _normal_play, backend):
+        scene.physics_backend = backend
         scene.create_game_object("FixedTimeProbe")
 
         class FixedTimeProbe(InxComponent):
@@ -2434,33 +2501,38 @@ class TestRaycastBatch(_PreparedPhysicsPlay):
         # The fixed pybind call frame and returned borrowed dict stay constant.
         assert peak < 32 * 1024
 
-    def test_query_generation_changes_only_when_published_physics_state_changes(self, scene):
+    @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
+    def test_query_generation_changes_only_when_published_physics_state_changes(self, scene, backend, _normal_play):
+        scene.physics_backend = backend
         import numpy as np
 
         target = scene.create_game_object("QueryGenerationTarget")
         target.add_component("BoxCollider")
-        Physics.sync_transforms()
-        initial = int(PublicPhysics.query_generation)
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            target = runtime.find(target.name)
+            Physics.sync_transforms()
+            initial = int(PublicPhysics.query_generation)
 
-        # Repeating a query boundary with no authored change must keep the
-        # same published-world token; consumers can safely retain hit buffers.
-        Physics.sync_transforms()
-        assert int(PublicPhysics.query_generation) == initial
+            # Repeating a query boundary with no authored change must keep the
+            # same published-world token; consumers can safely retain hit buffers.
+            Physics.sync_transforms()
+            assert int(PublicPhysics.query_generation) == initial
 
-        target.transform.position = Vector3(0, 2, 0)
-        Physics.sync_transforms()
-        moved = int(PublicPhysics.query_generation)
-        assert moved > initial
+            target.transform.position = Vector3(0, 2, 0)
+            Physics.sync_transforms()
+            moved = int(PublicPhysics.query_generation)
+            assert moved > initial
 
-        origins = np.array([[0, 5, 0]], dtype=np.float32)
-        directions = np.array([[0, -1, 0]], dtype=np.float32)
-        output = self._output(1)
-        result = PublicPhysics.raycast_batch(origins, directions, output)
-        assert int(PublicPhysics.query_generation) == moved
-        assert result["query_generation"] == moved
-        assert output["hit"][0] == 1
+            origins = np.array([[0, 5, 0]], dtype=np.float32)
+            directions = np.array([[0, -1, 0]], dtype=np.float32)
+            output = self._output(1)
+            result = PublicPhysics.raycast_batch(origins, directions, output)
+            assert int(PublicPhysics.query_generation) == moved
+            assert result["query_generation"] == moved
+            assert output["hit"][0] == 1
 
-    def test_worker_consumes_published_epoch_and_owner_query_publishes_authored_changes(self, scene):
+    def test_worker_consumes_published_epoch_and_owner_query_publishes_authored_changes(self, scene, _normal_play):
         """Workers are snapshot-only; the owner query is an authoring safe point."""
         import threading
 
@@ -2469,50 +2541,54 @@ class TestRaycastBatch(_PreparedPhysicsPlay):
         target = scene.create_game_object("PublishedBatchGround")
         target_collider = target.add_component("BoxCollider")
         target_collider.size = Vector3(2, 1, 2)
-        Physics.sync_transforms()
-        published_generation = int(PublicPhysics.query_generation)
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            target = runtime.find("PublishedBatchGround")
+            target_collider = target.get_component("BoxCollider")
+            Physics.sync_transforms()
+            published_generation = int(PublicPhysics.query_generation)
 
-        # This authored move is intentionally left pending. A Python worker is
-        # not an engine safe point and must neither walk SceneManager nor make
-        # the pending Transform visible to physics.
-        target.transform.position = Vector3(20, 0, 0)
-        origins = np.array([[0, 5, 0]], dtype=np.float32)
-        directions = np.array([[0, -1, 0]], dtype=np.float32)
-        worker_output = self._output(1)
-        launch = threading.Event()
-        failure = []
+            # This authored move is intentionally left pending. A Python worker is
+            # not an engine safe point and must neither walk SceneManager nor make
+            # the pending Transform visible to physics.
+            target.transform.position = Vector3(20, 0, 0)
+            origins = np.array([[0, 5, 0]], dtype=np.float32)
+            directions = np.array([[0, -1, 0]], dtype=np.float32)
+            worker_output = self._output(1)
+            launch = threading.Event()
+            failure = []
 
-        def query():
-            try:
-                assert launch.wait(timeout=2)
-                PublicPhysics.raycast_batch(
-                    origins, directions, worker_output, max_distance=10, profile=True
-                )
-            except BaseException as exc:
-                failure.append(exc)
+            def query():
+                try:
+                    assert launch.wait(timeout=2)
+                    PublicPhysics.raycast_batch(
+                        origins, directions, worker_output, max_distance=10, profile=True
+                    )
+                except BaseException as exc:
+                    failure.append(exc)
 
-        worker = threading.Thread(target=query, name="physics-published-epoch")
-        worker.start()
-        launch.set()
-        worker.join(timeout=10)
-        assert not worker.is_alive()
-        assert failure == []
-        assert worker_output["query_generation"] == published_generation
-        assert int(PublicPhysics.query_generation) == published_generation
-        assert int(worker_output["hit"][0]) == 1
-        assert int(worker_output["collider_id"][0]) == target_collider.component_id
-        assert int(worker_output["game_object_id"][0]) == target.id
-        assert worker_output["profile"]["snapshot_sync_ms"] == 0.0
+            worker = threading.Thread(target=query, name="physics-published-epoch")
+            worker.start()
+            launch.set()
+            worker.join(timeout=10)
+            assert not worker.is_alive()
+            assert failure == []
+            assert worker_output["query_generation"] == published_generation
+            assert int(PublicPhysics.query_generation) == published_generation
+            assert int(worker_output["hit"][0]) == 1
+            assert int(worker_output["collider_id"][0]) == target_collider.component_id
+            assert int(worker_output["game_object_id"][0]) == target.id
+            assert worker_output["profile"]["snapshot_sync_ms"] == 0.0
 
-        # The same API on the owner thread publishes the pending move before
-        # entering the native batch. The old ray now misses in a newer epoch.
-        owner_output = self._output(1)
-        PublicPhysics.raycast_batch(origins, directions, owner_output, max_distance=10)
-        assert owner_output["query_generation"] > published_generation
-        assert int(PublicPhysics.query_generation) == owner_output["query_generation"]
-        assert int(owner_output["hit"][0]) == 0
+            # The same API on the owner thread publishes the pending move before
+            # entering the native batch. The old ray now misses in a newer epoch.
+            owner_output = self._output(1)
+            PublicPhysics.raycast_batch(origins, directions, owner_output, max_distance=10)
+            assert owner_output["query_generation"] > published_generation
+            assert int(PublicPhysics.query_generation) == owner_output["query_generation"]
+            assert int(owner_output["hit"][0]) == 0
 
-    def test_large_batch_epoch_serializes_owner_mutation_step_and_destroy(self, scene):
+    def test_large_batch_epoch_serializes_owner_mutation_step_and_destroy(self, scene, _normal_play):
         """A GIL-released batch keeps one coherent epoch while writers make progress."""
         import threading
         import time
@@ -2524,65 +2600,71 @@ class TestRaycastBatch(_PreparedPhysicsPlay):
         collider.size = Vector3(2, 1, 2)
         collider_id = collider.component_id
         game_object_id = target.id
-        Physics.sync_transforms()
-        published_generation = int(PublicPhysics.query_generation)
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            target = runtime.find("ConcurrentBatchTarget")
+            collider = target.get_component("BoxCollider")
+            collider_id = collider.component_id
+            game_object_id = target.id
+            Physics.sync_transforms()
+            published_generation = int(PublicPhysics.query_generation)
 
-        count = 262_144
-        origins = np.zeros((count, 3), dtype=np.float32)
-        origins[:, 1] = 5.0
-        directions = np.zeros_like(origins)
-        directions[:, 1] = -1.0
-        output = self._output(count)
-        entered = threading.Event()
-        failure = []
+            count = 262_144
+            origins = np.zeros((count, 3), dtype=np.float32)
+            origins[:, 1] = 5.0
+            directions = np.zeros_like(origins)
+            directions[:, 1] = -1.0
+            output = self._output(count)
+            entered = threading.Event()
+            failure = []
 
-        def query():
-            try:
-                entered.set()
-                PublicPhysics.raycast_batch(
-                    origins, directions, output, max_distance=10.0, profile=True
-                )
-            except BaseException as exc:
-                failure.append(exc)
+            def query():
+                try:
+                    entered.set()
+                    PublicPhysics.raycast_batch(
+                        origins, directions, output, max_distance=10.0, profile=True
+                    )
+                except BaseException as exc:
+                    failure.append(exc)
 
-        worker = threading.Thread(target=query, name="physics-large-published-epoch")
-        worker.start()
-        assert entered.wait(timeout=2.0)
+            worker = threading.Thread(target=query, name="physics-large-published-epoch")
+            worker.start()
+            assert entered.wait(timeout=2.0)
 
-        # Once the worker enters the >= 65,536-ray native path it releases the
-        # GIL and holds the published epoch read lock. These owner writes must
-        # wait for that complete epoch instead of mutating Jolt underneath it.
-        writer_started = time.perf_counter()
-        target.transform.position = Vector3(20, 0, 0)
-        Physics.sync_transforms()
-        SceneManager.instance().step(1.0 / 60.0)
-        assert target.remove_component(collider) is True
-        Physics.sync_transforms()
-        writer_elapsed = time.perf_counter() - writer_started
+            # Once the worker enters the >= 65,536-ray native path it releases the
+            # GIL and holds the published epoch read lock. These owner writes must
+            # wait for that complete epoch instead of mutating Jolt underneath it.
+            writer_started = time.perf_counter()
+            target.transform.position = Vector3(20, 0, 0)
+            Physics.sync_transforms()
+            _normal_play.frames(1)
+            assert target.remove_component(collider) is True
+            Physics.sync_transforms()
+            writer_elapsed = time.perf_counter() - writer_started
 
-        worker.join(timeout=20.0)
-        assert not worker.is_alive()
-        assert failure == []
-        assert writer_elapsed < 10.0
-        assert output["query_generation"] >= published_generation
-        assert output["query_generation"] <= int(PublicPhysics.query_generation)
+            worker.join(timeout=20.0)
+            assert not worker.is_alive()
+            assert failure == []
+            assert writer_elapsed < 10.0
+            assert output["query_generation"] >= published_generation
+            assert output["query_generation"] <= int(PublicPhysics.query_generation)
 
-        # One batch may observe either side of the owner mutation, but never a
-        # mixture. Published numeric identities remain valid after destruction.
-        hit_values = np.unique(output["hit"])
-        assert len(hit_values) == 1
-        if int(hit_values[0]) == 1:
-            np.testing.assert_array_equal(output["collider_id"], collider_id)
-            np.testing.assert_array_equal(output["game_object_id"], game_object_id)
-        else:
-            np.testing.assert_array_equal(output["collider_id"], 0)
-            np.testing.assert_array_equal(output["game_object_id"], 0)
+            # One batch may observe either side of the owner mutation, but never a
+            # mixture. Published numeric identities remain valid after destruction.
+            hit_values = np.unique(output["hit"])
+            assert len(hit_values) == 1
+            if int(hit_values[0]) == 1:
+                np.testing.assert_array_equal(output["collider_id"], collider_id)
+                np.testing.assert_array_equal(output["game_object_id"], game_object_id)
+            else:
+                np.testing.assert_array_equal(output["collider_id"], 0)
+                np.testing.assert_array_equal(output["game_object_id"], 0)
 
-        final_output = self._output(1)
-        PublicPhysics.raycast_batch(
-            origins[:1], directions[:1], final_output, max_distance=10.0
-        )
-        assert int(final_output["hit"][0]) == 0
+            final_output = self._output(1)
+            PublicPhysics.raycast_batch(
+                origins[:1], directions[:1], final_output, max_distance=10.0
+            )
+            assert int(final_output["hit"][0]) == 0
 
     def test_compound_trigger_filter_uses_published_subshape_identity(self, scene):
         import numpy as np
@@ -2610,34 +2692,45 @@ class TestRaycastBatch(_PreparedPhysicsPlay):
         assert int(output["game_object_id"][0]) == target.id
         assert output["distance"][0] == pytest.approx(4.5, abs=1e-4)
 
-    def test_profile_contract_and_disabled_profile_cleanup(self, scene):
+    @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
+    def test_profile_contract_and_disabled_profile_cleanup(self, scene, backend, _normal_play):
+        scene.physics_backend = backend
         import numpy as np
 
         target = scene.create_game_object("ProfileBatchGround")
         target.add_component("BoxCollider")
-        Physics.sync_transforms()
-        origins = np.array([[0, 5, 0], [50, 5, 0]], dtype=np.float32)
-        directions = np.array([[0, -1, 0], [0, -1, 0]], dtype=np.float32)
-        output = self._output(2)
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            target = runtime.find(target.name)
+            Physics.sync_transforms()
+            origins = np.array([[0, 5, 0], [50, 5, 0]], dtype=np.float32)
+            directions = np.array([[0, -1, 0], [0, -1, 0]], dtype=np.float32)
+            output = self._output(2)
 
-        result = PublicPhysics.raycast_batch(origins, directions, output, max_distance=10, profile=True)
-        profile = result["profile"]
-        timing_fields = {
-            "input_validation_ms", "snapshot_sync_ms", "snapshot_lock_wait_ms",
-            "dispatch_wall_ms", "jolt_query_cpu_ms", "broadphase_filter_lock_cpu_ms",
-            "narrowphase_cpu_ms", "result_sort_filter_cpu_ms", "hit_publish_cpu_ms",
-            "output_publish_ms",
-        }
-        count_fields = {"broadphase_candidates", "narrowphase_hits", "published_hits"}
-        assert set(profile) == timing_fields | count_fields
-        assert all(isinstance(profile[name], float) and profile[name] >= 0.0 for name in timing_fields)
-        assert all(isinstance(profile[name], int) and profile[name] >= 0 for name in count_fields)
-        assert profile["published_hits"] == int(output["hit"].sum()) == 1
-        assert profile["narrowphase_hits"] >= profile["published_hits"]
-        assert profile["broadphase_candidates"] >= 1
+            result = PublicPhysics.raycast_batch(origins, directions, output, max_distance=10, profile=True)
+            profile = result["profile"]
+            timing_fields = {
+                "input_validation_ms", "snapshot_sync_ms", "snapshot_lock_wait_ms",
+                "dispatch_wall_ms", "jolt_query_cpu_ms", "broadphase_filter_lock_cpu_ms",
+                "narrowphase_cpu_ms", "result_sort_filter_cpu_ms", "hit_publish_cpu_ms",
+                "output_publish_ms",
+            }
+            count_fields = {"broadphase_candidates", "narrowphase_hits", "published_hits"}
+            assert set(profile) == timing_fields | count_fields
+            assert all(isinstance(profile[name], float) and profile[name] >= 0.0 for name in timing_fields)
+            assert all(isinstance(profile[name], int) and profile[name] >= 0 for name in count_fields)
+            assert profile["published_hits"] == int(output["hit"].sum()) == 1
+            if backend == PhysicsBackend.CPU:
+                assert profile["narrowphase_hits"] >= profile["published_hits"]
+                assert profile["broadphase_candidates"] >= 1
+            else:
+                # The GPU receipt reports final rows; it has no diagnostic
+                # candidate/raw-hit counters. Unmeasured fields remain zero.
+                assert profile["narrowphase_hits"] == 0
+                assert profile["broadphase_candidates"] == 0
 
-        PublicPhysics.raycast_batch(origins, directions, output, max_distance=10, profile=False)
-        assert "profile" not in output
+            PublicPhysics.raycast_batch(origins, directions, output, max_distance=10, profile=False)
+            assert "profile" not in output
 
     def test_collision_callback_queries_after_fixed_epoch_publication(self, scene, _normal_play):
         """Script contact callbacks run after Step releases the write epoch."""

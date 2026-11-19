@@ -12,7 +12,9 @@
 #include "PhysicsParticipant.h"
 #include "PhysicsWorld.h"
 #include <map>
+#include <mutex>
 #include <set>
+#include <shared_mutex>
 
 namespace infernux
 {
@@ -33,8 +35,9 @@ struct PhysicsDomain final
     PhysicsBackend backend = PhysicsBackend::CPU;
     [[nodiscard]] bool UsesGpu() const noexcept;
     glm::vec3 gravity;
-    std::unique_ptr<JoltCpuScene> cpuScene;
+    std::shared_ptr<JoltCpuScene> cpuScene;
     std::unique_ptr<JoltCpuControl> cpuControl;
+    std::optional<std::unique_lock<std::shared_mutex>> cpuFixedQueryWrite;
     JoltCpuContactPublication cpuContacts;
     ContactStreamIdentity cpuPublication;
     struct CpuPose

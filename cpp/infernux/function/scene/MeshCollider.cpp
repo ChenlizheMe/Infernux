@@ -19,6 +19,7 @@
 #include "core/threading/JobSystem.h"
 #include "physics/PhysicsECSStore.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cfloat>
 #include <cmath>
@@ -39,6 +40,7 @@ struct CookedGeometry
     JPH::RefConst<JPH::Shape> shape;
     std::vector<glm::vec3> hullPositions;
     std::vector<uint32_t> hullEdges;
+    bool closedMesh = false;
 };
 
 struct CookingCacheKey
@@ -377,6 +379,19 @@ static std::shared_ptr<const CookedGeometry> CookGeometry(std::vector<glm::vec3>
         settings.mIndexedTriangles.emplace_back(indices[index], indices[index + 1], indices[index + 2], 0,
                                                 static_cast<uint32_t>(index / 3));
     }
+    // The source has already been welded and cleaned. Preserve its topological
+    // boundary with the immutable cook: ray parity only defines an interior for
+    // a closed manifold, never for an open triangle surface.
+    std::unordered_map<uint64_t, uint32_t> edgeUses;
+    edgeUses.reserve(indices.size());
+    for (size_t index = 0; index < indices.size(); index += 3)
+        for (size_t edge = 0; edge < 3; ++edge) {
+            const auto a = indices[index + edge], b = indices[index + (edge + 1) % 3];
+            const auto key = (uint64_t(std::min(a, b)) << 32) | std::max(a, b);
+            ++edgeUses[key];
+        }
+    cooked->closedMesh = !edgeUses.empty() && std::all_of(edgeUses.begin(), edgeUses.end(),
+                                                          [](const auto &edge) { return edge.second == 2; });
     settings.mPerTriangleUserData = true;
     settings.SetEmbedded();
     return finish(settings.Create(), "mesh shape cooking failed");
@@ -645,6 +660,11 @@ JPH::RefConst<JPH::Shape> MeshCollider::GetPublishedConvexQueryShape() const
     if (m_publishedGeometry || !IsConvex())
         throw std::invalid_argument("Collider penetration requires MeshCollider.convex = true");
     throw std::runtime_error("MeshCollider has no published convex geometry for a penetration query");
+}
+
+bool MeshCollider::IsPublishedMeshClosed() const noexcept
+{
+    return m_publishedGeometry && m_publishedGeometry->closedMesh;
 }
 
 std::shared_ptr<const CookedGeometry> MeshCollider::CaptureCookedGeometry() const

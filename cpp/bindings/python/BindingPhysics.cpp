@@ -51,6 +51,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <stdexcept>
+#include <tuple>
 
 namespace py = pybind11;
 
@@ -228,10 +229,14 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
     // GPU queries execute on the engine owner. Publishing author inputs above
     // and decoding the same frozen generation below preserves ordinary return
     // semantics; releasing the GIL does not change the calling thread.
-    const auto dispatchNative = [&] {
+    auto dispatchNative = [&,
+                           capturedCpuEpoch = count != 0 ? physics.CaptureCpuRaycastBatchQuery() : nullptr]() mutable {
+        // The writer may be waiting with the GIL held. Release the CPU read
+        // epoch before gil_scoped_release attempts to reacquire that lock.
+        auto cpuEpoch = std::move(capturedCpuEpoch);
         physics.RaycastBatchPublished(originData, normalizedDirectionData, static_cast<size_t>(count), maxDistance,
                                       nativeHits.data(), nativeMask.data(), layerMask, queryTriggers, &queryGeneration,
-                                      profileEnabled ? &nativeProfile : nullptr, true);
+                                      profileEnabled ? &nativeProfile : nullptr, true, cpuEpoch);
     };
     // The GPU handles the ray lanes. Retain the GIL for short calls to avoid
     // reacquisition latency; large calls let unrelated Python services run.
@@ -280,9 +285,10 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
     output[py::str("query_generation")] = py::int_(queryGeneration);
     if (profileEnabled) {
         const uint64_t publishNs = profileNowNs() - publishStartNs;
-        const uint64_t broadphaseNs = nativeProfile.joltQueryCpuNs > nativeProfile.narrowPhaseCpuNs
-                                          ? nativeProfile.joltQueryCpuNs - nativeProfile.narrowPhaseCpuNs
-                                          : 0;
+        const uint64_t broadphaseNs =
+            nativeProfile.narrowPhaseCpuNs != 0 && nativeProfile.joltQueryCpuNs > nativeProfile.narrowPhaseCpuNs
+                ? nativeProfile.joltQueryCpuNs - nativeProfile.narrowPhaseCpuNs
+                : 0;
         constexpr double kNsToMs = 1.0 / 1'000'000.0;
         py::dict profile;
         profile["input_validation_ms"] = py::float_((validationEndNs - validationStartNs) * kNsToMs);
@@ -489,22 +495,30 @@ py::dict GetRigidbodyStates(const std::vector<Rigidbody *> &bodies, py::object o
     return writer.Write(batch.states);
 }
 
-std::shared_ptr<rhi::ComputeBuffer> ComputeOutput(py::dict &output, const char *name, rhi::ComputeScalarType scalarType,
-                                                  uint8_t lanes, uint64_t elementCount, rhi::ComputeHost *&host)
+JoltGpuQueryExportBinding ComputeOutput(py::dict &output, const char *name, JoltGpuQueryExportField field,
+                                        rhi::ComputeScalarType scalarType, uint8_t lanes, uint64_t elementCount,
+                                        rhi::ComputeHost *&host)
 {
     const auto key = py::str(name);
     if (!output.contains(key))
         throw py::value_error(std::string("GPU state output is missing '") + name + "'");
-    auto buffer = py::cast<std::shared_ptr<rhi::ComputeBuffer>>(output[key]);
-    if (!buffer)
-        throw py::value_error(std::string("GPU state output '") + name + "' must not be None");
+    auto [buffer, offset, capacity] =
+        py::cast<std::tuple<std::shared_ptr<rhi::ComputeBuffer>, uint64_t, uint64_t>>(output[key]);
+    if (!buffer || buffer->IsFrozen())
+        throw py::value_error(std::string("GPU physics output '") + name + "' must be writable");
     const auto &desc = buffer->GetDesc();
-    if (desc.scalarType != scalarType || desc.lanes != lanes || desc.elementCount < elementCount)
+    const uint64_t stride = lanes * sizeof(uint32_t);
+    const auto size = buffer->GetByteSize();
+    if (desc.scalarType != scalarType || desc.lanes != lanes || offset % stride || offset > size ||
+        capacity > (size - offset) / stride || elementCount > capacity)
         throw py::value_error(std::string("GPU state output '") + name + "' has the wrong type or capacity");
     if (host && !host->SharesServicesWith(buffer->GetHost()))
         throw py::value_error("GPU state outputs must belong to the same compute host");
     host = &buffer->GetHost();
-    return buffer;
+    JoltGpuQueryExportBinding binding{field, std::move(buffer)};
+    binding.byteOffset = offset;
+    binding.byteEnd = offset + capacity * stride;
+    return binding;
 }
 
 py::dict RaycastInto(py::array origins, py::array directions, py::dict output, float maxDistance,
@@ -515,38 +529,13 @@ py::dict RaycastInto(py::array origins, py::array directions, py::dict output, f
     const auto count = static_cast<uint64_t>(origins.shape(0));
     rhi::ComputeHost *host = nullptr;
     using Field = JoltGpuQueryExportField;
-    const auto destination = [&](Field field, const char *name, rhi::ComputeScalarType scalar, uint8_t lanes) {
-        uint64_t offset = 0;
-        py::dict storage = output;
-        if (output.contains(name) && py::isinstance<py::tuple>(output[name])) {
-            const auto view = py::cast<py::tuple>(output[name]);
-            if (view.size() != 3)
-                throw py::value_error("Device raycast output view requires storage, byte offset and capacity");
-            offset = py::cast<uint64_t>(view[1]);
-            const auto capacity = py::cast<uint64_t>(view[2]);
-            if (capacity < count)
-                throw py::value_error("Device raycast output view has insufficient capacity");
-            storage = py::dict();
-            storage[name] = view[0];
-        }
-        auto buffer = ComputeOutput(storage, name, scalar, lanes, count, host);
-        const auto bytes = count * lanes * sizeof(uint32_t);
-        if (offset % (lanes * sizeof(uint32_t)) || offset > buffer->GetByteSize() ||
-            bytes > buffer->GetByteSize() - offset)
-            throw py::value_error("Device raycast output view exceeds its storage or has invalid alignment");
-        JoltGpuQueryExportBinding binding{field, std::move(buffer)};
-        binding.byteOffset = offset;
-        return binding;
-    };
+    using Scalar = rhi::ComputeScalarType;
     const std::vector<JoltGpuQueryExportBinding> exports{
-        destination(Field::HitValid, "hit", rhi::ComputeScalarType::UInt32, 1),
-        destination(Field::HitPoint, "point", rhi::ComputeScalarType::Float32, 3),
-        destination(Field::HitNormal, "normal", rhi::ComputeScalarType::Float32, 3),
-        destination(Field::HitDistance, "distance", rhi::ComputeScalarType::Float32, 1),
+        ComputeOutput(output, "hit", Field::HitValid, Scalar::UInt32, 1, count, host),
+        ComputeOutput(output, "point", Field::HitPoint, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "normal", Field::HitNormal, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "distance", Field::HitDistance, Scalar::Float32, 1, count, host),
     };
-    for (const auto &binding : exports)
-        if (binding.buffer->IsFrozen())
-            throw py::value_error("Device raycast output buffers must be writable");
     const auto source = PhysicsWorld::Instance().RaycastInto(static_cast<const float *>(origins.data()), normalized,
                                                              count, maxDistance, exports, layers, queryTriggers);
     output["world_id"] = source.worldId;
@@ -560,19 +549,15 @@ py::dict RaycastInto(py::array origins, py::array directions, py::dict output, f
 std::vector<JoltGpuQueryExportBinding> RigidbodyStateExports(py::dict output, uint64_t count, rhi::ComputeHost *&host)
 {
     using Field = JoltGpuQueryExportField;
+    using Scalar = rhi::ComputeScalarType;
     return {
-        {Field::MotionPosition, ComputeOutput(output, "position", rhi::ComputeScalarType::Float32, 3, count, host)},
-        {Field::MotionCenterOfMass,
-         ComputeOutput(output, "center_of_mass", rhi::ComputeScalarType::Float32, 3, count, host)},
-        {Field::MotionLinearVelocity,
-         ComputeOutput(output, "linear_velocity", rhi::ComputeScalarType::Float32, 3, count, host)},
-        {Field::MotionAngularVelocity,
-         ComputeOutput(output, "angular_velocity", rhi::ComputeScalarType::Float32, 3, count, host)},
-        {Field::MotionInverseMass,
-         ComputeOutput(output, "inverse_mass", rhi::ComputeScalarType::Float32, 3, count, host)},
-        {Field::MotionRotation, ComputeOutput(output, "rotation", rhi::ComputeScalarType::Float32, 4, count, host)},
-        {Field::MotionInverseInertia,
-         ComputeOutput(output, "inverse_inertia", rhi::ComputeScalarType::Float32, 1, count * 9, host)},
+        ComputeOutput(output, "position", Field::MotionPosition, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "center_of_mass", Field::MotionCenterOfMass, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "linear_velocity", Field::MotionLinearVelocity, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "angular_velocity", Field::MotionAngularVelocity, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "inverse_mass", Field::MotionInverseMass, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "rotation", Field::MotionRotation, Scalar::Float32, 4, count, host),
+        ComputeOutput(output, "inverse_inertia", Field::MotionInverseInertia, Scalar::Float32, 1, count * 9, host),
     };
 }
 
@@ -788,15 +773,16 @@ py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::objec
 std::vector<JoltGpuQueryExportBinding> RigidbodyBoxExports(py::dict output, rhi::ComputeHost *&host)
 {
     using Field = JoltGpuQueryExportField;
+    using Scalar = rhi::ComputeScalarType;
     // The device collector determines the exact Box prefix. The common export
     // continuation validates that prefix against every retained target capacity.
     return {
-        {Field::ShapeBodyIndex, ComputeOutput(output, "body_index", rhi::ComputeScalarType::Int32, 1, 0, host)},
-        {Field::ShapeCenter, ComputeOutput(output, "center", rhi::ComputeScalarType::Float32, 3, 0, host)},
-        {Field::ShapeRotation, ComputeOutput(output, "rotation", rhi::ComputeScalarType::Float32, 4, 0, host)},
-        {Field::ShapeHalfExtents, ComputeOutput(output, "half_extents", rhi::ComputeScalarType::Float32, 3, 0, host)},
-        {Field::ShapeFriction, ComputeOutput(output, "friction", rhi::ComputeScalarType::Float32, 1, 0, host)},
-        {Field::ShapeBounciness, ComputeOutput(output, "bounciness", rhi::ComputeScalarType::Float32, 1, 0, host)},
+        ComputeOutput(output, "body_index", Field::ShapeBodyIndex, Scalar::Int32, 1, 0, host),
+        ComputeOutput(output, "center", Field::ShapeCenter, Scalar::Float32, 3, 0, host),
+        ComputeOutput(output, "rotation", Field::ShapeRotation, Scalar::Float32, 4, 0, host),
+        ComputeOutput(output, "half_extents", Field::ShapeHalfExtents, Scalar::Float32, 3, 0, host),
+        ComputeOutput(output, "friction", Field::ShapeFriction, Scalar::Float32, 1, 0, host),
+        ComputeOutput(output, "bounciness", Field::ShapeBounciness, Scalar::Float32, 1, 0, host),
     };
 }
 
