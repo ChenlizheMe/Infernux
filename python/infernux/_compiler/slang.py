@@ -494,6 +494,7 @@ class _KernelEmitter(_NumericalEmitter):
                                                   f"{result} {name}({parameters}) {{", *emitter.lines, "}"])
             self.helper_return_types[key] = name, result
             self.source_ranges.extend(emitter.source_ranges)
+            self.required_modules.update(emitter.required_modules)
         return (*self.helper_return_types[key], arguments)
 
     def _atomic_target(self, node):
@@ -669,6 +670,7 @@ def _local_derivative_source(plan, params, primal):
                 address = primal._address(name, index_node, derivative=True)
                 primal.gradient_accesses[name] = 3
                 primal.line(f"inx_grad_{name}.Store<{kind}>({address}, inx_grad_{name}.Load<{kind}>({address}) + inx_pair_{name}.d);")
+    primal.required_modules.update(local.required_modules)
     primal.helper_sources.update(local.helper_sources)
     primal.source_ranges.extend(local.source_ranges)
     return local_function
@@ -743,7 +745,8 @@ void main(uint3 tid : SV_DispatchThreadID) {{
     imports = dict.fromkeys("import " + function.symbol.split("::", 1)[0] + ";"
                             for function in plan.library_functions.values())
     code = "\n".join([
-        *imports, *emitter.declarations(), _ARITHMETIC, *emitter.helper_sources.values(),
+        *imports, *(f"import {module};" for module in sorted(emitter.required_modules)),
+        *emitter.declarations(), _ARITHMETIC, *emitter.helper_sources.values(),
         derivative, entry, *emitter.lines, "}",
     ])
     return code, emitter

@@ -95,6 +95,7 @@ class SlangEmitter(ast.NodeVisitor):
         self.source_lines = source.splitlines()
         self.aliases = aliases
         self.types = dict(types or {})
+        self.required_modules = set()
         self.locals = {}
         self.local_nodes = {}
         self.lines = []
@@ -223,6 +224,8 @@ class SlangEmitter(ast.NodeVisitor):
                 return TYPES[name]
             if name in INTRINSICS and not node.args:
                 self.error(node, "GPU intrinsics need explicit positional arguments", code="author.call")
+            if name in {"inverse", "matrix_comp_mult", "outer_product"}:
+                return self.matrix_intrinsic_type(node, name)
             intrinsic = INTRINSICS.get(name)
             if intrinsic in _FLOAT_INTRINSICS:
                 return floating_type(reduce(common_type, map(self.infer, node.args)))
@@ -268,6 +271,23 @@ class SlangEmitter(ast.NodeVisitor):
             return base.rstrip("0123456789") if base else None
         return None
 
+    def matrix_intrinsic_type(self, node, name):
+        count = 1 if name == "inverse" else 2
+        if len(node.args) != count or node.keywords:
+            self.error(node, f"shader.{name} takes {count} positional argument(s)", code="author.call")
+        kinds = tuple(self.infer(argument) for argument in node.args)
+        if name == "outer_product":
+            if any(kind not in {"float2", "float3", "float4"} for kind in kinds):
+                self.error(node, "outer_product takes two float vectors of length 2, 3 or 4", code="author.type")
+            return "float" + kinds[0][-1] + "x" + kinds[1][-1]
+        matrices = {f"float{rows}x{columns}" for rows in (2, 3, 4) for columns in (2, 3, 4)}
+        if name == "inverse":
+            if kinds[0] not in {"float2x2", "float3x3", "float4x4"}:
+                self.error(node, "inverse takes a float mat2, mat3 or mat4", code="author.type")
+        elif kinds[0] not in matrices or kinds[0] != kinds[1]:
+            self.error(node, "matrix_comp_mult takes two float matrices with the same shape", code="author.type")
+        return kinds[0]
+
     def visit_Constant(self, node):
         if not isinstance(node.value, (float, int, bool)):
             self.error(node, "GPU expressions use numeric literals")
@@ -290,6 +310,9 @@ class SlangEmitter(ast.NodeVisitor):
             self.error(node, "GPU calls must name a shader constructor, intrinsic or declared helper")
         if node.keywords:
             self.error(node, "GPU intrinsic arguments are positional")
+        if symbol in {"inverse", "matrix_comp_mult", "outer_product"}:
+            self.matrix_intrinsic_type(node, symbol)
+            self.required_modules.add("inx_math")
         return _FUNCTIONS[symbol] + "(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
 
     def visit_BinOp(self, node):

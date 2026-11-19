@@ -76,7 +76,8 @@ _ENGINE_MODULES = {"inx_ui_context": ("UIContext", "WorldUIContext"),
                    "inx_particle_lighting": ("lighting.particle_pbr", "lighting.six_way_smoke"),
                    "inx_frame": ("frame_time", "frame_delta_time", "_previous_ray_geometry_serial",
                                  "_view_jitter_delta_uv", "view", "ViewContext"),
-                   "inx_camera": ("camera", "CameraContext")}
+                   "inx_camera": ("camera", "CameraContext"),
+                   "inx_math": ("inverse", "matrix_comp_mult", "outer_product")}
 _CONSTRUCTORS = {"ShadingContext": ("InxShadingContext", "inx_shading_context"),
                  "FragmentOutput": ("InxFragmentOutput", "inx_fragment_output"),
                  "ThinSheetData": ("InxThinSheetData", "inx_thin_sheet_data")}
@@ -178,12 +179,15 @@ class _LibrarySource:
     def emit(self, emitter_type, *, differentiable=()):
         code = list(self.header)
         ranges = []
+        modules = set()
         for definition in self.definitions:
             function = self.module.functions[definition.name]
             emitter = emitter_type(self.text, self.module.path, aliases=(self.alias,), functions=self.functions)
             code.extend(emitter.emit_function(definition, function, public=True,
                                               differentiable=function.symbol in differentiable))
             ranges.extend(emitter.source_ranges)
+            modules.update(emitter.required_modules)
+        code[:0] = [f"import {module};" for module in sorted(modules) if f"import {module};" not in code]
         code.append("}")
         self.module.source = "\n".join(code)
         self.module.source_ranges = tuple(ranges)

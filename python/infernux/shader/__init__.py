@@ -501,6 +501,11 @@ def _gpu_intrinsic(name):
     def intrinsic(*args):
         raise RuntimeError(f"shader.{name} executes in a compiled GPU program")
     intrinsic.__name__ = name
+    intrinsic.__doc__ = {
+        "inverse": "Inverse of a nonsingular float mat2, mat3 or mat4; singular results are undefined.",
+        "matrix_comp_mult": "Elementwise product of float matrices with the same row/column shape (also a * b).",
+        "outer_product": "Outer product of float vectors: result[i][j] = column[i] * row[j].",
+    }.get(name)
     return intrinsic
 
 

@@ -6,6 +6,7 @@
 #include "SlangGeometryModule.h"
 #include "SlangLightingModule.h"
 #include "SlangLitScatteringModule.h"
+#include "SlangMathModule.h"
 #include "SlangParticleLightingModule.h"
 #include "SlangParticleModule.h"
 #include "SlangUIModule.h"
@@ -55,6 +56,7 @@ class SlangModuleFiles final : public ISlangFileSystemExt
     SlangModuleFiles(const ShaderSourceModule &source, const std::vector<ShaderSourceModule> &libraries)
     {
         Add(GetSlangGeometryModule());
+        Add(GetSlangMathModule());
         Add(GetSlangCameraModule());
         Add(GetSlangLitScatteringModule());
         Add(GetSlangLightingModule());
