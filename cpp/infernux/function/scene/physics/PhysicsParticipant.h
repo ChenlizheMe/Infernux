@@ -137,6 +137,21 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
                                                   float fixedDeltaTime, uint32_t substep, uint32_t iteration,
                                                   const Prefix &prefix);
 
+    struct PreparedStage
+    {
+        rhi::ComputeHost *host = nullptr;
+        std::vector<rhi::ComputeBufferUpdate> updates;
+        std::vector<rhi::ComputeDispatchDesc> dispatches;
+        std::function<void()> accepted;
+    };
+    /// Lower one GPU-only stage without changing its bound state or private
+    /// scratch identities. A runtime slot supplies immutable per-round ports;
+    /// writable/aliased runtime ports decline before preparing any GPU work.
+    [[nodiscard]] std::optional<PreparedStage> PrepareGpuStage(JoltGpuParticipantStage, const JPH::GPU::StepParams &,
+                                                               float fixedDeltaTime, uint32_t substep,
+                                                               uint32_t iteration, const Prefix &,
+                                                               std::optional<uint32_t> runtimeSlot = std::nullopt);
+
     [[nodiscard]] std::optional<JoltGpuControlWork>
     PrepareClosedRounds(const JPH::GPU::StepParams &, float fixedDeltaTime, uint32_t substep, uint32_t iteration,
                         uint32_t rounds, const Prefix &, std::function<void(uint32_t)> done);
@@ -178,6 +193,11 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     std::map<std::string, BoundStage> m_instances;
     std::optional<PhysicsParticipantStep> m_uploadedStep;
     std::shared_ptr<rhi::ComputeBuffer> m_step, m_indices, m_rigidMotion;
+    struct BatchRuntime
+    {
+        std::shared_ptr<rhi::ComputeBuffer> step, indices;
+    };
+    std::vector<BatchRuntime> m_batchRuntime;
     uint32_t m_rigidMotionSlot = UINT32_MAX, m_rigidImpulseSlot = UINT32_MAX;
     std::vector<std::weak_ptr<PhysicsParticipantOutput>> m_outputs;
     uint64_t m_generation = 0, m_nextOutput = 1;

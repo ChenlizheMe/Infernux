@@ -95,6 +95,65 @@ JoltGpuControlWork StageChain(std::shared_ptr<const ParticipantBatch> batch, siz
         return {nullptr, std::move(next), JoltGpuControlWork::ResumeAfter::HostWork};
     return ContinueJoltGpuControlWork(std::move(work), std::move(next));
 }
+
+std::optional<JoltGpuControlWork> GpuStageBatch(std::shared_ptr<const ParticipantBatch> batch,
+                                                JoltGpuParticipantStage stage, JPH::GPU::StepParams params,
+                                                float fixedDeltaTime, uint32_t substep, uint32_t iteration,
+                                                uint32_t rounds, std::function<void(uint32_t)> done)
+{
+    const auto &selected = batch->OwnersFor(stage, substep);
+    // Bound speculative preparation as well as accepted work. The tick already
+    // caps closed rounds at four; larger owner sets keep their ordinary cursor.
+    constexpr size_t maxStageInvocations = 16;
+    if (!rounds || selected.empty() || (selected.size() == 1 && rounds == 1) ||
+        selected.size() > maxStageInvocations / rounds)
+        return std::nullopt;
+    std::vector<rhi::ComputeBufferUpdate> updates;
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    std::vector<std::function<void()>> accepted;
+    rhi::ComputeHost *host = nullptr;
+    size_t largestStageDispatches = 0;
+    // Keep the existing serial order: every owner in round N precedes round N+1.
+    // Shared Exchange states and private scratch retain their exact bound owners.
+    for (uint32_t round = 0; round < rounds; ++round)
+        for (const auto index : selected) {
+            const auto &prefix = batch->owners[index];
+            auto part = prefix.owner->PrepareGpuStage(stage, params, fixedDeltaTime, substep, iteration + round, prefix,
+                                                      rounds > 1 ? std::optional(round) : std::nullopt);
+            if (!part || (host && !host->SharesServicesWith(*part->host)))
+                return std::nullopt;
+            host = part->host;
+            largestStageDispatches = std::max(largestStageDispatches, part->dispatches.size());
+            for (auto &update : part->updates)
+                updates.push_back(std::move(update));
+            for (auto &dispatch : part->dispatches)
+                dispatches.push_back(std::move(dispatch));
+            accepted.push_back(std::move(part->accepted));
+        }
+    const bool reducesDispatchWork = dispatches.size() > largestStageDispatches;
+    auto packet = rhi::PrepareComputeBatch(*host, std::move(updates), std::move(dispatches));
+    JoltGpuControlWork result{std::move(packet),
+                              [batch, selected, stage, substep, accepted = std::move(accepted), done, rounds] {
+                                  for (const auto &apply : accepted)
+                                      if (apply)
+                                          apply();
+                                  if (stage == JoltGpuParticipantStage::Predict && substep == 0)
+                                      for (const auto index : selected) {
+                                          const auto &prefix = batch->owners[index];
+                                          prefix.owner->AcceptControls(prefix.controls);
+                                      }
+                                  done(rounds);
+                                  return JoltGpuControlWork{};
+                              },
+                              JoltGpuControlWork::ResumeAfter::Acceptance};
+    result.minimumReducesDispatchWork = reducesDispatchWork;
+    // Admission may contract all the way to the original first owner at the
+    // same stage/round. No speculative control acceptance or cursor progress.
+    result.prepareMinimum = [batch, stage, params, fixedDeltaTime, substep, iteration, done] {
+        return StageChain(batch, 0, stage, params, fixedDeltaTime, substep, iteration, [done] { done(1); });
+    };
+    return result;
+}
 } // namespace
 
 PhysicsParticipant::PhysicsParticipant(const Component &component, Recipes recipes, Controls controls, uint32_t count,
@@ -529,6 +588,8 @@ PhysicsParticipant::BoundStage::BoundStage(std::shared_ptr<rhi::ComputeWorkInsta
 }
 bool PhysicsParticipant::BindInstances()
 {
+    if (m_batchRuntime.empty())
+        m_batchRuntime.resize(4);
     auto &host = m_recipes.at("initialize")->GetHost();
     for (auto &[name, state] : m_exchangeStates) {
         const auto peer = state.owner.lock();
@@ -657,6 +718,90 @@ JoltGpuControlWork PhysicsParticipant::PrepareStage(JoltGpuParticipantStage stag
         });
 }
 
+std::optional<PhysicsParticipant::PreparedStage>
+PhysicsParticipant::PrepareGpuStage(JoltGpuParticipantStage stage, const JPH::GPU::StepParams &params,
+                                    float fixedDeltaTime, uint32_t substep, uint32_t iteration, const Prefix &prefix,
+                                    std::optional<uint32_t> runtimeSlot)
+{
+    if (prefix.rigidExchange &&
+        (stage == JoltGpuParticipantStage::Prepare || stage == JoltGpuParticipantStage::Exchange))
+        return std::nullopt;
+    PreparedStage result;
+    result.host = &m_recipes.at("initialize")->GetHost();
+    const auto found = m_instances.find(StageName(stage));
+    const auto *bound = found != m_instances.end() ? &found->second : nullptr;
+    const PhysicsParticipantStep timing{params.gravityDt.w, fixedDeltaTime};
+    const bool uploadStep = bound && bound->usesStep &&
+                            (!m_uploadedStep || m_uploadedStep->substepDeltaTime != timing.substepDeltaTime ||
+                             m_uploadedStep->fixedDeltaTime != timing.fixedDeltaTime);
+    if (bound)
+        bound->work->AppendDispatches(result.dispatches);
+    auto step = m_step, indices = m_indices;
+    BatchRuntime runtime;
+    if (runtimeSlot && bound) {
+        if (*runtimeSlot >= m_batchRuntime.size())
+            return std::nullopt;
+        const auto &recipe = bound->work->GetRecipe();
+        for (const auto &port : recipe.GetPorts()) {
+            if (!port.input || (port.name != "step" && port.name != "indices"))
+                continue;
+            // Splitting a writable or otherwise named runtime allocation would
+            // change an observable state/input identity. Keep the ordinary path.
+            for (const auto &other : recipe.GetPorts())
+                if (&other != &port && other.range.slot == port.range.slot)
+                    return std::nullopt;
+            const auto &original = bound->work->GetBuffers().at(port.range.slot);
+            for (const auto &dispatch : result.dispatches)
+                for (size_t i = 0; i < dispatch.buffers.size(); ++i)
+                    if (dispatch.buffers[i] == original && dispatch.bufferAccesses[i] != rhi::ComputeBufferAccess::Read)
+                        return std::nullopt;
+        }
+        // New snapshots remain local until acceptance. A declined/contracted
+        // optional packet must not retain newly allocated residency debt.
+        runtime = m_batchRuntime[*runtimeSlot];
+        for (const auto usesIndices : {false, true}) {
+            if (!(usesIndices ? bound->usesIndices : bound->usesStep))
+                continue;
+            auto &storage = usesIndices ? runtime.indices : runtime.step;
+            const auto &original = usesIndices ? m_indices : m_step;
+            if (!storage)
+                storage = rhi::ComputeBuffer::TryCreatePrivate(*result.host, original->GetDesc());
+            if (!storage)
+                return std::nullopt;
+            for (auto &dispatch : result.dispatches) {
+                for (auto &buffer : dispatch.buffers)
+                    if (buffer == original)
+                        buffer = storage;
+                if (dispatch.indirectArguments && dispatch.indirectArguments->buffer == original)
+                    dispatch.indirectArguments->buffer = storage;
+            }
+            (usesIndices ? indices : step) = storage;
+        }
+    }
+    if (bound && bound->usesStep && (runtimeSlot || uploadStep))
+        result.updates.push_back({step, 0, Bytes(timing)});
+    if (bound && bound->usesIndices) {
+        const PhysicsParticipantIndices values{
+            substep,         params.solve.y, stage == JoltGpuParticipantStage::Exchange ? iteration : 0u,
+            params.counts.w, prefix.count,   uint32_t(stage)};
+        result.updates.push_back({indices, 0, Bytes(values)});
+    }
+    if (stage == JoltGpuParticipantStage::Predict && substep == 0)
+        for (const auto &[control, value] : prefix.controls)
+            result.updates.push_back({m_controlStorage.at(control), 0, *value});
+    if (bound && (runtimeSlot || uploadStep || bound->writesStep)) {
+        const auto resident = runtimeSlot || bound->writesStep ? std::nullopt : std::optional(timing);
+        const bool changeStep = bound->usesStep && (runtimeSlot || uploadStep || bound->writesStep);
+        result.accepted = [self = shared_from_this(), resident, changeStep, runtimeSlot, runtime] {
+            if (runtimeSlot)
+                self->m_batchRuntime[*runtimeSlot] = runtime;
+            if (changeStep)
+                self->m_uploadedStep = resident;
+        };
+    }
+    return result;
+}
+
 std::optional<JoltGpuControlWork> PhysicsParticipant::PrepareClosedRounds(const JPH::GPU::StepParams &params,
                                                                           float fixedDeltaTime, uint32_t substep,
                                                                           uint32_t iteration, uint32_t rounds,
@@ -678,44 +823,35 @@ std::optional<JoltGpuControlWork> PhysicsParticipant::PrepareClosedRounds(const 
     if (!closed)
         return std::nullopt;
     std::vector<rhi::ComputeDispatchDesc> dispatches;
-    const PhysicsParticipantStep timing{params.gravityDt.w, fixedDeltaTime};
+    std::vector<std::function<void()>> accepted;
+    auto gpuPrefix = prefix;
+    gpuPrefix.rigidExchange = {};
     for (uint32_t round = 0; round < rounds; ++round) {
-        auto inputs = Inputs(recipe, false);
-        // Packet-head updates cannot overwrite one shared indices/step port
-        // repeatedly. Rebind only runtime inputs, preserving canonical state.
-        for (const auto &entry : {std::pair{"step", m_step}, std::pair{"indices", m_indices}}) {
-            const auto input = inputs.find(entry.first);
-            if (input == inputs.end())
-                continue;
-            auto storage = rhi::ComputeBuffer::TryCreatePrivate(host, entry.second->GetDesc());
-            if (!storage)
-                return std::nullopt;
-            input->second = storage;
-            if (entry.first == std::string_view("step"))
-                closed->updates.push_back({storage, 0, Bytes(timing)});
-            else {
-                const PhysicsParticipantIndices values{substep,           params.solve.y,
-                                                       iteration + round, params.counts.w,
-                                                       prefix.count,      uint32_t(JoltGpuParticipantStage::Exchange)};
-                closed->updates.push_back({storage, 0, Bytes(values)});
-            }
-        }
-        const auto instance = bound.work->Rebind(Bindings(inputs));
-        if (!instance)
+        auto part = PrepareGpuStage(JoltGpuParticipantStage::Exchange, params, fixedDeltaTime, substep,
+                                    iteration + round, gpuPrefix, round);
+        if (!part)
             return std::nullopt;
-        instance->AppendDispatches(dispatches);
+        for (auto &update : part->updates)
+            closed->updates.push_back(std::move(update));
+        for (auto &dispatch : part->dispatches)
+            dispatches.push_back(std::move(dispatch));
+        accepted.push_back(std::move(part->accepted));
         dispatches.push_back(std::move(closed->responses.at(round)));
     }
     auto packet =
         rhi::PrepareComputeBatch(host, std::move(closed->updates), std::move(dispatches), std::move(closed->reads));
     auto self = shared_from_this();
-    JoltGpuControlWork result{packet, [self, packet, apply = std::move(closed->apply), done, rounds] {
-                                  apply(packet);
-                                  // The canonical step port was not the rebound runtime port.
-                                  self->m_uploadedStep.reset();
-                                  done(rounds);
-                                  return JoltGpuControlWork{};
-                              }};
+    JoltGpuControlWork result{
+        packet, [self, packet, apply = std::move(closed->apply), accepted = std::move(accepted), done, rounds] {
+            apply(packet);
+            for (const auto &commit : accepted)
+                if (commit)
+                    commit();
+            // The canonical step port was not the rebound runtime port.
+            self->m_uploadedStep.reset();
+            done(rounds);
+            return JoltGpuControlWork{};
+        }};
     result.prepareMinimum = [self, params, fixedDeltaTime, substep, iteration, &prefix, done] {
         return ContinueJoltGpuControlWork(
             self->PrepareStage(JoltGpuParticipantStage::Exchange, params, fixedDeltaTime, substep, iteration, prefix),
@@ -802,11 +938,16 @@ JoltGpuParticipantStages CapturePhysicsParticipants(const std::vector<std::weak_
     std::sort(stages.rigidBodyIds.begin(), stages.rigidBodyIds.end());
     stages.rigidBodyIds.erase(std::unique(stages.rigidBodyIds.begin(), stages.rigidBodyIds.end()),
                               stages.rigidBodyIds.end());
-    if (batch && batch->byStage[static_cast<size_t>(Stage::Exchange)].size() == 1) {
-        const auto index = batch->byStage[static_cast<size_t>(Stage::Exchange)].front();
-        stages.prepareClosedRounds = [batch, index](const JPH::GPU::StepParams &params, float dt, uint32_t substep,
-                                                    uint32_t iteration, uint32_t rounds,
-                                                    std::function<void(uint32_t)> done) {
+    if (batch && !batch->byStage[static_cast<size_t>(Stage::Exchange)].empty()) {
+        stages.prepareClosedRounds = [batch](const JPH::GPU::StepParams &params, float dt, uint32_t substep,
+                                             uint32_t iteration, uint32_t rounds,
+                                             std::function<void(uint32_t)> done) -> std::optional<JoltGpuControlWork> {
+            if (auto work = GpuStageBatch(batch, Stage::Exchange, params, dt, substep, iteration, rounds, done))
+                return work;
+            const auto &selected = batch->byStage[static_cast<size_t>(Stage::Exchange)];
+            if (selected.size() != 1)
+                return std::nullopt;
+            const auto index = selected.front();
             const auto &prefix = batch->owners[index];
             return prefix.owner->PrepareClosedRounds(params, dt, substep, iteration, rounds, prefix, std::move(done));
         };
@@ -814,6 +955,9 @@ JoltGpuParticipantStages CapturePhysicsParticipants(const std::vector<std::weak_
     if (batch)
         stages.prepare = [batch](Stage stage, const JPH::GPU::StepParams &params, float fixedDeltaTime,
                                  uint32_t substep, uint32_t iteration, std::function<void()> done) {
+            if (auto work = GpuStageBatch(batch, stage, params, fixedDeltaTime, substep, iteration, 1,
+                                          [done](uint32_t) { done(); }))
+                return std::move(*work);
             return StageChain(batch, 0, stage, params, fixedDeltaTime, substep, iteration, std::move(done));
         };
     return stages;

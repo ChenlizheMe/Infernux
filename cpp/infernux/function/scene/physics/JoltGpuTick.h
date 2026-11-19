@@ -169,6 +169,9 @@ struct JoltGpuParticipantStages
     std::function<JoltGpuControlWork(Stage, const JPH::GPU::StepParams &, float, uint32_t, uint32_t,
                                      std::function<void()>)>
         prepare;
+    // Optional ordered Exchange prefix across all selected owners. Keep every
+    // round and dispatch; decline before submission when a native consumer is
+    // required between rounds. Minimum contraction retains the original cursor.
     std::function<std::optional<JoltGpuControlWork>(const JPH::GPU::StepParams &, float, uint32_t, uint32_t, uint32_t,
                                                     std::function<void(uint32_t)>)>
         prepareClosedRounds;

@@ -1890,8 +1890,8 @@ class JoltGpuTick::Impl
             if (const auto stage = ParticipantStage(stageCursor.phase)) {
                 if (*stage == JoltGpuParticipantStage::Exchange && !HasRigidWork() &&
                     control.participants.prepareClosedRounds && tickParameters.counts.w - stageCursor.iteration > 1) {
-                    // Same finite round cap as the coupled producer. A CPU
-                    // owning-context capability decides whether closure is legal.
+                    // Same finite round cap as the coupled producer. Owners
+                    // decline if a round needs an intermediate native consumer.
                     const auto rounds = std::min(tickParameters.counts.w - stageCursor.iteration, 4u);
                     auto closed =
                         control.participants.prepareClosedRounds(tickParameters, fixedDeltaTime, stageCursor.substep,
