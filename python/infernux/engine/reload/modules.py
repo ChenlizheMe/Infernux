@@ -10,6 +10,7 @@ import builtins
 from contextlib import ExitStack, contextmanager, nullcontext
 from contextvars import ContextVar
 from infernux.engine.path_utils import resolved_path
+from threading import get_ident
 from types import ModuleType
 
 
@@ -110,6 +111,7 @@ def remove_module(name):
 class ModuleBatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     def __init__(self, sources, *, unavailable=(), coordinator=None, owner=None):
         # name -> exact compiled source; the owner has already invalidated old modules.
+        self._owner_thread = get_ident()
         self.sources = sources
         self.unavailable = frozenset(unavailable)
         self.modules = {}
@@ -147,6 +149,11 @@ class ModuleBatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         self.runtime_imports.add((importer, module.__name__))
 
     def find_spec(self, fullname, path=None, target=None):
+        # sys.meta_path is process-wide. A preload can start worker imports while
+        # this thread is publishing; those imports must use their normal loader,
+        # not extend or execute a partially published source batch on that worker.
+        if get_ident() != self._owner_thread:
+            return None
         result = self.sources.get(fullname)
         if result is None and self.coordinator is not None:
             candidate = self.coordinator.candidate_batch(fullname, consumer=self)

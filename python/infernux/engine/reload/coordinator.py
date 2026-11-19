@@ -485,67 +485,55 @@ class ReloadCoordinator:
                 self._publication_call(candidate, lambda c=candidate, names=names: c.batch.load(names))
                 self._retire_failed_publications(publications)
 
-            # First publish every current declaration, then prepare and bind all
-            # components. No preload, deserialize, Awake or Start runs earlier.
-            self._prepare_publications(publications)
-            while True:
-                initialized = False
-                for candidate in self._ordered_publications(publications):
-                    while candidate.error is None and candidate.initialized < len(candidate.prepared):
-                        prepared = candidate.prepared[candidate.initialized]
-                        candidate.initialized += 1
-                        self._publication_call(candidate, lambda c=candidate, p=prepared:
-                                               self.adapter.initialize(p, c.owner))
-                        self._retire_failed_publications(publications)
-                        initialized = True
-                # Actual imports made by preload join this same construction.
-                # Newly imported modules are prepared once, never retried.
-                added = self._prepare_publications(publications)
-                if not initialized and not added:
-                    break
-            for phase in ("after_deserialize", "awake", "start"):
-                for candidate in self._ordered_publications(publications):
-                    for prepared in candidate.prepared:
-                        self._publication_call(candidate, lambda c=candidate, p=prepared:
-                                               self.adapter.phase(p, c.owner, phase))
-                        self._retire_failed_publications(publications)
-
-            # All current owners receive admission before enable/view hooks can
-            # observe peers. The owner thread has not resumed normal callbacks.
-            for candidate in publications:
-                if candidate.error is None:
-                    candidate.owner.start_admission()
-            for candidate in publications:
-                for prepared in candidate.prepared:
-                    self._publication_call(candidate, lambda c=candidate, p=prepared:
-                                           self.adapter.phase(p, c.owner, "admit"))
-            for candidate in self._ordered_publications(publications):
-                for prepared in candidate.prepared:
-                    self._publication_call(candidate, lambda p=prepared: self.adapter.activate(p))
-                    self._retire_failed_publications(publications)
             from infernux.components.script_loader import _clear_script_error
-            for candidate in publications:
-                if candidate.error is not None:
+            activated, notified = {}, set()
+            while True:
+                self._activate_publications(publications, activated)
+                # Lifecycle hooks can import another source after preparation.
+                # That source must activate before any completion notification.
+                if any(candidate.error is None and candidate.batch.modules.keys() - candidate.prepared_names
+                       for candidate in publications):
                     continue
-                self._publication_call(candidate, candidate.batch.publish)
-                self._retire_failed_publications(publications)
-                if candidate.error is not None:
+                for candidate in publications:
+                    if candidate.error is not None:
+                        continue
+                    sources = tuple((name, result) for name, result in candidate.batch.sources.items()
+                                    if (candidate, result.path) not in notified)
+                    if not sources:
+                        continue
+                    self._publication_call(candidate, candidate.batch.publish)
+                    self._retire_failed_publications(publications)
+                    if (candidate.error is not None
+                            or candidate.batch.modules.keys() - candidate.prepared_names):
+                        continue
+                    if candidate.batch.modules:
+                        self._owners[candidate.owner] = None
+                    else:
+                        candidate.owner.close()
+                    def complete(c=candidate, sources=sources):
+                        for name, result in sources:
+                            if name in c.batch.modules:
+                                self._source_inputs.discard(result.path)
+                            self._unavailable.discard(name)
+                            self.states[result.path] = ReloadState(result.path, "active")
+                            _clear_script_error(result.path)
+                        # One owner/import scope and reconciliation per known
+                        # source group, even when the group has many files.
+                        for _name, result in sources:
+                            notified.add((c, result.path))
+                            if self.on_publish is not None:
+                                self.on_publish(result.path)
+                    self._publication_call(candidate, complete)
+                    self._retire_failed_publications(publications)
+                # Notifications may import new current sources. Complete their
+                # normal lifecycle before notifying them, without replaying peers.
+                if any(candidate.error is None and (
+                           candidate.batch.modules.keys() - candidate.prepared_names
+                           or any((candidate, result.path) not in notified
+                                  for result in candidate.batch.sources.values()))
+                       for candidate in publications):
                     continue
-                if candidate.batch.modules:
-                    self._owners[candidate.owner] = None
-                else:
-                    candidate.owner.close()
-                def complete(c=candidate):
-                    for name, result in c.batch.sources.items():
-                        if name in c.batch.modules:
-                            self._source_inputs.discard(result.path)
-                        self._unavailable.discard(name)
-                        self.states[result.path] = ReloadState(result.path, "active")
-                        _clear_script_error(result.path)
-                        if self.on_publish is not None:
-                            self.on_publish(result.path)
-                self._publication_call(candidate, complete)
-                self._retire_failed_publications(publications)
+                break
             from infernux.host.queries import emit_signal
             emit_signal("operations.changed")
         finally:
@@ -560,6 +548,43 @@ class ReloadCoordinator:
                 self._pending.pop(path, None)
                 self._ready.pop(path, None)
         return failed_initializations + len(accepted)
+
+    def _activate_publications(self, publications, activated):
+        # Bind all current declarations before initialization. A later import
+        # joins the same barrier; only newly prepared groups repeat these phases.
+        self._prepare_publications(publications)
+        while True:
+            initialized = False
+            for candidate in self._ordered_publications(publications):
+                while candidate.error is None and candidate.initialized < len(candidate.prepared):
+                    prepared = candidate.prepared[candidate.initialized]
+                    candidate.initialized += 1
+                    self._publication_call(candidate, lambda c=candidate, p=prepared:
+                                           self.adapter.initialize(p, c.owner))
+                    self._retire_failed_publications(publications)
+                    initialized = True
+            added = self._prepare_publications(publications)
+            if not initialized and not added:
+                break
+        for phase in ("after_deserialize", "awake", "start"):
+            for candidate in self._ordered_publications(publications):
+                for prepared in candidate.prepared[activated.get(candidate, 0):]:
+                    self._publication_call(candidate, lambda c=candidate, p=prepared:
+                                           self.adapter.phase(p, c.owner, phase))
+                    self._retire_failed_publications(publications)
+        # All owners receive admission before enable/view hooks observe peers.
+        for candidate in publications:
+            if candidate.error is None and not candidate.owner.closed:
+                candidate.owner.start_admission()
+        for candidate in publications:
+            for prepared in candidate.prepared[activated.get(candidate, 0):]:
+                self._publication_call(candidate, lambda c=candidate, p=prepared:
+                                       self.adapter.phase(p, c.owner, "admit"))
+        for candidate in self._ordered_publications(publications):
+            for prepared in candidate.prepared[activated.get(candidate, 0):]:
+                self._publication_call(candidate, lambda p=prepared: self.adapter.activate(p))
+                self._retire_failed_publications(publications)
+            activated[candidate] = len(candidate.prepared)
 
     def _ordered_publications(self, publications):
         by_path = {path: candidate for candidate in publications for path in candidate.owner.paths}
