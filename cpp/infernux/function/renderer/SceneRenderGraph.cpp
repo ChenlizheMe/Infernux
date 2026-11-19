@@ -445,9 +445,14 @@ bool SceneRenderGraph::HasPendingBufferInputs(bool forStep) const
     // must not withhold this view. Retry the retained plan after uploads finish
     // rather than publishing a clear-only image as the completed World frame.
     return m_worldRayPending || (m_hasCachedDrawCalls && m_cachedObjectBufferRevision == 0) ||
-           std::any_of(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), [forStep](const auto *buffer) {
-               return buffer->input->IsWaitingForResult() && (!forStep || buffer->input->HoldsStep());
-           });
+           HasPendingResultInputs(forStep);
+}
+
+bool SceneRenderGraph::HasPendingResultInputs(bool forStep) const
+{
+    return std::any_of(m_liveBufferInputs.begin(), m_liveBufferInputs.end(), [forStep](const auto *buffer) {
+        return buffer->input->IsWaitingForResult() && (!forStep || buffer->input->HoldsStep());
+    });
 }
 
 void SceneRenderGraph::CacheLiveAuthorPasses()

@@ -845,6 +845,15 @@ class InxRenderer
     float m_totalTime = 0.0f;
     float m_smoothDeltaTime = 0.016f;
     uint64_t m_frameCount = 0;
+    struct PlayerStartupClock
+    {
+        uint64_t world = 0, epoch = 0;
+        bool waiting = false;
+        std::chrono::steady_clock::time_point presentedAt{};
+    } m_playerStartupClock;
+    std::optional<float> PreparePlayerStartupClock(bool explicitDelta, bool allowPresentation,
+                                                   std::chrono::steady_clock::time_point sampledAt);
+    void FinishPlayerStartupClock(uint64_t presentationAcceptedNs);
 
     std::unique_ptr<InxVkCoreModular> m_vkCore;
     std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)>

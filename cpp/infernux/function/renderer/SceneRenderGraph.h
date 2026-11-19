@@ -825,6 +825,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
     }
 
   private:
+    friend class InxRenderer;
+    // Authored result requirements may need simulation to make progress.
+    // Geometry/ray uploads in HasPendingBufferInputs only need preparation.
+    [[nodiscard]] bool HasPendingResultInputs(bool forStep = false) const;
     struct PendingParticleViewDiagnostic
     {
         uint64_t requestId = 0;

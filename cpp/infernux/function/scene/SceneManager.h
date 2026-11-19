@@ -211,6 +211,10 @@ class SceneManager
 
     /// One Host admission, then all ready logical phases within the existing allowance.
     void ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta = false);
+    // Internal graphical Host entry: one starting World may have a later
+    // automatic clock origin. Sibling Worlds retain the full Host interval.
+    void ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta,
+                              uint64_t automaticClockWorld, float automaticClockDelta);
     /// Earliest fixed interval among running Worlds with already admitted work.
     /// Event-driven hosts can service it between presentation opportunities.
     [[nodiscard]] std::optional<float> PendingRuntimeServiceInterval() const noexcept;

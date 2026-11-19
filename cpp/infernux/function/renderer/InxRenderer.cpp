@@ -1250,7 +1250,9 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     auto _sceneUpdateStart = std::chrono::high_resolution_clock::now();
     auto _scenePhaseT0 = std::chrono::high_resolution_clock::now();
     SceneManager &sceneManager = SceneManager::Instance();
-    sceneManager.ServiceRuntimeFrames(*m_frameWorkOwner, m_deltaTime, explicitDelta);
+    const auto startupDelta = PreparePlayerStartupClock(explicitDelta, allowPresentation, currentTime);
+    sceneManager.ServiceRuntimeFrames(*m_frameWorkOwner, m_deltaTime, explicitDelta,
+                                      startupDelta ? m_playerStartupClock.world : 0, startupDelta.value_or(0.0f));
     if (finishStoppedFrame())
         return {};
     m_gui->CompleteInputFrame();
@@ -1562,6 +1564,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
         performanceSample.drawMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawStart).count();
     const bool renderSubmitted = m_vkCore->GetLastSubmittedCompletionEpoch() != previousCompletionEpoch;
+    FinishPlayerStartupClock(presentationAcceptedNs);
     if (renderSubmitted) {
         ++m_frameCount;
         sceneManager.CommitSkinPoseHistories();
@@ -5235,6 +5238,97 @@ uint64_t InxRenderer::PrimaryScreenWorldId() const
     const auto &manager = SceneManager::Instance();
     const auto *primary = manager.GetPrimaryRuntimeWorld();
     return manager.IsRuntimeWorldManagementActive() ? (primary ? primary->id : 0) : manager.AuthoringWorld().id;
+}
+
+std::optional<float> InxRenderer::PreparePlayerStartupClock(bool explicitDelta, bool allowPresentation,
+                                                            std::chrono::steady_clock::time_point sampledAt)
+{
+    if (!m_guiPlayerMode)
+        return std::nullopt;
+    auto *world = SceneManager::Instance().GetPrimaryRuntimeWorld();
+    if (!world)
+        return std::nullopt;
+    auto &clock = m_playerStartupClock;
+    const auto &simulation = world->simulation;
+    if (clock.world != world->id || clock.epoch != simulation.simulationEpoch) {
+        clock = {world->id, simulation.simulationEpoch,
+                 simulation.isPlaying && simulation.frameTime.unscaledTime == 0.0 && simulation.fixedStepIndex == 0};
+        // Player activation can select its cloned primary inside this Host's
+        // GUI callback, after DrawFrame's opening screen-request sync. Bind
+        // that actual output before deciding whether this Play is visible.
+        if (clock.waiting)
+            SyncPrimaryScreenRequest();
+    }
+    if (!clock.waiting && clock.presentedAt == std::chrono::steady_clock::time_point{})
+        return std::nullopt;
+    const auto handle = SceneManager::Instance().GetRuntimeWorldHandle(world->id);
+    if (explicitDelta || !simulation.isPlaying || simulation.isPaused || !allowPresentation ||
+        m_view->IsApplicationInBackground() || !m_gameCameraEnabled || !handle || !handle->displayInGame ||
+        !GameScreens().Requested(world->id) || simulation.fixedStepIndex != 0) {
+        clock.waiting = false;
+        clock.presentedAt = {};
+        return std::nullopt;
+    }
+    if (clock.presentedAt != std::chrono::steady_clock::time_point{}) {
+        // Only the first automatic sample needs the later origin. Retain all
+        // time after Present accepted the first real Game image, including
+        // the rest of that Host and its following event/pacing interval.
+        const auto delta = std::chrono::duration<float>(sampledAt - clock.presentedAt).count();
+        clock.presentedAt = {};
+        return std::max(0.0f, delta);
+    }
+    if (!clock.waiting)
+        return std::nullopt;
+    const WorldExecutionScope scope(world);
+    const auto *scene = world->scenes.active;
+    const auto cameras = scene ? scene->GetActiveGameCameras(nullptr) : std::vector<Camera *>{};
+    const bool hasScreenCamera = std::any_of(cameras.begin(), cameras.end(), [](const auto *camera) {
+        return !camera->GetRenderToTexture() && camera->GetPixelWidth() && camera->GetPixelHeight();
+    });
+    const auto output = m_gameScreenOutputs->Find(world->id);
+    if (!hasScreenCamera || !output || !output->error.empty()) {
+        clock.waiting = false;
+        return std::nullopt;
+    }
+    // Zero-time Update/lifecycle/publication and all normal preparation still
+    // run. No automatic Fixed debt predates the Player's first visible image.
+    m_gui->RequestFrame();
+    return 0.0f;
+}
+
+void InxRenderer::FinishPlayerStartupClock(uint64_t presentationAcceptedNs)
+{
+    auto &clock = m_playerStartupClock;
+    if (!clock.waiting)
+        return;
+    const auto publication = SceneRenderBridge::Instance().AcquirePreparedRuntimePublication(clock.world);
+    if (publication && publication->world->SimulationEpoch() == clock.epoch && !publication->HasScreenViews()) {
+        // The render pipeline may intentionally omit every screen view.
+        clock.waiting = false;
+        return;
+    }
+    // An authored result may need simulation to progress. Geometry/ray
+    // uploads only need preparation and must keep the startup clock held.
+    const bool needsResults = std::any_of(m_scheduledViews.begin(), m_scheduledViews.end(), [&](const auto &view) {
+        return view.waitingForResult && view.graph->GetCachedCameraView().worldId == clock.world &&
+               view.graph->HasPendingResultInputs();
+    });
+    if (needsResults) {
+        clock.waiting = false;
+        return;
+    }
+    const auto output = m_gameScreenOutputs ? m_gameScreenOutputs->Find(clock.world) : nullptr;
+    const auto sample = output ? output->front : nullptr;
+    if (!presentationAcceptedNs || !sample || sample->worldId != clock.world ||
+        sample->simulationEpoch != clock.epoch || sample->generation != output->generation)
+        return;
+    const auto pixels = std::static_pointer_cast<const GameScreenOutputs::PixelStorage>(sample->storageOwner);
+    if (!pixels || !pixels->registered || !m_gui->IsTextureReferencedByCurrentDrawData(pixels->textureId))
+        return;
+    clock.waiting = false;
+    clock.presentedAt =
+        std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::nanoseconds(presentationAcceptedNs)));
 }
 
 void InxRenderer::RequestGameScreenOutput(const std::string &consumer, uint64_t worldId,

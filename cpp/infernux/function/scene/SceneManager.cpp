@@ -1870,6 +1870,12 @@ bool SceneManager::ServiceCurrentWorldFrame()
 
 void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta)
 {
+    ServiceRuntimeFrames(work, hostDeltaTime, explicitDelta, 0, 0.0f);
+}
+
+void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTime, bool explicitDelta,
+                                        uint64_t automaticClockWorld, float automaticClockDelta)
+{
     BindRuntimeFrameWork(work);
     if (!work.IsAccepting())
         return;
@@ -1879,13 +1885,16 @@ void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTim
     if (!work.IsAccepting())
         return;
     UpdateHostFrame(hostDeltaTime);
-    const auto consumeDelta = [this, hostDeltaTime, explicitDelta] {
-        if (!explicitDelta)
-            return ConsumeFrameDeltaTime(hostDeltaTime);
+    const auto consumeDelta = [this, hostDeltaTime, explicitDelta, automaticClockWorld, automaticClockDelta] {
         auto &simulation = CurrentWorld().simulation;
+        if (!explicitDelta && CurrentWorld().id != automaticClockWorld)
+            return ConsumeFrameDeltaTime(hostDeltaTime);
+        // The graphical startup clock owns this transition's time origin.
+        // Consume its reset even when Play happened in this same Host, so
+        // the first post-presentation interval is not discarded a second time.
         simulation.resetDeltaTimeOnNextFrame = false;
         simulation.deltaResetHostOpportunity = 0;
-        return hostDeltaTime;
+        return explicitDelta ? hostDeltaTime : automaticClockDelta;
     };
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     const auto audioStart = ProfileClock::now();
