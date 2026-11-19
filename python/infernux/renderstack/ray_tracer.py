@@ -111,6 +111,8 @@ class RayTracingContext:
     name: str = "ray"
     gi_intensity: float = 1.0
     ssao_strength: float = 0.0
+    gi_saturation: float = 1.0
+    ssao_contrast: float = 1.0
 
     @cached_property
     def world(self) -> RayTracingWorld:
@@ -177,7 +179,9 @@ class RayTracingContext:
             p.set_texture("primary_tex", primary)
             p.set_texture("ambient_visibility", visibility or surface["surface_frame"])
             p.set_param("diffuse_intensity", self.gi_intensity)
+            p.set_param("diffuse_saturation", self.gi_saturation)
             p.set_param("ssao_strength", self.ssao_strength)
+            p.set_param("ssao_contrast", max(0.25, self.ssao_contrast))
             for key, port in (("diffuse_irradiance", "diffuse"), ("specular_radiance", "specular")):
                 p.set_texture(f"ray_{port}", packed.get(key, primary))
                 if linear:

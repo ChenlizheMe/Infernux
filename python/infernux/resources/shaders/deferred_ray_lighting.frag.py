@@ -18,7 +18,9 @@ class DeferredRayLighting(shader.fullscreen):
     ray_specular = shader.input("ray_specular", shader.UInt2D)
     ambient_visibility = shader.input("ambient_visibility", shader.Color2D)
     diffuse_intensity = shader.parameter.float(default=1.0)
+    diffuse_saturation = shader.parameter.float(default=1.0)
     ssao_strength = shader.parameter.float(default=0.0)
+    ssao_contrast = shader.parameter.float(default=1.0)
     diffuse_enabled = shader.parameter.bool(default=False)
     specular_enabled = shader.parameter.bool(default=False)
 
@@ -45,5 +47,6 @@ class DeferredRayLighting(shader.fullscreen):
             specular = resolve_ray_specular(self.ray_specular, self.primary_tex, self.normal_tex, pixel, packed.x,
                                             depth, surface.normal_ws, frame.z)
         diffuse = adjust_diffuse_lighting(diffuse, self.ambient_visibility, ctx.uv, depth,
-                                          self.diffuse_intensity, self.ssao_strength)
+                                          self.diffuse_intensity, self.diffuse_saturation,
+                                          self.ssao_strength, self.ssao_contrast)
         return shader.vec4(shader.lighting._shade_ray(surface, context, metadata.y, diffuse, specular), 1.0)

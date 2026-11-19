@@ -105,8 +105,11 @@ class DefaultDeferredPipeline(RenderPipeline):
     inserted by ``graph.screen_ui_section()``.
 
     ``global_illumination`` enables diffuse indirect light. With GI active,
-    ``ray_specular`` adds traced reflections. ``ray_quality`` sets the diffuse tracing rate. Light
-    transport samples are kept on their native grid through reconstruction.
+    ``ray_specular`` adds traced reflections. ``ray_quality`` sets the diffuse tracing rate.
+    At zero GI saturation, bounced light keeps its luminance and takes on the
+    receiver's color. SSAO strength controls the amount of contact darkening
+    and its contrast shapes partial occlusion. These controls act on the
+    displayed lighting. Light transport samples are kept on their native grid through reconstruction.
     Lighting resolves them against the full-resolution surface; specular
     paths use the full-resolution grid at every quality.
     """
@@ -130,8 +133,16 @@ class DefaultDeferredPipeline(RenderPipeline):
         default=1.0, range=(0.0, 4.0), slider=True, display_name_key="renderstack.gi_intensity",
         visible_when=attrgetter("global_illumination"),
     )
+    gi_saturation: float = serialized_field(
+        default=1.0, range=(0.0, 1.0), slider=True, display_name_key="renderstack.gi_saturation",
+        visible_when=attrgetter("global_illumination"),
+    )
     ssao_strength: float = serialized_field(
         default=0.5, range=(0.0, 1.0), slider=True, display_name_key="renderstack.ssao_strength",
+        visible_when=attrgetter("global_illumination"),
+    )
+    ssao_contrast: float = serialized_field(
+        default=1.0, range=(0.25, 4.0), slider=True, display_name_key="renderstack.ssao_contrast",
         visible_when=attrgetter("global_illumination"),
     )
     ray_specular: bool = serialized_field(
@@ -260,7 +271,8 @@ class DefaultDeferredPipeline(RenderPipeline):
                 graph, surface=current, geometry=raw_gbuffer,
                 diffuse=True, specular=self.ray_specular, transparency=self.ray_transparency,
                 quality=self.ray_quality, reconstruct=self._reconstruct_rays,
-                gi_intensity=self.gi_intensity, ssao_strength=self.ssao_strength,
+                gi_intensity=self.gi_intensity, gi_saturation=self.gi_saturation,
+                ssao_strength=self.ssao_strength, ssao_contrast=self.ssao_contrast,
             )
             frame = self.ray_tracer.build(ctx)
             ctx.shade_deferred(frame, graph.get_texture(COLOR_TEXTURE),

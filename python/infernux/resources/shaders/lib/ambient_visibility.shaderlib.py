@@ -1,5 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth
+from infernux.shader.lib.color import luminance
 
 
 def contact_visibility(signal: shader.Color2D, uv: shader.vec2, eye_depth: float) -> float:
@@ -22,9 +23,13 @@ def contact_visibility(signal: shader.Color2D, uv: shader.vec2, eye_depth: float
 
 
 def adjust_diffuse_lighting(diffuse: shader.vec4, visibility: shader.Color2D, uv: shader.vec2,
-                            depth: float, intensity: float, strength: float) -> shader.vec4:
+                            depth: float, intensity: float, saturation: float,
+                            strength: float, contrast: float) -> shader.vec4:
     scale = intensity
     if strength > 0.0 and diffuse.a > 0.0:
         contact = contact_visibility(visibility, uv, linear_eye_depth(depth, shader.camera()))
+        # Scale the odds of occlusion. Fully open and fully occluded samples stay fixed.
+        contact /= 1.0 + (contrast - 1.0) * (1.0 - contact)
         scale *= shader.mix(1.0, contact, strength)
-    return shader.vec4(diffuse.rgb * scale, diffuse.a)
+    color = shader.mix(diffuse.rgb, shader.vec3(luminance(diffuse.rgb)), 1.0 - saturation)
+    return shader.vec4(color * scale, diffuse.a)

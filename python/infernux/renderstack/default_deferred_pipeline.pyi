@@ -51,7 +51,9 @@ class DefaultDeferredPipeline(RenderPipeline):
     shadow_resolution: int
     global_illumination: bool
     gi_intensity: float
+    gi_saturation: float
     ssao_strength: float
+    ssao_contrast: float
     ray_specular: bool
     ray_transparency: bool
     ray_quality: RayTracingQuality

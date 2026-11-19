@@ -249,7 +249,8 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
     pipeline.ray_transparency = not diffuse
     pipeline.ray_quality = quality
     fields = get_serialized_fields(type(pipeline))
-    for name in ("ray_specular", "ray_transparency", "ray_quality", "gi_intensity", "ssao_strength"):
+    for name in ("ray_specular", "ray_transparency", "ray_quality", "gi_intensity", "gi_saturation",
+                 "ssao_strength", "ssao_contrast"):
         assert fields[name].visible_when(pipeline) == diffuse
     pipeline.define_topology(graph)
     graph.build()
@@ -268,7 +269,8 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
 
     assert lighting._shader_name == "infernux/internal/deferred_ray_lighting"
     assert lighting._parameters == {"diffuse_enabled": diffuse, "specular_enabled": specular,
-                                    "diffuse_intensity": 1.0, "ssao_strength": 0.5}
+                                    "diffuse_intensity": 1.0, "diffuse_saturation": 1.0,
+                                    "ssao_strength": 0.5, "ssao_contrast": 1.0}
     visibility = graph.get_pass_result("gbuffer").sample("ambient_visibility")
     assert visibility.format == Format.RG16_SFLOAT and visibility.size_divisor == 2
     assert lighting._input_bindings["ambient_visibility"] == visibility.name
@@ -329,6 +331,7 @@ def test_zero_contact_strength_keeps_diffuse_independent_of_the_visibility_pass(
     pipeline = DefaultDeferredPipeline()
     pipeline.global_illumination = True
     pipeline.gi_intensity = 1.75
+    pipeline.gi_saturation = 0.25
     pipeline.ssao_strength = 0.0
     graph = RenderGraph("contact disabled")
     pipeline.define_topology(graph)
@@ -337,6 +340,7 @@ def test_zero_contact_strength_keeps_diffuse_independent_of_the_visibility_pass(
     assert not graph.get_pass_result("gbuffer").has("ambient_visibility")
     assert "gbuffer/Contact Visibility" not in passes
     assert passes["DeferredLightingPass"]._parameters["diffuse_intensity"] == 1.75
+    assert passes["DeferredLightingPass"]._parameters["diffuse_saturation"] == 0.25
     assert passes["Ray Diffuse Spatial 1"]._parameters["ssao_strength"] == 0.0
 
 
@@ -348,6 +352,7 @@ def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently
 
     pipeline = DefaultDeferredPipeline(CustomMirror())
     pipeline.global_illumination = pipeline.ray_specular = True
+    pipeline.ssao_contrast = 2.0
     graph = RenderGraph("custom mirror")
     pipeline.define_topology(graph)
     graph.build()
@@ -355,7 +360,8 @@ def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently
     assert "Ray Diffuse Reconstruction" in passes and "Ray Specular Reconstruction" not in passes
     assert passes["DeferredLightingPass"]._shader_name == "infernux/internal/deferred_linear_lighting"
     assert passes["DeferredLightingPass"]._parameters == {"diffuse_mode": 2, "specular_mode": 1,
-                                                          "diffuse_intensity": 1.0, "ssao_strength": 0.5}
+                                                          "diffuse_intensity": 1.0, "diffuse_saturation": 1.0,
+                                                          "ssao_strength": 0.5, "ssao_contrast": 2.0}
     assert "Resolve diffuse_irradiance" not in passes
     assert passes["DeferredLightingPass"]._input_bindings["specular_radiance"] == graph.get_pass_result("ray/raw").sample("specular_radiance").name
 

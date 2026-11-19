@@ -20,7 +20,9 @@ class DeferredLinearLighting(shader.fullscreen):
     ray_specular = shader.input("ray_specular", shader.UInt2D)
     ambient_visibility = shader.input("ambient_visibility", shader.Color2D)
     diffuse_intensity = shader.parameter.float(default=1.0)
+    diffuse_saturation = shader.parameter.float(default=1.0)
     ssao_strength = shader.parameter.float(default=0.0)
+    ssao_contrast = shader.parameter.float(default=1.0)
     # Per-view constants: 0 disabled, 1 user linear HDR, 2 built-in packed signal.
     diffuse_mode = shader.parameter.int(default=0)
     specular_mode = shader.parameter.int(default=0)
@@ -49,5 +51,6 @@ class DeferredLinearLighting(shader.fullscreen):
         elif self.specular_mode == 1:
             specular = shader.load(self.specular_radiance, pixel, 0)
         diffuse = adjust_diffuse_lighting(diffuse, self.ambient_visibility, ctx.uv, depth,
-                                          self.diffuse_intensity, self.ssao_strength)
+                                          self.diffuse_intensity, self.diffuse_saturation,
+                                          self.ssao_strength, self.ssao_contrast)
         return shader.vec4(shader.lighting._shade_ray(surface, shading, metadata.y, diffuse, specular), 1.0)
