@@ -5365,8 +5365,8 @@ std::vector<PhysicsBoxShapeState> PhysicsWorld::GetBodyBoxShapeStates(uint32_t i
 }
 
 std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::PrepareParticleCollisionScene(
-    Scene &scene, const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,
-    uint64_t revision, const std::shared_ptr<const void> &consumer) const
+    Scene &scene, const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous, uint64_t revision,
+    const std::shared_ptr<const void> &consumer) const
 {
     RequireOwnerThread();
     auto &domain = *scene.GetRuntimeWorld()->physics;
@@ -5383,7 +5383,7 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
     std::shared_ptr<JoltGpuParticleExportResult> exported;
     std::vector<RowKey> keys;
     std::exception_ptr error;
-    RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+    const auto prepareCollisionExport = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         return PrepareJoltGpuQueryWork(
             [&]() -> JoltGpuControlWork {
                 std::vector<QueryInput> requests;
@@ -5459,7 +5459,8 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
                     });
             },
             error);
-    }, false, true);
+    };
+    RunControl(domain, prepareCollisionExport, false, true);
     if (error)
         std::rethrow_exception(error);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
