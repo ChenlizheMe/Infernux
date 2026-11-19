@@ -11,13 +11,10 @@ endif()
 # Preset schema 6 and workflow presets require 3.25; lowering this alone would
 # advertise a toolchain that cannot read the checked-in build entry points.
 
-# Resolve platform compiler companion tools before project() performs its IPO
-# probe. Ubuntu installs versioned LLVM binaries without always publishing the
-# unversioned llvm-ar/llvm-ranlib names expected by CMake's Clang integration.
-include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxCompilerTools.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxDependencyLayout.cmake")
 
 project(Infernux LANGUAGES C CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/InfernuxCompilerTools.cmake")
 infernux_configure_compiler_outputs()
 
 # Root orchestration only. Target ownership and packaging policy live in the
