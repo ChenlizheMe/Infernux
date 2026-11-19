@@ -164,10 +164,11 @@ class FragmentOutput:
 
 
 class ShadingContext:
-    """Lighting geometry independent of mesh UVs, vertex colors and tangent streams."""
+    """Lighting geometry. An omitted shadow plane uses the geometric normal."""
 
     position_ws: vec3
     geometric_normal_ws: vec3
+    shadow_plane_ws: vec3
     view_depth: float
     pixel_position: vec2
     layer_mask: uint

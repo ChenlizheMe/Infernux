@@ -55,7 +55,7 @@ class MatrixMath(shader.fullscreen):
         comp = shader.matrix_comp_mult(outer, outer)
         return shader.vec4(x[0][0], y[1][1], z[2][2], comp[1][2])
 ''', "matrix.frag.py", "matrix_math")
-    assert "float2x3 outer;" in definition.generated_source
+    assert "float2x3 inx_value_outer;" in definition.generated_source
     assert "import inx_math;" in definition.generated_source
     compiled = definition.compile()
     assert {target["target"] for target in compiled["targets"]} == {"spirv", "wgsl"}

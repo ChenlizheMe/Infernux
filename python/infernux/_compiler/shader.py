@@ -143,7 +143,7 @@ class _Author(ParameterAuthor):
                                 "particle": "Particle input is shader.ParticleContext",
                                 "screen_ui": "Screen UI input is shader.UIContext", "world_ui": "World UI input is shader.WorldUIContext"}.get(
                                     self.domain, "Fullscreen input is shader.vec2, shader.fragment_input or shader.multisample_input"))
-            signature = kind + " " + uv.arg + (" : TEXCOORD0" if kind == "float2" else "")
+            signature = kind + " " + self.bind_value(uv.arg) + (" : TEXCOORD0" if kind == "float2" else "")
             self.types[uv.arg] = kind
         tuple_return = (isinstance(main.returns, ast.Subscript)
                         and self.qualified(main.returns.value) == "tuple")
@@ -178,7 +178,7 @@ class _Author(ParameterAuthor):
         self.block(main.body)
         semantic = " : SV_Target0" if result in {"float4", "uint4"} else ""
         if self.domain in {"mesh", "particle"} and not self.is_surface:
-            argument = arguments[1].arg if len(arguments) == 2 else ""
+            argument = self.value_names[arguments[1].arg] if len(arguments) == 2 else ""
             alpha = "color.color.a" if result == "InxFragmentOutput" else "color.a"
             entry = "inx_evaluate_particle" if self.domain == "particle" else "inx_evaluate_fragment"
             threshold = "max(inx_parameters._alpha_clip_threshold, 0.0001)" if self.domain == "particle" else "inx_parameters._alpha_clip_threshold"

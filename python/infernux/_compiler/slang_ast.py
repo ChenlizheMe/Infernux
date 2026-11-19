@@ -97,6 +97,7 @@ class SlangEmitter(ast.NodeVisitor):
         self.types = dict(types or {})
         self.required_modules = set()
         self.locals = {}
+        self.value_names = {}
         self.local_nodes = {}
         self.lines = []
         self.indent = 1
@@ -168,13 +169,19 @@ class SlangEmitter(ast.NodeVisitor):
                 self.declare_locals(statement.body, parameters=parameters)
                 self.declare_locals(statement.orelse, parameters=parameters)
 
+    def bind_value(self, name):
+        """Give an author-local binding a target identifier independent of Slang keywords."""
+        symbol = "inx_value_" + name if name.isascii() else "inx_unicode_" + name.encode("utf8").hex()
+        self.value_names[name] = symbol
+        return symbol
+
     def local_declarations(self):
         for name, kind in self.locals.items():
             if kind is None:
                 self.error(self.local_nodes[name],
                            f"Cannot infer GPU local {name!r}; declare its type or correct the assigned expression",
                            code="author.type")
-            self.line(kind + " " + name + ";")
+            self.line(kind + " " + self.bind_value(name) + ";")
 
     def annotation(self, node):
         name = qualified(node).rsplit(".", 1)[-1]
@@ -298,7 +305,7 @@ class SlangEmitter(ast.NodeVisitor):
     def visit_Name(self, node):
         if node.id not in self.types:
             self.error(node, "Unknown GPU value: " + node.id)
-        return node.id
+        return self.value_names.get(node.id, node.id)
 
     def visit_Attribute(self, node):
         return self.visit(node.value) + "." + node.attr
@@ -394,7 +401,7 @@ class SlangEmitter(ast.NodeVisitor):
         flag = self.begin_loop(node)
         arguments = [self.visit(arg) for arg in call.args]
         begin, end, step = ("0", arguments[0], "1") if len(arguments) == 1 else (*arguments, "1") if len(arguments) == 2 else arguments
-        index = node.target.id
+        index = self.visit(node.target)
         scope = self.loop_sequence
         self.line(f"let inx_start_{scope} = {begin};")
         self.line(f"let inx_stop_{scope} = {end};")

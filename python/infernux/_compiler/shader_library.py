@@ -278,6 +278,8 @@ class ShaderEmitter(SlangEmitter):
             kind, constructor = _CONSTRUCTORS[operation]
             fields = STRUCT_FIELDS[kind]
             values = {keyword.arg: keyword.value for keyword in node.keywords}
+            if kind == "InxShadingContext" and "shadow_plane_ws" not in values:
+                fields = {name: field for name, field in fields.items() if name != "shadow_plane_ws"}
             if node.args or values.keys() != fields.keys() or len(values) != len(node.keywords):
                 self.error(node, operation + " declares named fields: " + ", ".join(fields), code="author.type")
             for name, kind in fields.items():
@@ -391,10 +393,10 @@ class ShaderEmitter(SlangEmitter):
             self.lighting_mode = "tiled_lighting"
         fields = definition.args.args[1:] if method else definition.args.args
         self.types.update((field.arg, kind) for field, kind in zip(fields, function.arguments))
+        parameters = ", ".join(kind + " " + self.bind_value(field.arg) for field, kind in zip(fields, function.arguments))
         self.declare_locals(definition.body, parameters=(field.arg for field in fields))
         self.local_declarations()
         self.block(definition.body)
-        parameters = ", ".join(kind + " " + field.arg for field, kind in zip(fields, function.arguments))
         specialization = "<let tiled_lighting : bool>" if function.lighting_specialization else ""
         derivative = ["[Differentiable]"] if differentiable else []
         inline = ["[ForceInline]"] if function.result in {"float4", "InxFragmentOutput"} else []

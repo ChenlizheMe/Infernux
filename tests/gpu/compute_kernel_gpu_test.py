@@ -19,10 +19,10 @@ from infernux import shader
 
 
 @inx.compute.function
-def _affine_term(value, scale, bias):
-    value *= scale
-    value += bias
-    return value
+def _affine_term(new, scale, bias):
+    new *= scale
+    new += bias
+    return new
 
 
 @inx.compute.function
@@ -32,8 +32,8 @@ def _integer_period(value, divisor):
 
 @inx.compute.kernel
 def _helper_kernel(domain_values, output_values, scale, bias):
-    i = inx.compute.index(domain_values)
-    output_values[i] = _affine_term(domain_values[i], scale, bias)
+    namespace = inx.compute.index(domain_values)
+    output_values[namespace] = _affine_term(domain_values[namespace], scale, bias)
 
 
 @inx.compute.function

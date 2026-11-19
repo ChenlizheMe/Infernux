@@ -61,7 +61,23 @@ class Math(shader.fullscreen):
         return {result}
 '''
     definition = parse_shader(source, "数学.frag.py", "intrinsic_math")
-    assert f"{kind} value;" in definition.generated_source
+    assert f"{kind} inx_value_value;" in definition.generated_source
+    assert {target["target"] for target in definition.compile()["targets"]} == {"spirv", "wgsl"}
+
+
+def test_shader_bindings_accept_target_keywords_and_keep_nested_names_distinct():
+    definition = parse_shader('''import infernux.shader as shader
+class Counter(shader.fullscreen):
+    def step_count(self, uniform: float) -> float:
+        余量 = uniform
+        for namespace in range(2):
+            余量 += float(namespace)
+        return 余量
+
+    def main(self, new: shader.vec2) -> shader.vec4:
+        inx_value_new = self.step_count(new.x)
+        return shader.vec4(new.y, inx_value_new, 0.0, 1.0)
+''', "counter.frag.py", "counter")
     assert {target["target"] for target in definition.compile()["targets"]} == {"spirv", "wgsl"}
 
 
@@ -477,11 +493,11 @@ class Painted(shader.surface):
         assert {(1, 0), (1, 4), (1, 6)} <= entries["fragment_main"]
         assert not {(1, 1), (1, 2), (1, 3)} & entries["fragment_main"]
         assert {(1, 1), (1, 2), (1, 3)} <= entries["fragment_forward_plus"]
-        assert {"vertex_motion", "fragment_gbuffer", "fragment_depth", "fragment_picking", "fragment_motion",
+        assert {"vertex_motion", "fragment_gbuffer", "fragment_depth", "fragment_shadow", "fragment_picking", "fragment_motion",
                 "fragment_normal", "fragment_base_color"} <= entries.keys()
         # Geometry outputs retain the authored surface and alpha decision,
         # without linking light lists or shadow resources into their stages.
-        for name in ("fragment_gbuffer", "fragment_depth", "fragment_picking", "fragment_motion",
+        for name in ("fragment_gbuffer", "fragment_depth", "fragment_shadow", "fragment_picking", "fragment_motion",
                      "fragment_normal", "fragment_base_color"):
             assert not any(binding[0] == 1 for binding in entries[name])
 
@@ -856,6 +872,9 @@ class Deferred(shader.fullscreen):
 '''
     definition = parse_shader(source, str(tmp_path / "deferred.frag.py"), "library_deferred")
     assert "helper<true>" in definition.generated_source
+    with_plane = source.replace("view_depth=1.0", "shadow_plane_ws=shader.vec3(1.0, 0.0, 0.0), view_depth=1.0")
+    explicit = parse_shader(with_plane, str(tmp_path / "deferred.frag.py"), "explicit_receiver_plane")
+    assert {target["target"] for target in explicit.compile()["targets"]} == {"spirv", "wgsl"}
     for target in definition.compile()["targets"]:
         fragment = next(entry for entry in target["entries"] if entry["name"] == "fragment_main")
         assert {(1, 1), (1, 2), (1, 3)} <= {tuple(binding) for binding in fragment["bindings"]}
@@ -1031,7 +1050,7 @@ class Volume(shader.fullscreen):
         return color + shader.load(self.image, shader.ivec3(0), 0) / float(size.z)
 '''
     definition = parse_shader(source, "volume.frag.py", "volume")
-    assert "uint3 size;" in definition.generated_source
+    assert "uint3 inx_value_size;" in definition.generated_source
     for target in definition.compile()["targets"]:
         image = next(item for item in target["resources"] if item["name"] == "image" and item["type"] == 2)
         assert image["dimension"] == 4  # Shared RHI Texture3D view dimension.

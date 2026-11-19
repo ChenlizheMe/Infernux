@@ -369,6 +369,7 @@ class _KernelEmitter(_NumericalEmitter):
         if plan.continuation.eligible:
             self.argument_fields.extend([("int", "inx_range_begin"), ("int", "inx_range_end")])
         self.types[plan.work_item.index_name] = "int"
+        self.bind_value(plan.work_item.index_name)
         self.atomic_buffers = {
             node.args[0].value.id
             for node in ast.walk(plan.definition)
@@ -478,6 +479,7 @@ class _KernelEmitter(_NumericalEmitter):
             emitter = _HelperEmitter(self, function)
             signature = list(zip(parameters, types))
             emitter.types.update({argument.arg: kind for argument, kind in signature})
+            parameter_list = ", ".join(kind + " " + emitter.bind_value(arg.arg) for arg, kind in signature)
             emitter.declare_locals(function.body, parameters=(argument.arg for argument, _ in signature))
             results = [emitter.infer(node.value) for node in ast.walk(function) if isinstance(node, ast.Return)]
             emitter.local_declarations()
@@ -488,10 +490,9 @@ class _KernelEmitter(_NumericalEmitter):
             for kind in results[1:]:
                 result = common_type(result, kind)
             name = function.name + "_" + str(len(self.helper_sources))
-            parameters = ", ".join(kind + " " + arg.arg for arg, kind in signature)
             attributes = ["[Differentiable]"] if self.plan.autodiff_mode != "none" else []
             self.helper_sources[key] = "\n".join([*attributes, emitter.source_directive(function),
-                                                  f"{result} {name}({parameters}) {{", *emitter.lines, "}"])
+                                                  f"{result} {name}({parameter_list}) {{", *emitter.lines, "}"])
             self.helper_return_types[key] = name, result
             self.source_ranges.extend(emitter.source_ranges)
             self.required_modules.update(emitter.required_modules)
@@ -618,7 +619,7 @@ def _local_derivative_source(plan, params, primal):
         local.line("result." + name + " = inx_local_" + name + ";")
     local.line("return result;")
     # The discrete row index has no differential.
-    parameters = [f"no_diff int {index}"]
+    parameters = ["no_diff int " + local.value_names[index]]
     for name in inputs:
         qualifier = "" if name in selected else "no_diff "
         parameters.append(f"{qualifier}{types[name]} inx_local_{name}")
@@ -627,7 +628,7 @@ def _local_derivative_source(plan, params, primal):
     primal.lines.clear()
     primal.accesses.clear()
     index_node = ast.Name(id=index, ctx=ast.Load())
-    arguments = [index]
+    arguments = [primal.value_names[index]]
     for name in inputs:
         kind = types[name]
         address = primal._address(name, index_node)
@@ -726,7 +727,7 @@ def _source(plan, params):
     emitter.local_declarations()
     emitter.block(plan.definition.body)
     derivative = _local_derivative_source(plan, params, emitter) if plan.autodiff_mode != "none" else ""
-    index = plan.work_item.index_name
+    index = emitter.value_names[plan.work_item.index_name]
     domain = plan.work_item.domain_name
     first = "inx_args.inx_range_begin" if plan.continuation.eligible else "0"
     last = "inx_args.inx_range_end" if plan.continuation.eligible else f"inx_args.{domain}_shape_0"
