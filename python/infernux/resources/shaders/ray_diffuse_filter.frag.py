@@ -1,6 +1,8 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
-from infernux.shader.lib.ray_signal import pack_ray_signal, ray_grid_pixel, unpack_ray_signal
+from infernux.shader.lib.ray_signal import (
+    pack_ray_gradient, pack_ray_signal, ray_grid_pixel, unpack_ray_gradient, unpack_ray_signal,
+)
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -51,7 +53,7 @@ class RayDiffuseFilter(shader.fullscreen):
         local_means = self.stride == 2
         squared_sum = 4.0 * shader.dot(center.rgb, center.rgb)
         squared_weights = 16.0
-        gradient_sum = 4.0 * shader.as_float(packet.z)
+        gradient_sum = 4.0 * unpack_ray_gradient(packet.z)
         mean_error_sum = 4.0 * shader.as_float(packet.w)
         # Widen support after disocclusion or relighting, then taper the outer taps as samples accumulate.
         wide_weight = shader.saturate((8.0 - center.a) / 7.0) if self.stride == 8 else 1.0
@@ -88,7 +90,7 @@ class RayDiffuseFilter(shader.fullscreen):
                 visibility = shader.load(self.ambient_visibility, cell, 0).x
                 weight /= 1.0 + 12.0 * self.ssao_strength * shader.abs(center_visibility - visibility)
             if raw_samples or local_means:
-                gradient_sum += weight * shader.as_float(sample.z)
+                gradient_sum += weight * unpack_ray_gradient(sample.z)
             if raw_samples:
                 squared_sum += weight * shader.dot(estimate.rgb, estimate.rgb)
                 squared_weights += weight * weight
@@ -108,10 +110,11 @@ class RayDiffuseFilter(shader.fullscreen):
             inverse_samples = squared_weights / (total * total)
             spread = shader.max(squared_sum / total - shader.dot(mean, mean), 0.0)
             mean_error = spread * inverse_samples / shader.max(1.0 - inverse_samples, 0.0001)
-            return pack_ray_signal(shader.vec4(mean, 1.0), shader.as_uint(shader.vec2(gradient_sum / total, mean_error)))
+            guides = shader.uvec2(pack_ray_gradient(gradient_sum / total), shader.as_uint(mean_error))
+            return pack_ray_signal(shader.vec4(mean, 1.0), guides)
         if local_means:
             # Overlapping neighborhoods share samples. The weighted mean of their variances bounds
             # the variance of the combined estimate without assuming independent observations.
-            guides = shader.vec2(gradient_sum, mean_error_sum) / total
-            return pack_ray_signal(shader.vec4(mean, 1.0), shader.as_uint(guides))
+            guides = shader.uvec2(pack_ray_gradient(gradient_sum / total), shader.as_uint(mean_error_sum / total))
+            return pack_ray_signal(shader.vec4(mean, 1.0), guides)
         return pack_ray_signal(shader.vec4(mean, center.a), packet.zw)

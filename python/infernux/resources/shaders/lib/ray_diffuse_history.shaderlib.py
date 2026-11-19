@@ -4,6 +4,23 @@ from infernux.shader.lib.ray_signal import pack_ray_signal, ray_grid_pixel, unpa
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
+def matched_change_weight(current: shader.vec3, previous: shader.vec3, gradient: shader.vec3) -> float:
+    # Project the matched-path change onto the observed RGB change. A hue change can
+    # agree in direction even when the two measurements have equal luminance.
+    peak = shader.max(shader.abs(current), shader.abs(previous))
+    scale = shader.max(shader.max(peak.x, shader.max(peak.y, peak.z)), 1e-20)
+    current_scaled = current / scale
+    previous_scaled = previous / scale
+    difference = current_scaled - previous_scaled
+    weights = shader.vec3(0.2126, 0.7152, 0.0722)
+    energy = shader.max(shader.dot(weights * current_scaled, current_scaled),
+                        shader.dot(weights * previous_scaled, previous_scaled))
+    delta_power = shader.dot(weights * difference, difference)
+    agreement = shader.max(0.0, shader.dot(weights * difference, gradient / scale))
+    response = shader.saturate(agreement / shader.sqrt(shader.max(delta_power * energy, 1e-12)))
+    return shader.saturate(6.0 * response * response)
+
+
 def diffuse_history(history: shader.UInt2D, surfaces: shader.UInt2D, primary: shader.uvec4,
                     history_uv: shader.vec2, previous_uv: shader.vec2, expected_eye: float,
                     extent: shader.ivec2, full: shader.ivec2) -> shader.uvec4:

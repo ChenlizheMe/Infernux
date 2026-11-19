@@ -25,9 +25,6 @@ class RayPathSpatial(shader.fullscreen):
         packet = shader.load(self.estimates, cell, 0)
         path = shader.load(self.paths, cell, 0)
         count = path.w & shader.uint(7)
-        if not self.specular:
-            # Irradiance reconstruction uses the signed change along the replayed ray.
-            packet = shader.uvec4(packet.xy, path.w & shader.uint(0xFFFE0000), packet.w)
         if count == 0:
             return packet
         extent = shader.ivec2(shader.dimensions(self.paths, 0))

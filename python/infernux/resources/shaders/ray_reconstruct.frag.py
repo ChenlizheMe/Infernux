@@ -1,9 +1,9 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
-from infernux.shader.lib.ray_diffuse_history import diffuse_history
+from infernux.shader.lib.ray_diffuse_history import diffuse_history, matched_change_weight
 from infernux.shader.lib.ray_signal import (
     pack_ray_signal, ray_grid_pixel, specular_color_variance, specular_hit_distance,
-    specular_witness, unpack_ray_signal,
+    specular_witness, unpack_ray_gradient, unpack_ray_signal,
 )
 from infernux.shader.lib.ray_surface_depth import ray_previous_eye_depth
 from infernux.shader.lib.surface import decode_octahedral_normal
@@ -154,11 +154,7 @@ class RayReconstruct(shader.fullscreen):
         weights = shader.vec3(0.2126, 0.7152, 0.0722)
         delta = shader.dot(difference, weights)
         if not self.specular and scene_changed:
-            # A coherent change in the replayed path identifies a moving shadow on a stationary receiver.
-            magnitude = shader.max(shader.dot(current.rgb, weights), shader.dot(previous.rgb, weights))
-            matched = shader.max(0.0, shader.sign(delta) * shader.as_float(fresh.z))
-            relative = matched / shader.max(magnitude, 1e-8)
-            blend = shader.saturate(6.0 * relative * relative)
+            blend = matched_change_weight(current.rgb, previous.rgb, unpack_ray_gradient(fresh.z))
             count = shader.min(count, 1.0 / shader.max(blend, 1.0 / 64.0))
         estimate = shader.mix(previous.rgb, current.rgb, 1.0 / count)
         # The reflection filter measures squared RGB distance. Equal-luminance

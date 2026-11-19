@@ -1,7 +1,7 @@
 import infernux.shader as shader
 from infernux.shader.lib.deferred_surface import deferred_shading_context, load_deferred_surface
 from infernux.shader.lib.ray_path import path_pixel, previous_path
-from infernux.shader.lib.ray_signal import pack_ray_signal
+from infernux.shader.lib.ray_signal import pack_ray_gradient, pack_ray_signal, unpack_ray_gradient
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -39,4 +39,15 @@ class RayPathTemporal(shader.fullscreen):
                                     self.previous_paths, uv, extent, full)
         result = shader.ray._path_temporal(surface, context, normal, self.surface_records, metadata.y,
                                            self.specular, self.tail_cache, history, shader.uvec2(ctx.position.xy))
-        return (pack_ray_signal(result.signal.radiance, result.signal.witness), result.reservoir)
+        packet = pack_ray_signal(result.signal.radiance, result.signal.witness)
+        reservoir = result.reservoir
+        if not self.specular:
+            change = shader.vec3(0.0)
+            if (history.w & shader.uint(7)) != 0:
+                # Compare the same path at the same precision on both sides of the frame boundary.
+                replayed = unpack_ray_gradient(pack_ray_gradient(result.replayed_radiance))
+                change = shader.as_float(history.z) * (replayed - unpack_ray_gradient(history.w >> 3))
+            packet = shader.uvec4(packet.xy, pack_ray_gradient(change), packet.w)
+            selected = pack_ray_gradient(result.selected_radiance)
+            reservoir = shader.uvec4(reservoir.xyz, (selected << 3) | reservoir.w)
+        return (packet, reservoir)

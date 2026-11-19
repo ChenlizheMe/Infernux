@@ -94,6 +94,36 @@ void main(uint3 id : SV_DispatchThreadID) {
     np.testing.assert_allclose(values[1::3, :3], values[2::3, :3], atol=3e-4, rtol=0.0)
 
 
+def test_diffuse_history_responds_to_equal_luminance_motion(engine):
+    entry = compile_library_compute("ray_diffuse_history", """
+[[vk::binding(0, 0)]] RWStructuredBuffer<float4> values;
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    float scale = exp2(float(id.x) * 20.0 - 60.0);
+    float3 previous = float3(scale, 0, 0);
+    float3 current = float3(0, scale * (0.2126 / 0.7152), 0);
+    float3 change = current - previous;
+    values[id.x] = float4(LIBRARY::matched_change_weight(current, previous, change),
+                          LIBRARY::matched_change_weight(current, previous, -change),
+                          LIBRARY::matched_change_weight(current, current, change),
+                          LIBRARY::matched_change_weight(current, previous, 0.25 * change));
+}
+""", "diffuse-history-color-response")
+    host = engine._acquire_compute_host()
+    kernel = host._create_kernel_from_compiler(bytes(entry["code"]), [(0, "storage")], 0, entry["name"])
+    buffer = host.create_buffer(7, "float32", 4)
+    try:
+        kernel.dispatch([buffer], b"", 7)
+        kernel.wait()
+        values = np.frombuffer(buffer.get_bytes(7 * 16), dtype=np.float32).reshape(7, 4).copy()
+    finally:
+        del buffer, kernel
+        host._release_lease()
+    partial = 6 * .25**2 * (1 + .2126 / .7152)
+    np.testing.assert_allclose(values, np.tile([1, 0, 0, partial], (7, 1)), atol=2e-6)
+
+
 @pytest.mark.parametrize("kind", ["rotation", "cross", "depth"])
 def test_authored_material_library_geometry(engine, scene, tmp_path, monkeypatch, kind):
     monkeypatch.setattr(AssetManager, "_engine", engine)

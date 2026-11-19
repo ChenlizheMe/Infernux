@@ -21,6 +21,23 @@ def pack_ray_signal(signal: shader.vec4, witness: shader.uvec2) -> shader.uvec4:
     return shader.uvec4(low, high, witness)
 
 
+def pack_ray_gradient(rgb: shader.vec3) -> shader.uint:
+    # Three signed seven-bit components share a binary32 exponent. The three high bits
+    # remain available when the reservoir combines this guide with its sample count.
+    peak = shader.max(shader.abs(rgb.x), shader.max(shader.abs(rgb.y), shader.abs(rgb.z)))
+    exponent = shader.max(shader.as_uint(peak) >> 23, shader.uint(1))
+    scale = shader.as_float(exponent << 23)
+    quantized = shader.ivec3(shader.round((rgb / scale) * 31.5))
+    bits = shader.uvec3(quantized) & shader.uint(127)
+    return bits.x | (bits.y << 7) | (bits.z << 14) | (exponent << 21)
+
+
+def unpack_ray_gradient(word: shader.uint) -> shader.vec3:
+    bits = shader.uvec3(word, word >> 7, word >> 14) & shader.uint(127)
+    signed = shader.ivec3(bits) - 128 * shader.ivec3(bits >> 6)
+    return (shader.vec3(signed) / 31.5) * shader.as_float((word >> 21) << 23)
+
+
 def specular_hit_distance(witness: shader.uint) -> float:
     return shader.as_float(witness & shader.uint(0xFFFF0000))
 

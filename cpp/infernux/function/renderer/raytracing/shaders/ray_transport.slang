@@ -768,12 +768,9 @@ public InxRayPathEstimate inx_ray_path_temporal(InxSurfaceData surface, InxShadi
     InxBuffer_uint4 records, uint model_id, bool specular, InxBuffer_uint4 cache, uint4 history, uint2 trace_pixel)
 {
     uint2 key = inx_ray_path_key(specular ? context.pixel_position : float2(trace_pixel), specular, true);
-    // The fourth reservoir word carries the count [0:2], selected luminance [3:16],
-    // and a signed temporal gradient [17:31]. Both guides retain a float's exponent.
     uint previous_count = history.w & 7u;
-    uint previous_luma = (history.w << 14u) & 0x7ffe0000u;
-    float gradient = 0.0;
-    uint selected_luma = 0u;
+    float3 selected_radiance = float3(0.0);
+    float3 replayed_radiance = float3(0.0);
     // Without a reprojected diffuse proposal, evaluate the complementary Sobol
     // direction in the same two-candidate budget. A fresh proposal has unit mass.
     if (!specular && previous_count == 0u)
@@ -795,33 +792,26 @@ public InxRayPathEstimate inx_ray_path_temporal(InxSurfaceData surface, InxShadi
         {
             result = sample;
             if (result.radiance.w <= 0.0)
-                return {result, uint4(0)};
+                return {result, uint4(0), float3(0.0), float3(0.0)};
         }
+        else
+            replayed_radiance = sample.radiance.rgb;
         float mass = i == 0u ? 1.0 : float(represented) * asfloat(history.z);
         float target = inx_ray_path_target(sample.radiance.rgb);
-        uint luma = 0u;
-        if (!specular)
-        {
-            float brightness = max(dot(sample.radiance.rgb, float3(0.2126, 0.7152, 0.0722)), 0.0);
-            luma = asuint(brightness) & 0x7ffe0000u;
-            if (i == 1u && previous_count != 0u)
-                gradient = asfloat(history.z) * (asfloat(luma) - asfloat(previous_luma));
-        }
         float score = mass * target;
         total += score;
         uint bits = inx_ray_sample_hash(key.x ^ inx_ray_sample_hash(key.y) ^ ((i + 1u) * 0xb92367d5u));
         if (float(bits >> 8u) * (1.0 / 16777216.0) * total < score)
         {
-            selected_luma = luma;
+            selected_radiance = sample.radiance.rgb;
             selected = candidate;
             selected_target = target;
         }
         estimate += mass * sample.radiance.rgb;
     }
-    // Only proposal keys recur. Keep the hit of the fresh ray available to filters and project code.
     result.radiance.rgb = estimate / float(count);
-    uint evidence = (asuint(gradient) & 0xfffe0000u) | (selected_luma >> 14u) | count;
-    return {result, uint4(selected, asuint(total / (float(count) * selected_target)), evidence)};
+    return {result, uint4(selected, asuint(total / (float(count) * selected_target)), count),
+            selected_radiance, replayed_radiance};
 }
 
 public int2 inx_ray_path_neighbor(uint2 cell)
