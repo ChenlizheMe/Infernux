@@ -633,7 +633,6 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     using Candidate = JoltMixedContactStep::Candidate;
     using Boundary = JoltGpuControlWork::ResumeAfter;
     static constexpr uint32_t LeavesPerDispatch = 2048;
-    static constexpr uint64_t TransferPerPacket = 64 * 1024;
 
     struct Window
     {
@@ -659,6 +658,8 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     const std::vector<UInt4> *tree = nullptr;
     const JoltGpuModel *responseModel = nullptr;
     std::function<JoltGpuControlWork()> substepReady;
+    std::vector<SourceRead> sourceReads;
+    size_t nextSource = 0;
     bool discovery = false;
     std::function<void(UInt4)> continuous;
     std::vector<UInt4> continuousDecoded;
@@ -697,6 +698,46 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
         return bool(slot);
     }
 
+    // Joint inputs and candidates describe the same pre-solve state. Fill spare
+    // readback space in the discovery packets before issuing a separate transfer.
+    template <class Accept>
+    JoltGpuControlWork ReadDiscovery(std::vector<rhi::ComputeBufferUpdate> updates,
+                                     std::vector<rhi::ComputeDispatchDesc> dispatches,
+                                     std::vector<rhi::ComputeBufferRead> reads, Accept accepted)
+    {
+        const size_t first = reads.size();
+        size_t end = nextSource;
+        if (end < sourceReads.size()) {
+            uint64_t bytes = 0;
+            for (const auto &read : reads)
+                bytes += read.byteSize;
+            while (end < sourceReads.size() && bytes + sourceReads[end].range.byteSize <= TransferPerPacket) {
+                const auto &sourceRange = sourceReads[end++].range;
+                bytes += sourceRange.byteSize;
+                reads.push_back(sourceRange);
+            }
+        }
+        auto packet =
+            rhi::PrepareComputeBatch(owner.m_host, std::move(updates), std::move(dispatches), std::move(reads));
+        return {packet, [self = shared_from_this(), packet, first, end, accepted = std::move(accepted)] {
+                    size_t index = first;
+                    for (; self->nextSource < end; ++self->nextSource) {
+                        const auto &source = self->sourceReads[self->nextSource];
+                        packet->Readback(index++)->ReadInto(source.destination, source.range.byteSize);
+                    }
+                    return accepted(*packet);
+                }};
+    }
+
+    JoltGpuControlWork FinishDiscovery()
+    {
+        if (nextSource != sourceReads.size())
+            return ReadDiscovery({}, {}, {},
+                                 [self = shared_from_this()](const auto &) { return self->FinishDiscovery(); });
+        auto ready = std::move(substepReady);
+        return ready();
+    }
+
     JoltGpuControlWork Begin(const JoltGpuStorage &storage, const JPH::GPU::StepParams &params, uint32_t index,
                              bool response, std::function<JoltGpuControlWork()> done)
     {
@@ -710,10 +751,10 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
         if (!continuous)
             tree = &step.EncodeTree(index, discovery ? params.gravityDt.w : 0.0f);
         const uint32_t leaves = params.selectedCounts.y;
-        if (!leaves || tree->empty())
-            return done();
-        substep = index;
         substepReady = std::move(done);
+        if (!leaves || tree->empty())
+            return FinishDiscovery();
+        substep = index;
         range = {params.selection.z, 0u, 0u, Bits(params.gravityDt.w)};
         leafEnd = range.x + leaves;
         treeOffset = 0;
@@ -771,20 +812,19 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
                                                           : rhi::ComputeBufferAccess::Read);
         }
         if (discovery && windows.empty() && uint64_t(range.y) * stride <= 4096u) {
-            auto packet =
-                rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {std::move(dispatch)},
-                                         {{buffers[6], uint64_t(range.z) * sizeof(uint32_t), sizeof(uint32_t)},
-                                          {buffers[7], 0, uint64_t(range.y) * stride}});
-            return {packet, [self = shared_from_this(), packet] {
-                        uint32_t count;
-                        packet->Readback(0)->ReadInto(&count, sizeof(count));
-                        if (count > self->range.y)
-                            throw std::runtime_error("Cross-domain candidate count exceeds its leaf range");
-                        if (count)
-                            self->AcceptCandidates(*packet->Readback(1), count, self->range.y, self->substep);
-                        auto ready = std::move(self->substepReady);
-                        return ready();
-                    }};
+            return ReadDiscovery(
+                std::move(updates), {std::move(dispatch)},
+                {{buffers[6], uint64_t(range.z) * sizeof(uint32_t), sizeof(uint32_t)},
+                 {buffers[7], 0, uint64_t(range.y) * stride}},
+                [self = shared_from_this()](const auto &packet) {
+                    uint32_t count;
+                    packet.Readback(0)->ReadInto(&count, sizeof(count));
+                    if (count > self->range.y)
+                        throw std::runtime_error("Cross-domain candidate count exceeds its leaf range");
+                    if (count)
+                        self->AcceptCandidates(*packet.Readback(1), count, self->range.y, self->substep);
+                    return self->FinishDiscovery();
+                });
         }
         auto packet = rhi::PrepareComputeBatch(owner.m_host, std::move(updates), {std::move(dispatch)});
         return {packet,
@@ -805,16 +845,16 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
     {
         if (windows.empty())
             return {};
-        auto packet =
-            rhi::PrepareComputeBatch(owner.m_host, {}, {}, {{buffers[6], 0, windows.size() * sizeof(uint32_t)}});
-        return {packet, [self = shared_from_this(), packet] {
-                    self->counts.resize(self->windows.size());
-                    packet->Readback(0)->ReadInto(self->counts.data(), self->counts.size() * sizeof(uint32_t));
-                    for (size_t i = 0; i < self->counts.size(); ++i)
-                        if (self->counts[i] > self->windows[i].leaves)
-                            throw std::runtime_error("Cross-domain candidate count exceeds its leaf range");
-                    return self->ReadCandidates();
-                }};
+        return ReadDiscovery(
+            {}, {}, {{buffers[6], 0, windows.size() * sizeof(uint32_t)}},
+            [self = shared_from_this()](const auto &packet) {
+                self->counts.resize(self->windows.size());
+                packet.Readback(0)->ReadInto(self->counts.data(), self->counts.size() * sizeof(uint32_t));
+                for (size_t i = 0; i < self->counts.size(); ++i)
+                    if (self->counts[i] > self->windows[i].leaves)
+                        throw std::runtime_error("Cross-domain candidate count exceeds its leaf range");
+                return self->ReadCandidates();
+            });
     }
 
     JoltGpuControlWork ReadCandidates()
@@ -843,19 +883,19 @@ struct JoltGpuMixedContacts::Job : std::enable_shared_from_this<Job>
         if (reads.empty()) {
             if (!discovery)
                 return {};
-            auto ready = std::move(substepReady);
-            return ready();
+            return FinishDiscovery();
         }
-        auto packet = rhi::PrepareComputeBatch(owner.m_host, {}, {}, std::move(reads));
-        return {packet, [self = shared_from_this(), packet, ranges = std::move(ranges), nextWindow, nextFirst] {
-                    for (size_t i = 0; i < ranges.size(); ++i) {
-                        const auto &range = ranges[i];
-                        self->AcceptCandidates(*packet->Readback(i), range.count, range.count, range.substep);
-                    }
-                    self->readWindow = nextWindow;
-                    self->readFirst = nextFirst;
-                    return self->ReadCandidates();
-                }};
+        return ReadDiscovery(
+            {}, {}, std::move(reads),
+            [self = shared_from_this(), ranges = std::move(ranges), nextWindow, nextFirst](const auto &packet) {
+                for (size_t i = 0; i < ranges.size(); ++i) {
+                    const auto &range = ranges[i];
+                    self->AcceptCandidates(*packet.Readback(i), range.count, range.count, range.substep);
+                }
+                self->readWindow = nextWindow;
+                self->readFirst = nextFirst;
+                return self->ReadCandidates();
+            });
     }
 };
 
@@ -877,15 +917,15 @@ JoltGpuMixedContacts::Observe(const std::shared_ptr<const JoltGpuScene::Publicat
             [job](const auto &) { return job->ReadCounts(); }};
 }
 
-JoltGpuControlWork JoltGpuMixedContacts::Discover(const JoltGpuStorage &storage, const JPH::GPU::StepParams &params,
-                                                  uint32_t substep,
-                                                  const std::shared_ptr<const JoltGpuScene::Publication> &publication,
-                                                  JoltMixedContactStep &step,
-                                                  const JoltMixedContactStep::Policy &policy,
-                                                  std::function<JoltGpuControlWork()> ready)
+JoltGpuControlWork
+JoltGpuMixedContacts::Discover(const JoltGpuStorage &storage, const JPH::GPU::StepParams &params, uint32_t substep,
+                               const std::shared_ptr<const JoltGpuScene::Publication> &publication,
+                               JoltMixedContactStep &step, const JoltMixedContactStep::Policy &policy,
+                               std::vector<SourceRead> sourceReads, std::function<JoltGpuControlWork()> ready)
 {
-    return std::make_shared<Job>(*this, step, policy, publication)
-        ->Begin(storage, params, substep, true, std::move(ready));
+    auto job = std::make_shared<Job>(*this, step, policy, publication);
+    job->sourceReads = std::move(sourceReads);
+    return job->Begin(storage, params, substep, true, std::move(ready));
 }
 
 JoltGpuControlWork JoltGpuMixedContacts::DiscoverContinuous(

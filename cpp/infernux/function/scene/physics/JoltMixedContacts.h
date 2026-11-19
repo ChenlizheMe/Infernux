@@ -183,14 +183,28 @@ class JoltMixedContactStep final
 /// This uses the owning physics cursor's packets throughout.
 class JoltGpuMixedContacts final
 {
+    static constexpr uint64_t TransferPerPacket = 64 * 1024;
+
   public:
+    // The substep owns the destination until discovery completes or is cancelled.
+    struct SourceRead
+    {
+        template <class T>
+        SourceRead(const std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t offset, T &value)
+            : range{buffer, offset, sizeof(T)}, destination(&value)
+        {
+            static_assert(sizeof(T) <= TransferPerPacket);
+        }
+        rhi::ComputeBufferRead range;
+        void *destination;
+    };
     JoltGpuMixedContacts(rhi::ComputeHost &, const ShaderTargetCode &);
     [[nodiscard]] JoltGpuScene::ContactObserver Observe(const std::shared_ptr<const JoltGpuScene::Publication> &,
                                                         JoltMixedContactStep &, const JoltMixedContactStep::Policy &);
     [[nodiscard]] JoltGpuControlWork Discover(const JoltGpuStorage &, const JPH::GPU::StepParams &, uint32_t substep,
                                               const std::shared_ptr<const JoltGpuScene::Publication> &,
                                               JoltMixedContactStep &, const JoltMixedContactStep::Policy &,
-                                              std::function<JoltGpuControlWork()>);
+                                              std::vector<SourceRead>, std::function<JoltGpuControlWork()>);
     [[nodiscard]] JoltGpuControlWork DiscoverContinuous(const JoltGpuStorage &, const JPH::GPU::StepParams &,
                                                         const std::shared_ptr<const JoltGpuScene::Publication> &,
                                                         JoltMixedContactStep &, JoltCpuContactPublication &,

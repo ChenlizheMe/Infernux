@@ -257,7 +257,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     {
         uint32_t slot;
         bool dynamic, stateNeeded;
-        UInt4 sleep{};
+        uint32_t awake = 0;
         BodyState state{};
     };
     struct FixedInput
@@ -266,6 +266,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         JPH::BodyID cpuId;
         size_t source;
     };
+    std::vector<FixedInput> fixedInputs;
+    std::vector<FixedSource> fixedSources;
     std::vector<FixedRow> fixedRows;
     std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> impulses;
     std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> corrections;
@@ -296,13 +298,14 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         return *step.Scene().System().GetBodyLockInterfaceNoLock().TryGetBody(id);
     }
 
-    void CaptureFixedRows(const std::vector<FixedInput> &joints, const std::vector<FixedSource> &sources)
+    void CaptureFixedRows()
     {
-        fixedRows.reserve(joints.size());
+        fixedRows.clear();
+        fixedRows.reserve(fixedInputs.size());
         std::unordered_map<uint32_t, bool> cpuWake;
-        for (const auto &input : joints) {
+        for (const auto &input : fixedInputs) {
             auto &joint = *input.joint;
-            const auto &source = sources[input.source];
+            const auto &source = fixedSources[input.source];
             const auto &cpuBody = Body(input.cpuId);
             const auto &gpuActor = *publication->directory->actors[source.slot];
             const auto a = step.CpuMassFrame(joint.cpuBody);
@@ -336,7 +339,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             const bool cpuActive = cpuDynamic ? cpuBody.IsActive()
                                               : cpuBody.GetLinearVelocity() != JPH::Vec3::sZero() ||
                                                     cpuBody.GetAngularVelocity() != JPH::Vec3::sZero();
-            const bool gpuActive = source.dynamic ? source.sleep.x != 0u
+            const bool gpuActive = source.dynamic ? source.awake != 0u
                                                   : Vector(source.state.linearVelocity) != JPH::Vec3::sZero() ||
                                                         Vector(source.state.angularVelocity) != JPH::Vec3::sZero();
             bool active = newJoint || cpuActive || gpuActive;
@@ -356,14 +359,13 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         }
     }
 
-    JoltGpuControlWork ReadFixedSources(const JoltGpuStorage &storage, std::function<JoltGpuControlWork()> next)
+    std::vector<JoltGpuMixedContacts::SourceRead> FixedSourceReads(const JoltGpuStorage &storage)
     {
-        fixedRows.clear();
+        fixedInputs.clear();
+        fixedSources.clear();
         if (step.m_fixedJoints.empty() || (!solveVelocity && !solvePosition))
-            return next();
+            return {};
         const auto &directory = *publication->directory;
-        std::vector<FixedInput> joints;
-        std::vector<FixedSource> sources;
         std::unordered_map<uint32_t, size_t> bySlot;
         for (const auto &joint : step.m_fixedJoints) {
             const auto slot = directory.FindBodySlot(joint->gpuBody);
@@ -374,40 +376,26 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 continue;
             const bool dynamic = directory.actors[slot]->acceptedMotionType == MotionDynamic;
             const bool stateNeeded = !dynamic || !joint->reference;
-            const auto [entry, inserted] = bySlot.try_emplace(slot, sources.size());
+            const auto [entry, inserted] = bySlot.try_emplace(slot, fixedSources.size());
             if (inserted)
-                sources.push_back({slot, dynamic, stateNeeded});
+                fixedSources.push_back({slot, dynamic, stateNeeded});
             else
-                sources[entry->second].stateNeeded |= stateNeeded;
-            joints.push_back({joint, cpuId, entry->second});
+                fixedSources[entry->second].stateNeeded |= stateNeeded;
+            fixedInputs.push_back({joint, cpuId, entry->second});
         }
-        if (joints.empty())
-            return next();
         const auto &sleep = storage.Get(Resource::SleepStates);
         const auto &states = storage.Get(Resource::BodyStates);
-        std::vector<rhi::ComputeBufferRead> reads;
-        for (const auto &source : sources) {
+        std::vector<JoltGpuMixedContacts::SourceRead> reads;
+        for (auto &source : fixedSources) {
             if (source.dynamic)
-                reads.push_back({sleep,
-                                 uint64_t(source.slot) * sizeof(BodySleepRecord) + offsetof(BodySleepRecord, runtime) +
-                                     offsetof(BodySleepRuntime, state),
-                                 sizeof(UInt4)});
+                reads.emplace_back(sleep,
+                                   uint64_t(source.slot) * sizeof(BodySleepRecord) +
+                                       offsetof(BodySleepRecord, runtime) + offsetof(BodySleepRuntime, state),
+                                   source.awake);
             if (source.stateNeeded)
-                reads.push_back({states, uint64_t(source.slot) * sizeof(BodyState), sizeof(BodyState)});
+                reads.emplace_back(states, uint64_t(source.slot) * sizeof(BodyState), source.state);
         }
-        auto packet = rhi::PrepareComputeBatch(owner.m_host, {}, {}, std::move(reads));
-        return {packet, [self = shared_from_this(), packet, joints = std::move(joints), sources = std::move(sources),
-                         next = std::move(next)]() mutable {
-                    size_t read = 0;
-                    for (auto &source : sources) {
-                        if (source.dynamic)
-                            packet->Readback(read++)->ReadInto(&source.sleep, sizeof(source.sleep));
-                        if (source.stateNeeded)
-                            packet->Readback(read++)->ReadInto(&source.state, sizeof(source.state));
-                    }
-                    self->CaptureFixedRows(joints, sources);
-                    return next();
-                }};
+        return reads;
     }
 
     EndpointPair Endpoints(size_t index) const
@@ -942,12 +930,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             buffers[PreviousPatches] = history->previousPatches;
             buffers[Patches] = history->nextPatches;
         }
-        return discovery.Discover(storage, stepParams, substep, publication, step, policy,
-                                  [self = shared_from_this(), &storage, &inputs, done = std::move(done)]() mutable {
-                                      return self->ReadFixedSources(
-                                          storage, [self, &inputs, done = std::move(done)]() mutable {
-                                              return self->PrepareWorkset(inputs, std::move(done));
-                                          });
+        return discovery.Discover(storage, stepParams, substep, publication, step, policy, FixedSourceReads(storage),
+                                  [self = shared_from_this(), &inputs, done = std::move(done)]() mutable {
+                                      self->CaptureFixedRows();
+                                      return self->PrepareWorkset(inputs, std::move(done));
                                   });
     }
 
