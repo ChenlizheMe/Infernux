@@ -40,7 +40,7 @@ class JoltGpuSleep final
     PreparePrescribedCapture(const JoltGpuStorage &, const JPH::GPU::StepParams &, std::vector<uint32_t> sourceSlots,
                              std::function<void(std::shared_ptr<const JoltGpuPrescribedSleepBounds>)> completed);
     [[nodiscard]] JoltGpuControlWork PreparePrescribedWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,
-                                                           std::shared_ptr<const JoltGpuPrescribedSleepBounds>,
+                                                           const JoltGpuPrescribedSleepBounds &,
                                                            std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork
     PrepareSnapshot(const JoltGpuStorage &, const JPH::GPU::StepParams &,

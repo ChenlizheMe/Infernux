@@ -634,25 +634,21 @@ JoltGpuSleep::PreparePrescribedCapture(const JoltGpuStorage &s, const StepParams
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PreparePrescribedWake(const JoltGpuStorage &s, const StepParams &selection,
-                                                       std::shared_ptr<const JoltGpuPrescribedSleepBounds> old,
+                                                       const JoltGpuPrescribedSleepBounds &old,
                                                        std::function<void()> done)
 {
-    if (!old) {
-        done();
-        return {};
-    }
-    if (!old->count || !old->sources || !old->bounds || old->sources->GetByteSize() != uint64_t(old->count) * 4u ||
-        old->bounds->GetByteSize() != uint64_t(old->count) * 64u ||
-        !old->sources->HasInitializedRange(0u, old->sources->GetByteSize()) ||
-        !old->bounds->HasInitializedRange(0u, old->bounds->GetByteSize()))
+    if (!old.count || !old.sources || !old.bounds || old.sources->GetByteSize() != uint64_t(old.count) * 4u ||
+        old.bounds->GetByteSize() != uint64_t(old.count) * 64u ||
+        !old.sources->HasInitializedRange(0u, old.sources->GetByteSize()) ||
+        !old.bounds->HasInitializedRange(0u, old.bounds->GetByteSize()))
         throw std::invalid_argument("Prescribed wake lost its completed exact source capture");
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
     auto p = Selection(s, selection);
-    e->buffers[Requests] = old->sources;
-    e->buffers[Bounds] = old->bounds;
-    p.operation.w = old->count;
-    for (uint32_t source = 0; source < old->count; ++source) {
+    e->buffers[Requests] = old.sources;
+    e->buffers[Bounds] = old.bounds;
+    p.operation.w = old.count;
+    for (uint32_t source = 0; source < old.count; ++source) {
         p.layout.z = source;
         e->Add(PrescribedWake, p.selected.y, p.selected.z, p);
     }

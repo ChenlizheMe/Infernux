@@ -1176,6 +1176,13 @@ class JoltGpuTick::Impl
                 NextSpan(next);
                 continue;
             }
+            // An empty prescribed-motion capture has no bounds to compare. Let the
+            // adjacent numerical stages share their packet when no wake pass is due.
+            if ((next.phase == Phase::WakePrescribedBounds || next.phase == Phase::WakeFinalPrescribedBounds) &&
+                !prescribedBounds) {
+                NextSpan(next);
+                continue;
+            }
             if (ProducerPhase(next.phase))
                 return;
             const auto span = Span(next.phase);
@@ -2081,7 +2088,7 @@ class JoltGpuTick::Impl
                 // commit. A previously asleep destination did not accumulate
                 // quiet time here; waking it now preserves one real following
                 // forces/contact opportunity even when TimeBeforeSleep is 0.
-                SelectControlWork(programs.GetSleep().PreparePrescribedWake(storage, tickParameters, prescribedBounds,
+                SelectControlWork(programs.GetSleep().PreparePrescribedWake(storage, tickParameters, *prescribedBounds,
                                                                             [this] {
                                                                                 NextSpan(stageCursor);
                                                                                 Normalize(stageCursor);
