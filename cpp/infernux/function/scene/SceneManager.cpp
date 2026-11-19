@@ -1118,13 +1118,16 @@ FrameWorkFacts SceneManager::DescribeRuntimeFrames()
     const bool early = !m_runtimeFrameWork->IsLate();
     FrameWorkFacts facts;
     const auto eligible = [&](const auto &world) {
+        if (world->handle->state == "failed")
+            return false;
+        const bool failed = world->simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed;
         const bool step = world->simulation.isPaused && world->simulation.pausedStepPending;
         const bool frame = !world->simulation.isPaused &&
                            (world->frame.phase != RuntimeWorld::FramePhase::Idle || !world->frame.pending.empty());
-        if (!world->simulation.isPlaying || (!step && !frame && !world->pausedAuthor.Pending()))
+        if (!world->simulation.isPlaying || (!failed && !step && !frame && !world->pausedAuthor.Pending()))
             return false;
         facts.pending = true;
-        if (!early)
+        if (failed || !early)
             return true;
         const auto &physics = PhysicsWorld::Instance();
         return frame && world->physics->solverStarted && physics.m_gpuScene &&
@@ -1168,8 +1171,33 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
         if (live == m_runtimeWorlds.end())
             continue;
         auto *world = live->get();
-        if (!world->simulation.isPlaying)
+        if (!world->simulation.isPlaying || world->handle->state == "failed")
             continue;
+        if (world->simulation.fixedPhase == RuntimeWorld::FixedPhase::Failed) {
+            // A GPU receipt may fail outside this World's execution scope. Its
+            // observer pauses the solver; this ordinary Host quantum reports the
+            // retained failure without admitting or replaying another Fixed.
+            const WorldExecutionScope scope(world);
+            world->handle->error = "The physical step failed; stop Play before restarting the simulation";
+            world->handle->state = "failed";
+            world->handle->retirementOutcome = "failed";
+            world->handle->pendingPrimary = false;
+            world->simulation.isPaused = true;
+            world->simulation.isStepping = false;
+            world->simulation.pausedStepPending = false;
+            world->simulation.stepFrameOpen = false;
+            world->frame.stepInput.reset();
+            world->frame.stepLogicalFrameTarget = 0;
+            world->frame.pending.clear();
+            INXLOG_ERROR("World ", world->id, " physical step ", world->simulation.fixedStepIndex,
+                         " failed before publication; last complete Fixed ", world->simulation.publishedFixedStepIndex,
+                         ". ", world->handle->error);
+            // Keep the Scene and its last complete display publication available
+            // until normal Stop retires this World and restores the authored graph.
+            RuntimeLifecycleScopeEnd lifecycleEnd{*world, m_runtimeLifecycleEnd};
+            CloseRuntimeFrame(false);
+            return true;
+        }
         const bool step = world->simulation.isPaused && world->simulation.pausedStepPending;
         const bool frame = !world->simulation.isPaused &&
                            (world->frame.phase != RuntimeWorld::FramePhase::Idle || !world->frame.pending.empty());
