@@ -54,11 +54,12 @@ class RayTracingView:
             return surface.sample("light_list")
         return self._ctx.graph.create_view_light_list(f"{self._ctx.name}/lights")
 
-    def history(self, name: str, *, format: Format, size_divisor: int = 0):
-        """A per-camera history of this tracer's world, cleared when its lighting inputs change."""
+    def history(self, name: str, *, format: Format, size_divisor: int = 0, respond_to_lighting: bool = False):
+        """Allocate per-camera history. A filter that remeasures changing light can retain its prior estimate."""
         read, write = self._ctx.graph.create_temporal_history(
             f"{self._ctx.name}/{name}", format=format, size_divisor=size_divisor)
         read._depends_on_ray_world = write._depends_on_ray_world = True
+        read._responds_to_ray_lighting = write._responds_to_ray_lighting = respond_to_lighting
         return read, write
 
 
@@ -108,6 +109,8 @@ class RayTracingContext:
     quality: RayTracingQuality = RayTracingQuality.STANDARD
     reconstruct: bool = True
     name: str = "ray"
+    gi_intensity: float = 1.0
+    ssao_strength: float = 0.0
 
     @cached_property
     def world(self) -> RayTracingWorld:
@@ -116,6 +119,16 @@ class RayTracingContext:
     @cached_property
     def view(self) -> RayTracingView:
         return RayTracingView(self)
+
+    @cached_property
+    def ambient_visibility(self) -> TextureHandle | None:
+        """Contact visibility and eye depth from the pipeline's geometry buffer, on demand."""
+        if self.ssao_strength <= 0.0 or not self.diffuse:
+            return None
+        source = self.surface
+        if self.geometry is not None and (source is None or not source.has("ambient_visibility")):
+            source = self.geometry
+        return source.sample("ambient_visibility") if source is not None else None
 
     def _publish_layers(self, stage, layers):
         textures = {}
@@ -150,6 +163,7 @@ class RayTracingContext:
         enabled = [key for key, active in (("diffuse_irradiance", self.diffuse), ("specular_radiance", self.specular)) if active]
         packed = {key: result._packets[key] for key in enabled if key in result._packets}
         linear = {key: result.denoised.sample(key) for key in enabled if key not in packed}
+        visibility = self.ambient_visibility
         with self.graph.add_pass(name) as p:
             p.write_color(target)
             p.set_clear(color=(0.0, 0.0, 0.0, 1.0))
@@ -161,6 +175,9 @@ class RayTracingContext:
             # pass. No dummy images, standalone resolves or copies are created.
             primary = result._primary or surface["surface"]
             p.set_texture("primary_tex", primary)
+            p.set_texture("ambient_visibility", visibility or surface["surface_frame"])
+            p.set_param("diffuse_intensity", self.gi_intensity)
+            p.set_param("ssao_strength", self.ssao_strength)
             for key, port in (("diffuse_irradiance", "diffuse"), ("specular_radiance", "specular")):
                 p.set_texture(f"ray_{port}", packed.get(key, primary))
                 if linear:

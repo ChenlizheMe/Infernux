@@ -1202,6 +1202,7 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
         MakeViewOptions(m_cameraDithering, m_cameraStopNaNs, m_renderView.kind == rhi::RenderViewKind::Scene,
                         m_rayHistoryWorld.AcceptedGeometry(), static_cast<uint32_t>(m_executionCount),
                         m_cameraHistoryValid ? m_temporalJitterNdc - m_previousJitterNdc : glm::vec2(0.0f));
+    globals.viewOptions.x |= m_rayHistoryWorld.ViewFlags();
     if (!rhiDevice.WriteBuffer(frame.globals.buffer, 0, &globals, sizeof(globals))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local globals UBO");
         return false;
@@ -1410,8 +1411,10 @@ void SceneRenderGraph::SetWorldRayGeometry(const std::shared_ptr<const RenderWor
         m_worldRayTail = {};
         m_worldRayTailRequest.reset();
     }
-    if (m_worldRayMaterial && !m_worldRayPending && m_rayHistoryWorld.Update(*world, binding, m_worldRayMaterial))
-        raytracing::InvalidateRayHistories(m_temporalHistories);
+    if (m_worldRayMaterial && !m_worldRayPending) {
+        const auto change = m_rayHistoryWorld.Update(*world, binding, m_worldRayMaterial);
+        raytracing::InvalidateRayHistories(m_temporalHistories, change);
+    }
     auto next = std::array{std::move(binding.buffer), std::move(binding.meshes)};
     if (next == m_worldRayBuffers)
         return;
@@ -2800,7 +2803,7 @@ void SceneRenderGraph::CommitSubmissionExecution()
     } else {
         CommitTemporalHistory();
         CommitCameraHistory();
-        m_rayHistoryWorld.AcceptGeometry();
+        m_rayHistoryWorld.Accept();
         m_motionHistory.CommitFrame();
         m_historyResetPending = false;
     }

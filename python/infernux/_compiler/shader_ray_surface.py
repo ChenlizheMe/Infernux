@@ -14,7 +14,7 @@ from infernux._compiler.shading_model import read_shading_model
 _CONTEXT_FIELDS = {"position_ws", "normal_ws", "tangent_ws", "color", "uv0", "uv1", "surface_id", "line_color"}
 _SLOT_TYPES = {"float": "float", "vec2": "float2", "vec3": "float3", "vec4": "float4", "color": "float4",
                "int": "int", "uint": "uint", "bool": "uint", "texture_2d": "uint"}
-_DYNAMIC_OPERATIONS = {"camera", "frame_time", "frame_delta_time", "_previous_ray_geometry_serial",
+_DYNAMIC_OPERATIONS = {"camera", "frame_time", "frame_delta_time", "_previous_ray_geometry_serial", "_ray_lighting_changed",
                        "_previous_ray_light_serial", "_previous_ray_other_change_serial"}
 
 

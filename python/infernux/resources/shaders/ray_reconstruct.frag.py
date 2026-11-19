@@ -1,5 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
+from infernux.shader.lib.ray_diffuse_history import diffuse_history
 from infernux.shader.lib.ray_signal import (
     pack_ray_signal, ray_grid_pixel, specular_color_variance, specular_hit_distance,
     specular_witness, unpack_ray_signal,
@@ -52,25 +53,27 @@ class RayReconstruct(shader.fullscreen):
         history_uv = previous_uv + shader._view_jitter_delta_uv()
         if shader.any(history_uv < shader.vec2(0.0)) or shader.any(history_uv >= shader.vec2(1.0)):
             return fresh
-        previous_pixel = shader.ivec2(history_uv * shader.vec2(extent))
-        previous_source = ray_grid_pixel(previous_pixel, extent, full) if reduced else previous_pixel
-        previous_primary = shader.load(self.previous_primary, previous_source, 0)
-        if primary.x != previous_primary.x:
-            return fresh
-        normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
-        previous_normal = decode_octahedral_normal(shader.unpack_half_2x16(previous_primary.z))
-        normal_threshold = 0.985 if self.specular else 0.94
-        if shader.dot(normal, previous_normal) < normal_threshold:
-            return fresh
-
         camera = shader.camera()
         expected_depth = ray_previous_eye_depth(motion.w)
-        previous_depth = linear_eye_depth(shader.as_float(previous_primary.y), camera)
-        # Compare the same surface in its previous pose, including motion toward the camera.
-        if shader.abs(expected_depth - previous_depth) > 0.01 + 0.015 * expected_depth:
-            return fresh
-
-        previous_packet = shader.load(self.previous_signal, previous_pixel, 0)
+        previous_primary = shader.uvec4(0)
+        previous_packet = shader.uvec4(0)
+        if reduced and not self.specular:
+            previous_packet = diffuse_history(self.previous_signal, self.previous_primary, primary, history_uv,
+                                              previous_uv, expected_depth, extent, full)
+        else:
+            previous_pixel = shader.ivec2(history_uv * shader.vec2(extent))
+            previous_primary = shader.load(self.previous_primary, previous_pixel, 0)
+            if primary.x != previous_primary.x:
+                return fresh
+            normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
+            previous_normal = decode_octahedral_normal(shader.unpack_half_2x16(previous_primary.z))
+            normal_threshold = 0.985 if self.specular else 0.94
+            if shader.dot(normal, previous_normal) < normal_threshold:
+                return fresh
+            previous_depth = linear_eye_depth(shader.as_float(previous_primary.y), camera)
+            if shader.abs(expected_depth - previous_depth) > 0.01 + 0.015 * expected_depth:
+                return fresh
+            previous_packet = shader.load(self.previous_signal, previous_pixel, 0)
         previous = unpack_ray_signal(previous_packet)
         if previous.a <= 0.0:
             return fresh
@@ -129,7 +132,7 @@ class RayReconstruct(shader.fullscreen):
                         if stamps[surface_id & 3] > accepted:
                             return fresh
                 limit = 8.0
-        elif visibility.y != accepted:
+        elif visibility.y != accepted or shader._ray_lighting_changed():
             # The diffuse prefilter stores the squared RGB error of its directional mean.
             # Let new measurements dominate when they contradict the old lighting.
             innovation = previous.rgb - current.rgb
@@ -137,7 +140,7 @@ class RayReconstruct(shader.fullscreen):
             confidence = uncertainty / shader.max(uncertainty + shader.dot(innovation, innovation), 1e-12)
             limit = 1.0 + 4.0 * confidence
         elif shader.any(shader.abs(history_uv - uv) * shader.vec2(full) > shader.vec2(0.5)):
-            limit = 32.0
+            limit = 6.0
 
         count = shader.min(previous.a + 1.0, limit)
         estimate = shader.mix(previous.rgb, current.rgb, 1.0 / count)

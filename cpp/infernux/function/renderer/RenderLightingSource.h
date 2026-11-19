@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
@@ -69,6 +70,10 @@ struct RenderLightingSource
 {
     // Stable generation advances only when actual source values change.
     uint64_t generation = 0;
+    /// Last abrupt change in illumination shared by distant receivers. Persists across skipped views.
+    uint64_t diffuseCutGeneration = 0;
+    std::array<glm::vec3, 6> distantDiffuse{};
+    void UpdateDiffuseHistory(const RenderLightingSource *previous);
     std::vector<RenderLightSource> lights;
     std::shared_ptr<const LightSamplingDistribution> sampling;
     glm::vec4 ambientSky{0.0f};

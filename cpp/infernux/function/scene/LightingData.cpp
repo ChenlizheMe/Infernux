@@ -20,6 +20,40 @@
 namespace infernux
 {
 
+void RenderLightingSource::UpdateDiffuseHistory(const RenderLightingSource *previous)
+{
+    // Incident light on the six axial faces gives a scale-independent test of both
+    // energy and direction. Local emitters are measured at the individual receiver.
+    for (size_t face = 0; face < distantDiffuse.size(); ++face) {
+        const glm::vec4 ambient = face == 2 ? ambientSky : (face == 3 ? ambientGround : ambientEquator);
+        distantDiffuse[face] = glm::vec3(ambient) * ambient.w;
+    }
+    for (const auto &light : lights) {
+        if (light.type != static_cast<uint32_t>(CanonicalLightType::Directional) ||
+            !(light.influenceDomains & CanonicalLightAffectsGeometry))
+            continue;
+        const glm::vec3 power = light.linearColor * light.intensity;
+        for (int axis = 0; axis < 3; ++axis) {
+            const float cosine = -light.direction[axis];
+            distantDiffuse[2 * axis] += power * std::max(0.0f, cosine);
+            distantDiffuse[2 * axis + 1] += power * std::max(0.0f, -cosine);
+        }
+    }
+    diffuseCutGeneration = generation;
+    if (!previous)
+        return;
+    float peakSquared = 0.0f, changeSquared = 0.0f;
+    for (size_t face = 0; face < distantDiffuse.size(); ++face) {
+        const auto a = previous->distantDiffuse[face], b = distantDiffuse[face];
+        peakSquared = std::max({peakSquared, glm::dot(a, a), glm::dot(b, b)});
+        changeSquared = std::max(changeSquared, glm::dot(b - a, b - a));
+    }
+    // A jump of one stop relative to the brightest face starts fresh. Continuous
+    // daylight can reuse evidence even when a view renders only some world publications.
+    if (changeSquared <= 0.25f * peakSquared)
+        diffuseCutGeneration = previous->diffuseCutGeneration;
+}
+
 std::shared_ptr<const LightSamplingDistribution>
 BuildLightSamplingDistribution(const std::vector<RenderLightSource> &lights)
 {

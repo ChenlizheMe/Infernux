@@ -862,6 +862,8 @@
   "renderstack.default_forward": "Default Forward",
   "renderstack.pipeline_settings": "Pipeline Settings",
   "renderstack.global_illumination": "Global Illumination (GI)",
+  "renderstack.gi_intensity": "Diffuse GI Intensity",
+  "renderstack.ssao_strength": "Contact Occlusion (SSAO)",
   "renderstack.ray_specular": "Ray-Traced Reflections",
   "renderstack.ray_transparency": "Ray-Traced Transparency",
   "renderstack.ray_quality": "Ray Tracing Quality",

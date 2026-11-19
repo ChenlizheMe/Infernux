@@ -10,6 +10,8 @@ class RayDiffuseFilter(shader.fullscreen):
     signal = shader.input("signal", shader.UInt2D)
     primary = shader.input("primary", shader.UInt2D)
     frame = shader.input("frame", shader.Color2D)
+    ambient_visibility = shader.input("ambient_visibility", shader.Color2D)
+    ssao_strength = shader.parameter.float(default=0.0)
     stride = shader.parameter.int(default=1)
 
     def main(self, ctx: shader.fragment_input) -> shader.uvec4:
@@ -27,6 +29,10 @@ class RayDiffuseFilter(shader.fullscreen):
         camera = shader.camera()
         uv = (shader.vec2(source) + shader.vec2(0.5)) / shader.vec2(full)
         depth = shader.as_float(witness.y)
+        visibility_size = shader.ivec2(shader.dimensions(self.ambient_visibility, 0))
+        center_visibility = 1.0
+        if self.ssao_strength > 0.0:
+            center_visibility = shader.load(self.ambient_visibility, shader.ivec2(uv * shader.vec2(visibility_size)), 0).x
         position = world_position(uv, depth, camera)
         plane_normal = decode_octahedral_normal(shader.unpack_half_2x16(witness.z))
         normal = decode_octahedral_normal(shader.load(self.frame, source, 0).xy)
@@ -63,6 +69,10 @@ class RayDiffuseFilter(shader.fullscreen):
             normal_weight = shader.saturate((shader.dot(normal, sample_normal) - 0.94) / 0.06)
             weight = (2.0 if offset.x == 0 or offset.y == 0 else 1.0) * normal_weight
             weight *= shader.saturate(1.0 - plane_distance / plane_band)
+            if self.ssao_strength > 0.0:
+                cell = shader.ivec2(sample_uv * shader.vec2(visibility_size))
+                visibility = shader.load(self.ambient_visibility, cell, 0).x
+                weight /= 1.0 + 12.0 * self.ssao_strength * shader.abs(center_visibility - visibility)
             if current_frame:
                 squared_sum += weight * shader.dot(estimate.rgb, estimate.rgb)
                 squared_weights += weight * weight

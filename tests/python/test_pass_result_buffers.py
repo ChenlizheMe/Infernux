@@ -249,7 +249,7 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
     pipeline.ray_transparency = not diffuse
     pipeline.ray_quality = quality
     fields = get_serialized_fields(type(pipeline))
-    for name in ("ray_specular", "ray_transparency", "ray_quality"):
+    for name in ("ray_specular", "ray_transparency", "ray_quality", "gi_intensity", "ssao_strength"):
         assert fields[name].visible_when(pipeline) == diffuse
     pipeline.define_topology(graph)
     graph.build()
@@ -267,7 +267,11 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
         return
 
     assert lighting._shader_name == "infernux/internal/deferred_ray_lighting"
-    assert lighting._parameters == {"diffuse_enabled": diffuse, "specular_enabled": specular}
+    assert lighting._parameters == {"diffuse_enabled": diffuse, "specular_enabled": specular,
+                                    "diffuse_intensity": 1.0, "ssao_strength": 0.5}
+    visibility = graph.get_pass_result("gbuffer").sample("ambient_visibility")
+    assert visibility.format == Format.RG16_SFLOAT and visibility.size_divisor == 2
+    assert lighting._input_bindings["ambient_visibility"] == visibility.name
     primary = graph.get_pass_result("gbuffer").sample("ray_primary_surface")
     assert lighting._input_bindings["primary_tex"] == primary.name and primary.size_divisor == 0
     assert not any(name.startswith(("Decode ", "Resolve ")) for name in passes)
@@ -302,6 +306,7 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
             previous = graph.get_texture(reconstruction._input_bindings["previous_signal"])
             assert previous.size_divisor == divisor
             assert previous._depends_on_ray_world
+            assert previous._responds_to_ray_lighting == (name == "ray_diffuse")
             filtered = reconstruction._write_colors[0]
             if name == "ray_specular":
                 assert reconstruction._input_bindings["signal"] == packet.name
@@ -320,6 +325,21 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
     graph.build()
 
 
+def test_zero_contact_strength_keeps_diffuse_independent_of_the_visibility_pass():
+    pipeline = DefaultDeferredPipeline()
+    pipeline.global_illumination = True
+    pipeline.gi_intensity = 1.75
+    pipeline.ssao_strength = 0.0
+    graph = RenderGraph("contact disabled")
+    pipeline.define_topology(graph)
+    graph.build()
+    passes = {p.name: p for p in graph._passes}
+    assert not graph.get_pass_result("gbuffer").has("ambient_visibility")
+    assert "gbuffer/Contact Visibility" not in passes
+    assert passes["DeferredLightingPass"]._parameters["diffuse_intensity"] == 1.75
+    assert passes["Ray Diffuse Spatial 1"]._parameters["ssao_strength"] == 0.0
+
+
 def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently():
     class CustomMirror(DefaultRayTracer):
         def reconstruct_specular(self, ctx, raw, guides):
@@ -334,7 +354,8 @@ def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently
     passes = {p.name: p for p in graph._passes}
     assert "Ray Diffuse Reconstruction" in passes and "Ray Specular Reconstruction" not in passes
     assert passes["DeferredLightingPass"]._shader_name == "infernux/internal/deferred_linear_lighting"
-    assert passes["DeferredLightingPass"]._parameters == {"diffuse_mode": 2, "specular_mode": 1}
+    assert passes["DeferredLightingPass"]._parameters == {"diffuse_mode": 2, "specular_mode": 1,
+                                                          "diffuse_intensity": 1.0, "ssao_strength": 0.5}
     assert "Resolve diffuse_irradiance" not in passes
     assert passes["DeferredLightingPass"]._input_bindings["specular_radiance"] == graph.get_pass_result("ray/raw").sample("specular_radiance").name
 

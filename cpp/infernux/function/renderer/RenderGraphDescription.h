@@ -227,6 +227,7 @@ struct GraphTextureDesc
     uint32_t depth = 1;               ///< Imported Texture3D depth; 1 for ordinary textures
     bool isVolume = false;            ///< True when the imported asset is a Texture3D
     bool dependsOnRayWorld = false;   ///< History contains lighting computed from the published ray world.
+    bool respondsToLighting = false;  ///< Reweights old evidence against freshly measured illumination.
     std::optional<RenderTextureLayout> renderTextureLayout;
 
     [[nodiscard]] bool operator==(const GraphTextureDesc &other) const;

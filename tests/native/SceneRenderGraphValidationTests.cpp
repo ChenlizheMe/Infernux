@@ -141,14 +141,35 @@ void CheckWorldUIDepthReplay()
 
 void CheckRayHistoryOwnership()
 {
+    RenderLightingSource day;
+    day.lights.emplace_back();
+    day.generation = 1;
+    day.UpdateDiffuseHistory(nullptr);
+    auto movingSun = day;
+    movingSun.lights.front().direction = glm::normalize(glm::vec3(0.05f, 0.0f, 1.0f));
+    movingSun.generation = 2;
+    movingSun.UpdateDiffuseHistory(&day);
+    assert(movingSun.diffuseCutGeneration == day.generation);
+    auto dark = movingSun;
+    dark.lights.front().intensity = 0.0f;
+    dark.generation = 3;
+    dark.UpdateDiffuseHistory(&movingSun);
+    assert(dark.diffuseCutGeneration == dark.generation);
+
     std::unordered_map<std::string, GraphTemporalHistory> histories;
     auto &lighting = histories["studio/indirect"];
+    auto &responsive = histories["studio/diffuse"];
     auto &exposure = histories["_ray_named_exposure"];
     lighting.dependsOnRayWorld = true;
+    responsive.dependsOnRayWorld = responsive.respondsToLighting = true;
     lighting.Accept();
+    responsive.Accept();
     exposure.Accept();
-    raytracing::InvalidateRayHistories(histories);
+    raytracing::InvalidateRayHistories(histories, raytracing::RayHistoryChange::Lighting);
     assert(!lighting.valid && lighting.readIndex == 0);
+    assert(responsive.valid && responsive.readIndex == 1);
+    raytracing::InvalidateRayHistories(histories, raytracing::RayHistoryChange::Reset);
+    assert(!responsive.valid && responsive.readIndex == 0);
     assert(exposure.valid && exposure.readIndex == 1);
 }
 

@@ -479,6 +479,7 @@ void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
         next.sampling = m_lighting && next.lights == m_lighting->lights ? m_lighting->sampling
                                                                         : BuildLightSamplingDistribution(next.lights);
         next.generation = ++m_lightingGeneration;
+        next.UpdateDiffuseHistory(m_lighting.get());
         m_lighting = std::make_shared<const RenderLightingSource>(std::move(next));
     }
     frame.m_lighting = m_lighting;

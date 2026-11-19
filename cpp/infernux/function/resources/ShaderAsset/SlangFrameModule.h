@@ -15,6 +15,7 @@ public float inx_frame_time() { return inx_globals.time.x; }
 public float inx_frame_delta_time() { return inx_globals.time.w; }
 public uint inx_view_sample_index() { return inx_globals.view_options.w; }
 public uint inx_previous_ray_geometry_serial() { return inx_globals.view_options.y; }
+public bool inx_ray_lighting_changed() { return (inx_globals.view_options.x & 16u) != 0u; }
 public float2 inx_view_jitter_delta_uv() { return unpackHalf2x16ToFloat(inx_globals.view_options.z); }
 public struct InxViewContext
 {

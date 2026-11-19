@@ -126,6 +126,14 @@ class DefaultDeferredPipeline(RenderPipeline):
     global_illumination: bool = serialized_field(
         default=False, header="Ray Tracing", display_name_key="renderstack.global_illumination",
     )
+    gi_intensity: float = serialized_field(
+        default=1.0, range=(0.0, 4.0), slider=True, display_name_key="renderstack.gi_intensity",
+        visible_when=attrgetter("global_illumination"),
+    )
+    ssao_strength: float = serialized_field(
+        default=0.5, range=(0.0, 1.0), slider=True, display_name_key="renderstack.ssao_strength",
+        visible_when=attrgetter("global_illumination"),
+    )
     ray_specular: bool = serialized_field(
         default=False, display_name_key="renderstack.ray_specular", visible_when=attrgetter("global_illumination"),
     )
@@ -154,6 +162,19 @@ class DefaultDeferredPipeline(RenderPipeline):
         self._standalone_desc = None
         if self._render_stack is not None:
             self._render_stack.invalidate_graph()
+
+    @geometry_buffer("ambient_visibility", dependencies={DEPTH_TEXTURE, "surface_frame"})
+    def _provide_ambient_visibility(self, context):
+        from infernux.rendergraph.graph import Format
+
+        graph = context.graph
+        target = graph.create_texture(f"_result/{context.source}/ambient_visibility",
+                                      format=Format.RG16_SFLOAT, size_divisor=2, samples=1)
+        with graph.add_pass(f"{context.source}/Contact Visibility") as p:
+            p.set_textures({"depth_tex": context.sample(DEPTH_TEXTURE), "frame": context.sample("surface_frame")})
+            p.write_color(target)
+            p.fullscreen_quad("infernux/internal/contact_visibility")
+        return target
 
     @geometry_buffer(NORMAL_TEXTURE, dependencies={DEPTH_TEXTURE})
     def _provide_deferred_normal(self, context):
@@ -239,6 +260,7 @@ class DefaultDeferredPipeline(RenderPipeline):
                 graph, surface=current, geometry=raw_gbuffer,
                 diffuse=True, specular=self.ray_specular, transparency=self.ray_transparency,
                 quality=self.ray_quality, reconstruct=self._reconstruct_rays,
+                gi_intensity=self.gi_intensity, ssao_strength=self.ssao_strength,
             )
             frame = self.ray_tracer.build(ctx)
             ctx.shade_deferred(frame, graph.get_texture(COLOR_TEXTURE),
