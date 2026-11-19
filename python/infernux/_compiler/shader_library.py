@@ -69,7 +69,7 @@ _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceH
                   "ray._indirect_signal": ("inx_ray_indirect_signal", "InxRaySignal", (
                       "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool", "InxBuffer_uint4")),
                   "ray._path_temporal": ("inx_ray_path_temporal", "InxRayPathEstimate", (
-                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "InxBuffer_uint4", "uint4")),
+                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "InxBuffer_uint4", "uint4", "uint2")),
                   "ray._replay_path": ("inx_ray_replay_path", "InxRaySignal", (
                       "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool", "InxBuffer_uint4", "uint2")),
                   "ray._path_neighbor": ("inx_ray_path_neighbor", "int2", ("uint2",))}

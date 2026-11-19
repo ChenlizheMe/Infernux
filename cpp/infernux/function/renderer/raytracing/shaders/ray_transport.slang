@@ -626,16 +626,33 @@ public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxB
 uint2 inx_ray_path_key(float2 position, bool specular, bool temporal)
 {
     uint2 pixel = uint2(position);
-    uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
-    return uint2(specular ? inx_ray_sample_hash(seed) : seed, temporal ? inx_view_sample_index() : 0u);
+    uint index = temporal ? inx_view_sample_index() : 0u;
+    if (specular)
+    {
+        uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
+        return uint2(inx_ray_sample_hash(seed), index);
+    }
+    // Interleave a 16-point set on the trace grid. The reservoir carries the
+    // original rank and scramble so a neighbor replays exactly the same sample.
+    uint2 lane = pixel & 3u;
+    uint rank = ((lane.x & 1u) << 3u) | (((lane.x ^ lane.y) & 1u) << 2u) |
+                (lane.x & 2u) | ((lane.x ^ lane.y) >> 1u);
+    uint2 tile = pixel >> 2u;
+    uint scramble = inx_ray_sample_hash(tile.x ^ inx_ray_sample_hash(tile.y));
+    return uint2((scramble & ~15u) | rank, index);
 }
 
 RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,
                                               float3 geometric_normal, bool specular, bool temporal, uint2 key,
                                               out uint seed, out float4 reflector)
 {
-    seed = key.x;
-    float2 uniform = inx_ray_primary_uniform(key.y, seed);
+    uint rank = key.x & 15u;
+    // Shift both coordinates over the unit square. A receiver visible only on
+    // a thin edge can still sample the whole hemisphere without its neighbors.
+    float2 offset = float2(float(rank) * (1.0 / 16.0), float(rank) * 0.61803398875);
+    float2 uniform = specular ? inx_ray_primary_uniform(key.y, key.x) :
+                                frac(inx_ray_primary_uniform(key.y, key.x >> 4u) + offset);
+    seed = specular ? key.x : inx_ray_sample_hash(key.x);
     if (temporal)
         seed ^= inx_ray_sample_hash(key.y);
     float3 shading_normal = normalize(surface.normal_ws);
@@ -732,9 +749,9 @@ float inx_ray_path_target(float3 radiance)
 }
 
 public InxRayPathEstimate inx_ray_path_temporal(InxSurfaceData surface, InxShadingContext context, float3 normal,
-    InxBuffer_uint4 records, uint model_id, bool specular, InxBuffer_uint4 cache, uint4 history)
+    InxBuffer_uint4 records, uint model_id, bool specular, InxBuffer_uint4 cache, uint4 history, uint2 trace_pixel)
 {
-    uint2 key = inx_ray_path_key(context.pixel_position, specular, true);
+    uint2 key = inx_ray_path_key(specular ? context.pixel_position : float2(trace_pixel), specular, true);
     uint represented = min(history.w, 4u);
     uint count = 1u + represented;
     uint2 selected = key;
