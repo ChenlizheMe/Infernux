@@ -422,8 +422,7 @@ void JoltGpuCommandCursor::AppendCommands(CommandIterator commands, CommandItera
     if (commandCount <= MaxCommandsPerBodyDispatch &&
         std::all_of(commands + 1, end, [firstBody](const auto &command) { return command.meta.x == firstBody; })) {
         const auto first = static_cast<uint32_t>(m_commands.size());
-        m_dispatches.emplace_back(
-            BodyDispatch{first, commandCount, static_cast<uint32_t>(m_spans.size()), 1, firstBody});
+        m_dispatches.emplace_back(BodyDispatch{first, commandCount, static_cast<uint32_t>(m_spans.size()), 1});
         m_spans.push_back({{firstBody, first, commandCount, 0}});
         m_commands.insert(m_commands.end(), commands, end);
         return;
@@ -452,15 +451,13 @@ void JoltGpuCommandCursor::AppendCommands(CommandIterator commands, CommandItera
     while (!active.empty()) {
         std::vector<Group> next;
         next.reserve(active.size());
-        uint32_t previousBody = 0;
         bool firstInRound = true;
         for (auto group : active) {
             const uint32_t body = commands[order[group.first]].meta.x;
             const uint32_t count = std::min(MaxCommandsPerBodyDispatch, group.end - group.first);
-            if (firstInRound || body != previousBody + 1 ||
-                std::get<BodyDispatch>(m_dispatches.back()).spanCount == MaxCommandBodiesPerDispatch) {
+            if (firstInRound || std::get<BodyDispatch>(m_dispatches.back()).spanCount == MaxCommandBodiesPerDispatch) {
                 m_dispatches.emplace_back(BodyDispatch{static_cast<uint32_t>(m_commands.size()), 0,
-                                                       static_cast<uint32_t>(m_spans.size()), 0, body});
+                                                       static_cast<uint32_t>(m_spans.size()), 0});
             }
             auto &dispatch = std::get<BodyDispatch>(m_dispatches.back());
             m_spans.push_back({{body, static_cast<uint32_t>(m_commands.size()), count, 0}});
@@ -471,7 +468,6 @@ void JoltGpuCommandCursor::AppendCommands(CommandIterator commands, CommandItera
             group.first += count;
             if (group.first < group.end)
                 next.push_back(group);
-            previousBody = body;
             firstInRound = false;
         }
         active = std::move(next);
@@ -579,12 +575,43 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuCommandCursor::PrepareNext(rhi
         dispatch.kernel = m_kernel;
         dispatch.groupCountX = 1;
         rhi::ComputeDispatchProof proof;
+        // Shader lanes use the body slot in each span. Only adjacent slots share a resource range.
+        struct BodyRange
+        {
+            uint32_t first, count;
+        };
+        std::array<BodyRange, MaxCommandBodiesPerDispatch> ranges;
+        size_t rangeCount = 0;
+        for (uint32_t i = 0; i < slice.spanCount; ++i) {
+            const auto body = m_spans[slice.firstSpan + i].range.x;
+            if (rangeCount && body == ranges[rangeCount - 1].first + ranges[rangeCount - 1].count)
+                ++ranges[rangeCount - 1].count;
+            else
+                ranges[rangeCount++] = {body, 1};
+        }
         for (const auto port : m_ports) {
             const uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffers[port]);
             const bool writer = port == States || port == Forces || port == Targets || port == Sleeps;
             dispatch.bufferAccesses.push_back(writer ? rhi::ComputeBufferAccess::ReadWrite
                                                      : rhi::ComputeBufferAccess::Read);
+            if (port >= Models) {
+                for (size_t i = 0; i < rangeCount; ++i) {
+                    const auto [body, length] = ranges[i];
+                    const rhi::ComputeBindingRange range{binding, uint64_t(body) * Ports[port].stride,
+                                                         uint64_t(length) * Ports[port].stride};
+                    proof.reads.push_back(range);
+                    if (port == Sleeps) {
+                        for (uint32_t j = 0; j < length; ++j)
+                            proof.writes.push_back(
+                                {binding,
+                                 uint64_t(body + j) * sizeof(BodySleepRecord) + offsetof(BodySleepRecord, runtime),
+                                 sizeof(BodySleepRuntime)});
+                    } else if (writer)
+                        proof.writes.push_back(range);
+                }
+                continue;
+            }
             uint64_t offset = 0, byteSize = buffers[port]->GetByteSize();
             if (port == Commands) {
                 offset = uint64_t(slice.firstCommand - first->firstCommand) * sizeof(BodyCommand);
@@ -592,19 +619,8 @@ std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuCommandCursor::PrepareNext(rhi
             } else if (port == Spans) {
                 offset = uint64_t(slice.firstSpan - first->firstSpan) * sizeof(BodyCommandSpan);
                 byteSize = uint64_t(slice.spanCount) * sizeof(BodyCommandSpan);
-            } else if (port >= Models) {
-                offset = uint64_t(slice.firstBody) * Ports[port].stride;
-                byteSize = uint64_t(slice.spanCount) * Ports[port].stride;
             }
             proof.reads.push_back({binding, offset, byteSize});
-            if (port == Sleeps) {
-                for (uint32_t body = 0; body < slice.spanCount; ++body)
-                    proof.writes.push_back({binding,
-                                            uint64_t(slice.firstBody + body) * sizeof(BodySleepRecord) +
-                                                offsetof(BodySleepRecord, runtime),
-                                            sizeof(BodySleepRuntime)});
-            } else if (writer)
-                proof.writes.push_back({binding, offset, byteSize});
         }
         dispatch.proof = std::move(proof);
         dispatches.push_back(std::move(dispatch));

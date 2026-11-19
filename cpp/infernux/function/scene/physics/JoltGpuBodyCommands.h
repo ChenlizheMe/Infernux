@@ -130,7 +130,7 @@ class JoltGpuCommandCursor final
     friend class JoltGpuBodyCommands;
     struct BodyDispatch
     {
-        uint32_t firstCommand, commandCount, firstSpan, spanCount, firstBody;
+        uint32_t firstCommand, commandCount, firstSpan, spanCount;
     };
     using Dispatch = std::variant<BodyDispatch, JoltGpuPoseWake::Work>;
     using CommandIterator = std::vector<JPH::GPU::BodyCommand>::const_iterator;
