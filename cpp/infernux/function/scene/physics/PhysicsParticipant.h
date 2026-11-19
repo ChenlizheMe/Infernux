@@ -14,7 +14,7 @@ class Rigidbody;
 class PhysicsParticipant;
 struct RuntimeWorldHandle;
 
-/// A deferred immutable compact observation, owned by ordinary BufferSource leases.
+/// An immutable observation, owned by ordinary BufferSource leases.
 /// The participant only keeps weak entries. Queue bundles retain submitted storage.
 class PhysicsParticipantOutput final
 {
@@ -127,6 +127,8 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     [[nodiscard]] std::shared_ptr<PhysicsParticipantOutput> CaptureOutput(const std::string &name, uint64_t offset,
                                                                           std::optional<uint64_t> count);
     [[nodiscard]] bool HasPendingOutputs();
+    /// Pin complete allocations at a published boundary. Returns true if ranges still need copying.
+    [[nodiscard]] bool PublishResidentOutputs(uint64_t epoch, uint64_t step, bool isFixedStep);
     [[nodiscard]] JoltGpuControlWork PrepareOutputs(uint64_t epoch, uint64_t step, bool isFixedStep);
     void SetControl(const std::string &name, std::vector<uint8_t> bytes);
     void SetCount(uint32_t count);

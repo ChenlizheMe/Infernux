@@ -315,7 +315,7 @@ void QueryCapsuleInput(QueryInput &request, const glm::vec3 &a, const glm::vec3 
     const double sine = std::sin(halfAngle);
     request.rotation =
         radial > 0    ? Float4{static_cast<float>(delta.z / radial * sine), 0,
-                            static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
+                               static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
         : delta.y > 0 ? Float4{0, 0, 0, 1}
                       : Float4{1, 0, 0, 0};
 }
@@ -1522,20 +1522,24 @@ bool PhysicsWorld::ServiceParticipantOutputs()
     if (observers.empty())
         return true;
     const auto publication = m_gpuScene->GetPublished(domain.owner);
-    if (!publication)
+    if (!publication || m_gpuScene->IsWriterFor(domain.owner))
         return false;
-    // Capture the actual completed boundary. Source-write tickets are read
-    // later, inside the exclusive Work writer, before preparing each copy.
     const auto epoch = publication->simulationEpoch, step = publication->fixedStepIndex;
     const bool fixed = publication->isFixedStep;
     JoltGpuControlWork copies;
     for (auto it = observers.rbegin(); it != observers.rend(); ++it) {
+        if (!(*it)->PublishResidentOutputs(epoch, step, fixed))
+            continue;
         auto tail = std::move(copies);
-        copies = {nullptr, [owner = *it, epoch, step, fixed, tail = std::move(tail)]() mutable {
+        copies = {nullptr,
+                  [owner = *it, epoch, step, fixed, tail = std::move(tail)]() mutable {
                       return ContinueJoltGpuControlWork(owner->PrepareOutputs(epoch, step, fixed),
                                                         [tail = std::move(tail)]() mutable { return std::move(tail); });
-                  }};
+                  },
+                  JoltGpuControlWork::ResumeAfter::HostWork};
     }
+    if (!copies.continueWork)
+        return true;
     AdmissionScope admission(*m_gpuScene, domain.owner);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
     if (!m_gpuScene->TryBeginWork(domain.owner, copies, false))
@@ -2173,6 +2177,36 @@ void PhysicsWorld::ServiceGpuWork()
     if (!m_initialized)
         return;
     ServiceGpuRetirements();
+    if (m_gpuScene && m_gpuWork->IsActive() && !m_gpuWork->IsLate() && m_gpuWork->ServiceRemaining() > 0) {
+        auto *world = m_gpuScene->GetRunningObservationWorld();
+        if (world && world->simulation.isPlaying && !world->handle->destroyRequested &&
+            world->simulation.fixedPhase == RuntimeWorld::FixedPhase::Integration) {
+            auto &dependency = *world->physics;
+            if (!dependency.retiring && dependency.participantOutputPending && !dependency.stepPending) {
+                // Step must preserve an already accepted observation before
+                // admitting its next writer. This is a dependency of that
+                // admitted Fixed even though its solver has not started yet.
+                // Focus the shared source on this exact Work writer and use
+                // only the current pre-render allowance; never drain or Step.
+                const WorldExecutionScope ownerScope(world);
+                struct RequiredWorldScope
+                {
+                    JoltGpuScene &scene;
+                    RuntimeWorld *previous;
+                    ~RequiredWorldScope()
+                    {
+                        scene.SetRequiredWorld(previous);
+                    }
+                } required{*m_gpuScene, m_gpuScene->SetRequiredWorld(world)};
+                try {
+                    (void)AdvanceGpuJob(dependency, false);
+                } catch (...) {
+                    FailStep(dependency);
+                    throw;
+                }
+            }
+        }
+    }
     auto &domain = CurrentDomain();
     if (!domain.gpuRegistered || domain.fixedGpuPhase == PhysicsDomain::FixedGpuPhase::Failed)
         return;

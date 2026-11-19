@@ -1646,7 +1646,9 @@ void RegisterPhysicsBindings(py::module_ &m)
             [](const PhysicsParticipantOutput &value) -> py::object {
                 if (!value.IsReady())
                     return py::none();
-                const auto submission = [](rhi::SubmissionTicket ticket) {
+                const auto submission = [](rhi::SubmissionTicket ticket) -> py::object {
+                    if (!ticket.IsValid())
+                        return py::none();
                     return py::make_tuple(ticket.device, static_cast<uint32_t>(ticket.queue), ticket.serial);
                 };
                 py::dict result;

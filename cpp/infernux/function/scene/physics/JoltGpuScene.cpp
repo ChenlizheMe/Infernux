@@ -2966,6 +2966,17 @@ bool JoltGpuScene::HasRunningFixedTick(const RuntimeWorld &world) const noexcept
            domain.candidate->fixedStepIndex == world.simulation.fixedStepIndex &&
            domain.cursor->GetStatus() == JoltGpuTick::Status::Running;
 }
+RuntimeWorld *JoltGpuScene::GetRunningObservationWorld() const noexcept
+{
+    // Work observations own the exclusive writer; numerical peer writers and
+    // the retained publication alone do not establish this dependency.
+    const auto *writer = m_impl->writer;
+    return writer && m_impl->writerKind == Impl::WriterKind::Work && writer->world && writer->published &&
+                   writer->published->simulationEpoch == writer->world->simulation.simulationEpoch && writer->cursor &&
+                   writer->cursor->GetStatus() == JoltGpuTick::Status::Running
+               ? writer->world
+               : nullptr;
+}
 JoltGpuTick::Status JoltGpuScene::GetTickStatus(const RuntimeWorld &world)
 {
     if (IsWriterFor(world))

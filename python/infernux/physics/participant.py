@@ -39,6 +39,9 @@ class Participant:
     def capture_output(self, name, *, offset=0, count=None):
         """Observe a named state range at the current or earliest complete boundary.
 
+        A whole allocation shares the immutable published GPU value. A subrange
+        owns a compact copy. The identity's copy_submission is present only
+        when that copy ran.
         This does not integrate, apply pending controls, or wait synchronously.
         Transfer the returned ordinary BufferSource with compute.transfer for CPU use.
         """

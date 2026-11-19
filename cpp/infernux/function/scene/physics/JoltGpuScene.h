@@ -314,6 +314,7 @@ class JoltGpuScene final
     friend class PhysicsWorld;
     friend class SceneManager;
     [[nodiscard]] bool HasRunningFixedTick(const RuntimeWorld &world) const noexcept;
+    [[nodiscard]] RuntimeWorld *GetRunningObservationWorld() const noexcept;
     void RequireParticipantBodies(RuntimeWorld &, const std::shared_ptr<JoltGpuParticipantBodies> &) const;
     bool IsCurrentPublication(const RuntimeWorld &world, const std::shared_ptr<const Publication> &publication) const;
     void RunPublicationObservation(RuntimeWorld &world, const std::shared_ptr<const Publication> &publication,

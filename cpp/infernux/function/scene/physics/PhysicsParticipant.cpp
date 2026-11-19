@@ -409,6 +409,34 @@ bool PhysicsParticipant::HasPendingOutputs()
                     m_outputs.end());
     return !m_outputs.empty();
 }
+bool PhysicsParticipant::PublishResidentOutputs(uint64_t epoch, uint64_t step, bool isFixedStep)
+{
+    bool needsCopies = false;
+    for (const auto &entry : m_outputs) {
+        const auto capture = entry.lock();
+        if (!capture || capture->IsDone())
+            continue;
+        const auto &source = m_state.at(capture->name);
+        const auto bytes = capture->layout.GetByteSize();
+        if (capture->sourceByteOffset || bytes != source->GetByteSize()) {
+            needsCopies = true;
+            continue;
+        }
+        if (!source->HasInitializedRange(0, bytes)) {
+            capture->Fail("Participant output lacks an accepted complete writer");
+            continue;
+        }
+        // Pin this allocation. A later writer preserves it through the normal
+        // ComputeBuffer write barrier, including a writer bound by another participant.
+        capture->value = source->Freeze();
+        capture->sourceWrite = capture->value->GetLastWriteSubmission();
+        capture->simulationEpoch = epoch;
+        capture->fixedStepIndex = step;
+        capture->isFixedStep = isFixedStep;
+        capture->ready = true;
+    }
+    return needsCopies;
+}
 JoltGpuControlWork PhysicsParticipant::PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture,
                                                      uint64_t epoch, uint64_t step, bool isFixedStep)
 {
