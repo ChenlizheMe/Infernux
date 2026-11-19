@@ -46,6 +46,10 @@ class ShaderLoader final : public IAssetLoader
     PrepareMaterialProgram(const std::shared_ptr<ShaderAsset> &fragment, const std::shared_ptr<ShaderAsset> &vertex,
                            const ShaderStagePair &stages, AssetDatabase *database);
     RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
+    [[nodiscard]] AssetReloadMode GetReloadMode() const noexcept override
+    {
+        return AssetReloadMode::Grouped;
+    }
     void OnRelocated(const RuntimeAssetPayload &payload, const std::string &filePath) override;
     void OnPublished(const RuntimeAssetPayload &payload, const std::string &guid, AssetDatabase *adb) override;
     [[nodiscard]] bool SupportsWorkerLoad() const noexcept override

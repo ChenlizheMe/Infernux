@@ -23,6 +23,8 @@ enum class AssetReloadMode
 {
     InPlace,
     Invalidate,
+    // The owning system publishes a set of dependent runtime assets together.
+    Grouped,
 };
 
 class RuntimeAssetPayload final

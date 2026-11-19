@@ -371,28 +371,21 @@ void Infernux::RegisterAssetCallbacks()
             camera->OnTargetTextureAssetChanged(event == AssetEvent::Deleted);
     });
 
-    auto resolveMaterial = [](const std::string &matGuid) -> std::shared_ptr<InxMaterial> {
+    // Source notifications invalidate live consumers. A material first loaded
+    // after the edit resolves its current sources during normal preparation.
+    auto residentMaterial = [](const std::string &matGuid) -> std::shared_ptr<InxMaterial> {
         auto &registry = AssetRegistry::Instance();
-        auto mat = registry.GetAssetType(matGuid) == ResourceType::Material ? registry.GetAsset<InxMaterial>(matGuid)
-                                                                            : nullptr;
-        if (mat)
-            return mat;
-        auto *adb = AssetRegistry::Instance().GetAssetDatabase();
-        if (adb) {
-            std::string matPath = adb->GetPathFromGuid(matGuid);
-            if (!matPath.empty() && adb->GetResourceTypeForPath(matPath) == ResourceType::Material)
-                mat = AssetRegistry::Instance().LoadAssetByPath<InxMaterial>(matPath, ResourceType::Material);
-        }
-        return mat;
+        return registry.GetAssetType(matGuid) == ResourceType::Material ? registry.GetAsset<InxMaterial>(matGuid)
+                                                                        : nullptr;
     };
 
     graph.RegisterCallback(
         ResourceType::Texture,
-        [this, resolveMaterial](const std::string &dependentGuid, const std::string &texGuid, AssetEvent event) {
+        [this, residentMaterial](const std::string &dependentGuid, const std::string &texGuid, AssetEvent event) {
             if (m_renderer &&
                 m_renderer->InvalidateMaterialTextureAssets(dependentGuid, texGuid, event == AssetEvent::Deleted))
                 return;
-            auto mat = resolveMaterial(dependentGuid);
+            auto mat = residentMaterial(dependentGuid);
             if (mat) {
                 if (event == AssetEvent::Deleted) {
                     for (const auto &[propName, prop] : mat->GetAllProperties()) {
@@ -462,12 +455,12 @@ void Infernux::RegisterAssetCallbacks()
                                INXLOG_INFO("AssetGraph: refreshed AudioSource clip reference without changing GUID");
                            });
 
-    graph.RegisterCallback(ResourceType::Shader, [this, resolveMaterial](const std::string &dependentGuid,
-                                                                         const std::string & /*shaderGuid*/,
-                                                                         AssetEvent event) {
+    graph.RegisterCallback(ResourceType::Shader, [this, residentMaterial](const std::string &dependentGuid,
+                                                                          const std::string & /*shaderGuid*/,
+                                                                          AssetEvent event) {
         if (event != AssetEvent::Modified && event != AssetEvent::Deleted)
             return;
-        auto mat = resolveMaterial(dependentGuid);
+        auto mat = residentMaterial(dependentGuid);
         if (!mat)
             return;
         if (m_renderer) {

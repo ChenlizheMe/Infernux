@@ -99,7 +99,7 @@ def test_reimport_publishes_in_place_payload_once(assets, tmp_path, entrypoint, 
             _wav(source, frames=32)
         else:
             if suffix == ".mat":
-                document["properties"]["metallic"]["value"] = 0.75
+                document["properties"]["metallic"] = {"type": 0, "value": 0.75}
             else:
                 document["friction"] = 0.125
             source.write_text(json.dumps(document), encoding="utf-8")
@@ -120,12 +120,22 @@ def test_reimport_publishes_in_place_payload_once(assets, tmp_path, entrypoint, 
 
 @pytest.mark.parametrize("suffix,begin,error_text", [
     (".wav", "begin_load_audio_by_guid", "Audio"),
-    (".frag", "begin_load_shader_by_guid", "Shader"),
+    (".frag.py", "begin_load_shader_by_guid", "WorkerFailure.frag.py"),
 ])
 def test_worker_failure_has_resource_error_and_releases_ticket(assets, engine, tmp_path, suffix, begin, error_text):
     database, registry = assets
     source = tmp_path / ("WorkerFailure" + suffix)
-    source.write_bytes(b"invalid encoded resource")
+    if suffix == ".frag.py":
+        source.write_text('''import infernux.shader as shader
+
+class WorkerFailure(shader.fullscreen):
+    shader_id = "test/worker_failure"
+
+    def main(self) -> shader.vec4:
+        return shader.vec4(0.0, 0.0, 0.0, 0.0, 0.0)
+''', encoding="utf-8")
+    else:
+        source.write_bytes(b"invalid encoded resource")
     imported = database.import_asset(str(source))
     assert imported, imported.error  # Metadata acceptance does not claim successful runtime decoding.
     try:
@@ -315,10 +325,18 @@ def test_failed_import_has_no_preview_from_previous_generation(assets, engine, t
         database.delete_asset(str(source))
 
 
-def test_dependency_repair_clears_only_runtime_failure(assets, tmp_path):
+def test_dependency_repair_clears_only_runtime_failure(assets, engine, tmp_path):
     database, registry = assets
-    shader = tmp_path / "Dependency.vert"
-    valid_shader = '#version 450\nShaderInfo { Name "ResourceDependencyRecovery" }\nvoid main() { gl_Position=vec4(0.0); }\n'
+    shader = tmp_path / "dependency.vert.py"
+    valid_shader = '''import infernux.shader as shader
+
+class Dependency(shader.vert):
+    shader_id = "test/resource_dependency_recovery"
+
+    def deform(self, vertex: shader.VertexData, ctx: shader.VertexContext) -> shader.VertexData:
+        vertex.position_os += shader.vec3(0.0)
+        return vertex
+'''
     shader.write_text(valid_shader, encoding="utf-8")
     shader_result = database.import_asset(str(shader))
     assert shader_result, shader_result.error
@@ -338,14 +356,18 @@ def test_dependency_repair_clears_only_runtime_failure(assets, tmp_path):
         assert result, result.error
         material_guids.append(result.guid)
     try:
-        shader.write_text(valid_shader.replace("vec4(0.0)", "invalid_glsl_token"), encoding="utf-8")
+        shader.write_text(valid_shader.replace("vec3(0.0)", "vec3(0.0, 0.0, 0.0, 0.0)"), encoding="utf-8")
         assert database.reimport_asset(str(shader))
         ticket = registry.begin_load_shader_by_guid(shader_guid)
         ticket.wait()
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError) as rejected_program:
             registry.try_commit_asset_load(ticket)
-        registry.invalidate_asset(material_guids[0])
-        assert registry.load_material_by_guid(material_guids[0]) is None
+        material = registry.load_material_by_guid(material_guids[0])
+        assert material is not None
+        assert not engine.refresh_material_pipeline(material)
+        # Material documents remain editable while their renderer rejects a
+        # dependency. Exercise the failure ledger with that actual load error.
+        database.report_runtime_load_failure(material_guids[0], str(rejected_program.value))
         assert database.get_import_error(material_guids[0])
         broken_source.write_text("{ damaged authoring source", encoding="utf-8")
         rejected = database.reimport_asset(str(broken_source))
@@ -356,7 +378,7 @@ def test_dependency_repair_clears_only_runtime_failure(assets, tmp_path):
         repaired = database.reimport_asset(str(shader))
         assert repaired, repaired.error
         assert not database.get_import_error(material_guids[0])
-        assert registry.load_material_by_guid(material_guids[0]) is not None
+        assert engine.refresh_material_pipeline(material)
         assert database.get_import_error(material_guids[1]) == source_error
         assert registry.load_material_by_guid(material_guids[1]) is None
     finally:
