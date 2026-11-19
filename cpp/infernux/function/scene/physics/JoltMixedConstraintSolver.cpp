@@ -260,7 +260,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> corrections;
     uint32_t substep = 0, substepCount = 0;
     uint32_t serialGroupCount = 0, cooperativeGroupCount = 0;
-    uint32_t largestGroupPatchCount = 0;
+    uint32_t maxPatchWaves = 0;
     bool solveVelocity = false;
     bool solvePosition = false;
     bool interleaveCpu = false;
@@ -415,9 +415,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         // Headers precede the level ranges and packed patch ordinals. The stable
         // patch buffer order is still used by warm start and contact publication.
         groups.resize(connectedGroups.size());
-        serialGroupCount = cooperativeGroupCount = 0;
+        serialGroupCount = cooperativeGroupCount = maxPatchWaves = 0;
         for (const auto &group : connectedGroups) {
             if (group.y < SolverLanes / 2) {
+                maxPatchWaves = std::max(maxPatchWaves, group.y);
                 groups[serialGroupCount++] = group;
                 continue;
             }
@@ -452,6 +453,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 ++levelCounts[level];
             }
             if (levelCounts.size() > group.y / 2u) {
+                maxPatchWaves = std::max(maxPatchWaves, group.y);
                 groups[serialGroupCount++] = group;
                 continue;
             }
@@ -460,13 +462,16 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             const auto patchWords = firstLevel + levelCount;
             groups[connectedGroups.size() - ++cooperativeGroupCount] = {firstLevel, levelCount, group.z, group.w};
             groups.resize(patchWords + (group.y + 3u) / 4u);
+            uint32_t patchWaves = 0;
             uint32_t offset = 0;
             for (uint32_t level = 0; level < levelCount; ++level) {
                 const uint32_t count = levelCounts[level];
+                patchWaves += (count + SolverLanes - 1u) / SolverLanes;
                 groups[firstLevel + level] = {patchWords * 4u + offset, count, 0, 0};
                 levelCounts[level] = offset;
                 offset += count;
             }
+            maxPatchWaves = std::max(maxPatchWaves, patchWaves);
             std::vector<uint32_t> orderedPatches(group.y);
             for (uint32_t row = 0; row < group.y; ++row)
                 orderedPatches[levelCounts[rowLevels[row]]++] = group.x + row;
@@ -514,7 +519,6 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         std::vector<UInt4> connectedGroups;
         patches.clear();
         wakeSlots.clear();
-        largestGroupPatchCount = 0;
         solveFixed = false;
         patches.reserve(order.size());
         cpuLinks.clear();
@@ -551,7 +555,6 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             }
             patches.push_back(value);
             ++group.y;
-            largestGroupPatchCount = std::max(largestGroupPatchCount, group.y);
         }
         BuildGroupSchedule(connectedGroups);
         std::sort(gpuContactBodies.begin(), gpuContactBodies.end());
@@ -989,8 +992,9 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
 
     uint32_t Rounds(uint32_t maximum) const
     {
-        // Groups run in parallel. Bound the serial work within each group.
-        return largestGroupPatchCount <= 32 && !interleaveCpu ? maximum : 1u;
+        // Parallel groups cost one wave per occupied 64-lane span in each color;
+        // a serial group costs one wave per patch. Local rows consume every round.
+        return maxPatchWaves <= 32 && !interleaveCpu ? maximum : 1u;
     }
 
     void UploadWorkset(std::vector<rhi::ComputeBufferUpdate> &updates) const
