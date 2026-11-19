@@ -118,6 +118,7 @@ def main():
         try:
             frontend.init_renderer(128, 96, str(project))
             frontend.resize_game_render_target(128, 96)
+            engine.set_scene_view_visible(False)
             engine.set_editor_fps_cap(240.0)
             engine.set_editor_idle_fps(0.0)
             imported = AssetManager.import_asset(str(mesh), database=frontend.get_asset_database())
@@ -171,7 +172,7 @@ def main():
                     if (
                         stage in ("baseline", "zero_bloom", "zero_chain", "active_bloom",
                                   "bloom_then_edge", "edge_then_bloom", "msaa_roundtrip")
-                        and frame >= changed_frame + 8
+                        and frame >= changed_frame + 2
                         and (stage != "baseline" or probe_geometry_published())
                     ):
                         ticket = frontend.request_render_target_readback(True)

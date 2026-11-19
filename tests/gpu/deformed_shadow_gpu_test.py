@@ -9,6 +9,7 @@ import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, InxMaterial, LightShadows, SceneManager, Vector3
 from deformed_tangent_frame_gpu_test import VERTEX, FRAGMENT
+from renderer_fixture import GameFrames
 
 RECEIVER = '''import infernux.shader as shader
 
@@ -179,12 +180,15 @@ def main():
             set_pipeline()
             apply()
             engine.set_game_camera_enabled(True)
+            game_frames = GameFrames(engine)
 
             def after_draw():
                 nonlocal plan, scale_index, phase, frame, changed, ticket, completed
                 try:
+                    if not game_frames.advance():
+                        return
                     frame += 1
-                    if ticket is None and frame >= changed + 10:
+                    if ticket is None and frame >= changed + 2:
                         ticket = frontend.request_render_target_readback(True)
                     elif ticket is not None and ticket.done:
                         pixels = ticket.result_numpy().copy().astype(np.float32)
