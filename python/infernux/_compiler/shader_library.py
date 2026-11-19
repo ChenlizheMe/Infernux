@@ -67,7 +67,12 @@ _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceH
                   "ray._tail_estimate": ("inx_ray_tail_estimate", "float4", (
                       "InxBuffer_uint4", "InxBuffer_uint4", "InxBuffer_uint4", "uint")),
                   "ray._indirect_signal": ("inx_ray_indirect_signal", "InxRaySignal", (
-                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool", "InxBuffer_uint4"))}
+                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool", "InxBuffer_uint4")),
+                  "ray._path_temporal": ("inx_ray_path_temporal", "InxRayPathEstimate", (
+                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "InxBuffer_uint4", "uint4")),
+                  "ray._replay_path": ("inx_ray_replay_path", "InxRaySignal", (
+                      "InxSurfaceData", "InxShadingContext", "float3", "InxBuffer_uint4", "uint", "bool", "bool", "InxBuffer_uint4", "uint2")),
+                  "ray._path_neighbor": ("inx_ray_path_neighbor", "int2", ("uint2",))}
 _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
                      "frame_delta_time": ("inx_frame_delta_time", "float", ()),
                      "_previous_ray_geometry_serial": ("inx_previous_ray_geometry_serial", "uint", ()),

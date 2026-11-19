@@ -46,6 +46,14 @@ def _linear_raw(graph, packet):
     return output
 
 
+def _bind_transport(render_pass, ctx, guides, specular):
+    bind_deferred_material(render_pass, deferred_surface_inputs(guides.surface))
+    render_pass.set_texture("primary", guides.primary)
+    render_pass.set_buffer("tail_cache", ctx.graph._world_ray_tail_read())
+    _bind_world(render_pass, ctx.world.materials)
+    render_pass.set_param("specular", specular)
+
+
 def _hit_distance(graph, packet):
     """Distance in world units along the fresh secondary ray, zero without a finite hit."""
     output = graph.create_texture(f"{packet.name}/hit_distance", format=Format.R32_SFLOAT,
@@ -96,20 +104,35 @@ class DefaultRayTracer(RayTracer):
         """Generate one lobe's samples and its hit witnesses on the native trace grid."""
         graph = ctx.graph
         name = "ray_specular" if specular else "ray_diffuse"
-        output = graph.create_texture(f"{ctx.name}/{name}_packet", format=Format.RGBA32_UINT,
-                                      size_divisor=divisor, samples=1)
+        stem = f"{ctx.name}/{name}"
+        output = graph.create_texture(f"{stem}_packet", format=Format.RGBA32_UINT, size_divisor=divisor, samples=1)
         label = "Ray Specular Radiance" if specular else "Ray Diffuse Irradiance"
-        inputs = deferred_surface_inputs(guides.surface)
-        with graph.add_pass(label) as p:
-            p.write_color(output)
-            bind_deferred_material(p, inputs)
-            p.set_texture("primary", guides.primary)
-            p.set_buffer("tail_cache", graph._world_ray_tail_read())
-            _bind_world(p, ctx.world.materials)
-            p.set_param("specular", specular)
-            p.set_param("temporal", ctx.reconstruct)
-            p.set_param("resolution_divisor", divisor or 1)
-            p.fullscreen_quad("infernux/internal/ray_indirect")
+        if ctx.reconstruct:
+            # These keys generate paths in the current scene, including after a light changes.
+            # Only the temporal selection recurs. The spatial result is consumed once.
+            previous, current = graph.create_temporal_history(
+                f"{stem}/paths", format=Format.RGBA32_UINT, size_divisor=divisor)
+            estimates = graph.create_texture(f"{stem}/temporal_estimate", format=Format.RGBA32_UINT,
+                                             size_divisor=divisor, samples=1)
+            with graph.add_pass(f"{label} Path Candidates") as p:
+                _bind_transport(p, ctx, guides, specular)
+                p.set_textures({"motion": guides.motion, "previous_surface": guides.previous_primary,
+                                "previous_paths": previous})
+                p.write_color(estimates)
+                p.write_color(current, slot=1)
+                p.fullscreen_quad("infernux/internal/ray_path_temporal")
+            with graph.add_pass(label) as p:
+                _bind_transport(p, ctx, guides, specular)
+                p.set_textures({"paths": current, "estimates": estimates})
+                p.write_color(output)
+                p.fullscreen_quad("infernux/internal/ray_path_spatial")
+        else:
+            with graph.add_pass(label) as p:
+                _bind_transport(p, ctx, guides, specular)
+                p.set_param("temporal", False)
+                p.set_param("resolution_divisor", divisor or 1)
+                p.write_color(output)
+                p.fullscreen_quad("infernux/internal/ray_indirect")
         return _PackedSignal(output, partial(_linear_raw, graph, output))
 
     def reconstruct_diffuse(self, ctx, raw, guides):

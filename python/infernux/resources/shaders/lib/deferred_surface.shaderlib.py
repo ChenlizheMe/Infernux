@@ -14,6 +14,12 @@ def decode_deferred_surface(base: shader.vec4, frame: shader.vec4, emission: sha
     )
 
 
+def load_deferred_surface(albedo: shader.Color2D, normal: shader.Color2D, emission: shader.Color2D,
+                          surface: shader.UInt2D, pixel: shader.ivec2) -> shader.SurfaceData:
+    return decode_deferred_surface(shader.load(albedo, pixel, 0), shader.load(normal, pixel, 0),
+                                   shader.load(emission, pixel, 0), shader.load(surface, pixel, 0).y)
+
+
 def deferred_shading_context(uv: shader.vec2, pixel: shader.vec2, depth: float,
                              normal_ws: shader.vec3, metadata: shader.uvec4) -> shader.ShadingContext:
     camera = shader.camera()

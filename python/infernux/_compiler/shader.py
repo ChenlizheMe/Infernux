@@ -1241,18 +1241,21 @@ public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxB
     return inx_ray_radiance(page, ray, records, cache, seed, float3(1.0), 0.0, float4(0.0), 0u).radiance;
 }
 
-RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,
-                                               float3 geometric_normal, bool specular, bool temporal,
-                                               out uint seed, out float4 reflector)
+uint2 inx_ray_path_key(float2 position, bool specular, bool temporal)
 {
-    uint2 pixel = uint2(context.pixel_position);
-    seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
-    if (specular)
-        seed = inx_ray_sample_hash(seed);
-    uint index = temporal ? inx_view_sample_index() : 0u;
-    float2 uniform = inx_ray_primary_uniform(index, seed);
+    uint2 pixel = uint2(position);
+    uint seed = inx_ray_sample_hash(pixel.x ^ inx_ray_sample_hash(pixel.y));
+    return uint2(specular ? inx_ray_sample_hash(seed) : seed, temporal ? inx_view_sample_index() : 0u);
+}
+
+RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,
+                                              float3 geometric_normal, bool specular, bool temporal, uint2 key,
+                                              out uint seed, out float4 reflector)
+{
+    seed = key.x;
+    float2 uniform = inx_ray_primary_uniform(key.y, seed);
     if (temporal)
-        seed ^= inx_ray_sample_hash(index);
+        seed ^= inx_ray_sample_hash(key.y);
     float3 shading_normal = normalize(surface.normal_ws);
     reflector = float4(0.0);
     RayDirectionSample sample;
@@ -1296,20 +1299,20 @@ float3 inx_ray_primary_emissive(RayPage page, InxSurfaceData surface, InxShading
     return sample.emission * response * (inx_ray_mis_weight(sample.pdf, bsdf_pdf) / sample.pdf);
 }
 
-public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
-                                            InxBuffer_uint4 records, uint model_id, bool specular, bool temporal,
-                                            InxBuffer_uint4 cache)
+public InxRaySignal inx_ray_replay_path(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
+                                        InxBuffer_uint4 records, uint model_id, bool specular, bool temporal,
+                                        InxBuffer_uint4 cache, uint2 key)
 {
     if (model_id != INX_PBR_MODEL_ID)
         return (InxRaySignal)0;
     uint seed;
     float4 reflector;
     RayDirectionSample sample = inx_ray_primary_direction(surface, context, geometric_normal, specular,
-                                                          temporal, seed, reflector);
+                                                          temporal, key, seed, reflector);
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
         return (InxRaySignal)0;
-    uint index = temporal ? inx_view_sample_index() : 0u;
+    uint index = key.y;
     float3 emission = inx_ray_primary_emissive(page, surface, context, geometric_normal, specular, seed, index);
     if (!sample.active)
         return inx_ray_signal_output(emission, uint2(ray_invalid_index, 0u));
@@ -1328,6 +1331,73 @@ public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingCo
                                            index, sample.delta ? 0.0 : sample.pdf, context.position_ws);
     signal.radiance.rgb += emission;
     return signal;
+}
+
+public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingContext context, float3 geometric_normal,
+                                            InxBuffer_uint4 records, uint model_id, bool specular, bool temporal,
+                                            InxBuffer_uint4 cache)
+{
+    return inx_ray_replay_path(surface, context, geometric_normal, records, model_id, specular, temporal, cache,
+                               inx_ray_path_key(context.pixel_position, specular, temporal));
+}
+
+// A positive target leaves support for directions that were black before a lighting or visibility change.
+float inx_ray_path_target(float3 radiance)
+{
+    float3 magnitude = abs(radiance);
+    float peak = max(magnitude.r, max(magnitude.g, magnitude.b));
+    return 0.125 + peak / (1.0 + peak);
+}
+
+public InxRayPathEstimate inx_ray_path_temporal(InxSurfaceData surface, InxShadingContext context, float3 normal,
+    InxBuffer_uint4 records, uint model_id, bool specular, InxBuffer_uint4 cache, uint4 history)
+{
+    uint2 key = inx_ray_path_key(context.pixel_position, specular, true);
+    uint represented = min(history.w, 4u);
+    uint count = 1u + represented;
+    uint2 selected = key;
+    float selected_target = 1.0;
+    float total = 0.0;
+    float3 estimate = float3(0.0);
+    InxRaySignal result = (InxRaySignal)0;
+    // Use one traversal call site for the bounded stream on both the native and browser GPU compilers.
+    for (uint i = 0u; i < (represented == 0u ? 1u : 2u); ++i)
+    {
+        uint2 candidate = i == 0u ? key : history.xy;
+        InxRaySignal sample = inx_ray_replay_path(surface, context, normal, records, model_id, specular, true,
+                                                  cache, candidate);
+        if (i == 0u)
+        {
+            result = sample;
+            if (result.radiance.w <= 0.0)
+                return {result, uint4(0)};
+        }
+        float mass = i == 0u ? 1.0 : float(represented) * asfloat(history.z);
+        float target = inx_ray_path_target(sample.radiance.rgb);
+        float score = mass * target;
+        total += score;
+        uint bits = inx_ray_sample_hash(key.x ^ inx_ray_sample_hash(key.y) ^ ((i + 1u) * 0xb92367d5u));
+        if (float(bits >> 8u) * (1.0 / 16777216.0) * total < score)
+        {
+            selected = candidate;
+            selected_target = target;
+        }
+        estimate += mass * sample.radiance.rgb;
+    }
+    // Only proposal keys recur. Keep the hit of the fresh ray available to filters and project code.
+    result.radiance.rgb = estimate / float(count);
+    return {result, uint4(selected, asuint(total / (float(count) * selected_target)), count)};
+}
+
+public int2 inx_ray_path_neighbor(uint2 cell)
+{
+    // A shifted 2x2 tile is paired by an involution. Both pixels read the same temporal publication.
+    uint shift = inx_ray_sample_hash(inx_view_sample_index() ^ 0x39faa78du);
+    uint2 q = cell + uint2(shift & 1u, (shift >> 1u) & 1u);
+    uint2 tile = q >> 1u;
+    uint axis = inx_ray_sample_hash(tile.x ^ inx_ray_sample_hash(tile.y ^ shift)) & 3u;
+    uint2 mask = axis == 0u ? uint2(1, 0) : (axis == 1u ? uint2(0, 1) : uint2(1, 1));
+    return int2(cell) + int2(q ^ mask) - int2(q);
 }
 
 public uint2 inx_ray_tail_pixel(uint index, uint2 extent)
@@ -1366,8 +1436,9 @@ public InxRayTailRequest inx_ray_tail_primary_request(InxSurfaceData surface, In
         return (InxRayTailRequest)0;
     uint seed;
     float4 reflector;
+    uint2 key = inx_ray_path_key(context.pixel_position, specular, temporal);
     RayDirectionSample sample = inx_ray_primary_direction(surface, context, geometric_normal, specular,
-                                                          temporal, seed, reflector);
+                                                          temporal, key, seed, reflector);
     if (!sample.active)
         return (InxRayTailRequest)0;
     TraceRay ray = {inx_ray_origin(context.position_ws, geometric_normal), 0.0, sample.direction,

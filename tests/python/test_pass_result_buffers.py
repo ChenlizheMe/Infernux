@@ -278,7 +278,13 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
             assert trace._input_bindings["world_ray_meshes"] == graph.get_buffer("world_ray_meshes").name
             packet = graph.get_texture(trace._write_colors[0])
             assert packet.format == Format.RGBA32_UINT and packet.size_divisor == divisor
-            assert trace._parameters["resolution_divisor"] == (divisor or 1)
+            candidates = passes[label + " Path Candidates"]
+            paths = graph.get_texture(candidates._write_colors[1])
+            previous_paths = graph.get_texture(candidates._input_bindings["previous_paths"])
+            assert paths.temporal_key == previous_paths.temporal_key and paths.size_divisor == divisor
+            assert not previous_paths._depends_on_ray_world
+            assert trace._input_bindings["paths"] == paths.name
+            assert trace._input_bindings["estimates"] == candidates._write_colors[0]
             distance = result.sample(guide)
             assert distance is result.sample(guide)
             assert distance.format == Format.R32_SFLOAT and distance.size_divisor == divisor
