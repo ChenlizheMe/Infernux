@@ -57,6 +57,14 @@ def _hit_distance(graph, packet):
     return output
 
 
+def _filter_diffuse(graph, guides, source, target, stride):
+    with graph.add_pass(f"Ray Diffuse Spatial {stride}") as p:
+        p.set_textures({"signal": source, "primary": guides.primary, "frame": guides.surface.sample("surface_frame")})
+        p.write_color(target)
+        p.set_param("stride", stride)
+        p.fullscreen_quad("infernux/internal/ray_diffuse_filter")
+
+
 def _linear_resolve(graph, packet, guides, specular):
     name = "specular_radiance" if specular else "diffuse_irradiance"
     output = graph.create_texture(f"{packet.name}/resolved", format=Format.RGBA32_SFLOAT, samples=1)
@@ -118,6 +126,11 @@ class DefaultRayTracer(RayTracer):
         if ctx.reconstruct:
             name = "specular" if specular else "diffuse"
             divisor = packet.size_divisor
+            if not specular:
+                filtered = graph.create_texture(f"{ctx.name}/{name}/filtered", format=Format.RGBA32_UINT,
+                                                size_divisor=divisor, samples=1)
+                _filter_diffuse(graph, guides, packet, filtered, 1)
+                packet = filtered
             previous, output = ctx.view.history(name, format=Format.RGBA32_UINT, size_divisor=divisor)
             label = "Ray Specular Reconstruction" if specular else "Ray Diffuse Reconstruction"
             with graph.add_pass(label) as p:
@@ -128,23 +141,12 @@ class DefaultRayTracer(RayTracer):
                 p.set_param("specular", specular)
                 p.fullscreen_quad("infernux/internal/ray_reconstruct")
             packet = output
-            if not specular:
-                # Spatial estimates never feed back into per-view history.
-                filtered = graph.create_texture(f"{ctx.name}/{name}/filtered", format=Format.RGBA32_UINT,
-                                                size_divisor=divisor, samples=1)
-                steps = [(1, filtered)]
-                if divisor != 4:
-                    intermediate = graph.create_texture(f"{ctx.name}/{name}/intermediate", format=Format.RGBA32_UINT,
-                                                        size_divisor=divisor, samples=1)
-                    steps.extend(((2, intermediate), (4, filtered)))
-                for stride, output in steps:
-                    with graph.add_pass(f"Ray Diffuse Spatial {stride}") as p:
-                        p.set_textures({"signal": packet, "primary": guides.primary,
-                                        "frame": guides.surface.sample("surface_frame")})
-                        p.write_color(output)
-                        p.set_param("stride", stride)
-                        p.fullscreen_quad("infernux/internal/ray_diffuse_filter")
-                    packet = output
+            if not specular and divisor != 4:
+                intermediate = graph.create_texture(f"{ctx.name}/{name}/intermediate", format=Format.RGBA32_UINT,
+                                                    size_divisor=divisor, samples=1)
+                _filter_diffuse(graph, guides, packet, intermediate, 2)
+                _filter_diffuse(graph, guides, intermediate, filtered, 4)
+                packet = filtered
         return _PackedSignal(packet, partial(_linear_resolve, graph, packet, guides, specular))
 
     def build(self, ctx: RayTracingContext):

@@ -37,13 +37,10 @@ class RayDiffuseFilter(shader.fullscreen):
         # Separable binomial weights over a 3x3 atrous stencil.
         radiance = center.rgb * 4.0
         total = 4.0
-        peak = center_luma
-        peak_color = center.rgb
-        peak_variance = variance
-        peak_weight = 4.0
-        runner_up = 0.0
-        runner_variance = 0.0
-        support = 4.0 if center.a >= 4.0 else 0.0
+        # Estimate fresh irradiance before temporal reuse. Wider strides only filter the displayed result.
+        current_frame = self.stride == 1
+        squared_sum = 4.0 * shader.dot(center.rgb, center.rgb)
+        squared_weights = 16.0
         for tap in range(9):
             if tap == 4:
                 continue
@@ -66,31 +63,21 @@ class RayDiffuseFilter(shader.fullscreen):
             normal_weight = shader.saturate((shader.dot(normal, sample_normal) - 0.94) / 0.06)
             weight = (2.0 if offset.x == 0 or offset.y == 0 else 1.0) * normal_weight
             weight *= shader.saturate(1.0 - plane_distance / plane_band)
-            shape_weight = weight
-            if center.a > 1.0 and estimate.a > 1.0:
+            if current_frame:
+                squared_sum += weight * shader.dot(estimate.rgb, estimate.rgb)
+                squared_weights += weight * weight
+            elif center.a > 1.0 and estimate.a > 1.0:
                 sample_luma = shader.dot(estimate.rgb, luma)
                 sample_variance = shader.as_float(sample.w) / (estimate.a - 1.0)
                 sigma = 4.0 * shader.sqrt(variance + sample_variance)
                 sigma += 0.001 + 0.02 * shader.max(center_luma, sample_luma)
                 weight *= sigma / (sigma + shader.abs(sample_luma - center_luma))
-                if self.stride == 1 and shape_weight >= 0.25 and estimate.a >= 4.0:
-                    support += shape_weight
-                    if sample_luma > peak:
-                        runner_up = peak
-                        runner_variance = peak_variance
-                        peak = sample_luma
-                        peak_color = estimate.rgb
-                        peak_variance = sample_variance
-                        peak_weight = weight
-                    elif sample_luma > runner_up:
-                        runner_up = sample_luma
-                        runner_variance = sample_variance
             radiance += weight * estimate.rgb
             total += weight
-        # A single uncertain impulse must not spread through the next wavelet stride.
-        # A repeatable bright detail has zero uncertainty and keeps its full energy.
-        if self.stride == 1 and support >= 8.0 and peak > 0.0:
-            excess = shader.max(0.0, peak - runner_up - 2.0 * shader.sqrt(runner_variance))
-            impulse = shader.min(excess, 2.0 * shader.sqrt(peak_variance))
-            radiance -= peak_color * (peak_weight * impulse / peak)
-        return pack_ray_signal(shader.vec4(radiance / total, center.a), packet.zw)
+        mean = radiance / total
+        if current_frame:
+            inverse_samples = squared_weights / (total * total)
+            spread = shader.max(squared_sum / total - shader.dot(mean, mean), 0.0)
+            mean_error = spread * inverse_samples / shader.max(1.0 - inverse_samples, 0.0001)
+            return pack_ray_signal(shader.vec4(mean, 1.0), shader.uvec2(packet.z, shader.as_uint(mean_error)))
+        return pack_ray_signal(shader.vec4(mean, center.a), packet.zw)

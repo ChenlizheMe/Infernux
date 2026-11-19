@@ -24,8 +24,9 @@ class RayReconstruct(shader.fullscreen):
         current = unpack_ray_signal(fresh)
         if current.a <= 0.0:
             return fresh
-        distance = shader.as_float(fresh.w)
-        fresh = shader.uvec4(fresh.xyz, specular_witness(distance, 0.0) if self.specular else shader.uint(0))
+        # The incoming fourth word holds ray distance for specular, or uncertainty for diffuse.
+        signal_aux = shader.as_float(fresh.w)
+        fresh = shader.uvec4(fresh.xyz, specular_witness(signal_aux, 0.0) if self.specular else shader.uint(0))
 
         extent = shader.ivec2(shader.dimensions(self.signal, 0))
         full = shader.ivec2(shader.dimensions(self.primary, 0))
@@ -74,6 +75,7 @@ class RayReconstruct(shader.fullscreen):
         accepted = shader._previous_ray_geometry_serial()
         limit = 64.0
         if self.specular:
+            distance = signal_aux
             # Irradiance is independent of receiver roughness. Only a changed reflection lobe
             # invalidates the history of its material-weighted signal.
             roughness = shader.as_float(primary.w)
@@ -120,9 +122,12 @@ class RayReconstruct(shader.fullscreen):
                             return fresh
                 limit = 8.0
         elif visibility.y != accepted:
-            # This estimate integrates many directions. After a visibility change its
-            # old paths need fresh evaluation, including paths that missed geometry.
-            return fresh
+            # The diffuse prefilter stores the squared RGB error of its directional mean.
+            # Let new measurements dominate when they contradict the old lighting.
+            innovation = previous.rgb - current.rgb
+            uncertainty = signal_aux
+            confidence = uncertainty / shader.max(uncertainty + shader.dot(innovation, innovation), 1e-12)
+            limit = 1.0 + 4.0 * confidence
         elif shader.any(shader.abs(history_uv - uv) * shader.vec2(full) > shader.vec2(0.5)):
             limit = 32.0
 
@@ -132,5 +137,5 @@ class RayReconstruct(shader.fullscreen):
         prior_variance = (specular_luminance_variance(previous_packet.w) if self.specular
                           else shader.as_float(previous_packet.w))
         variance = (1.0 - 1.0 / count) * (prior_variance + delta * delta / count)
-        witness = specular_witness(distance, variance) if self.specular else shader.as_uint(variance)
+        witness = specular_witness(signal_aux, variance) if self.specular else shader.as_uint(variance)
         return pack_ray_signal(shader.vec4(estimate, count), shader.uvec2(fresh.z, witness))

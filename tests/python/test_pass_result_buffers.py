@@ -286,22 +286,25 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
             assert raw.size_divisor == divisor and resolved.size_divisor == 0
             assert raw.format == resolved.format == Format.RGBA32_SFLOAT
             assert result.sample(semantic) is raw and reconstructed.sample(semantic) is resolved
-            assert passes[resolve]._input_bindings["signal"] == trace._write_colors[0]
-            previous = graph.get_texture(passes[resolve]._input_bindings["previous_signal"])
+            reconstruction = passes[resolve]
+            previous = graph.get_texture(reconstruction._input_bindings["previous_signal"])
             assert previous.size_divisor == divisor
             assert previous._depends_on_ray_world
-            if name == "ray_diffuse":
-                filtered = passes[resolve]._write_colors[0]
+            filtered = reconstruction._write_colors[0]
+            if name == "ray_specular":
+                assert reconstruction._input_bindings["signal"] == packet.name
+            else:
+                fresh = passes["Ray Diffuse Spatial 1"]
+                assert fresh._input_bindings["signal"] == packet.name
+                assert reconstruction._input_bindings["signal"] == fresh._write_colors[0]
                 assert (previous.name, filtered) == ("ray/diffuse/read", "ray/diffuse/write")
-                outputs = []
-                for stride in ((1,) if divisor == 4 else (1, 2, 4)):
-                    spatial = passes[f"Ray Diffuse Spatial {stride}"]
-                    assert spatial._input_bindings["signal"] == filtered
-                    filtered = spatial._write_colors[0]
-                    outputs.append(filtered)
                 if divisor != 4:
-                    assert outputs[0] == outputs[2] != outputs[1]
-                assert lighting._input_bindings[name] == filtered
+                    wider, widest = (passes[f"Ray Diffuse Spatial {stride}"] for stride in (2, 4))
+                    assert wider._input_bindings["signal"] == filtered
+                    assert widest._input_bindings["signal"] == wider._write_colors[0]
+                    filtered = widest._write_colors[0]
+                    assert filtered == fresh._write_colors[0] != wider._write_colors[0]
+            assert lighting._input_bindings[name] == filtered
     graph.build()
 
 
