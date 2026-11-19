@@ -72,7 +72,8 @@ void PrepareGraphTemporalHistory(HistoryMap &histories, rhi::Device &device, con
             allocation.width = targetWidth;
             allocation.height = targetHeight;
             allocation.colorFormat = desc.format;
-            if (rhi::IsIntegerFormat(desc.format))
+            // Float32 histories can be loaded even on devices without float32 texture filtering.
+            if (!device.GetCapabilities().CheckFormat(desc.format, rhi::FormatFeature::FilterLinear).IsSupported())
                 allocation.filter = rhi::FilterMode::Nearest;
             std::array<std::shared_ptr<rhi::RenderTexture>, 2> targets;
             for (uint32_t index = 0; index < targets.size(); ++index)
