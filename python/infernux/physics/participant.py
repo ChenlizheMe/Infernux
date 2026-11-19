@@ -185,7 +185,7 @@ class PhysicsBuildPlan:
         return self._indices
 
     def participant(self, *, initialize, predict=None, prepare=None, exchange=None, accept=None,
-                    controls=None, count, rigidbodies=()):
+                    controls=None, count, rigidbodies=(), exchange_states=None):
         """Bind multiple named initialize outputs to later Work input ports.
 
         Input names match initialize output names, step/indices, or controls.
@@ -201,6 +201,13 @@ class PhysicsBuildPlan:
         every target is active, dynamic and permits cross-backend interaction.
         Changing permission takes effect at the next Fixed boundary. The other
         declared stages and controls continue while Exchange is suspended.
+
+        exchange_states maps Exchange input names to (participant, state_name).
+        The Work reads or updates that participant's initialized GPU storage
+        in this World, in the same solver iteration. One shared interaction
+        can apply both responses. Bind an existing participant and declare the
+        interaction once. Exchange is suspended while either owner is inactive
+        and retires with its source. Predict and Accept keep their normal timing.
         """
         if self._sealed:
             raise RuntimeError('build_physics has finished')
@@ -223,10 +230,15 @@ class PhysicsBuildPlan:
                 raise ValueError('control prototype must describe its complete allocation')
             decoded[name] = prototype._native, prototype._coerce_data(value).tobytes(order='C')
             layouts[name] = prototype
+        peers = {}
+        for name, (peer, state) in (exchange_states or {}).items():
+            if not isinstance(peer, Participant) or peer._native is None:
+                raise ValueError('exchange_states needs a live physics participant')
+            peers[name] = peer._native, state
         native = _NativePhysics._register_participant(
             self._component._get_bound_native_component(),
             {name: work._require_open() for name, work in recipes.items()}, decoded, count,
-            [body._require_cpp_component() for body in rigidbodies])
+            [body._require_cpp_component() for body in rigidbodies], peers)
         result = Participant(native, layouts)
         self._participants.append(result)
         return result

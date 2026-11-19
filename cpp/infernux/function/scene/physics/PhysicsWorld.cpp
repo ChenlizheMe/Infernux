@@ -315,7 +315,7 @@ void QueryCapsuleInput(QueryInput &request, const glm::vec3 &a, const glm::vec3 
     const double sine = std::sin(halfAngle);
     request.rotation =
         radial > 0    ? Float4{static_cast<float>(delta.z / radial * sine), 0,
-                               static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
+                            static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
         : delta.y > 0 ? Float4{0, 0, 0, 1}
                       : Float4{1, 0, 0, 0};
 }
@@ -1348,11 +1348,11 @@ JoltGpuParticipantStages PhysicsWorld::CaptureParticipants(PhysicsDomain &domain
     return stages;
 }
 
-std::shared_ptr<PhysicsParticipant> PhysicsWorld::RegisterParticipant(const Component &component,
-                                                                      PhysicsParticipant::Recipes recipes,
-                                                                      PhysicsParticipant::Controls controls,
-                                                                      uint32_t count,
-                                                                      const std::vector<Rigidbody *> &rigidbodies)
+std::shared_ptr<PhysicsParticipant>
+PhysicsWorld::RegisterParticipant(const Component &component, PhysicsParticipant::Recipes recipes,
+                                  PhysicsParticipant::Controls controls, uint32_t count,
+                                  const std::vector<Rigidbody *> &rigidbodies,
+                                  const PhysicsParticipant::ExchangeStates &exchangeStates)
 {
     RequireOwnerThread();
     auto &domain = DomainForComponent(component);
@@ -1360,8 +1360,8 @@ std::shared_ptr<PhysicsParticipant> PhysicsWorld::RegisterParticipant(const Comp
     if (domain.retiring || recipes.empty() || !m_gpuHost ||
         !recipes.begin()->second->GetHost().SharesServicesWith(*m_gpuHost))
         throw std::invalid_argument("Participant requires its live World's engine compute host");
-    auto participant =
-        std::make_shared<PhysicsParticipant>(component, std::move(recipes), std::move(controls), count, rigidbodies);
+    auto participant = std::make_shared<PhysicsParticipant>(component, std::move(recipes), std::move(controls), count,
+                                                            rigidbodies, exchangeStates);
     domain.participants.push_back(participant);
     return participant;
 }

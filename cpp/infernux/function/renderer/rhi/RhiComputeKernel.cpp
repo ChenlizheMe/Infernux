@@ -1464,21 +1464,20 @@ void ComputeKernel::Destroy() noexcept
 
 namespace
 {
-bool SameAllocationLayout(const ComputeBufferDesc &left, const ComputeBufferDesc &right)
-{
-    return left.elementCount == right.elementCount && left.scalarType == right.scalarType &&
-           left.lanes == right.lanes && HasBufferUsage(right.usage, left.usage);
-}
-
 bool Overlaps(const ComputeWorkRange &left, const ComputeWorkRange &right)
 {
     return left.offset < right.offset + right.byteSize && right.offset < left.offset + left.byteSize;
 }
 
-void ValidateWorkAliases(const ComputeWorkDispatch &dispatch, const std::vector<BufferHandle> &identities)
+uint64_t StorageIdentity(BufferHandle handle)
+{
+    return handle.IsValid() ? (uint64_t(handle.generation) << 32 | handle.index) : 0;
+}
+
+void ValidateWorkAliases(const ComputeWorkDispatch &dispatch, const std::vector<uint64_t> &identities)
 {
     const auto sharesAllocation = [&](uint32_t left, uint32_t right) {
-        return left == right || (identities[left].IsValid() && identities[left] == identities[right]);
+        return left == right || (identities[left] && identities[left] == identities[right]);
     };
     if (dispatch.prefix) {
         const auto &prefix = *dispatch.prefix;
@@ -1509,8 +1508,7 @@ void ValidateWorkAliases(const ComputeWorkDispatch &dispatch, const std::vector<
 }
 
 void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std::vector<ComputeWorkPort> &ports,
-                           const std::vector<ComputeWorkDispatch> &dispatches,
-                           const std::vector<BufferHandle> &identities)
+                           const std::vector<ComputeWorkDispatch> &dispatches, const std::vector<uint64_t> &identities)
 {
     struct AllocationUses
     {
@@ -1520,10 +1518,10 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
     };
     // Most instances bind distinct allocations. Compare logical lifetimes only
     // within an allocation that is actually shared, not across the whole graph.
-    std::unordered_map<BufferHandle, AllocationUses, HandleHash<BufferTag>> allocations;
+    std::unordered_map<uint64_t, AllocationUses> allocations;
     allocations.reserve(slots.size());
     for (size_t index = 0; index < slots.size(); ++index) {
-        if (!identities[index].IsValid())
+        if (!identities[index])
             continue;
         auto [entry, inserted] = allocations.try_emplace(identities[index]);
         auto &uses = entry->second;
@@ -1535,13 +1533,13 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
             const auto &prefix = *dispatch.prefix;
             for (const auto &range : {prefix.count, prefix.payload}) {
                 const auto identity = identities[dispatch.bindings[range.binding].range.slot];
-                if (identity.IsValid() && allocations.at(identity).aliases)
+                if (identity && allocations.at(identity).aliases)
                     throw std::invalid_argument("Counted compute storage cannot alias another logical slot");
             }
         }
         for (const auto &binding : dispatch.bindings) {
             const auto identity = identities[binding.range.slot];
-            if (!identity.IsValid())
+            if (!identity)
                 continue;
             auto &uses = allocations.at(identity);
             if (uses.aliases)
@@ -1550,13 +1548,13 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
         if (dispatch.indirectArguments) {
             const auto &range = *dispatch.indirectArguments;
             const auto identity = identities[range.slot];
-            if (identity.IsValid() && allocations.at(identity).aliases)
+            if (identity && allocations.at(identity).aliases)
                 allocations.at(identity).bindings.push_back({range, ComputeBufferAccess::Read});
         }
     }
     for (const auto &port : ports) {
         const auto identity = identities[port.range.slot];
-        if (identity.IsValid()) {
+        if (identity) {
             auto &uses = allocations.at(identity);
             if (uses.aliases)
                 uses.ports.push_back(&port.range);
@@ -1583,6 +1581,15 @@ void ValidateWorkIsolation(const std::vector<ComputeWorkSlot> &slots, const std:
 }
 } // namespace
 
+void ComputeWorkRecipe::ValidateStorageAliases(const std::vector<uint64_t> &identities) const
+{
+    if (identities.size() != m_slots.size())
+        throw std::invalid_argument("Compute work requires one storage identity per slot");
+    for (const auto &dispatch : m_dispatches)
+        ValidateWorkAliases(dispatch, identities);
+    ValidateWorkIsolation(m_slots, m_ports, m_dispatches, identities);
+}
+
 ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkSlot> slots,
                                      std::vector<ComputeWorkPort> ports, std::vector<ComputeWorkDispatch> dispatches)
     : m_host(host), m_slots(std::move(slots)), m_ports(std::move(ports)), m_dispatches(std::move(dispatches))
@@ -1592,7 +1599,7 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
     if (m_slots.empty() || m_dispatches.empty())
         throw std::invalid_argument("Compute work requires storage and at least one dispatch");
     std::vector<intervals::Set> initialized(m_slots.size());
-    std::vector<BufferHandle> identities(m_slots.size());
+    std::vector<uint64_t> identities(m_slots.size());
     for (size_t index = 0; index < m_slots.size(); ++index) {
         const auto &slot = m_slots[index];
         const auto &desc = slot.allocation;
@@ -1601,11 +1608,11 @@ ComputeWorkRecipe::ComputeWorkRecipe(ComputeHost &host, std::vector<ComputeWorkS
             throw std::invalid_argument("Compute work allocation layout is invalid");
         if (slot.external) {
             const auto ticket = slot.external->GetLastWriteSubmission();
-            if (!slot.external->GetHost().SharesServicesWith(m_host) ||
-                !SameAllocationLayout(desc, slot.external->GetDesc()) || !slot.external->GetBuffer().IsValid() ||
-                !ticket.IsValid() || ticket.device != host.device.GetDeviceId())
+            if (!slot.external->GetHost().SharesServicesWith(m_host) || !slot.Accepts(slot.external->GetDesc()) ||
+                !slot.external->GetBuffer().IsValid() || !ticket.IsValid() ||
+                ticket.device != host.device.GetDeviceId())
                 throw std::invalid_argument("Compute work external storage needs a matching accepted compute producer");
-            identities[index] = slot.external->GetBuffer();
+            identities[index] = StorageIdentity(slot.external->GetBuffer());
         }
     }
     const auto validateRange = [&](const ComputeWorkRange &range) {
@@ -1760,8 +1767,7 @@ ComputeWorkRecipe::Bind(std::vector<ComputeWorkInput> inputs,
             throw std::invalid_argument("Compute work input does not name a declared port");
         const auto &port = m_ports[found->second];
         if (provided[found->second] || !input.buffer || !input.buffer->GetHost().SharesServicesWith(m_host) ||
-            !input.buffer->GetBuffer().IsValid() ||
-            !SameAllocationLayout(m_slots[port.range.slot].allocation, input.buffer->GetDesc()))
+            !input.buffer->GetBuffer().IsValid() || !m_slots[port.range.slot].Accepts(input.buffer->GetDesc()))
             throw std::invalid_argument(
                 "Compute work input must bind one matching real owner to a declared input port");
         provided[found->second] = true;
@@ -1773,12 +1779,11 @@ ComputeWorkRecipe::Bind(std::vector<ComputeWorkInput> inputs,
     for (size_t index = 0; index < retained.size(); ++index)
         if (!buffers[index] && !retained[index]->GetAllocation()->IsReadProtected())
             buffers[index] = retained[index];
-    std::vector<BufferHandle> identities;
+    std::vector<uint64_t> identities;
+    identities.reserve(buffers.size());
     for (const auto &buffer : buffers)
-        identities.push_back(buffer ? buffer->GetBuffer() : BufferHandle{});
-    for (const auto &dispatch : m_dispatches)
-        ValidateWorkAliases(dispatch, identities);
-    ValidateWorkIsolation(m_slots, m_ports, m_dispatches, identities);
+        identities.push_back(buffer ? StorageIdentity(buffer->GetBuffer()) : 0);
+    ValidateStorageAliases(identities);
     auto host = m_host;
     for (size_t index = 0; index < buffers.size(); ++index) {
         if (buffers[index])

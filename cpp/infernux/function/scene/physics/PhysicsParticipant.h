@@ -68,6 +68,7 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
   public:
     using Recipes = std::map<std::string, std::shared_ptr<rhi::ComputeWorkRecipe>>;
     using Controls = std::map<std::string, PhysicsParticipantControl>;
+    using ExchangeStates = std::map<std::string, std::pair<std::shared_ptr<PhysicsParticipant>, std::string>>;
     using ControlPayloads = std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>>;
     struct RigidExchange
     {
@@ -110,7 +111,7 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     };
 
     PhysicsParticipant(const Component &component, Recipes recipes, Controls controls, uint32_t count,
-                       const std::vector<Rigidbody *> &rigidbodies);
+                       const std::vector<Rigidbody *> &rigidbodies, const ExchangeStates &exchangeStates);
     [[nodiscard]] bool IsReady() const noexcept
     {
         return m_ready && !m_retired;
@@ -141,6 +142,14 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
                         uint32_t rounds, const Prefix &, std::function<void(uint32_t)> done);
 
   private:
+    struct ExchangeState
+    {
+        std::weak_ptr<PhysicsParticipant> owner;
+        std::string output;
+        std::shared_ptr<rhi::ComputeBuffer> buffer;
+    };
+    void DeclareExchangeStates(const ExchangeStates &states);
+    void ReleasePeerExchange();
     void ValidateRigidPorts();
     [[nodiscard]] JoltGpuControlWork PrepareRecipeStage(JoltGpuParticipantStage stage,
                                                         const JPH::GPU::StepParams &params, float fixedDeltaTime,
@@ -156,6 +165,7 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     std::vector<PhysicsTargetReference> m_rigidbodies;
     Recipes m_recipes;
     Controls m_controls;
+    std::map<std::string, ExchangeState> m_exchangeStates;
     std::map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_state, m_controlStorage;
     std::map<uint32_t, std::shared_ptr<rhi::ComputeBuffer>> m_stateSlots;
     ControlPayloads m_pendingControls, m_initialControls;

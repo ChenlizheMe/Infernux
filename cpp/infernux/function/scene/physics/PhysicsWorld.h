@@ -280,7 +280,8 @@ class PhysicsWorld
     std::shared_ptr<PhysicsParticipant> RegisterParticipant(const Component &component,
                                                             PhysicsParticipant::Recipes recipes,
                                                             PhysicsParticipant::Controls controls, uint32_t count,
-                                                            const std::vector<Rigidbody *> &rigidbodies);
+                                                            const std::vector<Rigidbody *> &rigidbodies,
+                                                            const PhysicsParticipant::ExchangeStates &exchangeStates);
     /// Existing Host service / Tick source only; never waits for GPU completion.
     bool TryPrepareStartupPrograms();
     bool ServiceParticipantPreparation();

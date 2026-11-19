@@ -347,6 +347,11 @@ struct ComputeWorkSlot
     ComputeBufferDesc allocation;
     /// Absent for per-instance storage; external storage is always read-only.
     std::shared_ptr<ComputeBuffer> external;
+    [[nodiscard]] bool Accepts(const ComputeBufferDesc &storage) const noexcept
+    {
+        return allocation.elementCount == storage.elementCount && allocation.scalarType == storage.scalarType &&
+               allocation.lanes == storage.lanes && HasBufferUsage(storage.usage, allocation.usage);
+    }
 };
 
 struct ComputeWorkPort
@@ -408,6 +413,9 @@ class ComputeWorkRecipe final : public std::enable_shared_from_this<ComputeWorkR
         return m_dispatches;
     }
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<ComputeWorkRange> GetRequiredInputs() const;
+    /// Equal nonzero identities denote the same backing storage. Zero denotes an
+    /// independent, unbound slot. Authoring can supply these before allocating.
+    INFERNUX_RENDER_CORE_API void ValidateStorageAliases(const std::vector<uint64_t> &identities) const;
     [[nodiscard]] ComputeHost &GetHost() noexcept
     {
         return m_host;
