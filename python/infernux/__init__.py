@@ -314,6 +314,7 @@ __all__ = [
     # Batch processing
     "batch_read",
     "batch_write",
+    "create_batch_handle",
     "create_component_batch_handle",
     # Object lifecycle
     "Instantiate",
