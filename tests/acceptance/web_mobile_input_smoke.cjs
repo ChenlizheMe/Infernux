@@ -23,6 +23,7 @@ if (preflightCdpIndex >= 0 && preflightBrowserEngine !== "chromium") {
 
 const { chromium, firefox } = require("playwright");
 const { PNG } = require("pngjs");
+const canvasReadbacks = [];
 
 function writeJsonAtomic(outputPath, payload) {
   if (!outputPath) return;
@@ -95,7 +96,20 @@ async function captureCanvas(canvas, outputPath) {
 }
 
 async function readCanvasFrame(canvas) {
-  return PNG.sync.read(await captureCanvas(canvas));
+  // Color/visibility checks use the canvas's actual device-pixel bitmap.
+  // A page screenshot requests another browser compositor frame; on software
+  // WebGPU that can time out while the game keeps presenting valid frames.
+  // Keep a separate compositor gate and explicitly requested visual captures.
+  const {image, ...receipt} = await canvas.evaluate(target => {
+    const frame = () => globalThis.Module?._InfernuxWebGetAcceptanceFrame?.() ?? null;
+    const started = performance.now();
+    const frameBefore = frame();
+    const image = target.toDataURL("image/png");
+    return {image, frameBefore, frameAfter: frame(), started, finished: performance.now()};
+  });
+  const bitmap = PNG.sync.read(Buffer.from(image.slice(image.indexOf(",") + 1), "base64"));
+  canvasReadbacks.push({...receipt, width: bitmap.width, height: bitmap.height});
+  return bitmap;
 }
 
 function summarizeCanvasFrame(image) {
@@ -1176,6 +1190,12 @@ async function main() {
       fixtureUiClick = { x, y, marker: "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY" };
     }
     const frameAfterInput = skipFrameChecks ? null : await measureCanvasFrame(canvas);
+    // Retain one actual screen-compositor gate, after the interactive/render
+    // contracts have warmed the Player. Numeric edits above must not enqueue
+    // another compositor copy for every color sample on software WebGPU.
+    const compositorFrame = skipFrameChecks ? null : summarizeCanvasFrame(
+      PNG.sync.read(await captureCanvas(canvas)),
+    );
     const result = await page.evaluate((contract) => {
       const canvas = document.querySelector("#canvas");
       const diagnostics = JSON.parse(canvas.dataset.infernuxDiagnostics || "[]");
@@ -1224,7 +1244,16 @@ async function main() {
             renderHeight: canvas.height,
             viewportWidth: window.visualViewport?.width || window.innerWidth,
             viewportHeight: window.visualViewport?.height || window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
           };
+        })(),
+        canvasConfiguration: (() => {
+          const configuration = canvas.getContext("webgpu")?.getConfiguration?.();
+          return configuration ? {
+            format: configuration.format,
+            colorSpace: configuration.colorSpace,
+            alphaMode: configuration.alphaMode,
+          } : null;
         })(),
         unhandledErrors: diagnostics.filter((item) => item.startsWith("ERROR:")),
         requiredDiagnostics: Object.fromEntries(
@@ -1265,6 +1294,8 @@ async function main() {
     result.skyDifference = skyDifference;
     result.frameAfterActivation = frameAfterActivation;
     result.frameAfterInput = frameAfterInput;
+    result.compositorFrame = compositorFrame;
+    result.canvasReadbacks = canvasReadbacks;
     result.contextMenuPrevented = contextMenuPrevented;
     result.initialKeyboardFocus = initialKeyboardFocus;
     result.keyboardMapping = keyboardMapping;
@@ -1287,6 +1318,14 @@ async function main() {
       frameAfterInput.meanLuminance >= Math.max(
         0.01,
         frameAfterActivation.meanLuminance * 0.05,
+      )
+    );
+    result.compositorPixelsMatch = skipFrameChecks || (
+      frameIsVisible(compositorFrame) &&
+      Math.abs(compositorFrame.width - result.canvasLayout.cssWidth * result.canvasLayout.devicePixelRatio) <= 1 &&
+      Math.abs(compositorFrame.height - result.canvasLayout.cssHeight * result.canvasLayout.devicePixelRatio) <= 1 &&
+      ["meanLuminance", "upperMeanLuminance", "lowerMeanLuminance"].every(
+        field => Math.abs(compositorFrame[field] - frameAfterInput[field]) <= 0.01,
       )
     );
     const skyIsVisible = skipFrameChecks || (
@@ -1343,7 +1382,7 @@ async function main() {
         (!skipFrameChecks && !frameIsVisible(frameBeforeActivation)) ||
         (!skipFrameChecks && !frameIsVisible(frameAfterActivation)) ||
         (!skipFrameChecks && !frameIsVisible(frameAfterInput)) ||
-        !inputPreservedFrame || !skyIsVisible || !shadowsAreVisible) {
+        !inputPreservedFrame || !result.compositorPixelsMatch || !skyIsVisible || !shadowsAreVisible) {
       throw new Error(JSON.stringify({ result, pageErrors, consoleErrors }));
     }
     delete result.diagnosticTail;
@@ -1374,7 +1413,11 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error}\n`);
-  process.exitCode = 1;
-});
+module.exports = {captureCanvas, readCanvasFrame};
+
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack || error}\n`);
+    process.exitCode = 1;
+  });
+}

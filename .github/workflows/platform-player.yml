@@ -491,6 +491,7 @@ jobs:
         run: |
           npm ci --prefix tests/acceptance
           & .\tests\acceptance\node_modules\.bin\playwright.cmd install chromium
+          node --test tests/acceptance/web_canvas_capture_contract.test.cjs
 
       - name: Validate Web Player pixels and input in Chromium
         shell: pwsh
