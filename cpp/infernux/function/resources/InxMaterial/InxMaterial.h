@@ -700,6 +700,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     void InvalidateShaderSelection() noexcept
     {
         m_selectedShaderArtifact.reset();
+        m_rejectedRenderPublication.reset();
         m_shaderProgramDiagnostic.reset();
     }
 
@@ -742,6 +743,8 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
     bool m_isRenderPublication = false;
     std::shared_ptr<const ShaderProgramArtifact> m_selectedShaderArtifact;
+    // Only a rejected domain selection retains a complete accepted draw publication.
+    std::shared_ptr<InxMaterial> m_rejectedRenderPublication;
     // Source ownership only; copies/publications do not inherit diagnostics.
     std::shared_ptr<OwnedDiagnostic> m_shaderProgramDiagnostic;
     mutable std::weak_ptr<InxMaterial> m_cachedRenderPublication;

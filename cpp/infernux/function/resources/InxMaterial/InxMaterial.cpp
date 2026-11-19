@@ -2306,6 +2306,8 @@ std::shared_ptr<InxMaterial> InxMaterial::CaptureRenderPublication() const
 {
     if (m_isRenderPublication)
         return std::const_pointer_cast<InxMaterial>(shared_from_this());
+    if (m_rejectedRenderPublication)
+        return m_rejectedRenderPublication;
     auto cached = m_cachedRenderPublication.lock();
     bool unchanged = cached && m_cachedRenderPublicationVersion == m_version &&
                      cached->m_selectedShaderArtifact == m_selectedShaderArtifact &&

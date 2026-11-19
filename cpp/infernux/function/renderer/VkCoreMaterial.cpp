@@ -313,7 +313,22 @@ void InxVkCoreModular::PrepareMaterialAuthoring(const std::shared_ptr<InxMateria
         // Publish the selected immutable program only after its author values
         // and resource bindings are ready. Failure cannot leave it marked ready.
         material->m_selectedShaderArtifact = std::move(selected);
+        material->m_rejectedRenderPublication.reset();
         material->m_shaderProgramDiagnostic.reset();
+    } catch (const ShaderProgramDomainMismatch &error) {
+        // Domain rejection belongs to this material, not the World transaction.
+        // Keep the complete accepted values/layout together; never attach an
+        // old shader ABI to the newly authored fields of an incompatible pair.
+        auto accepted = material->m_cachedRenderPublication.lock();
+        if (!accepted || !accepted->GetSelectedShaderArtifact() ||
+            accepted->GetSelectedShaderArtifact()->domain != ShaderProgramDomain::Mesh) {
+            const auto errorMaterial = AssetRegistry::Instance().GetBuiltinMaterial("ErrorMaterial");
+            PrepareMaterialAuthoring(errorMaterial);
+            accepted = errorMaterial->CaptureRenderPublication();
+        }
+        material->m_selectedShaderArtifact.reset();
+        material->m_rejectedRenderPublication = std::move(accepted);
+        material->ReportShaderProgramError(error.what());
     } catch (const ShaderProgramSelectionError &error) {
         // Preserve the source token across identical retry failures. Clearing it
         // here would resolve/recreate a Console row on every Host opportunity.
