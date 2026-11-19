@@ -32,6 +32,7 @@
 #include "SceneDepthResolver.h"
 #include "lighting/CanonicalLightGpuBuffer.h"
 #include "lighting/ForwardPlusLightGrid.h"
+#include "lighting/ViewLighting.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
 #include "raytracing/RayHistoryWorldState.h"
 #include "raytracing/RayWorldTailCache.h"
@@ -804,19 +805,19 @@ class SceneRenderGraph : public NativeLifetimeOwner
     void StageCameraLighting(const std::shared_ptr<const RenderLightingSource> &source, const RenderViewData &view);
     [[nodiscard]] bool HasCameraShadows() const noexcept
     {
-        return !m_cameraLightCollector.GetShadowFrame().views.empty();
+        return !m_viewLighting.Lights().GetShadowFrame().views.empty();
     }
     [[nodiscard]] uint32_t GetCameraLightCount() const noexcept
     {
-        return m_cameraLightCollector.GetTotalLightCount();
+        return m_viewLighting.Lights().GetTotalLightCount();
     }
     [[nodiscard]] uint32_t GetCameraShadowViewCount() const noexcept
     {
-        return static_cast<uint32_t>(m_cameraLightCollector.GetShadowFrame().views.size());
+        return static_cast<uint32_t>(m_viewLighting.Lights().GetShadowFrame().views.size());
     }
     [[nodiscard]] uint32_t GetCameraShadowAssignmentCount() const noexcept
     {
-        return static_cast<uint32_t>(m_cameraLightCollector.GetShadowFrame().assignments.size());
+        return static_cast<uint32_t>(m_viewLighting.Lights().GetShadowFrame().assignments.size());
     }
     [[nodiscard]] uint64_t GetShadowResourceIdentity() const noexcept
     {
@@ -1195,27 +1196,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     std::array<PerViewFrameState, EngineConfig::kFrameSlotCapacity> m_perViewFrames{};
     rhi::BindingLayoutHandle m_perViewLayout;
     lighting::CanonicalLightGpuBuffer m_cameraCanonicalLights;
-    struct CameraLightingInputs
-    {
-        std::shared_ptr<const RenderLightingSource> source;
-        glm::mat4 view{1.0f};
-        glm::mat4 projection{1.0f};
-        glm::vec3 position{0.0f};
-        lighting::ShadowDepthRange visibleDepth;
-        uint32_t shadowResolution = 0;
-        bool valid = false;
-
-        bool operator==(const CameraLightingInputs &other) const noexcept
-        {
-            return source == other.source && view == other.view && projection == other.projection &&
-                   position == other.position && visibleDepth.nearDepth == other.visibleDepth.nearDepth &&
-                   visibleDepth.farDepth == other.visibleDepth.farDepth && shadowResolution == other.shadowResolution &&
-                   valid == other.valid;
-        }
-    };
-    CameraLightingInputs m_cameraLightingInputs;
-    uint64_t m_cameraLightingRevision = 1;
-    SceneLightCollector m_cameraLightCollector;
+    lighting::ViewLighting m_viewLighting;
     uint64_t m_shadowCameraResourceId = 0;
 
     // Resource handle bound to the graph's "shadowMap" sampler input.

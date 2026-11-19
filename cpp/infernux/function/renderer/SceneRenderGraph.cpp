@@ -103,50 +103,6 @@ template <typename T> void HashShadowValue(uint64_t &hash, const T &value)
     HashShadowBytes(hash, &value, sizeof(T));
 }
 
-lighting::ShadowDepthRange VisibleShadowDepthRange(const RenderViewData &camera, const std::vector<DrawCall> &drawCalls)
-{
-    lighting::ShadowDepthRange result{};
-    if (!camera.valid)
-        return result;
-
-    // Cascade selection in the shader uses view-space z, including any
-    // affine view override. A normalized world forward changes those units.
-    const auto &view = camera.view;
-    const glm::vec3 depthAxis(view[0][2], view[1][2], view[2][2]);
-    float nearest = std::numeric_limits<float>::max();
-    float farthest = 0.0f;
-    for (const DrawCall &drawCall : drawCalls) {
-        // Device-authored receivers cover the camera projection. Their final
-        // GPU bounds cannot participate in a CPU-only tightening of cascades.
-        if (drawCall.devicePose.value)
-            return {};
-        if (!drawCall.frustumVisible || !drawCall.worldBounds.IsValid())
-            continue;
-        const glm::vec3 center = (drawCall.worldBounds.min + drawCall.worldBounds.max) * 0.5f;
-        const glm::vec3 extent = (drawCall.worldBounds.max - drawCall.worldBounds.min) * 0.5f;
-        const float centerDepth = glm::dot(center, depthAxis) + view[3][2];
-        const float depthRadius = glm::dot(glm::abs(depthAxis), extent);
-        const float objectFar = centerDepth + depthRadius;
-        if (objectFar <= 0.0f)
-            continue;
-
-        // A huge receiver crossing the camera should not collapse the entire
-        // logarithmic distribution onto the near clip plane.
-        const float boundedRadius = std::min(depthRadius, std::max(centerDepth * 0.5f, 0.0f));
-        nearest = std::min(nearest, std::max(centerDepth - boundedRadius, 0.001f));
-        farthest = std::max(farthest, objectFar);
-    }
-    if (farthest <= 0.0f || nearest == std::numeric_limits<float>::max())
-        return result;
-
-    // These are geometry bounds. ComputeShadowVP intersects them with the
-    // effective projection; dormant authored clipping planes do not apply.
-    const float span = std::max(farthest - nearest, 0.001f);
-    result.nearDepth = nearest;
-    result.farDepth = farthest + span * 0.05f;
-    return result;
-}
-
 } // namespace
 
 // ============================================================================
@@ -1263,34 +1219,23 @@ void SceneRenderGraph::StageCameraLighting(const std::shared_ptr<const RenderLig
                                            const RenderViewData &view)
 {
     const uint32_t shadowResolution = m_renderView.kind == rhi::RenderViewKind::Preview ? 0 : GetShadowMapResolution();
-    const auto visibleDepth = shadowResolution && m_hasCachedDrawCalls
-                                  ? VisibleShadowDepthRange(view, m_cachedRenderers.DrawCalls())
-                                  : lighting::ShadowDepthRange{};
-    CameraLightingInputs inputs{source,       view.view,        view.projection, view.position,
-                                visibleDepth, shadowResolution, view.valid};
-    if (inputs == m_cameraLightingInputs)
-        return;
-    m_cameraLightCollector.CollectLights(*source, view.position);
-    m_cameraLightCollector.ComputeShadowVP(*source, view, static_cast<float>(shadowResolution), visibleDepth);
-    m_cameraLightCollector.BuildShaderLightingUBO();
-    m_cameraLightingInputs = std::move(inputs);
-    ++m_cameraLightingRevision;
+    m_viewLighting.Prepare(source, view, shadowResolution, {m_cachedRenderers.DrawCalls()});
 }
 
 bool SceneRenderGraph::UploadCameraLighting()
 {
     const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
-    if (frame.lightingRevision == m_cameraLightingRevision)
+    if (frame.lightingRevision == m_viewLighting.Revision())
         return true;
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
-    const ShaderLightingUBO &lighting = m_cameraLightCollector.GetShaderLightingUBO();
+    const ShaderLightingUBO &lighting = m_viewLighting.Lights().GetShaderLightingUBO();
     if (!frame.lighting.IsValid() || !rhiDevice.WriteBuffer(frame.lighting, 0, &lighting, sizeof(lighting))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local LightingUBO");
         return false;
     }
     const auto previous = m_cameraCanonicalLights.Frame(frameIndex).buffer;
-    if (!m_cameraCanonicalLights.Update(frameIndex, m_cameraLightCollector.GetCanonicalLightSnapshot())) {
+    if (!m_cameraCanonicalLights.Update(frameIndex, m_viewLighting.Lights().GetCanonicalLightSnapshot())) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local canonical lights");
         return false;
     }
@@ -1302,7 +1247,7 @@ bool SceneRenderGraph::UploadCameraLighting()
         m_needsRebuild = true;
         m_graphBuilt = false;
     }
-    frame.lightingRevision = m_cameraLightingRevision;
+    frame.lightingRevision = m_viewLighting.Revision();
     return true;
 }
 
@@ -1714,7 +1659,7 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 // with lightVP from SceneLightCollector. The shadow pipeline is
                 // lazily created inside DrawShadowCasters().
                 vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, m_shadowCameraResourceId,
-                                          GetViewGlobalsBinding().buffer, m_cameraLightCollector.GetShadowFrame(),
+                                          GetViewGlobalsBinding().buffer, m_viewLighting.Lights().GetShadowFrame(),
                                           lightIndex);
                 break;
             case GraphCommandType::DrawWorldUI:
@@ -1944,7 +1889,7 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
     for (const auto &pass : m_pythonGraphDesc.passes) {
         const auto *command = pass.PrimaryCommand();
         if (command && command->type == GraphCommandType::DrawShadowCasters) {
-            const auto &shadowViews = m_cameraLightCollector.GetShadowFrame().views;
+            const auto &shadowViews = m_viewLighting.Lights().GetShadowFrame().views;
             if (shadowViews.empty())
                 continue;
             uint32_t shadowLayers = 0;
@@ -2759,7 +2704,7 @@ uint64_t SceneRenderGraph::ComputeShadowContentSignature(bool &hasDynamicCaster)
         HashShadowValue(hash, materialGeneration);
     }
 
-    const auto &shadowFrame = m_cameraLightCollector.GetShadowFrame();
+    const auto &shadowFrame = m_viewLighting.Lights().GetShadowFrame();
     HashShadowValue(hash, shadowFrame.atlasSize);
     const uint64_t viewCount = shadowFrame.views.size();
     const uint64_t assignmentCount = shadowFrame.assignments.size();
@@ -2820,7 +2765,7 @@ uint64_t SceneRenderGraph::ComputeShadowContentSignature(bool &hasDynamicCaster)
 
 void SceneRenderGraph::RefreshShadowAtlasUpdateState()
 {
-    if (!m_hasShadowCasterPass || m_cameraLightCollector.GetShadowFrame().views.empty()) {
+    if (!m_hasShadowCasterPass || m_viewLighting.Lights().GetShadowFrame().views.empty()) {
         m_pendingShadowContentSignature = 0;
         m_shadowAtlasUpdateRequired = false;
         return;
@@ -5685,7 +5630,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         localVkCore->DrawShadowCasters(
                             ctx.GetCommandBuffer(), passWidth, passHeight, shadowQueueMin, shadowQueueMax,
                             m_shadowCameraResourceId, GetViewGlobalsBinding().buffer,
-                            m_cameraLightCollector.GetShadowFrame(), shadowLightIndex, shadowDepthFormat,
+                            m_viewLighting.Lights().GetShadowFrame(), shadowLightIndex, shadowDepthFormat,
                             [&](uint32_t, const lighting::ShadowView &activeShadowView,
                                 const ShaderViewBindings &shadowBindings) {
                                 particle::GpuParticleViewConstants shadowView;

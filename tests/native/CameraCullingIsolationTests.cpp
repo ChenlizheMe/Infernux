@@ -1,3 +1,5 @@
+#include <function/renderer/RenderPoseBuffer.h>
+#include <function/renderer/lighting/ViewLighting.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
@@ -419,8 +421,53 @@ static void TestRetiredCameraMaterials(SceneManager &manager)
     }
 }
 
+static void TestViewLightingPublication()
+{
+    auto world = std::make_shared<RenderLightingSource>();
+    auto &sun = world->lights.emplace_back();
+    sun.id = 42;
+    sun.shadows = 1;
+    sun.direction = glm::normalize(glm::vec3(1, -2, 1));
+    RenderViewData camera;
+    camera.valid = true;
+    camera.position = {};
+    camera.projection = glm::perspectiveLH_ZO(glm::radians(60.0f), 1.0f, 150.0f, 0.1f);
+
+    std::vector<DrawCall> scene(1), authored(1);
+    scene.front().worldBounds = {{-1, -1, 4}, {1, 1, 8}};
+    authored.front().worldBounds = {{-1, -1, 22}, {1, 1, 32}};
+    lighting::ViewLighting first, second;
+    assert(first.Prepare(world, camera, 1024, {scene}));
+    const auto nearOnly = first.Lights().GetShadowFrame().views.back().splitFar;
+    const auto revision = first.Revision();
+    assert(!first.Prepare(world, camera, 1024, {scene}) && first.Revision() == revision);
+    assert(second.Prepare(world, camera, 1024, {scene, authored}));
+    assert(second.Lights().GetShadowFrame().views.back().splitFar > nearOnly);
+    assert(first.Lights().GetShadowFrame().views.back().splitFar == nearOnly);
+
+    authored.front().frustumVisible = false;
+    assert(second.Prepare(world, camera, 1024, {scene, authored}));
+    assert(second.Lights().GetShadowFrame().views.back().splitFar == nearOnly);
+    authored.front().frustumVisible = true;
+    authored.front().devicePose.value = std::make_shared<const RenderPoseValue>();
+    assert(second.Prepare(world, camera, 1024, {scene, authored}));
+    assert(second.Lights().GetShadowFrame().views.back().splitFar > 32.0f);
+    assert(second.Prepare(world, camera, 0, {scene, authored}));
+    assert(second.Lights().GetShadowFrame().views.empty());
+
+    const auto newWorld = std::make_shared<RenderLightingSource>(*world);
+    newWorld->lights.front().intensity = 3.0f;
+    assert(first.Prepare(newWorld, camera, 1024, {scene}));
+    assert(first.Lights().GetCanonicalLightSnapshot().directionalLights.front().colorIntensity.w == 3.0f);
+    camera.position.x += 1.0f;
+    camera.view[3][0] -= 1.0f;
+    assert(first.Prepare(newWorld, camera, 1024, {scene}));
+    assert(!first.Prepare(newWorld, camera, 1024, {scene}));
+}
+
 int main()
 {
+    TestViewLightingPublication();
     auto &registry = AssetRegistry::Instance();
     registry.Initialize(std::make_unique<AssetDatabase>());
     registry.RegisterLoader(ResourceType::Mesh, std::make_unique<MeshLoader>());

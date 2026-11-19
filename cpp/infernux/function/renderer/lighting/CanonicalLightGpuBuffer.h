@@ -34,7 +34,10 @@ struct CanonicalLightUpload
 
     const size_t directionalBytes = snapshot.directionalLights.size() * sizeof(CanonicalLightData);
     const size_t localBytes = snapshot.localLights.size() * sizeof(CanonicalLightData);
-    upload.bytes.resize(sizeof(CanonicalLightGpuHeader) + directionalBytes + localBytes);
+    const size_t samplingOffset = sizeof(CanonicalLightGpuHeader) + directionalBytes + localBytes;
+    const size_t strataBytes = snapshot.sampling ? snapshot.sampling->strata.size() * sizeof(LightSamplingStratum) : 0;
+    const size_t cdfBytes = snapshot.sampling ? snapshot.sampling->cumulative.size() * sizeof(float) : 0;
+    upload.bytes.resize(samplingOffset + strataBytes + cdfBytes);
     std::memcpy(upload.bytes.data(), &upload.header, sizeof(upload.header));
     if (directionalBytes > 0) {
         std::memcpy(upload.bytes.data() + sizeof(upload.header), snapshot.directionalLights.data(), directionalBytes);
@@ -43,17 +46,10 @@ struct CanonicalLightUpload
         std::memcpy(upload.bytes.data() + sizeof(upload.header) + directionalBytes, snapshot.localLights.data(),
                     localBytes);
     }
-    if (snapshot.sampling) {
-        const auto &sampling = *snapshot.sampling;
-        const size_t offset = upload.bytes.size();
-        const size_t strataBytes = sampling.strata.size() * sizeof(LightSamplingStratum);
-        const size_t cdfBytes = sampling.cumulative.size() * sizeof(float);
-        upload.bytes.resize(offset + strataBytes + cdfBytes);
-        if (strataBytes > 0)
-            std::memcpy(upload.bytes.data() + offset, sampling.strata.data(), strataBytes);
-        if (cdfBytes > 0)
-            std::memcpy(upload.bytes.data() + offset + strataBytes, sampling.cumulative.data(), cdfBytes);
-    }
+    if (strataBytes)
+        std::memcpy(upload.bytes.data() + samplingOffset, snapshot.sampling->strata.data(), strataBytes);
+    if (cdfBytes)
+        std::memcpy(upload.bytes.data() + samplingOffset + strataBytes, snapshot.sampling->cumulative.data(), cdfBytes);
     return upload;
 }
 
