@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_shading_context
+from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_raster_context
 from infernux.shader.lib.ray_signal import resolve_ray_diffuse, resolve_ray_specular
 
 
@@ -31,7 +31,7 @@ class DeferredRayLighting(shader.fullscreen):
         frame = shader.load(self.normal_tex, pixel, 0)
         emission = shader.load(self.emission_tex, pixel, 0)
         surface = decode_deferred_surface(base, frame, emission, packed.y)
-        context = deferred_shading_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata)
+        context = deferred_raster_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata, self.depth_tex)
         diffuse = shader.vec4(0.0)
         if self.diffuse_enabled:
             diffuse = resolve_ray_diffuse(self.ray_diffuse, self.primary_tex, self.normal_tex, pixel, packed.x,

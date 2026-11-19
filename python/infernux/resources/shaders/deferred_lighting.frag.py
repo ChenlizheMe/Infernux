@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_shading_context
+from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_raster_context
 
 
 class DeferredLighting(shader.fullscreen):
@@ -16,12 +16,12 @@ class DeferredLighting(shader.fullscreen):
         pixel = shader.ivec2(ctx.position.xy)
         depth = shader.load(self.depth_tex, pixel, 0)
         packed = shader.load(self.surface_tex, pixel, 0)
+        metadata = self.surface_records[packed.x * 3]
+        if depth <= 0.0 or packed.x == 0 or metadata.y == 0:
+            return shader.vec4(0.0)
         base = shader.load(self.albedo_tex, pixel, 0)
         frame = shader.load(self.normal_tex, pixel, 0)
         emission = shader.load(self.emission_tex, pixel, 0)
-        metadata = self.surface_records[packed.x * 3]
         surface = decode_deferred_surface(base, frame, emission, packed.y)
-        context = deferred_shading_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata)
-        if depth <= 0.0 or packed.x == 0 or metadata.y == 0:
-            return shader.vec4(0.0)
+        context = deferred_raster_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata, self.depth_tex)
         return shader.vec4(shader.lighting.shade(surface, context, metadata.y), 1.0)

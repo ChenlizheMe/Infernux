@@ -120,6 +120,7 @@ public struct InxShadingContext
 {
     public float3 position_ws;
     public float3 geometric_normal_ws;
+    public float3 shadow_plane_ws;
     public float view_depth;
     public float2 pixel_position;
     public uint layer_mask;
@@ -142,6 +143,7 @@ public InxShadingContext inx_shading_context(float3 position_ws, float3 geometri
     result.light_domain = 1u;
     result.position_ws = position_ws;
     result.geometric_normal_ws = geometric_normal_ws;
+    result.shadow_plane_ws = geometric_normal_ws;
     result.view_depth = view_depth;
     result.pixel_position = pixel_position;
     result.layer_mask = layer_mask;
@@ -169,6 +171,7 @@ public InxShadingContext inx_shading_context(InxMeshInput input)
     result.light_domain = 1u;
     result.position_ws = input.position_ws;
     result.geometric_normal_ws = input.normal_ws;
+    result.shadow_plane_ws = cross(ddx(input.position_ws), ddy(input.position_ws));
     result.view_depth = input.view_depth;
     result.pixel_position = input.position.xy;
     result.layer_mask = input.layer_mask;

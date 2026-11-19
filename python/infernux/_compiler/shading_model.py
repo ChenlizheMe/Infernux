@@ -37,7 +37,7 @@ float3 inx_author_direct<let tiled_lighting : bool>(InxSurfaceData surface, InxS
     response.surface = surface;
     response.context = context;
     return inx_direct_lighting<tiled_lighting, InxAuthorLightResponse<tiled_lighting>>(
-        context, normalize(surface.normal_ws), response);
+        context, context.shadow_plane_ws, response);
 }
 """
 

@@ -442,12 +442,12 @@ InxMeshInput vertex_motion(InxVertexInput input, uint instance : SV_VulkanInstan
 [shader("fragment")]
 float4 fragment_main(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
-    return inx_shade_surface<false>(inx_evaluate_surface(input, front_facing), input);
+    return inx_shade_surface<false>(input, front_facing);
 }
 [shader("fragment")]
 float4 fragment_forward_plus(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
-    return inx_shade_surface<true>(inx_evaluate_surface(input, front_facing), input);
+    return inx_shade_surface<true>(input, front_facing);
 }
 [shader("fragment")]
 void fragment_depth(InxMeshInput input, bool front_facing : SV_IsFrontFace)
@@ -1266,9 +1266,10 @@ public float4 inx_ray_tail_estimate(InxBuffer_uint4 requests, InxBuffer_uint4 ca
 
 
 _SURFACE_LIGHTING = """
-float4 inx_shade_surface<let tiled_lighting : bool>(InxSurfaceData surface, InxMeshInput input)
+float4 inx_shade_surface<let tiled_lighting : bool>(InxMeshInput input, bool front_facing)
 {
     InxShadingContext context = inx_shading_context(input);
+    InxSurfaceData surface = inx_evaluate_surface(input, front_facing);
     context.normal_variance = inx_normal_variance(surface.normal_ws);
     context.receives_shadows = context.receives_shadows && INX_RECEIVE_SHADOWS;
     return float4(inx_shading_model::shade<tiled_lighting>(surface, context), surface.alpha);
@@ -1517,7 +1518,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         for name, front in _TRANSPARENT_PARTITIONS:
             code.append(_partitioned_entry(
                 name, "float4", "InxMeshInput input, bool front_facing : SV_IsFrontFace", " : SV_Target0",
-                "inx_shade_surface<true>(inx_evaluate_surface(input, front_facing), input)", front,
+                "inx_shade_surface<true>(input, front_facing)", front,
                 "input.position.z"))
         if model.deferred_model:
             pbr = "true" if model.deferred_model == "PBR" else "false"

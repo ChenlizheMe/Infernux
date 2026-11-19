@@ -19,10 +19,10 @@ inline constexpr std::array kGBufferColorFormats{
     rhi::PixelFormat::RG32UInt,
 };
 
-// Device depth uses reversed Z on both backends. Bias the caster into its
-// surface while keeping the receiver and its atlas coordinates fixed.
+// Both backends compare each shadow tap on the receiver plane. A slope offset
+// on the caster would move silhouettes away from thin or grazing contacts.
 inline constexpr float kShadowCasterDepthBias = -1.0f;
-inline constexpr float kShadowCasterSlopeBias = -2.0f;
+inline constexpr float kShadowCasterSlopeBias = 0.0f;
 
 inline constexpr bool UsesInstanceMotion(ShaderCompileTarget target) noexcept
 {

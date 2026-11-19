@@ -773,10 +773,10 @@ float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx,
     float3 energy_compensation = inx_pbr_energy_compensation(F0, env_brdf);
     float3 lo = float3(0.0);
     if (!indirect_only) {
-        InxLight main_light = get_main_light(ctx.position_ws, N, ctx.view_depth);
+        InxLight main_light = get_main_light(ctx.position_ws, ctx.shadow_plane_ws, ctx.view_depth);
         InxPbrLightResponse response = inx_pbr_light_response(scattering, N, V, energy_compensation,
                                                              s.specular_highlights);
-        lo = calculate_all_lighting(ctx.position_ws, N, ctx.view_depth, main_light.shadow, response);
+        lo = calculate_all_lighting(ctx.position_ws, ctx.shadow_plane_ws, ctx.view_depth, main_light.shadow, response);
     }
     float3 k_s_env = f_schlick_roughness(F0, f90, ndot_v, perceptual_roughness);
     float3 k_d_env = (1.0 - k_s_env) * (1.0 - metallic);
