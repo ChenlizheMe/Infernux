@@ -766,10 +766,30 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         return query.meta.x == QueryGatherMotion ||
                ((query.meta.x <= QueryPenetration || query.meta.x == QueryShapeCast) && query.meta.y == QueryClosest);
     });
-    const auto stride = knownCount ? 1u : std::max({1u, bodyCount, leafCount});
-    if (queryCount > std::numeric_limits<uint32_t>::max() / stride)
+    const bool shapeGather = format == QueryOutputShape;
+    uint32_t stride = knownCount ? 1u : std::max({1u, bodyCount, leafCount});
+    uint64_t records = queryCount * stride;
+    std::vector<uint8_t> shapeRequests;
+    if (shapeGather) {
+        // A selected body can emit at most its own published leaves. Each request,
+        // including a repeated body, owns a disjoint range in the candidate buffer.
+        stride = 0;
+        records = 0;
+        shapeRequests.resize(static_cast<size_t>(inputBytes));
+        for (size_t row = 0; row < queries.size(); ++row) {
+            auto request = queries[row];
+            const uint32_t slot = request.source.y;
+            const uint32_t leaves =
+                slot == InvalidQueryBodySlot ? leafCount : publication->directory->actors[slot]->physicalModel.meta.y;
+            request.source.z = static_cast<uint32_t>(records);
+            request.source.w = std::max(1u, leaves);
+            records += request.source.w;
+            std::memcpy(shapeRequests.data() + row * sizeof(request), &request, sizeof(request));
+        }
+    }
+    if (records > std::numeric_limits<uint32_t>::max())
         throw JoltGpuQueryRequestError("Jolt GPU query scratch capacity exceeds device indexing");
-    const auto capacity = static_cast<uint32_t>(queryCount) * stride;
+    const auto capacity = static_cast<uint32_t>(records);
     // Only typed Host batches opt in. The same motion invocation writes one
     // selected Float4 stream per input row; device exports keep their full ABI.
     uint32_t projectedMotionBlocks = 0;
@@ -814,7 +834,7 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     static_assert(sizeof(QueryInput) >= sizeof(QuerySpan) + sizeof(QueryCastState));
     const uint64_t spanBytes = CheckedBytes(queryCount, sizeof(QuerySpan));
     const uint64_t prefixBytes =
-        motion ? spanBytes : CheckedBytes(queryCount, sizeof(QuerySpan) + sizeof(QueryCastState));
+        motion || shapeGather ? spanBytes : CheckedBytes(queryCount, sizeof(QuerySpan) + sizeof(QueryCastState));
     const uint64_t prefixWords = prefixBytes / sizeof(UInt4);
     // Tail header4 + up to32 fixed2048-word workers coexist with all spans/CA states.
     // Fewer workers change scheduling only, never request/candidate capacity.
@@ -897,6 +917,8 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
             std::memcpy(data.data() + row * sizeof(input), &input, sizeof(input));
         }
         upload(Inputs, std::move(data));
+    } else if (shapeGather) {
+        upload(Inputs, std::move(shapeRequests));
     } else if (rays) {
         allocate(Inputs, requestWords);
         buffers[RayInputs] = buffers[Inputs];
@@ -988,8 +1010,7 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
             const auto access = Access(stage, port);
             dispatch.buffers.push_back(buffers[port]);
             dispatch.bufferAccesses.push_back(access);
-            // Scan and compact address only the span prefix. Evaluate writes
-            // the complete control; resume retains both spans and CA state.
+            // Scan and compact only access spans. Cast work also keeps a per-request cursor.
             if (port == Geometry) {
                 for (const auto &range : result->geometry->wordRanges)
                     proof.reads.push_back(
@@ -1435,7 +1456,8 @@ void JoltGpuQueryResult::Materialize()
     uint32_t end = 0;
     for (const auto &span : hostSpans) {
         RequireSuccess(span.range.z);
-        if (span.range.x != end || span.range.y > count - end || span.range.w || (knownCount && span.range.y != 1))
+        if (span.range.x != end || span.range.y > count - end || span.range.w > hitCapacity - span.range.y ||
+            (knownCount && span.range.y != 1))
             throw std::runtime_error("Jolt GPU query span differs from its compact result prefix");
         end += span.range.y;
     }
