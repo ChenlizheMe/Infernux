@@ -68,12 +68,20 @@ class GameScreenOutputs final
         std::shared_ptr<const GameScreenSample> front, lastAccepted;
         std::vector<std::shared_ptr<const GameScreenSample>> pending;
         std::shared_ptr<const RenderWorldFrame> acceptedSource;
+        std::weak_ptr<const RenderWorldFrame> omittedSource;
         struct Consumer
         {
             GameScreenOutputConfig config;
             GameScreenConsumerKind kind = GameScreenConsumerKind::Presentation;
         };
         std::map<std::string, Consumer> consumers;
+
+        bool HasPresentationConsumer() const
+        {
+            return std::any_of(consumers.begin(), consumers.end(), [](const auto &entry) {
+                return entry.second.kind == GameScreenConsumerKind::Presentation;
+            });
+        }
     };
 
     GameScreenOutputs(InxVkCoreModular &core, InxGUI &gui) : m_core(core), m_gui(gui)
@@ -478,9 +486,7 @@ class GameScreenOutputs final
         result.guiRecordedSequence = output->guiRecordedSequence;
         result.guiRecordingCount = output->guiRecordingCount;
         result.slotStalls = output->slotStalls;
-        result.hasPresentationConsumer =
-            std::any_of(output->consumers.begin(), output->consumers.end(),
-                        [](const auto &entry) { return entry.second.kind == GameScreenConsumerKind::Presentation; });
+        result.hasPresentationConsumer = output->HasPresentationConsumer();
         result.hasRequiredConsumer = Required(worldId);
         result.admitted = output->admission;
         result.accepted = output->lastAccepted;
@@ -504,6 +510,8 @@ class GameScreenOutputs final
     void RejectUnsubmittedSource(uint64_t worldId)
     {
         if (const auto output = Find(worldId)) {
+            if (output->admission)
+                output->omittedSource = output->admission->source;
             output->work.reset();
             output->admission.reset();
         }

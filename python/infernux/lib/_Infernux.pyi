@@ -3123,6 +3123,8 @@ class GraphBufferCapture:
 
 
 class SceneRenderGraph:
+    @property
+    def execution_count(self) -> int: ...
     """The active scene render graph."""
 
     @property

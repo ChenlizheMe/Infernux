@@ -707,7 +707,7 @@ class GameViewPanel(EditorPanel):
 
     def _render_fps_counter(self, ctx):
         """FPS counter (right-aligned, Unity-style)."""
-        fps_text = self._world_view.fps_text
+        fps_text = self._world_view.game_fps_text
         if fps_text != getattr(self, '_cached_fps_text', None):
             self._cached_fps_text = fps_text
             self._cached_fps_text_w, _ = ctx.calc_text_size(fps_text)

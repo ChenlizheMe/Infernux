@@ -798,7 +798,9 @@ void InxRenderer::PreparePipeline()
                 const uint64_t previewId =
                     viewContext.kind == rhi::RenderViewKind::Preview ? m_sceneCameraPreviewId : 0;
                 const auto publication = graph->PreparePublication(m_graphEventInterests);
-                const auto sceneWorld = sceneView ? graph->GetCachedCameraView().worldId : 0;
+                const auto &camera = graph->GetCachedCameraView();
+                const SceneFrameStamp sceneFrame{camera.worldId, camera.simulationEpoch, camera.completedWorldFrame,
+                                                 true};
                 const auto sceneTargetGeneration = m_sceneRenderTargetGeneration;
 
                 uint32_t finalize = range.workItems.back();
@@ -824,11 +826,12 @@ void InxRenderer::PreparePipeline()
                             throw std::logic_error("Accepted directional ray cache batch was not fully recorded");
                     });
                 }
-                submission.OnWorkAccepted(finalize, [this, graph, previewId, publication, sceneView, sceneWorld,
+                submission.OnWorkAccepted(finalize, [this, graph, previewId, publication, sceneView, sceneFrame,
                                                      sceneTargetGeneration](rhi::SubmissionTicket ticket) {
                     graph->CommitSubmissionExecution();
                     if (sceneView) {
-                        m_sceneRenderedWorldId = sceneWorld;
+                        m_consumedSceneFrame = sceneFrame;
+                        m_sceneRenderedWorldId = sceneFrame.world;
                         m_sceneRenderedTargetGeneration = sceneTargetGeneration;
                     }
                     if (previewId)
@@ -925,7 +928,8 @@ void InxRenderer::PreparePipeline()
         SceneManager::Instance().SetRuntimeFramePublicationCallbacks(
             [this](RuntimeWorld &world) { return PublishRuntimeRenderFrame(world); },
             [this](uint64_t world) { RetireRuntimeRenderFrame(world); },
-            [this](RuntimeWorld &world) { return PublishRuntimeRenderFrame(world, true); });
+            [this](RuntimeWorld &world) { return PublishRuntimeRenderFrame(world, true); },
+            [this](const RuntimeWorld &world) { return CanBeginRenderFrame(world); });
         SceneManager::Instance().SetRuntimeFramePresentationCallback(
             [this](RuntimeWorld &world) { return IsStepScreenComplete(world); });
     }
@@ -1356,7 +1360,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 
         // ---- Scene View: always use editor camera ----
         if (sceneViewActive) {
-            const WorldExecutionScope editorView(bridge.GetEditorViewedWorld());
+            auto *viewedWorld = bridge.GetEditorViewedWorld();
+            const WorldExecutionScope editorView(viewedWorld);
             Camera *editorCam = SceneManager::Instance().GetEditorCameraController().GetCamera();
 
             // World-space Billboard UI is gameplay-facing UI.  The Scene view
@@ -1379,7 +1384,14 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
             auto _srpT0 = std::chrono::high_resolution_clock::now();
 #endif
             const auto frame = editorCam ? bridge.AcquirePreparedFrameForCamera(editorCam->GetComponentID()) : nullptr;
-            if (const auto *view = frame ? frame->FindView(editorCam->GetComponentID()) : nullptr) {
+            const auto *view = frame ? frame->FindView(editorCam->GetComponentID()) : nullptr;
+            const bool alreadyDrawn =
+                view && viewedWorld && viewedWorld->simulation.isPlaying && !viewedWorld->simulation.isPaused &&
+                m_consumedSceneFrame.submitted &&
+                m_consumedSceneFrame.Matches(view->worldId, view->simulationEpoch, view->completedWorldFrame) &&
+                m_sceneRenderedTargetGeneration == m_sceneRenderTargetGeneration;
+            if (view && (!alreadyDrawn || HasPendingCapture(CaptureSource::Scene) ||
+                         (m_scenePickingService && m_scenePickingService->HasPendingRecord()))) {
                 ScriptableRenderContext capture(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx,
                                                 frame, *view);
                 if (frame->IsSharedSceneView()) {
@@ -1389,6 +1401,8 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                 }
                 m_renderPipeline->RenderSelectedView(capture, capture.GetView());
                 const auto plan = capture.CapturePlan();
+                if (plan->state == RenderViewPlanState::Skipped)
+                    m_consumedSceneFrame = {view->worldId, view->simulationEpoch, view->completedWorldFrame};
                 ScriptableRenderContext context(m_vkCore.get(), m_sceneRenderGraph.get(), m_viewRequestSerial, gizmoCtx,
                                                 *plan);
                 context.ExecutePlan(plan);
@@ -4822,6 +4836,30 @@ void InxRenderer::RefreshRuntimeViewPlans()
     m_runtimeViewPlansDirty = pending;
 }
 
+bool InxRenderer::CanBeginRenderFrame(const RuntimeWorld &world) const
+{
+    if (m_view->IsMinimized())
+        return true;
+    const auto &bridge = SceneRenderBridge::Instance();
+    const auto publication = bridge.AcquireLatestDisplayPublication(world.id);
+    if (!publication || publication->world->IsPausedAuthorPresentation() ||
+        publication->world->SimulationEpoch() != world.simulation.simulationEpoch)
+        return true;
+
+    const auto &source = publication->world;
+    const auto output = m_gameScreenOutputs->Find(world.id);
+    if (output && output->acceptedSource != source && output->HasPresentationConsumer() && publication->screenConfig &&
+        publication->screenConfig->generation == output->generation && output->error.empty() &&
+        publication->HasScreenViews() && output->omittedSource.lock() != source)
+        return false;
+
+    // All visible cameras consume the same logical frame. A hidden tab creates no obligation.
+    if (m_sceneViewVisible && bridge.GetEditorViewedWorldId() == world.id && m_sceneRenderTarget &&
+        m_sceneRenderTarget->IsReady() && m_sceneRenderTarget->GetWidth() > 1 && m_sceneRenderTarget->GetHeight() > 1)
+        return m_consumedSceneFrame.Matches(world.id, source->SimulationEpoch(), source->CompletedWorldFrame());
+    return true;
+}
+
 bool InxRenderer::IsStepScreenComplete(RuntimeWorld &world)
 {
     if (!m_gameScreenOutputs || !m_gameScreenOutputs->Requested(world.id)) {
@@ -5061,9 +5099,9 @@ InxRenderer::CollectRequestedViews(bool sceneActive, bool gameActive,
         m_nextScheduledViews.push_back({graph, graph->GetRenderViewContext().id, 0, scene});
         return true;
     };
-    if (sceneActive)
-        add(m_sceneRenderGraph.get(), true);
     std::vector<SceneRenderGraph *> retainedScreenViews;
+    if (sceneActive && !add(m_sceneRenderGraph.get(), true) && m_sceneRenderGraph && m_consumedSceneFrame.submitted)
+        retainedScreenViews.push_back(m_sceneRenderGraph.get());
     if (sceneActive || gameActive) {
         for (const auto *camera : m_cachedGameCameras) {
             const auto view = m_gameRenderGraphs.find(camera->cameraId);
@@ -5104,6 +5142,17 @@ void InxRenderer::UpdateViewSchedule()
             view.graph->SetScreenUIRenderer(m_screenUIRenderer.get(), ownsScreenUI);
         view.graph->EnsureGraphBuilt();
         view.waitingForResult = view.graph->HasPendingBufferInputs();
+        // An authored input can depend on a future script frame. An unavailable GPU slot or a pending
+        // geometry upload, on the other hand, must keep precisely this World frame queued for drawing.
+        if (view.waitingForResult && view.graph->HasPendingResultInputs()) {
+            if (view.scene)
+                m_consumedSceneFrame = {owner, camera.simulationEpoch, camera.completedWorldFrame};
+            else if (game && !camera.renderToTexture) {
+                const auto output = m_gameScreenOutputs->Find(owner);
+                if (output && output->admission)
+                    output->omittedSource = output->admission->source;
+            }
+        }
         view.admitted = !view.waitingForResult && view.graph->AdmitGraphEvents(m_graphEventInterests);
         view.accessRevision = view.graph->GetResourceAccessRevision();
         if (game && !camera.renderToTexture && view.graph->HasRejectedWorldRayMaterials())

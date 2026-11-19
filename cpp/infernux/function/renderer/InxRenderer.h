@@ -916,6 +916,16 @@ class InxRenderer
     std::vector<std::pair<SceneRenderTarget *, bool>> m_guiTargetEncodings;
     uint64_t m_sceneRenderedWorldId = 0;
     uint64_t m_sceneRenderedTargetGeneration = 0;
+    struct SceneFrameStamp
+    {
+        uint64_t world = 0, epoch = 0, frame = 0;
+        bool submitted = false;
+        bool Matches(uint64_t worldId, uint64_t simulationEpoch, uint64_t worldFrame) const noexcept
+        {
+            return world == worldId && epoch == simulationEpoch && frame == worldFrame;
+        }
+    };
+    SceneFrameStamp m_consumedSceneFrame;
     uint64_t m_gameRenderTargetGeneration = 0;
     std::unique_ptr<EditorGizmos> m_editorGizmos;
     std::unique_ptr<EditorTools> m_editorTools;
@@ -1061,6 +1071,7 @@ class InxRenderer
     bool HasActiveGameViews(bool allowScreen = true);
     void PrepareWorldRenderInputs();
     bool PublishRuntimeRenderFrame(RuntimeWorld &world, bool pausedAuthor = false);
+    bool CanBeginRenderFrame(const RuntimeWorld &world) const;
     bool IsStepScreenComplete(RuntimeWorld &world);
     std::unordered_map<uint64_t, std::shared_ptr<const GameScreenSample>> m_stepScreenSamples;
     void RetireRuntimeRenderFrame(uint64_t worldId);

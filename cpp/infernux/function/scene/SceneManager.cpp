@@ -599,6 +599,7 @@ void SceneManager::CompleteShutdown()
     m_authoringWorld.reset();
     RefreshThreadDefaultRandomStorage();
     m_runtimeFramePublication = nullptr;
+    m_canBeginRenderFrame = nullptr;
     m_pausedAuthorPublication = nullptr;
     m_runtimeFrameRetirement = nullptr;
     m_runtimeWorldBeginRetirementCallback = nullptr;
@@ -1251,11 +1252,13 @@ double SceneManager::GetQueuedSimulationSeconds() const noexcept
 
 void SceneManager::SetRuntimeFramePublicationCallbacks(std::function<bool(RuntimeWorld &)> publish,
                                                        std::function<void(uint64_t)> retire,
-                                                       std::function<bool(RuntimeWorld &)> pausedAuthor)
+                                                       std::function<bool(RuntimeWorld &)> pausedAuthor,
+                                                       std::function<bool(const RuntimeWorld &)> canBeginFrame)
 {
     m_runtimeFramePublication = std::move(publish);
     m_runtimeFrameRetirement = std::move(retire);
     m_pausedAuthorPublication = std::move(pausedAuthor);
+    m_canBeginRenderFrame = std::move(canBeginFrame);
 }
 
 void SceneManager::BeginPresentationAssetObservation()
@@ -1868,6 +1871,11 @@ bool SceneManager::ServiceCurrentWorldFrame()
     if (!ServicePausedAuthorPresentation())
         return false;
     if (world.simulation.isPaused && !world.simulation.pausedStepPending)
+        return false;
+    // Leave time and input queued. Repeated host polls must not open a lifecycle or retire scene objects.
+    if (!world.simulation.isPaused && world.frame.phase == RuntimeWorld::FramePhase::Idle &&
+        !world.frame.pending.empty() && world.frame.pending.front().automaticHost && m_canBeginRenderFrame &&
+        !m_canBeginRenderFrame(world))
         return false;
     if (IsRuntimeFrameWaitingForPhysics(world)) {
         const auto admittedState = GetSimulationState();

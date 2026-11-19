@@ -7,6 +7,14 @@ from .dpi import editor_dpi_scale
 from .theme import Theme, ImGuiCol, ImGuiStyleVar
 
 
+def _format_view_rate(name, frames, elapsed):
+    if frames < 0:
+        return f'{name} FPS: --'
+    if frames == 0:
+        return f'{name} FPS: 0'
+    return f'{name} FPS: {frames / elapsed:.0f} ({1000 * elapsed / frames:.2f} ms)'
+
+
 class WorldViewState:
     def __init__(self):
         self.rows = ()
@@ -15,8 +23,10 @@ class WorldViewState:
         self.mode = None
         self.layout = 0
         self.input_mode = 0
-        self.fps = self.frame_ms = 0.0
-        self._sample_time = self._sample_frame = None
+        self.scene_fps_text = 'Scene FPS: --'
+        self.game_fps_text = 'Game FPS: --'
+        self._sample_key = self._sample_counts = None
+        self._sample_time = 0.0
         self._next_sample = 0.0
 
     def prepare(self, manager, engine):
@@ -37,19 +47,26 @@ class WorldViewState:
         if self.world_id not in visible:
             self.world_id = visible[0] if visible else 0
         now = perf_counter()
-        if now >= self._next_sample:
-            frame = engine.get_native_engine().frame_work.opportunity
-            if self._sample_frame is not None and frame >= self._sample_frame:
-                elapsed = now - self._sample_time
-                frames = frame - self._sample_frame
-                self.fps = frames / elapsed
-                self.frame_ms = elapsed * 1000.0 / frames if frames else 0.0
-            self._sample_time, self._sample_frame = now, frame
-            self._next_sample = now + 1.0
-
-    @property
-    def fps_text(self):
-        return f'Main FPS: {self.fps:.0f} ({self.frame_ms:.2f} ms)' if self.fps else 'Main FPS: --'
+        key = (self.world_id, self.mode)
+        if now < self._next_sample and self._sample_key == key:
+            return
+        native = engine.get_native_engine()
+        graph = native.get_scene_render_graph()
+        scene = graph.execution_count if graph is not None else 0
+        screen = engine._game_screen_status(self.world_id) if self.world_id else {}
+        game = screen.get('completed_sequence', 0)
+        generation = screen.get('generation', 0)
+        if key == self._sample_key:
+            old_scene, old_game, old_generation = self._sample_counts
+            elapsed = now - self._sample_time
+            game_frames = game - old_game if generation == old_generation else -1
+            self.scene_fps_text = _format_view_rate('Scene', scene - old_scene, elapsed)
+            self.game_fps_text = _format_view_rate('Game', game_frames, elapsed)
+        else:
+            self.scene_fps_text, self.game_fps_text = 'Scene FPS: --', 'Game FPS: --'
+        self._sample_key = key
+        self._sample_counts = (scene, game, generation)
+        self._sample_time, self._next_sample = now, now + 1.0
 
     def select(self, world_id):
         world_id = int(world_id)
@@ -90,7 +107,7 @@ class SceneViewWorldsMixin:
         ctx.pop_style_var(1)
         ctx.pop_style_color(1)
         ctx.same_line()
-        ctx.label(view.fps_text)
+        ctx.label(view.scene_fps_text)
         if ctx.begin_popup('SceneWorldSettings'):
             self._draw_world_settings(ctx, dpi)
             ctx.end_popup()

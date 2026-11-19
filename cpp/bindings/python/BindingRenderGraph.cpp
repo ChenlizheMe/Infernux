@@ -40,6 +40,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
 
     // SceneRenderGraph class
     NativeClass<SceneRenderGraph>(m, "SceneRenderGraph")
+        .def_property_readonly("execution_count", &SceneRenderGraph::GetExecutionCount,
+                               "Number of view executions accepted by the graphics queue.")
         .def_property_readonly("storage_deferred", &SceneRenderGraph::IsGraphStorageDeferred)
         .def("capture_buffer", &SceneRenderGraph::CaptureBuffer, py::arg("name"))
         // Pass configuration

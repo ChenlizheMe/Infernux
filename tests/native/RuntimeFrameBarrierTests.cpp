@@ -73,6 +73,7 @@ class PhysicsPublicationGpuFixture
 
 int main()
 {
+    infernux::FrameWorkOwner hostClock([] { return uint64_t{0}; });
     SceneManager &manager = SceneManager::Instance();
     using Barrier = SceneManager::RuntimeFrameBarrier;
 
@@ -248,6 +249,37 @@ int main()
     assert(retired3);
     manager.SetTimeScale(1.0f);
     manager.SetMaxFixedDeltaTime(1.0f / 3.0f);
+    manager.SetFixedTimeStep(1.0f / 64.0f);
+    uint64_t publishedFrame = 0, submittedFrame = 0;
+    manager.SetRuntimeFramePublicationCallbacks(
+        [&](infernux::RuntimeWorld &world) {
+            publishedFrame = world.simulation.frameTime.frameCount;
+            return true;
+        },
+        {}, {}, [&](const infernux::RuntimeWorld &) { return submittedFrame == publishedFrame; });
+    playRuntimeScene();
+    (void)manager.ConsumeFrameDeltaTime(0.0f);
+    const auto poll = [&](float elapsed) {
+        hostClock.BeginOpportunity();
+        manager.ServiceRuntimeFrames(hostClock, elapsed, false);
+        hostClock.AdvanceLate([] { return infernux::FrameGpuAvailability::Ready; });
+        hostClock.EndOpportunity();
+    };
+    const auto initialUpdates = updateCount, initialLates = lateUpdateCount, initialFixed = fixedUpdateCount;
+    poll(1.0f / 256.0f);
+    const auto firstPublication = publishedFrame;
+    assert(firstPublication > 0 && updateCount == initialUpdates + 1 && lateUpdateCount == initialLates + 1);
+    for (unsigned i = 0; i < 8; ++i)
+        poll(1.0f / 256.0f);
+    assert(publishedFrame == firstPublication && updateCount == initialUpdates + 1 && fixedUpdateCount == initialFixed);
+    submittedFrame = firstPublication;
+    poll(0.0f);
+    assert(publishedFrame == firstPublication + 1 && updateCount == initialUpdates + 2 &&
+           lateUpdateCount == initialLates + 2 && fixedUpdateCount == initialFixed + 2);
+    manager.Stop();
+    const bool retiredAfterRender = manager.CollectRetiredRuntimeWorlds();
+    assert(retiredAfterRender);
+    manager.SetFixedTimeStep(0.02f);
     manager.SetRuntimeFramePublicationCallbacks({}, {});
     observed.clear();
 

@@ -221,7 +221,8 @@ class SceneManager
     void BindRuntimeFrameWork(FrameWorkOwner &work);
     void SetRuntimeFramePublicationCallbacks(std::function<bool(RuntimeWorld &)> publish,
                                              std::function<void(uint64_t)> retire,
-                                             std::function<bool(RuntimeWorld &)> pausedAuthor = {});
+                                             std::function<bool(RuntimeWorld &)> pausedAuthor = {},
+                                             std::function<bool(const RuntimeWorld &)> canBeginFrame = {});
     void RecordHostFrame(float deltaTime, bool automaticHost = false);
     [[nodiscard]] bool CanContinueRuntimeFrame() const noexcept;
     void ReportRuntimeFrameProgress() noexcept;
@@ -803,6 +804,7 @@ class SceneManager
     uint64_t m_runtimeFrameSource = 0;
     std::function<void()> m_runtimeInput;
     std::function<bool(RuntimeWorld &)> m_runtimeFramePublication;
+    std::function<bool(const RuntimeWorld &)> m_canBeginRenderFrame;
     std::function<bool(RuntimeWorld &)> m_pausedAuthorPublication;
     std::function<void(uint64_t)> m_runtimeFrameRetirement;
     std::function<bool(RuntimeWorld &)> m_runtimeFramePresentation;
