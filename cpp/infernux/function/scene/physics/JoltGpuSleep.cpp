@@ -1,4 +1,5 @@
 #include "JoltGpuSleep.h"
+#include <Jolt/GPU/ConstraintTypes.h>
 #include "JoltGpuProgramSources.h"
 #include "JoltGpuSleepLayout.h"
 
@@ -306,6 +307,9 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
     {
         uint32_t status = 0;
         packet.Readback(0)->ReadInto(&status, sizeof(status));
+        if (status & ConstraintNotReady)
+            throw std::runtime_error("GPU constraint topology did not validate (status " +
+                                     std::to_string(status & ~ConstraintNotReady) + ")");
         if (status)
             throw std::runtime_error("GPU sleep failed state/root validation (status " + std::to_string(status) + ")");
     }
@@ -317,6 +321,9 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = owner->entries[op.entry].kernel;
         dispatch.groupCountX = Groups(count);
+        if (wakeArguments)
+            dispatch.indirectArguments = rhi::ComputeIndirectArguments{
+                wakeArguments, uint64_t(dispatch.groupCountX - 1u) * sizeof(ConstraintScheduleWord)};
         rhi::ComputeDispatchProof proof;
         for (Port port : owner->entries[op.entry].ports) {
             auto buffer = port == Params ? params : port == Work ? work : buffers[port];
@@ -455,6 +462,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         return work;
     }
     std::shared_ptr<Impl> owner;
+    std::shared_ptr<rhi::ComputeBuffer> wakeArguments;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
     std::shared_ptr<BoundsValidation> boundsValidation;
     std::vector<Operation> plan;
@@ -520,7 +528,9 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     e->initializeStatus = false;
     e->buffers[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
     e->buffers[Patches] = contacts->patches;
-    e->Add(Clear, p.selected.y, p.selected.z, p);
+    e->wakeArguments = topology.wakeArguments;
+    if (!e->wakeArguments)
+        e->Add(Clear, p.selected.y, p.selected.z, p);
     e->Add(SeedBodies, p.selected.y, p.selected.z, p);
     p.layout.z = selected.selection.w;
     p.layout.w = selected.selectedCounts.z;

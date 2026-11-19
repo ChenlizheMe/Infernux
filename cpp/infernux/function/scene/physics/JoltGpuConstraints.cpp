@@ -65,6 +65,7 @@ enum Entry : uint8_t
     Finalize,
     WriteBodyRoots,
     InitializeIsolatedTopology,
+    BuildLocalTopology,
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> EntryNames{"constraint_init_words",
@@ -91,7 +92,8 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"constraint_init_w
                                                               "constraint_write_islands",
                                                               "constraint_finalize",
                                                               "constraint_write_body_roots",
-                                                              "constraint_initialize_isolated_topology"};
+                                                              "constraint_initialize_isolated_topology",
+                                                              "constraint_build_local_topology"};
 constexpr uint32_t Bit(Port port)
 {
     return 1u << port;
@@ -123,7 +125,8 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | K | S,
                                                       P | S,
                                                       P | K | S | C,
-                                                      P | K | S | B | V};
+                                                      P | K | S | B | V,
+                                                      P | S | B | C | V | Bit(TopologyArguments)};
 
 struct PortLayout
 {
@@ -319,6 +322,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Checked(12ull * j);
         Checked(2ull * b);
         const uint32_t allRefs = Checked(uint64_t(j) + p);
+        localTopology = b <= ConstraintLocalBodies && allRefs <= ConstraintLocalRefs;
         frozen[Bodies] = inputs.GetCaptured(Resource::BodyModels);
         frozen[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
         // Joint directory/activity flags stay fixed under this arena writer.
@@ -424,10 +428,14 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             return false;
         if (isolatedTopology || phase != Phase::Connectivity)
             return true;
-        if (!topologyArguments)
-            topologyArguments =
-                Allocate(TopologyArgumentBytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
-        return topologyArguments && Endpoint(parents, voteBytes - sizeof(uint32_t));
+        if (!Endpoint(parents, voteBytes - sizeof(uint32_t)))
+            return false;
+        if (!topologyArguments) {
+            const auto groups = Blocks(std::max({config.counts.x, config.counts.y, config.counts.z}));
+            const auto bytes = localTopology ? uint64_t(groups) * WordBytes : TopologyArgumentBytes;
+            topologyArguments = Allocate(bytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
+        }
+        return topologyArguments != nullptr;
     }
 
     void Add(Entry entry, uint32_t length, const ConstraintParams &value)
@@ -528,6 +536,11 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             Add(Seed, 1u);
             Add(BuildJointRefs, config.counts.y);
             Add(BuildPatchRefs, config.counts.z);
+            if (localTopology) {
+                Add(BuildLocalTopology, 1u);
+                validationStart = plan.size();
+                return;
+            }
             Add(InitParents, config.counts.x);
         }
         Add(ResetConnectivity, 1u);
@@ -649,14 +662,17 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             const bool statusOnly = port == RootVotes && (op.entry == ResetConnectivity || op.entry == JoinEdges ||
                                                           op.entry == FlattenParents || op.entry == GateValidation);
             const uint64_t voteStatusOffset = uint64_t(config.counts.x) * sizeof(uint32_t);
-            if (initSchedule || initParent || initVotes) {
+            if (op.entry == BuildLocalTopology && (port == Parents || port == RootVotes)) {
+                dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
+                proof.writes.push_back({binding, 0u, buffer->GetByteSize()});
+            } else if (initSchedule || initParent || initVotes) {
                 const uint64_t stride = port == Schedule ? WordBytes : 4u;
                 dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
                 proof.writes.push_back({binding, uint64_t(first) * stride, uint64_t(count) * stride});
             } else if (port == TopologyArguments || (statusOnly && op.entry == ResetConnectivity)) {
                 dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
                 proof.writes.push_back({binding, statusOnly ? voteStatusOffset : 0u,
-                                        statusOnly ? sizeof(uint32_t) : TopologyArgumentBytes});
+                                        statusOnly ? sizeof(uint32_t) : buffer->GetByteSize()});
             } else {
                 const bool mayWrite = (port == Schedule && op.entry != MarkRoots) ||
                                       (port == Parents && (op.entry == JoinEdges || op.entry == FlattenParents)) ||
@@ -705,7 +721,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->schedule = schedule;
         value->rootVotes = rootVotes;
         value->execution = shared_from_this();
-        topologyArguments.reset();
+        if (localTopology)
+            value->wakeArguments = std::move(topologyArguments);
+        else
+            topologyArguments.reset();
         // Setup must write/read its actual new generations.
         frozen[Joints].reset();
         frozen[Contacts].reset();
@@ -786,9 +805,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         const auto submittedPhase = phase;
         std::vector<rhi::ComputeBufferRead> reads;
         if (boundary && !isolatedTopology) {
-            if (submittedPhase == Phase::Connectivity)
+            if (submittedPhase == Phase::Connectivity && !localTopology)
                 reads.push_back({schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
-            else
+            else if (submittedPhase == Phase::Assemble)
                 reads.push_back({schedule, uint64_t(config.layout.x) * WordBytes, 2u * WordBytes});
         }
         const auto resumeAfter =
@@ -801,7 +820,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                 // Cursor changes follow acceptance. Boundary decode also needs completion.
                 self->cursor = next;
                 if (boundary) {
-                    if (self->isolatedTopology) {
+                    if (self->isolatedTopology || (submittedPhase == Phase::Connectivity && self->localTopology)) {
                         self->PublishTopology();
                         return {};
                     }
@@ -828,6 +847,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed;
     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completedTopology;
     bool isolatedTopology = false;
+    bool localTopology = false;
     ConstraintParams config{};
     std::array<uint32_t, 2> jointSort{}, patchSort{};
     std::vector<ScanLevel> hierarchy;

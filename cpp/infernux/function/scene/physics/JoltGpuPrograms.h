@@ -113,7 +113,7 @@ struct JoltGpuConstraintWorkset
     std::shared_ptr<rhi::ComputeBuffer> rootVotes;
 };
 
-// One validated topology, before awake-domain numerical setup/finalization.
+// One topology, before awake-domain numerical setup/finalization.
 // Schedule is a source-exclusive live producer, not an installable frozen plan.
 // The opaque execution is the SAME CC producer resumed after setup.
 struct JoltGpuConstraintTopology
@@ -121,6 +121,8 @@ struct JoltGpuConstraintTopology
     uint32_t bodyRootFirst = 0, bodyFirst = 0, bodyCount = 0;
     std::shared_ptr<rhi::ComputeBuffer> schedule, rootVotes;
     std::shared_ptr<void> execution;
+    // For a device-resolved graph, these arguments gate every consumer up to wake completion.
+    std::shared_ptr<rhi::ComputeBuffer> wakeArguments;
 };
 
 class JoltGpuModelUpdate;
