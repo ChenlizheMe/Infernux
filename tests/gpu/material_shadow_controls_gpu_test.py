@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from renderer_fixture import GameFrames
 from infernux import Engine
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel, InxMaterial, LightShadows, SceneManager, Vector3
@@ -12,33 +13,32 @@ from infernux.renderstack.forward_parameters import MSAASamples
 from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
 from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 
-CASTER = '''#version 450
-ShaderInfo {
-    Name "Tutorial Shadow Caster"
-    ShadingModel Unlit
-    Cull Off
-    AlphaClip 0.5
-    CastShadows CAST
-    Properties { Color base_color = [1.0, 0.0, 1.0, 1.0] }
-}
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    s.albedo = material.base_color.rgb;
-    s.alpha = ALPHA;
-}
+def caster_source(*, casts=True, alpha=1.0):
+    return f'''import infernux.shader as shader
+
+class ShadowCaster(shader.surface):
+    shader_id = "tests/shadow_caster"
+    shading_model = shader.ref("infernux/shading/unlit")
+    cull_mode = "none"
+    alpha_clip = 0.5
+    cast_shadows = {casts}
+    base_color = shader.material.color(default=(1.0, 0.0, 1.0, 1.0))
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=self.base_color.rgb, alpha={alpha})
 '''
-RECEIVER = '''#version 450
-ShaderInfo {
-    Name "Tutorial Shadow Receiver"
-    ShadingModel PBR
-    Cull Off
-    ReceiveShadows RECEIVE
-}
-void surface(out SurfaceData s) {
-    s = InitSurfaceData();
-    s.albedo = vec3(0.5);
-    s.smoothness = 0.0;
-}
+
+
+def receiver_source(*, receives=True):
+    return f'''import infernux.shader as shader
+
+class ShadowReceiver(shader.surface):
+    shader_id = "tests/shadow_receiver"
+    cull_mode = "none"
+    receive_shadows = {receives}
+
+    def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
+        return shader.SurfaceData(albedo=shader.vec3(0.5), smoothness=0.0)
 '''
 
 def main():
@@ -52,10 +52,10 @@ def main():
         quad = project / 'Assets/Quad.obj'
         quad.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\n'
                         'vn 0 0 -1\nf 1//1 3//1 2//1\nf 1//1 4//1 3//1\n', encoding='ascii')
-        caster_file = project / 'Assets/Caster.frag'
-        receiver_file = project / 'Assets/Receiver.frag'
-        caster_file.write_text(CASTER.replace('CAST', 'On').replace('ALPHA', '1.0'), encoding='ascii')
-        receiver_file.write_text(RECEIVER.replace('RECEIVE', 'On'), encoding='ascii')
+        caster_file = project / 'Assets/shadow_caster.frag.py'
+        receiver_file = project / 'Assets/shadow_receiver.frag.py'
+        caster_file.write_text(caster_source(), encoding='ascii')
+        receiver_file.write_text(receiver_source(), encoding='ascii')
         frontend = Engine()
         engine = frontend.get_native_engine()
         console = ConsolePanel()
@@ -92,7 +92,7 @@ def main():
             receiver = plane.add_component('MeshRenderer')
             receiver.set_mesh_asset_guid(imported.guid)
             receive_material = InxMaterial.create_default_lit()
-            receive_material.frag_shader_name = 'Tutorial Shadow Receiver'
+            receive_material.frag_shader_name = 'tests/shadow_receiver'
             receiver.set_material(0, receive_material)
             # Shared mesh/material are eligible for native instance batching;
             # the second receiver keeps receiving while the first opts out.
@@ -107,7 +107,7 @@ def main():
             caster = obj.add_component('MeshRenderer')
             caster.set_mesh_asset_guid(imported.guid)
             cast_material = InxMaterial.create_default_unlit()
-            cast_material.frag_shader_name = 'Tutorial Shadow Caster'
+            cast_material.frag_shader_name = 'tests/shadow_caster'
             cast_material.set_color('base_color', 1.0, 0.0, 1.0, 1.0)
             caster.set_material(0, cast_material)
             caster.enabled = False
@@ -129,9 +129,13 @@ def main():
                 path.write_text(text, encoding='ascii')
                 result = AssetManager.reimport_asset(str(path), database=db)
                 assert result, result.error
+            game_frames = GameFrames(engine)
+
             def after_draw():
                 nonlocal phase, frame, changed, ticket, completed
                 try:
+                    if not game_frames.advance():
+                        return
                     frame += 1
                     if ticket is None and frame >= changed + 8:
                         ticket = frontend.request_render_target_readback(True)
@@ -182,15 +186,15 @@ def main():
                             receiver.receives_shadows = False
                         elif phase == 4:
                             receiver.receives_shadows = True
-                            edit(caster_file, CASTER.replace('CAST','Off').replace('ALPHA','1.0'))
+                            edit(caster_file, caster_source(casts=False))
                         elif phase == 5:
-                            edit(caster_file, CASTER.replace('CAST','On').replace('ALPHA','1.0'))
-                            edit(receiver_file, RECEIVER.replace('RECEIVE','Off'))
+                            edit(caster_file, caster_source())
+                            edit(receiver_file, receiver_source(receives=False))
                         elif phase == 6:
-                            edit(receiver_file, RECEIVER.replace('RECEIVE','On'))
-                            edit(caster_file, CASTER.replace('CAST','On').replace('ALPHA','0.0'))
+                            edit(receiver_file, receiver_source())
+                            edit(caster_file, caster_source(alpha=0.0))
                         else:
-                            edit(caster_file, CASTER.replace('CAST','On').replace('ALPHA','1.0'))
+                            edit(caster_file, caster_source())
                         ticket, changed = None, frame
                     if frame > 200:
                         raise AssertionError('Shadow audit timeout')
