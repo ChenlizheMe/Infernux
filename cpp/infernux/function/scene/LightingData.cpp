@@ -615,7 +615,15 @@ void SceneLightCollector::BuildShaderLightingUBO()
         gpuView.viewProjection = view.viewProjection;
         gpuView.atlasScaleOffset = view.atlas.ScaleOffset(m_shadowFrame.atlasSize);
         gpuView.depthTexel = glm::vec4(view.nearPlane, view.farPlane, view.worldUnitsPerTexel, view.filterRadiusTexels);
-        gpuView.splitData = glm::vec4(view.splitNear, view.splitFar, 0.0f, 0.0f);
+        // A sixteenth of a light texel in reversed depth is affine in NDC z.
+        // Orthographic texels stay fixed; perspective texels grow with view depth.
+        const float footprint = view.worldUnitsPerTexel / 16.0f;
+        glm::vec2 receiverBias{std::numeric_limits<float>::epsilon(), footprint / (view.farPlane - view.nearPlane)};
+        if (view.type != lighting::ShadowViewType::DirectionalCascade) {
+            receiverBias.x += footprint / view.farPlane;
+            receiverBias.y *= view.nearPlane / view.farPlane;
+        }
+        gpuView.splitData = glm::vec4(view.splitNear, view.splitFar, receiverBias);
         gpuView.metadata = glm::uvec4(static_cast<uint32_t>(view.type), view.subView, 0u, 0u);
     }
 }

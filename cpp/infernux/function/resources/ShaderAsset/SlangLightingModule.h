@@ -469,7 +469,7 @@ float sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 no
     float2 receiver_texel = atlas_uv * atlas_size;
     float2 gradient = shadow_params.z * shadow_receiver_gradient(
         shadow_view.view_projection, ndc, normalize(normal), 2.0 * texel / atlas_scale);
-    float receiver_depth = ndc.z + shadow_params.y * (1.1920929e-7 * ndc.z);
+    float receiver_depth = ndc.z + shadow_params.y * mad(ndc.z, shadow_view.split_data.z, shadow_view.split_data.w);
     if (!soft_filter) {
         return shadow_bilinear_pcf(atlas_uv, receiver_texel, receiver_depth, gradient, tile_min, tile_max, atlas_size);
     }

@@ -43,22 +43,6 @@
 namespace infernux
 {
 
-namespace
-{
-
-ShadowViewGpuData PackShadowView(const lighting::ShadowView &view, uint32_t atlasSize)
-{
-    ShadowViewGpuData result{};
-    result.viewProjection = view.viewProjection;
-    result.atlasScaleOffset = view.atlas.ScaleOffset(atlasSize);
-    result.depthTexel = glm::vec4(view.nearPlane, view.farPlane, view.worldUnitsPerTexel, view.filterRadiusTexels);
-    result.splitData = glm::vec4(view.splitNear, view.splitFar, 0.0f, 0.0f);
-    result.metadata = glm::uvec4(static_cast<uint32_t>(view.type), view.subView, 0u, 0u);
-    return result;
-}
-
-} // namespace
-
 // ============================================================================
 // Material UBO Management
 // ============================================================================
