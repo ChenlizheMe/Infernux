@@ -96,11 +96,16 @@ try {
     auto &presentation = m_backend.Presentation();
     const VkExtent2D extent = presentation.GetExtent();
     uint32_t imageIndex = 0;
+    int64_t acquireWaitNs = 0;
     bool presenting = false;
     if (output != WindowOutput::Disabled && extent.width && extent.height) {
+        const auto beforeAcquire = std::chrono::steady_clock::now();
         const auto result = presentation.AcquireNextImage(frameSlot, imageIndex);
         switch (result) {
         case vk::SwapchainResult::Success:
+            acquireWaitNs =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - beforeAcquire)
+                    .count();
             presenting = true;
             break;
         case vk::SwapchainResult::SkipFrame:
@@ -479,6 +484,7 @@ try {
             timing.acceptedNs =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(acceptedAt.time_since_epoch()).count();
             timing.hostWaitNs =
+                acquireWaitNs +
                 std::chrono::duration_cast<std::chrono::nanoseconds>(acceptedAt - beforePresent).count();
             if (m_firstVisiblePresentationPending) {
                 m_firstVisiblePresentationPending = false;
