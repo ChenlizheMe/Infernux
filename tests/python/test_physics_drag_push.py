@@ -11,17 +11,35 @@ Regression tests for two historical bugs:
 """
 from __future__ import annotations
 
+from time import monotonic
+from types import SimpleNamespace
+
 import pytest
 
-from infernux.lib import Physics, SceneManager, Vector3
+from infernux.lib import Physics, Vector3
+from tests.python.test_integration_physics import _collider_authoring_project, _physics_play
 
-DT = 1.0 / 60.0
 
+@pytest.fixture
+def running_scene(_physics_play, _collider_authoring_project):
+    state = _collider_authoring_project
+    dt = 1 / 60
+    scene = _physics_play.start()
+    with _physics_play.scope():
+        state.native.set_fixed_time_step(dt)
+        assert state.manager.resume()
 
-def _step(n: int = 1):
-    sm = SceneManager.instance()
-    for _ in range(n):
-        sm.step(DT)
+        def frames(count):
+            for _ in range(count):
+                goal = state.native.published_fixed_step_index + 1
+                state.host.tick(dt)
+                deadline = monotonic() + 30
+                while state.native.published_fixed_step_index < goal:
+                    assert monotonic() < deadline, "Timed out waiting for the live physics step"
+                    state.host.tick(0)
+                assert state.native.completed_fixed_step_index == state.native.published_fixed_step_index == goal
+
+        yield SimpleNamespace(scene=scene, frames=frames)
 
 
 def _make_ground(scene):
@@ -52,38 +70,35 @@ def _make_cube(scene, pos, *, kinematic: bool):
     return cube, rb
 
 
-def _drag_cube(cube, from_x: float, to_x: float, frames: int):
+def _drag_cube(running_scene, cube, from_x: float, to_x: float, frames: int):
     """Simulate a gizmo drag: write transform.position once per frame."""
     for i in range(frames):
         t = (i + 1) / frames
         x = from_x + (to_x - from_x) * t
         cube.transform.position = Vector3(x, 0.5, 0)
-        _step(1)
+        running_scene.frames(1)
 
 
-def test_static_collider_drag_pushes_sphere(scene):
+def test_static_collider_drag_pushes_sphere(running_scene):
+    scene = running_scene.scene
     Physics.set_gravity(Vector3(0, -9.81, 0))
     _make_ground(scene)
     sphere, srb = _make_sphere(scene, Vector3(0, 0.5, 0))
     cube, _ = _make_cube(scene, Vector3(-3, 0.5, 0), kinematic=False)
 
-    sm = SceneManager.instance()
-    sm.play()
-    sm.pause()
-
     # Settle: sphere should come to rest and sleep.
-    _step(120)
+    running_scene.frames(120)
     assert srb.is_sleeping(), "sphere should be asleep after settling"
 
     # Drag the cube into the sphere at 3 m/s (0.05 m per frame).
-    _drag_cube(cube, -3.0, 0.0, frames=60)
+    _drag_cube(running_scene, cube, -3.0, 0.0, frames=60)
 
     x_after_drag = sphere.transform.position.x
     vel = srb.velocity
     print(f"\n[static] sphere x after drag = {x_after_drag:.3f}, vel = ({vel.x:.3f}, {vel.y:.3f}, {vel.z:.3f})")
 
     # Let it keep moving.
-    _step(120)
+    running_scene.frames(120)
     x_final = sphere.transform.position.x
     print(f"[static] sphere x after 2s free run = {x_final:.3f}")
 
@@ -95,26 +110,23 @@ def test_static_collider_drag_pushes_sphere(scene):
     )
 
 
-def test_kinematic_collider_drag_pushes_sphere(scene):
+def test_kinematic_collider_drag_pushes_sphere(running_scene):
+    scene = running_scene.scene
     Physics.set_gravity(Vector3(0, -9.81, 0))
     _make_ground(scene)
     sphere, srb = _make_sphere(scene, Vector3(0, 0.5, 0))
     cube, crb = _make_cube(scene, Vector3(-3, 0.5, 0), kinematic=True)
 
-    sm = SceneManager.instance()
-    sm.play()
-    sm.pause()
-
-    _step(120)
+    running_scene.frames(120)
     assert srb.is_sleeping(), "sphere should be asleep after settling"
 
-    _drag_cube(cube, -3.0, 0.0, frames=60)
+    _drag_cube(running_scene, cube, -3.0, 0.0, frames=60)
 
     x_after_drag = sphere.transform.position.x
     vel = srb.velocity
     print(f"\n[kinematic] sphere x after drag = {x_after_drag:.3f}, vel = ({vel.x:.3f}, {vel.y:.3f}, {vel.z:.3f})")
 
-    _step(120)
+    running_scene.frames(120)
     x_final = sphere.transform.position.x
     cube_pos = cube.transform.position
     body_pos = crb.position
@@ -128,13 +140,12 @@ def test_kinematic_collider_drag_pushes_sphere(scene):
     )
 
 
-def test_gizmo_style_drag_imparts_cross_velocity(scene):
+def test_gizmo_style_drag_imparts_cross_velocity(running_scene):
     """The editor gizmo drive gives a dynamic body contact velocity during a drag."""
-    from types import SimpleNamespace
-
     from infernux.engine.ui.scene_view_panel import SceneViewGizmoMixin
     from infernux.lib import Physics
 
+    scene = running_scene.scene
     Physics.set_gravity(Vector3(0, -9.81, 0))
     _make_ground(scene)
     sphere = scene.create_game_object("Sphere")
@@ -148,10 +159,7 @@ def test_gizmo_style_drag_imparts_cross_velocity(scene):
     cube.add_component("BoxCollider")
     crb = cube.add_component("Rigidbody")
 
-    sm = SceneManager.instance()
-    sm.play()
-    sm.pause()
-    _step(30)
+    running_scene.frames(30)
 
     # Sphere is rolling along +X; cube is dragged along +Z across its path.
     srb.velocity = Vector3(2.0, 0.0, 0.0)
@@ -164,7 +172,7 @@ def test_gizmo_style_drag_imparts_cross_velocity(scene):
     for i in range(steps):
         t = (i + 1) / steps
         SceneViewGizmoMixin._apply_gizmo_position(drive, cube, (1.5, 0.5, z0 + (z1 - z0) * t))
-        _step(1)
+        running_scene.frames(1)
 
     # Gizmo drag end: restore dynamics on the dragged body.
     crb.is_kinematic = False
@@ -177,7 +185,7 @@ def test_gizmo_style_drag_imparts_cross_velocity(scene):
     assert v.z > 1.0, f"cross impact imparted no Z velocity (vz={v.z:.3f})"
 
     z_impact = sphere.transform.position.z
-    _step(90)
+    running_scene.frames(90)
     z_final = sphere.transform.position.z
     print(f"[gizmo-style] sphere z {z_impact:.2f} -> {z_final:.2f} after 1.5s")
     assert z_final > z_impact + 1.0, (
@@ -185,21 +193,19 @@ def test_gizmo_style_drag_imparts_cross_velocity(scene):
     )
 
 
-def test_kinematic_body_does_not_drift_after_drag(scene):
+def test_kinematic_body_does_not_drift_after_drag(running_scene):
     """After a gizmo drag ends, the kinematic body must stop at the target."""
+    scene = running_scene.scene
     Physics.set_gravity(Vector3(0, -9.81, 0))
     _make_ground(scene)
     cube, crb = _make_cube(scene, Vector3(-3, 0.5, 0), kinematic=True)
 
-    sm = SceneManager.instance()
-    sm.play()
-    sm.pause()
-    _step(30)
+    running_scene.frames(30)
 
-    _drag_cube(cube, -3.0, 0.0, frames=60)
+    _drag_cube(running_scene, cube, -3.0, 0.0, frames=60)
 
     # Stop dragging; run 2 seconds.
-    _step(120)
+    running_scene.frames(120)
     tf = cube.transform.position
     body = crb.position
     print(f"\n[drift] cube transform = ({tf.x:.3f}, {tf.y:.3f}, {tf.z:.3f})")

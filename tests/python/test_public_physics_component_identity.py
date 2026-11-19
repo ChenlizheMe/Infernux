@@ -3,9 +3,10 @@
 import pytest
 
 import infernux as inx
-from infernux.lib import SceneManager, Vector3
+from infernux.lib import Vector3
 from infernux.lib import CollisionInfo, RaycastHit
 from infernux.physics import Physics
+from tests.python.test_integration_physics import _collider_authoring_project, _physics_play, simulation
 
 
 class PublicPhysicsProbe(inx.InxComponent):
@@ -28,8 +29,8 @@ class PublicPhysicsProbe(inx.InxComponent):
 
 @pytest.mark.parametrize('shape', [inx.BoxCollider, inx.SphereCollider, inx.CapsuleCollider, inx.CylinderCollider])
 @pytest.mark.parametrize('phase', ['enter', 'stay', 'exit'])
-def test_trigger_bridge_reuses_exact_public_collider(scene, shape, phase):
-    SceneManager.instance().play()
+def test_trigger_bridge_reuses_exact_public_collider(simulation, shape, phase):
+    scene = simulation.scene
     owner = scene.create_game_object('CallbackCollider')
     expected = owner.add_component(shape)
     listener = scene.create_game_object('CallbackListener').add_component(PublicPhysicsProbe)
@@ -41,7 +42,8 @@ def test_trigger_bridge_reuses_exact_public_collider(scene, shape, phase):
     assert received.game_object is owner
 
 
-def test_real_contact_callbacks_reuse_public_collider_through_all_phases(scene):
+def test_real_contact_callbacks_reuse_public_collider_through_all_phases(simulation):
+    scene = simulation.scene
     ground = scene.create_game_object('CanonicalGround')
     ground.transform.position = Vector3(0, -.5, 0)
     ground.transform.local_scale = Vector3(20, 1, 20)
@@ -51,14 +53,9 @@ def test_real_contact_callbacks_reuse_public_collider_through_all_phases(scene):
     ball.add_component(inx.SphereCollider)
     body = ball.add_component(inx.Rigidbody)
     listener = ball.add_component(PublicPhysicsProbe)
-    manager = SceneManager.instance()
-    manager.play()
-    manager.pause()
-    for _ in range(100):
-        manager.step(.02)
+    simulation.frames(100, .02)
     body.velocity = Vector3(0, 15, 0)
-    for _ in range(15):
-        manager.step(.02)
+    simulation.frames(15, .02)
     events = [(name, collider) for name, collider in listener.events if name.startswith('collision-')]
     assert {name for name, _ in events} == {'collision-enter', 'collision-stay', 'collision-exit'}
     assert all(collider is expected for _, collider in events)
@@ -99,8 +96,8 @@ def test_overlap_queries_return_public_components_with_stable_identity(scene, qu
 
 
 @pytest.mark.parametrize('phase', ['enter', 'stay', 'exit'])
-def test_trigger_component_identity_does_not_select_first_same_type_collider(scene, phase):
-    SceneManager.instance().play()
+def test_trigger_component_identity_does_not_select_first_same_type_collider(simulation, phase):
+    scene = simulation.scene
     owner = scene.create_game_object('CompoundCallbackOwner')
     first = owner.add_component(inx.BoxCollider)
     second = owner.add_component(inx.BoxCollider)

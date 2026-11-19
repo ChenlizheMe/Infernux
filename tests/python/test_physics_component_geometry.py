@@ -6,7 +6,8 @@ import pytest
 
 from infernux.components.builtin import Rigidbody, SphereCollider
 from infernux.gizmos import Gizmos
-from infernux.lib import Physics, SceneManager, Vector3, quatf
+from infernux.lib import Physics, Vector3, quatf
+from tests.python.test_integration_physics import _collider_authoring_project, _physics_play, simulation
 
 
 def rotation_value(values, form):
@@ -14,23 +15,19 @@ def rotation_value(values, form):
 
 
 @pytest.mark.parametrize('form,angle', [('tuple', 0), ('list', .7), ('native', math.pi / 2)])
-def test_move_rotation_applies_public_quaternion_inputs(scene, form, angle):
-    owner = scene.create_game_object("Kinematic quaternion input")
+def test_move_rotation_applies_public_quaternion_inputs(simulation, form, angle):
+    owner = simulation.scene.create_game_object("Kinematic quaternion input")
     body = owner.add_component("Rigidbody")
     assert isinstance(body, Rigidbody)
     body.is_kinematic = True
     owner.add_component("BoxCollider")
-    manager = SceneManager.instance()
-    manager.play()
-    manager.pause()
-    dt = manager.get_fixed_time_step()
-    manager.step(dt)
+    simulation.fixed()
     target = (0, math.sin(angle / 2), 0, math.cos(angle / 2))
     body.move_rotation(rotation_value(target, form))
-    manager.step(dt)
+    simulation.fixed()
     assert abs(sum(a * b for a, b in zip(body.rotation, target))) == pytest.approx(1, abs=2e-5)
     # Settling the kinematic target must not leave residual angular movement.
-    manager.step(dt)
+    simulation.fixed()
     assert abs(sum(a * b for a, b in zip(body.rotation, target))) == pytest.approx(1, abs=2e-5)
 
 

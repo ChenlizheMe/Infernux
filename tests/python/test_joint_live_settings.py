@@ -2,13 +2,14 @@
 import pytest
 
 from infernux.lib import Vector3
-from tests.python.test_joint_shape_publication import _mechanism, _step
+from tests.python.test_integration_physics import _collider_authoring_project, _physics_play, simulation
+from tests.python.test_joint_shape_publication import _mechanism
 
 
 @pytest.mark.parametrize('kind', ['HingeJoint', 'SliderJoint'])
 @pytest.mark.parametrize('setting', ['use_limits', 'minimum', 'maximum', 'enable_collision'])
-def test_live_joint_settings_retain_angle_or_displacement_reference(scene, kind, setting):
-    owner, body, joint, support = _mechanism(scene, kind)
+def test_live_joint_settings_retain_angle_or_displacement_reference(simulation, kind, setting):
+    owner, body, joint, support = _mechanism(simulation, kind)
     joint.use_limits = True
     if kind == 'HingeJoint':
         joint.minimum_angle = -30
@@ -18,7 +19,7 @@ def test_live_joint_settings_retain_angle_or_displacement_reference(scene, kind,
         joint.minimum_distance = -1
         joint.maximum_distance = 1
         body.velocity = Vector3(1, 0, 0)
-    _step(10)
+    simulation.frames(10)
     field = 'current_angle' if kind == 'HingeJoint' else 'current_position'
     before = getattr(joint, field)
     assert abs(before) > .05

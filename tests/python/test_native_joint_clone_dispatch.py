@@ -3,6 +3,7 @@ import pytest
 
 from infernux import Instantiate, InxComponent, serialized_field
 from infernux.lib import Physics, SceneManager, Vector3
+from tests.python.test_integration_physics import _collider_authoring_project, _physics_play, simulation
 
 
 class CloneStepProbe(InxComponent):
@@ -24,13 +25,10 @@ def anchor(body):
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("cloned", [False, True])
 @pytest.mark.parametrize("with_script", [False, True])
-def test_native_clone_receives_fixed_steps_and_rebuilds_body(scene, kind, nested, cloned, with_script):
+def test_native_clone_receives_fixed_steps_and_rebuilds_body(simulation, kind, nested, cloned, with_script):
+    scene = simulation.scene
     manager = SceneManager.instance()
     dt = manager.get_fixed_time_step()
-
-    def steps(count):
-        for _ in range(count):
-            manager.step(dt)
 
     def actor(name, x):
         owner = scene.create_game_object(name)
@@ -53,10 +51,8 @@ def test_native_clone_receives_fixed_steps_and_rebuilds_body(scene, kind, nested
     if with_script:
         prototype.add_component(CloneStepProbe)
     _, free_body = actor("Unconstrained control", 8)
-    manager.play()
-    manager.pause()
     Physics.sync_transforms()
-    steps(3)
+    simulation.frames(3, dt)
     if cloned:
         clone = Instantiate(root)
         clone.transform.position = Vector3(4, 0 if nested else 3, 0)
@@ -71,19 +67,19 @@ def test_native_clone_receives_fixed_steps_and_rebuilds_body(scene, kind, nested
     else:
         assert list(target.get_py_components() or []) == []
     Physics.sync_transforms()
-    steps(3)
+    simulation.frames(3, dt)
     # A later body replacement still needs native fixed dispatch to rebuild
     # the constraint, without setting a joint property or adding a script.
     for rebuild in (False, True):
         if rebuild:
             assert target.remove_component(target.get_component("BoxCollider"))
             target.add_component("BoxCollider")
-            steps(3)
+            simulation.frames(3, dt)
         before, free_y = anchor(body), free_body.position.y
         ticks_before = target.get_component(CloneStepProbe).ticks if with_script else 0
         time_before = manager.fixed_time
         body.velocity = free_body.velocity = Vector3(0, 6, 0)
-        steps(10)
+        simulation.frames(10, dt)
         assert manager.fixed_time - time_before == pytest.approx(10*dt, abs=1e-5)
         assert free_body.position.y - free_y == pytest.approx(60*dt, abs=.015)
         assert anchor(body) == pytest.approx(before, abs=.025)

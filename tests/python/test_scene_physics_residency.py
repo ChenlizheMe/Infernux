@@ -6,6 +6,7 @@ import pytest
 
 from infernux.lib import Physics, SceneManager, Vector3, _Infernux as native
 from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+from tests.python.test_integration_physics import _collider_authoring_project, _physics_play, simulation
 
 
 def _hit(x):
@@ -40,13 +41,20 @@ def _queue_change(owner, operation, x):
         ("move", "native_commit", True),
     ],
 )
-def test_other_scene_pending_physics_survives_publication(scene, operation, boundary, persistent):
+def test_other_scene_pending_physics_survives_publication(scene, operation, boundary, persistent, _physics_play):
+    if persistent:
+        runtime = _physics_play.start()
+        with _physics_play.scope():
+            _check_scene_publication(runtime, operation, boundary, persistent)
+    else:
+        _check_scene_publication(scene, operation, boundary, persistent)
+
+
+def _check_scene_publication(scene, operation, boundary, persistent):
     manager = SceneManager.instance()
     target = manager.create_scene("ReplacementTarget")
     owner = scene.create_game_object("UnaffectedOwner")
     if persistent:
-        manager.play()
-        manager.pause()
         manager.dont_destroy_on_load(owner)
         manager.prepare_active_scene_replacement()
         assert owner.scene is manager.get_runtime_persistent_scene()
@@ -109,10 +117,9 @@ def test_retained_world_resolves_pending_bodies_before_suspension(scene, operati
             token.rollback()
 
 
-def test_single_prepare_preserves_pending_persistent_reenable(scene):
+def test_single_prepare_preserves_pending_persistent_reenable(simulation):
+    scene = simulation.scene
     manager = SceneManager.instance()
-    manager.play()
-    manager.pause()
     owner = scene.create_game_object("PersistentSingle")
     manager.dont_destroy_on_load(owner)
     manager.prepare_active_scene_replacement()

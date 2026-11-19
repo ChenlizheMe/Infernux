@@ -4,6 +4,7 @@ import math
 import pytest
 
 from infernux.lib import ForceMode, SceneManager, Vector3
+from tests.python.test_integration_physics import _collider_authoring_project, _physics_play, simulation
 
 
 def _pendulum(scene, wide=False, mass=1, angle=0, limited=False):
@@ -27,20 +28,19 @@ def _pendulum(scene, wide=False, mass=1, angle=0, limited=False):
 @pytest.mark.parametrize('rate', [30, 60, 120])
 @pytest.mark.parametrize('wide', [False, True])
 @pytest.mark.parametrize('mass', [1, 20])
-def test_free_pendulum_does_not_sleep_at_visible_turning_point(scene, rate, wide, mass):
+def test_free_pendulum_does_not_sleep_at_visible_turning_point(simulation, rate, wide, mass):
+    scene = simulation.scene
     owner, body, joint = _pendulum(scene, wide, mass)
     manager = SceneManager.instance()
     previous = manager.get_fixed_time_step()
     dt = 1 / rate
     manager.set_fixed_time_step(dt)
-    manager.play()
-    manager.pause()
     try:
-        manager.step(dt)
+        simulation.fixed()
         body.angular_velocity = Vector3(0, 0, 1.2)
         observed_angle = 0
         for _ in range(rate * 20):
-            manager.step(dt)
+            simulation.fixed()
             angle = abs(joint.current_angle)
             observed_angle = max(observed_angle, angle)
             assert math.isfinite(angle)
@@ -54,7 +54,8 @@ def test_free_pendulum_does_not_sleep_at_visible_turning_point(scene, rate, wide
         manager.set_fixed_time_step(previous)
 
 
-def test_supported_body_grid_retires_without_disabling_sleep(scene):
+def test_supported_body_grid_retires_without_disabling_sleep(simulation):
+    scene = simulation.scene
     floor = scene.create_game_object('Sleep grid floor')
     floor.transform.position = Vector3(0, -.5, 0)
     floor.transform.local_scale = Vector3(24, 1, 24)
@@ -70,16 +71,14 @@ def test_supported_body_grid_retires_without_disabling_sleep(scene):
     manager = SceneManager.instance()
     previous = manager.get_fixed_time_step()
     manager.set_fixed_time_step(1 / 60)
-    manager.play()
-    manager.pause()
     try:
         for _ in range(180):
-            manager.step(1 / 60)
+            simulation.fixed()
         assert all(body.is_sleeping() for body in bodies)
         before = [body.position for body in bodies]
         bodies[0].add_force(Vector3(0, 1, 0), ForceMode.Impulse)
         for _ in range(6):
-            manager.step(1 / 60)
+            simulation.fixed()
         assert all(body.is_sleeping() for body in bodies[1:])
         assert all((body.position - position).magnitude < .0001
                    for body, position in zip(bodies[1:], before[1:]))
@@ -88,7 +87,8 @@ def test_supported_body_grid_retires_without_disabling_sleep(scene):
 
 
 @pytest.mark.parametrize('kind', ['pendulum', 'hinge_limit', 'floor_contact'])
-def test_stationary_mechanisms_still_sleep_and_wake_on_impulse(scene, kind):
+def test_stationary_mechanisms_still_sleep_and_wake_on_impulse(simulation, kind):
+    scene = simulation.scene
     if kind == 'floor_contact':
         floor = scene.create_game_object('Sleep support floor')
         floor.transform.position = Vector3(0, -.5, 0)
@@ -105,22 +105,20 @@ def test_stationary_mechanisms_still_sleep_and_wake_on_impulse(scene, kind):
     previous = manager.get_fixed_time_step()
     dt = 1 / 60
     manager.set_fixed_time_step(dt)
-    manager.play()
-    manager.pause()
     try:
         for _ in range(600):
-            manager.step(dt)
+            simulation.fixed()
             if body.is_sleeping():
                 break
         assert body.is_sleeping(), f'{kind} failed to retire after coming to rest'
         before = body.position
         for _ in range(60):
-            manager.step(dt)
+            simulation.fixed()
         assert (body.position - before).magnitude < .0001
         body.add_force(Vector3(0, 1, 0) if kind == 'floor_contact' else Vector3(2, 0, 0), ForceMode.Impulse)
         assert not body.is_sleeping()
         for _ in range(6):
-            manager.step(dt)
+            simulation.fixed()
         assert (body.position - before).magnitude > .0001
     finally:
         manager.set_fixed_time_step(previous)

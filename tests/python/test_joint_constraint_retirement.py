@@ -4,7 +4,7 @@ import math
 import pytest
 
 from infernux.lib import PhysicsBackend, SceneManager, Vector3
-from tests.python.test_integration_physics import _collider_authoring_project, _physics_play
+from tests.python.test_integration_physics import _collider_authoring_project, _physics_play, simulation
 
 
 @pytest.fixture(autouse=True)
@@ -16,7 +16,7 @@ def fixed_step(engine):
     manager.set_fixed_time_step(previous)
 
 
-def make_joint(scene, kind, support_scene=None, *, start=True):
+def make_joint(scene, kind, support_scene=None):
     support_scene = support_scene or scene
     support = support_scene.create_game_object("Joint support")
     support.transform.position = Vector3(0, 3, 0)
@@ -35,27 +35,13 @@ def make_joint(scene, kind, support_scene=None, *, start=True):
     joint = owner.add_component(kind)
     joint.axis = Vector3(0, 0, 1) if kind == "HingeJoint" else Vector3(1, 0, 0)
     joint.connected_body = support_body
-    if start:
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        steps(3)
-        assert displacement(body) == pytest.approx(0, abs=.015)
     return owner, body, joint, support, support_body
 
 
-def steps(count, play=None):
-    if play is not None:
-        play.frames(count)
-        return
-    for _ in range(count):
-        SceneManager.instance().step(1 / 60)
-
-
-def displacement(body, play=None):
+def displacement(body, play):
     body.velocity = Vector3(0, 6, 0)
     before = body.position.y
-    steps(10, play)
+    play.frames(10)
     after = body.position.y
     body.velocity = Vector3(0, 0, 0)
     return after - before
@@ -74,7 +60,7 @@ def test_target_retirement_publishes_inactive_joint_before_next_fixed_step(scene
     manager = SceneManager.instance()
     support_scene = manager.create_scene("Support world") if operation == "unload_target" else scene
     support_scene.physics_backend = backend
-    make_joint(scene, kind, support_scene, start=False)
+    make_joint(scene, kind, support_scene)
     support_scene_name = support_scene.name
     # Play snapshots remap references across resident Scenes. A standalone
     # authoring asset cannot encode another Scene's native component identity.
@@ -87,7 +73,7 @@ def test_target_retirement_publishes_inactive_joint_before_next_fixed_step(scene
         joint = owner.get_component(kind)
         support = support_scene.find("Joint support")
         support_body = support.get_component("Rigidbody")
-        steps(3, _physics_play)
+        _physics_play.frames(3)
         assert displacement(body, _physics_play) == pytest.approx(0, abs=.015)
         joint_handle = joint.handle
         support_handle = support.handle
@@ -110,14 +96,14 @@ def test_target_retirement_publishes_inactive_joint_before_next_fixed_step(scene
         assert joint.connected_body is None
         reader = native_joint if read_path == "native" else joint
         assert current(reader, kind) == 0
-        steps(1, _physics_play)
+        _physics_play.frames(1)
         assert current(joint, kind) == 0
         assert scene.resolve_component(joint_handle) is not None
         assert displacement(body, _physics_play) == pytest.approx(1, abs=.015)
         # Reuse the exact public object after retirement. An explicit None means
         # fixed world, unlike a missing nonzero target reference.
         joint.connected_body = None
-        steps(1, _physics_play)
+        _physics_play.frames(1)
         assert displacement(body, _physics_play) == pytest.approx(0, abs=.015)
         assert math.isfinite(current(joint, kind))
 
@@ -125,75 +111,84 @@ def test_target_retirement_publishes_inactive_joint_before_next_fixed_step(scene
 @pytest.mark.parametrize("kind", ["HingeJoint", "SliderJoint"])
 @pytest.mark.parametrize("switch", ["joint", "body", "owner"])
 def test_joint_repeated_disable_enable_rebuilds_constraint(scene, kind, switch, _physics_play):
-    make_joint(scene, kind, start=False)
+    make_joint(scene, kind)
     runtime = _physics_play.start()
     with _physics_play.scope():
         owner = runtime.find("Joint mechanism")
         body = owner.get_component("Rigidbody")
         joint = owner.get_component(kind)
         support_body = runtime.find("Joint support").get_component("Rigidbody")
-        steps(3, _physics_play)
+        _physics_play.frames(3)
         assert displacement(body, _physics_play) == pytest.approx(0, abs=.015)
         target = {"joint": joint, "body": support_body, "owner": owner}[switch]
         attr = "active" if switch == "owner" else "enabled"
         for _ in range(3):
             setattr(target, attr, False)
-            steps(1, _physics_play)
+            _physics_play.frames(1)
             assert current(joint, kind) == 0
             if switch != "owner":
                 assert displacement(body, _physics_play) == pytest.approx(1, abs=.015)
             setattr(target, attr, True)
-            steps(1, _physics_play)
+            _physics_play.frames(1)
             assert displacement(body, _physics_play) == pytest.approx(0, abs=.015)
             assert math.isfinite(current(joint, kind))
 
 
 @pytest.mark.parametrize("kind", ["HingeJoint", "SliderJoint"])
-def test_removed_joint_stays_dead_while_replacement_binds(scene, kind):
+def test_removed_joint_stays_dead_while_replacement_binds(simulation, kind):
+    scene = simulation.scene
     owner, body, joint, _, support_body = make_joint(scene, kind)
+    simulation.frames(3)
+    assert displacement(body, simulation) == pytest.approx(0, abs=.015)
     handle = joint.handle
     assert owner.remove_component(joint)
     assert scene.resolve_component(handle) is None
     with pytest.raises(ReferenceError):
         current(joint, kind)
-    assert displacement(body) == pytest.approx(1, abs=.015)
+    assert displacement(body, simulation) == pytest.approx(1, abs=.015)
     replacement = owner.add_component(kind)
     replacement.axis = Vector3(0, 0, 1) if kind == "HingeJoint" else Vector3(1, 0, 0)
     replacement.connected_body = support_body
-    steps(1)
-    assert displacement(body) == pytest.approx(0, abs=.015)
+    simulation.frames(1)
+    assert displacement(body, simulation) == pytest.approx(0, abs=.015)
 
 
 @pytest.mark.parametrize("kind", ["HingeJoint", "SliderJoint"])
-def test_owner_scene_unload_releases_constraint_on_other_scene_body(scene, kind):
+def test_owner_scene_unload_releases_constraint_on_other_scene_body(simulation, kind):
+    scene = simulation.scene
     manager = SceneManager.instance()
     support_scene = manager.create_scene("Surviving support")
-    _, _, _, _, support_body = make_joint(scene, kind, support_scene)
+    _, owner_body, _, _, support_body = make_joint(scene, kind, support_scene)
+    simulation.frames(3)
+    assert displacement(owner_body, simulation) == pytest.approx(0, abs=.015)
     world_id = scene.world_id
     manager.unload_scene(scene)
     assert manager.get_scene_by_world_id(world_id) is None
     support_body.is_kinematic = False
-    steps(1)
-    assert displacement(support_body) == pytest.approx(1, abs=.015)
+    simulation.frames(1)
+    assert displacement(support_body, simulation) == pytest.approx(1, abs=.015)
 
 
 @pytest.mark.parametrize("kind", ["HingeJoint", "SliderJoint"])
-def test_constraint_owner_retirement_and_reconnection_stress(scene, kind):
+def test_constraint_owner_retirement_and_reconnection_stress(simulation, kind):
+    scene = simulation.scene
     for cycle in range(32):
         owner, body, joint, support, support_body = make_joint(scene, kind)
+        simulation.frames(3)
+        assert displacement(body, simulation) == pytest.approx(0, abs=.015)
         target_collider = support.get_component("BoxCollider")
         assert support.remove_component(target_collider)
         assert current(joint._require_cpp_component(), kind) == 0
         assert current(joint, kind) == 0
         assert joint.connected_body is support_body
-        assert displacement(body) == pytest.approx(0, abs=.015)
+        assert displacement(body, simulation) == pytest.approx(0, abs=.015)
         support_body.enabled = False
         assert current(joint, kind) == 0
-        assert displacement(body) == pytest.approx(1, abs=.015)
+        assert displacement(body, simulation) == pytest.approx(1, abs=.015)
         support_body.enabled = True
         support.add_component("BoxCollider")
-        steps(1)
-        assert displacement(body) == pytest.approx(0, abs=.015)
+        simulation.frames(1)
+        assert displacement(body, simulation) == pytest.approx(0, abs=.015)
         # Both destruction orders must unregister the non-owning constraint
         # owner reference before either component allocation can be reused.
         first, second = (owner, support) if cycle % 2 else (support, owner)
