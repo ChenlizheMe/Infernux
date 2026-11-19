@@ -1484,8 +1484,7 @@ JoltGpuPrograms::JoltGpuPrograms(rhi::ComputeHost &host, const ShaderTargetCode 
 bool JoltGpuPrograms::TryPrepareStartupPrograms(bool hasLocalContacts)
 {
     bool ready = m_sleep->TryPrepareStartupPrograms();
-    for (const auto stage :
-         {Stage::PrepareKinematics, Stage::ApplyForces, Stage::BuildBounds, Stage::Integrate, Stage::FinishTick})
+    for (const auto stage : {Stage::PrepareKinematics, Stage::ApplyForces, Stage::BuildBounds, Stage::Integrate})
         ready &= m_entries[static_cast<size_t>(stage)].kernel->TryPreparePipeline();
     if (hasLocalContacts) {
         for (const auto stage : {Stage::CollidePairs, Stage::SetupContacts, Stage::StoreContactHistory})

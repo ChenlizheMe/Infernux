@@ -257,8 +257,8 @@ class JoltGpuTick final
     /// CPU forces
     /// are moved into one parameter/force upload packet and captured only when
     /// it is accepted. dt is the logical fixed step; each substep uses dt/N.
-    /// Kinematic preparation precedes all substeps and FinishTick follows them
-    /// once. Target runtime state is live, outside the five captured inputs.
+    /// Kinematic preparation latches the drive once for all substeps. Target
+    /// state remains live between ticks, outside the captured inputs.
     /// The owner keeps solver state and the force accumulator exclusive until
     /// completion. Later controller results wait for the next control boundary;
     /// they must not overwrite this accumulator while its tick is running.

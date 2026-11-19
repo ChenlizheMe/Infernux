@@ -338,7 +338,6 @@ class JoltGpuTick::Impl
         StoreContactHistory,
         UpdateSleep,
         WakeFinalPrescribedBounds,
-        FinishTick,
         Done
     };
     struct StageCursor
@@ -611,8 +610,7 @@ class JoltGpuTick::Impl
         return stageCursor.phase == Phase::PrepareContactStore || stageCursor.phase == Phase::StoreContactHistory ||
                stageCursor.phase == Phase::ParticipantAccept || stageCursor.phase == Phase::UpdateSleep ||
                stageCursor.phase == Phase::WakeFinalPrescribedBounds ||
-               stageCursor.phase == Phase::CaptureArticulationRotors || stageCursor.phase == Phase::FinishTick ||
-               stageCursor.phase == Phase::Done;
+               stageCursor.phase == Phase::CaptureArticulationRotors || stageCursor.phase == Phase::Done;
     }
 
     bool PressureSafe() const noexcept
@@ -796,8 +794,6 @@ class JoltGpuTick::Impl
             return {Stage::SolvePosition, Domain::IslandPatches};
         case Phase::FinishJoints:
             return {Stage::FinishJoints, Domain::Joints};
-        case Phase::FinishTick:
-            return {Stage::FinishTick, Domain::Bodies};
         case Phase::CommitArticulationPose:
         case Phase::CaptureArticulationRotors:
         case Phase::ClassifyArticulations:
@@ -1032,10 +1028,7 @@ class JoltGpuTick::Impl
             next.phase = Phase::WakeFinalPrescribedBounds;
             break;
         case Phase::WakeFinalPrescribedBounds:
-            next.phase = ++next.substep < tickParameters.solve.y ? Phase::CaptureArticulationRotors : Phase::FinishTick;
-            break;
-        case Phase::FinishTick:
-            next.phase = Phase::Done;
+            next.phase = ++next.substep < tickParameters.solve.y ? Phase::CaptureArticulationRotors : Phase::Done;
             break;
         case Phase::Done:
             break;
