@@ -3669,16 +3669,8 @@ PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const float *origins, cons
                                                       const std::vector<JoltGpuQueryExportBinding> &exports,
                                                       uint32_t layers, bool triggers) const
 {
-    RequireOwnerThread();
-    auto &domain = CurrentDomain();
-    RequireHealthyStep(domain);
-    if (!domain.UsesGpu())
-        throw std::invalid_argument("Device raycast output requires a GPU physics scene");
     if ((count && (!origins || !directions)) || count > UINT32_MAX)
         throw std::invalid_argument("Raycast batch requires valid arrays within the query index range");
-    for (const auto &binding : exports)
-        if (binding.field < JoltGpuQueryExportField::HitPoint || binding.field > JoltGpuQueryExportField::HitValid)
-            throw std::invalid_argument("Device raycast output requires hit projection fields");
     std::vector<QueryInput> requests;
     requests.reserve(count);
     for (size_t i = 0; i < count; ++i) {
@@ -3688,19 +3680,53 @@ PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const float *origins, cons
                       {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
         requests.push_back(input);
     }
-    // Keep an empty GPU scene a device query too: its zero-leaf publication
-    // produces one miss record per ray through the same query kernels.
+    return ExportRaycastBatch(requests, exports);
+}
+
+PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const JoltGpuQueryVector3Input &origins,
+                                                      const JoltGpuQueryVector3Input &directions, size_t count,
+                                                      float maximum,
+                                                      const std::vector<JoltGpuQueryExportBinding> &exports,
+                                                      uint32_t layers, bool triggers) const
+{
+    if (count > UINT32_MAX || !std::isfinite(maximum) || maximum <= 0)
+        throw std::invalid_argument("GPU raycast requires a valid count and positive finite maximum distance");
+    // A single validated template describes the family. Numerical rays are
+    // packed on the GPU, never uploaded as N author-side QueryInput records.
+    auto input = Query(QueryRay, QueryClosest, layers, triggers);
+    QueryRayInput(input, {}, {1, 0, 0}, maximum);
+    return ExportRaycastBatch({input}, exports,
+                              JoltGpuQueryRayInputs{origins, directions, static_cast<uint32_t>(count)});
+}
+
+PhysicsRigidbodyBatchSource PhysicsWorld::ExportRaycastBatch(const std::vector<QueryInput> &requests,
+                                                             const std::vector<JoltGpuQueryExportBinding> &exports,
+                                                             std::optional<JoltGpuQueryRayInputs> rays) const
+{
+    RequireOwnerThread();
+    auto &domain = CurrentDomain();
+    RequireHealthyStep(domain);
+    if (!domain.UsesGpu())
+        throw std::invalid_argument("Device raycast output requires a GPU physics scene");
+    for (const auto &binding : exports)
+        if (binding.field < JoltGpuQueryExportField::HitPoint || binding.field > JoltGpuQueryExportField::HitValid)
+            throw std::invalid_argument("Device raycast output requires hit projection fields");
+    // The same publication represents an empty scene and produces one miss per ray.
     RequireGpu(domain);
     SealSpatialQuery(domain);
     const auto publication = ReadGpuQueryPublication(domain);
     const auto generation = domain.queryGeneration.load(std::memory_order_acquire);
     std::exception_ptr error;
+    std::shared_ptr<JoltGpuQueryResult> result;
     ObserveSpatialGpuQuery(domain, publication, [&](const auto &accepted) {
         return PrepareJoltGpuQueryWork(
             [&] {
-                auto query = m_gpuQueries->Prepare(accepted, requests, {}, generation, JoltGpuQueryReadback::Device);
+                auto query = m_gpuQueries->Prepare(accepted, requests, {}, generation, JoltGpuQueryReadback::Device, 32,
+                                                   {}, rays);
+                result = query.result;
                 return ContinueJoltGpuControlWork(std::move(query.work), [this, result = query.result, &exports] {
-                    (void)result->GetRecordCount();
+                    if (result->GetSummary().counts.y != QuerySuccess)
+                        return JoltGpuControlWork{};
                     return m_gpuQueries->PrepareExport({result}, exports);
                 });
             },
@@ -3708,6 +3734,7 @@ PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const float *origins, cons
     });
     if (error)
         std::rethrow_exception(error);
+    (void)result->GetRecordCount(); // Deliver a numerical error to the caller without failing the world.
     return {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex, generation};
 }
 

@@ -420,6 +420,15 @@ class Physics(metaclass=_PhysicsMeta):
         within a fixed step. Body, Collider/generation and complete sub-shape
         IDs identify the captured geometry; ``feature`` describes its primitive
         contact feature.
+        ``contact_separation`` is a float32 vector in metres along the contact
+        normal: negative overlap, positive speculative gap, and zero a captured
+        touching point. NaN means no captured separation (Exit events and CPU
+        CCD callbacks). It belongs to the same representative point as
+        ``contact_point``/``feature``; it is not the manifold maximum. Events
+        retain the first manifold's first point, and a Stay is emitted at most
+        once per pair per Fixed. This is not an all-point, all-substep contact
+        distribution or a final-pose penetration query. GPU CCD reports the
+        captured impact separation; CPU CCD does not provide this quantity.
         Reading does not advance physics. An empty completed batch still has
         metadata. Component callbacks aggregate sub-shapes by Collider pair.
         This stream contains no solver impulse; use :meth:`get_contact_impulses`
@@ -563,9 +572,11 @@ class Physics(metaclass=_PhysicsMeta):
 
         The current runtime World must use GPU physics. Selecting GPU on an
         authoring Scene takes effect when Play creates its runtime World.
-        Inputs are C-contiguous
-        float32 NumPy arrays of shape ``(N, 3)``; directions are normalized
-        with the same rules as ``raycast_batch``. ``out`` contains GPU
+        Supply origins and directions as two GPU ``inx.vector3`` buffers
+        (or views), or two C-contiguous float32 NumPy arrays of shape
+        ``(N, 3)``. GPU inputs stay resident, including results of an earlier
+        compute dispatch. Both paths normalize finite, nonzero directions.
+        ``out`` contains GPU
         ``infernux.compute.Buffer`` values: ``hit`` (uint32 scalar), ``point``
         and ``normal`` (float32, 3 lanes), and ``distance`` (float32 scalar).
         All buffers use one compute host and capacity at least N. Only the
@@ -581,6 +592,15 @@ class Physics(metaclass=_PhysicsMeta):
         directly. Query status and range metadata are checked on the host;
         hit values and world numerical state are never read back by this call.
         """
+        from infernux.compute import Buffer
+
+        if isinstance(origins, Buffer) or isinstance(directions, Buffer):
+            inputs = (origins, directions)
+            if not all(isinstance(value, Buffer) and value.device == "gpu" for value in inputs):
+                raise TypeError("pass two GPU vector3 buffers or two float32 NumPy arrays")
+            for value in inputs:
+                value._require_open()
+            origins, directions = ((value._native, value._byte_offset, value.element_count) for value in inputs)
         names = ("hit", "point", "normal", "distance")
         gpu_output = _gpu_state_output(out, names)
         if gpu_output is None:

@@ -149,6 +149,8 @@ void State::Publish(ContactStreamIdentity identity, const Policy &policy, uint32
         e.contactNormal = pair.normal;
         e.relativeVelocity = pair.relativeVelocity;
         e.feature = pair.feature;
+        if (phase != 2)
+            e.contactSeparation = pair.separation;
         output->events.push_back(e);
     };
     auto callbacks = [&](const std::map<PairKey, Pair> &before, const std::map<PairKey, Pair> &after,
@@ -200,7 +202,8 @@ void State::Publish(ContactStreamIdentity identity, const Policy &policy, uint32
                             first.position,
                             orient(first.normal),
                             orient(first.relativeVelocity),
-                            first.feature};
+                            first.feature,
+                            first.separation};
             if (policy.impulses && !manifold.trigger)
                 for (uint32_t i = 0; i < manifold.pointCount; ++i) {
                     const auto &point = frame.points[offset + i];

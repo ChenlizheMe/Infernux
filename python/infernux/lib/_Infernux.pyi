@@ -5496,7 +5496,9 @@ class Physics:
     def set_contact_event_stream_enabled(enabled: bool = ..., include_triggers: bool = ...) -> None: ...
 
     @staticmethod
-    def get_contact_events() -> dict[str, Any]: ...
+    def get_contact_events() -> dict[str, Any]:
+        """Captured representative geometry; contact_separation is signed metres, NaN when unavailable."""
+        ...
 
     @staticmethod
     def set_contact_impulse_stream_enabled(enabled: bool = ...) -> None: ...
@@ -5527,7 +5529,8 @@ class Physics:
     ) -> dict[str, Any]: ...
     @staticmethod
     def raycast_into(
-        origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32],
+        origins: npt.NDArray[np.float32] | tuple[_ComputeBuffer, int, int],
+        directions: npt.NDArray[np.float32] | tuple[_ComputeBuffer, int, int],
         output: dict[str, Any], max_distance: float = 1000.0,
         layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> dict[str, Any]: ...

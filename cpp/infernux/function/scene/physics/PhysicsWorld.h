@@ -582,8 +582,8 @@ class PhysicsWorld
                  uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
     /// Cast a contiguous batch of XYZ float rays against one stable world epoch.
-    /// The engine owner publishes pending authoring state, queries each active
-    /// backend and merges hits from the same completed world boundary.
+    /// The engine owner publishes pending authoring state and queries the
+    /// backend of the current scene at one completed world boundary.
     /// Every input row produces one mask entry and one initialized result row;
     /// caller-owned storage must contain @p count elements.
     void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
@@ -598,6 +598,13 @@ class PhysicsWorld
                                                           const std::vector<JoltGpuQueryExportBinding> &exports,
                                                           uint32_t layerMask = GetDefaultQueryLayerMask(),
                                                           bool queryTriggers = true) const;
+
+    /// Read packed float3 sensor buffers directly on the GPU. Inputs are staged
+    /// before any export, including when input and output views share storage.
+    [[nodiscard]] PhysicsRigidbodyBatchSource
+    RaycastInto(const JoltGpuQueryVector3Input &origins, const JoltGpuQueryVector3Input &directions, size_t count,
+                float maxDistance, const std::vector<JoltGpuQueryExportBinding> &exports,
+                uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
     /// Publish pending authored collider state on the engine owner thread.
     /// @return true when the synchronization boundary has completed.
@@ -900,6 +907,9 @@ class PhysicsWorld
     RunQuery(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
              const std::vector<JPH::GPU::QueryInput> &, uint64_t sweepColliderId = 0,
              uint64_t sweepColliderGeneration = 0, uint32_t sweepBodyId = UINT32_MAX) const;
+    PhysicsRigidbodyBatchSource ExportRaycastBatch(const std::vector<JPH::GPU::QueryInput> &requests,
+                                                   const std::vector<JoltGpuQueryExportBinding> &exports,
+                                                   std::optional<JoltGpuQueryRayInputs> rays = {}) const;
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(PhysicsDomain &domain,
                                                                        const JPH::GPU::QueryInput &request,

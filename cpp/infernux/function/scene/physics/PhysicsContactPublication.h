@@ -59,6 +59,9 @@ class PhysicsContactPublication final
         glm::vec3 position{0.0f}, normal{0.0f}, relativeVelocity{0.0f}, impulse{0.0f};
         uint32_t feature = 0;
         bool hasSolvedImpulse = true;
+        // dot(pointOnB - pointOnA, normal), in metres at capture time.
+        // Some native callbacks provide no witnesses; their value stays NaN.
+        float separation = std::numeric_limits<float>::quiet_NaN();
     };
     struct Manifold
     {
@@ -81,6 +84,7 @@ class PhysicsContactPublication final
         // The first solver point supplies stream events and callbacks.
         glm::vec3 position, normal, relativeVelocity;
         uint32_t feature;
+        float separation = std::numeric_limits<float>::quiet_NaN();
         CallbackPairKey CallbackKey() const
         {
             return std::make_tuple(std::min(a.SurfaceKey(), b.SurfaceKey()), std::max(a.SurfaceKey(), b.SurfaceKey()),

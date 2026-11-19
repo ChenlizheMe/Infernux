@@ -64,7 +64,7 @@ State::Endpoint DecodeEndpoint(const JoltGpuScene::Publication &p, uint32_t slot
 }
 
 State::Manifold DecodeManifold(const JoltGpuScene::Publication &p, const ContactReportPatch &r, uint32_t substep,
-                               std::vector<State::Point> &points)
+                               bool swept, std::vector<State::Point> &points)
 {
     if (r.meta.x != substep || !r.meta.z || r.meta.z > MaxPatchPoints ||
         (r.meta.y & ~(PatchActive | PatchSensor | PatchOverlapping)))
@@ -84,7 +84,12 @@ State::Manifold DecodeManifold(const JoltGpuScene::Publication &p, const Contact
             !Finite(v.relativeVelocity) || !Finite(v.impulse) || std::abs(glm::dot(n, n) - 1.0f) > 1.0e-3f ||
             (trigger && (v.impulse.x || v.impulse.y || v.impulse.z)))
             throw std::runtime_error("GPU contact report has invalid numerical point");
-        points.push_back({Vector(v.pointDepth), n, Vector(v.relativeVelocity), Vector(v.impulse), v.feature.x});
+        // Ordinary reports retain per-point positive penetration in pointDepth.w.
+        // Swept reports retain the impact metric there in normal.w instead;
+        // their midpoint padding in pointDepth.w is not a measured zero depth.
+        const float separation = -(swept ? v.normal.w : v.pointDepth.w);
+        points.push_back(
+            {Vector(v.pointDepth), n, Vector(v.relativeVelocity), Vector(v.impulse), v.feature.x, true, separation});
     }
     return {a, b, trigger, offset, r.meta.z};
 }
@@ -152,19 +157,20 @@ void JoltGpuContactPublication::AppendFrame(uint32_t substep, State::Frame &dest
             sweepRecords += frame.records.size();
     destination.manifolds.reserve(destination.manifolds.size() + ordinary.records.size() + sweepRecords);
     destination.points.reserve(destination.points.size() + ordinary.records.size() * MaxPatchPoints + sweepRecords);
-    const auto append = [&](const auto &frame) {
+    const auto append = [&](const auto &frame, bool sweptFrame) {
         if (frame.substep != substep || !frame.finished || !frame.seeded)
             throw std::logic_error("Contact frame sequence mismatch");
         for (const auto &record : frame.records) {
             if (record.meta.w >= frame.capacity)
                 throw std::runtime_error("Contact source ordinal exceeds retained workset");
-            destination.manifolds.push_back(DecodeManifold(*report.publication, record, substep, destination.points));
+            destination.manifolds.push_back(
+                DecodeManifold(*report.publication, record, substep, sweptFrame, destination.points));
         }
     };
-    append(ordinary);
+    append(ordinary, false);
     if (swept != report.sweepFrames.end())
         for (const auto &frame : swept->second)
-            append(frame);
+            append(frame, true);
 }
 
 void JoltGpuContactPublication::AcceptCompleted(std::shared_ptr<const Publication> publication) noexcept

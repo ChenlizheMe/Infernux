@@ -38,7 +38,7 @@
 | `static Physics.query_rigidbody_states_and_box_states_in_bounds(minimum: Any, maximum: Any, state_out: dict[str, Any], box_out: dict[str, Any], layer_mask: int = ..., query_triggers: bool = ...) → tuple[dict[str, Any], dict[str, Any]]` |  |
 | `static Physics.apply_rigidbody_impulses(rigidbodies: List[Any], linear_impulses: Any, angular_impulses: Any) → None` |  |
 | `static Physics.set_contact_event_stream_enabled(enabled: bool = ..., include_triggers: bool = ...) → None` |  |
-| `static Physics.get_contact_events() → dict[str, Any]` |  |
+| `static Physics.get_contact_events() → dict[str, Any]` | 读取当前固定步的接触事件。`contact_separation` 给出代表接触点的有符号距离，单位为米，负值表示重叠。退出事件以及未测得距离的 CPU 连续碰撞返回 `NaN`。 |
 | `static Physics.set_contact_impulse_stream_enabled(enabled: bool = ...) → None` |  |
 | `static Physics.get_contact_impulses() → dict[str, Any]` |  |
 | `static Physics.query_rigidbodies_in_bounds(minimum: Any, maximum: Any, layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` |  |
@@ -47,7 +47,7 @@
 | `static Physics.raycast(origin: Any, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → Optional[Any]` | 从原点沿方向发射射线检测碰撞。 |
 | `static Physics.raycast_screen(camera: Any, screen_position: Tuple[float, float], viewport_size: Tuple[float, float], max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → Optional[Any]` | Cast from a top-left-origin camera viewport pixel position. |
 | `static Physics.raycast_batch(origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32], out: RaycastBatchOutput, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ..., profile: bool = ...) → RaycastBatchOutput` |  |
-| `static Physics.raycast_into(origins, directions, out, max_distance=1000.0, layer_mask=None, query_triggers=True)` | 在 GPU 场景中将每条射线的最近命中写入已有的计算缓冲区，供后续 GPU 程序直接读取。 |
+| `static Physics.raycast_into(origins, directions, out, max_distance=1000.0, layer_mask=None, query_triggers=True)` | GPU 场景支持两种输入。起点和方向可以是两个驻留显存的 `inx.vector3` 缓冲区或视图，也可以是两个形状为 `(N, 3)` 的连续 float32 NumPy 数组。最近命中写入已有 GPU 缓冲区，后续着色器可直接读取。 |
 | `static Physics.raycast_all(origin: Any, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | 射线检测所有碰撞体。 |
 | `static Physics.overlap_sphere(center: Any, radius: float, layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | 检测球形区域内的所有碰撞体。 |
 | `static Physics.overlap_box(center: Any, half_extents: Any, orientation: Any = ..., layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | Find all colliders within an oriented box. |

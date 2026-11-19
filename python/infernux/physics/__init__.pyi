@@ -175,7 +175,7 @@ class Physics:
 
     @staticmethod
     def raycast_into(
-        origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32], out: RaycastDeviceOutput,
+        origins: npt.NDArray[np.float32] | Buffer, directions: npt.NDArray[np.float32] | Buffer, out: RaycastDeviceOutput,
         max_distance: float = ..., layer_mask: Optional[int] = ..., query_triggers: bool = ...,
     ) -> RaycastDeviceOutput: ...
 

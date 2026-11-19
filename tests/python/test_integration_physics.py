@@ -701,22 +701,33 @@ class TestColliderRaycast:
 
 
 class TestRigidbodyStateBatch:
-    def test_contact_stream_publishes_resolved_geometry_for_custom_solvers(self, scene):
+    @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
+    def test_contact_stream_publishes_resolved_geometry_for_custom_solvers(self, scene, _physics_play, backend):
         import numpy as np
-        from infernux.physics import Physics as PublicPhysics
 
+        scene.physics_backend = backend
         _make_ground(scene)
-        _, ball = _make_ball(scene, pos=Vector3(0, 2, 0), radius=0.5)
-        sm = SceneManager.instance()
-        PublicPhysics.set_contact_event_stream_enabled(True)
-        sm.play()
-        sm.pause()
-        _step_frames(40, sm.get_fixed_time_step())
+        _, ball = _make_ball(scene, pos=Vector3(0, 0.9, 0), radius=0.5)
+        ball.use_gravity = False
+        runtime = _physics_play.start()
+        with _physics_play.scope():
+            fixed_dt = SceneManager.instance().get_fixed_time_step()
+            PublicPhysics.set_contact_event_stream_enabled(True)
+        try:
+            _physics_play.frames(1, fixed_dt)
+            with _physics_play.scope():
+                events = PublicPhysics.get_contact_events()
+                runtime.find("Ball").transform.position = Vector3(0, 3, 0)
+            _physics_play.frames(1, fixed_dt)
+            with _physics_play.scope():
+                separated = PublicPhysics.get_contact_events()
+        finally:
+            with _physics_play.scope():
+                PublicPhysics.set_contact_event_stream_enabled(False)
 
-        events = PublicPhysics.get_contact_events()
-        PublicPhysics.set_contact_event_stream_enabled(False)
-        assert set(events) == {"type", "body_ids", "sub_shape_ids", "contact_point",
-                               "contact_normal", "relative_velocity"}
+        assert events["world_id"] == separated["world_id"] == runtime._runtime_world_id
+        assert events["simulation_epoch"] == separated["simulation_epoch"]
+        assert events["fixed_step_index"] == 1 and separated["fixed_step_index"] == 2
         assert events["type"].dtype == np.uint8
         assert events["body_ids"].dtype == np.uint32
         assert events["body_ids"].shape[1] == 2
@@ -727,6 +738,11 @@ class TestRigidbodyStateBatch:
         assert np.all(np.isfinite(events["contact_point"]))
         assert np.all(np.isfinite(events["contact_normal"]))
         assert np.all(events["body_ids"] != np.uint32(0xFFFFFFFF))
+        assert events["contact_separation"].dtype == np.float32
+        entered = events["contact_separation"][events["type"] == 0]
+        assert entered.size == 1 and entered[0] == pytest.approx(-0.1, abs=0.002)
+        exited = separated["contact_separation"][separated["type"] == 2]
+        assert exited.size == 1 and np.isnan(exited[0])
 
     def test_contact_impulse_stream_publishes_actual_solver_impulses(self, scene):
         """Expose the solved Jolt lambda without making custom solvers guess it."""

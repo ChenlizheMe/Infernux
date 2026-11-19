@@ -260,9 +260,13 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
             const auto sa = hit.mSubShapeID1, sb = hit.mSubShapeID2;
             const auto p = base + 0.5f * (hit.mContactPointOn1 + hit.mContactPointOn2);
             const auto normal = hit.mPenetrationAxis.Normalized();
-            const Reports::Point point{
-                ToGlm(p), sign * ToGlm(normal), sign * ToGlm(b.GetPointVelocity(p) - a.GetPointVelocity(p)), {}, 0,
-                false};
+            const Reports::Point point{ToGlm(p),
+                                       sign * ToGlm(normal),
+                                       sign * ToGlm(b.GetPointVelocity(p) - a.GetPointVelocity(p)),
+                                       {},
+                                       0,
+                                       false,
+                                       normal.Dot(hit.mContactPointOn2 - hit.mContactPointOn1)};
             Append(Key(a, sa, b, sb), &point, 1, true, false);
         });
         try {
@@ -280,6 +284,8 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
         if (!Observes(a, sa, b, sb, false))
             return;
         const float sign = a.GetID() < b.GetID() ? 1.0f : -1.0f;
+        // This native callback supplies a midpoint, not both shape witnesses
+        // or a depth. Keep the separation unknown instead of inventing zero.
         const Reports::Point point{
             ToGlm(position),  sign * ToGlm(normal), sign * ToGlm(relativeVelocity), sign * ToGlm(impulse), 0,
             m_policy.impulses};
@@ -439,7 +445,8 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
                          ToGlm(second.GetPointVelocity(p) - first.GetPointVelocity(p)),
                          {},
                          0,
-                         false};
+                         false,
+                         axis.Dot(hit.mContactPointOn2 - hit.mContactPointOn1)};
         key = Key(a, hit.mSubShapeID1, b, hit.mSubShapeID2);
         manifold.a = Endpoint(first, reverse ? hit.mSubShapeID2 : hit.mSubShapeID1);
         manifold.b = Endpoint(second, reverse ? hit.mSubShapeID1 : hit.mSubShapeID2);
@@ -482,7 +489,9 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
                          sign * ToGlm(b.GetPointVelocity(p) - a.GetPointVelocity(p)),
                          {},
                          i,
-                         false};
+                         false,
+                         manifold.mWorldSpaceNormal.Dot(manifold.mRelativeContactPointsOn2[i] -
+                                                        manifold.mRelativeContactPointsOn1[i])};
         }
         Append(Key(a, sa, b, sb), points.data(), count, false, false);
     }

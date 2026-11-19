@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace infernux
@@ -118,6 +119,10 @@ struct ContactEvent
     glm::vec3 contactPoint{0.0f};
     glm::vec3 contactNormal{0.0f}; ///< Contact normal, body A -> body B
     glm::vec3 relativeVelocity{0.0f};
+    // Signed normal separation of this representative captured point, in
+    // metres: negative overlap, positive speculative gap. NaN on Exit or when
+    // the native capture did not provide geometric witnesses (CPU CCD).
+    float contactSeparation = std::numeric_limits<float>::quiet_NaN();
 };
 
 } // namespace infernux

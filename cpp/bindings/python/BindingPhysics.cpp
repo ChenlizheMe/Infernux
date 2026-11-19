@@ -495,6 +495,26 @@ py::dict GetRigidbodyStates(const std::vector<Rigidbody *> &bodies, py::object o
     return writer.Write(batch.states);
 }
 
+// The public Buffer supplies the allocation, byte offset and logical length of its view.
+using ComputeView = std::tuple<std::shared_ptr<rhi::ComputeBuffer>, uint64_t, uint64_t>;
+
+void RequireComputeView(const ComputeView &view, const char *name, rhi::ComputeScalarType scalarType, uint8_t lanes,
+                        rhi::ComputeHost *&host)
+{
+    const auto &[buffer, offset, capacity] = view;
+    if (!buffer)
+        throw py::value_error(std::string("GPU physics buffer '") + name + "' is closed");
+    const auto &desc = buffer->GetDesc();
+    const uint64_t stride = lanes * sizeof(uint32_t);
+    const auto size = buffer->GetByteSize();
+    if (desc.scalarType != scalarType || desc.lanes != lanes || offset % stride || offset > size ||
+        capacity > (size - offset) / stride)
+        throw py::value_error(std::string("GPU physics buffer '") + name + "' has the wrong type or capacity");
+    if (host && !host->SharesServicesWith(buffer->GetHost()))
+        throw py::value_error("GPU physics buffers must belong to the same compute host");
+    host = &buffer->GetHost();
+}
+
 JoltGpuQueryExportBinding ComputeOutput(py::dict &output, const char *name, JoltGpuQueryExportField field,
                                         rhi::ComputeScalarType scalarType, uint8_t lanes, uint64_t elementCount,
                                         rhi::ComputeHost *&host)
@@ -502,23 +522,40 @@ JoltGpuQueryExportBinding ComputeOutput(py::dict &output, const char *name, Jolt
     const auto key = py::str(name);
     if (!output.contains(key))
         throw py::value_error(std::string("GPU state output is missing '") + name + "'");
-    auto [buffer, offset, capacity] =
-        py::cast<std::tuple<std::shared_ptr<rhi::ComputeBuffer>, uint64_t, uint64_t>>(output[key]);
-    if (!buffer || buffer->IsFrozen())
+    auto view = py::cast<ComputeView>(output[key]);
+    RequireComputeView(view, name, scalarType, lanes, host);
+    auto &[buffer, offset, capacity] = view;
+    if (buffer->IsFrozen())
         throw py::value_error(std::string("GPU physics output '") + name + "' must be writable");
-    const auto &desc = buffer->GetDesc();
     const uint64_t stride = lanes * sizeof(uint32_t);
-    const auto size = buffer->GetByteSize();
-    if (desc.scalarType != scalarType || desc.lanes != lanes || offset % stride || offset > size ||
-        capacity > (size - offset) / stride || elementCount > capacity)
+    if (elementCount > capacity)
         throw py::value_error(std::string("GPU state output '") + name + "' has the wrong type or capacity");
-    if (host && !host->SharesServicesWith(buffer->GetHost()))
-        throw py::value_error("GPU state outputs must belong to the same compute host");
-    host = &buffer->GetHost();
     JoltGpuQueryExportBinding binding{field, std::move(buffer)};
     binding.byteOffset = offset;
     binding.byteEnd = offset + capacity * stride;
     return binding;
+}
+
+std::vector<JoltGpuQueryExportBinding> RaycastExports(py::dict &output, uint64_t count, rhi::ComputeHost *&host)
+{
+    using Field = JoltGpuQueryExportField;
+    using Scalar = rhi::ComputeScalarType;
+    return {
+        ComputeOutput(output, "hit", Field::HitValid, Scalar::UInt32, 1, count, host),
+        ComputeOutput(output, "point", Field::HitPoint, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "normal", Field::HitNormal, Scalar::Float32, 3, count, host),
+        ComputeOutput(output, "distance", Field::HitDistance, Scalar::Float32, 1, count, host),
+    };
+}
+
+py::dict PublishRaycastInto(py::dict output, uint64_t count, const PhysicsRigidbodyBatchSource &source)
+{
+    output["world_id"] = source.worldId;
+    output["simulation_epoch"] = source.simulationEpoch;
+    output["fixed_step_index"] = source.fixedStepIndex;
+    output["query_generation"] = source.numericalGeneration;
+    output["count"] = count;
+    return output;
 }
 
 py::dict RaycastInto(py::array origins, py::array directions, py::dict output, float maxDistance,
@@ -528,22 +565,34 @@ py::dict RaycastInto(py::array origins, py::array directions, py::dict output, f
     const auto *normalized = ValidateRaycastBatchInputs(origins, directions, maxDistance);
     const auto count = static_cast<uint64_t>(origins.shape(0));
     rhi::ComputeHost *host = nullptr;
-    using Field = JoltGpuQueryExportField;
-    using Scalar = rhi::ComputeScalarType;
-    const std::vector<JoltGpuQueryExportBinding> exports{
-        ComputeOutput(output, "hit", Field::HitValid, Scalar::UInt32, 1, count, host),
-        ComputeOutput(output, "point", Field::HitPoint, Scalar::Float32, 3, count, host),
-        ComputeOutput(output, "normal", Field::HitNormal, Scalar::Float32, 3, count, host),
-        ComputeOutput(output, "distance", Field::HitDistance, Scalar::Float32, 1, count, host),
+    auto exports = RaycastExports(output, count, host);
+    return PublishRaycastInto(output, count,
+                              PhysicsWorld::Instance().RaycastInto(static_cast<const float *>(origins.data()),
+                                                                   normalized, count, maxDistance, exports, layers,
+                                                                   queryTriggers));
+}
+
+py::dict RaycastFromDevice(const ComputeView &origins, const ComputeView &directions, py::dict output,
+                           float maxDistance, std::optional<uint32_t> requestedMask, bool queryTriggers)
+{
+    if (!std::isfinite(maxDistance) || maxDistance <= 0.0f)
+        throw py::value_error("max_distance must be finite and greater than zero");
+    const auto count = std::get<2>(origins);
+    if (count != std::get<2>(directions))
+        throw py::value_error("origins and directions must have the same row count");
+    rhi::ComputeHost *host = nullptr;
+    const auto operand = [&](const ComputeView &view, const char *name) {
+        RequireComputeView(view, name, rhi::ComputeScalarType::Float32, 3, host);
+        const auto &[buffer, offset, rows] = view;
+        return JoltGpuQueryVector3Input{buffer, offset, offset + rows * 3 * sizeof(float)};
     };
-    const auto source = PhysicsWorld::Instance().RaycastInto(static_cast<const float *>(origins.data()), normalized,
-                                                             count, maxDistance, exports, layers, queryTriggers);
-    output["world_id"] = source.worldId;
-    output["simulation_epoch"] = source.simulationEpoch;
-    output["fixed_step_index"] = source.fixedStepIndex;
-    output["query_generation"] = source.numericalGeneration;
-    output["count"] = count;
-    return output;
+    const auto originView = operand(origins, "origins");
+    const auto directionView = operand(directions, "directions");
+    auto exports = RaycastExports(output, count, host);
+    return PublishRaycastInto(output, count,
+                              PhysicsWorld::Instance().RaycastInto(originView, directionView, count, maxDistance,
+                                                                   exports, ResolveQueryLayerMask(requestedMask),
+                                                                   queryTriggers));
 }
 
 std::vector<JoltGpuQueryExportBinding> RigidbodyStateExports(py::dict output, uint64_t count, rhi::ComputeHost *&host)
@@ -579,6 +628,7 @@ py::dict GetContactEvents()
     py::array_t<float> contactPoints({count, py::ssize_t(3)});
     py::array_t<float> contactNormals({count, py::ssize_t(3)});
     py::array_t<float> relativeVelocities({count, py::ssize_t(3)});
+    py::array_t<float> contactSeparations(count);
 
     auto eventTypes = type.mutable_unchecked<1>();
     auto bodies = bodyIds.mutable_unchecked<2>();
@@ -586,9 +636,11 @@ py::dict GetContactEvents()
     auto points = contactPoints.mutable_unchecked<2>();
     auto normals = contactNormals.mutable_unchecked<2>();
     auto velocities = relativeVelocities.mutable_unchecked<2>();
+    auto separations = contactSeparations.mutable_unchecked<1>();
     for (py::ssize_t index = 0; index < count; ++index) {
         const auto &event = events[static_cast<size_t>(index)];
         eventTypes(index) = static_cast<uint8_t>(event.type);
+        separations(index) = event.contactSeparation;
         bodies(index, 0) = event.bodyIdA;
         bodies(index, 1) = event.bodyIdB;
         subShapes(index, 0) = event.subShapeIdA;
@@ -630,6 +682,7 @@ py::dict GetContactEvents()
     result["contact_point"] = std::move(contactPoints);
     result["contact_normal"] = std::move(contactNormals);
     result["relative_velocity"] = std::move(relativeVelocities);
+    result["contact_separation"] = std::move(contactSeparations);
     return result;
 }
 
@@ -1838,6 +1891,8 @@ void RegisterPhysicsBindings(py::module_ &m)
             "query_triggers"_a = true, "Cast a ray. Returns RaycastHit or None.")
         .def_static("raycast_into", &RaycastInto, "origins"_a.noconvert(), "directions"_a.noconvert(), "output"_a,
                     "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(), "query_triggers"_a = true)
+        .def_static("raycast_into", &RaycastFromDevice, "origins"_a.noconvert(), "directions"_a.noconvert(),
+                    "output"_a, "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(), "query_triggers"_a = true)
         .def_static("raycast_batch", &RaycastBatch, "origins"_a.noconvert(), "directions"_a.noconvert(), "output"_a,
                     "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(), "query_triggers"_a = true,
                     "profile"_a = false,
