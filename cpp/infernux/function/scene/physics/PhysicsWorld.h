@@ -920,7 +920,8 @@ class PhysicsWorld
     void SealQuerySources(PhysicsDomain &domain, bool includeStaticBoundaries) const;
     void SealSpatialQuery(PhysicsDomain &domain) const;
     [[nodiscard]] std::shared_ptr<const JoltGpuScene::Publication> ReadGpuQueryPublication(PhysicsDomain &) const;
-    [[nodiscard]] std::shared_ptr<const JoltGpuScene::Publication> ReadGpuSpatialQueryPublication(PhysicsDomain &) const;
+    [[nodiscard]] std::shared_ptr<const JoltGpuScene::Publication>
+    ReadGpuSpatialQueryPublication(PhysicsDomain &) const;
     void ObserveSpatialGpuQuery(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
                                 const JoltGpuScene::Consumer &) const;
     [[nodiscard]] JoltCpuQueries::Filter
