@@ -110,22 +110,11 @@ float3 f_schlick_roughness(float3 f0, float f90, float u, float perceptual_rough
     float x5 = x * x2 * x2;
     return f0 + (max(float3(1.0 - perceptual_roughness), f0) - f0) * x5;
 }
-float D_GGX(float ndot_h, float roughness) {
-    float a2 = roughness * roughness;
-    float s  = (ndot_h * a2 - ndot_h) * ndot_h + 1.0;
-    return INV_PI * a2 / max(s * s, FLT_MIN);
-}
-float v_smith_joint_ggx(float ndot_l, float ndot_v, float roughness) {
-    float a2 = roughness * roughness;
-    float lambda_v = ndot_l * sqrt((-ndot_v * a2 + ndot_v) * ndot_v + a2);
-    float lambda_l = ndot_v * sqrt((-ndot_l * a2 + ndot_l) * ndot_l + a2);
-    return 0.5 / max(lambda_v + lambda_l, FLT_MIN);
-}
 float dv_smith_joint_ggx(float ndot_h, float ndot_l, float ndot_v, float roughness) {
     float a2 = roughness * roughness;
-    float s  = (ndot_h * a2 - ndot_h) * ndot_h + 1.0;
-    float lambda_v = ndot_l * sqrt((-ndot_v * a2 + ndot_v) * ndot_v + a2);
-    float lambda_l = ndot_v * sqrt((-ndot_l * a2 + ndot_l) * ndot_l + a2);
+    float s = inx_ggx_ndf_denominator(ndot_h, a2);
+    float lambda_v = ndot_l * inx_ggx_projected_roughness(ndot_v, a2);
+    float lambda_l = ndot_v * inx_ggx_projected_roughness(ndot_l, a2);
     return INV_PI * 0.5 * a2 / max(s * s * (lambda_v + lambda_l), FLT_MIN);
 }
 float disney_diffuse(float ndot_v, float ndot_l, float ldot_v, float perceptual_roughness) {
@@ -170,9 +159,9 @@ float3 evaluate_pbr_light(float3 N, float3 V, float3 L, float3 light_radiance,
     float3  half_vec = V + L;
     float half_len2 = dot(half_vec, half_vec);
     float3  H     = (half_len2 > 1e-8) ? half_vec * rsqrt(half_len2) : N;
-    float ndot_l = max(dot(N, L), 0.0);
-    float ndot_v = max(dot(N, V), 0.0);
-    float ndot_h = max(dot(N, H), 0.0);
+    float ndot_l = saturate(dot(N, L));
+    float ndot_v = saturate(dot(N, V));
+    float ndot_h = saturate(dot(N, H));
     float ldot_h = max(dot(L, H), 0.0);
     float ldot_v = max(dot(L, V), 0.0);
     if (ndot_l <= 0.0) return float3(0.0);

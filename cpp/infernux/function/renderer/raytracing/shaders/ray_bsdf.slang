@@ -101,11 +101,6 @@ float3 ray_ggx_fresnel(RayGgxMaterial material, float cosine)
     return lerp(material.f0, float3(material.f90), tail * tail_squared * tail_squared) * material.strength;
 }
 
-float ray_ggx_projected_roughness(float cosine, float alpha_squared)
-{
-    return sqrt(cosine * cosine + alpha_squared * (1.0 - cosine * cosine));
-}
-
 struct RayGgxTerms
 {
     float pdf;
@@ -123,9 +118,8 @@ RayGgxTerms ray_ggx_terms(float3 shading_normal, float3 geometric_normal, float3
         return {0.0, float3(0.0), false};
 
     float alpha_squared = material.alpha * material.alpha;
-    float nv = ray_ggx_projected_roughness(nov, alpha_squared);
-    // Use a factored form to preserve the finite peak when noh rounds to one.
-    float d = (1.0 - noh) * (1.0 + noh) + alpha_squared * noh * noh;
+    float nv = inx_ggx_projected_roughness(nov, alpha_squared);
+    float d = inx_ggx_ndf_denominator(noh, alpha_squared);
     float distribution = ray_bsdf_inverse_pi * alpha_squared / (d * d);
     // Visible normal density times the reflection Jacobian. G1(v)/(4 * nov) simplifies analytically.
     float pdf = distribution / (2.0 * (nov + nv));
@@ -133,7 +127,7 @@ RayGgxTerms ray_ggx_terms(float3 shading_normal, float3 geometric_normal, float3
     if (!(nol > 0.0 && dot(geometric_normal, incoming) > 0.0))
         return {pdf, float3(0.0), false};
 
-    float nl = ray_ggx_projected_roughness(nol, alpha_squared);
+    float nl = inx_ggx_projected_roughness(nol, alpha_squared);
     // In f*cos/pdf, only the ratio of correlated Smith G2 to visible-normal G1 remains.
     float masking = (nol * (nov + nv)) / (nol * nv + nov * nl);
     return {pdf, ray_ggx_fresnel(material, voh) * masking, true};
