@@ -44,6 +44,7 @@ Usage::
 from __future__ import annotations
 
 from enum import IntEnum
+from operator import attrgetter
 from typing import TYPE_CHECKING
 
 from infernux.renderstack.default_ray_tracer import DefaultRayTracer
@@ -103,8 +104,8 @@ class DefaultDeferredPipeline(RenderPipeline):
     ``before_post_process`` / ``after_post_process`` are automatically
     inserted by ``graph.screen_ui_section()``.
 
-    ``ray_diffuse`` and ``ray_specular`` independently replace the raster
-    environment terms. ``ray_quality`` sets the diffuse tracing rate. Light
+    ``global_illumination`` enables diffuse indirect light. With GI active,
+    ``ray_specular`` adds traced reflections. ``ray_quality`` sets the diffuse tracing rate. Light
     transport samples are kept on their native grid through reconstruction.
     Lighting resolves them against the full-resolution surface; specular
     paths use the full-resolution grid at every quality.
@@ -122,10 +123,19 @@ class DefaultDeferredPipeline(RenderPipeline):
         tooltip="Shadow map resolution (width & height)",
         header="Shadows",
     )
-    ray_diffuse: bool = serialized_field(default=False, header="Ray Tracing")
-    ray_specular: bool = serialized_field(default=False)
-    ray_transparency: bool = serialized_field(default=False)
-    ray_quality: RayTracingQuality = serialized_field(default=RayTracingQuality.STANDARD)
+    global_illumination: bool = serialized_field(
+        default=False, header="Ray Tracing", display_name_key="renderstack.global_illumination",
+    )
+    ray_specular: bool = serialized_field(
+        default=False, display_name_key="renderstack.ray_specular", visible_when=attrgetter("global_illumination"),
+    )
+    ray_transparency: bool = serialized_field(
+        default=False, display_name_key="renderstack.ray_transparency", visible_when=attrgetter("global_illumination"),
+    )
+    ray_quality: RayTracingQuality = serialized_field(
+        default=RayTracingQuality.STANDARD, display_name_key="renderstack.ray_quality",
+        visible_when=attrgetter("global_illumination"),
+    )
     _reconstruct_rays = True
 
     def __init__(self, ray_tracer: RayTracer | None = None):
@@ -224,10 +234,10 @@ class DefaultDeferredPipeline(RenderPipeline):
             current = graph.current_pass_result
 
         frame = None
-        if self.ray_diffuse or self.ray_specular or self.ray_transparency:
+        if self.global_illumination:
             ctx = RayTracingContext(
                 graph, surface=current, geometry=raw_gbuffer,
-                diffuse=self.ray_diffuse, specular=self.ray_specular, transparency=self.ray_transparency,
+                diffuse=True, specular=self.ray_specular, transparency=self.ray_transparency,
                 quality=self.ray_quality, reconstruct=self._reconstruct_rays,
             )
             frame = self.ray_tracer.build(ctx)

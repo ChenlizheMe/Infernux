@@ -49,7 +49,7 @@ class DefaultDeferredPipeline(RenderPipeline):
 
     name: str
     shadow_resolution: int
-    ray_diffuse: bool
+    global_illumination: bool
     ray_specular: bool
     ray_transparency: bool
     ray_quality: RayTracingQuality

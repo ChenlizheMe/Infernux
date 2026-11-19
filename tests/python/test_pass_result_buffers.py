@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from infernux.components.fields import get_serialized_fields
 
 from infernux.rendergraph.graph import Format, RenderGraph
 from infernux.renderstack.geometry_buffers import (
@@ -240,12 +241,16 @@ def test_deferred_ray_surface_replays_raw_gbuffer_depth_and_surface_id_on_demand
     (True, True, RayTracingQuality.HIGH, 0),
     (True, True, RayTracingQuality.LIGHTWEIGHT, 4),
 ])
-def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, quality, diffuse_divisor):
+def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diffuse_divisor):
     graph = RenderGraph("Deferred ray lighting")
     pipeline = DefaultDeferredPipeline()
-    pipeline.ray_diffuse = diffuse
+    pipeline.global_illumination = diffuse
     pipeline.ray_specular = specular
+    pipeline.ray_transparency = not diffuse
     pipeline.ray_quality = quality
+    fields = get_serialized_fields(type(pipeline))
+    for name in ("ray_specular", "ray_transparency", "ray_quality"):
+        assert fields[name].visible_when(pipeline) == diffuse
     pipeline.define_topology(graph)
     graph.build()
 
@@ -253,11 +258,12 @@ def test_deferred_ray_indirect_builds_only_requested_lobes(diffuse, specular, qu
     result = graph.get_pass_result("ray/raw")
     reconstructed = graph.get_pass_result("ray/denoised")
     lighting = passes["DeferredLightingPass"]
-    if not (diffuse or specular):
+    if not diffuse:
         assert result is None
         assert reconstructed is None
         assert lighting._shader_name == "infernux/internal/deferred_lighting"
         assert graph.get_buffer("world_ray_geometry") is None
+        assert "Thin Surface Capture" not in passes
         return
 
     assert lighting._shader_name == "infernux/internal/deferred_ray_lighting"
@@ -321,7 +327,7 @@ def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently
             return raw.radiance
 
     pipeline = DefaultDeferredPipeline(CustomMirror())
-    pipeline.ray_diffuse = pipeline.ray_specular = True
+    pipeline.global_illumination = pipeline.ray_specular = True
     graph = RenderGraph("custom mirror")
     pipeline.define_topology(graph)
     graph.build()
@@ -361,6 +367,7 @@ def test_custom_specular_trace_reads_world_cache_without_requesting_an_update():
 
     graph = RenderGraph("read-only mirror")
     pipeline = DefaultDeferredPipeline(Mirror())
+    pipeline.global_illumination = True
     pipeline.ray_specular = True
     pipeline.define_topology(graph)
     graph.build()
@@ -492,6 +499,7 @@ def test_geometry_buffer_cycle_reports_source_and_dependency_chain():
 def test_deferred_thin_sheet_preserves_background_and_partitions_transparency():
     graph = RenderGraph("Thin sheet composition")
     pipeline = DefaultDeferredPipeline()
+    pipeline.global_illumination = True
     pipeline.ray_transparency = True
     pipeline.define_topology(graph)
     passes = {render_pass._name: render_pass for render_pass in graph._passes}
