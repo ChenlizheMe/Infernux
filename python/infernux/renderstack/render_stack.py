@@ -208,6 +208,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     _pipeline_console_source: str = ""
     _pipeline_console_message: str = ""
     _owning_scene = None
+    _observed_effect_slots = ()
 
     @property
     def _graph_state(self) -> _ViewGraphState:
@@ -264,6 +265,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
     def on_destroy(self) -> None:
         """Dispose pipeline resources and promote another active stack if needed."""
+        self._observe_effect_slots(())
         self._unregister_pipeline_catalog_reload()
         self._clear_pipeline_diagnostic()
         scene = self._owning_scene
@@ -764,6 +766,14 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         # graph until a replacement graph has built successfully. A rejected
         # edit must not disable live parameters on the graph still on screen.
 
+    def _observe_effect_slots(self, slots) -> None:
+        # Subscribe when topology changes. Disabled slots must also wake the graph.
+        for slot in self._observed_effect_slots:
+            slot._unobserve(self)
+        self._observed_effect_slots = tuple(slots)
+        for slot in self._observed_effect_slots:
+            slot._observe(self)
+
     def build_graph(self, *, output_samples: int = 0):  # -> RenderGraphDescription
         """Build the complete RenderGraph.
 
@@ -777,6 +787,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         from infernux.rendergraph.graph import RenderGraph
 
         self._select_graph_state(output_samples)
+        self._observe_effect_slots(self.effect_slots)
         graph = RenderGraph("Pipeline+Stack", output_samples=output_samples)
         self._resource_bus = ResourceBus(graph=graph)
         compiled_effects = []

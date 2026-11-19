@@ -80,3 +80,24 @@ def test_direct_replacement_owns_inputs_and_preserves_other_stage_identity(autho
     assert replacement.stage_id == "caller_scope"
     replacement.enabled = False
     assert stack.get_effect_stage_slots("final")[0].enabled
+
+
+def test_mounted_slot_edit_invalidates_only_its_live_graphs(authoring):
+    stack, _, _ = authoring
+    slot = stack.get_effect_stage_slots("final")[0]
+    description = stack.build_graph()
+    state = stack._graph_state
+    state.description = description
+    slot.enabled = True
+    assert state.description is description
+    slot.enabled = False
+    assert state.description is None
+
+    state.description = stack.build_graph()
+    slot.enabled = True
+    assert state.description is None
+
+    stack.set_effect_stage_slots("final", [])
+    state.description = description = stack.build_graph()
+    slot.enabled = False
+    assert state.description is description

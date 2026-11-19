@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from weakref import WeakSet
 
 from infernux.components.serializable_object import SerializableObject
 from infernux.components.fields import serialized_field
@@ -16,6 +17,23 @@ class EffectSlot(SerializableObject):
     stage_id: str = serialized_field(default="", hidden=True)
     effect: RenderEffectRef = serialized_field(default=None, asset_type="RenderEffect")
     enabled: bool = serialized_field(default=True)
+
+    def __setattr__(self, name: str, value) -> None:
+        values = vars(self)
+        previous = values.get(name)
+        super().__setattr__(name, value)
+        if name in ("enabled", "effect", "stage_id", "slot_id") and previous != values[name]:
+            for stack in values.get("_graph_owners", ()):
+                stack.invalidate_graph()
+
+    def _observe(self, stack):
+        owners = vars(self).get("_graph_owners")
+        if owners is None:
+            owners = vars(self)["_graph_owners"] = WeakSet()
+        owners.add(stack)
+
+    def _unobserve(self, stack):
+        vars(self)["_graph_owners"].discard(stack)
 
     def __init__(
         self,
