@@ -136,7 +136,8 @@ class FrameOpportunityScope
     }
     ~FrameOpportunityScope()
     {
-        m_owner.EndOpportunity();
+        if (m_owner.IsActive())
+            m_owner.EndOpportunity();
     }
 
   private:
@@ -698,21 +699,25 @@ void Infernux::FinishFrame(const RenderFrameResult &result)
         ++m_submittedRenderFrames;
         SceneManager::Instance().EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderSubmitted);
     }
+    uint64_t hostIntervalNs = 0;
     if (result.presentationAcceptedNs) {
+        if (m_lastPresentation.acceptedNs && m_lastPresentation.hostOpportunity + 1 == m_frameWork.Opportunity())
+            hostIntervalNs = result.presentationAcceptedNs - m_lastPresentation.acceptedNs;
         m_lastPresentation = {m_lastPresentation.sequence + 1, m_frameWork.Opportunity(),
                               result.presentationAcceptedNs};
         SceneManager::Instance().EmitRuntimeFrameBarrier(SceneManager::RuntimeFrameBarrier::RenderPresented);
     }
     const bool foregroundReady = result.foregroundReady;
     const auto lateStart = samplePerformanceFrame ? Clock::now() : Clock::time_point{};
-    if (m_frameWork.AdvanceLate([this, foregroundReady] { return BackgroundGpuAvailability(foregroundReady); }))
-        if (m_renderer)
-            m_renderer->RequestFullSpeedFrame();
+    const bool pending =
+        m_frameWork.AdvanceLate([this, foregroundReady] { return BackgroundGpuAvailability(foregroundReady); });
+    if (pending && m_renderer)
+        m_renderer->RequestFullSpeedFrame();
     const double lateWorkMs =
         samplePerformanceFrame ? std::chrono::duration<double, std::milli>(Clock::now() - lateStart).count() : 0.0;
     if (auto callback = m_endFrameCallback)
         callback(foregroundReady && !m_exitRequested.load(std::memory_order_acquire));
-    m_frameWork.EndOpportunity();
+    m_frameWork.EndOpportunity(hostIntervalNs, pending ? result.presentationHostWaitNs : 0);
     // Callbacks can reset the measurement window. Start that window on the next DrawFrame.
     if (samplePerformanceFrame && m_renderer->HasFramePerformanceSample())
         m_renderer->RecordFramePerformanceSample(result, drawEnd, lateWorkMs);

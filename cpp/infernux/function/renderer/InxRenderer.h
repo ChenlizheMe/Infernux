@@ -307,6 +307,7 @@ struct RenderFrameResult
     bool foregroundReady = false;
     bool submitted = false;
     uint64_t presentationAcceptedNs = 0;
+    uint64_t presentationHostWaitNs = 0;
 };
 
 class InxRenderer

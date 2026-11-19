@@ -1558,13 +1558,13 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
     const auto drawStart =
         samplePerformanceFrame ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const auto previousCompletionEpoch = m_vkCore->GetLastSubmittedCompletionEpoch();
-    const auto presentationAcceptedNs =
+    const auto presentation =
         m_vkCore->DrawFrame(windowOutput, samplePerformanceFrame ? &performanceSample.drawPhases : nullptr);
     if (samplePerformanceFrame)
         performanceSample.drawMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drawStart).count();
     const bool renderSubmitted = m_vkCore->GetLastSubmittedCompletionEpoch() != previousCompletionEpoch;
-    FinishPlayerStartupClock(presentationAcceptedNs);
+    FinishPlayerStartupClock(presentation.acceptedNs);
     if (renderSubmitted) {
         ++m_frameCount;
         sceneManager.CommitSkinPoseHistories();
@@ -2038,7 +2038,7 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
 #endif
     if (pace && (windowSuspended || !renderSubmitted))
         SDL_Delay(windowSuspended ? 16 : 1);
-    return {true, renderSubmitted, presentationAcceptedNs};
+    return {true, renderSubmitted, presentation.acceptedNs, presentation.hostWaitNs};
 }
 
 // ============================================================================

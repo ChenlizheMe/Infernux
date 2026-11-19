@@ -224,6 +224,8 @@ void FrameWorkOwner::Configure(uint64_t ownerNanoseconds, uint64_t foregroundRes
         overrun(m_spentNanoseconds, allowance) - overrun(m_spentNanoseconds, m_allowanceNanoseconds);
     m_allowanceNanoseconds = allowance;
     m_ownerNanoseconds = ownerNanoseconds;
+    m_nextAllowanceNanoseconds = ownerNanoseconds;
+    m_ownerConfigured = true;
     m_foregroundReserveNanoseconds = foregroundReserveNanoseconds;
 }
 
@@ -235,7 +237,7 @@ uint64_t FrameWorkOwner::BeginOpportunity()
     m_active = true;
     m_late = m_serviced = m_earlyAdvanced = false;
     m_spentNanoseconds = 0;
-    m_allowanceNanoseconds = m_ownerNanoseconds;
+    m_allowanceNanoseconds = m_nextAllowanceNanoseconds;
     for (auto &resource : m_resources) {
         resource.allowance = resource.limit;
         resource.admitted = 0;
@@ -789,9 +791,18 @@ bool FrameWorkOwner::AdvanceLate(const std::function<FrameGpuAvailability()> &gp
     return Drive(gpuAvailability);
 }
 
-void FrameWorkOwner::EndOpportunity() noexcept
+void FrameWorkOwner::EndOpportunity(uint64_t hostIntervalNs, uint64_t blockedHostNs) noexcept
 {
     m_active = false;
+    m_nextAllowanceNanoseconds = m_ownerNanoseconds;
+    if (m_ownerConfigured || !blockedHostNs || m_spentNanoseconds < m_ownerNanoseconds)
+        return;
+    // Grow the next default Host allowance only where a recent opportunity had
+    // both demand and measured blocking. Leave half the wait as timing margin.
+    // Limit growth per observation so a single stalled frame cannot buy a long run.
+    const auto used = (std::min)(m_spentNanoseconds, m_allowanceNanoseconds);
+    const auto headroom = (std::min)({blockedHostNs / 2, hostIntervalNs / 2, m_allowanceNanoseconds});
+    m_nextAllowanceNanoseconds = (std::max)(m_ownerNanoseconds, (std::min)(hostIntervalNs / 2, used + headroom));
 }
 
 void FrameWorkOwner::ClearSources()

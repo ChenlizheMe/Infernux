@@ -251,7 +251,7 @@ class FrameWorkOwner
     DrainRequired(SourceId id, const std::function<FrameGpuAvailability()> &gpuAvailability,
                   const std::function<FrameWorkWaitResult(SourceId, uint64_t)> &waitForProgress = {});
     INFERNUX_FOUNDATION_API bool AdvanceLate(const std::function<FrameGpuAvailability()> &gpuAvailability);
-    INFERNUX_FOUNDATION_API void EndOpportunity() noexcept;
+    INFERNUX_FOUNDATION_API void EndOpportunity(uint64_t hostIntervalNs = 0, uint64_t blockedHostNs = 0) noexcept;
     void Stop() noexcept
     {
         m_admission.store(Admission::Closed, std::memory_order_release);
@@ -442,6 +442,8 @@ class FrameWorkOwner
     uint64_t m_opportunity = 0;
     uint64_t m_ownerNanoseconds = 1'000'000;
     uint64_t m_allowanceNanoseconds = m_ownerNanoseconds;
+    uint64_t m_nextAllowanceNanoseconds = m_ownerNanoseconds;
+    bool m_ownerConfigured = false;
     uint64_t m_foregroundReserveNanoseconds = 0;
     uint64_t m_spentNanoseconds = 0;
     uint64_t m_totalNanoseconds = 0;

@@ -69,7 +69,8 @@ bool IsPackagedPlayerRuntime()
 // Rendering
 // ============================================================================
 
-uint64_t InxVkCoreModular::DrawFrame(WindowOutput output, std::array<double, 6> *phaseTimings)
+InxVkCoreModular::PresentationTiming InxVkCoreModular::DrawFrame(WindowOutput output,
+                                                                 std::array<double, 6> *phaseTimings)
 try {
     struct DrawBufferBindingsScope
     {
@@ -246,7 +247,7 @@ try {
     // Without a window image, skip empty plans while keeping any admitted
     // view, particle, initialization or capture work on the same frame slot.
     if (!presenting && m_frameSubmission.WorkCount() == timingWorkCount)
-        return 0;
+        return {};
 
 #if INFERNUX_FRAME_PROFILE
     const auto finishTimings = [this](VkCommandBuffer commandBuffer) {
@@ -469,13 +470,16 @@ try {
         (*phaseTimings)[1] = std::chrono::duration<double, std::milli>(now - phaseStart).count();
         phaseStart = now;
     }
-    uint64_t presentationAcceptedNs = 0;
+    PresentationTiming timing;
     if (presenting) {
+        const auto beforePresent = std::chrono::steady_clock::now();
         const auto result = presentation.Present(m_backend.Queues(), imageIndex);
         if (result == vk::SwapchainResult::Success) {
-            const auto acceptedAt = std::chrono::steady_clock::now().time_since_epoch();
-            presentationAcceptedNs =
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(acceptedAt).count());
+            const auto acceptedAt = std::chrono::steady_clock::now();
+            timing.acceptedNs =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(acceptedAt.time_since_epoch()).count();
+            timing.hostWaitNs =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(acceptedAt - beforePresent).count();
             if (m_firstVisiblePresentationPending) {
                 m_firstVisiblePresentationPending = false;
                 m_firstVisiblePresentationCompleted = true;
@@ -503,7 +507,7 @@ try {
     if (phaseTimings && presenting)
         (*phaseTimings)[2] =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phaseStart).count();
-    return presentationAcceptedNs;
+    return timing;
 } catch (...) {
     m_frameSubmission.DiscardPublications();
     if (!m_frameFailure)
