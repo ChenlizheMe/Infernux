@@ -21,6 +21,15 @@ inline const ShaderSourceModule &GetSlangRayTraversalModule()
     return module;
 }
 
+inline const ShaderSourceModule &GetSlangRayTransportModule()
+{
+    static const ShaderSourceModule module{"inx_ray_transport", "<infernux/shader/ray_transport.slang>", [] {
+            std::string source;
+@_ray_transport_source@            return source;
+        }()};
+    return module;
+}
+
 inline const ShaderSourceModule &GetSlangRayBsdfModule()
 {
     static const ShaderSourceModule module{"inx_ray_bsdf", "<infernux/shader/ray_bsdf>", [] {

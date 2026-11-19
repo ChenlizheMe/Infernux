@@ -1003,8 +1003,9 @@ class Grayscale(shader.fullscreen):
     for target in definition.compile()["targets"]:
         vertex, fragment = target["entries"]
         assert not vertex["bindings"]
-        assert len(fragment["bindings"]) == 3  # image, sampler, parameter block
-        image, sampler, parameters = target["resources"]
+        bindings = {tuple(binding) for binding in fragment["bindings"]}
+        assert len(bindings) == 3  # image, sampler, parameter block
+        image, sampler, parameters = (r for r in target["resources"] if (r["set"], r["binding"]) in bindings)
         assert image["name"] == sampler["name"] == "image"
         assert image["binding"] != sampler["binding"]
         offset, strength = parameters["value"]["fields"]
