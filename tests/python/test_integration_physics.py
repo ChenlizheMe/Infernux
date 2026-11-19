@@ -1141,17 +1141,106 @@ class TestRigidbodyPose:
             rigidbody.move_position(Vector3(1, 2, 3))
 
 
-class TestFixedTiming:
-    def test_manual_step_is_exclusive_and_runs_one_shared_fixed_frame(self, scene):
+class _PreparedPhysicsPlay:
+    @pytest.fixture
+    def _normal_play(self, _collider_authoring_project):
+        """Prepare an authored scene through the normal editor Play owner."""
+        import time
+        from types import SimpleNamespace
+        from infernux.components.script_loader import load_and_create_component
+        from infernux.core.assets import AssetManager
+        from infernux.lib import _Infernux
+        from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+        from infernux.world import WorldManager
+
+        state = _collider_authoring_project
+        world = None
+        pipeline = RenderStackPipeline()
+        state.host._engine.set_render_pipeline(pipeline)
+
+        def until(predicate, label):
+            deadline = time.monotonic() + 60.0
+            while not predicate():
+                assert time.monotonic() < deadline, label
+                state.runner.tick()
+                state.host.tick(0.0)
+
+        def add_probe(owner):
+            path = state.path.parent / "ColliderIgnoreProbe.py"
+            path.write_text(
+                "from infernux.components import InxComponent\n"
+                "class ColliderIgnoreProbe(InxComponent):\n"
+                "    def awake(self): self.events = []\n"
+                "    def on_collision_enter(self, collision): self.events.append(collision)\n",
+                encoding="utf-8",
+            )
+            imported = AssetManager.import_asset(str(path), database=state.manager._asset_database)
+            assert imported.succeeded and imported.guid
+            probe = load_and_create_component(
+                str(path), state.manager._asset_database, "ColliderIgnoreProbe", script_guid=imported.guid
+            )
+            assert probe is not None
+            owner.add_py_component(probe)
+
+        def start():
+            nonlocal world
+            # Publish the final GUID Scene, including this test's actual setup.
+            state.path.write_text(state.scene.serialize_asset(), encoding="utf-8")
+            assert state.manager._asset_database.import_asset(str(state.path)).succeeded
+            state.manager.initial_world_count = 1
+            assert state.manager.enter_play_mode()
+
+            def ready():
+                if not state.manager.is_playing:
+                    return False
+                worlds = WorldManager.get_worlds()
+                assert all(value.state not in ("failed", "cancelled", "destroyed") for value in worlds)
+                return len(worlds) == 1 and worlds[0].is_ready
+
+            until(ready, "Normal Play world preparation timed out")
+            world, = WorldManager.get_worlds()
+            assert state.manager.pause()
+            with _Infernux._RuntimeWorldScope(world.id):
+                runtime = world.get_active_scene()
+                assert runtime is not state.scene
+                assert runtime.world_id != state.scene.world_id
+                return runtime
+
+        def frames(count, delta=1.0 / 60.0):
+            # Each request advances the specified amount of simulation time.
+            # Host opportunities only drain the admitted step; they add no time.
+            for _ in range(count):
+                state.native.step(delta)
+                until(lambda: not state.native.is_stepping(),
+                      "Paused simulation frame did not complete")
+            with _Infernux._RuntimeWorldScope(world.id):
+                assert not state.native.fixed_step_pending
+                assert state.native.completed_fixed_step_index == state.native.published_fixed_step_index
+
+        try:
+            yield SimpleNamespace(start=start, frames=frames, add_probe=add_probe,
+                                  scope=lambda: _Infernux._RuntimeWorldScope(world.id))
+        finally:
+            try:
+                if state.manager.is_playing:
+                    assert state.manager.exit_play_mode()
+                    until(lambda: state.manager.is_edit_mode and not state.host._world_runtimes
+                          and state.host._runtime_world_session is None,
+                          "Normal Stop did not retire the runtime worlds")
+            finally:
+                state.host._engine.set_render_pipeline(None)
+
+
+class TestFixedTiming(_PreparedPhysicsPlay):
+    def test_manual_step_is_exclusive_and_runs_one_shared_fixed_frame(self, scene, _normal_play):
         """Manual stepping must be the paused form of the automatic path.
 
         Calling ``step`` while Play is running is intentionally a no-op, so a
         tooling/editor request cannot advance the World beside the automatic
-        accumulator. Once paused, one call runs exactly one fixed bundle and
-        the normal script phases around it, regardless of the display delta
-        supplied by the caller.
+        accumulator. Once paused, stepping by the configured fixed interval
+        runs one fixed bundle and the normal script phases around it.
         """
-        probe_object = scene.create_game_object("ManualStepProbe")
+        scene.create_game_object("ManualStepProbe")
 
         class ManualStepProbe(InxComponent):
             def awake(self):
@@ -1172,29 +1261,32 @@ class TestFixedTiming:
             def late_update(self, _delta_time):
                 self.calls.append("late")
 
-        probe = probe_object.add_component(ManualStepProbe)
-        manager = SceneManager.instance()
-        manager.play()
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            manager = SceneManager.instance()
+            fixed_delta = manager.get_fixed_time_step()
+            _normal_play.frames(1, fixed_delta)
+            probe = runtime.find("ManualStepProbe").add_component(ManualStepProbe)
+            manager.play()
 
-        fixed_delta = manager.get_fixed_time_step()
-        before_fixed = manager.fixed_time
-        before_frame = manager.runtime_frame_count
+            before_fixed = manager.fixed_time
+            before_frame = manager.runtime_frame_count
 
-        # Automatic Play owns the World while unpaused; the manual request
-        # cannot create a second simulation or run a duplicate script frame.
-        manager.step(0.5)
-        assert manager.fixed_time == pytest.approx(before_fixed)
-        assert manager.runtime_frame_count == before_frame
-        assert probe.calls == []
+            # Automatic Play owns the World while unpaused; the manual request
+            # cannot create a second simulation or run a duplicate script frame.
+            manager.step(0.5)
+            assert manager.fixed_time == pytest.approx(before_fixed)
+            assert manager.runtime_frame_count == before_frame
+            assert probe.calls == []
 
-        manager.pause()
-        manager.step(0.5)
+            manager.pause()
+            _normal_play.frames(1, fixed_delta)
 
-        assert manager.fixed_time == pytest.approx(before_fixed + fixed_delta)
-        assert manager.runtime_frame_count == before_frame + 1
-        assert probe.calls == ["fixed", "pre", "post", "update", "late"]
+            assert manager.fixed_time == pytest.approx(before_fixed + fixed_delta)
+            assert manager.runtime_frame_count == before_frame + 1
+            assert probe.calls == ["fixed", "pre", "post", "update", "late"]
 
-    def test_public_physics_stages_bridge_the_same_jolt_step(self, scene):
+    def test_public_physics_stages_bridge_the_same_jolt_step(self, scene, _normal_play):
         Physics.set_gravity(Vector3(0, 0, 0))
         body, rigidbody = _make_ball(scene, pos=Vector3(0, 5, 0))
         rigidbody.use_gravity = False
@@ -1224,22 +1316,24 @@ class TestFixedTiming:
                 self.post_velocity = tuple(rigidbody.velocity)
                 self.post_position = tuple(body.transform.position)
 
-        probe = body.add_component(PhysicsStageProbe)
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            body = runtime.find("Ball")
+            rigidbody = body.get_component("Rigidbody")
+            probe = body.add_component(PhysicsStageProbe)
+            manager = SceneManager.instance()
+            _normal_play.frames(1, manager.get_fixed_time_step())
 
-        assert probe.calls == ["fixed", "pre", "post"]
-        assert probe.fixed_velocity == pytest.approx((0, 0, 0), abs=1e-4)
-        assert probe.pre_velocity == pytest.approx((0, 0, 0), abs=1e-4)
-        assert probe.post_velocity == pytest.approx((3, 0, 0), abs=1e-4)
-        assert probe.post_position[0] == pytest.approx(
-            3.0 * manager.get_fixed_time_step(), abs=1e-3
-        )
+            assert probe.calls == ["fixed", "pre", "post"]
+            assert probe.fixed_velocity == pytest.approx((0, 0, 0), abs=1e-4)
+            assert probe.pre_velocity == pytest.approx((0, 0, 0), abs=1e-4)
+            assert probe.post_velocity == pytest.approx((3, 0, 0), abs=1e-4)
+            assert probe.post_position[0] == pytest.approx(
+                3.0 * manager.get_fixed_time_step(), abs=1e-3
+            )
 
-    def test_fixed_time_is_current_inside_fixed_update(self, scene):
-        probe_object = scene.create_game_object("FixedTimeProbe")
+    def test_fixed_time_is_current_inside_fixed_update(self, scene, _normal_play):
+        scene.create_game_object("FixedTimeProbe")
 
         class FixedTimeProbe(InxComponent):
             def awake(self):
@@ -1248,21 +1342,20 @@ class TestFixedTiming:
             def fixed_update(self, _delta_time):
                 self.samples.append((Time.fixed_time, Time.fixed_unscaled_time))
 
-        probe = probe_object.add_component(FixedTimeProbe)
-        manager = SceneManager.instance()
-        manager.time_scale = 1.0
-        manager.play()
-        manager.pause()
-        manager.step()
-        manager.step()
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            probe = runtime.find("FixedTimeProbe").add_component(FixedTimeProbe)
+            manager = SceneManager.instance()
+            manager.time_scale = 1.0
+            _normal_play.frames(2, manager.get_fixed_time_step())
 
-        fixed_delta = manager.get_fixed_time_step()
-        assert len(probe.samples) == 2
-        for step_index, sample in enumerate(probe.samples, start=1):
-            expected_time = fixed_delta * step_index
-            assert sample == pytest.approx(
-                (expected_time, expected_time), rel=1e-6, abs=1e-12
-            )
+            fixed_delta = manager.get_fixed_time_step()
+            assert len(probe.samples) == 2
+            for step_index, sample in enumerate(probe.samples, start=1):
+                expected_time = fixed_delta * step_index
+                assert sample == pytest.approx(
+                    (expected_time, expected_time), rel=1e-6, abs=1e-12
+                )
 
 
 class TestCollision:
@@ -1921,95 +2014,7 @@ class TestLayerCollision:
         assert Physics.get_ignore_layer_collision(10, 11) is False
 
 
-class TestColliderCollisionIgnore:
-    @pytest.fixture
-    def _normal_play(self, _collider_authoring_project):
-        """Use the existing normal editor/Play owner, scoped to this class."""
-        import time
-        from types import SimpleNamespace
-        from infernux.components.script_loader import load_and_create_component
-        from infernux.core.assets import AssetManager
-        from infernux.lib import _Infernux
-        from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
-        from infernux.world import WorldManager
-
-        state = _collider_authoring_project
-        world = None
-        pipeline = RenderStackPipeline()
-        state.host._engine.set_render_pipeline(pipeline)
-
-        def until(predicate, label):
-            deadline = time.monotonic() + 60.0
-            while not predicate():
-                assert time.monotonic() < deadline, label
-                state.runner.tick()
-                state.host.tick(0.0)
-
-        def add_probe(owner):
-            path = state.path.parent / "ColliderIgnoreProbe.py"
-            path.write_text(
-                "from infernux.components import InxComponent\n"
-                "class ColliderIgnoreProbe(InxComponent):\n"
-                "    def awake(self): self.events = []\n"
-                "    def on_collision_enter(self, collision): self.events.append(collision)\n",
-                encoding="utf-8",
-            )
-            imported = AssetManager.import_asset(str(path), database=state.manager._asset_database)
-            assert imported.succeeded and imported.guid
-            probe = load_and_create_component(
-                str(path), state.manager._asset_database, "ColliderIgnoreProbe", script_guid=imported.guid
-            )
-            assert probe is not None
-            owner.add_py_component(probe)
-
-        def start():
-            nonlocal world
-            # Publish the final GUID Scene, including this test's actual setup.
-            state.path.write_text(state.scene.serialize_asset(), encoding="utf-8")
-            assert state.manager._asset_database.import_asset(str(state.path)).succeeded
-            state.manager.initial_world_count = 1
-            assert state.manager.enter_play_mode()
-
-            def ready():
-                if not state.manager.is_playing:
-                    return False
-                worlds = WorldManager.get_worlds()
-                assert all(value.state not in ("failed", "cancelled", "destroyed") for value in worlds)
-                return len(worlds) == 1 and worlds[0].is_ready
-
-            until(ready, "Normal Play world preparation timed out")
-            world, = WorldManager.get_worlds()
-            assert state.manager.pause()
-            with _Infernux._RuntimeWorldScope(world.id):
-                runtime = world.get_active_scene()
-                assert runtime is not state.scene
-                assert runtime.world_id != state.scene.world_id
-                return runtime
-
-        def frames(count):
-            # Preserve these tests' explicit 1/60-second simulation requests.
-            # Host opportunities only drain the admitted step; they add no time.
-            for _ in range(count):
-                state.native.step(1.0 / 60.0)
-                until(lambda: not state.native.is_stepping(),
-                      "Paused simulation frame did not complete")
-            with _Infernux._RuntimeWorldScope(world.id):
-                assert not state.native.fixed_step_pending
-                assert state.native.completed_fixed_step_index == state.native.published_fixed_step_index
-
-        try:
-            yield SimpleNamespace(start=start, frames=frames, add_probe=add_probe,
-                                  scope=lambda: _Infernux._RuntimeWorldScope(world.id))
-        finally:
-            try:
-                if state.manager.is_playing:
-                    assert state.manager.exit_play_mode()
-                    until(lambda: state.manager.is_edit_mode and not state.host._world_runtimes
-                          and state.host._runtime_world_session is None,
-                          "Normal Stop did not retire the runtime worlds")
-            finally:
-                state.host._engine.set_render_pipeline(None)
-
+class TestColliderCollisionIgnore(_PreparedPhysicsPlay):
     def test_exact_compound_member_can_be_ignored_and_restored(self, scene, _normal_play):
         compound = scene.create_game_object("CompoundGround")
         box = compound.add_component("BoxCollider")
@@ -2162,7 +2167,7 @@ class TestColliderCollisionIgnore:
             assert all(math.isfinite(value) for value in (velocity.x, velocity.y, velocity.z))
 
 
-class TestRaycastBatch:
+class TestRaycastBatch(_PreparedPhysicsPlay):
     @staticmethod
     def _output(capacity, fill=0):
         import numpy as np
@@ -2610,7 +2615,7 @@ class TestRaycastBatch:
         PublicPhysics.raycast_batch(origins, directions, output, max_distance=10, profile=False)
         assert "profile" not in output
 
-    def test_collision_callback_queries_after_fixed_epoch_publication(self, scene):
+    def test_collision_callback_queries_after_fixed_epoch_publication(self, scene, _normal_play):
         """Script contact callbacks run after Step releases the write epoch."""
         ground = _make_ground(scene)
         ball, rigidbody = _make_ball(scene, pos=Vector3(0, 0.75, 0))
@@ -2625,14 +2630,15 @@ class TestRaycastBatch:
                     Vector3(0, 5, 0), Vector3(0, -1, 0), 10
                 )
 
-        probe = ball.add_component(QueryFromContact)
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        manager.step()
+        runtime = _normal_play.start()
+        with _normal_play.scope():
+            ground = runtime.find("Ground")
+            ball = runtime.find("Ball")
+            probe = ball.add_component(QueryFromContact)
+            _normal_play.frames(1, SceneManager.instance().get_fixed_time_step())
 
-        assert probe.hit is not None
-        assert probe.hit.game_object.id in {ground.id, ball.id}
+            assert probe.hit is not None
+            assert probe.hit.game_object.id in {ground.id, ball.id}
 
     def test_disable_and_reenable_publish_distinct_query_epochs(self, scene):
         target = scene.create_game_object("QueryEpochDisableTarget")
