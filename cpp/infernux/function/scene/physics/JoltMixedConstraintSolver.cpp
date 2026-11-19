@@ -25,6 +25,26 @@ using PatchKey = std::pair<Contact::EndpointKey, Contact::EndpointKey>;
 constexpr uint32_t SolverLanes = 64;
 constexpr uint32_t ClearCpuImpulses = 1u, ReportContactImpulses = 2u;
 
+enum SolverPort : uint32_t
+{
+    Params,
+    GpuModels,
+    GpuStates,
+    CpuModels,
+    CpuVelocities,
+    Groups,
+    Patches,
+    Impulses,
+    Sleep,
+    Forces,
+    WakeSlots,
+    CpuPoses,
+    Anchors,
+    PreviousPatches,
+    PortCount
+};
+using SolverBuffers = std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount>;
+
 struct Parameters
 {
     UInt4 range;               // Serial groups, cooperative groups, rounds, velocity pass flags.
@@ -130,7 +150,7 @@ void LinkGroup(std::vector<size_t> &parents, std::unordered_map<uint32_t, size_t
 }
 } // namespace
 
-struct JoltMixedContactStep::ImpulseHistory
+struct JoltMixedContactStep::SolverState
 {
     struct Anchors
     {
@@ -144,9 +164,16 @@ struct JoltMixedContactStep::ImpulseHistory
         uint32_t deviceIndex, pointCount;
         std::array<Anchors, MaxContactPointsPerPair> anchors;
     };
+    void ReleaseManifolds()
+    {
+        std::vector<Manifold>{}.swap(manifolds);
+        previousPatches.reset();
+        nextPatches.reset();
+    }
     // Sorted by the canonical manifold key, independently of device group order.
     std::vector<Manifold> manifolds;
     std::shared_ptr<rhi::ComputeBuffer> previousPatches, nextPatches;
+    SolverBuffers scratch;
     std::unordered_set<uint32_t> teleportedBodies;
     std::tuple<uint64_t, uint64_t, uint32_t> nextSubstep;
     float deltaTime = 0;
@@ -154,13 +181,13 @@ struct JoltMixedContactStep::ImpulseHistory
 
 void JoltMixedContactStep::InvalidateImpulseHistory(uint32_t bodyId)
 {
-    if (m_impulseHistory)
-        m_impulseHistory->teleportedBodies.insert(bodyId);
+    if (m_solverState)
+        m_solverState->teleportedBodies.insert(bodyId);
 }
 
-void JoltMixedContactStep::DiscardImpulseHistory() noexcept
+void JoltMixedContactStep::DiscardSolverState() noexcept
 {
-    m_impulseHistory.reset();
+    m_solverState.reset();
 }
 
 JoltMixedConstraintSolver::JoltMixedConstraintSolver(rhi::ComputeHost &host, const ShaderTargetCode &target)
@@ -199,34 +226,15 @@ bool JoltMixedConstraintSolver::TryPreparePrograms(bool velocity, bool position,
 
 struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
 {
-    enum Port : uint32_t
-    {
-        Params,
-        GpuModels,
-        GpuStates,
-        CpuModels,
-        CpuVelocities,
-        Groups,
-        Patches,
-        Impulses,
-        Sleep,
-        Forces,
-        WakeSlots,
-        CpuPoses,
-        Anchors,
-        PreviousPatches,
-        PortCount
-    };
-
     JoltMixedConstraintSolver &owner;
     JoltGpuMixedContacts &discovery;
     JoltMixedContactStep &step;
     JoltCpuContactPublication &cpu;
     const JoltMixedContactStep::Policy &policy;
     std::shared_ptr<const JoltGpuScene::Publication> publication;
-    std::shared_ptr<JoltMixedContactStep::ImpulseHistory> history;
+    std::shared_ptr<JoltMixedContactStep::SolverState> state;
     std::unordered_set<uint32_t> teleportedBodies;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
+    SolverBuffers buffers;
     std::vector<CpuBoundary> models;
     std::vector<Velocity> velocities, receipts;
     std::vector<Pose> poses, projected;
@@ -287,10 +295,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         : owner(owner), discovery(discovery), step(step), cpu(cpu), policy(policy), publication(std::move(publication)),
           projectCpuIds(std::move(projectIds))
     {
-        if (!step.m_impulseHistory)
-            step.m_impulseHistory = std::make_shared<JoltMixedContactStep::ImpulseHistory>();
-        history = step.m_impulseHistory;
-        teleportedBodies.swap(history->teleportedBodies);
+        if (!step.m_solverState)
+            step.m_solverState = std::make_shared<JoltMixedContactStep::SolverState>();
+        state = step.m_solverState;
+        teleportedBodies.swap(state->teleportedBodies);
     }
 
     const JPH::Body &Body(JPH::BodyID id) const
@@ -678,8 +686,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     float MatchWarmStarts()
     {
         const auto &settings = step.Scene().System().GetPhysicsSettings();
-        if (!settings.mConstraintWarmStart || history->manifolds.empty() ||
-            history->nextSubstep != std::tuple(publication->simulationEpoch, publication->fixedStepIndex, substep))
+        if (!settings.mConstraintWarmStart || state->manifolds.empty() ||
+            state->nextSubstep != std::tuple(publication->simulationEpoch, publication->fixedStepIndex, substep))
             return 0.0f;
 
         bool matched = false;
@@ -692,10 +700,10 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                                  Body(response.native).IsCollisionCacheInvalid()))
                 continue;
             const auto key = Key(response);
-            const auto found = std::lower_bound(history->manifolds.begin(), history->manifolds.end(), key,
+            const auto found = std::lower_bound(state->manifolds.begin(), state->manifolds.end(), key,
                                                 [](const auto &cached, const auto &key) { return cached.key < key; });
             constexpr float alignedNormals = 0.95f;
-            if (found == history->manifolds.end() || found->key != key ||
+            if (found == state->manifolds.end() || found->key != key ||
                 found->shapeRevisions != response.shapeRevisions ||
                 glm::dot(found->normal, XYZ(response.normalFriction)) < alignedNormals)
                 continue;
@@ -730,18 +738,18 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 patch.normalLambda = {pointIndices[0], pointIndices[1], pointIndices[2], pointIndices[3]};
             }
         }
-        return matched ? params.gravityDt.w / history->deltaTime : 0.0f;
+        return matched ? params.gravityDt.w / state->deltaTime : 0.0f;
     }
 
     void RetainImpulses()
     {
         const auto &responses = step.Responses();
-        history->manifolds.resize(responses.size());
+        state->manifolds.resize(responses.size());
         for (uint32_t i = 0; i < order.size(); ++i) {
             if (order[i] >= responses.size())
                 continue;
             const auto &response = responses[order[i]];
-            auto &cached = history->manifolds[order[i]];
+            auto &cached = state->manifolds[order[i]];
             cached.key = Key(response);
             cached.shapeRevisions = response.shapeRevisions;
             cached.normal = XYZ(response.normalFriction);
@@ -752,12 +760,12 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 cached.anchors[point] = {current.localAnchorA, current.localAnchorB};
             }
         }
-        history->previousPatches = buffers[Patches];
-        history->nextPatches = buffers[PreviousPatches];
+        state->previousPatches = buffers[Patches];
+        state->nextPatches = buffers[PreviousPatches];
         const bool lastSubstep = substep + 1 == substepCount;
-        history->nextSubstep = {publication->simulationEpoch, publication->fixedStepIndex + lastSubstep,
-                                lastSubstep ? 0u : substep + 1};
-        history->deltaTime = params.gravityDt.w;
+        state->nextSubstep = {publication->simulationEpoch, publication->fixedStepIndex + lastSubstep,
+                              lastSubstep ? 0u : substep + 1};
+        state->deltaTime = params.gravityDt.w;
     }
 
     void CaptureModels()
@@ -829,11 +837,11 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         }
     }
 
-    bool Allocate(Port port, uint64_t bytes)
+    bool Allocate(std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes)
     {
-        auto &buffer = buffers[port];
         if (buffer && buffer->GetByteSize() >= bytes)
             return true;
+        buffer.reset();
         buffer = rhi::ComputeBuffer::TryCreatePrivate(owner.m_host, {bytes / 4, rhi::ComputeScalarType::UInt32, 1, {}});
         return bool(buffer);
     }
@@ -867,33 +875,53 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
 
     bool AllocateWorkset()
     {
-        const auto velocityBytes = models.size() * sizeof(Velocity);
-        return Allocate(CpuModels, models.size() * sizeof(CpuBoundary)) && Allocate(CpuVelocities, velocityBytes) &&
-               Allocate(Groups, groups.size() * sizeof(UInt4) + jointStatus.size() * sizeof(uint32_t) +
-                                    contactImpulses.size() * sizeof(ReportedContactImpulse)) &&
-               Allocate(Patches, patches.size() * sizeof(DevicePatch)) &&
-               (!solveVelocity || (Allocate(PreviousPatches, sizeof(DevicePatch)) &&
-                                   Allocate(Impulses, std::max(size_t{1}, native.size()) * sizeof(Velocity)))) &&
-               (!solvePosition || Allocate(Anchors, anchors.size() * sizeof(PositionAnchors)));
+        const bool solve = !patches.empty();
+        const std::pair<SolverPort, uint64_t> sizes[] = {
+            {Params, solve || !wakeSlots.empty() ? sizeof(params) : 0},
+            {CpuModels, solve ? models.size() * sizeof(CpuBoundary) : 0},
+            {CpuVelocities, solve ? models.size() * sizeof(Velocity) : 0},
+            {Groups, solve ? groups.size() * sizeof(UInt4) + jointStatus.size() * sizeof(uint32_t) +
+                                 contactImpulses.size() * sizeof(ReportedContactImpulse)
+                           : 0},
+            {Impulses, solve && solveVelocity ? std::max(size_t{1}, native.size()) * sizeof(Velocity) : 0},
+            {Anchors, solve && solvePosition ? anchors.size() * sizeof(PositionAnchors) : 0},
+            {WakeSlots, wakeSlots.size() * sizeof(uint32_t)},
+        };
+        buffers[CpuPoses].reset();
+        // Retire unused or outgrown bindings before asking the device to admit new storage.
+        for (auto [port, bytes] : sizes) {
+            buffers[port].reset();
+            auto &scratch = state->scratch[port];
+            if (scratch && (!bytes || bytes > scratch->GetByteSize() || bytes < scratch->GetByteSize() / 4))
+                scratch.reset();
+        }
+        for (auto [port, bytes] : sizes) {
+            auto &scratch = state->scratch[port];
+            if (bytes && !Allocate(scratch, bytes))
+                return false;
+            buffers[port] = scratch;
+        }
+        if (!solve)
+            return true;
+        if (solvePosition)
+            buffers[CpuPoses] = buffers[CpuVelocities];
+        const auto patchBytes = patches.size() * sizeof(DevicePatch);
+        if (buffers[Patches] && patchBytes < buffers[Patches]->GetByteSize() / 4)
+            buffers[Patches].reset();
+        return Allocate(buffers[Patches], patchBytes) &&
+               (!solveVelocity || Allocate(buffers[PreviousPatches], sizeof(DevicePatch)));
     }
 
     JoltGpuControlWork Install(std::function<void()> done)
     {
-        if (patches.empty() && wakeSlots.empty()) {
-            done();
-            return {};
-        }
         const bool pipelinesReady = !owner.m_host.SupportsPipelinePreparation() ||
                                     owner.TryPreparePrograms(solveVelocity && !patches.empty(),
                                                              solvePosition && !patches.empty(), !wakeSlots.empty());
-        if (!pipelinesReady || !Allocate(Params, sizeof(params)) || (!patches.empty() && !AllocateWorkset()) ||
-            (!wakeSlots.empty() && !Allocate(WakeSlots, wakeSlots.size() * sizeof(uint32_t)))) {
+        if (!pipelinesReady || !AllocateWorkset()) {
             return {nullptr, [self = shared_from_this(), done = std::move(done)]() mutable {
                         return self->Install(std::move(done));
                     }};
         }
-        if (solvePosition)
-            buffers[CpuPoses] = buffers[CpuVelocities];
         if (wakeSlots.empty()) {
             done();
             return {};
@@ -927,8 +955,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         buffers[Sleep] = storage.Get(Resource::SleepStates);
         buffers[Forces] = storage.Get(Resource::BodyForces);
         if (solveVelocity) {
-            buffers[PreviousPatches] = history->previousPatches;
-            buffers[Patches] = history->nextPatches;
+            buffers[PreviousPatches] = state->previousPatches;
+            buffers[Patches] = std::move(state->nextPatches);
         }
         return discovery.Discover(storage, stepParams, substep, publication, step, policy, FixedSourceReads(storage),
                                   [self = shared_from_this(), &inputs, done = std::move(done)]() mutable {
@@ -946,7 +974,9 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         inputs.SetExternalWakePending(!wakeSlots.empty());
         interleaveCpu = (!native.empty() || !projectCpuIds.empty()) && cpu.CoupledHasLocalVelocityRows();
         if (patches.empty()) {
-            history->manifolds.clear();
+            state->ReleaseManifolds();
+            buffers[Patches].reset();
+            buffers[PreviousPatches].reset();
             if (projectCpuIds.empty())
                 cpu.AdvanceCoupledVelocity();
         } else {
@@ -1018,6 +1048,17 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         updates.push_back({buffers[Patches], 0, Bytes(patches)});
     }
 
+    void SetSolveParameters(std::vector<rhi::ComputeBufferUpdate> &updates, uint32_t rounds, uint32_t flags,
+                            float warmScale, bool first)
+    {
+        // A pass starts with a full upload. Later rounds share the group layout and step constants.
+        if (first || rounds != params.range.z || flags != params.range.w || warmScale != params.contact.x) {
+            params.range = {serialGroupCount, cooperativeGroupCount, rounds, flags};
+            params.contact.x = warmScale;
+            updates.push_back({buffers[Params], 0, Bytes(&params, 1)});
+        }
+    }
+
     JoltGpuControlWork WarmVelocity(const JoltGpuStepInputs &inputs, std::function<void(uint32_t)> done)
     {
         const auto &plan = inputs.GetConstraints();
@@ -1066,8 +1107,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         // An island with no native rows can keep the updated shadow and impulse sum on the GPU.
         const bool readContacts = last && !contactImpulses.empty();
         const uint32_t flags = (newVelocities ? ClearCpuImpulses : 0u) | (readContacts ? ReportContactImpulses : 0u);
-        params.range = {serialGroupCount, cooperativeGroupCount, rounds, flags};
-        params.contact.x = first ? warmStartScale : 0.0f;
+        std::vector<rhi::ComputeBufferUpdate> updates;
+        SetSolveParameters(updates, rounds, flags, first ? warmStartScale : 0.0f, first);
         const bool readFeedback = !native.empty() && (interleaveCpu || last || !projectCpuIds.empty());
         const bool readJoints = last && !jointStatus.empty();
         std::vector<rhi::ComputeBufferRead> reads;
@@ -1081,7 +1122,6 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             reads.push_back(JointStatusRead());
         const auto resume =
             reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
-        std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)}};
         if (velocityCount)
             updates.push_back({buffers[CpuVelocities], 0, Bytes(velocities.data(), velocityCount)});
         if (first)
@@ -1157,8 +1197,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         const bool last = iteration + rounds == iterations;
         const bool readFeedback = !native.empty() && (interleaveCpu || last);
         const uint32_t cpuRounds = interleaveCpu || !projectCpuIds.empty() ? rounds : iterations;
-        params.range = {serialGroupCount, cooperativeGroupCount, rounds, 0};
-        std::vector<rhi::ComputeBufferUpdate> updates{{buffers[Params], 0, Bytes(&params, 1)}};
+        std::vector<rhi::ComputeBufferUpdate> updates;
+        SetSolveParameters(updates, rounds, 0, params.contact.x, iteration == 0);
         if (poseCount)
             updates.push_back({buffers[CpuPoses], 0, Bytes(poses.data(), poseCount)});
         if (iteration == 0) {

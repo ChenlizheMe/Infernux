@@ -936,7 +936,7 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
     }
     domain.admittedContactPolicy = std::move(policy);
     if (domain.mixedContacts && !coupled)
-        domain.mixedContacts->DiscardImpulseHistory();
+        domain.mixedContacts->DiscardSolverState();
     SealStaticFixedMoves(domain);
     domain.cpuFixedAdmitted = bool(domain.cpuControl);
     if (domain.cpuFixedAdmitted) {

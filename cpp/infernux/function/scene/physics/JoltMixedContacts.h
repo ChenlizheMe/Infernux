@@ -102,7 +102,7 @@ class JoltMixedContactStep final
     void AppendFrame(uint32_t substep, Frame &);
     void ClearStep();
     void InvalidateImpulseHistory(uint32_t bodyId);
-    void DiscardImpulseHistory() noexcept;
+    void DiscardSolverState() noexcept;
 
   private:
     friend class JoltMixedConstraintSolver;
@@ -130,7 +130,7 @@ class JoltMixedContactStep final
     [[nodiscard]] MassFrame CpuMassFrame(uint32_t id) const;
     [[nodiscard]] bool CpuJointMayWake(const JPH::Body &, std::unordered_map<uint32_t, bool> &) const;
     void ObserveSleepingPair(BodyPair);
-    struct ImpulseHistory;
+    struct SolverState;
     struct SleepingContact
     {
         SleepLink link;
@@ -167,7 +167,7 @@ class JoltMixedContactStep final
     std::vector<SleepLink> m_pendingSleepLinks;
     std::vector<SleepingContact> m_sleepLinks;
     size_t m_nextSleepIsland = 0;
-    std::shared_ptr<ImpulseHistory> m_impulseHistory;
+    std::shared_ptr<SolverState> m_solverState;
     std::vector<Pose> m_continuousPose;
     std::vector<JPH::Vec3> m_continuousDisplacement;
     std::vector<JPH::GPU::UInt4> m_continuousTree;
