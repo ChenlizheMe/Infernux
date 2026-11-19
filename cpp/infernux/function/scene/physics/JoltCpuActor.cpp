@@ -268,8 +268,8 @@ JPH::BodyID JoltCpuScene::ReplaceBody(uint32_t bodyId, const PreparedCpuActor &a
     return native;
 }
 
-void JoltCpuScene::StartTemporaryStaticDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation,
-                                             float duration, float maxSpeed)
+std::optional<JPH::AABox> JoltCpuScene::StartTemporaryStaticDrive(uint32_t bodyId, JPH::RVec3Arg position,
+                                                                  JPH::QuatArg rotation, float duration, float maxSpeed)
 {
     if (!std::isfinite(duration) || duration <= 0.0f || !std::isfinite(maxSpeed) || maxSpeed < 0.0f)
         throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");
@@ -285,7 +285,7 @@ void JoltCpuScene::StartTemporaryStaticDrive(uint32_t bodyId, JPH::RVec3Arg posi
             if (!body.IsStatic() || !body.IsInBroadPhase() || record.authoredDynamic)
                 throw std::logic_error("A temporary static drive requires a resident static body");
             if (position == body.GetPosition() && (rotation == body.GetRotation() || rotation == -body.GetRotation()))
-                return;
+                return std::nullopt;
             movingLayer = StaticDriveLayer(body.GetObjectLayer(), true);
             if (!body.CanBeKinematicOrDynamic())
                 replacementSettings = body.GetBodyCreationSettings();
@@ -330,7 +330,7 @@ void JoltCpuScene::StartTemporaryStaticDrive(uint32_t bodyId, JPH::RVec3Arg posi
         record.temporaryStaticDrive = true;
     }
 
-    StartKinematicDrive(bodyId, position, rotation, duration, maxSpeed);
+    return StartKinematicDrive(bodyId, position, rotation, duration, maxSpeed);
 }
 
 void JoltCpuScene::StopTemporaryStaticDrive(uint32_t bodyId)

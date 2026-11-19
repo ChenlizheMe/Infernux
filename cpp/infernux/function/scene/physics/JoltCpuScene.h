@@ -125,14 +125,15 @@ class JoltCpuScene final : private JPH::ContactListener,
     void SetBodyAwake(uint32_t bodyId, bool awake);
     void ResetBodyMotion(uint32_t bodyId);
 
-    /// Called once per Fixed, with the complete composed target selected by
-    /// the owner. Velocity remains available in the completed physics state.
-    void StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
-                             float maxSpeed);
+    /// Returns the bounds before integration when the prescribed body will move.
+    /// The fixed-step owner wakes neighbours of both endpoints after integration.
+    [[nodiscard]] std::optional<JPH::AABox> StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position,
+                                                                JPH::QuatArg rotation, float duration, float maxSpeed);
 
     /// A collider-only actor temporarily supplies contact velocity for one Fixed.
-    void StartTemporaryStaticDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
-                                   float maxSpeed);
+    [[nodiscard]] std::optional<JPH::AABox> StartTemporaryStaticDrive(uint32_t bodyId, JPH::RVec3Arg position,
+                                                                      JPH::QuatArg rotation, float duration,
+                                                                      float maxSpeed);
     void StopTemporaryStaticDrive(uint32_t bodyId);
 
     struct PoseUpdate
@@ -214,6 +215,7 @@ class JoltCpuScene final : private JPH::ContactListener,
     static bool AcceptedAwake(const BodyRecord &record, const JPH::Body &body);
     void WakeBody(BodyRecord &record, JPH::Body &body);
     void WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude = {});
+    void WakeBodiesAtMovedBounds(JPH::BodyID source, const JPH::AABox &before);
     void MarkPoseUpdate(uint32_t bodyId, BodyRecord &record);
     void MarkActivePoseUpdates();
     void OnBodyActivated(const JPH::BodyID &, JPH::uint64) noexcept override

@@ -408,18 +408,22 @@ void JoltCpuScene::SetBodyOriginPose(uint32_t bodyId, const std::optional<JPH::R
     bodies.SetPositionAndRotation(native, origin, orientation, JPH::EActivation::Activate);
     bodies.InvalidateContactCache(native);
     MarkPoseUpdate(bodyId, record);
-    if (added) {
-        JPH::AABox newBounds;
-        {
-            JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), native);
-            newBounds = lock.GetBody().GetWorldSpaceBounds();
-        }
-        WakeBodiesInBounds(oldBounds, native);
-        if (!(oldBounds == newBounds))
-            WakeBodiesInBounds(newBounds, native);
-    } else {
+    if (added)
+        WakeBodiesAtMovedBounds(native, oldBounds);
+    else
         SetBodyAwake(bodyId, true);
+}
+
+void JoltCpuScene::WakeBodiesAtMovedBounds(JPH::BodyID source, const JPH::AABox &before)
+{
+    JPH::AABox after;
+    {
+        JPH::BodyLockRead lock(m_system.GetBodyLockInterface(), source);
+        after = lock.GetBody().GetWorldSpaceBounds();
     }
+    WakeBodiesInBounds(before, source);
+    if (!(before == after))
+        WakeBodiesInBounds(after, source);
 }
 
 void JoltCpuScene::SetBodyVelocity(uint32_t bodyId, const std::optional<JPH::Vec3> &linear,
@@ -471,8 +475,8 @@ void JoltCpuScene::ResetBodyMotion(uint32_t bodyId)
     SetBodyAwake(bodyId, true);
 }
 
-void JoltCpuScene::StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
-                                       float maxSpeed)
+std::optional<JPH::AABox> JoltCpuScene::StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position,
+                                                            JPH::QuatArg rotation, float duration, float maxSpeed)
 {
     if (!std::isfinite(duration) || duration <= 0.0f || !std::isfinite(maxSpeed) || maxSpeed < 0.0f)
         throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");
@@ -521,6 +525,7 @@ void JoltCpuScene::StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position, 
     if (capped)
         SetBodyOriginPose(bodyId, cappedOrigin, reachable);
 
+    std::optional<JPH::AABox> movedFrom;
     bool wake = false;
     {
         JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
@@ -529,11 +534,14 @@ void JoltCpuScene::StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position, 
         // Native MoveKinematic applies DOFs without imposing manual velocity clamps.
         body.GetMotionProperties()->MoveKinematic(JPH::Vec3(targetCOM - body.GetCenterOfMassPosition()), deltaRotation,
                                                   duration);
-        wake = !body.IsActive() && body.IsInBroadPhase() &&
-               (body.GetLinearVelocity() != JPH::Vec3::sZero() || body.GetAngularVelocity() != JPH::Vec3::sZero());
+        if (body.GetLinearVelocity() != JPH::Vec3::sZero() || body.GetAngularVelocity() != JPH::Vec3::sZero()) {
+            movedFrom = body.GetWorldSpaceBounds();
+            wake = !body.IsActive();
+        }
     }
     if (wake)
         m_system.GetBodyInterface().ActivateBody(record.native);
+    return movedFrom;
 }
 
 uint32_t JoltCpuScene::BodyRecord::MemberIndex(JPH::SubShapeID subshape) const

@@ -354,11 +354,13 @@ struct JoltCpuControl::State
                 continue;
             }
             if (scene.IsBodyInBroadphase(body)) {
-                if (drive.temporaryStatic)
-                    scene.StartTemporaryStaticDrive(body, drive.position, drive.rotation, drive.duration,
-                                                    drive.maxSpeed);
-                else
-                    scene.StartKinematicDrive(body, drive.position, drive.rotation, drive.duration, drive.maxSpeed);
+                const auto before = drive.temporaryStatic
+                                        ? scene.StartTemporaryStaticDrive(body, drive.position, drive.rotation,
+                                                                          drive.duration, drive.maxSpeed)
+                                        : scene.StartKinematicDrive(body, drive.position, drive.rotation,
+                                                                    drive.duration, drive.maxSpeed);
+                if (before)
+                    drivenBounds.emplace_back(scene.NativeBody(body), *before);
                 Complete(drive.positionSource, Position);
                 Complete(drive.rotationSource, Rotation);
                 drive.pending = false;
@@ -374,6 +376,7 @@ struct JoltCpuControl::State
     std::vector<Entry> pending;
     std::optional<Fixed> fixed;
     std::map<uint32_t, Drive> drives;
+    std::vector<std::pair<JPH::BodyID, JPH::AABox>> drivenBounds;
     std::vector<Completion> completions;
 };
 
@@ -597,6 +600,11 @@ void JoltCpuControl::PublishApplied()
     auto &state = *m_state;
     if (state.fixed && !state.fixed->applied)
         throw std::logic_error("CPU Fixed publication requires an applied prefix");
+    // At this boundary the source has reached its actual integrated pose. Wake
+    // its neighbours while this Fixed still owns the world and its native IDs.
+    for (const auto &[body, before] : state.drivenBounds)
+        state.scene.WakeBodiesAtMovedBounds(body, before);
+    state.drivenBounds.clear();
     const auto completed = std::exchange(state.completions, {});
     for (const auto &item : completed)
         if (const auto *author = item.source.Get())
@@ -612,6 +620,7 @@ void JoltCpuControl::Close() noexcept
     state.pending.clear();
     state.fixed.reset();
     state.drives.clear();
+    state.drivenBounds.clear();
     state.completions.clear();
     state.bindings.clear();
     while (!state.joints.empty())
