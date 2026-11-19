@@ -444,17 +444,36 @@ void JoltCpuScene::SetBodyAwake(uint32_t bodyId, bool awake)
     }
 }
 
+JPH::BodyID JoltCpuScene::ClearBodyMotion(uint32_t bodyId)
+{
+    auto &record = m_bodies.at(bodyId);
+    m_constraints.ResetBodyWarmStart(bodyId);
+    JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), record.native);
+    auto &body = lock.GetBody();
+    if (!body.IsStatic()) {
+        body.GetMotionProperties()->ResetMotion();
+        WakeBody(record, body);
+    }
+    return record.native;
+}
+
 void JoltCpuScene::ResetBodyMotion(uint32_t bodyId)
 {
-    const auto native = NativeBody(bodyId);
-    {
-        JPH::BodyLockWrite lock(m_system.GetBodyLockInterface(), native);
-        auto &body = lock.GetBody();
-        if (!body.IsStatic())
-            body.GetMotionProperties()->ResetMotion();
-    }
+    const auto native = ClearBodyMotion(bodyId);
     m_system.ForgetBodyContacts(&native, 1);
-    SetBodyAwake(bodyId, true);
+}
+
+void JoltCpuScene::ResetBodyMotions(const std::vector<MotionReset> &resets)
+{
+    std::vector<JPH::BodyID> bodies;
+    bodies.reserve(resets.size());
+    for (const auto &reset : resets) {
+        bodies.push_back(ClearBodyMotion(reset.bodyId));
+        SetBodyOriginPose(reset.bodyId, reset.position, reset.rotation);
+        SetBodyVelocity(reset.bodyId, reset.linearVelocity, reset.angularVelocity);
+    }
+    // Jolt walks the world's contact cache once for the entire reset boundary.
+    m_system.ForgetBodyContacts(bodies.data(), static_cast<int>(bodies.size()));
 }
 
 std::optional<JPH::AABox> JoltCpuScene::StartKinematicDrive(uint32_t bodyId, JPH::RVec3Arg position,

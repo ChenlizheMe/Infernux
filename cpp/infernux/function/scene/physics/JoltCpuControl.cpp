@@ -82,10 +82,12 @@ struct JoltCpuControl::State
         std::vector<uint64_t> ids;
     };
 
+    using MotionResets = std::vector<JoltCpuScene::MotionReset>;
     struct Entry
     {
         uint32_t body;
-        std::variant<Model, Add, Retire, Command, Move, JointCreate, JointUpdates, JointPoseDrives, JointRetire> data;
+        std::variant<Model, Add, Retire, Command, MotionResets, Move, JointCreate, JointUpdates, JointPoseDrives,
+                     JointRetire> data;
     };
     struct Fixed
     {
@@ -255,10 +257,11 @@ struct JoltCpuControl::State
             scene.SetBodyAwake(body, awake.awake);
     }
 
-    void Apply(uint32_t body, ResetMotion)
+    void Apply(uint32_t, const MotionResets &resets, const RetiredJoints &)
     {
-        CancelDrive(body, false);
-        scene.ResetBodyMotion(body);
+        for (const auto &reset : resets)
+            CancelDrive(reset.bodyId, false);
+        scene.ResetBodyMotions(resets);
     }
 
     void Apply(uint32_t body, Remove remove)
@@ -442,6 +445,15 @@ void JoltCpuControl::Queue(uint32_t bodyId, Command command)
     auto &state = *m_state;
     state.RequireStaged(bodyId);
     state.pending.push_back({bodyId, std::move(command)});
+}
+
+void JoltCpuControl::QueueMotionReset(JoltCpuScene::MotionReset reset)
+{
+    auto &state = *m_state;
+    state.RequireStaged(reset.bodyId);
+    if (state.pending.empty() || !std::holds_alternative<State::MotionResets>(state.pending.back().data))
+        state.pending.push_back({UINT32_MAX, State::MotionResets{}});
+    std::get<State::MotionResets>(state.pending.back().data).push_back(std::move(reset));
 }
 
 PhysicsTargetSource JoltCpuControl::QueueMove(uint32_t bodyId, KinematicMove command, const PhysicsTargetAuthor *author)

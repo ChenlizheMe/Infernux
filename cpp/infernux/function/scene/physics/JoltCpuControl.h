@@ -38,9 +38,6 @@ class JoltCpuControl final
     {
         bool awake;
     };
-    struct ResetMotion
-    {
-    };
     struct Remove
     {
         bool preserveVelocity = false;
@@ -52,7 +49,7 @@ class JoltCpuControl final
         float duration;
         float maxSpeed;
     };
-    using Command = std::variant<Pose, Velocity, Force, Awake, ResetMotion, Remove>;
+    using Command = std::variant<Pose, Velocity, Force, Awake, Remove>;
     using RetiredJoints = std::function<void(uint32_t bodyId, const std::vector<uint64_t> &jointIds)>;
 
     explicit JoltCpuControl(JoltCpuScene &scene);
@@ -67,6 +64,7 @@ class JoltCpuControl final
     void AddBodies(std::vector<uint32_t> bodyIds);
     void RetireActor(uint32_t bodyId);
     void Queue(uint32_t bodyId, Command command);
+    void QueueMotionReset(JoltCpuScene::MotionReset reset);
     PhysicsTargetSource QueueMove(uint32_t bodyId, KinematicMove command, const PhysicsTargetAuthor *author = nullptr);
     void QueueTemporaryStaticMove(uint32_t bodyId, JPH::RVec3Arg position, JPH::QuatArg rotation, float duration,
                                   float maxSpeed);

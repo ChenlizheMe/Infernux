@@ -106,6 +106,14 @@ class JoltCpuScene final : private JPH::ContactListener,
                          const std::optional<JPH::Vec3> &angular);
     void SetBodyAwake(uint32_t bodyId, bool awake);
     void ResetBodyMotion(uint32_t bodyId);
+    struct MotionReset
+    {
+        uint32_t bodyId;
+        JPH::RVec3 position;
+        JPH::Quat rotation;
+        JPH::Vec3 linearVelocity, angularVelocity;
+    };
+    void ResetBodyMotions(const std::vector<MotionReset> &resets);
 
     /// Returns the bounds before integration when the prescribed body will move.
     /// The fixed-step owner wakes neighbours of both endpoints after integration.
@@ -195,6 +203,7 @@ class JoltCpuScene final : private JPH::ContactListener,
     static PhysicsBodyMotionState SampleMotionState(uint32_t bodyId, const BodyRecord &record, const JPH::Body &body,
                                                     PhysicsStateFields fields, bool *sleeping = nullptr);
     static bool AcceptedAwake(const BodyRecord &record, const JPH::Body &body);
+    JPH::BodyID ClearBodyMotion(uint32_t bodyId);
     void WakeBody(BodyRecord &record, JPH::Body &body);
     void WakeBodiesInBounds(JPH::AABox bounds, JPH::BodyID exclude = {});
     void WakeBodiesAtMovedBounds(JPH::BodyID source, const JPH::AABox &before);

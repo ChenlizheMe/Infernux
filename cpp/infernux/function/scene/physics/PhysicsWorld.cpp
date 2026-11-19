@@ -2910,12 +2910,13 @@ void PhysicsWorld::ResetBodyMotionStates(const std::vector<PhysicsBodyMotionStat
     for (const auto &s : states) {
         if (m_bodyActors.at(s.bodyId).backend == Backend::Cpu) {
             auto &control = *DomainForBody(s.bodyId).cpuControl;
-            control.Queue(s.bodyId, JoltCpuControl::ResetMotion{});
-        } else {
-            BodyCommand c{};
-            c.meta.y = CommandResetMotion;
-            m_gpuScene->QueueCommand(s.bodyId, c);
+            control.QueueMotionReset({s.bodyId, CpuPosition(Vector(s.position)), CpuRotation(Rotation(s.rotation)),
+                                      CpuVector(Vector(s.linearVelocity)), CpuVector(Vector(s.angularVelocity))});
+            continue;
         }
+        BodyCommand c{};
+        c.meta.y = CommandResetMotion;
+        m_gpuScene->QueueCommand(s.bodyId, c);
         SetBodyPosition(s.bodyId, s.position, s.rotation);
         SetBodyLinearVelocity(s.bodyId, s.linearVelocity);
         SetBodyAngularVelocity(s.bodyId, s.angularVelocity);
