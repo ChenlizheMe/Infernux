@@ -299,8 +299,14 @@ SwapchainResult VkSwapchainManager::AcquireNextImage(uint32_t frameSlot, uint32_
                      m_imageAvailableSemaphores.size(), " acquire semaphores");
         return SwapchainResult::Error;
     }
-    // A busy presentation surface defers drawing until another host cycle.
-    VkResult result = m_dispatch.acquireNextImage(m_device, m_generation.swapchain, 0,
+#if defined(__ANDROID__)
+    // BufferQueue wakes as soon as the compositor releases an image. A bounded
+    // wait also returns control to SDL if the surface disappears during pause.
+    constexpr uint64_t acquireTimeoutNs = 50'000'000;
+#else
+    constexpr uint64_t acquireTimeoutNs = 0;
+#endif
+    VkResult result = m_dispatch.acquireNextImage(m_device, m_generation.swapchain, acquireTimeoutNs,
                                                   m_imageAvailableSemaphores[frameSlot], VK_NULL_HANDLE, &imageIndex);
 
     if (result == VK_ERROR_SURFACE_LOST_KHR) {
