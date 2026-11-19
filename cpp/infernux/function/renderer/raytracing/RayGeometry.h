@@ -164,18 +164,11 @@ struct RayGeometryBytes
     size_t bytes;
 };
 
-struct RayVisibilityRevision
-{
-    uint32_t serial = 0;
-    uint32_t translatedSurface = 0;
-    uint32_t otherChangeSerial = 0;
-};
-
 /// A page lives at its final offsets through the bounded upload, without a second packed copy.
 struct RayPageUpload
 {
     RayPageUpload(const RayMeshPage &page);
-    RayPageUpload(const RayInstancePage &page, RayGeometryStatus status, RayVisibilityRevision revision = {},
+    RayPageUpload(const RayInstancePage &page, RayGeometryStatus status, uint32_t visibilitySerial = 0,
                   const std::vector<RayGeometryWord> &visibility = {});
     [[nodiscard]] RayGeometryBytes Section(size_t index) const noexcept;
     static constexpr size_t sectionCount = 6;

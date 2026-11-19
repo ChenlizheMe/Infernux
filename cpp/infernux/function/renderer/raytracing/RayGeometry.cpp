@@ -591,7 +591,7 @@ RayPageUpload::RayPageUpload(const RayMeshPage &page)
     (void)PageWordOffset(bytes);
 }
 
-RayPageUpload::RayPageUpload(const RayInstancePage &page, RayGeometryStatus status, RayVisibilityRevision revision,
+RayPageUpload::RayPageUpload(const RayInstancePage &page, RayGeometryStatus status, uint32_t visibilitySerial,
                              const std::vector<RayGeometryWord> &visibility)
     : m_headerBytes(sizeof(m_header)),
       m_sections{MeshSection(page.nodes), MeshSection(page.instances), MeshSection(visibility),
@@ -601,8 +601,7 @@ RayPageUpload::RayPageUpload(const RayInstancePage &page, RayGeometryStatus stat
     const auto shadowHistory = instances + m_sections[1].bytes;
     m_header[0] = {page.nodes.empty() ? kInvalidRayIndex : 0u, PageWordOffset(m_headerBytes), PageWordOffset(instances),
                    static_cast<uint32_t>(status)};
-    m_header[1] = {PageWordOffset(shadowHistory), revision.serial, revision.translatedSurface,
-                   revision.otherChangeSerial};
+    m_header[1] = {PageWordOffset(shadowHistory), visibilitySerial, 0u, 0u};
     const auto emissiveRanges = shadowHistory + m_sections[2].bytes;
     const auto emissiveTriangles = emissiveRanges + m_sections[3].bytes;
     m_header[2] = {PageWordOffset(emissiveRanges), PageWordOffset(emissiveTriangles),

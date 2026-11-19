@@ -83,7 +83,7 @@ void CheckHierarchy(const std::vector<Bounds> &bounds)
     assert(std::memcmp(incremental.data(), repeat.nodes.data(), incremental.size() * sizeof(BvhNode)) == 0);
 }
 
-void CheckReceiverMotionHistory(const RayInstancePage &page)
+void CheckVisibilityHistory(const RayInstancePage &page)
 {
     const RenderLightingSource lights;
     std::vector<RayShadowInstance> instances{{1u, 1u, true, true, glm::mat4(1.0f), {}},
@@ -99,17 +99,17 @@ void CheckReceiverMotionHistory(const RayInstancePage &page)
     const auto moved = publish(&initial);
     instances[0].objectToWorld[3].x += 0.1f;
     const auto skipped = publish(&moved);
-    assert(skipped.revision.translatedSurface == 1 && skipped.revision.otherChangeSerial == initial.revision.serial);
+    assert(skipped.stamps[0][1] == skipped.serial && skipped.stamps[0][2] == initial.stamps[0][2]);
     instances[1].objectToWorld[3].x += 0.1f;
     const auto switched = publish(&skipped);
-    assert(switched.revision.translatedSurface == 2 && switched.revision.otherChangeSerial == skipped.revision.serial);
+    assert(switched.stamps[0][1] == skipped.serial && switched.stamps[0][2] == switched.serial);
     instances[1].objectToWorld[3].x += 0.1f;
     instances[0].objectToWorld[3].x += 0.1f;
     const auto both = publish(&switched);
-    assert(both.revision.translatedSurface == 0 && both.revision.otherChangeSerial == both.revision.serial);
+    assert(both.stamps[0][1] == both.serial && both.stamps[0][2] == both.serial);
     instances[0].objectToWorld[0].x = 2.0f;
     const auto scale = publish(&both);
-    assert(scale.revision.translatedSurface == 0 && scale.revision.otherChangeSerial == scale.revision.serial);
+    assert(scale.stamps[0][1] == scale.serial && scale.stamps[0][2] == both.serial);
 }
 } // namespace
 
@@ -171,7 +171,7 @@ int main()
     while (!top.Advance(1u)) {
     }
     const auto page = top.Take();
-    CheckReceiverMotionHistory(page);
+    CheckVisibilityHistory(page);
     assert(page.nodes.size() == 1u && page.instances.size() == 2u);
     assert(page.instances[0].root == page.instances[1].root);
     assert(page.instances[1].worldToObjectX[0] == -0.5f && page.instances[1].worldToObjectX[3] == 2.0f);
@@ -184,7 +184,7 @@ int main()
 
     const RayPageUpload meshUpload(meshPage);
     const std::vector<RayGeometryWord> shadowStamps{{0u, 17u, 0u, 0u}};
-    const RayPageUpload instanceUpload(page, RayGeometryStatus::Ready, {17u, 3u, 12u}, shadowStamps);
+    const RayPageUpload instanceUpload(page, RayGeometryStatus::Ready, 17u, shadowStamps);
     const auto header = [](const RayPageUpload &upload) {
         return *static_cast<const RayGeometryWord *>(upload.Section(0).data);
     };
@@ -192,7 +192,7 @@ int main()
     assert(header(meshUpload)[3] + 4 * meshPage.attributes.size() == meshUpload.bytes / sizeof(RayGeometryWord));
     assert((header(instanceUpload) == RayGeometryWord{0u, 3u, 5u, 1u}));
     const auto *instanceHeaders = static_cast<const RayGeometryWord *>(instanceUpload.Section(0).data);
-    assert((instanceHeaders[1] == RayGeometryWord{5u + 2u * kRayInstanceWords, 17u, 3u, 12u}));
+    assert((instanceHeaders[1] == RayGeometryWord{5u + 2u * kRayInstanceWords, 17u, 0u, 0u}));
     assert((instanceHeaders[2] == RayGeometryWord{6u + 2u * kRayInstanceWords, 6u + 2u * kRayInstanceWords, 0u, 0u}));
     assert(instanceUpload.Section(3).data == shadowStamps.data());
     assert(instanceUpload.bytes == 64u + sizeof(BvhNode) + 2 * sizeof(RayInstance));

@@ -120,15 +120,9 @@ class RayReconstruct(shader.fullscreen):
                             return fresh
                 limit = 8.0
         elif visibility.y != accepted:
-            # A diffuse estimate integrates many directions. The last ray's
-            # endpoint cannot certify the other samples after a scene edit.
-            if visibility.y < accepted or visibility.z != primary.x or visibility.w > accepted:
-                return fresh
-            projected_uv = previous_clip.xy / previous_clip.w * shader.vec2(0.5, -0.5) + shader.vec2(0.5)
-            displacement = shader.abs(projected_uv - previous_uv)
-            if shader.any(displacement > shader.vec2(0.03)):
-                return fresh
-            limit = 4.0
+            # This estimate integrates many directions. After a visibility change its
+            # old paths need fresh evaluation, including paths that missed geometry.
+            return fresh
         elif shader.any(shader.abs(history_uv - uv) * shader.vec2(full) > shader.vec2(0.5)):
             limit = 32.0
 
