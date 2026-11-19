@@ -10,6 +10,6 @@ class Unlit(shader.surface):
     albedo_map_st = shader.material.vec4(default=(1.0, 1.0, 0.0, 0.0))
 
     def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
-        base = shader.sample(self.albedo_map, texture_uv(ctx, 0, self.albedo_map_st))
+        base = shader._surface_sample(self.albedo_map, texture_uv(ctx, 0, self.albedo_map_st))
         return shader.SurfaceData(albedo=base.rgb * ctx.color * self.base_color.rgb,
                                   alpha=base.a * self.base_color.a)

@@ -70,7 +70,7 @@ class ShaderDefinition:
 
 class _Author(ParameterAuthor):
     uses_surface_sampling = False
-    ray_lit = False
+    ray_entry = None
     color_outputs = ()
     tuple_outputs = ()
 
@@ -102,7 +102,7 @@ class _Author(ParameterAuthor):
         return f"inx_surface_sampling.{method}(" + ", ".join(self.visit(arg) for arg in node.args) + ")"
 
     def visit_Attribute(self, node):
-        if self.ray_lit and isinstance(node.value, ast.Name) and node.value.id == "self":
+        if self.ray_entry and isinstance(node.value, ast.Name) and node.value.id == "self":
             field = self.fields.get(node.attr)
             if isinstance(field, ShaderParameter):
                 if field.kind == "texture_2d":
@@ -204,8 +204,8 @@ class _Author(ParameterAuthor):
             return evaluator
         if self.domain in {"screen_ui", "world_ui"}:
             return [self.source_directive(main), result + " inx_author_ui(" + signature + ")", "{", *self.lines, "}"]
-        if self.ray_lit:
-            declaration = (f"InxSurfaceData inx_author_surface({signature}, InxRayLitMaterial inx_ray_material, "
+        if self.ray_entry:
+            declaration = (f"InxSurfaceData {self.ray_entry}({signature}, InxRayLitMaterial inx_ray_material, "
                            "InxRayLitSampling inx_surface_sampling)")
         elif self.is_surface:
             sampling = "<Sampling : InxSurfaceSampling>" if self.uses_surface_sampling else ""
@@ -598,13 +598,30 @@ _RAY_LIT_EVALUATION = """
 // Matches RayMaterialParticipation in the material table producer.
 static const uint inx_ray_material_lit = 1u;
 static const uint inx_ray_material_excluded = 2u;
+static const uint inx_ray_material_unlit = 3u;
+
+bool inx_ray_has_surface(uint kind)
+{
+    return kind == inx_ray_material_lit || kind == inx_ray_material_unlit;
+}
+
+float3 inx_ray_unlit_radiance(RaySurfaceHit hit, InxSurfaceData surface)
+{
+    float3 geometric = hit.front_face ? hit.geometric_normal_ws : -hit.geometric_normal_ws;
+    let context = inx_shading_context(hit.position_ws, geometric, 0.0, float2(0.0), 0xffffffffu, false, 0.0);
+    return inx_ray_unlit_response::shade<false>(surface, context);
+}
 
 bool inx_evaluate_ray_lit(InxMeshInput input, bool front_facing, InxSecondarySurfaceSampling footprint,
                           out InxSurfaceData surface)
 {
     InxRayLitMaterial material = ray_lit_materials[input.surface_id];
     InxRayLitSampling sampling = {footprint};
-    surface = inx_prepare_surface(inx_author_surface(input, material, sampling), input, front_facing);
+    if (material.participation == inx_ray_material_unlit)
+        surface = inx_ray_author_unlit(input, material, sampling);
+    else
+        surface = inx_ray_author_lit(input, material, sampling);
+    surface = inx_prepare_surface(surface, input, front_facing);
     return inx_surface_covered(surface, material.values._alpha_clip_threshold);
 }
 
@@ -631,7 +648,7 @@ struct InxRayLitHitPolicy : RayHitPolicy
     bool accepts(RayPage page, TraceRay ray, RayHit candidate)
     {
         uint participation = ray_lit_materials[candidate.surface_id].participation;
-        if (participation != inx_ray_material_lit)
+        if (!inx_ray_has_surface(participation))
             return participation != inx_ray_material_excluded;
         if (!(ray_lit_materials[candidate.surface_id].values._alpha_clip_threshold > 0.0))
             return true;
@@ -665,7 +682,7 @@ public InxRaySurfaceHit inx_world_ray_closest(float3 origin_ws, float3 direction
     RayHit hit = inx_trace_lit_closest(page, ray, layer_mask, lod);
     if (hit.triangle_index != ray_invalid_index)
     {
-        if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+        if (!inx_ray_has_surface(ray_lit_materials[hit.surface_id].participation))
         {
             result.available = false;
             return result;
@@ -905,13 +922,16 @@ InxRayTransportTerm inx_ray_direct_sample(RayPage page, RaySurfaceHit attributes
     RayHit hit = inx_trace_lit_closest(page, endpoint, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return {radiance + weight * inx_environment_radiance(endpoint.direction), true, 0.0};
-    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+    uint kind = ray_lit_materials[hit.surface_id].participation;
+    if (!inx_ray_has_surface(kind))
         return {float3(0.0), false, hit.distance};
+    bounce.attributes = ray_surface_at_hit(page, endpoint, hit);
+    inx_evaluate_ray_lit_hit(bounce.attributes, hit.surface_id, 0.0, bounce.surface);
+    if (kind == inx_ray_material_unlit)
+        return {radiance + weight * inx_ray_unlit_radiance(bounce.attributes, bounce.surface), true, hit.distance};
     bounce.hit = hit;
     bounce.outgoing = -endpoint.direction;
     bounce.throughput = weight;
-    bounce.attributes = ray_surface_at_hit(page, endpoint, hit);
-    inx_evaluate_ray_lit_hit(bounce.attributes, hit.surface_id, 0.0, bounce.surface);
     return {radiance + weight * bounce.surface.emission, true, hit.distance};
 }
 
@@ -940,7 +960,10 @@ InxRayTransportTerm inx_ray_tail_sample(RayPage page, RaySurfaceHit attributes, 
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return {float3(0.0), true, 0.0};
-    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+    uint kind = ray_lit_materials[hit.surface_id].participation;
+    if (kind == inx_ray_material_unlit)
+        return {float3(0.0), true, hit.distance};
+    if (kind != inx_ray_material_lit)
         return {float3(0.0), false, hit.distance};
     RaySurfaceHit next_attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData next_surface;
@@ -961,15 +984,18 @@ public float4 inx_ray_radiance_parts(float3 origin, float3 direction, InxBuffer_
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return float4(part == 0 ? inx_environment_radiance(direction) : float3(0.0), 1.0);
-    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+    uint kind = ray_lit_materials[hit.surface_id].participation;
+    if (!inx_ray_has_surface(kind))
         return float4(0.0);
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData surface;
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, surface);
-    if (part == 1)
-        return float4(surface.emission, 1.0);
     if (part == 4)
         return float4(float(hit.surface_id), float(hit.primitive), hit.distance, 1.0);
+    if (kind == inx_ray_material_unlit)
+        return float4(part <= 1 ? inx_ray_unlit_radiance(attributes, surface) : float3(0.0), 1.0);
+    if (part == 1)
+        return float4(surface.emission, 1.0);
     InxRayTransportTerm term;
     if (part == 3)
         term = inx_ray_tail_sample(page, attributes, surface, records, -direction, seed, maximum);
@@ -1050,11 +1076,15 @@ InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 record
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return inx_ray_signal_output(inx_environment_radiance(ray.direction) * weight, uint2(0u));
-    if (ray_lit_materials[hit.surface_id].participation != inx_ray_material_lit)
+    uint kind = ray_lit_materials[hit.surface_id].participation;
+    if (!inx_ray_has_surface(kind))
         return (InxRaySignal)0;
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData secondary;
     inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, secondary);
+    if (kind == inx_ray_material_unlit)
+        return inx_ray_signal_output(weight * inx_ray_unlit_radiance(attributes, secondary),
+                                     uint2(hit.surface_id, asuint(hit.distance)));
     float maximum = asfloat(inx_buffer_load(cache, 1u).z);
     InxRayBounce bounce;
     let guide = inx_ray_reflected_light(reflector, seed);
@@ -1311,8 +1341,20 @@ InxThinSurfaceOutput fragment_thin_surface(InxMeshInput input, bool front_facing
 """
 
 
-def parse_shader(source: str, source_path: str, module_name: str, *, reader=None, vertex_path=None,
-                 _graph=None) -> ShaderDefinition:
+@dataclass
+class _FragmentSource:
+    author: _Author
+    graph: LibraryGraph
+    declaration: ast.ClassDef
+    main: ast.FunctionDef
+    helpers: list
+    shading_model: tuple | None
+    dependencies: tuple
+    thin: ast.FunctionDef | None
+    info: dict
+
+
+def _read_fragment(source, source_path, reader=None, graph=None):
     info = read_shader_info(source, source_path)
     author = _Author(source, source_path)
     author.alias, imports, body = declarations(source, source_path)
@@ -1326,22 +1368,20 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if declaration.decorator_list or len(declaration.bases) != 1 or author.qualified(declaration.bases[0]) not in bases:
         author.error(declaration, "Declare a fullscreen, mesh, particle, screen UI or world UI shader")
     author.domain = bases[author.qualified(declaration.bases[0])]
-    graph = _graph if _graph is not None else LibraryGraph(reader, allow_world_rays=author.domain == "fullscreen")
+    graph = graph if graph is not None else LibraryGraph(reader, allow_world_rays=author.domain == "fullscreen")
     author.functions, dependencies = graph.imports(imports, author)
     author.lighting_mode = "true" if author.domain == "fullscreen" else "false"
     author.is_surface = author.qualified(declaration.bases[0]) == author.alias + ".surface"
-    author.ray_lit = module_name == _RAY_LIT_MODULE
     entry_name = "surface" if author.is_surface else "main"
-    main, helpers, references = None, [], {}
+    main, helpers, shading_model = None, [], None
     for statement in declaration.body:
         if info_field(statement) in INFO_DEFAULTS:
             continue
         if (author.domain == "mesh" and isinstance(statement, ast.Assign) and len(statement.targets) == 1
                 and author.qualified(statement.targets[0]) == "shading_model"):
-            name = author.qualified(statement.targets[0])
-            if name in references or not author.is_surface:
+            if shading_model is not None or not author.is_surface:
                 author.error(statement, "Declare one shading model on a Surface", code="author.reference")
-            references[name] = (graph.reference(statement.value, author, stage="shadingmodel", suffix=".shadingmodel.py"), statement)
+            shading_model = (graph.reference(statement.value, author, stage="shadingmodel", suffix=".shadingmodel.py"), statement)
         elif isinstance(statement, ast.Assign) and any(author.qualified(target) == "vertex_shader" for target in statement.targets):
             author.error(statement, "Choose the vertex shader on the material; fragment authors do not select a vertex asset", code="author.reference")
         elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
@@ -1372,30 +1412,17 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         author.fields["_alpha_clip_threshold"] = ShaderParameter("_alpha_clip_threshold", "float", 0.0, "", internal=True)
         author.field_nodes["_alpha_clip_threshold"] = declaration
         author.field_sources["_alpha_clip_threshold"] = (author, declaration)
-    if author.ray_lit:
-        if not author.is_surface or helpers or references or vertex_path is not None:
-            author.error(declaration, "The ray Lit entry requires a Surface body and shared ShaderLib helpers",
-                         code="author.stage")
-        parameters = tuple(field for field in author.fields.values() if isinstance(field, ShaderParameter))
-        values = [field for field in parameters if field.kind != "texture_2d"]
-        textures = [field for field in parameters if field.kind == "texture_2d"]
-        entry = author.function(main)
-        if not author.uses_surface_sampling:
-            author.error(main, "The ray Lit entry requires explicit material sampling", code="author.stage")
-        code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", "import inx_ray_traversal;",
-                "import inx_ray_bsdf;", "import inx_ray_tail_cache;", "import inx_camera;", "import inx_lighting;", "import inx_frame;",
-                *("import " + name + ";" for name in dependencies),
-                "struct ShaderParameters {", *author.parameter_field_declarations(values), "};",
-                "struct InxRayLitMaterial {", "    ShaderParameters values;", "    uint participation;",
-                *("    uint " + field.name + ";" for field in textures), "};",
-                "StructuredBuffer<InxRayLitMaterial> ray_lit_materials;",
-                _SURFACE_SAMPLING, _RAY_LIT_SAMPLING, *entry, _SURFACE_COVERAGE, _RAY_LIT_EVALUATION]
-        return ShaderDefinition(declaration.name, source_path, module_name, parameters, "\n".join(code), graph.sources(),
-                                source_ranges=(*graph.ranges(), *author.source_ranges), domain=author.domain,
-                                surface=author.is_surface, info=info)
+    if author.is_surface and shading_model is None:
+        shading_model = (default_shading_model(), declaration)
+    return _FragmentSource(author, graph, declaration, main, helpers, shading_model, dependencies, thin, info)
+
+
+def parse_shader(source: str, source_path: str, module_name: str, *, reader=None, vertex_path=None) -> ShaderDefinition:
+    fragment = _read_fragment(source, source_path, reader)
+    author, graph, declaration = fragment.author, fragment.graph, fragment.declaration
     model = None
-    if author.is_surface:
-        model_path, location = references.get("shading_model", (default_shading_model(), declaration))
+    if fragment.shading_model:
+        model_path, location = fragment.shading_model
         model = read_shading_model(model_path, graph, author, location)
     vertex = None
     if vertex_path is not None:
@@ -1422,9 +1449,9 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     if author.domain in {"mesh", "particle", "screen_ui", "world_ui"}:
         if inputs:
             author.error(declaration, "Material image resources are declared as material properties")
-    dependencies = tuple(dict.fromkeys((*dependencies, *(vertex.dependencies if vertex else ()))))
+    dependencies = tuple(dict.fromkeys((*fragment.dependencies, *(vertex.dependencies if vertex else ()))))
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", *("import " + name + ";" for name in dependencies)]
-    code.extend(engine_imports(body, author.alias, graph=graph, owner=author))
+    code.extend(engine_imports((declaration,), author.alias, graph=graph, owner=author))
     if graph.ray_lit is not None:
         for field in _WORLD_RAY_INPUTS:
             if field.name in author.fields:
@@ -1455,7 +1482,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             code.append(_mesh_vertex())
         elif author.domain == "fullscreen":
             code.append(_FULLSCREEN_VERTEX)
-    for helper in helpers:
+    for helper in fragment.helpers:
         emitter = _Author(source, source_path)
         emitter.alias = author.alias
         emitter.aliases = (author.alias,)
@@ -1465,18 +1492,18 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         emitter.functions = author.functions
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
         author.source_ranges.extend(emitter.source_ranges)
-    entry = author.function(main)
+    entry = author.function(fragment.main)
     if author.uses_surface_sampling:
         code.append(_SURFACE_SAMPLING)
     code.extend(entry)
     if author.domain in {"screen_ui", "world_ui"}:
         from infernux.lib import _Infernux
         code.append(_Infernux._shader_ui_author_source(
-            author.domain == "world_ui", author.annotation(main.returns) == "InxFragmentOutput"))
+            author.domain == "world_ui", author.annotation(fragment.main.returns) == "InxFragmentOutput"))
     if author.domain == "particle":
-        code.append(_particle_passes(author.annotation(main.returns)))
+        code.append(_particle_passes(author.annotation(fragment.main.returns)))
     if author.is_surface:
-        code.append("static const bool INX_RECEIVE_SHADOWS = " + ("true" if info["receive_shadows"] else "false") + ";")
+        code.append("static const bool INX_RECEIVE_SHADOWS = " + ("true" if fragment.info["receive_shadows"] else "false") + ";")
         code.append(_surface_evaluation(author.uses_surface_sampling))
         code.append(_SURFACE_LIGHTING)
         passes = _SURFACE_PASSES
@@ -1494,7 +1521,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
             pbr = "true" if model.deferred_model == "PBR" else "false"
             code.append(f"static const bool INX_GBUFFER_PBR = {pbr};")
             code.append(_SURFACE_GBUFFER)
-        if thin is not None:
+        if fragment.thin is not None:
             code.append(_SURFACE_THIN)
     libraries = graph.sources()
     if model:
@@ -1504,7 +1531,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
                             tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *vertex_ranges,
                                                  *(vertex.author.source_ranges if vertex else ()), *author.source_ranges))),
                             author.domain, author.is_surface, model.name if model else None, model.deferred_model if model else None,
-                            info, vertex.path if vertex else None, thin is not None, author.color_outputs)
+                            fragment.info, vertex.path if vertex else None, fragment.thin is not None, author.color_outputs)
 
 
 def read_shader(path: Path, module_name: str) -> ShaderDefinition:
@@ -1512,13 +1539,43 @@ def read_shader(path: Path, module_name: str) -> ShaderDefinition:
 
 
 def _prepare_ray_lit(reader=None, *, _graph=None):
-    """Prepare the built-in Lit module for full-layer pages with one sampler per page class."""
-    path = default_shading_model().with_name("lit.frag.py")
+    """Compile the raster-authored surfaces against the shared ray material table."""
     graph = _graph if _graph is not None else LibraryGraph(reader)
-    source = graph.reader(str(path))
-    if source is None:
-        raise FileNotFoundError(path)
-    return parse_shader(source.removeprefix("\ufeff"), str(path), _RAY_LIT_MODULE, _graph=graph)
+    entries, dependencies, ranges = [], [], []
+    fragments = {}
+    for name in ("lit", "unlit"):
+        path = default_shading_model().with_name(name + ".frag.py")
+        source = graph.reader(str(path))
+        if source is None:
+            raise FileNotFoundError(path)
+        fragment = _read_fragment(source.removeprefix("\ufeff"), str(path), graph=graph)
+        author = fragment.author
+        author.ray_entry = "inx_ray_author_" + name
+        entries.extend(author.function(fragment.main))
+        dependencies.extend(fragment.dependencies)
+        ranges.extend(author.source_ranges)
+        fragments[name] = fragment
+
+    unlit = fragments["unlit"]
+    model_path, location = unlit.shading_model
+    response_name = "inx_ray_unlit_response"
+    model = read_shading_model(model_path, graph, unlit.author, location, namespace=response_name)
+    graph.ordered.append(Module(response_name, model.path, model.source, {}, model.source_ranges))
+    dependencies.append(response_name)
+    lit = fragments["lit"].author
+    parameters = tuple(lit.fields.values())
+    values = [field for field in parameters if field.kind != "texture_2d"]
+    textures = [field for field in parameters if field.kind == "texture_2d"]
+    code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", "import inx_ray_traversal;",
+            "import inx_ray_bsdf;", "import inx_ray_tail_cache;", "import inx_camera;", "import inx_lighting;", "import inx_frame;",
+            *("import " + name + ";" for name in dict.fromkeys(dependencies)),
+            "struct ShaderParameters {", *lit.parameter_field_declarations(values), "};",
+            "struct InxRayLitMaterial {", "    ShaderParameters values;", "    uint participation;",
+            *("    uint " + field.name + ";" for field in textures), "};",
+            "StructuredBuffer<InxRayLitMaterial> ray_lit_materials;",
+            _SURFACE_SAMPLING, _RAY_LIT_SAMPLING, *entries, _SURFACE_COVERAGE, _RAY_LIT_EVALUATION]
+    return ShaderDefinition("Lit", lit.path, _RAY_LIT_MODULE, parameters, "\n".join(code), graph.sources(),
+                            source_ranges=(*graph.ranges(), *ranges), domain="mesh", surface=True, info=fragments["lit"].info)
 
 
 def _world_ray_module(graph, owner, location):
@@ -1526,7 +1583,8 @@ def _world_ray_module(graph, owner, location):
         owner.error(location, "World ray queries require a fullscreen shader", code="author.stage")
     if graph.ray_lit is None:
         lit = _prepare_ray_lit(_graph=graph)
-        ranges = tuple(span for span in lit.source_ranges if span[0] == lit.source_path)
+        library_paths = {module.path for module in graph.ordered}
+        ranges = tuple(span for span in lit.source_ranges if span[0] not in library_paths)
         graph.ray_lit = Module(lit.module_name, lit.source_path, lit.generated_source, {}, ranges)
         graph.ordered.append(graph.ray_lit)
     return graph.ray_lit

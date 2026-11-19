@@ -21,6 +21,8 @@ ShaderCodeTarget RuntimeShaderAuthorTarget() noexcept;
 std::string ShaderAuthorProgramSelection(std::string_view authorGuid, std::string_view vertexGuid,
                                          ShaderCodeTarget target);
 std::string ShaderAuthorInputId(const AssetDatabase &database, const std::string &path);
+std::vector<std::string> ShaderAuthorDependencies(const AssetDatabase &database,
+                                                  const std::vector<ShaderCacheInput> &inputs);
 std::optional<ShaderAuthorProgramRecord> FindShaderAuthorProgram(const AssetDatabase &database,
                                                                  std::string_view selection,
                                                                  const std::vector<ShaderCacheInput> &loadedInputs = {},

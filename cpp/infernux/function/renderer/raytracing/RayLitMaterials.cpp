@@ -20,6 +20,7 @@ enum class RayMaterialParticipation : uint32_t
     Unknown = 0,
     Lit = 1,
     Excluded = 2,
+    Unlit = 3,
 };
 
 const ShaderResourceLayout &Buffer(const std::vector<ShaderResourceLayout> &resources, std::string_view name)
@@ -132,9 +133,11 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
             participation = RayMaterialParticipation::Excluded;
         else if (material.GetFragShaderName() == "infernux/lit")
             participation = RayMaterialParticipation::Lit;
+        else if (material.GetFragShaderName() == "infernux/unlit")
+            participation = RayMaterialParticipation::Unlit;
         const auto kind = static_cast<uint32_t>(participation);
         std::memcpy(row + layout.participation, &kind, sizeof(kind));
-        if (participation != RayMaterialParticipation::Lit)
+        if (participation != RayMaterialParticipation::Lit && participation != RayMaterialParticipation::Unlit)
             continue;
         auto *values = row + layout.values.offset;
         layout.uniforms.Write(values, material);
@@ -144,6 +147,8 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
         layout.uniforms.WriteValue(values, "_alpha_clip_threshold", &alpha);
 
         for (const auto &[name, offset] : layout.textureFields) {
+            if (participation == RayMaterialParticipation::Unlit && !material.HasProperty(name))
+                continue;
             auto texture = resolve(material, draw.parameterBlock.get(), name);
             if (!texture)
                 return std::nullopt;

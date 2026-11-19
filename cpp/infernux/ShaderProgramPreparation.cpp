@@ -70,13 +70,7 @@ FrozenAuthorProgram FreezeAuthorProgram(const AssetDatabase &database, const Sha
     };
     frozen.generated = SlangCompiler::Get().PrepareAuthorSource(source, read, ShaderAuthorPhase::Program, vertex);
     frozen.record.schema = frozen.generated.schema;
-    for (const auto &library : frozen.generated.libraries) {
-        if (asset_formats::FindShaderSourceKind(library.path)) {
-            auto guid = database.GetGuidFromPath(library.path);
-            if (!guid.empty())
-                frozen.record.dependencies.push_back(std::move(guid));
-        }
-    }
+    frozen.record.dependencies = ShaderAuthorDependencies(database, frozen.inputs);
     return frozen;
 }
 } // namespace

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetFormatRegistry.h>
 #include <nlohmann/json.hpp>
 #include <platform/filesystem/InxPath.h>
 #include <unordered_map>
@@ -156,6 +157,25 @@ std::string ShaderAuthorInputId(const AssetDatabase &database, const std::string
             return guid + "@" + relative;
     }
     return guid;
+}
+
+std::vector<std::string> ShaderAuthorDependencies(const AssetDatabase &database,
+                                                  const std::vector<ShaderCacheInput> &inputs)
+{
+    // Several authored files can contribute to one generated Slang module.
+    // The first recorded input owns the program and cannot be its own dependency.
+    std::vector<std::string> dependencies;
+    for (size_t i = 1; i < inputs.size(); ++i) {
+        const auto &input = inputs[i];
+        if (input.id != inputs.front().id && asset_formats::FindShaderSourceKind(input.path)) {
+            auto guid = database.GetGuidFromPath(input.path);
+            if (!guid.empty())
+                dependencies.push_back(std::move(guid));
+        }
+    }
+    std::sort(dependencies.begin(), dependencies.end());
+    dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
+    return dependencies;
 }
 
 std::optional<ShaderAuthorProgramRecord> FindShaderAuthorProgram(const AssetDatabase &database,
