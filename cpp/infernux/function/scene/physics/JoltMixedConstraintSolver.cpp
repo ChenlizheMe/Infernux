@@ -4,6 +4,7 @@
 #include "JoltGpuProgramSources.h"
 #include "JoltMixedContinuousContacts.h"
 
+#include <Jolt/Math/Math.h>
 #include <Jolt/Physics/Body/MotionProperties.h>
 #include <algorithm>
 #include <cstring>
@@ -421,26 +422,35 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 continue;
             }
 
-            std::vector<uint32_t> nextCpuLevel(group.w);
-            std::unordered_map<uint32_t, uint32_t> nextGpuLevel;
+            // A color is a set of patches with disjoint dynamic writers. Reuse
+            // the first available color at both endpoints, independent of how
+            // the broadphase happened to number a connected chain.
+            std::vector<uint32_t> cpuColors(group.w);
+            std::unordered_map<uint32_t, uint32_t> gpuColors;
             std::vector<uint32_t> rowLevels(group.y), levelCounts;
             for (uint32_t row = 0; row < group.y; ++row) {
                 const uint32_t patch = group.x + row;
                 const auto pair = Endpoints(order[patch]);
-                auto *cpuLevel = pair.cpuDynamic ? &nextCpuLevel[patches[patch].endpoints.x - group.z] : nullptr;
-                auto *gpuLevel = pair.gpuDynamic ? &nextGpuLevel[pair.gpuSlot] : nullptr;
-                const uint32_t level = std::max(cpuLevel ? *cpuLevel : 0u, gpuLevel ? *gpuLevel : 0u);
-                if (cpuLevel)
-                    *cpuLevel = level + 1u;
-                if (gpuLevel)
-                    *gpuLevel = level + 1u;
+                auto *cpuMask = pair.cpuDynamic ? &cpuColors[patches[patch].endpoints.x - group.z] : nullptr;
+                auto *gpuMask = pair.gpuDynamic ? &gpuColors[pair.gpuSlot] : nullptr;
+                const uint32_t available = ~((cpuMask ? *cpuMask : 0u) | (gpuMask ? *gpuMask : 0u));
+                uint32_t level = static_cast<uint32_t>(levelCounts.size());
+                if (available) {
+                    level = JPH::CountTrailingZeros(available);
+                    const uint32_t bit = 1u << level;
+                    if (cpuMask)
+                        *cpuMask |= bit;
+                    if (gpuMask)
+                        *gpuMask |= bit;
+                }
+                // When all 32 colors conflict, append an exclusive level for
+                // this row. A high-degree group still uses its serial packet
+                // below; it never allocates a per-body table of unbounded size.
                 rowLevels[row] = level;
                 if (level == levelCounts.size())
                     levelCounts.push_back(0u);
                 ++levelCounts[level];
             }
-            // Preserve the dependency order at each writer. A chain with little
-            // independent work uses one lane, like the small connected groups.
             if (levelCounts.size() > group.y / 2u) {
                 groups[serialGroupCount++] = group;
                 continue;
