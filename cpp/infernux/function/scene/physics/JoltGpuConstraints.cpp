@@ -592,8 +592,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         // Uniform inputs are immutable within this packet. Adjacent operators
         // often use the same configuration or range, so share their one upload.
         const auto reuse = [&](const auto &bytes) -> std::shared_ptr<rhi::ComputeBuffer> {
-            const auto found = std::find_if(uploads.begin(), uploads.end(),
-                                            [&](const auto &upload) { return upload.data == bytes; });
+            const auto found =
+                std::find_if(uploads.begin(), uploads.end(), [&](const auto &upload) { return upload.data == bytes; });
             return found == uploads.end() ? nullptr : found->buffer;
         };
         auto parameters = reuse(parameterBytes);
