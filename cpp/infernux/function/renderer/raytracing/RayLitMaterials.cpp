@@ -1,4 +1,5 @@
 #include "RayLitMaterials.h"
+#include "RayMaterial.h"
 
 #include <function/renderer/InxRenderStruct.h>
 #include <function/renderer/shader/MaterialUniformLayout.h>
@@ -13,15 +14,6 @@ namespace infernux::raytracing
 {
 namespace
 {
-
-// Matches the material participation values in the Slang ray evaluator.
-enum class RayMaterialParticipation : uint32_t
-{
-    Unknown = 0,
-    Lit = 1,
-    Excluded = 2,
-    Unlit = 3,
-};
 
 const ShaderResourceLayout &Buffer(const std::vector<ShaderResourceLayout> &resources, std::string_view name)
 {
@@ -57,6 +49,18 @@ std::vector<std::byte> Rows(uint64_t stride, uint64_t count)
 }
 
 } // namespace
+
+RayMaterialParticipation ClassifyRayMaterial(const InxMaterial &material) noexcept
+{
+    if (material.GetRenderState().blendEnable)
+        return RayMaterialParticipation::Excluded;
+    const auto &shader = material.GetFragShaderName();
+    if (shader == "infernux/lit")
+        return RayMaterialParticipation::Lit;
+    if (shader == "infernux/unlit")
+        return RayMaterialParticipation::Unlit;
+    return RayMaterialParticipation::Unknown;
+}
 
 struct RayLitMaterialLayout::State
 {
@@ -128,13 +132,7 @@ std::optional<RayLitMaterialInput> RayLitMaterialLayout::Capture(const DrawCallR
         auto *row = input.materials.data() + draw.surfaceId * layout.materialStride;
         const auto &material = *draw.material;
         const auto &renderState = material.GetRenderState();
-        auto participation = RayMaterialParticipation::Unknown;
-        if (renderState.blendEnable)
-            participation = RayMaterialParticipation::Excluded;
-        else if (material.GetFragShaderName() == "infernux/lit")
-            participation = RayMaterialParticipation::Lit;
-        else if (material.GetFragShaderName() == "infernux/unlit")
-            participation = RayMaterialParticipation::Unlit;
+        const auto participation = ClassifyRayMaterial(material);
         const auto kind = static_cast<uint32_t>(participation);
         std::memcpy(row + layout.participation, &kind, sizeof(kind));
         if (participation != RayMaterialParticipation::Lit && participation != RayMaterialParticipation::Unlit)

@@ -4,6 +4,7 @@
 #include "RayDeformationSource.h"
 #include "RayEmissive.h"
 #include "RayGeometry.h"
+#include "RayMaterial.h"
 #include "RayShadowChanges.h"
 
 #include <core/error/InxError.h>
@@ -124,9 +125,9 @@ struct DrawMeshPlacement
 // triangle area. Uniform mixing keeps every triangle in the supported domain.
 float RayEmissivePower(const InxMaterial &material, const RendererParameterBlock *parameters)
 {
-    const auto &shader = material.GetFragShaderName();
-    const bool lit = shader == "infernux/lit";
-    if (material.GetRenderState().blendEnable || (!lit && shader != "infernux/unlit"))
+    const auto kind = ClassifyRayMaterial(material);
+    const bool lit = kind == RayMaterialParticipation::Lit;
+    if (!lit && kind != RayMaterialParticipation::Unlit)
         return 0.0f;
     const std::string property = lit ? "emission_color" : "base_color";
     const auto *declared = material.GetProperty(property);
