@@ -639,8 +639,10 @@ JoltGpuControlWork JoltGpuSleep::PrepareSnapshot(const JoltGpuStorage &s, const 
     auto p = Selection(s, selection);
     e->resultPort = Snapshot;
     e->resultBytes = uint64_t(p.selected.z) * 16u;
-    // Export has no status writer. Its snapshot consumer retains the completion boundary.
+    // Export has no CPU status consumer. Its successor freezes the accepted
+    // GPU destination; the enclosing Tick retains the publication receipts.
     e->reportsStatus = false;
+    e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
     e->Add(Export, p.selected.y, p.selected.z, p);
     e->OnComplete([done = std::move(done)](auto &self) {
         done(self.buffers[Snapshot] ? self.buffers[Snapshot]->Freeze() : nullptr);

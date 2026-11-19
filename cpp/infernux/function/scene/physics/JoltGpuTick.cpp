@@ -1735,7 +1735,10 @@ class JoltGpuTick::Impl
             return prepare ? prepare(finalOutput) : JoltGpuControlWork{};
         }
         auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), {}, {}, std::move(copies));
-        return {packet, [this] { return PrepareSnapshot(); }};
+        // The continuation only records later copies or freezes the accepted
+        // destination before preparing queue-ordered final work. No CPU value
+        // is decoded here. Tick publication still waits for every real receipt.
+        return {packet, [this] { return PrepareSnapshot(); }, JoltGpuControlWork::ResumeAfter::Acceptance};
     }
 
     bool Prepare()
