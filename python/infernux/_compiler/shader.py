@@ -1301,7 +1301,10 @@ public InxRaySignal inx_ray_indirect_signal(InxSurfaceData surface, InxShadingCo
     // half-angle onto microfacet slopes for the next analytic light connection.
     // alpha = tan(theta/2), perceptual roughness = sqrt(alpha). Emission and
     // BSDF-sampled endpoints retain the authored material and its matching PDF.
-    float sample_count = specular ? 96.0 : 64.0;
+    // A visibility change restarts diffuse accumulation. Widen the analytic light
+    // footprint while the spatial filter is reconstructing from fresh directions.
+    float sample_count = specular ? 96.0 :
+        (world_ray_geometry[1].y == inx_previous_ray_geometry_serial() ? 64.0 : 4.0);
     float cap = max(4.0 * 3.14159265359 * sample_count * sample.pdf - 1.0, 1.0);
     float light_roughness = temporal && !sample.delta ? rsqrt(sqrt(cap)) : 0.0;
     InxRaySignal signal = inx_ray_radiance(page, ray, records, cache, seed, sample.weight, light_roughness, reflector,
