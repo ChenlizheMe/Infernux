@@ -89,7 +89,7 @@ struct ContactStreamIdentity
 };
 
 /// Actual velocity-solver impulse from the most recent fixed step. The
-/// impulse is applied to body B (its negative to A). Each solver midpoint
+/// impulse is applied to body B (its negative to A). Each solver contact point
 /// retains its normal impulse and an equal share of manifold tangent friction.
 /// Independent torsional-friction angular impulses are not included. Opt-in.
 struct ContactImpulse

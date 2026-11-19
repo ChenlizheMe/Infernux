@@ -440,7 +440,7 @@ class Physics(metaclass=_PhysicsMeta):
     def set_contact_impulse_stream_enabled(enabled: bool = True):
         """Enable the actual Jolt velocity-solver impulse snapshot.
 
-        Each solver midpoint reports its normal impulse and an equal share
+        Each solver contact point reports its normal impulse and an equal share
         of the manifold's tangential friction impulse. These shares preserve
         the net linear impulse and its angular impulse, but are not separately
         solved pointwise friction forces. Independent torsional friction is
@@ -453,7 +453,7 @@ class Physics(metaclass=_PhysicsMeta):
         """Return actual solved contact impulses from the latest fixed step.
 
         NumPy columns carry body, Collider/generation, complete sub-shape IDs,
-        ``substep``, ``feature``, ``point_index`` and solver midpoints/normals.
+        ``substep``, ``feature``, ``point_index``, solver contact points and normals.
         Integer World/epoch/fixed-step metadata identifies the entire batch.
         Each impulse acts on body B (its negative acts on A). Geometry and
         incoming relative velocities are captured before warm start; impulses
