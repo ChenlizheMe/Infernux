@@ -103,6 +103,7 @@ class RuntimeWorld final
         double automaticUnscaledDebt = 0.0;
         double automaticScaledDebt = 0.0;
         bool automaticInputPending = false;
+        bool coalescedHostTime = false;
         std::vector<TimedInputSpan> inputSpans;
         double automaticSampleDelay = 0;
         bool automaticSamplePending = true;
@@ -120,12 +121,23 @@ class RuntimeWorld final
             return automaticUnscaledDebt > 0.0 || automaticScaledDebt > 0.0 || automaticInputPending;
         }
 
+        // Group queued Host arrivals by the amount of Fixed work that recently
+        // fit in a frame. A single original Host sample keeps its own delta.
+        [[nodiscard]] double ScaledCatchUpLimit(double fixedWaitSeconds) const noexcept
+        {
+            if (fixedWaitSeconds <= 0.0 || sampledTimeScale <= 0.0f)
+                return sampledMaximumDeltaTime;
+            const double fixed = sampledFixedTimeStep;
+            const double interval = (std::max)(double(unscaledDeltaTime), fixed / sampledTimeScale);
+            const double steps = (std::max)(1.0, std::floor(interval / fixedWaitSeconds));
+            return (std::min)(double(sampledMaximumDeltaTime), steps * fixed);
+        }
+
         FrameAdmission TakeNextAutomatic(double unscaledLimit = std::numeric_limits<double>::infinity(),
                                          double scaledLimit = std::numeric_limits<double>::infinity())
         {
-            // Use the existing maximum frame delta, not one fixed tick:
-            // otherwise cheap no-Fixed/one-Fixed frames can consume the late
-            // budget faster than physics can catch up with a fast Host.
+            // Keep an individual Host sample intact and distribute queued time
+            // across the budgets supplied by the world.
             const double frameLimit = sampledMaximumDeltaTime;
             const double unscaledQuantum =
                 (std::min)(unscaledLimit, (std::max)(static_cast<double>(unscaledDeltaTime), frameLimit));
@@ -177,6 +189,7 @@ class RuntimeWorld final
                 return false;
             automaticUnscaledDebt += next.automaticUnscaledDebt;
             automaticScaledDebt += next.automaticScaledDebt;
+            coalescedHostTime = true;
             // Preserve a single large arrival. Coalesced debt is admitted in
             // quanta bounded by the existing maximum frame delta or a larger
             // real single arrival, never as one giant Fixed catch-up frame.
@@ -326,6 +339,7 @@ class RuntimeWorld final
         };
         std::deque<Point> points;
         double acceptedTime = 0, fixedTime = 0;
+        double currentFixedWaitSeconds = 0, recentFixedWaitSeconds = 0;
         uint64_t lastInitialSource = 0, lastUpdateSource = 0, lastFixedSource = 0;
         InputFrameLease held, latest, fixedInput, updateInput;
         bool zeroScaledFrame = false;

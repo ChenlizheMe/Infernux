@@ -1347,6 +1347,9 @@ void SceneManager::RecordHostFrame(float deltaTime, bool automaticHost)
     if (!world.simulation.isPlaying || world.simulation.isPaused ||
         (world.scenes.loaded.empty() && !world.scenes.persistent))
         return;
+    if (automaticHost && world.inputTimeline && world.inputTimeline->automaticFrame &&
+        world.simulation.fixedPhase != RuntimeWorld::FixedPhase::Idle)
+        world.inputTimeline->currentFixedWaitSeconds += deltaTime;
     auto input = InputManager::Instance().CaptureFrame();
     const auto previous = !world.frame.pending.empty() ? world.frame.pending.back().input
                                                        : InputManager::Instance().GetWorldExternalInput(world.id);
@@ -1557,8 +1560,13 @@ void SceneManager::ContinueRuntimeUpdate()
             return;
         auto &pending = world.frame.pending.front();
         RuntimeWorld::FrameAdmission admission;
+        double scaledLimit = 0.0;
         if (pending.automaticHost) {
-            admission = pending.TakeNextAutomatic();
+            const double fixedWait = world.inputTimeline ? world.inputTimeline->recentFixedWaitSeconds : 0.0;
+            scaledLimit = pending.ScaledCatchUpLimit(fixedWait);
+            admission = pending.coalescedHostTime
+                            ? pending.TakeNextAutomatic(std::numeric_limits<double>::infinity(), scaledLimit)
+                            : pending.TakeNextAutomatic();
             if (!pending.HasAutomaticDemand())
                 world.frame.pending.pop_front();
         } else {
@@ -1570,7 +1578,7 @@ void SceneManager::ContinueRuntimeUpdate()
             while (!world.frame.pending.empty() && CanContinueRuntimeFrame()) {
                 auto &next = world.frame.pending.front();
                 const double remainingUnscaled = limit - admission.automaticUnscaledDebt;
-                const double remainingScaled = limit - admission.automaticScaledDebt;
+                const double remainingScaled = scaledLimit - admission.automaticScaledDebt;
                 if (!next.automaticHost || next.sampledTimeScale != admission.sampledTimeScale ||
                     next.sampledMaximumDeltaTime != admission.sampledMaximumDeltaTime ||
                     next.sampledFixedTimeStep != admission.sampledFixedTimeStep ||
@@ -2712,6 +2720,7 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     if (world.inputTimeline && world.inputTimeline->automaticFrame &&
         world.simulation.fixedPhase == RuntimeWorld::FixedPhase::Idle) {
         auto &timeline = *world.inputTimeline;
+        timeline.currentFixedWaitSeconds = 0;
         std::vector<InputFrameLease> events;
         while (!timeline.points.empty() && timeline.points.front().time <= timeline.fixedTime) {
             auto sample = std::move(timeline.points.front().input);
@@ -2870,6 +2879,14 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
     }
     if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsPostScript) || !current())
         return false;
+    if (world.inputTimeline && world.inputTimeline->automaticFrame) {
+        auto &timeline = *world.inputTimeline;
+        // React to a slow completed step immediately, then recover the larger
+        // catch-up batches as subsequent steps spend less time across Hosts.
+        const double observed = timeline.currentFixedWaitSeconds;
+        const double smoothed = timeline.recentFixedWaitSeconds + 0.25 * (observed - timeline.recentFixedWaitSeconds);
+        timeline.recentFixedWaitSeconds = (std::max)(observed, smoothed);
+    }
     world.simulation.fixedPhase = RuntimeWorld::FixedPhase::Idle;
     return true;
 }
