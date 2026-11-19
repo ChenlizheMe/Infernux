@@ -421,6 +421,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         bool final = next == plan.size();
         const bool readStatus = final && reportsStatus && !boundsValidation;
+        const bool deferStatus = readStatus && !query && bool(deferValidation);
         std::vector<rhi::ComputeBufferRead> reads;
         if (readStatus) {
             reads.push_back({buffers[Roots], uint64_t(statusIndex) * 4u, 4u});
@@ -430,21 +431,25 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         const bool multi = dispatches.size() > 1u;
         auto packet =
             rhi::PrepareComputeBatch(owner->host, std::move(uploads), std::move(dispatches), std::move(reads));
-        JoltGpuControlWork work{packet,
-                                [self = shared_from_this(), packet, next, offset, readStatus]() -> JoltGpuControlWork {
-                                    self->started = true;
-                                    self->cursor = next;
-                                    self->cursorOffset = offset;
-                                    if (readStatus) {
-                                        ReadStatus(*packet);
-                                        if (self->query) {
-                                            self->queryResults.resize(self->resultBytes / sizeof(UInt4));
-                                            packet->Readback(1)->ReadInto(self->queryResults.data(), self->resultBytes);
-                                        }
-                                    }
-                                    return self->Next();
-                                },
-                                final ? finalResumeAfter : JoltGpuControlWork::ResumeAfter::Acceptance};
+        JoltGpuControlWork work{
+            packet,
+            [self = shared_from_this(), packet, next, offset, readStatus, deferStatus]() -> JoltGpuControlWork {
+                self->started = true;
+                self->cursor = next;
+                self->cursorOffset = offset;
+                if (readStatus) {
+                    if (deferStatus)
+                        self->deferValidation(packet, [packet] { ReadStatus(*packet); });
+                    else
+                        ReadStatus(*packet);
+                    if (self->query) {
+                        self->queryResults.resize(self->resultBytes / sizeof(UInt4));
+                        packet->Readback(1)->ReadInto(self->queryResults.data(), self->resultBytes);
+                    }
+                }
+                return self->Next();
+            },
+            deferStatus || !final ? JoltGpuControlWork::ResumeAfter::Acceptance : finalResumeAfter};
         if (multi)
             work.prepareMinimum = [self = shared_from_this()] { return self->Next(1u); };
         return work;
@@ -462,6 +467,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
     std::vector<uint8_t> requestBytes, boundsBytes;
     std::vector<UInt4> queryResults;
     std::function<JoltGpuControlWork(Execution &)> completed;
+    DeferredValidation deferValidation;
 };
 
 JoltGpuSleep::JoltGpuSleep(rhi::ComputeHost &host, const ShaderTargetCode &target)
@@ -528,7 +534,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
 }
 JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                                 const BodySleepParameters &settings, JoltGpuSleepCoupling coupling,
-                                                std::function<void()> done)
+                                                std::function<void()> done, DeferredValidation deferValidation)
 {
     if (!std::isfinite(settings.timing.x) || settings.timing.x <= 0 || !std::isfinite(settings.timing.y) ||
         settings.timing.y < 0 || !std::isfinite(settings.timing.z) || settings.timing.z <= 0 || settings.timing.w != 0)
@@ -551,6 +557,9 @@ JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, c
     const auto &step = inputs.GetParameters();
     const auto jointFirst = step.selection.w, jointCount = step.selectedCounts.z;
     if (!coupling.resolve) {
+        // No later CPU decision consumes this status. Keep its real readback,
+        // and let the Tick validate it before publishing the completed step.
+        e->deferValidation = std::move(deferValidation);
         e->AddSleepCommit(p, jointFirst, jointCount, coupling.endpoints);
         e->OnComplete([done = std::move(done)](auto &) { done(); });
         return e->Next();

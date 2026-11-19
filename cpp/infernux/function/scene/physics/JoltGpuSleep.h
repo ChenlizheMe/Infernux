@@ -15,6 +15,8 @@ struct JoltGpuPrescribedSleepBounds
 class JoltGpuSleep final
 {
   public:
+    using DeferredValidation =
+        std::function<void(const std::shared_ptr<rhi::PreparedComputeBatch> &, std::function<void()>)>;
     struct BoundsValidation
     {
         std::shared_ptr<rhi::ComputeBuffer> status;
@@ -28,7 +30,8 @@ class JoltGpuSleep final
                                                  const JoltGpuConstraintTopology &, std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareHistory(const JoltGpuStorage &, const JoltGpuStepInputs &,
                                                     const JPH::GPU::BodySleepParameters &, JoltGpuSleepCoupling,
-                                                    std::function<void()> completed);
+                                                    std::function<void()> completed,
+                                                    DeferredValidation deferValidation = {});
     // Called ONLY after a genuinely new accepted force-input producer. An
     // absent CPU upload is not evidence of a new external GPU force write.
     [[nodiscard]] JoltGpuControlWork PrepareForceWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,

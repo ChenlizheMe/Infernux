@@ -199,6 +199,8 @@ class JoltGpuTick::Impl
         control = {};
         workContinuation = {};
         workMinimum = {};
+        for (auto &receipt : receipts)
+            receipt.validate = {};
         finalOutput = {};
         modelUpdate.reset();
         commandCursor.reset();
@@ -393,6 +395,9 @@ class JoltGpuTick::Impl
         uint64_t transferBytes;
         uint64_t submitStarted;
         std::shared_ptr<const JoltGpuGeometryLease> geometry;
+        // Readbacks whose values do not feed another GPU/CPU numerical phase.
+        // Their real receipt still gates publication; cancellation drops decode.
+        std::function<void()> validate;
     };
 
     struct SharedStage
@@ -528,6 +533,11 @@ class JoltGpuTick::Impl
             submissionBusy = false;
         while (!receipts.empty() && receipts.front().completion.IsComplete()) {
             auto &receipt = receipts.front();
+            // Move before invoking: a validation exception fails this Tick and
+            // cancels later decodes, while this accepted receipt is accounted
+            // exactly once by the following retirement pass.
+            if (auto validate = std::move(receipt.validate))
+                validate();
             const auto elapsed = receipt.completion.GetDeviceElapsedNanoseconds();
             uint64_t estimate = 0;
             if (elapsed) {
@@ -1420,6 +1430,27 @@ class JoltGpuTick::Impl
                (!receipts.empty() || !sharedStages.empty());
     }
 
+    void DeferValidation(const std::shared_ptr<rhi::PreparedComputeBatch> &packet, std::function<void()> validate)
+    {
+        if (!packet || !validate || !packet->GetSubmission().IsValid())
+            throw std::logic_error("GPU validation requires its accepted source packet");
+        const auto ticket = packet->GetSubmission();
+        const auto found = std::find_if(receipts.begin(), receipts.end(), [&](const auto &receipt) {
+            return receipt.completion.GetSubmission() == ticket;
+        });
+        if (found == receipts.end()) {
+            // Poll may have retired the packet before its acceptance-ready
+            // continuation got a host turn. Decode before advancing this phase.
+            if (!packet->GetCompletion().HasRetired())
+                throw std::logic_error("GPU validation lost its unretired source receipt");
+            validate();
+            return;
+        }
+        if (found->validate)
+            throw std::logic_error("GPU receipt already owns a deferred validation");
+        found->validate = std::move(validate);
+    }
+
     static bool CoupledFeedbackPhase(Phase phase)
     {
         return phase == Phase::WarmCoupledContacts || phase == Phase::ExchangeCoupledContacts ||
@@ -2084,13 +2115,15 @@ class JoltGpuTick::Impl
             if (stageCursor.phase == Phase::UpdateSleep) {
                 auto settings = control.sleepParameters;
                 settings.timing.x = tickParameters.gravityDt.w;
-                SelectControlWork(programs.GetSleep().PrepareHistory(storage, inputs, settings,
-                                                                     inputs.TakeSleepCoupling(),
-                                                                     [this] {
-                                                                         NextSpan(stageCursor);
-                                                                         Normalize(stageCursor);
-                                                                     }),
-                                  PacketKind::NumericalWork);
+                SelectControlWork(
+                    programs.GetSleep().PrepareHistory(
+                        storage, inputs, settings, inputs.TakeSleepCoupling(),
+                        [this] {
+                            NextSpan(stageCursor);
+                            Normalize(stageCursor);
+                        },
+                        [this](const auto &packet, auto validate) { DeferValidation(packet, std::move(validate)); }),
+                    PacketKind::NumericalWork);
                 return true;
             }
             if (stageCursor.phase == Phase::CompleteConvexContacts) {
