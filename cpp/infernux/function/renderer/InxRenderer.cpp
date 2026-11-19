@@ -1915,6 +1915,9 @@ RenderFrameResult InxRenderer::DrawFrame(bool pace)
                             << ": record=" << entry.recordMs / n << "ms barrier=" << entry.barrierMs / n
                             << "ms callback=" << entry.callbackMs / n << "ms calls=" << entry.calls
                             << " gpuRegions=" << entry.gpuRegions << " gpuNotSampled=" << entry.gpuNotSampled;
+                        if (entry.gpuSamples)
+                            oss << " gpu=" << entry.gpuMs / static_cast<double>(entry.gpuSamples)
+                                << "ms/sample gpuSamples=" << entry.gpuSamples;
                     }
 
                     const auto particlePassProfiles = infernux::vk::RenderGraph::GetParticlePassProfiles(32);

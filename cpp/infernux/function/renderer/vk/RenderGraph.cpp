@@ -99,6 +99,18 @@ std::vector<RenderGraph::ViewPassProfileEntry> RenderGraph::GetViewPassProfiles(
     return result;
 }
 
+void RenderGraph::AccumulateGpuTimes(const rhi::GpuTimestampFrame &frame)
+{
+    for (uint32_t i = 0; i < frame.sampleCount; ++i) {
+        const auto &sample = frame.samples[i];
+        const auto it = s_viewPassProfiles.find(std::string(sample.Name()));
+        if (it != s_viewPassProfiles.end()) {
+            it->second.gpuMs += sample.milliseconds;
+            ++it->second.gpuSamples;
+        }
+    }
+}
+
 std::vector<RenderGraph::ParticlePassProfileEntry> RenderGraph::GetParticlePassProfiles(size_t maxEntries)
 {
     std::vector<ParticlePassProfileEntry> result;
@@ -2323,7 +2335,9 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
 
 #if INFERNUX_FRAME_PROFILE
         context.m_activePassId = passIndex;
-        const std::string profileKey = "V" + std::to_string(m_renderViewId) + "/P" + std::to_string(passIndex);
+        // A completed query can arrive after this view has rebuilt its graph.
+        const std::string profileKey = "V" + std::to_string(m_renderViewId) + "/P" + std::to_string(passIndex) + "@" +
+                                       std::to_string(m_identity.Current().value);
         auto &viewProfile = s_viewPassProfiles[profileKey];
         viewProfile.view = m_renderViewId;
         viewProfile.pass = passIndex;

@@ -729,6 +729,8 @@ class RenderGraph
         uint64_t calls = 0;
         uint64_t gpuRegions = 0;
         uint64_t gpuNotSampled = 0;
+        uint64_t gpuSamples = 0;
+        double gpuMs = 0.0;
     };
 
     struct ParticlePassProfileEntry
@@ -963,6 +965,7 @@ class RenderGraph
     INFERNUX_VULKAN_BACKEND_API static std::vector<PassCallbackProfileEntry> GetTopCallbackProfiles(size_t maxEntries);
     INFERNUX_VULKAN_BACKEND_API static PassCallbackProfileEntry GetCallbackProfile(std::string_view name);
     INFERNUX_VULKAN_BACKEND_API static std::vector<ViewPassProfileEntry> GetViewPassProfiles();
+    INFERNUX_VULKAN_BACKEND_API static void AccumulateGpuTimes(const rhi::GpuTimestampFrame &frame);
     INFERNUX_VULKAN_BACKEND_API static std::vector<ParticlePassProfileEntry> GetParticlePassProfiles(size_t maxEntries);
     INFERNUX_VULKAN_BACKEND_API static void ResetExecuteProfileSnapshot();
 #endif

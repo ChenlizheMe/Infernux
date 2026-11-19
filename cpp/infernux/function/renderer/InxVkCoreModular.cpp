@@ -18,6 +18,7 @@
 #include "raytracing/RayWorldGeometry.h"
 #include "raytracing/RayWorldMaterials.h"
 #include "raytracing/RayWorldTailCache.h"
+#include "vk/RenderGraph.h"
 #include "vk/RhiVulkanTypes.h"
 #include <function/renderer/shader/BuiltinSceneProgram.h>
 
@@ -1198,7 +1199,8 @@ void InxVkCoreModular::PollFrameSlot(uint32_t slot, uint64_t timeoutNanoseconds)
         return;
     m_submissionExecutor.CompleteFrame(slot);
 #if INFERNUX_FRAME_PROFILE
-    (void)m_gpuTimestampQueries.CollectCompletedFrame(slot);
+    if (const auto timings = m_gpuTimestampQueries.CollectCompletedFrame(slot))
+        vk::RenderGraph::AccumulateGpuTimes(*timings);
 #endif
 }
 
