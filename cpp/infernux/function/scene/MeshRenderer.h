@@ -505,6 +505,7 @@ class MeshRenderer : public Component
     [[nodiscard]] std::unique_ptr<Component> Clone() const override;
 
   protected:
+    friend class SceneRenderExtractor;
     virtual void OnMeshSourceChanged()
     {
     }

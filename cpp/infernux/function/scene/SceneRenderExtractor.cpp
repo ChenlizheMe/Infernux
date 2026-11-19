@@ -221,8 +221,7 @@ size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication
         auto *object = renderer->GetGameObject();
         if (!object || !object->IsActiveInHierarchy())
             continue;
-        if (!renderer->GetPoseBuffer() || renderer->RequiresCpuPoseForGeometry())
-            renderer->RefreshProceduralGeometry(object->GetTransform()->GetWorldMatrix());
+        renderer->EnsureProceduralGeometryCurrent();
         for (uint32_t slot = 0, count = std::max(1u, renderer->GetMaterialCount()); slot < count; ++slot) {
             const auto material = renderer->GetEffectiveMaterial(slot);
             if (material) {
