@@ -688,7 +688,7 @@ class PhysicsWorld
     [[nodiscard]] std::shared_ptr<particle::GpuParticleCollisionDevicePayload>
     PrepareParticleCollisionScene(class Scene &scene,
                                   const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,
-                                  uint64_t revision) const;
+                                  uint64_t revision, const std::shared_ptr<const void> &consumer) const;
 
     /// Runtime-only collision policy for one exact Collider pair. This is
     /// separate from joint-owned whole-body suppression.
@@ -914,7 +914,8 @@ class PhysicsWorld
     void DrainGpuSource(PhysicsDomain &domain) const;
     void ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const;
     [[nodiscard]] JoltGpuScene::Consumer PrepareRenderConsumer(PhysicsDomain &domain, bool numericalChange) const;
-    void RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer, bool publicationRead = false) const;
+    void RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer, bool publicationRead = false,
+                    bool requireStaticGpuBoundaries = false) const;
     void DrainQueryGpuCapacity(PhysicsDomain &domain) const;
     void AcceptQueryGpuPublication(PhysicsDomain &domain, bool refresh) const;
     void SealQuerySources(PhysicsDomain &domain, bool includeStaticBoundaries) const;

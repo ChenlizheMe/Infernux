@@ -1113,5 +1113,7 @@ class InxRenderer
 
     void RetireReplacedViewTargets();
     std::vector<std::unique_ptr<SceneRenderTarget>> m_replacedViewTargets;
+    // The provider owns this lease only while a collision graph consumes the world.
+    std::shared_ptr<const void> m_particleCollisionConsumer;
 };
 } // namespace infernux

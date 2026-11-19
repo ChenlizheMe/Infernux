@@ -176,5 +176,7 @@ struct PhysicsDomain final
     std::shared_ptr<PresentationPoseReads> presentationPoseReads;
     uint32_t presentationPoseReadDepth = 0;
     uint64_t presentationPoseReadGeneration = 0;
+    // A collision graph can consume static GPU boundaries without a Rigidbody.
+    std::weak_ptr<const void> particleCollisionConsumer;
 };
 } // namespace infernux

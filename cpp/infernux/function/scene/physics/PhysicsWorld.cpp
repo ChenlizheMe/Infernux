@@ -652,6 +652,8 @@ void PhysicsWorld::RetireIdleGpuPartition(PhysicsDomain &domain)
         domain.bodyTransfer || !domain.requestedBodyTransfers.empty() || domain.participantOutputPending ||
         !domain.participantPreparing.expired())
         return;
+    if (!domain.particleCollisionConsumer.expired())
+        return;
     // A participant can read its last completed state while it is disabled.
     for (const auto &entry : domain.participants)
         if (const auto owner = entry.lock(); owner && !owner->IsRetired())
@@ -2483,7 +2485,8 @@ void PhysicsWorld::AcceptQueryGpuPublication(PhysicsDomain &domain, bool refresh
     }
 }
 
-void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer, bool publicationRead) const
+void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer, bool publicationRead,
+                              bool requireStaticGpuBoundaries) const
 {
     RequireOwnerThread();
     const WorldExecutionScope ownerScope(&domain.owner);
@@ -2524,6 +2527,19 @@ void PhysicsWorld::RunControl(PhysicsDomain &domain, const JoltGpuScene::Consume
         {
             FrameWorkOwner::Scope preparation(*m_gpuWork);
             FlushAuthoring(domain);
+        }
+        // Device collision readers consume collider-only actors even when no
+        // Rigidbody step runs. An empty pending set stages nothing; capacity
+        // deferral retains the existing control cursor and accepted receipts.
+        while (requireStaticGpuBoundaries) {
+            {
+                FrameWorkOwner::Scope preparation(*m_gpuWork);
+                if (const_cast<PhysicsWorld *>(this)->EnsureStaticBoundaries(domain, Backend::Gpu))
+                    break;
+            }
+            if (!domain.waitingForSlot)
+                throw std::runtime_error("GPU collision query is awaiting static collider acceptance");
+            DrainQueryGpuCapacity(domain);
         }
         DrainQueryGpuCapacity(domain);
         if (publicationRead) {
@@ -5350,9 +5366,13 @@ std::vector<PhysicsBoxShapeState> PhysicsWorld::GetBodyBoxShapeStates(uint32_t i
 
 std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::PrepareParticleCollisionScene(
     Scene &scene, const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,
-    uint64_t revision) const
+    uint64_t revision, const std::shared_ptr<const void> &consumer) const
 {
+    RequireOwnerThread();
     auto &domain = *scene.GetRuntimeWorld()->physics;
+    if (!consumer)
+        throw std::invalid_argument("GPU particle collision export requires a live consumer");
+    domain.particleCollisionConsumer = consumer;
     using RowKey = particle::GpuParticleCollisionRowKey;
     struct Row
     {
@@ -5439,7 +5459,7 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
                     });
             },
             error);
-    });
+    }, false, true);
     if (error)
         std::rethrow_exception(error);
     FrameWorkOwner::Scope materialize(*m_gpuWork);

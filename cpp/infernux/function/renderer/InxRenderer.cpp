@@ -396,6 +396,7 @@ InxRenderer::~InxRenderer()
     m_sceneRenderGraph.reset();
 
     m_particleGpuSystemManager.reset();
+    m_particleCollisionConsumer.reset();
 
     m_screenUIRenderer.reset();
 
@@ -4245,6 +4246,7 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
 void InxRenderer::UpdateParticleCollisionScene()
 {
     if (!m_particleGpuSystemManager || !m_particleGpuSystemManager->RequiresCollisionScene()) {
+        m_particleCollisionConsumer.reset();
         // No immediately preceding collision consumer exists across this gap.
         m_particleCollisionAcceptedDevice.reset();
         m_particleCollisionPendingDevice.reset();
@@ -4254,6 +4256,7 @@ void InxRenderer::UpdateParticleCollisionScene()
 
     Scene *scene = SceneManager::Instance().GetActiveScene();
     if (scene != m_particleCollisionSourceScene) {
+        m_particleCollisionConsumer.reset();
         m_particleCollisionAcceptedDevice.reset();
         m_particleCollisionPendingDevice.reset();
     }
@@ -4274,8 +4277,10 @@ void InxRenderer::UpdateParticleCollisionScene()
         // One owner-controlled operation selects the immutable publication,
         // gathers its device state and projects the particle table on the GPU.
         // The renderer never downloads poses or consults live Collider material.
+        if (!m_particleCollisionConsumer)
+            m_particleCollisionConsumer = std::make_shared<uint8_t>(0);
         snapshot.device = PhysicsWorld::Instance().PrepareParticleCollisionScene(
-            *scene, m_particleCollisionAcceptedDevice, snapshot.revision);
+            *scene, m_particleCollisionAcceptedDevice, snapshot.revision, m_particleCollisionConsumer);
         if (!snapshot.device)
             throw std::runtime_error("GPU particle collision export returned no device publication");
         snapshot.topologyRevision = snapshot.device->topologyRevision;
