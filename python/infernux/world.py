@@ -175,14 +175,15 @@ class WorldManager:
     def get_worlds() -> tuple[World, ...]:
         session = _owner_session()
         from infernux.lib import SceneManager
-        manager = SceneManager.instance()
-        return tuple(World(session, manager._get_runtime_world_handle(identity))
-                     for identity in manager._runtime_world_ids)
+        handles = SceneManager.instance()._published_runtime_world_handles
+        return tuple(World(session, handle) for handle in handles)
 
     @staticmethod
     def get_primary_world() -> World | None:
-        worlds = WorldManager.get_worlds()
-        return worlds[0] if worlds else None
+        session = _owner_session()
+        from infernux.lib import SceneManager
+        primary = SceneManager.instance()._primary_runtime_world_handle
+        return World(session, primary) if primary is not None else None
 
     @staticmethod
     def get_current_world() -> World | None:

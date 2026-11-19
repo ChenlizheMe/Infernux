@@ -88,6 +88,7 @@ class SceneManager
     [[nodiscard]] RuntimeWorld *FindRuntimeWorld(uint64_t id) const noexcept;
     [[nodiscard]] RuntimeWorld *GetPrimaryRuntimeWorld() const noexcept;
     [[nodiscard]] std::vector<uint64_t> GetRuntimeWorldIds() const;
+    [[nodiscard]] std::vector<std::shared_ptr<RuntimeWorldHandle>> GetPublishedRuntimeWorldHandles() const;
     [[nodiscard]] bool IsPreparingRuntimeWorld(const RuntimeWorld &world) const noexcept;
 
     /// Internal scene-transaction entry points, not the public multi-world API.
@@ -222,7 +223,6 @@ class SceneManager
                                              std::function<void(uint64_t)> retire,
                                              std::function<bool(RuntimeWorld &)> pausedAuthor = {},
                                              std::function<bool(const RuntimeWorld &)> canBeginFrame = {});
-    void RecordHostFrame(float deltaTime, bool automaticHost = false);
     [[nodiscard]] bool CanContinueRuntimeFrame() const noexcept;
     void ReportRuntimeFrameProgress() noexcept;
     void SetRuntimeInputCallback(std::function<void()> callback);
@@ -231,12 +231,6 @@ class SceneManager
     {
         m_runtimeFramePresentation = std::move(callback);
     }
-
-    /// Consume the one-frame timing boundary published by a scene replacement.
-    /// The first frame of a newly committed scene receives zero delta so asset
-    /// preparation and graph construction time cannot leak into gameplay,
-    /// animation, particles, or the fixed-step accumulator.
-    [[nodiscard]] float ConsumeFrameDeltaTime(float deltaTime) noexcept;
 
     /// Flush deferred body creation and dirty static Collider poses before a
     /// scene query. Static-only scenes otherwise defer this work because they
@@ -723,6 +717,8 @@ class SceneManager
     void AdvanceFrameTime(float unscaledDeltaTime, float scaledDeltaTime);
     void UpdateHostFrame(float deltaTime);
     void UpdateCurrentWorld(float deltaTime);
+    void RecordHostFrame(RuntimeWorld &world, float deltaTime, bool automaticHost = false);
+    [[nodiscard]] float ConsumeFrameDeltaTime(RuntimeWorld &world, float deltaTime) const noexcept;
     bool ServiceCurrentWorldFrame();
     bool IsRuntimeFrameWaitingForPhysics(const RuntimeWorld &world) const;
     bool AdvanceRunningPhysics(RuntimeWorld &world);

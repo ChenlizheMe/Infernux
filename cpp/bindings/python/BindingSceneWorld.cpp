@@ -504,6 +504,12 @@ void BindSceneManager(py::module_ &m)
         .def_property_readonly("_authoring_runtime_world_id",
                                [](const SceneManager &manager) { return manager.AuthoringWorld().id; })
         .def_property_readonly("_runtime_world_ids", &SceneManager::GetRuntimeWorldIds)
+        .def_property_readonly("_published_runtime_world_handles", &SceneManager::GetPublishedRuntimeWorldHandles)
+        .def_property_readonly("_primary_runtime_world_handle",
+                               [](const SceneManager &manager) {
+                                   const auto *world = manager.GetPrimaryRuntimeWorld();
+                                   return world ? world->handle : nullptr;
+                               })
         .def("_set_runtime_world_retirement_callbacks", &SceneManager::SetRuntimeWorldRetirementCallbacks)
         .def("_ensure_authoring_world", &SceneManager::EnsureAuthoringWorld)
         .def("_collect_retired_runtime_worlds", &SceneManager::CollectRetiredRuntimeWorlds)

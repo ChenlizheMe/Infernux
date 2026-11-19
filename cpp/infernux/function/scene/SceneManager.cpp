@@ -210,6 +210,15 @@ std::vector<uint64_t> SceneManager::GetRuntimeWorldIds() const
     return ids;
 }
 
+std::vector<std::shared_ptr<RuntimeWorldHandle>> SceneManager::GetPublishedRuntimeWorldHandles() const
+{
+    std::vector<std::shared_ptr<RuntimeWorldHandle>> handles;
+    handles.reserve(m_runtimeWorlds.size());
+    for (const auto &world : m_runtimeWorlds)
+        handles.push_back(world->handle);
+    return handles;
+}
+
 RuntimeWorld *SceneManager::FindRuntimeWorld(uint64_t id) const noexcept
 {
     if (m_authoringWorld && m_authoringWorld->id == id)
@@ -312,6 +321,9 @@ RuntimeWorld &SceneManager::BeginReservedRuntimeWorld(const std::shared_ptr<Runt
 
 std::shared_ptr<RuntimeWorldHandle> SceneManager::GetRuntimeWorldHandle(uint64_t id) const
 {
+    const auto slot = PublishedWorldSlot(id);
+    if (slot < m_runtimeWorlds.size())
+        return m_runtimeWorlds[slot]->handle;
     for (const auto &handle : m_reservedWorlds)
         if (handle->id == id)
             return handle;
@@ -741,9 +753,8 @@ void SceneManager::SetActiveScene(Scene *scene)
     // via SceneRenderBridge / EditorCameraController, independent of mainCamera.
 }
 
-float SceneManager::ConsumeFrameDeltaTime(float deltaTime) noexcept
+float SceneManager::ConsumeFrameDeltaTime(RuntimeWorld &world, float deltaTime) const noexcept
 {
-    auto &world = CurrentWorld();
     if (!world.simulation.resetDeltaTimeOnNextFrame)
         return deltaTime;
     // A transition inside this Host may spend time loading after the Host's
@@ -1395,9 +1406,8 @@ void SceneManager::FinishStepPresentation(bool completeStep)
         CurrentWorld().simulation.stepFrameOpen = false;
 }
 
-void SceneManager::RecordHostFrame(float deltaTime, bool automaticHost)
+void SceneManager::RecordHostFrame(RuntimeWorld &world, float deltaTime, bool automaticHost)
 {
-    auto &world = CurrentWorld();
     if (!world.simulation.isPlaying || world.simulation.isPaused ||
         (world.scenes.loaded.empty() && !world.scenes.persistent))
         return;
@@ -1405,14 +1415,15 @@ void SceneManager::RecordHostFrame(float deltaTime, bool automaticHost)
         world.simulation.fixedPhase != RuntimeWorld::FixedPhase::Idle)
         world.inputTimeline->currentFixedWaitSeconds += deltaTime;
     auto input = InputManager::Instance().CaptureFrame();
-    const auto previous = !world.frame.pending.empty() ? world.frame.pending.back().input
-                                                       : InputManager::Instance().GetWorldExternalInput(world.id);
-    const bool inputBoundary = !previous || (previous->sampleIdentity != input->sampleIdentity &&
-                                             !InputManager::CanCoalesceFrames(*previous, *input));
-    // Explicit calls, including dt=0, remain independent frame requests.
-    // Automatic neutral zero-time polling creates no new logical demand.
-    if (automaticHost && deltaTime == 0.0f && !inputBoundary)
-        return;
+    bool inputBoundary = false;
+    if (automaticHost) {
+        const auto previous = !world.frame.pending.empty() ? world.frame.pending.back().input
+                                                           : InputManager::Instance().GetWorldExternalInput(world.id);
+        inputBoundary = !previous || (previous->sampleIdentity != input->sampleIdentity &&
+                                      !InputManager::CanCoalesceFrames(*previous, *input));
+        if (deltaTime == 0.0f && !inputBoundary)
+            return;
+    }
     RuntimeWorld::FrameAdmission admission{
         deltaTime,
         std::clamp(deltaTime * world.simulation.timeScale, 0.0f, world.simulation.maxFixedDeltaTime),
@@ -1597,7 +1608,7 @@ void SceneManager::UpdateCurrentWorld(float deltaTime)
             return;
     }
 
-    RecordHostFrame(deltaTime);
+    RecordHostFrame(world, deltaTime);
     ContinueRuntimeUpdate();
 }
 
@@ -1948,10 +1959,10 @@ void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTim
     if (!work.IsAccepting())
         return;
     UpdateHostFrame(hostDeltaTime);
-    const auto consumeDelta = [this, hostDeltaTime, explicitDelta, automaticClockWorld, automaticClockDelta] {
-        auto &simulation = CurrentWorld().simulation;
-        if (!explicitDelta && CurrentWorld().id != automaticClockWorld)
-            return ConsumeFrameDeltaTime(hostDeltaTime);
+    const auto consumeDelta = [&](RuntimeWorld &world) {
+        auto &simulation = world.simulation;
+        if (!explicitDelta && world.id != automaticClockWorld)
+            return ConsumeFrameDeltaTime(world, hostDeltaTime);
         // The graphical startup clock owns this transition's time origin.
         // Consume its reset even when Play happened in this same Host, so
         // the first post-presentation interval is not discarded a second time.
@@ -1969,16 +1980,14 @@ void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTim
             return; // An empty Play collection still owns its live preparation source.
         const WorldExecutionScope authorScope(m_authoringWorld.get());
         TransformECSStore::Instance().BeginFrameCache();
-        UpdateCurrentWorld(consumeDelta());
+        UpdateCurrentWorld(consumeDelta(*m_authoringWorld));
         EndRuntimeFrame(false);
         return;
     }
     // Admission stays at the original Host/input boundary. Actual runtime work
     // competes with preparation/physics through the same late owner chooser.
-    for (const auto &world : m_runtimeWorlds) {
-        const WorldExecutionScope scope(world.get());
-        RecordHostFrame(consumeDelta(), !explicitDelta);
-    }
+    for (const auto &world : m_runtimeWorlds)
+        RecordHostFrame(*world, consumeDelta(*world), !explicitDelta);
     work.Wake(m_runtimeFrameSource);
 }
 
