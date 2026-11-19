@@ -532,7 +532,7 @@ jobs:
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_MANAGED_GUID_READ_READY guid=8b7148eba8303c90b0589315c16f7cba" `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_CPU_COOK_READY value=84" `
-              --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_SLANG_READY target=wgsl value=-12,-3,0,6,15" `
+              --ready-diagnostic "INFERNUX_PLATFORM_FIXTURE_SLANG_READY target=wgsl value=-12,-3,0,6,15" `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY" `
               --report out/test-results/web-browser-player-smoke.json
           } finally {
@@ -759,6 +759,7 @@ jobs:
           fi
 
       - name: Validate Android Player on API 36
+        id: emulator
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 36
@@ -779,3 +780,15 @@ jobs:
           name: android-player-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/test-results/android-*
           if-no-files-found: warn
+
+      - name: Keep the tested APKs after an emulator failure
+        if: failure() && steps.emulator.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-emulator-packages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            out/acceptance/android/*.apk
+            out/acceptance/android-release/*.apk
+            tests/android/input_instrumentation/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 3
+          if-no-files-found: ignore

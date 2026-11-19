@@ -3,8 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { verifyWebKeyboard } = require("./web_keyboard_contract.cjs");
-const { verifyWebCamera } = require("./web_camera_contract.cjs");
-const { verifyWebRenderSettings } = require("./web_render_settings_contract.cjs");
+const { verifyWebCamera, verifyWebRenderSettings } = require("./web_render_contract.cjs");
 
 // Validate engine selection before loading optional browser dependencies.  A
 // malformed CI invocation must report its actionable configuration error even
@@ -87,8 +86,16 @@ async function activateCanvas(page, canvasBox, cdpEndpoint) {
   );
 }
 
+async function captureCanvas(canvas, outputPath) {
+  const clip = await canvas.boundingBox();
+  if (!clip) throw new Error("The Player canvas has no visible bounds");
+  // Read the compositor at its actual pixel density. Element screenshots
+  // require CSS animation-frame stability before they capture the same area.
+  return canvas.page().screenshot({clip, path: outputPath});
+}
+
 async function readCanvasFrame(canvas) {
-  return PNG.sync.read(await canvas.screenshot({ animations: "disabled" }));
+  return PNG.sync.read(await captureCanvas(canvas));
 }
 
 function summarizeCanvasFrame(image) {
@@ -158,6 +165,8 @@ function compareCanvasFrames(reference, candidate) {
   let samples = 0;
   let changed = 0;
   let absoluteDifference = 0;
+  let skySamples = 0;
+  let skyDifference = 0;
   for (let y = 0; y < reference.height; y += stride) {
     for (let x = 0; x < reference.width; x += stride) {
       const index = (y * reference.width + x) * 4;
@@ -168,25 +177,33 @@ function compareCanvasFrames(reference, candidate) {
       ) / (3 * 255);
       samples += 1;
       absoluteDifference += difference;
+      if (y < reference.height / 5) {
+        skySamples += 1;
+        skyDifference += difference;
+      }
       if (difference > 2 / 255) changed += 1;
     }
   }
   return {
     meanAbsoluteDifference: absoluteDifference / samples,
+    upperFifthMeanDifference: skyDifference / skySamples,
     changedPixelRatio: changed / samples,
   };
 }
 
 async function setRenderDiagnostic(page, feature, enabled) {
-  await page.evaluate(({ feature, enabled }) => {
+  const previous = await page.evaluate(({ feature, enabled }) => Module.infernuxReadRuntime(diagnostic => {
     Module.ccall(
       "InfernuxWebSetRenderDiagnostic",
       null,
       ["number", "number"],
       [feature, enabled ? 1 : 0],
     );
-  }, { feature, enabled });
-  await page.waitForTimeout(120);
+    return diagnostic(16);
+  }), { feature, enabled });
+  await page.waitForFunction(frame =>
+    Module.ccall("InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [16, 0]) > frame,
+    previous, {timeout: 30000});
 }
 
 async function main() {
@@ -201,7 +218,7 @@ async function main() {
       "[--expect-presentation fullscreen-borderless|windowed] " +
       "[--expect-render-width N] [--expect-render-height N] " +
       "[--track-object NAME] [--movement-key KEY|--movement-touch] " +
-      "[--min-displacement N] [--require-diagnostic TEXT] " +
+      "[--min-displacement N] [--require-diagnostic TEXT] [--ready-diagnostic TEXT] " +
       "[--require-diagnostic-order BEFORE=>AFTER] " +
       "[--capture-frame-output PATH] [--skip-frame-checks] " +
       "[--capture-only --fixed-delta N --pause-after-frame N] " +
@@ -250,7 +267,8 @@ async function main() {
   const trackedObject = argumentValue("--track-object");
   const movementKey = argumentValue("--movement-key", "w");
   const minimumDisplacement = Number(argumentValue("--min-displacement", "0.02"));
-  const requiredDiagnostics = argumentValues("--require-diagnostic");
+  const readyDiagnostics = argumentValues("--ready-diagnostic");
+  const requiredDiagnostics = [...readyDiagnostics, ...argumentValues("--require-diagnostic")];
   const forbiddenDiagnostics = [
     "AudioSource::StartVoice: AudioEngine not initialized",
   ];
@@ -448,9 +466,12 @@ async function main() {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 180000 });
     try {
       await page.waitForFunction(
-        () => document.querySelector("#canvas")?.dataset.infernuxState === "ready",
-        null,
-        { timeout: startupTimeout },
+        expected => {
+          const data = document.querySelector("#canvas")?.dataset;
+          if (data?.infernuxState !== "ready") return false;
+          const messages = JSON.parse(data.infernuxDiagnostics || "[]");
+          return expected.every(marker => messages.some(message => message.includes(marker)));
+        }, readyDiagnostics, {polling: 100, timeout: startupTimeout},
       );
     } catch (error) {
       const startup = await page.evaluate(() => {
@@ -555,7 +576,7 @@ async function main() {
       }
       const captureFramePath = path.resolve(captureFrameOutput);
       fs.mkdirSync(path.dirname(captureFramePath), { recursive: true });
-      await canvas.screenshot({ path: captureFramePath, animations: "disabled" });
+      await captureCanvas(canvas, captureFramePath);
       const frame = await measureCanvasFrame(canvas);
       if (frame.width !== expectedRenderWidth ||
           frame.height !== expectedRenderHeight) {
@@ -681,16 +702,15 @@ async function main() {
     if (captureFrameOutput) {
       captureFramePath = path.resolve(captureFrameOutput);
       fs.mkdirSync(path.dirname(captureFramePath), { recursive: true });
-      await canvas.screenshot({ path: captureFramePath, animations: "disabled" });
+      await captureCanvas(canvas, captureFramePath);
     }
     await page.keyboard.down("w");
     await page.waitForTimeout(120);
     const nativeWPressed = await page.evaluate(() => Module.ccall(
       "InfernuxWebGetKeyState", "number", ["number"], [26],
     ) === 1);
-    const pythonWPressed = await page.evaluate(() => Module.ccall(
-      "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [0, 26],
-    ) === 1);
+    const pythonWPressed = await page.evaluate(() =>
+      Module.infernuxReadRuntime(diagnostic => diagnostic(0, 26) === 1));
     await page.keyboard.up("w");
     await page.waitForTimeout(120);
     const nativeWReleased = await page.evaluate(() => Module.ccall(
@@ -700,39 +720,38 @@ async function main() {
     if (!keyboardMapping.passed) {
       throw new Error(`Web keyboard mapping failed: ${JSON.stringify(keyboardMapping)}`);
     }
-    const cameraClear = verifyCameraClear ? await verifyWebCamera(page, () => readCanvasFrame(canvas)) : null;
+    const cameraClear = verifyCameraClear ? await verifyWebCamera(page, () => readCanvasFrame(canvas), startupTimeout) : null;
     if (cameraClear && !cameraClear.passed) {
       throw new Error(`Web camera clear failed: ${JSON.stringify(cameraClear)}`);
     }
-    const renderSettings = verifyRenderSettings ? await verifyWebRenderSettings(page, () => readCanvasFrame(canvas)) : null;
+    const renderSettings = verifyRenderSettings ? await verifyWebRenderSettings(page, () => readCanvasFrame(canvas), startupTimeout) : null;
     if (renderSettings && !renderSettings.passed) {
       throw new Error(`Web live render settings failed: ${JSON.stringify(renderSettings)}`);
     }
     let gameplayMovement = null;
     if (trackedObject) {
-      const readPosition = async () => page.evaluate((name) => [0, 1, 2].map((axis) =>
-        Module.ccall(
-          "InfernuxWebGetObjectPositionAxis",
-          "number",
-          ["string", "number"],
-          [name, axis],
-        )
-      ), trackedObject);
-      const before = await readPosition(trackedObject);
-      const runtimeBefore = await page.evaluate(() => ({
-        fixedPlanCount: Module.ccall(
-          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [1, 0],
-        ),
-        updatePlanCount: Module.ccall(
-          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [2, 0],
-        ),
-        nativePhaseDispatches: Module.ccall(
-          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [3, 0],
-        ),
-        phaseErrors: Module.ccall(
-          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [4, 0],
-        ),
-      }));
+      const observePosition = ({name, origin, distance}) => {
+        const position = [0, 1, 2].map(axis => Module.ccall(
+          "InfernuxWebGetObjectPositionAxis", "number", ["string", "number"], [name, axis]));
+        return !origin || Math.hypot(position[0] - origin[0], position[2] - origin[2]) >= distance
+          ? position : null;
+      };
+      const readPosition = () => page.evaluate(observePosition, {name: trackedObject});
+      const before = await readPosition();
+      const waitForMotion = async () => {
+        const sample = await page.waitForFunction(observePosition, {
+          name: trackedObject, origin: before, distance: minimumDisplacement,
+        }, {polling: 100, timeout: startupTimeout});
+        const position = await sample.jsonValue();
+        await sample.dispose();
+        return position;
+      };
+      const runtimeBefore = await page.evaluate(() => Module.infernuxReadRuntime(diagnostic => ({
+        fixedPlanCount: diagnostic(1),
+        updatePlanCount: diagnostic(2),
+        nativePhaseDispatches: diagnostic(3),
+        phaseErrors: diagnostic(4),
+      })));
       if (!before.every(Number.isFinite)) {
         throw new Error(`Web Player could not find tracked object: ${trackedObject}`);
       }
@@ -761,8 +780,7 @@ async function main() {
             type: "touchMove",
             touchPoints: [stickForward],
           });
-          await page.waitForTimeout(1200);
-          whileHeld = await readPosition(trackedObject);
+          whileHeld = await waitForMotion();
         } finally {
           await touchSession.send("Input.dispatchTouchEvent", {
             type: "touchEnd",
@@ -773,22 +791,17 @@ async function main() {
       } else {
         await page.keyboard.down(movementKey);
         try {
-          await page.waitForTimeout(1200);
-          whileHeld = await readPosition(trackedObject);
+          whileHeld = await waitForMotion();
         } finally {
           await page.keyboard.up(movementKey);
         }
       }
       await page.waitForTimeout(120);
-      const after = await readPosition(trackedObject);
-      const runtimeAfter = await page.evaluate(() => ({
-        nativePhaseDispatches: Module.ccall(
-          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [3, 0],
-        ),
-        phaseErrors: Module.ccall(
-          "InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [4, 0],
-        ),
-      }));
+      const after = await readPosition();
+      const runtimeAfter = await page.evaluate(() => Module.infernuxReadRuntime(diagnostic => ({
+        nativePhaseDispatches: diagnostic(3),
+        phaseErrors: diagnostic(4),
+      })));
       const displacement = Math.hypot(
         after[0] - before[0],
         after[1] - before[1],
@@ -876,13 +889,7 @@ async function main() {
         x: secondStart.x - canvasBox.width * 0.08,
         y: secondStart.y - canvasBox.height * 0.08,
       };
-      const readUnityTouches = async () => page.evaluate(() => {
-        const diagnostic = (probe, argument = 0) => Module.ccall(
-          "InfernuxWebGetRuntimeDiagnostic",
-          "number",
-          ["number", "number"],
-          [probe, argument],
-        );
+      const readUnityTouches = () => page.evaluate(() => Module.infernuxReadRuntime(diagnostic => {
         const count = Math.trunc(diagnostic(5));
         return {
           count,
@@ -894,15 +901,15 @@ async function main() {
             phase: diagnostic(10, index),
           })),
         };
-      });
+      }));
       const waitForNoUnityTouches = async () => {
-        await page.waitForFunction(() => Module.ccall(
-          "InfernuxWebGetRuntimeDiagnostic",
-          "number",
-          ["number", "number"],
-          [5, 0],
-        ) === 0, null, { timeout: 10000 });
-        return readUnityTouches();
+        const deadline = Date.now() + 10000;
+        let state = await readUnityTouches();
+        while (state.count && Date.now() < deadline) {
+          await page.evaluate(() => new Promise(requestAnimationFrame));
+          state = await readUnityTouches();
+        }
+        return state;
       };
       let contactsActive = false;
       try {
@@ -1182,15 +1189,8 @@ async function main() {
           (item) => item.includes("INFERNUX_WEB_NATIVE_MODULE_READY"),
         ),
         sceneReady: diagnostics.some((item) => item.includes("INFERNUX_WEB_SCENE_READY")),
-        sceneRenderReady: diagnostics.some(
-          (item) => item.includes("INFERNUX_WEB_SCENE_RENDER_READY"),
-        ),
-        skyReady: diagnostics.some(
-          (item) => item.includes("INFERNUX_WEB_SKY_READY"),
-        ),
-        shadowReady: diagnostics.some(
-          (item) => item.includes("INFERNUX_WEB_SHADOW_READY"),
-        ),
+        submittedScreenFrame: Module.ccall("InfernuxWebGetRuntimeDiagnostic", "number",
+          ["number", "number"], [16, 0]),
         screenUiReady: diagnostics.some(
           (item) => item.includes("INFERNUX_WEB_SCREEN_UI_READY"),
         ),
@@ -1291,12 +1291,16 @@ async function main() {
     );
     const skyIsVisible = skipFrameChecks || (
       skyDifference.changedPixelRatio >= 0.2 &&
-      skyDifference.meanAbsoluteDifference >= 0.03
+      // The upper fifth is sky in this fixture. Foreground pixels must not dilute its contrast.
+      skyDifference.upperFifthMeanDifference >= 0.03
     );
     const shadowsAreVisible = skipFrameChecks || (
       shadowDifference.changedPixelRatio >= 0.0025 &&
       shadowDifference.meanAbsoluteDifference >= 0.0002
     );
+    result.sceneRenderReady = result.submittedScreenFrame > 0;
+    result.skyReady = skipFrameChecks ? null : skyIsVisible;
+    result.shadowReady = skipFrameChecks ? null : shadowsAreVisible;
     const presentationMatches = !expectedPresentation ||
       result.presentation === expectedPresentation;
     const renderSizeMatches = (
@@ -1317,7 +1321,7 @@ async function main() {
     );
     if (pageErrors.length || consoleErrors.length || result.unhandledErrors.length ||
         !result.pythonReady || !result.nativeModuleReady || !result.sceneReady ||
-        !result.sceneRenderReady || !result.skyReady || !result.shadowReady ||
+        !result.sceneRenderReady ||
         !result.screenUiReady ||
         !result.firstFrameReady || !result.runtimeActive ||
         !result.pointerBridge || !result.textBridge || !result.visualViewport ||
@@ -1351,6 +1355,20 @@ async function main() {
       result,
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
+  } catch (error) {
+    const player = await page.evaluate(() => {
+      const canvas = document.querySelector("#canvas");
+      return {
+        state: canvas?.dataset.infernuxState, size: [canvas?.width, canvas?.height],
+        publishedFrame: globalThis.Module?._InfernuxWebGetAcceptanceFrame?.(),
+        diagnostics: JSON.parse(canvas?.dataset.infernuxDiagnostics || "[]").slice(-45),
+      };
+    }).catch(() => null);
+    writeJsonAtomic(reportPath, {
+      schema: 1, status: "failed", url, error: String(error), player, pageErrors, consoleErrors,
+      elapsed_seconds: Number(process.hrtime.bigint() - startedAt) / 1e9,
+    });
+    throw error;
   } finally {
     await browser.close();
   }

@@ -52,6 +52,8 @@ _SCREEN_STATE_PATTERN = re.compile(
 _EXPECTED_TEXT = "输入测试中文🙂"
 _DEFAULT_REQUIRED_LOGS = (
     "INFERNUX_PLATFORM_FIXTURE_SCREEN_STATE",
+    "INFERNUX_PLATFORM_FIXTURE_CPU_COOK_READY value=84",
+    "INFERNUX_PLATFORM_FIXTURE_SLANG_READY target=spirv value=-12,-3,0,6,15",
     "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY "
     "value=Package resource reached UIText on every Player target.",
     "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY "
@@ -273,11 +275,15 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             "waitMilliseconds",
             str(arguments.wait_milliseconds),
             "-e",
+            "startupWaitMilliseconds",
+            str(round(arguments.startup_timeout * 1000.0)),
+            "-e",
             "resumeCycles",
             str(arguments.resume_cycles),
             arguments.runner,
             timeout=(
-                (1 + 3 * arguments.resume_cycles)
+                arguments.startup_timeout
+                + (1 + 3 * arguments.resume_cycles)
                 * arguments.wait_milliseconds / 1000.0 + 90.0
             ),
         )
@@ -389,6 +395,7 @@ def _parser() -> argparse.ArgumentParser:
             "com.infernux.acceptance.input.MultiTouchInstrumentation"
         ),
     )
+    parser.add_argument("--startup-timeout", type=float, default=90.0)
     parser.add_argument("--wait-milliseconds", type=int, default=7000)
     parser.add_argument("--resume-cycles", type=int, choices=range(11), default=0)
     parser.add_argument("--require-log", action="append", default=[])
@@ -404,6 +411,8 @@ def main() -> int:
     try:
         if not arguments.instrumentation_apk.is_file():
             raise FileNotFoundError(arguments.instrumentation_apk)
+        if arguments.startup_timeout <= 0:
+            raise ValueError("--startup-timeout must be positive")
         if arguments.wait_milliseconds <= 0:
             raise ValueError("--wait-milliseconds must be positive")
         result = run_smoke(arguments)

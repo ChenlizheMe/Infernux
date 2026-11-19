@@ -5,10 +5,10 @@
 async function verifyWebKeyboard(page) {
   const checks = [];
   await page.locator("canvas").focus();
-  const read = (scan) => page.evaluate((value) => ({
+  const read = (scan) => page.evaluate(value => Module.infernuxReadRuntime(diagnostic => ({
     native: Module.ccall("InfernuxWebGetKeyState", "number", ["number"], [value]),
-    python: Module.ccall("InfernuxWebGetRuntimeDiagnostic", "number", ["number", "number"], [0, value]),
-  }), scan);
+    python: diagnostic(0, value),
+  })), scan);
   // The letter probe must not move the fixture's Rigidbody before render checks.
   for (const [key, scan] of [
     ["b", 5], ["ShiftLeft", 225], ["ShiftRight", 229],

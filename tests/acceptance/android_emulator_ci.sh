@@ -164,6 +164,7 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
         tests/android/input_instrumentation/app/build/outputs/apk/debug/app-debug.apk \
         --serial emulator-5554 \
         --target-package "$target_package" \
+        --startup-timeout 240 \
         --wait-milliseconds 20000 \
         --report out/test-results/android-multitouch-smoke.json \
         --logcat-report out/test-results/android-multitouch-smoke.logcat.txt
@@ -186,6 +187,7 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
         tests/android/input_instrumentation/app/build/outputs/apk/debug/app-debug.apk \
         --serial emulator-5554 \
         --target-package "$target_package" \
+        --startup-timeout 240 \
         --wait-milliseconds 20000 \
         --resume-cycles 2 \
         --report out/test-results/android-release-multitouch-smoke.json \

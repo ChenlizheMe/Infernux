@@ -91,11 +91,16 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             keyboardSettingChanged = true;
             launchFromShell(automation, component);
             final long waitMilliseconds = readPositiveLong("waitMilliseconds", 7000L);
-            stage = "gameplay-ready";
-            waitForLogMarker(
+            // Start() creates gameplay objects before the first Update() has
+            // completed the fixture's cold resident Slang work. Input phases
+            // begin only after that real GPU result reaches the Player script.
+            final long startupWaitMilliseconds = readPositiveLong("startupWaitMilliseconds", 90000L);
+            stage = "startup-work-ready";
+            waitForLogMarkers(
                     automation,
+                    startupWaitMilliseconds,
                     "INFERNUX_PLATFORM_FIXTURE_GAMEPLAY_READY",
-                    waitMilliseconds);
+                    "INFERNUX_PLATFORM_FIXTURE_SLANG_READY target=spirv value=-12,-3,0,6,15");
 
             stage = "target-activity";
             targetActivity = waitForTargetActivity(10000L);
@@ -348,17 +353,30 @@ public final class MultiTouchInstrumentation extends Instrumentation {
 
     private static void waitForLogMarker(
             UiAutomation automation, String marker, long timeoutMilliseconds) throws IOException {
+        waitForLogMarkers(automation, timeoutMilliseconds, marker);
+    }
+
+    private static void waitForLogMarkers(
+            UiAutomation automation, long timeoutMilliseconds, String... markers) throws IOException {
         final long deadline = SystemClock.uptimeMillis() + timeoutMilliseconds;
         String output = "";
+        String missing = "";
         while (SystemClock.uptimeMillis() < deadline) {
             output = shell(automation, "logcat -d -v brief -s python.stdout:I");
-            if (output.contains(marker)) {
+            missing = "";
+            for (String marker : markers) {
+                if (!output.contains(marker)) {
+                    missing = marker;
+                    break;
+                }
+            }
+            if (missing.isEmpty()) {
                 return;
             }
             SystemClock.sleep(250L);
         }
         throw new IllegalStateException(
-                "Android Player did not publish " + marker + "; lastLog=" + output);
+                "Android Player did not publish " + missing + "; lastLog=" + output);
     }
 
     private static String formatInsets(Insets insets) {
