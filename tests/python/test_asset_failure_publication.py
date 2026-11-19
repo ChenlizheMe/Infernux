@@ -357,6 +357,10 @@ class Dependency(shader.vert):
         material_guids.append(result.guid)
     try:
         shader.write_text(valid_shader.replace("vec3(0.0)", "vec3(0.0, 0.0, 0.0, 0.0)"), encoding="utf-8")
+        # Shader sources reload as a grouped publication; retiring the resident
+        # generation first is the 050 contract for a direct source reimport.
+        if registry.is_loaded(shader_guid):
+            registry.invalidate_asset(shader_guid)
         assert database.reimport_asset(str(shader))
         ticket = registry.begin_load_shader_by_guid(shader_guid)
         ticket.wait()
