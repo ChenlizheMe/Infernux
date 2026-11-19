@@ -812,9 +812,9 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
     InxPbrLightResponse response = inx_secondary_light_response(surface, surface.normal_ws, outgoing);
     uint strata = min(count, 4u);
     float3 radiance = float3(0.0);
-    float total = 0.0;
-    float3 selected_color = float3(0.0);
-    InxTransportLight selected = (InxTransportLight)0;
+    float3 total = float3(0.0);
+    float3 orientation = float3(0.0);
+    uint3 selected = uint3(ray_invalid_index);
     for (uint i = 0u; i < strata; ++i)
     {
         // Each stratum estimates its own sum. Only the shadow-dependent part needs a ray.
@@ -832,24 +832,41 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
         float strength = metadata.z != 0u ? light.shadow_strength : 0.0;
         radiance += (1.0 - strength) * contribution;
         float3 shadowed = strength * contribution;
-        float3 magnitude = abs(shadowed);
-        float weight = max(magnitude.x, max(magnitude.y, magnitude.z));
+        float3 weight = abs(shadowed);
         total += weight;
+        // A shared random number correlates RGB without changing each channel's selection PDF.
         float replace_u = float(inx_ray_sample_hash(stream ^ 0xc2b2ae35u) >> 8u) * (1.0 / 16777216.0);
-        if (weight > replace_u * total)
+        uint key = (index << 2u) | corner;
+        for (uint channel = 0u; channel < 3u; ++channel)
         {
-            selected = light;
-            selected_color = shadowed / weight;
+            if (weight[channel] > replace_u * total[channel])
+            {
+                selected[channel] = key;
+                orientation[channel] = sign(shadowed[channel]);
+            }
         }
     }
-    if (total > 0.0)
+    float3 origin = inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws);
+    InxRayLitHitPolicy material = {0.0};
+    InxRayShadowHitPolicy caster = {records, material};
+    // Channels that selected the same light endpoint share one visibility query.
+    for (uint channel = 0u; channel < 3u; ++channel)
     {
-        float3 origin = inx_ray_origin(attributes.position_ws, geometric, attributes.position_error_ws);
-        TraceRay shadow_ray = inx_ray_light_visibility(origin, selected);
-        InxRayLitHitPolicy material = {0.0};
-        InxRayShadowHitPolicy caster = {records, material};
-        if (shadow_ray.maximum <= 0.0 || trace_visibility(page, shadow_ray, selected.layer_mask, caster))
-            radiance += total * selected_color;
+        uint key = selected[channel];
+        if (key == ray_invalid_index)
+            continue;
+        InxTransportLight light = inx_transport_light(key >> 2u, attributes.position_ws, key & 3u);
+        TraceRay shadow_ray = inx_ray_light_visibility(origin, light);
+        bool visible = shadow_ray.maximum <= 0.0 || trace_visibility(page, shadow_ray, light.layer_mask, caster);
+        for (uint match = channel; match < 3u; ++match)
+        {
+            if (selected[match] == key)
+            {
+                if (visible)
+                    radiance[match] += total[match] * orientation[match];
+                selected[match] = ray_invalid_index;
+            }
+        }
     }
     return radiance;
 }
