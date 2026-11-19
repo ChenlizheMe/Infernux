@@ -586,14 +586,31 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         const uint32_t limit = ChunkLimit(op.entry);
         if (!count || count > limit || first >= op.length || count > op.length - first)
             throw std::logic_error("GPU constraints emitted an invalid bounded chunk");
-        // Keep partial uniform acquisition across managed pressure. No cursor
-        // or phase advances on a null-packet continuation.
-        if (!Endpoint(uniforms.parameters, sizeof(ConstraintParams)) ||
-            ((EntryPorts[op.entry] & K) && !Endpoint(uniforms.work, sizeof(StageWork))))
+        const bool usesWork = (EntryPorts[op.entry] & K) != 0u;
+        auto parameterBytes = Bytes(op.config);
+        auto workBytes = usesWork ? Bytes(StageWork{{first, count, 0u, 0u}}) : std::vector<uint8_t>{};
+        // Uniform inputs are immutable within this packet. Adjacent operators
+        // often use the same configuration or range, so share their one upload.
+        const auto reuse = [&](const auto &bytes) -> std::shared_ptr<rhi::ComputeBuffer> {
+            const auto found = std::find_if(uploads.begin(), uploads.end(),
+                                            [&](const auto &upload) { return upload.data == bytes; });
+            return found == uploads.end() ? nullptr : found->buffer;
+        };
+        auto parameters = reuse(parameterBytes);
+        auto work = usesWork ? reuse(workBytes) : nullptr;
+        // Only new, unpublished allocations survive pressure. A packet-local
+        // hit must not become the next packet's writable pending endpoint.
+        if ((!parameters && !Endpoint(uniforms.parameters, sizeof(ConstraintParams))) ||
+            (usesWork && !work && !Endpoint(uniforms.work, sizeof(StageWork))))
             return false;
-        uploads.push_back({uniforms.parameters, 0u, Bytes(op.config)});
-        if (EntryPorts[op.entry] & K)
-            uploads.push_back({uniforms.work, 0u, Bytes(StageWork{{first, count, 0u, 0u}})});
+        if (!parameters) {
+            parameters = uniforms.parameters;
+            uploads.push_back({parameters, 0u, std::move(parameterBytes)});
+        }
+        if (usesWork && !work) {
+            work = uniforms.work;
+            uploads.push_back({work, 0u, std::move(workBytes)});
+        }
         rhi::ComputeDispatchDesc dispatch;
         const auto &program = implementation->programs[op.entry];
         dispatch.kernel = program.kernel;
@@ -602,8 +619,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             throw std::length_error("GPU constraint chunk exceeds dispatch dimensions");
         rhi::ComputeDispatchProof proof;
         for (const auto port : program.ports) {
-            const auto &buffer = port == Params              ? uniforms.parameters
-                                 : port == Work              ? uniforms.work
+            const auto &buffer = port == Params              ? parameters
+                                 : port == Work              ? work
                                  : port == Schedule          ? schedule
                                  : port == Parents           ? parents
                                  : port == RootVotes         ? rootVotes
