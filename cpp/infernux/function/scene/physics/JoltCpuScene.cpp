@@ -19,27 +19,9 @@
 namespace infernux
 {
 JoltCpuExecution::JoltCpuExecution(const EngineConfig &config)
-    : m_scratchLimit(config.physicsTempAllocatorSize), m_maxJobs(config.physicsMaxJobs), m_scratch(m_scratchLimit),
-      m_inlineJobs(m_maxJobs),
+    : m_scratch(config.physicsTempAllocatorSize), m_inlineJobs(config.physicsMaxJobs),
       m_workerJobs(config.physicsMaxJobs, config.physicsMaxBarriers, config.physicsMaxConcurrency)
 {
-}
-
-std::unique_ptr<JoltCpuExecution::CoupledWorkspace> JoltCpuExecution::AcquireCoupledWorkspace()
-{
-    for (auto &workspace : m_coupledWorkspaces)
-        if (workspace)
-            return std::move(workspace);
-    return std::make_unique<CoupledWorkspace>(m_scratchLimit, m_maxJobs);
-}
-
-void JoltCpuExecution::ReleaseCoupledWorkspace(std::unique_ptr<CoupledWorkspace> returned) noexcept
-{
-    for (auto &workspace : m_coupledWorkspaces)
-        if (!workspace) {
-            workspace = std::move(returned);
-            return;
-        }
 }
 
 JPH::EPhysicsUpdateError JoltCpuExecution::Step(JPH::PhysicsSystem &system, float deltaTime, int collisionSteps)

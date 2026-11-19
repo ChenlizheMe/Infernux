@@ -45,27 +45,9 @@ class JoltCpuExecution final
     JPH::EPhysicsUpdateError Step(JPH::PhysicsSystem &system, float deltaTime, int collisionSteps);
 
   private:
-    friend class JoltCpuContactPublication;
-
-    struct CoupledWorkspace
-    {
-        CoupledWorkspace(size_t scratchLimit, uint32_t maxJobs) : scratch(scratchLimit), jobs(maxJobs)
-        {
-        }
-        JoltCpuTempAllocator scratch;
-        JPH::JobSystemSingleThreaded jobs;
-    };
-
-    std::unique_ptr<CoupledWorkspace> AcquireCoupledWorkspace();
-    void ReleaseCoupledWorkspace(std::unique_ptr<CoupledWorkspace>) noexcept;
-
-    size_t m_scratchLimit;
-    uint32_t m_maxJobs;
     JoltCpuTempAllocator m_scratch;
     JPH::JobSystemSingleThreaded m_inlineJobs;
     InfernuxJoltJobSystemAdapter m_workerJobs;
-    // The GPU arena admits up to two concurrent numerical writers.
-    std::array<std::unique_ptr<CoupledWorkspace>, 2> m_coupledWorkspaces;
 };
 
 /// Native state owned by one logical World. Public identities are supplied by

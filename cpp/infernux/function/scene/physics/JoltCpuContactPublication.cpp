@@ -624,36 +624,8 @@ struct JoltCpuContactPublication::Capture final : JPH::ContactListener
     bool m_streamTriggers = false, m_observeTriggers = false;
 };
 
-struct JoltCpuContactPublication::CoupledStep
-{
-    CoupledStep(JoltCpuExecution &shared, JoltCpuScene &owner, float fixedDelta, uint32_t count,
-                ContactStreamIdentity stepIdentity)
-        : execution(shared), scene(owner), time(fixedDelta), substeps(count), identity(stepIdentity)
-    {
-    }
-
-    ~CoupledStep()
-    {
-        context.reset();
-        if (workspace)
-            execution.ReleaseCoupledWorkspace(std::move(workspace));
-    }
-
-    JoltCpuExecution &execution;
-    JoltCpuScene &scene;
-    float time;
-    uint32_t substeps;
-    ContactStreamIdentity identity;
-    std::unique_ptr<JoltCpuExecution::CoupledWorkspace> workspace;
-    std::optional<JPH::PhysicsUpdateContext> context;
-    std::optional<ScopedListener> listener;
-};
-
 JoltCpuContactPublication::JoltCpuContactPublication() = default;
-JoltCpuContactPublication::~JoltCpuContactPublication()
-{
-    CancelCoupled();
-}
+JoltCpuContactPublication::~JoltCpuContactPublication() = default;
 
 void JoltCpuContactPublication::PrepareObservation(JoltCpuScene &scene, uint32_t substeps,
                                                    ContactStreamIdentity identity, Reports::Policy policy,
@@ -698,186 +670,6 @@ JPH::EPhysicsUpdateError JoltCpuContactPublication::Step(JoltCpuExecution &execu
     return result;
 }
 
-void JoltCpuContactPublication::ConfigureCoupledFixed(JoltCpuExecution &execution, JoltCpuScene &scene, float deltaTime,
-                                                      uint32_t substeps, ContactStreamIdentity identity,
-                                                      Reports::Policy policy,
-                                                      std::function<void(uint32_t)> afterSubstep)
-{
-    PrepareObservation(scene, substeps, identity, std::move(policy), std::move(afterSubstep));
-    m_coupled = std::make_unique<CoupledStep>(execution, scene, deltaTime, substeps, identity);
-    if (m_observing)
-        m_coupled->listener.emplace(scene.System(), *m_capture);
-}
-
-void JoltCpuContactPublication::BeginCoupledSubstep(uint32_t substep, const std::vector<JPH::BodyID> &endpoints,
-                                                    const std::vector<JPH::BodyID> &sleepEndpoints,
-                                                    const std::vector<JPH::BodyID> &wakeEndpoints)
-{
-    auto &fixed = *m_coupled;
-    auto &system = fixed.scene.System();
-    if (!wakeEndpoints.empty()) {
-        JPH_IF_ENABLE_ASSERTS(JPH::BodyManager::GrantActiveBodiesAccess grant_active(true, false);)
-        auto &bodies = substep == 0 ? system.GetBodyInterface() : system.GetBodyInterfaceNoLock();
-        bodies.ActivateBodies(wakeEndpoints.data(), static_cast<int>(wakeEndpoints.size()));
-    }
-    bool admitted = false;
-    if (substep == 0) {
-        fixed.workspace = fixed.execution.AcquireCoupledWorkspace();
-        auto &context = fixed.context.emplace(fixed.workspace->scratch);
-        admitted = system.BeginCoupledUpdate(fixed.time, static_cast<int>(fixed.substeps), endpoints.data(),
-                                             static_cast<uint32_t>(endpoints.size()), context, fixed.workspace->jobs);
-    } else {
-        admitted =
-            system.BeginNextCoupledSubstep(*fixed.context, endpoints.data(), static_cast<uint32_t>(endpoints.size()));
-    }
-    if (!admitted)
-        throw std::logic_error("CPU coupling endpoints differ from the admitted Fixed");
-    if (!sleepEndpoints.empty())
-        system.DeferCoupledSleep(*fixed.context, sleepEndpoints.data(), static_cast<uint32_t>(sleepEndpoints.size()));
-}
-
-void JoltCpuContactPublication::ApplyCoupledVelocityImpulses(
-    const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses)
-{
-    auto &fixed = *m_coupled;
-    fixed.scene.System().ApplyCoupledVelocityImpulses(*fixed.context, impulses.data(),
-                                                      static_cast<uint32_t>(impulses.size()));
-}
-
-bool JoltCpuContactPublication::AdvanceCoupledVelocity(bool finishWhenIdle)
-{
-    auto &fixed = *m_coupled;
-    const auto result = fixed.scene.System().AdvanceCoupledVelocityUpdate(*fixed.context, finishWhenIdle);
-    return AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Velocity);
-}
-
-void JoltCpuContactPublication::FinishCoupledVelocity()
-{
-    while (!AdvanceCoupledVelocity()) {
-    }
-}
-
-void JoltCpuContactPublication::PrepareCoupledIntegration(bool retainMotion)
-{
-    auto &fixed = *m_coupled;
-    fixed.scene.System().PrepareCoupledIntegrationUpdate(*fixed.context, retainMotion);
-}
-
-std::optional<float> JoltCpuContactPublication::CoupledImpactTime() const
-{
-    const auto &fixed = *m_coupled;
-    return fixed.scene.System().GetCoupledImpactTime(*fixed.context);
-}
-
-bool JoltCpuContactPublication::HasCoupledImpact(JPH::BodyID body) const
-{
-    const auto &fixed = *m_coupled;
-    return fixed.scene.System().HasCoupledImpact(*fixed.context, body);
-}
-
-std::optional<uint32_t> JoltCpuContactPublication::GetSweepVelocityIsland(JPH::BodyID body)
-{
-    auto &fixed = *m_coupled;
-    return fixed.scene.System().GetSweepVelocityIsland(*fixed.context, body);
-}
-
-JPH::Vec3 JoltCpuContactPublication::CoupledDisplacement(JPH::BodyID body) const
-{
-    const auto &fixed = *m_coupled;
-    return fixed.scene.System().GetCoupledDisplacement(*fixed.context, body);
-}
-
-void JoltCpuContactPublication::AdvanceCoupledSweep(float fraction, float remaining,
-                                                    const std::vector<JPH::PhysicsSystem::CoupledBodyImpulse> &impulses)
-{
-    auto &fixed = *m_coupled;
-    fixed.scene.System().AdvanceCoupledSweep(*fixed.context, fraction, remaining, impulses.data(),
-                                             static_cast<uint32_t>(impulses.size()));
-}
-
-void JoltCpuContactPublication::AdvanceCoupledIntegration()
-{
-    auto &fixed = *m_coupled;
-    const auto result = fixed.scene.System().AdvanceCoupledIntegrationUpdate(*fixed.context);
-    AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Continuous);
-}
-
-bool JoltCpuContactPublication::AdvanceCoupledPosition(
-    const std::vector<JPH::PhysicsSystem::CoupledBodyCorrection> &corrections, uint32_t rounds)
-{
-    auto &fixed = *m_coupled;
-    const auto result = fixed.scene.System().AdvanceCoupledPositionUpdate(
-        *fixed.context, corrections.data(), static_cast<uint32_t>(corrections.size()), rounds);
-    return AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Position);
-}
-
-bool JoltCpuContactPublication::AcceptCoupledRound(std::optional<JPH::EPhysicsUpdateError> result,
-                                                   JPH::PhysicsUpdateContext::ECoupledStage phase)
-{
-    auto &fixed = *m_coupled;
-    if (!result)
-        return fixed.context->mCoupledStage != phase;
-    fixed.listener.reset();
-    if (*result != JPH::EPhysicsUpdateError::None)
-        throw std::runtime_error("CPU physics exceeded its configured native capacity");
-    FinishObservation(fixed.scene, fixed.substeps, fixed.identity);
-    m_coupled.reset();
-    return true;
-}
-
-JPH::PhysicsUpdateContext::CoupledFreeVelocity JoltCpuContactPublication::CoupledFreeVelocity(JPH::BodyID body) const
-{
-    const auto &context = *m_coupled->context;
-    const auto &bodies = context.mCoupledBodies;
-    const auto found = std::lower_bound(bodies.begin(), bodies.end(), body);
-    return context.mCoupledFreeVelocities[found - bodies.begin()];
-}
-
-bool JoltCpuContactPublication::CoupledHasLocalVelocityRows() const noexcept
-{
-    return m_coupled->context->mCoupledHasLocalVelocityRows;
-}
-
-JPH::PhysicsSystem::CoupledSleepIsland JoltCpuContactPublication::CoupledSleepIsland(JPH::BodyID endpoint) const
-{
-    const auto &fixed = *m_coupled;
-    return fixed.scene.System().GetCoupledSleepIsland(*fixed.context, endpoint);
-}
-
-void JoltCpuContactPublication::FinishCoupledSleep(const std::vector<uint32_t> &sleepingIslands)
-{
-    auto &fixed = *m_coupled;
-    const auto result = fixed.scene.System().FinishCoupledSleep(*fixed.context, sleepingIslands.data(),
-                                                                static_cast<uint32_t>(sleepingIslands.size()));
-    AcceptCoupledRound(result, JPH::PhysicsUpdateContext::ECoupledStage::Sleep);
-}
-
-void JoltCpuContactPublication::CancelCoupled() noexcept
-{
-    if (!m_coupled)
-        return;
-    if (m_coupled->context) {
-        auto &context = *m_coupled->context;
-        auto &system = m_coupled->scene.System();
-        using Stage = JPH::PhysicsUpdateContext::ECoupledStage;
-        while (context.IsCoupledUpdate()) {
-            if (context.mCoupledStage == Stage::NextSubstep)
-                system.BeginNextCoupledSubstep(context, nullptr, 0);
-            if (context.mCoupledStage == Stage::Position)
-                system.AdvanceCoupledPositionUpdate(context);
-            else if (context.mCoupledStage == Stage::Integration)
-                system.PrepareCoupledIntegrationUpdate(context);
-            else if (context.mCoupledStage == Stage::Continuous)
-                system.AdvanceCoupledIntegrationUpdate(context);
-            else if (context.mCoupledStage == Stage::Sleep)
-                system.FinishCoupledSleep(context);
-            else
-                system.AdvanceCoupledVelocityUpdate(context);
-        }
-    }
-    m_coupled.reset();
-}
-
 void JoltCpuContactPublication::ValidateCompleted(ContactStreamIdentity identity, uint32_t substeps) const
 {
     if (!m_ready || m_ready->worldId != identity.worldId || m_ready->simulationEpoch != identity.simulationEpoch ||
@@ -920,7 +712,6 @@ void JoltCpuContactPublication::Publish(Reports &publication)
 
 void JoltCpuContactPublication::CancelPending() noexcept
 {
-    CancelCoupled();
     m_ready.reset();
     if (m_capture)
         m_capture->DiscardFrames();
@@ -928,7 +719,6 @@ void JoltCpuContactPublication::CancelPending() noexcept
 
 void JoltCpuContactPublication::Close() noexcept
 {
-    CancelCoupled();
     m_ready.reset();
     m_published.reset();
     m_capture.reset();
