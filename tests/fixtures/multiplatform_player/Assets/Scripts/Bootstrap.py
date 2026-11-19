@@ -56,8 +56,11 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._release_capture = None
         self._slang_probe = None
         self._slang_result = None
+        self._slang_started_ns = monotonic_ns()
+        self._first_fixed_update = True
 
     def start(self):
+        self._slang_phase("start")
         inx.jit.warmup(cpu_jit_probe, 7)
         cpu_result = cpu_jit_probe(7)
         if cpu_result != 84:
@@ -172,6 +175,10 @@ class PlatformFixtureBootstrap(inx.InxComponent):
 
     def fixed_update(self, fixed_delta_time: float):
         del fixed_delta_time
+        first_update = self._first_fixed_update
+        if first_update:
+            self._first_fixed_update = False
+            self._slang_phase("fixed_update_begin")
         if self._body is None:
             raise RuntimeError("Multiplatform fixture Rigidbody is unavailable")
         horizontal, vertical = self._actions["Move"].read_value()
@@ -188,6 +195,8 @@ class PlatformFixtureBootstrap(inx.InxComponent):
                     float(vertical) * self.MOVE_FORCE,
                 )
             )
+        if first_update:
+            self._slang_phase("fixed_update_end")
 
     def update(self, delta_time: float):
         del delta_time
@@ -207,6 +216,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         if self._slang_probe is None:
             from infernux._compiler.gpu_artifact import _read_artifact
 
+            self._slang_phase("declare")
             # The link-time value is chosen after the cooked Player starts.
             bias = monotonic_ns() & 0x3fff_ffff
             kernel = inx.compute.kernel(
@@ -219,19 +229,26 @@ class PlatformFixtureBootstrap(inx.InxComponent):
             arguments = (source, output)
             artifacts = Path(inx.Application.data_path()) / "Library/Artifacts/Compute"
             before = set(artifacts.glob("*.inxgpu"))
+            self._slang_phase("prepare_begin")
             inx.compute.prepare(kernel, arguments)
+            self._slang_phase("prepare_end")
+            self._slang_phase("launch_begin")
             inx.compute.launch(kernel, arguments)
+            self._slang_phase("launch_end")
             artifact_path, = set(artifacts.glob("*.inxgpu")) - before
             _, compiled = _read_artifact(artifact_path)
             expected_target = "wgsl" if sys.platform == "emscripten" else "spirv"
             if compiled.target != expected_target or not compiled.native_dispatch:
                 raise RuntimeError(f"Platform Slang produced an unexpected artifact: {compiled.target}")
+            self._slang_phase("readback_begin")
             self._slang_probe = (output.get_data_async(), arguments, bias, compiled.target, compiled.identity)
+            self._slang_phase("readback_pending")
             return
 
         readback, buffers, bias, target, artifact = self._slang_probe
         if not readback.done:
             return
+        self._slang_phase("receipt")
         with readback.get_data() as result:
             values = [value - bias for value in result.numpy().tolist()]
         ticket = readback.source_write_submission
@@ -246,6 +263,10 @@ class PlatformFixtureBootstrap(inx.InxComponent):
             f"INFERNUX_PLATFORM_FIXTURE_SLANG_READY target={target} value={','.join(map(str, values))} "
             f"cold_artifact={artifact} source_write={ticket}"
         )
+
+    def _slang_phase(self, phase):
+        elapsed_ms = (monotonic_ns() - self._slang_started_ns) / 1_000_000
+        inx.Debug.log(f"INFERNUX_PLATFORM_FIXTURE_SLANG_PHASE phase={phase} elapsed_ms={elapsed_ms:.3f}")
 
     def on_destroy(self):
         if self._slang_probe is not None:

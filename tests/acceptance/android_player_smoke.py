@@ -649,6 +649,7 @@ def run_smoke(arguments: argparse.Namespace) -> SmokeResult:
     device = select_device(
         parse_devices(controller.run("devices", "-l")), arguments.serial
     )
+    arguments.serial = device.serial
     adb = Adb(arguments.adb, device.serial)
     abi = adb.run("shell", "getprop", "ro.product.cpu.abi").strip()
     packaged_abis = apk_abis(arguments.apk)
@@ -969,6 +970,43 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _capture_player_failure(arguments: argparse.Namespace) -> str | None:
+    """Preserve the live process before the smoke runner's final force-stop."""
+    if arguments.report is None or not arguments.serial:
+        return None
+    destination = arguments.report.with_name(f"{arguments.report.stem}-failure")
+    destination.mkdir(parents=True, exist_ok=True)
+    adb = Adb(arguments.adb, arguments.serial)
+
+    def capture(name: str, *command: str, timeout: float = 5.0) -> str:
+        try:
+            output = adb.run(*command, check=False, timeout=timeout)
+        except (OSError, subprocess.SubprocessError) as error:
+            output = f"Evidence capture failed: {error}"
+        (destination / f"{name}.txt").write_text(output + "\n", encoding="utf-8")
+        return output
+
+    pid_output = capture("pid", "shell", "pidof", arguments.package)
+    pid = player_pid(pid_output).split()
+    if pid:
+        process = pid[0]
+        capture("threads", "shell", "top", "-b", "-n", "1", "-H", "-p", process)
+        capture("process", "shell", "cat", f"/proc/{process}/status")
+        capture("player-logcat", "logcat", "-d", "--pid", process, "-v", "threadtime")
+        if arguments.serial.startswith("emulator-"):
+            # AOSP userdebug permits shell's su without restarting ADB. Keep
+            # the process and every other connected device untouched.
+            capture("native-backtrace", "shell", "su", "0", "debuggerd", "-b", process, timeout=15.0)
+        logs = capture("private-log-files", "shell", "run-as", arguments.package,
+                       "find", "files", "-type", "f", "-name", "*.log")
+        for index, name in enumerate(logs.splitlines()[:8]):
+            if name.startswith("files/") and name.endswith(".log"):
+                capture(f"private-log-{index}", "shell", "run-as", arguments.package, "cat", name)
+    capture("activity", "shell", "dumpsys", "activity", "activities")
+    capture("window", "shell", "dumpsys", "window", "windows")
+    return str(destination)
+
+
 def _stop_player_best_effort(arguments: argparse.Namespace, serial: str | None) -> None:
     """Stop the accepted Player without hiding the original acceptance result."""
 
@@ -1034,6 +1072,13 @@ def main() -> int:
             "serial": arguments.serial or "",
             "error": str(error),
         }
+        if run_started:
+            try:
+                evidence = _capture_player_failure(arguments)
+                if evidence is not None:
+                    payload["failure_evidence"] = evidence
+            except OSError as capture_error:
+                payload["failure_evidence_error"] = str(capture_error)
         _write_report(arguments.report, payload)
         print(str(error), file=sys.stderr)
         return 1

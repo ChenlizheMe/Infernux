@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -243,3 +244,58 @@ def test_signature_mismatch_never_uninstalls_the_existing_game(tmp_path, monkeyp
         module.run_smoke(arguments)
     assert len(installs) == 1
     assert installs[0][1] == {"approve_oem_prompt": True}
+
+
+def test_runtime_failure_is_captured_before_the_live_player_is_stopped(tmp_path, monkeypatch):
+    module = _module()
+    apk = tmp_path / "player.apk"
+    _write_player_apk(apk, "com.infernux.fixture/com.infernux.bootstrap.InfernuxActivity")
+    report = tmp_path / "report.json"
+    events = []
+
+    def fail(_arguments):
+        raise RuntimeError("resident Slang receipt timed out")
+
+    monkeypatch.setattr(module, "run_smoke", fail)
+    monkeypatch.setattr(module, "_capture_player_failure",
+                        lambda _arguments: events.append("capture") or "live-evidence")
+    monkeypatch.setattr(module, "_stop_player_best_effort",
+                        lambda *_arguments: events.append("stop"))
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), str(apk), "--serial", "emulator-5580",
+                                      "--report", str(report)])
+
+    assert module.main() == 1
+    assert events == ["capture", "stop"]
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["error"] == "resident Slang receipt timed out"
+    assert payload["failure_evidence"] == "live-evidence"
+
+
+def test_live_evidence_keeps_thread_capture_even_when_backtrace_times_out(tmp_path, monkeypatch):
+    module = _module()
+    commands = []
+
+    class FakeAdb:
+        def __init__(self, _executable, serial):
+            assert serial == "emulator-5580"
+
+        def run(self, *arguments, **options):
+            assert options["check"] is False
+            assert options["timeout"] <= 15.0
+            commands.append(arguments)
+            if arguments == ("shell", "pidof", "com.infernux.fixture"):
+                return "4321"
+            if "debuggerd" in arguments:
+                raise subprocess.TimeoutExpired(arguments, options["timeout"])
+            return "SDLThread resident-compile"
+
+    monkeypatch.setattr(module, "Adb", FakeAdb)
+    arguments = module._parser().parse_args([str(tmp_path / "player.apk"),
+        "--serial", "emulator-5580", "--package", "com.infernux.fixture",
+        "--report", str(tmp_path / "smoke.json")])
+    destination = Path(module._capture_player_failure(arguments))
+
+    assert (destination / "pid.txt").read_text(encoding="utf-8").strip() == "4321"
+    assert "SDLThread" in (destination / "threads.txt").read_text(encoding="utf-8")
+    assert "timed out" in (destination / "native-backtrace.txt").read_text(encoding="utf-8")
+    assert not any("force-stop" in command for command in commands)
