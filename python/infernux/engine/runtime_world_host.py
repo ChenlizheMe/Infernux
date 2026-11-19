@@ -27,7 +27,6 @@ class RuntimeWorldHost(WorkRuntime):
             runtime_updates=_author_update_callbacks,
         )
         self._runtime_scene_manager = None
-        self._last_native_transform_serial = None
         from infernux.runtime_services import _external_update_snapshot
         self._clock_callbacks = _external_update_snapshot(self)
         self._clock_delta = 0.0
@@ -69,9 +68,6 @@ class RuntimeWorldHost(WorkRuntime):
                 from infernux.runtime_services import _invalidate_external_update_snapshot
                 _invalidate_external_update_snapshot(engine)
         scene_manager._set_runtime_world_retirement_callbacks(_begin_retire_world, _retire_world)
-        self._last_native_transform_serial = int(
-            scene_manager.get_global_transform_serial()
-        )
         def _begin_native_frame():
             engine = engine_ref()
             if engine is None:
@@ -256,21 +252,11 @@ class RuntimeWorldHost(WorkRuntime):
                 _dispatch_updates(callbacks, self._clock_delta, self._clock_delta, gameplay_phase=False)
             return changes
         scheduler = self._runtime_scheduler
-        if barrier == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
-            scene_manager = getattr(self, "_runtime_scene_manager", None)
-            getter = getattr(scene_manager, "get_global_transform_serial", None)
-            if callable(getter):
-                current_serial = int(getter())
-                previous_serial = getattr(
-                    self,
-                    "_last_native_transform_serial",
-                    None,
-                )
-                self._last_native_transform_serial = current_serial
-                if previous_serial is not None and current_serial != previous_serial:
-                    journal = scheduler.change_journal
-                    journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, broad=True)
-                    journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, broad=True)
+        if (barrier == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION
+                and self._runtime_scene_manager._take_world_transform_publication()):
+            journal = scheduler.change_journal
+            journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, broad=True)
+            journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, broad=True)
         changes = scheduler.consume_native_barrier(barrier)
         if barrier == RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
             if changes is not None:

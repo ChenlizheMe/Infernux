@@ -335,6 +335,7 @@ class RuntimeWorld final
     std::shared_ptr<Random::Storage> random = std::make_shared<Random::Storage>();
     size_t executionScopes = 0;
     bool retirementScenesComplete = false;
+    bool transformPublicationPending = false;
     std::unique_ptr<PhysicsDomain> physics;
     SimulationState simulation;
     LifecycleState lifecycle;

@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 namespace py = pybind11;
@@ -682,6 +683,10 @@ void BindSceneManager(py::module_ &m)
              "Number of CPU body poses processed for presentation interpolation in the most recent host frame")
         .def("get_global_transform_serial", &SceneManager::GetGlobalTransformSerial,
              "Get the monotonic native Transform storage revision")
+        .def("_take_world_transform_publication",
+             [](SceneManager &manager) {
+                 return std::exchange(manager.CurrentWorld().transformPublicationPending, false);
+             })
         .def(
             "get_last_frame_profile",
             [](const SceneManager &manager) {

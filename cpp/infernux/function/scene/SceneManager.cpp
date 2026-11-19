@@ -161,9 +161,11 @@ SceneManager::SceneManager() : m_authoringWorld(std::make_unique<RuntimeWorld>()
             PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject, physicsSource, authoredSource,
                                                             rotationAuthored);
         Scene *scene = gameObject->GetScene();
-        if (!scene || !scene->GetRuntimeWorld())
+        auto *world = scene ? scene->GetRuntimeWorld() : nullptr;
+        if (!world)
             return;
-        const WorldExecutionScope worldScope(scene->GetRuntimeWorld());
+        const WorldExecutionScope worldScope(world);
+        world->transformPublicationPending = true;
         if (authoredSource)
             RequestPausedAuthorPresentation();
         if (const auto bone = CurrentWorld().render.skeletonBoneOwners.find(transform);
@@ -652,9 +654,11 @@ uint64_t SceneManager::GetGlobalTransformSerial() const
 void SceneManager::PublishPhysicsTransformsToRenderer() noexcept
 {
     PhysicsECSStore::Instance().NotifyCollisionSceneChanged();
-    ++CurrentWorld().render.renderTransformRevision;
-    if (CurrentWorld().render.renderTransformRevision == 0)
-        CurrentWorld().render.renderTransformRevision = 1;
+    auto &world = CurrentWorld();
+    world.transformPublicationPending = true;
+    ++world.render.renderTransformRevision;
+    if (world.render.renderTransformRevision == 0)
+        world.render.renderTransformRevision = 1;
 }
 
 void SceneManager::PublishPhysicsStateToRenderer()
