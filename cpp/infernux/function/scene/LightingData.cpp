@@ -20,6 +20,67 @@
 namespace infernux
 {
 
+std::shared_ptr<const LightSamplingDistribution>
+BuildLightSamplingDistribution(const std::vector<RenderLightSource> &lights)
+{
+    const auto count = static_cast<uint32_t>(lights.size());
+    // Every stratum then contains one light; its exact uniform choice needs no table.
+    if (count <= 4u)
+        return {};
+    auto result = std::make_shared<LightSamplingDistribution>();
+    const uint32_t strata = std::min(count, 4u);
+    result->strata.resize(strata);
+    result->cumulative.resize(count);
+    std::vector<const RenderLightSource *> ordered;
+    ordered.reserve(count);
+    for (const auto &light : lights)
+        if (light.type == static_cast<uint32_t>(CanonicalLightType::Directional))
+            ordered.push_back(&light);
+    for (const auto &light : lights)
+        if (light.type != static_cast<uint32_t>(CanonicalLightType::Directional))
+            ordered.push_back(&light);
+    for (uint32_t s = 0; s < strata; ++s) {
+        const uint32_t begin = s * count / strata, end = (s + 1u) * count / strata;
+        auto &group = result->strata[s];
+        group.lower = glm::vec3(std::numeric_limits<float>::max());
+        group.upper = -group.lower;
+        group.dominant = begin;
+        float high = 0.0f, low = std::numeric_limits<float>::max();
+        double total = 0.0;
+        for (uint32_t i = begin; i < end; ++i) {
+            const auto &light = *ordered[i];
+            const auto color = glm::abs(light.linearColor);
+            const float power = (light.influenceDomains & CanonicalLightAffectsGeometry) != 0u
+                                    ? std::max({color.x, color.y, color.z}) * std::max(light.intensity, 0.0f)
+                                    : 0.0f;
+            if (power > high) {
+                high = power;
+                group.dominant = i;
+            }
+            low = std::min(low, power);
+            total += power;
+            result->cumulative[i] = static_cast<float>(total);
+            if (light.type == static_cast<uint32_t>(CanonicalLightType::Directional)) {
+                group.flags |= 1u;
+                continue;
+            }
+            glm::vec3 extent(0.0f);
+            if (light.type == static_cast<uint32_t>(CanonicalLightType::Area))
+                extent = 0.5f * (glm::abs(glm::normalize(light.right) * light.areaSize.x) +
+                                 glm::abs(glm::normalize(light.up) * light.areaSize.y));
+            group.lower = glm::min(group.lower, light.position - extent);
+            group.upper = glm::max(group.upper, light.position + extent);
+        }
+        if (high == low)
+            group.flags |= 2u;
+        for (uint32_t i = begin; i < end; ++i)
+            result->cumulative[i] = total > 0.0 ? static_cast<float>(result->cumulative[i] / total)
+                                                : float(i - begin + 1u) / float(end - begin);
+        result->cumulative[end - 1u] = 1.0f;
+    }
+    return result;
+}
+
 std::vector<RenderLightSource> CaptureRenderLights()
 {
     std::vector<RenderLightSource> lights;
@@ -59,6 +120,7 @@ void SceneLightCollector::CollectLights(Scene *scene, const glm::vec3 &cameraPos
     RenderLightingSource source;
     if (scene)
         source.lights = CaptureRenderLights();
+    source.sampling = BuildLightSamplingDistribution(source.lights);
     Clear();
     source.ambientSky = m_lightingUBO.ambientSkyColor;
     source.ambientEquator = m_lightingUBO.ambientEquatorColor;
@@ -69,6 +131,7 @@ void SceneLightCollector::CollectLights(Scene *scene, const glm::vec3 &cameraPos
 void SceneLightCollector::CollectLights(const RenderLightingSource &source, const glm::vec3 &cameraPosition)
 {
     Clear();
+    m_canonicalLightSnapshot.sampling = source.sampling;
     SetAmbientLinear(source.ambientSky, source.ambientEquator, source.ambientGround);
     SetCameraPosition(cameraPosition);
     for (const auto &light : source.lights) {

@@ -374,11 +374,24 @@ int main()
     assert(snapshot.Size() == 1001);
     assert(snapshot.localLights[999].positionRange.x == 999.0f);
 
+    auto sampling = std::make_shared<infernux::LightSamplingDistribution>();
+    sampling->strata.resize(4);
+    sampling->cumulative.resize(snapshot.Size());
+    sampling->strata[0].dominant = 7;
+    sampling->cumulative.back() = 1.0f;
+    snapshot.sampling = sampling;
     const auto upload = BuildCanonicalLightUpload(snapshot);
     assert(upload.header.countsAndGeneration.x == 1);
     assert(upload.header.countsAndGeneration.y == 1000);
     assert(upload.header.countsAndGeneration.z == 41);
-    assert(upload.bytes.size() == sizeof(CanonicalLightGpuHeader) + 1001 * sizeof(CanonicalLightData));
+    const size_t recordBytes = sizeof(CanonicalLightGpuHeader) + 1001 * sizeof(CanonicalLightData);
+    assert(upload.bytes.size() == recordBytes + 4 * sizeof(infernux::LightSamplingStratum) + 1001 * sizeof(float));
+    infernux::LightSamplingStratum packedSampling{};
+    std::memcpy(&packedSampling, upload.bytes.data() + recordBytes, sizeof(packedSampling));
+    assert(packedSampling.dominant == 7);
+    float lastCumulative = 0.0f;
+    std::memcpy(&lastCumulative, upload.bytes.data() + upload.bytes.size() - sizeof(float), sizeof(float));
+    assert(lastCumulative == 1.0f);
     CanonicalLightData packedDirectional{};
     std::memcpy(&packedDirectional, upload.bytes.data() + sizeof(CanonicalLightGpuHeader), sizeof(CanonicalLightData));
     assert(packedDirectional.metadata.w == (CanonicalLightAffectsGeometry | CanonicalLightAffectsParticles));
@@ -401,6 +414,7 @@ int main()
     snapshot.Clear(43);
     assert(snapshot.generation == 43);
     assert(snapshot.Size() == 0);
+    assert(!snapshot.sampling);
     assert(snapshot.directionalLights.capacity() >= 1);
     assert(snapshot.localLights.capacity() >= 1000);
 

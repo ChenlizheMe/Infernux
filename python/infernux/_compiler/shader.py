@@ -800,17 +800,17 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
     for (uint i = 0u; i < strata; ++i)
     {
         // Each stratum estimates its own sum. Only the shadow-dependent part needs a ray.
-        uint begin = i * count / strata;
-        uint width = (i + 1u) * count / strata - begin;
         uint stream = inx_ray_sample_hash(seed + i);
         float sample_u = float(inx_ray_sample_hash(stream ^ 0x91e10da5u) >> 8u) * (1.0 / 16777216.0);
-        uint index = begin + min(uint(sample_u * float(width)), width - 1u);
+        InxTransportLightSelection candidate = inx_sample_transport_light(
+            count, strata, i, sample_u, attributes.position_ws, geometric, surface.normal_ws, metadata.x);
+        uint index = candidate.index;
         uint corner = inx_ray_sample_hash(stream ^ 0x68bc21ebu) & 3u;
         InxTransportLight light = inx_transport_light(index, attributes.position_ws, corner);
         if ((light.layer_mask & metadata.x) == 0u || light.sample.attenuation <= 0.0 ||
             dot(geometric, light.sample.direction) <= 0.0 || dot(surface.normal_ws, light.sample.direction) <= 0.0)
             continue;
-        float3 contribution = float(width) * response.evaluate(light.sample);
+        float3 contribution = candidate.inverse_pdf * response.evaluate(light.sample);
         float strength = metadata.z != 0u ? light.shadow_strength : 0.0;
         radiance += (1.0 - strength) * contribution;
         float3 shadowed = strength * contribution;

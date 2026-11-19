@@ -47,11 +47,30 @@ struct RenderLightSource
     }
 };
 
+struct alignas(16) LightSamplingStratum
+{
+    glm::vec3 lower{};
+    uint32_t dominant = 0;
+    glm::vec3 upper{};
+    uint32_t flags = 0; // bit 0: contains directional; bit 1: equal power
+};
+static_assert(sizeof(LightSamplingStratum) == 32);
+
+// Canonical directional-first order. Shared by every View of this immutable World publication.
+struct LightSamplingDistribution
+{
+    std::vector<LightSamplingStratum> strata;
+    std::vector<float> cumulative;
+};
+std::shared_ptr<const LightSamplingDistribution>
+BuildLightSamplingDistribution(const std::vector<RenderLightSource> &lights);
+
 struct RenderLightingSource
 {
     // Stable generation advances only when actual source values change.
     uint64_t generation = 0;
     std::vector<RenderLightSource> lights;
+    std::shared_ptr<const LightSamplingDistribution> sampling;
     glm::vec4 ambientSky{0.0f};
     glm::vec4 ambientEquator{0.0f};
     glm::vec4 ambientGround{0.0f};

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <function/renderer/RenderLightingSource.h>
 #include <function/renderer/rhi/RhiDevice.h>
 #include <function/scene/LightingData.h>
 
@@ -41,6 +42,17 @@ struct CanonicalLightUpload
     if (localBytes > 0) {
         std::memcpy(upload.bytes.data() + sizeof(upload.header) + directionalBytes, snapshot.localLights.data(),
                     localBytes);
+    }
+    if (snapshot.sampling) {
+        const auto &sampling = *snapshot.sampling;
+        const size_t offset = upload.bytes.size();
+        const size_t strataBytes = sampling.strata.size() * sizeof(LightSamplingStratum);
+        const size_t cdfBytes = sampling.cumulative.size() * sizeof(float);
+        upload.bytes.resize(offset + strataBytes + cdfBytes);
+        if (strataBytes > 0)
+            std::memcpy(upload.bytes.data() + offset, sampling.strata.data(), strataBytes);
+        if (cdfBytes > 0)
+            std::memcpy(upload.bytes.data() + offset + strataBytes, sampling.cumulative.data(), cdfBytes);
     }
     return upload;
 }

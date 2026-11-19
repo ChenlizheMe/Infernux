@@ -306,6 +306,65 @@ public InxTransportLight inx_transport_light(uint index, float3 position, uint r
     result.sample = inx_light_sample(direction, radiance, attenuation, 1.0);
     return result;
 }
+// The immutable World publication appends four-stratum metadata and normalized CDFs
+// after the canonical records. Actual stored differences define every sampled PDF.
+public struct InxTransportLightSelection
+{
+    public uint index;
+    public float inverse_pdf;
+};
+float transport_light_cdf(uint offset, uint index)
+{
+    return canonical_lights.Load<float>(offset + index * 4u);
+}
+public InxTransportLightSelection inx_sample_transport_light(uint count, uint strata, uint stratum, float u,
+    float3 position, float3 geometric_normal, float3 shading_normal, uint layer_mask)
+{
+    uint begin = stratum * count / strata;
+    uint end = (stratum + 1u) * count / strata;
+    uint width = end - begin;
+    if (width == 1u)
+        return {begin, 1.0};
+    uint proposal = 16u + count * 128u;
+    uint4 upper = canonical_lights.Load<uint4>(proposal + stratum * 32u + 16u);
+    float alpha = 0.0;
+    if ((upper.w & 2u) == 0u)
+    {
+        uint4 lower = canonical_lights.Load<uint4>(proposal + stratum * 32u);
+        InxTransportLight dominant = inx_transport_light(lower.w, position, 0u);
+        if ((dominant.layer_mask & layer_mask) != 0u &&
+            dot(geometric_normal, dominant.sample.direction) > 0.0 &&
+            dot(shading_normal, dominant.sample.direction) > 0.0)
+        {
+            float3 distance = max(max(asfloat(lower.xyz) - position, position - asfloat(upper.xyz)), float3(0.0));
+            float attenuation_bound = (upper.w & 1u) != 0u ? 1.0 : 1.0 / (1.0 + dot(distance, distance));
+            alpha = 0.5 * saturate(dominant.sample.attenuation / attenuation_bound);
+        }
+    }
+    if (alpha == 0.0)
+        return {begin + min(uint(u * float(width)), width - 1u), float(width)};
+    uint index;
+    uint cdf_offset = proposal + strata * 32u;
+    if (u < alpha)
+    {
+        float v = u / alpha;
+        uint low = begin, high = end - 1u;
+        while (low < high)
+        {
+            uint middle = low + (high - low) / 2u;
+            if (transport_light_cdf(cdf_offset, middle) > v) high = middle;
+            else low = middle + 1u;
+        }
+        index = low;
+    }
+    else
+        index = begin + min(uint((u - alpha) / (1.0 - alpha) * float(width)), width - 1u);
+    float cumulative = transport_light_cdf(cdf_offset, index);
+    float previous = index == begin ? 0.0 : transport_light_cdf(cdf_offset, index - 1u);
+    float density = (1.0 - alpha) / float(width) + alpha * (cumulative - previous);
+    return {index, 1.0 / density};
+}
+
 )slang"
                                            R"slang(struct InxLighting<let tiled_lighting : bool>
 {

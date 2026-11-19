@@ -477,6 +477,8 @@ void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
     next.ambientEquator = values.ambientEquatorColor;
     next.ambientGround = values.ambientGroundColor;
     if (!m_lighting || !next.SameValues(*m_lighting)) {
+        next.sampling = m_lighting && next.lights == m_lighting->lights ? m_lighting->sampling
+                                                                        : BuildLightSamplingDistribution(next.lights);
         next.generation = ++m_lightingGeneration;
         m_lighting = std::make_shared<const RenderLightingSource>(std::move(next));
     }

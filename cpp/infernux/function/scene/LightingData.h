@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <function/renderer/lighting/ShadowFrame.h>
 #include <glm/glm.hpp>
+#include <memory>
 #include <vector>
 
 namespace infernux
@@ -15,6 +16,7 @@ class Scene;
 class Light;
 class Camera;
 struct RenderLightingSource;
+struct LightSamplingDistribution;
 struct RenderViewData;
 
 // ============================================================================
@@ -248,12 +250,14 @@ struct CanonicalLightSnapshot
     uint64_t generation = 0;
     std::vector<CanonicalLightData> directionalLights;
     std::vector<CanonicalLightData> localLights;
+    std::shared_ptr<const LightSamplingDistribution> sampling;
 
     void Clear(uint64_t nextGeneration)
     {
         generation = nextGeneration;
         directionalLights.clear();
         localLights.clear();
+        sampling.reset();
     }
 
     void Add(const CanonicalLightData &light)
