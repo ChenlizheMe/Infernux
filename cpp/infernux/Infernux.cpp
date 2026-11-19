@@ -2107,8 +2107,11 @@ bool Infernux::AdvancePreviewTasks(bool gpu, uint64_t lane)
 
 void Infernux::PollGpuCompletions()
 {
-    if (!m_renderer)
+    if (!m_renderer) {
+        if (m_gpuServices)
+            m_gpuServices->CollectComputeResources();
         return;
+    }
     // Retiring foreground GPU work is part of advancing the renderer itself.
     m_renderer->PollGpuCompletions();
     FrameWorkOwner::Scope scope(m_frameWork);
