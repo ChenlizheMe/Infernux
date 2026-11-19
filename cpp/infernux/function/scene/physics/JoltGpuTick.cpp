@@ -296,7 +296,6 @@ class JoltGpuTick::Impl
     };
     enum class Phase
     {
-        InitializeSleep,
         CapturePrescribedBounds,
         PrepareKinematics,
         CaptureArticulationRotors,
@@ -745,9 +744,9 @@ class JoltGpuTick::Impl
     {
         return phase == Phase::ParticipantPredict || phase == Phase::ParticipantPrepare ||
                phase == Phase::ParticipantExchange || phase == Phase::ParticipantAccept || phase == Phase::Broadphase ||
-               phase == Phase::CompleteConvexContacts || phase == Phase::InitializeSleep ||
-               phase == Phase::CapturePrescribedBounds || phase == Phase::WakePrescribedBounds ||
-               phase == Phase::BuildTopology || phase == Phase::WakeComponents || phase == Phase::UpdateSleep ||
+               phase == Phase::CompleteConvexContacts || phase == Phase::CapturePrescribedBounds ||
+               phase == Phase::WakePrescribedBounds || phase == Phase::BuildTopology ||
+               phase == Phase::WakeComponents || phase == Phase::UpdateSleep ||
                phase == Phase::WakeFinalPrescribedBounds || phase == Phase::BuildConstraints ||
                phase == Phase::CommitArticulationPose || phase == Phase::CaptureArticulationRotors ||
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
@@ -808,7 +807,6 @@ class JoltGpuTick::Impl
         case Phase::ResolveSweep:
         case Phase::SolveSweepEvent:
         case Phase::ReportSweep:
-        case Phase::InitializeSleep:
         case Phase::CapturePrescribedBounds:
         case Phase::WakePrescribedBounds:
         case Phase::CompleteConvexContacts:
@@ -884,9 +882,6 @@ class JoltGpuTick::Impl
         next.islandBatchLanes = 0;
         next.localFirst = 0;
         switch (next.phase) {
-        case Phase::InitializeSleep:
-            next.phase = Phase::CapturePrescribedBounds;
-            break;
         case Phase::CapturePrescribedBounds:
             next.phase = Phase::PrepareKinematics;
             break;
@@ -1160,7 +1155,7 @@ class JoltGpuTick::Impl
     void CaptureStageSpans()
     {
         stageCursor = {};
-        stageCursor.phase = HasRigidWork()         ? Phase::InitializeSleep
+        stageCursor.phase = HasRigidWork()         ? Phase::CapturePrescribedBounds
                             : control.participants ? Phase::ParticipantPredict
                                                    : Phase::Done;
         Normalize(stageCursor);
@@ -1967,15 +1962,6 @@ class JoltGpuTick::Impl
                                       ? programs.GetArticulations().PrepareRotors(storage, inputs, done)
                                       : programs.GetArticulations().PrepareClassification(
                                             storage, inputs, control.participants.gpuBodySlots.get(), done),
-                                  PacketKind::NumericalWork);
-                return true;
-            }
-            if (stageCursor.phase == Phase::InitializeSleep) {
-                SelectControlWork(programs.GetSleep().PrepareInitialize(storage, tickParameters,
-                                                                        [this] {
-                                                                            NextSpan(stageCursor);
-                                                                            Normalize(stageCursor);
-                                                                        }),
                                   PacketKind::NumericalWork);
                 return true;
             }

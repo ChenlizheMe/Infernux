@@ -24,8 +24,6 @@ class JoltGpuSleep final
 
     JoltGpuSleep(rhi::ComputeHost &host, const ShaderTargetCode &stepTarget);
     [[nodiscard]] bool TryPrepareStartupPrograms();
-    [[nodiscard]] JoltGpuControlWork PrepareInitialize(const JoltGpuStorage &, const JPH::GPU::StepParams &,
-                                                       std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareWake(const JoltGpuStorage &, const JoltGpuStepInputs &,
                                                  const JoltGpuConstraintTopology &, std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareHistory(const JoltGpuStorage &, const JoltGpuStepInputs &,

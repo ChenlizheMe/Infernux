@@ -52,7 +52,6 @@ enum Entry : uint8_t
     Query,
     PrescribedCapture,
     PrescribedWake,
-    Initialize,
     NewBoundsWake,
     EntryCount
 };
@@ -71,7 +70,6 @@ constexpr std::array<std::string_view, EntryCount> Names{"sleep_clear_votes",
                                                          "query_sleep_status",
                                                          "sleep_capture_prescribed_bounds",
                                                          "sleep_wake_prescribed_bounds",
-                                                         "sleep_initialize_history",
                                                          "sleep_wake_new_bounds"};
 constexpr uint32_t Bit(Port p)
 {
@@ -93,7 +91,6 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | R | Bit(Snapshot) | Bit(Requests) | Bit(Results),
                                                  P | W | B | S | R | Bit(States) | Bit(Bounds) | Bit(Requests),
                                                  P | W | B | S | R | Bit(States) | Bit(Bounds) | Bit(Requests),
-                                                 P | W | B | S | Bit(States),
                                                  P | W | B | S | R | Bit(States) | Bit(Requests)};
 struct Layout
 {
@@ -316,13 +313,12 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             const bool complete = (port == Bounds && (op.entry == CaptureBounds || op.entry == PrescribedCapture)) ||
                                   (port == Snapshot && op.entry == Export) || port == Results ||
                                   (port == Roots && op.entry == Clear);
-            const bool writer =
-                port == Roots ||
-                (port == Sleeps && (op.entry == Wake || op.entry == ForceWake || op.entry == Update ||
-                                    op.entry == Commit || op.entry == BoundsWake || op.entry == PrescribedWake ||
-                                    op.entry == Initialize || op.entry == NewBoundsWake)) ||
-                (port == Forces && op.entry == Update) || (port == States && op.entry == Commit) ||
-                (port == Joints && op.entry == RetireHinge);
+            const bool writer = port == Roots ||
+                                (port == Sleeps && (op.entry == Wake || op.entry == ForceWake || op.entry == Update ||
+                                                    op.entry == Commit || op.entry == BoundsWake ||
+                                                    op.entry == PrescribedWake || op.entry == NewBoundsWake)) ||
+                                (port == Forces && op.entry == Update) || (port == States && op.entry == Commit) ||
+                                (port == Joints && op.entry == RetireHinge);
             dispatch.bufferAccesses.push_back(complete ? rhi::ComputeBufferAccess::Write
                                               : writer ? rhi::ComputeBufferAccess::ReadWrite
                                                        : rhi::ComputeBufferAccess::Read);
@@ -468,24 +464,11 @@ JoltGpuSleep::JoltGpuSleep(rhi::ComputeHost &host, const ShaderTargetCode &targe
 bool JoltGpuSleep::TryPrepareStartupPrograms()
 {
     bool ready = true;
-    for (const auto entry : {Initialize, Clear, Update, Commit, Export})
+    for (const auto entry : {Clear, Update, Commit, Export})
         ready &= m_impl->entries[entry].kernel->TryPreparePipeline();
     return ready;
 }
 
-JoltGpuControlWork JoltGpuSleep::PrepareInitialize(const JoltGpuStorage &s, const StepParams &selection,
-                                                   std::function<void()> done)
-{
-    auto e = std::make_shared<Impl::Execution>(m_impl);
-    e->Bind(s);
-    auto p = Selection(s, selection);
-    // This shader has no status writer; its successor only advances the GPU work cursor.
-    e->reportsStatus = false;
-    e->finalResumeAfter = JoltGpuControlWork::ResumeAfter::Acceptance;
-    e->Add(Initialize, p.selected.y, p.selected.z, p);
-    e->OnComplete([done = std::move(done)](auto &) { done(); });
-    return e->Next();
-}
 JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                              const JoltGpuConstraintTopology &topology, std::function<void()> done)
 {
