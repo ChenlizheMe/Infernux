@@ -192,7 +192,10 @@ class Transform : public Component
     void SetLocalScale(const glm::vec3 &scale)
     {
         auto &store = TransformECSStore::Instance();
-        store.SetLocalScale(m_ecsHandle, scale);
+        if (store.IsFrameCacheActiveFor(m_ecsHandle))
+            store.SetCachedLocalScale(m_ecsHandle.index, scale);
+        else
+            store.SetLocalScale(m_ecsHandle, scale);
         store.SetDirty(m_ecsHandle, true);
         InvalidateWorldMatrix(false);
     }

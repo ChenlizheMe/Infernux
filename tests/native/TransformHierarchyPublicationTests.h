@@ -11,9 +11,61 @@
 #include <iostream>
 #include <stdexcept>
 
+inline void TestTransformScalePublication(infernux::Scene &scene)
+{
+    using namespace infernux;
+    auto &store = TransformECSStore::Instance();
+    auto *parent = scene.CreateGameObject("ScalePublicationParent");
+    auto *object = scene.CreateGameObject("ScalePublicationTarget");
+    parent->GetTransform()->SetLocalTRS(glm::vec3(3, 4, 5), glm::vec3(0), glm::vec3(2, 3, 4));
+    const glm::vec3 position(1.2f, 0.5f, -9.0f), scale(-40, 80, 1);
+    for (const bool nested : {false, true}) {
+        object->SetParent(nested ? parent : nullptr, false);
+        for (const bool readBeforeCommit : {false, true}) {
+            for (const int order : {1, 0, 2}) {
+                auto *transform = object->GetTransform();
+                transform->SetLocalTRS(position, glm::vec3(0), glm::vec3(1));
+                store.BeginFrameCache();
+                const auto serial = store.GetGlobalTransformSerial();
+                if (order == 1)
+                    transform->SetLocalPosition(position + glm::vec3(1));
+                transform->SetLocalScale(scale);
+                if (order == 2)
+                    transform->SetLocalPosition(position + glm::vec3(1));
+                const auto check = [&] {
+                    const glm::vec3 localPosition = position + (order ? glm::vec3(1) : glm::vec3(0));
+                    glm::mat4 expected(1);
+                    expected[0][0] = scale.x;
+                    expected[1][1] = scale.y;
+                    expected[2][2] = scale.z;
+                    expected[3] = glm::vec4(localPosition, 1);
+                    if (nested)
+                        expected = parent->GetTransform()->GetWorldMatrix() * expected;
+                    const auto &actual = transform->GetWorldMatrix();
+                    for (int column = 0; column < 4; ++column)
+                        if (glm::length(actual[column] - expected[column]) > 2e-4f)
+                            throw std::runtime_error("frame publication lost authored scale or combined position/scale");
+                };
+                if (readBeforeCommit)
+                    check();
+                if (store.EndFrameCache())
+                    throw std::runtime_error("scale authoring was reported as a physics publication");
+                check();
+                if (store.GetGlobalTransformSerial() <= serial)
+                    throw std::runtime_error("authored scale did not publish a Transform revision");
+                store.BeginFrameCache();
+                (void)store.EndFrameCache();
+                check();
+            }
+        }
+    }
+    std::cout << "SCALE_PUBLICATION root/nested writes=passed combined=passed subsequent_frame=passed\n";
+}
+
 inline void TestTransformHierarchyPublication(infernux::Scene &scene)
 {
     using namespace infernux;
+    TestTransformScalePublication(scene);
     auto &store = TransformECSStore::Instance();
     std::array<GameObject *, 3> objects{};
     for (size_t i = 0; i < objects.size(); ++i)
