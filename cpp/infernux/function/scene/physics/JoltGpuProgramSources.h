@@ -28,8 +28,6 @@ enum class JoltGpuProgram
     ContactReports,
     ArticulationCapture,
     ArticulationDynamics,
-    CrossDomainCandidates,
-    CrossDomainContactSolver,
     Count
 };
 

@@ -34,12 +34,6 @@ class RigidbodyInterpolation(IntEnum):
 class Rigidbody(PhysicsBody):
     """Controls physics simulation for the GameObject."""
 
-    @property
-    def gpu(self) -> bool:
-        """Use GPU physics for this body; defaults to False (CPU)."""
-        ...
-    @gpu.setter
-    def gpu(self, value: bool) -> None: ...
     _cpp_type_name: str
     _component_category_: str
 

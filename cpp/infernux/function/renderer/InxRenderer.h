@@ -935,6 +935,7 @@ class InxRenderer
     std::shared_ptr<ParticleProgramBootstrap> m_particleProgramBootstrap;
     bool m_particleGpuSystemManagerInitializationAttempted = false;
     const Scene *m_particleCollisionSourceScene = nullptr;
+    bool m_particleCollisionEmpty = false;
     uint64_t m_particleCollisionPublishedRevision = 1;
     std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> m_particleCollisionAcceptedDevice;
     std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> m_particleCollisionPendingDevice;

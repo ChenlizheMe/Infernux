@@ -20,6 +20,7 @@ namespace infernux
 {
 
 class Scene;
+enum class PhysicsBackend : uint8_t;
 class MeshRenderer;
 class SkinnedMeshRenderer;
 class Transform;
@@ -311,6 +312,7 @@ class RuntimeWorld final
     static std::shared_ptr<RuntimeWorldHandle> ReserveHandle();
     explicit RuntimeWorld(std::shared_ptr<RuntimeWorldHandle> handle = nullptr);
     ~RuntimeWorld();
+    [[nodiscard]] PhysicsBackend GetPhysicsBackend() const noexcept;
     RuntimeWorld(const RuntimeWorld &) = delete;
     RuntimeWorld &operator=(const RuntimeWorld &) = delete;
     RuntimeWorld(RuntimeWorld &&) = delete;

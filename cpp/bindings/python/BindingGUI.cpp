@@ -1567,6 +1567,7 @@ void RegisterGUIBindings(py::module_ &m)
         // Selection callbacks
         .def_readwrite("is_selected", &HierarchyPanel::isSelected)
         .def_readwrite("select_id", &HierarchyPanel::selectId)
+        .def_readwrite("select_scene", &HierarchyPanel::selectScene)
         .def_readwrite("toggle_id", &HierarchyPanel::toggleId)
         .def_readwrite("range_select_id", &HierarchyPanel::rangeSelectId)
         .def_readwrite("clear_selection", &HierarchyPanel::clearSelection)

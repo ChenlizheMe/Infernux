@@ -3,7 +3,6 @@
 #include "JointSettings.h"
 #include "JoltCpuControl.h"
 #include "JoltGpuJoints.h"
-#include "JoltMixedContacts.h"
 #include "PhysicsDomain.h"
 #include "PhysicsWorld.h"
 
@@ -201,48 +200,33 @@ float ClampHingeTarget(const JointAuthor &author, float target)
 
 } // namespace
 
-PhysicsWorld::JointBackend PhysicsWorld::SelectJointBackend(Backend owner, Backend connected) noexcept
-{
-    if (owner != Backend::StaticBoundary && connected != Backend::StaticBoundary && owner != connected)
-        return JointBackend::Mixed;
-    return owner == Backend::Gpu || connected == Backend::Gpu ? JointBackend::Gpu : JointBackend::Cpu;
-}
-
-void PhysicsWorld::ValidateMixedJointPermission(uint32_t owner, uint32_t connected) const
-{
-    if (!FindRigidbodyByBodyId(owner)->AllowsCrossBackendInteraction() ||
-        !FindRigidbodyByBodyId(connected)->AllowsCrossBackendInteraction())
-        throw std::invalid_argument(
-            "A cross-backend FixedJoint requires both Rigidbody components to allow cross-backend interaction");
-}
-
 PhysicsWorld::JointBackend PhysicsWorld::PrepareJointEndpoints(PhysicsDomain &domain, uint32_t ownerBody,
-                                                               uint32_t connectedBody, bool supportsMixed)
+                                                               uint32_t connectedBody)
 {
-    const auto &owner = *FindBodyRegistration(ownerBody);
-    const auto a = owner.AuthorBackend();
-    auto b = Backend::StaticBoundary;
+    const auto *owner = FindBodyRegistration(ownerBody);
+    if (!owner || &DomainForBody(ownerBody) != &domain)
+        throw std::invalid_argument("Joint owner must belong to its Scene physics domain");
+    const auto target = domain.UsesGpu() ? Backend::Gpu : Backend::Cpu;
+    const auto requireEndpoint = [&](uint32_t bodyId) {
+        const auto *body = FindBodyRegistration(bodyId);
+        if (!body || &DomainForBody(bodyId) != &domain)
+            throw std::invalid_argument("Joint endpoints must belong to the same Scene physics domain");
+        if (body->backend == Backend::StaticBoundary)
+            EnsureStaticBoundary(domain, bodyId);
+        else if (body->backend != target)
+            throw std::logic_error("Joint endpoint differs from its Scene physics backend");
+    };
+    requireEndpoint(ownerBody);
     if (connectedBody != Cpu::WorldBody) {
-        if (ownerBody == connectedBody || &DomainForBody(connectedBody) != &domain)
-            throw std::invalid_argument("Joint endpoints must be distinct bodies belonging to the same RuntimeWorld");
-        const auto &connected = *FindBodyRegistration(connectedBody);
-        b = connected.AuthorBackend();
-    }
-    if (a == Backend::StaticBoundary && b == Backend::StaticBoundary)
-        throw std::invalid_argument("Joint requires a Rigidbody endpoint to select its physics backend");
-    const auto route = SelectJointBackend(a, b);
-    if (route == JointBackend::Mixed) {
-        if (!supportsMixed)
-            throw std::invalid_argument(
-                "Joint endpoints on different physics backends are unsupported for this joint type");
-        ValidateMixedJointPermission(ownerBody, connectedBody);
-        return JointBackend::Mixed;
-    }
-    if (a == Backend::StaticBoundary)
-        EnsureStaticBoundary(domain, ownerBody, b);
-    if (b == Backend::StaticBoundary && connectedBody != Cpu::WorldBody)
-        EnsureStaticBoundary(domain, connectedBody, a);
-    return route;
+        if (ownerBody == connectedBody)
+            throw std::invalid_argument("Joint endpoints must be distinct bodies");
+        requireEndpoint(connectedBody);
+        if (owner->backend == Backend::StaticBoundary &&
+            FindBodyRegistration(connectedBody)->backend == Backend::StaticBoundary)
+            throw std::invalid_argument("Joint requires a Rigidbody endpoint");
+    } else if (owner->backend == Backend::StaticBoundary)
+        throw std::invalid_argument("Joint requires a Rigidbody endpoint");
+    return domain.UsesGpu() ? JointBackend::Gpu : JointBackend::Cpu;
 }
 
 PhysicsDomain *PhysicsWorld::FindCpuJointDomain(uint64_t id) const noexcept
@@ -265,33 +249,6 @@ void PhysicsWorld::RetireCpuJointRoutes(PhysicsDomain &domain) noexcept
         else
             ++it;
     }
-}
-
-PhysicsConstraintOwner &PhysicsWorld::DetachMixedJointRoute(PhysicsDomain &domain, uint64_t id) noexcept
-{
-    auto entry = domain.mixedFixedJoints.extract(id);
-    m_mixedJointDomains.erase(id);
-    return *entry.mapped().owner;
-}
-
-void PhysicsWorld::RetireMixedJoint(PhysicsDomain &domain, uint64_t id) noexcept
-{
-    DetachMixedJointRoute(domain, id).OnPhysicsConstraintDestroyed();
-}
-
-void PhysicsWorld::RetireMixedJointRoutes(PhysicsDomain &domain) noexcept
-{
-    while (!domain.mixedFixedJoints.empty())
-        RetireMixedJoint(domain, domain.mixedFixedJoints.begin()->first);
-}
-
-bool PhysicsWorld::HasMixedJointForBody(const PhysicsDomain &domain, uint32_t id) const noexcept
-{
-    const auto &joints = domain.mixedFixedJoints;
-    return std::any_of(joints.begin(), joints.end(), [id](const auto &entry) {
-        const auto &joint = *entry.second.joint;
-        return joint.cpuBody == id || joint.gpuBody == id;
-    });
 }
 
 uint64_t PhysicsWorld::CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA, uint32_t bodyIdB,
@@ -365,22 +322,11 @@ uint64_t PhysicsWorld::CreateFixedConstraint(PhysicsConstraintOwner &owner, uint
 {
     auto &domain = DomainForBody(bodyIdA);
     RequireOwnerThread();
-    const auto route = PrepareJointEndpoints(domain, bodyIdA, bodyIdB, true);
+    const auto route = PrepareJointEndpoints(domain, bodyIdA, bodyIdB);
     if (route == JointBackend::Cpu)
         return StageCpuJoint(domain, m_cpuJointDomains, owner,
                              {bodyIdA, bodyIdB, localBakedAnchor, {}, localAnchor, {}}, Cpu::Fixed{}, enableCollision,
                              imported);
-    if (route == JointBackend::Mixed) {
-        const auto baked = JointVector(localBakedAnchor), local = JointVector(localAnchor);
-        const auto id = imported ? imported->id : PhysicsECSStore::Instance().AllocateJointIdentity();
-        const bool cpuOwns = FindBodyRegistration(bodyIdA)->AuthorBackend() == Backend::Cpu;
-        auto joint = std::make_shared<JoltMixedFixedJoint>(JoltMixedFixedJoint{
-            cpuOwns ? bodyIdA : bodyIdB, cpuOwns ? bodyIdB : bodyIdA, cpuOwns, JPH::Vec3(baked.x, baked.y, baked.z),
-            JPH::Vec3(local.x, local.y, local.z), imported && imported->state ? *imported->state : std::nullopt});
-        domain.mixedFixedJoints.emplace(id, PhysicsDomain::MixedFixed{std::move(joint), &owner, enableCollision});
-        m_mixedJointDomains.emplace(id, &domain);
-        return id;
-    }
     JointAuthor author{};
     author.SetKind(JPH::GPU::JointFixed);
     author.bodies.w = JPH::GPU::JointEnabled | (enableCollision ? JPH::GPU::JointCollisionEnabled : 0);
@@ -393,10 +339,6 @@ uint64_t PhysicsWorld::CreateFixedConstraint(PhysicsConstraintOwner &owner, uint
 void PhysicsWorld::SetConstraintCollisionEnabled(uint64_t constraintId, bool enabled)
 {
     RequireOwnerThread();
-    if (const auto mixed = m_mixedJointDomains.find(constraintId); mixed != m_mixedJointDomains.end()) {
-        mixed->second->mixedFixedJoints.at(constraintId).enableCollision = enabled;
-        return;
-    }
     if (auto *cpu = FindCpuJointDomain(constraintId)) {
         const auto &joint = *cpu->cpuControl->FindJoint(constraintId);
         cpu->cpuControl->UpdateJoints({{constraintId, joint.settings, enabled}});
@@ -766,12 +708,6 @@ void PhysicsWorld::DestroyConstraintsForBody(uint32_t bodyId)
     RequireOwnerThread();
     if (FindBodyRegistration(bodyId)) {
         auto &domain = DomainForBody(bodyId);
-        for (auto it = domain.mixedFixedJoints.begin(); it != domain.mixedFixedJoints.end();) {
-            const auto &joint = *it->second.joint;
-            const auto id = it++->first;
-            if (joint.cpuBody == bodyId || joint.gpuBody == bodyId)
-                RetireMixedJoint(domain, id);
-        }
         if (domain.cpuControl)
             RetireCpuJointRoutes(domain.cpuControl->DestroyJointsForBody(bodyId));
     }
@@ -784,10 +720,6 @@ void PhysicsWorld::DestroyConstraint(uint64_t constraintId)
     if (constraintId == 0)
         return;
     RequireOwnerThread();
-    if (const auto mixed = m_mixedJointDomains.find(constraintId); mixed != m_mixedJointDomains.end()) {
-        RetireMixedJoint(*mixed->second, constraintId);
-        return;
-    }
     if (auto *cpu = FindCpuJointDomain(constraintId)) {
         cpu->cpuControl->DestroyJoint(constraintId);
         m_cpuJointDomains.erase(constraintId);

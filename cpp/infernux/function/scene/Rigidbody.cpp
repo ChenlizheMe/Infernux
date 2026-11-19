@@ -136,8 +136,6 @@ SemanticTypeDescriptor DescribeRigidbody()
                               {"labels", labels}};
     };
 
-    add("gpu", "BOOL", false);
-    add("cross_backend_interaction", "BOOL", false);
     add("mass", "FLOAT", 1.0)["range"] = {0.001, 1000.0};
     add("drag", "FLOAT", 0.0)["range"] = {0.0, 100.0};
     add("angular_drag", "FLOAT", 0.05)["range"] = {0.0, 100.0};
@@ -378,28 +376,6 @@ void Rigidbody::SetUseGravity(bool use)
     d.useGravity = use;
     float factor = d.useGravity ? 1.0f : 0.0f;
     ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyGravityFactor(id, factor); });
-}
-
-const RuntimeWorld *Rigidbody::GetBoundPhysicsWorld() const
-{
-    if (GetBodyId() == UINT32_MAX)
-        return nullptr;
-    return PhysicsECSStore::Instance().GetActor(Data().actorHandle).runtimeWorld;
-}
-
-void Rigidbody::OnGpuSelectionChanged()
-{
-    if (const auto *world = GetBoundPhysicsWorld(); world && world->simulation.isPlaying)
-        PhysicsWorld::Instance().RequestBodyTransfer(*this);
-    else
-        NotifyCollidersBodyTypeChanged();
-}
-
-void Rigidbody::ValidateGpuSelection(bool gpu) const
-{
-    if (gpu != IsGpuEnabled())
-        if (const auto *world = GetBoundPhysicsWorld(); world && world->simulation.isPlaying)
-            PhysicsWorld::Instance().ValidateBodyTransfer(*this, gpu);
 }
 
 void Rigidbody::SetIsKinematic(bool kinematic)
@@ -1340,13 +1316,8 @@ void Rigidbody::ValidateSerializedDocument(const nlohmann::json &j)
                               {"mass", "drag", "angular_drag", "use_gravity", "is_kinematic", "constraints",
                                "collision_detection_mode", "interpolation", "max_angular_velocity",
                                "max_linear_velocity"},
-                              {"mass_properties", "gpu", "cross_backend_interaction"});
+                              {"mass_properties"});
     (void)ReadMassProperties(j);
-    if (j.contains("gpu"))
-        RequireBoolean(j, "gpu", "Rigidbody");
-    if (j.contains("cross_backend_interaction"))
-        RequireBoolean(j, "cross_backend_interaction", "Rigidbody");
-
     const float mass = RequireFiniteFloat(j, "mass", "Rigidbody");
     const float drag = RequireFiniteFloat(j, "drag", "Rigidbody");
     const float angularDrag = RequireFiniteFloat(j, "angular_drag", "Rigidbody");
@@ -1380,8 +1351,6 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
     try {
         ValidateSerializedDocument(j);
 
-        const bool previousGpu = IsGpuEnabled();
-        ValidateGpuSelection(j.value("gpu", false));
         RigidbodyECSData staged = Data();
         staged.mass = j.at("mass").get<float>();
         const auto properties = ReadMassProperties(j);
@@ -1401,10 +1370,6 @@ bool Rigidbody::DeserializeDocument(const nlohmann::json &j)
             return false;
         DataMut() = staged;
         m_massProperties = properties;
-        if (previousGpu != IsGpuEnabled())
-            if (const auto *world = GetBoundPhysicsWorld(); world && world->simulation.isPlaying)
-                PhysicsWorld::Instance().RequestBodyTransfer(*this);
-
         // Propagate all settings to Jolt bodies (e.g. when edited in Inspector during play)
         NotifyCollidersBodyTypeChanged();
 

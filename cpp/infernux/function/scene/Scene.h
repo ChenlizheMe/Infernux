@@ -5,6 +5,7 @@
 #include "ObjectHandle.h"
 #include "SceneAuthoringIdentity.h"
 #include "SceneEnvironment.h"
+#include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -19,6 +20,12 @@ class SceneCommitToken;
 class SceneManager;
 class RuntimeWorld;
 class InxMaterial;
+
+enum class PhysicsBackend : uint8_t
+{
+    CPU,
+    GPU
+};
 
 /**
  * @brief Scene container that holds all GameObjects.
@@ -56,6 +63,13 @@ class Scene : public NativeLifetimeOwner
     {
         m_name = name;
     }
+
+    [[nodiscard]] PhysicsBackend GetPhysicsBackend() const noexcept
+    {
+        return m_physicsBackend;
+    }
+    [[nodiscard]] bool IsPhysicsBackendWritable() const noexcept;
+    void SetPhysicsBackend(PhysicsBackend backend);
 
     /// Isolated authoring content, never a member of the gameplay world.
     [[nodiscard]] bool IsPreview() const noexcept
@@ -474,6 +488,8 @@ class Scene : public NativeLifetimeOwner
     static uint64_t GenerateWorldId();
 
     std::string m_name = "Untitled Scene";
+    PhysicsBackend m_physicsBackend = PhysicsBackend::CPU;
+    bool m_hasCommittedDocument = false;
     bool m_isPreview = false;
     uint64_t m_worldId = GenerateWorldId();
     RuntimeWorld *m_runtimeWorld = nullptr;
@@ -564,7 +580,7 @@ class SceneCommitToken final
     friend class Scene;
     struct Impl;
 
-    explicit SceneCommitToken(Scene &scene);
+    explicit SceneCommitToken(Scene &scene, PhysicsBackend incomingBackend);
     void ReleaseRetainedWorld();
     std::unique_ptr<Impl> m_impl;
 };

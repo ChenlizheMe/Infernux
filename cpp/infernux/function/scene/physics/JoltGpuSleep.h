@@ -29,7 +29,7 @@ class JoltGpuSleep final
     [[nodiscard]] JoltGpuControlWork PrepareWake(const JoltGpuStorage &, const JoltGpuStepInputs &,
                                                  const JoltGpuConstraintTopology &, std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareHistory(const JoltGpuStorage &, const JoltGpuStepInputs &,
-                                                    const JPH::GPU::BodySleepParameters &, JoltGpuSleepCoupling,
+                                                    const JPH::GPU::BodySleepParameters &,
                                                     std::function<void()> completed,
                                                     DeferredValidation deferValidation = {});
     // Called ONLY after a genuinely new accepted force-input producer. An

@@ -10,6 +10,10 @@
 
 <!-- USER CONTENT START --> description
 
+在文件管理器选中 `.scene` 文件，在 Inspector 的「物理」中选择 CPU 或 GPU。新场景默认使用 CPU。
+场景中的刚体、关节和碰撞查询都使用该后端。保存后，重新加载场景或重新进入 Play 即可生效。
+运行和暂停期间，当前实例保留加载时的选择。同一个物理世界里叠加加载的场景须使用同一后端，独立世界可以分别选择设备。
+
 <!-- USER CONTENT END -->
 
 ## 属性
@@ -17,6 +21,8 @@
 | 名称 | 类型 | 描述 |
 |------|------|------|
 | name | `str` | 场景名称。 |
+| physics_backend | `PhysicsBackend` | 场景资产选用的设备，取值为 `PhysicsBackend.CPU` 或 `PhysicsBackend.GPU`。 |
+| physics_backend_writable | `bool` | 当前场景是否允许编辑后端选项。*(只读)* |
 | is_preview | `bool` |  *(只读)* |
 | structure_version | `int` |  *(只读)* |
 | temporal_discontinuity_revision | `int` |  *(只读)* |

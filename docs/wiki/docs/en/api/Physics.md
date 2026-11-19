@@ -47,6 +47,7 @@ Spatial queries accept layer masks and explicit trigger handling. Keep query vol
 | `static Physics.raycast(origin: Any, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → Optional[Any]` | Cast a ray and return the first hit, or None. |
 | `static Physics.raycast_screen(camera: Any, screen_position: Tuple[float, float], viewport_size: Tuple[float, float], max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → Optional[Any]` | Cast from a top-left-origin camera viewport pixel position. |
 | `static Physics.raycast_batch(origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32], out: RaycastBatchOutput, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ..., profile: bool = ...) → RaycastBatchOutput` |  |
+| `static Physics.raycast_into(origins, directions, out, max_distance=1000.0, layer_mask=None, query_triggers=True)` | In a GPU scene, write closest hits to existing compute buffers for another GPU program. |
 | `static Physics.raycast_all(origin: Any, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | Cast a ray and return all hits. |
 | `static Physics.overlap_sphere(center: Any, radius: float, layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | Find all colliders within a sphere. |
 | `static Physics.overlap_box(center: Any, half_extents: Any, orientation: Any = ..., layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | Find all colliders within an oriented box. |

@@ -246,8 +246,9 @@ void HierarchyPanel::SetSelectionSnapshot(const std::vector<uint64_t> &ids, uint
     m_selIds.insert(ids.begin(), ids.end());
     m_selPrimary = primary;
     m_selCount = static_cast<int>(ids.size());
+    // Asset/document selection also replaces a selected scene header.
+    m_selectedSceneWorldId = 0;
     if (!ids.empty()) {
-        m_selectedSceneWorldId = 0;
         m_pendingSceneSelectWorldId = 0;
     }
 }
@@ -1416,7 +1417,10 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
         if (!ctx->IsMouseButtonDown(0)) {
             if (!ctx->IsMouseDragging(0)) {
                 const uint64_t worldId = m_pendingSceneSelectWorldId;
-                ClearSelectionAndNotify();
+                if (selectScene)
+                    selectScene(worldId);
+                else
+                    ClearSelectionAndNotify();
                 m_selectedSceneWorldId = worldId;
             }
             m_pendingSceneSelectWorldId = 0;

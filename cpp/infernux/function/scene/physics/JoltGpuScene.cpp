@@ -1927,12 +1927,11 @@ class JoltGpuScene::Impl
             control.acceptedGenericGeometry = publication->hasGenericGeometry;
         }
         // Retained reduced representation/history must still take its original
-        // conversion path even after the last Rigidbody migrated away.
+        // conversion path even after the last Rigidbody is removed.
         const auto &rigidCache = domain.articulationCache;
         control.simulateRigidBodies =
             reports.simulateRigidBodies || (rigidCache && (rigidCache->numeric || !rigidCache->trees.empty()));
         control.prepareContactReport = std::move(reports.phase);
-        control.prepareCoupledContacts = std::move(reports.couple);
         control.groups = TakeControlGroups(domain);
         domain.pendingSources.reset();
         domain.pendingCompletions.clear();
@@ -2522,22 +2521,6 @@ JoltGpuControlWork JoltGpuScene::PrepareParticipantImpulses(RuntimeWorld &world,
 {
     RequireParticipantBodies(world, bodies);
     return m_impl->commands.PrepareParticipantImpulses(bodies, std::move(impulses));
-}
-
-bool JoltGpuScene::TryPrepareParticipantCpuResponse()
-{
-    return m_impl->commands.TryPrepareParticipantCpuResponse();
-}
-
-rhi::ComputeDispatchDesc JoltGpuScene::ParticipantCpuResponse(std::shared_ptr<rhi::ComputeBuffer> parameters,
-                                                              std::shared_ptr<rhi::ComputeBuffer> models,
-                                                              std::shared_ptr<rhi::ComputeBuffer> motion,
-                                                              std::shared_ptr<rhi::ComputeBuffer> impulses,
-                                                              std::shared_ptr<rhi::ComputeBuffer> journal,
-                                                              uint32_t count, uint32_t round)
-{
-    return m_impl->commands.ParticipantCpuResponse(std::move(parameters), std::move(models), std::move(motion),
-                                                   std::move(impulses), std::move(journal), count, round);
 }
 
 const std::shared_ptr<JoltGpuGeometryStore> &JoltGpuScene::GetGeometryStore() const noexcept

@@ -3,6 +3,7 @@
 #include <Jolt/Jolt.h>
 
 #include <Jolt/Physics/PhysicsSettings.h>
+#include "../Scene.h"
 #include "JoltCpuContactPublication.h"
 #include "JoltGpuContactPublication.h"
 #include "JoltGpuRenderBindings.h"
@@ -18,8 +19,6 @@ namespace infernux
 class RuntimeWorld;
 class JoltCpuScene;
 class JoltCpuControl;
-class JoltMixedContactStep;
-struct JoltMixedFixedJoint;
 class PhysicsConstraintOwner;
 
 /// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
@@ -31,6 +30,8 @@ struct PhysicsDomain final
     ~PhysicsDomain();
     void MarkGpuPoseDiscontinuity(uint32_t bodyId);
     RuntimeWorld &owner;
+    PhysicsBackend backend = PhysicsBackend::CPU;
+    [[nodiscard]] bool UsesGpu() const noexcept;
     glm::vec3 gravity;
     std::unique_ptr<JoltCpuScene> cpuScene;
     std::unique_ptr<JoltCpuControl> cpuControl;
@@ -50,7 +51,6 @@ struct PhysicsDomain final
     {
         bool gpuBodies = false;
         bool gpuContacts = false;
-        bool mixedFixed = false;
     };
     std::optional<StartupPrograms> startupPrograms;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
@@ -61,37 +61,23 @@ struct PhysicsDomain final
     Ragdoll *pendingRagdollHead = nullptr, *pendingRagdollTail = nullptr;
     bool reconcilingRagdolls = false;
     std::unordered_set<uint32_t> bodyIds;
-    std::unordered_set<uint32_t> pendingStaticCpu, pendingStaticGpu;
+    std::unordered_set<uint32_t> pendingStatic;
     struct StaticMove
     {
         glm::vec3 position;
         glm::quat rotation;
         std::weak_ptr<PhysicsStaticBoundaryModel> model;
         uint64_t positionRevision = 0, rotationRevision = 0;
-        bool cpuQueued = false, gpuQueued = false;
+        bool queued = false;
     };
     std::unordered_map<uint32_t, StaticMove> pendingStaticMoves;
     std::vector<std::pair<uint32_t, StaticMove>> admittedStaticMoves;
     std::vector<PhysicsActorHandle> recreateActors;
-    struct BodyTransferRequest
-    {
-        std::vector<uint32_t> bodies;
-        bool gpu, explicitGroup;
-    };
-    std::vector<BodyTransferRequest> requestedBodyTransfers;
-    struct BodyTransfer
-    {
-        std::vector<uint32_t> bodies;
-        bool controlBegun = false;
-        std::vector<std::pair<uint32_t, uint32_t>> cpuWakeExclusions;
-    };
-    std::optional<BodyTransfer> bodyTransfer;
     uint64_t surfaceRevision = 0;
     bool stepPending = false, stepCompleted = false, solverStarted = false;
     enum class FixedGpuPhase
     {
         Idle,
-        Transfer,
         RetireControl,
         RetryCreation,
         Solver,
@@ -101,8 +87,10 @@ struct PhysicsDomain final
     bool waitingForSlot = false;
     bool controlPending = false, controlNumericalChange = false;
     float admittedDeltaTime = 0;
+    uint32_t admittedSubsteps = 1;
     std::optional<JoltGpuStepParameters> admittedParameters;
-    std::optional<JPH::PhysicsSettings> admittedCpuSettings;
+    JPH::PhysicsSettings admittedCpuSettings;
+    JPH::Vec3 admittedCpuGravity = JPH::Vec3::sZero();
     PhysicsContactPublication::Policy admittedContactPolicy;
     uint64_t stepEpoch = 0, stepIndex = 0;
     bool flushingAuthoring = false, synchronousRead = false;
@@ -127,42 +115,21 @@ struct PhysicsDomain final
     bool contactEventStreamEnabled = false, contactImpulseStreamEnabled = false, contactIncludeTriggers = true;
     PhysicsContactPublication contacts;
     JoltGpuContactPublication gpuContacts;
-    std::unique_ptr<JoltMixedContactStep> mixedContacts;
-    struct MixedFixed
-    {
-        std::shared_ptr<JoltMixedFixedJoint> joint;
-        PhysicsConstraintOwner *owner;
-        bool enableCollision;
-    };
-    std::map<uint64_t, MixedFixed> mixedFixedJoints;
     struct RenderState
     {
         using Keys = std::array<uint64_t, 3>;
         struct Job
         {
-            struct PoseInput
-            {
-                uint32_t bodyId;
-                bool cpu;
-                std::optional<JoltGpuRenderBindings::PhysicsPose> pose;
-            };
             JoltGpuRenderBindings::SnapshotPtr snapshot;
             Keys keys{};
             uint64_t numericalGeneration = 0;
             std::optional<JoltGpuRenderBindings::Prepared> bindings;
             JoltGpuRenderPoseBatch output;
             std::shared_ptr<const JoltGpuScene::Publication> publication;
-            float alpha = 1.0f;
-            std::vector<PoseInput> inputs;
         };
         JoltGpuRenderBindings bindings;
         std::shared_ptr<Job> pending, ready;
         std::optional<Keys> checkedKeys;
-        JoltGpuRenderBindings::SnapshotPtr mixedHierarchy;
-        std::optional<Keys> hierarchyKeys;
-        std::shared_ptr<Job> mixedPending;
-        uint64_t mixedGeneration = 0;
-        float mixedAlpha = 1.0f;
     };
     RenderState rendering;
     struct PresentationPoseReads

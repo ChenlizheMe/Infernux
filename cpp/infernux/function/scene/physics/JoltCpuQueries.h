@@ -89,7 +89,7 @@ class JoltCpuQueries final
                                const Filter &filter) const;
     /// Read a batch against the same accepted CPU scene, in request order.
     void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maximum,
-                      RaycastHit *hits, uint8_t *mask, const Filter &filter, bool merge = false) const;
+                      RaycastHit *hits, uint8_t *mask, const Filter &filter) const;
     [[nodiscard]] bool SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
                                 const glm::vec3 &displacement, RaycastHit &hit, const BodyExclusion &exclude = {},
                                 const JPH::Shape *capturedShape = nullptr) const;

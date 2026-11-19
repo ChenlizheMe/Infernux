@@ -476,8 +476,8 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
     e->buffers[Schedule] = plan->schedule;
     const uint32_t world = inputs.GetParameters().selection.x;
     const auto &h = state->header;
-    const bool sweepsDynamicPairs = storage.HasDynamicSweeps(world) || inputs.NeedsCoupledSweep();
-    // Cross-device contact rows share the same maximal velocity representation as ordinary external contacts.
+    const bool sweepsDynamicPairs = storage.HasDynamicSweeps(world);
+    // A participant that exchanges impulses needs maximal coordinates for each affected tree.
     std::vector<uint32_t> contactedTrees;
     const auto addTree = [&](uint32_t slot) {
         if (slot < h.selected.x || slot - h.selected.x >= h.selected.y)
@@ -487,8 +487,6 @@ JoltGpuControlWork JoltGpuArticulations::PrepareClassification(const JoltGpuStor
         if (tree != ArtControlInvalid)
             contactedTrees.push_back(tree);
     };
-    for (const auto slot : inputs.GetExternalContactBodies())
-        addTree(slot);
     if (participantBodies)
         for (const auto slot : *participantBodies)
             addTree(slot);

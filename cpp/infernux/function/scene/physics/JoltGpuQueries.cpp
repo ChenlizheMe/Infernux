@@ -554,8 +554,14 @@ JoltGpuControlWork JoltGpuQueries::Continue(const std::shared_ptr<Execution> &ex
         result->hitReadbackIndex = static_cast<uint32_t>(reads.size());
         reads.push_back({result->hits, 0, CheckedBytes(count, result->recordBytes)});
     }
-    result->spanReadbackIndex = static_cast<uint32_t>(reads.size());
-    reads.push_back({result->spans, 0, CheckedBytes(result->queryCount, sizeof(QuerySpan))});
+    if (!result->knownCount || result->readback != JoltGpuQueryReadback::Device) {
+        result->spanReadbackIndex = static_cast<uint32_t>(reads.size());
+        reads.push_back({result->spans, 0, CheckedBytes(result->queryCount, sizeof(QuerySpan))});
+    }
+    if (reads.empty()) {
+        result->tailBatch = execution->packet;
+        return {};
+    }
     result->tailBatch = rhi::PrepareComputeBatch(execution->host, {}, {}, std::move(reads));
     JoltGpuControlWork work{result->tailBatch};
     work.geometry = result->geometry;
@@ -861,7 +867,8 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         {static_cast<uint32_t>(primitives.size()), stride, capacity, format},
         {result->publication ? result->publication->worldRow : 0u, bodyBase, leafBase,
          result->publication ? result->publication->jointBase : 0u},
-        {bodyCount, leafCount, result->publication ? result->publication->jointCount : 0u, projectedMotionBlocks}};
+        {bodyCount, leafCount, result->publication ? result->publication->jointCount : 0u,
+         projectedMotionBlocks | (knownCount && readback == JoltGpuQueryReadback::Device ? QueryFixedRowMapping : 0u)}};
     upload(Parameters, Bytes(&parameters, 1));
     // Requests and explicit primitives share one immutable word stream. This
     // removes an upload/binding without changing either public input layout.
@@ -945,7 +952,7 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
             result->hitReadbackIndex = static_cast<uint32_t>(reads.size());
             reads.push_back({result->hits, 0, CheckedBytes(result->queryCount, storageRecordBytes)});
         }
-        if (result->projectedMotionBlocks.empty()) {
+        if (result->projectedMotionBlocks.empty() && !(knownCount && readback == JoltGpuQueryReadback::Device)) {
             result->spanReadbackIndex = static_cast<uint32_t>(reads.size());
             reads.push_back({result->spans, 0, CheckedBytes(result->queryCount, sizeof(QuerySpan))});
         }
@@ -987,7 +994,7 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
 {
     m_host.RequireAlive();
     for (const auto &binding : bindings)
-        if (binding.field > JoltGpuQueryExportField::ShapeBounciness)
+        if (binding.field > JoltGpuQueryExportField::HitValid)
             throw JoltGpuQueryRequestError("Jolt GPU export has an unknown field");
     std::array<std::shared_ptr<JoltGpuQueryResult>, 3> sources;
     const JoltGpuScene::Publication *publication = nullptr;
@@ -1011,15 +1018,16 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
         result->Materialize();
         if (!result->queryCount)
             continue;
-        if (result->outputFormat != QueryOutputMotion && result->outputFormat != QueryOutputShape)
-            throw JoltGpuQueryRequestError("Jolt GPU exports require motion or shape record sources");
+        if (result->outputFormat != QueryOutputMotion && result->outputFormat != QueryOutputShape &&
+            (result->outputFormat != QueryOutputHit || !result->knownCount))
+            throw JoltGpuQueryRequestError("Jolt GPU exports require typed state or fixed closest-hit records");
         if (sources[result->outputFormat])
             throw JoltGpuQueryRequestError("Jolt GPU export batch repeats a typed source family");
         sources[result->outputFormat] = result;
     }
-    if ((!sources[QueryOutputMotion] && !sources[QueryOutputShape]) || bindings.empty())
+    if ((!sources[QueryOutputMotion] && !sources[QueryOutputShape] && !sources[QueryOutputHit]) || bindings.empty())
         return {};
-    constexpr std::array<uint32_t, 13> Widths{3, 4, 3, 3, 3, 3, 9, 1, 3, 3, 4, 1, 1};
+    constexpr std::array<uint32_t, 17> Widths{3, 4, 3, 3, 3, 3, 9, 1, 3, 3, 4, 1, 1, 3, 3, 1, 1};
     struct Target
     {
         std::shared_ptr<JoltGpuQueryResult> source;
@@ -1034,7 +1042,8 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
             !m_host.SharesServicesWith(binding.buffer->GetHost()) || binding.byteOffset % sizeof(uint32_t))
             throw JoltGpuQueryRequestError("Jolt GPU export field or destination differs from its compute owner");
         const bool motion = field <= static_cast<uint32_t>(JoltGpuQueryExportField::MotionInverseInertia);
-        const auto &source = sources[motion ? QueryOutputMotion : QueryOutputShape];
+        const bool hit = field >= static_cast<uint32_t>(JoltGpuQueryExportField::HitPoint);
+        const auto &source = sources[motion ? QueryOutputMotion : hit ? QueryOutputHit : QueryOutputShape];
         if (!source)
             throw JoltGpuQueryRequestError("Jolt GPU export has no matching typed query source");
         if (binding.field == JoltGpuQueryExportField::ShapeHalfExtents && !source->shapeBoxesOnly)
@@ -1046,6 +1055,7 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
             throw JoltGpuQueryRequestError("GPU export selection exceeds its completed typed source");
         const auto &desc = binding.buffer->GetDesc();
         const auto scalar = binding.field == JoltGpuQueryExportField::ShapeBodyIndex ? rhi::ComputeScalarType::Int32
+                            : binding.field == JoltGpuQueryExportField::HitValid     ? rhi::ComputeScalarType::UInt32
                                                                                      : rhi::ComputeScalarType::Float32;
         const auto lanes = Widths[field] == 9 ? 1u : Widths[field];
         const auto bytes = CheckedBytes(uint64_t(count) * Widths[field], sizeof(uint32_t));
@@ -1119,8 +1129,10 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
     if (dispatches.empty())
         return {};
     JoltGpuControlWork work{rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches))};
-    work.geometry =
-        sources[QueryOutputMotion] ? sources[QueryOutputMotion]->geometry : sources[QueryOutputShape]->geometry;
+    work.geometry = publication ? (sources[QueryOutputMotion]  ? sources[QueryOutputMotion]->geometry
+                                   : sources[QueryOutputShape] ? sources[QueryOutputShape]->geometry
+                                                               : sources[QueryOutputHit]->geometry)
+                                : nullptr;
     return work;
 }
 
@@ -1320,11 +1332,11 @@ void JoltGpuQueryResult::Materialize()
     if (!tailBatch || !tailBatch->GetSubmission().IsValid())
         throw std::logic_error("Jolt GPU query metadata requires its completed receipt");
     const auto count = summaryValue.counts.x;
-    if (!projectedMotionBlocks.empty()) {
+    if (!projectedMotionBlocks.empty() || (knownCount && readback == JoltGpuQueryReadback::Device)) {
         // The producer writes one row per input. Scan validates every row's
         // length/padding before the same completed summary accepts this map.
-        if (!knownCount || outputFormat != QueryOutputMotion || count != queryCount)
-            throw std::runtime_error("Jolt GPU projected motion has no fixed input-row mapping");
+        if (!knownCount || count != queryCount || (!projectedMotionBlocks.empty() && outputFormat != QueryOutputMotion))
+            throw std::runtime_error("Jolt GPU query has no fixed input-row mapping");
         materialized = true;
         return; // Numerical readers need no host span array.
     }
@@ -1432,7 +1444,8 @@ const std::vector<QueryMotionState> &JoltGpuQueryResult::ReadMotion()
 const std::vector<QuerySpan> &JoltGpuQueryResult::ReadSpans()
 {
     Materialize();
-    if (!projectedMotionBlocks.empty() && hostSpans.size() != queryCount) {
+    if ((!projectedMotionBlocks.empty() || (knownCount && readback == JoltGpuQueryReadback::Device)) &&
+        hostSpans.size() != queryCount) {
         hostSpans.resize(queryCount);
         for (uint32_t i = 0; i < queryCount; ++i)
             hostSpans[i].range = {i, 1u, QuerySuccess, 0u};

@@ -4265,10 +4265,15 @@ void InxRenderer::UpdateParticleCollisionScene()
         m_particleCollisionAcceptedDevice.reset();
         m_particleCollisionPendingDevice.reset();
         m_particleCollisionSourceScene = nullptr;
+        m_particleCollisionEmpty = false;
         return;
     }
 
     Scene *scene = SceneManager::Instance().GetActiveScene();
+    if (scene && scene->GetRuntimeWorld()->GetPhysicsBackend() != PhysicsBackend::GPU)
+        scene = nullptr;
+    if (!scene && m_particleCollisionEmpty)
+        return;
     if (scene != m_particleCollisionSourceScene) {
         m_particleCollisionConsumer.reset();
         m_particleCollisionAcceptedDevice.reset();
@@ -4303,6 +4308,7 @@ void InxRenderer::UpdateParticleCollisionScene()
     if (!m_particleGpuSystemManager->PublishCollisionScene(snapshot, &error))
         throw std::runtime_error("Failed to publish GPU particle collision scene: " + error);
     m_particleCollisionSourceScene = scene;
+    m_particleCollisionEmpty = !scene;
     m_particleCollisionPendingDevice = std::move(snapshot.device);
 }
 

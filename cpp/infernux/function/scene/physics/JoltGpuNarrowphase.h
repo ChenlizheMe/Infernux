@@ -23,8 +23,7 @@ class JoltGpuNarrowphase final
                                                    std::function<void(std::optional<float>)> completed);
     [[nodiscard]] JoltGpuControlWork PrepareSweepEvent(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
                                                        FrameWorkOwner &budget, float fraction, float remainingSeconds,
-                                                       bool localImpact, bool reportImpacts,
-                                                       std::function<void()> completed);
+                                                       bool reportImpacts, std::function<void()> completed);
 
   private:
     class Impl;

@@ -77,8 +77,8 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
         std::function<JoltGpuControlWork(JoltGpuParticipantRigidPort, const JPH::GPU::StepParams &,
                                          const std::shared_ptr<rhi::ComputeBuffer> &)>
             prepare;
-        // The body owner may include bounded CPU ports in the same recipe
-        // packet. It owns the original segmented chain when contraction is needed.
+        // The owning GPU Scene orders the motion capture, project recipe
+        // and resident impulse response on the same compute source.
         std::function<JoltGpuControlWork(const JPH::GPU::StepParams &, const std::shared_ptr<rhi::ComputeBuffer> &,
                                          const std::shared_ptr<rhi::ComputeBuffer> &, Recipe)>
             exchange;
@@ -122,7 +122,6 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     }
     [[nodiscard]] bool IsActive() const;
     /// Cold preparation hint only; Fixed routing still resolves accepted body ownership.
-    [[nodiscard]] bool HasCpuOnlyRigidBindings() const;
     void Retire() noexcept;
     [[nodiscard]] std::shared_ptr<PhysicsParticipantOutput> CaptureOutput(const std::string &name, uint64_t offset,
                                                                           std::optional<uint64_t> count);

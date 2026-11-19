@@ -342,14 +342,6 @@ class JoltGpuModelUpdate final
     std::array<uint32_t, 3> m_replacementCounts{};
 };
 
-struct JoltGpuSleepCoupling
-{
-    std::vector<uint32_t> endpoints;
-    // Current root and readiness per endpoint in request order. Return one
-    // endpoint per GPU island that must stay awake.
-    std::function<std::vector<uint32_t>(const std::vector<JPH::GPU::UInt4> &)> resolve;
-};
-
 /// Immutable parameter/author values and a borrowed live force endpoint for
 /// one selected-world tick. The shared packed writer lease excludes later
 /// producers until this cursor releases it. Forces never acquire a content
@@ -395,30 +387,6 @@ class JoltGpuStepInputs
     {
         return m_articulations;
     }
-    void SetExternalContactBodies(std::vector<uint32_t> bodies) noexcept
-    {
-        m_externalContactBodies = std::move(bodies);
-    }
-    [[nodiscard]] const std::vector<uint32_t> &GetExternalContactBodies() const noexcept
-    {
-        return m_externalContactBodies;
-    }
-    void SetNeedsCoupledSweep(bool needed) noexcept
-    {
-        m_needsCoupledSweep = needed;
-    }
-    [[nodiscard]] bool NeedsCoupledSweep() const noexcept
-    {
-        return m_needsCoupledSweep;
-    }
-    void SetSweepSettlementPending(bool pending) noexcept
-    {
-        m_sweepSettlementPending = pending;
-    }
-    [[nodiscard]] bool SweepSettlementPending() const noexcept
-    {
-        return m_sweepSettlementPending;
-    }
     void SetSweepImpactTime(std::optional<float> fraction) noexcept
     {
         m_sweepImpactTime = fraction;
@@ -426,25 +394,6 @@ class JoltGpuStepInputs
     [[nodiscard]] std::optional<float> SweepImpactTime() const noexcept
     {
         return m_sweepImpactTime;
-    }
-    void SetExternalWakePending(bool pending) noexcept
-    {
-        m_externalWakePending = pending;
-    }
-    [[nodiscard]] bool HasExternalWakePending() const noexcept
-    {
-        return m_externalWakePending;
-    }
-    void SetSleepCoupling(std::function<JoltGpuSleepCoupling()> prepare)
-    {
-        m_prepareSleepCoupling = std::move(prepare);
-    }
-    [[nodiscard]] JoltGpuSleepCoupling TakeSleepCoupling()
-    {
-        if (!m_prepareSleepCoupling)
-            return {};
-        auto prepare = std::exchange(m_prepareSleepCoupling, {});
-        return prepare();
     }
     void SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts);
     void ClearContacts() noexcept;
@@ -513,12 +462,7 @@ class JoltGpuStepInputs
     std::shared_ptr<const JoltGpuColliderPairs> m_colliderPairs;
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     std::shared_ptr<JoltGpuArticulationState> m_articulations;
-    std::vector<uint32_t> m_externalContactBodies;
-    bool m_externalWakePending = false;
-    bool m_needsCoupledSweep = false;
-    bool m_sweepSettlementPending = false;
     std::optional<float> m_sweepImpactTime;
-    std::function<JoltGpuSleepCoupling()> m_prepareSleepCoupling;
     // Immutable range values, not additional frozen model/input ports. Capture
     // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
     mutable std::vector<WorkUniform> m_workUniforms;

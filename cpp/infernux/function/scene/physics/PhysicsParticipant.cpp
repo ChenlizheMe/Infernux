@@ -493,13 +493,6 @@ bool PhysicsParticipant::IsActive() const
     return IsReady() && component && component->HasAwake() && component->IsPreparationReady() &&
            component->IsEnabled() && component->GetGameObject() && component->GetGameObject()->IsActiveInHierarchy();
 }
-bool PhysicsParticipant::HasCpuOnlyRigidBindings() const
-{
-    return !m_rigidbodies.empty() && std::all_of(m_rigidbodies.begin(), m_rigidbodies.end(), [](const auto &reference) {
-        const auto *body = dynamic_cast<Rigidbody *>(reference.GetComponent());
-        return body && !body->IsGpuEnabled();
-    });
-}
 void PhysicsParticipant::SetControl(const std::string &name, std::vector<uint8_t> bytes)
 {
     if (IsRetired())
@@ -552,7 +545,7 @@ PhysicsParticipant::Prefix PhysicsParticipant::CapturePrefix()
     for (const auto &reference : m_rigidbodies) {
         const auto *body = dynamic_cast<Rigidbody *>(reference.GetComponent());
         if (!body || WorldOf(body) != world || !body->IsEnabled() || !body->GetGameObject()->IsActiveInHierarchy() ||
-            body->IsKinematic() || body->GetBodyId() == UINT32_MAX || !body->AllowsCrossBackendInteraction()) {
+            body->IsKinematic() || body->GetBodyId() == UINT32_MAX) {
             prefix.rigidBodyIds.clear();
             prefix.stages &= ~JoltGpuParticipantStages::Bit(JoltGpuParticipantStage::Exchange);
             return prefix;

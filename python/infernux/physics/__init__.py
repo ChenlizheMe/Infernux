@@ -22,6 +22,7 @@ from typing import Optional, List
 
 from infernux.math.coerce import coerce_quat, coerce_vec3
 from infernux.lib import Physics as _CppPhysics
+from infernux.lib import PhysicsBackend
 from infernux.lib import _wrap_native_builtin_component
 
 
@@ -176,17 +177,6 @@ class Physics(metaclass=_PhysicsMeta):
                 value = value.numpy(copy=False)
             arrays[name] = value
         _CppPhysics.reset_rigidbodies([body._require_cpp_component() for body in rigidbodies], arrays)
-
-    @staticmethod
-    def set_rigidbody_backend(rigidbodies, *, gpu: bool) -> None:
-        """Move a live group to the selected backend before a fixed step.
-
-        Include both endpoints of joints that require one backend. A FixedJoint
-        can span the two backends when both endpoints allow cross-backend
-        interaction. Bodies and joints keep their identities, motion and
-        constraint reference frames.
-        """
-        _CppPhysics.set_rigidbody_backend([body._require_cpp_component() for body in rigidbodies], gpu)
 
     @staticmethod
     def get_rigidbody_states_and_box_states(rigidbodies, state_out, box_out, *, query_triggers: bool = False):
@@ -546,10 +536,10 @@ class Physics(metaclass=_PhysicsMeta):
         unless the ray hit a non-convex MeshCollider triangle.
 
         Call on the engine owner thread. Native execution publishes pending
-        authored collider state and runs the whole batch on the shared GPU
-        compute pipeline against one retained publication. No per-ray Python
-        calls or CPU collision queries run. The same dictionary and arrays are
-        returned unchanged. Misses use
+        authored collider state and runs the batch on the current Scene's
+        selected physics backend against one retained publication. CPU is the
+        default; GPU scenes explicitly read the batch results back. The same
+        dictionary and arrays are returned unchanged. Misses use
         ``hit=0``, infinite distance and zero object/component identities.
         ``Physics.query_generation`` exposes the monotonic published-world
         token for associating retained results with the snapshot they read;
@@ -563,6 +553,45 @@ class Physics(metaclass=_PhysicsMeta):
         return _CppPhysics.raycast_batch(
             origins, directions, out, float(max_distance), _query_layer_mask(layer_mask), bool(query_triggers), bool(profile)
         )
+
+    @staticmethod
+    def raycast_into(origins, directions, out, max_distance: float = 1000.0,
+                     layer_mask: Optional[int] = None, query_triggers: bool = True):
+        """Cast closest-hit rays directly into resident GPU compute buffers.
+
+        The current Scene must select GPU physics. Inputs are C-contiguous
+        float32 NumPy arrays of shape ``(N, 3)``; directions are normalized
+        with the same rules as ``raycast_batch``. ``out`` contains GPU
+        ``infernux.compute.Buffer`` values: ``hit`` (uint32 scalar), ``point``
+        and ``normal`` (float32, 3 lanes), and ``distance`` (float32 scalar).
+        All buffers use one compute host and capacity at least N. Only the
+        first N rows of each writable buffer or view are written, preserving
+        storage outside the view. Misses have hit=0, zero point/normal and
+        positive infinite distance.
+
+        Call on the engine owner thread. This completes against one published
+        GPU world and returns the same dictionary, adding ``count``,
+        ``world_id``, ``simulation_epoch``, ``fixed_step_index`` and
+        ``query_generation``. Output writer dependencies are tracked by the
+        compute runtime, so subsequent GPU programs can consume these buffers
+        directly. Query status and range metadata are checked on the host;
+        hit values and world numerical state are never read back by this call.
+        """
+        names = ("hit", "point", "normal", "distance")
+        gpu_output = _gpu_state_output(out, names)
+        if gpu_output is None:
+            raise TypeError("raycast_into requires resident GPU compute buffers")
+        for name in names:
+            value = out[name]
+            value._require_writable()
+            gpu_output[name] = (value._native, value._byte_offset, value.element_count)
+        result = _CppPhysics.raycast_into(
+            origins, directions, gpu_output, float(max_distance),
+            _query_layer_mask(layer_mask), bool(query_triggers),
+        )
+        for name in ("count", "world_id", "simulation_epoch", "fixed_step_index", "query_generation"):
+            out[name] = result[name]
+        return out
 
     @staticmethod
     def raycast_all(origin, direction, max_distance: float = 1000.0, layer_mask: Optional[int] = None,
@@ -731,4 +760,4 @@ class Physics(metaclass=_PhysicsMeta):
 from .joint_batch import HingeJointBatch
 from .participant import Participant, PhysicsBuildPlan
 
-__all__ = ["Physics", "HingeJointBatch", "Participant", "PhysicsBuildPlan"]
+__all__ = ["Physics", "PhysicsBackend", "HingeJointBatch", "Participant", "PhysicsBuildPlan"]

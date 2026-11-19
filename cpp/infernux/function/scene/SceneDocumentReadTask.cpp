@@ -161,14 +161,25 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
 void ValidateResolvedSceneDocument(const nlohmann::json &document)
 {
     static const std::unordered_set<std::string> allowed = {
-        "name",        "isPlaying",    "objects",         "mainCameraComponentId",
-        "environment", "nextObjectId", "nextComponentId", "authoring_identity",
+        "name",
+        "isPlaying",
+        "objects",
+        "mainCameraComponentId",
+        "environment",
+        "nextObjectId",
+        "nextComponentId",
+        "authoring_identity",
+        "physics_backend",
     };
     RequireExactFields(document, allowed, "Scene");
     if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||
         !document["isPlaying"].is_boolean() || !document.contains("objects") || !document["objects"].is_array()) {
         throw std::invalid_argument("Scene has invalid required fields");
     }
+    if (document.contains("physics_backend") &&
+        (!document["physics_backend"].is_string() ||
+         (document["physics_backend"] != "cpu" && document["physics_backend"] != "gpu")))
+        throw std::invalid_argument("Scene.physics_backend must be 'cpu' or 'gpu'");
 
     std::unordered_set<uint64_t> objectIds;
     std::unordered_set<uint64_t> componentIds;

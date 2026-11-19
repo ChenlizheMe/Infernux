@@ -1,5 +1,5 @@
 #include "JoltGpuRenderBindings.h"
-#include "PhysicsWorld.h"
+#include "PhysicsECSStore.h"
 
 #include "../GameObject.h"
 #include "../MeshRenderer.h"
@@ -10,7 +10,6 @@
 #include "../TransformECSStore.h"
 #include "core/math/QuaternionEuler.h"
 #include "core/math/TransformMatrix.h"
-#include "core/math/TransformVectorMath.h"
 #include <function/renderer/RenderPoseBuffer.h>
 
 #include <algorithm>
@@ -87,9 +86,6 @@ struct JoltGpuRenderBindings::Snapshot
         glm::vec3 position{};
         glm::quat rotation{1, 0, 0, 0};
         glm::vec3 scale{1};
-        std::optional<glm::vec3> worldPosition;
-        std::optional<glm::quat> worldRotation;
-        bool gpuBody = false;
 
         [[nodiscard]] glm::mat4 LocalMatrix() const
         {
@@ -113,12 +109,6 @@ struct JoltGpuRenderBindings::Snapshot
         glm::vec3 boundsMin{};
         glm::vec3 boundsMax{};
     };
-    struct CpuAnchor
-    {
-        glm::mat4 world, inverse;
-        glm::quat rotation;
-    };
-    std::unordered_map<uint32_t, CpuAnchor> cpuAnchors;
     std::vector<TransformValue> transforms;
     std::vector<RendererValue> renderers;
     std::unordered_map<uint32_t, uint64_t> continuity;
@@ -132,20 +122,14 @@ using Snapshot = JoltGpuRenderBindings::Snapshot;
 bool SameSnapshot(const Snapshot &a, const Snapshot &b)
 {
     if (a.transforms.size() != b.transforms.size() || a.renderers.size() != b.renderers.size() ||
-        a.continuity != b.continuity || a.cpuAnchors.size() != b.cpuAnchors.size())
+        a.continuity != b.continuity)
         return false;
-    for (const auto &[index, anchor] : a.cpuAnchors) {
-        const auto next = b.cpuAnchors.find(index);
-        if (next == b.cpuAnchors.end() || next->second.world != anchor.world ||
-            next->second.inverse != anchor.inverse || next->second.rotation != anchor.rotation)
-            return false;
-    }
     for (size_t i = 0; i < a.transforms.size(); ++i) {
         const auto &x = a.transforms[i];
         const auto &y = b.transforms[i];
         if (x.identity != y.identity || x.reference.GetComponent() != y.reference.GetComponent() ||
             x.actor != y.actor || x.bodyId != y.bodyId || x.parent != y.parent || x.world != y.world ||
-            x.scale != y.scale || x.authored != y.authored || x.gpuBody != y.gpuBody)
+            x.scale != y.scale || x.authored != y.authored)
             return false;
         // An independent actor gets its pose from accepted device state, not
         // from the last lazily materialized CPU local position/rotation.
@@ -268,7 +252,7 @@ JoltGpuRenderBindings::~JoltGpuRenderBindings()
     Clear();
 }
 
-JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &world, bool captureCpuConsumers) const
+JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &world) const
 {
     const WorldExecutionScope ownerScope(&world);
     auto snapshot = std::make_shared<Snapshot>();
@@ -281,7 +265,7 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
         Transform *parent = nullptr;
         PhysicsActorHandle actor;
         uint32_t bodyId = UINT32_MAX;
-        bool hasActor = false, cpuAnchor = false, gpuBody = false, gpuPath = false, mixedCpuPath = false;
+        bool hasActor = false;
     };
     std::unordered_map<const Transform *, Ancestry> ancestry;
     std::unordered_map<const Transform *, uint32_t> indices;
@@ -304,16 +288,9 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
             value.parent = current->GetParent();
             value.actor = physics.FindActor(current->GetGameObject());
             const bool ownActor = physics.IsValid(value.actor);
-            if (ownActor) {
+            if (ownActor)
                 value.bodyId = physics.GetActor(value.actor).bodyId;
-                const auto *entry = PhysicsWorld::Instance().FindBodyRegistration(value.bodyId);
-                value.cpuAnchor = entry && entry->backend == PhysicsWorld::Backend::Cpu;
-                value.gpuBody = entry && entry->backend == PhysicsWorld::Backend::Gpu;
-            }
-            const auto *parent = value.parent ? &ancestry.at(value.parent) : nullptr;
-            value.hasActor = !value.cpuAnchor && (ownActor || (parent && parent->hasActor));
-            value.gpuPath = value.gpuBody || (parent && parent->gpuPath);
-            value.mixedCpuPath = parent && (parent->mixedCpuPath || (value.cpuAnchor && parent->gpuPath));
+            value.hasActor = ownActor || (value.parent && ancestry.at(value.parent).hasActor);
             ancestry.emplace(current, value);
         }
         return ancestry.at(transform);
@@ -338,7 +315,6 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
             value.world = current->GetGameObject()->GetScene()->GetWorldId();
             value.actor = capturedAncestry.actor;
             value.bodyId = capturedAncestry.bodyId;
-            value.gpuBody = capturedAncestry.gpuBody;
             const auto handle = current->GetECSHandle();
             value.position = transforms.GetLocalPosition(handle);
             value.rotation = transforms.GetLocalRotation(handle);
@@ -348,23 +324,13 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
                 // This exceptional getter path can still cost depth; folding
                 // its ancestors would change the existing storage contract.
                 TransformECSStore::PhysicsPoseReadScope cachedAuthor(transforms);
-                if (transforms.HasFrameCacheWorldPositionOverride(handle)) {
-                    value.worldPosition = transforms.GetCachedWorldPosition(handle.index);
+                if (transforms.HasFrameCacheWorldPositionOverride(handle))
                     value.position = current->GetLocalPosition();
-                }
-                if (transforms.HasFrameCacheWorldRotationOverride(handle)) {
-                    value.worldRotation = transforms.GetCachedWorldRotation(handle.index);
+                if (transforms.HasFrameCacheWorldRotationOverride(handle))
                     value.rotation = current->GetLocalRotation();
-                }
             }
             value.authored = transforms.GetAuthoredPoseRevision(handle);
             parentIndex = static_cast<uint32_t>(snapshot->transforms.size());
-            if (capturedAncestry.cpuAnchor) {
-                TransformECSStore::PhysicsPoseReadScope capture(transforms);
-                snapshot->cpuAnchors.emplace(parentIndex, Snapshot::CpuAnchor{current->GetWorldMatrix(),
-                                                                              current->GetWorldToLocalMatrix(),
-                                                                              current->GetWorldRotation()});
-            }
             snapshot->transforms.push_back(std::move(value));
             indices.emplace(current, parentIndex);
         }
@@ -383,120 +349,14 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
                        source != existing->second.source))
             continue; // Explicit user/NN pose bindings have priority.
         const auto &path = captureAncestry(object->GetTransform());
-        if (!path.hasActor || renderer->RequiresCpuPoseForGeometry()) {
-            if (path.mixedCpuPath)
-                captureTransform(object->GetTransform());
+        if (!path.hasActor || renderer->RequiresCpuPoseForGeometry())
             continue;
-        }
         const auto transform = captureTransform(object->GetTransform());
         snapshot->renderers.push_back({renderer, PhysicsTargetReference(renderer), transform,
                                        renderer->GetSubmeshIndex() >= 0 ? renderer->GetMeshPivotOffset() : glm::vec3(0),
                                        renderer->GetLocalBoundsMin(), renderer->GetLocalBoundsMax()});
     }
-    if (captureCpuConsumers) {
-        std::vector<Transform *> consumers;
-        SceneManager::Instance().CollectPresentationWorldTransforms(consumers);
-        for (auto *transform : consumers)
-            if (captureAncestry(transform).mixedCpuPath)
-                captureTransform(transform);
-        // A new physics generation can dirty a palette whose previous work
-        // has already left the pending queue. Use its registered hierarchy.
-        for (const auto &[bone, skeleton] : world.render.skeletonBoneOwners)
-            if (captureAncestry(bone).mixedCpuPath)
-                captureTransform(bone);
-    }
     return snapshot;
-}
-
-bool JoltGpuRenderBindings::HasMixedHierarchy(const Snapshot &snapshot) const
-{
-    return !snapshot.cpuAnchors.empty();
-}
-
-std::vector<Rigidbody *> JoltGpuRenderBindings::MixedGpuAncestors(const Snapshot &snapshot) const
-{
-    std::vector<Rigidbody *> result;
-    std::vector<uint8_t> needed(snapshot.transforms.size());
-    for (const auto &[index, anchor] : snapshot.cpuAnchors)
-        if (const auto parent = snapshot.transforms[index].parent; parent != NoNode)
-            needed[parent] = 1;
-    for (size_t i = snapshot.transforms.size(); i > 0; --i) {
-        if (needed[i - 1]) {
-            const auto parent = snapshot.transforms[i - 1].parent;
-            if (parent != NoNode)
-                needed[parent] = 1;
-        }
-    }
-    for (size_t i = 0; i < snapshot.transforms.size(); ++i) {
-        const auto &value = snapshot.transforms[i];
-        if (needed[i] && value.gpuBody && value.reference.GetComponent() == value.identity)
-            if (auto *body = PhysicsWorld::Instance().FindRigidbodyByBodyId(value.bodyId))
-                result.push_back(body);
-    }
-    return result;
-}
-
-JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::ResolveMixedAnchors(SnapshotPtr snapshot,
-                                                                              const MixedPose &pose) const
-{
-    auto resolved = std::make_shared<Snapshot>(*snapshot);
-    const Snapshot::CpuAnchor root{glm::mat4(1), glm::mat4(1), glm::quat(1, 0, 0, 0)};
-    std::vector<Snapshot::CpuAnchor> hierarchy(resolved->transforms.size());
-    std::vector<uint32_t> path;
-    const auto compose = [](const glm::mat4 &left, const glm::mat4 &right) {
-        const auto result = transform_math::ComposeAffine(glm::value_ptr(left), glm::value_ptr(right));
-        return glm::make_mat4(result.data());
-    };
-    constexpr auto position = static_cast<uint8_t>(PhysicsTargetChannels::Position);
-    constexpr auto rotation = static_cast<uint8_t>(PhysicsTargetChannels::Rotation);
-    for (size_t i = 0; i < resolved->transforms.size(); ++i) {
-        auto &value = resolved->transforms[i];
-        const auto &parent = value.parent == NoNode ? root : hierarchy[value.parent];
-        auto worldPosition = value.worldPosition;
-        auto worldRotation = value.worldRotation;
-        const auto anchor = resolved->cpuAnchors.find(static_cast<uint32_t>(i));
-        if (anchor != resolved->cpuAnchors.end() || value.gpuBody) {
-            if (const auto sample = pose(value.bodyId, anchor != resolved->cpuAnchors.end())) {
-                if (sample->channels & position)
-                    worldPosition = sample->position;
-                if (sample->channels & rotation)
-                    worldRotation = sample->rotation;
-            }
-        }
-        if (worldPosition || worldRotation || anchor != resolved->cpuAnchors.end()) {
-            path.clear();
-            for (auto index = value.parent; index != NoNode; index = resolved->transforms[index].parent)
-                path.push_back(index);
-        }
-        if (worldPosition) {
-            value.position = *worldPosition;
-            // Match Transform::InverseTransformPoint, including collapsed scales.
-            for (auto it = path.rbegin(); it != path.rend(); ++it) {
-                const auto &ancestor = resolved->transforms[*it];
-                const auto &q = ancestor.rotation;
-                const auto delta = value.position - ancestor.position;
-                const auto rotated = transform_math::RotateLocal({-q.x, -q.y, -q.z, q.w}, {delta.x, delta.y, delta.z});
-                const auto scale =
-                    transform_math::InverseLocalScale({ancestor.scale.x, ancestor.scale.y, ancestor.scale.z});
-                value.position = {rotated[0] * scale[0], rotated[1] * scale[1], rotated[2] * scale[2]};
-            }
-        }
-        if (worldRotation) {
-            value.rotation = *worldRotation;
-            for (auto it = path.rbegin(); it != path.rend(); ++it)
-                value.rotation = Multiply(glm::conjugate(resolved->transforms[*it].rotation), value.rotation);
-        }
-        auto &result = hierarchy[i];
-        result.world = compose(parent.world, value.LocalMatrix());
-        result.inverse = compose(value.LocalInverse(), parent.inverse);
-        if (anchor != resolved->cpuAnchors.end()) {
-            result.rotation = value.rotation;
-            for (const auto index : path)
-                result.rotation = Multiply(resolved->transforms[index].rotation, result.rotation);
-            anchor->second = result;
-        }
-    }
-    return resolved;
 }
 
 bool JoltGpuRenderBindings::NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const
@@ -529,9 +389,6 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
     }
     std::vector<std::shared_ptr<const JoltGpuScene::PublishedActor>> actors(captured.transforms.size());
     for (size_t i = 0; i < captured.transforms.size(); ++i) {
-        // A CPU anchor may retain a parked GPU allocation under the same ID.
-        if (captured.cpuAnchors.count(static_cast<uint32_t>(i)))
-            continue;
         if (const auto found = actorByHandle.find(captured.transforms[i].actor); found != actorByHandle.end())
             actors[i] = found->second;
     }
@@ -557,12 +414,7 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
         const auto &transform = captured.transforms[i];
         const auto &parent = transform.parent == NoNode ? noParent : chains[transform.parent];
         auto &chain = chains[i];
-        if (const auto anchor = captured.cpuAnchors.find(static_cast<uint32_t>(i));
-            anchor != captured.cpuAnchors.end()) {
-            chain.affine = anchor->second.world;
-            chain.inverse = anchor->second.inverse;
-            chain.rotation = anchor->second.rotation;
-        } else if (actors[i]) {
+        if (actors[i]) {
             auto &node = prepared.nodes[nodeIndices[i]];
             node.bodyParent = {actors[i]->slot, parent.root == NoNode ? NoNode : nodeIndices[parent.root], 0, 0};
             node.rootCOM = actors[i]->rootCenterOfMass;
@@ -606,17 +458,13 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
 }
 
 bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
-                                    const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration,
-                                    const std::function<void()> &commitTransforms)
+                                    const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration)
 {
     const auto &snapshot = *prepared.snapshot;
     if (snapshot.lifetime != m_impl->lifetime)
         return false; // A completed old job cannot reacquire bindings after Stop.
     auto &physics = PhysicsECSStore::Instance();
     const auto currentHierarchy = CurrentHierarchy(snapshot);
-    if (commitTransforms &&
-        std::find(currentHierarchy.begin(), currentHierarchy.end(), uint8_t(0)) != currentHierarchy.end())
-        return false;
     ActiveHierarchy active;
     std::unordered_map<const Snapshot *, HierarchyComparison> hierarchyComparisons;
     std::unordered_set<MeshRenderer *> retained;
@@ -653,11 +501,6 @@ bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_
             continue;
         }
         outputs.push_back(output);
-    }
-    if (commitTransforms) {
-        if (!allPublished)
-            return false;
-        commitTransforms();
     }
     // Removed components and explicit replacement sources no longer belong
     // to the automatic publication. Clearing them cannot release a user source.

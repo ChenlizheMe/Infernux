@@ -584,13 +584,12 @@ JoltGpuControlWork JoltGpuNarrowphase::PrepareSweeps(const JoltGpuStorage &stora
 
 JoltGpuControlWork JoltGpuNarrowphase::PrepareSweepEvent(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
                                                          FrameWorkOwner &budget, float fraction, float remainingSeconds,
-                                                         bool localImpact, bool reportImpacts,
-                                                         std::function<void()> completed)
+                                                         bool reportImpacts, std::function<void()> completed)
 {
     auto execution = std::make_shared<Impl::Execution>(
         m_impl, storage, inputs, budget, [done = std::move(completed)](std::optional<float>) { done(); }, true,
         remainingSeconds, false, reportImpacts);
-    execution->expectLocalContact = localImpact;
+    execution->expectLocalContact = true;
     std::memcpy(&execution->motionFraction, &fraction, sizeof(fraction));
     execution->retainChoices = [&inputs](const auto &choices) { inputs.SetSweepChoices(choices); };
     // Without local rows, each body can reach the event and rebase its motion in one invocation.

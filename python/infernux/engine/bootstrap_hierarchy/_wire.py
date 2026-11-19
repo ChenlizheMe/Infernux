@@ -151,6 +151,21 @@ def wire_hierarchy_callbacks(bs: EditorBootstrap) -> None:
     hp.select_id = lambda oid: selection.select_scene_object(
         oid, owner_id="hierarchy"
     )
+    def _select_scene(world_id):
+        from infernux.engine.interaction import DocumentRegistry, SelectionTarget
+        document_id = bs.scene_file_manager.document_id_for_scene(int(world_id))
+        document = DocumentRegistry.instance().get(document_id) if document_id else None
+        if document is None or bs.scene_file_manager.is_prefab_mode:
+            return
+        if document.resource_path:
+            # The very same AssetSelection path as a FileManager click.
+            bs._on_project_selection_changed([document.resource_path], document.resource_path)
+        else:
+            selection.select(
+                SelectionTarget.settings_element(document_id, "scene", sub_kind="scene"),
+                owner_id="hierarchy", reason="hierarchy_scene_select", record_history=True,
+            )
+    hp.select_scene = _select_scene
     hp.toggle_id = lambda oid: selection.toggle_scene_object(
         oid, owner_id="hierarchy"
     )

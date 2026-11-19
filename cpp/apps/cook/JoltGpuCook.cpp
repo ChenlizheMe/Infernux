@@ -31,8 +31,7 @@ ShaderSourceModule LoadModule(const std::filesystem::path &root, const char *nam
     return {name, path, ReadSource(root / path)};
 }
 
-ShaderSourceModule LoadProgramSource(const std::filesystem::path &root, const std::filesystem::path &jolt,
-                                     JoltGpuProgram program)
+ShaderSourceModule LoadProgramSource(const std::filesystem::path &jolt, JoltGpuProgram program)
 {
     switch (program) {
     case JoltGpuProgram::ArticulationCapture:
@@ -63,12 +62,6 @@ ShaderSourceModule LoadProgramSource(const std::filesystem::path &root, const st
         return LoadModule(jolt, "jph_gpu_render_poses", "Jolt/GPU/Shaders/render_poses.slang");
     case JoltGpuProgram::Joints:
         return LoadModule(jolt, "jph_gpu_joints", "Jolt/GPU/Shaders/joint_commands.slang");
-    case JoltGpuProgram::CrossDomainCandidates:
-        return {"inx_cross_domain_candidates", "Jolt/GPU/Shaders/cross_domain_candidates.slang",
-                ReadSource(root / "cpp/infernux/function/scene/physics/shaders/cross_domain_candidates.slang")};
-    case JoltGpuProgram::CrossDomainContactSolver:
-        return {"inx_cross_domain_contact_solver", "Jolt/GPU/Shaders/cross_domain_contact_solver.slang",
-                ReadSource(root / "cpp/infernux/function/scene/physics/shaders/cross_domain_contact_solver.slang")};
     case JoltGpuProgram::Count:
         break;
     }
@@ -173,7 +166,7 @@ void CookPhysics(const std::filesystem::path &root, ShaderCodeTarget target, con
     const auto jolt = root / "external/joltphysics_for_infernux";
     const auto libraries = LoadProgramLibraries(root, jolt);
     WritePrograms(output, "InfernuxJoltGpuArchive", static_cast<unsigned>(JoltGpuProgram::Count), [&](unsigned index) {
-        const auto source = LoadProgramSource(root, jolt, static_cast<JoltGpuProgram>(index));
+        const auto source = LoadProgramSource(jolt, static_cast<JoltGpuProgram>(index));
         return SlangCompiler::Get().Compile(source, libraries, {target}, true);
     });
 }

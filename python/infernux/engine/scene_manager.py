@@ -595,6 +595,35 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         """Return every resident authored Scene document in display order."""
         return self._loaded_scene_document_ids()
 
+    def _scene_asset_document_ids(self, path: str) -> tuple[str, ...]:
+        """Include Project Inspector drafts before replacing their controller."""
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+
+        guid, _ = self._scene_asset_from_path(path)
+        return tuple(
+            document.document_id
+            for document in DocumentRegistry.instance().documents_for_resource(path, guid=guid)
+            if document.key.kind is DocumentKind.SCENE
+        )
+
+    def _resolve_scene_asset_draft(self, path: str, on_complete: Callable[[], None]) -> bool:
+        from infernux.engine.interaction import DocumentRegistry, DocumentState
+
+        registry = DocumentRegistry.instance()
+        document_ids = self._scene_asset_document_ids(path)
+        if not any(
+            (document := registry.get(document_id)) is not None
+            and (document.is_dirty or document.state is DocumentState.CONFLICT)
+            for document_id in document_ids
+        ):
+            return True
+        from infernux.engine.ui.dirty_panel_confirmation import DirtyPanelConfirmationCoordinator
+
+        DirtyPanelConfirmationCoordinator.instance().request_documents_replace(
+            document_ids, on_complete=on_complete, on_cancel=self._cancel_scene_navigation,
+        )
+        return False
+
     def _unload_non_active_scenes(self) -> None:
         """Complete an Editor Single replacement after its document commit."""
         from infernux.lib import SceneManager
@@ -1027,6 +1056,15 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if not self._can_replace_scene():
             return False
         if discard_changes:
+            from infernux.engine.interaction import DocumentActionStatus, DocumentRegistry, DocumentState
+
+            registry = DocumentRegistry.instance()
+            for identifier in self._scene_asset_document_ids(path):
+                document = registry.get(identifier)
+                if document is not None and (document.is_dirty or document.state is DocumentState.CONFLICT):
+                    result = registry.request_discard(identifier)
+                    if result.status not in {DocumentActionStatus.APPLIED, DocumentActionStatus.NO_OP}:
+                        return False
             self._stage_scene_navigation()
             if self._current_scene_path:
                 self._save_camera_state(self._current_scene_path)
@@ -1075,6 +1113,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         resident = self._binding_for_scene_guid(identity)
         if resident is not None:
             return self.activate_loaded_scene(resident.scene)
+
+        if not self._resolve_scene_asset_draft(
+            path, lambda: self._begin_deferred_additive(identity, path, record_history=record_history)
+        ):
+            return False
+
+        return self._begin_deferred_additive(identity, path, record_history=record_history)
+
+    def _begin_deferred_additive(self, identity: str, path: str, *, record_history: bool) -> bool:
+        if not self._can_replace_scene() or self.is_prefab_mode:
+            return False
 
         # The command is dispatched from the native frame.  Queue the actual
         # Scene creation/read for poll_deferred_load(), which is the owner
@@ -1134,6 +1183,11 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         resident = self._binding_for_scene_guid(identity)
         if resident is not None:
             return self.activate_loaded_scene(resident.scene)
+
+        if not self._resolve_scene_asset_draft(
+            path, lambda: self._begin_deferred_additive(identity, path, record_history=record_history)
+        ):
+            return False
 
         if record_history:
             self._stage_scene_navigation()
@@ -1299,7 +1353,9 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         from infernux.engine.interaction import DocumentRegistry, DocumentState
 
         registry = DocumentRegistry.instance()
-        document_ids = self._loaded_scene_document_ids()
+        document_ids = tuple(dict.fromkeys(
+            (*self._loaded_scene_document_ids(), *self._scene_asset_document_ids(path))
+        ))
         if any(
             (document := registry.get(document_id)) is not None
             and (document.is_dirty or document.state is DocumentState.CONFLICT)

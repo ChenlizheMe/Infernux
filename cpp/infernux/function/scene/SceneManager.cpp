@@ -641,6 +641,8 @@ Scene *SceneManager::CreateScene(const std::string &name)
     auto &world = CurrentWorld();
     auto scene = std::make_unique<Scene>(name);
     scene->m_runtimeWorld = &world;
+    if ((&world != m_authoringWorld.get() || world.simulation.isPlaying) && world.scenes.active)
+        scene->m_physicsBackend = world.scenes.active->GetPhysicsBackend();
     scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     Scene *ptr = scene.get();
     world.scenes.loaded.push_back(std::move(scene));
@@ -692,11 +694,18 @@ void SceneManager::SetActiveScene(Scene *scene)
     if (scene && world.scenes.loadedSet.find(scene) == world.scenes.loadedSet.end())
         throw std::invalid_argument("active Scene must be loaded in this SceneManager");
     const bool activeSceneChanged = scene != world.scenes.active;
+    const bool firstActiveScene = scene && !world.scenes.active;
+    if (scene && activeSceneChanged && !firstActiveScene &&
+        (&world != m_authoringWorld.get() || world.simulation.isPlaying) &&
+        scene->GetPhysicsBackend() != world.GetPhysicsBackend())
+        throw std::invalid_argument("Runtime Scenes in the same world must use the same physics backend");
     if (activeSceneChanged && world.simulation.isPlaying)
         FlushPersistentPromotions();
 
     world.scenes.active = scene;
     if (world.scenes.active) {
+        if (firstActiveScene)
+            PhysicsWorld::Instance().ConfigureSceneBackend(world, scene->GetPhysicsBackend());
         world.scenes.active->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
         world.scenes.active->SetPlaying(world.simulation.isPlaying);
     }
@@ -1327,8 +1336,6 @@ bool SceneManager::ServicePausedAuthorPresentation()
         return false;
     if (physics.IsFixedPublicationHeld(*world.physics))
         return true; // Resume the held Fixed before consuming this author request.
-    if (!physics.ServiceMixedRenderPoses())
-        return false;
     const auto serial = world.pausedAuthor.requested;
     const auto epoch = world.simulation.simulationEpoch;
     const auto publish = m_pausedAuthorPublication;
@@ -1348,10 +1355,7 @@ bool SceneManager::TryPublishRuntimeFrame()
     auto &world = CurrentWorld();
     if (world.frame.phase != RuntimeWorld::FramePhase::Publish || !CanContinueRuntimeFrame())
         return false;
-    if (!PhysicsWorld::Instance().ServiceMixedRenderPoses())
-        return false;
     const auto admittedState = GetSimulationState();
-    // A completed mixed pose can make a palette dirty after FinalizeRuntimeTransforms.
     PublishSkeletonPoses();
     const auto publish = m_runtimeFramePublication;
     if (publish && !publish(world))
@@ -2903,8 +2907,6 @@ bool SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler, const Simula
         if (!RuntimeResultsReady(RuntimeFrameBarrier::PhysicsToTransform) || !validWorld())
             return false;
         if (world.simulation.fixedHasPhysics) {
-            if (!PhysicsWorld::Instance().ServiceMixedRenderPoses())
-                return false;
             const auto phaseStart = ProfileClock::now();
             // The world published one completed GPU generation. Invalidating
             // consumers here does not read every body back into Transform.

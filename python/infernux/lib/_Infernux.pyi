@@ -1963,10 +1963,19 @@ class _ScenePlayModeSnapshot:
     def _preflight_resource_dependencies(self) -> None: ...
 
 
+class PhysicsBackend(IntEnum):
+    CPU = 0
+    GPU = 1
+
+
 class Scene:
     """A single scene containing GameObjects."""
 
     name: str
+    physics_backend: PhysicsBackend
+
+    @property
+    def physics_backend_writable(self) -> bool: ...
 
     @property
     def is_preview(self) -> bool: ...
@@ -3777,6 +3786,7 @@ class HierarchyPanel(EditorPanel):
     # Selection callbacks
     is_selected: Any
     select_id: Any
+    select_scene: Callable[[int], None]
     toggle_id: Any
     range_select_id: Any
     clear_selection: Any
@@ -5147,9 +5157,6 @@ class MeshCollider(Collider):
 class PhysicsBody(Component):
     """Abstract native physics component."""
 
-    gpu: bool
-    cross_backend_interaction: bool
-
 
 class Rigidbody(PhysicsBody):
     """Physics rigid body component."""
@@ -5517,6 +5524,12 @@ class Physics:
         origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32],
         output: dict[str, Any], max_distance: float = 1000.0,
         layer_mask: Optional[int] = ..., query_triggers: bool = True, profile: bool = False,
+    ) -> dict[str, Any]: ...
+    @staticmethod
+    def raycast_into(
+        origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32],
+        output: dict[str, Any], max_distance: float = 1000.0,
+        layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> dict[str, Any]: ...
     @staticmethod
     def raycast_all(

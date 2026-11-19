@@ -143,16 +143,8 @@ py::array_t<T> RaycastBatchOutput(py::dict &output, const char *name, py::ssize_
     return py::reinterpret_borrow<py::array_t<T>>(value);
 }
 
-py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, float maxDistance,
-                      std::optional<uint32_t> requestedMask, bool queryTriggers, bool profileEnabled)
+const float *ValidateRaycastBatchInputs(const py::array &origins, const py::array &directions, float maxDistance)
 {
-    const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
-    const auto profileNowNs = []() noexcept {
-        return static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
-                .count());
-    };
-    const uint64_t validationStartNs = profileEnabled ? profileNowNs() : 0;
     RequireRaycastBatchInput(origins, "origins");
     RequireRaycastBatchInput(directions, "directions");
     if (origins.shape(0) != directions.shape(0))
@@ -194,6 +186,23 @@ py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, 
         }
         normalizedDirectionData = normalizedDirections.data();
     }
+
+    return normalizedDirectionData;
+}
+
+py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, float maxDistance,
+                      std::optional<uint32_t> requestedMask, bool queryTriggers, bool profileEnabled)
+{
+    const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
+    const auto profileNowNs = []() noexcept {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    };
+    const uint64_t validationStartNs = profileEnabled ? profileNowNs() : 0;
+    const float *normalizedDirectionData = ValidateRaycastBatchInputs(origins, directions, maxDistance);
+    const auto count = origins.shape(0);
+    const auto *originData = static_cast<const float *>(origins.data());
 
     auto hit = RaycastBatchOutput<uint8_t>(output, "hit", count);
     auto point = RaycastBatchOutput<float>(output, "point", count, 3);
@@ -496,6 +505,56 @@ std::shared_ptr<rhi::ComputeBuffer> ComputeOutput(py::dict &output, const char *
         throw py::value_error("GPU state outputs must belong to the same compute host");
     host = &buffer->GetHost();
     return buffer;
+}
+
+py::dict RaycastInto(py::array origins, py::array directions, py::dict output, float maxDistance,
+                     std::optional<uint32_t> requestedMask, bool queryTriggers)
+{
+    const auto layers = ResolveQueryLayerMask(requestedMask);
+    const auto *normalized = ValidateRaycastBatchInputs(origins, directions, maxDistance);
+    const auto count = static_cast<uint64_t>(origins.shape(0));
+    rhi::ComputeHost *host = nullptr;
+    using Field = JoltGpuQueryExportField;
+    const auto destination = [&](Field field, const char *name, rhi::ComputeScalarType scalar, uint8_t lanes) {
+        uint64_t offset = 0;
+        py::dict storage = output;
+        if (output.contains(name) && py::isinstance<py::tuple>(output[name])) {
+            const auto view = py::cast<py::tuple>(output[name]);
+            if (view.size() != 3)
+                throw py::value_error("Device raycast output view requires storage, byte offset and capacity");
+            offset = py::cast<uint64_t>(view[1]);
+            const auto capacity = py::cast<uint64_t>(view[2]);
+            if (capacity < count)
+                throw py::value_error("Device raycast output view has insufficient capacity");
+            storage = py::dict();
+            storage[name] = view[0];
+        }
+        auto buffer = ComputeOutput(storage, name, scalar, lanes, count, host);
+        const auto bytes = count * lanes * sizeof(uint32_t);
+        if (offset % (lanes * sizeof(uint32_t)) || offset > buffer->GetByteSize() ||
+            bytes > buffer->GetByteSize() - offset)
+            throw py::value_error("Device raycast output view exceeds its storage or has invalid alignment");
+        JoltGpuQueryExportBinding binding{field, std::move(buffer)};
+        binding.byteOffset = offset;
+        return binding;
+    };
+    const std::vector<JoltGpuQueryExportBinding> exports{
+        destination(Field::HitValid, "hit", rhi::ComputeScalarType::UInt32, 1),
+        destination(Field::HitPoint, "point", rhi::ComputeScalarType::Float32, 3),
+        destination(Field::HitNormal, "normal", rhi::ComputeScalarType::Float32, 3),
+        destination(Field::HitDistance, "distance", rhi::ComputeScalarType::Float32, 1),
+    };
+    for (const auto &binding : exports)
+        if (binding.buffer->IsFrozen())
+            throw py::value_error("Device raycast output buffers must be writable");
+    const auto source = PhysicsWorld::Instance().RaycastInto(static_cast<const float *>(origins.data()), normalized,
+                                                             count, maxDistance, exports, layers, queryTriggers);
+    output["world_id"] = source.worldId;
+    output["simulation_epoch"] = source.simulationEpoch;
+    output["fixed_step_index"] = source.fixedStepIndex;
+    output["query_generation"] = source.numericalGeneration;
+    output["count"] = count;
+    return output;
 }
 
 std::vector<JoltGpuQueryExportBinding> RigidbodyStateExports(py::dict output, uint64_t count, rhi::ComputeHost *&host)
@@ -1272,12 +1331,7 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // Rigidbody component (Unity: Rigidbody)
     // ====================================================================
-    NativeClass<PhysicsBody, Component>(m, "PhysicsBody")
-        .def_property("gpu", &PhysicsBody::IsGpuEnabled, &PhysicsBody::SetGpuEnabled,
-                      "Use GPU physics for this body. Defaults to CPU (False).")
-        .def_property("cross_backend_interaction", &PhysicsBody::AllowsCrossBackendInteraction,
-                      &PhysicsBody::SetCrossBackendInteraction,
-                      "Allow contacts with opted-in bodies on the other physics backend.");
+    NativeClass<PhysicsBody, Component>(m, "PhysicsBody");
 
     NativeClass<Rigidbody, PhysicsBody>(m, "Rigidbody")
         .def(py::init<>())
@@ -1719,12 +1773,6 @@ void RegisterPhysicsBindings(py::module_ &m)
                     "Write selected solver fields in input body order; None selects the seven float fields")
         .def_static("reset_rigidbodies", &ResetRigidbodies, "rigidbodies"_a, "state"_a,
                     "Reset resident body poses/velocities and solver history between completed fixed steps")
-        .def_static(
-            "set_rigidbody_backend",
-            [](const std::vector<Rigidbody *> &bodies, bool gpu) {
-                PhysicsWorld::Instance().SetRigidbodyBackend(bodies, gpu);
-            },
-            "rigidbodies"_a, "gpu"_a, "Transfer a complete live Rigidbody group at a fixed step boundary")
         .def_static("_write_rigidbody_state_buffers", &WriteRigidbodyStateBuffers, "rigidbodies"_a, "output"_a,
                     "Gather solver state on GPU and write resident buffers under one immutable snapshot")
         .def_static("_write_rigidbody_state_and_box_state_buffers", &WriteRigidbodyStateAndBoxStateBuffers,
@@ -1802,6 +1850,8 @@ void RegisterPhysicsBindings(py::module_ &m)
             },
             "origin"_a, "direction"_a, "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(),
             "query_triggers"_a = true, "Cast a ray. Returns RaycastHit or None.")
+        .def_static("raycast_into", &RaycastInto, "origins"_a.noconvert(), "directions"_a.noconvert(), "output"_a,
+                    "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(), "query_triggers"_a = true)
         .def_static("raycast_batch", &RaycastBatch, "origins"_a.noconvert(), "directions"_a.noconvert(), "output"_a,
                     "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(), "query_triggers"_a = true,
                     "profile"_a = false,

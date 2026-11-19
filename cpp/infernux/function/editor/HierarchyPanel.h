@@ -60,6 +60,7 @@ class HierarchyPanel : public EditorPanel
 
     std::function<bool(uint64_t)> isSelected;
     std::function<void(uint64_t)> selectId;
+    std::function<void(uint64_t)> selectScene;
     std::function<void(uint64_t)> toggleId;
     std::function<void(uint64_t)> rangeSelectId;
     std::function<void()> clearSelection;

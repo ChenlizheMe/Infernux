@@ -11,6 +11,8 @@ class in <b>infernux.components.builtin</b>
 Controls physics simulation for the GameObject.
 
 <!-- USER CONTENT START --> description
+All Rigidbody components use the physics backend selected for their Scene. Backend selection belongs to the Scene, and joint endpoints must belong to the same physics domain.
+
 **Status:** Preview · **Verified with:** 0.4.8
 
 For dynamic bodies, use forces or velocity rather than writing Transform every frame. Use move operations for kinematic bodies and issue simulation commands from fixed updates.

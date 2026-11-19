@@ -275,9 +275,10 @@ void PhysicsWorld::ReconcileRagdolls(PhysicsDomain &domain)
                     view.ready = false;
                     continue;
                 }
-                if (registered->backend != parentBody->backend || registered->backend == Backend::StaticBoundary)
-                    throw std::invalid_argument("Ragdoll joint endpoints must have the same Rigidbody backend");
-                member.gpuJoint = registered->backend == Backend::Gpu;
+                const auto sceneBackend = domain.UsesGpu() ? Backend::Gpu : Backend::Cpu;
+                if (registered->backend != sceneBackend || parentBody->backend != sceneBackend)
+                    throw std::invalid_argument("Ragdoll joint endpoints must use their Scene physics backend");
+                member.gpuJoint = domain.UsesGpu();
                 if (member.gpuJoint) {
                     if (!domain.gpuRegistered) {
                         view.ready = false;
@@ -488,6 +489,8 @@ void PhysicsWorld::QueueRagdollPoseDrives(PhysicsDomain &domain, const std::vect
     std::vector<JoltCpuControl::JointPoseDrive> cpu;
     std::vector<JoltGpuScene::PoseDriveIntent> gpu;
     for (const auto &drive : drives) {
+        if (drive.gpu != domain.UsesGpu())
+            throw std::logic_error("Ragdoll drive differs from its Scene physics backend");
         const auto value = drive.relative.value_or(glm::quat(1, 0, 0, 0));
         if (drive.gpu) {
             if (domain.gpuRegistered)

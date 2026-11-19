@@ -39,6 +39,10 @@ enum class JoltGpuQueryExportField : uint32_t
     ShapeRotation = JPH::GPU::QueryExportShapeRotation,
     ShapeFriction = JPH::GPU::QueryExportShapeFriction,
     ShapeBounciness = JPH::GPU::QueryExportShapeBounciness,
+    HitPoint = JPH::GPU::QueryExportHitPoint,
+    HitNormal = JPH::GPU::QueryExportHitNormal,
+    HitDistance = JPH::GPU::QueryExportHitDistance,
+    HitValid = JPH::GPU::QueryExportHitValid,
 };
 
 struct JoltGpuQueryExportBinding

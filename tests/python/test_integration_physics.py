@@ -21,6 +21,7 @@ from infernux.lib import (
     InxPhysicMaterial,
     Physics,
     PrimitiveType,
+    PhysicsBackend,
     RigidbodyConstraints,
     SceneManager,
     Vector3,
@@ -110,7 +111,9 @@ def test_additive_scene_rigidbody_collides_with_other_scene_ground(scene):
 
 
 class TestHingeJoint:
-    def test_world_hinge_preserves_anchor_and_limits_rotation(self, scene):
+    @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
+    def test_world_hinge_preserves_anchor_and_limits_rotation(self, scene, backend, _physics_play):
+        scene.physics_backend = backend
         body = scene.create_game_object("WorldHinge")
         body.transform.position = Vector3(1.0, 3.0, 0.0)
         rigidbody = body.add_component("Rigidbody")
@@ -124,19 +127,22 @@ class TestHingeJoint:
         hinge.minimum_angle = -35.0
         hinge.maximum_angle = 35.0
 
-        manager = SceneManager.instance()
-        manager.play()
-        manager.pause()
-        _step_frames(240)
+        runtime = _physics_play.start()
+        with _physics_play.scope():
+            body = runtime.find("WorldHinge")
+            rigidbody = body.get_component("Rigidbody")
+            hinge = body.get_component("HingeJoint")
+            assert runtime.physics_backend == backend
+            _physics_play.frames(240)
 
-        rotated_anchor = _rotate_vector(rigidbody.rotation, Vector3(-1.0, 0.0, 0.0))
-        world_anchor = rigidbody.position + rotated_anchor
-        assert world_anchor.x == pytest.approx(0.0, abs=0.025)
-        assert world_anchor.y == pytest.approx(3.0, abs=0.025)
-        assert world_anchor.z == pytest.approx(0.0, abs=0.025)
-        assert -35.5 <= hinge.current_angle <= 35.5
-        assert abs(hinge.current_angle) > 20.0
-        assert abs(rigidbody.position.z) < 0.025
+            rotated_anchor = _rotate_vector(rigidbody.rotation, Vector3(-1.0, 0.0, 0.0))
+            world_anchor = rigidbody.position + rotated_anchor
+            assert world_anchor.x == pytest.approx(0.0, abs=0.025)
+            assert world_anchor.y == pytest.approx(3.0, abs=0.025)
+            assert world_anchor.z == pytest.approx(0.0, abs=0.025)
+            assert -35.5 <= hinge.current_angle <= 35.5
+            assert abs(hinge.current_angle) > 20.0
+            assert abs(rigidbody.position.z) < 0.025
 
     def test_connected_body_reference_and_serialized_contract(self, scene):
         support = scene.create_game_object("HingeSupport")
@@ -1141,94 +1147,112 @@ class TestRigidbodyPose:
             rigidbody.move_position(Vector3(1, 2, 3))
 
 
-class _PreparedPhysicsPlay:
-    @pytest.fixture
-    def _normal_play(self, _collider_authoring_project):
-        """Prepare an authored scene through the normal editor Play owner."""
-        import time
-        from types import SimpleNamespace
-        from infernux.components.script_loader import load_and_create_component
-        from infernux.core.assets import AssetManager
-        from infernux.lib import _Infernux
-        from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
-        from infernux.world import WorldManager
+@pytest.fixture
+def _physics_play(_collider_authoring_project):
+    """Prepare an authored scene through the normal editor Play owner."""
+    import time
+    from types import SimpleNamespace
+    from infernux.components.script_loader import load_and_create_component
+    from infernux.core.assets import AssetManager
+    from infernux.lib import _Infernux
+    from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+    from infernux.world import WorldManager
 
-        state = _collider_authoring_project
-        world = None
-        pipeline = RenderStackPipeline()
-        state.host._engine.set_render_pipeline(pipeline)
+    state = _collider_authoring_project
+    world = None
+    # The renderer starts with a lit demo Scene. It is unrelated to this test;
+    # retain only this fixture's Scene and additive Scenes created by the test.
+    for index in range(int(state.native.scene_count) - 1, -1, -1):
+        resident = state.native.get_scene_at(index)
+        if resident is not state.scene:
+            state.native.unload_scene(resident)
+    pipeline = RenderStackPipeline()
+    state.host._engine.set_render_pipeline(pipeline)
 
-        def until(predicate, label):
-            deadline = time.monotonic() + 60.0
-            while not predicate():
-                assert time.monotonic() < deadline, label
-                state.runner.tick()
-                state.host.tick(0.0)
+    def until(predicate, label):
+        deadline = time.monotonic() + 60.0
+        while not predicate():
+            assert time.monotonic() < deadline, label
+            state.runner.tick()
+            state.host.tick(0.0)
 
-        def add_probe(owner):
-            path = state.path.parent / "ColliderIgnoreProbe.py"
-            path.write_text(
-                "from infernux.components import InxComponent\n"
-                "class ColliderIgnoreProbe(InxComponent):\n"
-                "    def awake(self): self.events = []\n"
-                "    def on_collision_enter(self, collision): self.events.append(collision)\n",
-                encoding="utf-8",
-            )
-            imported = AssetManager.import_asset(str(path), database=state.manager._asset_database)
-            assert imported.succeeded and imported.guid
-            probe = load_and_create_component(
-                str(path), state.manager._asset_database, "ColliderIgnoreProbe", script_guid=imported.guid
-            )
-            assert probe is not None
-            owner.add_py_component(probe)
+    def add_probe(owner):
+        path = state.path.parent / "ColliderIgnoreProbe.py"
+        path.write_text(
+            "from infernux.components import InxComponent\n"
+            "class ColliderIgnoreProbe(InxComponent):\n"
+            "    def awake(self): self.events = []\n"
+            "    def on_collision_enter(self, collision): self.events.append(collision)\n",
+            encoding="utf-8",
+        )
+        imported = AssetManager.import_asset(str(path), database=state.manager._asset_database)
+        assert imported.succeeded and imported.guid
+        probe = load_and_create_component(
+            str(path), state.manager._asset_database, "ColliderIgnoreProbe", script_guid=imported.guid
+        )
+        assert probe is not None
+        owner.add_py_component(probe)
 
-        def start():
-            nonlocal world
+    def start(*, publish_asset=True):
+        nonlocal world
+        for index in range(int(state.native.scene_count)):
+            resident = state.native.get_scene_at(index)
+            assert resident.physics_backend == state.scene.physics_backend
+        if publish_asset:
             # Publish the final GUID Scene, including this test's actual setup.
             state.path.write_text(state.scene.serialize_asset(), encoding="utf-8")
             assert state.manager._asset_database.import_asset(str(state.path)).succeeded
-            state.manager.initial_world_count = 1
-            assert state.manager.enter_play_mode()
+        state.manager.initial_world_count = 1
+        assert state.manager.enter_play_mode()
 
-            def ready():
-                if not state.manager.is_playing:
-                    return False
-                worlds = WorldManager.get_worlds()
-                assert all(value.state not in ("failed", "cancelled", "destroyed") for value in worlds)
-                return len(worlds) == 1 and worlds[0].is_ready
+        def ready():
+            if not state.manager.is_playing:
+                return False
+            worlds = WorldManager.get_worlds()
+            assert all(value.state not in ("failed", "cancelled", "destroyed") for value in worlds)
+            return len(worlds) == 1 and worlds[0].is_ready
 
-            until(ready, "Normal Play world preparation timed out")
-            world, = WorldManager.get_worlds()
-            assert state.manager.pause()
-            with _Infernux._RuntimeWorldScope(world.id):
-                runtime = world.get_active_scene()
-                assert runtime is not state.scene
-                assert runtime.world_id != state.scene.world_id
-                return runtime
+        until(ready, "Normal Play world preparation timed out")
+        world, = WorldManager.get_worlds()
+        assert state.manager.pause()
+        with _Infernux._RuntimeWorldScope(world.id):
+            runtime = world.get_active_scene()
+            assert runtime is not state.scene
+            assert runtime.world_id != state.scene.world_id
+            assert runtime._runtime_world_id == world.id
+            assert runtime.physics_backend == state.scene.physics_backend
+            assert not runtime.physics_backend_writable
+            return runtime
 
-        def frames(count, delta=1.0 / 60.0):
-            # Each request advances the specified amount of simulation time.
-            # Host opportunities only drain the admitted step; they add no time.
-            for _ in range(count):
-                state.native.step(delta)
-                until(lambda: not state.native.is_stepping(),
-                      "Paused simulation frame did not complete")
-            with _Infernux._RuntimeWorldScope(world.id):
-                assert not state.native.fixed_step_pending
-                assert state.native.completed_fixed_step_index == state.native.published_fixed_step_index
+    def frames(count, delta=1.0 / 60.0):
+        # Each request advances the specified amount of simulation time.
+        # Host opportunities only drain the admitted step; they add no time.
+        for _ in range(count):
+            state.native.step(delta)
+            until(lambda: not state.native.is_stepping(),
+                  "Paused simulation frame did not complete")
+        with _Infernux._RuntimeWorldScope(world.id):
+            assert not state.native.fixed_step_pending
+            assert state.native.completed_fixed_step_index == state.native.published_fixed_step_index
 
+    try:
+        yield SimpleNamespace(start=start, frames=frames, add_probe=add_probe,
+                              scope=lambda: _Infernux._RuntimeWorldScope(world.id))
+    finally:
         try:
-            yield SimpleNamespace(start=start, frames=frames, add_probe=add_probe,
-                                  scope=lambda: _Infernux._RuntimeWorldScope(world.id))
+            if state.manager.is_playing:
+                assert state.manager.exit_play_mode()
+                until(lambda: state.manager.is_edit_mode and not state.host._world_runtimes
+                      and state.host._runtime_world_session is None,
+                      "Normal Stop did not retire the runtime worlds")
         finally:
-            try:
-                if state.manager.is_playing:
-                    assert state.manager.exit_play_mode()
-                    until(lambda: state.manager.is_edit_mode and not state.host._world_runtimes
-                          and state.host._runtime_world_session is None,
-                          "Normal Stop did not retire the runtime worlds")
-            finally:
-                state.host._engine.set_render_pipeline(None)
+            state.host._engine.set_render_pipeline(None)
+
+
+class _PreparedPhysicsPlay:
+    @pytest.fixture
+    def _normal_play(self, _physics_play):
+        return _physics_play
 
 
 class TestFixedTiming(_PreparedPhysicsPlay):

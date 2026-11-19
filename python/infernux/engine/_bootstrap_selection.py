@@ -860,6 +860,15 @@ class BootstrapSelectionMixin:
             self._set_outline(0, [])
             return
 
+        if domain is SelectionDomain.SETTINGS_ELEMENT and primary is not None and primary.sub_kind == "scene":
+            from infernux.engine.ui.inspector_snapshot import InspectorSnapshotService, InspectorTarget
+            path = f"scene-document:{primary.document_id}"
+            InspectorSnapshotService.instance().set_active_target(InspectorTarget.asset(path))
+            inspector.set_selected_file(path, "scene")
+            self.project_panel.clear_selection(False)
+            self._set_outline(0, [])
+            return
+
         if domain in (SelectionDomain.ASSET, SelectionDomain.ASSET_SUBRESOURCE):
             paths = [
                 _project_path_for_target(target)

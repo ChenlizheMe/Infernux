@@ -44,8 +44,6 @@ enum Entry : uint8_t
     Wake,
     ForceWake,
     Update,
-    ReadExternalVotes,
-    VetoExternal,
     Commit,
     RetireHinge,
     CaptureBounds,
@@ -65,8 +63,6 @@ constexpr std::array<std::string_view, EntryCount> Names{"sleep_clear_votes",
                                                          "sleep_wake_components",
                                                          "sleep_wake_force_input",
                                                          "sleep_update_history",
-                                                         "sleep_read_external_votes",
-                                                         "sleep_veto_external",
                                                          "sleep_commit_components",
                                                          "sleep_retire_hinge_momentum",
                                                          "sleep_capture_old_bounds",
@@ -89,8 +85,6 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | B | S | R | C | Bit(States),
                                                  P | W | B | S | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | C | Bit(States) | Bit(Forces),
-                                                 P | W | R | C | Bit(Requests) | Bit(Results),
-                                                 P | W | R | C | Bit(Requests),
                                                  P | W | B | S | R | C | Bit(States),
                                                  P | W | B | S | R | Bit(Joints),
                                                  P | B | S | R | Bit(States) | Bit(Bounds),
@@ -273,18 +267,6 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         requestBytes.resize(requests.size() * sizeof(uint32_t));
         if (!requests.empty())
             std::memcpy(requestBytes.data(), requests.data(), requestBytes.size());
-    }
-    void AddSleepCommit(SleepWorkParameters p, uint32_t jointFirst, uint32_t jointCount,
-                        const std::vector<uint32_t> &awake)
-    {
-        if (!awake.empty()) {
-            SetRequests(awake);
-            Add(VetoExternal, 0, static_cast<uint32_t>(awake.size()), p);
-        }
-        Add(Commit, p.selected.y, p.selected.z, p);
-        p.layout.z = jointFirst;
-        p.layout.w = jointCount;
-        Add(RetireHinge, jointFirst, jointCount, p);
     }
     template <class F> void OnComplete(F done)
     {
@@ -543,8 +525,8 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-                                                const BodySleepParameters &settings, JoltGpuSleepCoupling coupling,
-                                                std::function<void()> done, DeferredValidation deferValidation)
+                                                const BodySleepParameters &settings, std::function<void()> done,
+                                                DeferredValidation deferValidation)
 {
     if (!std::isfinite(settings.timing.x) || settings.timing.x <= 0 || !std::isfinite(settings.timing.y) ||
         settings.timing.y < 0 || !std::isfinite(settings.timing.z) || settings.timing.z <= 0 || settings.timing.w != 0)
@@ -565,31 +547,12 @@ JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, c
     e->Add(Clear, p.selected.y, p.selected.z, p);
     e->Add(Update, p.selected.y, p.selected.z, p);
     const auto &step = inputs.GetParameters();
-    const auto jointFirst = step.selection.w, jointCount = step.selectedCounts.z;
-    if (!coupling.resolve) {
-        // No later CPU decision consumes this status. Keep its real readback,
-        // and let the Tick validate it before publishing the completed step.
-        e->deferValidation = std::move(deferValidation);
-        e->AddSleepCommit(p, jointFirst, jointCount, coupling.endpoints);
-        e->OnComplete([done = std::move(done)](auto &) { done(); });
-        return e->Next();
-    }
-
-    e->SetRequests(coupling.endpoints);
-    e->resultBytes = uint64_t(coupling.endpoints.size()) * sizeof(UInt4);
-    e->query = true;
-    e->Add(ReadExternalVotes, 0, static_cast<uint32_t>(coupling.endpoints.size()), p);
-    e->completed = [p, jointFirst, jointCount, resolve = std::move(coupling.resolve),
-                    done = std::move(done)](auto &ready) {
-        const auto awake = resolve(ready.queryResults);
-        auto commit = std::make_shared<Impl::Execution>(ready.owner);
-        commit->buffers = std::move(ready.buffers);
-        commit->statusIndex = ready.statusIndex;
-        commit->initializeStatus = false;
-        commit->AddSleepCommit(p, jointFirst, jointCount, awake);
-        commit->OnComplete([done = std::move(done)](auto &) { done(); });
-        return commit->Next();
-    };
+    e->deferValidation = std::move(deferValidation);
+    e->Add(Commit, p.selected.y, p.selected.z, p);
+    p.layout.z = step.selection.w;
+    p.layout.w = step.selectedCounts.z;
+    e->Add(RetireHinge, p.layout.z, p.layout.w, p);
+    e->OnComplete([done = std::move(done)](auto &) { done(); });
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareForceWake(const JoltGpuStorage &s, const StepParams &selection,

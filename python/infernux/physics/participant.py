@@ -201,9 +201,8 @@ class PhysicsBuildPlan:
         and world angular velocity in four float4 blocks. Response is world
         linear impulse followed by world angular impulse about that COM.
         Targets are distinct Rigidbodies in this World. Exchange runs while
-        every target is active, dynamic and permits cross-backend interaction.
-        Changing permission takes effect at the next Fixed boundary. The other
-        declared stages and controls continue while Exchange is suspended.
+        every target is active and dynamic in the same Scene physics domain.
+        The other declared stages and controls continue while Exchange is suspended.
 
         exchange_states maps Exchange input names to (participant, state_name).
         The Work reads or updates that participant's initialized GPU storage

@@ -47,6 +47,7 @@
 | `static Physics.raycast(origin: Any, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → Optional[Any]` | 从原点沿方向发射射线检测碰撞。 |
 | `static Physics.raycast_screen(camera: Any, screen_position: Tuple[float, float], viewport_size: Tuple[float, float], max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → Optional[Any]` | Cast from a top-left-origin camera viewport pixel position. |
 | `static Physics.raycast_batch(origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32], out: RaycastBatchOutput, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ..., profile: bool = ...) → RaycastBatchOutput` |  |
+| `static Physics.raycast_into(origins, directions, out, max_distance=1000.0, layer_mask=None, query_triggers=True)` | 在 GPU 场景中将每条射线的最近命中写入已有的计算缓冲区，供后续 GPU 程序直接读取。 |
 | `static Physics.raycast_all(origin: Any, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | 射线检测所有碰撞体。 |
 | `static Physics.overlap_sphere(center: Any, radius: float, layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | 检测球形区域内的所有碰撞体。 |
 | `static Physics.overlap_box(center: Any, half_extents: Any, orientation: Any = ..., layer_mask: int = ..., query_triggers: bool = ...) → List[Any]` | Find all colliders within an oriented box. |

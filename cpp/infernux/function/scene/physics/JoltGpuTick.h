@@ -119,18 +119,6 @@ enum class JoltGpuContactReportStage
     Sweep
 };
 
-enum class JoltGpuCoupledContactStage
-{
-    Prepare,
-    WarmVelocity,
-    Velocity,
-    Integrate,
-    PrepareSweep,
-    Sweep,
-    SettleSweep,
-    Position
-};
-
 enum class JoltGpuParticipantStage : uint32_t
 {
     Predict,
@@ -163,7 +151,7 @@ struct JoltGpuParticipantStages
         return bool(prepare);
     }
     uint32_t mask = 0;
-    bool initialControls = false, hasCpuTargets = false;
+    bool initialControls = false;
     std::vector<uint32_t> rigidBodyIds;
     std::shared_ptr<std::vector<uint32_t>> gpuBodySlots;
     std::function<JoltGpuControlWork(Stage, const JPH::GPU::StepParams &, float, uint32_t, uint32_t,
@@ -216,13 +204,6 @@ struct JoltGpuTickControl
     std::function<JoltGpuControlWork(const JoltGpuStorage &, const JoltGpuStepInputs &, const JPH::GPU::StepParams &,
                                      uint32_t, JoltGpuContactReportStage, std::function<void()>)>
         prepareContactReport;
-    // Prepare before native topology, then exchange after local velocity and position rounds.
-    // The Integrate phase releases the peer's retained pre-integration boundary once.
-    // With no local GPU rows, the caller may advance multiple independent rounds in one submission.
-    std::function<JoltGpuControlWork(const JoltGpuStorage &, JoltGpuStepInputs &, const JPH::GPU::StepParams &,
-                                     uint32_t, uint32_t, JoltGpuCoupledContactStage, uint32_t,
-                                     std::function<void(uint32_t)>)>
-        prepareCoupledContacts;
     /// Prepare exactly once after every numerical writer is accepted, including
     /// for a control-only/empty world. The input is the compact selected-world
     /// output; its states are null for a zero-body range. All packets use this source's admission and

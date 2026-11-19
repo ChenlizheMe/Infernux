@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any, List, NotRequired, Optional, Sequence, Tuple, TypedDict, Union
 import numpy as np
 import numpy.typing as npt
+from infernux.compute import Buffer
 from infernux.lib import PenetrationResult, RaycastHit
+from infernux.lib import PhysicsBackend as PhysicsBackend
 from infernux.components.builtin.collider import Collider
 from .joint_batch import HingeJointBatch as HingeJointBatch
 from .participant import Participant as Participant, PhysicsBuildPlan as PhysicsBuildPlan
@@ -39,6 +41,18 @@ class RaycastBatchOutput(TypedDict):
     profile: NotRequired[RaycastBatchProfile]
 
 
+class RaycastDeviceOutput(TypedDict):
+    hit: Buffer
+    point: Buffer
+    normal: Buffer
+    distance: Buffer
+    count: NotRequired[int]
+    world_id: NotRequired[int]
+    simulation_epoch: NotRequired[int]
+    fixed_step_index: NotRequired[int]
+    query_generation: NotRequired[int]
+
+
 class Physics:
     """Global physics system for raycasting and spatial queries."""
 
@@ -57,8 +71,6 @@ class Physics:
                              *, fields: Optional[Sequence[str]] = ...) -> dict[str, Any]: ...
     @staticmethod
     def reset_rigidbodies(rigidbodies: Sequence[Any], state: dict[str, Any]) -> None: ...
-    @staticmethod
-    def set_rigidbody_backend(rigidbodies: Sequence[Any], *, gpu: bool) -> None: ...
     @staticmethod
     def get_rigidbody_states_and_box_states(
         rigidbodies: List[Any], state_out: dict[str, Any], box_out: dict[str, Any],
@@ -160,6 +172,12 @@ class Physics:
         query_triggers: bool = ...,
         profile: bool = ...,
     ) -> RaycastBatchOutput: ...
+
+    @staticmethod
+    def raycast_into(
+        origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32], out: RaycastDeviceOutput,
+        max_distance: float = ..., layer_mask: Optional[int] = ..., query_triggers: bool = ...,
+    ) -> RaycastDeviceOutput: ...
 
     @staticmethod
     def raycast_all(

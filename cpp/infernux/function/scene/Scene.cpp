@@ -16,6 +16,7 @@
 #include "function/resources/AssetDependencyGraph.h"
 #include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/resources/InxMaterial/InxMaterial.h"
+#include "physics/PhysicsWorld.h"
 #include "platform/filesystem/DocumentStore.h"
 #include <algorithm>
 #include <atomic>
@@ -94,6 +95,24 @@ uint64_t Scene::GenerateWorldId()
     return s_nextSceneWorldId.fetch_add(1, std::memory_order_relaxed);
 }
 
+bool Scene::IsPhysicsBackendWritable() const noexcept
+{
+    return !m_runtimeWorld ||
+           (m_runtimeWorld == &SceneManager::Instance().AuthoringWorld() && !m_runtimeWorld->simulation.isPlaying);
+}
+
+void Scene::SetPhysicsBackend(PhysicsBackend backend)
+{
+    if (backend != PhysicsBackend::CPU && backend != PhysicsBackend::GPU)
+        throw std::invalid_argument("Unknown scene physics backend");
+    if (backend == m_physicsBackend)
+        return;
+    RequireWritableWorld();
+    if (!IsPhysicsBackendWritable())
+        throw std::logic_error("Cannot change the physics backend of a loaded runtime Scene");
+    m_physicsBackend = backend;
+}
+
 namespace
 {
 constexpr size_t kDenseSceneObjectThreshold = 512;
@@ -152,8 +171,15 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
         return false;
     }
     static const std::unordered_set<std::string> allowedSceneFields = {
-        "name",        "isPlaying",    "objects",         "mainCameraComponentId",
-        "environment", "nextObjectId", "nextComponentId", "authoring_identity",
+        "name",
+        "isPlaying",
+        "objects",
+        "mainCameraComponentId",
+        "environment",
+        "nextObjectId",
+        "nextComponentId",
+        "authoring_identity",
+        "physics_backend",
     };
     for (const auto &[key, value] : document.items()) {
         (void)value;
@@ -168,6 +194,38 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
             return false;
         }
     }
+    if (document.contains("physics_backend") &&
+        (!document["physics_backend"].is_string() ||
+         (document["physics_backend"] != "cpu" && document["physics_backend"] != "gpu"))) {
+        INXLOG_ERROR("Scene::Deserialize: physics_backend must be 'cpu' or 'gpu'");
+        return false;
+    }
+    return true;
+}
+
+PhysicsBackend DocumentPhysicsBackend(const nlohmann::json &document)
+{
+    return document.value("physics_backend", std::string("cpu")) == "gpu" ? PhysicsBackend::GPU : PhysicsBackend::CPU;
+}
+
+bool HasCompatibleSceneBackend(const Scene &scene, PhysicsBackend backend, bool retainingWorld,
+                               bool initialDocument = false)
+{
+    auto *world = scene.GetRuntimeWorld();
+    if (!world)
+        return true;
+    if (world->scenes.persistent.get() == &scene)
+        return true;
+    if (world->scenes.active != &scene) {
+        if (world->GetPhysicsBackend() != backend) {
+            INXLOG_ERROR("Cannot add a Scene with a different physics backend to the same runtime world");
+            return false;
+        }
+    } else if (!retainingWorld && (!initialDocument || world->scenes.loaded.size() != 1) &&
+               world->GetPhysicsBackend() != backend) {
+        INXLOG_ERROR("Changing a runtime world's physics backend requires a retained Scene replacement");
+        return false;
+    }
     return true;
 }
 } // namespace
@@ -180,6 +238,9 @@ struct SceneCommitToken::Impl
     bool active = true;
     bool restoring = false;
     std::string name;
+    PhysicsBackend physicsBackend = PhysicsBackend::CPU;
+    PhysicsBackend admittedPhysicsBackend = PhysicsBackend::CPU;
+    bool hasCommittedDocument = false;
     std::vector<std::unique_ptr<GameObject>> rootObjects;
     std::unordered_map<uint64_t, GameObject *> objectsById;
     SceneAuthoringIdentity authoringIdentity;
@@ -190,6 +251,7 @@ struct SceneCommitToken::Impl
     std::vector<Scene::PendingPyComponent> pendingPyComponents;
     std::vector<ComponentRegistryNode> componentRegistryNodes;
     std::vector<PhysicsECSStore::ActorHandle> residentActors;
+    std::vector<PhysicsECSStore::ActorHandle> replacedAdditiveActors;
     Camera *mainCamera = nullptr;
     bool isLoaded = false;
     bool isPlaying = false;
@@ -223,7 +285,7 @@ void RestoreSceneComponentRegistries(Scene &scene)
 }
 } // namespace
 
-SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>())
+SceneCommitToken::SceneCommitToken(Scene &scene, PhysicsBackend incomingBackend) : m_impl(std::make_unique<Impl>())
 {
     const WorldExecutionScope worldScope(scene.GetRuntimeWorld());
     if (scene.m_retainedCommit)
@@ -236,6 +298,10 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
     Impl &state = *m_impl;
     state.scene = &scene;
     state.name = scene.m_name;
+    state.physicsBackend = scene.m_physicsBackend;
+    state.admittedPhysicsBackend =
+        scene.m_runtimeWorld ? scene.m_runtimeWorld->GetPhysicsBackend() : scene.m_physicsBackend;
+    state.hasCommittedDocument = scene.m_hasCommittedDocument;
     state.mainCamera = scene.m_mainCamera;
     state.isLoaded = scene.m_isLoaded;
     state.isPlaying = scene.m_isPlaying;
@@ -270,8 +336,14 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
     physicsStore.ForEachAliveActor([&](PhysicsActorData &actor) {
         if (actor.owner->GetScene() == &scene)
             state.residentActors.push_back(physicsStore.FindActor(actor.owner));
+        else if (scene.m_runtimeWorld && incomingBackend != state.admittedPhysicsBackend &&
+                 scene.m_runtimeWorld->scenes.active == &scene && actor.runtimeWorld == scene.m_runtimeWorld &&
+                 scene.m_runtimeWorld->scenes.loadedSet.count(actor.owner->GetScene()) != 0 && !actor.sceneSuspended)
+            state.replacedAdditiveActors.push_back(physicsStore.FindActor(actor.owner));
     });
     for (const auto actor : state.residentActors)
+        physicsStore.SuspendActor(actor);
+    for (const auto actor : state.replacedAdditiveActors)
         physicsStore.SuspendActor(actor);
 
     state.rootObjects = std::move(scene.m_rootObjects);
@@ -335,6 +407,8 @@ bool SceneCommitToken::Rollback()
         }
 
         scene.m_name = std::move(state.name);
+        scene.m_physicsBackend = state.physicsBackend;
+        scene.m_hasCommittedDocument = state.hasCommittedDocument;
         scene.m_rootObjects = std::move(state.rootObjects);
         scene.m_objectsById = std::move(state.objectsById);
         scene.m_authoringIdentity = std::move(state.authoringIdentity);
@@ -354,9 +428,21 @@ bool SceneCommitToken::Rollback()
         scene.m_environment = state.environment;
         for (auto &root : scene.m_rootObjects)
             root->SetScene(&scene);
+        if (scene.m_runtimeWorld && scene.m_runtimeWorld->scenes.active == &scene)
+            PhysicsWorld::Instance().ConfigureSceneBackend(*scene.m_runtimeWorld, state.admittedPhysicsBackend);
         RestoreSceneComponentRegistries(scene);
+        auto &physicsStore = PhysicsECSStore::Instance();
+        const auto restoreActor = [&](const auto actor) {
+            if (!physicsStore.IsValid(actor))
+                return;
+            physicsStore.RestoreActor(actor);
+            if (physicsStore.GetActor(actor).bodyId == UINT32_MAX)
+                physicsStore.RefreshActor(actor);
+        };
         for (const auto actor : state.residentActors)
-            PhysicsECSStore::Instance().RestoreActor(actor);
+            restoreActor(actor);
+        for (const auto actor : state.replacedAdditiveActors)
+            restoreActor(actor);
         SceneManager::Instance().FlushPendingBroadphase();
         scene.m_retainedCommit = nullptr;
         state.scene = nullptr;
@@ -407,8 +493,11 @@ std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(con
     // Finalize() destroys the retained graph — save/load then crash.
     if (!ValidateSceneDocumentHeader(document))
         return nullptr;
+    const auto backend = DocumentPhysicsBackend(document);
+    if (!HasCompatibleSceneBackend(*this, backend, true))
+        return nullptr;
 
-    auto token = std::shared_ptr<SceneCommitToken>(new SceneCommitToken(*this));
+    auto token = std::shared_ptr<SceneCommitToken>(new SceneCommitToken(*this, backend));
     if (DeserializeDocument(document, &token->m_impl->objectIdRemap, &token->m_impl->componentIdRemap, newInstanceIds))
         return token;
     if (!token->Rollback())
@@ -1795,6 +1884,7 @@ nlohmann::json Scene::SerializeDocument() const
 {
     json j;
     j["name"] = m_name;
+    j["physics_backend"] = m_physicsBackend == PhysicsBackend::GPU ? "gpu" : "cpu";
     j["isPlaying"] = m_isPlaying;
     j["environment"] = m_environment.ToJson();
 
@@ -1905,6 +1995,10 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         };
         if (!ValidateSceneDocumentHeader(j))
             return false;
+        const auto backend = DocumentPhysicsBackend(j);
+        if (!HasCompatibleSceneBackend(*this, backend, m_retainedCommit != nullptr,
+                                       !m_hasCommittedDocument && !m_hasStarted && m_rootObjects.empty()))
+            return false;
 
         const bool hasAuthoringIdentity = j.contains("authoring_identity");
         SceneAuthoringIdentity documentIdentity = hasAuthoringIdentity
@@ -1925,6 +2019,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         // Transform/physics stores can hold both graphs, while temporary component
         // IDs avoid publishing over live registry entries before validation succeeds.
         Scene staging(j["name"].get<std::string>());
+        staging.m_physicsBackend = backend;
         staging.m_isPlaying = j["isPlaying"].get<bool>();
         if (j.contains("environment"))
             staging.m_environment = SceneEnvironmentSettings::FromJson(j["environment"]);
@@ -2286,6 +2381,10 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         m_hasStarted = false;
 
         m_name = std::move(staging.m_name);
+        m_physicsBackend = staging.m_physicsBackend;
+        m_hasCommittedDocument = true;
+        if (m_runtimeWorld && m_runtimeWorld->scenes.active == this)
+            PhysicsWorld::Instance().ConfigureSceneBackend(*m_runtimeWorld, m_physicsBackend);
         m_isPlaying = staging.m_isPlaying;
         m_environment = staging.m_environment;
         m_pendingPyComponents = std::move(staging.m_pendingPyComponents);

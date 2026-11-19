@@ -174,7 +174,6 @@ class JoltGpuScene final
     {
         decltype(JoltGpuTickControl::prepareContactReport) phase;
         Consumer finish;
-        decltype(JoltGpuTickControl::prepareCoupledContacts) couple;
         // A Fixed can retain a static query catalog without native rigid dynamics.
         bool simulateRigidBodies = true;
     };
@@ -268,13 +267,6 @@ class JoltGpuScene final
     [[nodiscard]] JoltGpuControlWork PrepareParticipantImpulses(RuntimeWorld &,
                                                                 const std::shared_ptr<JoltGpuParticipantBodies> &,
                                                                 std::shared_ptr<rhi::ComputeBuffer> impulses);
-
-    [[nodiscard]] bool TryPrepareParticipantCpuResponse();
-
-    [[nodiscard]] rhi::ComputeDispatchDesc
-    ParticipantCpuResponse(std::shared_ptr<rhi::ComputeBuffer> parameters, std::shared_ptr<rhi::ComputeBuffer> models,
-                           std::shared_ptr<rhi::ComputeBuffer> motion, std::shared_ptr<rhi::ComputeBuffer> impulses,
-                           std::shared_ptr<rhi::ComputeBuffer> journal, uint32_t count, uint32_t round);
 
     /// Busy preserves the complete per-world FIFO and logical tick identity.
     [[nodiscard]] bool TryBeginTick(RuntimeWorld &world, uint64_t epoch, uint64_t step, float dt,

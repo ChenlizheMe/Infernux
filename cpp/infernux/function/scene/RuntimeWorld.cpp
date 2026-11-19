@@ -44,6 +44,11 @@ RuntimeWorld::RuntimeWorld(std::shared_ptr<RuntimeWorldHandle> reserved)
     physics = std::make_unique<PhysicsDomain>(*this);
     PhysicsECSStore::Instance().RegisterRuntimeWorld(*this);
 }
+PhysicsBackend RuntimeWorld::GetPhysicsBackend() const noexcept
+{
+    return physics->backend;
+}
+
 RuntimeWorld::~RuntimeWorld()
 {
     const WorldExecutionScope worldScope(this);

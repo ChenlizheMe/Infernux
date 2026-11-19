@@ -10,6 +10,12 @@ A single scene containing GameObjects.
 
 <!-- USER CONTENT START --> description
 
+Select a `.scene` file in the File Manager and choose **Physics → Backend** in its Inspector.
+New scenes use CPU. The selected backend runs rigidbodies, joints and collision queries for the loaded scene.
+Save the asset and reload the scene, or start a new Play session, to apply the selection.
+Play and Pause retain the backend chosen at load. Scenes loaded additively into one
+physics world must use the same backend. Independent worlds can use different backends.
+
 <!-- USER CONTENT END -->
 
 ## Properties
@@ -17,6 +23,8 @@ A single scene containing GameObjects.
 | Name | Type | Description |
 |------|------|------|
 | name | `str` |  |
+| physics_backend | `PhysicsBackend` | `PhysicsBackend.CPU` or `PhysicsBackend.GPU`. Editable on the scene asset. |
+| physics_backend_writable | `bool` | Whether the backend can be edited in this scene context. *(read-only)* |
 | is_preview | `bool` |  *(read-only)* |
 | structure_version | `int` |  *(read-only)* |
 | temporal_discontinuity_revision | `int` |  *(read-only)* |

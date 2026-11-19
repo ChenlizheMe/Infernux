@@ -417,8 +417,11 @@ static void BindSceneObjects(NativeClass<Scene> &cls)
 
 static void BindSceneState(NativeClass<Scene> &cls)
 {
-    cls.def_property_readonly("structure_version", &Scene::GetStructureVersion,
-                              "Monotonic counter bumped on structural changes (add/remove/reparent)")
+    cls.def_property("physics_backend", &Scene::GetPhysicsBackend, &Scene::SetPhysicsBackend,
+                     "Scene physics backend; loaded runtime Scenes cannot change it")
+        .def_property_readonly("physics_backend_writable", &Scene::IsPhysicsBackendWritable)
+        .def_property_readonly("structure_version", &Scene::GetStructureVersion,
+                               "Monotonic counter bumped on structural changes (add/remove/reparent)")
         .def_property_readonly("temporal_discontinuity_revision", &Scene::GetTemporalDiscontinuityRevision,
                                "Monotonic counter bumped only by explicit world-time jumps")
         .def_property_readonly("world_id", &Scene::GetWorldId, "Unique identity of this native Scene world")
@@ -441,6 +444,7 @@ static void BindSceneState(NativeClass<Scene> &cls)
 
 void BindScene(py::module_ &m)
 {
+    py::enum_<PhysicsBackend>(m, "PhysicsBackend").value("CPU", PhysicsBackend::CPU).value("GPU", PhysicsBackend::GPU);
     NativeClass<Scene> cls(m, "Scene");
     BindSceneEnvironment(cls);
     BindSceneObjects(cls);

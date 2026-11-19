@@ -472,7 +472,7 @@ bool JoltCpuQueries::Raycast(const glm::vec3 &origin, const glm::vec3 &direction
 }
 
 void JoltCpuQueries::RaycastBatch(const float *origins, const float *directions, size_t count, float maximum,
-                                  RaycastHit *hits, uint8_t *mask, const Filter &filter, bool merge) const
+                                  RaycastHit *hits, uint8_t *mask, const Filter &filter) const
 {
     if (count == 0)
         return;
@@ -484,20 +484,8 @@ void JoltCpuQueries::RaycastBatch(const float *origins, const float *directions,
         const auto *p = origins + i * 3, *d = directions + i * 3;
         rays.emplace_back(Position({p[0], p[1], p[2]}), CastDisplacement({d[0], d[1], d[2]}, maximum));
     }
-    for (size_t i = 0; i < count; ++i) {
-        auto collector = CastRay(m_scene, rays[i], maximum, filter, false);
-        if (!merge) {
-            mask[i] = collector.ClosestHit(hits[i]) ? 1 : 0;
-            continue;
-        }
-        RaycastHit candidate;
-        if (collector.ClosestHit(candidate) &&
-            (!mask[i] || std::tie(candidate.distance, candidate.bodyId, candidate.subShapeId) <
-                             std::tie(hits[i].distance, hits[i].bodyId, hits[i].subShapeId))) {
-            hits[i] = std::move(candidate);
-            mask[i] = 1;
-        }
-    }
+    for (size_t i = 0; i < count; ++i)
+        mask[i] = CastRay(m_scene, rays[i], maximum, filter, false).ClosestHit(hits[i]) ? 1 : 0;
 }
 
 bool JoltCpuQueries::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,

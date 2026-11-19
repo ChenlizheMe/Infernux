@@ -614,7 +614,8 @@ class _State:
         try:
             meta_path = (file_path if any(token in file_path for token in ("::subtex:", "::subanim:"))
                          else _meta_host_path_for_virtual_asset(file_path))
-            self.meta = read_published_asset_metadata(meta_path)
+            self.meta = ({} if category == "scene" and file_path.startswith("scene-document:")
+                         else read_published_asset_metadata(meta_path))
             result = cat_def.load_fn(file_path)
         except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
             report_asset_load_error(file_path, str(exc))
@@ -880,6 +881,11 @@ def _apply_editable_resource_document(
 
 
 def _bind_asset_document(state: _State, cat_def: AssetCategoryDef) -> None:
+    if state.category == "scene":
+        from infernux.engine.interaction import DocumentRegistry
+        state.document_id = str(state.settings)
+        DocumentRegistry.instance().attach_view(state.document_id, "inspector")
+        return
     _bind_import_settings_document(state, cat_def)
     if not state.document_id:
         _bind_editable_resource_document(state, cat_def)
@@ -1026,6 +1032,15 @@ def _ensure_categories():
             "animation_count",
             "animation_names_csv",
         ],
+        show_header=False,
+    )
+
+    from .scene_asset_inspector import load_scene_asset, render_scene_asset
+    _categories["scene"] = AssetCategoryDef(
+        display_name="asset.display_scene",
+        access_mode=AssetAccessMode.READ_ONLY_RESOURCE,
+        load_fn=load_scene_asset,
+        custom_body_fn=render_scene_asset,
         show_header=False,
     )
 
