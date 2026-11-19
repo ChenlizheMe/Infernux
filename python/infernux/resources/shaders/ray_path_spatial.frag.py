@@ -24,14 +24,19 @@ class RayPathSpatial(shader.fullscreen):
         cell = shader.ivec2(ctx.position.xy)
         packet = shader.load(self.estimates, cell, 0)
         path = shader.load(self.paths, cell, 0)
-        if path.w == 0:
+        count = path.w & shader.uint(7)
+        if not self.specular:
+            # Irradiance reconstruction uses the signed change along the replayed ray.
+            packet = shader.uvec4(packet.xy, path.w & shader.uint(0xFFFE0000), packet.w)
+        if count == 0:
             return packet
         extent = shader.ivec2(shader.dimensions(self.paths, 0))
         neighbor = shader.ray._path_neighbor(shader.uvec2(cell))
         if shader.any(neighbor < shader.ivec2(0)) or shader.any(neighbor >= extent):
             return packet
         other = shader.load(self.paths, neighbor, 0)
-        if other.w == 0:
+        neighbor_count = other.w & shader.uint(7)
+        if neighbor_count == 0:
             return packet
         full = shader.ivec2(shader.dimensions(self.primary, 0))
         pixel = path_pixel(cell, extent, full)
@@ -48,7 +53,7 @@ class RayPathSpatial(shader.fullscreen):
         sample = shader.ray._replay_path(surface, context, normal, self.surface_records, metadata.y,
                                          self.specular, True, self.tail_cache, other.xy)
         local = unpack_ray_signal(packet)
-        represented = shader.float(shader.min(other.w, shader.uint(4)))
-        fraction = represented / (shader.float(path.w) + represented)
+        represented = shader.float(shader.min(neighbor_count, shader.uint(4)))
+        fraction = represented / (shader.float(count) + represented)
         radiance = shader.mix(local.rgb, shader.as_float(other.z) * sample.radiance.rgb, fraction)
         return pack_ray_signal(shader.vec4(radiance, local.w), packet.zw)

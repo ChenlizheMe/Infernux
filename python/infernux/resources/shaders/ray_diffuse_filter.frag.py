@@ -37,6 +37,9 @@ class RayDiffuseFilter(shader.fullscreen):
         plane_normal = decode_octahedral_normal(shader.unpack_half_2x16(witness.z))
         normal = decode_octahedral_normal(shader.load(self.frame, source, 0).xy)
         plane_band = 0.001 + 0.002 * linear_eye_depth(depth, camera)
+        clip_w = (camera.view_projection_matrix @ shader.vec4(position, 1.0)).w
+        focal = shader.abs(shader.vec2(camera.projection_matrix[0][0], camera.projection_matrix[1][1]))
+        footprint = 2.0 * shader.float(self.stride) * clip_w / (shader.vec2(extent) * focal)
         luma = shader.vec3(0.2126, 0.7152, 0.0722)
         center_luma = shader.dot(center.rgb, luma)
         variance = shader.as_float(packet.w) / shader.max(center.a - 1.0, 1.0)
@@ -48,6 +51,7 @@ class RayDiffuseFilter(shader.fullscreen):
         local_means = self.stride == 2
         squared_sum = 4.0 * shader.dot(center.rgb, center.rgb)
         squared_weights = 16.0
+        gradient_sum = 4.0 * shader.as_float(packet.z)
         mean_error_sum = 4.0 * shader.as_float(packet.w)
         # Widen support after disocclusion or relighting, then taper the outer taps as samples accumulate.
         wide_weight = shader.saturate((8.0 - center.a) / 7.0) if self.stride == 8 else 1.0
@@ -68,15 +72,23 @@ class RayDiffuseFilter(shader.fullscreen):
                 continue
             sample_uv = (shader.vec2(sample_source) + shader.vec2(0.5)) / shader.vec2(full)
             sample_position = world_position(sample_uv, shader.as_float(sample_witness.y), camera)
-            plane_distance = shader.abs(shader.dot(sample_position - position, plane_normal))
+            displacement = sample_position - position
+            plane_distance = shader.abs(shader.dot(displacement, plane_normal))
             sample_normal = decode_octahedral_normal(shader.load(self.frame, sample_source, 0).xy)
             normal_weight = shader.saturate((shader.dot(normal, sample_normal) - 0.94) / 0.06)
             weight = (2.0 if offset.x == 0 or offset.y == 0 else 1.0) * normal_weight
             weight *= shader.saturate(1.0 - plane_distance / plane_band)
+            if self.stride >= 4:
+                # At a grazing angle two screen neighbors can lie far apart on the receiver.
+                step = shader.vec2(offset) * footprint
+                support2 = 4.0 * shader.dot(step, step)
+                weight *= shader.min(1.0, support2 / shader.max(shader.dot(displacement, displacement), 1e-16))
             if self.ssao_strength > 0.0:
                 cell = shader.ivec2(sample_uv * shader.vec2(visibility_size))
                 visibility = shader.load(self.ambient_visibility, cell, 0).x
                 weight /= 1.0 + 12.0 * self.ssao_strength * shader.abs(center_visibility - visibility)
+            if raw_samples or local_means:
+                gradient_sum += weight * shader.as_float(sample.z)
             if raw_samples:
                 squared_sum += weight * shader.dot(estimate.rgb, estimate.rgb)
                 squared_weights += weight * weight
@@ -96,9 +108,10 @@ class RayDiffuseFilter(shader.fullscreen):
             inverse_samples = squared_weights / (total * total)
             spread = shader.max(squared_sum / total - shader.dot(mean, mean), 0.0)
             mean_error = spread * inverse_samples / shader.max(1.0 - inverse_samples, 0.0001)
-            return pack_ray_signal(shader.vec4(mean, 1.0), shader.uvec2(packet.z, shader.as_uint(mean_error)))
+            return pack_ray_signal(shader.vec4(mean, 1.0), shader.as_uint(shader.vec2(gradient_sum / total, mean_error)))
         if local_means:
             # Overlapping neighborhoods share samples. The weighted mean of their variances bounds
             # the variance of the combined estimate without assuming independent observations.
-            return pack_ray_signal(shader.vec4(mean, 1.0), shader.uvec2(packet.z, shader.as_uint(mean_error_sum / total)))
+            guides = shader.vec2(gradient_sum, mean_error_sum) / total
+            return pack_ray_signal(shader.vec4(mean, 1.0), shader.as_uint(guides))
         return pack_ray_signal(shader.vec4(mean, center.a), packet.zw)

@@ -80,6 +80,7 @@ class RayReconstruct(shader.fullscreen):
 
         visibility = self.geometry[1]
         accepted = shader._previous_ray_geometry_serial()
+        scene_changed = visibility.y != accepted or shader._ray_lighting_changed()
         limit = 64.0
         if self.specular:
             distance = signal_aux
@@ -132,27 +133,34 @@ class RayReconstruct(shader.fullscreen):
                         if stamps[surface_id & 3] > accepted:
                             return fresh
                 limit = 8.0
-        elif shader._ray_lighting_changed():
+        elif shader._ray_proposals_changed():
             # Measure the RGB change against the energy at this receiver, including equal-luminance color edits.
             change = previous.rgb - current.rgb
             energy = shader.max(shader.dot(previous.rgb, previous.rgb), shader.dot(current.rgb, current.rgb))
             agreement = shader.saturate(1.0 - 4.0 * shader.dot(change, change) / shader.max(energy, 1e-12))
             limit = 1.0 + 3.0 * agreement * agreement
-        elif visibility.y != accepted:
+        elif scene_changed:
             # The diffuse prefilter stores the squared RGB error of its directional mean.
             # Let new measurements dominate when they contradict the old lighting.
             innovation = previous.rgb - current.rgb
             uncertainty = signal_aux
             confidence = uncertainty / shader.max(uncertainty + shader.dot(innovation, innovation), 1e-12)
-            limit = 1.0 + 4.0 * confidence
+            limit = 1.0 + 7.0 * confidence
         elif shader.any(shader.abs(history_uv - uv) * shader.vec2(full) > shader.vec2(0.5)):
             limit = 6.0
 
         count = shader.min(previous.a + 1.0, limit)
-        estimate = shader.mix(previous.rgb, current.rgb, 1.0 / count)
         difference = current.rgb - previous.rgb
         weights = shader.vec3(0.2126, 0.7152, 0.0722)
         delta = shader.dot(difference, weights)
+        if not self.specular and scene_changed:
+            # A coherent change in the replayed path identifies a moving shadow on a stationary receiver.
+            magnitude = shader.max(shader.dot(current.rgb, weights), shader.dot(previous.rgb, weights))
+            matched = shader.max(0.0, shader.sign(delta) * shader.as_float(fresh.z))
+            relative = matched / shader.max(magnitude, 1e-8)
+            blend = shader.saturate(6.0 * relative * relative)
+            count = shader.min(count, 1.0 / shader.max(blend, 1.0 / 64.0))
+        estimate = shader.mix(previous.rgb, current.rgb, 1.0 / count)
         # The reflection filter measures squared RGB distance. Equal-luminance
         # changes between colored lights contribute to its uncertainty as well.
         deviation2 = shader.dot(difference * difference, weights) if self.specular else delta * delta
