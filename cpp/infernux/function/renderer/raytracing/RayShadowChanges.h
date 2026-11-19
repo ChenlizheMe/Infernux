@@ -38,20 +38,22 @@ class RayShadowChanges
 {
   public:
     RayShadowChanges(const RayShadowState *previous, std::vector<RayShadowInstance> instances,
-                     const RayInstancePage &page, const RenderLightingSource &lighting, size_t surfaceCount)
+                     const RayInstancePage &page, const RenderLightingSource &lighting, size_t surfaceCount,
+                     bool deformed)
         : m_previous(previous), m_page(page), m_lighting(lighting),
-          m_stampCount(std::max(size_t{1}, (surfaceCount + 3) / 4))
+          m_stampCount(std::max(size_t{1}, (surfaceCount + 3) / 4)), m_resetSlots(deformed)
     {
         m_state.instances = std::move(instances);
         m_state.lightingGeneration = lighting.generation;
         m_state.stamps.reserve(m_stampCount);
         if (m_previous) {
-            const bool wrapped = m_previous->serial == UINT32_MAX;
-            m_state.serial = wrapped ? 1u : m_previous->serial + 1;
-            m_resetSlots = wrapped || m_previous->lightingGeneration != m_state.lightingGeneration ||
-                           m_previous->instances.size() != m_state.instances.size() ||
-                           m_previous->stamps.size() != m_stampCount;
-            if (!m_resetSlots)
+            m_state.serial = m_previous->serial;
+            m_resetSlots |= m_previous->lightingGeneration != m_state.lightingGeneration ||
+                            m_previous->instances.size() != m_state.instances.size() ||
+                            m_previous->stamps.size() != m_stampCount;
+            if (m_resetSlots)
+                MarkVisibilityChange();
+            else
                 m_changedCasters.reserve(m_state.instances.size());
         }
     }
@@ -255,6 +257,17 @@ class RayShadowChanges
         return m_state.stamps[surfaceId >> 2u][surfaceId & 3u];
     }
 
+    // Re-publishing an identical TLAS preserves every view's accumulated light.
+    // All changes in one publication share one serial, including a counter wrap.
+    void MarkVisibilityChange()
+    {
+        m_state.serial = m_previous->serial + 1u;
+        if (m_state.serial == 0u) {
+            m_state.serial = 1u;
+            m_resetSlots = true;
+        }
+    }
+
     void Compare(size_t index)
     {
         auto &current = m_state.instances[index];
@@ -263,15 +276,20 @@ class RayShadowChanges
             return;
         const auto &prior = m_previous->instances[index];
         if (current.surfaceId != prior.surfaceId) {
+            MarkVisibilityChange();
             m_resetSlots = true;
             return;
         }
         const bool moved = current.objectToWorld != prior.objectToWorld;
         const bool changedLayer = current.layerMask != prior.layerMask;
-        if (moved || changedLayer || current.receivesShadows != prior.receivesShadows)
+        const bool receiverChanged = moved || changedLayer || current.receivesShadows != prior.receivesShadows;
+        const bool casterChanged = current.castsShadows != prior.castsShadows;
+        if (!receiverChanged && !casterChanged)
+            return;
+        MarkVisibilityChange();
+        if (receiverChanged)
             Stamp(current.surfaceId) = m_state.serial;
-        if ((current.castsShadows || prior.castsShadows) &&
-            (moved || changedLayer || current.castsShadows != prior.castsShadows))
+        if ((current.castsShadows || prior.castsShadows) && (moved || changedLayer || casterChanged))
             m_changedCasters.push_back(index);
     }
 

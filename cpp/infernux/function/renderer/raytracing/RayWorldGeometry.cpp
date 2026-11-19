@@ -644,7 +644,7 @@ void RayWorldGeometryBuild::Run(uint32_t window)
                     const auto &lighting = world->Lighting();
                     shadowChanges = std::make_unique<RayShadowChanges>(
                         sharedMeshes ? &sharedMeshes->shadowHistory : nullptr, std::move(shadowInstances), instancePage,
-                        lighting ? *lighting : kNoWorldLighting, surfaceCount);
+                        lighting ? *lighting : kNoWorldLighting, surfaceCount, NeedsDeformation() || !deformed.empty());
                     step = Step::UpdateShadows;
                     break;
                 }
@@ -655,10 +655,6 @@ void RayWorldGeometryBuild::Run(uint32_t window)
         case Step::UpdateShadows:
             if (shadowChanges->Advance(window)) {
                 shadowHistory = shadowChanges->Take();
-                if (NeedsDeformation() || !deformed.empty()) {
-                    for (auto &stamp : shadowHistory.stamps)
-                        stamp.fill(shadowHistory.serial);
-                }
                 shadowChanges.reset();
                 emissiveBuild = std::make_unique<RayEmissiveBuild>(
                     emissiveSources, (meshCandidate ? meshCandidate : sharedMeshes)->referenceAreas, instancePage,

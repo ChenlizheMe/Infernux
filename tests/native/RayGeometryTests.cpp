@@ -85,16 +85,19 @@ void CheckHierarchy(const std::vector<Bounds> &bounds)
 
 void CheckVisibilityHistory(const RayInstancePage &page)
 {
-    const RenderLightingSource lights;
+    RenderLightingSource lights;
     std::vector<RayShadowInstance> instances{{1u, 1u, true, true, glm::mat4(1.0f), {}},
                                              {2u, 1u, true, true, glm::mat4(1.0f), {}}};
-    const auto publish = [&](const RayShadowState *previous) {
-        RayShadowChanges changes(previous, instances, page, lights, 3);
-        uint32_t budget = 1024;
-        assert(changes.Advance(budget));
+    const auto publish = [&](const RayShadowState *previous, bool deformed = false) {
+        RayShadowChanges changes(previous, instances, page, lights, 3, deformed);
+        uint32_t budget = 1;
+        while (!changes.Advance(budget))
+            budget = 1;
         return changes.Take();
     };
     const auto initial = publish(nullptr);
+    const auto unchanged = publish(&initial);
+    assert(unchanged.serial == initial.serial && unchanged.stamps == initial.stamps);
     instances[0].objectToWorld[3].x += 0.1f;
     const auto moved = publish(&initial);
     instances[0].objectToWorld[3].x += 0.1f;
@@ -110,6 +113,20 @@ void CheckVisibilityHistory(const RayInstancePage &page)
     instances[0].objectToWorld[0].x = 2.0f;
     const auto scale = publish(&both);
     assert(scale.stamps[0][1] == scale.serial && scale.stamps[0][2] == both.serial);
+    instances[1].castsShadows = false;
+    const auto policy = publish(&scale);
+    assert(policy.serial == scale.serial + 1);
+    const auto deformed = publish(&policy, true);
+    assert(deformed.serial == policy.serial + 1 && deformed.stamps[0][2] == deformed.serial);
+    ++lights.generation;
+    const auto relit = publish(&deformed);
+    assert(relit.serial == deformed.serial + 1 && relit.stamps[0][1] == relit.serial);
+    auto last = relit;
+    last.serial = UINT32_MAX;
+    assert(publish(&last).serial == UINT32_MAX);
+    instances[0].objectToWorld[3].z += 1.0f;
+    const auto wrapped = publish(&last);
+    assert(wrapped.serial == 1 && wrapped.stamps[0][1] == 1 && wrapped.stamps[0][2] == 1);
 }
 } // namespace
 
