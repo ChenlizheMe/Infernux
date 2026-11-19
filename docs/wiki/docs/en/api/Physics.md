@@ -12,6 +12,8 @@ Global physics system for raycasting and spatial queries.
 **Status:** Preview · **Verified with:** 0.4.8
 
 Spatial queries accept layer masks and explicit trigger handling. Keep query volumes and distances bounded, and use the simplest query that answers the gameplay question.
+
+A query reads a coherent state of its own world. If a host callback adds a collider while a fixed step is publishing, a ray cast from that callback can still see the previous geometry. Code that needs the new collider should query after the world has published the edit. `Physics.query_generation` identifies the published query state.
 <!-- USER CONTENT END -->
 
 ## Properties
