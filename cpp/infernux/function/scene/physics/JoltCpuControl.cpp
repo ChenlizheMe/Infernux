@@ -87,7 +87,8 @@ struct JoltCpuControl::State
     {
         uint32_t body;
         std::variant<Model, Add, Retire, Command, MotionResets, Move, JointCreate, JointUpdates, JointPoseDrives,
-                     JointRetire> data;
+                     JointRetire>
+            data;
     };
     struct Fixed
     {

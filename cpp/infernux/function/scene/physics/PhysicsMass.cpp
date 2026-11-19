@@ -40,19 +40,19 @@ static JPH::Mat44 ScaledAuthoredInertia(const RigidbodyMassProperties &propertie
 
 static PreparedBodyMass PrepareMassConfiguration(const JPH::MassProperties &properties)
 {
-    JPH::Mat44 axes;
+    JPH::Quat axes;
     JPH::Vec3 moments;
-    if (!properties.DecomposePrincipalMomentsOfInertia(axes, moments))
+    if (!properties.GetPrincipalInertiaForMotion(axes, moments))
         throw std::invalid_argument("rigidbody inertia cannot be decomposed at the current scale");
     JPH::Vec3 inverse = JPH::Vec3::sZero();
     for (int i = 0; i < 3; ++i) {
         const double moment = moments[i];
         const float value = float(1.0 / moment);
-        if (moment <= 0.0 || !std::isfinite(value) || value <= 0.0f)
+        if (!std::isfinite(value) || value <= 0.0f)
             throw std::invalid_argument("rigidbody inverse inertia is not representable at the current scale");
         inverse.SetComponent(i, value);
     }
-    return {properties.mMass, inverse, axes.GetQuaternion()};
+    return {properties.mMass, inverse, axes};
 }
 
 } // namespace
