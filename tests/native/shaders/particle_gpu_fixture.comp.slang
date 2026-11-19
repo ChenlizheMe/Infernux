@@ -34,6 +34,10 @@ struct DispatchValues
     uint system_seed;
     uint simulation_step;
     float delta_time;
+    uint diagnostic_flags;
+    uint alive_read_slot;
+    uint alive_write_slot;
+    uint use_alive_list;
     uint reserved;
 };
 
@@ -43,6 +47,9 @@ struct DispatchValues
 [[vk::binding(3, 0)]] RWStructuredBuffer<ParticleInstance> instances;
 [[vk::binding(4, 0)]] RWStructuredBuffer<DrawArguments> indirect_args;
 [[vk::binding(6, 0)]] RWStructuredBuffer<uint> render_indices;
+#ifdef INX_FIXTURE_ALIVE_DISPATCH
+[[vk::binding(9, 0)]] RWStructuredBuffer<uint4> alive_dispatch_args;
+#endif
 [[vk::push_constant]] ConstantBuffer<DispatchValues> dispatch;
 
 [shader("compute")]
@@ -51,6 +58,12 @@ void main(uint3 thread : SV_DispatchThreadID)
 {
     if (thread.x != 0u)
         return;
+
+#ifdef INX_FIXTURE_ALIVE_DISPATCH
+    // Bootstrap and export reset publish one bounded workgroup for this
+    // single-particle fixture; Update/Rendering only consume the arguments.
+    alive_dispatch_args[0] = alive_dispatch_args[1] = uint4(1u, 1u, 1u, 0u);
+#endif
 
     states[0] = uint4(1u, dispatch.simulation_step, dispatch.system_seed, dispatch.capacity);
     free_slots[0] = 0u;

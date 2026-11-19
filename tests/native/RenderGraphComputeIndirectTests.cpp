@@ -816,6 +816,13 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     const auto computeCode = SpirvWords(computeTarget.entries.front().code);
     const auto reflectionTarget = infernux::test::CompileSlangFixture(reflectionPath);
     const auto particleComputeCode = infernux::test::FixtureSpirv(particleComputePath);
+    auto particleResetSource = infernux::test::ReadSlangFixture(particleComputePath);
+    particleResetSource.name += "_reset";
+    particleResetSource.source = "#define INX_FIXTURE_ALIVE_DISPATCH\n" + particleResetSource.source;
+    const auto particleResetCode =
+        SpirvWords(infernux::CompileSlangNativeModule(std::move(particleResetSource), infernux::ShaderCodeTarget::SpirV)
+                       .entries.front()
+                       .code);
 
     if (!VerifyForwardPlusTileCoverage(resources))
         return false;
@@ -978,6 +985,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedProgram.stateStride = 16;
     for (auto &kernel : managedProgram.kernels)
         kernel = particleComputeCode;
+    managedProgram.kernels[static_cast<size_t>(infernux::particle::GpuKernelStage::Bootstrap)] = particleResetCode;
+    managedProgram.kernels[static_cast<size_t>(infernux::particle::GpuKernelStage::RenderReset)] = particleResetCode;
+
     infernux::particle::GpuParticleOutputProgram primaryOutput;
     primaryOutput.id = 911;
     primaryOutput.stableId = "managed-primary";
@@ -1365,6 +1375,11 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     particleDesc.collisionSceneMeshBvhNodes = particleCollisionMeshBvhNodes;
     for (auto &kernel : particleDesc.kernels)
         kernel = {particleComputeCode.data(), particleComputeCode.size()};
+    particleDesc.kernels[static_cast<size_t>(infernux::particle::GpuKernelStage::Bootstrap)] = {
+        particleResetCode.data(), particleResetCode.size()};
+    particleDesc.kernels[static_cast<size_t>(infernux::particle::GpuKernelStage::RenderReset)] = {
+        particleResetCode.data(), particleResetCode.size()};
+
     infernux::particle::ParticleGpuRuntime particleRuntime;
     if (!Require(particleRuntime.Create(rhi, particleDesc), "Particle GPU runtime creation failed"))
         return false;
