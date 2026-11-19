@@ -4,7 +4,7 @@
 
 struct CouplingParams
 {
-    uint4 range; // Serial groups, cooperative groups, rounds, clear impulses. Wake/sweep use first and count.
+    uint4 range; // Serial groups, cooperative groups, rounds, velocity flags. Wake/sweep use first and count.
     float4 gravityDt;
     float4 contact; // Warm-start scale, penetration slop, max correction, Baumgarte.
 };
@@ -30,7 +30,9 @@ struct MixedPatch
     uint4 endpoints; // CPU address, GPU slot, point count, previous manifold + 1 or joint status byte address.
     float4 normalFriction;
     float4 points[4]; // Contact midpoint/bias, or two COM arms and two frames for a fixed joint (zero points).
-    float4 normalLambda, frictionLambda;
+    float4 normalLambda;
+    float3 frictionLambda;
+    uint reportAddress;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<CouplingParams> params;
@@ -38,7 +40,7 @@ struct MixedPatch
 [[vk::binding(2, 0)]] globallycoherent RWStructuredBuffer<BodyState> gpu_states;
 [[vk::binding(3, 0)]] StructuredBuffer<CpuBoundary> cpu_models;
 [[vk::binding(4, 0)]] globallycoherent RWStructuredBuffer<Velocity> cpu_velocities;
-// Immutable group descriptors and packed ordinals, followed by one status word per active fixed joint.
+// Group descriptors and ordinals, fixed joint status words, then subscribed contact impulses in publication order.
 [[vk::binding(5, 0)]] RWByteAddressBuffer solver_schedule;
 [[vk::binding(6, 0)]] RWStructuredBuffer<MixedPatch> patches;
 [[vk::binding(7, 0)]] globallycoherent RWStructuredBuffer<Velocity> cpu_impulses;
@@ -57,6 +59,7 @@ struct MixedPatch
 [[vk::binding(21, 0)]] RWStructuredBuffer<ContinuousReceipt> continuous_receipts;
 
 static const uint SolverLanes = 64u;
+static const uint ClearCpuImpulses = 1u, ReportContactImpulses = 2u;
 groupshared uint4 shared_group;
 groupshared uint shared_group_index;
 
@@ -182,7 +185,7 @@ void warm_patch(uint index)
     sb.angularVelocity.xyz += jph_inverse_inertia(mb, sb, torqueB);
     store_velocity_result(a, b, jph_dynamic(ma), jph_dynamic(mb), sa, sb, impulse, torqueA);
     patch.normalLambda = normalLambda;
-    patch.frictionLambda = float4(tangent, spin, 0);
+    patch.frictionLambda = float3(tangent, spin);
     patches[index] = patch;
 }
 
@@ -209,7 +212,7 @@ JointFixedAuthor fixed_author()
 
 // Both dynamic endpoints are exclusive to this patch for the current level.
 // Local constraint solvers have completed their current velocity round.
-void solve_patch(uint index)
+void solve_patch(uint index, bool reportImpulses)
 {
     MixedPatch patch = patches[index];
     uint a = patch.endpoints.x;
@@ -290,8 +293,13 @@ void solve_patch(uint index)
     sb.angularVelocity.xyz += jph_inverse_inertia(mb, sb, jnb);
     store_velocity_result(a, b, jph_dynamic(ma), jph_dynamic(mb), sa, sb, jt + jn, jt_angular + jna);
     patch.normalLambda = next;
-    patch.frictionLambda.xyz = float3(tangent, angular);
+    patch.frictionLambda = float3(tangent, angular);
     patches[index] = patch;
+    if (reportImpulses)
+    {
+        solver_schedule.Store4(patch.reportAddress, asuint(next));
+        solver_schedule.Store2(patch.reportAddress + 16u, asuint(tangent));
+    }
 }
 
 void clear_group_impulses(uint4 group, uint lane, uint stride)
@@ -303,14 +311,14 @@ void clear_group_impulses(uint4 group, uint lane, uint stride)
 
 void solve_serial_velocity(uint4 group)
 {
-    if (params.range.w != 0u)
+    if ((params.range.w & ClearCpuImpulses) != 0u)
         clear_group_impulses(group, 0u, 1u);
     if (params.contact.x > 0.0f)
         for (uint i = group.x; i < group.x + group.y; ++i)
             warm_patch(i);
     for (uint round = 0; round < params.range.z; ++round)
         for (uint i = group.x; i < group.x + group.y; ++i)
-            solve_patch(i);
+            solve_patch(i, (params.range.w & ReportContactImpulses) != 0u && round + 1u == params.range.z);
 }
 
 [shader("compute")]
@@ -329,7 +337,7 @@ void exchange_cross_domain_velocity(uint3 id : SV_GroupID, uint lane : SV_GroupI
     if (group_index - serial >= params.range.y) return;
 
     const uint4 group = cooperative_group(group_index, lane);
-    if (params.range.w != 0u)
+    if ((params.range.w & ClearCpuImpulses) != 0u)
     {
         clear_group_impulses(group, lane, SolverLanes);
         finish_contact_level();
@@ -346,7 +354,8 @@ void exchange_cross_domain_velocity(uint3 id : SV_GroupID, uint lane : SV_GroupI
                 if (round < warm)
                     warm_patch(patch);
                 else
-                    solve_patch(patch);
+                    solve_patch(patch, (params.range.w & ReportContactImpulses) != 0u &&
+                                       round + 1u == params.range.z + warm);
             }
             finish_contact_level();
         }

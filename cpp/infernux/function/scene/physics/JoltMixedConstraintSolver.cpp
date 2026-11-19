@@ -23,10 +23,11 @@ using Contact = PhysicsContactPublication;
 using Patch = JoltMixedContactStep::ResponsePatch;
 using PatchKey = std::pair<Contact::EndpointKey, Contact::EndpointKey>;
 constexpr uint32_t SolverLanes = 64;
+constexpr uint32_t ClearCpuImpulses = 1u, ReportContactImpulses = 2u;
 
 struct Parameters
 {
-    UInt4 range;               // Serial groups, cooperative groups, rounds, clear accumulated CPU impulses.
+    UInt4 range;               // Serial groups, cooperative groups, rounds, velocity pass flags.
     Float4 gravityDt, contact; // Warm-start scale, penetration slop, maximum correction, Baumgarte.
 };
 struct CpuBoundary
@@ -53,13 +54,21 @@ struct DevicePatch
     UInt4 endpoints;
     Float4 normalFriction;
     std::array<Float4, MaxContactPointsPerPair> points;
-    Float4 normalLambda, frictionLambda;
+    Float4 normalLambda;
+    std::array<float, 3> frictionLambda;
+    uint32_t reportAddress;
+};
+struct ReportedContactImpulse
+{
+    std::array<float, MaxContactPointsPerPair> normal;
+    float tangent1, tangent2;
 };
 static_assert(sizeof(CpuBoundary) == 112);
 static_assert(sizeof(Velocity) == 32);
 static_assert(sizeof(Pose) == sizeof(Velocity));
 static_assert(sizeof(PositionAnchors) == 128);
 static_assert(sizeof(DevicePatch) == 128);
+static_assert(sizeof(ReportedContactImpulse) == 24);
 
 glm::vec3 XYZ(const Float4 &value)
 {
@@ -225,6 +234,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     std::vector<DevicePatch> patches;
     std::vector<UInt4> groups;
     std::vector<uint32_t> jointStatus;
+    std::vector<ReportedContactImpulse> contactImpulses;
     // Dynamic slots form the compact readback prefix. Prescribed boundaries are inputs only.
     std::vector<JPH::BodyID> native, prescribed;
     std::vector<uint32_t> projectCpuIds;
@@ -792,6 +802,9 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         const float dt = params.gravityDt.w;
         const float minImpact = step.Scene().System().GetPhysicsSettings().mMinVelocityForRestitution;
         auto &responses = step.Responses();
+        contactImpulses.resize(solveVelocity && policy.impulses ? responses.size() : 0);
+        // All contact rows are admitted. Only fixed joints from sleeping groups can be absent.
+        const size_t reportBase = groups.size() * sizeof(UInt4) + (order.size() - responses.size()) * sizeof(uint32_t);
         for (size_t i = 0; i < order.size(); ++i) {
             auto &patch = patches[i];
             if (order[i] >= responses.size()) {
@@ -802,6 +815,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                 continue;
             }
             auto &response = responses[order[i]];
+            if (!contactImpulses.empty())
+                patch.reportAddress = static_cast<uint32_t>(reportBase + order[i] * sizeof(ReportedContactImpulse));
             const auto &free = velocities[patch.endpoints.x];
             const auto v = XYZ(free.linear);
             const auto w = XYZ(free.angular);
@@ -849,11 +864,13 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
         dispatch.groupCountY = static_cast<uint32_t>((uint64_t(workgroups) + width - 1u) / width);
         for (const auto port : program.ports) {
             dispatch.buffers.push_back(buffers[port]);
-            const bool modifies = port == GpuStates || port == CpuVelocities || port == CpuPoses || port == Patches ||
-                                  port == Sleep || (port == Groups && !jointStatus.empty());
+            const bool modifies =
+                port == GpuStates || port == CpuVelocities || port == CpuPoses || port == Patches || port == Sleep ||
+                (port == Groups && (!jointStatus.empty() || (params.range.w & ReportContactImpulses)));
             using Access = rhi::ComputeBufferAccess;
             if (port == Impulses)
-                dispatch.bufferAccesses.push_back(params.range.w ? Access::Write : Access::ReadWrite);
+                dispatch.bufferAccesses.push_back(params.range.w & ClearCpuImpulses ? Access::Write
+                                                                                    : Access::ReadWrite);
             else
                 dispatch.bufferAccesses.push_back(modifies ? Access::ReadWrite : Access::Read);
         }
@@ -864,7 +881,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     {
         const auto velocityBytes = models.size() * sizeof(Velocity);
         return Allocate(CpuModels, models.size() * sizeof(CpuBoundary)) && Allocate(CpuVelocities, velocityBytes) &&
-               Allocate(Groups, groups.size() * sizeof(UInt4) + jointStatus.size() * sizeof(uint32_t)) &&
+               Allocate(Groups, groups.size() * sizeof(UInt4) + jointStatus.size() * sizeof(uint32_t) +
+                                    contactImpulses.size() * sizeof(ReportedContactImpulse)) &&
                Allocate(Patches, patches.size() * sizeof(DevicePatch)) &&
                (!solveVelocity || (Allocate(PreviousPatches, sizeof(DevicePatch)) &&
                                    Allocate(Impulses, std::max(size_t{1}, native.size()) * sizeof(Velocity)))) &&
@@ -975,6 +993,7 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
     {
         auto &frame = step.ContactFrame(substep);
         auto &responses = step.Responses();
+        const ReportedContactImpulse zero{};
         for (size_t i = 0; i < order.size(); ++i) {
             if (order[i] >= responses.size())
                 continue;
@@ -982,18 +1001,17 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             const auto &response = responses[order[i]];
             if (!policy.Observes(response.cpu.SurfaceKey(), response.gpu.SurfaceKey(), false))
                 continue;
+            const auto &impulse = contactImpulses.empty() ? zero : contactImpulses[order[i]];
             const auto n = XYZ(patch.normalFriction);
             const auto t =
                 glm::normalize(std::abs(n.x) > std::abs(n.y) ? glm::vec3(n.z, 0, -n.x) : glm::vec3(0, n.z, -n.y));
             const auto friction =
-                (t * patch.frictionLambda.x + glm::cross(n, t) * patch.frictionLambda.y) / float(response.pointCount);
-            const float normal[] = {patch.normalLambda.x, patch.normalLambda.y, patch.normalLambda.z,
-                                    patch.normalLambda.w};
+                (t * impulse.tangent1 + glm::cross(n, t) * impulse.tangent2) / float(response.pointCount);
             frame.manifolds.push_back({response.cpu, response.gpu, false, frame.points.size(), response.pointCount});
             for (uint32_t j = 0; j < response.pointCount; ++j) {
                 const auto &point = response.points[j];
                 frame.points.push_back(
-                    {XYZ(point.positionDepth), n, point.gpuVelocity, n * normal[j] + friction, j, true});
+                    {XYZ(point.positionDepth), n, point.gpuVelocity, n * impulse.normal[j] + friction, j, true});
             }
         }
     }
@@ -1060,17 +1078,19 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
             }
         }
         // An island with no native rows can keep the updated shadow and impulse sum on the GPU.
-        params.range = {serialGroupCount, cooperativeGroupCount, rounds, newVelocities ? 1u : 0u};
+        const bool readContacts = last && !contactImpulses.empty();
+        const uint32_t flags = (newVelocities ? ClearCpuImpulses : 0u) | (readContacts ? ReportContactImpulses : 0u);
+        params.range = {serialGroupCount, cooperativeGroupCount, rounds, flags};
         params.contact.x = first ? warmStartScale : 0.0f;
         const bool readFeedback = !native.empty() && (interleaveCpu || last || !projectCpuIds.empty());
-        const bool readContacts = last && policy.impulses && !step.Responses().empty();
         const bool readJoints = last && !jointStatus.empty();
         std::vector<rhi::ComputeBufferRead> reads;
         if (readFeedback)
             reads.push_back({buffers[Impulses], 0, native.size() * sizeof(Velocity)});
         const auto contactRead = reads.size();
         if (readContacts)
-            reads.push_back({buffers[Patches], 0, patches.size() * sizeof(DevicePatch)});
+            reads.push_back({buffers[Groups], groups.size() * sizeof(UInt4) + jointStatus.size() * sizeof(uint32_t),
+                             contactImpulses.size() * sizeof(ReportedContactImpulse)});
         if (readJoints)
             reads.push_back(JointStatusRead());
         const auto resume =
@@ -1117,7 +1137,8 @@ struct JoltMixedConstraintSolver::Job : std::enable_shared_from_this<Job>
                         self->CheckJointStatus(*packet->Readback(contactRead + readContacts));
                     if (readContacts)
                         packet->Readback(contactRead)
-                            ->ReadInto(self->patches.data(), self->patches.size() * sizeof(DevicePatch));
+                            ->ReadInto(self->contactImpulses.data(),
+                                       self->contactImpulses.size() * sizeof(ReportedContactImpulse));
                     if (last && self->policy.impulses)
                         self->PublishContacts();
                     if (last)
