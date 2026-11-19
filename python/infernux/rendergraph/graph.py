@@ -1023,6 +1023,7 @@ class RenderGraph:
         self._output: Optional[str] = None
         self._linear_output: Optional[str] = None
         self._display_encoded_outputs: set[str] = set()
+        self._standard_display_tail = None
         self._msaa_samples: int = output_samples  # 0 = pipeline-owned screen MSAA
         self._temporal_jitter = False
         # Topology auto-recording
@@ -1983,24 +1984,33 @@ class RenderGraph:
         declares these output textures as display-encoded. Standalone custom
         graphs may keep linear output; the display consumer then encodes it.
 
+        Its underscore-prefixed passes and temporary texture are private; custom
+        post processing should use the public color resource/effect stages.
+
         Idempotent: calling it twice (e.g. from ``screen_ui_section`` and the
         RenderStack build safety net) inserts the passes only once.
         """
         if self.has_pass("_DisplayEncode"):
             return
 
-        self._linear_output = self.get_texture("color").name
-        self.create_texture("_display_encode", format=Format.RGBA16_SFLOAT)
-        with self.add_pass("_DisplayEncode") as p:
-            p.set_texture("source_tex", "color")
-            p.write_color("_display_encode")
-            p.fullscreen_quad("infernux/internal/display_encode")
-        with self.add_pass("_DisplayEncode_Commit") as p:
-            p.set_texture("source_tex", "_display_encode")
-            p.write_color("color")
-            p.fullscreen_quad("infernux/internal/fullscreen_copy")
-        self._display_encoded_outputs.update((self.get_texture("_display_encode").name,
-                                              self.get_texture("color").name))
+        color = self.get_texture("color")
+        self._linear_output = color.name
+        encoded = self.create_texture("_display_encode", format=Format.RGBA16_SFLOAT)
+        with self.add_pass("_DisplayEncode") as encode:
+            encode.set_texture("source_tex", color)
+            encode.write_color(encoded)
+            encode.fullscreen_quad("infernux/internal/display_encode")
+        with self.add_pass("_DisplayEncode_Commit") as commit:
+            commit.set_texture("source_tex", encoded)
+            commit.write_color(color)
+            commit.fullscreen_quad("infernux/internal/fullscreen_copy")
+        # Remember our builders, so compilation never guesses whether a user's
+        # similarly named or subsequently edited pass is a standard copy.
+        self._standard_display_tail = (color, encoded, tuple(
+            (p, {key: value.copy() if isinstance(value, (dict, list)) else value
+                 for key, value in vars(p).items()}) for p in (encode, commit)
+        ))
+        self._display_encoded_outputs.update((encoded.name, color.name))
 
     # ---- Pass management ----
 
@@ -2454,15 +2464,35 @@ class RenderGraph:
                 "Call graph.set_output(texture)."
             )
 
-        return self._build_native(passes)
+        textures = self._textures
+        if self._standard_display_tail is not None and self._msaa_samples > 1:
+            color, encoded, nodes = self._standard_display_tail
+            encode, commit = (p for p, _ in nodes)
+            # Native resolves a sampled MSAA camera to a separate 1x input.
+            # Lower only our untouched, adjacent pair with an unused private
+            # intermediate. The final sample count may be configured late.
+            if (color.is_camera_target and self._output != encoded.name
+                    and all(vars(p) == state and p in passes for p, state in nodes)
+                    and passes[passes.index(encode) + 1:passes.index(encode) + 2] == [commit]
+                    and not any(encoded.name in (
+                        *p._reads, *p._input_bindings.values(), *p._write_colors.values(),
+                        p._write_depth, p._resolve_color, p._source_resource, p._destination_resource,
+                    ) for p in passes if p is not encode and p is not commit)):
+                from copy import copy
 
-    def _build_native(self, passes):
+                direct_encode = copy(encode)
+                direct_encode._write_colors = {0: color.name}
+                passes = [direct_encode if p is encode else p for p in passes if p is not commit]
+                textures = [texture for texture in textures if texture is not encoded]
+        return self._build_native(passes, textures=textures)
+
+    def _build_native(self, passes, *, textures=None):
         """Build using native C++ types."""
         desc = RenderGraphDescription()
         desc.name = self._name
         desc.source_revision = next(_SOURCE_REVISION_COUNTER)
 
-        desc.textures = self._textures
+        desc.textures = self._textures if textures is None else textures
 
         buffer_list = []
         for buffer in self._buffers:

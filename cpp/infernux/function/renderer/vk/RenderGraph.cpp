@@ -734,6 +734,11 @@ void PassBuilder::SkipCallbackWhenRendererListsEmpty(bool enabled)
     m_graph->m_passes[m_passId].skipCallbackWhenRendererListsEmpty = enabled;
 }
 
+void PassBuilder::SetDrawCondition(std::function<bool()> condition)
+{
+    m_graph->m_passes[m_passId].drawCondition = std::move(condition);
+}
+
 void PassBuilder::SetExecutionGate(std::function<bool()> gate)
 {
     m_graph->m_passes[m_passId].executionGate = std::move(gate);
@@ -2350,7 +2355,20 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
         const bool executePass = !pass.executionGate || pass.executionGate();
         if (executePass && pass.executionTiming)
             pass.executionTiming(commandBuffer, true);
-        const bool isGraphicsPass = executePass && pass.type == PassType::Graphics && pass.renderingSignature.IsValid();
+        bool executeCallback = executePass &&
+                               std::visit([](const auto &callback) { return bool(callback); }, pass.executeCallback) &&
+                               (!pass.drawCondition || pass.drawCondition());
+        if (executeCallback && pass.skipCallbackWhenRendererListsEmpty) {
+            executeCallback =
+                std::any_of(pass.rendererListInputs.begin(), pass.rendererListInputs.end(), [&](ResourceHandle handle) {
+                    const RendererList *rendererList = ResolveRendererList(handle);
+                    return rendererList && !rendererList->Empty();
+                });
+        }
+        const bool hasAttachmentWork =
+            executeCallback || pass.clearColorEnabled || pass.clearDepthEnabled || pass.hasResolveAttachment;
+        const bool isGraphicsPass =
+            executePass && pass.type == PassType::Graphics && pass.renderingSignature.IsValid() && hasAttachmentWork;
 #if INFERNUX_FRAME_PROFILE
         if (isGraphicsPass) {
             ++s_executeProfile.graphicsPassCount;
@@ -2389,15 +2407,6 @@ void RenderGraph::RecordPasses(VkCommandBuffer commandBuffer, const std::vector<
         }
 
         // Execute pass callback
-        bool executeCallback =
-            executePass && std::visit([](const auto &callback) { return bool(callback); }, pass.executeCallback);
-        if (executeCallback && pass.skipCallbackWhenRendererListsEmpty) {
-            executeCallback =
-                std::any_of(pass.rendererListInputs.begin(), pass.rendererListInputs.end(), [&](ResourceHandle handle) {
-                    const RendererList *rendererList = ResolveRendererList(handle);
-                    return rendererList && !rendererList->Empty();
-                });
-        }
         if (executeCallback) {
             // RHI bind elision is deliberately scoped to one pass callback.
             // Raw command-buffer access invalidates it again through

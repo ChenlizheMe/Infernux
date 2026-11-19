@@ -5,7 +5,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Any, Callable
 from weakref import WeakSet
@@ -229,7 +229,7 @@ class MainThreadCommandQueue:
             timeout=max(timeout_ms, 1) / 1000.0
         )
 
-    def drain(self, max_commands: int | None = 16, *, can_continue=None) -> int:
+    def drain(self, max_commands: int | None = 16, *, can_continue=None, batch_scope=None) -> int:
         with self._owner_lock:
             self._main_thread_id = threading.get_ident()
         processed = 0
@@ -237,15 +237,18 @@ class MainThreadCommandQueue:
         # through Awake/Start/OnDestroy in this drain.
         queued = self._queue.qsize()
         admitted = queued if max_commands is None else min(max(int(max_commands), 0), queued)
-        for _ in range(admitted):
-            if can_continue is not None and not can_continue():
-                break
-            try:
-                _name, fn, future, reload_owner, lifetime = self._queue.get_nowait()
-            except queue.Empty:
-                break
-            self._execute(fn, future, reload_owner, lifetime)
-            processed += 1
+        if not admitted:
+            return 0
+        with batch_scope() if batch_scope is not None else nullcontext():
+            for _ in range(admitted):
+                if can_continue is not None and not can_continue():
+                    break
+                try:
+                    _name, fn, future, reload_owner, lifetime = self._queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._execute(fn, future, reload_owner, lifetime)
+                processed += 1
         return processed
 
     def cancel_pending(self, reason: str = "Host service stopped.") -> int:

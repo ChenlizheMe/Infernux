@@ -486,6 +486,8 @@ class PassBuilder
     /// Skip only this pass's callback when all declared renderer lists are empty.
     /// Attachment clears and layout transitions still execute.
     INFERNUX_VULKAN_BACKEND_API void SkipCallbackWhenRendererListsEmpty(bool enabled = true);
+    /// Skip draw recording when the producer has no commands. Attachment clears and resolves still execute.
+    INFERNUX_VULKAN_BACKEND_API void SetDrawCondition(std::function<bool()> condition);
     /// Keep compiled transitions, but skip raster clears and execution when a
     /// private optional batch was not admitted for this submission.
     INFERNUX_VULKAN_BACKEND_API void SetExecutionGate(std::function<bool()> gate);
@@ -583,6 +585,7 @@ struct RenderPassData
     rhi::GraphicsRenderingSignature renderingSignature;
     bool hasSideEffect = false;
     bool skipCallbackWhenRendererListsEmpty = false;
+    std::function<bool()> drawCondition;
     std::function<bool()> executionGate;
     std::function<void(VkCommandBuffer, bool)> executionTiming;
     std::vector<ResourceHandle> rendererListInputs;

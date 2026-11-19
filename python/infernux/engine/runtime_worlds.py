@@ -465,6 +465,8 @@ class RuntimeWorldSession:
             materialized = True
             domain = WorldRuntime(identity)
             self.engine._world_runtimes[identity] = domain
+            from infernux.runtime_services import _invalidate_external_update_snapshot
+            _invalidate_external_update_snapshot(self.engine)
             yield
             with _Infernux._RuntimeWorldScope(identity):
                 object_ids = set().union(*(set(record[0]) for record in self.records))

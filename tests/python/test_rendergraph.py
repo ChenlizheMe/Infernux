@@ -234,6 +234,88 @@ class TestGraphTextures:
 # ══════════════════════════════════════════════════════════════════════
 
 
+@pytest.mark.parametrize("samples", [0, 1, 2, 4, 8])
+def test_standard_display_tail_uses_resolved_msaa_input_without_extra_copy(samples):
+    graph = RenderGraph("DisplayTail", output_samples=samples)
+    graph.create_texture("color", camera_target=True)
+    with graph.add_pass("CustomLinear") as render_pass:
+        render_pass.write_color("color")
+        render_pass.fullscreen_quad("custom/linear")
+    graph.screen_ui_overlay_section()
+    graph.screen_ui_overlay_section()  # Standard section remains idempotent.
+    with graph.add_pass("CustomDisplay") as render_pass:
+        render_pass.write_color("color")
+        render_pass.fullscreen_quad("custom/display", alpha_blend=True)
+    description = graph.build()
+    assert [render_pass.name for render_pass in graph.build().passes] == [
+        render_pass.name for render_pass in description.passes
+    ]
+    passes = {render_pass.name: render_pass for render_pass in description.passes}
+    assert description.output_texture == description.linear_output_texture == "color"
+    assert description.output_display_encoded
+    assert description.linear_output_pass_count == 1
+    assert description.msaa_samples == samples
+    direct = samples > 1
+    assert ("_DisplayEncode_Commit" not in passes) == direct
+    assert ("_display_encode" not in {texture.name for texture in description.textures}) == direct
+    assert passes["_DisplayEncode"].read_textures == ["color"]
+    assert passes["_DisplayEncode"].write_colors == [(0, "color" if direct else "_display_encode")]
+    assert passes["_ScreenUI_Overlay"].commands[0].type == GraphCommandType.DRAW_SCREEN_UI
+    assert description.passes[-1].name == "CustomDisplay"
+    assert description.passes[-1].commands[0].alpha_blend
+
+
+def test_single_sample_custom_color_keeps_display_ping_pong_under_msaa():
+    graph = RenderGraph("CustomColor", output_samples=4)
+    graph.create_texture("color", format=Format.RGBA16_SFLOAT)
+    graph.display_encode_section()
+    graph.set_output("color")
+    assert "_DisplayEncode_Commit" in {render_pass.name for render_pass in graph.build().passes}
+
+
+@pytest.mark.parametrize("fixed_samples", [0, 1])
+def test_display_tail_uses_final_samples_after_late_reconfiguration(fixed_samples):
+    graph = RenderGraph("LateMSAA", output_samples=fixed_samples)
+    graph.create_texture("color", camera_target=True)
+    graph.set_msaa_samples(4)
+    graph.display_encode_section()
+    authored_passes = list(graph._passes)
+    authored_texture = graph.get_texture("_display_encode")
+    for samples in (4, 1, 4):
+        effective = graph.set_msaa_samples(samples)
+        description = graph.build()
+        passes = {render_pass.name: render_pass for render_pass in description.passes}
+        assert description.msaa_samples == effective
+        assert ("_DisplayEncode_Commit" not in passes) == (effective > 1)
+        assert passes["_DisplayEncode"].write_colors == [
+            (0, "color" if effective > 1 else "_display_encode")
+        ]
+        assert graph._passes == authored_passes
+        assert graph.get_texture("_display_encode") is authored_texture
+
+
+@pytest.mark.parametrize("customization", ["shader", "blend", "external_reader", "export"])
+def test_display_tail_keeps_explicit_customization(customization):
+    graph = RenderGraph("CustomTail", output_samples=4)
+    graph.create_texture("color", camera_target=True)
+    with graph.add_pass("Opaque") as render_pass:
+        render_pass.write_color("color")
+        render_pass.draw_renderers()
+    graph.display_encode_section()
+    commit = graph._passes[-1]
+    if customization == "shader":
+        commit.fullscreen_quad("custom/commit")
+    elif customization == "blend":
+        commit.fullscreen_quad("infernux/internal/fullscreen_copy", alpha_blend=True)
+    elif customization == "external_reader":
+        graph.create_texture("capture", format=Format.RGBA16_SFLOAT)
+        with graph.add_copy_pass("Capture") as render_pass:
+            render_pass.copy_texture("_display_encode", "capture")
+    else:
+        graph.set_output("_display_encode")
+    assert "_DisplayEncode_Commit" in {render_pass.name for render_pass in graph.build().passes}
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Validation error cases
 # ══════════════════════════════════════════════════════════════════════

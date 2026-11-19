@@ -5487,7 +5487,9 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 const auto passExtent = ResolveGraphPassExtent(m_pythonGraphDesc, passDesc, width, height);
                 const auto passWidth = passExtent.first;
                 const auto passHeight = passExtent.second;
-                bool isShadowPass = command && command->type == GraphCommandType::DrawShadowCasters;
+                const bool isShadowPass = command && command->type == GraphCommandType::DrawShadowCasters;
+                if (isShadowPass)
+                    builder.SetDrawCondition([this] { return m_shadowAtlasUpdateRequired; });
 
                 // ----- Depth -----
                 vk::ResourceHandle depth;
@@ -5602,8 +5604,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         }
                     }
                     if (isShadowPass) {
-                        if (!m_shadowAtlasUpdateRequired)
-                            return;
                         VkClearAttachment clearAttachment{};
                         clearAttachment.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
                         clearAttachment.clearValue.depthStencil = {0.0f, 0};

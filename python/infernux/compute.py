@@ -2492,6 +2492,8 @@ def _resolve_bound_transform(object_id: int, object_handle):
 
 def _poll_transform_bindings() -> None:
     """Exchange authored/simulated poses at the physics Transform barrier."""
+    if not _transform_bindings:
+        return
     with _record_commands():
         bindings = tuple(_transform_bindings)
         index = 0

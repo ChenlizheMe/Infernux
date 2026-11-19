@@ -61,7 +61,7 @@ class PythonWorldScope final
         auto *world = SceneManager::Instance().FindRuntimeWorld(m_id);
         if (!world)
             throw std::logic_error("RuntimeWorld has retired");
-        m_scope = std::make_unique<WorldExecutionScope>(world);
+        m_scope.emplace(world);
     }
     void Exit()
     {
@@ -70,7 +70,7 @@ class PythonWorldScope final
 
   private:
     uint64_t m_id;
-    std::unique_ptr<WorldExecutionScope> m_scope;
+    std::optional<WorldExecutionScope> m_scope;
 };
 
 enum class ResultTargetStatus

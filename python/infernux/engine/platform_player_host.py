@@ -60,7 +60,7 @@ class PlatformPlayerHost(RuntimeWorldHost):
     def prepare_frame(self, delta_time):
         from infernux.lib import SceneManager, _Infernux
         from infernux.host.commands import MainThreadCommandQueue
-        from infernux.runtime_services import _update_snapshot, _dispatch_updates
+        from infernux.runtime_services import _external_update_snapshot, _dispatch_updates
 
         self._retire_result_consumers()
         work = self._frame_work
@@ -79,7 +79,7 @@ class PlatformPlayerHost(RuntimeWorldHost):
             self._runtime_world_session.pump()
         self._player_runtime.prepare_frame()
         self._prepare_runtime_world_schedulers()
-        self._clock_callbacks = _update_snapshot()
+        self._clock_callbacks = _external_update_snapshot(self)
         self._clock_delta = float(delta_time)
         if self._clock_callbacks['service_update']:
             _dispatch_updates(self._clock_callbacks['service_update'], delta_time, delta_time, gameplay_phase=False)

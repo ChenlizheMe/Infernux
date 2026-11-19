@@ -285,9 +285,26 @@ class Engine(RuntimeWorldHost):
         Python traversal.
         """
         from infernux.lib import SceneManager, _Infernux
-        from infernux.runtime_services import _update_snapshot, _dispatch_updates
+        from contextlib import contextmanager
+        from infernux.host.commands import MainThreadCommandQueue
+        if not _PLAYER_MODE:
+            from infernux.core.assets import AssetManager
+            from infernux.engine.undo import UndoManager
+        from infernux.runtime_services import _external_update_snapshot, _dispatch_updates
 
         engine_ref = weakref.ref(self)
+
+        @contextmanager
+        def _command_batch():
+            engine = engine_ref()
+            work = engine._frame_work
+            work.begin_scope()
+            try:
+                with _Infernux._RuntimeWorldScope(SceneManager.instance()._authoring_runtime_world_id):
+                    with engine._authoring_scheduler.change_journal.transaction():
+                        yield
+            finally:
+                work.end_scope()
 
         def _pre_scene_tick(delta_time):
             engine = engine_ref()
@@ -299,9 +316,6 @@ class Engine(RuntimeWorldHost):
                 with _Infernux._RuntimeWorldScope(SceneManager.instance()._authoring_runtime_world_id):
                     with engine._authoring_scheduler.change_journal.transaction():
                         if not _PLAYER_MODE:
-                            from infernux.core.assets import AssetManager
-                            from infernux.host import MainThreadCommandQueue
-
                             # Edit may have resumed after the last frame's model
                             # publication. Apply it before queued authoring can
                             # instantiate another root from that same revision.
@@ -310,8 +324,6 @@ class Engine(RuntimeWorldHost):
                             # Drain before begin_native_frame, never from pre-GUI
                             # while that frame still owns the old dispatch epoch.
                             # The shared queue drains below for both host roles.
-                            from infernux.engine.undo import UndoManager
-
                             # History may restore a scene and publish script types.
                             # UI callbacks only enqueue replay; never restore that
                             # graph while a native frame owns the dispatch epoch.
@@ -320,17 +332,10 @@ class Engine(RuntimeWorldHost):
                                 undo.process_pending_replay()
                         if engine._mode == RuntimeMode.Headless:
                             engine._tick_headless_maintenance()
-                from infernux.host.commands import MainThreadCommandQueue
                 work = engine._frame_work
-                work.begin_scope()
-                try:
-                    with _Infernux._RuntimeWorldScope(SceneManager.instance()._authoring_runtime_world_id):
-                        with engine._authoring_scheduler.change_journal.transaction():
-                            MainThreadCommandQueue.instance().drain(
-                                max_commands=None,
-                                can_continue=lambda: work.active and work.accepting and work.remaining(background=True) > 0)
-                finally:
-                    work.end_scope()
+                MainThreadCommandQueue.instance().drain(
+                    max_commands=None, batch_scope=_command_batch,
+                    can_continue=lambda: work.active and work.accepting and work.remaining(background=True) > 0)
                 session = engine._runtime_world_session
                 if session is not None:
                     session.pump()
@@ -344,7 +349,7 @@ class Engine(RuntimeWorldHost):
                         engine._prepare_work_sources()
                     finally:
                         engine._frame_work.end_scope()
-                engine._clock_callbacks = _update_snapshot()
+                engine._clock_callbacks = _external_update_snapshot(engine)
                 engine._clock_delta = float(delta_time)
                 if engine._clock_callbacks['service_update']:
                     _dispatch_updates(engine._clock_callbacks['service_update'], delta_time, delta_time,
@@ -355,8 +360,6 @@ class Engine(RuntimeWorldHost):
             if engine is None:
                 return
             if not _PLAYER_MODE:
-                from infernux.core.assets import AssetManager
-
                 AssetManager.flush_model_instance_sync()
             if engine._prepare_runtime_world_schedulers():
                 # A paused Step is intentionally executed outside the

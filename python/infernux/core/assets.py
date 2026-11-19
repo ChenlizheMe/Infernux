@@ -28,6 +28,7 @@ import time
 import weakref
 import uuid
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type
 
@@ -2412,16 +2413,18 @@ class AssetManager:
         if max_items is not None and max_items < 1:
             raise ValueError("max_items must be positive or None")
         with cls._pending_gpu_texture_reloads_lock:
+            if not cls._pending_gpu_texture_reloads:
+                return 0
             if paths is None:
-                keys = list(cls._pending_gpu_texture_reloads)
+                keys = list(islice(cls._pending_gpu_texture_reloads, max_items))
             else:
                 keys = []
                 for path in paths:
                     key = cls._normalize_asset_path(path) or path_key(path)
                     if key in cls._pending_gpu_texture_reloads and key not in keys:
                         keys.append(key)
-            if max_items is not None:
-                keys = keys[:max_items]
+                        if len(keys) == max_items:
+                            break
             pending = [
                 cls._pending_gpu_texture_reloads.pop(key)
                 for key in keys

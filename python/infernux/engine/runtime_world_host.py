@@ -18,6 +18,7 @@ class RuntimeWorldHost(WorkRuntime):
         from infernux.lib import SceneManager
         SceneManager.instance()._ensure_authoring_world()
         self._world_runtimes = {}
+        self._external_update_snapshot_revision = -1
         self._runtime_world_session = None
         from infernux.runtime_services import _author_update_callbacks
         self._authoring_scheduler = RuntimeExecutionScheduler(
@@ -27,8 +28,8 @@ class RuntimeWorldHost(WorkRuntime):
         )
         self._runtime_scene_manager = None
         self._last_native_transform_serial = None
-        from infernux.runtime_services import _update_snapshot
-        self._clock_callbacks = _update_snapshot()
+        from infernux.runtime_services import _external_update_snapshot
+        self._clock_callbacks = _external_update_snapshot(self)
         self._clock_delta = 0.0
 
     def _install_runtime_world_callbacks(self):
@@ -65,6 +66,8 @@ class RuntimeWorldHost(WorkRuntime):
             if domain is not None:
                 domain.close()
                 del engine._world_runtimes[int(identity)]
+                from infernux.runtime_services import _invalidate_external_update_snapshot
+                _invalidate_external_update_snapshot(engine)
         scene_manager._set_runtime_world_retirement_callbacks(_begin_retire_world, _retire_world)
         self._last_native_transform_serial = int(
             scene_manager.get_global_transform_serial()

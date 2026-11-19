@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from threading import RLock
+from types import MappingProxyType
 from typing import Any, Callable, Literal, get_args
 from contextlib import nullcontext
 from infernux.execution import capture_execution_scope, component_execution, execution_phase, simulation_state
@@ -16,6 +17,8 @@ UpdatePhase = Literal["update", "late_update", "fixed_update", "editor_update",
 _author_update_callbacks: dict[str, tuple[UpdateRegistration, ...]] = {
     phase: () for phase in get_args(UpdatePhase)
 }
+_EXTERNAL_UPDATE_PHASES = ('service_update', 'render_submitted', 'render_presented')
+_external_update_revision = 0
 
 
 def _update_table():
@@ -66,8 +69,10 @@ class UpdateRegistration:
         previous = self._updates[self._phase]
         current = previous + (self,) if enabled else tuple(item for item in previous if item is not self)
         self._updates[self._phase] = current
-        if bool(previous) != bool(current) and self._phase not in (
-                'service_update', 'render_submitted', 'render_presented'):
+        if self._phase in _EXTERNAL_UPDATE_PHASES:
+            global _external_update_revision
+            _external_update_revision += 1
+        elif bool(previous) != bool(current):
             from infernux.components._component_lifecycle import RuntimeExecutionScheduler
 
             RuntimeExecutionScheduler.set_runtime_service_phase_active(
@@ -121,6 +126,32 @@ def _update_snapshot() -> dict[str, tuple[UpdateRegistration, ...]]:
         result[phase] = _author_update_callbacks[phase] + tuple(
             registration for domain in domains for registration in domain.updates[phase])
     return result
+
+
+def _invalidate_external_update_snapshot(engine) -> None:
+    """A changed World collection becomes visible at the next host snapshot."""
+    engine._external_update_snapshot_revision = -1
+
+
+def _external_update_snapshot(engine):
+    """Capture only host phases, retaining one immutable publication until edits.
+
+    Registration tuples already use copy-on-write. An unchanged host therefore
+    does not enter a World scope, enumerate Worlds, or copy callback tables.
+    Dispatch still checks each registration's live enabled/ownership state.
+    """
+    revision = _external_update_revision
+    if getattr(engine, '_external_update_snapshot_revision', -1) == revision:
+        return engine._external_update_snapshot
+    snapshot = MappingProxyType({
+        phase: _author_update_callbacks[phase] + tuple(
+            registration for domain in engine._world_runtimes.values()
+            for registration in domain.updates.get(phase, ()))
+        for phase in _EXTERNAL_UPDATE_PHASES
+    })
+    engine._external_update_snapshot = snapshot
+    engine._external_update_snapshot_revision = revision
+    return snapshot
 
 
 def _dispatch_updates(callbacks: tuple[UpdateRegistration, ...], delta: float, unscaled_delta: float,
