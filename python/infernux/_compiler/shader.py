@@ -426,14 +426,15 @@ InxMeshInput vertex_motion(InxVertexInput input, uint instance : SV_VulkanInstan
 {
     InxMeshInput result = inx_mesh_vertex(input, instance);
     InxInstanceData history = inx_instances[instance];
+    result.motion_current_clip = float4(result.position.x, -result.position.y, result.position.zw);
+    result.motion_previous_clip = result.motion_current_clip;
     if ((history.object_flags & 1u) != 0u)
     {
         InxSkinState skin = inx_skins[instance];
         skin.bone_offset = skin.previous_bone_offset;
         float3 previous_local = inx_skin_vertex(input, skin, inx_bones).position;
         float4 previous_clip = mul(inx_view.previous_view_projection, mul(inx_previous_model(history), float4(previous_local, 1.0)));
-        float4 current_clip = float4(result.position.x, -result.position.y, result.position.zw);
-        result.motion_vector = inx_raster_motion(current_clip, previous_clip);
+        result.motion_previous_clip = previous_clip;
     }
     inx_clip_device_bounds(result, instance);
     return result;
@@ -463,7 +464,8 @@ uint2 fragment_picking(InxMeshInput input, bool front_facing : SV_IsFrontFace) :
 float2 fragment_motion(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
 {
     inx_evaluate_surface(input, front_facing);
-    return (input.object_flags & 1u) != 0u ? input.motion_vector - inx_view_jitter_delta_uv() : float2(0.0);
+    return inx_mesh_has_motion_history(input)
+        ? inx_mesh_motion(input) - inx_view_jitter_delta_uv() : float2(0.0);
 }
 [shader("fragment")]
 float4 fragment_normal(InxMeshInput input, bool front_facing : SV_IsFrontFace) : SV_Target0
@@ -1304,8 +1306,8 @@ uint4 fragment_ray_surface(InxMeshInput input, bool front_facing : SV_IsFrontFac
     float3 toward_eye = inx_camera_toward_eye(input.position_ws);
     normal *= (dot(normal, toward_eye) < 0.0 ? -1.0 : 1.0) * rsqrt(length_squared);
     float2 encoded = inx_encode_surface_normal(normal);
-    uint depth_and_motion = asuint(inx_ray_receiver_depth(input, normal)) | ((input.object_flags & 1u) << 31u);
-    return uint4(input.surface_id, packHalf2x16(encoded), packHalf2x16(input.motion_vector), depth_and_motion);
+    uint depth_and_motion = asuint(inx_ray_receiver_depth(input, normal)) | (uint(inx_mesh_has_motion_history(input)) << 31u);
+    return uint4(input.surface_id, packHalf2x16(encoded), packHalf2x16(inx_mesh_motion(input)), depth_and_motion);
 }
 """
 
@@ -1332,7 +1334,7 @@ InxThinSurfaceOutput fragment_thin_surface(InxMeshInput input, bool front_facing
     float3 emission = clamp(surface.emission, float3(0.0), float3(65504.0));
     InxThinSurfaceOutput result;
     result.layer = uint4(input.surface_id, packHalf2x16(inx_encode_surface_normal(normal)),
-                         packHalf2x16(input.motion_vector), asuint(input.position.z));
+                         packHalf2x16(inx_mesh_motion(input)), asuint(input.position.z));
     result.optics = uint4(packHalf2x16(float2(ior, optical_depth.r)),
                           packHalf2x16(optical_depth.gb), packHalf2x16(emission.rg),
                           packHalf2x16(float2(emission.b, saturate(surface.alpha))));

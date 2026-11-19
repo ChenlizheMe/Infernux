@@ -18,6 +18,16 @@ public float2 inx_raster_motion(float4 current_clip, float4 previous_clip)
     return 0.5 * (current_clip.xy / max(abs(current_clip.w), 1e-6) -
                   previous_clip.xy / max(abs(previous_clip.w), 1e-6));
 }
+public bool inx_mesh_has_motion_history(InxMeshInput input)
+{
+    return (input.object_flags & 1u) != 0u &&
+           input.motion_current_clip.w > 0.0 && input.motion_previous_clip.w > 0.0;
+}
+public float2 inx_mesh_motion(InxMeshInput input)
+{
+    return inx_mesh_has_motion_history(input)
+        ? inx_raster_motion(input.motion_current_clip, input.motion_previous_clip) : float2(0.0);
+}
 public float3 inx_camera_toward_eye(float3 position_ws)
 {
     // Increasing reversed clip depth at fixed screen XY moves toward the eye.

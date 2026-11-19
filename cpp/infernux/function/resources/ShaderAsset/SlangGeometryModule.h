@@ -97,7 +97,10 @@ public struct InxMeshInput
     public nointerpolation uint2 object_id : TEXCOORD8;
     public nointerpolation uint object_flags : TEXCOORD9;
     public nointerpolation uint layer_mask : TEXCOORD10;
-    public float2 motion_vector : TEXCOORD11;
+    // Interpolate clip positions before division. Vertex NDC motion is not affine
+    // across perspective triangles, especially when vertices cross the eye plane.
+    public float4 motion_current_clip : TEXCOORD13;
+    public float4 motion_previous_clip : TEXCOORD14;
     public nointerpolation uint surface_id : TEXCOORD12;
 };
 public struct InxSurfaceData
@@ -294,8 +297,9 @@ public InxMeshInput inx_transform_vertex(InxVertexInput input, float4x4 model, f
     result.object_flags = instance.object_flags;
     result.layer_mask = instance.layer_mask;
     result.surface_id = instance.pose_indices.w;
-    result.motion_vector = float2(0.0);
     result.position = mul(projection, mul(view, world));
+    result.motion_current_clip = result.position;
+    result.motion_previous_clip = result.position;
     // The existing shared camera buffer stores a Vulkan viewport projection.
     // Return canonical Y-up before the common target compiler's clip lowering.
     result.position.y = -result.position.y;
