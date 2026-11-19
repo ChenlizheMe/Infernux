@@ -525,9 +525,17 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const auto slot = dispatches.size();
         if (slot >= packetLimit || !parameterSlots[slot] || !workSlots[slot])
             throw std::logic_error("Resident broadphase requires its admitted bounded uniform workspace");
-        const auto &uniform = parameterSlots[slot];
+        auto uniform = parameterSlots[slot];
         const auto &workUniform = workSlots[slot];
-        uploads.push_back({uniform, 0, Bytes(value)});
+        auto parameterBytes = Bytes(value);
+        const auto same = std::find_if(uploads.begin(), uploads.end(), [&](const auto &upload) {
+            return upload.offset == 0 && upload.data == parameterBytes &&
+                   std::find(parameterSlots.begin(), parameterSlots.end(), upload.buffer) != parameterSlots.end();
+        });
+        if (same != uploads.end())
+            uniform = same->buffer;
+        else
+            uploads.push_back({uniform, 0, std::move(parameterBytes)});
         if (EntryPorts[entry] & K)
             uploads.push_back({workUniform, 0, Bytes(work)});
         const auto &program = implementation->programs[entry];
