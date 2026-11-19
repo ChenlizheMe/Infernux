@@ -5,6 +5,7 @@
 #include <function/renderer/VulkanFrameSubmission.h>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
+#include <function/renderer/shader/FullscreenTriangleSource.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanComputeQueue.h>
@@ -680,14 +681,9 @@ void write_parameters() { parameters[0] = parameters[1]; }
 )"},
                                  ShaderCodeTarget::SpirV);
     const auto rendererParameterGraphics =
-        CompileSlangNativeModule({"renderer_parameter_draw", "RendererParameterBuffer.graphics.slang", R"(
+        CompileSlangNativeModule({"renderer_parameter_draw", "RendererParameterBuffer.graphics.slang",
+                                  std::string(FullscreenTriangleVertexSource) + R"(
 [[vk::binding(0, 0)]] StructuredBuffer<float4> parameters;
-[shader("vertex")]
-float4 parameter_triangle(uint vertex : SV_VertexID) : SV_Position
-{
-    const float2 positions[3] = {float2(-1, -1), float2(3, -1), float2(-1, 3)};
-    return float4(positions[vertex], 0, 1);
-}
 [shader("fragment")]
 float4 parameter_color() : SV_Target0 { return parameters[0]; }
 )"},

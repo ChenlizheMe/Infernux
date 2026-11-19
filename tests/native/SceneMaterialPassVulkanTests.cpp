@@ -51,7 +51,7 @@ void Run()
     source.source = {"scene_material", "<scene material>", R"(
 struct Parameters { float4 signal; };
 [[vk::binding(0, 0)]] ConstantBuffer<Parameters> inx_parameters;
-[shader("vertex")] float4 vertex_main(uint id : SV_VertexID) : SV_Position {
+[shader("vertex")] float4 vertex_main(uint id : SV_VulkanVertexID) : SV_Position {
     return float4(float2((id << 1) & 2, id & 2) * 2.0 - 1.0, 0.5, 1.0);
 }
 [shader("fragment")] float4 fragment_main() : SV_Target0 { return inx_parameters.signal; }
