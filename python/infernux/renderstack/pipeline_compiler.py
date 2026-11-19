@@ -530,7 +530,6 @@ def _compile_route(
             depth,
             motion,
             motion_draw,
-            shadow_map,
         )
         original_color = None
         if policy in {RoutePolicy.ADDITIVE_EXTRACT, RoutePolicy.ORDERED_COMPOSITE}:
@@ -573,7 +572,6 @@ def _compile_route(
             depth,
             motion,
             motion_draw,
-            shadow_map,
         )
         resources = _effect_resources(inline_target, depth, motion, normal, shadow_map)
         for stage in route_stages:
@@ -604,7 +602,6 @@ def _compile_route(
         depth,
         motion,
         motion_draw,
-        shadow_map,
         resolve=route_color if draw_color is not route_color else None,
     )
 
@@ -675,7 +672,6 @@ def _draw_deferred_route(
     depth,
     motion,
     motion_draw,
-    shadow_map,
 ):
     """Rasterize one opaque route into the canonical GBuffer and light it."""
     if route.domain != "opaque":
@@ -698,10 +694,6 @@ def _draw_deferred_route(
             ) as geometry_pass:
                 write_deferred_gbuffer(geometry_pass, surface)
                 geometry_pass.write_depth(depth)
-                if shadow_map is not None:
-                    # Publish the View's shadow image for the per-view lighting
-                    # descriptor and retain the shadow caster in this graph.
-                    geometry_pass.set_texture("shadowMap", shadow_map)
                 geometry_pass.draw_renderers(
                     queue_range=selector.as_tuple(),
                     sort_mode="front_to_back",
@@ -738,7 +730,6 @@ def _draw_route(
     depth,
     motion,
     motion_draw,
-    shadow_map,
     *,
     resolve=None,
 ) -> None:
@@ -759,8 +750,6 @@ def _draw_route(
                     render_pass.write_depth(depth)
                 if resolve is not None:
                     render_pass.write_resolve(resolve)
-                if shadow_map is not None:
-                    render_pass.set_texture("shadowMap", shadow_map)
                 render_pass.draw_renderers(
                     queue_range=selector.as_tuple(),
                     sort_mode=sort_mode,

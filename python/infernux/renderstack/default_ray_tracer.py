@@ -274,7 +274,6 @@ def _update_ray_tail(ctx, *, primary, thin):
 def _draw_thin_transparency(graph, capture, surface):
     layer, optics = capture
     color, depth = surface.sample(COLOR_TEXTURE), surface.sample(DEPTH_TEXTURE)
-    shadow = surface.sample("shadow_map")
     reflection = graph.create_texture("_ray_thin_reflection", format=Format.RGBA16_SFLOAT, samples=1)
     background = graph.create_texture("_ray_thin_background", format=Format.RGBA16_SFLOAT, samples=1)
     world = graph._create_world_ray_lit()
@@ -288,7 +287,7 @@ def _draw_thin_transparency(graph, capture, surface):
     with graph.add_pass("Transparent Behind Thin Surface") as render_pass:
         render_pass.read(depth)
         render_pass.write_color(color)
-        render_pass.set_textures({"transparent_layer": layer, "shadowMap": shadow})
+        render_pass.set_texture("transparent_layer", layer)
         render_pass.draw_renderers(
             queue_range=transparent_queue_range(), sort_mode="back_to_front",
             material_pass="transparent_behind", material_filter="ordinary_transparent",
@@ -304,7 +303,7 @@ def _draw_thin_transparency(graph, capture, surface):
     with graph.add_pass("Transparent In Front Of Thin Surface") as render_pass:
         render_pass.read(depth)
         render_pass.write_color(color)
-        render_pass.set_textures({"transparent_layer": layer, "shadowMap": shadow})
+        render_pass.set_texture("transparent_layer", layer)
         render_pass.draw_renderers(
             queue_range=transparent_queue_range(), sort_mode="back_to_front",
             material_pass="transparent_front", material_filter="ordinary_transparent",

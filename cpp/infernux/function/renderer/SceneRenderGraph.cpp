@@ -1832,24 +1832,11 @@ uint32_t SceneRenderGraph::GetShadowMapResolution() const
 {
     if (m_hasPythonGraph && !m_pythonGraphValid)
         return 0;
-    for (const auto &pass : m_pythonGraphDesc.passes) {
-        const bool drawsShadows =
-            std::any_of(pass.commands.begin(), pass.commands.end(), [](const GraphCommandDesc &command) {
-                return command.type == GraphCommandType::DrawShadowCasters;
-            });
-        if (!drawsShadows || pass.writeDepth.empty())
-            continue;
-
-        const auto texture =
-            std::find_if(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
-                         [&](const GraphTextureDesc &candidate) { return candidate.name == pass.writeDepth; });
-        if (texture == m_pythonGraphDesc.textures.end())
-            return 0;
-
-        const auto [width, height] = texture->ResolveExtent(m_width, m_height);
-        return width == height ? width : 0u;
-    }
-    return 0;
+    const auto *caster = FindViewShadowCaster(m_pythonGraphDesc);
+    if (!caster)
+        return 0;
+    const auto [width, height] = ResolveGraphPassExtent(m_pythonGraphDesc, *caster, m_width, m_height);
+    return width == height ? width : 0u;
 }
 
 // ============================================================================
@@ -2823,7 +2810,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
         return;
     }
 
-    if (!m_hasShadowCasterPass) {
+    if (!m_shadowMapInputHandle.IsValid()) {
         if (!viewFrame.shadowBinding.usesDefaultTexture) {
             m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
             m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
@@ -2844,18 +2831,13 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
         }
         return;
     }
-    if (!m_renderGraph || !m_shadowMapInputHandle.IsValid()) {
-        throw std::logic_error("Shadow-caster graph did not publish its shadowMap input");
-    }
-
     VkImageView view = m_renderGraph->ResolveTextureView(m_shadowMapInputHandle);
     VkSampler shadowSampler = m_vkCore->GetShadowDepthSampler();
     if (view == VK_NULL_HANDLE || shadowSampler == VK_NULL_HANDLE) {
         throw std::runtime_error("Shadow-caster graph could not resolve its shadow image view and sampler");
     }
 
-    const VkImageLayout imageLayout = m_shadowMapInputIsDepth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
-                                                              : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    constexpr auto imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
     const auto &bound = viewFrame.shadowBinding;
     if (!bound.usesDefaultTexture && bound.imageView == view && bound.sampler == shadowSampler &&
         bound.layout == imageLayout)
@@ -2870,7 +2852,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
     auto &images = viewFrame.fullscreenBindings.textures;
     device.Release(images[0].texture);
     device.Release(images[6].sampler);
-    images[0] = {0, rhi::BindingType::SampledTexture, device.RegisterTextureView(view), {}, m_shadowMapInputIsDepth};
+    images[0] = {0, rhi::BindingType::SampledTexture, device.RegisterTextureView(view), {}, true};
     images[6] = {6, rhi::BindingType::Sampler, {}, device.RegisterSampler(shadowSampler)};
     viewFrame.shadowBinding = {view, shadowSampler, imageLayout, false};
 }
@@ -3537,7 +3519,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
     m_graphBuilt = false;
     m_shadowMapInputHandle = {};
     m_transparentLayerInputHandle = {};
-    m_shadowMapInputIsDepth = false;
     m_visibleRendererList = {};
     m_shadowRendererList = {};
 
@@ -4234,12 +4215,7 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
             }
         }
 
-        // Fullscreen lighting shaders consume the camera-local shadow map
-        // through the per-view descriptor set rather than their explicit
-        // set-0 texture list. Discover that graph resource up front so those
-        // passes still participate in dependency and layout tracking.
-        const auto perViewShadowTextureName = ResolveGraphShadowTexture(m_pythonGraphDesc);
-        bool fullscreenShadowDependencyDeclared = false;
+        const auto *shadowCaster = FindViewShadowCaster(m_pythonGraphDesc);
         // Camera clear settings remain active across frames. Consumption is
         // local to this graph build so only the first color-clearing pass is
         // overridden without disabling later per-frame color updates.
@@ -4274,6 +4250,11 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     m_authorPassIndices.emplace(pass.id, AuthorPass{passIndex, dispatch});
             };
             const GraphCommandDesc *command = passDesc.PrimaryCommand();
+            const auto viewShadowInput = shadowCaster && command && ReadsViewShadow(*command)
+                                             ? customRTHandles.at(shadowCaster->writeDepth)
+                                             : vk::ResourceHandle{};
+            if (viewShadowInput.IsValid())
+                m_shadowMapInputHandle = viewShadowInput;
             if (m_viewportGeneration && m_screenUIOutput && !m_viewportColorPublished && command &&
                 command->type == GraphCommandType::DrawScreenUI && command->screenUIList != 0) {
                 // Finish the camera's display-encoded rectangle first. Overlay
@@ -5095,12 +5076,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 const auto fsPassWidth = fsPassExtent.first;
                 const auto fsPassHeight = fsPassExtent.second;
 
-                vk::ResourceHandle fullscreenShadowInput;
-                if (!fullscreenShadowDependencyDeclared && !perViewShadowTextureName.empty()) {
-                    const auto shadow = customRTHandles.find(perViewShadowTextureName);
-                    if (shadow != customRTHandles.end())
-                        fullscreenShadowInput = shadow->second;
-                }
                 vk::ResourceHandle fsResolvedVersion;
                 FullscreenPipelineKey fullscreenPipelineKey;
                 fullscreenPipelineKey.depthFormat = fsDepthFormat;
@@ -5134,10 +5109,10 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             builder.Read(input.handle);
                         }
                     }
-                    if (fullscreenShadowInput.IsValid() &&
+                    if (viewShadowInput.IsValid() &&
                         std::none_of(fsReadInputs.begin(), fsReadInputs.end(),
-                                     [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
-                        builder.ReadSampledDepth(fullscreenShadowInput);
+                                     [&](const auto &input) { return input.handle == viewShadowInput; })) {
+                        builder.ReadSampledDepth(viewShadowInput);
                     }
                     if (authorProgram->UsesViewBinding(2) || authorProgram->UsesViewBinding(3)) {
                         for (const auto &resources : forwardPlusResources) {
@@ -5237,11 +5212,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                     };
                 });
                 trackAuthorPass(pass);
-                if (fullscreenShadowInput.IsValid()) {
-                    m_shadowMapInputHandle = fullscreenShadowInput;
-                    m_shadowMapInputIsDepth = true;
-                    fullscreenShadowDependencyDeclared = true;
-                }
                 for (const auto version : fsWrittenVersions)
                     publishResourceVersion(version);
                 publishResourceVersion(fsResolvedVersion);
@@ -5566,6 +5536,10 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                         builder.Read(binding.handle);
                     }
                 }
+                if (viewShadowInput.IsValid() &&
+                    std::none_of(inputBindingHandles.begin(), inputBindingHandles.end(),
+                                 [&](const auto &input) { return input.handle == viewShadowInput; }))
+                    builder.ReadSampledDepth(viewShadowInput);
 
                 // ----- Color outputs (MRT) -----
                 // Write all declared color targets at their respective slots.
@@ -5591,10 +5565,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 }
 
                 for (const auto &binding : inputBindingHandles) {
-                    if (binding.samplerName == "shadowMap" && !m_shadowMapInputHandle.IsValid()) {
-                        m_shadowMapInputHandle = binding.handle;
-                        m_shadowMapInputIsDepth = binding.isDepth;
-                    }
                     if (command && IsTransparentPartition(command->shaderTarget) &&
                         binding.samplerName == kTransparentLayerInput)
                         m_transparentLayerInputHandle = binding.handle;

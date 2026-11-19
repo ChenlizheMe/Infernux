@@ -122,14 +122,22 @@ std::shared_ptr<const ShaderTargetCode> ResolveGraphRayLitProgram(const RenderGr
     return program;
 }
 
-std::string ResolveGraphShadowTexture(const RenderGraphDescription &graph)
+const GraphPassDesc *FindViewShadowCaster(const RenderGraphDescription &graph) noexcept
 {
-    for (const auto &pass : graph.passes)
-        for (const auto &command : pass.commands)
-            for (const auto &[name, resource] : command.inputBindings)
-                if (name == "shadowMap")
-                    return resource;
-    return {};
+    for (const auto &pass : graph.passes) {
+        const auto *command = pass.PrimaryCommand();
+        if (command && command->type == GraphCommandType::DrawShadowCasters)
+            return &pass;
+    }
+    return nullptr;
+}
+
+bool ReadsViewShadow(const GraphCommandDesc &command) noexcept
+{
+    if (command.type == GraphCommandType::FullscreenQuad)
+        return command.fullscreenProgram && command.fullscreenProgram->UsesViewBinding(0);
+    return command.type == GraphCommandType::DrawRenderers &&
+           (command.shaderTarget == ShaderCompileTarget::Forward || IsForwardPlusMaterialPass(command.shaderTarget));
 }
 
 std::optional<GraphPassDesc> ResolveGraphCameraClear(const RenderGraphDescription &graph, CameraClearFlags flags,

@@ -5,6 +5,7 @@ import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import CameraClearFlags,ConsolePanel,SceneManager,Vector3,vec4f,LightType,LightShadows
+from infernux.rendergraph.graph import Format
 
 
 MONITOR = """import infernux.shader as shader
@@ -28,6 +29,10 @@ class Monitor(inx.renderstack.RenderPipeline):
         self.builds+=1;g.set_msaa_samples(1)
         a=g.import_texture('left',self.targets[0]);b=g.import_texture('right',self.targets[1])
         color=g.create_texture('color',camera_target=True)
+        # This camera only composites other views. Its unused shadow atlas must
+        # be cullable without binding a texture to the monitor's shader.
+        atlas = g.create_texture("unused_camera_atlas", format=Format.D32_SFLOAT, size=(64, 64))
+        g.add_pass("Unused camera shadow").write_depth(atlas).set_clear(depth=0.0).draw_shadow_casters()
         compare = g.add_pass("CompareViews").write_color(color)
         compare.set_texture("left_tex", a).set_texture("right_tex", b).fullscreen_quad("tests/view_shadow_monitor")
         g.screen_ui_overlay_section(resources={'color'});g.set_output(color)

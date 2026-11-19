@@ -178,7 +178,6 @@ def add_forward_opaque_pass(
         p.write_color(COLOR_TEXTURE)
         p.write_depth(DEPTH_TEXTURE)
         p.set_clear(color=clear_color, depth=0.0)
-        p.set_texture("shadowMap", SHADOW_MAP_TEXTURE)
         p.draw_renderers(
             queue_range=queue_range or opaque_queue_range(),
             sort_mode="front_to_back",
@@ -207,7 +206,6 @@ def add_transparent_pass(
     with graph.add_pass(name) as p:
         p.read(DEPTH_TEXTURE)
         p.write_color(COLOR_TEXTURE)
-        p.set_texture("shadowMap", SHADOW_MAP_TEXTURE)
         p.draw_renderers(
             queue_range=queue_range or transparent_queue_range(),
             sort_mode="back_to_front",

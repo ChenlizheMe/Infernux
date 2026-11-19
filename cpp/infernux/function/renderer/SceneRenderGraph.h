@@ -1199,12 +1199,9 @@ class SceneRenderGraph : public NativeLifetimeOwner
     lighting::ViewLighting m_viewLighting;
     uint64_t m_shadowCameraResourceId = 0;
 
-    // Resource handle bound to the graph's "shadowMap" sampler input.
-    // Resolved after Compile() so the per-view descriptor can be updated
-    // BEFORE command buffer recording starts.
+    // Camera atlas consumed by material or fullscreen view bindings.
     vk::ResourceHandle m_shadowMapInputHandle;
     vk::ResourceHandle m_transparentLayerInputHandle;
-    bool m_shadowMapInputIsDepth = false;
 
     // Fullscreen effect renderer — manages pipeline cache, descriptor pool,
     // and linear sampler for FullscreenQuad graph passes.
