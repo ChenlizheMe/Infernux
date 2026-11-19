@@ -72,6 +72,8 @@ struct RenderLightingSource
     uint64_t generation = 0;
     /// Last abrupt change in illumination shared by distant receivers. Persists across skipped views.
     uint64_t diffuseCutGeneration = 0;
+    /// Last discontinuity in the light distribution sampled by reusable paths.
+    uint64_t proposalCutGeneration = 0;
     std::array<glm::vec3, 6> distantDiffuse{};
     void UpdateDiffuseHistory(const RenderLightingSource *previous);
     std::vector<RenderLightSource> lights;

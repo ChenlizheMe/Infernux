@@ -132,7 +132,13 @@ class RayReconstruct(shader.fullscreen):
                         if stamps[surface_id & 3] > accepted:
                             return fresh
                 limit = 8.0
-        elif visibility.y != accepted or shader._ray_lighting_changed():
+        elif shader._ray_lighting_changed():
+            # Measure the RGB change against the energy at this receiver, including equal-luminance color edits.
+            change = previous.rgb - current.rgb
+            energy = shader.max(shader.dot(previous.rgb, previous.rgb), shader.dot(current.rgb, current.rgb))
+            agreement = shader.saturate(1.0 - 4.0 * shader.dot(change, change) / shader.max(energy, 1e-12))
+            limit = 1.0 + 3.0 * agreement * agreement
+        elif visibility.y != accepted:
             # The diffuse prefilter stores the squared RGB error of its directional mean.
             # Let new measurements dominate when they contradict the old lighting.
             innovation = previous.rgb - current.rgb

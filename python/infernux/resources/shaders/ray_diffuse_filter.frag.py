@@ -43,10 +43,12 @@ class RayDiffuseFilter(shader.fullscreen):
         # Separable binomial weights over a 3x3 atrous stencil.
         radiance = center.rgb * 4.0
         total = 4.0
-        # Estimate fresh irradiance before temporal reuse. Wider strides only filter the displayed result.
-        current_frame = self.stride == 1
+        # The first two scales measure current-frame irradiance. The final scale uses temporal statistics.
+        raw_samples = self.stride == 1
+        local_means = self.stride == 2
         squared_sum = 4.0 * shader.dot(center.rgb, center.rgb)
         squared_weights = 16.0
+        mean_error_sum = 4.0 * shader.as_float(packet.w)
         for tap in range(9):
             if tap == 4:
                 continue
@@ -73,9 +75,11 @@ class RayDiffuseFilter(shader.fullscreen):
                 cell = shader.ivec2(sample_uv * shader.vec2(visibility_size))
                 visibility = shader.load(self.ambient_visibility, cell, 0).x
                 weight /= 1.0 + 12.0 * self.ssao_strength * shader.abs(center_visibility - visibility)
-            if current_frame:
+            if raw_samples:
                 squared_sum += weight * shader.dot(estimate.rgb, estimate.rgb)
                 squared_weights += weight * weight
+            elif local_means:
+                mean_error_sum += weight * shader.as_float(sample.w)
             elif center.a > 1.0 and estimate.a > 1.0:
                 sample_luma = shader.dot(estimate.rgb, luma)
                 sample_variance = shader.as_float(sample.w) / (estimate.a - 1.0)
@@ -85,9 +89,13 @@ class RayDiffuseFilter(shader.fullscreen):
             radiance += weight * estimate.rgb
             total += weight
         mean = radiance / total
-        if current_frame:
+        if raw_samples:
             inverse_samples = squared_weights / (total * total)
             spread = shader.max(squared_sum / total - shader.dot(mean, mean), 0.0)
             mean_error = spread * inverse_samples / shader.max(1.0 - inverse_samples, 0.0001)
             return pack_ray_signal(shader.vec4(mean, 1.0), shader.uvec2(packet.z, shader.as_uint(mean_error)))
+        if local_means:
+            # Overlapping neighborhoods share samples. The weighted mean of their variances bounds
+            # the variance of the combined estimate without assuming independent observations.
+            return pack_ray_signal(shader.vec4(mean, 1.0), shader.uvec2(packet.z, shader.as_uint(mean_error_sum / total)))
         return pack_ray_signal(shader.vec4(mean, center.a), packet.zw)

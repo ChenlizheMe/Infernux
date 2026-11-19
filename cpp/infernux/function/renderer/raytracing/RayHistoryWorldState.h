@@ -31,6 +31,7 @@ class RayHistoryWorldState
         m_candidateGeometry = geometry.visibilitySerial;
         const auto lighting = world.Lighting() ? world.Lighting()->generation : 0;
         const auto cut = world.Lighting() ? world.Lighting()->diffuseCutGeneration : 0;
+        m_proposalCut = world.Lighting() ? world.Lighting()->proposalCutGeneration : 0;
         // Geometry prepared for another light publication cannot establish
         // which receivers changed under this view's current lights.
         const bool matchedVisibility =
@@ -58,11 +59,13 @@ class RayHistoryWorldState
     {
         m_acceptedGeometry = m_candidateGeometry;
         m_acceptedLighting = m_lighting;
+        m_acceptedProposalCut = m_proposalCut;
     }
 
     [[nodiscard]] uint32_t ViewFlags() const noexcept
     {
-        return static_cast<uint32_t>(m_lightingChanged) << 4u;
+        return (static_cast<uint32_t>(m_lightingChanged) << 4u) |
+               (static_cast<uint32_t>(m_proposalCut != m_acceptedProposalCut) << 5u);
     }
 
     [[nodiscard]] uint32_t AcceptedGeometry() const noexcept
@@ -76,6 +79,8 @@ class RayHistoryWorldState
     uint64_t m_lighting = 0;
     uint64_t m_lightCut = 0;
     uint64_t m_acceptedLighting = 0;
+    uint64_t m_proposalCut = 0;
+    uint64_t m_acceptedProposalCut = 0;
     bool m_lightingChanged = false;
     uint32_t m_candidateGeometry = 0;
     uint32_t m_acceptedGeometry = 0;

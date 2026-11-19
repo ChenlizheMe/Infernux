@@ -20,6 +20,35 @@
 namespace infernux
 {
 
+namespace
+{
+glm::vec3 GeometryLightPower(const RenderLightSource &light)
+{
+    return (light.influenceDomains & CanonicalLightAffectsGeometry) ? light.linearColor * light.intensity
+                                                                    : glm::vec3(0.0f);
+}
+
+bool LocalLightProposalsChanged(const std::vector<RenderLightSource> &oldLights,
+                                const std::vector<RenderLightSource> &lights)
+{
+    // A path key includes random choices in the ordered light distribution.
+    if (oldLights.size() != lights.size())
+        return true;
+    for (size_t i = 0; i < lights.size(); ++i) {
+        const auto &a = oldLights[i], &b = lights[i];
+        if (a.id != b.id || a.type != b.type)
+            return true;
+        if (b.type == static_cast<uint32_t>(CanonicalLightType::Directional))
+            continue;
+        const glm::vec3 before = GeometryLightPower(a), after = GeometryLightPower(b), delta = after - before;
+        // A change exceeding one stop, or a comparable chromatic change, starts fresh proposals.
+        if (4.0f * glm::dot(delta, delta) > std::max(glm::dot(before, before), glm::dot(after, after)))
+            return true;
+    }
+    return false;
+}
+} // namespace
+
 void RenderLightingSource::UpdateDiffuseHistory(const RenderLightingSource *previous)
 {
     // Incident light on the six axial faces gives a scale-independent test of both
@@ -39,7 +68,7 @@ void RenderLightingSource::UpdateDiffuseHistory(const RenderLightingSource *prev
             distantDiffuse[2 * axis + 1] += power * std::max(0.0f, -cosine);
         }
     }
-    diffuseCutGeneration = generation;
+    diffuseCutGeneration = proposalCutGeneration = generation;
     if (!previous)
         return;
     float peakSquared = 0.0f, changeSquared = 0.0f;
@@ -50,8 +79,11 @@ void RenderLightingSource::UpdateDiffuseHistory(const RenderLightingSource *prev
     }
     // A jump of one stop relative to the brightest face starts fresh. Continuous
     // daylight can reuse evidence even when a view renders only some world publications.
-    if (changeSquared <= 0.25f * peakSquared)
+    if (changeSquared <= 0.25f * peakSquared) {
         diffuseCutGeneration = previous->diffuseCutGeneration;
+        if (!LocalLightProposalsChanged(previous->lights, lights))
+            proposalCutGeneration = previous->proposalCutGeneration;
+    }
 }
 
 std::shared_ptr<const LightSamplingDistribution>

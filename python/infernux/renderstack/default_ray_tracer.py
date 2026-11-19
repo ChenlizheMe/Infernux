@@ -158,8 +158,12 @@ class DefaultRayTracer(RayTracer):
             if not specular:
                 filtered = graph.create_texture(f"{ctx.name}/{name}/filtered", format=Format.RGBA32_UINT,
                                                 size_divisor=divisor, samples=1)
+                intermediate = graph.create_texture(f"{ctx.name}/{name}/intermediate", format=Format.RGBA32_UINT,
+                                                    size_divisor=divisor, samples=1)
+                # Estimate this frame's irradiance before deciding whether the reprojected lighting still fits.
                 _filter_diffuse(ctx, guides, packet, filtered, 1)
-                packet = filtered
+                _filter_diffuse(ctx, guides, filtered, intermediate, 2)
+                packet = intermediate
             previous, output = ctx.view.history(name, format=Format.RGBA32_UINT, size_divisor=divisor,
                                                 respond_to_lighting=not specular)
             label = "Ray Specular Reconstruction" if specular else "Ray Diffuse Reconstruction"
@@ -173,10 +177,7 @@ class DefaultRayTracer(RayTracer):
                 p.fullscreen_quad("infernux/internal/ray_reconstruct")
             packet = output
             if not specular:
-                intermediate = graph.create_texture(f"{ctx.name}/{name}/intermediate", format=Format.RGBA32_UINT,
-                                                    size_divisor=divisor, samples=1)
-                _filter_diffuse(ctx, guides, packet, intermediate, 2)
-                _filter_diffuse(ctx, guides, intermediate, filtered, 4)
+                _filter_diffuse(ctx, guides, packet, filtered, 4)
                 packet = filtered
         return _PackedSignal(packet, partial(_linear_resolve, graph, packet, guides, specular))
 

@@ -3,6 +3,7 @@
 #include <function/renderer/gui/WorldUIDepthReplay.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/scene/Camera.h>
+#include <function/scene/LightingData.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -155,6 +156,27 @@ void CheckRayHistoryOwnership()
     dark.generation = 3;
     dark.UpdateDiffuseHistory(&movingSun);
     assert(dark.diffuseCutGeneration == dark.generation);
+
+    auto lamp = day;
+    lamp.lights.emplace_back().type = static_cast<uint32_t>(CanonicalLightType::Spot);
+    lamp.generation = 4;
+    lamp.UpdateDiffuseHistory(&day);
+    assert(lamp.proposalCutGeneration == lamp.generation && lamp.diffuseCutGeneration == day.generation);
+    auto movingLamp = lamp;
+    movingLamp.lights.back().position.x += 1.0f;
+    movingLamp.lights.back().intensity *= 0.92f;
+    movingLamp.generation = 5;
+    movingLamp.UpdateDiffuseHistory(&lamp);
+    assert(movingLamp.proposalCutGeneration == lamp.generation);
+    auto blueLamp = movingLamp;
+    blueLamp.lights.back().linearColor = {0.0f, 0.0f, 1.0f};
+    blueLamp.generation = 6;
+    blueLamp.UpdateDiffuseHistory(&movingLamp);
+    assert(blueLamp.proposalCutGeneration == blueLamp.generation && blueLamp.diffuseCutGeneration == day.generation);
+    auto next = blueLamp;
+    ++next.generation;
+    next.UpdateDiffuseHistory(&blueLamp);
+    assert(next.proposalCutGeneration == blueLamp.generation); // A view may skip the publication that changed color.
 
     std::unordered_map<std::string, GraphTemporalHistory> histories;
     auto &lighting = histories["studio/indirect"];
