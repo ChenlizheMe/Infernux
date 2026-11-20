@@ -19,8 +19,13 @@ class RayDiffuseReprojection(shader.fullscreen):
 
         extent = shader.ivec2(shader.dimensions(self.primary, 0))
         uv = (shader.vec2(pixel) + 0.5) / shader.vec2(extent)
-        raster_motion = shader.unpack_half_2x16(movement.z)
-        previous = uv - raster_motion
+        jitter_delta = shader._view_jitter_delta_uv()
+        uv_delta = jitter_delta - shader.unpack_half_2x16(movement.z)
+        # Quantize the geometric offset before evaluating the raster footprint.
+        # This keeps the history lookup and coverage mask on the same grid.
+        encoded = shader.ivec2(shader.floor(shader.clamp(uv_delta, -1.0, 1.0) * 32767.0 + 0.5))
+        packed_delta = (shader.as_uint(encoded.x) & shader.uint(0xFFFF)) | (shader.as_uint(encoded.y) << 16)
+        previous = uv + shader.vec2(encoded) / 32767.0 - jitter_delta
         origin = shader.ivec2(previous * shader.vec2(extent) - 0.5)
         cam = shader.camera()
         depth = shader.as_float(surface.y)
@@ -36,7 +41,4 @@ class RayDiffuseReprojection(shader.fullscreen):
             old = shader.load(self.previous_primary, at, 0)
             if shader.abs(linear_eye_depth(shader.as_float(old.y), cam) - eye) <= tolerance:
                 mask |= shader.uint(1) << i
-        # Depth history is raster-aligned. Lighting history is reconstructed
-        # at unjittered pixel centers, so publish the geometric displacement.
-        motion = raster_motion - shader._view_jitter_delta_uv()
-        return shader.uvec4(shader.pack_half_2x16(motion), mask, shader.uint(0), shader.uint(0))
+        return shader.uvec4(packed_delta, mask, shader.uint(0), shader.uint(0))

@@ -696,7 +696,9 @@ InxRaySignal inx_reproject_diffuse_radiance(InxScreenDiffuseTrace hit, InxUInt2D
     if (reproj.y == 0u)
         return (InxRaySignal)0;
 
-    float2 previous_uv = hit.uv - unpackHalf2x16ToFloat(reproj.x);
+    // The surface reprojection pass packs previous minus current UV as two SNORM16 values.
+    int2 encoded = int2(asint(reproj.x << 16u) >> 16, asint(reproj.x) >> 16);
+    float2 previous_uv = hit.uv + float2(encoded) / 32767.0;
     uint2 at = min(uint2(saturate(previous_uv) * float2(full)), full - 1u);
     return {float4(history.texture.Load(int3(at, 0)).rgb, 1.0), uint2(0u, asuint(hit.distance))};
 }

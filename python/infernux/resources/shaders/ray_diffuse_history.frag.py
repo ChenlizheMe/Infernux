@@ -1,5 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.ray_sh_filter import sh_clip_history, sh_guide_pixel
+from infernux.shader.lib.ray_surface_depth import diffuse_previous_uv_delta
 
 
 class RayDiffuseHistory(shader.fullscreen):
@@ -25,7 +26,7 @@ class RayDiffuseHistory(shader.fullscreen):
         if surface.x == 0:
             return (shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0))
 
-        depth = shader.as_float(shader.load(self.guide, source / 2, 0).x)
+        depth = shader.as_float(shader.load(self.guide, source >> 1, 0).x)
         state = shader.vec4(0.0, depth, 0.0, 0.0)
         r = shader.load(self.fresh_red, cell, 0)
         g = shader.load(self.fresh_green, cell, 0)
@@ -34,11 +35,11 @@ class RayDiffuseHistory(shader.fullscreen):
         mask = reproj.y
         if not self.old_state.valid or mask == 0:
             return (r, g, b, state)
-        motion = shader.unpack_half_2x16(reproj.x)
-        previous = (shader.vec2(cell) + 0.5) / shader.vec2(extent) - motion
+        uv_delta = diffuse_previous_uv_delta(reproj.x)
+        previous = (shader.vec2(cell) + 0.5) / shader.vec2(extent) + uv_delta
         if mask != 15:
-            raster_motion = motion + shader._view_jitter_delta_uv()
-            footprint = shader.frac(shader.vec2(source) - raster_motion * shader.vec2(full))
+            raster_delta = uv_delta - shader._view_jitter_delta_uv()
+            footprint = shader.frac(shader.vec2(source) + raster_delta * shader.vec2(full))
             correction = shader.vec2(0.0)
             total = 0.0
             for i in range(4):
@@ -49,10 +50,10 @@ class RayDiffuseHistory(shader.fullscreen):
                 weight = area.x * area.y
                 correction += offset * weight
                 total += weight
-            previous += correction / (shader.max(total, 1.0e-5) * shader.vec2(full))
+            if total > 1.0e-5:
+                previous += correction / (total * shader.vec2(full))
 
-        at = shader.clamp(shader.ivec2(shader.floor(previous * shader.vec2(extent))),
-                          shader.ivec2(0), extent - 1)
+        at = shader.clamp(shader.ivec2(previous * shader.vec2(extent)), shader.ivec2(0), extent - 1)
         old = shader.load(self.old_state, at, 0).xy
         error = shader.abs(old.y - depth)
         if error > 0.03 * depth:

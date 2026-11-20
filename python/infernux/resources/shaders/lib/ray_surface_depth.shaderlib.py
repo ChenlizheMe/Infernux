@@ -30,6 +30,10 @@ def ray_previous_eye_depth(motion_depth: shader.uint) -> float:
     return shader.as_float(motion_depth & shader.uint(0x7FFF0000))
 
 
+def diffuse_previous_uv_delta(packed: shader.uint) -> shader.vec2:
+    return shader.vec2(shader.as_int(packed << 16) >> 16, shader.as_int(packed) >> 16) / 32767.0
+
+
 def previous_depth_plane(normal: shader.vec3, uv: shader.vec2, eye_depth: float,
                          camera: shader.CameraContext) -> shader.vec4:
     """Device-depth plane of the previous receiver, with validity in W."""

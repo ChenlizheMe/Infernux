@@ -1,4 +1,5 @@
 import infernux.shader as shader
+from infernux.shader.lib.ray_surface_depth import diffuse_previous_uv_delta
 
 
 class GTAOTemporal(shader.fullscreen):
@@ -16,9 +17,9 @@ class GTAOTemporal(shader.fullscreen):
         if not self.history.valid:
             return shader.vec4(center)
 
-        motion = (shader.unpack_half_2x16(shader.load(self.reprojection, pixel, 0).x) if self.use_reprojection
-                  else shader.load(self.motion, pixel, 0).xy)
-        previous = shader.sample_level(self.history, ctx.uv - motion, 0.0).x
+        uv_delta = (diffuse_previous_uv_delta(shader.load(self.reprojection, pixel, 0).x) if self.use_reprojection
+                    else -shader.load(self.motion, pixel, 0).xy)
+        previous = shader.sample_level(self.history, ctx.uv + uv_delta, 0.0).x
         size = shader.ivec2(shader.dimensions(self.visibility, 0))
         total = 0.0
         mean = 0.0
