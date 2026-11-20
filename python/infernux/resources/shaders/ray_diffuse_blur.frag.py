@@ -27,7 +27,7 @@ class RayDiffuseBlur(shader.fullscreen):
         # Low-confidence pixels borrow a wider neighborhood. The filtered
         # state recurs across frames, so a converged pixel only needs a small kernel.
         stability = shader.saturate((shader.float(center.w) - 1.0) / 6.0)
-        span = 1 + shader.int(shader.round(2.0 * (1.0 - stability)))
+        stride = 3 - shader.int(shader.round(2.0 * stability))
         camera = shader.camera()
         uv = (shader.vec2(site) + shader.vec2(0.5)) / shader.vec2(full)
         z = shader.as_float(receiver.y)
@@ -52,15 +52,11 @@ class RayDiffuseBlur(shader.fullscreen):
         green = shader.vec4(0.0)
         blue = shader.vec4(0.0)
         total = 0.0
-        for i in range(13):
-            if i >= 9 and span == 1:
-                break
-            d = shader.ivec2(i % 3 - 1, int(i / 3) - 1)
-            weight = shader.float((2 - shader.abs(d.x)) * (2 - shader.abs(d.y)))
-            if i >= 9:
-                axis = shader.ivec2(1, 0) if i < 11 else shader.ivec2(0, 1)
-                d = axis * (span if i % 2 == 0 else -span)
-                weight = 1.0
+        for i in range(9):
+            offset = shader.ivec2(i % 3 - 1, int(i / 3) - 1)
+            d = offset * stride
+            kernel_distance2 = shader.float(offset.x * offset.x + offset.y * offset.y)
+            weight = shader.exp2(-stability * kernel_distance2)
             at = cell + d
             if shader.any(at < shader.ivec2(0)) or shader.any(at >= extent):
                 continue
