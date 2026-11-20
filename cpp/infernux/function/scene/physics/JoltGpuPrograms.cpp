@@ -345,7 +345,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
         for (uint32_t body = range.x; body < bodyEnd + range.y; ++body) {
             const auto &record = ModelRecord(model.bodies, bodyChanges, body);
             const auto motionType = record.meta.z & ~MotionNotResident;
-            if (record.meta.w != world || record.meta.x != bodyLeafEnd ||
+            if (record.meta.w != world || record.meta.x != (record.meta.y ? bodyLeafEnd : 0u) ||
                 bodyLeafEnd + record.meta.y > leafEnd + leaves.y ||
                 (motionType != MotionStatic && motionType != MotionKinematic && motionType != MotionDynamic))
                 throw std::invalid_argument("Invalid body or leaf range in the Jolt GPU model");
@@ -363,7 +363,7 @@ ModelCounts ValidateModel(const JoltGpuModel &model, const std::vector<JoltGpuBo
                 record.damping.x < 0 || record.damping.y < 0 || record.damping.z < 0 || record.damping.w < 0 ||
                 !std::isfinite(record.invInertiaDiagonal.w) || (nonstatic && !Normalized(record.inertiaRotation)))
                 throw std::invalid_argument("Jolt GPU body has invalid mass, inertia or damping");
-            for (uint32_t leaf = record.meta.x; leaf < bodyLeafEnd + record.meta.y; ++leaf) {
+            for (uint32_t leaf = static_cast<uint32_t>(bodyLeafEnd); leaf < bodyLeafEnd + record.meta.y; ++leaf) {
                 const auto &shape = ModelRecord(model.shapes, shapeChanges, leaf);
                 const bool triangle = (shape.meta.w & ShapeOneSidedTriangle) != 0u;
                 const uint32_t triangleFlags = ShapeOneSidedTriangle | (7u << ShapeTriangleActiveEdgeShift);
@@ -641,6 +641,83 @@ void AppendModelUpload(std::vector<rhi::ComputeBufferUpdate> &updates,
     updates.push_back({buffer, baseOffset + uint64_t(first) * sizeof(Record), std::move(bytes)});
 }
 
+// Keep unchanged records on the device even when a topology edit shifts their
+// positions. Short runs are left in the surrounding upload to limit commands.
+template <class Record, class SourceIndex>
+void AppendAuthorTransfers(const std::shared_ptr<rhi::ComputeBuffer> &source,
+                           const std::shared_ptr<rhi::ComputeBuffer> &target, const std::vector<Record> &old,
+                           const std::vector<Record> &next, SourceIndex sourceIndex,
+                           std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeBufferCopy> &copies)
+{
+    constexpr uint64_t minimumCopyBytes = 256;
+    if (next.empty()) {
+        uploads.push_back({target, 0u, std::vector<uint8_t>(sizeof(Record))});
+        return;
+    }
+    const auto same = [&](size_t from, size_t to) {
+        return from < old.size() && std::memcmp(&old[from], &next[to], sizeof(Record)) == 0;
+    };
+    const bool inPlace = source == target;
+    size_t uploadFirst = 0;
+    const auto uploadThrough = [&](size_t end) {
+        if (end != uploadFirst)
+            uploads.push_back(
+                {target, uint64_t(uploadFirst) * sizeof(Record), Bytes(next.data() + uploadFirst, end - uploadFirst)});
+    };
+    for (size_t to = 0; to < next.size();) {
+        const size_t from = sourceIndex(to);
+        if (!same(from, to)) {
+            ++to;
+            continue;
+        }
+        const size_t first = to++;
+        while (to < next.size() && sourceIndex(to) == from + to - first && same(from + to - first, to))
+            ++to;
+        const uint64_t byteSize = uint64_t(to - first) * sizeof(Record);
+        if (inPlace ? from == first : byteSize >= minimumCopyBytes) {
+            uploadThrough(first);
+            if (!inPlace)
+                copies.push_back(
+                    {source, target, {uint64_t(from) * sizeof(Record), uint64_t(first) * sizeof(Record), byteSize}});
+            uploadFirst = to;
+        }
+    }
+    uploadThrough(next.size());
+}
+
+void AppendAuthorReplacementTransfers(rhi::ComputeHost &host, const JoltGpuStorage &storage,
+                                      const JoltGpuModel &replacement,
+                                      std::array<std::shared_ptr<rhi::ComputeBuffer>, StoragePortCount> &buffers,
+                                      std::vector<rhi::ComputeBufferUpdate> &uploads,
+                                      std::vector<rhi::ComputeBufferCopy> &copies)
+{
+    const auto &old = storage.GetModel();
+    const auto sameIndex = [](size_t index) { return index; };
+    const auto oldShape = [&](size_t index) -> size_t {
+        const auto owner = replacement.shapes[index].meta.y;
+        const auto ordinal = index - replacement.bodies[owner].meta.x;
+        if (owner < old.bodies.size() && ordinal < old.bodies[owner].meta.y)
+            return old.bodies[owner].meta.x + ordinal;
+        return old.shapes.size();
+    };
+    AppendAuthorTransfers(storage.Get(Resource::BodyModels), buffers[PortIndex(Resource::BodyModels)], old.bodies,
+                          replacement.bodies, sameIndex, uploads, copies);
+    // Body capacity can grow without changing any accepted shape address.
+    // Keep that allocation shared with existing publications in this case.
+    const auto shapePort = PortIndex(Resource::ShapeModels);
+    const auto &previousShapes = storage.Get(Resource::ShapeModels);
+    const auto &shapes = replacement.shapes;
+    const bool sameShapes =
+        previousShapes && old.shapes.size() == shapes.size() &&
+        (shapes.empty() || std::memcmp(old.shapes.data(), shapes.data(), shapes.size() * sizeof(ShapeModel)) == 0);
+    if (!sameShapes) {
+        buffers[shapePort] = Allocate(host, shapePort, std::max<size_t>(1, shapes.size()) * sizeof(ShapeModel));
+        AppendAuthorTransfers(previousShapes, buffers[shapePort], old.shapes, shapes, oldShape, uploads, copies);
+    }
+    AppendAuthorTransfers(storage.Get(Resource::Worlds), buffers[PortIndex(Resource::Worlds)], old.worlds,
+                          replacement.worlds, sameIndex, uploads, copies);
+}
+
 uint32_t Groups(uint32_t count, uint32_t width)
 {
     return count / width + static_cast<uint32_t>(count % width != 0);
@@ -727,8 +804,12 @@ void JoltGpuBuildWorldRanges(JoltGpuModel &model, const std::vector<uint32_t> &c
             throw std::invalid_argument("Packed WorldRange body capacities exceed target model");
         for (uint32_t local = 0; local < capacities[row]; ++local, ++body) {
             auto &record = model.bodies[static_cast<size_t>(body)];
-            if (record.meta.x != leaf || leaf + record.meta.y > model.shapes.size())
+            if ((record.meta.y && record.meta.x != leaf) || leaf + record.meta.y > model.shapes.size())
                 throw std::invalid_argument("Packed WorldRange leaf stream is not contiguous by body");
+            // Empty ranges have no address. Their author records need not be
+            // rewritten when a different body's shapes move through the pack.
+            if (!record.meta.y)
+                record.meta.x = 0;
             record.meta.w = row;
             for (uint32_t ordinal = 0; ordinal < record.meta.y; ++ordinal, ++leaf)
                 model.shapes[static_cast<size_t>(leaf)].meta.y = static_cast<uint32_t>(body);
@@ -1035,27 +1116,17 @@ JoltGpuStorage::PrepareModelReplacement(JoltGpuModel replacement,
                 throw std::invalid_argument("Jolt GPU replacement owns all author-model uploads");
         }
 
+    // Leaf edits keep the body and world extents. Changed records use the
+    // existing ports and retain any published reader through normal RHI COW.
     auto buffers = m_buffers;
-    for (auto resource : {Resource::BodyModels, Resource::ShapeModels, Resource::Worlds, Resource::Bounds}) {
-        const auto port = PortIndex(resource);
-        const uint64_t size = resource == Resource::BodyModels ? uint64_t(counts.bodies) * sizeof(BodyModel)
-                              : resource == Resource::ShapeModels
-                                  ? uint64_t(std::max(1u, counts.shapes)) * sizeof(ShapeModel)
-                              : resource == Resource::Worlds ? uint64_t(counts.worlds) * sizeof(WorldRange)
-                                                             : uint64_t(counts.shapes) * sizeof(Aabb);
-        buffers[port] = Allocate(m_host, port, size);
-    }
-    additionalUpdates.push_back(
-        {buffers[PortIndex(Resource::BodyModels)], 0, Bytes(replacement.bodies.data(), replacement.bodies.size())});
-    if (counts.shapes)
-        additionalUpdates.push_back({buffers[PortIndex(Resource::ShapeModels)], 0,
-                                     Bytes(replacement.shapes.data(), replacement.shapes.size())});
-    else
-        additionalUpdates.push_back(
-            {buffers[PortIndex(Resource::ShapeModels)], 0, std::vector<uint8_t>(sizeof(ShapeModel))});
-    additionalUpdates.push_back(
-        {buffers[PortIndex(Resource::Worlds)], 0, Bytes(replacement.worlds.data(), replacement.worlds.size())});
-    auto batch = rhi::PrepareComputeBatch(m_host, std::move(additionalUpdates), std::move(mutations));
+    std::vector<rhi::ComputeBufferCopy> copies;
+    AppendAuthorReplacementTransfers(m_host, *this, replacement, buffers, additionalUpdates, copies);
+    if (additionalUpdates.empty() && mutations.empty() && copies.empty())
+        return {};
+    const auto bounds = PortIndex(Resource::Bounds);
+    buffers[bounds] = Allocate(m_host, bounds, uint64_t(counts.shapes) * sizeof(Aabb));
+    auto batch =
+        rhi::PrepareComputeBatch(m_host, std::move(additionalUpdates), std::move(mutations), {}, std::move(copies));
     auto transaction = std::unique_ptr<JoltGpuModelUpdate>(
         new JoltGpuModelUpdate(*this, std::move(batch), std::move(replacement), std::move(buffers),
                                {counts.shapes, counts.maxBodiesPerWorld, counts.maxLeavesPerWorld}));
@@ -1090,7 +1161,7 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PreparePackedReplacement(Jol
         stream->GetByteSize() != jointBytes || !stream->HasInitializedRange(0, jointBytes))
         throw std::invalid_argument("GPU packed layout requires completed remapped joint runtime");
     buffers[PortIndex(Resource::Joints)] = std::move(stream);
-    for (const auto resource : {Resource::BodyModels, Resource::ShapeModels, Resource::Worlds, Resource::Bounds}) {
+    for (const auto resource : {Resource::BodyModels, Resource::Worlds, Resource::Bounds}) {
         const auto port = PortIndex(resource);
         const uint64_t count = resource == Resource::BodyModels ? bodyCapacity
                                : resource == Resource::Worlds   ? std::max(1u, counts.worlds)
@@ -1103,20 +1174,14 @@ std::unique_ptr<JoltGpuModelUpdate> JoltGpuStorage::PreparePackedReplacement(Jol
             buffers[port] = Allocate(m_host, port, Ports[port].stride);
     }
     std::vector<rhi::ComputeBufferUpdate> uploads;
-    const auto author = [&](Resource resource, const auto &values) {
-        const auto port = PortIndex(resource);
-        auto bytes = values.empty() ? std::vector<uint8_t>(Ports[port].stride) : Bytes(values.data(), values.size());
-        uploads.push_back({buffers[port], 0u, std::move(bytes)});
-    };
-    author(Resource::BodyModels, replacement.bodies);
-    author(Resource::ShapeModels, replacement.shapes);
-    author(Resource::Worlds, replacement.worlds);
+    std::vector<rhi::ComputeBufferCopy> copies;
+    AppendAuthorReplacementTransfers(m_host, *this, replacement, buffers, uploads, copies);
     if (!m_buffers[PortIndex(Resource::Contacts)]) {
         uploads.push_back({buffers[PortIndex(Resource::Contacts)], 0u, std::vector<uint8_t>(sizeof(Contact))});
         uploads.push_back(
             {buffers[PortIndex(Resource::ContactPatches)], 0u, std::vector<uint8_t>(sizeof(ContactPatch))});
     }
-    auto packet = rhi::PrepareComputeBatch(m_host, std::move(uploads), {});
+    auto packet = rhi::PrepareComputeBatch(m_host, std::move(uploads), {}, {}, std::move(copies));
     auto transaction = std::unique_ptr<JoltGpuModelUpdate>(
         new JoltGpuModelUpdate(*this, std::move(packet), std::move(replacement), std::move(buffers),
                                {counts.shapes, counts.maxBodiesPerWorld, counts.maxLeavesPerWorld}));
@@ -1241,7 +1306,9 @@ JoltGpuModelUpdate::JoltGpuModelUpdate(JoltGpuStorage &storage, std::shared_ptr<
 void JoltGpuModelUpdate::Commit() noexcept
 {
     if (m_replacement) {
-        const auto slot = PortIndex(Resource::ShapeModels);
+        // Body/leaf layout replacements also retire their bounds. Joint-only
+        // transactions keep these bounds and the existing contact history.
+        const auto slot = PortIndex(Resource::Bounds);
         if (m_replacementBuffers[slot] != m_storage->m_buffers[slot])
             m_storage->m_contactHistory.clear();
         m_storage->m_model.bodies.swap(m_replacement->bodies);
