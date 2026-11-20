@@ -3129,10 +3129,10 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
         }
         group.indices.push_back(row);
     }
-    const bool directGpu = groups.size() == 1 && groups.front().backend == Backend::Gpu;
-    const auto aggregateRows = directGpu ? size_t{0} : bodies.size();
+    const bool direct = groups.size() == 1 && (groups.front().backend == Backend::Gpu || exports.empty());
+    const auto aggregateRows = direct ? size_t{0} : bodies.size();
     PhysicsRigidbodyStateBatch batch;
-    if (!directGpu)
+    if (!direct)
         batch.bodies = bodies;
     batch.states.resize(aggregateRows);
     batch.sourceForBody.resize(aggregateRows);
@@ -3152,13 +3152,20 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
             if (exports.empty() && (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)))
                 for (const auto &state : group.batch.states)
                     domain.requestedMotion[state.bodyId] = {generation, state, fields};
+            if (direct) {
+                // The native query already wrote body and box rows in caller order.
+                if (group.batch.boxCount > UINT32_MAX)
+                    throw std::length_error("Physics shape aggregate exceeds device indexing");
+                group.batch.sources = std::move(batch.sources);
+                group.batch.sourceForBody.resize(bodies.size());
+                return std::move(group.batch);
+            }
         } else {
             std::exception_ptr error;
             const auto prepare = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
                 group.publication = publication;
                 return PrepareStateBatch(domain, publication, group.bodies, fields, includeBoxes, triggers, exports,
-                                         group.batch, group.motion, group.shapes, error,
-                                         !directGpu && !exports.empty());
+                                         group.batch, group.motion, group.shapes, error, !direct && !exports.empty());
             };
             if (sealed) {
                 ObserveSpatialGpuQuery(domain, gpu, prepare);
@@ -3170,7 +3177,7 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
             MaterializeStateBatch(domain, group.batch, group.motion, group.shapes, exports.empty(), fields);
             // One world's query rows already follow caller order. The device can export
             // the entire batch, including the owning body of each compound shape.
-            if (directGpu)
+            if (direct)
                 return std::move(group.batch);
             const auto &p = *group.publication;
             const uint64_t generation = group.motion   ? group.motion->numericalGeneration
