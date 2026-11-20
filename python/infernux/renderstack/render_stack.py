@@ -750,6 +750,14 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
         This is called automatically after effect or pipeline changes.
         """
+        self._clear_graph_cache()
+        if (_Infernux.__runtime_profile__ == "desktop"
+                and self._scene_instances.get(self._scene_key(self._owning_scene)) is self):
+            owner = self._try_get_game_object()
+            if owner is not None:
+                _Infernux._notify_presentation_author_edit(owner)
+
+    def _clear_graph_cache(self) -> None:
         for state in (self._graph_states or {}).values():
             state.description = None
             state.bindings = []
@@ -961,19 +969,19 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 RenderEffectArtifactRegistry.topology_generation()
                 != (state.attempted_artifact_generation if state.build_failed else state.artifact_generation)
             ):
-                self.invalidate_graph()
+                self._clear_graph_cache()
 
         if state.description is not None:
             if not state.description._render_texture_layouts_current():
-                self.invalidate_graph()
+                self._clear_graph_cache()
             else:
                 requires_rebuild, updates = self._collect_effect_parameter_updates(
                     context, force=not context.is_graph_revision_current(state.description.source_revision),
                 )
                 if requires_rebuild:
-                    self.invalidate_graph()
+                    self._clear_graph_cache()
         elif any(texture.revision != revision for texture, revision in state.rejected_texture_inputs):
-            self.invalidate_graph()
+            self._clear_graph_cache()
 
         # Lazy build graph topology (skip if last build failed)
         if state.description is None and not state.build_failed:

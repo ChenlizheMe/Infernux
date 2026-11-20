@@ -228,8 +228,20 @@ class GameScreenOutputs final
     bool Due(uint64_t worldId, const std::shared_ptr<const RenderWorldFrame> &source) const
     {
         const auto output = Find(worldId);
-        return Requested(worldId) && source &&
-               (output->work || output->acceptedSource != source || output->forceSample || output->requiredBufferWork);
+        if (!source || !output || output->retired || (output->consumers.empty() && !output->requiredBufferWork))
+            return false;
+        if (output->work || output->acceptedSource != source || output->forceSample || output->requiredBufferWork)
+            return true;
+
+        // A visible paused camera can keep advancing its render history from
+        // the same sealed World. Explicit steps still own their exact output.
+        const auto *world = SceneManager::Instance().FindRuntimeWorld(worldId);
+        if (!world || !world->simulation.isPlaying || !world->simulation.isPaused || !output->lastAccepted ||
+            output->lastAccepted->generation != output->generation || output->omittedSource.lock() == source)
+            return false;
+        const auto &simulation = world->simulation;
+        return !simulation.isStepping && !simulation.pausedStepPending && !simulation.stepFrameOpen &&
+               output->HasPresentationConsumer();
     }
 
     /// At most one work generation per output in a Host opportunity. No wait:
