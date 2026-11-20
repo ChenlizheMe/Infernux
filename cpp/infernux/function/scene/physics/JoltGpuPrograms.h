@@ -76,6 +76,7 @@ struct JoltGpuStageWork
 {
     JPH::GPU::Stage stage;
     JPH::GPU::StageWork parameters;
+    uint32_t islandDispatch = 0;
 };
 
 /// The selected substep's dispatch extent. The candidate header and shader
@@ -114,31 +115,26 @@ struct JoltGpuContactHistory
     }
 };
 
-/// One accepted substep plan with canonical island and source ranges. Its
-/// workspace is private to the tick's queue and ordered with all consumers.
-/// A bounded plan carries device dispatch arguments. Wider plans publish an
-/// exact summary for successive, resumable solver tiles.
+/// Capacity-bounded dispatches whose effective ranges are produced by the GPU.
+struct JoltGpuIslandDispatch
+{
+    JPH::GPU::StageWork parameters;
+    uint32_t argumentRecord;
+};
+
+/// One accepted substep plan on the tick's queue. Island counts, source
+/// ranges and indirect arguments stay on the device between producer and solver.
 struct JoltGpuConstraintWorkset
 {
-    uint32_t islandCount = 0, jointIslandCount = 0, contactIslandCount = 0;
-    uint32_t activeJoints = 0, activePatches = 0, maxJointItems = 0, maxPatchItems = 0;
     std::shared_ptr<rhi::ComputeBuffer> schedule, solveArguments;
     uint32_t bodyRootFirst = 0, bodyFirst = 0, bodyCount = 0;
     uint32_t jointRefFirst = 0, jointRefCount = 0, patchRefFirst = 0, patchRefCount = 0;
     std::shared_ptr<rhi::ComputeBuffer> rootVotes;
+    std::vector<JoltGpuIslandDispatch> jointDispatches, patchDispatches;
 
-    [[nodiscard]] uint32_t IslandLimit(bool joints) const noexcept
+    [[nodiscard]] const std::vector<JoltGpuIslandDispatch> &Dispatches(bool joints) const noexcept
     {
-        if (solveArguments)
-            return std::min(bodyCount, joints ? jointRefCount : patchRefCount);
-        return joints ? jointIslandCount : contactIslandCount;
-    }
-
-    [[nodiscard]] uint32_t RowLimit(bool joints) const noexcept
-    {
-        if (solveArguments)
-            return joints ? jointRefCount : patchRefCount;
-        return joints ? maxJointItems : maxPatchItems;
+        return joints ? jointDispatches : patchDispatches;
     }
 };
 

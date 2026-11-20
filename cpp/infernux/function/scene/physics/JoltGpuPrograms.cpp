@@ -658,42 +658,28 @@ const JoltGpuContactWorkset &RequireContacts(const JoltGpuStepInputs &inputs)
 }
 
 bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, const StageDefinition &definition,
-                  const StageWork &work)
+                  const JoltGpuStageWork &work)
 {
-    const auto range = work.range;
+    const auto range = work.parameters.range;
     const uint32_t quantum = JoltGpuStageItemLimit(definition.stage, definition.domain, inputs.GetContacts().get());
     if (IslandDomain(definition.domain)) {
         const auto &constraints = inputs.GetConstraints();
         if (!constraints)
             throw std::invalid_argument("Jolt GPU island work requires its validated substep plan");
         const bool joints = definition.domain == Domain::IslandJoints;
-        const uint32_t tableCount = constraints->IslandLimit(joints);
-        const uint32_t maximum = constraints->RowLimit(joints);
+        const auto &dispatches = constraints->Dispatches(joints);
+        if (work.islandDispatch >= dispatches.size())
+            throw std::invalid_argument("Jolt GPU island command is outside its substep plan");
+        const auto expected = dispatches[work.islandDispatch].parameters.range;
         const bool wholeRounds = IsContactRoundStage(definition.stage);
         const auto &step = inputs.GetParameters();
-        const uint32_t rounds = !wholeRounds                                     ? 1u
-                                : definition.stage == Stage::SolvePositionRounds ? step.solve.x
-                                                                                 : step.counts.w;
-        if (range.z == ConstraintWholeIslandTable) {
-            const auto iterations = wholeRounds ? range.x : 1u;
-            if (!constraints->solveArguments || range.y != maximum || range.w != tableCount ||
-                (wholeRounds ? (constraints->jointRefCount || !iterations || iterations > rounds ||
-                                range.y > IslandPatchRoundVisits / iterations)
-                             : range.x != 0u) ||
-                !ConstraintDeviceScheduleFits(constraints->bodyCount, constraints->jointRefCount,
-                                              constraints->patchRefCount))
-                throw std::invalid_argument("Jolt GPU counted dispatch does not match its bounded island plan");
-            return range.w != 0 && range.y != 0;
-        }
-        if (range.z > tableCount || range.w > tableCount - range.z)
-            throw std::invalid_argument("Jolt GPU island work addresses outside its installed island table");
-        if (wholeRounds && (range.x || range.y != maximum || constraints->jointIslandCount || rounds < 2u))
-            throw std::invalid_argument("Grouped contact rounds require whole islands without interleaved joints");
-        if (uint64_t(range.w) * range.y > quantum / rounds)
-            throw std::invalid_argument("Jolt GPU island work exceeds its total rectangular item quantum");
-        if (range.x > maximum || uint64_t(range.y) > maximum - range.x)
-            throw std::invalid_argument("Jolt GPU island work addresses outside its accepted summary maximum");
-        return range.w != 0 && range.y != 0;
+        const uint32_t rounds = definition.stage == Stage::SolvePositionRounds ? step.solve.x : step.counts.w;
+        if (range.y != expected.y || range.z != expected.z || range.w != expected.w ||
+            (wholeRounds ? (expected.z != ConstraintWholeIslandTable || constraints->jointRefCount || !range.x ||
+                            range.x > rounds || range.y > IslandPatchRoundVisits / range.x)
+                         : range.x != expected.x))
+            throw std::invalid_argument("Jolt GPU island dispatch does not match its substep plan");
+        return true;
     }
     if (range.y > quantum)
         throw std::invalid_argument("Jolt GPU work exceeds its bounded item quantum");
@@ -1597,22 +1583,18 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
     dispatch.proof = std::move(proof);
     const auto &definition = entry.definition;
     dispatch.groupCountY = dispatch.groupCountZ = 1;
-    if (entry.directKernel) {
-        if (range.y < ContactParallelMinimum) {
-            dispatch.kernel = entry.directKernel;
-            dispatch.groupCountX = Groups(range.w, definition.groupSizeX);
-        } else
-            dispatch.groupCountX = range.w;
-    } else {
-        dispatch.groupCountX = Groups(IslandDomain(definition.domain) ? range.w : range.y, definition.groupSizeX);
-    }
-    if (range.z == ConstraintWholeIslandTable) {
+    if (IslandDomain(definition.domain)) {
+        const auto &constraints = *inputs.GetConstraints();
         const bool joints = definition.domain == Domain::IslandJoints;
-        const auto record = joints ? ConstraintLocalJointDispatch : ConstraintLocalPatchDispatch;
-        dispatch.indirectArguments = rhi::ComputeIndirectArguments{inputs.GetConstraints()->solveArguments,
-                                                                   record * sizeof(ConstraintScheduleWord)};
-        if (!joints && range.y >= ContactParallelMinimum)
-            dispatch.groupCountX = range.w;
+        const bool direct = joints || constraints.patchRefCount < ContactParallelMinimum;
+        if (entry.directKernel && direct)
+            dispatch.kernel = entry.directKernel;
+        dispatch.groupCountX = direct ? Groups(range.w, definition.groupSizeX) : range.w;
+        const auto record = constraints.Dispatches(joints)[work.islandDispatch].argumentRecord;
+        dispatch.indirectArguments = rhi::ComputeIndirectArguments{constraints.solveArguments,
+                                                                   uint64_t(record) * sizeof(ConstraintScheduleWord)};
+    } else {
+        dispatch.groupCountX = Groups(range.y, definition.groupSizeX);
     }
     if (definition.stage == Stage::SetupContacts)
         dispatch.indirectArguments = inputs.GetContacts()->setupDispatch;
@@ -1677,7 +1659,7 @@ void JoltGpuPrograms::AppendStages(const JoltGpuStorage &storage, const JoltGpuS
         if (index >= m_entries.size())
             throw std::invalid_argument("Unknown Jolt GPU stage");
         const auto &entry = m_entries[index];
-        if (!ValidateWork(storage, inputs, entry.definition, unit.parameters))
+        if (!ValidateWork(storage, inputs, entry.definition, unit))
             continue;
         const auto range = unit.parameters.range;
         const std::array<uint32_t, 4> key{range.x, range.y, range.z, range.w};
@@ -1734,7 +1716,7 @@ JoltGpuPrograms::PrepareBodyBatch(const JoltGpuStorage &storage, const std::vect
     std::vector<std::pair<uint32_t, uint32_t>> intervals;
     for (const auto &member : members) {
         if (!member.inputs || member.work.stage != definition->stage ||
-            !ValidateWork(storage, *member.inputs, single, member.work.parameters))
+            !ValidateWork(storage, *member.inputs, single, member.work))
             throw std::invalid_argument("Body batch requires nonempty units of one ready body stage");
         const auto &selected = member.inputs->GetParameters();
         const auto range = member.work.parameters.range;

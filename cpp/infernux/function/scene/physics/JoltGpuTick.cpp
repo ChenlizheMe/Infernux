@@ -353,8 +353,7 @@ class JoltGpuTick::Impl
         Phase phase = Phase::Done;
         uint32_t substep = 0;
         uint32_t iteration = 0;
-        uint32_t islandBatchFirst = 0;
-        uint32_t islandBatchLanes = 0;
+        uint32_t islandDispatch = 0;
         uint32_t localFirst = 0;
         float sweepRemaining = 0.0f;
         uint64_t sameTimeImpacts = 0;
@@ -429,12 +428,8 @@ class JoltGpuTick::Impl
         key.reserve(ready.size());
         for (const auto &unit : ready) {
             const auto range = unit.parameters.range;
-            const auto iterations =
-                unit.stage == JPH::GPU::Stage::SolvePositionRounds ? tickParameters.solve.x : tickParameters.counts.w;
-            const auto rounds = JPH::GPU::IsContactRoundStage(unit.stage)
-                                    ? (range.z == JPH::GPU::ConstraintWholeIslandTable ? range.x : iterations)
-                                    : 1u;
-            key.emplace_back(unit.stage, unit.parameters.range.y * rounds, unit.parameters.range.w);
+            const auto rounds = JPH::GPU::IsContactRoundStage(unit.stage) ? range.x : 1u;
+            key.emplace_back(unit.stage, range.y * rounds, range.w);
         }
         return key;
     }
@@ -841,20 +836,12 @@ class JoltGpuTick::Impl
         return domain == Domain::IslandJoints || domain == Domain::IslandPatches;
     }
 
-    uint32_t IslandCount(JPH::GPU::Domain domain) const
+    const std::vector<JoltGpuIslandDispatch> &IslandDispatches(JPH::GPU::Domain domain) const
     {
         const auto &plan = inputs.GetConstraints();
         if (!plan)
             throw std::logic_error("Island phase requires its installed constraint plan");
-        return plan->IslandLimit(domain == JPH::GPU::Domain::IslandJoints);
-    }
-
-    uint32_t IslandMaxItems(JPH::GPU::Domain domain) const
-    {
-        const auto &plan = inputs.GetConstraints();
-        if (!plan)
-            throw std::logic_error("Island phase requires its installed constraint plan");
-        return plan->RowLimit(domain == JPH::GPU::Domain::IslandJoints);
+        return plan->Dispatches(domain == JPH::GPU::Domain::IslandJoints);
     }
 
     uint32_t ItemCount(JPH::GPU::Domain domain) const
@@ -890,29 +877,21 @@ class JoltGpuTick::Impl
     {
         const auto &plan = inputs.GetConstraints();
         const auto rounds = ContactIterations(phase);
-        if (control.participants || rounds < 2u || !plan)
+        if (control.participants || rounds < 2u || !plan || plan->jointRefCount || !plan->patchRefCount ||
+            plan->patchRefCount > JPH::GPU::IslandPatchRoundVisits)
             return 1u;
-        if (plan->solveArguments) {
-            if (plan->jointRefCount || !plan->patchRefCount)
-                return 1u;
-            return std::clamp(JPH::GPU::IslandPatchRoundVisits / plan->patchRefCount, 1u, rounds);
-        }
-        if (!plan->jointIslandCount && plan->maxPatchItems && plan->maxPatchItems < JPH::GPU::ContactParallelMinimum &&
-            rounds <= JPH::GPU::IslandPatchQuantum / plan->maxPatchItems)
-            return rounds;
-        return 1u;
+        return std::clamp(JPH::GPU::IslandPatchRoundVisits / plan->patchRefCount, 1u, rounds);
     }
 
     void NextSpan(StageCursor &next) const
     {
         const auto &plan = inputs.GetConstraints();
-        const bool localRows = plan && (plan->IslandLimit(true) || plan->IslandLimit(false));
+        const bool localRows = plan && (!plan->jointDispatches.empty() || !plan->patchDispatches.empty());
         const bool exchange = control.participants.Has(JoltGpuParticipantStage::Exchange, next.substep);
         const bool velocity = tickParameters.counts.w && (localRows || exchange);
         const bool position = tickParameters.solve.x && localRows;
         const auto drift = storage.HasSweepBodies(selectedRow) ? Phase::PrepareSweep : Phase::Integrate;
-        next.islandBatchFirst = 0;
-        next.islandBatchLanes = 0;
+        next.islandDispatch = 0;
         next.localFirst = 0;
         switch (next.phase) {
         case Phase::CapturePrescribedBounds:
@@ -1128,7 +1107,7 @@ class JoltGpuTick::Impl
                 return;
             const auto span = Span(next.phase);
             if (IslandDomain(span.domain)) {
-                if (next.islandBatchFirst < IslandCount(span.domain) && IslandMaxItems(span.domain))
+                if (next.islandDispatch < IslandDispatches(span.domain).size())
                     return;
             } else if (next.localFirst < ItemCount(span.domain)) {
                 return;
@@ -1144,50 +1123,24 @@ class JoltGpuTick::Impl
         const auto quantum = span.domain == JPH::GPU::Domain::Bodies
                                  ? std::min(JPH::GPU::WorkItemLimit(span.domain), bodyLimit)
                                  : JoltGpuStageItemLimit(span.stage, span.domain, inputs.GetContacts().get());
-        JPH::GPU::StageWork parameters{};
-        if (IslandDomain(span.domain) && inputs.GetConstraints()->solveArguments) {
-            const uint32_t lanes = IslandCount(span.domain);
-            const auto rounds =
-                JPH::GPU::IsContactRoundStage(span.stage)
-                    ? std::min(ContactIterations(next.phase) - next.iteration, ContactRoundsPerDispatch(next.phase))
-                    : 0u;
-            parameters.range = {rounds, IslandMaxItems(span.domain), JPH::GPU::ConstraintWholeIslandTable, lanes};
-            next.islandBatchFirst = lanes;
-        } else if (JPH::GPU::IsContactRoundStage(span.stage)) {
-            const uint32_t maximum = IslandMaxItems(span.domain);
-            const uint32_t itemsPerIsland = maximum * ContactIterations(next.phase);
-            const uint32_t lanes = std::min(IslandCount(span.domain) - next.islandBatchFirst, quantum / itemsPerIsland);
-            parameters.range = {0u, maximum, next.islandBatchFirst, lanes};
-            next.islandBatchFirst += lanes;
-        } else if (IslandDomain(span.domain)) {
-            const auto maximum = IslandMaxItems(span.domain);
-            if (next.localFirst == 0) {
-                const auto remaining = IslandCount(span.domain) - next.islandBatchFirst;
-                next.islandBatchLanes = JPH::GPU::ConstraintIslandBatchWidth(remaining, maximum, quantum);
-            }
-            // A batch owns these same islands until every local slice is done.
-            // Recomputing its width for a short final slice would skip the
-            // prefix of newly included islands after a yield/retry.
-            const auto lanes = next.islandBatchLanes;
-            const auto count = std::min(quantum / lanes, maximum - next.localFirst);
-            parameters.range = {next.localFirst, count, next.islandBatchFirst, lanes};
-            next.localFirst += count;
-            if (next.localFirst == maximum) {
-                next.localFirst = 0;
-                next.islandBatchFirst += lanes;
-                next.islandBatchLanes = 0;
-            }
+        JoltGpuStageWork unit{span.stage, {}};
+        if (IslandDomain(span.domain)) {
+            unit.islandDispatch = next.islandDispatch++;
+            unit.parameters = IslandDispatches(span.domain)[unit.islandDispatch].parameters;
+            if (JPH::GPU::IsContactRoundStage(span.stage))
+                unit.parameters.range.x =
+                    std::min(ContactIterations(next.phase) - next.iteration, ContactRoundsPerDispatch(next.phase));
         } else {
             const auto count = std::min(quantum, ItemCount(span.domain) - next.localFirst);
             const uint32_t base = span.domain == JPH::GPU::Domain::Bodies   ? tickParameters.selection.y
                                   : span.domain == JPH::GPU::Domain::Shapes ? tickParameters.selection.z
                                   : span.domain == JPH::GPU::Domain::Joints ? tickParameters.selection.w
                                                                             : 0u;
-            parameters.range = {base + next.localFirst, count, 0, 0};
+            unit.parameters.range = {base + next.localFirst, count, 0, 0};
             next.localFirst += count;
         }
         Normalize(next);
-        return {span.stage, parameters};
+        return unit;
     }
 
     void CaptureStageSpans()
@@ -1204,8 +1157,7 @@ class JoltGpuTick::Impl
         inputs.SetContacts(std::move(contacts));
         NextSpan(stageCursor);
         stageCursor.localFirst = 0;
-        stageCursor.islandBatchFirst = 0;
-        stageCursor.islandBatchLanes = 0;
+        stageCursor.islandDispatch = 0;
         Normalize(stageCursor);
     }
 
@@ -1262,7 +1214,7 @@ class JoltGpuTick::Impl
     void CaptureContactHistory()
     {
         const auto &plan = inputs.GetConstraints();
-        if (!tickParameters.counts.w || !plan || !(plan->solveArguments ? plan->patchRefCount : plan->activePatches)) {
+        if (!tickParameters.counts.w || !plan || !plan->patchRefCount) {
             storage.ClearContactHistory(selectedRow);
             return;
         }
@@ -2467,8 +2419,7 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
                !member->batch->RequiresPreparation() && !member->batch->HasPreservationWork() &&
                preparedEnd.phase == end.phase && preparedEnd.substep == end.substep &&
                preparedEnd.iteration == end.iteration && preparedEnd.localFirst == end.localFirst &&
-               preparedEnd.islandBatchFirst == end.islandBatchFirst &&
-               preparedEnd.islandBatchLanes == end.islandBatchLanes;
+               preparedEnd.islandDispatch == end.islandDispatch;
     };
     if (!replaceable(a, fullA, fullEndA) || !replaceable(b, fullB, fullEndB))
         return false;
