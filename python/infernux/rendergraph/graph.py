@@ -1558,6 +1558,18 @@ class RenderGraph:
                 return self._scene_radiance
         return None
 
+    def _record_scene_radiance(self, color: TextureHandle | None = None) -> None:
+        history = self._unwritten_scene_radiance_history()
+        if history is None:
+            return
+        if color is None:
+            scene = self.current_pass_result
+            color = scene.sample("color") if scene is not None and scene.has("color") else self.get_texture("color")
+        with self.add_pass("Record Scene Radiance") as record:
+            record.set_texture("source_tex", color)
+            record.write_color(history[1])
+            record.fullscreen_quad("infernux/internal/fullscreen_copy")
+
     def get_texture(self, name: str) -> Optional[TextureHandle]:
         """Look up a texture by its string alias.
 
@@ -1901,16 +1913,7 @@ class RenderGraph:
                           world_ui_layer_mask: int = 0xffffffff) -> None:
         """Draw Camera UI and expose the composite immediately afterwards."""
         res = resources or {"color"}
-        history = self._unwritten_scene_radiance_history()
-        if history is not None:
-            # Camera UI and final effects can contribute color without changing the
-            # depth seen by screen rays. Capture the scene before either is drawn.
-            scene = self.current_pass_result
-            color = scene.sample("color") if scene is not None and scene.has("color") else self.get_texture("color")
-            with self.add_pass("Record Scene Radiance") as record:
-                record.set_texture("source_tex", color)
-                record.write_color(history[1])
-                record.fullscreen_quad("infernux/internal/fullscreen_copy")
+        self._record_scene_radiance()
         if not self.has_pass("_WorldUI"):
             depth = next((tex for tex in self._textures if tex.is_camera_target and tex.is_depth), None)
             if depth is None:

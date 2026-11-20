@@ -215,6 +215,8 @@ def add_transparent_pass(
     queue_range: tuple[int, int] | None = None,
     material_pass: str = "forward",
 ) -> None:
+    # Screen rays intersect opaque depth. Keep the corresponding opaque color.
+    graph._record_scene_radiance(graph.get_texture(COLOR_TEXTURE))
     with graph.add_pass(name) as p:
         p.read(DEPTH_TEXTURE)
         p.write_color(COLOR_TEXTURE)

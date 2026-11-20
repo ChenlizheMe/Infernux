@@ -285,6 +285,7 @@ def _update_ray_tail(ctx, *, primary, thin):
 def _draw_thin_transparency(graph, capture, surface):
     layer, optics = capture
     color, depth = surface.sample(COLOR_TEXTURE), surface.sample(DEPTH_TEXTURE)
+    graph._record_scene_radiance(color)
     reflection = graph.create_texture("_ray_thin_reflection", format=Format.RGBA16_SFLOAT, samples=1)
     background = graph.create_texture("_ray_thin_background", format=Format.RGBA16_SFLOAT, samples=1)
     world = graph._create_world_ray_lit()
