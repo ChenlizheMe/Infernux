@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.ray_signal import unpack_ray_signal
-from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_blue_noise, sh_facing, sh_guide_normal, sh_guide_pixel
+from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_blue_noise, sh_facing, sh_guide_normal, sh_guide_pixel, sh_trace_pixel
 from infernux.shader.lib.ray_moments import sample_direction, sh_coefficients
 
 
@@ -14,6 +14,7 @@ class RayDiffuseGather(shader.fullscreen):
     blue_noise = shader.input("blue_noise", shader.Color2D)
     use_visibility = shader.parameter.bool(default=False)
     divisor = shader.parameter.int(default=2)
+    trace_divisor = shader.parameter.int(default=4)
 
     def main(self, ctx: shader.fragment_input) -> tuple[shader.vec4, shader.vec4, shader.vec4]:
         cell = shader.ivec2(ctx.position.xy)
@@ -45,7 +46,7 @@ class RayDiffuseGather(shader.fullscreen):
             if shader.any(point < shader.vec2(0.0)) or shader.any(point >= shader.vec2(observed)):
                 continue
             at = shader.ivec2(point)
-            site = sh_guide_pixel(at * 2, observed * 2, full, index)
+            site = sh_trace_pixel(at, self.trace_divisor, full, index)
             other_depth = shader.as_float(shader.load(self.guide, site / 2, 0).x)
             body_packet = shader.load(self.observations, at, 0)
             body = unpack_ray_signal(body_packet)

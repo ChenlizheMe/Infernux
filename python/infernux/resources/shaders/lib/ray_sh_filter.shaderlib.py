@@ -39,6 +39,17 @@ def sh_guide_pixel(cell: shader.ivec2, grid: shader.ivec2, full: shader.ivec2, i
     return shader.min(2 * sh_guide_cell(cell, grid, full) + sh_guide_phase(index), full - 1)
 
 
+def sh_trace_pixel(cell: shader.ivec2, divisor: int, full: shader.ivec2, index: shader.uint) -> shader.ivec2:
+    # Advance through the half-resolution guide cells before repeating the ray footprint.
+    # Each cell shares the guide's four-phase full-resolution sample pattern.
+    stride = divisor >> 1
+    phase = shader.int(index >> 2) & (stride * stride - 1)
+    phase ^= phase >> 1
+    offset = shader.ivec2(phase / stride, phase & (stride - 1))
+    guide = shader.min(cell * stride + offset, shader.max(full >> 1, shader.ivec2(1)) - 1)
+    return shader.min(2 * guide + sh_guide_phase(index), full - 1)
+
+
 def sh_guide_normal(packed: shader.uint) -> shader.vec3:
     bits = shader.ivec3(shader.uvec3(packed, packed >> 8, packed >> 16) & shader.uvec3(255))
     return shader.vec3(bits - (bits >> 7) * 256) / 127.0

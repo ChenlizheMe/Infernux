@@ -42,6 +42,7 @@ def _read_observations(ctx, guides, observations, *, full_resolution=False):
                         "frame": guides.surface.sample("surface_frame")})
         p.set_param("full_resolution", full_resolution)
         p.set_param("temporal", ctx.reconstruct)
+        p.set_param("trace_divisor", observations.size_divisor)
         p.write_color(output)
         p.fullscreen_quad("infernux/internal/ray_diffuse_raw_irradiance")
     return output
@@ -183,6 +184,7 @@ def reconstruct_diffuse(ctx, guides, observation):
                         "guide": observation.half_geometry, "ambient_visibility": visibility, "blue_noise": noise})
         p.set_param("use_visibility", observation.visibility is not None)
         p.set_param("divisor", divisor)
+        p.set_param("trace_divisor", observation.witness.size_divisor)
         _write_slots(p, fresh)
         p.fullscreen_quad("infernux/internal/ray_diffuse_gather")
     with graph.add_pass("Ray Diffuse Reconstruction") as p:
