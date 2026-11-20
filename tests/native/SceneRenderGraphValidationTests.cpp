@@ -922,18 +922,19 @@ int main(int argc, char **argv)
     assert(!ValidateRenderGraphDescription(MakeAttachmentGraph(1, 2, false), 1));
     assert(!ValidateRenderGraphDescription(MakeAttachmentGraph(1, 1, true), 1));
 
-    unsigned occupiedX = 0, occupiedY = 0;
-    for (uint32_t i = 0; i < 8; ++i) {
-        const glm::vec2 jitter = SceneRenderGraph::ComputeTemporalJitterNdc(i, 200, 100);
-        assert(jitter == -SceneRenderGraph::ComputeTemporalJitterNdc(i + 4, 200, 100));
-        const glm::vec2 unit = jitter * glm::vec2(100, 50) + 0.5f;
-        assert(unit.x > 0.0f && unit.x < 1.0f && unit.y > 0.0f && unit.y < 1.0f);
-        occupiedX |= 1u << static_cast<unsigned>(unit.x * 8);
-        occupiedY |= 1u << static_cast<unsigned>(unit.y * 8);
+    const auto jitterPixels = [](uint32_t phase) {
+        return SceneRenderGraph::ComputeTemporalJitterNdc(phase, 200, 100) * glm::vec2(100, 50);
+    };
+    const glm::vec2 first = jitterPixels(0);
+    const glm::vec2 second = jitterPixels(1);
+    assert(first.x == 0.0f && std::abs(first.y + 1.0f / 6.0f) < 1e-6f);
+    assert(std::abs(second.x - 0.25f) < 1e-6f && std::abs(second.y - 1.0f / 6.0f) < 1e-6f);
+    assert(jitterPixels(8) != first && jitterPixels(64) != first);
+    assert(jitterPixels(128) == first);
+    for (uint32_t phase = 0; phase < 128; ++phase) {
+        const glm::vec2 offset = jitterPixels(phase);
+        assert(std::abs(offset.x) < 0.5f && std::abs(offset.y) < 0.5f);
     }
-    assert(occupiedX == 0xffu && occupiedY == 0xffu);
-    assert(SceneRenderGraph::ComputeTemporalJitterNdc(0, 200, 100) ==
-           SceneRenderGraph::ComputeTemporalJitterNdc(8, 200, 100));
     assert(SceneRenderGraph::ComputeTemporalJitterNdc(0, 0, 100) == glm::vec2(0.0f));
 
     glm::mat4 perspective(1.0f);

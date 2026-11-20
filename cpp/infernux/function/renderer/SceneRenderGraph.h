@@ -16,6 +16,7 @@
 
 #pragma once
 #include "RenderViewSchedule.h"
+#include "RenderViewHistory.h"
 #include "RenderWorld.h"
 #include "gui/InxScreenUIRenderer.h"
 #include <core/config/EngineConfig.h>
@@ -1136,7 +1137,6 @@ class SceneRenderGraph : public NativeLifetimeOwner
     bool m_cameraHistoryValid = false;
     RenderViewData m_cachedCameraView;
     std::shared_ptr<const RenderViewPlan> m_appliedPlan;
-    static constexpr uint32_t kTemporalJitterSampleCount = 8;
     uint32_t m_temporalSampleIndex = 0;
     glm::vec2 m_temporalJitterNdc{0.0f};
     glm::vec2 m_previousJitterNdc{0.0f};

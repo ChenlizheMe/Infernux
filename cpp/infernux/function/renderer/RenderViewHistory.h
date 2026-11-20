@@ -3,11 +3,12 @@
 #include "RenderWorld.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace infernux
 {
-inline constexpr uint32_t kTemporalJitterSampleCount = 8;
+inline constexpr uint32_t kTemporalJitterSampleCount = 128;
 
 inline bool IsRenderViewCut(const RenderViewData &previous, const RenderViewData &current)
 {
@@ -33,12 +34,27 @@ inline glm::vec2 RenderViewJitterNdc(uint32_t sampleIndex, uint32_t width, uint3
 {
     if (width == 0 || height == 0)
         return glm::vec2(0.0f);
-    // Each axis visits all eight subpixel strata. Opposite phases cancel exactly,
-    // so a completed coverage cycle stays centered on the unjittered pixel.
-    static constexpr int offsets[kTemporalJitterSampleCount][2] = {{-7, -1}, {3, 5},   {1, -7}, {-5, 3},
-                                                                   {7, 1},   {-3, -5}, {-1, 7}, {5, -3}};
-    const auto &offset = offsets[sampleIndex % kTemporalJitterSampleCount];
-    return {static_cast<float>(offset[0]) / (8.0f * width), static_cast<float>(offset[1]) / (8.0f * height)};
+    static constexpr auto rasterOffsets = [] {
+        auto radicalInverse = [](uint32_t index, uint32_t base) {
+            const float inverseBase = 1.0f / static_cast<float>(base);
+            float place = inverseBase;
+            float result = 0.0f;
+            while (index != 0u) {
+                result += static_cast<float>(index % base) * place;
+                index /= base;
+                place *= inverseBase;
+            }
+            return result;
+        };
+        std::array<glm::vec2, kTemporalJitterSampleCount> offsets{};
+        for (uint32_t phase = 0; phase < kTemporalJitterSampleCount; ++phase) {
+            // Center Halton(2, 3) samples and convert to projection displacement in top-left pixels.
+            const uint32_t sample = phase + 1u;
+            offsets[phase] = {0.5f - radicalInverse(sample, 2u), radicalInverse(sample, 3u) - 0.5f};
+        }
+        return offsets;
+    }();
+    return 2.0f * rasterOffsets[sampleIndex % kTemporalJitterSampleCount] / glm::vec2(width, height);
 }
 
 inline glm::mat4 JitterRenderViewProjection(glm::mat4 projection, const glm::vec2 &jitterNdc)
