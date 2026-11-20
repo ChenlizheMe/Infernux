@@ -21,19 +21,20 @@ class RayDiffuseReprojection(shader.fullscreen):
         uv = (shader.vec2(pixel) + 0.5) / shader.vec2(extent)
         raster_motion = shader.unpack_half_2x16(movement.z)
         previous = uv - raster_motion
-        origin = shader.ivec2(shader.floor(previous * shader.vec2(extent) - 0.5))
+        origin = shader.ivec2(previous * shader.vec2(extent) - 0.5)
         cam = shader.camera()
-        point = world_position(uv, shader.as_float(surface.y), cam)
+        depth = shader.as_float(surface.y)
+        point = world_position(uv, depth, cam)
         view = (cam.view_matrix @ shader.vec4(point, 1.0)).xyz
         eye = ray_previous_eye_depth(movement.w)
-        tolerance = 0.025 * eye / shader.max(0.1, shader.abs(shader.normalize(view).z))
+        tolerance = 0.025 * linear_eye_depth(depth, cam) / shader.max(1.0e-5, shader.abs(shader.normalize(view).z))
         mask = shader.uint(0)
         for i in range(4):
             at = origin + shader.ivec2(i & 1, i >> 1)
             if shader.any(at < shader.ivec2(0)) or shader.any(at >= extent):
                 continue
             old = shader.load(self.previous_primary, at, 0)
-            if old.x == surface.x and shader.abs(linear_eye_depth(shader.as_float(old.y), cam) - eye) <= tolerance:
+            if shader.abs(linear_eye_depth(shader.as_float(old.y), cam) - eye) <= tolerance:
                 mask |= shader.uint(1) << i
         # Depth history is raster-aligned. Lighting history is reconstructed
         # at unjittered pixel centers, so publish the geometric displacement.
