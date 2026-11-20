@@ -20,7 +20,7 @@ class RayDiffuseBlur(shader.fullscreen):
         full = shader.ivec2(shader.dimensions(self.primary, 0))
         index = shader._view_sample_index()
         site = sh_guide_pixel(cell, extent, full, index)
-        geometry = shader.load(self.guide, site / 2, 0)
+        geometry = shader.load(self.guide, site >> 1, 0)
         depth = shader.as_float(geometry.x)
         age = shader.load(self.state, cell, 0).x
         if depth <= 0.0:
@@ -41,9 +41,7 @@ class RayDiffuseBlur(shader.fullscreen):
             if shader.any(at < shader.ivec2(0)) or shader.any(at >= extent):
                 continue
             pt = sh_guide_pixel(at, extent, full, index)
-            guide = shader.load(self.guide, pt / 2, 0)
-            if shader.load(self.state, at, 0).y <= 0.0:
-                continue
+            guide = shader.load(self.guide, pt >> 1, 0)
             normal = sh_guide_normal(guide.y)
             other_vis = shader.load(self.visibility, pt, 0).x if self.use_visibility else 0.0
             weight = sh_bilateral(depth, shader.as_float(guide.x), facing, visibility, other_vis)

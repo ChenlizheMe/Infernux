@@ -317,6 +317,8 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     assert blur._input_bindings["visibility"] == visibility.name
     assert gather._input_bindings["guide"] == blur._input_bindings["guide"] == screen._write_colors[0]
     assert fill._input_bindings["guide"] == history._input_bindings["guide"] == screen._write_colors[0]
+    assert resolve._input_bindings["guide"] == screen._write_colors[0]
+    assert resolve._parameters["divisor"] == filter_divisor
     noise = graph.get_texture(gather._input_bindings["blue_noise"])
     assert noise.size == (256, 256) and noise.asset_guid
     assert resolve._input_bindings["blue_noise"] == noise.name
@@ -334,7 +336,7 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
         assert current.format == previous.format == Format.RGBA16_SFLOAT
     assert fill._input_bindings["state"] == history._write_colors[3]
     assert fill._input_bindings["old_state"] == history._input_bindings["old_state"]
-    assert blur._input_bindings["state"] == resolve._input_bindings["state"] == fill._write_colors[3]
+    assert blur._input_bindings["state"] == fill._write_colors[3]
     old_state = graph.get_texture(history._input_bindings["old_state"])
     state = graph.get_texture(fill._write_colors[3])
     assert state.temporal_key == old_state.temporal_key and state._responds_to_ray_lighting

@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.ray_sh_filter import sh_clip_history, sh_facing, sh_guide_normal, sh_guide_pixel
+from infernux.shader.lib.ray_sh_filter import sh_clip_history, sh_facing, sh_guide_cell, sh_guide_normal
 
 
 class RayDiffuseFill(shader.fullscreen):
@@ -21,8 +21,7 @@ class RayDiffuseFill(shader.fullscreen):
                     shader.load(self.blue_sh, cell, 0), state)
         extent = shader.ivec2(shader.dimensions(self.state, 0))
         full = shader.ivec2(shader.dimensions(self.primary, 0))
-        site = sh_guide_pixel(cell, extent, full, shader._view_sample_index())
-        geometry = shader.load(self.guide, site / 2, 0)
+        geometry = shader.load(self.guide, sh_guide_cell(cell, extent, full), 0)
         depth = shader.as_float(geometry.x)
         facing = sh_facing(sh_guide_normal(geometry.y))
 
@@ -35,11 +34,10 @@ class RayDiffuseFill(shader.fullscreen):
             at = cell + 2 * shader.ivec2(i % 5 - 2, int(i / 5) - 2)
             if shader.any(at < shader.ivec2(0)) or shader.any(at >= extent):
                 continue
-            neighbor = shader.load(self.state, at, 0).xy
-            if neighbor.y <= 0.0:
-                continue
-            similarity = shader.exp2(-shader.min(30.0, 10.0 * facing * shader.abs(1.0 - neighbor.y / depth)))
-            weight = similarity * shader.max(neighbor.x, 1.0)
+            neighbor_age = shader.load(self.state, at, 0).x
+            neighbor_depth = shader.as_float(shader.load(self.guide, sh_guide_cell(at, extent, full), 0).x)
+            similarity = shader.exp2(-shader.min(30.0, 10.0 * facing * shader.abs(1.0 - neighbor_depth / depth)))
+            weight = similarity * shader.max(neighbor_age, 1.0)
             red += shader.load(self.red_sh, at, 0) * weight
             green += shader.load(self.green_sh, at, 0) * weight
             blue += shader.load(self.blue_sh, at, 0) * weight

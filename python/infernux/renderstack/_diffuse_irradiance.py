@@ -47,12 +47,13 @@ def _read_observations(ctx, guides, observations, *, full_resolution=False):
     return output
 
 
-def _resolve(ctx, guides, coefficients, state, noise):
+def _resolve(ctx, guides, coefficients, half_geometry, noise, divisor):
     graph = ctx.graph
     output = graph.create_texture(f"{ctx.name}/diffuse/resolved", format=Format.RGBA16_SFLOAT, samples=1)
     with graph.add_pass("Ray Diffuse Resolved Irradiance") as p:
-        p.set_textures({**_sh_inputs(coefficients), "state": state, "primary": guides.primary,
+        p.set_textures({**_sh_inputs(coefficients), "guide": half_geometry, "primary": guides.primary,
                         "frame": guides.surface.sample("surface_frame"), "blue_noise": noise})
+        p.set_param("divisor", divisor)
         p.write_color(output)
         p.fullscreen_quad("infernux/internal/ray_diffuse_resolve")
     return output
@@ -204,4 +205,4 @@ def reconstruct_diffuse(ctx, guides, observation):
         p.set_param("use_visibility", observation.visibility is not None)
         _write_slots(p, filtered)
         p.fullscreen_quad("infernux/internal/ray_diffuse_blur")
-    return RayTracingSignal(partial(_resolve, ctx, guides, filtered, state, noise))
+    return RayTracingSignal(partial(_resolve, ctx, guides, filtered, observation.half_geometry, noise, divisor))
