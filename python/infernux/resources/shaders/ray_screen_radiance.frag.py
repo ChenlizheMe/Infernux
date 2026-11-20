@@ -39,6 +39,9 @@ class RayScreenRadiance(shader.fullscreen):
             context = deferred_raster_context(raster / shader.vec2(full), raster, depth, surface.normal_ws,
                                               metadata, self.depth_tex)
             surface.specular_highlights = 0.0
-            rgb = shader.lighting._shade_ray(surface, context, metadata.y, shader.vec4(0.0), shader.vec4(0.0, 0.0, 0.0, 1.0))
+            # This pass supplies current direct radiance. Mark the empty indirect
+            # inputs as valid so PBR doesn't inject an unoccluded environment probe.
+            no_indirect = shader.vec4(0.0, 0.0, 0.0, 1.0)
+            rgb = shader.lighting._shade_ray(surface, context, metadata.y, no_indirect, no_indirect)
             radiance = shader.vec4(rgb, 1.0)
         return (radiance, shader.vec4(closest, 0.0, 0.0, 1.0))
