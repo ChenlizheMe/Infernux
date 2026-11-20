@@ -953,8 +953,15 @@ public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 geometric_nor
     if (page.status != ray_page_ready)
         return (InxRaySignal)0;
     uint frame = temporal ? inx_view_sample_index() : 0u;
-    uint index = inx_diffuse_hilbert(cell) + 288u * (frame & 63u);
-    float2 u = frac(0.5 + float2(0.7548776865, 0.5698403120) * float(index));
+    uint rank = inx_diffuse_hilbert(cell);
+    uint index = rank + 288u * (frame & 63u);
+    // Fixed-point R2 keeps subpixel precision as the view sample index grows.
+    // Offset each trace tile so distant surfaces do not follow the same wave.
+    uint2 tile = cell >> 5u;
+    uint scramble = inx_ray_sample_hash(tile.x ^ inx_ray_sample_hash(tile.y));
+    uint2 point = uint2(0x80000000u) + (rank + 288u * frame) * uint2(3242174889u, 2447445414u);
+    point += uint2(scramble, inx_ray_sample_hash(scramble));
+    float2 u = (float2(point >> 9u) + 0.5) * (1.0 / 8388608.0);
     float z = 1.0 - u.x;
     float hemisphere_radius = sqrt(max(0.0, 1.0 - z*z));
     float angle = 6.28318530718 * u.y;
