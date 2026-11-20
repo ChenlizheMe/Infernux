@@ -1323,12 +1323,11 @@ void JoltGpuStepInputs::SetContacts(std::shared_ptr<const JoltGpuContactWorkset>
     const auto &authorWorlds = GetCaptured(Resource::Worlds);
     if (!authorWorlds)
         throw std::invalid_argument("Jolt GPU contact workset requires its captured author world prefix");
-    for (const auto &buffer : {contacts->parameters, contacts->worlds, contacts->contacts, contacts->patches})
+    for (const auto &buffer : {contacts->parameters, contacts->contacts, contacts->patches})
         if (!buffer || !authorWorlds->GetHost().SharesServicesWith(buffer->GetHost()))
             throw std::invalid_argument("Jolt GPU contact workset resources must share their captured compute owner");
     const auto contactCount = uint64_t(contacts->patchCount) * MaxContactPointsPerPair;
     if (contacts->parameters->GetByteSize() != sizeof(StepParams) ||
-        contacts->worlds->GetByteSize() != authorWorlds->GetByteSize() ||
         contacts->contacts->GetByteSize() < std::max(uint64_t{1}, contactCount) * sizeof(Contact) ||
         contacts->contacts->GetByteSize() % sizeof(Contact) ||
         contacts->patches->GetByteSize() < sizeof(ContactPatch) ||
@@ -1522,7 +1521,6 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
             : resource == Resource::ContactHistory
                 ? (writer ? inputs.NextContactHistory().buffer : inputs.PreviousContactHistory().buffer)
             : contacts && resource == Resource::StepParams     ? contacts->parameters
-            : contacts && resource == Resource::Worlds         ? contacts->worlds
             : contacts && resource == Resource::Contacts       ? contacts->contacts
             : contacts && resource == Resource::ContactPatches ? contacts->patches
             : !writer && input < inputs.m_buffers.size()       ? inputs.m_buffers[input]

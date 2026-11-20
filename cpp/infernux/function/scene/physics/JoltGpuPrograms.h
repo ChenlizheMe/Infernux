@@ -84,7 +84,7 @@ struct JoltGpuContactWorkset
 {
     uint32_t patchCount = 0, maxPatchesPerWorld = 0;
     bool collisionDispatched = false;
-    std::shared_ptr<rhi::ComputeBuffer> parameters, worlds, contacts, patches;
+    std::shared_ptr<rhi::ComputeBuffer> parameters, contacts, patches;
 };
 
 // Sorted by the preceding substep's canonical leaf pair. Only the stored

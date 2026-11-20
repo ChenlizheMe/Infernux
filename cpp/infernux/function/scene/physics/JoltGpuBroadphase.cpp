@@ -28,7 +28,6 @@ enum Port : uint8_t
     AuthorWorlds,
     Bounds,
     Joints,
-    RuntimeWorlds,
     Arena,
     Arguments,
     ColliderPairs,
@@ -58,7 +57,6 @@ enum Entry : uint8_t
     MaterializeCounts,
     StoreOffsets,
     PublishCount,
-    BuildWorldRanges,
     ResetFill,
     CheckFill,
     PublishFill,
@@ -88,7 +86,6 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"init_words",
                                                               "materialize_counts",
                                                               "store_rank_offsets",
                                                               "publish_count_summary",
-                                                              "build_world_ranges",
                                                               "reset_fill_ranks",
                                                               "check_fill",
                                                               "publish_fill_summary",
@@ -123,7 +120,6 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     A | P | K,
     A | P | K,
     A | P,
-    A | P | K | Bit(AuthorWorlds) | Bit(RuntimeWorlds),
     A | P | K,
     A | P | K,
     A | P,
@@ -159,7 +155,6 @@ constexpr PortLayout Ports[] = {
     {"author_worlds", sizeof(WorldRange), {"bodies", "leaves"}, 3u, true},
     {"bounds", sizeof(Aabb), {"minimum", "maximum"}, 0u, true},
     {"joint_stream", sizeof(QueryRecordWord), {"value"}, 1u, true},
-    {"runtime_worlds", sizeof(WorldRange), {"bodies", "leaves"}, 3u, false},
     {"contact_patches", sizeof(ContactPatch), {"leaves"}, 1u, false},
     {"indirect_arguments", sizeof(QueryRecordWord), {"value"}, 1u, false},
     {"collider_pair_ignores", sizeof(ColliderPairKey), {"a", "b"}, 3u, true},
@@ -285,7 +280,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         CountScan,
         Offsets,
         CountPublish,
-        Worlds,
         CountBoundary,
         FinalCapacity,
         FinalInitialize,
@@ -471,7 +465,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     return false;
             if (!Endpoint(arena, uint64_t(scratchWords) * WordBytes) ||
                 !Endpoint(workset->parameters, sizeof(StepParams)) ||
-                !Endpoint(runtimeWorlds, uint64_t(config.counts.z) * sizeof(WorldRange)) ||
                 !Endpoint(arguments, (MaxDispatchesPerPacket - 1u) * WordBytes,
                           rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect))
                 return false;
@@ -554,7 +547,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             const auto &buffer = port == Parameters         ? uniform
                                  : port == Work             ? workUniform
                                  : port == Arena            ? arena
-                                 : port == RuntimeWorlds    ? runtimeWorlds
                                  : port == Arguments        ? arguments
                                  : port == ResidentContacts ? workset->contacts
                                  : port == ResidentStep     ? workset->parameters
@@ -566,19 +558,15 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             const bool initialize = (port == Arena && entry == InitWords) ||
                                     (port == ResidentContacts && entry == InitContacts) ||
                                     (port == CandidateArena && entry == InitCandidates);
-            const bool worldWrite = port == RuntimeWorlds;
             const bool argumentWrite = port == Arguments;
-            dispatch.bufferAccesses.push_back(
-                initialize || worldWrite || argumentWrite                         ? rhi::ComputeBufferAccess::Write
-                : port == Arena || port == CandidateArena || port == ResidentStep ? rhi::ComputeBufferAccess::ReadWrite
-                                                                                  : rhi::ComputeBufferAccess::Read);
+            dispatch.bufferAccesses.push_back(initialize || argumentWrite ? rhi::ComputeBufferAccess::Write
+                                              : port == Arena || port == CandidateArena || port == ResidentStep
+                                                  ? rhi::ComputeBufferAccess::ReadWrite
+                                                  : rhi::ComputeBufferAccess::Read);
             if (initialize)
                 proof.writes.push_back({binding,
                                         uint64_t(first) * (port == ResidentContacts ? sizeof(Contact) : WordBytes),
                                         uint64_t(count) * (port == ResidentContacts ? sizeof(Contact) : WordBytes)});
-            else if (worldWrite)
-                proof.writes.push_back(
-                    {binding, uint64_t(first) * sizeof(WorldRange), uint64_t(count) * sizeof(WorldRange)});
             else if (argumentWrite)
                 proof.writes.push_back({binding, 0, uint64_t(count) * WordBytes});
             else if (port == Bounds) {
@@ -911,7 +899,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::SmallPairs:
                 if (!Emit(BuildSmallPairs, 0, 1, config, uploads, dispatches))
                     return true;
-                phase = Phase::Worlds;
+                phase = capacity ? Phase::ResidentPublish : Phase::CountBoundary;
                 return true;
             case Phase::Suppression:
                 config.merge.x = suppression[0];
@@ -983,13 +971,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::CountPublish:
                 if (!Emit(PublishCount, 0, 1, config, uploads, dispatches))
                     return true;
-                phase = Phase::Worlds;
-                return true;
-            case Phase::Worlds:
-                if (Range(BuildWorldRanges, config.counts.z, uploads, dispatches))
-                    return true;
                 phase = capacity ? Phase::ResidentPublish : Phase::CountBoundary;
-                break;
+                return true;
             case Phase::FinalInitialize:
                 if (Range(InitCandidates, static_cast<uint32_t>(1ull + 2ull * capacity), uploads, dispatches))
                     return true;
@@ -1144,7 +1127,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     {
         settingsPorts = s.settingsPorts;
         arena = s.arena;
-        runtimeWorlds = s.runtimeWorlds;
         arguments = s.arguments;
         candidateArena = s.candidateArena;
         parameterSlots = s.parameterSlots;
@@ -1243,7 +1225,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                                           // this completed execution. The workset retains only
                                           // the values needed by generic/topology/solver work.
                                           self->workset->parameters = self->workset->parameters->Freeze();
-                                          self->workset->worlds = self->runtimeWorlds->Freeze();
                                           self->workset->patches = self->candidateArena;
                                           auto callback = std::move(self->completed);
                                           callback(self->workset);
@@ -1266,7 +1247,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     const JoltGpuStorage &storageOwner;
     const JoltGpuStepInputs &acceptedInputs;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> settingsPorts;
-    std::shared_ptr<rhi::ComputeBuffer> arena, runtimeWorlds, arguments, candidateArena;
+    std::shared_ptr<rhi::ComputeBuffer> arena, arguments, candidateArena;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, MaxDispatchesPerPacket> parameterSlots, workSlots;
     std::shared_ptr<JoltGpuContactWorkset> workset;
     StepParams parameters;
@@ -1300,8 +1281,7 @@ JoltGpuBroadphase::JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetC
 bool JoltGpuBroadphase::TryPrepareStartupPrograms()
 {
     bool ready = true;
-    for (const auto entry :
-         {InitWords, InitCandidates, InitContacts, BuildWorldRanges, BuildSmallPairs, PublishResidentCount})
+    for (const auto entry : {InitWords, InitCandidates, InitContacts, BuildSmallPairs, PublishResidentCount})
         ready &= m_impl->programs[entry].kernel->TryPreparePipeline();
     return ready;
 }
