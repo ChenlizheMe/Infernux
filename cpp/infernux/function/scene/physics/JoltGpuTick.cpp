@@ -1633,7 +1633,8 @@ class JoltGpuTick::Impl
                 return {nullptr, [this] { return PrepareSnapshot(); }};
             snapshotSleepRows += rows;
         }
-        if (snapshotMetadataOffset < snapshotMetadata.size()) {
+        // The sleep projection may consume this packet's entire transfer allowance.
+        if (remaining && snapshotMetadataOffset < snapshotMetadata.size()) {
             const auto bytes = std::min(remaining, uint64_t(snapshotMetadata.size()) - snapshotMetadataOffset);
             const auto first = snapshotMetadata.begin() + static_cast<size_t>(snapshotMetadataOffset);
             uploads.push_back({finalOutput.joints, snapshotMetadataOffset,
