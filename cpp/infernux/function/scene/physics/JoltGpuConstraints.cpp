@@ -40,6 +40,8 @@ enum Port : uint8_t
     StepStatus,
     ConvexCompletion,
     GateSpans,
+    GateSourceArguments,
+    GateDefaultArguments,
     PortCount
 };
 enum Entry : uint8_t
@@ -133,7 +135,8 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     P | K | S,
     P | K | S,
     P | K | S | Bit(TopologyArguments),
-    Bit(ConvexCompletion) | Bit(GateSpans) | Bit(Patches) | Bit(TopologyArguments)};
+    Bit(ConvexCompletion) | Bit(GateSpans) | Bit(GateSourceArguments) | Bit(GateDefaultArguments) |
+        Bit(TopologyArguments)};
 
 struct PortLayout
 {
@@ -167,11 +170,14 @@ constexpr PortLayout Ports[] = {
     {"topology_arguments", sizeof(ConstraintScheduleWord), {"value"}, 1u, false},
     {"step_status", sizeof(uint32_t), {}, 0u, false},
     {"convex_completion", sizeof(ConstraintScheduleWord), {"value"}, 1u, true},
-    {"topology_gate_spans", sizeof(ConstraintScheduleWord), {"value"}, 1u, true}};
+    {"topology_gate_spans", sizeof(ConstraintScheduleWord), {"value"}, 1u, true},
+    {"topology_gate_source_arguments", sizeof(ConstraintScheduleWord), {"value"}, 1u, true},
+    {"topology_gate_default_arguments", sizeof(ConstraintScheduleWord), {"value"}, 1u, false}};
 static_assert(std::size(Ports) == PortCount);
 constexpr size_t MaxDispatchesPerPacket = JoltGpuConstraints::Workspace::MaxDispatches;
 constexpr uint64_t WordBytes = sizeof(ConstraintScheduleWord);
 constexpr uint64_t TopologyArgumentBytes = ConstraintBlockLimit * WordBytes;
+constexpr uint64_t GateDefaultBytes = ConstraintLocalArgumentWords * WordBytes;
 static_assert(ConstraintItemLimit == ConstraintBlockSize * ConstraintBlockLimit);
 
 uint32_t Checked(uint64_t n)
@@ -776,6 +782,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                     proof.writes.push_back({binding, 0u, TopologyArgumentBytes});
                     proof.writes.push_back({binding, ConstraintLocalWakePatchDispatch * WordBytes, WordBytes});
                 } else if (op.entry == BuildLocalSchedule || op.entry == Finalize) {
+                    proof.writes.push_back({binding, 0u, TopologyArgumentBytes});
                     proof.writes.push_back({binding, ConstraintLocalJointDispatch * WordBytes, 2u * WordBytes});
                 } else if (op.entry == WriteSolverArguments) {
                     proof.writes.push_back(
@@ -827,24 +834,33 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         auto callback = std::move(completedTopology);
         callback(std::move(value), setupAccepted);
     }
-    void Install()
+    JoltGpuConstraintWorkset WorksetView() const
     {
-        auto value = std::make_shared<JoltGpuConstraintWorkset>();
+        JoltGpuConstraintWorkset value;
         // The assembly and all its consumers use this owner's Compute FIFO.
         // The next substep may write these addresses after all readers
         // have been accepted. Queue receipts retain their actual allocations.
-        value->schedule = workspace.schedule;
-        value->solveArguments = workspace.arguments;
-        value->jointDispatches = std::move(jointDispatches);
-        value->patchDispatches = std::move(patchDispatches);
-        value->bodyRootFirst = config.limits.w;
-        value->bodyFirst = config.selection.y;
-        value->bodyCount = config.counts.x;
-        value->jointRefFirst = config.references.x;
-        value->jointRefCount = config.counts.y;
-        value->patchRefFirst = config.references.y;
-        value->patchRefCount = config.counts.z;
-        value->rootVotes = workspace.rootVotes;
+        value.schedule = workspace.schedule;
+        value.solveArguments = workspace.arguments;
+        value.bodyRootFirst = config.limits.w;
+        value.bodyFirst = config.selection.y;
+        value.bodyCount = config.counts.x;
+        value.jointRefFirst = config.references.x;
+        value.jointRefCount = config.counts.y;
+        value.patchRefFirst = config.references.y;
+        value.patchRefCount = config.counts.z;
+        value.rootVotes = workspace.rootVotes;
+        return value;
+    }
+
+    void Install(std::shared_ptr<const JoltGpuConstraintWorkset> value = {})
+    {
+        if (!value) {
+            auto assembled = std::make_shared<JoltGpuConstraintWorkset>(WorksetView());
+            assembled->jointDispatches = std::move(jointDispatches);
+            assembled->patchDispatches = std::move(patchDispatches);
+            value = std::move(assembled);
+        }
         if (!isolatedTopology)
             resident = std::move(workspace);
         frozen[Joints].reset();
@@ -906,104 +922,199 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         return false;
     }
 
+    bool CanGuard(const rhi::ComputeDispatchDesc &dispatch) const
+    {
+        const auto &arguments = dispatch.indirectArguments;
+        if (arguments && arguments->buffer != contactLease->countedArguments &&
+            (arguments->buffer != workspace.arguments ||
+             arguments->offset + rhi::ComputeIndirectArguments::ByteSize > GateDefaultBytes))
+            return false;
+        // An indirect zero cannot establish coverage. The gate unconditionally
+        // initializes the wake/solver directory. Other writes need live storage.
+        return std::all_of(dispatch.proof->writes.begin(), dispatch.proof->writes.end(), [&](const auto &range) {
+            const auto &buffer = dispatch.buffers[range.binding];
+            return (buffer == workspace.arguments && range.offset + range.byteSize <= GateDefaultBytes) ||
+                   buffer->HasInitializedRange(range.offset, range.byteSize);
+        });
+    }
+
+    bool GatePrefix(const std::shared_ptr<rhi::ComputeBuffer> &completion, size_t first,
+                    std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &prefix)
+    {
+        std::array<UInt4, MaxDispatchesPerPacket> spans{};
+        if (!Endpoint(workspace.gateSpans, sizeof(spans)))
+            return false;
+        if (!workspace.gatedArguments)
+            workspace.gatedArguments =
+                Allocate(sizeof(spans), rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
+        if (!workspace.gatedArguments)
+            return false;
+
+        const auto &counted = contactLease->countedArguments;
+        std::vector<uint64_t> sourceOffsets;
+        for (size_t i = first; i < prefix.size(); ++i) {
+            auto &dispatch = prefix[i];
+            const auto &source = dispatch.indirectArguments;
+            if (source && source->buffer == workspace.arguments)
+                continue; // Its producer replaces the gate's zero default.
+            const auto record = i - first;
+            if (source) {
+                spans[record] = {Checked(source->offset / WordBytes), 0u, 0u, 1u};
+                sourceOffsets.push_back(source->offset);
+            } else {
+                spans[record] = {dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ, 0u};
+            }
+            dispatch.indirectArguments = rhi::ComputeIndirectArguments{workspace.gatedArguments, record * WordBytes};
+        }
+        uploads.push_back({workspace.gateSpans, 0u, Bytes(spans)});
+        const auto &program = implementation->programs[GateTopology];
+        rhi::ComputeDispatchDesc gate;
+        gate.kernel = program.kernel;
+        gate.proof.emplace();
+        for (const auto port : program.ports) {
+            const uint32_t binding = static_cast<uint32_t>(gate.buffers.size());
+            switch (port) {
+            case TopologyArguments:
+            case GateDefaultArguments:
+                gate.buffers.push_back(port == TopologyArguments ? workspace.gatedArguments : workspace.arguments);
+                gate.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
+                gate.proof->writes.push_back(
+                    {binding, 0u, port == TopologyArguments ? sizeof(spans) : GateDefaultBytes});
+                break;
+            case GateSourceArguments:
+                gate.buffers.push_back(sourceOffsets.empty() ? workspace.gateSpans : counted);
+                gate.bufferAccesses.push_back(rhi::ComputeBufferAccess::Read);
+                if (sourceOffsets.empty())
+                    gate.proof->reads.push_back({binding, 0u, WordBytes});
+                for (const auto offset : sourceOffsets)
+                    gate.proof->reads.push_back({binding, offset, WordBytes});
+                break;
+            default:
+                gate.buffers.push_back(port == ConvexCompletion ? completion : workspace.gateSpans);
+                gate.bufferAccesses.push_back(rhi::ComputeBufferAccess::Read);
+                gate.proof->reads.push_back({binding, 0u, port == GateSpans ? sizeof(spans) : WordBytes});
+                break;
+            }
+        }
+        prefix.insert(prefix.begin() + first, std::move(gate));
+        return true;
+    }
+
+    void FinishConnectivity(bool includesSetup, bool includesAssembly,
+                            std::shared_ptr<const JoltGpuConstraintWorkset> preparedPlan = {})
+    {
+        if (!includesAssembly) {
+            PublishTopology(includesSetup);
+            return;
+        }
+        completed = std::move(setup->assembled);
+        setup.reset();
+        completedTopology = {};
+        Install(std::move(preparedPlan));
+    }
+
     JoltGpuContactTopologyStart::ObservePrefix
     AppendAfterCollision(const std::shared_ptr<rhi::ComputeBuffer> &completion,
                          std::vector<rhi::ComputeBufferUpdate> &uploads,
                          std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
-        if (isolatedTopology || !Capacity())
+        if (isolatedTopology || dispatches.size() + 1u >= MaxDispatchesPerPacket || !Capacity())
             return {};
 
+        const auto limit = MaxDispatchesPerPacket - dispatches.size() - 1u;
         Cursor next = cursor;
         Cursor unconditional = cursor;
+        Cursor last;
         std::vector<rhi::ComputeBufferUpdate> prefixUploads;
         std::vector<rhi::ComputeDispatchDesc> prefix;
-        std::array<UInt4, MaxDispatchesPerPacket> spans{};
-        size_t gatedCount = 0u;
+        size_t firstGuard = 0u, lastUpload = 0u;
         bool dependent = false;
-        while (next.operation < plan.size() && prefix.size() < MaxDispatchesPerPacket) {
-            // Leave the final topology dispatch available to the regular
-            // recorder when it can share a packet with wake and setup.
-            if (setup && next.operation + 1u == plan.size())
-                break;
+        while (next.operation < plan.size() && prefix.size() < limit) {
             const auto &op = plan[next.operation];
-            const bool patches = op.entry == BuildPatchRefs;
-            dependent |= patches;
+            dependent |= op.entry == BuildPatchRefs;
             const uint32_t count = std::min(ChunkLimit(op.entry), op.length - next.first);
             const auto uploadStart = prefixUploads.size();
             if (!Emit(op, next.first, count, prefixUploads, prefix))
                 break;
-            const auto &dispatch = prefix.back();
-            if (dependent) {
-                // A command with zero groups cannot initialize a new range.
-                // Finish any such cold output in the ordinary topology packet.
-                const auto initialized = [&](const auto &range) {
-                    return dispatch.buffers[range.binding]->HasInitializedRange(range.offset, range.byteSize);
-                };
-                if (!std::all_of(dispatch.proof->writes.begin(), dispatch.proof->writes.end(), initialized)) {
-                    prefixUploads.resize(uploadStart);
-                    prefix.pop_back();
-                    break;
-                }
-                spans[gatedCount++] = {dispatch.groupCountX, next.first, count, uint32_t(patches)};
+            if (dependent && !CanGuard(prefix.back())) {
+                prefixUploads.resize(uploadStart);
+                prefix.pop_back();
+                break;
             }
+            last = next;
+            lastUpload = uploadStart;
             next.first += count;
             if (next.first == op.length) {
                 next.first = 0u;
                 ++next.operation;
             }
-            if (!dependent)
+            if (!dependent) {
                 unconditional = next;
+                firstGuard = prefix.size();
+            }
         }
         if (prefix.empty())
             return {};
 
-        if (gatedCount) {
-            if (!Endpoint(workspace.gateSpans, sizeof(spans)))
-                return {};
-            if (!workspace.gatedArguments)
-                workspace.gatedArguments =
-                    Allocate(sizeof(spans), rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
-            if (!workspace.gatedArguments)
-                return {};
-            prefixUploads.push_back({workspace.gateSpans, 0u, Bytes(spans)});
-
-            const auto &program = implementation->programs[GateTopology];
-            rhi::ComputeDispatchDesc gate;
-            gate.kernel = program.kernel;
-            gate.proof.emplace();
-            for (const auto port : program.ports) {
-                const uint32_t binding = static_cast<uint32_t>(gate.buffers.size());
-                if (port == TopologyArguments) {
-                    gate.buffers.push_back(workspace.gatedArguments);
-                    gate.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
-                    gate.proof->writes.push_back({binding, 0u, sizeof(spans)});
-                } else {
-                    gate.buffers.push_back(port == ConvexCompletion ? completion
-                                           : port == GateSpans      ? workspace.gateSpans
-                                                                    : frozen[Patches]);
-                    gate.bufferAccesses.push_back(rhi::ComputeBufferAccess::Read);
-                    gate.proof->reads.push_back({binding, 0u, port == GateSpans ? sizeof(spans) : WordBytes});
-                }
+        const auto appendGuarded = [&](auto append) {
+            const auto firstUpload = prefixUploads.size(), firstDispatch = prefix.size();
+            if ((this->*append)(limit, prefixUploads, prefix) &&
+                std::all_of(prefix.begin() + firstDispatch, prefix.end(),
+                            [this](const auto &unit) { return CanGuard(unit); }))
+                return true;
+            prefixUploads.resize(firstUpload);
+            prefix.resize(firstDispatch);
+            return false;
+        };
+        const bool includesSetup = next.operation == plan.size() && appendGuarded(&Execution::AppendSetup);
+        if (setup && next.operation == plan.size() && !includesSetup) {
+            // Keep the final connectivity unit available to the normal
+            // recorder, where it can share a packet with setup.
+            next = last;
+            prefix.pop_back();
+            prefixUploads.resize(lastUpload);
+            if (firstGuard > prefix.size()) {
+                firstGuard = prefix.size();
+                unconditional = next;
             }
-            const auto firstGated = prefix.size() - gatedCount;
-            for (size_t i = 0u; i < gatedCount; ++i)
-                prefix[firstGated + i].indirectArguments =
-                    rhi::ComputeIndirectArguments{workspace.gatedArguments, i * WordBytes};
-            prefix.insert(prefix.begin() + firstGated, std::move(gate));
         }
+        const bool includesAssembly = includesSetup && appendGuarded(&Execution::AppendLocalAssembly);
+        std::shared_ptr<const JoltGpuConstraintWorkset> preparedPlan;
+        std::function<void()> acceptSolver;
+        if (includesAssembly && setup->appendSolverPrefix && prefix.size() < limit) {
+            auto planView = std::make_shared<JoltGpuConstraintWorkset>(WorksetView());
+            planView->jointDispatches = jointDispatches;
+            planView->patchDispatches = patchDispatches;
+            const auto firstUpload = prefixUploads.size(), firstDispatch = prefix.size();
+            acceptSolver = setup->appendSolverPrefix(planView, limit - firstDispatch, prefixUploads, prefix);
+            if (acceptSolver && std::all_of(prefix.begin() + firstDispatch, prefix.end(),
+                                            [this](const auto &unit) { return CanGuard(unit); })) {
+                preparedPlan = std::move(planView);
+            } else {
+                prefixUploads.resize(firstUpload);
+                prefix.resize(firstDispatch);
+                acceptSolver = {};
+            }
+        }
+        if (prefix.empty() ||
+            (firstGuard < prefix.size() && !GatePrefix(completion, firstGuard, prefixUploads, prefix)))
+            return {};
         uploads.insert(uploads.end(), std::make_move_iterator(prefixUploads.begin()),
                        std::make_move_iterator(prefixUploads.end()));
         dispatches.insert(dispatches.end(), std::make_move_iterator(prefix.begin()),
                           std::make_move_iterator(prefix.end()));
 
-        return [self = shared_from_this(), next, unconditional](bool collisionComplete) -> JoltGpuControlWork {
+        return [self = shared_from_this(), next, unconditional, includesSetup, includesAssembly,
+                preparedPlan = std::move(preparedPlan),
+                acceptSolver = std::move(acceptSolver)](bool collisionComplete) -> JoltGpuControlWork {
             self->cursor = collisionComplete ? next : unconditional;
             if (!collisionComplete)
                 return {};
             if (self->cursor.operation != self->plan.size())
                 return self->Next();
-            self->PublishTopology();
+            self->FinishConnectivity(includesSetup, includesAssembly, preparedPlan);
+            if (acceptSolver)
+                acceptSolver();
             return {};
         };
     }
@@ -1037,13 +1148,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                                     self->cursor = next;
                                     if (boundary) {
                                         if (submittedPhase == Phase::Connectivity) {
-                                            if (includesAssembly) {
-                                                self->completed = std::move(self->setup->assembled);
-                                                self->setup.reset();
-                                                self->completedTopology = {};
-                                                self->Install();
-                                            } else
-                                                self->PublishTopology(includesSetup);
+                                            self->FinishConnectivity(includesSetup, includesAssembly);
                                             return {};
                                         }
                                         self->Install();

@@ -13,6 +13,12 @@ struct JoltGpuConstraintSetup
     std::vector<JoltGpuStageWork> stages;
     // Empty when a contact consumer needs the fully set-up rows first.
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> assembled;
+    // Record ordered stages against the proposed schedule. Advance the real
+    // cursor only after that guarded prefix actually executed.
+    std::function<std::function<void()>(const std::shared_ptr<const JoltGpuConstraintWorkset> &, size_t,
+                                        std::vector<rhi::ComputeBufferUpdate> &,
+                                        std::vector<rhi::ComputeDispatchDesc> &)>
+        appendSolverPrefix;
 };
 
 // Two ways to record the same topology cursor. The collision packet can
