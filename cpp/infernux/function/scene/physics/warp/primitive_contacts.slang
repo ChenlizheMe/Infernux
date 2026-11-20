@@ -68,6 +68,8 @@ float3 inverseRotatePoint(CartesianFrame frame, float3 point)
     return float3(dot(frameAxis(frame, 0), point), dot(frameAxis(frame, 1), point), dot(frameAxis(frame, 2), point));
 }
 
+#include "box_contacts.slang"
+
 PrimitivePoint sphereContact(float3 centerA, float radiusA, float3 centerB, float radiusB)
 {
     const float3 difference = centerB - centerA;
@@ -258,7 +260,8 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
                                (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomEllipsoid || typeB == GeomBox);
         const bool spherePair = typeA == GeomSphere && (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomBox);
         const bool capsulePair = typeA == GeomCapsule && typeB == GeomCapsule;
-        if (!planePair && !spherePair && !capsulePair)
+        const bool boxPair = typeA == GeomBox && typeB == GeomBox;
+        if (!planePair && !spherePair && !capsulePair && !boxPair)
             continue;
 
         const CartesianFrame frameA = geometryFrames[geometryBase + pair.x];
@@ -266,6 +269,21 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
         const float3 centerA = frameA.position.xyz;
         const float3 centerB = frameB.position.xyz;
         const ContactMaterial material = resolveMaterial(pair, settings.x);
+        if (boxPair)
+        {
+            const float margin = material.parameters.x + material.parameters.y;
+            const BoxManifold manifold = boxBoxContact(frameA, a.size.xyz, frameB, b.size.xyz, margin);
+            if (manifold.count != 0)
+            {
+                const ContactBasis basis = makeBasis(manifold.normal);
+                for (uint i = 0; i < manifold.count; ++i)
+                {
+                    const float4 point = manifold.points[i];
+                    writeContact(id.y, pair, i, point.w, point.xyz, basis, material, settings.z);
+                }
+            }
+            continue;
+        }
         if (spherePair)
         {
             PrimitivePoint result;
