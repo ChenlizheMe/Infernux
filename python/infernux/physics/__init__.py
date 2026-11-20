@@ -30,6 +30,16 @@ def _query_layer_mask(value: Optional[int]) -> Optional[int]:
     return None if value is None else int(value)
 
 
+def _rigidbody_state_sources(rigidbodies):
+    sources = []
+    for body in rigidbodies:
+        handle = body._native_handle
+        if handle is None:
+            raise ReferenceError(f"{type(body).__name__} is not bound to a live native component")
+        sources.append(handle)
+    return sources
+
+
 def _gpu_state_output(out, names, *, flush: bool = True):
     from infernux.compute import Buffer, _flush_commands
 
@@ -132,9 +142,9 @@ class Physics(metaclass=_PhysicsMeta):
         its physics world; Collider components are optional. Arrays are snapshots;
         modifying them does not modify the physics world.
         """
-        native_bodies = [body._require_cpp_component() for body in rigidbodies]
+        sources = _rigidbody_state_sources(rigidbodies)
         if out is None:
-            return _CppPhysics.get_rigidbody_states(native_bodies, fields=fields)
+            return _CppPhysics.get_rigidbody_states(sources, fields=fields)
         if not isinstance(out, dict):
             raise TypeError("Rigidbody state output must be a dictionary")
         from infernux.compute import Buffer
@@ -143,7 +153,7 @@ class Physics(metaclass=_PhysicsMeta):
         if fields is None:
             gpu_output = _gpu_state_output(out, names)
             if gpu_output is not None:
-                _CppPhysics._write_rigidbody_state_buffers(native_bodies, gpu_output)
+                _CppPhysics._write_rigidbody_state_buffers(sources, gpu_output)
                 return out
         elif any(isinstance(value, Buffer) and value.device != "cpu" for value in out.values()):
             raise TypeError("Selected Rigidbody state fields require CPU outputs")
@@ -151,7 +161,7 @@ class Physics(metaclass=_PhysicsMeta):
             name: value.numpy(copy=False) if isinstance(value, Buffer) else value
             for name, value in out.items()
         }
-        _CppPhysics.get_rigidbody_states(native_bodies, native_output, fields=fields)
+        _CppPhysics.get_rigidbody_states(sources, native_output, fields=fields)
         return out
 
     @staticmethod
@@ -204,9 +214,8 @@ class Physics(metaclass=_PhysicsMeta):
         box_host = next(iter(box_out[name]._host for name in box_names))
         if int(state_host.identity) != int(box_host.identity):
             raise ValueError("Combined rigidbody state outputs must use the same compute host")
-        native_bodies = [body._require_cpp_component() for body in rigidbodies]
         box_count = _CppPhysics._write_rigidbody_state_and_box_state_buffers(
-            native_bodies, state_gpu, box_gpu, bool(query_triggers)
+            _rigidbody_state_sources(rigidbodies), state_gpu, box_gpu, bool(query_triggers)
         )
         box_out["count"] = int(box_count)
         return state_out, box_out
@@ -248,10 +257,10 @@ class Physics(metaclass=_PhysicsMeta):
         """
         from infernux.compute import Buffer
 
-        native_bodies = [body._require_cpp_component() for body in rigidbodies]
+        sources = _rigidbody_state_sources(rigidbodies)
         if out is None:
             return _CppPhysics.get_rigidbody_box_states(
-                native_bodies, query_triggers=bool(query_triggers)
+                sources, query_triggers=bool(query_triggers)
             )
         if not isinstance(out, dict):
             raise TypeError("Box collider state output must be a dictionary")
@@ -259,7 +268,7 @@ class Physics(metaclass=_PhysicsMeta):
         gpu_output = _gpu_state_output(out, names)
         if gpu_output is not None:
             out["count"] = int(_CppPhysics._write_rigidbody_box_state_buffers(
-                native_bodies, gpu_output, bool(query_triggers)
+                sources, gpu_output, bool(query_triggers)
             ))
             return out
         native_output = {
@@ -267,7 +276,7 @@ class Physics(metaclass=_PhysicsMeta):
             for name, value in out.items() if name != "count"
         }
         result = _CppPhysics.get_rigidbody_box_states(
-            native_bodies, native_output, bool(query_triggers)
+            sources, native_output, bool(query_triggers)
         )
         out["count"] = int(result["count"])
         return out

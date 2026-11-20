@@ -52,6 +52,7 @@
 #include <pybind11/stl.h>
 #include <stdexcept>
 #include <tuple>
+#include <variant>
 
 namespace py = pybind11;
 
@@ -359,6 +360,36 @@ void RequireRigidbodyBatchBodies(const std::vector<Rigidbody *> &bodies)
             throw py::value_error("rigidbodies must not contain None");
 }
 
+using RigidbodyStateSource = std::variant<ObjectHandle, Rigidbody *>;
+
+std::vector<Rigidbody *> ResolveRigidbodyStateSources(const std::vector<RigidbodyStateSource> &sources)
+{
+    PhysicsWorld::Instance().RequireOwnerThread();
+    std::vector<Rigidbody *> bodies;
+    bodies.reserve(sources.size());
+    for (const auto &source : sources) {
+        if (const auto *handle = std::get_if<ObjectHandle>(&source)) {
+            // Compare the full identity before reading any physics state. Each
+            // input can belong to a different scene, regardless of the current world.
+            auto *component = Component::FindByComponentId(handle->id);
+            if (!component || !handle->IsValid() || component->GetHandle() != *handle) {
+                PyErr_SetString(PyExc_ReferenceError, "Rigidbody is not bound to a live native component");
+                throw py::error_already_set();
+            }
+            auto *body = dynamic_cast<Rigidbody *>(component);
+            if (!body)
+                throw py::type_error("Rigidbody state requires Rigidbody components");
+            bodies.push_back(body);
+        } else {
+            auto *body = std::get<Rigidbody *>(source);
+            if (!body)
+                throw py::value_error("rigidbodies must not contain None");
+            bodies.push_back(body);
+        }
+    }
+    return bodies;
+}
+
 struct RigidbodyStateArrayWriter
 {
     struct Writer
@@ -486,10 +517,10 @@ struct RigidbodyStateArrayWriter
     }
 };
 
-py::dict GetRigidbodyStates(const std::vector<Rigidbody *> &bodies, py::object output, py::object fields)
+py::dict GetRigidbodyStates(const std::vector<RigidbodyStateSource> &sources, py::object output, py::object fields)
 {
-    RigidbodyStateArrayWriter writer(static_cast<py::ssize_t>(bodies.size()), output, fields);
-    RequireRigidbodyBatchBodies(bodies);
+    RigidbodyStateArrayWriter writer(static_cast<py::ssize_t>(sources.size()), output, fields);
+    const auto bodies = ResolveRigidbodyStateSources(sources);
     const auto batch = PhysicsWorld::Instance().GatherRigidbodyStates(
         bodies, static_cast<PhysicsStateFields>(writer.mask), false, true);
     return writer.Write(batch.states);
@@ -610,11 +641,11 @@ std::vector<JoltGpuQueryExportBinding> RigidbodyStateExports(py::dict output, ui
     };
 }
 
-void WriteRigidbodyStateBuffers(const std::vector<Rigidbody *> &bodies, py::dict output)
+void WriteRigidbodyStateBuffers(const std::vector<RigidbodyStateSource> &sources, py::dict output)
 {
     rhi::ComputeHost *host = nullptr;
-    auto exports = RigidbodyStateExports(output, bodies.size(), host);
-    RequireRigidbodyBatchBodies(bodies);
+    auto exports = RigidbodyStateExports(output, sources.size(), host);
+    const auto bodies = ResolveRigidbodyStateSources(sources);
     (void)PhysicsWorld::Instance().GatherRigidbodyStates(bodies, PhysicsStateFields::All, false, true, exports);
 }
 
@@ -815,9 +846,9 @@ py::dict WriteRigidbodyBoxArrays(const std::vector<PhysicsRigidbodyBoxState> &en
     return result;
 }
 
-py::dict GetRigidbodyBoxStates(const std::vector<Rigidbody *> &bodies, py::object output, bool queryTriggers)
+py::dict GetRigidbodyBoxStates(const std::vector<RigidbodyStateSource> &sources, py::object output, bool queryTriggers)
 {
-    RequireRigidbodyBatchBodies(bodies);
+    const auto bodies = ResolveRigidbodyStateSources(sources);
     const auto batch =
         PhysicsWorld::Instance().GatherRigidbodyStates(bodies, PhysicsStateFields::None, true, queryTriggers);
     return WriteRigidbodyBoxArrays(batch.boxes, output);
@@ -839,24 +870,25 @@ std::vector<JoltGpuQueryExportBinding> RigidbodyBoxExports(py::dict output, rhi:
     };
 }
 
-uint64_t WriteRigidbodyBoxStateBuffers(const std::vector<Rigidbody *> &bodies, py::dict output, bool queryTriggers)
+uint64_t WriteRigidbodyBoxStateBuffers(const std::vector<RigidbodyStateSource> &sources, py::dict output,
+                                       bool queryTriggers)
 {
     rhi::ComputeHost *host = nullptr;
     auto exports = RigidbodyBoxExports(output, host);
-    RequireRigidbodyBatchBodies(bodies);
+    const auto bodies = ResolveRigidbodyStateSources(sources);
     return PhysicsWorld::Instance()
         .GatherRigidbodyStates(bodies, PhysicsStateFields::None, true, queryTriggers, exports)
         .boxCount;
 }
 
-uint64_t WriteRigidbodyStateAndBoxStateBuffers(const std::vector<Rigidbody *> &bodies, py::dict stateOutput,
+uint64_t WriteRigidbodyStateAndBoxStateBuffers(const std::vector<RigidbodyStateSource> &sources, py::dict stateOutput,
                                                py::dict boxOutput, bool queryTriggers)
 {
     rhi::ComputeHost *host = nullptr;
-    auto exports = RigidbodyStateExports(stateOutput, bodies.size(), host);
+    auto exports = RigidbodyStateExports(stateOutput, sources.size(), host);
     auto boxes = RigidbodyBoxExports(boxOutput, host);
     exports.insert(exports.end(), std::make_move_iterator(boxes.begin()), std::make_move_iterator(boxes.end()));
-    RequireRigidbodyBatchBodies(bodies);
+    const auto bodies = ResolveRigidbodyStateSources(sources);
     return PhysicsWorld::Instance()
         .GatherRigidbodyStates(bodies, PhysicsStateFields::All, true, queryTriggers, exports)
         .boxCount;
