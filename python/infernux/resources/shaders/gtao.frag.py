@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
-from infernux.shader.lib.ray_sh_filter import sh_guide_normal
+from infernux.shader.lib.ray_sh_filter import sh_guide_normal, sh_guide_phase
 from infernux.shader.lib.gtao import hilbert_index, horizon_angle, horizon_coverage
 
 
@@ -23,10 +23,13 @@ class GTAO(shader.fullscreen):
         eye_depth = linear_eye_depth(depth, camera)
         scale = 1.0 if orthographic else eye_depth
         focal = shader.vec2(projection[0][0], projection[1][1])
-        px_to_view = shader.vec2(2.0, -2.0) / (shader.vec2(size) * focal)
+        full = shader.ivec2(shader.view().size)
+        phase = sh_guide_phase(shader._view_sample_index())
+        site = shader.min(2 * pixel + phase, full - 1)
+        px_to_view = shader.vec2(2.0, -2.0) / (shader.vec2(full) * focal)
         projection_scale = 0.5 * shader.abs(focal.y) / scale
-        radius = (0.125 / projection_scale) / shader.abs(scale * px_to_view.x * 0.9992)
-        uv = (shader.vec2(pixel) + 0.5) / shader.vec2(size)
+        radius = (0.125 / projection_scale) / shader.abs(2.0 * scale * px_to_view.x * 0.9992)
+        uv = (shader.vec2(site) + 0.5) / shader.vec2(full)
         center = (camera.view_matrix @ shader.vec4(world_position(uv, depth, camera), 1.0)).xyz
         forward = shader.sign(center.z)
         origin = shader.vec3(center.xy, center.z * 0.9992) if orthographic else center * 0.9992
@@ -50,11 +53,14 @@ class GTAO(shader.fullscreen):
             t = (shader.float(step) + shader.frac(jitter.y + shader.float(step * 3) * 0.618034)) / 3.0
             offset = shader.ivec2(shader.round(screen_axis * (radius * t * t + 1.3)))
             for side in range(2):
-                tap = shader.clamp(pixel + (1 - 2 * side) * offset, shader.ivec2(0), size - 1)
+                tap = pixel + (1 - 2 * side) * offset
+                if shader.any(tap < shader.ivec2(0)) or shader.any(tap >= size):
+                    continue
                 sample_depth = shader.as_float(shader.load(self.guide, tap, 0).x)
                 if sample_depth > 0.0:
                     z = linear_eye_depth(sample_depth, camera)
-                    plane = shader.vec2(tap - pixel) * px_to_view
+                    sample_site = shader.min(2 * tap + phase, full - 1)
+                    plane = shader.vec2(sample_site - site) * px_to_view
                     position = center.xy + plane if orthographic else (center.xy / eye_depth + plane) * z
                     delta = shader.vec3(position, forward * z) - origin
                     distance = shader.length(delta)
@@ -63,6 +69,8 @@ class GTAO(shader.fullscreen):
                     horizons[side] = shader.max(horizons[side], shader.mix(open_horizon[side], tangent_cosine, support))
         sin_n = shader.sin(angle_n)
         coverage = horizon_coverage(horizons, angle_n, sin_n, cos_n)
-        small_radius = 0.5 * shader.saturate((10.0 - radius) * 0.01)
-        visibility = small_radius + coverage * shader.mix(length_n, 1.0, 0.05)
-        return shader.vec4(shader.max(0.03, visibility))
+        # Normalize each rotated slice by its open hemisphere integral. A
+        # grazing plane otherwise changes visibility as the slice rotates.
+        open_coverage = cos_n + angle_n * sin_n
+        visibility = shader.clamp(coverage / shader.max(open_coverage, 1e-6), 0.03, 1.0)
+        return shader.vec4(visibility)
