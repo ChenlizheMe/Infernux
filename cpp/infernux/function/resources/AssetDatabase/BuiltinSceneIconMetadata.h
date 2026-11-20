@@ -73,7 +73,8 @@ inline bool HasCurrentBuiltinTextureMetadata(const InxResourceMeta &metadata, co
 {
     if (IsBuiltinBlueNoise(path, readOnly))
         return metadata.HasKey("texture_type") && metadata.GetDataAs<std::string>("texture_type") == "data" &&
-               metadata.HasKey("texture_compression") && metadata.GetDataAs<std::string>("texture_compression") == "none" &&
+               metadata.HasKey("texture_compression") &&
+               metadata.GetDataAs<std::string>("texture_compression") == "none" &&
                metadata.HasKey("generate_mipmaps") && !metadata.GetDataAs<bool>("generate_mipmaps") &&
                metadata.HasKey("srgb") && !metadata.GetDataAs<bool>("srgb");
     return HasCurrentBuiltinSceneIconMetadata(metadata, path, readOnly);
