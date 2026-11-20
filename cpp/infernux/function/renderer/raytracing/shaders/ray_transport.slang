@@ -764,7 +764,10 @@ InxDiffuseDepthTest inx_diffuse_screen_depth(InxUInt2D depths, int2 extent, floa
     }
     float3 raw_depth = float3(nearest, linear, ndc.z);
     bool orthographic = abs(inx_view.projection[3][3]) > 0.5;
-    float3 depth = orthographic ? 1.0 - raw_depth : rcp(max(raw_depth, 1.0e-12));
+    // Scale eye depth to the same units as the march's thickness. A finite
+    // perspective far plane adds an offset to the reciprocal-depth mapping.
+    float eye_offset = inx_view.depth_params.w / inx_view.depth_params.z;
+    float3 depth = orthographic ? 1.0 - raw_depth : rcp(max(raw_depth + eye_offset, 1.0e-12));
     return {max(depth.x, depth.y) * 1.000002 - depth.z, depth.z - min(depth.x, depth.y)};
 }
 
