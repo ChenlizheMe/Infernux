@@ -680,23 +680,9 @@ float3 inx_screen_ray_normal(uint word)
     return normalize(normal);
 }
 
-float3 inx_screen_ray_position(uint2 pixel, uint2 extent, float depth)
-{
-    float2 ndc = (float2(pixel) + 0.5) * (2.0 / float2(extent)) - 1.0;
-    float4 position = mul(inx_view.inverse_view_projection, float4(ndc, depth, 1.0));
-    return position.xyz / position.w;
-}
-
 bool inx_inside_screen_ray(float3 ndc)
 {
     return all(abs(ndc.xy) < 1.0) && ndc.z > 0.0 && ndc.z <= 1.0;
-}
-
-float inx_screen_eye_depth(float device_depth)
-{
-    if (abs(inx_view.projection[3][3]) > 0.5)
-        return lerp(inx_view.projection_params.y, inx_view.projection_params.x, device_depth);
-    return rcp(mad(device_depth, inx_view.depth_params.z, inx_view.depth_params.w));
 }
 
 struct InxScreenDiffuseHit
@@ -706,39 +692,19 @@ struct InxScreenDiffuseHit
 };
 
 InxRaySignal inx_reproject_diffuse_radiance(TraceRay ray, InxScreenDiffuseHit hit, InxUInt2D primary,
-                                          InxUInt2D previous, InxUInt2D motion, InxHistory2D history, uint2 full)
+                                          InxUInt2D reprojection, InxHistory2D history, uint2 full)
 {
-    uint4 surface = primary.texture.Load(int3(hit.pixel, 0));
-    uint4 movement = motion.texture.Load(int3(hit.pixel, 0));
-    if (surface.x == 0u || movement.x != surface.x || (movement.w & 0x80000000u) == 0u)
+    uint2 reproj = reprojection.texture.Load(int3(hit.pixel, 0)).xy;
+    if (reproj.y == 0u)
         return (InxRaySignal)0;
+    uint4 surface = primary.texture.Load(int3(hit.pixel, 0));
     float3 normal = inx_screen_ray_normal(surface.z);
     if (dot(normal, ray.direction) >= 0.0)
         return (InxRaySignal)0;
 
     float2 uv = (float2(hit.pixel) + 0.5) / float2(full);
-    float2 previous_uv = uv - unpackHalf2x16ToFloat(movement.z);
-    float2 raster_uv = previous_uv + inx_view_jitter_delta_uv();
+    float2 previous_uv = uv - unpackHalf2x16ToFloat(reproj.x);
     if (any(previous_uv < 0.0) || any(previous_uv >= 1.0))
-        return (InxRaySignal)0;
-    float previous_eye = asfloat(movement.w & 0x7fff0000u);
-    float3 point = inx_screen_ray_position(hit.pixel, full, asfloat(surface.y));
-    float3 view = mul(inx_view.view, float4(point, 1.0)).xyz;
-    float tolerance = 0.025 * previous_eye / max(0.1, abs(normalize(view).z));
-    int2 origin = int2(floor(raster_uv * float2(full) - 0.5));
-    uint mask = 0u;
-    [unroll] for (uint i = 0u; i < 4u; ++i)
-    {
-        int2 pixel = origin + int2(i & 1u, i >> 1u);
-        if (all(pixel >= 0) && all(pixel < int2(full)))
-        {
-            uint4 old = previous.texture.Load(int3(pixel, 0));
-            float error = abs(inx_screen_eye_depth(asfloat(old.y)) - previous_eye);
-            if (old.x == surface.x && error <= tolerance)
-                mask |= 1u << i;
-        }
-    }
-    if (mask == 0u)
         return (InxRaySignal)0;
     uint2 at = min(uint2(previous_uv * float2(full)), full - 1u);
     return {float4(history.texture.Load(int3(at, 0)).rgb, 1.0), uint2(surface.x, asuint(hit.distance))};
@@ -888,7 +854,7 @@ InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float3 receiver, floa
 }
 
 InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D primary, InxColor2D depths,
-                                     InxHistory2D history, InxUInt2D previous, InxUInt2D motion,
+                                     InxHistory2D history, InxUInt2D reprojection,
                                      InxBuffer_uint4 records, InxBuffer_uint4 cache,
                                      uint seed, uint index, float pdf, float3 receiver, uint2 pixel, bool temporal)
 {
@@ -900,7 +866,7 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D prim
         let screen = inx_march_diffuse_screen(ray, receiver, vp, depths, full, extent, pixel, index);
         if (screen.distance > 0.0)
         {
-            let light = inx_reproject_diffuse_radiance(ray, screen, primary, previous, motion, history, full);
+            let light = inx_reproject_diffuse_radiance(ray, screen, primary, reprojection, history, full);
             if (light.radiance.a > 0.0)
                 return light;
         }
@@ -932,8 +898,7 @@ uint inx_diffuse_hilbert(uint2 pixel)
 
 public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 normal, uint2 cell, bool temporal,
                                          InxUInt2D primary, InxColor2D screen_depth, InxHistory2D history,
-                                         InxUInt2D previous, InxUInt2D motion,
-                                         InxBuffer_uint4 records, InxBuffer_uint4 cache)
+                                         InxUInt2D reprojection, InxBuffer_uint4 records, InxBuffer_uint4 cache)
 {
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
@@ -955,7 +920,7 @@ public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 normal, uint2
     float3 origin = inx_ray_origin(position, normal);
     TraceRay ray = {origin, 0.0, direction, inx_view.projection_params.y};
     const float pdf = 0.15915494309;
-    let hit = inx_ray_diffuse_incident(page, ray, primary, screen_depth, history, previous, motion, records, cache,
+    let hit = inx_ray_diffuse_incident(page, ray, primary, screen_depth, history, reprojection, records, cache,
                                        inx_ray_sample_hash(index), frame, pdf, position, cell * 2u, temporal);
     if (hit.radiance.a <= 0.0)
         return (InxRaySignal)0;

@@ -13,6 +13,10 @@ def sh_normal_weight(normal: shader.vec3, other: shader.vec3) -> float:
     return 0.01 / (falloff * falloff)
 
 
+def sh_clip_history(coefficients: shader.vec4) -> shader.vec4:
+    return shader.vec4(shader.max(0.0, coefficients.x), shader.clamp(coefficients.yzw, -1024.0, 1024.0))
+
+
 def sh_guide_pixel(cell: shader.ivec2, grid: shader.ivec2, full: shader.ivec2, index: shader.uint) -> shader.ivec2:
     # Rotate four representative subpixels in a fixed order for a view.
     phase = shader.int(index & shader.uint(3))

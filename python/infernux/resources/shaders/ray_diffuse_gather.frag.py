@@ -16,7 +16,7 @@ class RayDiffuseGather(shader.fullscreen):
     ssao_strength = shader.parameter.float(default=0.0)
     divisor = shader.parameter.int(default=2)
 
-    def main(self, ctx: shader.fragment_input) -> tuple[shader.vec4, shader.vec4, shader.vec4, shader.vec4]:
+    def main(self, ctx: shader.fragment_input) -> tuple[shader.vec4, shader.vec4, shader.vec4]:
         cell = shader.ivec2(ctx.position.xy)
         observed = shader.ivec2(shader.dimensions(self.observations, 0))
         full = shader.ivec2(shader.dimensions(self.primary, 0))
@@ -25,7 +25,7 @@ class RayDiffuseGather(shader.fullscreen):
         source = sh_guide_pixel(cell, extent, full, index)
         p = shader.load(self.primary, source, 0)
         if p.x == 0:
-            return (shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0))
+            return (shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0))
         n = decode_octahedral_normal(shader.unpack_half_2x16(p.z))
         trace_scale = shader.vec2(observed) / shader.vec2(full)
         anchor = (shader.vec2(cell) + 0.5) * shader.vec2(observed) / shader.vec2(extent)
@@ -37,8 +37,6 @@ class RayDiffuseGather(shader.fullscreen):
         g = shader.vec4(0.0)
         b = shader.vec4(0.0)
         total = 0.0
-        second_moment = 0.0
-        squared_weights = 0.0
         visibility_extent = shader.ivec2(shader.dimensions(self.ambient_visibility, 0))
         ao_strength = shader.min(1.0, contact_density(self.ssao_strength))
         visibility = 0.0
@@ -71,17 +69,6 @@ class RayDiffuseGather(shader.fullscreen):
             r += body.r * basis
             g += body.g * basis
             b += body.b * basis
-            irradiance = body.rgb * cosine
-            second_moment += w * shader.dot(irradiance, irradiance)
-            squared_weights += w * w
             total += w
-        if total <= 1.0e-5:
-            return (shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0))
-        r /= total
-        g /= total
-        b /= total
-        mean = shader.vec3(shader.dot(r.yzw, n), shader.dot(g.yzw, n), shader.dot(b.yzw, n))
-        variance = shader.max(0.0, second_moment / total - shader.dot(mean, mean))
-        error = variance * squared_weights / shader.max(total * total - squared_weights, 1.0e-5)
-        sigma = shader.min(65504.0, shader.sqrt(error))
-        return (sh_coefficients(r), sh_coefficients(g), sh_coefficients(b), shader.vec4(1.0, sigma, 0.0, 0.0))
+        norm = 1.0 / shader.max(total, 1.0e-5)
+        return (sh_coefficients(r * norm), sh_coefficients(g * norm), sh_coefficients(b * norm))

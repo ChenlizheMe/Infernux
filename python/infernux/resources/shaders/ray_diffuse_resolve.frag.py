@@ -41,7 +41,7 @@ class RayDiffuseResolve(shader.fullscreen):
                 continue
             source = sh_guide_pixel(at, extent, full, index)
             guide = shader.load(self.primary, source, 0)
-            if guide.x == 0 or shader.load(self.state, at, 0).x == 0.0:
+            if shader.load(self.state, at, 0).y <= 0.0:
                 continue
             weight = sh_bilateral(depth, shader.as_float(guide.y), 1.0, 0.0, 0.0)
             red += weight * shader.load(self.red_sh, at, 0)

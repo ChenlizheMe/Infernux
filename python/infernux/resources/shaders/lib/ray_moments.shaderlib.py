@@ -22,10 +22,6 @@ def sh_coefficients(moment: shader.vec4) -> shader.vec4:
     return shader.clamp(coefficients, shader.vec4(-65504.0), shader.vec4(65504.0))
 
 
-def sh_moment(coefficients: shader.vec4) -> shader.vec4:
-    return coefficients * shader.vec4(3.544907702, shader.vec3(2.046653416))
-
-
 def sh_diffuse_irradiance(red: shader.vec4, green: shader.vec4, blue: shader.vec4,
                           normal: shader.vec3) -> shader.vec3:
     dc = shader.vec3(red.x, green.x, blue.x)

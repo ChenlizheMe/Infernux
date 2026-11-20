@@ -49,7 +49,7 @@ class RayDiffuseBlur(shader.fullscreen):
                 continue
             pt = sh_guide_pixel(at, extent, full, index)
             guide = shader.load(self.primary, pt, 0)
-            if guide.x == 0 or shader.load(self.state, at, 0).x == 0.0:
+            if shader.load(self.state, at, 0).y <= 0.0:
                 continue
             normal = decode_octahedral_normal(shader.unpack_half_2x16(guide.z))
             other_vis = 0.0
