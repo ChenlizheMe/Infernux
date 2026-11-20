@@ -427,10 +427,11 @@ class JoltGpuTick::Impl
         key.reserve(ready.size());
         for (const auto &unit : ready) {
             const auto range = unit.parameters.range;
-            const auto rounds =
-                unit.stage == JPH::GPU::Stage::SolveVelocityRounds
-                    ? (range.z == JPH::GPU::ConstraintWholeIslandTable ? range.x : tickParameters.counts.w)
-                    : 1u;
+            const auto iterations =
+                unit.stage == JPH::GPU::Stage::SolvePositionRounds ? tickParameters.solve.x : tickParameters.counts.w;
+            const auto rounds = JPH::GPU::IsContactRoundStage(unit.stage)
+                                    ? (range.z == JPH::GPU::ConstraintWholeIslandTable ? range.x : iterations)
+                                    : 1u;
             key.emplace_back(unit.stage, unit.parameters.range.y * rounds, unit.parameters.range.w);
         }
         return key;
@@ -790,7 +791,7 @@ class JoltGpuTick::Impl
         case Phase::SolveJointVelocity:
             return {Stage::SolveJointVelocity, Domain::IslandJoints};
         case Phase::SolveVelocity:
-            return {VelocityRoundsPerDispatch() > 1u ? Stage::SolveVelocityRounds : Stage::SolveVelocity,
+            return {ContactRoundsPerDispatch(phase) > 1u ? Stage::SolveVelocityRounds : Stage::SolveVelocity,
                     Domain::IslandPatches};
         case Phase::StoreContactHistory:
             return {Stage::StoreContactHistory, Domain::Patches};
@@ -801,7 +802,8 @@ class JoltGpuTick::Impl
         case Phase::SolveJointPosition:
             return {Stage::SolveJointPosition, Domain::IslandJoints};
         case Phase::SolvePosition:
-            return {Stage::SolvePosition, Domain::IslandPatches};
+            return {ContactRoundsPerDispatch(phase) > 1u ? Stage::SolvePositionRounds : Stage::SolvePosition,
+                    Domain::IslandPatches};
         case Phase::FinishJoints:
             return {Stage::FinishJoints, Domain::Joints};
         case Phase::CommitArticulationPose:
@@ -876,10 +878,15 @@ class JoltGpuTick::Impl
         return control.simulateRigidBodies && tickParameters.selectedCounts.x;
     }
 
-    uint32_t VelocityRoundsPerDispatch() const noexcept
+    uint32_t ContactIterations(Phase phase) const noexcept
+    {
+        return phase == Phase::SolvePosition ? tickParameters.solve.x : tickParameters.counts.w;
+    }
+
+    uint32_t ContactRoundsPerDispatch(Phase phase) const noexcept
     {
         const auto &plan = inputs.GetConstraints();
-        const auto rounds = tickParameters.counts.w;
+        const auto rounds = ContactIterations(phase);
         if (control.participants || rounds < 2u || !plan)
             return 1u;
         if (plan->solveArguments) {
@@ -992,7 +999,7 @@ class JoltGpuTick::Impl
             next.phase = Phase::SolveVelocity;
             break;
         case Phase::SolveVelocity:
-            next.iteration += std::min(tickParameters.counts.w - next.iteration, VelocityRoundsPerDispatch());
+            next.iteration += std::min(tickParameters.counts.w - next.iteration, ContactRoundsPerDispatch(next.phase));
             next.phase = next.iteration < tickParameters.counts.w
                              ? (exchange ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
                          : HasRigidWork() && control.prepareContactReport ? Phase::ReportContactsAfterVelocity
@@ -1034,7 +1041,8 @@ class JoltGpuTick::Impl
             next.phase = Phase::SolvePosition;
             break;
         case Phase::SolvePosition:
-            next.phase = ++next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
+            next.iteration += std::min(tickParameters.solve.x - next.iteration, ContactRoundsPerDispatch(next.phase));
+            next.phase = next.iteration < tickParameters.solve.x ? Phase::SolveJointPosition : Phase::FinishJoints;
             break;
         case Phase::FinishJoints:
             if (inputs.NextContactHistory().patchCount) {
@@ -1136,14 +1144,15 @@ class JoltGpuTick::Impl
         JPH::GPU::StageWork parameters{};
         if (IslandDomain(span.domain) && inputs.GetConstraints()->solveArguments) {
             const uint32_t lanes = IslandCount(span.domain);
-            const auto rounds = span.stage == JPH::GPU::Stage::SolveVelocityRounds
-                                    ? std::min(tickParameters.counts.w - next.iteration, VelocityRoundsPerDispatch())
-                                    : 0u;
+            const auto rounds =
+                JPH::GPU::IsContactRoundStage(span.stage)
+                    ? std::min(ContactIterations(next.phase) - next.iteration, ContactRoundsPerDispatch(next.phase))
+                    : 0u;
             parameters.range = {rounds, IslandMaxItems(span.domain), JPH::GPU::ConstraintWholeIslandTable, lanes};
             next.islandBatchFirst = lanes;
-        } else if (span.stage == JPH::GPU::Stage::SolveVelocityRounds) {
+        } else if (JPH::GPU::IsContactRoundStage(span.stage)) {
             const uint32_t maximum = IslandMaxItems(span.domain);
-            const uint32_t itemsPerIsland = maximum * tickParameters.counts.w;
+            const uint32_t itemsPerIsland = maximum * ContactIterations(next.phase);
             const uint32_t lanes = std::min(IslandCount(span.domain) - next.islandBatchFirst, quantum / itemsPerIsland);
             parameters.range = {0u, maximum, next.islandBatchFirst, lanes};
             next.islandBatchFirst += lanes;

@@ -671,8 +671,11 @@ bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs
         const bool joints = definition.domain == Domain::IslandJoints;
         const uint32_t tableCount = constraints->IslandLimit(joints);
         const uint32_t maximum = constraints->RowLimit(joints);
-        const bool wholeRounds = definition.stage == Stage::SolveVelocityRounds;
-        const uint32_t rounds = wholeRounds ? inputs.GetParameters().counts.w : 1u;
+        const bool wholeRounds = IsContactRoundStage(definition.stage);
+        const auto &step = inputs.GetParameters();
+        const uint32_t rounds = !wholeRounds                                     ? 1u
+                                : definition.stage == Stage::SolvePositionRounds ? step.solve.x
+                                                                                 : step.counts.w;
         if (range.z == ConstraintWholeIslandTable) {
             const auto iterations = wholeRounds ? range.x : 1u;
             if (!constraints->solveArguments || range.y != maximum || range.w != tableCount ||
@@ -1499,6 +1502,7 @@ bool JoltGpuPrograms::TryPrepareStartupPrograms(bool hasLocalContacts)
         for (const auto stage : {Stage::WarmContacts, Stage::SolveVelocity, Stage::SolvePosition})
             ready &= m_entries[static_cast<size_t>(stage)].directKernel->TryPreparePipeline();
         ready &= m_entries[static_cast<size_t>(Stage::SolveVelocityRounds)].kernel->TryPreparePipeline();
+        ready &= m_entries[static_cast<size_t>(Stage::SolvePositionRounds)].kernel->TryPreparePipeline();
     }
     return ready;
 }
