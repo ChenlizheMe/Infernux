@@ -15,8 +15,8 @@
  */
 
 #pragma once
-#include "RenderViewSchedule.h"
 #include "RenderViewHistory.h"
+#include "RenderViewSchedule.h"
 #include "RenderWorld.h"
 #include "gui/InxScreenUIRenderer.h"
 #include <core/config/EngineConfig.h>
