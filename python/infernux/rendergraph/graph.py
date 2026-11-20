@@ -1896,6 +1896,16 @@ class RenderGraph:
                           world_ui_layer_mask: int = 0xffffffff) -> None:
         """Draw Camera UI and expose the composite immediately afterwards."""
         res = resources or {"color"}
+        history = self._unwritten_scene_radiance_history()
+        if history is not None:
+            # Camera UI and final effects can contribute color without changing the
+            # depth seen by screen rays. Capture the scene before either is drawn.
+            scene = self.current_pass_result
+            color = scene.sample("color") if scene is not None and scene.has("color") else self.get_texture("color")
+            with self.add_pass("Record Scene Radiance") as record:
+                record.set_texture("source_tex", color)
+                record.write_color(history[1])
+                record.fullscreen_quad("infernux/internal/fullscreen_copy")
         if not self.has_pass("_WorldUI"):
             depth = next((tex for tex in self._textures if tex.is_camera_target and tex.is_depth), None)
             if depth is None:
@@ -1971,9 +1981,6 @@ class RenderGraph:
                                  passes retain their own masks.
         """
         res = resources or {"color"}
-        scene = self.current_pass_result
-        radiance_order = self._next_order() if self._scene_radiance is not None else None
-
         self.camera_ui_section(resources=res, world_ui_layer_mask=world_ui_layer_mask)
 
         if not self.has_injection_point("before_post_process"):
@@ -1990,15 +1997,6 @@ class RenderGraph:
         if not self.has_injection_point("after_post_process"):
             self.injection_point("after_post_process", resources=res)
 
-        history = self._unwritten_scene_radiance_history()
-        if history is not None:
-            # A camera without TAA records the scene output before camera UI
-            # and the display transform, even when the scene did not publish a result.
-            color = scene.sample("color") if scene is not None and scene.has("color") else self.get_texture("color")
-            with self._add_typed_pass("Record Scene Radiance", "raster", order=radiance_order) as record:
-                record.set_texture("source_tex", color)
-                record.write_color(history[1])
-                record.fullscreen_quad("infernux/internal/fullscreen_copy")
         self.screen_ui_overlay_section(resources=res)
 
     def display_encode_section(self) -> None:

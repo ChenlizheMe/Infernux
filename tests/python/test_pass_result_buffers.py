@@ -361,7 +361,8 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     graph.build()
 
 
-def test_deferred_diffuse_uses_the_taa_history_without_recopying_scene_color():
+@pytest.mark.parametrize("stage", ["after_transparent", "final"])
+def test_deferred_diffuse_history_excludes_camera_ui(stage):
     from infernux.core.asset_ref import RenderEffectRef
     from infernux.renderstack.render_effect import RenderEffect
     from infernux.renderstack.render_effect_asset import RenderEffectAsset
@@ -373,7 +374,7 @@ def test_deferred_diffuse_uses_the_taa_history_without_recopying_scene_color():
     stack._pipeline = pipeline
     pipeline._render_stack = stack
     taa = RenderEffect(RenderEffectAsset(feature_type="infernux.post.temporal_aa"))
-    stack.add_effect_slot("final", RenderEffectRef(effect=taa))
+    stack.add_effect_slot(stage, RenderEffectRef(effect=taa))
     description = stack.build_graph()
 
     passes = {p.name: p for p in description.passes}
@@ -381,9 +382,17 @@ def test_deferred_diffuse_uses_the_taa_history_without_recopying_scene_color():
     render_pass, = (p for p in passes.values() if p.name.endswith("/TAA_Resolve"))
     trace = passes["Ray Diffuse Irradiance"]
     previous, = (t for t in trace.read_textures if t.endswith("_scene_radiance/read"))
-    assert previous in render_pass.read_textures
-    assert textures[dict(render_pass.write_colors)[0]].temporal_key == textures[previous].temporal_key
-    assert "Record Scene Radiance" not in passes
+    names = list(passes)
+    if stage == "after_transparent":
+        assert names.index(render_pass.name) < names.index("_WorldUI")
+        assert previous in render_pass.read_textures
+        assert textures[dict(render_pass.write_colors)[0]].temporal_key == textures[previous].temporal_key
+        assert "Record Scene Radiance" not in passes
+    else:
+        capture = passes["Record Scene Radiance"]
+        assert names.index(capture.name) < names.index("_WorldUI") < names.index(render_pass.name)
+        assert previous not in render_pass.read_textures
+        assert textures[dict(capture.write_colors)[0]].temporal_key == textures[previous].temporal_key
 
 
 def test_screen_ui_records_scene_radiance_from_a_custom_pipeline_color_target():
