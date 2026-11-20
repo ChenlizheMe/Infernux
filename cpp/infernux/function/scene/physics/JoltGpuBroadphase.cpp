@@ -56,9 +56,8 @@ enum Entry : uint8_t
     PublishActive,
     FinishRanks,
     PublishCount,
-    SetCandidateBank,
     InitContacts,
-    PublishResidentCount,
+    PublishCandidates,
     InitCandidates,
     BuildSmallPairs,
     EntryCount
@@ -80,9 +79,8 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"init_words",
                                                               "publish_active_summary",
                                                               "finish_sap_ranks",
                                                               "publish_count_summary",
-                                                              "set_candidate_bank",
                                                               "init_contacts",
-                                                              "publish_resident_count",
+                                                              "publish_candidates",
                                                               "init_candidates",
                                                               "build_small_pairs"};
 
@@ -109,9 +107,8 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     A | P,
     A | P | K,
     A | P | Bit(PairCount),
-    A | P | Bit(CandidateArena),
     P | K | Bit(ResidentContacts),
-    A | P | Bit(ResidentStep),
+    A | P | K | Bit(ResidentStep) | Bit(CandidateArena) | Bit(Arguments),
     P | K | Bit(CandidateArena),
     A | P | Bit(Bodies) | Bit(Shapes) | Bit(AuthorWorlds) | Bit(Bounds) | Bit(Joints) | Bit(ColliderPairs) |
         Bit(CandidateArena)};
@@ -170,6 +167,11 @@ uint32_t Blocks(uint32_t count)
     return count / BroadphaseBlockSize + static_cast<uint32_t>(count % BroadphaseBlockSize != 0);
 }
 
+uint32_t CollisionChunks(uint32_t count)
+{
+    return count / BroadphaseItemLimit + static_cast<uint32_t>(count % BroadphaseItemLimit != 0);
+}
+
 void ValidateLayout(Port port, const ShaderResourceLayout &resource)
 {
     const auto &expected = Ports[port];
@@ -198,8 +200,7 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
 
 bool SummaryEntry(Entry entry)
 {
-    return entry == SeedActive || entry == AccumulateStatus || entry == PublishActive || entry == PublishCount ||
-           entry == SetCandidateBank || entry == PublishResidentCount;
+    return entry == SeedActive || entry == AccumulateStatus || entry == PublishActive || entry == PublishCount;
 }
 } // namespace
 
@@ -280,7 +281,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         ResidentPublish,
         ActiveBoundary,
         CandidateSort,
-        CandidatePublish,
         Collide,
         Done
     };
@@ -383,10 +383,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         parameters.counts.z = n;
         parameters.solve.z = parameters.solve.w = 0;
         workset = std::make_shared<JoltGpuContactWorkset>();
-        // A world with a contact history can run collision inline before the usual count receipt.
-        // Otherwise the tick dispatches only the candidates reported by that same receipt.
         const uint32_t previousPatches = swept ? 0u : storage.GetContactHistory(settings.selection.x).patchCount;
-        workset->collisionDispatched = previousPatches != 0;
         // Use the preceding substep's accepted pair count to avoid allocating
         // quadratic contact storage for sparse single-group work.
         const uint32_t pairLimit = smallPairs ? std::max(1u, leaves * (leaves - 1u) / 2u) : 0u;
@@ -437,6 +434,14 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         return false;
     }
 
+    bool ArgumentCapacity()
+    {
+        const uint64_t bytes = std::max(MaxDispatchesPerPacket - 1u, CollisionChunks(capacity)) * WordBytes;
+        if (arguments && arguments->GetByteSize() < bytes)
+            arguments.reset();
+        return Endpoint(arguments, bytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
+    }
+
     bool Capacity()
     {
         if (phase == Phase::InitialCapacity) {
@@ -448,9 +453,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     return false;
             if (!Endpoint(arena, uint64_t(scratchWords) * WordBytes) ||
                 !Endpoint(workset->parameters, sizeof(StepParams)) ||
-                (!config.round.w && !Endpoint(pairCount, sizeof(uint32_t))) ||
-                !Endpoint(arguments, (MaxDispatchesPerPacket - 1u) * WordBytes,
-                          rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect))
+                (!config.round.w && !Endpoint(pairCount, sizeof(uint32_t))) || !ArgumentCapacity())
                 return false;
             if (!Endpoint(candidateArena, (1ull + 2ull * capacity) * WordBytes) ||
                 !Endpoint(workset->contacts, uint64_t(std::max(1u, capacity * PointsPerPair())) * sizeof(Contact))) {
@@ -471,7 +474,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         } else if (phase == Phase::FinalCapacity) {
             if (!Endpoint(candidateArena, (1ull + 2ull * capacity) * WordBytes) ||
                 !Endpoint(workset->contacts, uint64_t(std::max(1u, capacity * PointsPerPair())) * sizeof(Contact)) ||
-                !Endpoint(workset->parameters, sizeof(StepParams))) {
+                !Endpoint(workset->parameters, sizeof(StepParams)) || !ArgumentCapacity()) {
                 // Historical growth slack is optional. Under real allocation
                 // pressure release the partial grown owner, then retry exactly
                 // the C already returned by this frozen count prefix.
@@ -497,9 +500,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     {
         const bool block = entry == ScanBlocks || entry == ReduceBlocks;
         const uint32_t first = work.range.x, count = work.range.y;
-        const uint32_t limit = entry == PrepareIndirect ? MaxDispatchesPerPacket - 1u
-                               : block                  ? BroadphaseBlockLimit
-                                                        : BroadphaseItemLimit;
+        const uint32_t limit = entry == PrepareIndirect     ? MaxDispatchesPerPacket - 1u
+                               : entry == PublishCandidates ? CollisionChunks(capacity)
+                               : block                      ? BroadphaseBlockLimit
+                                                            : BroadphaseItemLimit;
         if (!count || count > limit)
             throw std::logic_error("Jolt GPU broadphase emitted an invalid bounded work unit");
         const auto slot = dispatches.size();
@@ -521,7 +525,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const auto &program = implementation->programs[entry];
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = program.kernel;
-        dispatch.groupCountX = block ? count : SummaryEntry(entry) ? 1u : Blocks(count);
+        dispatch.groupCountX = block ? count : SummaryEntry(entry) || entry == PublishCandidates ? 1u : Blocks(count);
         dispatch.indirectArguments = std::move(indirect);
         if (dispatch.groupCountX > implementation->host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
             throw std::length_error("Jolt GPU broadphase bounded work exceeds dispatch limits");
@@ -540,7 +544,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             if (!buffer)
                 throw std::logic_error("Jolt GPU broadphase work has an absent resource");
             dispatch.buffers.push_back(buffer);
-            const bool initialize = (port == Arena && entry == InitWords) ||
+            const bool initialize = (port == Arena && (entry == InitWords || entry == BuildSmallPairs)) ||
                                     (port == ResidentContacts && entry == InitContacts) ||
                                     (port == CandidateArena && entry == InitCandidates);
             const bool argumentWrite = port == Arguments;
@@ -852,7 +856,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::Initialize:
                 // Scratch is reset each step. Capacity suffix needs a real
                 // direct initializer only when this allocation is new.
-                if (Range(InitWords, scratchWords, uploads, dispatches))
+                if (!config.round.w && Range(InitWords, scratchWords, uploads, dispatches))
                     return true;
                 item = candidateArena->HasInitializedRange(0, candidateArena->GetByteSize())
                            ? static_cast<uint32_t>(1ull + 2ull * capacity)
@@ -870,7 +874,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::SmallPairs:
                 if (!Emit(BuildSmallPairs, 0, 1, config, uploads, dispatches))
                     return true;
-                phase = capacity ? Phase::ResidentPublish : Phase::CountBoundary;
+                config.merge.x = config.candidates.x;
+                phase = Phase::ResidentPublish;
                 return true;
             case Phase::Suppression:
                 config.merge.x = suppression[0];
@@ -935,16 +940,24 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::CountPublish:
                 if (!Emit(PublishCount, 0, 1, config, uploads, dispatches))
                     return true;
-                phase = capacity ? Phase::ResidentPublish : Phase::CountBoundary;
+                if (capacity) {
+                    BeginSort(config.candidates.x, config.candidates.y, capacity, 2);
+                    phase = Phase::CandidateSort;
+                } else
+                    phase = Phase::CountBoundary;
                 return true;
             case Phase::FinalInitialize:
                 if (Range(InitCandidates, static_cast<uint32_t>(1ull + 2ull * capacity), uploads, dispatches))
                     return true;
-                afterContacts = config.round.w ? Phase::SmallPairs : Phase::ResidentPublish;
-                if (!config.round.w && requiredCapacity) {
+                if (config.round.w)
+                    afterContacts = Phase::SmallPairs;
+                else if (requiredCapacity) {
                     // A wider arena needs a new collection from the same frozen SAP records.
                     BeginActive();
                     afterContacts = Phase::Ends;
+                } else {
+                    BeginSort(config.candidates.x, config.candidates.y, capacity, 2);
+                    afterContacts = Phase::CandidateSort;
                 }
                 phase = Phase::FinalContacts;
                 break;
@@ -953,59 +966,20 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     return true;
                 phase = afterContacts;
                 break;
-            case Phase::ResidentPublish:
-                if (!Emit(PublishResidentCount, 0, 1, config, uploads, dispatches))
-                    return true;
-                if (config.round.w) {
-                    phase = workset->collisionDispatched ? Phase::Collide : Phase::Done;
-                    return true;
-                }
-                BeginSort(config.candidates.x, config.candidates.y, capacity, 2);
-                phase = Phase::CandidateSort;
-                return true;
             case Phase::CandidateSort:
                 if (Sort(uploads, dispatches))
                     return true;
                 config.merge.x = sortSource;
-                phase = Phase::CandidatePublish;
+                phase = Phase::ResidentPublish;
                 break;
-            case Phase::CandidatePublish:
-                if (!Emit(SetCandidateBank, 0, 1, config, uploads, dispatches))
+            case Phase::ResidentPublish:
+                if (!Emit(PublishCandidates, 0, CollisionChunks(capacity), config, uploads, dispatches))
                     return true;
-                item = 0;
-                phase = capacity && workset->collisionDispatched ? Phase::Collide : Phase::Done;
+                phase = config.round.y ? Phase::Done : Phase::Collide;
                 return true;
             case Phase::Collide: {
-                if (item == capacity) {
-                    item = 0;
-                    phase = Phase::Done;
-                    break;
-                }
-                auto value = config;
-                value.mergeKey.y = 1u;
-                // The same producer/record contract as Merge; Collide's
-                // arguments are consumed by the original stage kernel.
-                const bool matching = indirectEntry == EntryCount && indirectCount && item >= indirectFirst &&
-                                      (item - indirectFirst) % BroadphaseItemLimit == 0u &&
-                                      (item - indirectFirst) / BroadphaseItemLimit < indirectCount;
-                if (!matching) {
-                    const uint32_t available = packetLimit - static_cast<uint32_t>(dispatches.size());
-                    if (available < 2u) {
-                        packetFull = true;
-                        return true;
-                    }
-                    const uint32_t remaining = (capacity - item) / BroadphaseItemLimit +
-                                               static_cast<uint32_t>((capacity - item) % BroadphaseItemLimit != 0u);
-                    const uint32_t records = std::min(available - 1u, remaining);
-                    const StageWork producer{{item, records, 1u, 0u}};
-                    if (!EmitWork(PrepareIndirect, producer, value, uploads, dispatches))
-                        return true;
-                    indirectEntry = EntryCount;
-                    indirectFirst = item;
-                    indirectCount = records;
-                }
                 const uint32_t count = std::min(BroadphaseItemLimit, capacity - item);
-                const uint32_t record = (item - indirectFirst) / BroadphaseItemLimit;
+                const uint32_t record = item / BroadphaseItemLimit;
                 stagePrograms.AppendResidentCollide(storageOwner, acceptedInputs, workset, capacity,
                                                     StageWork{{item, count, 0u, 0u}}, workSlots[dispatches.size()],
                                                     {arguments, uint64_t(record) * WordBytes}, uploads, dispatches);
@@ -1222,7 +1196,7 @@ JoltGpuBroadphase::JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetC
 bool JoltGpuBroadphase::TryPrepareStartupPrograms()
 {
     bool ready = true;
-    for (const auto entry : {InitWords, InitCandidates, InitContacts, BuildSmallPairs, PublishResidentCount})
+    for (const auto entry : {InitWords, InitCandidates, InitContacts, BuildSmallPairs, PublishCandidates})
         ready &= m_impl->programs[entry].kernel->TryPreparePipeline();
     return ready;
 }

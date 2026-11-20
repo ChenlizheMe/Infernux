@@ -308,7 +308,6 @@ class JoltGpuTick::Impl
         WakePrescribedBounds,
         BuildBounds,
         Broadphase,
-        CollidePairs,
         CompleteConvexContacts,
         BuildTopology,
         WakeComponents,
@@ -771,8 +770,6 @@ class JoltGpuTick::Impl
             return {Stage::CaptureSweepMotion, Domain::Bodies};
         case Phase::BuildSweptBounds:
             return {Stage::BuildSweptBounds, Domain::Shapes};
-        case Phase::CollidePairs:
-            return {Stage::CollidePairs, Domain::Patches};
         case Phase::SetupContacts:
             return {Stage::SetupContacts, Domain::Contacts};
         case Phase::SetupJoints:
@@ -924,9 +921,6 @@ class JoltGpuTick::Impl
             next.phase = Phase::Broadphase;
             break;
         case Phase::Broadphase:
-            next.phase = Phase::CollidePairs;
-            break;
-        case Phase::CollidePairs:
             next.phase = inputs.HasGenericGeometry() ? Phase::CompleteConvexContacts
                          : control.participants      ? Phase::ParticipantPrepare
                                                      : Phase::BuildTopology;
@@ -1159,11 +1153,8 @@ class JoltGpuTick::Impl
 
     void AcceptContactWorkset(std::shared_ptr<const JoltGpuContactWorkset> contacts)
     {
-        const bool collisionDispatched = contacts->collisionDispatched;
         inputs.SetContacts(std::move(contacts));
-        stageCursor.phase = Phase::CollidePairs;
-        if (collisionDispatched)
-            NextSpan(stageCursor);
+        NextSpan(stageCursor);
         stageCursor.localFirst = 0;
         stageCursor.islandBatchFirst = 0;
         stageCursor.islandBatchLanes = 0;
