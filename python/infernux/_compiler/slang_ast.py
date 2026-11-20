@@ -90,6 +90,11 @@ def product_type(left, right):
     return common_type(left, right)
 
 
+def add_module_imports(code, required):
+    imports = (f"import {module};" for module in sorted(required))
+    code[:0] = [declaration for declaration in imports if declaration not in code]
+
+
 class SlangEmitter(ast.NodeVisitor):
     def __init__(self, source: str, path: str, *, aliases=("shader",), types=None):
         self.path = path

@@ -12,6 +12,7 @@ from .shader_types import RESOURCE_BINDINGS, RESOURCE_MODULE, RESOURCE_TYPES
 from .shading_model import default_shading_model, read_shading_model
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 from .shader_parameters import ParameterAuthor, ShaderInput, ShaderParameter, resource_symbol
+from .slang_ast import add_module_imports
 from .vertex import read_vertex
 
 
@@ -829,7 +830,8 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     code.extend(author.parameter_declarations(parameters))
     vertex_ranges = ()
     if vertex:
-        vertex_code, vertex_ranges = vertex.emit()
+        vertex_code, vertex_ranges, vertex_modules = vertex.emit()
+        author.required_modules.update(vertex_modules)
         code.extend([vertex_code, _VERTEX_DEFORM])
         code.append(_mesh_vertex(deform=True, project="self.project" in vertex.author.functions))
     else:
@@ -847,6 +849,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
         emitter.functions = author.functions
         code.extend(emitter.emit_function(helper, author.functions["self." + helper.name], method=True))
         author.source_ranges.extend(emitter.source_ranges)
+        author.required_modules.update(emitter.required_modules)
     entry = author.function(fragment.main)
     if author.uses_surface_sampling:
         code.append(_SURFACE_SAMPLING)
@@ -883,6 +886,7 @@ def parse_shader(source: str, source_path: str, module_name: str, *, reader=None
     libraries = graph.sources()
     if model:
         libraries = (*libraries, ("inx_surface_model", model.path, model.source))
+    add_module_imports(code, author.required_modules)
     return ShaderDefinition(declaration.name, source_path, module_name, parameters,
                             "\n".join(code), libraries, (*inputs, *_WORLD_RAY_INPUTS) if graph.ray_lit else inputs,
                             tuple(dict.fromkeys((*graph.ranges(), *(model.source_ranges if model else ()), *vertex_ranges,
@@ -1016,11 +1020,12 @@ def _prepare_source(source, source_path, module_name, reader, *, metadata_only=F
         owner = ShaderEmitter(source, source_path)
         vertex = read_vertex(source_path, graph, owner, ast.Constant(value=None, lineno=1, col_offset=0), source=source)
         parameters = tuple(vertex.author.fields.values())
-        code, ranges = vertex.emit()
+        code, ranges, modules = vertex.emit()
         prefix = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;",
                   *engine_imports(vertex.methods, vertex.author.alias, graph=graph, owner=vertex.author),
                   *("import " + name + ";" for name in vertex.dependencies),
                   *vertex.author.parameter_declarations(parameters)]
+        add_module_imports(prefix, modules)
         schema = {"name": vertex.name, "domain": "vertex", "info": vertex.info,
                   "parameters": [asdict(field) for field in parameters], "inputs": []}
         return "\n".join([*prefix, code]), graph.sources(), json.dumps(schema, ensure_ascii=False), (*graph.ranges(), *vertex.author.source_ranges, *ranges)

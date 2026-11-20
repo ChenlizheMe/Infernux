@@ -59,7 +59,8 @@ def test_surface_replay_and_history_readers_track_the_same_depth_layout(tmp_path
 @pytest.mark.parametrize("target", ["spirv", "wgsl"])
 def test_secondary_surface_has_reflected_payload_without_extra_active_buffer(tmp_path, target):
     path, read = sources(tmp_path)
-    adapter, diagnostic = optional_ray_surface(SURFACE, str(path), "test_secondary", read)
+    source = SURFACE.replace("marker(self.tint.rgb) * self.energy", "marker(self.tint.rgb) * (self.energy // 2.0)")
+    adapter, diagnostic = optional_ray_surface(source, str(path), "test_secondary", read)
     assert diagnostic is None
     root = '''import test_secondary; import inx_geometry;
 [[vk::binding(0, 0)]] ByteAddressBuffer input;

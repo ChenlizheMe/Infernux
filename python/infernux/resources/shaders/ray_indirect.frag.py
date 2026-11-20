@@ -24,7 +24,7 @@ class RayIndirect(shader.fullscreen):
         uv = ctx.uv
         if self.resolution_divisor > 1:
             full = shader.ivec2(shader.dimensions(self.primary, 0))
-            extent = shader.max(shader.ivec2(full / self.resolution_divisor), shader.ivec2(1))
+            extent = shader.ivec2(shader.max(shader.uvec2(1), shader.uvec2(full) // shader.uint(self.resolution_divisor)))
             pixel = ray_grid_pixel(pixel, extent, full)
             full_pixel = shader.vec2(pixel) + shader.vec2(0.5)
             uv = full_pixel / shader.vec2(full)

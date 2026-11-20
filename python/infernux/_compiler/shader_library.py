@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from infernux.shader._language import INTRINSICS, TYPES
-from .slang_ast import SlangEmitter, qualified
+from .slang_ast import SlangEmitter, add_module_imports, qualified
 from .shader_types import (
     BUFFER_ELEMENTS, BUFFER_TYPES, MULTISAMPLED_TYPES, RESOURCE_DIMENSIONS,
     RESOURCE_ELEMENTS, RESOURCE_MODULE, RESOURCE_TYPES, STRUCT_FIELDS, STRUCT_TYPES, SURFACE_FIELDS,
@@ -213,7 +213,7 @@ class _LibrarySource:
                                               differentiable=function.symbol in differentiable))
             ranges.extend(emitter.source_ranges)
             modules.update(emitter.required_modules)
-        code[:0] = [f"import {module};" for module in sorted(modules) if f"import {module};" not in code]
+        add_module_imports(code, modules)
         code.append("}")
         self.module.source = "\n".join(code)
         self.module.source_ranges = tuple(ranges)

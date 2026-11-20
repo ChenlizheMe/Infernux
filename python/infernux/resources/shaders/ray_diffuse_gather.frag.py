@@ -20,7 +20,7 @@ class RayDiffuseGather(shader.fullscreen):
         cell = shader.ivec2(ctx.position.xy)
         observed = shader.ivec2(shader.dimensions(self.observations, 0))
         full = shader.ivec2(shader.dimensions(self.primary, 0))
-        extent = shader.max(shader.ivec2(1), shader.ivec2(full / self.divisor))
+        extent = shader.ivec2(shader.max(shader.uvec2(1), shader.uvec2(full) // shader.uint(self.divisor)))
         index = shader._view_sample_index()
         source = sh_guide_pixel(cell, extent, full, index)
         geometry = shader.load(self.guide, source >> 1, 0)

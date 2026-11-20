@@ -53,14 +53,9 @@ def specular_witness(distance: float, variance: float) -> shader.uint:
 
 
 def ray_grid_pixel(pixel: shader.ivec2, source: shader.ivec2, target: shader.ivec2) -> shader.ivec2:
-    # Divide positive integer pixel centers. Correct the floating quotient
-    # with exact products at the boundary of an odd-sized cell.
-    numerator = (2 * pixel + shader.ivec2(1)) * target
-    denominator = 2 * source
-    quotient = shader.ivec2(numerator / denominator)
-    too_high = shader.ivec2(quotient * denominator > numerator)
-    too_low = shader.ivec2((quotient + shader.ivec2(1)) * denominator <= numerator)
-    return quotient - too_high + too_low
+    # Map pixel centers between positive-sized grids, including odd dimensions.
+    numerator = shader.uvec2(2 * pixel + 1) * shader.uvec2(target)
+    return shader.ivec2(numerator // shader.uvec2(2 * source))
 
 
 def resolve_reduced_ray(signal: shader.UInt2D, primary: shader.UInt2D, frame: shader.Color2D,

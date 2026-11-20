@@ -19,7 +19,9 @@ class RayDiffuseRawIrradiance(shader.fullscreen):
         pixel = shader.ivec2(ctx.position.xy)
         full = shader.ivec2(shader.dimensions(self.primary, 0))
         extent = shader.ivec2(shader.dimensions(self.observations, 0))
-        cell = shader.min(shader.ivec2(pixel / self.trace_divisor), extent - 1) if self.full_resolution else pixel
+        cell = pixel
+        if self.full_resolution:
+            cell = shader.min(shader.ivec2(shader.uvec2(pixel) // shader.uint(self.trace_divisor)), extent - 1)
         if not self.full_resolution:
             index = shader._view_sample_index() if self.temporal else shader.uint(0)
             pixel = sh_trace_pixel(cell, self.trace_divisor, full, index)

@@ -9,6 +9,7 @@ from infernux._compiler.shader import _Author, _read_fragment, _RAY_TEXTURE_MODU
 from infernux._compiler.shader_info import read_shader_info
 from infernux._compiler.shader_library import RESOURCE_MODULE, LibraryGraph, ShaderEmitter, declarations, qualified
 from infernux._compiler.shading_model import read_shading_model
+from infernux._compiler.slang_ast import add_module_imports
 
 
 _CONTEXT_FIELDS = {"position_ws", "normal_ws", "tangent_ws", "color", "uv0", "uv1", "surface_id", "line_color"}
@@ -154,6 +155,7 @@ def prepare_ray_surface(source: str, source_path: str, module_name: str, reader=
     emitted = author.function(fragment.main)
     code = ["import " + RESOURCE_MODULE[0] + ";", "import inx_geometry;", "import inx_ray_texture_pages;",
             *("import " + name + ";" for name in fragment.dependencies)]
+    add_module_imports(code, author.required_modules)
     code.extend(parameter_slot_declarations(parameters, module_name))
     code += ["public struct " + payload + " {",
              *("    public " + module_name + "_Slot_" + field.kind + " " + field.name + ";" for field in parameters), "};",

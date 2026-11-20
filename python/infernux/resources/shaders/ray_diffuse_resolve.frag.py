@@ -25,7 +25,7 @@ class RayDiffuseResolve(shader.fullscreen):
             return shader.vec4(0.0)
         depth = shader.as_float(receiver.y)
         shading = decode_octahedral_normal(shader.load(self.frame, pixel, 0).xy)
-        cell = shader.min(shader.ivec2(pixel / self.divisor), extent - 1)
+        cell = shader.min(shader.ivec2(shader.uvec2(pixel) // shader.uint(self.divisor)), extent - 1)
         index = shader._view_sample_index()
         camera = shader.camera()
         normal = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))

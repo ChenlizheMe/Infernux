@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .shader_library import Module, ShaderEmitter, builtin_shader_root, declarations, engine_imports
-from .slang_ast import qualified
+from .slang_ast import add_module_imports, qualified
 from .shader_info import INFO_DEFAULTS, info_field, read_shader_info
 
 
@@ -149,9 +149,11 @@ def read_shading_model(path, graph, owner, location, *, source=None, namespace="
         emitter = _ModelEmitter(source, str(path), aliases=(alias,), functions=functions, contract=contract)
         code.extend(emitter.emit_function(method, functions["self." + method.name], method=True, public=True))
         ranges.extend(emitter.source_ranges)
+        author.required_modules.update(emitter.required_modules)
     if direct_calls:
         code.append(_DIRECT_RESPONSE)
     code.append("}")
+    add_module_imports(code, author.required_modules)
     builtin_models = {builtin_shader_root().joinpath(name + ".shadingmodel.py").resolve(): model
                       for name, model in (("pbr", "PBR"), ("unlit", "Unlit"), ("toon", "Toon"))}
     return ShadingModel(declaration.name, str(path), contract, "\n".join(code), dependencies, tuple(ranges),

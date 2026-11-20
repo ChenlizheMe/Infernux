@@ -23,6 +23,7 @@ class VertexDefinition:
 
     def emit(self):
         code, ranges = ["namespace inx_vertex_author {"], []
+        modules = set()
         for method in self.methods:
             emitter = ParameterAuthor(self.source, self.path)
             emitter.alias = self.author.alias
@@ -33,8 +34,9 @@ class VertexDefinition:
             emitter.stage = "vertex" if method.name in {"deform", "project"} else None
             code.extend(emitter.emit_function(method, emitter.functions["self." + method.name], method=True))
             ranges.extend(emitter.source_ranges)
+            modules.update(emitter.required_modules)
         code.append("}")
-        return "\n".join(code), tuple(ranges)
+        return "\n".join(code), tuple(ranges), modules
 
 
 def read_vertex(path, graph, owner, location, *, source=None):

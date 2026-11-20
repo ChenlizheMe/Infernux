@@ -142,8 +142,12 @@ def scale(value: float) -> float:
 from .forces import damp
 
 class Preview(shader.fullscreen):
+    def quarter(self, value: shader.ivec2) -> shader.ivec2:
+        return value // 4
+
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
-        return shader.vec4(damp(ctx.position.x))
+        cell = self.quarter(shader.ivec2(ctx.position.xy))
+        return shader.vec4(damp(ctx.position.x // 2.0) + shader.float(cell.x))
 ''', encoding='utf-8')
     declaration = load_kernel(scripts / 'Work.py')
     values = (-9.0, -7.0, 7.0, 9.0)
