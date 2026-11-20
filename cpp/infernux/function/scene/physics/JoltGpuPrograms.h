@@ -445,11 +445,6 @@ class JoltGpuStepInputs
 
   private:
     friend class JoltGpuPrograms;
-    struct WorkUniform
-    {
-        JPH::GPU::StageWork parameters{};
-        std::shared_ptr<rhi::ComputeBuffer> buffer;
-    };
     JPH::GPU::StepParams m_parameters{};
     std::shared_ptr<const JoltGpuGeometryLease> m_geometry;
     bool m_hasGenericGeometry = false;
@@ -463,10 +458,6 @@ class JoltGpuStepInputs
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     std::shared_ptr<JoltGpuArticulationState> m_articulations;
     std::optional<float> m_sweepImpactTime;
-    // Immutable range values, not additional frozen model/input ports. Capture
-    // starts a fresh bounded cache; an unaccepted upload is never a cache hit.
-    mutable std::vector<WorkUniform> m_workUniforms;
-    mutable size_t m_nextWorkUniform = 0;
 };
 
 /// One ready body unit. The caller retains the member/cursor and clean layout lease.
@@ -560,6 +551,11 @@ class JoltGpuPrograms
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<Binding> bindings;
     };
+    struct WorkUniform
+    {
+        std::array<uint32_t, 4> range;
+        std::shared_ptr<rhi::ComputeBuffer> buffer;
+    };
     static constexpr size_t StageCount = sizeof(JPH::GPU::Stages) / sizeof(JPH::GPU::Stages[0]);
     rhi::ComputeHost m_host;
     std::shared_ptr<JoltGpuSleep> m_sleep;
@@ -567,6 +563,10 @@ class JoltGpuPrograms
     std::shared_ptr<rhi::ComputeBuffer> m_emptyArticulationControl;
     std::array<Entry, StageCount> m_entries;
     std::array<BodyBatchEntry, 3> m_bodyBatchEntries;
+    // Each initialized buffer contains only a fixed dispatch range. The storage
+    // and physics inputs may change while that value stays reusable on this device.
+    std::vector<WorkUniform> m_workUniforms;
+    size_t m_nextWorkUniform = 0;
 };
 
 } // namespace infernux

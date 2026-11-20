@@ -1282,8 +1282,6 @@ void JoltGpuStepInputs::Capture(const JoltGpuStorage &storage, Resource resource
         throw std::invalid_argument("Jolt GPU tick inputs accept only parameters, models, worlds and forces");
     const auto &buffer = storage.Get(resource);
     m_buffers[slot] = !buffer || resource == Resource::BodyForces ? buffer : buffer->Freeze();
-    m_workUniforms.clear();
-    m_nextWorkUniform = 0;
 }
 
 void JoltGpuStepInputs::CaptureParameters(const JoltGpuStorage &storage,
@@ -1293,8 +1291,6 @@ void JoltGpuStepInputs::CaptureParameters(const JoltGpuStorage &storage,
         !storage.GetHost().SharesServicesWith(buffer->GetHost()) || !buffer->HasInitializedRange(0, sizeof(StepParams)))
         throw std::logic_error("GPU member parameters require their accepted upload");
     m_buffers[InputIndex(Resource::StepParams)] = buffer->Freeze();
-    m_workUniforms.clear();
-    m_nextWorkUniform = 0;
 }
 
 void JoltGpuStepInputs::CaptureGeometry(std::shared_ptr<const JoltGpuGeometryLease> geometry, bool generic)
@@ -1649,27 +1645,22 @@ void JoltGpuPrograms::AppendStages(const JoltGpuStorage &storage, const JoltGpuS
         const std::array<uint32_t, 4> key{range.x, range.y, range.z, range.w};
         auto uniform = uniforms.find(key);
         if (uniform == uniforms.end()) {
-            auto cached =
-                std::find_if(inputs.m_workUniforms.begin(), inputs.m_workUniforms.end(), [&](const auto &value) {
-                    const auto a = value.parameters.range;
-                    return a.x == range.x && a.y == range.y && a.z == range.z && a.w == range.w;
-                });
+            auto cached = std::find_if(m_workUniforms.begin(), m_workUniforms.end(),
+                                       [&](const auto &value) { return value.range == key; });
             std::shared_ptr<rhi::ComputeBuffer> buffer;
-            if (cached != inputs.m_workUniforms.end() && cached->buffer &&
-                m_host.SharesServicesWith(cached->buffer->GetHost()) &&
-                cached->buffer->HasInitializedRange(0, sizeof(StageWork))) {
+            if (cached != m_workUniforms.end() && cached->buffer->HasInitializedRange(0, sizeof(StageWork))) {
                 buffer = cached->buffer;
             } else {
                 buffer = Allocate(m_host, PortIndex(Resource::StageWork), sizeof(StageWork));
                 uploads.push_back({buffer, 0, Bytes(&unit.parameters, 1)});
-                const JoltGpuStepInputs::WorkUniform value{unit.parameters, buffer};
-                if (cached != inputs.m_workUniforms.end())
+                const WorkUniform value{key, buffer};
+                if (cached != m_workUniforms.end())
                     *cached = value;
-                else if (inputs.m_workUniforms.size() < WorkUniformCacheCapacity)
-                    inputs.m_workUniforms.push_back(value);
+                else if (m_workUniforms.size() < WorkUniformCacheCapacity)
+                    m_workUniforms.push_back(value);
                 else {
-                    inputs.m_workUniforms[inputs.m_nextWorkUniform] = value;
-                    inputs.m_nextWorkUniform = (inputs.m_nextWorkUniform + 1) % WorkUniformCacheCapacity;
+                    m_workUniforms[m_nextWorkUniform] = value;
+                    m_nextWorkUniform = (m_nextWorkUniform + 1) % WorkUniformCacheCapacity;
                 }
             }
             uniform = uniforms.emplace(key, std::move(buffer)).first;
