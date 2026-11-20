@@ -76,6 +76,7 @@ def trace_diffuse(ctx, guides, divisor):
                                         size_divisor=2, samples=1)
     with graph.add_pass("Ray Diffuse Screen Proxy") as p:
         bind_deferred_surface(p, deferred_surface_inputs(guides.surface))
+        p.set_param("temporal", ctx.reconstruct)
         p.write_color(screen_radiance)
         p.write_color(screen_depth, slot=1)
         p.fullscreen_quad("infernux/internal/ray_screen_radiance")

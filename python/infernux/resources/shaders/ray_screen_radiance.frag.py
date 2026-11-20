@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.deferred_surface import deferred_raster_context, load_deferred_surface
-from infernux.shader.lib.ray_signal import ray_grid_pixel
+from infernux.shader.lib.ray_sh_filter import sh_guide_pixel
 
 
 class RayScreenRadiance(shader.fullscreen):
@@ -12,19 +12,14 @@ class RayScreenRadiance(shader.fullscreen):
     surface_tex = shader.input("gbuffer_surface", shader.UInt2D)
     depth_tex = shader.input("depth", shader.Depth2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
+    temporal = shader.parameter.bool(default=True)
 
     def main(self, ctx: shader.fragment_input) -> tuple[shader.vec4, shader.vec4]:
         cell = shader.ivec2(ctx.position.xy)
         full = shader.ivec2(shader.dimensions(self.depth_tex, 0))
         extent = shader.max(shader.ivec2(full / 2), shader.ivec2(1))
-        lo = shader.ivec2(shader.floor(shader.vec2(cell * full) / shader.vec2(extent)))
-        hi = shader.ivec2(shader.ceil(shader.vec2((cell + 1) * full) / shader.vec2(extent)))
-        closest = 0.0
-        for y in range(lo.y, hi.y):
-            for x in range(lo.x, hi.x):
-                closest = shader.max(closest, shader.load(self.depth_tex, shader.ivec2(x, y), 0))
-
-        pixel = ray_grid_pixel(cell, extent, full)
+        index = shader._view_sample_index() if self.temporal else shader.uint(0)
+        pixel = sh_guide_pixel(cell, extent, full, index)
         depth = shader.load(self.depth_tex, pixel, 0)
         packed = shader.load(self.surface_tex, pixel, 0)
         surface = load_deferred_surface(self.albedo_tex, self.normal_tex, self.emission_tex, self.surface_tex, pixel)
@@ -44,4 +39,4 @@ class RayScreenRadiance(shader.fullscreen):
             no_indirect = shader.vec4(0.0, 0.0, 0.0, 1.0)
             rgb = shader.lighting._shade_ray(surface, context, metadata.y, no_indirect, no_indirect)
             radiance = shader.vec4(rgb, 1.0)
-        return (radiance, shader.vec4(closest, 0.0, 0.0, 1.0))
+        return (radiance, shader.vec4(depth, 0.0, 0.0, 1.0))
