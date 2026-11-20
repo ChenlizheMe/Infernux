@@ -399,6 +399,8 @@ def test_effect_replay_uses_published_lighting_and_rebuilds_for_a_new_input():
         "diffuse": lambda: signal.radiance, "mirror": lambda: light("mirror"),
     })
 
+    recorded_gains = []
+
     class Tint(FullScreenEffect):
         name = "Tint"
         injection_point = "before_post_process"
@@ -406,6 +408,7 @@ def test_effect_replay_uses_published_lighting_and_rebuilds_for_a_new_input():
         gain: float = serialized_field(default=1.0)
 
         def setup_passes(self, graph, bus):
+            recorded_gains.append(self.gain)
             graph.injection_point("tint_input")
             graph.effect_stage("tint_output")
             with graph.add_pass("Tint") as p:
@@ -428,9 +431,14 @@ def test_effect_replay_uses_published_lighting_and_rebuilds_for_a_new_input():
     binding = _compile_effect(source, graph, bus, binding_id="post/tint")
     assert [p.name for p in graph.build().passes] == ["diffuse", "effects/post/tint/Tint"]
     assert len(binding.blocks) == 1
+    _, previous = binding.collect_updates()
     source.set_float("gain", 2.0)
     rebuild, updates = binding.collect_updates()
     assert not rebuild and dict(updates[0].values) == {"gain": 2.0}
+    # Two captured views need complete values. Only the edit runs setup again.
+    assert binding.collect_updates() == (False, updates)
+    assert recorded_gains.count(2.0) == 1
+    assert dict(previous[0].values) == {"gain": 1.0}
     source.set_float("gain", 3.0)
     assert binding.collect_updates() == (True, [])
     assert calls == ["diffuse"]

@@ -899,8 +899,21 @@ class CompiledEffectBinding:
     graph_structure: tuple
     parameter_layout: tuple[tuple[str, ...], ...]
 
+    _recorded_revision: tuple[int, int] | None = field(default=None, init=False, repr=False)
+    _recorded_updates: tuple = field(default=(), init=False, repr=False)
+
     def collect_updates(self):
-        """Return ``(requires_rebuild, native_updates)`` for current values."""
+        """Give each captured view the complete parameter blocks from this source revision."""
+        revision = (self.source.revision, RenderEffectArtifactRegistry.topology_generation())
+        if revision != self._recorded_revision:
+            rebuild, updates = self._record_updates()
+            if rebuild:
+                return True, []
+            self._recorded_updates = tuple(updates)
+            self._recorded_revision = revision
+        return False, self._recorded_updates
+
+    def _record_updates(self):
         if self.source.feature_type != self.feature.type_id:
             return True, []
         if self.feature.topology_signature(self.source) != self.topology_signature:
