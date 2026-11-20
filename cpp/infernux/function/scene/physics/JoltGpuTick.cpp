@@ -139,6 +139,7 @@ class JoltGpuTick::Impl
         finalPrepared = finalAccepted = false;
         finalOutput = {};
         snapshotRegion = 0;
+        snapshotSleepRows = 0;
         snapshotOffset = 0;
         snapshotMetadataOffset = 0;
         snapshotMetadata.clear();
@@ -692,8 +693,10 @@ class JoltGpuTick::Impl
             CancelPackets();
             finalOutput.states.reset();
             finalOutput.joints.reset();
+            finalOutput.sleepStatus.reset();
             finalOutput.jointLayout.reset();
             snapshotRegion = 0;
+            snapshotSleepRows = 0;
             snapshotOffset = snapshotMetadataOffset = 0;
             snapshotMetadata.clear();
             workContinuation = [this] { return PrepareSnapshot(); };
@@ -1597,6 +1600,7 @@ class JoltGpuTick::Impl
         const uint64_t stateBytes = uint64_t(finalOutput.bodyCount) * sizeof(BodyState);
         const uint64_t authorBytes = uint64_t(slice.authorWords) * 16u;
         const uint64_t jointStateBytes = uint64_t(slice.stateWords) * 16u;
+        const uint32_t sleepRows = control.snapshotSleepStatus ? finalOutput.bodyCount : 0u;
         const auto allocate = [&](std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes, bool body) {
             if (!bytes)
                 return true;
@@ -1610,13 +1614,25 @@ class JoltGpuTick::Impl
             return bool(buffer);
         };
         if (!allocate(finalOutput.states, stateBytes, true) ||
-            !allocate(finalOutput.joints, finalOutput.jointLayout->ByteSize(), false))
+            !allocate(finalOutput.joints, finalOutput.jointLayout->ByteSize(), false) ||
+            !allocate(finalOutput.sleepStatus, uint64_t(sleepRows) * sizeof(UInt4), false))
             return {nullptr, [this] { return PrepareSnapshot(); }};
         const auto available = work.ResourceRemaining(FrameWorkResource::Transfer);
         const auto window = available ? available : work.ResourceState(FrameWorkResource::Transfer).limit;
         uint64_t remaining = std::max(uint64_t{16}, window - window % 16u);
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeBufferCopy> copies;
+        std::vector<rhi::ComputeDispatchDesc> dispatches;
+        if (snapshotSleepRows < sleepRows) {
+            // A single projection is the minimum unit. Its uniforms and the
+            // copy payload are charged together to the same transfer window.
+            remaining = std::max(remaining, JoltGpuSleep::MinimumSnapshotUploadBytes);
+            const auto rows = programs.GetSleep().AppendSnapshot(storage, tickParameters, finalOutput.sleepStatus,
+                                                                 snapshotSleepRows, remaining, uploads, dispatches);
+            if (!rows)
+                return {nullptr, [this] { return PrepareSnapshot(); }};
+            snapshotSleepRows += rows;
+        }
         if (snapshotMetadataOffset < snapshotMetadata.size()) {
             const auto bytes = std::min(remaining, uint64_t(snapshotMetadata.size()) - snapshotMetadataOffset);
             const auto first = snapshotMetadata.begin() + static_cast<size_t>(snapshotMetadataOffset);
@@ -1656,12 +1672,14 @@ class JoltGpuTick::Impl
             if (finalOutput.states)
                 finalOutput.states = finalOutput.states->Freeze();
             finalOutput.joints = finalOutput.joints->Freeze();
+            if (finalOutput.sleepStatus)
+                finalOutput.sleepStatus = finalOutput.sleepStatus->Freeze();
             snapshotComplete = true;
             auto prepare = std::move(control.prepareFinalWork);
             control.prepareFinalWork = {};
             return prepare ? prepare(finalOutput) : JoltGpuControlWork{};
         }
-        auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), {}, {}, std::move(copies));
+        auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), std::move(dispatches), {}, std::move(copies));
         // The continuation only records later copies or freezes the accepted
         // destination before preparing queue-ordered final work. No CPU value
         // is decoded here. Tick publication still waits for every real receipt.
@@ -2208,6 +2226,7 @@ class JoltGpuTick::Impl
     bool finalPrepared = true, finalAccepted = true;
     JoltGpuTickOutput finalOutput;
     uint32_t snapshotRegion = 0;
+    uint32_t snapshotSleepRows = 0;
     uint64_t snapshotOffset = 0;
     uint64_t snapshotMetadataOffset = 0;
     std::vector<uint8_t> snapshotMetadata;

@@ -44,9 +44,14 @@ class JoltGpuSleep final
                                                            const JoltGpuPrescribedSleepBounds &,
                                                            std::function<void()> completed,
                                                            DeferredValidation deferValidation);
-    [[nodiscard]] JoltGpuControlWork
-    PrepareSnapshot(const JoltGpuStorage &, const JPH::GPU::StepParams &,
-                    std::function<void(std::shared_ptr<rhi::ComputeBuffer>)> completed);
+    static constexpr uint64_t MinimumSnapshotUploadBytes =
+        sizeof(JPH::GPU::SleepWorkParameters) + sizeof(JPH::GPU::StageWork);
+    // Record a bounded projection into the same packet as the numerical
+    // snapshot copies. Return the number of local body rows recorded.
+    [[nodiscard]] uint32_t AppendSnapshot(const JoltGpuStorage &, const JPH::GPU::StepParams &,
+                                          const std::shared_ptr<rhi::ComputeBuffer> &snapshot, uint32_t first,
+                                          uint64_t &uploadBudget, std::vector<rhi::ComputeBufferUpdate> &,
+                                          std::vector<rhi::ComputeDispatchDesc> &);
     // Old bounds are captured before the accepted source mutation. The later
     // wake retains the exact 64B bound/pose witness even if the source is removed.
     [[nodiscard]] JoltGpuControlWork

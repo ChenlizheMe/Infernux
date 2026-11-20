@@ -1508,6 +1508,7 @@ class JoltGpuScene::Impl
             };
         }
         JoltGpuTickControl control;
+        control.snapshotSleepStatus = true;
         std::vector<std::pair<uint32_t, uint32_t>> prescribedSources;
         for (const auto record : domain.records) {
             if (record == UINT32_MAX)
@@ -1561,26 +1562,17 @@ class JoltGpuScene::Impl
             publication->geometryStore = output.geometryStore;
             publication->geometry = output.geometry;
             publication->hasGenericGeometry = output.hasGenericGeometry;
-            JPH::GPU::StepParams selected{};
-            selected.selection = {output.worldRow, output.bodyBase, output.leafBase, output.jointBase};
-            selected.selectedCounts = {output.bodyCount, output.leafCount, output.jointCount, 0u};
-            return ContinueJoltGpuControlWork(
-                programs.GetSleep().PrepareSnapshot(
-                    storage, selected,
-                    [publication](auto snapshot) { publication->sleepStatus = std::move(snapshot); }),
-                [this, retained, consumer, finalConsumer, reportFinish] {
-                    return ContinueJoltGpuControlWork(joints.PrepareStatus(retained), [retained, consumer,
-                                                                                       finalConsumer, reportFinish] {
+            publication->sleepStatus = output.sleepStatus;
+            return ContinueJoltGpuControlWork(joints.PrepareStatus(retained), [retained, consumer, finalConsumer,
+                                                                               reportFinish] {
+                return ContinueJoltGpuControlWork(
+                    reportFinish ? reportFinish(retained) : JoltGpuControlWork{}, [retained, consumer, finalConsumer] {
                         return ContinueJoltGpuControlWork(
-                            reportFinish ? reportFinish(retained) : JoltGpuControlWork{},
-                            [retained, consumer, finalConsumer] {
-                                return ContinueJoltGpuControlWork(
-                                    consumer ? consumer(retained) : JoltGpuControlWork{}, [retained, finalConsumer] {
-                                        return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
-                                    });
+                            consumer ? consumer(retained) : JoltGpuControlWork{}, [retained, finalConsumer] {
+                                return finalConsumer ? finalConsumer(retained) : JoltGpuControlWork{};
                             });
                     });
-                });
+            });
         };
         domain.candidate = std::move(publication);
         domain.candidateCompletions = std::move(completions);

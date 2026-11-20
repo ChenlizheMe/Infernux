@@ -108,6 +108,7 @@ struct JoltGpuTickOutput
     std::shared_ptr<JoltGpuGeometryStore> geometryStore;
     std::shared_ptr<const JoltGpuGeometryLease> geometry;
     bool hasGenericGeometry = false;
+    std::shared_ptr<rhi::ComputeBuffer> sleepStatus;
 };
 
 /// Accepted through the tick's existing work source before solver inputs are
@@ -178,6 +179,7 @@ struct JoltGpuTickControl
     std::function<std::vector<uint32_t>()> prepareSleepSources;
     // Pure observations explicitly opt out; existing Tick/Control/Work retain snapshots.
     bool needsSnapshot = true;
+    bool snapshotSleepStatus = false;
     // Closed partitions release their resources through the regular control cursor.
     bool partitionCleanup = false;
     // Dispatch eligibility only: selected/publication ranges remain complete.
