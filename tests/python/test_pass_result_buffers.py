@@ -287,8 +287,13 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     assert all(graph.get_texture(name).size_divisor == 2 for name in screen._write_colors.values())
     energy, axes = (graph.get_texture(name) for name in observation._write_colors.values())
     assert energy.size_divisor == axes.size_divisor == trace_divisor
+    gather = passes["Ray Diffuse SH Gather"]
+    assert gather._input_bindings["body_samples"] == energy.name and gather._input_bindings["light_samples"] == axes.name
+    assert gather._input_bindings["ambient_visibility"] == visibility.name
+    assert all(graph.get_texture(name).size_divisor == filter_divisor for name in gather._write_colors.values())
     history = passes["Ray Diffuse Reconstruction"]
-    assert history._input_bindings["fresh_dc"] == energy.name and history._input_bindings["fresh_axes"] == axes.name
+    assert history._input_bindings["fresh_dc"] == gather._write_colors[0]
+    assert history._input_bindings["fresh_axes"] == gather._write_colors[1]
     blur = passes["Ray Diffuse Recurrent Blur"]
     assert blur._input_bindings["coefficients"] == history._write_colors[0]
     assert blur._input_bindings["directions"] == history._write_colors[1]

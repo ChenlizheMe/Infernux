@@ -805,7 +805,7 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D witn
                                    float4(0.0), index, pdf, receiver);
 }
 
-public float4x4 inx_ray_diffuse_moments(float3 position, float3 normal, uint2 cell, bool temporal,
+public float4x4 inx_ray_diffuse_samples(float3 position, float3 normal, uint2 cell, bool temporal,
                                         InxUInt2D witnesses, InxColor2D radiance, InxColor2D screen_depth,
                                         InxBuffer_uint4 records, InxBuffer_uint4 cache)
 {
@@ -830,20 +830,14 @@ public float4x4 inx_ray_diffuse_moments(float3 position, float3 normal, uint2 ce
                                        seed, key.y, pdf, position);
     if (hit.radiance.a <= 0.0)
         return (float4x4)0;
-    float4 basis = float4(1.0, dir) / pdf;
-    float4 red = hit.radiance.r * basis;
-    float4 green = hit.radiance.g * basis;
-    float4 blue = hit.radiance.b * basis;
+    float3 emission = float3(0.0);
     let light = inx_ray_emitter_sample(page, position, ray_reflected_uniform3(seed ^ 0xa9d53e47u, key.y), ray.maximum);
     float cosine = dot(normal, light.direction);
     if (light.active && cosine > 0.0 && inx_ray_emitter_visible(page, origin, light))
-    {
-        float4 emitter = float4(1.0, light.direction) * (inx_ray_mis_weight(light.pdf, inx_ray_moment_pdf(cosine)) / light.pdf);
-        red += light.emission.r * emitter;
-        green += light.emission.g * emitter;
-        blue += light.emission.b * emitter;
-    }
-    return float4x4(red, green, blue, float4(1.0, asfloat(hit.witness.y), 0.0, 0.0));
+        emission = light.emission * (inx_ray_mis_weight(light.pdf, inx_ray_moment_pdf(cosine)) / light.pdf);
+    // Reconstruction admits each proposal on the receiving hemisphere before forming SH.
+    return float4x4(float4(hit.radiance.rgb / pdf, 1.0), float4(dir, asfloat(hit.witness.y)),
+                    float4(emission, 0.0), float4(light.direction, 0.0));
 }
 
 RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,

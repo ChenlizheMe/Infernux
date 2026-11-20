@@ -13,20 +13,28 @@ def unpack_moment(dc: float, q: shader.uint) -> shader.vec4:
     return shader.vec4(dc, dc * direction)
 
 
+def sample_direction(packet: shader.uvec4) -> shader.vec3:
+    return unpack_moment(1.0, packet.z).yzw
+
+
 def diffuse_irradiance(red: shader.vec4, green: shader.vec4, blue: shader.vec4,
                        geometric: shader.vec3, shading: shader.vec3) -> shader.vec3:
     """Integrate the hemisphere on the face, then rotate the lobe to the material normal."""
-    # Every observed direction lies above the face. Its first moment integrates
-    # the face cosine exactly. The zonal second band estimates the normal-map change.
+    # The geometric cosine moment fixes the irradiance scale. The fitted ZH3
+    # lobe supplies only the change between geometric and material normals.
     axis_weight = 0.5 * (shading + geometric)
-    diffuse = shader.vec3(shader.dot(axis_weight, red.yzw), shader.dot(axis_weight, green.yzw),
-                          shader.dot(axis_weight, blue.yzw))
-    luminance_axis = 0.2126 * red.yzw + 0.7152 * green.yzw + 0.0722 * blue.yzw
-    axis = luminance_axis / shader.max(shader.length(luminance_axis), 1.0e-12)
+    lambertian = shader.vec3(shader.dot(axis_weight, red.yzw), shader.dot(axis_weight, green.yzw),
+                             shader.dot(axis_weight, blue.yzw))
+    first = 0.2126 * red.yzw + 0.7152 * green.yzw + 0.0722 * blue.yzw
+    axis = first / shader.max(shader.length(first), 1.0e-12)
     energy = shader.vec3(red.x, green.x, blue.x)
-    first = shader.abs(shader.vec3(shader.dot(red.yzw, axis), shader.dot(green.yzw, axis), shader.dot(blue.yzw, axis)))
-    rho = shader.saturate(first / shader.max(energy, shader.vec3(1.0e-12)))
-    cosine = shader.dot(axis, shading)
-    face_cosine = shader.dot(axis, geometric)
-    return shader.max(shader.vec3(0.0), diffuse + energy * rho * (2.0 * rho - shader.vec3(1.0)) *
-                      (0.46875 * (cosine * cosine - face_cosine * face_cosine)))
+    axial = shader.abs(shader.vec3(shader.dot(red.yzw, axis), shader.dot(green.yzw, axis),
+                                   shader.dot(blue.yzw, axis)))
+    # Convert unnormalized Cartesian moments to the orthonormal SH1/SH0 ratio.
+    ratio = 1.7320508075688772 * shader.saturate(axial / shader.max(energy, shader.vec3(1.0e-12)))
+    fitted = energy * ratio * (0.08 + 0.60 * ratio)
+    c = shader.dot(axis, shading)
+    base = shader.dot(axis, geometric)
+    # Y20, the unnormalized Lambert lobe, and the DC normalization combine
+    # into 3*sqrt(5)/32 after subtracting the geometric-normal evaluation.
+    return shader.max(shader.vec3(0.0), lambertian + 0.2096313728906053 * fitted * (c*c - base*base))

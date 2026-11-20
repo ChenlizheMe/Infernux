@@ -56,7 +56,7 @@ def builtin_shader_root():
 _RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
 _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceHit", _RAY_ARGUMENTS),
                   "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS),
-                  "ray._diffuse_moments": ("inx_ray_diffuse_moments", "float4x4", (
+                  "ray._diffuse_samples": ("inx_ray_diffuse_samples", "float4x4", (
                       "float3", "float3", "uint2", "bool", "InxUInt2D", "InxColor2D", "InxColor2D",
                       "InxBuffer_uint4", "InxBuffer_uint4")),
                   "ray._thin_reflection": ("inx_ray_thin_reflection", "float4", (
@@ -82,6 +82,7 @@ _ENGINE_FUNCTIONS = {"frame_time": ("inx_frame_time", "float", ()),
                      "_previous_ray_geometry_serial": ("inx_previous_ray_geometry_serial", "uint", ()),
                      "_ray_lighting_changed": ("inx_ray_lighting_changed", "bool", ()),
                      "_ray_proposals_changed": ("inx_ray_proposals_changed", "bool", ()),
+                     "_view_sample_index": ("inx_view_sample_index", "uint", ()),
                      "_view_jitter_delta_uv": ("inx_view_jitter_delta_uv", "float2", ()),
                      "_resolved_shading_context": ("inx_shading_context", "InxShadingContext",
                                                    ("float3", "float3", "float", "float2", "uint", "bool", "float")),
@@ -98,7 +99,7 @@ _ENGINE_MODULES = {"inx_ui_context": ("UIContext", "WorldUIContext"),
                    "inx_particle": ("ParticleContext",),
                    "inx_particle_lighting": ("lighting.particle_pbr", "lighting.six_way_smoke"),
                    "inx_frame": ("frame_time", "frame_delta_time", "_previous_ray_geometry_serial",
-                                 "_ray_lighting_changed", "_ray_proposals_changed", "_view_jitter_delta_uv", "view", "ViewContext"),
+                                 "_ray_lighting_changed", "_ray_proposals_changed", "_view_jitter_delta_uv", "_view_sample_index", "view", "ViewContext"),
                    "inx_camera": ("camera", "CameraContext"),
                    "inx_math": ("inverse", "matrix_comp_mult", "outer_product")}
 _CONSTRUCTORS = {"ShadingContext": ("InxShadingContext", "inx_shading_context"),
