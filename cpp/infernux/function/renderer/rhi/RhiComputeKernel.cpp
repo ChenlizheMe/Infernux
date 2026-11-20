@@ -635,9 +635,8 @@ ComputeKernel::PreparedBatch ComputeKernel::PrepareBatch(ComputeHost &host, std:
     return result;
 }
 
-std::vector<ComputeKernel::BufferValueState> ComputeKernel::PrepareValues(const PreparedBatch &batch)
+void ComputeKernel::PrepareValues(const PreparedBatch &batch, std::vector<BufferValueState> &values)
 {
-    std::vector<BufferValueState> values;
     const auto include = [&](const auto &allocation) {
         if (std::none_of(values.begin(), values.end(),
                          [&](const auto &value) { return value.allocation == allocation; }))
@@ -726,7 +725,6 @@ std::vector<ComputeKernel::BufferValueState> ComputeKernel::PrepareValues(const 
         }
         intervals::Add(written(copy.destination), region.destinationOffset, region.destinationOffset + region.byteSize);
     }
-    return values;
 }
 
 bool ComputeKernel::RecordBatch(ComputeRecordingContext &context, const PreparedBatch &batch,
@@ -1314,6 +1312,83 @@ bool PreparedComputeBatch::PrepareReadbacks(bool managed)
     return true;
 }
 
+bool PreparedComputeBatch::Record(ComputeRecordingContext &context)
+{
+    // Graph writers need the contents, not just the allocation, protected
+    // until this accepted read retires. Pure Compute FIFO keeps early release.
+    m_batch->contentReadOwners.clear();
+    const auto retain = [&](const auto &allocation, const auto &desc) {
+        if (allocation->IsGraphWritable() &&
+            std::none_of(m_batch->contentReadOwners.begin(), m_batch->contentReadOwners.end(),
+                         [&](const auto &value) { return value->GetAllocation() == allocation; }))
+            m_batch->contentReadOwners.push_back(std::make_shared<ComputeBufferState>(desc, allocation, true));
+    };
+    for (const auto &dispatch : m_batch->dispatches)
+        for (size_t index = 0; index < dispatch.work.allocations.size(); ++index)
+            if (static_cast<uint8_t>(dispatch.work.bufferAccesses[index]) &
+                static_cast<uint8_t>(ComputeBufferAccess::Read))
+                retain(dispatch.work.allocations[index], dispatch.work.states[index]->GetDesc());
+    for (const auto &copy : m_batch->copies)
+        retain(copy.source, copy.sourceState->GetDesc());
+    for (const auto &read : m_readbacks)
+        if (!read->IsCancelled())
+            retain(read->m_storage->source, read->m_source->GetDesc());
+    return ComputeKernel::RecordBatch(context, *m_batch, m_readbacks);
+}
+
+bool PreparedComputeBatch::CanShareSubmission() const
+{
+    return !m_ticket.IsValid() && HasWork() && m_readbacks.empty() && m_writeVersions.empty() && !RequiresPreparation();
+}
+
+bool PreparedComputeBatch::TrySubmitTogether(const std::vector<std::shared_ptr<PreparedComputeBatch>> &batches)
+{
+    if (batches.size() < 2)
+        throw std::invalid_argument("A shared compute submission needs at least two packets");
+    auto &host = batches.front()->m_host;
+    host.RequireAlive();
+    std::vector<ComputeKernel::BufferValueState> values;
+    auto owners = std::make_shared<std::vector<std::shared_ptr<ComputeKernel::PreparedBatch>>>();
+    owners->reserve(batches.size());
+    auto receipt = std::make_shared<ComputeExecutionReceipt>();
+    uint64_t staging = 0;
+    for (const auto &batch : batches) {
+        if (!batch->m_host.SharesServicesWith(host) || !batch->CanShareSubmission())
+            throw std::logic_error("Shared compute submission requires ready device-only packets from one owner");
+        if (std::find(owners->begin(), owners->end(), batch->m_batch) != owners->end())
+            throw std::invalid_argument("A compute packet cannot appear twice in one submission");
+        owners->push_back(batch->m_batch);
+        staging += batch->m_uploadStagingBytes;
+        // No allocation in kernel ticket attachment after this shared submit.
+        for (const auto &kernel : batch->m_batch->kernels)
+            kernel->m_pending.reserve(kernel->m_pending.size() + 1);
+    }
+    const auto record = [&](ComputeRecordingContext &context) {
+        for (const auto &batch : batches)
+            ComputeKernel::PrepareValues(*batch->m_batch, values);
+        for (const auto &batch : batches)
+            if (!batch->Record(context))
+                return false;
+        return true;
+    };
+    const auto ticket = host.Queue().TrySubmit(record, {std::move(owners), receipt, staging});
+    if (!ticket)
+        return false;
+    if (!ticket->IsValid())
+        throw std::runtime_error("Failed to submit shared compute batch");
+    for (const auto &batch : batches) {
+        batch->m_ticket = *ticket;
+        batch->m_receipt = receipt;
+    }
+    for (auto &value : values) {
+        value.allocation->m_initialized.swap(value.initialized);
+        value.allocation->m_written.swap(value.written);
+    }
+    for (const auto &batch : batches)
+        batch->Accepted(*ticket);
+    return true;
+}
+
 std::optional<SubmissionTicket> PreparedComputeBatch::SubmitInternal(bool block)
 {
     m_host.RequireAlive();
@@ -1327,27 +1402,8 @@ std::optional<SubmissionTicket> PreparedComputeBatch::SubmitInternal(bool block)
     const auto record = [&](ComputeRecordingContext &context) {
         // Read the latest accepted prefix only once a slot is available. All
         // allocation and proof checks finish before recording real commands.
-        values = ComputeKernel::PrepareValues(*m_batch);
-        // Graph writers need the contents, not just the allocation, protected
-        // until this accepted read retires. Pure Compute FIFO keeps early release.
-        m_batch->contentReadOwners.clear();
-        const auto retain = [&](const auto &allocation, const auto &desc) {
-            if (allocation->IsGraphWritable() &&
-                std::none_of(m_batch->contentReadOwners.begin(), m_batch->contentReadOwners.end(),
-                             [&](const auto &value) { return value->GetAllocation() == allocation; }))
-                m_batch->contentReadOwners.push_back(std::make_shared<ComputeBufferState>(desc, allocation, true));
-        };
-        for (const auto &dispatch : m_batch->dispatches)
-            for (size_t index = 0; index < dispatch.work.allocations.size(); ++index)
-                if (static_cast<uint8_t>(dispatch.work.bufferAccesses[index]) &
-                    static_cast<uint8_t>(ComputeBufferAccess::Read))
-                    retain(dispatch.work.allocations[index], dispatch.work.states[index]->GetDesc());
-        for (const auto &copy : m_batch->copies)
-            retain(copy.source, copy.sourceState->GetDesc());
-        for (const auto &read : m_readbacks)
-            if (!read->IsCancelled())
-                retain(read->m_storage->source, read->m_source->GetDesc());
-        return ComputeKernel::RecordBatch(context, *m_batch, m_readbacks);
+        ComputeKernel::PrepareValues(*m_batch, values);
+        return Record(context);
     };
     const ComputeSubmissionResources owners{m_batch, m_receipt, m_uploadStagingBytes};
     if (block)

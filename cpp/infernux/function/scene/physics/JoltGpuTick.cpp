@@ -438,6 +438,7 @@ class JoltGpuTick::Impl
         FrameWorkFacts Describe() const;
         bool Advance(bool gpu, uint64_t token);
         bool PrepareShared();
+        bool SubmitReadyNumericalWork();
         void DropShared(Impl *member) noexcept;
         bool OtherReceipts(const Impl *member) const noexcept;
     };
@@ -550,7 +551,8 @@ class JoltGpuTick::Impl
                                          stage->transferGrant);
                 const auto estimate =
                     elapsed ? static_cast<uint64_t>(std::ceil(*elapsed)) : NowNanoseconds() - stage->started;
-                stage->owner->ObserveCost(stage->key, estimate);
+                if (stage->phaseCount)
+                    stage->owner->ObserveCost(stage->key, estimate);
                 if (stage->statusRows.empty() && stage->phaseCount == 1)
                     ObserveUnitCost(stage->owner->stageEstimates[stage->stage], stage->members.size(), estimate);
                 // One packet measurement; the peer does not receive a second sample.
@@ -2710,6 +2712,92 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     return true;
 }
 
+bool JoltGpuTick::Impl::Lane::SubmitReadyNumericalWork()
+{
+    if (prepared || !HasOtherMember())
+        return false;
+    auto &scheduler = members[0]->work;
+    const auto gpuWindow = scheduler.ResourceRemaining(FrameWorkResource::Gpu);
+    const auto transferWindow = scheduler.ResourceRemaining(FrameWorkResource::Transfer);
+    if (!gpuWindow)
+        return false;
+
+    std::vector<std::shared_ptr<rhi::PreparedComputeBatch>> packets;
+    std::vector<SharedStage::Member> group;
+    uint64_t estimated = 0, bytes = 0, dispatches = 0;
+    bool calibrating = false;
+    size_t next = nextGpu;
+    for (size_t i = 0; i < members.size(); ++i) {
+        const size_t row = (nextGpu + i) % members.size();
+        auto *member = members[row];
+        if (!member || !member->admissionEnabled || member->status != Status::Running || !member->controlAccepted ||
+            member->batchKind != PacketKind::NumericalWork || !member->batch || member->preservation ||
+            member->submissionBusy || !member->batch->CanShareSubmission())
+            continue;
+        const auto &packet = *member->batch;
+        const auto units = packet.GetExecutionSignature().front();
+        const auto prediction = member->Prediction(member->SubmissionKey(packet));
+        const auto transfer = packet.GetTransferBytes();
+        // Calibrate a bounded packet of unknown work as one GPU observation.
+        // Known packets consume the recorded time and transfer allowances.
+        const bool cold = calibrating || !prediction;
+        if (!units || transfer > transferWindow - bytes || prediction > gpuWindow - estimated ||
+            (cold && dispatches + units > MaxPacketUnits))
+            continue;
+        packets.push_back(member->batch);
+        group.push_back({member, {}, 0, member->workGeometry});
+        estimated += prediction;
+        bytes += transfer;
+        dispatches += units;
+        calibrating = cold;
+        next = (row + 1) % members.size();
+    }
+    const auto prediction = calibrating ? 0u : estimated;
+    if (group.size() < 2 || !scheduler.CanAdmitResource(FrameWorkResource::Gpu, prediction, false) ||
+        (bytes && !scheduler.CanAdmitResource(FrameWorkResource::Transfer, bytes, false)))
+        return false;
+
+    auto receipt = std::make_shared<SharedStage>();
+    receipt->owner = group.front().tick;
+    receipt->members = std::move(group);
+    receipt->phaseCount = 0; // Group timing cannot be attributed to individual stages.
+    for (const auto &entry : receipt->members)
+        entry.tick->sharedStages.reserve(entry.tick->sharedStages.size() + 1);
+    receipt->started = NowNanoseconds();
+    try {
+        if (!rhi::PreparedComputeBatch::TrySubmitTogether(packets))
+            return false;
+    } catch (...) {
+        // There is no accepted prefix if recording or queue submission failed.
+        for (const auto &entry : receipt->members)
+            entry.tick->Fail();
+        return true;
+    }
+    receipt->completion.emplace(packets.front()->GetCompletion());
+    receipt->opportunity = scheduler.Opportunity();
+    receipt->gpuGrant = scheduler.RecordAcceptedResource(FrameWorkResource::Gpu, prediction);
+    receipt->bytes = bytes;
+    receipt->transferGrant = bytes ? scheduler.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0;
+    for (const auto &entry : receipt->members) {
+        auto &member = *entry.tick;
+        member.sharedStages.push_back(receipt);
+        member.batch.reset();
+        member.workMinimum = {};
+        member.batchNumericalKey.clear();
+        member.submissionBusy = false;
+    }
+    nextGpu = next;
+    if (INXLOG_GET_LEVEL() == LOG_DEBUG) {
+        try {
+            INXLOG_DIAGNOSTIC("GPU numerical shared submission: worlds=", packets.size(), " dispatches=", dispatches,
+                              " ticket=", packets.front()->GetSubmission().serial);
+        } catch (...) {
+            // Logging cannot revoke the accepted work of any member.
+        }
+    }
+    return true;
+}
+
 bool JoltGpuTick::Impl::Lane::Advance(bool gpu, uint64_t token)
 {
     if (members[0]->pressureActive || members[0]->PressureRequested())
@@ -2717,6 +2805,8 @@ bool JoltGpuTick::Impl::Lane::Advance(bool gpu, uint64_t token)
     if (!focus && !token) {
         try {
             if (PrepareShared())
+                return true;
+            if (gpu && SubmitReadyNumericalWork())
                 return true;
         } catch (...) {
             for (auto *member : members)

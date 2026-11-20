@@ -315,7 +315,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         settingsPorts[Bodies] = inputs.GetCaptured(Resource::BodyModels);
         settingsPorts[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
         settingsPorts[AuthorWorlds] = inputs.GetCaptured(Resource::Worlds);
-        settingsPorts[Bounds] = storage.Get(Resource::Bounds) ? storage.Get(Resource::Bounds)->Freeze() : nullptr;
+        // BuildBounds and broadphase use the same World leaf range. The tick
+        // owns that range through its last broadphase consumer, while peer
+        // ticks write only their own range. Keep the allocation alive without
+        // freezing the entire packed scratch buffer on each World.
+        settingsPorts[Bounds] = storage.Get(Resource::Bounds);
         settingsPorts[StepStatus] = stepStatus;
         // The exclusive arena writer keeps this topology fixed. Broadphase
         // reads only joint directory/author metadata, so representation-history
@@ -325,8 +329,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             throw std::invalid_argument("GPU broadphase requires its exclusive writer joint stream");
         for (auto port : {Bodies, Shapes, AuthorWorlds})
             ValidateInput(settingsPorts[port]);
-        if (n)
-            ValidateInput(settingsPorts[Bounds]);
         const auto requireBytes = [&](Port port, uint64_t bytes) {
             if (!settingsPorts[port] || settingsPorts[port]->GetByteSize() != bytes)
                 throw std::invalid_argument("Jolt GPU broadphase input extent differs from the accepted model");

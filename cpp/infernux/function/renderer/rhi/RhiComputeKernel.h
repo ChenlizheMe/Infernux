@@ -338,7 +338,7 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
                                                     std::vector<ComputeBufferCopy> copies = {});
     [[nodiscard]] static bool RecordBatch(ComputeRecordingContext &context, const PreparedBatch &batch,
                                           const std::vector<std::shared_ptr<ComputeReadback>> &reads);
-    [[nodiscard]] static std::vector<BufferValueState> PrepareValues(const PreparedBatch &batch);
+    static void PrepareValues(const PreparedBatch &batch, std::vector<BufferValueState> &values);
     void Attach(SubmissionTicket ticket);
     void CollectBindingGroups();
     void Destroy() noexcept;
@@ -588,6 +588,11 @@ class PreparedComputeBatch final
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API SubmissionTicket Submit();
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::optional<SubmissionTicket> TrySubmit();
+    /// A device-only packet with resolved endpoints can share a queue submission.
+    [[nodiscard]] INFERNUX_RENDER_CORE_API bool CanShareSubmission() const;
+    /// Record the packets in order, with one accepted ticket and completion for all.
+    [[nodiscard]] static INFERNUX_RENDER_CORE_API bool
+    TrySubmitTogether(const std::vector<std::shared_ptr<PreparedComputeBatch>> &batches);
     /// Requires acceptance; the returned ticket does not retain this batch.
     [[nodiscard]] INFERNUX_RENDER_CORE_API ComputeCompletion GetCompletion() const;
     [[nodiscard]] INFERNUX_RENDER_CORE_API bool HasWork() const noexcept;
@@ -640,6 +645,7 @@ class PreparedComputeBatch final
                          std::vector<ComputeDispatchDesc> dispatches, std::vector<ComputeBufferRead> reads,
                          std::vector<ComputeBufferCopy> copies);
     [[nodiscard]] std::optional<SubmissionTicket> SubmitInternal(bool block);
+    [[nodiscard]] bool Record(ComputeRecordingContext &context);
     void Accepted(SubmissionTicket ticket);
     [[nodiscard]] bool ResolveStorage(bool managed);
     [[nodiscard]] bool PrepareReadbacks(bool managed);
