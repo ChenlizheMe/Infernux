@@ -9,6 +9,7 @@ class PlatformPlayerHost(RuntimeWorldHost):
         from .player_runtime import PlayerRuntimeSession
 
         self._closing = False
+        self._closed = False
         self._native_services = native_services
         self._asset_database = asset_database
         self._process_input = process_input
@@ -27,6 +28,15 @@ class PlatformPlayerHost(RuntimeWorldHost):
     def get_native_engine(self):
         """The platform owns its device and event loop outside the desktop application."""
         return self._native_services
+
+    def request_capture(self, source, output_path, camera_component_id=0):
+        return self._native_services.request_capture(source, output_path, camera_component_id)
+
+    def query_capture(self, capture_id):
+        return self._native_services.query_capture(capture_id)
+
+    def cancel_capture(self, capture_id):
+        return self._native_services.cancel_capture(capture_id)
 
     def _capture_graph_buffer(self, name, camera_id, scene_view):
         if scene_view:
@@ -50,6 +60,29 @@ class PlatformPlayerHost(RuntimeWorldHost):
 
     def request_exit(self):
         self._closing = True
+
+    def shutdown(self, *, before_resource_release=None):
+        """Retire the shared Player while the platform device is still alive."""
+        if self._closed:
+            return
+        from infernux.application import Application
+        from infernux.compute import _release_engine_resources
+        from infernux.lib import SceneManager
+
+        self._closing = True
+        self._shutdown_work_runtime()
+        self._player_runtime.shutdown()
+        SceneManager.instance()._collect_retired_runtime_worlds()
+        if before_resource_release is not None:
+            before_resource_release()
+        _release_engine_resources()
+        self._authoring_scheduler.unbind_native_bridge()
+        self._authoring_scheduler.clear()
+        self._runtime_scene_manager = None
+        self._player_runtime.release_content()
+        self._frame_work.stop()
+        Application._unbind_engine(self)
+        self._closed = True
 
     def _request_full_speed_frame(self):
         """The browser already services every available animation frame."""
