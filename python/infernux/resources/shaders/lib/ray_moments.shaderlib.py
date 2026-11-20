@@ -17,6 +17,30 @@ def sample_direction(packet: shader.uvec4) -> shader.vec3:
     return unpack_moment(1.0, packet.z).yzw
 
 
+def sh_coefficients(moment: shader.vec4) -> shader.vec4:
+    coefficients = moment * shader.vec4(0.2820947918, shader.vec3(0.4886025119))
+    return shader.clamp(coefficients, shader.vec4(-65504.0), shader.vec4(65504.0))
+
+
+def sh_moment(coefficients: shader.vec4) -> shader.vec4:
+    return coefficients * shader.vec4(3.544907702, shader.vec3(2.046653416))
+
+
+def sh_diffuse_irradiance(red: shader.vec4, green: shader.vec4, blue: shader.vec4,
+                          normal: shader.vec3) -> shader.vec3:
+    dc = shader.vec3(red.x, green.x, blue.x)
+    linear = shader.vec3(shader.dot(red.yzw, normal), shader.dot(green.yzw, normal), shader.dot(blue.yzw, normal))
+    axis = 0.2126 * red.yzw + 0.7152 * green.yzw + 0.0722 * blue.yzw
+    axis /= shader.max(shader.length(axis), 1.0e-12)
+    aligned = shader.abs(shader.vec3(shader.dot(red.yzw, axis), shader.dot(green.yzw, axis),
+                                      shader.dot(blue.yzw, axis)))
+    ratio = aligned / shader.max(dc, shader.vec3(1.0e-12))
+    quadratic = dc * ratio * (0.08 + 0.60 * ratio)
+    cosine = shader.dot(axis, normal)
+    return shader.max(shader.vec3(0.0), 0.8862269255 * dc + 1.0233267079 * linear
+                      + 0.0788478913 * quadratic * (3.0 * cosine * cosine - 1.0))
+
+
 def diffuse_irradiance(red: shader.vec4, green: shader.vec4, blue: shader.vec4,
                        geometric: shader.vec3, shading: shader.vec3) -> shader.vec3:
     """Integrate the hemisphere on the face, then rotate the lobe to the material normal."""

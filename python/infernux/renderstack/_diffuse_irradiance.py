@@ -15,37 +15,52 @@ _GRIDS = {
 }
 
 
-def _pair(graph, name, divisor):
-    return tuple(graph.create_texture(f"{name}/{key}", format=Format.RGBA32_UINT,
-                                      size_divisor=divisor, samples=1) for key in ("energy", "directions"))
+_CHANNELS = ("red", "green", "blue")
 
 
-def _write_moments(render_pass, moments):
-    energy, directions = moments
-    render_pass.write_color(energy)
-    render_pass.write_color(directions, slot=1)
+def _sh_textures(graph, name, divisor):
+    return tuple(graph.create_texture(f"{name}/{channel}", format=Format.RGBA16_SFLOAT,
+                                      size_divisor=divisor, samples=1) for channel in _CHANNELS)
 
 
-def _resolve(ctx, guides, moments, *, raw):
-    energy, directions = moments
-    stage = "raw" if raw else "resolved"
-    output = ctx.graph.create_texture(f"{ctx.name}/diffuse/{stage}", format=Format.RGBA32_SFLOAT if raw else Format.RGBA16_SFLOAT,
-                                      size_divisor=energy.size_divisor if raw else 0, samples=1)
+def _sh_inputs(textures):
+    return dict(zip(("red_sh", "green_sh", "blue_sh"), textures))
+
+
+def _write_slots(render_pass, textures):
+    for slot, texture in enumerate(textures):
+        render_pass.write_color(texture, slot=slot)
+
+
+def _read_observations(ctx, guides, observations, *, full_resolution=False):
+    stage = "resolved" if full_resolution else "raw"
+    output = ctx.graph.create_texture(f"{ctx.name}/diffuse/{stage}", format=Format.RGBA32_SFLOAT,
+                                      size_divisor=0 if full_resolution else observations.size_divisor, samples=1)
     with ctx.graph.add_pass(f"Ray Diffuse {stage.title()} Irradiance") as p:
-        p.set_textures({"coefficients": energy, "directions": directions, "primary": guides.primary,
+        p.set_textures({"observations": observations, "primary": guides.primary,
                         "frame": guides.surface.sample("surface_frame")})
-        p.set_param("raw", raw)
-        p.set_param("observations", raw or not ctx.reconstruct)
+        p.set_param("full_resolution", full_resolution)
+        p.set_param("temporal", ctx.reconstruct)
+        p.write_color(output)
+        p.fullscreen_quad("infernux/internal/ray_diffuse_raw_irradiance")
+    return output
+
+
+def _resolve(ctx, guides, coefficients, state):
+    graph = ctx.graph
+    output = graph.create_texture(f"{ctx.name}/diffuse/resolved", format=Format.RGBA16_SFLOAT, samples=1)
+    with graph.add_pass("Ray Diffuse Resolved Irradiance") as p:
+        p.set_textures({**_sh_inputs(coefficients), "state": state, "primary": guides.primary,
+                        "frame": guides.surface.sample("surface_frame")})
         p.write_color(output)
         p.fullscreen_quad("infernux/internal/ray_diffuse_resolve")
     return output
 
 
 class DiffuseObservation(RayTracingSignal):
-    def __init__(self, ctx, guides, samples):
-        super().__init__(partial(_resolve, ctx, guides, samples, raw=True))
-        self.samples = samples
-        self.witness = samples[1]
+    def __init__(self, ctx, guides, packet):
+        super().__init__(partial(_read_observations, ctx, guides, packet))
+        self.witness = packet
 
 
 def trace_grid(quality):
@@ -64,8 +79,8 @@ def trace_diffuse(ctx, guides, divisor):
         p.write_color(screen_radiance)
         p.write_color(screen_depth, slot=1)
         p.fullscreen_quad("infernux/internal/ray_screen_radiance")
-    samples = tuple(graph.create_texture(f"{stem}/observation/{name}", format=Format.RGBA32_UINT,
-                                         size_divisor=divisor, samples=1) for name in ("body", "light"))
+    packet = graph.create_texture(f"{stem}/observation", format=Format.RGBA32_UINT,
+                                  size_divisor=divisor, samples=1)
     with graph.add_pass("Ray Diffuse Irradiance") as p:
         bind_ray_world(p, ctx.world.materials)
         p.set_textures({"primary": guides.primary, "screen_radiance": screen_radiance, "screen_depth": screen_depth})
@@ -73,41 +88,46 @@ def trace_diffuse(ctx, guides, divisor):
         p.set_buffer("tail_cache", graph._world_ray_tail_read())
         p.set_param("divisor", divisor or 1)
         p.set_param("temporal", ctx.reconstruct)
-        _write_moments(p, samples)
+        p.write_color(packet)
         p.fullscreen_quad("infernux/internal/ray_diffuse_observation")
-    return DiffuseObservation(ctx, guides, samples)
+    return DiffuseObservation(ctx, guides, packet)
 
 
 def reconstruct_diffuse(ctx, guides, observation):
-    moments = observation.samples
-    if ctx.reconstruct:
-        graph = ctx.graph
-        divisor = _GRIDS[ctx.quality][1]
-        history = [ctx.view.history(f"diffuse/{key}", format=Format.RGBA32_UINT, size_divisor=divisor,
-                                    respond_to_lighting=True) for key in ("energy", "directions")]
-        (old_energy, old_axes), filtered = zip(*history)
-        fresh = _pair(graph, f"{ctx.name}/diffuse/gathered", divisor)
-        reprojection = _pair(graph, f"{ctx.name}/diffuse/reprojected", divisor)
-        visibility = ctx.ambient_visibility or guides.surface.sample("surface_frame")
-        with graph.add_pass("Ray Diffuse SH Gather") as p:
-            p.set_textures({"body_samples": moments[0], "light_samples": moments[1], "primary": guides.primary,
-                            "ambient_visibility": visibility})
-            p.set_param("ssao_strength", ctx.ssao_strength)
-            p.set_param("divisor", divisor)
-            _write_moments(p, fresh)
-            p.fullscreen_quad("infernux/internal/ray_diffuse_gather")
-        with graph.add_pass("Ray Diffuse Reconstruction") as p:
-            p.set_textures({"fresh_dc": fresh[0], "fresh_axes": fresh[1], "old_dc": old_energy,
-                            "old_axes": old_axes, "primary": guides.primary, "previous_primary": guides.previous_primary,
-                            "motion": guides.motion})
-            p.set_buffer("geometry", ctx.world.geometry)
-            _write_moments(p, reprojection)
-            p.fullscreen_quad("infernux/internal/ray_diffuse_history")
-        with graph.add_pass("Ray Diffuse Recurrent Blur") as p:
-            p.set_textures({"coefficients": reprojection[0], "directions": reprojection[1],
-                            "primary": guides.primary, "visibility": visibility})
-            p.set_param("ssao_strength", ctx.ssao_strength)
-            _write_moments(p, filtered)
-            p.fullscreen_quad("infernux/internal/ray_diffuse_blur")
-        moments = filtered
-    return RayTracingSignal(partial(_resolve, ctx, guides, moments, raw=False))
+    if not ctx.reconstruct:
+        return RayTracingSignal(partial(_read_observations, ctx, guides, observation.witness, full_resolution=True))
+
+    graph = ctx.graph
+    divisor = _GRIDS[ctx.quality][1]
+    stem = f"{ctx.name}/diffuse"
+    old, filtered = zip(*(ctx.view.history(f"diffuse/{key}", format=Format.RGBA16_SFLOAT, size_divisor=divisor,
+                                           respond_to_lighting=True) for key in _CHANNELS))
+    old_state, state = ctx.view.history("diffuse/state", format=Format.RG16_SFLOAT, size_divisor=divisor,
+                                       respond_to_lighting=True)
+    fresh = _sh_textures(graph, f"{stem}/gathered", divisor)
+    fresh_state = graph.create_texture(f"{stem}/gathered/state", format=Format.RG16_SFLOAT,
+                                       size_divisor=divisor, samples=1)
+    reprojection = _sh_textures(graph, f"{stem}/reprojected", divisor)
+    visibility = ctx.ambient_visibility or guides.surface.sample("surface_frame")
+    with graph.add_pass("Ray Diffuse SH Gather") as p:
+        p.set_textures({"observations": observation.witness, "primary": guides.primary,
+                        "ambient_visibility": visibility})
+        p.set_param("ssao_strength", ctx.ssao_strength)
+        p.set_param("divisor", divisor)
+        _write_slots(p, (*fresh, fresh_state))
+        p.fullscreen_quad("infernux/internal/ray_diffuse_gather")
+    with graph.add_pass("Ray Diffuse Reconstruction") as p:
+        p.set_textures({**dict(zip(("fresh_red", "fresh_green", "fresh_blue"), fresh)),
+                        **dict(zip(("old_red", "old_green", "old_blue"), old)),
+                        "fresh_state": fresh_state, "old_state": old_state, "primary": guides.primary,
+                        "previous_primary": guides.previous_primary, "motion": guides.motion})
+        p.set_buffer("geometry", ctx.world.geometry)
+        _write_slots(p, (*reprojection, state))
+        p.fullscreen_quad("infernux/internal/ray_diffuse_history")
+    with graph.add_pass("Ray Diffuse Recurrent Blur") as p:
+        p.set_textures({**_sh_inputs(reprojection), "state": state, "primary": guides.primary,
+                        "visibility": visibility})
+        p.set_param("ssao_strength", ctx.ssao_strength)
+        _write_slots(p, filtered)
+        p.fullscreen_quad("infernux/internal/ray_diffuse_blur")
+    return RayTracingSignal(partial(_resolve, ctx, guides, filtered, state))

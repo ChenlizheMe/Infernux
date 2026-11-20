@@ -1,7 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.ambient_visibility import contact_density
-from infernux.shader.lib.ray_moments import pack_direction, unpack_moment
-from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_normal_weight
+from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_pixel, sh_normal_weight
 from infernux.shader.lib.ray_signal import ray_grid_pixel
 from infernux.shader.lib.surface import decode_octahedral_normal
 
@@ -9,22 +8,25 @@ from infernux.shader.lib.surface import decode_octahedral_normal
 class RayDiffuseBlur(shader.fullscreen):
     shader_id = "infernux/internal/ray_diffuse_blur"
     hidden = True
-    coefficients = shader.input("coefficients", shader.UInt2D)
-    directions = shader.input("directions", shader.UInt2D)
+    red_sh = shader.input("red_sh", shader.Color2D)
+    green_sh = shader.input("green_sh", shader.Color2D)
+    blue_sh = shader.input("blue_sh", shader.Color2D)
+    state = shader.input("state", shader.Color2D)
     primary = shader.input("primary", shader.UInt2D)
     visibility = shader.input("visibility", shader.Color2D)
     ssao_strength = shader.parameter.float(default=0.0)
 
-    def main(self, ctx: shader.fragment_input) -> tuple[shader.uvec4, shader.uvec4]:
+    def main(self, ctx: shader.fragment_input) -> tuple[shader.vec4, shader.vec4, shader.vec4]:
         cell = shader.ivec2(ctx.position.xy)
-        extent = shader.ivec2(shader.dimensions(self.coefficients, 0))
+        extent = shader.ivec2(shader.dimensions(self.state, 0))
         full = shader.ivec2(shader.dimensions(self.primary, 0))
-        site = ray_grid_pixel(cell, extent, full)
+        index = shader._view_sample_index()
+        site = sh_guide_pixel(cell, extent, full, index)
         receiver = shader.load(self.primary, site, 0)
-        center = shader.load(self.coefficients, cell, 0)
+        age = shader.load(self.state, cell, 0).x
         if receiver.x == 0:
-            return (shader.uvec4(0), shader.uvec4(0))
-        mature = center.w > 33
+            return (shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0))
+        mature = age > 33.0
         step = 1 if mature else 3
         depth = shader.as_float(receiver.y)
         n = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))
@@ -45,10 +47,9 @@ class RayDiffuseBlur(shader.fullscreen):
             at = cell + offset * step
             if shader.any(at < shader.ivec2(0)) or shader.any(at >= extent):
                 continue
-            pt = ray_grid_pixel(at, extent, full)
+            pt = sh_guide_pixel(at, extent, full, index)
             guide = shader.load(self.primary, pt, 0)
-            dc = shader.load(self.coefficients, at, 0)
-            if guide.x == 0 or dc.w == 0:
+            if guide.x == 0 or shader.load(self.state, at, 0).x == 0.0:
                 continue
             normal = decode_octahedral_normal(shader.unpack_half_2x16(guide.z))
             other_vis = 0.0
@@ -58,23 +59,9 @@ class RayDiffuseBlur(shader.fullscreen):
             weight *= sh_normal_weight(n, normal)
             if mature:
                 weight *= shader.exp2(-shader.float(offset.x * offset.x + offset.y * offset.y))
-            axes = shader.load(self.directions, at, 0)
-            level = shader.as_float(dc.xyz)
-            red += unpack_moment(level.x, axes.x) * weight
-            green += unpack_moment(level.y, axes.y) * weight
-            blue += unpack_moment(level.z, axes.z) * weight
+            red += shader.load(self.red_sh, at, 0) * weight
+            green += shader.load(self.green_sh, at, 0) * weight
+            blue += shader.load(self.blue_sh, at, 0) * weight
             total += weight
-        if total <= 0.0:
-            return (shader.uvec4(0), shader.uvec4(0))
-        age = shader.max(center.w, shader.uint(1))
-        center_axes = shader.load(self.directions, cell, 0)
-        center_level = shader.as_float(center.xyz)
-        # A spatial update may contribute one sample to the recurrent estimate.
-        # Averaging the full accumulated signal again spreads light across every frame.
-        spatial_fraction = 1.0 / shader.float(age)
-        red = shader.mix(unpack_moment(center_level.r, center_axes.r), red / total, spatial_fraction)
-        green = shader.mix(unpack_moment(center_level.g, center_axes.g), green / total, spatial_fraction)
-        blue = shader.mix(unpack_moment(center_level.b, center_axes.b), blue / total, spatial_fraction)
-        level = shader.vec3(red.x, green.x, blue.x)
-        return (shader.uvec4(shader.as_uint(level), age),
-                shader.uvec4(pack_direction(red), pack_direction(green), pack_direction(blue), 0))
+        norm = 1.0 / shader.max(total, 1.0e-20)
+        return (red * norm, green * norm, blue * norm)

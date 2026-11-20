@@ -285,27 +285,32 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     assert screen._write_colors == {0: observation._input_bindings["screen_radiance"],
                                     1: observation._input_bindings["screen_depth"]}
     assert all(graph.get_texture(name).size_divisor == 2 for name in screen._write_colors.values())
-    energy, axes = (graph.get_texture(name) for name in observation._write_colors.values())
-    assert energy.size_divisor == axes.size_divisor == trace_divisor
+    assert len(observation._write_colors) == 1
+    packet = graph.get_texture(observation._write_colors[0])
+    assert packet.size_divisor == trace_divisor and packet.format == Format.RGBA32_UINT
     gather = passes["Ray Diffuse SH Gather"]
-    assert gather._input_bindings["body_samples"] == energy.name and gather._input_bindings["light_samples"] == axes.name
+    assert gather._input_bindings["observations"] == packet.name
     assert gather._input_bindings["ambient_visibility"] == visibility.name
     assert all(graph.get_texture(name).size_divisor == filter_divisor for name in gather._write_colors.values())
     history = passes["Ray Diffuse Reconstruction"]
-    assert history._input_bindings["fresh_dc"] == gather._write_colors[0]
-    assert history._input_bindings["fresh_axes"] == gather._write_colors[1]
     blur = passes["Ray Diffuse Recurrent Blur"]
-    assert blur._input_bindings["coefficients"] == history._write_colors[0]
-    assert blur._input_bindings["directions"] == history._write_colors[1]
+    resolve = passes["Ray Diffuse Resolved Irradiance"]
     assert blur._input_bindings["visibility"] == visibility.name
-    for slot, port in enumerate(("old_dc", "old_axes")):
-        previous = graph.get_texture(history._input_bindings[port])
+    for slot, channel in enumerate(("red", "green", "blue")):
+        assert history._input_bindings[f"fresh_{channel}"] == gather._write_colors[slot]
+        assert blur._input_bindings[f"{channel}_sh"] == history._write_colors[slot]
+        assert resolve._input_bindings[f"{channel}_sh"] == blur._write_colors[slot]
+        previous = graph.get_texture(history._input_bindings[f"old_{channel}"])
         assert previous.size_divisor == filter_divisor and previous._responds_to_ray_lighting
         current = graph.get_texture(blur._write_colors[slot])
         assert current.temporal_key == previous.temporal_key and current.size_divisor == filter_divisor
-    resolve = passes["Ray Diffuse Resolved Irradiance"]
-    assert resolve._input_bindings["coefficients"] == blur._write_colors[0]
-    assert resolve._input_bindings["directions"] == blur._write_colors[1]
+        assert current.format == previous.format == Format.RGBA16_SFLOAT
+    assert history._input_bindings["fresh_state"] == gather._write_colors[3]
+    assert blur._input_bindings["state"] == resolve._input_bindings["state"] == history._write_colors[3]
+    old_state = graph.get_texture(history._input_bindings["old_state"])
+    state = graph.get_texture(history._write_colors[3])
+    assert state.temporal_key == old_state.temporal_key and state._responds_to_ray_lighting
+    assert state.format == old_state.format == Format.RG16_SFLOAT
     assert "world_ray_meshes" not in resolve._input_bindings
     assert lighting._input_bindings["diffuse_irradiance"] == reconstructed.sample("diffuse_irradiance").name
     assert reconstructed.sample("diffuse_irradiance").size_divisor == 0

@@ -671,12 +671,6 @@ uint2 inx_ray_path_key(float2 position, bool specular, bool temporal)
     return uint2((scramble & ~15u) | rank, index);
 }
 
-// The small uniform component keeps grazing observations in the SH projection.
-float inx_ray_moment_pdf(float cosine)
-{
-    return (0.04 + 1.92 * cosine) * 0.15915494309;
-}
-
 float3 inx_screen_ray_normal(uint word)
 {
     float2 oct = unpackHalf2x16ToFloat(word);
@@ -802,42 +796,63 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D witn
     }
     float roughness = rsqrt(sqrt(max(402.1238597 * pdf - 1.0, 1.0)));
     return inx_ray_radiance_at_hit(page, ray, hit, records, cache, seed, float3(1.0), roughness,
-                                   float4(0.0), index, pdf, receiver);
+                                   float4(0.0), index, 0.0, receiver);
 }
 
-public float4x4 inx_ray_diffuse_samples(float3 position, float3 normal, uint2 cell, bool temporal,
-                                        InxUInt2D witnesses, InxColor2D radiance, InxColor2D screen_depth,
-                                        InxBuffer_uint4 records, InxBuffer_uint4 cache)
+// The per-view sequence advances over the Hilbert order of each 64x64 ray tile.
+uint inx_diffuse_hilbert(uint2 pixel)
+{
+    uint2 point = pixel & 63u;
+    uint index = 0u;
+    for (uint step = 32u; step > 0u; step >>= 1u)
+    {
+        uint2 bits = uint2((point & step) != uint2(0u));
+        index += step * step * ((3u * bits.x) ^ bits.y);
+        if (bits.y == 0u)
+        {
+            if (bits.x != 0u)
+                point ^= 63u;
+            point = point.yx;
+        }
+    }
+    return index;
+}
+
+public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 normal, uint2 cell, bool temporal,
+                                         InxUInt2D witnesses, InxColor2D radiance, InxColor2D screen_depth,
+                                         InxBuffer_uint4 records, InxBuffer_uint4 cache)
 {
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
-        return (float4x4)0;
-    uint2 key = inx_ray_path_key(float2(cell), false, temporal);
-    uint rank = (key.x ^ (key.x >> 12u)) & 15u;
-    uint sample = ((rank & 3u) << 2u) | (rank >> 2u);
-    float2 shift = inx_ray_primary_uniform(key.y, key.x >> 4u);
-    float2 u = frac(float2(inx_ray_sobol_bits(sample) >> 8u) * (1.0 / 16777216.0) + shift);
-    float z = 2.0 * u.x / (0.04 + sqrt(0.0016 + 3.84 * u.x));
-    float3 axis = abs(normal.z) < 0.99 ? float3(0, 0, 1) : float3(0, 1, 0);
-    float3 tangent = normalize(cross(axis, normal));
+        return (InxRaySignal)0;
+    uint frame = temporal ? inx_view_sample_index() : 0u;
+    uint index = inx_diffuse_hilbert(cell) + 288u * (frame & 63u);
+    float2 u = frac(0.5 + float2(0.7548776865, 0.5698403120) * float(index));
+    float z = 1.0 - u.x;
+    float hemisphere_radius = sqrt(max(0.0, 1.0 - z*z));
     float angle = 6.28318530718 * u.y;
-    float3 dir = normal * z + (tangent * cos(angle) + cross(normal, tangent) * sin(angle)) * sqrt(max(0.0, 1.0 - z*z));
-    float pdf = inx_ray_moment_pdf(z);
-    uint seed = inx_ray_sample_hash(key.x) ^ inx_ray_sample_hash(key.y);
+
+    float hemisphere_sign = normal.z >= 0.0 ? 1.0 : -1.0;
+    float a = -1.0 / (hemisphere_sign + normal.z);
+    float b = normal.x * normal.y * a;
+    float3 tangent = float3(1.0 + hemisphere_sign * normal.x * normal.x * a,
+                            hemisphere_sign * b, -hemisphere_sign * normal.x);
+    float3 bitangent = float3(b, hemisphere_sign + normal.y * normal.y * a, -normal.y);
+    float3 direction = normal * z + (tangent * cos(angle) + bitangent * sin(angle)) * hemisphere_radius;
     float3 origin = inx_ray_origin(position, normal);
-    TraceRay ray = {origin, 0.0, dir, inx_view.projection_params.y};
+    TraceRay ray = {origin, 0.0, direction, inx_view.projection_params.y};
+    const float pdf = 0.15915494309;
     let hit = inx_ray_diffuse_incident(page, ray, witnesses, radiance, screen_depth, records, cache,
-                                       seed, key.y, pdf, position);
+                                       inx_ray_sample_hash(index), frame, pdf, position);
     if (hit.radiance.a <= 0.0)
-        return (float4x4)0;
-    float3 emission = float3(0.0);
-    let light = inx_ray_emitter_sample(page, position, ray_reflected_uniform3(seed ^ 0xa9d53e47u, key.y), ray.maximum);
-    float cosine = dot(normal, light.direction);
-    if (light.active && cosine > 0.0 && inx_ray_emitter_visible(page, origin, light))
-        emission = light.emission * (inx_ray_mis_weight(light.pdf, inx_ray_moment_pdf(cosine)) / light.pdf);
-    // Reconstruction admits each proposal on the receiving hemisphere before forming SH.
-    return float4x4(float4(hit.radiance.rgb / pdf, 1.0), float4(dir, asfloat(hit.witness.y)),
-                    float4(emission, 0.0), float4(light.direction, 0.0));
+        return (InxRaySignal)0;
+
+    float3 color = max(hit.radiance.rgb, 0.0);
+    float peak = max(color.r, max(color.g, color.b));
+    color *= min(1.0, 10.0 / max(peak, 1.0e-20));
+    uint3 packed = uint3(clamp(direction, -1.0, 1.0) * 511.0 + 511.5);
+    uint axis = packed.x | (packed.y << 10u) | (packed.z << 20u);
+    return {float4(color / pdf, 1.0), uint2(axis, hit.witness.y)};
 }
 
 RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,

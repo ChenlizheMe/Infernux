@@ -8,10 +8,18 @@ def sh_bilateral(depth: float, other_depth: float, facing: float, visibility: fl
 
 
 def sh_normal_weight(normal: shader.vec3, other: shader.vec3) -> float:
-    alignment = shader.max(0.0, shader.dot(normal, other))
+    alignment = shader.dot(normal, other)
     falloff = 1.0 - 0.9 * alignment * alignment
     return 0.01 / (falloff * falloff)
 
+
+def sh_guide_pixel(cell: shader.ivec2, grid: shader.ivec2, full: shader.ivec2, index: shader.uint) -> shader.ivec2:
+    # Rotate four representative subpixels in a fixed order for a view.
+    phase = shader.int(index & shader.uint(3))
+    offset = shader.ivec2(phase >> 1, (phase ^ (phase >> 1)) & 1)
+    center = (shader.vec2(cell) + 0.5) * shader.vec2(full) / shader.vec2(grid)
+    return shader.clamp(shader.ivec2(shader.floor(center - 1.0)) + offset,
+                        shader.ivec2(0), full - shader.ivec2(1))
 
 
 def sh_resolve_offset(pattern: shader.uint, tap: int) -> shader.ivec2:

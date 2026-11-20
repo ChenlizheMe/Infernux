@@ -156,7 +156,6 @@ class DefaultDeferredPipeline(RenderPipeline):
         default=RayTracingQuality.STANDARD, display_name_key="renderstack.ray_quality",
         visible_when=attrgetter("global_illumination"),
     )
-    _reconstruct_rays = True
 
     def __init__(self, ray_tracer: RayTracer | None = None):
         super().__init__()
@@ -271,7 +270,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             ctx = RayTracingContext(
                 graph, surface=current, geometry=raw_gbuffer,
                 diffuse=True, specular=self.ray_specular, transparency=self.ray_transparency,
-                quality=self.ray_quality, reconstruct=self._reconstruct_rays,
+                quality=self.ray_quality,
                 gi_intensity=self.gi_intensity, gi_saturation=self.gi_saturation,
                 ssao_strength=self.ssao_strength, ssao_contrast=self.ssao_contrast,
             )
