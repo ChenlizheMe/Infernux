@@ -17,13 +17,21 @@ def sh_clip_history(coefficients: shader.vec4) -> shader.vec4:
     return shader.vec4(shader.max(0.0, coefficients.x), shader.clamp(coefficients.yzw, -1024.0, 1024.0))
 
 
-def sh_guide_pixel(cell: shader.ivec2, grid: shader.ivec2, full: shader.ivec2, index: shader.uint) -> shader.ivec2:
-    # Rotate four representative subpixels in a fixed order for a view.
+def sh_guide_phase(index: shader.uint) -> shader.ivec2:
     phase = shader.int(index & shader.uint(3))
-    offset = shader.ivec2(phase >> 1, (phase ^ (phase >> 1)) & 1)
+    return shader.ivec2(phase >> 1, (phase ^ (phase >> 1)) & 1)
+
+
+def sh_guide_pixel(cell: shader.ivec2, grid: shader.ivec2, full: shader.ivec2, index: shader.uint) -> shader.ivec2:
+    offset = sh_guide_phase(index)
     center = (shader.vec2(cell) + 0.5) * shader.vec2(full) / shader.vec2(grid)
     return shader.clamp(shader.ivec2(shader.floor(center - 1.0)) + offset,
                         shader.ivec2(0), full - shader.ivec2(1))
+
+
+def sh_guide_normal(packed: shader.uint) -> shader.vec3:
+    bits = shader.ivec3(shader.uvec3(packed, packed >> 8, packed >> 16) & shader.uvec3(255))
+    return shader.vec3(bits - (bits >> 7) * 256) / 127.0
 
 
 def sh_resolve_offset(pattern: shader.uint, tap: int) -> shader.ivec2:

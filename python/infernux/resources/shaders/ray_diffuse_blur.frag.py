@@ -1,7 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.ambient_visibility import contact_density
 from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_pixel, sh_normal_weight
-from infernux.shader.lib.ray_signal import ray_grid_pixel
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -14,7 +12,7 @@ class RayDiffuseBlur(shader.fullscreen):
     state = shader.input("state", shader.Color2D)
     primary = shader.input("primary", shader.UInt2D)
     visibility = shader.input("visibility", shader.Color2D)
-    ssao_strength = shader.parameter.float(default=0.0)
+    use_visibility = shader.parameter.bool(default=False)
 
     def main(self, ctx: shader.fragment_input) -> tuple[shader.vec4, shader.vec4, shader.vec4]:
         cell = shader.ivec2(ctx.position.xy)
@@ -32,11 +30,7 @@ class RayDiffuseBlur(shader.fullscreen):
         n = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))
         view_normal = (shader.camera().view_matrix @ shader.vec4(n, 0.0)).xyz
         facing = shader.max(0.3, view_normal.z)
-        vis_extent = shader.ivec2(shader.dimensions(self.visibility, 0))
-        ao_strength = shader.min(1.0, contact_density(self.ssao_strength))
-        visibility = 0.0
-        if ao_strength > 0.0:
-            visibility = ao_strength * shader.load(self.visibility, ray_grid_pixel(site, full, vis_extent), 0).x
+        visibility = shader.load(self.visibility, site, 0).x if self.use_visibility else 0.0
 
         red = shader.vec4(0.0)
         green = shader.vec4(0.0)
@@ -52,9 +46,7 @@ class RayDiffuseBlur(shader.fullscreen):
             if shader.load(self.state, at, 0).y <= 0.0:
                 continue
             normal = decode_octahedral_normal(shader.unpack_half_2x16(guide.z))
-            other_vis = 0.0
-            if ao_strength > 0.0:
-                other_vis = ao_strength * shader.load(self.visibility, ray_grid_pixel(pt, full, vis_extent), 0).x
+            other_vis = shader.load(self.visibility, pt, 0).x if self.use_visibility else 0.0
             weight = sh_bilateral(depth, shader.as_float(guide.y), facing, visibility, other_vis)
             weight *= sh_normal_weight(n, normal)
             if mature:

@@ -124,8 +124,8 @@ class RayTracingContext:
 
     @cached_property
     def ambient_visibility(self) -> TextureHandle | None:
-        """Contact visibility and eye depth from the pipeline's geometry buffer, on demand."""
-        if self.ssao_strength <= 0.0 or not self.diffuse:
+        """Screen-space visibility shared by diffuse reconstruction and lighting."""
+        if not self.diffuse:
             return None
         source = self.surface
         if self.geometry is not None and (source is None or not source.has("ambient_visibility")):
@@ -180,7 +180,7 @@ class RayTracingContext:
             p.set_texture("ambient_visibility", visibility or surface["surface_frame"])
             p.set_param("diffuse_intensity", self.gi_intensity)
             p.set_param("diffuse_saturation", self.gi_saturation)
-            p.set_param("ssao_strength", self.ssao_strength)
+            p.set_param("ssao_strength", self.ssao_strength if visibility is not None else 0.0)
             p.set_param("ssao_contrast", max(0.25, self.ssao_contrast))
             for key, port in (("diffuse_irradiance", "diffuse"), ("specular_radiance", "specular")):
                 p.set_texture(f"ray_{port}", packed.get(key, primary))

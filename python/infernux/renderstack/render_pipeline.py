@@ -264,6 +264,26 @@ class RenderPipeline(SerializedFieldCollectorMixin):
             graph.add_copy_pass(f"{context.source}/Record Ray Primary").copy_texture(primary, target)
         return previous
 
+    @geometry_buffer("ray_diffuse_guide", dependencies={"depth", "surface_frame"})
+    def _provide_ray_diffuse_guide(self, context):
+        from infernux.renderstack._diffuse_irradiance import provide_diffuse_guide
+
+        return provide_diffuse_guide(context)
+
+    @geometry_buffer("ray_surface_reprojection", dependencies={
+        "ray_diffuse_guide", "ray_primary_surface", "ray_previous_primary_surface", "ray_surface_motion",
+    })
+    def _provide_ray_surface_reprojection(self, context):
+        from infernux.renderstack._diffuse_irradiance import provide_surface_reprojection
+
+        return provide_surface_reprojection(context)
+
+    @geometry_buffer("ambient_visibility", dependencies={"ray_surface_reprojection"})
+    def _provide_ambient_visibility(self, context):
+        from infernux.renderstack._diffuse_irradiance import provide_ambient_visibility
+
+        return provide_ambient_visibility(context)
+
     def _required_geometry_buffers(
         self, graph, *, phase: GeometryStagePhase | str = GeometryStagePhase.OPAQUE,
     ) -> frozenset[str]:

@@ -139,7 +139,7 @@ class DefaultDeferredPipeline(RenderPipeline):
     )
     ssao_strength: float = serialized_field(
         default=0.5, range=(0.0, 1.0), slider=True, display_name_key="renderstack.ssao_strength",
-        tooltip="0 disables contact shading. 0.1 applies the measured visibility. Higher values deepen contacts.",
+        tooltip="Adjusts the GTAO contribution to diffuse indirect lighting.",
         visible_when=attrgetter("global_illumination"),
     )
     ssao_contrast: float = serialized_field(
@@ -173,19 +173,6 @@ class DefaultDeferredPipeline(RenderPipeline):
         self._standalone_desc = None
         if self._render_stack is not None:
             self._render_stack.invalidate_graph()
-
-    @geometry_buffer("ambient_visibility", dependencies={DEPTH_TEXTURE, "surface_frame"})
-    def _provide_ambient_visibility(self, context):
-        from infernux.rendergraph.graph import Format
-
-        graph = context.graph
-        target = graph.create_texture(f"_result/{context.source}/ambient_visibility",
-                                      format=Format.RG16_SFLOAT, size_divisor=2, samples=1)
-        with graph.add_pass(f"{context.source}/Contact Visibility") as p:
-            p.set_textures({"depth_tex": context.sample(DEPTH_TEXTURE), "frame": context.sample("surface_frame")})
-            p.write_color(target)
-            p.fullscreen_quad("infernux/internal/contact_visibility")
-        return target
 
     @geometry_buffer(NORMAL_TEXTURE, dependencies={DEPTH_TEXTURE})
     def _provide_deferred_normal(self, context):

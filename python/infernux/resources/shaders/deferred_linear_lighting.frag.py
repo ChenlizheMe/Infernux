@@ -50,7 +50,7 @@ class DeferredLinearLighting(shader.fullscreen):
                                             depth, surface.normal_ws, frame.z)
         elif self.specular_mode == 1:
             specular = shader.load(self.specular_radiance, pixel, 0)
-        diffuse = adjust_diffuse_lighting(diffuse, self.ambient_visibility, ctx.uv, depth,
+        diffuse = adjust_diffuse_lighting(diffuse, self.ambient_visibility, pixel,
                                           self.diffuse_intensity, self.diffuse_saturation,
                                           self.ssao_strength, self.ssao_contrast)
         return shader.vec4(shader.lighting._shade_ray(surface, shading, metadata.y, diffuse, specular), 1.0)

@@ -273,7 +273,8 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
                                     "ssao_strength": 0.5, "ssao_contrast": 1.0}
     visibility = graph.get_pass_result("gbuffer").sample("ambient_visibility")
     primary = graph.get_pass_result("gbuffer").sample("ray_primary_surface")
-    assert visibility.size_divisor == 2 and primary.size_divisor == 0
+    assert visibility.size_divisor == primary.size_divisor == 0
+    assert visibility.format == Format.R8_UNORM
     assert lighting._input_bindings["ambient_visibility"] == visibility.name
     assert lighting._input_bindings["primary_tex"] == primary.name
 
@@ -285,9 +286,19 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     assert surface_reprojection._input_bindings["primary"] == primary.name
     assert observation._input_bindings["reprojection"] == surface_reprojection._write_colors[0]
     assert graph.get_texture(surface_reprojection._write_colors[0]).format == Format.RG32_UINT
-    screen = passes["Ray Diffuse Screen Depth"]
+    screen = passes["Ray Diffuse Half Geometry"]
     assert screen._write_colors == {0: observation._input_bindings["screen_depth"]}
     assert graph.get_texture(screen._write_colors[0]).size_divisor == 2
+    ao = passes["gbuffer/GTAO"]
+    upsample = passes["gbuffer/GTAO Upsample"]
+    temporal = passes["gbuffer/GTAO Temporal"]
+    assert screen._order < surface_reprojection._order < ao._order < upsample._order < temporal._order < observation._order
+    assert ao._input_bindings["guide"] == upsample._input_bindings["guide"] == screen._write_colors[0]
+    assert ao._write_colors[0] == upsample._input_bindings["visibility"]
+    assert upsample._write_colors[0] == temporal._input_bindings["visibility"]
+    assert temporal._input_bindings["reprojection"] == surface_reprojection._write_colors[0]
+    assert temporal._write_colors[0] == visibility.name
+    assert graph.get_texture(temporal._input_bindings["history"]).temporal_key == visibility.temporal_key
     previous_color = graph.get_texture(observation._input_bindings["previous_radiance"])
     capture = passes["Record Scene Radiance"]
     assert graph.get_texture(capture._write_colors[0]).temporal_key == previous_color.temporal_key
@@ -388,7 +399,7 @@ def test_screen_ui_records_scene_radiance_from_a_custom_pipeline_color_target():
     assert dict(capture.write_colors)[0] == target.name
 
 
-def test_zero_contact_strength_keeps_diffuse_independent_of_the_visibility_pass():
+def test_zero_contact_strength_preserves_visibility_guided_diffuse():
     pipeline = DefaultDeferredPipeline()
     pipeline.global_illumination = True
     pipeline.gi_intensity = 1.75
@@ -398,11 +409,12 @@ def test_zero_contact_strength_keeps_diffuse_independent_of_the_visibility_pass(
     pipeline.define_topology(graph)
     graph.build()
     passes = {p.name: p for p in graph._passes}
-    assert not graph.get_pass_result("gbuffer").has("ambient_visibility")
-    assert "gbuffer/Contact Visibility" not in passes
+    assert graph.get_pass_result("gbuffer").has("ambient_visibility")
+    assert "gbuffer/GTAO Temporal" in passes
     assert passes["DeferredLightingPass"]._parameters["diffuse_intensity"] == 1.75
     assert passes["DeferredLightingPass"]._parameters["diffuse_saturation"] == 0.25
-    assert passes["Ray Diffuse Recurrent Blur"]._parameters["ssao_strength"] == 0.0
+    assert passes["DeferredLightingPass"]._parameters["ssao_strength"] == 0.0
+    assert passes["Ray Diffuse Recurrent Blur"]._parameters["use_visibility"]
 
 
 def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently():

@@ -1,7 +1,6 @@
 import infernux.shader as shader
-from infernux.shader.lib.ambient_visibility import contact_density
 from infernux.shader.lib.noise import hash_vec2
-from infernux.shader.lib.ray_signal import ray_grid_pixel, unpack_ray_signal
+from infernux.shader.lib.ray_signal import unpack_ray_signal
 from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_pixel
 from infernux.shader.lib.ray_moments import sample_direction, sh_coefficients
 from infernux.shader.lib.surface import decode_octahedral_normal
@@ -13,7 +12,7 @@ class RayDiffuseGather(shader.fullscreen):
     observations = shader.input("observations", shader.UInt2D)
     primary = shader.input("primary", shader.UInt2D)
     ambient_visibility = shader.input("ambient_visibility", shader.Color2D)
-    ssao_strength = shader.parameter.float(default=0.0)
+    use_visibility = shader.parameter.bool(default=False)
     divisor = shader.parameter.int(default=2)
 
     def main(self, ctx: shader.fragment_input) -> tuple[shader.vec4, shader.vec4, shader.vec4]:
@@ -37,11 +36,7 @@ class RayDiffuseGather(shader.fullscreen):
         g = shader.vec4(0.0)
         b = shader.vec4(0.0)
         total = 0.0
-        visibility_extent = shader.ivec2(shader.dimensions(self.ambient_visibility, 0))
-        ao_strength = shader.min(1.0, contact_density(self.ssao_strength))
-        visibility = 0.0
-        if ao_strength > 0.0:
-            visibility = ao_strength * shader.load(self.ambient_visibility, ray_grid_pixel(source, full, visibility_extent), 0).x
+        visibility = shader.load(self.ambient_visibility, source, 0).x if self.use_visibility else 0.0
         phase = shader.float(index & shader.uint(255))
         rotation = shader.frac(hash_vec2(shader.vec2(cell)) + phase * shader.vec2(0.754877666, 0.569840296))
         for i in range(8):
@@ -57,9 +52,7 @@ class RayDiffuseGather(shader.fullscreen):
             body = unpack_ray_signal(body_packet)
             if body.a <= 0.0:
                 continue
-            neighbor_visibility = 0.0
-            if ao_strength > 0.0:
-                neighbor_visibility = ao_strength * shader.load(self.ambient_visibility, ray_grid_pixel(site, full, visibility_extent), 0).x
+            neighbor_visibility = shader.load(self.ambient_visibility, site, 0).x if self.use_visibility else 0.0
             w = sh_bilateral(depth, shader.as_float(q.y), facing, visibility, neighbor_visibility)
             axis = sample_direction(body_packet)
             cosine = shader.dot(n, axis)

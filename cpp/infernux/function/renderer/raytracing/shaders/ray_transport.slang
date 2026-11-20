@@ -710,9 +710,9 @@ InxRaySignal inx_reproject_diffuse_radiance(TraceRay ray, InxScreenDiffuseHit hi
     return {float4(history.texture.Load(int3(at, 0)).rgb, 1.0), uint2(surface.x, asuint(hit.distance))};
 }
 
-float inx_load_screen_depth(InxColor2D depths, int2 pixel, int2 extent)
+float inx_load_screen_depth(InxUInt2D depths, int2 pixel, int2 extent)
 {
-    return depths.texture.Load(int3(clamp(pixel, int2(0), extent - 1), 0)).x;
+    return asfloat(depths.texture.Load(int3(clamp(pixel, int2(0), extent - 1), 0)).x);
 }
 
 struct InxDiffuseDepthTest
@@ -721,7 +721,7 @@ struct InxDiffuseDepthTest
     float penetration;
 };
 
-InxDiffuseDepthTest inx_diffuse_screen_depth(InxColor2D depths, int2 extent, float3 ndc, bool linear_test)
+InxDiffuseDepthTest inx_diffuse_screen_depth(InxUInt2D depths, int2 extent, float3 ndc, bool linear_test)
 {
     float2 pixel = (ndc.xy * 0.5 + 0.5) * float2(extent);
     float nearest;
@@ -759,7 +759,7 @@ float3 inx_clip_diffuse_end(float3 start, float3 end, float limit)
     return start + delta * max(0.0, min(limit, min(boundary.x, min(boundary.y, boundary.z))));
 }
 
-bool inx_march_diffuse_segment(float3 start, float3 end, InxColor2D depths, int2 extent, float jitter,
+bool inx_march_diffuse_segment(float3 start, float3 end, InxUInt2D depths, int2 extent, float jitter,
                                float thickness, bool near_segment, out float3 crossing)
 {
     float2 pixels = (end.xy - start.xy) * (0.5 * float2(extent));
@@ -818,7 +818,7 @@ bool inx_march_diffuse_segment(float3 start, float3 end, InxColor2D depths, int2
     return false;
 }
 
-InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float3 receiver, float4x4 vp, InxColor2D depths,
+InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float3 receiver, float4x4 vp, InxUInt2D depths,
                                             uint2 full, uint2 extent, uint2 pixel, uint frame)
 {
     float4 clip = mul(vp, float4(receiver, 1.0));
@@ -853,7 +853,7 @@ InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float3 receiver, floa
     return (InxScreenDiffuseHit)0;
 }
 
-InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D primary, InxColor2D depths,
+InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D primary, InxUInt2D depths,
                                      InxHistory2D history, InxUInt2D reprojection,
                                      InxBuffer_uint4 records, InxBuffer_uint4 cache,
                                      uint seed, uint index, float pdf, float3 receiver, uint2 pixel, bool temporal)
@@ -897,7 +897,7 @@ uint inx_diffuse_hilbert(uint2 pixel)
 }
 
 public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 normal, uint2 cell, bool temporal,
-                                         InxUInt2D primary, InxColor2D screen_depth, InxHistory2D history,
+                                         InxUInt2D primary, InxUInt2D screen_depth, InxHistory2D history,
                                          InxUInt2D reprojection, InxBuffer_uint4 records, InxBuffer_uint4 cache)
 {
     RayPage page = ray_page();

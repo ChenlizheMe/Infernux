@@ -57,7 +57,7 @@ _RAY_ARGUMENTS = ("float3", "float3", "float", "float", "uint", "float")
 _RAY_FUNCTIONS = {"ray.trace_closest": ("inx_world_ray_closest", "InxRaySurfaceHit", _RAY_ARGUMENTS),
                   "ray.trace_visibility": ("inx_world_ray_visibility", "bool", _RAY_ARGUMENTS),
                   "ray._diffuse_sample": ("inx_ray_diffuse_sample", "InxRaySignal", (
-                      "float3", "float3", "uint2", "bool", "InxUInt2D", "InxColor2D", "InxHistory2D", "InxUInt2D",
+                      "float3", "float3", "uint2", "bool", "InxUInt2D", "InxUInt2D", "InxHistory2D", "InxUInt2D",
                       "InxBuffer_uint4", "InxBuffer_uint4")),
                   "ray._thin_reflection": ("inx_ray_thin_reflection", "float4", (
                       "float3", "float3", "InxBuffer_uint4", "float2", "InxBuffer_uint4")),

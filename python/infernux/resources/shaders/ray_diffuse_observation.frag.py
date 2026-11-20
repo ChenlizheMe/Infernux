@@ -9,7 +9,7 @@ class RayDiffuseObservation(shader.fullscreen):
     shader_id = "infernux/internal/ray_diffuse_observation"
     hidden = True
     primary = shader.input("primary", shader.UInt2D)
-    screen_depth = shader.input("screen_depth", shader.Color2D)
+    screen_depth = shader.input("screen_depth", shader.UInt2D)
     previous_radiance = shader.input("previous_radiance", shader.History2D, domain="scene_linear_hdr")
     reprojection = shader.input("reprojection", shader.UInt2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
