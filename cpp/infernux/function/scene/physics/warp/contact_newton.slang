@@ -34,7 +34,17 @@ uint patternWords(uint count)
 
 uint patternBase(uint world, uint col, uint count, uint words)
 {
-    return world * (count * words + count + 1) + col * words;
+    return world * (count * words + 5 * count + 3) + col * words;
+}
+
+uint componentOffsetBase(uint world, uint count, uint words)
+{
+    return patternBase(world, count, count, words) + count + 1;
+}
+
+uint factorErrorAddress(uint world, uint count, uint words)
+{
+    return componentOffsetBase(world, count, words) + 4 * count + 1;
 }
 
 uint inclusiveWordMask(uint bit)
@@ -90,7 +100,7 @@ void clear_newton_pattern(uint3 id : SV_DispatchThreadID)
     const uint count = tileCount();
     const uint entries = count * patternWords(count);
     if (id.x < entries && worlds[id.y].progress.y == Running)
-        hessianPattern[id.y * (entries + count + 1) + id.x].store(0);
+        hessianPattern[patternBase(id.y, 0, count, patternWords(count)) + id.x].store(0);
 }
 
 [shader("compute")]
@@ -147,6 +157,52 @@ void seed_newton_contact_pattern(uint3 id : SV_DispatchThreadID)
     }
 }
 
+void packNewtonComponents(uint world, uint count, uint words)
+{
+    const uint offsets = componentOffsetBase(world, count, words);
+    const uint members = offsets + count + 1;
+    const uint roots = members + count;
+    const uint cursors = roots + count;
+    for (uint col = 0; col <= count; ++col)
+        hessianPattern[offsets + col].store(0);
+    for (uint col = 0; col < count; ++col)
+    {
+        // Cholesky filled the earlier neighbors into a clique. The nearest
+        // predecessor in the elimination tree therefore represents all of them.
+        uint root = col;
+        const uint mask = patternBase(world, col, count, words);
+        for (uint w = col / 32u + 1; w > 0; --w)
+        {
+            const uint current = w - 1;
+            uint bits = hessianPattern[mask + current].load();
+            if (current == col / 32u)
+                bits &= (1u << (col & 31u)) - 1u;
+            if (bits != 0)
+            {
+                const uint parent = current * 32u + uint(firstbithigh(bits));
+                root = hessianPattern[roots + parent].load();
+                break;
+            }
+        }
+        hessianPattern[roots + col].store(root);
+        hessianPattern[offsets + root + 1].add(1);
+    }
+
+    uint start = 0;
+    for (uint root = 0; root < count; ++root)
+    {
+        hessianPattern[cursors + root].store(start);
+        start += hessianPattern[offsets + root + 1].load();
+        hessianPattern[offsets + root + 1].store(start);
+    }
+    for (uint col = 0; col < count; ++col)
+    {
+        const uint root = hessianPattern[roots + col].load();
+        const uint index = hessianPattern[cursors + root].add(1);
+        hessianPattern[members + index].store(col);
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void seal_newton_pattern(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
@@ -197,6 +253,8 @@ void seal_newton_pattern(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             state.progress.y = CapacityExceeded;
             worlds[world] = state;
         }
+        else
+            packNewtonComponents(world, count, words);
     }
 }
 
@@ -208,8 +266,11 @@ void clear_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     if (worlds[world].progress.y != Running)
         return;
     const uint count = tileCount();
-    const uint used = hessianPattern[patternBase(world, count, count, patternWords(count)) + count].load();
+    const uint words = patternWords(count);
+    const uint used = hessianPattern[patternBase(world, count, count, words) + count].load();
     const uint base = world * cgOptions[0].w * NewtonTileArea;
+    if (lane == 0)
+        hessianPattern[factorErrorAddress(world, count, words)].store(0);
     for (uint i = lane; i < used * NewtonTileArea; i += CgWidth)
         hessianValues[base + i].store(0);
 }
@@ -386,16 +447,22 @@ void storeHessian(uint address, float value)
 void factor_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     const uint world = group.y;
-    CgWorld state = worlds[world];
+    const CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)
         return;
     const uint count = broadcastCg(tileCount(), lane);
     const uint words = patternWords(count);
+    const uint offsets = componentOffsetBase(world, count, words);
+    const uint begin = broadcastCg(hessianPattern[offsets + group.x].load(), lane);
+    const uint end = broadcastCg(hessianPattern[offsets + group.x + 1].load(), lane);
+    const uint members = offsets + count + 1;
     const uint x = lane / NewtonTile;
     const uint y = lane % NewtonTile;
-    for (uint p = count; p > 0; --p)
+    const uint length = end - begin;
+    for (uint reverse = 0; reverse < length; ++reverse)
     {
-        const uint pivot = p - 1;
+        const uint earlier = length - 1 - reverse;
+        const uint pivot = hessianPattern[members + begin + earlier].load();
         const uint diagonal = tileAddress(world, pivot, pivot, count, words);
         diagonalTile[lane] = loadHessian(diagonal + lane);
         GroupMemoryBarrierWithGroupSync();
@@ -413,10 +480,7 @@ void factor_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             if (workgroupUniformLoad(invalidDiagonal) != 0)
             {
                 if (lane == 0)
-                {
-                    state.progress.y = InvalidFactor;
-                    worlds[world] = state;
-                }
+                    hessianPattern[factorErrorAddress(world, count, words)].store(1);
                 return;
             }
             if (y == inner && x < inner)
@@ -429,9 +493,9 @@ void factor_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         if (x <= y)
             storeHessian(diagonal + lane, diagonalTile[lane]);
 
-        for (uint i = lane; i < pivot * NewtonTile; i += CgWidth)
+        for (uint i = lane; i < earlier * NewtonTile; i += CgWidth)
         {
-            const uint row = i / NewtonTile;
+            const uint row = hessianPattern[members + begin + i / NewtonTile].load();
             if (!hasTile(world, pivot, row, count, words))
                 continue;
             const uint base = tileAddress(world, pivot, row, count, words) + (i % NewtonTile) * NewtonTile;
@@ -492,20 +556,34 @@ float directionValue(uint base, uint dof, uint nv)
 void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     const uint world = group.y;
-    CgWorld state = worlds[world];
+    const CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)
         return;
     const uint nv = settings[1].y;
     const uint count = broadcastCg(tileCount(), lane);
     const uint words = patternWords(count);
+    if (broadcastCg(hessianPattern[factorErrorAddress(world, count, words)].load(), lane) != 0)
+        return;
+    const uint offsets = componentOffsetBase(world, count, words);
+    const uint begin = broadcastCg(hessianPattern[offsets + group.x].load(), lane);
+    const uint length = broadcastCg(hessianPattern[offsets + group.x + 1].load() - begin, lane);
+    if (length == 0)
+        return;
+    const uint members = offsets + count + 1;
     const uint base = world * nv;
-    for (uint i = lane; i < nv; i += CgWidth)
-        directionHistory[base + i] = float4(0.0, 0.0, -gradient[base + i], 0.0);
+    for (uint i = lane; i < length * NewtonTile; i += CgWidth)
+    {
+        const uint tile = hessianPattern[members + begin + i / NewtonTile].load();
+        const uint dof = tile * NewtonTile + i % NewtonTile;
+        if (dof < nv)
+            directionHistory[base + dof] = float4(0.0, 0.0, -gradient[base + dof], 0.0);
+    }
     syncNewtonStorage();
 
-    for (uint p = count; p > 0; --p)
+    for (uint reverse = 0; reverse < length; ++reverse)
     {
-        const uint col = p - 1;
+        const uint earlier = length - 1 - reverse;
+        const uint col = hessianPattern[members + begin + earlier].load();
         const uint diagonal = tileAddress(world, col, col, count, words);
         if (lane == 0)
         {
@@ -522,22 +600,24 @@ void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             }
         }
         GroupMemoryBarrierWithGroupSync();
-        for (uint i = lane; i < col * NewtonTile; i += CgWidth)
+        for (uint i = lane; i < earlier * NewtonTile; i += CgWidth)
         {
-            const uint row = i / NewtonTile;
+            const uint row = hessianPattern[members + begin + i / NewtonTile].load();
             if (!hasTile(world, col, row, count, words))
                 continue;
             const uint address = tileAddress(world, col, row, count, words) + (i % NewtonTile) * NewtonTile;
-            float value = directionHistory[base + i].z;
+            const uint dof = row * NewtonTile + i % NewtonTile;
+            float value = directionHistory[base + dof].z;
             for (uint j = 0; j < NewtonTile; ++j)
                 value -= loadHessian(address + j) * tileVector[j];
-            directionHistory[base + i] = float4(0.0, 0.0, value, 0.0);
+            directionHistory[base + dof] = float4(0.0, 0.0, value, 0.0);
         }
         syncNewtonStorage();
     }
 
-    for (uint col = 0; col < count; ++col)
+    for (uint i = 0; i < length; ++i)
     {
+        const uint col = hessianPattern[members + begin + i].load();
         const uint diagonal = tileAddress(world, col, col, count, words);
         if (lane < NewtonTile)
         {
@@ -577,7 +657,28 @@ void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         }
         syncNewtonStorage();
     }
+}
 
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void finalize_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const uint world = group.y;
+    CgWorld state = worlds[world];
+    if (broadcastCg(state.progress.y, lane) != Running)
+        return;
+    const uint count = broadcastCg(tileCount(), lane);
+    if (broadcastCg(hessianPattern[factorErrorAddress(world, count, patternWords(count))].load(), lane) != 0)
+    {
+        if (lane == 0)
+        {
+            state.progress.y = InvalidFactor;
+            worlds[world] = state;
+        }
+        return;
+    }
+    const uint nv = settings[1].y;
+    const uint base = world * nv;
     float4 partial = float4(0.0);
     for (uint i = lane; i < nv; i += CgWidth)
     {
