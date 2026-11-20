@@ -26,6 +26,16 @@ uint8_t Mask(const Component &c)
                    (c.WantsTriggerExitCallbacks() ? TriggerExitInterest : 0));
 }
 
+void CaptureReceivers(const GameObject &object, std::vector<State::Receiver> &receivers)
+{
+    for (const auto &component : object.GetAllComponents()) {
+        if (!component || component->IsDestroyed() || component->IsBeingDestroyed())
+            continue;
+        if (const auto mask = Mask(*component))
+            receivers.push_back({PhysicsTargetReference(component.get()), mask});
+    }
+}
+
 State::PairKey CanonicalKey(const State::Manifold &manifold)
 {
     const auto a = manifold.a.Key(), b = manifold.b.Key();
@@ -70,20 +80,15 @@ void State::Policy::CaptureActor(const RuntimeWorld &world, const PhysicsActorDa
 {
     if (actor.runtimeWorld != &world || !actor.owner || actor.sceneSuspended || !actor.owner->IsActiveInHierarchy())
         return;
+    std::vector<Receiver> ownerReceivers;
+    CaptureReceivers(*actor.owner, ownerReceivers);
     for (auto *collider : actor.colliders) {
-        if (!collider || !collider->GetGameObject() || !collider->GetGameObject()->IsActiveInHierarchy())
+        auto *object = collider ? collider->GetGameObject() : nullptr;
+        if (!object || !object->IsActiveInHierarchy())
             continue;
-        std::vector<Receiver> interested;
-        std::set<Surface> seen;
-        for (auto *object : {actor.owner, collider->GetGameObject()})
-            for (const auto &c : object->GetAllComponents()) {
-                if (!c || c->IsDestroyed() || c->IsBeingDestroyed())
-                    continue;
-                const auto mask = Mask(*c);
-                const auto identity = std::make_pair(c->GetComponentID(), c->GetLifetimeGeneration());
-                if (mask && seen.insert(identity).second)
-                    interested.push_back({PhysicsTargetReference(c.get()), mask});
-            }
+        auto interested = ownerReceivers;
+        if (object != actor.owner)
+            CaptureReceivers(*object, interested);
         if (!interested.empty())
             receivers[{collider->GetComponentID(), collider->GetLifetimeGeneration()}] = std::move(interested);
     }
