@@ -364,7 +364,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         config.selectedCounts.w = static_cast<uint32_t>(pairs->keys.size());
         const uint32_t leaves = config.selectedCounts.y;
         const uint32_t joints = config.selectedCounts.z;
-        const bool smallPairs = leaves && leaves <= BroadphaseSmallSetLimit && joints <= BroadphaseSmallSetLimit;
+        const bool smallPairs = leaves && leaves <= BroadphaseSmallSetLimit && joints <= BroadphaseSmallJointLimit;
         config.round.w = uint32_t(smallPairs);
         config.round.y = uint32_t(swept);
         uint64_t words = 0;
@@ -408,9 +408,12 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         workset = std::make_shared<JoltGpuContactWorkset>();
         // A world with a contact history can run collision inline before the usual count receipt.
         // Otherwise the tick dispatches only the candidates reported by that same receipt.
-        workset->collisionDispatched = !swept && storage.GetContactHistory(settings.selection.x).patchCount != 0;
-        // A single group knows its complete pair upper bound from this World.
-        ConfigureCapacity(smallPairs ? std::max(1u, leaves * (leaves - 1u) / 2u)
+        const uint32_t previousPatches = swept ? 0u : storage.GetContactHistory(settings.selection.x).patchCount;
+        workset->collisionDispatched = previousPatches != 0;
+        // Use the preceding substep's accepted pair count to avoid allocating
+        // quadratic contact storage for sparse single-group work.
+        const uint32_t pairLimit = smallPairs ? std::max(1u, leaves * (leaves - 1u) / 2u) : 0u;
+        ConfigureCapacity(smallPairs ? std::min(std::max(leaves, previousPatches), pairLimit)
                                      : implementation->recentCapacity[config.round.y]);
     }
 
@@ -990,7 +993,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             case Phase::FinalInitialize:
                 if (Range(InitCandidates, static_cast<uint32_t>(1ull + 2ull * capacity), uploads, dispatches))
                     return true;
-                afterContacts = Phase::ResidentPublish;
+                afterContacts = config.round.w ? Phase::SmallPairs : Phase::ResidentPublish;
                 phase = Phase::FinalContacts;
                 break;
             case Phase::FinalContacts:
