@@ -281,10 +281,13 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     assert observation._parameters == {"divisor": trace_divisor, "temporal": True}
     assert observation._input_bindings["primary"] == primary.name
     assert observation._input_bindings["world_ray_meshes"] == graph.get_buffer("world_ray_meshes").name
-    screen = passes["Ray Diffuse Screen Proxy"]
-    assert screen._write_colors == {0: observation._input_bindings["screen_radiance"],
-                                    1: observation._input_bindings["screen_depth"]}
-    assert all(graph.get_texture(name).size_divisor == 2 for name in screen._write_colors.values())
+    screen = passes["Ray Diffuse Screen Depth"]
+    assert screen._write_colors == {0: observation._input_bindings["screen_depth"]}
+    assert graph.get_texture(screen._write_colors[0]).size_divisor == 2
+    previous_color = graph.get_texture(observation._input_bindings["previous_radiance"])
+    capture = passes["Record Scene Radiance"]
+    assert graph.get_texture(capture._write_colors[0]).temporal_key == previous_color.temporal_key
+    assert capture._order < passes["_WorldUI"]._order
     assert len(observation._write_colors) == 1
     packet = graph.get_texture(observation._write_colors[0])
     assert packet.size_divisor == trace_divisor and packet.format == Format.RGBA32_UINT
@@ -334,6 +337,47 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
         assert result.sample("specular_radiance").format == Format.RGBA32_SFLOAT
         assert result.sample("specular_hit_distance").size_divisor == 0
     graph.build()
+
+
+def test_deferred_diffuse_uses_the_taa_history_without_recopying_scene_color():
+    from infernux.core.asset_ref import RenderEffectRef
+    from infernux.renderstack.render_effect import RenderEffect
+    from infernux.renderstack.render_effect_asset import RenderEffectAsset
+    from infernux.renderstack.render_stack import RenderStack
+
+    stack = RenderStack()
+    pipeline = DefaultDeferredPipeline()
+    pipeline.global_illumination = True
+    stack._pipeline = pipeline
+    pipeline._render_stack = stack
+    taa = RenderEffect(RenderEffectAsset(feature_type="infernux.post.temporal_aa"))
+    stack.add_effect_slot("final", RenderEffectRef(effect=taa))
+    description = stack.build_graph()
+
+    passes = {p.name: p for p in description.passes}
+    textures = {t.name: t for t in description.textures}
+    render_pass, = (p for p in passes.values() if p.name.endswith("/TAA_Resolve"))
+    trace = passes["Ray Diffuse Irradiance"]
+    previous, = (t for t in trace.read_textures if t.endswith("_scene_radiance/read"))
+    assert previous in render_pass.read_textures
+    assert textures[dict(render_pass.write_colors)[0]].temporal_key == textures[previous].temporal_key
+    assert "Record Scene Radiance" not in passes
+
+
+def test_screen_ui_records_scene_radiance_from_a_custom_pipeline_color_target():
+    graph = RenderGraph("custom scene color")
+    color = graph.create_texture("color", format=Format.RGBA16_SFLOAT, camera_target=True)
+    graph.create_texture("depth", format=Format.D32_SFLOAT, camera_target=True)
+    graph.add_pass("Custom Lighting").write_color(color)
+    _, target = graph._scene_radiance_history()
+    graph.screen_ui_section()
+
+    passes = list(graph.build().passes)
+    names = [p.name for p in passes]
+    capture = passes[names.index("Record Scene Radiance")]
+    assert names.index("Custom Lighting") < names.index(capture.name) < names.index("_WorldUI")
+    assert color.name in capture.read_textures
+    assert dict(capture.write_colors)[0] == target.name
 
 
 def test_zero_contact_strength_keeps_diffuse_independent_of_the_visibility_pass():

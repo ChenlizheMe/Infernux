@@ -3,7 +3,7 @@
 from functools import partial
 
 from infernux.rendergraph.graph import Format
-from infernux.renderstack._pipeline_common import bind_deferred_surface, bind_ray_world, deferred_surface_inputs
+from infernux.renderstack._pipeline_common import bind_ray_world
 from infernux.renderstack.ray_tracer import RayTracingQuality, RayTracingSignal
 
 
@@ -70,21 +70,20 @@ def trace_grid(quality):
 def trace_diffuse(ctx, guides, divisor):
     graph = ctx.graph
     stem = f"{ctx.name}/diffuse"
-    screen_radiance = graph.create_texture(f"{stem}/screen_radiance", format=Format.RGBA16_SFLOAT,
-                                           size_divisor=2, samples=1)
+    previous_radiance, _ = graph._scene_radiance_history()
     screen_depth = graph.create_texture(f"{stem}/screen_depth", format=Format.R32_SFLOAT,
                                         size_divisor=2, samples=1)
-    with graph.add_pass("Ray Diffuse Screen Proxy") as p:
-        bind_deferred_surface(p, deferred_surface_inputs(guides.surface))
+    with graph.add_pass("Ray Diffuse Screen Depth") as p:
+        p.set_texture("depth", guides.surface.sample("depth"))
         p.set_param("temporal", ctx.reconstruct)
-        p.write_color(screen_radiance)
-        p.write_color(screen_depth, slot=1)
-        p.fullscreen_quad("infernux/internal/ray_screen_radiance")
+        p.write_color(screen_depth)
+        p.fullscreen_quad("infernux/internal/ray_diffuse_screen_depth")
     packet = graph.create_texture(f"{stem}/observation", format=Format.RGBA32_UINT,
                                   size_divisor=divisor, samples=1)
     with graph.add_pass("Ray Diffuse Irradiance") as p:
         bind_ray_world(p, ctx.world.materials)
-        p.set_textures({"primary": guides.primary, "screen_radiance": screen_radiance, "screen_depth": screen_depth})
+        p.set_textures({"primary": guides.primary, "screen_depth": screen_depth, "previous_radiance": previous_radiance,
+                        "motion": guides.motion or guides.primary, "previous_primary": guides.previous_primary or guides.primary})
         p.set_buffer("surface_records", guides.surface.sample("surface_records"))
         p.set_buffer("tail_cache", graph._world_ray_tail_read())
         p.set_param("divisor", divisor or 1)

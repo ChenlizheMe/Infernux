@@ -9,8 +9,10 @@ class RayDiffuseObservation(shader.fullscreen):
     shader_id = "infernux/internal/ray_diffuse_observation"
     hidden = True
     primary = shader.input("primary", shader.UInt2D)
-    screen_radiance = shader.input("screen_radiance", shader.Color2D)
     screen_depth = shader.input("screen_depth", shader.Color2D)
+    previous_radiance = shader.input("previous_radiance", shader.History2D, domain="scene_linear_hdr")
+    previous_primary = shader.input("previous_primary", shader.UInt2D)
+    motion = shader.input("motion", shader.UInt2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
     tail_cache = shader.input("ray_tail_read", shader.Buffer[shader.uvec4])
     divisor = shader.parameter.int(default=4)
@@ -30,6 +32,8 @@ class RayDiffuseObservation(shader.fullscreen):
         # The exact triangle traversal needs the point on the phase-selected raster surface.
         uv = (shader.vec2(site) + 0.5) / shader.vec2(full)
         position = world_position(uv, shader.as_float(receiver.y), shader.camera())
-        sample = shader.ray._diffuse_sample(position, normal, shader.uvec2(cell), self.temporal, self.primary,
-                                            self.screen_radiance, self.screen_depth, self.surface_records, self.tail_cache)
+        sample = shader.ray._diffuse_sample(
+            position, normal, shader.uvec2(cell), self.temporal, self.primary, self.screen_depth,
+            self.previous_radiance, self.previous_primary, self.motion, self.surface_records, self.tail_cache
+        )
         return pack_ray_signal(sample.radiance, sample.witness)

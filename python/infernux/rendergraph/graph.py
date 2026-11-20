@@ -1026,6 +1026,7 @@ class RenderGraph:
         self._standard_display_tail = None
         self._msaa_samples: int = output_samples  # 0 = pipeline-owned screen MSAA
         self._temporal_jitter = False
+        self._scene_radiance = None
         # Topology auto-recording
         self._topology: list[tuple[tuple[int, ...], str, str]] = []
         self._topology_serial = 0
@@ -1540,6 +1541,18 @@ class RenderGraph:
         read.temporal_key = write.temporal_key = base
         return read, write
 
+    def _scene_radiance_history(self):
+        if self._scene_radiance is None:
+            self._scene_radiance = self.create_temporal_history("_scene_radiance")
+        return self._scene_radiance
+
+    def _unwritten_scene_radiance_history(self):
+        if self._scene_radiance is not None:
+            write = self._scene_radiance[1].name
+            if not any(write in p._write_colors.values() for p in self._passes):
+                return self._scene_radiance
+        return None
+
     def get_texture(self, name: str) -> Optional[TextureHandle]:
         """Look up a texture by its string alias.
 
@@ -1958,6 +1971,8 @@ class RenderGraph:
                                  passes retain their own masks.
         """
         res = resources or {"color"}
+        scene = self.current_pass_result
+        radiance_order = self._next_order() if self._scene_radiance is not None else None
 
         self.camera_ui_section(resources=res, world_ui_layer_mask=world_ui_layer_mask)
 
@@ -1975,6 +1990,15 @@ class RenderGraph:
         if not self.has_injection_point("after_post_process"):
             self.injection_point("after_post_process", resources=res)
 
+        history = self._unwritten_scene_radiance_history()
+        if history is not None:
+            # A camera without TAA records the scene output before camera UI
+            # and the display transform, even when the scene did not publish a result.
+            color = scene.sample("color") if scene is not None and scene.has("color") else self.get_texture("color")
+            with self._add_typed_pass("Record Scene Radiance", "raster", order=radiance_order) as record:
+                record.set_texture("source_tex", color)
+                record.write_color(history[1])
+                record.fullscreen_quad("infernux/internal/fullscreen_copy")
         self.screen_ui_overlay_section(resources=res)
 
     def display_encode_section(self) -> None:
@@ -2029,11 +2053,12 @@ class RenderGraph:
         """
         return self._add_typed_pass(name, "raster")
 
-    def _add_typed_pass(self, name: str, pass_type: str) -> RenderPassBuilder:
+    def _add_typed_pass(self, name: str, pass_type: str, *, order=None) -> RenderPassBuilder:
         pass_name = self._scoped_name(name)
         builder = RenderPassBuilder(pass_name, graph=self, pass_type=pass_type)
         self._passes.append(builder)
-        builder._order = self._record_topology("pass", pass_name)
+        builder._order = order if order is not None else self._next_order()
+        self._topology.append((builder._order, "pass", pass_name))
         return builder
 
     def add_copy_pass(self, name: str) -> RenderPassBuilder:
