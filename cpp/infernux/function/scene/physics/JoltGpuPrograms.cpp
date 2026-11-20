@@ -770,6 +770,35 @@ std::vector<JoltGpuStorage::SweepCounts> JoltGpuStorage::CountSweeps(const JoltG
     return counts;
 }
 
+const JoltGpuStorage::DiscretePairLimits &JoltGpuStorage::GetDiscretePairLimits(uint32_t world) const
+{
+    auto &cached = m_sweepCounts[world].discrete;
+    if (cached)
+        return *cached;
+
+    const auto &range = m_model.worlds[world];
+    uint64_t active = 0u, passive = 0u, candidates = 0u;
+    for (uint32_t index = range.bodies.x; index < range.bodies.x + range.bodies.y; ++index) {
+        const auto &body = m_model.bodies[index];
+        if (!body.meta.y || (body.meta.z & MotionNotResident))
+            continue;
+        const auto first = m_model.shapes.begin() + body.meta.x;
+        const uint64_t bodyActive = body.meta.z == MotionDynamic
+                                        ? body.meta.y
+                                        : std::count_if(first, first + body.meta.y, [](const auto &leaf) {
+                                              return (leaf.meta.w & ShapeSensor) != 0u;
+                                          });
+        const uint64_t bodyPassive = body.meta.y - bodyActive;
+        candidates += bodyActive * (active + passive) + bodyPassive * active;
+        active += bodyActive;
+        passive += bodyPassive;
+    }
+    // Every projected job has an active leaf. The GPU may still have to
+    // test same-body or nonresident passive leaves while enumerating it.
+    const uint64_t projections = active * (range.leaves.y - active) + active * (active - (active != 0u)) / 2u;
+    return cached.emplace(DiscretePairLimits{candidates, projections, static_cast<uint32_t>(active)});
+}
+
 JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)
     : m_host(host), m_model(std::move(modelData))
 {
@@ -1233,12 +1262,22 @@ void JoltGpuModelUpdate::Commit() noexcept
         auto &next = m_storage->m_sweepCounts[change.model.meta.w];
         next.enabled += uint32_t(Sweeps(change.model));
         next.dynamicPairs += uint32_t(SweepsDynamicPairs(change.model));
+        if (old.meta.x != change.model.meta.x || old.meta.y != change.model.meta.y ||
+            old.meta.z != change.model.meta.z || old.meta.w != change.model.meta.w) {
+            previous.discrete.reset();
+            next.discrete.reset();
+        }
         old = change.model;
     }
     for (const auto &change : m_shapeChanges) {
         const auto &bodies = m_storage->m_model.bodies;
         m_storage->ClearContactHistory(bodies[change.model.meta.y].meta.w);
-        m_storage->m_model.shapes[change.index] = change.model;
+        auto &old = m_storage->m_model.shapes[change.index];
+        if (old.meta.y != change.model.meta.y || ((old.meta.w ^ change.model.meta.w) & ShapeSensor) != 0u) {
+            m_storage->m_sweepCounts[bodies[old.meta.y].meta.w].discrete.reset();
+            m_storage->m_sweepCounts[bodies[change.model.meta.y].meta.w].discrete.reset();
+        }
+        old = change.model;
     }
     for (const auto &change : m_jointChanges)
         m_storage->m_model.joints[change.index] = change.author;
@@ -1513,7 +1552,7 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
     const auto range = work.parameters.range;
     const auto &contacts = resident ? resident : inputs.GetContacts();
     const auto &history = inputs.NextContactHistory();
-    const bool updateHistoryPrefix = work.stage == Stage::StoreContactHistory && contacts->historyDispatch &&
+    const bool updateHistoryPrefix = work.stage == Stage::StoreContactHistory && contacts->countedArguments &&
                                      history.buffer->HasInitializedRange(0, history.ByteSize());
     for (size_t index = 0; index < entry.bindings.size(); ++index) {
         const auto &binding = entry.bindings[index];
@@ -1597,9 +1636,10 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
         dispatch.groupCountX = Groups(range.y, definition.groupSizeX);
     }
     if (definition.stage == Stage::SetupContacts)
-        dispatch.indirectArguments = inputs.GetContacts()->setupDispatch;
+        dispatch.indirectArguments =
+            contacts->Dispatch(JoltGpuContactWorkset::Range::Setup, range.x / MaxContactPointsPerPair);
     if (updateHistoryPrefix)
-        dispatch.indirectArguments = contacts->historyDispatch;
+        dispatch.indirectArguments = contacts->Dispatch(JoltGpuContactWorkset::Range::History, range.x);
     const auto &maximum = m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount;
     if (!dispatch.groupCountX || !dispatch.groupCountY || !dispatch.groupCountZ || dispatch.groupCountX > maximum[0] ||
         dispatch.groupCountY > maximum[1] || dispatch.groupCountZ > maximum[2])

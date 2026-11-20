@@ -361,8 +361,6 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             dispatch.groupCountX = (slots + ConvexJobGroupSize - 1u) / ConvexJobGroupSize;
             dispatch.indirectArguments = rhi::ComputeIndirectArguments{frozen[Arguments], 0u};
         }
-        if (entry == QueueConvex)
-            dispatch.indirectArguments = contactLease->patchDispatch;
         rhi::ComputeDispatchProof proof;
         for (const auto port : program.ports) {
             const auto &buffer = port == Scratch ? scratch
@@ -454,7 +452,10 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             uploads.push_back({uniform, 0u, std::move(bytes)});
             const bool initializing = entry == Initialize;
             const uint32_t count = initializing ? std::max(range.range.x, range.range.y) : range.range.y;
-            dispatches.push_back(Dispatch(entry, count, uniform, initializing ? &range : nullptr));
+            auto dispatch = Dispatch(entry, count, uniform, initializing ? &range : nullptr);
+            if (entry == QueueConvex)
+                dispatch.indirectArguments = contactLease->Dispatch(JoltGpuContactWorkset::Range::Pairs, range.range.x);
+            dispatches.push_back(std::move(dispatch));
             return true;
         };
         if (phase == Phase::InitializeJobs) {
@@ -471,7 +472,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
 
         uint32_t first = queueFirst;
         const uint32_t capacity = contactLease->patchSlots;
-        const uint32_t chunkSize = contactLease->patchDispatch ? capacity : 2048u;
+        const uint32_t chunkSize = contactLease->countedArguments ? contactLease->patchesPerDispatch : 2048u;
         while (first < capacity && dispatches.size() < maximum) {
             const uint32_t chunk = std::min(chunkSize, capacity - first);
             if (!appendRange(QueueConvex, StageWork{{first, chunk, 0u, 0u}}))

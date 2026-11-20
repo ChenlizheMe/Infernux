@@ -83,21 +83,40 @@ struct JoltGpuStageWork
 /// parameters own the logical prefix even when the host uses a capacity bound.
 struct JoltGpuContactWorkset
 {
+    enum class Range : uint32_t
+    {
+        Pairs,
+        Setup,
+        History,
+        RangeCount
+    };
+
     uint32_t patchSlots = 0;
     std::shared_ptr<rhi::ComputeBuffer> parameters, contacts, patches;
-    // The shader publishes these ranges when patchSlots is only a capacity.
-    std::optional<rhi::ComputeIndirectArguments> patchDispatch, setupDispatch, historyDispatch;
+    // Per tile, in Range order. The shader writes actual workload sizes when
+    // the host has only a capacity for the contact stream.
+    std::shared_ptr<rhi::ComputeBuffer> countedArguments;
+    uint32_t patchesPerDispatch = 0;
+
+    [[nodiscard]] std::optional<rhi::ComputeIndirectArguments> Dispatch(Range range, uint32_t firstPatch) const
+    {
+        if (!countedArguments)
+            return {};
+        const uint64_t record =
+            uint64_t(firstPatch / patchesPerDispatch) * uint32_t(Range::RangeCount) + uint32_t(range);
+        return rhi::ComputeIndirectArguments{countedArguments, record * sizeof(JPH::GPU::UInt4)};
+    }
 };
 
 inline uint32_t JoltGpuStageItemLimit(JPH::GPU::Stage stage, JPH::GPU::Domain domain,
                                       const JoltGpuContactWorkset *contacts) noexcept
 {
     using namespace JPH::GPU;
-    if (contacts && contacts->setupDispatch) {
+    if (contacts && contacts->countedArguments) {
         if (stage == Stage::SetupContacts)
-            return ConstraintLocalRefs * MaxContactPointsPerPair;
+            return contacts->patchesPerDispatch * MaxContactPointsPerPair;
         if (stage == Stage::StoreContactHistory)
-            return ConstraintLocalRefs;
+            return contacts->patchesPerDispatch;
     }
     return WorkItemLimit(domain);
 }
@@ -273,6 +292,12 @@ class JoltGpuStorage
     {
         return m_sweepCounts[world].dynamicPairs != 0u;
     }
+    struct DiscretePairLimits
+    {
+        uint64_t candidates, projections;
+        uint32_t activeLeaves;
+    };
+    [[nodiscard]] const DiscretePairLimits &GetDiscretePairLimits(uint32_t world) const;
     [[nodiscard]] uint32_t GetMaxLeavesPerWorld() const noexcept
     {
         return m_maxLeavesPerWorld;
@@ -319,6 +344,7 @@ class JoltGpuStorage
     struct SweepCounts
     {
         uint32_t enabled = 0u, dynamicPairs = 0u;
+        mutable std::optional<DiscretePairLimits> discrete;
     };
     static std::vector<SweepCounts> CountSweeps(const JoltGpuModel &model);
     std::vector<SweepCounts> m_sweepCounts;

@@ -688,8 +688,12 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     {
         if (localTopology && entry == InitWords)
             return config.limits.x;
-        if (entry == BuildPatchRefs && (localTopology || contactLease->patchDispatch))
-            return config.counts.z;
+        if (entry == BuildPatchRefs) {
+            if (contactLease->countedArguments)
+                return contactLease->patchesPerDispatch;
+            if (localTopology)
+                return config.counts.z;
+        }
         return Collective(entry) ? ConstraintBlockLimit : Summary(entry) ? 1u : ConstraintItemLimit;
     }
 
@@ -786,7 +790,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         }
         dispatch.proof = std::move(proof);
         if (op.entry == BuildPatchRefs)
-            dispatch.indirectArguments = contactLease->patchDispatch;
+            dispatch.indirectArguments = contactLease->Dispatch(JoltGpuContactWorkset::Range::Pairs, first);
         dispatches.push_back(std::move(dispatch));
         return true;
     }
