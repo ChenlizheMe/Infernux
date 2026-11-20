@@ -77,8 +77,6 @@ def test_published_skybox_draws_authored_material(engine, scene, skybox_asset, s
         engine.resize_game_render_target(160, 120)
         engine.set_game_camera_enabled(True)
         engine.set_render_pipeline(pipeline)
-        manager.play()
-        manager.pause()
         engine.set_play_mode_rendering(True)
         frame, ticket, changed = 0, None, 0
         images = []
@@ -127,7 +125,6 @@ def test_published_skybox_draws_authored_material(engine, scene, skybox_asset, s
     finally:
         engine.set_post_draw_callback(None)
         engine.set_render_pipeline(None)
-        manager.stop()
         engine.set_play_mode_rendering(previous_rendering)
         pipeline.dispose()
         for obj, active in previous:
