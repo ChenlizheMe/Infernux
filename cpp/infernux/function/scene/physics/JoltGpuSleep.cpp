@@ -88,7 +88,7 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | B | S | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | C | V | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | C | V | Bit(States),
-                                                 P | W | B | S | R | C | V | Bit(States) | Bit(Forces),
+                                                 P | W | B | S | V | Bit(States) | Bit(Forces),
                                                  P | W | B | S | V | Bit(Joints),
                                                  P | B | S | V | Bit(States) | Bit(Bounds),
                                                  P | W | B | S | V | Bit(States) | Bit(Bounds),
@@ -482,12 +482,9 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     const auto &selected = inputs.GetParameters();
     const auto &contacts = inputs.GetContacts();
     auto p = Selection(storage, selected);
-    if (!topology.schedule || !topology.rootVotes || topology.bodyFirst != p.selected.y ||
-        topology.bodyCount != p.selected.z || !contacts)
+    if (topology.bodyFirst != p.selected.y || topology.bodyCount != p.selected.z || !contacts)
         throw std::logic_error("GPU sleep wake requires its accepted substep topology");
     if (selected.selectedCounts.z == 0 && contacts->patchCount == 0) {
-        // Without edges, validated Dynamic roots are their own bodies. An
-        // awake body votes only for itself, and an asleep body gets no vote.
         done();
         return {};
     }
@@ -527,25 +524,20 @@ JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, c
     auto plan = inputs.GetConstraints();
     if (!plan || plan->bodyFirst != p.selected.y || plan->bodyCount != p.selected.z)
         throw std::logic_error("GPU sleep history requires its completed numerical plan");
-    e->buffers[Schedule] = plan->schedule;
-    e->buffers[Roots] = plan->rootVotes;
     e->buffers[Status] = status;
-    p.layout.x = plan->bodyRootFirst;
     p.timing = settings.timing;
     p.operation.z = 1u;
-    const auto &step = inputs.GetParameters();
-    const auto &contacts = inputs.GetContacts();
-    if (step.selectedCounts.z == 0u && contacts && contacts->patchCount == 0u) {
-        // This accepted topology was initialized as isolated: Dynamic roots
-        // are their own rows and every vote starts at zero.
-        // No component wake or numerical assembly writes those rows afterward.
+    if (plan->jointRefCount == 0u && plan->patchRefCount == 0u) {
         e->Add(UpdateCommitIsolated, p.selected.y, p.selected.z, p);
     } else {
+        e->buffers[Schedule] = plan->schedule;
+        e->buffers[Roots] = plan->rootVotes;
+        p.layout.x = plan->bodyRootFirst;
         e->Add(Clear, p.selected.y, p.selected.z, p);
         e->Add(Update, p.selected.y, p.selected.z, p);
         e->Add(Commit, p.selected.y, p.selected.z, p);
-        p.layout.z = step.selection.w;
-        p.layout.w = step.selectedCounts.z;
+        p.layout.z = inputs.GetParameters().selection.w;
+        p.layout.w = plan->jointRefCount;
         e->Add(RetireHinge, p.layout.z, p.layout.w, p);
     }
     e->OnComplete([done = std::move(done)](auto &) { done(); });

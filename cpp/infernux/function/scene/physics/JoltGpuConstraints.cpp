@@ -66,7 +66,6 @@ enum Entry : uint8_t
     WriteIslands,
     Finalize,
     WriteBodyRoots,
-    InitializeIsolatedTopology,
     BuildLocalTopology,
     EntryCount
 };
@@ -94,7 +93,6 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"constraint_init_w
                                                               "constraint_write_islands",
                                                               "constraint_finalize",
                                                               "constraint_write_body_roots",
-                                                              "constraint_initialize_isolated_topology",
                                                               "constraint_build_local_topology"};
 constexpr uint32_t Bit(Port port)
 {
@@ -127,7 +125,6 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | K | S,
                                                       P | S,
                                                       P | K | S | C,
-                                                      P | K | S | B | V,
                                                       P | S | B | C | V | Bit(TopologyArguments) | Bit(StepStatus)};
 
 struct PortLayout
@@ -317,11 +314,17 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         const auto &range = storage.GetModel().worlds.at(world);
         const uint32_t b = range.bodies.y, j = range.leaves.w, p = contactLease->patchCount;
         const uint32_t totalBodies = storage.GetBodyCount();
-        // Empty scenes bypass the solver owner; a real body domain can contain
-        // zero responsive constraints and still yields a validated empty schedule.
         if (!b || parameters.counts.x != totalBodies || parameters.counts.y != storage.GetWorldCount() ||
             parameters.counts.z != storage.GetShapeCount())
             throw std::invalid_argument("GPU constraint parameters differ from accepted model domain");
+        config.counts = {b, j, p, storage.GetJointCount()};
+        config.selection = {world, range.bodies.x, range.leaves.x, range.leaves.z};
+        // The accepted patch count and joint range establish that every body
+        // can run its sleep update independently.
+        isolatedTopology = j == 0u && p == 0u;
+        if (isolatedTopology)
+            return;
+
         Checked(2ull * (uint64_t(j) + p));
         Checked(4ull * p);
         Checked(12ull * j);
@@ -353,19 +356,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         RequireBytes(Sleeps, uint64_t(totalBodies) * sizeof(BodySleepRecord));
         if (frozen[Patches]->GetByteSize() < WordBytes)
             throw std::invalid_argument("GPU constraints require a candidate-bank header");
-        config.counts = {b, j, p, storage.GetJointCount()};
-        config.selection = {world, range.bodies.x, range.leaves.x, range.leaves.z};
         config.limits.y = range.leaves.y;
         config.limits.z = Checked(4ull * p);
-        // The completed broadphase and accepted selected joint range prove an empty numerical domain.
-        isolatedTopology = j == 0u && p == 0u;
-        if (isolatedTopology) {
-            config.limits.w = ConstraintScheduleHeaderWords;
-            config.limits.x = Checked(uint64_t(config.limits.w) + b);
-            phase = Phase::Assemble;
-            Add(InitializeIsolatedTopology, b);
-            return;
-        }
         uint64_t words = 0;
         const auto reserve = [&](uint64_t n) {
             const auto base = Checked(words);
@@ -429,10 +421,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     bool Capacity()
     {
         const uint64_t bodyBytes = uint64_t(config.counts.x) * sizeof(uint32_t);
-        const uint64_t voteBytes = bodyBytes + (!isolatedTopology && !localTopology ? sizeof(uint32_t) : 0u);
+        const uint64_t voteBytes = bodyBytes + (localTopology ? 0u : sizeof(uint32_t));
         if (!Endpoint(schedule, uint64_t(config.limits.x) * WordBytes) || !Endpoint(rootVotes, voteBytes))
             return false;
-        if (isolatedTopology || phase != Phase::Connectivity)
+        if (phase != Phase::Connectivity)
             return true;
         if (!Endpoint(parents, bodyBytes))
             return false;
@@ -652,19 +644,6 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                 throw std::logic_error("GPU constraint dispatch has an absent endpoint");
             const uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffer);
-            if (op.entry == InitializeIsolatedTopology && (port == Schedule || port == RootVotes)) {
-                dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
-                if (port == Schedule) {
-                    const uint64_t rootFirst = config.limits.w;
-                    const uint64_t start = first ? rootFirst + first : 0u;
-                    const uint64_t length = count + (first ? 0u : rootFirst);
-                    proof.writes.push_back({binding, start * WordBytes, length * WordBytes});
-                } else {
-                    proof.writes.push_back(
-                        {binding, uint64_t(first) * sizeof(uint32_t), uint64_t(count) * sizeof(uint32_t)});
-                }
-                continue;
-            }
             const bool initSchedule = op.entry == InitWords && port == Schedule;
             const bool initParent = op.entry == InitParents && port == Parents;
             const bool initVotes = op.entry == ClearRootFlags && port == RootVotes;
@@ -757,7 +736,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->activePatches = items.y;
         value->maxJointItems = items.z;
         value->maxPatchItems = items.w;
-        value->schedule = schedule->Freeze();
+        value->schedule = isolatedTopology ? nullptr : schedule->Freeze();
         value->bodyRootFirst = config.limits.w;
         value->bodyFirst = config.selection.y;
         value->bodyCount = config.counts.x;
@@ -786,6 +765,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     {
         if (phase == Phase::Done || phase == Phase::TopologyReady)
             return {};
+        if (isolatedTopology) {
+            PublishTopology();
+            return {};
+        }
         if (!Capacity())
             return {nullptr, [self = shared_from_this(), dispatchLimit] { return self->Next(dispatchLimit); }};
         Cursor next = cursor;
@@ -813,7 +796,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         const bool boundary = next.operation == plan.size();
         const auto submittedPhase = phase;
         std::vector<rhi::ComputeBufferRead> reads;
-        if (boundary && !isolatedTopology) {
+        if (boundary) {
             if (submittedPhase == Phase::Connectivity && !localTopology)
                 reads.push_back({schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
             else if (submittedPhase == Phase::Assemble)
@@ -829,7 +812,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                 // Cursor changes follow acceptance. Boundary decode also needs completion.
                 self->cursor = next;
                 if (boundary) {
-                    if (self->isolatedTopology || (submittedPhase == Phase::Connectivity && self->localTopology)) {
+                    if (submittedPhase == Phase::Connectivity && self->localTopology) {
                         self->PublishTopology();
                         return {};
                     }
@@ -894,8 +877,6 @@ JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const Jo
         topology->bodyCount != parameters.selectedCounts.x)
         throw std::logic_error("GPU numerical plan crosses its source/topology generation");
     if (execution->isolatedTopology) {
-        // The accepted broadphase and joint range prove that no numerical rows
-        // exist. Keep the queued root write as the sleep pass's dependency.
         execution->completed = std::move(completed);
         topology->execution.reset();
         execution->Install({}, {});
