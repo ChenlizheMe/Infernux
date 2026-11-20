@@ -236,6 +236,10 @@ class JoltGpuSleep::Impl
             program.kernel = PrepareJoltGpuKernel(host, target.target, *code, std::move(bindings));
         }
     }
+    struct Execution;
+    static std::shared_ptr<Execution> MakeWake(const std::shared_ptr<Impl> &, const JoltGpuStorage &,
+                                               const JoltGpuStepInputs &, const JoltGpuConstraintTopology &,
+                                               const std::shared_ptr<rhi::ComputeBuffer> &status);
     rhi::ComputeHost host;
     std::array<Program, EntryCount> entries;
 };
@@ -342,26 +346,9 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         return dispatch;
     }
 
-    JoltGpuControlWork Next(uint32_t maximumDispatches = 16u)
+    void AppendPrefix(size_t &next, uint32_t &offset, size_t maximumDispatches,
+                      std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
-        if (cursor == plan.size()) {
-            auto callback = std::move(completed);
-            return callback(*this);
-        }
-        if (boundsValidation || query) {
-            auto &status = boundsValidation ? boundsValidation->status : buffers[Status];
-            if (!Allocate(status, sizeof(PhysicsStepStatus)))
-                return {nullptr, [self = shared_from_this()] { return self->Next(); }};
-            buffers[Status] = status;
-        }
-        if (resultBytes && !Allocate(buffers[resultPort], resultBytes))
-            return {nullptr, [self = shared_from_this()] { return self->Next(); }};
-        if (!requestBytes.empty() && !Allocate(buffers[Requests], requestBytes.size()))
-            return {nullptr, [self = shared_from_this()] { return self->Next(); }};
-        size_t next = cursor;
-        uint32_t offset = cursorOffset;
-        std::vector<rhi::ComputeBufferUpdate> uploads;
-        std::vector<rhi::ComputeDispatchDesc> dispatches;
         if (!started) {
             if (buffers[Status])
                 JoltGpuSleep::InitializeStepStatus(buffers[Status], uploads);
@@ -397,6 +384,29 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
                 ++next;
             }
         }
+    }
+
+    JoltGpuControlWork Next(uint32_t maximumDispatches = 16u)
+    {
+        if (cursor == plan.size()) {
+            auto callback = std::move(completed);
+            return callback(*this);
+        }
+        if (boundsValidation || query) {
+            auto &status = boundsValidation ? boundsValidation->status : buffers[Status];
+            if (!Allocate(status, sizeof(PhysicsStepStatus)))
+                return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+            buffers[Status] = status;
+        }
+        if (resultBytes && !Allocate(buffers[resultPort], resultBytes))
+            return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+        if (!requestBytes.empty() && !Allocate(buffers[Requests], requestBytes.size()))
+            return {nullptr, [self = shared_from_this()] { return self->Next(); }};
+        size_t next = cursor;
+        uint32_t offset = cursorOffset;
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        std::vector<rhi::ComputeDispatchDesc> dispatches;
+        AppendPrefix(next, offset, maximumDispatches, uploads, dispatches);
         if (dispatches.empty())
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         const bool readQuery = next == plan.size() && query;
@@ -476,21 +486,19 @@ bool JoltGpuSleep::TryPrepareStartupPrograms()
     return ready;
 }
 
-JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-                                             const JoltGpuConstraintTopology &topology,
-                                             const std::shared_ptr<rhi::ComputeBuffer> &status,
-                                             std::function<void()> done)
+std::shared_ptr<JoltGpuSleep::Impl::Execution>
+JoltGpuSleep::Impl::MakeWake(const std::shared_ptr<Impl> &owner, const JoltGpuStorage &storage,
+                             const JoltGpuStepInputs &inputs, const JoltGpuConstraintTopology &topology,
+                             const std::shared_ptr<rhi::ComputeBuffer> &status)
 {
     const auto &selected = inputs.GetParameters();
     const auto &contacts = inputs.GetContacts();
     auto p = Selection(storage, selected);
     if (topology.bodyFirst != p.selected.y || topology.bodyCount != p.selected.z || !contacts)
         throw std::logic_error("GPU sleep wake requires its accepted substep topology");
-    if (selected.selectedCounts.z == 0 && contacts->patchSlots == 0) {
-        done();
-        return {};
-    }
-    auto e = std::make_shared<Impl::Execution>(m_impl);
+    auto e = std::make_shared<Execution>(owner);
+    if (selected.selectedCounts.z == 0 && contacts->patchSlots == 0)
+        return e;
     e->Bind(storage);
     e->buffers[Schedule] = topology.schedule;
     e->buffers[Roots] = topology.rootVotes;
@@ -509,8 +517,31 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     p.layout.w = contacts->patchSlots;
     e->Add(SeedPatches, 0u, p.layout.w, p);
     e->Add(Wake, p.selected.y, p.selected.z, p);
+    return e;
+}
+
+JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                                             const JoltGpuConstraintTopology &topology,
+                                             const std::shared_ptr<rhi::ComputeBuffer> &status,
+                                             std::function<void()> done)
+{
+    auto e = Impl::MakeWake(m_impl, storage, inputs, topology, status);
     e->OnComplete([done = std::move(done)](auto &) { done(); });
     return e->Next();
+}
+
+bool JoltGpuSleep::AppendWake(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
+                              const JoltGpuConstraintTopology &topology,
+                              const std::shared_ptr<rhi::ComputeBuffer> &status, size_t dispatchLimit,
+                              std::vector<rhi::ComputeBufferUpdate> &uploads,
+                              std::vector<rhi::ComputeDispatchDesc> &dispatches)
+{
+    auto e = Impl::MakeWake(m_impl, storage, inputs, topology, status);
+    size_t next = 0;
+    uint32_t offset = 0;
+    if (!e->plan.empty())
+        e->AppendPrefix(next, offset, dispatchLimit, uploads, dispatches);
+    return next == e->plan.size();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                                 const BodySleepParameters &settings,

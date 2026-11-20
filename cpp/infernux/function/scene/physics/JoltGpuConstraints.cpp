@@ -306,9 +306,11 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     };
 
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-              const StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &status,
-              std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> callback)
-        : implementation(std::move(owner)), contactLease(inputs.GetContacts()), stepStatus(status),
+              JoltGpuPrograms &programs, const StepParams &parameters,
+              const std::shared_ptr<rhi::ComputeBuffer> &status, std::optional<JoltGpuConstraintSetup> setup,
+              std::function<void(std::shared_ptr<JoltGpuConstraintTopology>, bool)> callback)
+        : implementation(std::move(owner)), rigidStorage(storage), stepInputs(inputs), stagePrograms(programs),
+          contactLease(inputs.GetContacts()), stepStatus(status), setup(std::move(setup)),
           completedTopology(std::move(callback))
     {
         if (!implementation->host.SharesServicesWith(storage.GetHost()) || !completedTopology || !contactLease)
@@ -341,18 +343,19 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         // Warm/rotor retirement changes neither field read by the schedule.
         frozen[Joints] = storage.Get(Resource::Joints);
         frozen[Patches] = contactLease->patches ? contactLease->patches->Freeze() : nullptr;
-        frozen[Contacts] = contactLease->contacts ? contactLease->contacts->Freeze() : nullptr;
-        // Topology mode does not read runtime activity. Borrow this live source
-        // endpoint so waking after CC cannot COW a stale captured reader.
+        // These live endpoints belong to the solver writer for this substep.
+        // The packet orders topology reads, setup writes and assembly reads.
+        frozen[Contacts] = contactLease->contacts;
         frozen[Sleeps] = storage.Get(Resource::SleepStates);
         if (!frozen[Joints] || !implementation->host.SharesServicesWith(frozen[Joints]->GetHost()))
             throw std::invalid_argument("GPU constraints require their exclusive writer joint stream");
-        for (auto port : {Bodies, Shapes, Patches, Contacts})
+        for (auto port : {Bodies, Shapes, Patches})
             ValidateInput(frozen[port]);
         RequireBytes(Bodies, uint64_t(totalBodies) * sizeof(BodyModel));
         RequireBytes(Shapes, uint64_t(std::max(1u, storage.GetShapeCount())) * sizeof(ShapeModel));
         RequireBytes(Joints, storage.GetJointLayout()->ByteSize());
-        if (frozen[Contacts]->GetByteSize() < uint64_t(std::max(1u, Checked(4ull * p))) * sizeof(Contact) ||
+        if (!frozen[Contacts] || !storage.GetHost().SharesServicesWith(frozen[Contacts]->GetHost()) ||
+            frozen[Contacts]->GetByteSize() < uint64_t(std::max(1u, Checked(4ull * p))) * sizeof(Contact) ||
             frozen[Contacts]->GetByteSize() % sizeof(Contact))
             throw std::invalid_argument("GPU constraints require initialized contact capacity covering logical 4C");
         if (!frozen[Sleeps] || !implementation->host.SharesServicesWith(frozen[Sleeps]->GetHost()))
@@ -454,6 +457,13 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     {
         Add(entry, length, config);
     }
+    static void AddReferences(std::vector<Operation> &operations, const ConstraintParams &value)
+    {
+        if (value.counts.y)
+            operations.push_back({BuildJointRefs, value.counts.y, value});
+        if (value.counts.z)
+            operations.push_back({BuildPatchRefs, value.counts.z, value});
+    }
     void Kind(Entry entry, uint32_t kind)
     {
         auto value = config;
@@ -541,8 +551,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         if (!connectivityPass) {
             Add(InitWords, config.limits.x);
             Add(Seed, 1u);
-            Add(BuildJointRefs, config.counts.y);
-            Add(BuildPatchRefs, config.counts.z);
+            AddReferences(plan, config);
             if (localTopology) {
                 Add(BuildLocalTopology, 1u);
                 validationStart = plan.size();
@@ -574,8 +583,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     void BuildAssembly()
     {
         ResetPlan(Phase::Assemble);
-        Add(BuildJointRefs, config.counts.y);
-        Add(BuildPatchRefs, config.counts.z);
+        AddReferences(plan, config);
         // Wake changes the active reference subset. The parent forest and
         // its published body roots are still the accepted substep's inputs.
         if (localTopology) {
@@ -722,25 +730,31 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             throw std::runtime_error("GPU constraint topology did not converge within its parent-chain bound");
         BuildConnectivity((control.x & ConstraintLinksPending) != 0u);
     }
-    void PublishTopology()
+    JoltGpuConstraintTopology TopologyView() const
     {
-        auto value = std::make_shared<JoltGpuConstraintTopology>();
-        value->bodyRootFirst = config.limits.w;
-        value->bodyFirst = config.selection.y;
-        value->bodyCount = config.counts.x;
-        value->schedule = schedule;
-        value->rootVotes = rootVotes;
-        value->execution = shared_from_this();
+        JoltGpuConstraintTopology value;
+        value.bodyRootFirst = config.limits.w;
+        value.bodyFirst = config.selection.y;
+        value.bodyCount = config.counts.x;
+        value.schedule = schedule;
+        value.rootVotes = rootVotes;
         if (localTopology)
-            value->wakeArguments = topologyArguments;
-        else
+            value.wakeArguments = topologyArguments;
+        return value;
+    }
+    void PublishTopology(bool setupAccepted = false)
+    {
+        auto value = std::make_shared<JoltGpuConstraintTopology>(TopologyView());
+        value->execution = shared_from_this();
+        if (!localTopology)
             topologyArguments.reset();
         // Setup must write/read its actual new generations.
         frozen[Joints].reset();
         frozen[Contacts].reset();
         phase = Phase::TopologyReady;
+        setup.reset();
         auto callback = std::move(completedTopology);
-        callback(std::move(value));
+        callback(std::move(value), setupAccepted);
     }
     void Install(const UInt4 &counts, const UInt4 &items)
     {
@@ -785,6 +799,66 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         read->ReadInto(result.data(), sizeof(result));
         Install(result[0], result[1]);
     }
+
+    void AppendPrefix(const std::vector<Operation> &operations, Cursor &next, size_t dispatchLimit, bool gateValidation,
+                      Uniforms &uniforms, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                      std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        while (next.operation < operations.size() && dispatches.size() < dispatchLimit) {
+            const auto &op = operations[next.operation];
+            const uint32_t count = std::min(ChunkLimit(op.entry), op.length - next.first);
+            if (!Emit(op, next.first, count, uniforms, uploads, dispatches))
+                return;
+            if (gateValidation && next.operation >= validationStart) {
+                auto &unit = dispatches.back();
+                unit.indirectArguments =
+                    rhi::ComputeIndirectArguments{topologyArguments, (unit.groupCountX - 1u) * WordBytes};
+            }
+            next.first += count;
+            if (next.first == op.length) {
+                next.first = 0u;
+                ++next.operation;
+            }
+        }
+    }
+
+    bool AppendSetup(size_t dispatchLimit, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                     std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        if (!setup || setup->stages.size() > dispatchLimit - dispatches.size())
+            return false;
+        const auto prefixUploads = uploads.size(), prefixDispatches = dispatches.size();
+        if (!stagePrograms.GetSleep().AppendWake(rigidStorage, stepInputs, TopologyView(), stepStatus,
+                                                 dispatchLimit - setup->stages.size(), uploads, dispatches)) {
+            uploads.resize(prefixUploads);
+            dispatches.resize(prefixDispatches);
+            return false;
+        }
+        stagePrograms.AppendStages(rigidStorage, stepInputs, setup->stages, uploads, dispatches);
+        return true;
+    }
+
+    bool AppendLocalAssembly(size_t dispatchLimit, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                             std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        if (!deviceSchedule || !setup->assembled)
+            return false;
+        auto numerical = config;
+        numerical.select.z = 1u;
+        std::vector<Operation> operations;
+        AddReferences(operations, numerical);
+        operations.push_back({BuildLocalSchedule, 1u, numerical});
+        const auto prefixUploads = uploads.size(), prefixDispatches = dispatches.size();
+        Cursor next;
+        Uniforms uniforms;
+        AppendPrefix(operations, next, dispatchLimit, false, uniforms, uploads, dispatches);
+        if (next.operation == operations.size())
+            return true;
+        uploads.resize(prefixUploads);
+        dispatches.resize(prefixDispatches);
+        return false;
+    }
+
     JoltGpuControlWork Next(size_t dispatchLimit = MaxDispatchesPerPacket)
     {
         if (phase == Phase::Done || phase == Phase::TopologyReady)
@@ -798,27 +872,15 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Cursor next = cursor;
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
-        while (next.operation < plan.size() && dispatches.size() < dispatchLimit) {
-            const auto &op = plan[next.operation];
-            const uint32_t count = std::min(ChunkLimit(op.entry), op.length - next.first);
-            if (!Emit(op, next.first, count, pendingUniforms, uploads, dispatches))
-                break;
-            if (phase == Phase::Connectivity && next.operation >= validationStart) {
-                auto &unit = dispatches.back();
-                unit.indirectArguments =
-                    rhi::ComputeIndirectArguments{topologyArguments, (unit.groupCountX - 1u) * WordBytes};
-            }
-            next.first += count;
-            if (next.first == op.length) {
-                next.first = 0u;
-                ++next.operation;
-            }
-        }
+        AppendPrefix(plan, next, dispatchLimit, phase == Phase::Connectivity, pendingUniforms, uploads, dispatches);
         if (dispatches.empty())
             return {nullptr, [self = shared_from_this(), dispatchLimit] { return self->Next(dispatchLimit); }};
-        const bool canContract = dispatches.size() > 1;
         const bool boundary = next.operation == plan.size();
         const auto submittedPhase = phase;
+        const bool includesSetup = boundary && submittedPhase == Phase::Connectivity && localTopology &&
+                                   AppendSetup(dispatchLimit, uploads, dispatches);
+        const bool includesAssembly = includesSetup && AppendLocalAssembly(dispatchLimit, uploads, dispatches);
+        const bool canContract = dispatches.size() > 1;
         std::vector<rhi::ComputeBufferRead> reads;
         if (boundary) {
             if (submittedPhase == Phase::Connectivity && !localTopology)
@@ -830,41 +892,51 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
         auto packet =
             rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), std::move(reads));
-        JoltGpuControlWork work{
-            packet,
-            [self = shared_from_this(), packet, next, boundary, submittedPhase]() -> JoltGpuControlWork {
-                // Cursor changes follow acceptance. Boundary decode also needs completion.
-                self->cursor = next;
-                if (boundary) {
-                    if (submittedPhase == Phase::Connectivity && self->localTopology) {
-                        self->PublishTopology();
-                        return {};
-                    }
-                    if (submittedPhase == Phase::Connectivity)
-                        self->DecodeConnectivity(packet);
-                    else {
-                        if (self->deviceSchedule)
-                            self->Install({}, {});
-                        else
-                            self->DecodeAssembly(packet);
-                        return {};
-                    }
-                }
-                return self->Next();
-            },
-            resumeAfter};
+        JoltGpuControlWork work{packet,
+                                [self = shared_from_this(), packet, next, boundary, submittedPhase, includesSetup,
+                                 includesAssembly]() -> JoltGpuControlWork {
+                                    // Cursor changes follow acceptance. Boundary decode also needs completion.
+                                    self->cursor = next;
+                                    if (boundary) {
+                                        if (submittedPhase == Phase::Connectivity && self->localTopology) {
+                                            if (includesAssembly) {
+                                                self->completed = std::move(self->setup->assembled);
+                                                self->setup.reset();
+                                                self->completedTopology = {};
+                                                self->Install({}, {});
+                                            } else
+                                                self->PublishTopology(includesSetup);
+                                            return {};
+                                        }
+                                        if (submittedPhase == Phase::Connectivity)
+                                            self->DecodeConnectivity(packet);
+                                        else {
+                                            if (self->deviceSchedule)
+                                                self->Install({}, {});
+                                            else
+                                                self->DecodeAssembly(packet);
+                                            return {};
+                                        }
+                                    }
+                                    return self->Next();
+                                },
+                                resumeAfter};
         if (canContract)
             work.prepareMinimum = [self = shared_from_this()] { return self->Next(1); };
         return work;
     }
 
     std::shared_ptr<Impl> implementation;
+    const JoltGpuStorage &rigidStorage;
+    const JoltGpuStepInputs &stepInputs;
+    JoltGpuPrograms &stagePrograms;
     std::shared_ptr<const JoltGpuContactWorkset> contactLease;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> frozen;
     std::shared_ptr<rhi::ComputeBuffer> schedule, parents, rootVotes, topologyArguments, stepStatus;
+    std::optional<JoltGpuConstraintSetup> setup;
     Uniforms pendingUniforms;
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed;
-    std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completedTopology;
+    std::function<void(std::shared_ptr<JoltGpuConstraintTopology>, bool)> completedTopology;
     bool isolatedTopology = false;
     bool localTopology = false;
     bool deviceSchedule = false;
@@ -884,11 +956,13 @@ JoltGpuConstraints::JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTarge
 }
 JoltGpuControlWork
 JoltGpuConstraints::PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-                                    const JPH::GPU::StepParams &parameters,
+                                    JoltGpuPrograms &programs, const JPH::GPU::StepParams &parameters,
                                     const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
-                                    std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completed)
+                                    std::optional<JoltGpuConstraintSetup> setup,
+                                    std::function<void(std::shared_ptr<JoltGpuConstraintTopology>, bool)> completed)
 {
-    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, parameters, stepStatus, std::move(completed))
+    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, stepStatus,
+                                             std::move(setup), std::move(completed))
         ->Next();
 }
 JoltGpuControlWork
@@ -913,12 +987,10 @@ JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const Jo
     // Setup has completed its real accepted writes. Observe this writer's live
     // directory/activity flags; history retirement does not change those flags.
     execution->frozen[Joints] = storage.Get(JPH::GPU::Resource::Joints);
-    execution->frozen[Contacts] = inputs.GetContacts()->contacts->Freeze();
-    execution->frozen[Sleeps] = storage.Get(JPH::GPU::Resource::SleepStates)->Freeze();
+    execution->frozen[Contacts] = inputs.GetContacts()->contacts;
+    execution->frozen[Sleeps] = storage.Get(JPH::GPU::Resource::SleepStates);
     if (!execution->frozen[Joints] || !storage.GetHost().SharesServicesWith(execution->frozen[Joints]->GetHost()))
         throw std::invalid_argument("GPU constraints require their exclusive writer joint stream");
-    execution->ValidateInput(execution->frozen[Contacts]);
-    execution->ValidateInput(execution->frozen[Sleeps]);
     execution->config.select.z = 1u;
     execution->completed = std::move(completed);
     topology->execution.reset();

@@ -29,6 +29,11 @@ class JoltGpuSleep final
                                                  const JoltGpuConstraintTopology &,
                                                  const std::shared_ptr<rhi::ComputeBuffer> &status,
                                                  std::function<void()> completed);
+    // Record the same wake passes after a topology producer in the current
+    // packet. The caller discards an incomplete, still unaccepted append.
+    [[nodiscard]] bool AppendWake(const JoltGpuStorage &, const JoltGpuStepInputs &, const JoltGpuConstraintTopology &,
+                                  const std::shared_ptr<rhi::ComputeBuffer> &status, size_t dispatchLimit,
+                                  std::vector<rhi::ComputeBufferUpdate> &, std::vector<rhi::ComputeDispatchDesc> &);
     [[nodiscard]] JoltGpuControlWork PrepareHistory(const JoltGpuStorage &, const JoltGpuStepInputs &,
                                                     const JPH::GPU::BodySleepParameters &,
                                                     const std::shared_ptr<rhi::ComputeBuffer> &status,

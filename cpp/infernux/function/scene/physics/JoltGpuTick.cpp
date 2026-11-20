@@ -1197,6 +1197,45 @@ class JoltGpuTick::Impl
         Normalize(stageCursor);
     }
 
+    JoltGpuControlWork PrepareContactTopology()
+    {
+        inputs.ClearConstraints();
+        constraintTopology.reset();
+        auto setupEnd = stageCursor;
+        std::optional<JoltGpuConstraintSetup> setup;
+        // Setup can share the topology packet when it has no articulation
+        // pressure witness on the host. Reporting observes the set-up rows.
+        if (!HasArticulationWork()) {
+            NextSpan(setupEnd); // WakeComponents
+            NextSpan(setupEnd); // SetupContacts
+            Normalize(setupEnd);
+            auto &prefix = setup.emplace();
+            while (setupEnd.phase == Phase::SetupContacts || setupEnd.phase == Phase::SetupJoints) {
+                if (prefix.stages.size() == MaxPacketUnits)
+                    break;
+                prefix.stages.push_back(TakeUnit(setupEnd));
+            }
+            if (setupEnd.phase == Phase::BuildConstraints) {
+                prefix.assembled = [this, setupEnd](auto plan) {
+                    stageCursor = setupEnd;
+                    AcceptConstraintWorkset(std::move(plan));
+                };
+            } else if (setupEnd.phase != Phase::ReportContactsBeforeVelocity) {
+                setup.reset();
+            }
+        }
+        return constraints.PrepareTopology(storage, inputs, programs, tickParameters, stepStatus, std::move(setup),
+                                           [this, setupEnd](auto topology, bool setupAccepted) {
+                                               constraintTopology = std::move(topology);
+                                               if (setupAccepted)
+                                                   stageCursor = setupEnd;
+                                               else {
+                                                   NextSpan(stageCursor);
+                                                   Normalize(stageCursor);
+                                               }
+                                           });
+    }
+
     void AcceptConstraintWorkset(std::shared_ptr<const JoltGpuConstraintWorkset> plan)
     {
         inputs.SetConstraints(std::move(plan));
@@ -2021,15 +2060,7 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::BuildTopology) {
-                inputs.ClearConstraints();
-                constraintTopology.reset();
-                SelectControlWork(constraints.PrepareTopology(storage, inputs, tickParameters, stepStatus,
-                                                              [this](auto topology) {
-                                                                  constraintTopology = std::move(topology);
-                                                                  NextSpan(stageCursor);
-                                                                  Normalize(stageCursor);
-                                                              }),
-                                  PacketKind::NumericalWork);
+                SelectControlWork(PrepareContactTopology(), PacketKind::NumericalWork);
                 return true;
             }
             if (stageCursor.phase == Phase::WakeComponents) {
