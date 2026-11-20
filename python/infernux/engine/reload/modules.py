@@ -91,7 +91,9 @@ def _source_builtins(namespace):
             _importing.reset(token)
         absolute = importlib.util.resolve_name("." * level + name, globals["__package__"]) if level else name
         _remember_import(imported, importer)
-        _remember_import(sys.modules.get(absolute), importer)
+        target = sys.modules.get(absolute)
+        if target is not imported:
+            _remember_import(target, importer)
         for child in fromlist or ():
             if child != "*":
                 _remember_import(sys.modules.get(absolute + "." + child), importer)

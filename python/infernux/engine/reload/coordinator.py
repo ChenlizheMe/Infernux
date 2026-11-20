@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 import hashlib
+import os
 import sys
 import traceback
 
@@ -111,7 +112,14 @@ class ReloadCoordinator:
 
     def record_import(self, importer, module, owner, *, verify_native=False):
         path = getattr(module, "__file__", None)
-        if not path or not self.graph.owns_path(path):
+        if not path:
+            return
+        indexed = self.graph.module_for_name(module.__name__)
+        # The indexed identity already establishes ownership of this source.
+        # Cached Python imports inside draw/update callbacks must not rescan
+        # package roots and resolve their paths through the file system.
+        same_source = indexed is not None and os.path.normcase(path) == os.path.normcase(indexed.source_path)
+        if not same_source and not self.graph.owns_path(path):
             return
         if is_native_module(module):
             path = resolved_path(path)
