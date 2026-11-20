@@ -138,6 +138,8 @@ class JoltGpuTick::Impl
         controlAccepted = false;
         finalPrepared = finalAccepted = false;
         finalOutput = {};
+        stepStatus.reset();
+        stepStatusPacket.reset();
         snapshotRegion = 0;
         snapshotSleepRows = 0;
         snapshotOffset = 0;
@@ -200,8 +202,10 @@ class JoltGpuTick::Impl
         workContinuation = {};
         workMinimum = {};
         for (auto &receipt : receipts)
-            receipt.validate = {};
+            receipt.stepValidation.reset();
         finalOutput = {};
+        stepStatus.reset();
+        stepStatusPacket.reset();
         modelUpdate.reset();
         commandCursor.reset();
         submissionBusy = false;
@@ -383,9 +387,7 @@ class JoltGpuTick::Impl
         uint64_t transferBytes;
         uint64_t submitStarted;
         std::shared_ptr<const JoltGpuGeometryLease> geometry;
-        // Readbacks whose values do not feed another GPU/CPU numerical phase.
-        // Their real receipt still gates publication; cancellation drops decode.
-        std::function<void()> validate;
+        std::shared_ptr<rhi::ComputeReadback> stepValidation;
     };
 
     struct SharedStage
@@ -522,11 +524,9 @@ class JoltGpuTick::Impl
             submissionBusy = false;
         while (!receipts.empty() && receipts.front().completion.IsComplete()) {
             auto &receipt = receipts.front();
-            // Move before invoking: a validation exception fails this Tick and
-            // cancels later decodes, while this accepted receipt is accounted
-            // exactly once by the following retirement pass.
-            if (auto validate = std::move(receipt.validate))
-                validate();
+            // A failure retires the actual submission without publishing the tick.
+            if (auto validation = std::move(receipt.stepValidation))
+                JoltGpuSleep::ValidateStepStatus(*validation);
             const auto elapsed = receipt.completion.GetDeviceElapsedNanoseconds();
             uint64_t estimate = 0;
             if (elapsed) {
@@ -1356,27 +1356,6 @@ class JoltGpuTick::Impl
                (!receipts.empty() || !sharedStages.empty());
     }
 
-    void DeferValidation(const std::shared_ptr<rhi::PreparedComputeBatch> &packet, std::function<void()> validate)
-    {
-        if (!packet || !validate || !packet->GetSubmission().IsValid())
-            throw std::logic_error("GPU validation requires its accepted source packet");
-        const auto ticket = packet->GetSubmission();
-        const auto found = std::find_if(receipts.begin(), receipts.end(), [&](const auto &receipt) {
-            return receipt.completion.GetSubmission() == ticket;
-        });
-        if (found == receipts.end()) {
-            // Poll may have retired the packet before its acceptance-ready
-            // continuation got a host turn. Decode before advancing this phase.
-            if (!packet->GetCompletion().HasRetired())
-                throw std::logic_error("GPU validation lost its unretired source receipt");
-            validate();
-            return;
-        }
-        if (found->validate)
-            throw std::logic_error("GPU receipt already owns a deferred validation");
-        found->validate = std::move(validate);
-    }
-
     void ModelAccepted()
     {
         auto &group = control.groups[groupCursor];
@@ -1596,10 +1575,25 @@ class JoltGpuTick::Impl
         return true;
     }
 
+    std::shared_ptr<rhi::PreparedComputeBatch>
+    PreparePublicationPacket(std::vector<rhi::ComputeBufferUpdate> uploads,
+                             std::vector<rhi::ComputeDispatchDesc> dispatches,
+                             std::vector<rhi::ComputeBufferCopy> copies, bool readStepStatus)
+    {
+        std::vector<rhi::ComputeBufferRead> reads;
+        if (readStepStatus)
+            reads.push_back({stepStatus, 0u, sizeof(JPH::GPU::PhysicsStepStatus)});
+        auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), std::move(dispatches), std::move(reads),
+                                               std::move(copies));
+        if (readStepStatus)
+            stepStatusPacket = packet;
+        return packet;
+    }
+
     JoltGpuControlWork PrepareSnapshot()
     {
         if (!control.needsSnapshot)
-            return {}; // Pure observations and closed partitions have no publication consumer.
+            return stepStatus ? JoltGpuControlWork{PreparePublicationPacket({}, {}, {}, true)} : JoltGpuControlWork{};
         using namespace JPH::GPU;
         const auto &liveLayout = *storage.GetJointLayout();
         const auto slice = liveLayout.WorldSlice(finalOutput.jointBase, finalOutput.jointCount);
@@ -1678,7 +1672,8 @@ class JoltGpuTick::Impl
             snapshotOffset += bytes;
             remaining -= bytes;
         }
-        if (uploads.empty() && copies.empty()) {
+        const bool readStepStatus = stepStatus && remaining >= sizeof(PhysicsStepStatus);
+        if (uploads.empty() && copies.empty() && !readStepStatus) {
             snapshotMetadata.clear();
             if (finalOutput.states)
                 finalOutput.states = finalOutput.states->Freeze();
@@ -1690,7 +1685,8 @@ class JoltGpuTick::Impl
             control.prepareFinalWork = {};
             return prepare ? prepare(finalOutput) : JoltGpuControlWork{};
         }
-        auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), std::move(dispatches), {}, std::move(copies));
+        auto packet =
+            PreparePublicationPacket(std::move(uploads), std::move(dispatches), std::move(copies), readStepStatus);
         // The continuation only records later copies or freezes the accepted
         // destination before preparing queue-ordered final work. No CPU value
         // is decoded here. Tick publication still waits for every real receipt.
@@ -1846,6 +1842,12 @@ class JoltGpuTick::Impl
                 batchKind = PacketKind::Inputs;
                 return true;
             }
+            if (!stepStatus && HasRigidWork()) {
+                stepStatus = rhi::ComputeBuffer::TryCreatePrivate(
+                    host, {sizeof(JPH::GPU::PhysicsStepStatus) / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1u});
+                if (!stepStatus)
+                    return false;
+            }
             if (const auto stage = ParticipantStage(stageCursor.phase)) {
                 if (*stage == JoltGpuParticipantStage::Exchange && !HasRigidWork() &&
                     control.participants.prepareClosedRounds && tickParameters.counts.w - stageCursor.iteration > 1) {
@@ -1935,15 +1937,9 @@ class JoltGpuTick::Impl
                 NextSpan(stageCursor);
                 Normalize(stageCursor);
             };
-            // Wake and sleep produce device inputs for later stages. The CPU only consumes
-            // their status before publishing this tick, on the receipt that copied it.
-            const auto validateStatus = [this](const auto &packet, auto validate) {
-                DeferValidation(packet, std::move(validate));
-            };
             if (forceWakePending) {
                 forceWakePending = false;
-                SelectControlWork(programs.GetSleep().PrepareForceWake(
-                                      storage, tickParameters, [] {}, validateStatus),
+                SelectControlWork(programs.GetSleep().PrepareForceWake(storage, tickParameters, [] {}),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -1963,13 +1959,12 @@ class JoltGpuTick::Impl
                             sources.push_back(body);
                     }
                 }
-                SelectControlWork(programs.GetSleep().PreparePrescribedCapture(
-                                      storage, tickParameters, std::move(sources),
-                                      [this, advanceStage](auto bounds) {
-                                          prescribedBounds = std::move(bounds);
-                                          advanceStage();
-                                      },
-                                      validateStatus),
+                SelectControlWork(programs.GetSleep().PreparePrescribedCapture(storage, tickParameters,
+                                                                               std::move(sources), stepStatus,
+                                                                               [this, advanceStage](auto bounds) {
+                                                                                   prescribedBounds = std::move(bounds);
+                                                                                   advanceStage();
+                                                                               }),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -2004,14 +1999,14 @@ class JoltGpuTick::Impl
                 // quiet time here; waking it now preserves one real following
                 // forces/contact opportunity even when TimeBeforeSleep is 0.
                 SelectControlWork(programs.GetSleep().PreparePrescribedWake(storage, tickParameters, *prescribedBounds,
-                                                                            advanceStage, validateStatus),
+                                                                            stepStatus, advanceStage),
                                   PacketKind::NumericalWork);
                 return true;
             }
             if (stageCursor.phase == Phase::BuildTopology) {
                 inputs.ClearConstraints();
                 constraintTopology.reset();
-                SelectControlWork(constraints.PrepareTopology(storage, inputs, tickParameters,
+                SelectControlWork(constraints.PrepareTopology(storage, inputs, tickParameters, stepStatus,
                                                               [this](auto topology) {
                                                                   constraintTopology = std::move(topology);
                                                                   NextSpan(stageCursor);
@@ -2024,7 +2019,7 @@ class JoltGpuTick::Impl
                 if (!constraintTopology)
                     throw std::logic_error("GPU sleep wake lost its accepted topology");
                 SelectControlWork(
-                    programs.GetSleep().PrepareWake(storage, inputs, *constraintTopology, advanceStage, validateStatus),
+                    programs.GetSleep().PrepareWake(storage, inputs, *constraintTopology, stepStatus, advanceStage),
                     PacketKind::NumericalWork);
                 return true;
             }
@@ -2032,7 +2027,7 @@ class JoltGpuTick::Impl
                 auto settings = control.sleepParameters;
                 settings.timing.x = tickParameters.gravityDt.w;
                 SelectControlWork(
-                    programs.GetSleep().PrepareHistory(storage, inputs, settings, advanceStage, validateStatus),
+                    programs.GetSleep().PrepareHistory(storage, inputs, settings, stepStatus, advanceStage),
                     PacketKind::NumericalWork);
                 return true;
             }
@@ -2113,11 +2108,17 @@ class JoltGpuTick::Impl
         const auto bytes = packet->GetTransferBytes();
         const bool prefix = kind == PacketKind::Stages || kind == PacketKind::Commands;
         const auto homogeneousStage = kind == PacketKind::Stages ? batchHomogeneousStage : std::nullopt;
+        std::shared_ptr<rhi::ComputeReadback> stepValidation;
+        if (kind == PacketKind::FinalWork && packet == stepStatusPacket.lock()) {
+            stepValidation = packet->Readback(0);
+            stepStatusPacket.reset();
+            stepStatus.reset();
+        }
         receipts.emplace_back(
             Receipt{packet->GetCompletion(), std::move(key), kind, prefix ? batchEnd - batchBegin : 0, homogeneousStage,
                     work.Opportunity(), work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
                     bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0, bytes, started,
-                    kind == PacketKind::Stages ? inputs.GetGeometry() : workGeometry});
+                    kind == PacketKind::Stages ? inputs.GetGeometry() : workGeometry, std::move(stepValidation)});
         if (kind == PacketKind::Preservation) {
             preservation.reset();
         } else {
@@ -2236,6 +2237,8 @@ class JoltGpuTick::Impl
     bool controlOnly = false;
     bool finalPrepared = true, finalAccepted = true;
     JoltGpuTickOutput finalOutput;
+    std::shared_ptr<rhi::ComputeBuffer> stepStatus;
+    std::weak_ptr<rhi::PreparedComputeBatch> stepStatusPacket;
     uint32_t snapshotRegion = 0;
     uint32_t snapshotSleepRows = 0;
     uint64_t snapshotOffset = 0;

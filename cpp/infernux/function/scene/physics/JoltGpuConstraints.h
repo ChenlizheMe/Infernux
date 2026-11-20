@@ -16,7 +16,7 @@ class JoltGpuConstraints final
 
     [[nodiscard]] JoltGpuControlWork
     PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-                    const JPH::GPU::StepParams &parameters,
+                    const JPH::GPU::StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
                     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completed);
     [[nodiscard]] JoltGpuControlWork
     PrepareNumericalPlan(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,

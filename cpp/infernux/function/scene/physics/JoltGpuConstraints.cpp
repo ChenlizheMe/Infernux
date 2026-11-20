@@ -1,6 +1,7 @@
 #include "JoltGpuConstraints.h"
 #include <Jolt/GPU/ConstraintTypes.h>
 #include "JoltGpuProgramSources.h"
+#include "JoltGpuSleep.h"
 #include "JoltGpuSleepLayout.h"
 
 #include <algorithm>
@@ -36,6 +37,7 @@ enum Port : uint8_t
     Schedule,
     Sleeps,
     TopologyArguments,
+    StepStatus,
     PortCount
 };
 enum Entry : uint8_t
@@ -126,7 +128,7 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | S,
                                                       P | K | S | C,
                                                       P | K | S | B | V,
-                                                      P | S | B | C | V | Bit(TopologyArguments)};
+                                                      P | S | B | C | V | Bit(TopologyArguments) | Bit(StepStatus)};
 
 struct PortLayout
 {
@@ -157,7 +159,8 @@ constexpr PortLayout Ports[] = {
     {"root_votes", sizeof(uint32_t), {}, 0u, false},
     {"constraint_schedule", sizeof(ConstraintScheduleWord), {"value"}, 1u, false},
     {"body_sleep", sizeof(BodySleepRecord), {"author", "runtime"}, 0u, true},
-    {"topology_arguments", sizeof(ConstraintScheduleWord), {"value"}, 1u, false}};
+    {"topology_arguments", sizeof(ConstraintScheduleWord), {"value"}, 1u, false},
+    {"step_status", sizeof(uint32_t), {}, 0u, false}};
 static_assert(std::size(Ports) == PortCount);
 constexpr uint32_t MaxDispatchesPerPacket = 16u;
 constexpr uint64_t WordBytes = sizeof(ConstraintScheduleWord);
@@ -205,7 +208,7 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
         (uniform ? value.byteSize : resource.elementStride) != expected.stride ||
         (!uniform && resource.binding.readOnlyStorage != expected.readOnly))
         throw std::invalid_argument("GPU constraint binding differs from shared POD");
-    if (port == Parents || port == RootVotes) {
+    if (port == Parents || port == RootVotes || port == StepStatus) {
         // Scalar uint atomics require this layout, not a UInt4 struct field.
         if (value.kind != ShaderValueKind::Scalar || value.scalar != ShaderScalarKind::UInt32 || value.byteSize != 4u ||
             value.rows != 1u || value.columns != 1u || !value.fields.empty())
@@ -303,8 +306,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     };
 
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-              const StepParams &parameters, std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> callback)
-        : implementation(std::move(owner)), contactLease(inputs.GetContacts()), completedTopology(std::move(callback))
+              const StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &status,
+              std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> callback)
+        : implementation(std::move(owner)), contactLease(inputs.GetContacts()), stepStatus(status),
+          completedTopology(std::move(callback))
     {
         if (!implementation->host.SharesServicesWith(storage.GetHost()) || !completedTopology || !contactLease)
             throw std::invalid_argument("GPU constraints require the accepted tick host/contact workset");
@@ -423,12 +428,13 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     }
     bool Capacity()
     {
-        const uint64_t voteBytes = (uint64_t(config.counts.x) + 1u) * sizeof(uint32_t);
+        const uint64_t bodyBytes = uint64_t(config.counts.x) * sizeof(uint32_t);
+        const uint64_t voteBytes = bodyBytes + (!isolatedTopology && !localTopology ? sizeof(uint32_t) : 0u);
         if (!Endpoint(schedule, uint64_t(config.limits.x) * WordBytes) || !Endpoint(rootVotes, voteBytes))
             return false;
         if (isolatedTopology || phase != Phase::Connectivity)
             return true;
-        if (!Endpoint(parents, voteBytes - sizeof(uint32_t)))
+        if (!Endpoint(parents, bodyBytes))
             return false;
         if (!topologyArguments) {
             const auto groups = Blocks(std::max({config.counts.x, config.counts.y, config.counts.z}));
@@ -624,6 +630,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             work = uniforms.work;
             uploads.push_back({work, 0u, std::move(workBytes)});
         }
+        if (op.entry == BuildLocalTopology)
+            JoltGpuSleep::InitializeStepStatus(stepStatus, uploads);
         rhi::ComputeDispatchDesc dispatch;
         const auto &program = implementation->programs[op.entry];
         dispatch.kernel = program.kernel;
@@ -638,6 +646,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                                  : port == Parents           ? parents
                                  : port == RootVotes         ? rootVotes
                                  : port == TopologyArguments ? topologyArguments
+                                 : port == StepStatus        ? stepStatus
                                                              : frozen[port];
             if (!buffer)
                 throw std::logic_error("GPU constraint dispatch has an absent endpoint");
@@ -651,8 +660,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                     const uint64_t length = count + (first ? 0u : rootFirst);
                     proof.writes.push_back({binding, start * WordBytes, length * WordBytes});
                 } else {
-                    const uint64_t length = uint64_t(count) + (first + count == config.counts.x);
-                    proof.writes.push_back({binding, uint64_t(first) * sizeof(uint32_t), length * sizeof(uint32_t)});
+                    proof.writes.push_back(
+                        {binding, uint64_t(first) * sizeof(uint32_t), uint64_t(count) * sizeof(uint32_t)});
                 }
                 continue;
             }
@@ -674,7 +683,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                 proof.writes.push_back({binding, statusOnly ? voteStatusOffset : 0u,
                                         statusOnly ? sizeof(uint32_t) : buffer->GetByteSize()});
             } else {
-                const bool mayWrite = (port == Schedule && op.entry != MarkRoots) ||
+                const bool mayWrite = port == StepStatus || (port == Schedule && op.entry != MarkRoots) ||
                                       (port == Parents && (op.entry == JoinEdges || op.entry == FlattenParents)) ||
                                       (port == RootVotes && op.entry != BuildRootRows && op.entry != GateValidation);
                 dispatch.bufferAccesses.push_back(mayWrite ? rhi::ComputeBufferAccess::ReadWrite
@@ -842,7 +851,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     std::shared_ptr<Impl> implementation;
     std::shared_ptr<const JoltGpuContactWorkset> contactLease;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> frozen;
-    std::shared_ptr<rhi::ComputeBuffer> schedule, parents, rootVotes, topologyArguments;
+    std::shared_ptr<rhi::ComputeBuffer> schedule, parents, rootVotes, topologyArguments, stepStatus;
     Uniforms pendingUniforms;
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed;
     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completedTopology;
@@ -865,9 +874,11 @@ JoltGpuConstraints::JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTarge
 JoltGpuControlWork
 JoltGpuConstraints::PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                     const JPH::GPU::StepParams &parameters,
+                                    const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
                                     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completed)
 {
-    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, parameters, std::move(completed))->Next();
+    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, parameters, stepStatus, std::move(completed))
+        ->Next();
 }
 JoltGpuControlWork
 JoltGpuConstraints::PrepareNumericalPlan(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
