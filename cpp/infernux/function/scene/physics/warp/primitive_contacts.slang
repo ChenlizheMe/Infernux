@@ -10,6 +10,7 @@ static const uint GeomPlane = 0;
 static const uint GeomSphere = 2;
 static const uint GeomCapsule = 3;
 static const uint GeomEllipsoid = 4;
+static const uint GeomCylinder = 5;
 static const uint GeomBox = 6;
 static const float MinFriction = 1.0e-5;
 static const float MinValue = 1.0e-15;
@@ -77,6 +78,31 @@ PrimitivePoint sphereContact(float3 centerA, float radiusA, float3 centerB, floa
     const float3 normal = separation == 0.0 ? float3(1, 0, 0) : difference / separation;
     const float distance = separation - (radiusA + radiusB);
     return {centerA + normal * (radiusA + 0.5 * distance), normal, distance};
+}
+
+PrimitivePoint sphereCylinderContact(float3 sphere, float radius, CartesianFrame cylinder, float2 size)
+{
+    const float3 center = cylinder.position.xyz;
+    const float3 axis = frameAxis(cylinder, 2);
+    const float3 offset = sphere - center;
+    const float axial = dot(offset, axis);
+    const float3 axialOffset = axis * axial;
+    const float3 radialOffset = offset - axialOffset;
+    const float radial2 = dot(radialOffset, radialOffset);
+    const bool withinCaps = abs(axial) < size.y;
+    const bool withinWall = radial2 < size.x * size.x;
+    if (withinCaps && (!withinWall || size.x - sqrt(radial2) <= size.y - abs(axial)))
+        return sphereContact(sphere, radius, center + axialOffset, size.x);
+
+    if (withinWall)
+    {
+        const float3 normal = axial > 0.0 ? axis : -axis;
+        const float distance = dot(offset, normal) - size.y - radius;
+        return {sphere - normal * (radius + 0.5 * distance), -normal, distance};
+    }
+
+    const float3 rim = center + axis * (sign(axial) * size.y) + radialOffset * (size.x / sqrt(radial2));
+    return sphereContact(sphere, radius, rim, 0.0);
 }
 
 PrimitivePoint sphereBoxContact(float3 sphere, float radius, CartesianFrame box, float3 extent)
@@ -235,6 +261,40 @@ void writeContact(uint world, uint4 pair, uint ordinal, float distance, float3 p
     contacts[world * capacity + slot] = contact;
 }
 
+void writePlaneCylinderContacts(uint world, uint4 pair, float3 plane, ContactBasis basis,
+                                CartesianFrame cylinder, float2 size, ContactMaterial material, uint capacity)
+{
+    const float3 normal = basis.normal;
+    float3 axis = frameAxis(cylinder, 2);
+    const float projection = dot(normal, axis);
+    axis = projection > 0.0 ? -axis : axis;
+    const float towardPlane = -abs(projection);
+    const float3 endOffset = axis * size.y;
+    const float centerDistance = dot(cylinder.position.xyz - plane, normal);
+    const float capOffset = towardPlane * size.y;
+    float3 radial = axis * towardPlane - normal;
+    if (dot(radial, radial) < 1.0e-12)
+    {
+        // A flat end cap admits any in-plane direction. Keep the ring on rotated caps as well.
+        const float3 preferred = float3(1.0, 0.0, 0.0) - axis * axis.x;
+        radial = dot(preferred, preferred) >= 1.0e-12 ? preferred : basis.tangent;
+    }
+    radial = normalize(radial) * size.x;
+    const float radialDistance = dot(radial, normal);
+    const float3 lateral = normalize(cross(radial, axis)) * (size.x * sqrt(3.0) * 0.5);
+    const float3 nearCap = cylinder.position.xyz + endOffset;
+    const float nearDistance = centerDistance + capOffset + radialDistance;
+    const float farDistance = centerDistance - capOffset + radialDistance;
+    const float sideDistance = centerDistance + capOffset - 0.5 * radialDistance;
+    const float3 sidePoint = nearCap - 0.5 * radial - normal * (0.5 * sideDistance);
+    writeContact(world, pair, 0, nearDistance, nearCap + radial - normal * (0.5 * nearDistance), basis, material,
+                 capacity);
+    writeContact(world, pair, 1, farDistance,
+                 cylinder.position.xyz - endOffset + radial - normal * (0.5 * farDistance), basis, material, capacity);
+    writeContact(world, pair, 2, sideDistance, sidePoint + lateral, basis, material, capacity);
+    writeContact(world, pair, 3, sideDistance, sidePoint - lateral, basis, material, capacity);
+}
+
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void clear_contact_count(uint3 id : SV_DispatchThreadID)
@@ -258,9 +318,9 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
         const PrimitiveShape b = shapes[pair.y];
         const uint typeA = a.type.x;
         const uint typeB = b.type.x;
-        const bool planePair = typeA == GeomPlane &&
-                               (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomEllipsoid || typeB == GeomBox);
-        const bool spherePair = typeA == GeomSphere && (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomBox);
+        const bool planePair = typeA == GeomPlane && (typeB >= GeomSphere && typeB <= GeomBox);
+        const bool spherePair = typeA == GeomSphere &&
+                                (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomCylinder || typeB == GeomBox);
         const bool capsulePair = typeA == GeomCapsule && (typeB == GeomCapsule || typeB == GeomBox);
         const bool boxPair = typeA == GeomBox && typeB == GeomBox;
         if (!planePair && !spherePair && !capsulePair && !boxPair)
@@ -291,6 +351,8 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
             PrimitivePoint result;
             if (typeB == GeomBox)
                 result = sphereBoxContact(centerA, a.size.x, frameB, b.size.xyz);
+            else if (typeB == GeomCylinder)
+                result = sphereCylinderContact(centerA, a.size.x, frameB, b.size.xy);
             else
             {
                 float3 closest = centerB;
@@ -339,6 +401,11 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
 
         const float3 normal = frameAxis(frameA, 2);
         ContactBasis basis = makeBasis(normal);
+        if (typeB == GeomCylinder)
+        {
+            writePlaneCylinderContacts(id.y, pair, centerA, basis, frameB, b.size.xy, material, settings.z);
+            continue;
+        }
         const float3 capsuleAxis = frameAxis(frameB, 2);
         uint pointCount = 1;
         if (typeB == GeomCapsule)

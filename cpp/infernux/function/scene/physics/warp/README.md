@@ -15,7 +15,7 @@ These Slang entries follow MuJoCo Warp's shared model and world-indexed data. Th
 | `mass_solve.slang` | `factor_m` and `solve_m` with compact, scalar, tiled and sparse blocks | `factor_small_mass`, `factor_tiled_mass`, `factor_sparse_mass`, `solve_small_mass`, `solve_tiled_mass`, `solve_sparse_mass` |
 | `euler.slang` | Velocity, position, time and warm-start advancement with optional implicit joint damping | `assemble_euler_mass`, `advance_velocity`, `advance_position`, `advance_time` |
 | `broadphase.slang` | Segmented sweep and prune with plane, sphere, axis-aligned box and oriented box filters | `sap_project`, `sap_merge`, `sap_find_ranges`, `sap_scan_ranges`, `sap_emit_pairs` |
-| `primitive_contacts.slang`, `box_contacts.slang`, `capsule_box.slang` | Plane against sphere, capsule, ellipsoid or box, sphere against sphere, capsule or box, capsule against capsule or box, and oriented box against box | `clear_contact_count`, `collide_primitives` |
+| `primitive_contacts.slang`, `box_contacts.slang`, `capsule_box.slang` | Plane against sphere, capsule, ellipsoid, cylinder or box, sphere against sphere, capsule, cylinder or box, capsule against capsule or box, and oriented box against box | `clear_contact_count`, `collide_primitives` |
 | `contact_constraints.slang` | Sparse contact Jacobian, constraint row parameters and pyramidal or elliptic contact objective | `clear_constraint_counts`, `reserve_contact_rows`, `project_contact_rows`, `finish_contact_rows`, `seed_contact_acceleration`, `contact_residual`, `evaluate_contact_objective` |
 | `contact_cg.slang` | Mass-preconditioned nonlinear conjugate gradient for rigid contact | `begin_contact_cg`, `cg_initial_mass_product`, `cg_project_iteration`, `cg_gradient`, `cg_search_direction`, `cg_ray_mass_and_gauss`, `cg_ray_constraint_product`, `cg_line_search`, `cg_apply_step`, `cg_publish_force` |
 | `contact_newton.slang` | Sparse rigid-contact Hessian, reverse block Cholesky and Newton direction | `clear_newton_pattern`, `seed_newton_mass_pattern`, `seed_newton_contact_pattern`, `seal_newton_pattern`, `clear_newton_matrix`, `add_newton_mass`, `build_newton_contact_metric`, `add_newton_contacts`, `factor_newton_matrix`, `solve_newton_direction`, `finalize_newton_direction` |
@@ -45,6 +45,8 @@ Set pair storage capacity per world through `sweepSettings`. The emission stage 
 ## Primitive contacts
 
 Clear the contact counters once before dispatching narrowphase. The primitive entry reads each world's candidate count on-device. Its material table stores geometry rows first and explicit pair overrides second. For geometry rows, the first three friction coefficients are sliding, torsional and rolling friction. For explicit pairs, supply the five contact coefficients. Contacts carry signed distance, frame, material, feature ordinal, and constraint and sensor flags. Oriented box pairs test all separating axes and clip the incident face or construct an edge witness pair. Face contacts preserve polygon order and carry up to eight points. Contact counts retain any overflow beyond allocated storage, just as candidate counts do.
+
+The box-pair reference is Warp's primitive SAT route. A full Warp step selects the convex route for box pairs unless `DisableBit.NATIVECCD` selects the primitive route. Plane-cylinder cap contacts use an in-plane radius direction when the cap is parallel to the plane, including rotated planes.
 
 ## Contact constraints
 
