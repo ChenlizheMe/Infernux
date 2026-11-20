@@ -1,4 +1,5 @@
 import infernux.shader as shader
+from infernux.shader.lib.ambient_visibility import contact_density
 from infernux.shader.lib.camera import linear_eye_depth, world_position
 from infernux.shader.lib.ray_signal import (
     pack_ray_gradient, pack_ray_signal, ray_grid_pixel, unpack_ray_gradient, unpack_ray_signal,
@@ -32,6 +33,7 @@ class RayDiffuseFilter(shader.fullscreen):
         uv = (shader.vec2(source) + shader.vec2(0.5)) / shader.vec2(full)
         depth = shader.as_float(witness.y)
         visibility_size = shader.ivec2(shader.dimensions(self.ambient_visibility, 0))
+        contact_weight = 12.0 * shader.saturate(contact_density(self.ssao_strength))
         center_visibility = 1.0
         if self.ssao_strength > 0.0:
             center_visibility = shader.load(self.ambient_visibility, shader.ivec2(uv * shader.vec2(visibility_size)), 0).x
@@ -88,7 +90,7 @@ class RayDiffuseFilter(shader.fullscreen):
             if self.ssao_strength > 0.0:
                 cell = shader.ivec2(sample_uv * shader.vec2(visibility_size))
                 visibility = shader.load(self.ambient_visibility, cell, 0).x
-                weight /= 1.0 + 12.0 * self.ssao_strength * shader.abs(center_visibility - visibility)
+                weight /= 1.0 + contact_weight * shader.abs(center_visibility - visibility)
             if raw_samples or local_means:
                 gradient_sum += weight * unpack_ray_gradient(sample.z)
             if raw_samples:

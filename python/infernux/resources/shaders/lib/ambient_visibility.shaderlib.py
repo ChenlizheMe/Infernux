@@ -9,6 +9,11 @@ def horizon_arc(cos_h: float, facing: float, along: float) -> float:
     return facing * sin_h * sin_h + along * (shader.acos(cos_h) - sin_h * cos_h)
 
 
+def contact_density(strength: float) -> float:
+    # At 0.1 the displayed indirect light uses the measured hemisphere visibility once.
+    return 10.0 * strength
+
+
 def contact_visibility(signal: shader.Color2D, uv: shader.vec2, eye_depth: float) -> float:
     """Upsample visibility without transferring occlusion across a foreground silhouette."""
     size = shader.ivec2(shader.dimensions(signal, 0))
@@ -36,6 +41,6 @@ def adjust_diffuse_lighting(diffuse: shader.vec4, visibility: shader.Color2D, uv
         contact = contact_visibility(visibility, uv, linear_eye_depth(depth, shader.camera()))
         # Scale the odds of occlusion. Fully open and fully occluded samples stay fixed.
         contact /= 1.0 + (contrast - 1.0) * (1.0 - contact)
-        scale *= shader.mix(1.0, contact, strength)
+        scale *= shader.pow(shader.max(contact, 1e-6), contact_density(strength))
     color = shader.mix(diffuse.rgb, shader.vec3(luminance(diffuse.rgb)), 1.0 - saturation)
     return shader.vec4(color * scale, diffuse.a)

@@ -107,8 +107,8 @@ class DefaultDeferredPipeline(RenderPipeline):
     ``global_illumination`` enables diffuse indirect light. With GI active,
     ``ray_specular`` adds traced reflections. ``ray_quality`` sets the diffuse tracing rate.
     At zero GI saturation, bounced light keeps its luminance and takes on the
-    receiver's color. SSAO strength controls the amount of contact darkening
-    and its contrast shapes partial occlusion. These controls act on the
+    receiver's color. SSAO strength 0.1 applies the measured hemispherical visibility once.
+    Higher strengths deepen contact shadows, and contrast shapes partial occlusion. These controls act on the
     displayed lighting. Light transport samples are kept on their native grid through reconstruction.
     Lighting resolves them against the full-resolution surface; specular
     paths use the full-resolution grid at every quality.
@@ -139,6 +139,7 @@ class DefaultDeferredPipeline(RenderPipeline):
     )
     ssao_strength: float = serialized_field(
         default=0.5, range=(0.0, 1.0), slider=True, display_name_key="renderstack.ssao_strength",
+        tooltip="0 disables contact shading. 0.1 applies the measured visibility. Higher values deepen contacts.",
         visible_when=attrgetter("global_illumination"),
     )
     ssao_contrast: float = serialized_field(
