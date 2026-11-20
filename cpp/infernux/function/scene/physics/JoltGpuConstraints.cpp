@@ -128,7 +128,7 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | S,
                                                       P | K | S | C,
                                                       P | S | B | C | V | Bit(TopologyArguments) | Bit(StepStatus),
-                                                      P | S | B | C};
+                                                      P | S | B | C | Bit(TopologyArguments) | Bit(StepStatus)};
 
 struct PortLayout
 {
@@ -334,6 +334,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Checked(2ull * b);
         const uint32_t allRefs = Checked(uint64_t(j) + p);
         localTopology = b <= ConstraintLocalBodies && allRefs <= ConstraintLocalRefs;
+        deviceSchedule = localTopology && j <= IslandJointQuantum && p <= IslandPatchQuantum;
         frozen[Bodies] = inputs.GetCaptured(Resource::BodyModels);
         frozen[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
         // Joint directory/activity flags stay fixed under this arena writer.
@@ -438,8 +439,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         if (!Endpoint(parents, bodyBytes))
             return false;
         if (!topologyArguments) {
-            const auto groups = Blocks(std::max({config.counts.x, config.counts.y, config.counts.z}));
-            const auto bytes = localTopology ? uint64_t(groups) * WordBytes : TopologyArgumentBytes;
+            const auto bytes = localTopology ? ConstraintLocalArgumentWords * WordBytes : TopologyArgumentBytes;
             topologyArguments = Allocate(bytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
         }
         return topologyArguments != nullptr;
@@ -670,10 +670,19 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                 const uint64_t stride = port == Schedule ? WordBytes : 4u;
                 dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
                 proof.writes.push_back({binding, uint64_t(first) * stride, uint64_t(count) * stride});
-            } else if (port == TopologyArguments || (statusOnly && op.entry == ResetConnectivity)) {
+            } else if (port == TopologyArguments) {
                 dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
-                proof.writes.push_back({binding, statusOnly ? voteStatusOffset : 0u,
-                                        statusOnly ? sizeof(uint32_t) : buffer->GetByteSize()});
+                if (op.entry == BuildLocalTopology) {
+                    const auto groups = Blocks(std::max({config.counts.x, config.counts.y, config.counts.z}));
+                    proof.writes.push_back({binding, 0u, groups * WordBytes});
+                } else if (op.entry == BuildLocalSchedule) {
+                    proof.writes.push_back({binding, ConstraintLocalJointDispatch * WordBytes, 2u * WordBytes});
+                } else {
+                    proof.writes.push_back({binding, 0u, buffer->GetByteSize()});
+                }
+            } else if (statusOnly && op.entry == ResetConnectivity) {
+                dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
+                proof.writes.push_back({binding, voteStatusOffset, sizeof(uint32_t)});
             } else {
                 const bool mayWrite = port == StepStatus || (port == Schedule && op.entry != MarkRoots) ||
                                       (port == Parents && (op.entry == JoinEdges || op.entry == FlattenParents)) ||
@@ -723,7 +732,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->rootVotes = rootVotes;
         value->execution = shared_from_this();
         if (localTopology)
-            value->wakeArguments = std::move(topologyArguments);
+            value->wakeArguments = topologyArguments;
         else
             topologyArguments.reset();
         // Setup must write/read its actual new generations.
@@ -750,6 +759,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->maxJointItems = items.z;
         value->maxPatchItems = items.w;
         value->schedule = isolatedTopology ? nullptr : schedule->Freeze();
+        if (deviceSchedule)
+            value->solveArguments = topologyArguments->Freeze();
         value->bodyRootFirst = config.limits.w;
         value->bodyFirst = config.selection.y;
         value->bodyCount = config.counts.x;
@@ -812,7 +823,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         if (boundary) {
             if (submittedPhase == Phase::Connectivity && !localTopology)
                 reads.push_back({schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
-            else if (submittedPhase == Phase::Assemble)
+            else if (submittedPhase == Phase::Assemble && !deviceSchedule)
                 reads.push_back({schedule, uint64_t(config.layout.x) * WordBytes, 2u * WordBytes});
         }
         const auto resumeAfter =
@@ -832,7 +843,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                     if (submittedPhase == Phase::Connectivity)
                         self->DecodeConnectivity(packet);
                     else {
-                        self->DecodeAssembly(packet);
+                        if (self->deviceSchedule)
+                            self->Install({}, {});
+                        else
+                            self->DecodeAssembly(packet);
                         return {};
                     }
                 }
@@ -853,6 +867,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>)> completedTopology;
     bool isolatedTopology = false;
     bool localTopology = false;
+    bool deviceSchedule = false;
     ConstraintParams config{};
     std::array<uint32_t, 2> jointSort{}, patchSort{};
     std::vector<ScanLevel> hierarchy;

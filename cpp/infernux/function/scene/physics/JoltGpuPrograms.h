@@ -99,17 +99,31 @@ struct JoltGpuContactHistory
     }
 };
 
-/// One substep plan built on the GPU with the required CC checks. Only the fixed
-/// structural summary is returned to the host for producer installation. Numerical
-/// dispatches bind schedule as one transient port and retain its accepted lease.
+/// One accepted substep plan with canonical island and source ranges. A bounded
+/// plan carries device dispatch arguments. Wider plans publish an exact summary
+/// so the host can admit successive, resumable solver tiles.
 struct JoltGpuConstraintWorkset
 {
     uint32_t islandCount = 0, jointIslandCount = 0, contactIslandCount = 0;
     uint32_t activeJoints = 0, activePatches = 0, maxJointItems = 0, maxPatchItems = 0;
-    std::shared_ptr<rhi::ComputeBuffer> schedule;
+    std::shared_ptr<rhi::ComputeBuffer> schedule, solveArguments;
     uint32_t bodyRootFirst = 0, bodyFirst = 0, bodyCount = 0;
     uint32_t jointRefFirst = 0, jointRefCount = 0, patchRefFirst = 0, patchRefCount = 0;
     std::shared_ptr<rhi::ComputeBuffer> rootVotes;
+
+    [[nodiscard]] uint32_t IslandLimit(bool joints) const noexcept
+    {
+        if (solveArguments)
+            return std::min(bodyCount, joints ? jointRefCount : patchRefCount);
+        return joints ? jointIslandCount : contactIslandCount;
+    }
+
+    [[nodiscard]] uint32_t RowLimit(bool joints) const noexcept
+    {
+        if (solveArguments)
+            return joints ? jointRefCount : patchRefCount;
+        return joints ? maxJointItems : maxPatchItems;
+    }
 };
 
 // One topology, before awake-domain numerical setup/finalization.
