@@ -673,7 +673,11 @@ bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs
         const uint64_t maximum = joints ? constraints->maxJointItems : constraints->maxPatchItems;
         if (range.z > tableCount || range.w > tableCount - range.z)
             throw std::invalid_argument("Jolt GPU island work addresses outside its installed island table");
-        if (uint64_t(range.w) * range.y > quantum)
+        const bool wholeRounds = definition.stage == Stage::SolveVelocityRounds;
+        const uint32_t rounds = wholeRounds ? inputs.GetParameters().counts.w : 1u;
+        if (wholeRounds && (range.x || range.y != maximum || constraints->jointIslandCount || rounds < 2u))
+            throw std::invalid_argument("Grouped contact rounds require whole islands without interleaved joints");
+        if (uint64_t(range.w) * range.y > quantum / rounds)
             throw std::invalid_argument("Jolt GPU island work exceeds its total rectangular item quantum");
         if (range.x > maximum || uint64_t(range.y) > maximum - range.x)
             throw std::invalid_argument("Jolt GPU island work addresses outside its accepted summary maximum");
@@ -1488,6 +1492,7 @@ bool JoltGpuPrograms::TryPrepareStartupPrograms(bool hasLocalContacts)
         // Small contact islands use the direct variants regardless of total World size.
         for (const auto stage : {Stage::WarmContacts, Stage::SolveVelocity, Stage::SolvePosition})
             ready &= m_entries[static_cast<size_t>(stage)].directKernel->TryPreparePipeline();
+        ready &= m_entries[static_cast<size_t>(Stage::SolveVelocityRounds)].kernel->TryPreparePipeline();
     }
     return ready;
 }
@@ -1571,11 +1576,12 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
     dispatch.proof = std::move(proof);
     const auto &definition = entry.definition;
     dispatch.groupCountY = dispatch.groupCountZ = 1;
-    if (definition.domain == Domain::IslandPatches && range.y < ContactParallelMinimum) {
-        dispatch.kernel = entry.directKernel;
-        dispatch.groupCountX = Groups(range.w, definition.groupSizeX);
-    } else if (definition.domain == Domain::IslandPatches) {
-        dispatch.groupCountX = range.w;
+    if (entry.directKernel) {
+        if (range.y < ContactParallelMinimum) {
+            dispatch.kernel = entry.directKernel;
+            dispatch.groupCountX = Groups(range.w, definition.groupSizeX);
+        } else
+            dispatch.groupCountX = range.w;
     } else {
         dispatch.groupCountX = Groups(IslandDomain(definition.domain) ? range.w : range.y, definition.groupSizeX);
     }

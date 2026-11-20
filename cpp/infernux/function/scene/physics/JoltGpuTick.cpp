@@ -417,12 +417,14 @@ class JoltGpuTick::Impl
         bool OtherReceipts(const Impl *member) const noexcept;
     };
 
-    static NumericalCostKey NumericalKey(const std::vector<JoltGpuStageWork> &ready)
+    NumericalCostKey NumericalKey(const std::vector<JoltGpuStageWork> &ready) const
     {
         NumericalCostKey key;
         key.reserve(ready.size());
-        for (const auto &unit : ready)
-            key.emplace_back(unit.stage, unit.parameters.range.y, unit.parameters.range.w);
+        for (const auto &unit : ready) {
+            const auto rounds = unit.stage == JPH::GPU::Stage::SolveVelocityRounds ? tickParameters.counts.w : 1u;
+            key.emplace_back(unit.stage, unit.parameters.range.y * rounds, unit.parameters.range.w);
+        }
         return key;
     }
 
@@ -781,7 +783,8 @@ class JoltGpuTick::Impl
         case Phase::SolveJointVelocity:
             return {Stage::SolveJointVelocity, Domain::IslandJoints};
         case Phase::SolveVelocity:
-            return {Stage::SolveVelocity, Domain::IslandPatches};
+            return {CanGroupVelocityRounds() ? Stage::SolveVelocityRounds : Stage::SolveVelocity,
+                    Domain::IslandPatches};
         case Phase::StoreContactHistory:
             return {Stage::StoreContactHistory, Domain::Patches};
         case Phase::Integrate:
@@ -864,6 +867,15 @@ class JoltGpuTick::Impl
     bool HasRigidWork() const noexcept
     {
         return control.simulateRigidBodies && tickParameters.selectedCounts.x;
+    }
+
+    bool CanGroupVelocityRounds() const noexcept
+    {
+        const auto &plan = inputs.GetConstraints();
+        const auto rounds = tickParameters.counts.w;
+        return !control.participants && rounds > 1u && plan && !plan->jointIslandCount && plan->maxPatchItems &&
+               plan->maxPatchItems < JPH::GPU::ContactParallelMinimum &&
+               rounds <= JPH::GPU::IslandPatchQuantum / plan->maxPatchItems;
     }
 
     void NextSpan(StageCursor &next) const
@@ -965,7 +977,8 @@ class JoltGpuTick::Impl
             next.phase = Phase::SolveVelocity;
             break;
         case Phase::SolveVelocity:
-            next.phase = ++next.iteration < tickParameters.counts.w
+            next.iteration += CanGroupVelocityRounds() ? tickParameters.counts.w : 1u;
+            next.phase = next.iteration < tickParameters.counts.w
                              ? (exchange ? Phase::ParticipantExchange : Phase::SolveJointVelocity)
                          : HasRigidWork() && control.prepareContactReport ? Phase::ReportContactsAfterVelocity
                                                                           : drift;
@@ -1106,7 +1119,13 @@ class JoltGpuTick::Impl
                                  ? std::min(JPH::GPU::WorkItemLimit(span.domain), bodyLimit)
                                  : JPH::GPU::WorkItemLimit(span.domain);
         JPH::GPU::StageWork parameters{};
-        if (IslandDomain(span.domain)) {
+        if (span.stage == JPH::GPU::Stage::SolveVelocityRounds) {
+            const uint32_t maximum = IslandMaxItems(span.domain);
+            const uint32_t itemsPerIsland = maximum * tickParameters.counts.w;
+            const uint32_t lanes = std::min(IslandCount(span.domain) - next.islandBatchFirst, quantum / itemsPerIsland);
+            parameters.range = {0u, maximum, next.islandBatchFirst, lanes};
+            next.islandBatchFirst += lanes;
+        } else if (IslandDomain(span.domain)) {
             const auto maximum = IslandMaxItems(span.domain);
             if (next.localFirst == 0) {
                 const auto remaining = IslandCount(span.domain) - next.islandBatchFirst;
@@ -2413,7 +2432,7 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     auto packet = a->programs.PrepareBodyBatch(a->storage, {{&a->inputs, unitA}, {&b->inputs, unitB}}, bodyBatchInputs);
     if (!packet)
         return false; // Managed defer accepts/cancels neither member's existing singleton.
-    auto numericalKey = Impl::NumericalKey({unitA, unitB});
+    auto numericalKey = a->NumericalKey({unitA, unitB});
     stage->key = Impl::Key(*packet, numericalKey);
     // Any old packets are exact, unaccepted singletons at these same
     // accepted cursors. Finish all fallible preparation before replacing them;
