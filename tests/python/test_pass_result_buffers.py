@@ -319,7 +319,8 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     assert blur._input_bindings["visibility"] == visibility.name
     assert gather._input_bindings["guide"] == blur._input_bindings["guide"] == screen._write_colors[0]
     assert fill._input_bindings["guide"] == history._input_bindings["guide"] == screen._write_colors[0]
-    assert resolve._input_bindings["guide"] == screen._write_colors[0]
+    assert resolve._input_bindings["primary"] == primary.name
+    assert "guide" not in resolve._input_bindings
     assert resolve._parameters["divisor"] == filter_divisor
     noise = graph.get_texture(gather._input_bindings["blue_noise"])
     assert noise.size == (256, 256) and noise.asset_guid
