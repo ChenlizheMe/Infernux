@@ -1314,9 +1314,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             })
         .def_property_readonly("gpu_residency_snapshot",
                                [](const Infernux &self) {
-                                   const auto *renderer = self.GetRenderer();
-                                   const GpuResidencySnapshot snapshot =
-                                       renderer ? renderer->GetGpuResidencySnapshot() : GpuResidencySnapshot{};
+                                   const GpuResidencySnapshot snapshot = self.GetGpuResidencySnapshot();
                                    py::dict result;
                                    result["budget_bytes"] = snapshot.budgetBytes;
                                    result["runtime_budget_bytes"] = snapshot.runtimeBudgetBytes;

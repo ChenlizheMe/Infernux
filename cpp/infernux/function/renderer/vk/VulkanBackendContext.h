@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VulkanBackendApi.h"
+#include <function/renderer/GpuResidency.h>
 
 #include "VkSwapchainManager.h"
 #include "VulkanComputeQueue.h"
@@ -27,6 +28,7 @@ class VulkanBackendContext
     INFERNUX_VULKAN_BACKEND_API bool InitializeInstance(const DeviceConfig &config);
     INFERNUX_VULKAN_BACKEND_API bool InitializeDevice(VkSurfaceKHR surface, uint32_t graphicsFrameSlots);
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API bool IsInitialized() const noexcept;
+    [[nodiscard]] INFERNUX_VULKAN_BACKEND_API GpuResidencySnapshot GetGpuResidencySnapshot() const;
     [[nodiscard]] INFERNUX_VULKAN_BACKEND_API std::unique_ptr<rhi::ComputeHost> AcquireComputeHost();
     [[nodiscard]] size_t GetComputeHostLeaseCount() const noexcept
     {

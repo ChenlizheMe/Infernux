@@ -1,5 +1,6 @@
 #include "VulkanBackendContext.h"
 #include "VulkanRhiDevice.h"
+#include "VmaContext.h"
 #include <core/log/InxLog.h>
 #include <limits>
 
@@ -71,6 +72,41 @@ bool VulkanBackendContext::InitializeDevice(VkSurfaceKHR surface, uint32_t graph
 bool VulkanBackendContext::IsInitialized() const noexcept
 {
     return m_services->alive;
+}
+
+GpuResidencySnapshot VulkanBackendContext::GetGpuResidencySnapshot() const
+{
+    GpuResidencySnapshot snapshot;
+    if (!IsInitialized())
+        return snapshot;
+
+    const auto &device = Device();
+    const auto statistics = QueryVmaRuntimeStatistics(device.GetVmaAllocator(), device.GetPhysicalDevice());
+    snapshot.allocatorAllocationBytes = statistics.allocationBytes;
+    snapshot.allocatorBlockBytes = statistics.blockBytes;
+    snapshot.allocatorAllocationCount = statistics.allocationCount;
+    snapshot.deviceLocalAllocationBytes = statistics.deviceLocalAllocationBytes;
+    snapshot.deviceLocalUsageBytes = statistics.deviceLocalUsageBytes;
+    snapshot.deviceLocalBudgetBytes = statistics.deviceLocalBudgetBytes;
+    // Match the default device-local allocation admission limit. Rendering may
+    // partition this budget or apply its explicit runtime override.
+    snapshot.runtimeBudgetBytes = (statistics.deviceLocalBudgetBytes / 10ULL) * 7ULL;
+    snapshot.budgetBytes = snapshot.runtimeBudgetBytes;
+    snapshot.stagingPoolBytes = device.GetRhiDevice().GetStagingPoolStatistics().bytes;
+    snapshot.deviceWaitIdleCount = device.GetWaitIdleCount();
+    snapshot.trackedBytes = snapshot.stagingPoolBytes;
+    snapshot.unclassifiedBytes = snapshot.allocatorAllocationBytes > snapshot.trackedBytes
+                                     ? snapshot.allocatorAllocationBytes - snapshot.trackedBytes
+                                     : 0;
+    // Compute-owned allocations have no renderer eviction projection. Keep
+    // them visible without assigning them to mesh/texture/graphics counters.
+    snapshot.effectiveAllocationBytes = snapshot.deviceLocalAllocationBytes;
+    snapshot.runtimeEffectiveAllocationBytes = snapshot.effectiveAllocationBytes;
+    snapshot.runtimeOverBudgetBytes = snapshot.runtimeEffectiveAllocationBytes > snapshot.runtimeBudgetBytes
+                                          ? snapshot.runtimeEffectiveAllocationBytes - snapshot.runtimeBudgetBytes
+                                          : 0;
+    snapshot.overBudgetBytes = snapshot.runtimeOverBudgetBytes;
+    return snapshot;
 }
 
 std::unique_ptr<rhi::ComputeHost> VulkanBackendContext::AcquireComputeHost()

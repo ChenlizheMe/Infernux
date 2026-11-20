@@ -37,7 +37,6 @@
 #include "vk/RenderGraph.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkHandle.h"
-#include "vk/VmaContext.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <charconv>
@@ -2407,9 +2406,7 @@ uint64_t InxRenderer::GetGpuResidencyBudgetBytes() const
         return m_gpuResidencyBudgetBytes;
     if (!m_vkCore)
         return 0;
-    const auto statistics = vk::QueryVmaRuntimeStatistics(m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                                                          m_vkCore->GetDeviceContext().GetPhysicalDevice());
-    const uint64_t totalManagedBudget = (statistics.deviceLocalBudgetBytes / 10ULL) * 7ULL;
+    const uint64_t totalManagedBudget = m_vkCore->GetBackendContext().GetGpuResidencySnapshot().runtimeBudgetBytes;
     const uint64_t editorTextureBudget = m_gui && !m_guiPlayerMode ? m_gui->GetImGuiTextureBudgetBytes() : 0;
     return totalManagedBudget > editorTextureBudget ? totalManagedBudget - editorTextureBudget : totalManagedBudget;
 }
@@ -2429,17 +2426,15 @@ GpuResidencySnapshot InxRenderer::GetGpuResidencySnapshot() const
     if (!m_vkCore)
         return snapshot;
 
-    const auto statistics = vk::QueryVmaRuntimeStatistics(m_vkCore->GetDeviceContext().GetVmaAllocator(),
-                                                          m_vkCore->GetDeviceContext().GetPhysicalDevice());
-    snapshot.runtimeBudgetBytes = GetGpuResidencyBudgetBytes();
+    snapshot = m_vkCore->GetBackendContext().GetGpuResidencySnapshot();
+    const uint64_t totalManagedBudget = snapshot.runtimeBudgetBytes;
     snapshot.editorTextureBudgetBytes = m_gui && !m_guiPlayerMode ? m_gui->GetImGuiTextureBudgetBytes() : 0;
+    snapshot.runtimeBudgetBytes = m_gpuResidencyBudgetBytes != 0
+                                      ? m_gpuResidencyBudgetBytes
+                                      : (totalManagedBudget > snapshot.editorTextureBudgetBytes
+                                             ? totalManagedBudget - snapshot.editorTextureBudgetBytes
+                                             : totalManagedBudget);
     snapshot.budgetBytes = snapshot.runtimeBudgetBytes + snapshot.editorTextureBudgetBytes;
-    snapshot.allocatorAllocationBytes = statistics.allocationBytes;
-    snapshot.allocatorBlockBytes = statistics.blockBytes;
-    snapshot.deviceLocalAllocationBytes = statistics.deviceLocalAllocationBytes;
-    snapshot.deviceLocalUsageBytes = statistics.deviceLocalUsageBytes;
-    snapshot.deviceLocalBudgetBytes = statistics.deviceLocalBudgetBytes;
-    snapshot.allocatorAllocationCount = statistics.allocationCount;
     snapshot.meshBytes = m_vkCore->GetMeshGpuResidentBytes();
     snapshot.textureBytes = m_vkCore->GetTextureGpuResidentBytes();
     snapshot.imguiTextureBytes = m_gui ? m_gui->GetImGuiTextureResidentBytes() : 0;

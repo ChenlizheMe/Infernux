@@ -465,6 +465,9 @@ class Infernux
         return m_isInitialized && !m_isCleanedUp;
     }
 
+    /// Shared device residency is available with or without window presentation.
+    [[nodiscard]] GpuResidencySnapshot GetGpuResidencySnapshot() const;
+
     /// @brief Get the renderer subsystem for direct access.
     /// @return Pointer to InxRenderer, or nullptr if not initialized / cleaned up
     [[nodiscard]] InxRenderer *GetRenderer() const

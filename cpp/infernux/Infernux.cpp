@@ -833,6 +833,15 @@ bool Infernux::HasGpuCompute() const noexcept
     return m_isInitialized && !m_isCleaningUp && !m_isCleanedUp && m_gpuServices && m_gpuServices->IsInitialized();
 }
 
+GpuResidencySnapshot Infernux::GetGpuResidencySnapshot() const
+{
+    if (m_isCleanedUp)
+        return {};
+    if (m_renderer)
+        return m_renderer->GetGpuResidencySnapshot();
+    return m_gpuServices ? m_gpuServices->GetGpuResidencySnapshot() : GpuResidencySnapshot{};
+}
+
 std::shared_ptr<rhi::RenderTexture> Infernux::CreateRenderTexture(const rhi::RenderTextureDesc &description)
 {
     if (!m_isInitialized || m_isCleaningUp || m_isCleanedUp || !m_renderer)
