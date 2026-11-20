@@ -112,6 +112,8 @@ PrimitivePoint sphereBoxContact(float3 sphere, float radius, CartesianFrame box,
     return {box.position.xyz + rotatePoint(box, point), rotatePoint(box, normal), -closest - radius};
 }
 
+#include "capsule_box.slang"
+
 float2 clampSegmentWeights(float s, float t, float s0, float s1)
 {
     if (t < 0.0)
@@ -259,7 +261,7 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
         const bool planePair = typeA == GeomPlane &&
                                (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomEllipsoid || typeB == GeomBox);
         const bool spherePair = typeA == GeomSphere && (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomBox);
-        const bool capsulePair = typeA == GeomCapsule && typeB == GeomCapsule;
+        const bool capsulePair = typeA == GeomCapsule && (typeB == GeomCapsule || typeB == GeomBox);
         const bool boxPair = typeA == GeomBox && typeB == GeomBox;
         if (!planePair && !spherePair && !capsulePair && !boxPair)
             continue;
@@ -305,6 +307,18 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
         }
         if (capsulePair)
         {
+            if (typeB == GeomBox)
+            {
+                PrimitivePoint first, second;
+                const uint points = capsuleBoxContacts(frameA, a.size.xy, frameB, b.size.xyz, first, second);
+                for (uint i = 0; i < points; ++i)
+                {
+                    const PrimitivePoint result = i == 0 ? first : second;
+                    writeContact(id.y, pair, i, result.distance, result.point, makeBasis(result.normal), material,
+                                 settings.z);
+                }
+                continue;
+            }
             const float3 halfA = frameAxis(frameA, 2) * a.size.y;
             const float3 halfB = frameAxis(frameB, 2) * b.size.y;
             const float3 startA = centerA - halfA;
