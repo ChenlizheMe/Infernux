@@ -1973,10 +1973,14 @@ class Scene:
     """A single scene containing GameObjects."""
 
     name: str
-    physics_backend: PhysicsBackend
+
+    @property
+    def physics_backend(self) -> PhysicsBackend: ...
 
     @property
     def physics_backend_writable(self) -> bool: ...
+
+    def _set_authoring_physics_backend(self, backend: PhysicsBackend) -> None: ...
 
     @property
     def is_preview(self) -> bool: ...

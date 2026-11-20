@@ -1,7 +1,7 @@
 #pragma once
-#include <Jolt/GPU/ArticulationDynamicsTypes.h>
-#include <Jolt/GPU/StateFkTypes.h>
 #include "JoltGpuArticulations.h"
+#include <function/scene/physics/gpu/ArticulationDynamicsTypes.h>
+#include <function/scene/physics/gpu/StateFkTypes.h>
 
 namespace infernux
 {

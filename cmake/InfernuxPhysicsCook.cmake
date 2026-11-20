@@ -5,7 +5,7 @@ function(infernux_add_jolt_gpu_cooker)
     add_executable(InfernuxJoltGpuCook "${_root}/cpp/apps/cook/JoltGpuCook.cpp")
     target_compile_features(InfernuxJoltGpuCook PRIVATE cxx_std_17)
     target_include_directories(InfernuxJoltGpuCook PRIVATE
-        "${_root}/cpp/infernux" "${_root}/external" "${_root}/external/joltphysics_for_infernux")
+        "${_root}/cpp/infernux" "${_root}/external")
 
     if(TARGET InfernuxShaderCompiler)
         target_link_libraries(InfernuxJoltGpuCook PRIVATE InfernuxShaderCompiler)
@@ -83,9 +83,9 @@ endfunction()
 
 function(infernux_cook_jolt_gpu_programs target format)
     get_filename_component(_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
-    set(_jolt_gpu "${_root}/external/joltphysics_for_infernux/Jolt/GPU")
+    set(_physics_gpu "${_root}/cpp/infernux/function/scene/physics/gpu")
     file(GLOB_RECURSE _shader_sources CONFIGURE_DEPENDS
-        "${_jolt_gpu}/*.slang" "${_jolt_gpu}/*.h" "${_jolt_gpu}/*.inl")
+        "${_physics_gpu}/*.slang" "${_physics_gpu}/*.h" "${_physics_gpu}/*.inl")
     infernux_cook_program_archive(${target} ${format} physics JoltGpuArchive.c ${_shader_sources}
         "${_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
 endfunction()

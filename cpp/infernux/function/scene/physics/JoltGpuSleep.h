@@ -1,7 +1,7 @@
 #pragma once
 
-#include <Jolt/GPU/SleepTypes.h>
 #include "JoltGpuTick.h"
+#include <function/scene/physics/gpu/SleepTypes.h>
 
 namespace infernux
 {

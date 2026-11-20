@@ -1,8 +1,8 @@
 #include "JoltGpuArticulationNumerics.h"
-#include <Jolt/GPU/ArticulationIntegrationTypes.h>
 #include "JoltGpuProgramSources.h"
 #include <algorithm>
 #include <cstring>
+#include <function/scene/physics/gpu/ArticulationIntegrationTypes.h>
 #include <map>
 #include <set>
 #include <stdexcept>

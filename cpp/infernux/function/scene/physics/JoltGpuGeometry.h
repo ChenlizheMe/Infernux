@@ -1,9 +1,9 @@
 #pragma once
 
 #include <Jolt/Jolt.h>
-#include <Jolt/GPU/ConvexGeometryTypes.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <array>
+#include <function/scene/physics/gpu/ConvexGeometryTypes.h>
 #include <memory>
 #include <vector>
 

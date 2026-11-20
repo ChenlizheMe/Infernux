@@ -21,7 +21,7 @@
 | 名称 | 类型 | 描述 |
 |------|------|------|
 | name | `str` | 场景名称。 |
-| physics_backend | `PhysicsBackend` | 场景资产选用的设备，取值为 `PhysicsBackend.CPU` 或 `PhysicsBackend.GPU`。 |
+| physics_backend | `PhysicsBackend` | 场景资产选用的设备，取值为 `PhysicsBackend.CPU` 或 `PhysicsBackend.GPU`。在 Scene Asset Inspector 设置，脚本只读。 |
 | physics_backend_writable | `bool` | 当前场景是否允许编辑后端选项。*(只读)* |
 | is_preview | `bool` |  *(只读)* |
 | structure_version | `int` |  *(只读)* |

@@ -56,10 +56,10 @@ def current(joint, kind):
 @pytest.mark.parametrize("read_path", ["native", "public"])
 @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
 def test_target_retirement_publishes_inactive_joint_before_next_fixed_step(scene, kind, operation, read_path, backend, _physics_play):
-    scene.physics_backend = backend
+    scene._set_authoring_physics_backend(backend)
     manager = SceneManager.instance()
     support_scene = manager.create_scene("Support world") if operation == "unload_target" else scene
-    support_scene.physics_backend = backend
+    support_scene._set_authoring_physics_backend(backend)
     make_joint(scene, kind, support_scene)
     support_scene_name = support_scene.name
     # Play snapshots remap references across resident Scenes. A standalone

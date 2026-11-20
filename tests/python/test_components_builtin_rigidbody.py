@@ -19,7 +19,7 @@ from infernux.components.builtin.rigidbody import (
 class TestVelocityAndForce:
     @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
     def test_bound_wrapper_configures_moves_and_sleeps_a_dynamic_body(self, scene, backend, _physics_play):
-        scene.physics_backend = backend
+        scene._set_authoring_physics_backend(backend)
         owner = scene.create_game_object("Wrapper dynamics")
         owner.add_component("BoxCollider")
         rb = owner.add_component(Rigidbody)
@@ -92,11 +92,15 @@ def test_body_backend_is_owned_by_scene_not_component_authoring(scene, backend, 
     from infernux.lib import Physics as NativePhysics
     from infernux.physics import Physics
 
-    scene.physics_backend = backend
+    scene._set_authoring_physics_backend(backend)
     owner = scene.create_game_object("Scene backend contract")
     owner.add_component("BoxCollider")
     body = owner.add_component(Rigidbody)
     native = body._require_cpp_component()
+    assert scene.physics_backend == backend
+    opposite = PhysicsBackend.GPU if backend == PhysicsBackend.CPU else PhysicsBackend.CPU
+    with pytest.raises(AttributeError):
+        scene.physics_backend = opposite
     assert scene.physics_backend == backend
     for name in ("gpu", "cross_backend_interaction"):
         assert not hasattr(type(body), name)
@@ -116,9 +120,10 @@ def test_body_backend_is_owned_by_scene_not_component_authoring(scene, backend, 
         runtime_body = runtime.find("Scene backend contract").get_component(Rigidbody)
         assert runtime_body is not body
         assert runtime.physics_backend == backend
-        opposite = PhysicsBackend.GPU if backend == PhysicsBackend.CPU else PhysicsBackend.CPU
-        with pytest.raises(RuntimeError, match="loaded runtime Scene"):
+        with pytest.raises(AttributeError):
             runtime.physics_backend = opposite
+        with pytest.raises(RuntimeError, match="loaded runtime Scene"):
+            runtime._set_authoring_physics_backend(opposite)
         assert runtime.physics_backend == backend
         runtime_document = json.loads(runtime_body._require_cpp_component().serialize())
         assert runtime_document["component_id"] != document["component_id"]

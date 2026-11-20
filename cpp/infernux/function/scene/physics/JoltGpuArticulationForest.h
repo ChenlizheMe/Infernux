@@ -1,9 +1,9 @@
 #pragma once
-#include <Jolt/GPU/ArticulationIntegrationTypes.h>
 #include "JoltGpuArticulations.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <function/scene/physics/gpu/ArticulationIntegrationTypes.h>
 #include <numeric>
 
 namespace infernux

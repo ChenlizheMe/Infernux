@@ -418,8 +418,10 @@ static void BindSceneObjects(NativeClass<Scene> &cls)
 
 static void BindSceneState(NativeClass<Scene> &cls)
 {
-    cls.def_property("physics_backend", &Scene::GetPhysicsBackend, &Scene::SetPhysicsBackend,
-                     "Scene physics backend; loaded runtime Scenes cannot change it")
+    cls.def_property_readonly("physics_backend", &Scene::GetPhysicsBackend,
+                              "Physics backend selected by the Scene asset")
+        .def("_set_authoring_physics_backend", &Scene::SetPhysicsBackend, py::arg("backend"),
+             "Apply the Scene Inspector document edit")
         .def_property_readonly("physics_backend_writable", &Scene::IsPhysicsBackendWritable)
         .def_property_readonly("structure_version", &Scene::GetStructureVersion,
                                "Monotonic counter bumped on structural changes (add/remove/reparent)")

@@ -1,10 +1,10 @@
 #pragma once
 
 #include <Jolt/Jolt.h>
-#include <Jolt/GPU/PhysicsTypes.h>
 #include <Jolt/Math/Vec3.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <Jolt/Physics/Collision/Shape/SubShapeID.h>
+#include <function/scene/physics/gpu/PhysicsTypes.h>
 
 #include "JoltGpuGeometry.h"
 #include <cstdint>

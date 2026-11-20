@@ -1,8 +1,8 @@
 #include "JoltGpuConstraints.h"
-#include <Jolt/GPU/ConstraintTypes.h>
 #include "JoltGpuProgramSources.h"
 #include "JoltGpuSleep.h"
 #include "JoltGpuSleepLayout.h"
+#include <function/scene/physics/gpu/ConstraintTypes.h>
 
 #include <algorithm>
 #include <array>

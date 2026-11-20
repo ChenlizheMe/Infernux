@@ -247,8 +247,8 @@ class JoltGpuTick final
     void SetSourceFocus(JoltGpuTick *member) noexcept;
     [[nodiscard]] FrameWorkWaitResult WaitForSourceProgress(uint64_t maxWaitNanoseconds);
 
-    /// Requires the packed backend's writer/layout exclusion. Only a Scene-admitted
-    /// disjoint clean sibling may share this unchanged layout and Source. worldRow
+    /// Requires the packed backend's writer/layout exclusion. Scene-admitted
+    /// disjoint numerical members may share an unchanged layout and Source. worldRow
     /// belongs to the accepted layout; controls may move its ranges before
     /// capture, but may not renumber its reserved row. Arbitrary controller/model/
     /// layout writers remain excluded until all relevant member receipts retire.
@@ -330,7 +330,7 @@ class JoltGpuTick final
     void ReleaseObservation() noexcept;
     void TracePublicationRead(const char *boundary, uint32_t row) const noexcept;
     std::unique_ptr<Impl> m_impl;
-    std::unique_ptr<JoltGpuTick> m_sharedMember;
+    std::vector<std::unique_ptr<JoltGpuTick>> m_sharedMembers;
     std::unique_ptr<JoltGpuTick> m_observationMember;
 };
 

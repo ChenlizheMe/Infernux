@@ -1,8 +1,8 @@
 #pragma once
 
-#include <Jolt/GPU/ArticulationControlTypes.h>
-#include <Jolt/GPU/ArticulationTypes.h>
 #include "JoltGpuTick.h"
+#include <function/scene/physics/gpu/ArticulationControlTypes.h>
+#include <function/scene/physics/gpu/ArticulationTypes.h>
 
 namespace infernux
 {

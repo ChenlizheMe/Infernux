@@ -1,7 +1,7 @@
 #pragma once
-#include <Jolt/GPU/SleepTypes.h>
 #include <array>
 #include <function/renderer/shader/ShaderProgramCode.h>
+#include <function/scene/physics/gpu/SleepTypes.h>
 #include <stdexcept>
 #include <string_view>
 

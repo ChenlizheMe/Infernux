@@ -1,10 +1,10 @@
 #pragma once
 
-#include <Jolt/GPU/SleepTypes.h>
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include "JoltGpuShape.h"
 #include "PhysicsShapeAuthoring.h"
 #include "PhysicsTargetReference.h"
+#include <function/scene/physics/gpu/SleepTypes.h>
 
 #include <optional>
 

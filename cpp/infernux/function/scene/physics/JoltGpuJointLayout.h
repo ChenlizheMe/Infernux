@@ -1,8 +1,8 @@
 #pragma once
 
-#include <Jolt/GPU/PhysicsTypes.h>
 #include <algorithm>
 #include <cstring>
+#include <function/scene/physics/gpu/PhysicsTypes.h>
 #include <limits>
 #include <memory>
 #include <stdexcept>

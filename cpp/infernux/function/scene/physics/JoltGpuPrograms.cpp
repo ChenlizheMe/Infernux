@@ -163,6 +163,7 @@ constexpr BodyBatchDefinition BodyBatchDefinitions[] = {
     {Stage::PrepareKinematics, "body_batch_prepare_kinematics"},
     {Stage::ApplyForces, "body_batch_apply_forces"},
     {Stage::Integrate, "body_batch_integrate"},
+    {Stage::BuildBounds, "body_batch_build_bounds"},
 };
 constexpr std::array<std::string_view, 3> BodyBatchInputNames = {"body_batch_header", "body_batch_selections",
                                                                  "body_batch_tiles"};
@@ -1738,16 +1739,16 @@ void JoltGpuPrograms::AppendStages(const JoltGpuStorage &storage, const JoltGpuS
     }
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch>
-JoltGpuPrograms::PrepareBodyBatch(const JoltGpuStorage &storage, const std::vector<JoltGpuBodyBatchMember> &members,
-                                  JoltGpuBodyBatchInputs &inputs)
+bool JoltGpuPrograms::AppendBodyBatch(const JoltGpuStorage &storage, const std::vector<JoltGpuBodyBatchMember> &members,
+                                      JoltGpuBodyBatchInputs &inputs, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                                      std::vector<rhi::ComputeDispatchDesc> &dispatches)
 {
     if (!m_host.SharesServicesWith(storage.GetHost()) || members.empty())
         throw std::invalid_argument("Body batch requires ready units on its shared storage owner");
     const auto definition = std::find_if(std::begin(BodyBatchDefinitions), std::end(BodyBatchDefinitions),
                                          [&](const auto &value) { return value.stage == members.front().work.stage; });
     if (definition == std::end(BodyBatchDefinitions))
-        throw std::invalid_argument("Body batch requires kinematic setup, forces or integrate");
+        throw std::invalid_argument("Body batch requires one supported body or bounds stage");
     const auto &entry = m_bodyBatchEntries[size_t(definition - std::begin(BodyBatchDefinitions))];
     const auto &single = Stages[static_cast<size_t>(definition->stage)];
     const uint32_t maxTiles = WorkItemLimit(Domain::Bodies) / 64u;
@@ -1756,6 +1757,8 @@ JoltGpuPrograms::PrepareBodyBatch(const JoltGpuStorage &storage, const std::vect
     std::vector<StepParams> selections;
     std::vector<BodyBatchTile> tiles;
     std::vector<std::pair<uint32_t, uint32_t>> intervals;
+    const bool bounds = definition->stage == Stage::BuildBounds;
+    std::shared_ptr<rhi::ComputeBuffer> geometry;
     for (const auto &member : members) {
         if (!member.inputs || member.work.stage != definition->stage ||
             !ValidateWork(storage, *member.inputs, single, member.work))
@@ -1779,6 +1782,13 @@ JoltGpuPrograms::PrepareBodyBatch(const JoltGpuStorage &storage, const std::vect
             const auto &forces = member.inputs->GetCaptured(Resource::BodyForces);
             if (!forces || forces->GetAllocation() != storage.Get(Resource::BodyForces)->GetAllocation())
                 throw std::invalid_argument("Body batch force endpoint is no longer its captured live input");
+        }
+        if (bounds) {
+            const auto &captured = member.inputs->GetCaptured(Resource::ConvexGeometry);
+            if (!geometry)
+                geometry = captured;
+            else if (geometry->GetAllocation() != captured->GetAllocation())
+                throw std::invalid_argument("Bounds batch members must share one geometry allocation");
         }
         const uint32_t count = Groups(range.y, 64);
         if (tiles.size() > maxTiles || count > maxTiles - tiles.size())
@@ -1814,15 +1824,15 @@ JoltGpuPrograms::PrepareBodyBatch(const JoltGpuStorage &storage, const std::vect
             auto grown = rhi::ComputeBuffer::TryCreatePrivate(
                 m_host, {bytes[i] / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
             if (!grown)
-                return {}; // No member unit or upload was accepted.
+                return false;
             buffer = std::move(grown);
         }
     }
     const BodyBatchHeader header{{static_cast<uint32_t>(selections.size()), static_cast<uint32_t>(tiles.size()),
                                   storage.GetBodyCount(), storage.GetWorldCount()}};
-    std::vector<rhi::ComputeBufferUpdate> uploads{{inputs.buffers[0], 0, Bytes(&header, 1)},
-                                                  {inputs.buffers[1], 0, Bytes(selections.data(), selections.size())},
-                                                  {inputs.buffers[2], 0, Bytes(tiles.data(), tiles.size())}};
+    uploads.push_back({inputs.buffers[0], 0, Bytes(&header, 1)});
+    uploads.push_back({inputs.buffers[1], 0, Bytes(selections.data(), selections.size())});
+    uploads.push_back({inputs.buffers[2], 0, Bytes(tiles.data(), tiles.size())});
     rhi::ComputeDispatchDesc dispatch;
     dispatch.kernel = entry.kernel;
     dispatch.groupCountX = static_cast<uint32_t>(tiles.size());
@@ -1830,12 +1840,25 @@ JoltGpuPrograms::PrepareBodyBatch(const JoltGpuStorage &storage, const std::vect
     rhi::ComputeDispatchProof proof;
     for (const auto &binding : entry.bindings) {
         const auto index = static_cast<uint32_t>(dispatch.buffers.size());
-        const auto &buffer =
-            binding.slot >= PortCount ? inputs.buffers[binding.slot - PortCount] : storage.m_buffers[binding.slot];
+        const auto resource = binding.slot < PortCount ? Ports[binding.slot].resource : Resource::StageWork;
+        const auto &buffer = binding.slot >= PortCount              ? inputs.buffers[binding.slot - PortCount]
+                             : resource == Resource::ConvexGeometry ? geometry
+                                                                    : storage.m_buffers[binding.slot];
         dispatch.buffers.push_back(buffer);
         dispatch.bufferAccesses.push_back(binding.access);
         if (binding.slot >= PortCount) {
             proof.reads.push_back({index, 0, bytes[binding.slot - PortCount]});
+        } else if (resource == Resource::ConvexGeometry) {
+            for (const auto &member : members)
+                for (const auto &[first, end] : member.inputs->GetGeometry()->wordRanges)
+                    proof.reads.push_back({index, first * sizeof(UInt4), (end - first) * sizeof(UInt4)});
+        } else if (bounds && resource == Resource::BodyStates) {
+            for (const auto &selected : selections)
+                proof.reads.push_back({index, uint64_t(selected.selection.y) * sizeof(BodyState),
+                                       uint64_t(selected.selectedCounts.x) * sizeof(BodyState)});
+        } else if (resource == Resource::Bounds) {
+            for (const auto &[first, count] : intervals)
+                proof.writes.push_back({index, uint64_t(first) * sizeof(Aabb), uint64_t(count) * sizeof(Aabb)});
         } else if (binding.read) {
             for (const auto &[first, count] : intervals)
                 proof.reads.push_back({index, uint64_t(first) * Ports[binding.slot].stride,
@@ -1845,7 +1868,8 @@ JoltGpuPrograms::PrepareBodyBatch(const JoltGpuStorage &storage, const std::vect
     // These helpers retain prior state on legal early exits; never claim a
     // complete body write. RHI preservation/proof admission remains unchanged.
     dispatch.proof = std::move(proof);
-    return rhi::PrepareComputeBatch(m_host, std::move(uploads), {std::move(dispatch)});
+    dispatches.push_back(std::move(dispatch));
+    return true;
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> JoltGpuPrograms::PrepareStages(const JoltGpuStorage &storage,

@@ -104,7 +104,7 @@ def test_additive_scene_rigidbody_collides_with_other_scene_ground(scene, _colli
 class TestHingeJoint:
     @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
     def test_world_hinge_preserves_anchor_and_limits_rotation(self, scene, backend, _physics_play):
-        scene.physics_backend = backend
+        scene._set_authoring_physics_backend(backend)
         body = scene.create_game_object("WorldHinge")
         body.transform.position = Vector3(1.0, 3.0, 0.0)
         rigidbody = body.add_component("Rigidbody")
@@ -686,7 +686,7 @@ class TestRigidbodyStateBatch:
     def test_contact_stream_publishes_resolved_geometry_for_custom_solvers(self, scene, _physics_play, backend):
         import numpy as np
 
-        scene.physics_backend = backend
+        scene._set_authoring_physics_backend(backend)
         _make_ground(scene)
         _, ball = _make_ball(scene, pos=Vector3(0, 0.9, 0), radius=0.5)
         ball.use_gravity = False
@@ -1288,7 +1288,7 @@ class TestFixedTiming(_PreparedPhysicsPlay):
         accumulator. Once paused, stepping by the configured fixed interval
         runs one fixed bundle and the normal script phases around it.
         """
-        scene.physics_backend = backend
+        scene._set_authoring_physics_backend(backend)
         owner = scene.create_game_object("ManualStepProbe")
         owner.add_component("BoxCollider")
         owner.add_component("Rigidbody").use_gravity = False
@@ -1352,7 +1352,7 @@ class TestFixedTiming(_PreparedPhysicsPlay):
 
     @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
     def test_public_physics_stages_bridge_the_same_jolt_step(self, scene, _normal_play, backend):
-        scene.physics_backend = backend
+        scene._set_authoring_physics_backend(backend)
         Physics.set_gravity(Vector3(0, 0, 0))
         body, rigidbody = _make_ball(scene, pos=Vector3(0, 5, 0))
         rigidbody.use_gravity = False
@@ -1400,7 +1400,7 @@ class TestFixedTiming(_PreparedPhysicsPlay):
 
     @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
     def test_fixed_time_is_current_inside_fixed_update(self, scene, _normal_play, backend):
-        scene.physics_backend = backend
+        scene._set_authoring_physics_backend(backend)
         scene.create_game_object("FixedTimeProbe")
 
         class FixedTimeProbe(InxComponent):
@@ -2429,7 +2429,7 @@ class TestRaycastBatch(_PreparedPhysicsPlay):
 
     @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
     def test_query_generation_changes_only_when_published_physics_state_changes(self, scene, backend, _normal_play):
-        scene.physics_backend = backend
+        scene._set_authoring_physics_backend(backend)
         import numpy as np
 
         target = scene.create_game_object("QueryGenerationTarget")
@@ -2620,7 +2620,7 @@ class TestRaycastBatch(_PreparedPhysicsPlay):
 
     @pytest.mark.parametrize("backend", [PhysicsBackend.CPU, PhysicsBackend.GPU], ids=["cpu_scene", "gpu_scene"])
     def test_profile_contract_and_disabled_profile_cleanup(self, scene, backend, _normal_play):
-        scene.physics_backend = backend
+        scene._set_authoring_physics_backend(backend)
         import numpy as np
 
         target = scene.create_game_object("ProfileBatchGround")

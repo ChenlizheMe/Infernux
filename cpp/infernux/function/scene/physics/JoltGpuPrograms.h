@@ -1,12 +1,12 @@
 #pragma once
 
-#include <Jolt/GPU/ConstraintTypes.h>
-#include <Jolt/GPU/PhysicsStages.h>
-#include <Jolt/GPU/SleepTypes.h>
 #include "JoltGpuJointLayout.h"
 #include "PhysicsContactTypes.h"
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
+#include <function/scene/physics/gpu/ConstraintTypes.h>
+#include <function/scene/physics/gpu/PhysicsStages.h>
+#include <function/scene/physics/gpu/SleepTypes.h>
 
 #include <array>
 #include <functional>
@@ -563,14 +563,13 @@ class JoltGpuPrograms
                                                                            const JoltGpuStepInputs &inputs,
                                                                            const std::vector<JoltGpuStageWork> &work);
 
-    /// One true body-tile dispatch, with the three immutable tables uploaded in
-    /// the same packet. Members must share one of the three body stages and
-    /// one accepted layout; total padded work is bounded by WorkItemLimit(Bodies).
-    /// nullptr means managed input allocation deferred: retain every cursor and
-    /// retry unchanged. This method neither submits nor accepts member work.
-    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
-    PrepareBodyBatch(const JoltGpuStorage &storage, const std::vector<JoltGpuBodyBatchMember> &members,
-                     JoltGpuBodyBatchInputs &inputs);
+    /// Append one world-tiled body or bounds dispatch on one accepted layout.
+    /// The caller submits the tables and ordered dispatches in one packet.
+    /// A deferred allocation returns false without appending GPU work.
+    [[nodiscard]] bool AppendBodyBatch(const JoltGpuStorage &storage,
+                                       const std::vector<JoltGpuBodyBatchMember> &members,
+                                       JoltGpuBodyBatchInputs &inputs, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                                       std::vector<rhi::ComputeDispatchDesc> &dispatches);
 
   private:
     friend class JoltGpuBroadphase;
@@ -615,7 +614,7 @@ class JoltGpuPrograms
     std::shared_ptr<JoltGpuArticulations> m_articulations;
     std::shared_ptr<rhi::ComputeBuffer> m_emptyArticulationControl;
     std::array<Entry, StageCount> m_entries;
-    std::array<BodyBatchEntry, 3> m_bodyBatchEntries;
+    std::array<BodyBatchEntry, 4> m_bodyBatchEntries;
     // Each initialized buffer contains only a fixed dispatch range. The storage
     // and physics inputs may change while that value stays reusable on this device.
     std::vector<WorkUniform> m_workUniforms;

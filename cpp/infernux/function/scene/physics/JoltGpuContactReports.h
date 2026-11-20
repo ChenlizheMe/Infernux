@@ -1,7 +1,7 @@
 #pragma once
-#include <Jolt/GPU/ContactReportTypes.h>
 #include "JoltGpuScene.h"
 #include <array>
+#include <function/scene/physics/gpu/ContactReportTypes.h>
 #include <map>
 
 namespace infernux

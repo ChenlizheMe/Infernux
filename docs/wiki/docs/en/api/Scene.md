@@ -23,7 +23,7 @@ physics world must use the same backend. Independent worlds can use different ba
 | Name | Type | Description |
 |------|------|------|
 | name | `str` |  |
-| physics_backend | `PhysicsBackend` | `PhysicsBackend.CPU` or `PhysicsBackend.GPU`. Editable on the scene asset. |
+| physics_backend | `PhysicsBackend` | Read-only access to the `PhysicsBackend.CPU` or `PhysicsBackend.GPU` setting in the Scene Asset Inspector. |
 | physics_backend_writable | `bool` | Whether the backend can be edited in this scene context. *(read-only)* |
 | is_preview | `bool` |  *(read-only)* |
 | structure_version | `int` |  *(read-only)* |

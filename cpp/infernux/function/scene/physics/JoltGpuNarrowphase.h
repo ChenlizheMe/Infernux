@@ -15,6 +15,13 @@ enum class JoltGpuSweepOutcome : uint32_t
     MoreMotion = JPH::GPU::SweepMoreMotion
 };
 
+struct JoltGpuSweepResult
+{
+    JoltGpuSweepOutcome outcome = JoltGpuSweepOutcome::NoImpact;
+    uint32_t integratedBodies = 0;
+    uint32_t reportedCandidates = 0;
+};
+
 /// Completes generic candidates after the Tick's original analytic initializer.
 /// Analytic families retain their existing kernels and budget planner; convex jobs keep
 /// their real support/manifold cursor until all candidates are complete.
@@ -40,7 +47,8 @@ class JoltGpuNarrowphase final
     [[nodiscard]] JoltGpuControlWork PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
                                                    JoltGpuPrograms &programs, FrameWorkOwner &budget, bool continuing,
                                                    bool reportImpacts,
-                                                   std::function<void(JoltGpuSweepOutcome, uint32_t)> completed);
+                                                   std::function<JoltGpuControlWork()> retryCandidates,
+                                                   std::function<void(JoltGpuSweepResult)> completed);
 
   private:
     class Impl;

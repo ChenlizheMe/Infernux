@@ -142,7 +142,7 @@ class _SetSceneBackend(UndoCommand):
         scene = _loaded_scene(document.document_id)
         if scene is not None:
             from infernux.physics import PhysicsBackend
-            scene.physics_backend = PhysicsBackend.CPU if value == "cpu" else PhysicsBackend.GPU
+            scene._set_authoring_physics_backend(PhysicsBackend.CPU if value == "cpu" else PhysicsBackend.GPU)
         else:
             _draft(document).data["physics_backend"] = value
 
