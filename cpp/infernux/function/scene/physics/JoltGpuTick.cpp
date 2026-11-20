@@ -209,6 +209,7 @@ class JoltGpuTick::Impl
         modelUpdate.reset();
         commandCursor.reset();
         collisionWorkspace = {};
+        narrowphaseWorkspace = {};
         constraintWorkspace = {};
         submissionBusy = false;
     }
@@ -278,6 +279,7 @@ class JoltGpuTick::Impl
     JoltGpuBroadphase &broadphase;
     JoltGpuBroadphase::Workspace collisionWorkspace;
     JoltGpuNarrowphase &narrowphase;
+    JoltGpuNarrowphase::Workspace narrowphaseWorkspace;
     JoltGpuConstraints &constraints;
     JoltGpuConstraints::Workspace constraintWorkspace;
     rhi::ComputeHost host;
@@ -375,8 +377,8 @@ class JoltGpuTick::Impl
     using UnitHistory = std::deque<UnitEstimate>;
     using UnitCostKey = std::tuple<JPH::GPU::Stage, uint32_t, uint32_t>;
     using NumericalCostKey = std::vector<UnitCostKey>;
-    using CostKey = std::tuple<std::vector<uint64_t>, uint64_t, NumericalCostKey>;
-    using CostView = std::tuple<const std::vector<uint64_t> &, uint64_t, const NumericalCostKey &>;
+    using CostKey = std::tuple<std::vector<uint64_t>, uint64_t, NumericalCostKey, uint32_t>;
+    using CostView = std::tuple<const std::vector<uint64_t> &, uint64_t, const NumericalCostKey &, uint32_t>;
     struct Receipt
     {
         rhi::ComputeCompletion completion;
@@ -434,17 +436,19 @@ class JoltGpuTick::Impl
         return key;
     }
 
-    static CostView Key(const rhi::PreparedComputeBatch &batch, const NumericalCostKey &numerical)
+    static CostView Key(const rhi::PreparedComputeBatch &batch, const NumericalCostKey &numerical,
+                        uint32_t controlUnits = 0)
     {
         // Keep the physical loop counts separate from the RHI signature. In a
         // island solver dispatch, local item count does not appear in its group counts.
-        return {batch.GetExecutionSignature(), batch.GetTransferBytes(), numerical};
+        return {batch.GetExecutionSignature(), batch.GetTransferBytes(), numerical, controlUnits};
     }
 
     CostView SubmissionKey(const rhi::PreparedComputeBatch &packet) const
     {
         static const NumericalCostKey empty;
-        return Key(packet, !preservation && batchKind == PacketKind::Stages ? batchNumericalKey : empty);
+        return Key(packet, !preservation && batchKind == PacketKind::Stages ? batchNumericalKey : empty,
+                   !preservation && batchKind == PacketKind::NumericalWork ? batchControlUnits : 0u);
     }
 
     static void ObserveUnitCost(UnitHistory &history, size_t count, uint64_t nanoseconds)
@@ -581,6 +585,7 @@ class JoltGpuTick::Impl
         PacketKind kind = PacketKind::Inputs, continuationKind = PacketKind::Work;
         JoltGpuControlWork::ResumeAfter resumeAfter = JoltGpuControlWork::ResumeAfter::Completion;
         NumericalCostKey numericalKey;
+        uint32_t controlUnits = 0;
         std::optional<JPH::GPU::Stage> homogeneousStage;
         size_t begin = 0, end = 0;
         StageCursor stageEnd;
@@ -601,6 +606,7 @@ class JoltGpuTick::Impl
         swap(continuationKind, saved.continuationKind);
         swap(continuationResumeAfter, saved.resumeAfter);
         swap(batchNumericalKey, saved.numericalKey);
+        swap(batchControlUnits, saved.controlUnits);
         swap(batchHomogeneousStage, saved.homogeneousStage);
         swap(batchBegin, saved.begin);
         swap(batchEnd, saved.end);
@@ -650,6 +656,7 @@ class JoltGpuTick::Impl
         if (!receipts.empty())
             return false;
         collisionWorkspace = {};
+        narrowphaseWorkspace = {};
         constraintWorkspace = {};
         const bool capturedWitness =
             status == Status::Running && controlAccepted && !controlOnly &&
@@ -1355,6 +1362,7 @@ class JoltGpuTick::Impl
         workGeometry = std::move(selected.geometry);
         workMinimum = std::move(selected.prepareMinimum);
         minimumReducesDispatchWork = selected.minimumReducesDispatchWork;
+        batchControlUnits = selected.numericalWorkUnits;
         workContinuation = std::move(selected.continueWork);
         continuationKind = kind;
         continuationResumeAfter = selected.resumeAfter;
@@ -2047,7 +2055,7 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::CompleteConvexContacts) {
-                SelectControlWork(narrowphase.Prepare(storage, inputs, work,
+                SelectControlWork(narrowphase.Prepare(storage, inputs, work, narrowphaseWorkspace,
                                                       [this] {
                                                           NextSpan(stageCursor);
                                                           Normalize(stageCursor);
@@ -2285,6 +2293,7 @@ class JoltGpuTick::Impl
     PacketKind batchKind = PacketKind::Inputs;
     std::optional<JPH::GPU::Stage> batchHomogeneousStage;
     NumericalCostKey batchNumericalKey;
+    uint32_t batchControlUnits = 0;
     size_t batchBegin = 0, batchEnd = 0;
     std::optional<size_t> sharedFallbackCursor;
     bool submissionBusy = false;

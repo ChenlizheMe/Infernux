@@ -37,6 +37,8 @@ struct JoltGpuControlWork
         HostWork
     };
     ResumeAfter resumeAfter = ResumeAfter::Completion;
+    // Bounded solver operations sealed in a dispatch's parameters.
+    uint32_t numericalWorkUnits = 0;
     // Some minimums split staging only, leaving the entire GPU program in one submission.
     bool minimumReducesDispatchWork = true;
     // Optional multi-unit packet contraction before acceptance. It must

@@ -2,6 +2,7 @@
 
 #include "JoltGpuTick.h"
 
+#include <array>
 #include <optional>
 
 namespace infernux
@@ -14,10 +15,21 @@ namespace infernux
 class JoltGpuNarrowphase final
 {
   public:
+    struct Workspace
+    {
+        static constexpr uint32_t DispatchesPerPacket = 5u;
+        static constexpr uint32_t AdvancesPerPacket = 8u;
+        std::shared_ptr<rhi::ComputeBuffer> scratch, jobs, arguments;
+        std::array<std::shared_ptr<rhi::ComputeBuffer>, DispatchesPerPacket> ranges;
+        std::array<std::shared_ptr<rhi::ComputeBuffer>, AdvancesPerPacket> advanceRanges;
+        double advanceNanoseconds = 0;
+    };
+
     JoltGpuNarrowphase(rhi::ComputeHost &host, const ShaderTargetCode &target);
 
     [[nodiscard]] JoltGpuControlWork Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-                                             FrameWorkOwner &budget, std::function<void()> completed);
+                                             FrameWorkOwner &budget, Workspace &resident,
+                                             std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
                                                    FrameWorkOwner &budget, float remainingSeconds, bool continuing,
                                                    std::function<void(std::optional<float>)> completed);
