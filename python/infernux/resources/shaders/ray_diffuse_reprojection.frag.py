@@ -41,4 +41,7 @@ class RayDiffuseReprojection(shader.fullscreen):
             old = shader.load(self.previous_primary, at, 0)
             if old.x == surface.x and shader.abs(linear_eye_depth(shader.as_float(old.y), cam) - eye) <= tolerance:
                 mask |= shader.uint(1) << i
-        return shader.uvec4(packed_delta, mask, shader.uint(0), shader.uint(0))
+        # Carry previous eye depth in the unused high bits of the coverage word.
+        # A zero word still means no valid reprojected footprint.
+        coverage = mask | (movement.w & shader.uint(0x7FFF0000)) if mask != 0 else mask
+        return shader.uvec4(packed_delta, coverage, shader.uint(0), shader.uint(0))

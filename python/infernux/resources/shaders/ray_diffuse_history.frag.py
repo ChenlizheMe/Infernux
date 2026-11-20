@@ -1,6 +1,7 @@
 import infernux.shader as shader
+from infernux.shader.lib.camera import linear_eye_depth
 from infernux.shader.lib.ray_sh_filter import sh_clip_history, sh_guide_pixel
-from infernux.shader.lib.ray_surface_depth import diffuse_previous_uv_delta
+from infernux.shader.lib.ray_surface_depth import diffuse_previous_uv_delta, ray_previous_eye_depth
 
 
 class RayDiffuseHistory(shader.fullscreen):
@@ -32,7 +33,7 @@ class RayDiffuseHistory(shader.fullscreen):
         g = shader.load(self.fresh_green, cell, 0)
         b = shader.load(self.fresh_blue, cell, 0)
         reproj = shader.load(self.reprojection, source, 0)
-        mask = reproj.y
+        mask = reproj.y & shader.uint(15)
         if not self.old_state.valid or mask == 0:
             return (r, g, b, state)
         uv_delta = diffuse_previous_uv_delta(reproj.x)
@@ -70,6 +71,13 @@ class RayDiffuseHistory(shader.fullscreen):
                     old = nearby
                     error = delta
                     previous = (shader.vec2(at) + 0.5) / shader.vec2(extent)
+
+        # The search finds the closest available depth. It can still select
+        # another layer, and device depth from the current view cannot certify it.
+        expected = ray_previous_eye_depth(reproj.y)
+        error = shader.abs(linear_eye_depth(old.y, shader.camera()) - expected)
+        if old.x <= 0.0 or error > 0.03 * expected:
+            return (r, g, b, state)
 
         age = shader.min(48.0, 1.0 + old.x)
         sample = shader.clamp(previous, 0.5 / shader.vec2(extent), 1.0 - 0.5 / shader.vec2(extent))
