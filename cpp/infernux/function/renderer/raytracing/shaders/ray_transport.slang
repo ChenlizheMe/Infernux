@@ -192,8 +192,9 @@ TraceRay inx_ray_light_visibility(float3 origin, InxTransportLight light)
     return inx_ray_open_segment(origin, to_light);
 }
 
-float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
-                               uint4 metadata, InxBuffer_uint4 records, float3 outgoing, uint seed)
+float3 inx_ray_direct_radiance<let UseDirectionalAtlas : bool>(
+    RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
+    uint4 metadata, InxBuffer_uint4 records, float3 outgoing, uint seed)
 {
     uint2 counts = inx_transport_light_counts();
     uint count = counts.x + counts.y;
@@ -208,7 +209,7 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
     uint3 selected = uint3(ray_invalid_index);
     for (uint i = 0u; i < strata; ++i)
     {
-        // Each stratum estimates its own sum. Only the shadow-dependent part needs a ray.
+        // Each stratum estimates its own sum. Only the shadow-dependent part needs a visibility query.
         uint stream = inx_ray_sample_hash(seed + i);
         float sample_u = float(inx_ray_sample_hash(stream ^ 0x91e10da5u) >> 8u) * (1.0 / 16777216.0);
         InxTransportLightSelection candidate = inx_sample_transport_light(
@@ -246,15 +247,24 @@ float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfac
         uint key = selected[channel];
         if (key == ray_invalid_index)
             continue;
-        InxTransportLight light = inx_transport_light(key >> 2u, attributes.position_ws, key & 3u);
-        TraceRay shadow_ray = inx_ray_light_visibility(origin, light);
-        bool visible = shadow_ray.maximum <= 0.0 || trace_visibility(page, shadow_ray, light.layer_mask, caster);
+        uint index = key >> 2u;
+        InxTransportLight light = inx_transport_light(index, attributes.position_ws, key & 3u);
+        float2 atlas = float2(0.0);
+        if (UseDirectionalAtlas && light.directional) {
+            float depth = mul(inx_view.view, float4(attributes.position_ws, 1.0)).z;
+            atlas = inx_secondary_directional_shadow(index, attributes.position_ws, geometric, depth);
+        }
+        float visibility = atlas.x;
+        if (atlas.y < 1.0) {
+            TraceRay shadow_ray = inx_ray_light_visibility(origin, light);
+            bool visible = shadow_ray.maximum <= 0.0 || trace_visibility(page, shadow_ray, light.layer_mask, caster);
+            visibility = lerp(visible ? 1.0 : 0.0, atlas.x, atlas.y);
+        }
         for (uint match = channel; match < 3u; ++match)
         {
             if (selected[match] == key)
             {
-                if (visible)
-                    radiance[match] += total[match] * orientation[match];
+                radiance[match] += visibility * total[match] * orientation[match];
                 selected[match] = ray_invalid_index;
             }
         }
@@ -430,7 +440,7 @@ InxRayTransportTerm inx_ray_direct_sample(RayPage page, RaySurfaceHit attributes
     bounce.hit.triangle_index = ray_invalid_index;
     InxSurfaceData light_surface = surface;
     light_surface.smoothness = min(surface.smoothness, 1.0 - light_roughness);
-    float3 radiance = inx_ray_direct_radiance(page, attributes, light_surface, metadata, records, outgoing, seed);
+    float3 radiance = inx_ray_direct_radiance<false>(page, attributes, light_surface, metadata, records, outgoing, seed);
     float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
     radiance += inx_ray_emissive_direct<true>(page, attributes, surface, outgoing, geometric, seed, maximum, guide);
     RayDirectionProposal proposal;
@@ -878,7 +888,7 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D dept
     // Reflection and thin transmission own the additional secondary radiance cache.
     surface.smoothness = min(surface.smoothness, 0.2);
     float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
-    float3 radiance = inx_ray_direct_radiance(page, attributes, surface,
+    float3 radiance = inx_ray_direct_radiance<true>(page, attributes, surface,
         inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed);
     radiance += inx_ray_emissive_direct<false>(page, attributes, surface, -ray.direction, geometric,
                                              seed, ray.maximum, (RayReflectedLightLobe)0);

@@ -437,17 +437,17 @@ float shadow_bilinear_pcf(float2 atlas_uv, float2 receiver_texel, float receiver
 float shadow_tent_weight(int index) {
     return (index == 0 || index == 3) ? 1.0 : 3.0;
 }
-float sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 normal,
-                                 float4 shadow_params, bool soft_filter) {
+float try_sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 normal,
+                                      float4 shadow_params, bool soft_filter) {
 )slang"
-                                           R"slang(    if (view_index >= lighting.shadow_view_header.x) return 1.0;
+                                           R"slang(    if (view_index >= lighting.shadow_view_header.x) return -1.0;
     InxShadowView shadow_view = lighting.shadow_views[view_index];
     float4 clip = mul(shadow_view.view_projection, float4(world_pos, 1.0));
-    if (abs(clip.w) < 0.000001) return 1.0;
+    if (abs(clip.w) < 0.000001) return -1.0;
     float3 ndc = clip.xyz / clip.w;
     float2 local_uv = ndc.xy * 0.5 + 0.5;
     if (any((local_uv < float2(0.0))) || any((local_uv > float2(1.0))) ||
-        ndc.z <= 0.0 || ndc.z >= 1.0) return 1.0;
+        ndc.z <= 0.0 || ndc.z >= 1.0) return -1.0;
     float2 atlas_scale = shadow_view.atlas_scale_offset.xy;
     float2 atlas_offset = shadow_view.atlas_scale_offset.zw;
     float2 atlas_uv = atlas_offset + local_uv * atlas_scale;
@@ -476,11 +476,23 @@ float sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 no
     }
     return visibility / max(total_weight, 1.0);
 }
+float sample_shadow_view_visibility(uint view_index, float3 world_pos, float3 normal,
+                                    float4 shadow_params, bool soft_filter) {
+    float visibility = try_sample_shadow_view_visibility(view_index, world_pos, normal, shadow_params, soft_filter);
+    return visibility < 0.0 ? 1.0 : visibility;
+}
 float sample_shadow_view(uint view_index, float3 world_pos, float3 normal, float4 shadow_params) {
     if (view_index >= lighting.shadow_view_header.x || shadow_params.w < 0.5 || shadow_params.x <= 0.0) return 1.0;
     float visibility = sample_shadow_view_visibility(
         view_index, world_pos, normal, shadow_params, shadow_params.w > 1.5);
     return lerp(1.0, visibility, shadow_params.x);
+}
+uint select_directional_view(uint first_view, uint view_count, float view_depth) {
+    for (uint index = 0u; index < view_count; ++index) {
+        if (view_depth < lighting.shadow_views[first_view + index].split_data.y)
+            return index;
+    }
+    return view_count - 1u;
 }
 float sample_directional_views(uint first_view, uint view_count, float4 shadow_params,
                              float3 world_pos, float3 normal, float view_depth) {
@@ -488,13 +500,7 @@ float sample_directional_views(uint first_view, uint view_count, float4 shadow_p
     uint available_views = lighting.shadow_view_header.x;
     if (view_count == 0u || first_view >= available_views) return 1.0;
     view_count = min(view_count, available_views - first_view);
-    uint selected = view_count - 1u;
-    for (uint index = 0u; index < view_count; ++index) {
-        if (view_depth < lighting.shadow_views[first_view + index].split_data.y) {
-            selected = index;
-            break;
-        }
-    }
+    uint selected = select_directional_view(first_view, view_count, view_depth);
     float shadow = sample_shadow_view(first_view + selected, world_pos, normal, shadow_params);
     if (selected + 1u < view_count) {
         InxShadowView current = lighting.shadow_views[first_view + selected];
@@ -791,6 +797,43 @@ float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx,
     return indirect_only ? ambient : ambient + lo + s.emission;
 }
 };
+// Return raw light visibility and how much of it is covered by this camera's atlas.
+// Missing cascade coverage is distinct from an unoccluded receiver.
+public float2 inx_secondary_directional_shadow(uint index, float3 world_pos, float3 geometric_normal, float depth)
+{
+    InxCanonicalLight light = load_light(index);
+    uint first_view = light.identity_and_shadow.z;
+    uint view_count = light.identity_and_shadow.w;
+    uint available_views = lighting.shadow_view_header.x;
+    if (view_count == 0u || first_view >= available_views)
+        return float2(0.0);
+    view_count = min(view_count, available_views - first_view);
+
+    InxLighting<false> context = (InxLighting<false>)0;
+    uint selected = context.select_directional_view(first_view, view_count, depth);
+    float2 split = lighting.shadow_views[first_view + selected].split_data.xy;
+    if (depth < lighting.shadow_views[first_view].split_data.x || depth >= split.y)
+        return float2(0.0);
+
+    float4 parameters = float4(light.shadow_and_inner_cos.xyz, float(light.metadata.z));
+    bool soft = light.metadata.z > 1u;
+    float visibility = context.try_sample_shadow_view_visibility(
+        first_view + selected, world_pos, geometric_normal, parameters, soft);
+    if (visibility < 0.0)
+        return float2(0.0);
+    float overlap = max((split.y - split.x) * 0.1, 0.0001);
+    float blend = smoothstep(0.0, overlap, split.y - depth);
+    if (blend >= 1.0)
+        return float2(visibility, 1.0);
+    if (selected + 1u < view_count) {
+        float next = context.try_sample_shadow_view_visibility(
+            first_view + selected + 1u, world_pos, geometric_normal, parameters, soft);
+        if (next >= 0.0)
+            return float2(lerp(next, visibility, blend), 1.0);
+    }
+    return float2(visibility, blend);
+}
+
 InxLighting<tiled_lighting> inx_lighting_context<let tiled_lighting : bool>(InxShadingContext input)
 {
     InxLighting<tiled_lighting> context;
