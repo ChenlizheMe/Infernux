@@ -706,10 +706,24 @@ InxRaySignal inx_reproject_diffuse_radiance(InxScreenDiffuseTrace hit, InxUInt2D
     if (reproj.y == 0u)
         return (InxRaySignal)0;
 
-    // The surface reprojection pass packs previous minus current UV as two SNORM16 values.
+    // Check the radiance lookup against the same raster footprint that produced the coverage mask.
     int2 encoded = int2(asint(reproj.x << 16u) >> 16, asint(reproj.x) >> 16);
-    float2 previous_uv = hit.uv + float2(encoded) / 32767.0;
-    uint2 at = min(uint2(saturate(previous_uv) * float2(full)), full - 1u);
+    float2 delta = float2(encoded) / 32767.0;
+    float2 uv = (float2(pixel) + 0.5) / float2(full);
+    float2 raster_uv = uv + delta - inx_view_jitter_delta_uv();
+    int2 origin = int2(floor(raster_uv * float2(full) - 0.5));
+    float2 sample_position = (hit.uv + delta) * float2(full) - float2(origin) - 0.5;
+    uint2 nearest = uint2(sample_position >= 0.5);
+    uint tap = nearest.x + 2u * nearest.y;
+    if ((reproj.y & (1u << tap)) == 0u)
+    {
+        // Search the other footprint taps by distance to the continuous lookup.
+        uint axis = abs(sample_position.x - 0.5) <= abs(sample_position.y - 0.5) ? 1u : 2u;
+        uint other = axis ^ 3u;
+        uint bits = reproj.y >> (tap ^ axis);
+        tap ^= (bits & 1u) != 0u ? axis : (((reproj.y >> (tap ^ other)) & 1u) != 0u ? other : 3u);
+    }
+    int2 at = origin + int2(tap & 1u, tap >> 1u);
     return {float4(history.texture.Load(int3(at, 0)).rgb, 1.0), uint2(0u, asuint(hit.distance))};
 }
 
@@ -869,7 +883,8 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D dept
             return light;
     }
     // Advance the triangle intersection interval while keeping all hit distances relative to the receiver.
-    ray.minimum = min(max(0.1, screen.distance), ray.maximum);
+    // A screen hit without reusable radiance still needs to be evaluated by the world trace.
+    ray.minimum = min(max(0.1, screen.hit ? ray.minimum : screen.distance), ray.maximum);
     TraceRay world_ray = ray;
     if (page.root != ray_invalid_index)
     {
