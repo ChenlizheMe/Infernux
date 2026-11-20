@@ -162,7 +162,7 @@ constexpr PortLayout Ports[] = {
     {"topology_arguments", sizeof(ConstraintScheduleWord), {"value"}, 1u, false},
     {"step_status", sizeof(uint32_t), {}, 0u, false}};
 static_assert(std::size(Ports) == PortCount);
-constexpr uint32_t MaxDispatchesPerPacket = 16u;
+constexpr size_t MaxDispatchesPerPacket = JoltGpuConstraints::Workspace::MaxDispatches;
 constexpr uint64_t WordBytes = sizeof(ConstraintScheduleWord);
 constexpr uint64_t TopologyArgumentBytes = ConstraintBlockLimit * WordBytes;
 static_assert(ConstraintItemLimit == ConstraintBlockSize * ConstraintBlockLimit);
@@ -300,17 +300,13 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     {
         uint32_t prefix, totals, capacity;
     };
-    struct Uniforms
-    {
-        std::shared_ptr<rhi::ComputeBuffer> parameters, work;
-    };
-
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
               JoltGpuPrograms &programs, const StepParams &parameters,
-              const std::shared_ptr<rhi::ComputeBuffer> &status, std::optional<JoltGpuConstraintSetup> setup,
+              const std::shared_ptr<rhi::ComputeBuffer> &status, Workspace &resident,
+              std::optional<JoltGpuConstraintSetup> setup,
               std::function<void(std::shared_ptr<JoltGpuConstraintTopology>, bool)> callback)
         : implementation(std::move(owner)), rigidStorage(storage), stepInputs(inputs), stagePrograms(programs),
-          contactLease(inputs.GetContacts()), stepStatus(status), setup(std::move(setup)),
+          resident(resident), contactLease(inputs.GetContacts()), stepStatus(status), setup(std::move(setup)),
           completedTopology(std::move(callback))
     {
         if (!implementation->host.SharesServicesWith(storage.GetHost()) || !completedTopology || !contactLease)
@@ -327,8 +323,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         // The accepted patch count and joint range establish that every body
         // can run its sleep update independently.
         isolatedTopology = j == 0u && p == 0u;
-        if (isolatedTopology)
+        if (isolatedTopology) {
+            resident = {};
             return;
+        }
 
         Checked(2ull * (uint64_t(j) + p));
         Checked(4ull * p);
@@ -403,7 +401,24 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             } while (true);
         }
         config.limits.x = Checked(words);
+        workspace = std::exchange(resident, {});
+        const auto scheduleBytes = uint64_t(config.limits.x) * WordBytes;
+        if (workspace.schedule && (workspace.schedule->GetByteSize() < scheduleBytes ||
+                                   workspace.schedule->GetByteSize() / 2u > scheduleBytes))
+            workspace.schedule.reset();
+        const auto keepExact = [](auto &buffer, uint64_t bytes) {
+            if (buffer && buffer->GetByteSize() != bytes)
+                buffer.reset();
+        };
+        keepExact(workspace.parents, uint64_t(b) * sizeof(uint32_t));
+        keepExact(workspace.rootVotes, uint64_t(b + uint32_t(!localTopology)) * sizeof(uint32_t));
+        keepExact(workspace.arguments, ArgumentBytes());
         BuildConnectivity();
+    }
+
+    uint64_t ArgumentBytes() const
+    {
+        return localTopology ? ConstraintLocalArgumentWords * WordBytes : TopologyArgumentBytes;
     }
 
     void ValidateInput(const std::shared_ptr<rhi::ComputeBuffer> &buffer) const
@@ -435,17 +450,17 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     {
         const uint64_t bodyBytes = uint64_t(config.counts.x) * sizeof(uint32_t);
         const uint64_t voteBytes = bodyBytes + (localTopology ? 0u : sizeof(uint32_t));
-        if (!Endpoint(schedule, uint64_t(config.limits.x) * WordBytes) || !Endpoint(rootVotes, voteBytes))
+        if (!Endpoint(workspace.schedule, uint64_t(config.limits.x) * WordBytes) ||
+            !Endpoint(workspace.rootVotes, voteBytes))
             return false;
         if (phase != Phase::Connectivity)
             return true;
-        if (!Endpoint(parents, bodyBytes))
+        if (!Endpoint(workspace.parents, bodyBytes))
             return false;
-        if (!topologyArguments) {
-            const auto bytes = localTopology ? ConstraintLocalArgumentWords * WordBytes : TopologyArgumentBytes;
-            topologyArguments = Allocate(bytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
-        }
-        return topologyArguments != nullptr;
+        if (!workspace.arguments)
+            workspace.arguments =
+                Allocate(ArgumentBytes(), rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
+        return workspace.arguments != nullptr;
     }
 
     void Add(Entry entry, uint32_t length, const ConstraintParams &value)
@@ -549,7 +564,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     {
         ResetPlan(Phase::Connectivity);
         if (!connectivityPass) {
-            Add(InitWords, config.limits.x);
+            if (!workspace.schedule || !workspace.schedule->HasInitializedRange(0, workspace.schedule->GetByteSize()))
+                Add(InitWords, config.limits.x);
             Add(Seed, 1u);
             AddReferences(plan, config);
             if (localTopology) {
@@ -616,8 +632,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         return Collective(entry) ? ConstraintBlockLimit : Summary(entry) ? 1u : ConstraintItemLimit;
     }
 
-    bool Emit(const Operation &op, uint32_t first, uint32_t count, Uniforms &uniforms,
-              std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    bool Emit(const Operation &op, uint32_t first, uint32_t count, std::vector<rhi::ComputeBufferUpdate> &uploads,
+              std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
         const bool collective = Collective(op.entry);
         // Each dispatch covers at most ConstraintBlockLimit workgroups.
@@ -636,8 +652,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         };
         auto parameters = reuse(parameterBytes);
         auto work = usesWork ? reuse(workBytes) : nullptr;
-        // Only new, unpublished allocations survive pressure. A packet-local
-        // hit must not become the next packet's writable pending endpoint.
+        // Each slot is written at most once before this packet records. The
+        // next packet reuses it after the prior readers have entered the FIFO.
+        auto &uniforms = workspace.uniforms[dispatches.size()];
         if ((!parameters && !Endpoint(uniforms.parameters, sizeof(ConstraintParams))) ||
             (usesWork && !work && !Endpoint(uniforms.work, sizeof(StageWork))))
             return false;
@@ -661,10 +678,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         for (const auto port : program.ports) {
             const auto &buffer = port == Params              ? parameters
                                  : port == Work              ? work
-                                 : port == Schedule          ? schedule
-                                 : port == Parents           ? parents
-                                 : port == RootVotes         ? rootVotes
-                                 : port == TopologyArguments ? topologyArguments
+                                 : port == Schedule          ? workspace.schedule
+                                 : port == Parents           ? workspace.parents
+                                 : port == RootVotes         ? workspace.rootVotes
+                                 : port == TopologyArguments ? workspace.arguments
                                  : port == StepStatus        ? stepStatus
                                                              : frozen[port];
             if (!buffer)
@@ -713,7 +730,6 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         if (op.entry == BuildPatchRefs)
             dispatch.indirectArguments = contactLease->patchDispatch;
         dispatches.push_back(std::move(dispatch));
-        uniforms = {};
         return true;
     }
 
@@ -745,18 +761,16 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value.bodyRootFirst = config.limits.w;
         value.bodyFirst = config.selection.y;
         value.bodyCount = config.counts.x;
-        value.schedule = schedule;
-        value.rootVotes = rootVotes;
+        value.schedule = workspace.schedule;
+        value.rootVotes = workspace.rootVotes;
         if (localTopology)
-            value.wakeArguments = topologyArguments;
+            value.wakeArguments = workspace.arguments;
         return value;
     }
     void PublishTopology(bool setupAccepted = false)
     {
         auto value = std::make_shared<JoltGpuConstraintTopology>(TopologyView());
         value->execution = shared_from_this();
-        if (!localTopology)
-            topologyArguments.reset();
         // Setup must write/read its actual new generations.
         frozen[Joints].reset();
         frozen[Contacts].reset();
@@ -781,9 +795,12 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->activePatches = items.y;
         value->maxJointItems = items.z;
         value->maxPatchItems = items.w;
-        value->schedule = isolatedTopology ? nullptr : schedule->Freeze();
+        // The assembly and all its consumers use this owner's Compute FIFO.
+        // The next substep may write these addresses after all readers
+        // have been accepted. Queue receipts retain their actual allocations.
+        value->schedule = workspace.schedule;
         if (deviceSchedule)
-            value->solveArguments = topologyArguments->Freeze();
+            value->solveArguments = workspace.arguments;
         value->bodyRootFirst = config.limits.w;
         value->bodyFirst = config.selection.y;
         value->bodyCount = config.counts.x;
@@ -791,7 +808,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value->jointRefCount = config.counts.y;
         value->patchRefFirst = config.references.y;
         value->patchRefCount = config.counts.z;
-        value->rootVotes = rootVotes;
+        value->rootVotes = workspace.rootVotes;
+        if (!isolatedTopology)
+            resident = std::move(workspace);
         frozen[Joints].reset();
         frozen[Contacts].reset();
         frozen[Sleeps].reset();
@@ -810,18 +829,17 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     }
 
     void AppendPrefix(const std::vector<Operation> &operations, Cursor &next, size_t dispatchLimit, bool gateValidation,
-                      Uniforms &uniforms, std::vector<rhi::ComputeBufferUpdate> &uploads,
-                      std::vector<rhi::ComputeDispatchDesc> &dispatches)
+                      std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
         while (next.operation < operations.size() && dispatches.size() < dispatchLimit) {
             const auto &op = operations[next.operation];
             const uint32_t count = std::min(ChunkLimit(op.entry), op.length - next.first);
-            if (!Emit(op, next.first, count, uniforms, uploads, dispatches))
+            if (!Emit(op, next.first, count, uploads, dispatches))
                 return;
             if (gateValidation && next.operation >= validationStart) {
                 auto &unit = dispatches.back();
                 unit.indirectArguments =
-                    rhi::ComputeIndirectArguments{topologyArguments, (unit.groupCountX - 1u) * WordBytes};
+                    rhi::ComputeIndirectArguments{workspace.arguments, (unit.groupCountX - 1u) * WordBytes};
             }
             next.first += count;
             if (next.first == op.length) {
@@ -859,8 +877,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         operations.push_back({BuildLocalSchedule, 1u, numerical});
         const auto prefixUploads = uploads.size(), prefixDispatches = dispatches.size();
         Cursor next;
-        Uniforms uniforms;
-        AppendPrefix(operations, next, dispatchLimit, false, uniforms, uploads, dispatches);
+        AppendPrefix(operations, next, dispatchLimit, false, uploads, dispatches);
         if (next.operation == operations.size())
             return true;
         uploads.resize(prefixUploads);
@@ -881,7 +898,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Cursor next = cursor;
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
-        AppendPrefix(plan, next, dispatchLimit, phase == Phase::Connectivity, pendingUniforms, uploads, dispatches);
+        AppendPrefix(plan, next, dispatchLimit, phase == Phase::Connectivity, uploads, dispatches);
         if (dispatches.empty())
             return {nullptr, [self = shared_from_this(), dispatchLimit] { return self->Next(dispatchLimit); }};
         const bool boundary = next.operation == plan.size();
@@ -893,9 +910,9 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         std::vector<rhi::ComputeBufferRead> reads;
         if (boundary) {
             if (submittedPhase == Phase::Connectivity && !localTopology)
-                reads.push_back({schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
+                reads.push_back({workspace.schedule, uint64_t(config.layout.y) * WordBytes, WordBytes});
             else if (submittedPhase == Phase::Assemble && !deviceSchedule)
-                reads.push_back({schedule, uint64_t(config.layout.x) * WordBytes, 2u * WordBytes});
+                reads.push_back({workspace.schedule, uint64_t(config.layout.x) * WordBytes, 2u * WordBytes});
         }
         const auto resumeAfter =
             reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
@@ -939,11 +956,12 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
     const JoltGpuStorage &rigidStorage;
     const JoltGpuStepInputs &stepInputs;
     JoltGpuPrograms &stagePrograms;
+    Workspace &resident;
+    Workspace workspace;
     std::shared_ptr<const JoltGpuContactWorkset> contactLease;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> frozen;
-    std::shared_ptr<rhi::ComputeBuffer> schedule, parents, rootVotes, topologyArguments, stepStatus;
+    std::shared_ptr<rhi::ComputeBuffer> stepStatus;
     std::optional<JoltGpuConstraintSetup> setup;
-    Uniforms pendingUniforms;
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> completed;
     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>, bool)> completedTopology;
     bool isolatedTopology = false;
@@ -975,11 +993,11 @@ bool JoltGpuConstraints::TryPrepareStartupPrograms()
 JoltGpuControlWork
 JoltGpuConstraints::PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                     JoltGpuPrograms &programs, const JPH::GPU::StepParams &parameters,
-                                    const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
+                                    const std::shared_ptr<rhi::ComputeBuffer> &stepStatus, Workspace &workspace,
                                     std::optional<JoltGpuConstraintSetup> setup,
                                     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>, bool)> completed)
 {
-    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, stepStatus,
+    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, stepStatus, workspace,
                                              std::move(setup), std::move(completed))
         ->Next();
 }

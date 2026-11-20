@@ -2,6 +2,8 @@
 
 #include <function/scene/physics/JoltGpuTick.h>
 
+#include <array>
+
 namespace infernux
 {
 struct JoltGpuConstraintWorkset;
@@ -19,13 +21,25 @@ struct JoltGpuConstraintSetup
 class JoltGpuConstraints final
 {
   public:
+    /// Private, queue-ordered storage for one fixed-step owner.
+    struct Workspace
+    {
+        static constexpr size_t MaxDispatches = 16;
+        struct Uniforms
+        {
+            std::shared_ptr<rhi::ComputeBuffer> parameters, work;
+        };
+        std::shared_ptr<rhi::ComputeBuffer> schedule, parents, rootVotes, arguments;
+        std::array<Uniforms, MaxDispatches> uniforms;
+    };
+
     JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTargetCode &target);
     [[nodiscard]] bool TryPrepareStartupPrograms();
 
     [[nodiscard]] JoltGpuControlWork
     PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
                     const JPH::GPU::StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
-                    std::optional<JoltGpuConstraintSetup> setup,
+                    Workspace &workspace, std::optional<JoltGpuConstraintSetup> setup,
                     std::function<void(std::shared_ptr<JoltGpuConstraintTopology>, bool setupAccepted)> completed);
     [[nodiscard]] JoltGpuControlWork
     PrepareNumericalPlan(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,

@@ -114,9 +114,10 @@ struct JoltGpuContactHistory
     }
 };
 
-/// One accepted substep plan with canonical island and source ranges. A bounded
-/// plan carries device dispatch arguments. Wider plans publish an exact summary
-/// so the host can admit successive, resumable solver tiles.
+/// One accepted substep plan with canonical island and source ranges. Its
+/// workspace is private to the tick's queue and ordered with all consumers.
+/// A bounded plan carries device dispatch arguments. Wider plans publish an
+/// exact summary for successive, resumable solver tiles.
 struct JoltGpuConstraintWorkset
 {
     uint32_t islandCount = 0, jointIslandCount = 0, contactIslandCount = 0;

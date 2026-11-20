@@ -43,21 +43,19 @@ enum Port : uint8_t
 enum Entry : uint8_t
 {
     InitWords,
-    SeedActive,
+    SeedSweep,
     PrepareIndirect,
+    PrepareSweepArguments,
     BuildSort,
     BuildSuppression,
     Merge,
     SortCandidateTiles,
     FindEnds,
-    CollectRound,
+    CollectSweep,
     ScanBlocks,
     ReduceBlocks,
     AddOffsets,
-    CompactActive,
     AccumulateStatus,
-    PublishActive,
-    FinishRanks,
     PublishCount,
     InitContacts,
     PublishCandidates,
@@ -66,21 +64,19 @@ enum Entry : uint8_t
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> EntryNames{"init_words",
-                                                              "seed_active",
+                                                              "seed_sweep",
                                                               "prepare_indirect_arguments",
+                                                              "prepare_sweep_arguments",
                                                               "build_sort_records",
                                                               "build_suppression",
                                                               "merge_items",
                                                               "sort_candidate_tiles",
                                                               "find_sap_ends",
-                                                              "collect_round",
+                                                              "collect_sap_pairs",
                                                               "scan_blocks",
                                                               "reduce_blocks",
                                                               "add_scan_offsets",
-                                                              "compact_active",
                                                               "accumulate_status_summary",
-                                                              "publish_active_summary",
-                                                              "finish_sap_ranks",
                                                               "publish_count_summary",
                                                               "init_contacts",
                                                               "publish_candidates",
@@ -96,6 +92,7 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     A | P | K,
     A | P | Bit(PairCount),
     A | Bit(Arguments) | P | K,
+    A | Bit(Arguments) | P | K | Bit(PairCount),
     A | P | K | Bit(Shapes) | Bit(Bodies) | Bit(AuthorWorlds) | Bit(Bounds),
     A | P | K | Bit(Joints) | Bit(Bodies) | Bit(AuthorWorlds),
     A | P | K | Bit(CandidateArena),
@@ -105,11 +102,8 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     A | P | K,
     A | P | K,
     A | P | K,
-    A | P | K,
     A | P,
-    A | P,
-    A | P | K,
-    A | P | Bit(PairCount),
+    A | P | K | Bit(PairCount),
     P | K | Bit(ResidentContacts),
     A | P | K | Bit(ResidentStep) | Bit(CandidateArena) | Bit(Arguments) | Bit(StepStatus),
     P | K | Bit(CandidateArena),
@@ -120,16 +114,16 @@ struct PortLayout
 {
     std::string_view name;
     uint64_t stride;
-    std::array<std::string_view, 14> fields;
+    std::array<std::string_view, 11> fields;
     uint32_t integers;
     bool readOnly;
 };
 constexpr PortLayout Ports[] = {
     {"broadphase",
      sizeof(BroadphaseParams),
-     {"counts", "workspace", "rankRows", "activeQueues", "round", "candidates", "merge", "mergeKey", "scan",
-      "scanParent", "activeState", "summary", "selection", "selectedCounts"},
-     0x3fffu,
+     {"counts", "workspace", "round", "candidates", "merge", "mergeKey", "scan", "scanParent", "summary", "selection",
+      "selectedCounts"},
+     0x7ffu,
      true},
     {"stage_work", sizeof(StageWork), {"range"}, 1u, true},
     {"body_models", sizeof(BodyModel), {"meta", "mass", "invInertiaDiagonal", "inertiaRotation", "damping"}, 1u, true},
@@ -155,8 +149,8 @@ constexpr PortLayout Ports[] = {
     {"step_status", sizeof(uint32_t), {}, 1u, false}};
 
 constexpr uint32_t MaxDispatchesPerPacket = 16;
-constexpr uint32_t ActivePassesPerWindow = 4;
-constexpr uint32_t NeighborTestsPerDispatch = BroadphaseItemLimit * 128u;
+constexpr uint32_t CapacityNeeded = 128u;
+constexpr uint32_t SweepPending = 256u;
 constexpr uint64_t WordBytes = sizeof(UInt4);
 
 template <class T> std::vector<uint8_t> Bytes(const T &value)
@@ -223,7 +217,7 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
 
 bool SummaryEntry(Entry entry)
 {
-    return entry == SeedActive || entry == AccumulateStatus || entry == PublishActive || entry == PublishCount;
+    return entry == SeedSweep || entry == AccumulateStatus || entry == PublishCount;
 }
 } // namespace
 
@@ -293,16 +287,15 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         SortRecords,
         SapSort,
         Ends,
-        Count,
-        Counts,
-        CountScan,
+        ProjectionScan,
+        SeedSweep,
+        Sweep,
         CountPublish,
         CountBoundary,
         FinalCapacity,
         FinalInitialize,
         FinalContacts,
         ResidentPublish,
-        ActiveBoundary,
         CandidateSort,
         Collide,
         Done
@@ -313,7 +306,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     };
     struct ScanCursor
     {
-        bool active = false, exclusive = false, descending = false, dynamic = false;
+        bool active = false, exclusive = false, descending = false;
         uint32_t originalInput = 0, level = 0, first = 0, root = 0;
         std::vector<uint32_t> counts;
     };
@@ -368,6 +361,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const uint32_t leaves = config.selectedCounts.y;
         const uint32_t joints = config.selectedCounts.z;
         const bool smallPairs = leaves && leaves <= BroadphaseSmallSetLimit && joints <= BroadphaseSmallJointLimit;
+        sweepUpperBound = leaves ? uint64_t(leaves) * (leaves - 1u) / 2u : 0u;
         config.round.w = uint32_t(smallPairs);
         config.round.y = uint32_t(swept);
         uint64_t words = 0;
@@ -378,14 +372,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             words += size;
             return result;
         };
-        config.workspace.y = reserve(1);
+        config.workspace.y = reserve(smallPairs ? 1u : 2u);
         if (!smallPairs) {
             zeroRecord = reserve(1);
             sap = {reserve(leaves), reserve(leaves)};
             suppression = {reserve(joints), reserve(joints)};
-            config.rankRows.x = reserve(leaves);
-            queues = {reserve(leaves), reserve(leaves)};
-            activeMeta = {reserve(1), reserve(1)};
             uint32_t count = std::max({leaves, joints, 1u});
             do {
                 const uint32_t input = reserve(count), prefix = reserve(count);
@@ -412,9 +403,9 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const uint32_t previousPatches = swept ? 0u : storage.GetContactHistory(settings.selection.x).patchCount;
         // Use the preceding substep's accepted pair count to avoid allocating
         // quadratic contact storage for sparse single-group work.
-        uint32_t pairLimit = smallPairs ? leaves * (leaves - 1u) / 2u : 0u;
-        const bool localDiscrete =
-            smallPairs && !swept && !inputs.HasGenericGeometry() && settings.selectedCounts.x <= ConstraintLocalBodies;
+        uint32_t pairLimit = smallPairs ? static_cast<uint32_t>(sweepUpperBound) : 0u;
+        const bool localDiscrete = !swept && !inputs.HasGenericGeometry() && sweepUpperBound <= BroadphaseSweepJobs &&
+                                   settings.selectedCounts.x <= ConstraintLocalBodies;
         if (localDiscrete) {
             const auto &model = storage.GetModel();
             pairLimit = DiscretePairBound(model, model.worlds[config.selection.x]);
@@ -427,6 +418,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         if (deviceCounts)
             workset->patchSlots = pairLimit;
         auto previous = swept ? Workspace{} : std::exchange(workspace, {});
+        sweepLimit = std::min(sweepUpperBound, std::max<uint64_t>(previous.sweepJobs, BroadphaseSweepJobs));
         ConfigureCapacity(deviceCounts ? std::max(1u, pairLimit)
                           : smallPairs ? std::min(std::max(leaves, previousPatches), std::max(1u, pairLimit))
                           : swept      ? implementation->sweptCapacity
@@ -524,7 +516,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     return false;
             if (!Endpoint(arena, uint64_t(scratchWords) * WordBytes) ||
                 !Endpoint(workset->parameters, sizeof(StepParams)) ||
-                (!config.round.w && !Endpoint(pairCount, sizeof(uint32_t))) || !ArgumentCapacity())
+                (!config.round.w && !Endpoint(pairCount, 2u * sizeof(uint32_t))) || !ArgumentCapacity())
                 return false;
             if (!Endpoint(candidateArena, (1ull + 2ull * capacity) * WordBytes) ||
                 !Endpoint(workset->contacts, uint64_t(std::max(1u, capacity * PointsPerPair())) * sizeof(Contact))) {
@@ -570,12 +562,14 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                   std::optional<rhi::ComputeIndirectArguments> indirect = {})
     {
         const bool block = entry == ScanBlocks || entry == ReduceBlocks;
+        const bool sweepArguments = entry == PrepareSweepArguments;
         const uint32_t first = work.range.x, count = work.range.y;
         const bool publish = entry == PublishCandidates;
-        const uint32_t limit = entry == PrepareIndirect ? MaxDispatchesPerPacket - 1u
-                               : publish                ? CollisionChunks()
-                               : block                  ? BroadphaseBlockLimit
-                                                        : BroadphaseItemLimit;
+        const uint32_t limit = entry == PrepareIndirect || sweepArguments ? MaxDispatchesPerPacket - 1u
+                               : entry == CollectSweep                    ? BroadphaseSweepJobs
+                               : publish                                  ? CollisionChunks()
+                               : block                                    ? BroadphaseBlockLimit
+                                                                          : BroadphaseItemLimit;
         if (!count || count > limit)
             throw std::logic_error("Jolt GPU broadphase emitted an invalid bounded work unit");
         const auto slot = dispatches.size();
@@ -599,7 +593,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const auto &program = implementation->programs[entry];
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = program.kernel;
-        dispatch.groupCountX = block ? count : SummaryEntry(entry) || publish ? 1u : Blocks(count);
+        dispatch.groupCountX = block ? count : SummaryEntry(entry) || publish || sweepArguments ? 1u : Blocks(count);
         dispatch.indirectArguments = std::move(indirect);
         if (dispatch.groupCountX > implementation->host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
             throw std::length_error("Jolt GPU broadphase bounded work exceeds dispatch limits");
@@ -622,11 +616,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                                     (port == ResidentContacts && entry == InitContacts) ||
                                     (port == CandidateArena && entry == InitCandidates);
             const bool argumentWrite = port == Arguments;
-            const bool resetCount = port == PairCount && entry == SeedActive;
+            const bool resetCount = port == PairCount && entry == SeedSweep;
             dispatch.bufferAccesses.push_back(initialize || argumentWrite || resetCount
                                                   ? rhi::ComputeBufferAccess::Write
                                               : port == Arena || port == CandidateArena || port == ResidentStep ||
-                                                      port == StepStatus || (port == PairCount && entry == CollectRound)
+                                                      port == StepStatus || (port == PairCount && entry == CollectSweep)
                                                   ? rhi::ComputeBufferAccess::ReadWrite
                                                   : rhi::ComputeBufferAccess::Read);
             if (initialize)
@@ -637,7 +631,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 const auto records = count + (entry == PublishCandidates ? work.range.z : 0u);
                 proof.writes.push_back({binding, 0, uint64_t(records) * WordBytes});
             } else if (resetCount)
-                proof.writes.push_back({binding, 0, sizeof(uint32_t)});
+                proof.writes.push_back({binding, 0, 2u * sizeof(uint32_t)});
             else if (port == Bounds) {
                 const uint64_t bytes = uint64_t(config.selectedCounts.y) * sizeof(Aabb);
                 if (bytes)
@@ -660,10 +654,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     bool EmitIndirect(Entry entry, uint32_t first, uint32_t count, uint32_t size, const BroadphaseParams &value,
                       std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
-        const bool block = entry == ScanBlocks || entry == ReduceBlocks;
-        const uint32_t limit = block ? BroadphaseBlockLimit : BroadphaseItemLimit;
-        const bool matching = indirectEntry == entry && indirectMeta == value.activeState.x &&
-                              indirectLevel == value.activeState.z && first >= indirectFirst &&
+        constexpr auto limit = BroadphaseItemLimit;
+        const bool matching = indirectEntry == entry && first >= indirectFirst &&
                               (first - indirectFirst) % limit == 0 && (first - indirectFirst) / limit < indirectCount;
         if (!matching) {
             const uint32_t available = packetLimit - static_cast<uint32_t>(dispatches.size());
@@ -675,18 +667,14 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             const uint32_t records = std::min(available - 1u, remaining);
             if (!records || uint64_t(first) + uint64_t(records - 1u) * limit >= size)
                 throw std::logic_error("Jolt GPU indirect chunk plan exceeds its bounded domain");
-            const StageWork producer{{first, records, value.mergeKey.y == 1u ? 1u : 0u, block ? 1u : 0u}};
-            // A producer is recorded here, after earlier queue/meta publishers;
-            // it must not be hoisted to the front of the packet.
+            const StageWork producer{{first, records, 0u, 0u}};
             if (!EmitWork(PrepareIndirect, producer, value, uploads, dispatches))
                 return false;
             indirectEntry = entry;
-            indirectMeta = value.activeState.x;
-            indirectLevel = value.activeState.z;
             indirectFirst = first;
             indirectCount = records;
         }
-        const uint32_t record = (first - indirectFirst) / limit;
+        const uint64_t record = (first - indirectFirst) / limit;
         const StageWork work{{first, count, 0, 0}};
         if (!EmitWork(entry, work, value, uploads, dispatches,
                       rhi::ComputeIndirectArguments{arguments, uint64_t(record) * WordBytes}))
@@ -708,13 +696,12 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         return true;
     }
 
-    void BeginScan(uint32_t input, uint32_t count, bool exclusive, bool dynamic = false)
+    void BeginScan(uint32_t input, uint32_t count, bool exclusive)
     {
         scan = {};
         scan.active = count != 0;
         scan.exclusive = exclusive;
         scan.originalInput = input;
-        scan.dynamic = dynamic;
         scan.root = zeroRecord;
         if (count) {
             do {
@@ -731,16 +718,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         auto value = config;
         const uint32_t level = scan.level, size = scan.counts[level];
         const auto &addresses = levels[level];
-        value.activeState.z = level;
-        value.activeState.w = scan.dynamic ? 1u : 0u;
         value.scan = {level ? levels[level].input : scan.originalInput, addresses.prefix, addresses.total, size};
         if (!scan.descending) {
             const uint32_t count = std::min(BroadphaseBlockLimit, Blocks(size) - scan.first);
             const auto entry = scan.exclusive ? ScanBlocks : ReduceBlocks;
-            const bool emitted = scan.dynamic
-                                     ? EmitIndirect(entry, scan.first, count, Blocks(size), value, uploads, dispatches)
-                                     : Emit(entry, scan.first, count, value, uploads, dispatches);
-            if (!emitted)
+            if (!Emit(entry, scan.first, count, value, uploads, dispatches))
                 return true;
             scan.first += count;
             if (scan.first == Blocks(size)) {
@@ -759,10 +741,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         } else {
             value.scanParent.x = levels[level + 1u].prefix;
             const uint32_t count = std::min(BroadphaseItemLimit, size - scan.first);
-            const bool emitted = scan.dynamic
-                                     ? EmitIndirect(AddOffsets, scan.first, count, size, value, uploads, dispatches)
-                                     : Emit(AddOffsets, scan.first, count, value, uploads, dispatches);
-            if (!emitted)
+            if (!Emit(AddOffsets, scan.first, count, value, uploads, dispatches))
                 return true;
             scan.first += count;
             if (scan.first == size) {
@@ -796,7 +775,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         value.merge = {sortSource, sortTarget, sortCount, sortWidth};
         value.mergeKey.x = sortKey;
         const uint32_t count = std::min(BroadphaseItemLimit, sortCount - item);
-        value.mergeKey.y = sortKey == 2u ? 1u : 0u;
         const bool seed = sortWidth == 1u;
         const auto entry = seed ? SortCandidateTiles : Merge;
         if (!(sortKey == 2u ? EmitIndirect(entry, item, count, sortCount, value, uploads, dispatches)
@@ -816,111 +794,39 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         return true;
     }
 
-    enum class ActiveStage
+    static StageWork SweepWork(uint64_t first, uint32_t count)
     {
-        Seed,
-        Round,
-        Scan,
-        Compact,
-        Publish
-    };
-
-    void BeginActive()
-    {
-        activeStage = ActiveStage::Seed;
-        activeBound = config.selectedCounts.y;
-        neighborsRemaining = std::max(1u, activeBound) - 1u;
-        windowPasses = 0;
-        config.activeQueues = {queues[0], queues[1], 0, 0};
-        config.activeState = {activeMeta[0], activeMeta[1], 0, 0};
+        return {{static_cast<uint32_t>(first), count, static_cast<uint32_t>(first >> 32u), 0u}};
     }
 
-    bool ActiveRange(Entry entry, std::vector<rhi::ComputeBufferUpdate> &uploads,
-                     std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    bool Sweep(std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
-        if (item == activeBound) {
-            item = 0;
+        if (sweepCursor >= sweepLimit)
             return false;
+        if (indirectEntry != CollectSweep) {
+            const auto available = packetLimit - static_cast<uint32_t>(dispatches.size());
+            if (available < 2u) {
+                packetFull = true;
+                return true;
+            }
+            const auto jobs = sweepLimit - sweepCursor;
+            const auto windows = (jobs + BroadphaseSweepJobs - 1u) / BroadphaseSweepJobs;
+            const auto records = static_cast<uint32_t>(std::min<uint64_t>(available - 1u, windows));
+            auto argumentsWork = SweepWork(sweepCursor, records);
+            argumentsWork.range.w = static_cast<uint32_t>(
+                std::min<uint64_t>(BroadphaseSweepJobs, jobs - uint64_t(records - 1u) * BroadphaseSweepJobs));
+            if (!EmitWork(PrepareSweepArguments, argumentsWork, config, uploads, dispatches))
+                return true;
+            indirectEntry = CollectSweep;
+            indirectFirst = sweepCursor;
         }
-        auto value = config;
-        value.activeState.z = 0;
-        value.activeState.w = 1;
-        const uint32_t count = std::min(BroadphaseItemLimit, activeBound - item);
-        if (!EmitIndirect(entry, item, count, activeBound, value, uploads, dispatches))
+        const auto record = (sweepCursor - indirectFirst) / BroadphaseSweepJobs;
+        const auto count = static_cast<uint32_t>(std::min<uint64_t>(BroadphaseSweepJobs, sweepLimit - sweepCursor));
+        if (!EmitWork(CollectSweep, SweepWork(sweepCursor, count), config, uploads, dispatches,
+                      rhi::ComputeIndirectArguments{arguments, record * WordBytes}))
             return true;
-        item += count;
+        sweepCursor += count;
         return true;
-    }
-
-    bool ActiveRounds(std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
-    {
-        while (true) {
-            switch (activeStage) {
-            case ActiveStage::Seed:
-                if (!Emit(SeedActive, 0, 1, config, uploads, dispatches))
-                    return true;
-                activeStage = ActiveStage::Round;
-                return true;
-            case ActiveStage::Round: {
-                config.scan.x = levels[0].input;
-                if (!neighborsRemaining) {
-                    phase = Phase::Counts;
-                    return false;
-                }
-                const uint32_t ranksPerDispatch = std::min(activeBound, BroadphaseItemLimit);
-                // Give shorter queues more work per rank within the same dispatch limit.
-                config.round.x = std::min(
-                    {neighborsRemaining, BroadphaseNeighborLimit, NeighborTestsPerDispatch / ranksPerDispatch});
-                if (ActiveRange(CollectRound, uploads, dispatches))
-                    return true;
-                neighborsRemaining -= config.round.x;
-                if (!neighborsRemaining || ++windowPasses < ActivePassesPerWindow)
-                    break;
-                BeginScan(levels[0].input, activeBound, true, true);
-                activeStage = ActiveStage::Scan;
-                break;
-            }
-            case ActiveStage::Scan:
-                if (Scan(uploads, dispatches))
-                    return true;
-                config.scan.x = levels[0].input;
-                config.scan.y = levels[0].prefix;
-                config.summary.x = scan.root;
-                activeStage = ActiveStage::Compact;
-                break;
-            case ActiveStage::Compact:
-                if (ActiveRange(CompactActive, uploads, dispatches))
-                    return true;
-                activeStage = ActiveStage::Publish;
-                break;
-            case ActiveStage::Publish:
-                if (!Emit(PublishActive, 0, 1, config, uploads, dispatches))
-                    return true;
-                std::swap(config.activeQueues.x, config.activeQueues.y);
-                std::swap(config.activeState.x, config.activeState.y);
-                activeStage = ActiveStage::Round;
-                phase = Phase::ActiveBoundary;
-                return true;
-            }
-        }
-    }
-
-    void DecodeActive(const std::shared_ptr<rhi::PreparedComputeBatch> &packet)
-    {
-        UInt4 value{};
-        const auto read = packet->Readback(0);
-        if (!read || !read->IsComplete())
-            throw std::logic_error("Jolt GPU active queue requires its completed source receipt");
-        read->ReadInto(&value, sizeof(value));
-        if (value.z)
-            throw std::runtime_error("Jolt GPU active queue failed numerical validation (status " +
-                                     std::to_string(value.z) + ")");
-        if (value.x > activeBound || value.y > neighborsRemaining || (value.x == 0) != (value.y == 0))
-            throw std::runtime_error("Jolt GPU active queue exceeded its remaining sweep range");
-        activeBound = value.x;
-        neighborsRemaining = value.y;
-        windowPasses = 0;
-        phase = Phase::Count;
     }
 
     bool NextDispatch(std::vector<rhi::ComputeBufferUpdate> &uploads, std::vector<rhi::ComputeDispatchDesc> &dispatches)
@@ -988,32 +894,35 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 if (Sort(uploads, dispatches))
                     return true;
                 config.workspace.z = sortSource;
-                BeginActive();
+                config.scan.x = levels[0].input;
                 phase = Phase::Ends;
                 break;
             case Phase::Ends:
                 if (Range(FindEnds, config.selectedCounts.y, uploads, dispatches))
                     return true;
-                phase = Phase::Count;
+                BeginScan(config.scan.x, config.selectedCounts.y, true);
+                phase = Phase::ProjectionScan;
                 break;
-            case Phase::Count:
-                if (ActiveRounds(uploads, dispatches))
-                    return true;
-                break;
-            case Phase::Counts:
-                if (Range(FinishRanks, config.selectedCounts.y, uploads, dispatches))
-                    return true;
-                BeginScan(config.scan.x, config.selectedCounts.y, false);
-                phase = Phase::CountScan;
-                break;
-            case Phase::CountScan:
+            case Phase::ProjectionScan:
                 if (Scan(uploads, dispatches))
                     return true;
                 config.summary.x = scan.root;
+                config.scan.y = levels[0].prefix;
+                phase = Phase::SeedSweep;
+                break;
+            case Phase::SeedSweep:
+                if (!Emit(SeedSweep, 0, 1u, config, uploads, dispatches))
+                    return true;
+                sweepCursor = 0u;
+                phase = Phase::Sweep;
+                return true;
+            case Phase::Sweep:
+                if (Sweep(uploads, dispatches))
+                    return true;
                 phase = Phase::CountPublish;
                 break;
             case Phase::CountPublish:
-                if (!Emit(PublishCount, 0, 1, config, uploads, dispatches))
+                if (!EmitWork(PublishCount, SweepWork(sweepCursor, 1u), config, uploads, dispatches))
                     return true;
                 if (capacity) {
                     BeginSort(config.candidates.x, config.candidates.y, capacity, 2);
@@ -1027,9 +936,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 if (config.round.w)
                     afterContacts = Phase::SmallPairs;
                 else if (requiredCapacity) {
-                    // A wider arena needs a new collection from the same frozen SAP records.
-                    BeginActive();
-                    afterContacts = Phase::Ends;
+                    // Refill from the retained projection prefix when storage grows.
+                    afterContacts = Phase::SeedSweep;
                 } else {
                     BeginSort(config.candidates.x, config.candidates.y, capacity, 2);
                     afterContacts = Phase::CandidateSort;
@@ -1078,15 +986,25 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const auto read = packet->Readback(0);
         if (!read || !read->IsComplete())
             throw std::logic_error("Jolt GPU broadphase metadata requires its completed source receipt");
-        UInt4 result{};
-        read->ReadInto(&result, sizeof(result));
-        constexpr uint32_t CapacityNeeded = 128u;
-        if (result.z & ~CapacityNeeded)
+        std::array<UInt4, 2> records{};
+        read->ReadInto(records.data(), config.round.w ? WordBytes : 2u * WordBytes);
+        const auto &result = records[0];
+        if (result.z & ~(CapacityNeeded | SweepPending))
             throw std::runtime_error("Jolt GPU broadphase numerical validation failed (status " +
                                      std::to_string(result.z) + ")");
         if (result.y || result.x > UINT32_MAX / MaxContactPointsPerPair || result.w > result.x ||
             (result.x == 0 && result.w != 0))
             throw std::runtime_error("Jolt GPU broadphase returned invalid candidate metadata");
+        sweepJobs = (uint64_t(records[1].y) << 32u) | records[1].x;
+        if (sweepJobs > sweepUpperBound || bool(result.z & SweepPending) != (sweepJobs > sweepCursor))
+            throw std::runtime_error("Jolt GPU broadphase returned invalid projection metadata");
+        sweepLimit = sweepJobs;
+        if (result.z & SweepPending) {
+            // Resume the existing projection and append counter at the first
+            // untested job. A changed command budget never repeats a window.
+            phase = Phase::Sweep;
+            return;
+        }
         if (count || (result.z & CapacityNeeded)) {
             if (!count && result.x <= capacity)
                 throw std::runtime_error("Resident broadphase reported a false capacity gap");
@@ -1133,8 +1051,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         phase = s.phase;
         sap = s.sap;
         suppression = s.suppression;
-        queues = s.queues;
-        activeMeta = s.activeMeta;
         scratchWords = s.scratchWords;
         zeroRecord = s.zeroRecord;
         item = s.item;
@@ -1143,15 +1059,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         sortCount = s.sortCount;
         sortKey = s.sortKey;
         sortWidth = s.sortWidth;
-        activeStage = s.activeStage;
         indirectEntry = s.indirectEntry;
-        activeBound = s.activeBound;
-        neighborsRemaining = s.neighborsRemaining;
-        windowPasses = s.windowPasses;
-        indirectMeta = s.indirectMeta;
-        indirectLevel = s.indirectLevel;
         indirectFirst = s.indirectFirst;
         indirectCount = s.indirectCount;
+        sweepCursor = s.sweepCursor;
+        sweepLimit = s.sweepLimit;
         initialUploads = s.initialUploads;
         allocationBlocked = s.allocationBlocked;
         packetFull = s.packetFull;
@@ -1182,16 +1094,15 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 break;
             if (allocationBlocked || packetFull)
                 break;
-            if (phase == Phase::CountBoundary || phase == Phase::ActiveBoundary || phase == Phase::Done)
+            if (phase == Phase::CountBoundary || phase == Phase::Done)
                 break;
         }
         const auto boundary = phase;
         std::vector<rhi::ComputeBufferRead> reads;
         const bool readCount = boundary == Phase::CountBoundary || (boundary == Phase::Done && !config.round.z);
         if (readCount)
-            reads.push_back({arena, uint64_t(config.workspace.y) * WordBytes, WordBytes});
-        if (boundary == Phase::ActiveBoundary)
-            reads.push_back({arena, uint64_t(config.activeState.x) * WordBytes, WordBytes});
+            reads.push_back(
+                {arena, uint64_t(config.workspace.y) * WordBytes, config.round.w ? WordBytes : 2u * WordBytes});
         if (dispatches.empty() && uploads.empty() && allocationBlocked)
             return {nullptr, [self = shared_from_this()] { return self->Next(); }};
         if (dispatches.empty() && uploads.empty() && reads.empty() && packetFull && limit == 1u) {
@@ -1209,8 +1120,6 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             [self = shared_from_this(), packet, boundary, readCount]() -> JoltGpuControlWork {
                 if (readCount)
                     self->Decode(packet, boundary == Phase::CountBoundary);
-                if (boundary == Phase::ActiveBoundary)
-                    self->DecodeActive(packet);
                 if (boundary == Phase::Done && self->phase == Phase::Done) {
                     const auto capacity = self->capacity;
                     const auto nextCapacity =
@@ -1218,6 +1127,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                     if (!self->config.round.y)
                         self->workspace = {capacity,
                                            nextCapacity,
+                                           self->sweepJobs,
                                            self->arena,
                                            self->arguments,
                                            self->workset->parameters,
@@ -1267,13 +1177,12 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     std::vector<ScanLevel> levels;
     ScanCursor scan;
     Phase phase = Phase::InitialCapacity;
-    std::array<uint32_t, 2> sap{}, suppression{}, queues{}, activeMeta{};
+    std::array<uint32_t, 2> sap{}, suppression{};
     uint32_t scratchWords = 0, zeroRecord = 0, item = 0;
     uint32_t sortSource = 0, sortTarget = 0, sortCount = 0, sortKey = 0, sortWidth = 1;
-    ActiveStage activeStage = ActiveStage::Seed;
     Entry indirectEntry = EntryCount;
-    uint32_t activeBound = 0, neighborsRemaining = 0, windowPasses = 0;
-    uint32_t indirectMeta = 0, indirectLevel = 0, indirectFirst = 0, indirectCount = 0;
+    uint64_t indirectFirst = 0, sweepUpperBound = 0, sweepLimit = 0, sweepCursor = 0, sweepJobs = 0;
+    uint32_t indirectCount = 0;
     uint32_t capacity = 0, requiredCapacity = 0, packetLimit = MaxDispatchesPerPacket;
     Phase afterContacts = Phase::Suppression;
     bool initialUploads = false;

@@ -15,6 +15,7 @@ class JoltGpuBroadphase final
     struct Workspace
     {
         uint32_t patchCapacity = 0, nextCapacity = 0;
+        uint64_t sweepJobs = 0;
         std::shared_ptr<rhi::ComputeBuffer> arena, arguments, parameters, patches, contacts, pairCount;
     };
 

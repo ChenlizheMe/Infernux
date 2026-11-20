@@ -209,6 +209,7 @@ class JoltGpuTick::Impl
         modelUpdate.reset();
         commandCursor.reset();
         collisionWorkspace = {};
+        constraintWorkspace = {};
         submissionBusy = false;
     }
 
@@ -278,6 +279,7 @@ class JoltGpuTick::Impl
     JoltGpuBroadphase::Workspace collisionWorkspace;
     JoltGpuNarrowphase &narrowphase;
     JoltGpuConstraints &constraints;
+    JoltGpuConstraints::Workspace constraintWorkspace;
     rhi::ComputeHost host;
     std::function<void()> failureObserver;
     FrameWorkOwner::SourceId sourceId = 0;
@@ -653,6 +655,7 @@ class JoltGpuTick::Impl
         if (!receipts.empty())
             return false;
         collisionWorkspace = {};
+        constraintWorkspace = {};
         const bool capturedWitness =
             status == Status::Running && controlAccepted && !controlOnly &&
             (stageCursor.phase == Phase::SetupJoints || stageCursor.phase == Phase::ReportContactsBeforeVelocity ||
@@ -1233,8 +1236,8 @@ class JoltGpuTick::Impl
                 setup.reset();
             }
         }
-        return constraints.PrepareTopology(storage, inputs, programs, tickParameters, stepStatus, std::move(setup),
-                                           [this, setupEnd](auto topology, bool setupAccepted) {
+        return constraints.PrepareTopology(storage, inputs, programs, tickParameters, stepStatus, constraintWorkspace,
+                                           std::move(setup), [this, setupEnd](auto topology, bool setupAccepted) {
                                                constraintTopology = std::move(topology);
                                                if (setupAccepted)
                                                    stageCursor = setupEnd;
