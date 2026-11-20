@@ -7,15 +7,13 @@ from functools import partial
 
 from infernux.lib import _Infernux
 from infernux.rendergraph.graph import Format, TextureHandle
+from infernux.renderstack import _diffuse_irradiance
 from infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE, DEPTH_TEXTURE, SURFACE_RECORDS_BUFFER,
-    bind_deferred_material, deferred_surface_inputs, draw_deferred_geometry, transparent_queue_range,
+    bind_deferred_material, bind_ray_world as _bind_world, deferred_surface_inputs, draw_deferred_geometry, transparent_queue_range,
 )
 from infernux.renderstack.pass_result import PassResult
-from infernux.renderstack.ray_tracer import RayTracer, RayTracingContext, RayTracingQuality, RayTracingSignal
-
-
-_DIFFUSE_DIVISOR = {RayTracingQuality.LIGHTWEIGHT: 4, RayTracingQuality.STANDARD: 2, RayTracingQuality.HIGH: 0}
+from infernux.renderstack.ray_tracer import RayTracer, RayTracingContext, RayTracingSignal
 
 
 @dataclass(frozen=True)
@@ -32,6 +30,7 @@ class _PackedSignal(RayTracingSignal):
     def __init__(self, packet, resolve, *, local_estimate=None):
         super().__init__(resolve)
         self.packet = packet
+        self.witness = packet
         self.local_estimate = packet if local_estimate is None else local_estimate
 
 
@@ -66,18 +65,6 @@ def _hit_distance(graph, packet):
     return output
 
 
-def _filter_diffuse(ctx, guides, source, target, stride):
-    frame = guides.surface.sample("surface_frame")
-    visibility = ctx.ambient_visibility
-    with ctx.graph.add_pass(f"Ray Diffuse Spatial {stride}") as p:
-        p.set_textures({"signal": source, "primary": guides.primary, "frame": frame,
-                        "ambient_visibility": visibility or frame})
-        p.set_param("ssao_strength", ctx.ssao_strength)
-        p.write_color(target)
-        p.set_param("stride", stride)
-        p.fullscreen_quad("infernux/internal/ray_diffuse_filter")
-
-
 def _linear_resolve(graph, packet, guides, specular):
     name = "specular_radiance" if specular else "diffuse_irradiance"
     output = graph.create_texture(f"{packet.name}/resolved", format=Format.RGBA32_SFLOAT, samples=1)
@@ -107,11 +94,12 @@ class DefaultRayTracer(RayTracer):
 
     def trace(self, ctx, guides, *, specular, divisor):
         """Generate one lobe's samples and its hit witnesses on the native trace grid."""
+        if not specular:
+            return _diffuse_irradiance.trace_diffuse(ctx, guides, divisor)
         graph = ctx.graph
-        name = "ray_specular" if specular else "ray_diffuse"
-        stem = f"{ctx.name}/{name}"
+        stem = f"{ctx.name}/ray_specular"
         output = graph.create_texture(f"{stem}_packet", format=Format.RGBA32_UINT, size_divisor=divisor, samples=1)
-        label = "Ray Specular Radiance" if specular else "Ray Diffuse Irradiance"
+        label = "Ray Specular Radiance"
         # Keep fresh traversal and history replay in separate draws. Spatial reuse can overwrite this packet.
         with graph.add_pass(f"{label} Samples" if ctx.reconstruct else label) as p:
             _bind_transport(p, ctx, guides, specular)
@@ -139,53 +127,33 @@ class DefaultRayTracer(RayTracer):
                 p.write_color(output)
                 p.fullscreen_quad("infernux/internal/ray_path_spatial")
         return _PackedSignal(output, partial(_linear_raw, graph, output),
-                             local_estimate=estimates if ctx.reconstruct and specular else output)
+                             local_estimate=estimates if ctx.reconstruct else output)
 
     def reconstruct_diffuse(self, ctx, raw, guides):
         """Return full-resolution irradiance. Custom filters read raw.radiance on demand."""
-        return self._reconstruct(ctx, raw, guides, specular=False)
+        return _diffuse_irradiance.reconstruct_diffuse(ctx, guides, raw)
 
     def reconstruct_specular(self, ctx, raw, guides):
         """Return outgoing reflected radiance, with positive alpha on supported surfaces."""
-        return self._reconstruct(ctx, raw, guides, specular=True)
-
-    def _reconstruct(self, ctx, raw, guides, *, specular):
         graph = ctx.graph
         packet = raw.packet
         if ctx.reconstruct:
-            name = "specular" if specular else "diffuse"
-            divisor = packet.size_divisor
-            if not specular:
-                filtered = graph.create_texture(f"{ctx.name}/{name}/filtered", format=Format.RGBA32_UINT,
-                                                size_divisor=divisor, samples=1)
-                intermediate = graph.create_texture(f"{ctx.name}/{name}/intermediate", format=Format.RGBA32_UINT,
-                                                    size_divisor=divisor, samples=1)
-                # Estimate this frame's irradiance before deciding whether the reprojected lighting still fits.
-                _filter_diffuse(ctx, guides, packet, filtered, 1)
-                _filter_diffuse(ctx, guides, filtered, intermediate, 2)
-                packet = intermediate
-            previous, output = ctx.view.history(name, format=Format.RGBA32_UINT, size_divisor=divisor,
-                                                respond_to_lighting=not specular)
-            label = "Ray Specular Reconstruction" if specular else "Ray Diffuse Reconstruction"
-            with graph.add_pass(label) as p:
-                p.set_textures({"signal": packet, "local_estimate": raw.local_estimate if specular else packet,
+            previous, output = ctx.view.history("specular", format=Format.RGBA32_UINT, size_divisor=packet.size_divisor)
+            with graph.add_pass("Ray Specular Reconstruction") as p:
+                p.set_textures({"signal": packet, "local_estimate": raw.local_estimate,
                                 "primary": guides.primary, "motion": guides.motion,
                                 "previous_signal": previous, "previous_primary": guides.previous_primary})
                 p.set_buffer("geometry", ctx.world.geometry)
                 p.write_color(output)
-                p.set_param("specular", specular)
+                p.set_param("specular", True)
                 p.fullscreen_quad("infernux/internal/ray_reconstruct")
             packet = output
-            if not specular:
-                _filter_diffuse(ctx, guides, packet, filtered, 4)
-                _filter_diffuse(ctx, guides, filtered, intermediate, 8)
-                packet = intermediate
-        return _PackedSignal(packet, partial(_linear_resolve, graph, packet, guides, specular))
+        return _PackedSignal(packet, partial(_linear_resolve, graph, packet, guides, True))
 
     def build(self, ctx: RayTracingContext):
         lobes = []
         if ctx.diffuse:
-            lobes.append(("diffuse_irradiance", False, _DIFFUSE_DIVISOR[ctx.quality], self.reconstruct_diffuse))
+            lobes.append(("diffuse_irradiance", False, _diffuse_irradiance.trace_grid(ctx.quality), self.reconstruct_diffuse))
         if ctx.specular:
             lobes.append(("specular_radiance", True, 0, self.reconstruct_specular))
         guides = self.prepare_guides(ctx) if lobes else None
@@ -194,12 +162,12 @@ class DefaultRayTracer(RayTracer):
         denoised = {name: reconstruct(ctx, raw[name], guides) for name, _, _, reconstruct in lobes}
         for name, specular, _, _ in lobes:
             sample = raw[name]
-            if isinstance(sample, _PackedSignal):
+            if isinstance(sample, (_PackedSignal, _diffuse_irradiance.DiffuseObservation)):
                 guide = "specular_hit_distance" if specular else "diffuse_hit_distance"
-                raw[guide] = partial(_hit_distance, ctx.graph, sample.packet)
+                raw[guide] = partial(_hit_distance, ctx.graph, sample.witness)
         frame = ctx.publish(raw=raw, denoised=denoised)
         frame._packets = {name: signal.packet for name, signal in denoised.items() if isinstance(signal, _PackedSignal)}
-        if frame._packets:
+        if guides is not None:
             frame._primary = guides.primary
         if ctx.transparency:
             frame._after_sky = partial(self.finish_transparency, ctx, guides)
@@ -213,13 +181,6 @@ class DefaultRayTracer(RayTracer):
         _update_ray_tail(ctx, primary=guides.primary if guides else None, thin=capture)
         _draw_thin_transparency(ctx.graph, capture, surface)
         return True
-
-
-def _bind_world(render_pass, world):
-    for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials"):
-        render_pass.set_buffer(key, world[key])
-    for key in ("ray_color_pages", "ray_data_pages"):
-        render_pass.set_texture(key, world[key])
 
 
 def draw_surface_replay(context):

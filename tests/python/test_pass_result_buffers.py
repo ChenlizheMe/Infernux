@@ -234,14 +234,14 @@ def test_deferred_ray_surface_replays_raw_gbuffer_depth_and_surface_id_on_demand
     assert graph.get_texture(replay._write_colors[0]).format == Format.RGBA32_UINT
 
 
-@pytest.mark.parametrize("diffuse,specular,quality,diffuse_divisor", [
-    (False, False, RayTracingQuality.STANDARD, 2),
-    (True, False, RayTracingQuality.STANDARD, 2),
-    (False, True, RayTracingQuality.LIGHTWEIGHT, 4),
-    (True, True, RayTracingQuality.HIGH, 0),
-    (True, True, RayTracingQuality.LIGHTWEIGHT, 4),
+@pytest.mark.parametrize("diffuse,specular,quality,trace_divisor,filter_divisor", [
+    (False, False, RayTracingQuality.STANDARD, 4, 4),
+    (True, False, RayTracingQuality.STANDARD, 4, 4),
+    (False, True, RayTracingQuality.LIGHTWEIGHT, 8, 4),
+    (True, True, RayTracingQuality.HIGH, 4, 2),
+    (True, True, RayTracingQuality.LIGHTWEIGHT, 8, 4),
 ])
-def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diffuse_divisor):
+def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trace_divisor, filter_divisor):
     graph = RenderGraph("Deferred ray lighting")
     pipeline = DefaultDeferredPipeline()
     pipeline.global_illumination = diffuse
@@ -267,66 +267,62 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, diff
         assert "Thin Surface Capture" not in passes
         return
 
-    assert lighting._shader_name == "infernux/internal/deferred_ray_lighting"
-    assert lighting._parameters == {"diffuse_enabled": diffuse, "specular_enabled": specular,
+    assert lighting._shader_name == "infernux/internal/deferred_linear_lighting"
+    assert lighting._parameters == {"diffuse_mode": 1, "specular_mode": 2 if specular else 0,
                                     "diffuse_intensity": 1.0, "diffuse_saturation": 1.0,
                                     "ssao_strength": 0.5, "ssao_contrast": 1.0}
     visibility = graph.get_pass_result("gbuffer").sample("ambient_visibility")
-    assert visibility.format == Format.RG16_SFLOAT and visibility.size_divisor == 2
-    assert lighting._input_bindings["ambient_visibility"] == visibility.name
     primary = graph.get_pass_result("gbuffer").sample("ray_primary_surface")
-    assert lighting._input_bindings["primary_tex"] == primary.name and primary.size_divisor == 0
-    assert not any(name.startswith(("Decode ", "Resolve ")) for name in passes)
-    for enabled, name, semantic, label, resolve, divisor in (
-        (diffuse, "ray_diffuse", "diffuse_irradiance", "Ray Diffuse Irradiance", "Ray Diffuse Reconstruction", diffuse_divisor),
-        (specular, "ray_specular", "specular_radiance", "Ray Specular Radiance", "Ray Specular Reconstruction", 0),
-    ):
-        assert result.has(semantic) == reconstructed.has(semantic) == (label in passes) == enabled
-        guide = "specular_hit_distance" if name == "ray_specular" else "diffuse_hit_distance"
-        assert result.has(guide) == enabled
-        if enabled:
-            trace = passes[label]
-            assert trace._input_bindings["primary"] == primary.name
-            assert trace._input_bindings["world_ray_meshes"] == graph.get_buffer("world_ray_meshes").name
-            packet = graph.get_texture(trace._write_colors[0])
-            assert packet.format == Format.RGBA32_UINT and packet.size_divisor == divisor
-            candidates = passes[label + " Path Candidates"]
-            samples = passes[label + " Samples"]
-            assert samples._write_colors[0] == candidates._input_bindings["fresh"] == packet.name
-            assert graph._passes.index(samples) < graph._passes.index(candidates) < graph._passes.index(trace)
-            paths = graph.get_texture(candidates._write_colors[1])
-            previous_paths = graph.get_texture(candidates._input_bindings["previous_paths"])
-            assert paths.temporal_key == previous_paths.temporal_key and paths.size_divisor == divisor
-            assert not previous_paths._depends_on_ray_world
-            assert trace._input_bindings["paths"] == paths.name
-            assert trace._input_bindings["estimates"] == candidates._write_colors[0]
-            distance = result.sample(guide)
-            assert distance is result.sample(guide)
-            assert distance.format == Format.R32_SFLOAT and distance.size_divisor == divisor
-            raw, resolved = result.sample(semantic), reconstructed.sample(semantic)
-            assert raw.size_divisor == divisor and resolved.size_divisor == 0
-            assert raw.format == resolved.format == Format.RGBA32_SFLOAT
-            assert result.sample(semantic) is raw and reconstructed.sample(semantic) is resolved
-            reconstruction = passes[resolve]
-            previous = graph.get_texture(reconstruction._input_bindings["previous_signal"])
-            assert previous.size_divisor == divisor
-            assert previous._depends_on_ray_world
-            assert previous._responds_to_ray_lighting == (name == "ray_diffuse")
-            filtered = reconstruction._write_colors[0]
-            if name == "ray_specular":
-                assert reconstruction._input_bindings["signal"] == packet.name
-            else:
-                fresh = passes["Ray Diffuse Spatial 1"]
-                assert fresh._input_bindings["signal"] == packet.name
-                assert (previous.name, filtered) == ("ray/diffuse/read", "ray/diffuse/write")
-                local, medium, wide = (passes[f"Ray Diffuse Spatial {stride}"] for stride in (2, 4, 8))
-                assert local._input_bindings["signal"] == fresh._write_colors[0]
-                assert reconstruction._input_bindings["signal"] == local._write_colors[0]
-                assert medium._input_bindings["signal"] == filtered
-                assert wide._input_bindings["signal"] == medium._write_colors[0] == fresh._write_colors[0]
-                filtered = wide._write_colors[0]
-                assert filtered == local._write_colors[0] != medium._write_colors[0]
-            assert lighting._input_bindings[name] == filtered
+    assert visibility.size_divisor == 2 and primary.size_divisor == 0
+    assert lighting._input_bindings["ambient_visibility"] == visibility.name
+    assert lighting._input_bindings["primary_tex"] == primary.name
+
+    observation = passes["Ray Diffuse Irradiance"]
+    assert observation._parameters == {"divisor": trace_divisor, "temporal": True}
+    assert observation._input_bindings["primary"] == primary.name
+    assert observation._input_bindings["world_ray_meshes"] == graph.get_buffer("world_ray_meshes").name
+    screen = passes["Ray Diffuse Screen Proxy"]
+    assert screen._write_colors == {0: observation._input_bindings["screen_radiance"],
+                                    1: observation._input_bindings["screen_depth"]}
+    assert all(graph.get_texture(name).size_divisor == 2 for name in screen._write_colors.values())
+    energy, axes = (graph.get_texture(name) for name in observation._write_colors.values())
+    assert energy.size_divisor == axes.size_divisor == trace_divisor
+    history = passes["Ray Diffuse Reconstruction"]
+    assert history._input_bindings["fresh_dc"] == energy.name and history._input_bindings["fresh_axes"] == axes.name
+    blur = passes["Ray Diffuse Recurrent Blur"]
+    assert blur._input_bindings["coefficients"] == history._write_colors[0]
+    assert blur._input_bindings["directions"] == history._write_colors[1]
+    assert blur._input_bindings["visibility"] == visibility.name
+    for slot, port in enumerate(("old_dc", "old_axes")):
+        previous = graph.get_texture(history._input_bindings[port])
+        assert previous.size_divisor == filter_divisor and previous._responds_to_ray_lighting
+        current = graph.get_texture(blur._write_colors[slot])
+        assert current.temporal_key == previous.temporal_key and current.size_divisor == filter_divisor
+    resolve = passes["Ray Diffuse Resolved Irradiance"]
+    assert resolve._input_bindings["coefficients"] == blur._write_colors[0]
+    assert resolve._input_bindings["directions"] == blur._write_colors[1]
+    assert "world_ray_meshes" not in resolve._input_bindings
+    assert lighting._input_bindings["diffuse_irradiance"] == reconstructed.sample("diffuse_irradiance").name
+    assert reconstructed.sample("diffuse_irradiance").size_divisor == 0
+    assert "Ray Diffuse Raw Irradiance" not in passes
+    assert result.sample("diffuse_irradiance").size_divisor == trace_divisor
+    distance = result.sample("diffuse_hit_distance")
+    assert distance is result.sample("diffuse_hit_distance") and distance.size_divisor == trace_divisor
+    assert distance.format == Format.R32_SFLOAT
+
+    assert result.has("specular_hit_distance") == reconstructed.has("specular_radiance") == specular
+    if specular:
+        fresh = passes["Ray Specular Radiance Samples"]
+        reuse = passes["Ray Specular Radiance Path Candidates"]
+        trace = passes["Ray Specular Radiance"]
+        assert fresh._write_colors[0] == reuse._input_bindings["fresh"] == trace._write_colors[0]
+        assert trace._input_bindings["paths"] == reuse._write_colors[1]
+        assert trace._input_bindings["estimates"] == reuse._write_colors[0]
+        specular_history = passes["Ray Specular Reconstruction"]
+        assert specular_history._input_bindings["signal"] == trace._write_colors[0]
+        assert lighting._input_bindings["ray_specular"] == specular_history._write_colors[0]
+        assert result.sample("specular_radiance").format == Format.RGBA32_SFLOAT
+        assert result.sample("specular_hit_distance").size_divisor == 0
     graph.build()
 
 
@@ -344,7 +340,7 @@ def test_zero_contact_strength_keeps_diffuse_independent_of_the_visibility_pass(
     assert "gbuffer/Contact Visibility" not in passes
     assert passes["DeferredLightingPass"]._parameters["diffuse_intensity"] == 1.75
     assert passes["DeferredLightingPass"]._parameters["diffuse_saturation"] == 0.25
-    assert passes["Ray Diffuse Spatial 1"]._parameters["ssao_strength"] == 0.0
+    assert passes["Ray Diffuse Recurrent Blur"]._parameters["ssao_strength"] == 0.0
 
 
 def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently():
@@ -362,7 +358,7 @@ def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently
     passes = {p.name: p for p in graph._passes}
     assert "Ray Diffuse Reconstruction" in passes and "Ray Specular Reconstruction" not in passes
     assert passes["DeferredLightingPass"]._shader_name == "infernux/internal/deferred_linear_lighting"
-    assert passes["DeferredLightingPass"]._parameters == {"diffuse_mode": 2, "specular_mode": 1,
+    assert passes["DeferredLightingPass"]._parameters == {"diffuse_mode": 1, "specular_mode": 1,
                                                           "diffuse_intensity": 1.0, "diffuse_saturation": 1.0,
                                                           "ssao_strength": 0.5, "ssao_contrast": 2.0}
     assert "Resolve diffuse_irradiance" not in passes
@@ -434,7 +430,8 @@ def test_custom_geometry_reuses_registered_surfaces_for_both_lobes(own_guides):
     primary = surface.sample("ray_primary_surface")
     for name in ("Ray Diffuse Irradiance", "Ray Specular Radiance"):
         assert passes[name]._input_bindings["primary"] == primary.name
-        assert passes[name]._input_bindings["normal_tex"] == normal.name
+    assert passes["Ray Specular Radiance"]._input_bindings["normal_tex"] == normal.name
+    assert passes["Ray Diffuse Resolved Irradiance"]._input_bindings["frame"] == normal.name
     assert passes["DeferredLightingPass"]._input_bindings["surface_tex"] == inputs["surface"].name
     assert len([name for name in passes if "Ray Surface Replay" in name]) == int(not own_guides)
     assert len([name for name in passes if "Ray Surface Witness" in name]) == int(not own_guides)

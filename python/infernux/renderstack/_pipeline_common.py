@@ -36,6 +36,13 @@ _GBUFFER_ATTACHMENTS = (
 
 POST_PROCESS_RESOURCES = {COLOR_TEXTURE, DEPTH_TEXTURE, MOTION_TEXTURE, NORMAL_TEXTURE}
 
+
+def bind_ray_world(render_pass, world):
+    for key in ("world_ray_geometry", "world_ray_meshes", "ray_lit_materials"):
+        render_pass.set_buffer(key, world[key])
+    for key in ("ray_color_pages", "ray_data_pages"):
+        render_pass.set_texture(key, world[key])
+
 FORWARD_CLEAR_COLOR = (0.1, 0.1, 0.1, 1.0)
 DEFERRED_GBUFFER_CLEAR_COLOR = (0.0, 0.0, 0.0, 0.0)
 DEFERRED_LIGHTING_CLEAR_COLOR = (0.0, 0.0, 0.0, 1.0)

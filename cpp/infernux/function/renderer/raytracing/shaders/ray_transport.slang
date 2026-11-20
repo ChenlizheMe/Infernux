@@ -104,6 +104,18 @@ public bool inx_world_ray_visibility(float3 origin_ws, float3 direction_ws, floa
     return inx_trace_lit_visibility(ray_page(), ray, layer_mask, lod);
 }
 
+uint2 inx_ray_sobol_bits(uint index)
+{
+    uint x = reversebits(index);
+    uint y = x;
+    y ^= (y & 0x55555555u) << 1u;
+    y ^= (y & 0x33333333u) << 2u;
+    y ^= (y & 0x0f0f0f0fu) << 4u;
+    y ^= (y & 0x00ff00ffu) << 8u;
+    y ^= y << 16u;
+    return uint2(x, y);
+}
+
 float2 inx_ray_primary_uniform(uint index, uint pixel_seed)
 {
     // Sobol dimension 3 (x^2 + x + 1, initial numerators 1, 3) stratifies
@@ -115,15 +127,8 @@ float2 inx_ray_primary_uniform(uint index, uint pixel_seed)
                | ((countbits(index & 0x14514510u) & 1u) << 2u);
     index ^= phase;
     // Two base-2 Sobol dimensions. The second direction matrix is Pascal's triangle mod 2.
-    uint x = reversebits(index);
-    uint y = x;
-    y ^= (y & 0x55555555u) << 1u;
-    y ^= (y & 0x33333333u) << 2u;
-    y ^= (y & 0x0f0f0f0fu) << 4u;
-    y ^= (y & 0x00ff00ffu) << 8u;
-    y ^= y << 16u;
     uint2 shift = uint2(inx_ray_sample_hash(pixel_seed), inx_ray_sample_hash(pixel_seed + 1u));
-    return float2((uint2(x, y) ^ shift) >> 8u) * (1.0 / 16777216.0);
+    return float2((inx_ray_sobol_bits(index) ^ shift) >> 8u) * (1.0 / 16777216.0);
 }
 
 float inx_ray_offset(float position, float normal)
@@ -581,11 +586,10 @@ float3 inx_ray_cached_tail(RayPage page, RayHit hit, RaySurfaceHit attributes, I
     return float3(0.0);
 }
 
-InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, InxBuffer_uint4 cache,
-                              uint seed, float3 weight, float light_roughness, float4 reflector, uint sample_index,
-                              float emission_pdf = 0.0, float3 emitter_origin = float3(0.0))
+InxRaySignal inx_ray_radiance_at_hit(RayPage page, TraceRay ray, RayHit hit, InxBuffer_uint4 records,
+                                     InxBuffer_uint4 cache, uint seed, float3 weight, float light_roughness,
+                                     float4 reflector, uint sample_index, float emission_pdf, float3 emitter_origin)
 {
-    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return inx_ray_signal_output(inx_environment_radiance(ray.direction) * weight, uint2(0u));
     uint kind = inx_ray_participation(hit.surface_id);
@@ -624,6 +628,15 @@ InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 record
                                   uint2(hit.surface_id, asuint(hit.distance)));
 }
 
+InxRaySignal inx_ray_radiance(RayPage page, TraceRay ray, InxBuffer_uint4 records, InxBuffer_uint4 cache,
+                              uint seed, float3 weight, float light_roughness, float4 reflector, uint sample_index,
+                              float emission_pdf = 0.0, float3 emitter_origin = float3(0.0))
+{
+    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
+    return inx_ray_radiance_at_hit(page, ray, hit, records, cache, seed, weight, light_roughness,
+                                   reflector, sample_index, emission_pdf, emitter_origin);
+}
+
 public float4 inx_ray_thin_reflection(float3 position_ws, float3 normal_ws, InxBuffer_uint4 records,
                                      float2 pixel_position, InxBuffer_uint4 cache)
 {
@@ -656,6 +669,181 @@ uint2 inx_ray_path_key(float2 position, bool specular, bool temporal)
     uint2 tile = pixel >> 2u;
     uint scramble = inx_ray_sample_hash(tile.x ^ inx_ray_sample_hash(tile.y));
     return uint2((scramble & ~15u) | rank, index);
+}
+
+// The small uniform component keeps grazing observations in the SH projection.
+float inx_ray_moment_pdf(float cosine)
+{
+    return (0.04 + 1.92 * cosine) * 0.15915494309;
+}
+
+float3 inx_screen_ray_normal(uint word)
+{
+    float2 oct = unpackHalf2x16ToFloat(word);
+    float3 normal = float3(oct, 1.0 - abs(oct.x) - abs(oct.y));
+    if (normal.z < 0.0)
+        normal.xy = (1.0 - abs(normal.yx)) * select(normal.xy >= 0.0, float2(1.0), float2(-1.0));
+    return normalize(normal);
+}
+
+float3 inx_screen_ray_position(uint2 pixel, uint2 extent, float depth)
+{
+    float2 ndc = (float2(pixel) + 0.5) * (2.0 / float2(extent)) - 1.0;
+    float4 position = mul(inx_view.inverse_view_projection, float4(ndc, depth, 1.0));
+    return position.xyz / position.w;
+}
+
+bool inx_inside_screen_ray(float3 ndc)
+{
+    return all(abs(ndc.xy) < 1.0) && ndc.z > 0.0 && ndc.z <= 1.0;
+}
+
+// Use radiance only from a representative of the hit surface itself. Projection
+// across an occluding edge must not turn a world hit into foreground lighting.
+float4 inx_ray_screen_sample(TraceRay ray, float distance, uint surface, float4x4 vp,
+                            InxUInt2D witnesses, InxColor2D radiance, uint2 full, uint2 extent)
+{
+    float3 hit = ray.origin + ray.direction * distance;
+    float4 clip = mul(vp, float4(hit, 1.0));
+    if (clip.w <= 0.0 || !inx_inside_screen_ray(clip.xyz / clip.w))
+        return float4(0.0);
+    float2 uv = 0.5 * clip.xy / clip.w + 0.5;
+    uint2 at = uint2(uv * float2(full));
+    uint2 cell = min(uint2(uv * float2(extent)), extent - 1u);
+    uint2 site = (2u * cell + 1u) * full / (2u * extent);
+    uint4 pixel = witnesses.texture.Load(int3(at, 0));
+    uint4 representative = witnesses.texture.Load(int3(site, 0));
+    if (pixel.x != surface || representative.x != surface)
+        return float4(0.0);
+    float3 normal = inx_screen_ray_normal(pixel.z);
+    float3 position = inx_screen_ray_position(at, full, asfloat(pixel.y));
+    float3 sample_position = inx_screen_ray_position(site, full, asfloat(representative.y));
+    float pitch = 2.0 * clip.w / (abs(inx_view.projection[1][1]) * float(full.y));
+    float plane_error = max(abs(dot(position - hit, normal)), abs(dot(sample_position - hit, normal)));
+    if (dot(normal, ray.direction) >= -0.025 || plane_error > max(0.0001, 0.75 * pitch) ||
+        dot(normal, inx_screen_ray_normal(representative.z)) < 0.94)
+        return float4(0.0);
+    return radiance.texture.Load(int3(cell, 0));
+}
+
+struct InxScreenDiffuseHit
+{
+    float distance;
+    uint surface;
+};
+
+InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float4x4 vp, InxUInt2D witnesses,
+                                            InxColor2D depths, uint2 full, uint2 extent)
+{
+    float4 start = mul(vp, float4(ray.origin, 1.0));
+    float4 travel = mul(vp, float4(ray.direction, 0.0));
+    float3 slope = travel.xyz * start.w - start.xyz * travel.w;
+    float2 cells = 0.5 * float2(extent) * abs(slope.xy);
+    float speed = max(cells.x, cells.y);
+    if (start.w <= 0.0 || speed <= 1.0e-6)
+        return (InxScreenDiffuseHit)0;
+    // NDC depth is affine along the projected line. Keep bounded steps in
+    // proxy texels even when the world-space distance per step grows.
+    float3 ndc = start.xyz / start.w;
+    float3 step = slope * (0.75 / speed);
+    [loop] for (int i = 0; i < 24; ++i)
+    {
+        ndc += step;
+        if (!inx_inside_screen_ray(ndc))
+            break;
+        float2 uv = 0.5 * ndc.xy + 0.5;
+        uint2 cell = uint2(uv * float2(extent));
+        float nearest = depths.texture.Load(int3(cell, 0)).x;
+        if (ndc.z > nearest)
+            continue;
+        uint2 pixel = uint2(uv * float2(full));
+        uint4 witness = witnesses.texture.Load(int3(pixel, 0));
+        if (witness.x == 0u || ndc.z > asfloat(witness.y))
+            continue;
+        float3 normal = inx_screen_ray_normal(witness.z);
+        float denominator = dot(ray.direction, normal);
+        if (denominator >= -0.025)
+            break;
+        float3 position = inx_screen_ray_position(pixel, full, asfloat(witness.y));
+        float distance = dot(position - ray.origin, normal) / denominator;
+        if (distance <= ray.minimum || distance >= ray.maximum)
+            break;
+        // The plane extrapolation can cross a neighboring silhouette several
+        // texels earlier than the witness. Hand uncertain crossings to the BVH.
+        float4 impact = start + travel * distance;
+        float2 drift = abs((impact.xy / impact.w - ndc.xy) * (0.5 * float2(extent)));
+        if (max(drift.x, drift.y) > 1.5)
+            break;
+        return {distance, witness.x};
+    }
+    return (InxScreenDiffuseHit)0;
+}
+
+InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D witnesses, InxColor2D radiance,
+                                     InxColor2D depths, InxBuffer_uint4 records, InxBuffer_uint4 cache,
+                                     uint seed, uint index, float pdf, float3 receiver)
+{
+    float4x4 vp = mul(inx_view.projection, inx_view.view);
+    uint2 full = inx_image_dimensions(witnesses, 0u);
+    uint2 extent = inx_image_dimensions(depths, 0u);
+    let screen = inx_march_diffuse_screen(ray, vp, witnesses, depths, full, extent);
+    if (screen.surface != 0u && inx_ray_participation(screen.surface) == inx_ray_material_lit)
+    {
+        float4 light = inx_ray_screen_sample(ray, screen.distance, screen.surface, vp, witnesses, radiance, full, extent);
+        if (light.a > 0.0)
+            return {light, uint2(screen.surface, asuint(screen.distance))};
+    }
+    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
+    if (hit.triangle_index != ray_invalid_index && inx_ray_participation(hit.surface_id) == inx_ray_material_lit)
+    {
+        float4 light = inx_ray_screen_sample(ray, hit.distance, hit.surface_id, vp, witnesses, radiance, full, extent);
+        if (light.a > 0.0)
+            return {light, uint2(hit.surface_id, asuint(hit.distance))};
+    }
+    float roughness = rsqrt(sqrt(max(402.1238597 * pdf - 1.0, 1.0)));
+    return inx_ray_radiance_at_hit(page, ray, hit, records, cache, seed, float3(1.0), roughness,
+                                   float4(0.0), index, pdf, receiver);
+}
+
+public float4x4 inx_ray_diffuse_moments(float3 position, float3 normal, uint2 cell, bool temporal,
+                                        InxUInt2D witnesses, InxColor2D radiance, InxColor2D screen_depth,
+                                        InxBuffer_uint4 records, InxBuffer_uint4 cache)
+{
+    RayPage page = ray_page();
+    if (page.status != ray_page_ready)
+        return (float4x4)0;
+    uint2 key = inx_ray_path_key(float2(cell), false, temporal);
+    uint rank = (key.x ^ (key.x >> 12u)) & 15u;
+    uint sample = ((rank & 3u) << 2u) | (rank >> 2u);
+    float2 shift = inx_ray_primary_uniform(key.y, key.x >> 4u);
+    float2 u = frac(float2(inx_ray_sobol_bits(sample) >> 8u) * (1.0 / 16777216.0) + shift);
+    float z = 2.0 * u.x / (0.04 + sqrt(0.0016 + 3.84 * u.x));
+    float3 axis = abs(normal.z) < 0.99 ? float3(0, 0, 1) : float3(0, 1, 0);
+    float3 tangent = normalize(cross(axis, normal));
+    float angle = 6.28318530718 * u.y;
+    float3 dir = normal * z + (tangent * cos(angle) + cross(normal, tangent) * sin(angle)) * sqrt(max(0.0, 1.0 - z*z));
+    float pdf = inx_ray_moment_pdf(z);
+    uint seed = inx_ray_sample_hash(key.x) ^ inx_ray_sample_hash(key.y);
+    float3 origin = inx_ray_origin(position, normal);
+    TraceRay ray = {origin, 0.0, dir, inx_view.projection_params.y};
+    let hit = inx_ray_diffuse_incident(page, ray, witnesses, radiance, screen_depth, records, cache,
+                                       seed, key.y, pdf, position);
+    if (hit.radiance.a <= 0.0)
+        return (float4x4)0;
+    float4 basis = float4(1.0, dir) / pdf;
+    float4 red = hit.radiance.r * basis;
+    float4 green = hit.radiance.g * basis;
+    float4 blue = hit.radiance.b * basis;
+    let light = inx_ray_emitter_sample(page, position, ray_reflected_uniform3(seed ^ 0xa9d53e47u, key.y), ray.maximum);
+    float cosine = dot(normal, light.direction);
+    if (light.active && cosine > 0.0 && inx_ray_emitter_visible(page, origin, light))
+    {
+        float4 emitter = float4(1.0, light.direction) * (inx_ray_mis_weight(light.pdf, inx_ray_moment_pdf(cosine)) / light.pdf);
+        red += light.emission.r * emitter;
+        green += light.emission.g * emitter;
+        blue += light.emission.b * emitter;
+    }
+    return float4x4(red, green, blue, float4(1.0, asfloat(hit.witness.y), 0.0, 0.0));
 }
 
 RayDirectionSample inx_ray_primary_direction(InxSurfaceData surface, InxShadingContext context,
