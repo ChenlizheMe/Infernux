@@ -685,13 +685,14 @@ bool inx_inside_screen_ray(float3 ndc)
     return all(abs(ndc.xy) < 1.0) && ndc.z > 0.0 && ndc.z <= 1.0;
 }
 
-struct InxScreenDiffuseHit
+struct InxScreenDiffuseTrace
 {
     float distance;
     float2 uv;
+    bool hit;
 };
 
-InxRaySignal inx_reproject_diffuse_radiance(TraceRay ray, InxScreenDiffuseHit hit, InxUInt2D primary,
+InxRaySignal inx_reproject_diffuse_radiance(TraceRay ray, InxScreenDiffuseTrace hit, InxUInt2D primary,
                                           InxUInt2D reprojection, InxHistory2D history, uint2 full)
 {
     uint2 pixel = min(uint2(hit.uv * float2(full)), full - 1u);
@@ -818,12 +819,12 @@ bool inx_march_diffuse_segment(float3 start, float3 end, InxUInt2D depths, int2 
     return false;
 }
 
-InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float3 receiver, float4x4 vp, InxUInt2D depths,
-                                            uint2 extent, uint2 pixel, uint frame)
+InxScreenDiffuseTrace inx_march_diffuse_screen(TraceRay ray, float4x4 vp, InxUInt2D depths,
+                                              uint2 extent, uint2 pixel, uint frame)
 {
-    float4 clip = mul(vp, float4(receiver, 1.0));
+    float4 clip = mul(vp, float4(ray.origin, 1.0));
     if (clip.w <= 0.0 || !inx_inside_screen_ray(clip.xyz / clip.w))
-        return (InxScreenDiffuseHit)0;
+        return (InxScreenDiffuseTrace)0;
     float3 start = clip.xyz / clip.w;
     float4 travel = mul(vp, float4(ray.direction, 0.0));
     float4 probe = clip + 0.5 * travel;
@@ -835,21 +836,20 @@ InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float3 receiver, floa
                         float(frame & 3u) * 0.25);
     float thickness = 0.5 * abs(inx_view.depth_params.z);
     float3 crossing;
-    if (!inx_march_diffuse_segment(start, near_end, depths, int2(extent), jitter, thickness, true, crossing))
+    bool hit = inx_march_diffuse_segment(start, near_end, depths, int2(extent), jitter, thickness, true, crossing);
+    if (!hit)
     {
         start = crossing;
         float4 projected = float4(start, 1.0) + travel;
         float denominator = projected.w >= 0.0 ? max(projected.w, 1.0e-10) : min(projected.w, -1.0e-10);
         float3 far_end = inx_clip_diffuse_end(start, projected.xyz / denominator, 1.0e20);
-        if (!inx_march_diffuse_segment(start, far_end, depths, int2(extent), jitter, thickness, false, crossing))
-            return (InxScreenDiffuseHit)0;
+        hit = inx_march_diffuse_segment(start, far_end, depths, int2(extent), jitter, thickness, false, crossing);
     }
 
     float4 world = mul(inx_view.inverse_view_projection, float4(crossing, 1.0));
-    float distance = dot(world.xyz / world.w - ray.origin, ray.direction);
-    if (distance > ray.minimum && distance < ray.maximum)
-        return {distance, saturate(crossing.xy * 0.5 + 0.5)};
-    return (InxScreenDiffuseHit)0;
+    float distance = length(world.xyz / world.w - ray.origin);
+    return {min(distance, ray.maximum), saturate(crossing.xy * 0.5 + 0.5),
+            hit && distance > ray.minimum && distance < ray.maximum};
 }
 
 InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D primary, InxUInt2D depths,
@@ -857,19 +857,18 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D prim
                                      InxBuffer_uint4 records, InxBuffer_uint4 cache,
                                      uint seed, uint index, float pdf, float3 receiver, uint2 pixel, bool temporal)
 {
-    if (temporal && history.valid)
+    float4x4 vp = mul(inx_view.projection, inx_view.view);
+    uint2 extent = inx_image_dimensions(depths, 0u);
+    let screen = inx_march_diffuse_screen(ray, vp, depths, extent, pixel, index);
+    if (screen.hit && temporal && history.valid)
     {
-        float4x4 vp = mul(inx_view.projection, inx_view.view);
         uint2 full = inx_image_dimensions(primary, 0u);
-        uint2 extent = inx_image_dimensions(depths, 0u);
-        let screen = inx_march_diffuse_screen(ray, receiver, vp, depths, extent, pixel, index);
-        if (screen.distance > 0.0)
-        {
-            let light = inx_reproject_diffuse_radiance(ray, screen, primary, reprojection, history, full);
-            if (light.radiance.a > 0.0)
-                return light;
-        }
+        let light = inx_reproject_diffuse_radiance(ray, screen, primary, reprojection, history, full);
+        if (light.radiance.a > 0.0)
+            return light;
     }
+    // Advance the triangle intersection interval while keeping all hit distances relative to the receiver.
+    ray.minimum = min(max(0.1, screen.distance), ray.maximum);
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
     float roughness = rsqrt(sqrt(max(402.1238597 * pdf - 1.0, 1.0)));
     return inx_ray_radiance_at_hit(page, ray, hit, records, cache, seed, float3(1.0), roughness,
@@ -923,8 +922,7 @@ public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 geometric_nor
     if (dot(direction, geometric_normal) <= 0.0)
         return inx_ray_signal_output(float3(0.0), uint2(axis, 0u));
 
-    float3 origin = inx_ray_origin(position, geometric_normal);
-    TraceRay ray = {origin, 0.0, direction, inx_view.projection_params.y};
+    TraceRay ray = {position, 0.0, direction, inx_view.projection_params.y};
     const float pdf = 0.15915494309;
     let hit = inx_ray_diffuse_incident(page, ray, primary, screen_depth, history, reprojection, records, cache,
                                        inx_ray_sample_hash(index), frame, pdf, position, cell * 2u, temporal);
