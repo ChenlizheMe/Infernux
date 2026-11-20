@@ -37,6 +37,13 @@ struct ContactBasis
     float3 bitangent;
 };
 
+struct PrimitivePoint
+{
+    float3 point;
+    float3 normal;
+    float distance;
+};
+
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> contactSettings; // geom count, candidate capacity, contact capacity, workers
 [[vk::binding(1, 0)]] StructuredBuffer<CartesianFrame> geometryFrames;
 [[vk::binding(2, 0)]] StructuredBuffer<PrimitiveShape> shapes;
@@ -54,6 +61,96 @@ float3 frameAxis(CartesianFrame frame, uint axis)
 float3 rotatePoint(CartesianFrame frame, float3 point)
 {
     return float3(dot(frame.row0.xyz, point), dot(frame.row1.xyz, point), dot(frame.row2.xyz, point));
+}
+
+float3 inverseRotatePoint(CartesianFrame frame, float3 point)
+{
+    return float3(dot(frameAxis(frame, 0), point), dot(frameAxis(frame, 1), point), dot(frameAxis(frame, 2), point));
+}
+
+PrimitivePoint sphereContact(float3 centerA, float radiusA, float3 centerB, float radiusB)
+{
+    const float3 difference = centerB - centerA;
+    const float separation = length(difference);
+    const float3 normal = separation == 0.0 ? float3(1, 0, 0) : difference / separation;
+    const float distance = separation - (radiusA + radiusB);
+    return {centerA + normal * (radiusA + 0.5 * distance), normal, distance};
+}
+
+PrimitivePoint sphereBoxContact(float3 sphere, float radius, CartesianFrame box, float3 extent)
+{
+    const float3 center = inverseRotatePoint(box, sphere - box.position.xyz);
+    const float3 clamped = clamp(center, -extent, extent);
+    const float3 delta = clamped - center;
+    const float distance = length(delta);
+    if (distance > MinValue)
+    {
+        const float3 normal = delta / distance;
+        const float3 point = 0.5 * (clamped + center + normal * radius);
+        return {box.position.xyz + rotatePoint(box, point), rotatePoint(box, normal), distance - radius};
+    }
+
+    // Center inside the box: choose the nearest face in Warp's fixed traversal order.
+    float closest = 2.0 * (extent.x + extent.y + extent.z);
+    uint face = 0;
+    for (uint i = 0; i < 6; ++i)
+    {
+        const uint axis = i / 2;
+        const float side = (i & 1u) != 0 ? 1.0 : -1.0;
+        const float faceDistance = abs(side * extent[axis] - center[axis]);
+        if (faceDistance < closest)
+        {
+            closest = faceDistance;
+            face = i;
+        }
+    }
+    float3 normal = float3(0.0);
+    normal[face / 2] = (face & 1u) != 0 ? -1.0 : 1.0;
+    const float3 point = center + 0.5 * (radius - closest) * normal;
+    return {box.position.xyz + rotatePoint(box, point), rotatePoint(box, normal), -closest - radius};
+}
+
+float2 clampSegmentWeights(float s, float t, float s0, float s1)
+{
+    if (t < 0.0)
+        return float2(saturate(s0), 0.0);
+    if (t > 1.0)
+        return float2(saturate(s1), 1.0);
+    return float2(s, t);
+}
+
+uint segmentWeights(float3 a, float3 ab, float3 c, float3 cd, out float2 first, out float2 second)
+{
+    const float3 ca = a - c;
+    const float abSquared = dot(ab, ab);
+    const float cdSquared = dot(cd, cd);
+    const float cdCa = dot(cd, ca);
+    const float abCa = dot(ab, ca);
+    const float abCd = dot(ab, cd);
+    second = float2(0.0);
+    if (abSquared <= MinValue)
+    {
+        first = float2(0.0, cdSquared <= MinValue ? 0.0 : saturate(cdCa / cdSquared));
+        return 1;
+    }
+    if (cdSquared <= MinValue)
+    {
+        first = float2(saturate(-abCa / abSquared), 0.0);
+        return 1;
+    }
+    const float s0 = -abCa / abSquared;
+    const float s1 = (abCd - abCa) / abSquared;
+    const float3 area = cross(ab, cd);
+    const float determinant = dot(area, area);
+    if (determinant > 1.0e-8 * abSquared * cdSquared)
+    {
+        const float s = saturate(dot(area, cross(cd, ca)) / determinant);
+        first = clampSegmentWeights(s, (abCd * s + cdCa) / cdSquared, s0, s1);
+        return 1;
+    }
+    first = clampSegmentWeights(0.0, cdCa / cdSquared, s0, s1);
+    second = clampSegmentWeights(1.0, (abCd + cdCa) / cdSquared, s0, s1);
+    return 2;
 }
 
 float3 basisReference(float3 normal)
@@ -159,8 +256,9 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
         const uint typeB = b.type.x;
         const bool planePair = typeA == GeomPlane &&
                                (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomEllipsoid || typeB == GeomBox);
-        const bool spherePair = typeA == GeomSphere && (typeB == GeomSphere || typeB == GeomCapsule);
-        if (!planePair && !spherePair)
+        const bool spherePair = typeA == GeomSphere && (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomBox);
+        const bool capsulePair = typeA == GeomCapsule && typeB == GeomCapsule;
+        if (!planePair && !spherePair && !capsulePair)
             continue;
 
         const CartesianFrame frameA = geometryFrames[geometryBase + pair.x];
@@ -170,19 +268,40 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
         const ContactMaterial material = resolveMaterial(pair, settings.x);
         if (spherePair)
         {
-            float3 closest = centerB;
-            if (typeB == GeomCapsule)
+            PrimitivePoint result;
+            if (typeB == GeomBox)
+                result = sphereBoxContact(centerA, a.size.x, frameB, b.size.xyz);
+            else
             {
-                const float3 axis = frameAxis(frameB, 2);
-                const float along = clamp(dot(centerA - centerB, axis), -b.size.y, b.size.y);
-                closest += axis * along;
+                float3 closest = centerB;
+                if (typeB == GeomCapsule)
+                {
+                    const float3 axis = frameAxis(frameB, 2);
+                    const float along = clamp(dot(centerA - centerB, axis), -b.size.y, b.size.y);
+                    closest += axis * along;
+                }
+                result = sphereContact(centerA, a.size.x, closest, b.size.x);
             }
-            const float3 difference = closest - centerA;
-            const float lengthAB = length(difference);
-            const float3 normal = lengthAB == 0.0 ? float3(1, 0, 0) : difference / lengthAB;
-            const float distance = lengthAB - (a.size.x + b.size.x);
-            const float3 point = centerA + normal * (a.size.x + 0.5 * distance);
-            writeContact(id.y, pair, 0, distance, point, makeBasis(normal), material, settings.z);
+            writeContact(id.y, pair, 0, result.distance, result.point, makeBasis(result.normal), material, settings.z);
+            continue;
+        }
+        if (capsulePair)
+        {
+            const float3 halfA = frameAxis(frameA, 2) * a.size.y;
+            const float3 halfB = frameAxis(frameB, 2) * b.size.y;
+            const float3 startA = centerA - halfA;
+            const float3 startB = centerB - halfB;
+            const float3 spanA = (centerA + halfA) - startA;
+            const float3 spanB = (centerB + halfB) - startB;
+            float2 first, second;
+            const uint points = segmentWeights(startA, spanA, startB, spanB, first, second);
+            for (uint i = 0; i < points; ++i)
+            {
+                const float2 weights = i == 0 ? first : second;
+                const PrimitivePoint result = sphereContact(startA + spanA * weights.x, a.size.x,
+                                                            startB + spanB * weights.y, b.size.x);
+                writeContact(id.y, pair, i, result.distance, result.point, makeBasis(result.normal), material, settings.z);
+            }
             continue;
         }
 
@@ -212,8 +331,7 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
             }
             else if (typeB == GeomEllipsoid)
             {
-                const float3 localNormal = float3(dot(normal, frameAxis(frameB, 0)), dot(normal, frameAxis(frameB, 1)),
-                                                  dot(normal, frameAxis(frameB, 2)));
+                const float3 localNormal = inverseRotatePoint(frameB, normal);
                 closest += rotatePoint(frameB, -normalize(localNormal * b.size.xyz) * b.size.xyz);
             }
             else
