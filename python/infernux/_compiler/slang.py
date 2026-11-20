@@ -344,9 +344,8 @@ class _NumericalEmitter(SlangEmitter):
         return super().visit_Call(node)
 
     def visit_BinOp(self, node):
-        if isinstance(node.op, (ast.FloorDiv, ast.Mod)):
-            function = "inx_floor_div" if isinstance(node.op, ast.FloorDiv) else "inx_mod"
-            return f"{function}({self.visit(node.left)}, {self.visit(node.right)})"
+        if isinstance(node.op, ast.Mod):
+            return f"inx_mod({self.visit(node.left)}, {self.visit(node.right)})"
         return super().visit_BinOp(node)
 
 
@@ -723,9 +722,6 @@ def _local_derivative_source(plan, params, primal):
 
 
 _ARITHMETIC = """
-int inx_floor_div(int a, int b) { int q = a / b; int r = a - q * b; return q - int(r != 0 && (r < 0) != (b < 0)); }
-uint inx_floor_div(uint a, uint b) { return a / b; }
-float inx_floor_div(float a, float b) { return floor(a / b); }
 int inx_mod(int a, int b) { int r = a - (a / b) * b; return r != 0 && (r < 0) != (b < 0) ? r + b : r; }
 uint inx_mod(uint a, uint b) { return a % b; }
 float inx_mod(float a, float b) { return a - floor(a / b) * b; }

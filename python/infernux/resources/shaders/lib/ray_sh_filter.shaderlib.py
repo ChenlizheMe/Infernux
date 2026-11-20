@@ -43,9 +43,9 @@ def sh_trace_pixel(cell: shader.ivec2, divisor: int, full: shader.ivec2, index: 
     # Advance through the half-resolution guide cells before repeating the ray footprint.
     # Each cell shares the guide's four-phase full-resolution sample pattern.
     stride = divisor >> 1
-    phase = shader.int(index >> 2) & (stride * stride - 1)
+    phase = (index >> 2) & shader.uint(stride * stride - 1)
     phase ^= phase >> 1
-    offset = shader.ivec2(phase / stride, phase & (stride - 1))
+    offset = shader.ivec2(phase // shader.uint(stride), phase & shader.uint(stride - 1))
     guide = shader.min(cell * stride + offset, shader.max(full >> 1, shader.ivec2(1)) - 1)
     return shader.min(2 * guide + sh_guide_phase(index), full - 1)
 

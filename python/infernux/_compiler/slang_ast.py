@@ -327,6 +327,12 @@ class SlangEmitter(ast.NodeVisitor):
             return "pow(" + self.visit(node.left) + ", " + self.visit(node.right) + ")"
         if isinstance(node.op, ast.MatMult):
             return "mul(" + self.visit(node.left) + ", " + self.visit(node.right) + ")"
+        if isinstance(node.op, ast.FloorDiv):
+            kind = self.infer(node)
+            if kind not in {"int", "uint", "float"}:
+                self.error(node, "GPU floor division requires scalar int, uint or float operands")
+            self.required_modules.add("inx_math")
+            return f"inx_math::floor_div({kind}({self.visit(node.left)}), {kind}({self.visit(node.right)}))"
         if isinstance(node.op, ast.Div):
             left, right = self.visit(node.left), self.visit(node.right)
             kind = common_type(self.infer(node.left), self.infer(node.right))

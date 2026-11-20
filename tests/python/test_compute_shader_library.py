@@ -124,6 +124,48 @@ class Preview(shader.fullscreen):
     assert changed.identity != primal.identity and changed.tasks != primal.tasks
 
 
+def test_scalar_floor_division_links_from_a_shared_shader_library(project, engine, monkeypatch):
+    root, scripts = project
+    (scripts / 'physical.shaderlib.py').write_text('''import infernux.shader as shader
+
+def scale(value: float) -> float:
+    signed = shader.int(value) // -3
+    unsigned = shader.uint(abs(value)) // shader.uint(3)
+    return value // 1.5 + shader.float(signed) + shader.float(unsigned)
+''', encoding='utf-8')
+    preview = scripts / 'FloorDivision.frag.py'
+    preview.write_text('''import infernux.shader as shader
+from .forces import damp
+
+class Preview(shader.fullscreen):
+    def main(self, ctx: shader.fragment_input) -> shader.vec4:
+        return shader.vec4(damp(ctx.position.x))
+''', encoding='utf-8')
+    declaration = load_kernel(scripts / 'Work.py')
+    values = (-9.0, -7.0, 7.0, 9.0)
+    host = engine._acquire_compute_host()
+    monkeypatch.setattr(compute, '_native_compute_host', lambda: host)
+    buffer = compute.buffer(shape=len(values), dtype=np.float32, device='gpu', data=values)
+    try:
+        with using_project_root(root):
+            compiled = read_shader(preview, 'test_shared_floor_division').compile()
+            assert {program['target'] for program in compiled['targets']} == {'spirv', 'wgsl'}
+            wgsl = frontend.compile_kernel(declaration.function, (buffer,), target='wgsl')
+            assert wgsl.target == 'wgsl' and wgsl.tasks
+            compute.prepare(declaration, (buffer,))
+            compute.launch(declaration, (buffer,))
+        expected = [x // 1.5 + int(x) // -3 + int(abs(x)) // 3 + x + 1.0 for x in values]
+        snapshot = buffer.get_data()
+        try:
+            np.testing.assert_array_equal(snapshot.numpy(), expected)
+        finally:
+            snapshot.close()
+    finally:
+        declaration._release_engine_resources()
+        buffer.close()
+        host._release_lease()
+
+
 @pytest.mark.parametrize(('leaf', 'code', 'path', 'line'), [
     ('return shader.ddx(value)', 'author.stage', 'physical.shaderlib.py', 3),
     ('return shader.frame_time()', 'author.stage', 'physical.shaderlib.py', 3),

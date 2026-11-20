@@ -23,7 +23,7 @@ class RayDiffuseGather(shader.fullscreen):
         extent = shader.max(shader.ivec2(1), shader.ivec2(full / self.divisor))
         index = shader._view_sample_index()
         source = sh_guide_pixel(cell, extent, full, index)
-        geometry = shader.load(self.guide, source / 2, 0)
+        geometry = shader.load(self.guide, source >> 1, 0)
         depth = shader.as_float(geometry.x)
         if depth <= 0.0:
             return (shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0))
@@ -47,7 +47,7 @@ class RayDiffuseGather(shader.fullscreen):
                 continue
             at = shader.ivec2(point)
             site = sh_trace_pixel(at, self.trace_divisor, full, index)
-            other_depth = shader.as_float(shader.load(self.guide, site / 2, 0).x)
+            other_depth = shader.as_float(shader.load(self.guide, site >> 1, 0).x)
             body_packet = shader.load(self.observations, at, 0)
             body = unpack_ray_signal(body_packet)
             if body.a <= 0.0:

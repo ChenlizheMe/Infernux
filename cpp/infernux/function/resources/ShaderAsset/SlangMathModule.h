@@ -13,6 +13,26 @@ inline const ShaderSourceModule &GetSlangMathModule()
 namespace inx_math
 {
 [ForceInline]
+public int floor_div(int a, int b)
+{
+    int q = a / b;
+    int r = a - q * b;
+    return q - int(r != 0 && (r < 0) != (b < 0));
+}
+
+[ForceInline]
+public uint floor_div(uint a, uint b)
+{
+    return a / b;
+}
+
+[ForceInline]
+public float floor_div(float a, float b)
+{
+    return floor(a / b);
+}
+
+[ForceInline]
 public float2x2 inverse(float2x2 m)
 {
     return float2x2(m[1][1], -m[0][1], -m[1][0], m[0][0]) / determinant(m);
