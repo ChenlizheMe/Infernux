@@ -82,7 +82,6 @@ public struct InxEngineGlobals
     public float4 depth_params;
     public float4 frame_params;
     public uint4 view_options;
-    public float2 raster_jitter_pixels;
 };
 public struct InxMeshInput
 {

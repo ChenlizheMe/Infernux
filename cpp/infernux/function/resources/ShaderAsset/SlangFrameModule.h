@@ -18,7 +18,6 @@ public uint inx_previous_ray_geometry_serial() { return inx_globals.view_options
 public bool inx_ray_lighting_changed() { return (inx_globals.view_options.x & 16u) != 0u; }
 public bool inx_ray_proposals_changed() { return (inx_globals.view_options.x & 32u) != 0u; }
 public float2 inx_view_jitter_delta_uv() { return unpackHalf2x16ToFloat(inx_globals.view_options.z); }
-public float2 inx_view_jitter_pixels() { return inx_globals.raster_jitter_pixels; }
 public struct InxViewContext
 {
     public float2 size;

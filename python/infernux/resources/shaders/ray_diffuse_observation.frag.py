@@ -1,6 +1,6 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import world_position
-from infernux.shader.lib.ray_sh_filter import sh_guide_pixel
+from infernux.shader.lib.ray_sh_filter import sh_guide_normal, sh_guide_pixel
 from infernux.shader.lib.ray_signal import pack_ray_signal
 from infernux.shader.lib.surface import decode_octahedral_normal
 
@@ -27,12 +27,15 @@ class RayDiffuseObservation(shader.fullscreen):
         receiver = shader.load(self.primary, site, 0)
         if receiver.x == 0:
             return shader.uvec4(0)
-        normal = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))
+        geometric_normal = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))
+        camera = shader.camera()
+        view_normal = sh_guide_normal(shader.load(self.screen_depth, site / 2, 0).y)
+        shading_normal = shader.normalize((shader.transpose(camera.view_matrix) @ shader.vec4(view_normal, 0.0)).xyz)
         # The exact triangle traversal needs the point on the phase-selected raster surface.
         uv = (shader.vec2(site) + 0.5) / shader.vec2(full)
-        position = world_position(uv, shader.as_float(receiver.y), shader.camera())
+        position = world_position(uv, shader.as_float(receiver.y), camera)
         sample = shader.ray._diffuse_sample(
-            position, normal, shader.uvec2(cell), self.temporal, self.primary, self.screen_depth,
+            position, geometric_normal, shading_normal, shader.uvec2(cell), self.temporal, self.primary, self.screen_depth,
             self.previous_radiance, self.reprojection, self.surface_records, self.tail_cache
         )
         return pack_ray_signal(sample.radiance, sample.witness)

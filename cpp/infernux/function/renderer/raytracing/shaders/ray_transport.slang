@@ -688,22 +688,22 @@ bool inx_inside_screen_ray(float3 ndc)
 struct InxScreenDiffuseHit
 {
     float distance;
-    uint2 pixel;
+    float2 uv;
 };
 
 InxRaySignal inx_reproject_diffuse_radiance(TraceRay ray, InxScreenDiffuseHit hit, InxUInt2D primary,
                                           InxUInt2D reprojection, InxHistory2D history, uint2 full)
 {
-    uint2 reproj = reprojection.texture.Load(int3(hit.pixel, 0)).xy;
+    uint2 pixel = min(uint2(hit.uv * float2(full)), full - 1u);
+    uint2 reproj = reprojection.texture.Load(int3(pixel, 0)).xy;
     if (reproj.y == 0u)
         return (InxRaySignal)0;
-    uint4 surface = primary.texture.Load(int3(hit.pixel, 0));
+    uint4 surface = primary.texture.Load(int3(pixel, 0));
     float3 normal = inx_screen_ray_normal(surface.z);
     if (dot(normal, ray.direction) >= 0.0)
         return (InxRaySignal)0;
 
-    float2 uv = (float2(hit.pixel) + 0.5) / float2(full);
-    float2 previous_uv = uv - unpackHalf2x16ToFloat(reproj.x);
+    float2 previous_uv = hit.uv - unpackHalf2x16ToFloat(reproj.x);
     if (any(previous_uv < 0.0) || any(previous_uv >= 1.0))
         return (InxRaySignal)0;
     uint2 at = min(uint2(previous_uv * float2(full)), full - 1u);
@@ -819,7 +819,7 @@ bool inx_march_diffuse_segment(float3 start, float3 end, InxUInt2D depths, int2 
 }
 
 InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float3 receiver, float4x4 vp, InxUInt2D depths,
-                                            uint2 full, uint2 extent, uint2 pixel, uint frame)
+                                            uint2 extent, uint2 pixel, uint frame)
 {
     float4 clip = mul(vp, float4(receiver, 1.0));
     if (clip.w <= 0.0 || !inx_inside_screen_ray(clip.xyz / clip.w))
@@ -845,11 +845,10 @@ InxScreenDiffuseHit inx_march_diffuse_screen(TraceRay ray, float3 receiver, floa
             return (InxScreenDiffuseHit)0;
     }
 
-    uint2 site = min(uint2(saturate(crossing.xy * 0.5 + 0.5) * float2(full)), full - 1u);
     float4 world = mul(inx_view.inverse_view_projection, float4(crossing, 1.0));
     float distance = dot(world.xyz / world.w - ray.origin, ray.direction);
     if (distance > ray.minimum && distance < ray.maximum)
-        return {distance, site};
+        return {distance, saturate(crossing.xy * 0.5 + 0.5)};
     return (InxScreenDiffuseHit)0;
 }
 
@@ -863,7 +862,7 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D prim
         float4x4 vp = mul(inx_view.projection, inx_view.view);
         uint2 full = inx_image_dimensions(primary, 0u);
         uint2 extent = inx_image_dimensions(depths, 0u);
-        let screen = inx_march_diffuse_screen(ray, receiver, vp, depths, full, extent, pixel, index);
+        let screen = inx_march_diffuse_screen(ray, receiver, vp, depths, extent, pixel, index);
         if (screen.distance > 0.0)
         {
             let light = inx_reproject_diffuse_radiance(ray, screen, primary, reprojection, history, full);
@@ -896,7 +895,8 @@ uint inx_diffuse_hilbert(uint2 pixel)
     return index;
 }
 
-public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 normal, uint2 cell, bool temporal,
+public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 geometric_normal, float3 shading_normal,
+                                         uint2 cell, bool temporal,
                                          InxUInt2D primary, InxUInt2D screen_depth, InxHistory2D history,
                                          InxUInt2D reprojection, InxBuffer_uint4 records, InxBuffer_uint4 cache)
 {
@@ -910,14 +910,20 @@ public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 normal, uint2
     float hemisphere_radius = sqrt(max(0.0, 1.0 - z*z));
     float angle = 6.28318530718 * u.y;
 
-    float hemisphere_sign = normal.z >= 0.0 ? 1.0 : -1.0;
-    float a = -1.0 / (hemisphere_sign + normal.z);
-    float b = normal.x * normal.y * a;
-    float3 tangent = float3(1.0 + hemisphere_sign * normal.x * normal.x * a,
-                            hemisphere_sign * b, -hemisphere_sign * normal.x);
-    float3 bitangent = float3(b, hemisphere_sign + normal.y * normal.y * a, -normal.y);
-    float3 direction = normal * z + (tangent * cos(angle) + bitangent * sin(angle)) * hemisphere_radius;
-    float3 origin = inx_ray_origin(position, normal);
+    float hemisphere_sign = shading_normal.z >= 0.0 ? 1.0 : -1.0;
+    float a = -1.0 / (hemisphere_sign + shading_normal.z);
+    float b = shading_normal.x * shading_normal.y * a;
+    float3 tangent = float3(1.0 + hemisphere_sign * shading_normal.x * shading_normal.x * a,
+                            hemisphere_sign * b, -hemisphere_sign * shading_normal.x);
+    float3 bitangent = float3(b, hemisphere_sign + shading_normal.y * shading_normal.y * a, -shading_normal.y);
+    float3 direction = shading_normal * z + (tangent * cos(angle) + bitangent * sin(angle)) * hemisphere_radius;
+    uint3 packed = uint3(clamp(direction, -1.0, 1.0) * 511.0 + 511.5);
+    uint axis = packed.x | (packed.y << 10u) | (packed.z << 20u);
+    // Keep blocked directions in the sample count so the hemisphere PDF stays unchanged.
+    if (dot(direction, geometric_normal) <= 0.0)
+        return inx_ray_signal_output(float3(0.0), uint2(axis, 0u));
+
+    float3 origin = inx_ray_origin(position, geometric_normal);
     TraceRay ray = {origin, 0.0, direction, inx_view.projection_params.y};
     const float pdf = 0.15915494309;
     let hit = inx_ray_diffuse_incident(page, ray, primary, screen_depth, history, reprojection, records, cache,
@@ -928,8 +934,6 @@ public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 normal, uint2
     float3 color = max(hit.radiance.rgb, 0.0);
     float peak = max(color.r, max(color.g, color.b));
     color *= min(1.0, 10.0 / max(peak, 1.0e-20));
-    uint3 packed = uint3(clamp(direction, -1.0, 1.0) * 511.0 + 511.5);
-    uint axis = packed.x | (packed.y << 10u) | (packed.z << 20u);
     return {float4(color / pdf, 1.0), uint2(axis, hit.witness.y)};
 }
 
