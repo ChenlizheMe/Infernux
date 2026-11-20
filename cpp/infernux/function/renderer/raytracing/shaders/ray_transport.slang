@@ -762,10 +762,10 @@ InxDiffuseDepthTest inx_diffuse_screen_depth(InxUInt2D depths, int2 extent, floa
         nearest = inx_load_screen_depth(depths, int2(floor(pixel)), extent);
         linear = nearest;
     }
-    float nearest_inv = rcp(max(nearest, 1.0e-12));
-    float linear_inv = rcp(max(linear, 1.0e-12));
-    float ray_inv = rcp(max(ndc.z, 1.0e-12));
-    return {max(nearest_inv, linear_inv) * 1.000002 - ray_inv, ray_inv - min(nearest_inv, linear_inv)};
+    float3 raw_depth = float3(nearest, linear, ndc.z);
+    bool orthographic = abs(inx_view.projection[3][3]) > 0.5;
+    float3 depth = orthographic ? 1.0 - raw_depth : rcp(max(raw_depth, 1.0e-12));
+    return {max(depth.x, depth.y) * 1.000002 - depth.z, depth.z - min(depth.x, depth.y)};
 }
 
 float3 inx_clip_diffuse_end(float3 start, float3 end, float limit)
@@ -851,7 +851,10 @@ InxScreenDiffuseTrace inx_march_diffuse_screen(TraceRay ray, float4x4 vp, InxUIn
     near_end = inx_clip_diffuse_end(start, near_end, 1.0);
     float jitter = frac(frac(52.982918 * frac(dot(float2(pixel), float2(0.06711056, 0.00583715)))) +
                         float(frame & 3u) * 0.25);
-    float thickness = 0.5 * abs(inx_view.depth_params.z);
+    // Orthographic device depth is linear over the clip range.
+    float range = inx_view.projection_params.y - inx_view.projection_params.x;
+    float depth_units_per_meter = abs(inx_view.projection[3][3]) > 0.5 ? rcp(range) : abs(inx_view.depth_params.z);
+    float thickness = 0.5 * depth_units_per_meter;
     int2 extent = int2(inx_image_dimensions(depths, 0u));
     float3 crossing;
     bool hit = inx_march_diffuse_segment(start, near_end, depths, extent, sample_grid, jitter, thickness, true, crossing);
