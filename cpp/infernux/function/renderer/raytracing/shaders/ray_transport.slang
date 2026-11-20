@@ -870,7 +870,16 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D dept
     }
     // Advance the triangle intersection interval while keeping all hit distances relative to the receiver.
     ray.minimum = min(max(0.1, screen.distance), ray.maximum);
-    RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
+    TraceRay world_ray = ray;
+    if (page.root != ray_invalid_index)
+    {
+        // The farthest corner bounds every world hit along this unit ray,
+        // including geometry beyond the camera. Keep room for float rounding.
+        RayNode bounds = ray_node<false, false>(page.top_nodes, page.root);
+        float3 delta = max(abs(bounds.minimum - ray.origin), abs(bounds.maximum - ray.origin));
+        world_ray.maximum = min(ray.maximum, (delta.x + delta.y + delta.z) * 1.000001);
+    }
+    RayHit hit = inx_trace_lit_closest(page, world_ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return inx_ray_signal_output(inx_environment_radiance(ray.direction), uint2(0u));
     uint kind = inx_ray_participation(hit.surface_id);
