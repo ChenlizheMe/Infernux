@@ -302,9 +302,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
               JoltGpuPrograms &programs, const StepParams &settings,
               const std::shared_ptr<rhi::ComputeBuffer> &stepStatus, Workspace &workspace,
               std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> callback, Mode mode,
-              SweepConsumer sweep = {})
+              SweepConsumer sweep = {}, AppendContactConsumer append = {})
         : implementation(std::move(owner)), stagePrograms(programs), storageOwner(storage), acceptedInputs(inputs),
-          workspace(workspace), parameters(settings), completed(std::move(callback)), consumeSweep(std::move(sweep))
+          workspace(workspace), parameters(settings), completed(std::move(callback)), consumeSweep(std::move(sweep)),
+          appendConsumer(std::move(append))
     {
         const bool swept = mode == Mode::Swept;
         if (!implementation->host.SharesServicesWith(storage.GetHost()) || (swept ? !consumeSweep : !completed))
@@ -1150,33 +1151,50 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             throw std::logic_error("Jolt GPU broadphase continuation produced an empty packet");
         const auto resumeAfter =
             reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
+        std::function<JoltGpuControlWork()> acceptConsumer;
+        if (boundary == Phase::Done && config.round.z && !config.round.y) {
+            workset->countedArguments = arguments;
+            workset->patchesPerDispatch = CollisionChunkSize();
+            // Each recorder owns its own uniform slots. The joined command
+            // sequence still goes through the tick's normal resource admission.
+            if (appendConsumer && limit == MaxDispatchesPerPacket)
+                acceptConsumer = appendConsumer(workset, packetLimit, uploads, dispatches);
+        }
+        const bool composed = bool(acceptConsumer);
         auto packet =
             rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), std::move(reads));
-        JoltGpuControlWork result{packet,
-                                  [self = shared_from_this(), packet, boundary, readCount]() -> JoltGpuControlWork {
-                                      if (readCount)
-                                          self->Decode(packet, boundary == Phase::CountBoundary);
-                                      if (boundary == Phase::Done && self->phase == Phase::Done) {
-                                          if (self->config.round.y)
-                                              return self->PublishSweep();
-                                          const auto capacity = self->capacity;
-                                          const auto nextCapacity = self->workset->patchSlots < capacity / 4u
-                                                                        ? std::max(1u, capacity / 2u)
-                                                                        : capacity;
-                                          self->RetainWorkspace(nextCapacity);
-                                          self->workset->parameters = self->workset->parameters->Freeze();
-                                          self->workset->patches = self->candidateArena;
-                                          if (self->config.round.z) {
-                                              self->workset->countedArguments = self->arguments;
-                                              self->workset->patchesPerDispatch = self->CollisionChunkSize();
-                                          }
-                                          auto callback = std::move(self->completed);
-                                          callback(self->workset);
-                                          return {};
-                                      }
-                                      return self->Next();
-                                  },
-                                  resumeAfter};
+        JoltGpuControlWork result{
+            packet,
+            [self = shared_from_this(), packet, boundary, readCount,
+             acceptConsumer = std::move(acceptConsumer)]() -> JoltGpuControlWork {
+                if (readCount)
+                    self->Decode(packet, boundary == Phase::CountBoundary);
+                if (boundary == Phase::Done && self->phase == Phase::Done) {
+                    if (self->config.round.y)
+                        return self->PublishSweep();
+                    const auto capacity = self->capacity;
+                    const auto nextCapacity =
+                        self->workset->patchSlots < capacity / 4u ? std::max(1u, capacity / 2u) : capacity;
+                    self->RetainWorkspace(nextCapacity);
+                    self->workset->parameters = self->workset->parameters->Freeze();
+                    self->workset->patches = self->candidateArena;
+                    auto callback = std::move(self->completed);
+                    callback(self->workset);
+                    if (acceptConsumer && INXLOG_GET_LEVEL() == LOG_DEBUG) {
+                        try {
+                            INXLOG_DIAGNOSTIC("GPU collision and topology shared submission: world_row=",
+                                              self->config.selection.x, " ticket=", packet->GetSubmission().serial);
+                        } catch (...) {
+                            // Logging cannot revoke the accepted topology prefix.
+                        }
+                    }
+                    return acceptConsumer ? acceptConsumer() : JoltGpuControlWork{};
+                }
+                return self->Next();
+            },
+            resumeAfter};
+        if (composed)
+            result.geometry = acceptedInputs.GetGeometry();
         if (limit > 2u)
             result.prepareMinimum = [self = shared_from_this(), packet, checkpoint = std::move(checkpoint)] {
                 packet->Cancel();
@@ -1199,6 +1217,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     BroadphaseParams config{};
     std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed;
     SweepConsumer consumeSweep;
+    AppendContactConsumer appendConsumer;
     std::vector<ScanLevel> levels;
     ScanCursor scan;
     Phase phase = Phase::InitialCapacity;
@@ -1232,10 +1251,11 @@ JoltGpuControlWork
 JoltGpuBroadphase::Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
                            const StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
                            Workspace &workspace,
-                           std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed, Mode mode)
+                           std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed, Mode mode,
+                           AppendContactConsumer appendConsumer)
 {
     return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, stepStatus, workspace,
-                                             std::move(completed), mode)
+                                             std::move(completed), mode, SweepConsumer{}, std::move(appendConsumer))
         ->Next();
 }
 

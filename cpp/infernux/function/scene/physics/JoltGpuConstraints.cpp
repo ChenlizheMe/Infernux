@@ -1086,7 +1086,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             planView->jointDispatches = jointDispatches;
             planView->patchDispatches = patchDispatches;
             const auto firstUpload = prefixUploads.size(), firstDispatch = prefix.size();
-            acceptSolver = setup->appendSolverPrefix(planView, limit - firstDispatch, prefixUploads, prefix);
+            acceptSolver =
+                setup->appendSolverPrefix(stepInputs, planView, limit - firstDispatch, prefixUploads, prefix);
             if (acceptSolver && std::all_of(prefix.begin() + firstDispatch, prefix.end(),
                                             [this](const auto &unit) { return CanGuard(unit); })) {
                 preparedPlan = std::move(planView);
@@ -1119,6 +1120,56 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         };
     }
 
+    JoltGpuContactTopologyStart::AcceptPrefix AppendReady(size_t dispatchLimit,
+                                                          std::vector<rhi::ComputeBufferUpdate> &uploads,
+                                                          std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        if (phase == Phase::Done || phase == Phase::TopologyReady || isolatedTopology || !Capacity())
+            return {};
+        Cursor next = cursor;
+        const auto first = dispatches.size();
+        AppendPrefix(plan, next, dispatchLimit, uploads, dispatches);
+        if (dispatches.size() == first)
+            return {};
+        const bool boundary = next.operation == plan.size();
+        const auto submittedPhase = phase;
+        const bool includesSetup =
+            boundary && submittedPhase == Phase::Connectivity && AppendSetup(dispatchLimit, uploads, dispatches);
+        const bool includesAssembly = includesSetup && AppendLocalAssembly(dispatchLimit, uploads, dispatches);
+        std::shared_ptr<const JoltGpuConstraintWorkset> preparedPlan;
+        std::function<void()> acceptSolver;
+        if (includesAssembly && setup->appendSolverPrefix && dispatches.size() < dispatchLimit) {
+            auto planView = std::make_shared<JoltGpuConstraintWorkset>(WorksetView());
+            planView->jointDispatches = jointDispatches;
+            planView->patchDispatches = patchDispatches;
+            const auto firstUpload = uploads.size(), firstDispatch = dispatches.size();
+            acceptSolver =
+                setup->appendSolverPrefix(stepInputs, planView, dispatchLimit - firstDispatch, uploads, dispatches);
+            if (acceptSolver) {
+                preparedPlan = std::move(planView);
+            } else {
+                uploads.resize(firstUpload);
+                dispatches.resize(firstDispatch);
+            }
+        }
+        return
+            [self = shared_from_this(), next, boundary, submittedPhase, includesSetup, includesAssembly,
+             preparedPlan = std::move(preparedPlan), acceptSolver = std::move(acceptSolver)]() -> JoltGpuControlWork {
+                self->cursor = next;
+                if (boundary) {
+                    if (submittedPhase == Phase::Connectivity) {
+                        self->FinishConnectivity(includesSetup, includesAssembly, preparedPlan);
+                        if (acceptSolver)
+                            acceptSolver();
+                    } else {
+                        self->Install();
+                    }
+                    return {};
+                }
+                return self->Next();
+            };
+    }
+
     JoltGpuControlWork Next(size_t dispatchLimit = MaxDispatchesPerPacket)
     {
         if (phase == Phase::Done || phase == Phase::TopologyReady)
@@ -1127,36 +1178,15 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             PublishTopology();
             return {};
         }
-        if (!Capacity())
-            return {nullptr, [self = shared_from_this(), dispatchLimit] { return self->Next(dispatchLimit); }};
-        Cursor next = cursor;
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
-        AppendPrefix(plan, next, dispatchLimit, uploads, dispatches);
-        if (dispatches.empty())
+        auto accept = AppendReady(dispatchLimit, uploads, dispatches);
+        if (!accept)
             return {nullptr, [self = shared_from_this(), dispatchLimit] { return self->Next(dispatchLimit); }};
-        const bool boundary = next.operation == plan.size();
-        const auto submittedPhase = phase;
-        const bool includesSetup =
-            boundary && submittedPhase == Phase::Connectivity && AppendSetup(dispatchLimit, uploads, dispatches);
-        const bool includesAssembly = includesSetup && AppendLocalAssembly(dispatchLimit, uploads, dispatches);
         const bool canContract = dispatches.size() > 1;
         auto packet = rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), {});
-        JoltGpuControlWork work{packet,
-                                [self = shared_from_this(), next, boundary, submittedPhase, includesSetup,
-                                 includesAssembly]() -> JoltGpuControlWork {
-                                    self->cursor = next;
-                                    if (boundary) {
-                                        if (submittedPhase == Phase::Connectivity) {
-                                            self->FinishConnectivity(includesSetup, includesAssembly);
-                                            return {};
-                                        }
-                                        self->Install();
-                                        return {};
-                                    }
-                                    return self->Next();
-                                },
-                                JoltGpuControlWork::ResumeAfter::Acceptance};
+        JoltGpuControlWork work{packet, std::move(accept), JoltGpuControlWork::ResumeAfter::Acceptance};
+        work.geometry = stepInputs.GetGeometry();
         if (canContract)
             work.prepareMinimum = [self = shared_from_this()] { return self->Next(1); };
         return work;
@@ -1164,7 +1194,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
 
     std::shared_ptr<Impl> implementation;
     const JoltGpuStorage &rigidStorage;
-    const JoltGpuStepInputs &stepInputs;
+    JoltGpuStepInputs stepInputs;
     JoltGpuPrograms &stagePrograms;
     Workspace &resident;
     Workspace workspace;
@@ -1213,6 +1243,13 @@ JoltGpuConstraints::PrepareTopology(const JoltGpuStorage &storage, const JoltGpu
     return {[execution] { return execution->Next(); },
             [execution](const auto &completion, auto &uploads, auto &dispatches) {
                 return execution->AppendAfterCollision(completion, uploads, dispatches);
+            },
+            [execution](size_t limit, auto &uploads, auto &dispatches) {
+                std::vector<rhi::ComputeDispatchDesc> topology;
+                auto accept = execution->AppendReady(std::min(limit, MaxDispatchesPerPacket), uploads, topology);
+                dispatches.insert(dispatches.end(), std::make_move_iterator(topology.begin()),
+                                  std::make_move_iterator(topology.end()));
+                return accept;
             }};
 }
 JoltGpuControlWork

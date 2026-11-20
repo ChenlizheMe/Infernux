@@ -1212,34 +1212,39 @@ class JoltGpuTick::Impl
     {
         inputs.ClearConstraints();
         constraintTopology.reset();
+        return MakeContactTopology(begin, inputs);
+    }
+
+    JoltGpuContactTopologyStart MakeContactTopology(const StageCursor &begin, const JoltGpuStepInputs &bindings)
+    {
         auto setupEnd = begin;
         std::optional<JoltGpuConstraintSetup> setup;
         // Setup can share the topology packet when it has no articulation
         // pressure witness on the host. Reporting observes the set-up rows.
         if (!HasArticulationWork()) {
-            NextSpan(setupEnd, inputs); // WakeComponents
-            NextSpan(setupEnd, inputs); // SetupContacts
-            Normalize(setupEnd, inputs);
+            NextSpan(setupEnd, bindings); // WakeComponents
+            NextSpan(setupEnd, bindings); // SetupContacts
+            Normalize(setupEnd, bindings);
             auto &prefix = setup.emplace();
             while (setupEnd.phase == Phase::SetupContacts || setupEnd.phase == Phase::SetupJoints) {
                 if (prefix.stages.size() == MaxPacketUnits)
                     break;
-                prefix.stages.push_back(TakeUnit(setupEnd, inputs));
+                prefix.stages.push_back(TakeUnit(setupEnd, bindings));
             }
             if (setupEnd.phase == Phase::BuildConstraints) {
                 prefix.assembled = [this, setupEnd](auto plan) {
                     stageCursor = setupEnd;
                     AcceptConstraintWorkset(std::move(plan));
                 };
-                prefix.appendSolverPrefix = [this, setupEnd](const auto &plan, size_t limit, auto &uploads,
-                                                             auto &dispatches) {
-                    return AppendSolverPrefix(setupEnd, plan, limit, uploads, dispatches);
+                prefix.appendSolverPrefix = [this, setupEnd](const auto &captured, const auto &plan, size_t limit,
+                                                             auto &uploads, auto &dispatches) {
+                    return AppendSolverPrefix(setupEnd, captured, plan, limit, uploads, dispatches);
                 };
             } else if (setupEnd.phase != Phase::ReportContactsBeforeVelocity) {
                 setup.reset();
             }
         }
-        return constraints.PrepareTopology(storage, inputs, programs, tickParameters, stepStatus, constraintWorkspace,
+        return constraints.PrepareTopology(storage, bindings, programs, tickParameters, stepStatus, constraintWorkspace,
                                            std::move(setup), [this, setupEnd](auto topology, bool setupAccepted) {
                                                constraintTopology = std::move(topology);
                                                if (setupAccepted)
@@ -1251,13 +1256,13 @@ class JoltGpuTick::Impl
                                            });
     }
 
-    std::function<void()> AppendSolverPrefix(StageCursor next,
+    std::function<void()> AppendSolverPrefix(StageCursor next, const JoltGpuStepInputs &bindings,
                                              const std::shared_ptr<const JoltGpuConstraintWorkset> &plan, size_t limit,
                                              std::vector<rhi::ComputeBufferUpdate> &uploads,
                                              std::vector<rhi::ComputeDispatchDesc> &dispatches)
     {
         using namespace JPH::GPU;
-        auto proposed = inputs;
+        auto proposed = bindings;
         proposed.SetConstraints(plan);
         BindContactHistory(proposed);
         const auto substep = next.substep;
@@ -2076,12 +2081,24 @@ class JoltGpuTick::Impl
             if (stageCursor.phase == Phase::Broadphase) {
                 PublishContactHistory();
                 inputs.ClearContacts();
+                constraintTopology.reset();
                 const auto mode = control.prepareContactReport || control.participants
                                       ? JoltGpuBroadphase::Mode::DiscreteWithHostCount
                                       : JoltGpuBroadphase::Mode::Discrete;
+                JoltGpuBroadphase::AppendContactConsumer append;
+                if (mode == JoltGpuBroadphase::Mode::Discrete && !inputs.HasGenericGeometry()) {
+                    append = [this](auto contacts, size_t limit, auto &uploads, auto &dispatches) {
+                        auto proposed = inputs;
+                        proposed.SetContacts(std::move(contacts));
+                        auto begin = stageCursor;
+                        NextSpan(begin, proposed);
+                        return MakeContactTopology(begin, proposed).appendReady(limit, uploads, dispatches);
+                    };
+                }
                 SelectControlWork(broadphase.Prepare(
                                       storage, inputs, programs, tickParameters, stepStatus, collisionWorkspace,
-                                      [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }, mode),
+                                      [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }, mode,
+                                      std::move(append)),
                                   PacketKind::NumericalWork);
                 return true;
             }

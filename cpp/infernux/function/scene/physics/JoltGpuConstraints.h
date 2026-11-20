@@ -15,22 +15,26 @@ struct JoltGpuConstraintSetup
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> assembled;
     // Record ordered stages against the proposed schedule. Advance the real
     // cursor only after that guarded prefix actually executed.
-    std::function<std::function<void()>(const std::shared_ptr<const JoltGpuConstraintWorkset> &, size_t,
-                                        std::vector<rhi::ComputeBufferUpdate> &,
-                                        std::vector<rhi::ComputeDispatchDesc> &)>
+    std::function<std::function<void()>(
+        const JoltGpuStepInputs &, const std::shared_ptr<const JoltGpuConstraintWorkset> &, size_t,
+        std::vector<rhi::ComputeBufferUpdate> &, std::vector<rhi::ComputeDispatchDesc> &)>
         appendSolverPrefix;
 };
 
-// Two ways to record the same topology cursor. The collision packet can
-// include a device-gated prefix, with its host cursor committed on receipt.
+// A topology cursor can be recorded on its own or appended to its producer.
+// In-progress convex work gates its topology prefix with the device result.
 struct JoltGpuContactTopologyStart
 {
     using ObservePrefix = std::function<JoltGpuControlWork(bool collisionComplete)>;
+    using AcceptPrefix = std::function<JoltGpuControlWork()>;
     std::function<JoltGpuControlWork()> prepare;
     std::function<ObservePrefix(const std::shared_ptr<rhi::ComputeBuffer> &completion,
                                 std::vector<rhi::ComputeBufferUpdate> &uploads,
                                 std::vector<rhi::ComputeDispatchDesc> &dispatches)>
         appendAfterCollision;
+    std::function<AcceptPrefix(size_t dispatchLimit, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                               std::vector<rhi::ComputeDispatchDesc> &dispatches)>
+        appendReady;
 };
 
 /// Builds one substep topology, then resumes that SAME validated CC execution

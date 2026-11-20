@@ -32,6 +32,10 @@ class JoltGpuBroadphase final
 
     using SweepRetry = std::function<JoltGpuControlWork()>;
     using SweepConsumer = std::function<JoltGpuControlWork(std::shared_ptr<const JoltGpuContactWorkset>, SweepRetry)>;
+    /// Append a consumer of device-counted contacts. Commit its cursor only after the packet is accepted.
+    using AppendContactConsumer = std::function<std::function<JoltGpuControlWork()>(
+        std::shared_ptr<const JoltGpuContactWorkset>, size_t, std::vector<rhi::ComputeBufferUpdate> &,
+        std::vector<rhi::ComputeDispatchDesc> &)>;
 
     JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetCode &target);
     [[nodiscard]] bool TryPrepareStartupPrograms();
@@ -40,7 +44,7 @@ class JoltGpuBroadphase final
     Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
             const JPH::GPU::StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
             Workspace &workspace, std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed,
-            Mode mode = Mode::Discrete);
+            Mode mode = Mode::Discrete, AppendContactConsumer appendConsumer = {});
 
     [[nodiscard]] JoltGpuControlWork PrepareSweep(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                                   JoltGpuPrograms &programs, const JPH::GPU::StepParams &parameters,
