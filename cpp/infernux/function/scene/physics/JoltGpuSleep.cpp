@@ -470,7 +470,8 @@ bool JoltGpuSleep::TryPrepareStartupPrograms()
 }
 
 JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-                                             const JoltGpuConstraintTopology &topology, std::function<void()> done)
+                                             const JoltGpuConstraintTopology &topology, std::function<void()> done,
+                                             DeferredValidation deferValidation)
 {
     const auto &selected = inputs.GetParameters();
     const auto &contacts = inputs.GetContacts();
@@ -487,6 +488,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(storage);
     e->buffers[Schedule] = topology.schedule;
+    e->deferValidation = std::move(deferValidation);
     e->buffers[Roots] = topology.rootVotes;
     e->statusIndex = p.selected.z;
     p.layout = {topology.bodyRootFirst, e->statusIndex, 0u, 0u};
@@ -539,19 +541,19 @@ JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, c
     return e->Next();
 }
 JoltGpuControlWork JoltGpuSleep::PrepareForceWake(const JoltGpuStorage &s, const StepParams &selection,
-                                                  std::function<void()> done)
+                                                  std::function<void()> done, DeferredValidation deferValidation)
 {
     auto e = std::make_shared<Impl::Execution>(m_impl);
     e->Bind(s);
     auto p = Selection(s, selection);
     e->Add(ForceWake, p.selected.y, p.selected.z, p);
+    e->deferValidation = std::move(deferValidation);
     e->OnComplete([done = std::move(done)](auto &) { done(); });
     return e->Next();
 }
-JoltGpuControlWork
-JoltGpuSleep::PreparePrescribedCapture(const JoltGpuStorage &s, const StepParams &selection,
-                                       std::vector<uint32_t> sources,
-                                       std::function<void(std::shared_ptr<const JoltGpuPrescribedSleepBounds>)> done)
+JoltGpuControlWork JoltGpuSleep::PreparePrescribedCapture(
+    const JoltGpuStorage &s, const StepParams &selection, std::vector<uint32_t> sources,
+    std::function<void(std::shared_ptr<const JoltGpuPrescribedSleepBounds>)> done, DeferredValidation deferValidation)
 {
     if (sources.empty()) {
         done({});
@@ -570,6 +572,7 @@ JoltGpuSleep::PreparePrescribedCapture(const JoltGpuStorage &s, const StepParams
     e->resultPort = Bounds;
     e->resultBytes = uint64_t(sources.size()) * 64u;
     e->Add(PrescribedCapture, 0u, p.operation.w, p);
+    e->deferValidation = std::move(deferValidation);
     e->OnComplete([done = std::move(done), count = p.operation.w](auto &self) {
         auto result = std::make_shared<JoltGpuPrescribedSleepBounds>();
         result->count = count;
@@ -581,7 +584,7 @@ JoltGpuSleep::PreparePrescribedCapture(const JoltGpuStorage &s, const StepParams
 }
 JoltGpuControlWork JoltGpuSleep::PreparePrescribedWake(const JoltGpuStorage &s, const StepParams &selection,
                                                        const JoltGpuPrescribedSleepBounds &old,
-                                                       std::function<void()> done)
+                                                       std::function<void()> done, DeferredValidation deferValidation)
 {
     if (!old.count || !old.sources || !old.bounds || old.sources->GetByteSize() != uint64_t(old.count) * 4u ||
         old.bounds->GetByteSize() != uint64_t(old.count) * 64u ||
@@ -592,6 +595,7 @@ JoltGpuControlWork JoltGpuSleep::PreparePrescribedWake(const JoltGpuStorage &s, 
     e->Bind(s);
     auto p = Selection(s, selection);
     e->buffers[Requests] = old.sources;
+    e->deferValidation = std::move(deferValidation);
     e->buffers[Bounds] = old.bounds;
     p.operation.w = old.count;
     for (uint32_t source = 0; source < old.count; ++source) {

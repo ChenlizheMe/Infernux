@@ -1902,9 +1902,19 @@ class JoltGpuTick::Impl
                 SelectControlWork(PrepareContactStore(), PacketKind::NumericalWork);
                 return true;
             }
+            const auto advanceStage = [this] {
+                NextSpan(stageCursor);
+                Normalize(stageCursor);
+            };
+            // Wake and sleep produce device inputs for later stages. The CPU only consumes
+            // their status before publishing this tick, on the receipt that copied it.
+            const auto validateStatus = [this](const auto &packet, auto validate) {
+                DeferValidation(packet, std::move(validate));
+            };
             if (forceWakePending) {
                 forceWakePending = false;
-                SelectControlWork(programs.GetSleep().PrepareForceWake(storage, tickParameters, [] {}),
+                SelectControlWork(programs.GetSleep().PrepareForceWake(
+                                      storage, tickParameters, [] {}, validateStatus),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -1924,13 +1934,13 @@ class JoltGpuTick::Impl
                             sources.push_back(body);
                     }
                 }
-                SelectControlWork(programs.GetSleep().PreparePrescribedCapture(storage, tickParameters,
-                                                                               std::move(sources),
-                                                                               [this](auto bounds) {
-                                                                                   prescribedBounds = std::move(bounds);
-                                                                                   NextSpan(stageCursor);
-                                                                                   Normalize(stageCursor);
-                                                                               }),
+                SelectControlWork(programs.GetSleep().PreparePrescribedCapture(
+                                      storage, tickParameters, std::move(sources),
+                                      [this, advanceStage](auto bounds) {
+                                          prescribedBounds = std::move(bounds);
+                                          advanceStage();
+                                      },
+                                      validateStatus),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -1965,10 +1975,7 @@ class JoltGpuTick::Impl
                 // quiet time here; waking it now preserves one real following
                 // forces/contact opportunity even when TimeBeforeSleep is 0.
                 SelectControlWork(programs.GetSleep().PreparePrescribedWake(storage, tickParameters, *prescribedBounds,
-                                                                            [this] {
-                                                                                NextSpan(stageCursor);
-                                                                                Normalize(stageCursor);
-                                                                            }),
+                                                                            advanceStage, validateStatus),
                                   PacketKind::NumericalWork);
                 return true;
             }
@@ -1987,25 +1994,16 @@ class JoltGpuTick::Impl
             if (stageCursor.phase == Phase::WakeComponents) {
                 if (!constraintTopology)
                     throw std::logic_error("GPU sleep wake lost its accepted topology");
-                SelectControlWork(programs.GetSleep().PrepareWake(storage, inputs, *constraintTopology,
-                                                                  [this] {
-                                                                      NextSpan(stageCursor);
-                                                                      Normalize(stageCursor);
-                                                                  }),
-                                  PacketKind::NumericalWork);
+                SelectControlWork(
+                    programs.GetSleep().PrepareWake(storage, inputs, *constraintTopology, advanceStage, validateStatus),
+                    PacketKind::NumericalWork);
                 return true;
             }
             if (stageCursor.phase == Phase::UpdateSleep) {
                 auto settings = control.sleepParameters;
                 settings.timing.x = tickParameters.gravityDt.w;
                 SelectControlWork(
-                    programs.GetSleep().PrepareHistory(
-                        storage, inputs, settings,
-                        [this] {
-                            NextSpan(stageCursor);
-                            Normalize(stageCursor);
-                        },
-                        [this](const auto &packet, auto validate) { DeferValidation(packet, std::move(validate)); }),
+                    programs.GetSleep().PrepareHistory(storage, inputs, settings, advanceStage, validateStatus),
                     PacketKind::NumericalWork);
                 return true;
             }

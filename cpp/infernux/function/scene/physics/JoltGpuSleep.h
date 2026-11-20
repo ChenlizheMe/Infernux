@@ -25,7 +25,8 @@ class JoltGpuSleep final
     JoltGpuSleep(rhi::ComputeHost &host, const ShaderTargetCode &stepTarget);
     [[nodiscard]] bool TryPrepareStartupPrograms();
     [[nodiscard]] JoltGpuControlWork PrepareWake(const JoltGpuStorage &, const JoltGpuStepInputs &,
-                                                 const JoltGpuConstraintTopology &, std::function<void()> completed);
+                                                 const JoltGpuConstraintTopology &, std::function<void()> completed,
+                                                 DeferredValidation deferValidation);
     [[nodiscard]] JoltGpuControlWork PrepareHistory(const JoltGpuStorage &, const JoltGpuStepInputs &,
                                                     const JPH::GPU::BodySleepParameters &,
                                                     std::function<void()> completed,
@@ -33,13 +34,16 @@ class JoltGpuSleep final
     // Called ONLY after a genuinely new accepted force-input producer. An
     // absent CPU upload is not evidence of a new external GPU force write.
     [[nodiscard]] JoltGpuControlWork PrepareForceWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,
-                                                      std::function<void()> completed);
+                                                      std::function<void()> completed,
+                                                      DeferredValidation deferValidation);
     [[nodiscard]] JoltGpuControlWork
     PreparePrescribedCapture(const JoltGpuStorage &, const JPH::GPU::StepParams &, std::vector<uint32_t> sourceSlots,
-                             std::function<void(std::shared_ptr<const JoltGpuPrescribedSleepBounds>)> completed);
+                             std::function<void(std::shared_ptr<const JoltGpuPrescribedSleepBounds>)> completed,
+                             DeferredValidation deferValidation);
     [[nodiscard]] JoltGpuControlWork PreparePrescribedWake(const JoltGpuStorage &, const JPH::GPU::StepParams &,
                                                            const JoltGpuPrescribedSleepBounds &,
-                                                           std::function<void()> completed);
+                                                           std::function<void()> completed,
+                                                           DeferredValidation deferValidation);
     [[nodiscard]] JoltGpuControlWork
     PrepareSnapshot(const JoltGpuStorage &, const JPH::GPU::StepParams &,
                     std::function<void(std::shared_ptr<rhi::ComputeBuffer>)> completed);
