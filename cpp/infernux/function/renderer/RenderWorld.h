@@ -204,6 +204,12 @@ class RenderWorldFrame final
         return m_transformRevision;
     }
 
+    /// The ray instances change only when the captured transforms change.
+    [[nodiscard]] uint64_t RayTransformRevision() const noexcept
+    {
+        return m_sourceFrame ? m_sourceFrame->RayTransformRevision() : m_rayTransformRevision;
+    }
+
     [[nodiscard]] uint64_t ContentRevision() const noexcept
     {
         return m_contentRevision;
@@ -246,6 +252,7 @@ class RenderWorldFrame final
     uint64_t m_worldId = 0;
     uint64_t m_structuralRevision = 0;
     uint64_t m_transformRevision = 0;
+    uint64_t m_rayTransformRevision = 0;
     uint64_t m_contentRevision = 0;
     uint64_t m_sourceContentRevision = 0;
     uint64_t m_poseRevision = 0;
@@ -284,6 +291,7 @@ class RenderWorldSnapshot final
         frame.m_worldId = 0;
         frame.m_structuralRevision = 0;
         frame.m_transformRevision = 0;
+        frame.m_rayTransformRevision = 0;
         frame.m_contentRevision = 0;
         frame.m_poseRevision = 0;
         Publish();

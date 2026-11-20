@@ -104,6 +104,19 @@ int main()
     assert(manager.GetActiveMeshRenderers().size() == 2);
     assert(manager.GetActiveLights().size() == 2);
 
+    const auto accepted = world.Acquire();
+    auto *transform = objectsA.rendered->GetTransform();
+    transform->SetPosition(glm::vec3(3.0f, 0.0f, 0.0f));
+    transform->SetPosition(glm::vec3(0.0f));
+    (void)extractor.ExtractCameraFrame(world, resolveWebCamera());
+    const auto unchanged = world.Acquire();
+    assert(unchanged->TransformRevision() != accepted->TransformRevision());
+    assert(unchanged->RayTransformRevision() == accepted->RayTransformRevision());
+    transform->SetPosition(glm::vec3(3.0f, 0.0f, 0.0f));
+    (void)extractor.ExtractCameraFrame(world, resolveWebCamera());
+    assert(world.Acquire()->RayTransformRevision() != unchanged->RayTransformRevision());
+    transform->SetPosition(glm::vec3(0.0f));
+
     manager.SetActiveScene(sceneB);
     assert(resolveWebCamera() == objectsB.camera);
     assert(manager.GetActiveScene()->GetEnvironment().skyExposure == 2.5f);

@@ -77,7 +77,7 @@ WorldRevision GetRevision(const RenderWorldFrame &world)
 {
     return {{world.WorldId(), world.SimulationEpoch(), world.StructuralRevision(), world.ContentRevision(),
              world.PoseRevision()},
-            world.TransformRevision()};
+            world.RayTransformRevision()};
 }
 
 uint64_t AddStorage(uint64_t bytes, uint64_t extra)

@@ -24,15 +24,17 @@ class WorldRayPage(shader.fullscreen):
         geometry = self.page[0]
         mesh = self.meshes[0]
         points = mesh.z - mesh.y
-        if geometry.w != 1 or geometry.x != 0 or len(self.page) != geometry.z + 8:
+        # The instance table ends where the shadow-visibility stamps begin.
+        # Each instance has three inverse rows, metadata and three forward rows.
+        if geometry.w != 1 or geometry.x != 0 or self.page[1].x != geometry.z + 14:
             return shader.vec4(0.0, 0.0, 1.0, 1.0)
         if len(self.meshes) != mesh.w + 4 * points or self.meshes[len(self.meshes) - 1].w != 1065353216:
             return shader.vec4(1.0, 0.0, 0.0, 1.0)
         first = self.page[geometry.z + 3]
-        second = self.page[geometry.z + 7]
+        second = self.page[geometry.z + 10]
         if first.x == second.x and first.y > 0 and second.y > 0 and first.y != second.y:
-            a = self.page[geometry.z].w & 2147483647
-            b = self.page[geometry.z + 4].w & 2147483647
+            a = self.page[geometry.z + 4].w & 2147483647
+            b = self.page[geometry.z + 11].w & 2147483647
             position = shader.min(a, b)
             if position == 1090519040:
                 return shader.vec4(0.0, 1.0, 1.0, 1.0)

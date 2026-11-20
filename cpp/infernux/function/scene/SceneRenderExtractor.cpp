@@ -26,6 +26,14 @@ namespace
 {
 SceneRenderExtractor::PrepareMaterial prepareMaterial;
 
+bool SameRayTransforms(const DrawCallResult &previous, const DrawCallResult &current)
+{
+    return std::equal(previous.drawCalls.begin(), previous.drawCalls.end(), current.drawCalls.begin(),
+                      current.drawCalls.end(), [](const DrawCall &a, const DrawCall &b) {
+                          return a.surfaceId == b.surfaceId && a.worldMatrix == b.worldMatrix;
+                      });
+}
+
 std::shared_ptr<const RenderSurfaceRecords> CaptureSurfaceRecords(const DrawCallResult &geometry)
 {
     uint32_t lastSurface = 0;
@@ -291,6 +299,16 @@ size_t SceneRenderExtractor::ExtractSourceFrame(RenderWorldSnapshot &publication
     frame.m_contentRevision = m_contentPublicationRevision;
     frame.m_sourceContentRevision = contentRevision;
     frame.m_poseRevision = m_poseRevision;
+    // Dirty Transform notifications can include writes that cancel before
+    // extraction. Keep the ray publication for an identical captured pose.
+    frame.m_rayTransformRevision = transformRevision;
+    const auto previous = publication.Acquire();
+    if (previous && previous->MatchesSource(worldId, currentVersion) &&
+        previous->SimulationEpoch() == simulationEpoch && previous->ContentRevision() == frame.m_contentRevision &&
+        previous->PoseRevision() == frame.m_poseRevision &&
+        (previous->TransformRevision() == transformRevision ||
+         SameRayTransforms(previous->DrawCalls(), frame.m_drawCalls)))
+        frame.m_rayTransformRevision = previous->RayTransformRevision();
     m_previousPoseValues.swap(m_framePoseValues);
 #if INFERNUX_FRAME_PROFILE
     m_profileSnapshot.prepareMs += std::chrono::duration<double, std::milli>(Clock::now() - prepareStart).count();
