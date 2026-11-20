@@ -29,13 +29,17 @@ class RayDiffuseObservation(shader.fullscreen):
             return shader.uvec4(0)
         geometric_normal = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))
         camera = shader.camera()
-        view_normal = sh_guide_normal(shader.load(self.screen_depth, site / 2, 0).y)
+        view_normal = sh_guide_normal(shader.load(self.screen_depth, site >> 1, 0).y)
         shading_normal = shader.normalize((shader.transpose(camera.view_matrix) @ shader.vec4(view_normal, 0.0)).xyz)
         # The exact triangle traversal needs the point on the phase-selected raster surface.
         uv = (shader.vec2(site) + 0.5) / shader.vec2(full)
         position = world_position(uv, shader.as_float(receiver.y), camera)
+        # Each half-resolution texel represents one of the four full-resolution sample centers.
+        scale = 0.25 * shader.vec2(full)
+        phase = shader.vec2(site & 1)
+        sample_grid = shader.vec4(scale, scale + 0.25 - 0.5 * phase)
         sample = shader.ray._diffuse_sample(
-            position, geometric_normal, shading_normal, shader.uvec2(cell), self.temporal, self.primary, self.screen_depth,
+            position, geometric_normal, shading_normal, shader.uvec2(cell), self.temporal, self.screen_depth, sample_grid,
             self.previous_radiance, self.reprojection, self.surface_records, self.tail_cache
         )
         return pack_ray_signal(sample.radiance, sample.witness)
