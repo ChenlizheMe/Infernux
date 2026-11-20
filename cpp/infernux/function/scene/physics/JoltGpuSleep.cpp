@@ -45,6 +45,7 @@ enum Entry : uint8_t
     ForceWake,
     Update,
     Commit,
+    UpdateCommitIsolated,
     RetireHinge,
     CaptureBounds,
     BoundsWake,
@@ -63,6 +64,7 @@ constexpr std::array<std::string_view, EntryCount> Names{"sleep_clear_votes",
                                                          "sleep_wake_force_input",
                                                          "sleep_update_history",
                                                          "sleep_commit_components",
+                                                         "sleep_update_commit_isolated",
                                                          "sleep_retire_hinge_momentum",
                                                          "sleep_capture_old_bounds",
                                                          "sleep_wake_bounds",
@@ -84,6 +86,7 @@ constexpr std::array<uint32_t, EntryCount> Masks{P | W | R,
                                                  P | W | B | S | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | C | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | C | Bit(States),
+                                                 P | W | B | S | R | C | Bit(States) | Bit(Forces),
                                                  P | W | B | S | R | Bit(Joints),
                                                  P | B | S | R | Bit(States) | Bit(Bounds),
                                                  P | W | B | S | R | Bit(States) | Bit(Bounds),
@@ -313,12 +316,14 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
             const bool complete = (port == Bounds && (op.entry == CaptureBounds || op.entry == PrescribedCapture)) ||
                                   (port == Snapshot && op.entry == Export) || port == Results ||
                                   (port == Roots && op.entry == Clear);
-            const bool writer = port == Roots ||
-                                (port == Sleeps && (op.entry == Wake || op.entry == ForceWake || op.entry == Update ||
-                                                    op.entry == Commit || op.entry == BoundsWake ||
-                                                    op.entry == PrescribedWake || op.entry == NewBoundsWake)) ||
-                                (port == Forces && op.entry == Update) || (port == States && op.entry == Commit) ||
-                                (port == Joints && op.entry == RetireHinge);
+            const bool writer =
+                port == Roots ||
+                (port == Sleeps && (op.entry == Wake || op.entry == ForceWake || op.entry == Update ||
+                                    op.entry == Commit || op.entry == UpdateCommitIsolated || op.entry == BoundsWake ||
+                                    op.entry == PrescribedWake || op.entry == NewBoundsWake)) ||
+                (port == Forces && (op.entry == Update || op.entry == UpdateCommitIsolated)) ||
+                (port == States && (op.entry == Commit || op.entry == UpdateCommitIsolated)) ||
+                (port == Joints && op.entry == RetireHinge);
             dispatch.bufferAccesses.push_back(complete ? rhi::ComputeBufferAccess::Write
                                               : writer ? rhi::ComputeBufferAccess::ReadWrite
                                                        : rhi::ComputeBufferAccess::Read);
@@ -463,7 +468,7 @@ JoltGpuSleep::JoltGpuSleep(rhi::ComputeHost &host, const ShaderTargetCode &targe
 bool JoltGpuSleep::TryPrepareStartupPrograms()
 {
     bool ready = true;
-    for (const auto entry : {Clear, Update, Commit, Export})
+    for (const auto entry : {Clear, Update, Commit, UpdateCommitIsolated, Export})
         ready &= m_impl->entries[entry].kernel->TryPreparePipeline();
     return ready;
 }
@@ -528,14 +533,22 @@ JoltGpuControlWork JoltGpuSleep::PrepareHistory(const JoltGpuStorage &storage, c
     p.layout = {plan->bodyRootFirst, e->statusIndex, 0u, 0u};
     p.timing = settings.timing;
     p.operation.z = 1u;
-    e->Add(Clear, p.selected.y, p.selected.z, p);
-    e->Add(Update, p.selected.y, p.selected.z, p);
     const auto &step = inputs.GetParameters();
+    const auto &contacts = inputs.GetContacts();
     e->deferValidation = std::move(deferValidation);
-    e->Add(Commit, p.selected.y, p.selected.z, p);
-    p.layout.z = step.selection.w;
-    p.layout.w = step.selectedCounts.z;
-    e->Add(RetireHinge, p.layout.z, p.layout.w, p);
+    if (step.selectedCounts.z == 0u && contacts && contacts->patchCount == 0u) {
+        // This accepted topology was initialized as isolated: Dynamic roots
+        // are their own rows, and every vote plus this step's status is zero.
+        // No component wake or numerical assembly writes those rows afterward.
+        e->Add(UpdateCommitIsolated, p.selected.y, p.selected.z, p);
+    } else {
+        e->Add(Clear, p.selected.y, p.selected.z, p);
+        e->Add(Update, p.selected.y, p.selected.z, p);
+        e->Add(Commit, p.selected.y, p.selected.z, p);
+        p.layout.z = step.selection.w;
+        p.layout.w = step.selectedCounts.z;
+        e->Add(RetireHinge, p.layout.z, p.layout.w, p);
+    }
     e->OnComplete([done = std::move(done)](auto &) { done(); });
     return e->Next();
 }
