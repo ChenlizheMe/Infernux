@@ -24,7 +24,7 @@ def matched_change_weight(current: shader.vec3, previous: shader.vec3, gradient:
 def diffuse_history(history: shader.UInt2D, surfaces: shader.UInt2D, primary: shader.uvec4,
                     history_uv: shader.vec2, previous_uv: shader.vec2, expected_eye: float,
                     extent: shader.ivec2, full: shader.ivec2) -> shader.uvec4:
-    # Reproject onto the actual raster representatives of the sparse grid, including odd extents.
+    # Reproject onto the actual sample centers at either tracing resolution, including odd extents.
     location = history_uv * shader.vec2(full) - shader.vec2(0.5)
     center = shader.ivec2(history_uv * shader.vec2(extent))
     site = ray_grid_pixel(center, extent, full)

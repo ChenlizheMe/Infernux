@@ -57,7 +57,7 @@ class RayReconstruct(shader.fullscreen):
         expected_depth = ray_previous_eye_depth(motion.w)
         previous_primary = shader.uvec4(0)
         previous_packet = shader.uvec4(0)
-        if reduced and not self.specular:
+        if not self.specular:
             previous_packet = diffuse_history(self.previous_signal, self.previous_primary, primary, history_uv,
                                               previous_uv, expected_depth, extent, full)
         else:
@@ -67,8 +67,7 @@ class RayReconstruct(shader.fullscreen):
                 return fresh
             normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
             previous_normal = decode_octahedral_normal(shader.unpack_half_2x16(previous_primary.z))
-            normal_threshold = 0.985 if self.specular else 0.94
-            if shader.dot(normal, previous_normal) < normal_threshold:
+            if shader.dot(normal, previous_normal) < 0.985:
                 return fresh
             previous_depth = linear_eye_depth(shader.as_float(previous_primary.y), camera)
             if shader.abs(expected_depth - previous_depth) > 0.01 + 0.015 * expected_depth:
@@ -149,13 +148,25 @@ class RayReconstruct(shader.fullscreen):
         elif shader.any(shader.abs(history_uv - uv) * shader.vec2(full) > shader.vec2(0.5)):
             limit = 6.0
 
+        if not self.specular and limit < 64.0:
+            # Bound the lifetime of a reacting history in seconds as the frame rate changes.
+            fresh_fraction = 1.0 - shader.exp2(-shader.frame_delta_time() / 0.023)
+            limit = shader.min(limit, 1.0 / shader.max(fresh_fraction, 1.0 / 64.0))
         count = shader.min(previous.a + 1.0, limit)
         difference = current.rgb - previous.rgb
         weights = shader.vec3(0.2126, 0.7152, 0.0722)
         delta = shader.dot(difference, weights)
-        if not self.specular and scene_changed:
-            blend = matched_change_weight(current.rgb, previous.rgb, unpack_ray_gradient(fresh.z))
-            count = shader.min(count, 1.0 / shader.max(blend, 1.0 / 64.0))
+        if not self.specular:
+            if scene_changed:
+                blend = matched_change_weight(current.rgb, previous.rgb, unpack_ray_gradient(fresh.z))
+                count = shader.min(count, 1.0 / shader.max(blend, 1.0 / 64.0))
+            # The occluder can have stopped while its old shadow is still in history.
+            # Measure disagreement against the error of the current spatial estimate.
+            energy = shader.max(shader.dot(current.rgb, current.rgb), shader.dot(previous.rgb, previous.rgb))
+            tolerance = 12.0 * signal_aux + 1e-8 * energy
+            agreement = shader.saturate(tolerance / shader.max(shader.dot(difference, difference), 1e-20))
+            retention = (1.0 - 1.0 / count) * shader.sqrt(agreement)
+            count = 1.0 / shader.max(1.0 - retention, 1.0 / 64.0)
         estimate = shader.mix(previous.rgb, current.rgb, 1.0 / count)
         # The reflection filter measures squared RGB distance. Equal-luminance
         # changes between colored lights contribute to its uncertainty as well.
