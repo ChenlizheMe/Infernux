@@ -30,6 +30,10 @@ class ViewLighting
     {
         return m_revision;
     }
+    const RenderLightingSource *Source() const noexcept
+    {
+        return m_source.get();
+    }
 
   private:
     std::shared_ptr<const RenderLightingSource> m_source;

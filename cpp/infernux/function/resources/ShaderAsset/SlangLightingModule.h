@@ -61,6 +61,7 @@ struct InxLightingData {
     InxAreaLight area_lights[16];
     uint4 shadow_view_header;
     InxShadowView shadow_views[64];
+    float4 environment_panorama;
 };
 struct InxCanonicalLight {
     float4 position_range, direction_outer_cos, color_intensity, shadow_and_inner_cos, area_right_width, area_up_height;
@@ -69,6 +70,10 @@ struct InxCanonicalLight {
 [[vk::binding(0, 1)]] DepthTexture2D shadow_image;
 [__AttributeUsage(_AttributeTargets.Var)]
 struct InxNonFilteringSamplerAttribute {};
+[__AttributeUsage(_AttributeTargets.Var)]
+struct InxUnfilterableTextureAttribute {};
+[InxUnfilterableTexture]
+[[vk::binding(9, 1)]] Texture2D<float4> environment_panorama_image;
 [InxNonFilteringSampler]
 [[vk::binding(6, 1)]] SamplerState shadow_sampler;
 [[vk::binding(4, 1)]] ConstantBuffer<InxLightingData> lighting;
@@ -854,6 +859,27 @@ public float3 inx_shade_pbr_ray<let tiled_lighting : bool>(InxSurfaceData surfac
 }
 public float3 inx_environment_radiance(float3 direction)
 {
+    float4 panorama = lighting.environment_panorama;
+    if (panorama.w >= 0.0)
+    {
+        float2 uv = float2(frac(atan2(direction.z, direction.x) * (0.5 * INV_PI) + 0.5 + panorama.w),
+                           acos(clamp(direction.y, -1.0, 1.0)) * INV_PI);
+        uint width, height;
+        environment_panorama_image.GetDimensions(width, height);
+        int2 size = int2(width, height);
+        // Normalize the panorama's seam and pole addressing across texture formats.
+        // Texel loads are also valid on WebGPU devices without float32-filterable.
+        float2 position = uv * float2(size) - 0.5;
+        int2 base = int2(floor(position));
+        float2 blend = frac(position);
+        int2 x = (int2(base.x, base.x + 1) + size.x) % size.x;
+        int2 y = clamp(int2(base.y, base.y + 1), 0, size.y - 1);
+        float3 north = lerp(environment_panorama_image.Load(int3(x.x, y.x, 0)).rgb,
+                            environment_panorama_image.Load(int3(x.y, y.x, 0)).rgb, blend.x);
+        float3 south = lerp(environment_panorama_image.Load(int3(x.x, y.y, 0)).rgb,
+                            environment_panorama_image.Load(int3(x.y, y.y, 0)).rgb, blend.x);
+        return lerp(north, south, blend.y) * panorama.rgb;
+    }
     return InxLighting<false>().sample_ambient_probe(direction);
 }
 public float3 inx_pbr_indirect(InxSurfaceData surface, InxShadingContext input)

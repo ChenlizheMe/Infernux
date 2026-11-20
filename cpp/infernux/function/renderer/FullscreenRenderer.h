@@ -67,10 +67,11 @@ struct FullscreenParameters
 };
 
 // Indexed by the engine's set-1 binding, independently of a program's active subset.
+inline constexpr uint32_t kEnvironmentPanoramaViewBinding = 9;
 struct FullscreenViewBindings
 {
     std::array<rhi::BufferBinding, 8> buffers;
-    std::array<rhi::TextureBinding, 8> textures;
+    std::array<rhi::TextureBinding, kEnvironmentPanoramaViewBinding + 1> textures;
 };
 
 // Borrowed view resources. Their owner stages and retires the allocations;

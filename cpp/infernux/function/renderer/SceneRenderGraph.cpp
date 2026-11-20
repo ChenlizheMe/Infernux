@@ -239,6 +239,8 @@ bool SceneRenderGraph::EnsureViewGpuResources()
         INXLOG_ERROR("SceneRenderGraph: failed to register the canonical per-view descriptor layout");
         return false;
     }
+    const auto &defaults = vkCore->GetMaterialPipelineManager().GetDescriptorManager();
+    m_defaultEnvironmentView = rhiDevice.RegisterTextureView(defaults.GetDefaultImageView());
     for (uint32_t i = 0; i < EngineConfig::kFrameSlotCapacity; ++i) {
         auto &frame = m_perViewFrames[i];
         frame.geometryDescriptor = vkCore->AllocatePerViewDescriptorLease();
@@ -852,8 +854,13 @@ void SceneRenderGraph::ReleaseViewGpuResources() noexcept
             frame = {};
         }
         rhiDevice.Release(m_perViewLayout);
+        rhiDevice.Release(m_defaultEnvironmentView);
     }
     m_perViewLayout = {};
+    m_defaultEnvironmentView = {};
+    m_environmentPanorama.reset();
+    m_environmentPanoramaView.reset();
+    m_environmentPanoramaPending = false;
     m_cameraCanonicalLights.Shutdown();
 }
 
@@ -1239,10 +1246,33 @@ bool SceneRenderGraph::UploadCameraLighting()
 {
     const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % EngineConfig::kFrameSlotCapacity;
     auto &frame = m_perViewFrames[frameIndex];
-    if (frame.lightingRevision == m_viewLighting.Revision())
+    const auto *source = m_viewLighting.Source();
+    const auto *panorama = source && source->environmentPanorama ? &*source->environmentPanorama : nullptr;
+    if (panorama ? m_environmentPanorama != *panorama : m_environmentPanorama.has_value()) {
+        m_environmentPanorama = panorama ? std::optional{*panorama} : std::nullopt;
+        m_environmentPanoramaView.reset();
+        m_environmentPanoramaPending = panorama != nullptr;
+    }
+    if (m_environmentPanoramaPending) {
+        auto resolved = m_vkCore->ResolveTextureForGraph(panorama->textureGuid, false);
+        m_environmentPanoramaPending = resolved.status == TextureResolveStatus::Pending;
+        if (resolved.status == TextureResolveStatus::Ready &&
+            resolved.contentGeneration == panorama->contentGeneration) {
+            m_environmentPanoramaView = std::move(resolved.binding.gpuView);
+            // The authored environment can become resident after the first draw.
+            InvalidateTemporalHistory();
+        }
+    }
+    if (frame.lightingRevision == m_viewLighting.Revision() && frame.environmentPanorama == m_environmentPanoramaView)
         return true;
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
-    const ShaderLightingUBO &lighting = m_viewLighting.Lights().GetShaderLightingUBO();
+    ShaderLightingUBO lighting = m_viewLighting.Lights().GetShaderLightingUBO();
+    frame.environmentPanorama = m_environmentPanoramaView;
+    frame.fullscreenBindings.textures[kEnvironmentPanoramaViewBinding] = {
+        kEnvironmentPanoramaViewBinding, rhi::BindingType::SampledTexture,
+        frame.environmentPanorama ? frame.environmentPanorama->GetView() : m_defaultEnvironmentView};
+    if (frame.environmentPanorama)
+        lighting.environmentPanorama = panorama->radianceAndRotation;
     if (!frame.lighting.IsValid() || !rhiDevice.WriteBuffer(frame.lighting, 0, &lighting, sizeof(lighting))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local LightingUBO");
         return false;

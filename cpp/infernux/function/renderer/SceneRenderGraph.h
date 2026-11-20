@@ -1178,6 +1178,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
         rhi::BufferHandle editorOverlayCameraMatrix;
         rhi::BufferHandle lighting;
         FullscreenViewBindings fullscreenBindings;
+        std::shared_ptr<const rhi::TextureGpuView> environmentPanorama;
         uint64_t lightingRevision = 0;
         PerViewBufferBindingState geometryBindings;
         PerViewBufferBindingState particleBindings;
@@ -1204,6 +1205,10 @@ class SceneRenderGraph : public NativeLifetimeOwner
     rhi::BindingLayoutHandle m_perViewLayout;
     lighting::CanonicalLightGpuBuffer m_cameraCanonicalLights;
     lighting::ViewLighting m_viewLighting;
+    std::optional<RenderEnvironmentPanorama> m_environmentPanorama;
+    std::shared_ptr<const rhi::TextureGpuView> m_environmentPanoramaView;
+    bool m_environmentPanoramaPending = false;
+    rhi::TextureViewHandle m_defaultEnvironmentView;
     uint64_t m_shadowCameraResourceId = 0;
 
     // Camera atlas consumed by material or fullscreen view bindings.

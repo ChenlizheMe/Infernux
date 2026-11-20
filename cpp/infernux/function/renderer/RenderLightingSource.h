@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace infernux
@@ -66,6 +68,23 @@ struct LightSamplingDistribution
 std::shared_ptr<const LightSamplingDistribution>
 BuildLightSamplingDistribution(const std::vector<RenderLightSource> &lights);
 
+struct RenderEnvironmentPanorama
+{
+    std::string textureGuid;
+    uint64_t contentGeneration = 0;
+    glm::vec4 radianceAndRotation{0.0f}; // Linear RGB multiplier, longitude rotation in turns.
+
+    bool operator==(const RenderEnvironmentPanorama &other) const noexcept
+    {
+        return textureGuid == other.textureGuid && contentGeneration == other.contentGeneration &&
+               radianceAndRotation == other.radianceAndRotation;
+    }
+    bool operator!=(const RenderEnvironmentPanorama &other) const noexcept
+    {
+        return !(*this == other);
+    }
+};
+
 struct RenderLightingSource
 {
     // Stable generation advances only when actual source values change.
@@ -81,13 +100,15 @@ struct RenderLightingSource
     glm::vec4 ambientSky{0.0f};
     glm::vec4 ambientEquator{0.0f};
     glm::vec4 ambientGround{0.0f};
+    std::optional<RenderEnvironmentPanorama> environmentPanorama;
     // Render-owned material copy: source authoring cannot mutate its values.
     std::shared_ptr<InxMaterial> skyboxMaterial;
 
     bool SameValues(const RenderLightingSource &other) const noexcept
     {
         return lights == other.lights && ambientSky == other.ambientSky && ambientEquator == other.ambientEquator &&
-               ambientGround == other.ambientGround && skyboxMaterial == other.skyboxMaterial;
+               ambientGround == other.ambientGround && environmentPanorama == other.environmentPanorama &&
+               skyboxMaterial == other.skyboxMaterial;
     }
 };
 // Scene-side capture boundary. Call only in the intended World scope.

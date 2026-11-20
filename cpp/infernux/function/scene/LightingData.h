@@ -193,6 +193,7 @@ struct alignas(16) ShaderLightingUBO
 
     glm::uvec4 shadowViewHeader; ///< x = view count, y = atlas size, zw = generation
     ShadowViewGpuData shadowViews[lighting::MaxShadowViews];
+    glm::vec4 environmentPanorama{0.0f, 0.0f, 0.0f, -1.0f}; ///< RGB multiplier, turns or -1 when unbound
 };
 
 // Compile-time size verification

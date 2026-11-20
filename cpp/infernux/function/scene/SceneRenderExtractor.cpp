@@ -4,6 +4,8 @@
 #include "physics/PhysicsWorld.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <core/types/ColorSpace.h>
 #include <cstring>
 #include <function/renderer/RenderInstanceHistory.h>
 #include <function/renderer/RenderSurfaceRecords.h>
@@ -452,6 +454,18 @@ void SceneRenderExtractor::CaptureLighting(RenderWorldFrame &frame)
         ambient.SetAmbientGradient(environment.ambientSkyColor, environment.ambientEquatorColor,
                                    environment.ambientGroundColor, environment.ambientIntensity);
     } else {
+        if (capturedSky && capturedSky->GetFragShaderName() == "infernux/skybox/panoramic") {
+            const auto &guid = capturedSky->GetTextureGuid("albedo_map");
+            if (!guid.empty()) {
+                manager.ObservePresentationAsset(guid);
+                const auto tint = inx::color::SrgbToLinear(glm::vec3(capturedSky->GetColor("tint")));
+                const float exposure = capturedSky->GetFloat("exposure") * std::max(0.0f, environment.ambientIntensity);
+                const float turns = capturedSky->GetFloat("rotation") / 360.0f;
+                next.environmentPanorama =
+                    RenderEnvironmentPanorama{guid, AssetRegistry::Instance().GetAssetContentGeneration(guid),
+                                              glm::vec4(tint * exposure, turns - std::floor(turns))};
+            }
+        }
         const auto *top = capturedSky ? capturedSky->GetProperty("sky_top_color") : nullptr;
         const auto *horizon = capturedSky ? capturedSky->GetProperty("sky_horizon_color") : nullptr;
         const auto *ground = capturedSky ? capturedSky->GetProperty("ground_color") : nullptr;

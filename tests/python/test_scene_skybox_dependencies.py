@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 
 from infernux.core.assets import AssetManager
-from infernux.lib import ConsolePanel, SceneManager, Vector3, _Infernux as native
+from infernux.lib import ConsolePanel, PrimitiveType, SceneManager, Vector3, _Infernux as native
 from tests.gpu.skybox_dependency_case import create_skybox_asset, publish_skybox, observe_skybox
 
 
@@ -128,6 +128,72 @@ def test_published_skybox_draws_authored_material(engine, scene, skybox_asset, s
         engine.set_post_draw_callback(None)
         engine.set_render_pipeline(None)
         manager.stop()
+        engine.set_play_mode_rendering(previous_rendering)
+        pipeline.dispose()
+        for obj, active in previous:
+            obj.active = active
+
+
+@pytest.mark.parametrize("skybox_asset", ["panoramic"], indirect=True)
+def test_panoramic_skybox_lights_a_diffuse_receiver(engine, scene, skybox_asset):
+    from infernux.renderstack import DefaultDeferredPipeline
+
+    _, guid, database = skybox_asset
+    previous = [(obj, obj.active_self) for obj in scene.get_root_objects()]
+    previous_rendering = engine.is_play_mode_rendering()
+    pipeline = DefaultDeferredPipeline()
+    pipeline.global_illumination = True
+    errors = []
+    ticket = None
+    result = None
+    callbacks = 0
+    try:
+        for obj, _ in previous:
+            obj.active = False
+        owner = scene.create_game_object("Environment witness camera")
+        owner.transform.position = Vector3(0, 1.8, -3.1)
+        owner.transform.euler_angles = Vector3(13, 0, 0)
+        scene.main_camera = owner.add_component("Camera")
+        floor = scene.create_primitive(PrimitiveType.Cube, "Environment receiver")
+        floor.transform.position = Vector3(0, -.1, 0)
+        floor.transform.local_scale = Vector3(8, .2, 9)
+        publish_skybox(scene, guid, database, engine, snapshot=True)
+        scene.main_camera = scene.find("Environment witness camera").get_component("Camera")
+        engine.resize_game_render_target(320, 180)
+        engine.set_game_camera_enabled(True)
+        engine.set_render_pipeline(pipeline)
+        engine.set_play_mode_rendering(True)
+        first = engine.renderer_frame_snapshot["game_render_graph_execution_count"]
+
+        def after_draw():
+            nonlocal callbacks, ticket, result
+            try:
+                callbacks += 1
+                assert callbacks < 300, "The environment-lit view did not produce a readback"
+                frame = engine.renderer_frame_snapshot
+                settled = frame["game_render_graph_execution_count"] >= first + 32
+                if ticket is None and engine.game_presentation_ready and settled:
+                    assert "Ray Diffuse Irradiance" in frame["game_render_graph_pass_names"]
+                    ticket = engine.request_render_target_readback(True)
+                elif ticket is not None and ticket.done:
+                    result = ticket.result_numpy().astype("float32")
+                    engine.exit()
+            except BaseException as error:
+                errors.append(error)
+                engine.exit()
+
+        engine.set_post_draw_callback(after_draw)
+        engine.run()
+        if errors:
+            raise errors[0]
+        assert result is not None
+        sky = result[5:25, 110:210, :3].mean(axis=(0, 1))
+        lit = result[125:155, 110:210, :3].mean(axis=(0, 1))
+        assert sky[0] > lit[0] + .03, (sky, lit)
+        assert lit[0] > max(lit[1], lit[2]) + .15, lit
+    finally:
+        engine.set_post_draw_callback(None)
+        engine.set_render_pipeline(None)
         engine.set_play_mode_rendering(previous_rendering)
         pipeline.dispose()
         for obj, active in previous:

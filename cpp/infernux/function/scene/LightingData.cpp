@@ -69,7 +69,7 @@ void RenderLightingSource::UpdateDiffuseHistory(const RenderLightingSource *prev
         }
     }
     diffuseCutGeneration = proposalCutGeneration = generation;
-    if (!previous)
+    if (!previous || environmentPanorama != previous->environmentPanorama)
         return;
     float peakSquared = 0.0f, changeSquared = 0.0f;
     for (size_t face = 0; face < distantDiffuse.size(); ++face) {
