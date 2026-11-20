@@ -16,6 +16,7 @@ namespace infernux
 namespace
 {
 using namespace JPH::GPU;
+static_assert(JoltGpuPoseWake::BodiesPerDispatch <= ConstraintBlockSize * ConstraintBlockLimit);
 enum Port : uint8_t
 {
     Params,
@@ -300,11 +301,11 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = owner->entries[op.entry].kernel;
         dispatch.groupCountX = Groups(count);
-        if (wakeArguments) {
-            const auto record = op.entry == SeedPatches ? ConstraintLocalWakePatchDispatch : dispatch.groupCountX - 1u;
-            dispatch.indirectArguments =
-                rhi::ComputeIndirectArguments{wakeArguments, uint64_t(record) * sizeof(ConstraintScheduleWord)};
-        }
+        if (op.entry == SeedPatches && wakePatchDispatch)
+            dispatch.indirectArguments = wakePatchDispatch;
+        else if (wakeArguments)
+            dispatch.indirectArguments = rhi::ComputeIndirectArguments{
+                wakeArguments, uint64_t(dispatch.groupCountX - 1u) * sizeof(ConstraintScheduleWord)};
         rhi::ComputeDispatchProof proof;
         for (Port port : owner->entries[op.entry].ports) {
             auto buffer = port == Params ? params : port == Work ? work : buffers[port];
@@ -374,7 +375,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         while (next < plan.size() && dispatches.size() < maximumDispatches) {
             const auto &op = plan[next];
             const auto limit =
-                wakeArguments && op.entry == SeedPatches ? ConstraintLocalRefs : JoltGpuPoseWake::BodiesPerDispatch;
+                wakePatchDispatch && op.entry == SeedPatches ? ConstraintLocalRefs : JoltGpuPoseWake::BodiesPerDispatch;
             uint32_t count = std::min(limit, op.count - offset);
             auto params = uniform(op.parameters);
             StageWork range{{op.first + offset, count, 0u, 0u}};
@@ -442,6 +443,7 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
     }
     std::shared_ptr<Impl> owner;
     std::shared_ptr<rhi::ComputeBuffer> wakeArguments;
+    std::optional<rhi::ComputeIndirectArguments> wakePatchDispatch;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
     std::shared_ptr<BoundsValidation> boundsValidation;
     std::vector<Operation> plan;
@@ -511,8 +513,7 @@ JoltGpuSleep::Impl::MakeWake(const std::shared_ptr<Impl> &owner, const JoltGpuSt
     e->buffers[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
     e->buffers[Patches] = contacts->patches;
     e->wakeArguments = topology.wakeArguments;
-    if (!e->wakeArguments)
-        e->Add(Clear, p.selected.y, p.selected.z, p);
+    e->wakePatchDispatch = topology.wakePatchDispatch;
     e->Add(SeedBodies, p.selected.y, p.selected.z, p);
     p.layout.z = selected.selection.w;
     p.layout.w = selected.selectedCounts.z;

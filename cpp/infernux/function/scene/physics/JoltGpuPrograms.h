@@ -150,8 +150,10 @@ struct JoltGpuConstraintTopology
     uint32_t bodyRootFirst = 0, bodyFirst = 0, bodyCount = 0;
     std::shared_ptr<rhi::ComputeBuffer> schedule, rootVotes;
     std::shared_ptr<void> execution;
-    // For a device-resolved graph, these arguments gate every consumer up to wake completion.
+    // The accepted graph gates all wake consumers. The counted patch command
+    // can carry a smaller effective range than its allocated candidate slots.
     std::shared_ptr<rhi::ComputeBuffer> wakeArguments;
+    std::optional<rhi::ComputeIndirectArguments> wakePatchDispatch;
 };
 
 class JoltGpuModelUpdate;
