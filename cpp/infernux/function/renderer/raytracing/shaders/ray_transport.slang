@@ -932,7 +932,9 @@ public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 geometric_nor
     if (dot(direction, geometric_normal) <= 0.0)
         return inx_ray_signal_output(float3(0.0), uint2(axis, 0u));
 
-    TraceRay ray = {position, 0.0, direction, inx_view.projection_params.y};
+    // The camera far plane only limits the screen trace. Allow the world query
+    // to see lighting and occluders outside the raster frustum.
+    TraceRay ray = {position, 0.0, direction, 100000.0};
     const float pdf = 0.15915494309;
     let hit = inx_ray_diffuse_incident(page, ray, screen_depth, sample_grid, history, reprojection, records,
                                        inx_ray_sample_hash(index), frame, cell * 2u, temporal);
