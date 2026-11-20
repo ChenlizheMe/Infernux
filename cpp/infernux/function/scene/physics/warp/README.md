@@ -9,11 +9,14 @@ These Slang entries follow MuJoCo Warp's shared model and world-indexed data. Th
 | `position.slang` | Branch kinematics, body inertial frames, geometry transforms | `kinematics_branch`, `body_inertial_frames`, `geom_local_to_global` |
 | `inertia.slang` | `com_pos`, subtree composite inertias and ancestor-row mass assembly | `subtree_com`, `subtree_com_world`, `cinert`, `cdof`, `crb_subtree`, `assemble_mass` |
 | `bias.slang` | `com_vel` and `rne` forward dynamics bias | `comvel_branch`, `bias_acceleration_branch`, `bias_force_body`, `bias_force_subtree`, `bias_force_world`, `project_bias` |
+| `passive.slang` | Rigid joint spring and damping forces | `joint_passive_force` |
 | `acceleration.slang` | Smooth generalized forces | `assemble_smooth_force` |
+| `wrench.slang` | Cartesian body wrenches, gravity compensation and generalized projection | `center_body_wrenches`, `add_generalized_wrenches` |
 | `mass_solve.slang` | `factor_m` and `solve_m` with compact, scalar, tiled and sparse blocks | `factor_small_mass`, `factor_tiled_mass`, `factor_sparse_mass`, `solve_small_mass`, `solve_tiled_mass`, `solve_sparse_mass` |
-| `euler.slang` | Velocity, position, time and warm-start advancement for semi-implicit Euler | `advance_velocity`, `advance_position`, `advance_time` |
+| `euler.slang` | Velocity, position, time and warm-start advancement with optional implicit joint damping | `assemble_euler_mass`, `advance_velocity`, `advance_position`, `advance_time` |
+| `broadphase.slang` | Segmented sweep and prune with plane, sphere, axis-aligned box and oriented box filters | `sap_project`, `sap_merge`, `sap_find_ranges`, `sap_scan_ranges`, `sap_emit_pairs` |
 
-For worlds without active constraints, the mass solve produces the acceleration consumed by Euler. The force assembly takes generalized passive, actuation and applied forces as inputs. Their producers, external Cartesian wrenches, implicit damping, collision, constraint assembly, the constraint solver, actuator and tendon armature, sleeping, CCD, and alternative integrators require their corresponding stages before full-step comparisons.
+For worlds without active constraints, the mass solve produces the acceleration consumed by Euler. The port accepts applied generalized forces and actuator forces as inputs. Actuator dynamics and transmissions, tendon forces and armature, actuator-specific gravity compensation, narrowphase, constraint assembly and solving, sleeping, CCD, and alternative integrators require their corresponding stages before full-step comparisons.
 
 The model contains the topology and inertial data shared by all worlds. `model.slang` defines records using 16-byte fields. Scalar generalized coordinates and the mass matrix remain tightly packed. Dispatch X addresses branches, bodies, joints or degrees of freedom, and dispatch Y addresses worlds. Dynamics arrays use a separate contiguous row per world. Quaternion order is `wxyz`. Matrix records store three padded rows.
 
@@ -21,11 +24,19 @@ The model contains the topology and inertial data shared by all worlds. `model.s
 
 Run the position, inertia, and bias entries in table order. The bias entries use one gravity vector per world. Factor the mass blocks after assembling the mass matrix, and solve each block after both its factor and the generalized force are available. Euler advances velocity before position and time. Resource dependencies between those dispatches require compute barriers.
 
+Assemble the generalized force after the joint passive step, and add any body wrenches before the mass solve. A body wrench gives world-space torque and force at the body's inertial origin. The projection first moves each wrench to its tree center of mass. With implicit Euler damping, assemble the effective mass and solve with the resolved generalized force as the right-hand side. `advance_velocity` integrates the effective acceleration and stores the resolved, undamped acceleration for warm-starting. Bind the same acceleration to both slots for the explicit damping case.
+
 ## Mass layout
 
 Classify each kinematic tree once when building the shared model, following upstream `m_block_layout`. Compact diagonal and full triangular blocks through six DOFs use the scalar entries. Other blocks through 64 DOFs use a workgroup tile, with the upper triangle gathered from CSR using `tileElements`. Absent entries carry `NoIndex`. Larger trees use the sparse entries. Each tiled or sparse workgroup owns a tree in one world. The sparse workgroup gathers contributions into a single writer per row and advances through tree levels on-device.
 
 Factor rows store packed dense block allocations followed by an optional CSR-shaped sparse region. Compact and sparse blocks store reciprocal diagonals in the per-DOF scratch array. The shared `sparseTopology` buffer starts with a four-word header containing the offsets of the level, row and contribution sections. Four-word block records follow. Within each block, the levels list DOFs shallowest first. A row's contribution records list each descendant DOF and the CSR entry for the pair. Submit an entry only when its block list is populated.
+
+## Broadphase
+
+Project bounds after geometry kinematics. The merge and inclusive scan entries use alternating buffers and strides of 1, 2, 4, and so on for the shared geometry count. The sweep workers take their work count from the final prefix sum for their world. The pair rule table follows the reference model's packed upper triangle and carries authored exclusions, explicit pair margins and sensor ids. Dispatches for an empty geometry set can be omitted when preparing the model.
+
+Set pair storage capacity per world through `sweepSettings`. The emission stage reports the total requested slot count. A following stage must consume at most the allocated range and propagate an overflow if the total exceeds it. Sleep filtering and per-world missing meshes require the matching model and state columns.
 
 ## Shader compilation
 

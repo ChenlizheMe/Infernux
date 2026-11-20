@@ -13,6 +13,29 @@
 [[vk::binding(5, 0)]] RWStructuredBuffer<float> qpos;
 [[vk::binding(6, 0)]] RWStructuredBuffer<float> qaccWarmstart;
 [[vk::binding(7, 0)]] RWStructuredBuffer<float> time;
+[[vk::binding(8, 0)]] StructuredBuffer<float> solvedAcceleration;
+[[vk::binding(9, 0)]] StructuredBuffer<DofModel> dofs;
+[[vk::binding(10, 0)]] StructuredBuffer<float4> dofDamping;
+[[vk::binding(11, 0)]] StructuredBuffer<float> massMatrix;
+[[vk::binding(12, 0)]] RWStructuredBuffer<float> eulerMassMatrix;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void assemble_euler_mass(uint3 id : SV_DispatchThreadID)
+{
+    const ModelDimensions size = model[0];
+    if (id.x >= size.state.y)
+        return;
+    const uint4 row = dofs[id.x].indices;
+    const uint base = id.y * size.layout.w + row.z;
+    for (uint entry = 0; entry + 1 < row.w; ++entry)
+        eulerMassMatrix[base + entry] = massMatrix[base + entry];
+    const uint diagonal = base + row.w - 1;
+    const float speed = abs(qvel[id.y * size.state.y + id.x]);
+    const float3 coefficients = dofDamping[id.x].xyz;
+    const float derivative = coefficients.x + 2.0 * coefficients.y * speed + 3.0 * coefficients.z * speed * speed;
+    eulerMassMatrix[diagonal] = massMatrix[diagonal] + timestep[id.y] * derivative;
+}
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -23,7 +46,7 @@ void advance_velocity(uint3 id : SV_DispatchThreadID)
         return;
     const uint index = id.y * count + id.x;
     qvel[index] += qacc[index] * timestep[id.y];
-    qaccWarmstart[index] = qacc[index];
+    qaccWarmstart[index] = solvedAcceleration[index];
 }
 
 [shader("compute")]
