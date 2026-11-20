@@ -25,44 +25,65 @@ float2 projectConvexSegment(float3 first, float3 second)
     return float2(0.0, 1.0);
 }
 
-float3 projectConvexTriangle(float3 vertices[3])
+bool projectConvexPlane(float3 first, float3 second, float3 third, out float3 projection)
 {
-    const float3 ab = vertices[1] - vertices[0];
-    const float3 ac = vertices[2] - vertices[0];
-    const float3 bc = vertices[2] - vertices[1];
+    const float3 ab = second - first;
+    const float3 ac = third - first;
+    const float3 bc = third - second;
     float3 normal = cross(bc, ab);
-    float offset = dot(normal, vertices[1]);
+    float offset = dot(normal, second);
     float normal2 = dot(normal, normal);
+    projection = float3(0.0);
     if (normal2 == 0.0)
-        return float3(projectConvexSegment(vertices[0], vertices[1]), 0.0);
+        return false;
     if (offset == 0.0 || normal2 <= MinValue)
     {
         normal = cross(ab, ac);
-        offset = dot(normal, vertices[0]);
+        offset = dot(normal, first);
         normal2 = dot(normal, normal);
         if (normal2 == 0.0)
-            return float3(projectConvexSegment(vertices[0], vertices[1]), 0.0);
+            return false;
         if (offset == 0.0 || normal2 <= MinValue)
         {
             normal = cross(ac, bc);
-            offset = dot(normal, vertices[2]);
+            offset = dot(normal, third);
             normal2 = dot(normal, normal);
         }
     }
-    const float3 projection = normal * (offset / normal2);
+    if (normal2 == 0.0)
+        return false;
+    projection = normal * (offset / normal2);
+    return true;
+}
 
+bool convexTriangleCoordinates(float3 first, float3 second, float3 third, float3 point, out float3 weights)
+{
     // Measure both signed areas from the same origin. This keeps the weights
     // normalized even when two supports nearly coincide on a box face.
+    const float3 ab = second - first;
+    const float3 ac = third - first;
     const float3 area = cross(ab, ac);
     const float3 magnitude = abs(area);
     const uint axis = magnitude.x >= magnitude.y && magnitude.x >= magnitude.z ? 0 :
                       magnitude.y >= magnitude.z ? 1 : 2;
+    weights = float3(0.0);
     if (area[axis] == 0.0)
-        return float3(projectConvexSegment(vertices[0], vertices[1]), 0.0);
-    const float3 delta = projection - vertices[0];
+        return false;
+    const float3 delta = point - first;
     const float weightB = cross(delta, ac)[axis] / area[axis];
     const float weightC = cross(ab, delta)[axis] / area[axis];
-    const float3 projected = float3(1.0 - weightB - weightC, weightB, weightC);
+    weights = float3(1.0 - weightB - weightC, weightB, weightC);
+    return true;
+}
+
+float3 projectConvexTriangle(float3 vertices[3])
+{
+    float3 projection;
+    if (!projectConvexPlane(vertices[0], vertices[1], vertices[2], projection))
+        return float3(projectConvexSegment(vertices[0], vertices[1]), 0.0);
+    float3 projected;
+    if (!convexTriangleCoordinates(vertices[0], vertices[1], vertices[2], projection, projected))
+        return float3(projectConvexSegment(vertices[0], vertices[1]), 0.0);
     const bool3 interior = projected > float3(0.0);
     if (all(interior))
         return projected;
