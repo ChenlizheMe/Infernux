@@ -1,5 +1,4 @@
 import infernux.shader as shader
-from infernux.shader.lib.color import luminance
 from infernux.shader.lib.ray_sh_filter import sh_clip_history, sh_guide_pixel
 
 
@@ -9,7 +8,6 @@ class RayDiffuseHistory(shader.fullscreen):
     fresh_red = shader.input("fresh_red", shader.Color2D)
     fresh_green = shader.input("fresh_green", shader.Color2D)
     fresh_blue = shader.input("fresh_blue", shader.Color2D)
-    fresh_error = shader.input("fresh_error", shader.Color2D)
     old_red = shader.input("old_red", shader.Color2D)
     old_green = shader.input("old_green", shader.Color2D)
     old_blue = shader.input("old_blue", shader.Color2D)
@@ -74,17 +72,7 @@ class RayDiffuseHistory(shader.fullscreen):
 
         age = shader.min(48.0, 1.0 + old.x)
         sample = shader.clamp(previous, 0.5 / shader.vec2(extent), 1.0 - 0.5 / shader.vec2(extent))
-        old_r = shader.sample_level(self.old_red, sample, 0.0)
-        old_g = shader.sample_level(self.old_green, sample, 0.0)
-        old_b = shader.sample_level(self.old_blue, sample, 0.0)
-        fresh_luma = luminance(shader.vec3(r.x, g.x, b.x))
-        old_luma = luminance(shader.vec3(old_r.x, old_g.x, old_b.x))
-        uncertainty = shader.load(self.fresh_error, cell, 0).x
-        level = shader.max(1e-4, shader.max(fresh_luma, old_luma))
-        lower = 1.5 * uncertainty + 0.05 * level
-        response = shader.smoothstep(lower, lower + 0.2 * level, shader.abs(fresh_luma - old_luma))
-        age = shader.mix(age, shader.min(age, 2.0), response)
-        r = shader.lerp(old_r, r, 1.0 / age)
-        g = shader.lerp(old_g, g, 1.0 / age)
-        b = shader.lerp(old_b, b, 1.0 / age)
+        r = shader.lerp(shader.sample_level(self.old_red, sample, 0.0), r, 1.0 / age)
+        g = shader.lerp(shader.sample_level(self.old_green, sample, 0.0), g, 1.0 / age)
+        b = shader.lerp(shader.sample_level(self.old_blue, sample, 0.0), b, 1.0 / age)
         return (sh_clip_history(r), sh_clip_history(g), sh_clip_history(b), shader.vec4(age, depth, 0.0, 0.0))

@@ -6,6 +6,9 @@ _package_dir = os.environ.get("_INFERNUX_PACKAGED_RESOURCE_ROOT") or os.path.dir
 
 _MONO_FONT = "MapleMono-CN-Regular.ttf"
 _MONO_FONT_RESOURCE = f"fonts/{_MONO_FONT}"
+_SH_BLUE_NOISE_RESOURCE = "textures/noise/sh_blue_noise.png"
+# Stable read-only asset identity for the packaged source path above.
+_SH_BLUE_NOISE_GUID = "2590868d76ce0a18b9ef9a896802dda2"
 
 # Default to package directory; overridden by activate_library() at launch.
 icon_path = os.path.join(_package_dir, "icons", "icon.png")

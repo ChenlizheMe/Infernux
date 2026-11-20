@@ -1,8 +1,7 @@
 import infernux.shader as shader
-from infernux.shader.lib.noise import hash_2d
 from infernux.shader.lib.ray_moments import sh_diffuse_irradiance
 from infernux.shader.lib.ray_signal import ray_grid_pixel
-from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_pixel, sh_resolve_offset
+from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_blue_noise, sh_guide_pixel, sh_resolve_offset
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -14,6 +13,7 @@ class RayDiffuseResolve(shader.fullscreen):
     blue_sh = shader.input("blue_sh", shader.Color2D)
     state = shader.input("state", shader.Color2D)
     primary = shader.input("primary", shader.UInt2D)
+    blue_noise = shader.input("blue_noise", shader.Color2D)
     frame = shader.input("frame", shader.Color2D)
 
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
@@ -27,8 +27,7 @@ class RayDiffuseResolve(shader.fullscreen):
         shading = decode_octahedral_normal(shader.load(self.frame, pixel, 0).xy)
         cell = ray_grid_pixel(pixel, full, extent)
         index = shader._view_sample_index()
-        seed = shader.vec2(pixel) + shader.float(index & shader.uint(255))
-        pattern = shader.uint(3.0 * hash_2d(seed) + 0.5)
+        pattern = shader.uint(3.0 * sh_blue_noise(self.blue_noise, pixel, index).x + 0.5)
         red = shader.vec4(0.0)
         green = shader.vec4(0.0)
         blue = shader.vec4(0.0)

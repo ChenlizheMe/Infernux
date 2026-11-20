@@ -1,0 +1,4 @@
+sh_blue_noise.png is LDR_RG01_0.png from the 256×256 set in Christoph Peters's
+Free Blue Noise Textures. The author released the textures under CC0 1.0.
+https://momentsingraphics.de/BlueNoise.html
+https://creativecommons.org/publicdomain/zero/1.0/

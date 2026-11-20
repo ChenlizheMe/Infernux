@@ -92,6 +92,8 @@ infernux = [
     "resources/fonts/*.ttf",
     "resources/fonts/*.txt",
     "resources/pictures/*.png",
+    "resources/textures/noise/*.png",
+    "resources/textures/noise/*.txt",
     "diagnostics/schemas/*.json",
     "resources/shaders/*.py",
     "resources/shaders/**/*.py",

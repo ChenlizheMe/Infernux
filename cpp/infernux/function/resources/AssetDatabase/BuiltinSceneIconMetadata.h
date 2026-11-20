@@ -49,4 +49,34 @@ inline bool HasCurrentBuiltinSceneIconMetadata(const InxResourceMeta &metadata, 
            metadata.HasKey("wrap_mode") && metadata.GetDataAs<std::string>("wrap_mode") == "clamp";
 }
 
+inline bool IsBuiltinBlueNoise(const std::string &path, bool readOnly)
+{
+    if (!readOnly)
+        return false;
+    const auto file = ToFsPath(path);
+    return file.filename() == "sh_blue_noise.png" && file.parent_path().filename() == "noise" &&
+           file.parent_path().parent_path().filename() == "textures";
+}
+
+inline void ApplyBuiltinTextureMetadata(InxResourceMeta &metadata, const std::string &path, bool readOnly)
+{
+    ApplyBuiltinSceneIconMetadata(metadata, path, readOnly);
+    if (IsBuiltinBlueNoise(path, readOnly)) {
+        metadata.AddMetadata("texture_type", std::string("data"));
+        metadata.AddMetadata("texture_compression", std::string("none"));
+        metadata.AddMetadata("generate_mipmaps", false);
+        metadata.AddMetadata("srgb", false);
+    }
+}
+
+inline bool HasCurrentBuiltinTextureMetadata(const InxResourceMeta &metadata, const std::string &path, bool readOnly)
+{
+    if (IsBuiltinBlueNoise(path, readOnly))
+        return metadata.HasKey("texture_type") && metadata.GetDataAs<std::string>("texture_type") == "data" &&
+               metadata.HasKey("texture_compression") && metadata.GetDataAs<std::string>("texture_compression") == "none" &&
+               metadata.HasKey("generate_mipmaps") && !metadata.GetDataAs<bool>("generate_mipmaps") &&
+               metadata.HasKey("srgb") && !metadata.GetDataAs<bool>("srgb");
+    return HasCurrentBuiltinSceneIconMetadata(metadata, path, readOnly);
+}
+
 } // namespace infernux

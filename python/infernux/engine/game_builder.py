@@ -2021,10 +2021,11 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             if guid not in editor_guids
             and is_lexical_path_within(source, assets_root, allow_root=False)
         }
+        builtin_runtime_resources = {_resources._MONO_FONT_RESOURCE.casefold(), _resources._SH_BLUE_NOISE_RESOURCE}
         for guid, entry in by_guid.items():
             if entry.get("read_only"):
                 relative = self._builtin_resource_relative_path(source_paths[guid], roots=builtin_roots).casefold()
-                if (relative == _resources._MONO_FONT_RESOURCE.casefold()
+                if (relative in builtin_runtime_resources
                         or (relative.startswith("shaders/") and logical_asset_type(entry) == "shader")):
                     roots.add(guid)
 
@@ -2116,6 +2117,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         by_guid = {str(entry["guid"]): entry for entry in self._asset_index_entries()}
         self._ensure_selected_particle_artifacts(selected)
         particle_index = self._particle_library_artifacts()
+        builtin_roots = self._builtin_resource_roots()
         copied: set[str] = set()
         for guid in sorted(selected):
             entry = selected[guid]
@@ -2141,11 +2143,28 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     )
                 continue
 
+            builtin_relative = (
+                self._builtin_resource_relative_path(source_path, roots=builtin_roots)
+                if entry.get("read_only", False)
+                else ""
+            )
+            source_root = None
+            source_entry = entry
+            if builtin_relative:
+                source_root = self._builtin_resource_source_root(source_path, builtin_relative)
+                source_entry = {**entry, "normalized_path": source_path}
+            source_relative = (
+                f"Library/Resources/{builtin_relative}"
+                if builtin_relative
+                else relative_path(source_path, self.project_path, resolve=False)
+            )
             binding = None
             for relative_artifact in artifact_paths:
                 artifact_path = resolved_path(os.path.join(self.project_path, relative_artifact))
                 try:
-                    binding = validate_artifact(self.project_path, entry, artifact_path)
+                    binding = validate_artifact(
+                        self.project_path, source_entry, artifact_path, source_root=source_root
+                    )
                 except RuntimeArtifactError as exc:
                     raise RuntimeError(f"Library artifact selection failed: {exc}") from exc
                 artifact_name = relative_artifact.replace("\\", "/")
@@ -2154,9 +2173,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 if artifact_name not in copied:
                     shutil.copy2(artifact_path, destination)
                     copied.add(artifact_name)
-                source_relative = relative_path(source_path, self.project_path, resolve=False)
                 self._runtime_artifact_source_paths.add(source_relative.casefold())
-                binding = dict(binding)
+                binding["source_path"] = source_relative
                 binding["runtime_path"] = f"Library/Artifacts/{artifact_name.split('/', 2)[-1]}" if artifact_name.startswith("Library/Artifacts/") else artifact_name
                 binding["dependencies"] = []
                 for dependency_guid in sorted(entry.get("dependencies", [])):
@@ -2174,10 +2192,13 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 skin_relative = f"Library/Artifacts/SkinnedMesh/{guid}.inxskin"
                 skin_path = resolved_path(os.path.join(self.project_path, skin_relative))
                 if os.path.isfile(skin_path):
-                    skin_binding = validate_artifact(self.project_path, entry, skin_path)
+                    skin_binding = validate_artifact(
+                        self.project_path, source_entry, skin_path, source_root=source_root
+                    )
                     destination = os.path.join(data_dir, "Library", "Artifacts", "SkinnedMesh", f"{guid}.inxskin")
                     os.makedirs(os.path.dirname(destination), exist_ok=True)
                     shutil.copy2(skin_path, destination)
+                    skin_binding["source_path"] = source_relative
                     skin_binding["runtime_path"] = skin_relative
                     skin_binding["dependencies"] = list(binding.get("dependencies", [])) if binding else []
                     self._runtime_artifact_bindings[skin_relative] = skin_binding

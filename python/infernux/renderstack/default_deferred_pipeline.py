@@ -158,7 +158,7 @@ class DefaultDeferredPipeline(RenderPipeline):
         default=False, display_name_key="renderstack.ray_transparency", visible_when=attrgetter("global_illumination"),
     )
     ray_quality: RayTracingQuality = serialized_field(
-        default=RayTracingQuality.STANDARD, display_name_key="renderstack.ray_quality",
+        default=RayTracingQuality.HIGH, display_name_key="renderstack.ray_quality",
         visible_when=attrgetter("global_illumination"),
     )
 

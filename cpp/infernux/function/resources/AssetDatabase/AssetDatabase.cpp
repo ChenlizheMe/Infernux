@@ -2005,7 +2005,7 @@ bool AssetDatabase::RestoreCachedCatalog()
                 return false;
             }
         }
-        if (!HasCurrentBuiltinSceneIconMetadata(entry.metadata, path, entry.readOnly) ||
+        if (!HasCurrentBuiltinTextureMetadata(entry.metadata, path, entry.readOnly) ||
             !HasCurrentPluginPageTextureMetadata(entry.metadata, path, m_projectRoot))
             return false;
 
@@ -3187,7 +3187,7 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item, TextureSourceSn
             if (item.fallbackGuid.empty())
                 item.authoredGuid = preservedGuid;
         }
-        ApplyBuiltinSceneIconMetadata(previousMetadata, item.file.path, item.file.readOnly);
+        ApplyBuiltinTextureMetadata(previousMetadata, item.file.path, item.file.readOnly);
         if (sourceSettings)
             ApplySourceImportSettings(previousMetadata, item.resourceType, *sourceSettings);
 
@@ -3360,7 +3360,7 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             fileState->second.source != file.source || fileState->second.meta != file.meta ||
             fileState->second.readOnly != file.readOnly ||
             !HasCurrentShaderSourceMetadata(indexed->metadata, file.path) ||
-            !HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly) ||
+            !HasCurrentBuiltinTextureMetadata(indexed->metadata, file.path, file.readOnly) ||
             !HasCurrentPluginPageTextureMetadata(indexed->metadata, file.path, m_projectRoot)) {
             unchanged = false;
             break;
@@ -3421,7 +3421,7 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             indexed->readOnly == file.readOnly && indexed->importSucceeded &&
             HasReusableRuntimeArtifact(*indexed, type, ToFsPath(m_projectRoot)) &&
             (file.readOnly || file.meta.size > 0) && HasCurrentShaderSourceMetadata(indexed->metadata, file.path) &&
-            HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly) &&
+            HasCurrentBuiltinTextureMetadata(indexed->metadata, file.path, file.readOnly) &&
             HasCurrentPluginPageTextureMetadata(indexed->metadata, file.path, m_projectRoot)) {
             m_metas[indexed->guid] = std::make_shared<InxResourceMeta>(indexed->metadata);
             updateScannedMapping(indexed->guid, file);

@@ -391,6 +391,8 @@ def validate_artifact(
     project_root: str | os.PathLike[str],
     entry: dict[str, Any],
     artifact_path: str | os.PathLike[str],
+    *,
+    source_root: str | os.PathLike[str] | None = None,
 ) -> dict[str, Any]:
     """Validate one Library artifact against its current AssetIndex entry."""
 
@@ -398,8 +400,9 @@ def validate_artifact(
         raise RuntimeArtifactError(
             f"AssetIndex reports an unsuccessful import for {entry.get('guid', '')}"
         )
-    source_fp = source_fingerprint(project_root, entry)
     root = resolved_path(project_root)
+    source_root = root if source_root is None else resolved_path(source_root)
+    source_fp = source_fingerprint(source_root, entry)
     artifact = resolved_path(artifact_path)
     try:
         artifact_relative = relative_path(artifact, root)
@@ -422,17 +425,17 @@ def validate_artifact(
                 f"Library particle artifact belongs to {owner}, not {guid}: "
                 f"{artifact}"
             )
-    expected_hash = expected_artifact_source_hash(project_root, entry, artifact)
+    expected_hash = expected_artifact_source_hash(source_root, entry, artifact)
     embedded_hash = artifact_source_hash(artifact)
     if embedded_hash.casefold() != expected_hash.casefold():
         raise RuntimeArtifactError(
             f"Library artifact is stale for {entry['guid']}: {artifact} "
             f"embedded={embedded_hash!r}, expected={expected_hash!r}"
         )
-    source_path = source_path_for_entry(project_root, entry)
+    source_path = source_path_for_entry(source_root, entry)
     return {
         "source_guid": str(entry["guid"]),
-        "source_path": relative_path(source_path, root),
+        "source_path": relative_path(source_path, source_root),
         "source_fingerprint": source_fp,
         "artifact_source_hash": expected_hash,
         "artifact_path": artifact_relative,

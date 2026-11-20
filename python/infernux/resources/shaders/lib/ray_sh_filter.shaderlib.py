@@ -40,6 +40,12 @@ def sh_guide_normal(packed: shader.uint) -> shader.vec3:
     return shader.vec3(bits - (bits >> 7) * 256) / 127.0
 
 
+def sh_blue_noise(texture: shader.Color2D, pixel: shader.ivec2, index: shader.uint) -> shader.vec2:
+    offset = shader.frac(0.5 + shader.float(index) * shader.vec2(0.7548776865, 0.5698403120))
+    texel = (pixel + shader.ivec2(offset * 256.0)) & shader.ivec2(255)
+    return shader.load(texture, texel, 0).xy * (255.0 / 256.0) + (0.5 / 256.0)
+
+
 def sh_resolve_offset(pattern: shader.uint, tap: int) -> shader.ivec2:
     if tap == 0:
         return shader.ivec2(0)

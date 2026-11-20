@@ -62,9 +62,7 @@ class GTAO(shader.fullscreen):
                     tangent_cosine = shader.dot(delta, view) / shader.max(distance, 1e-6)
                     horizons[side] = shader.max(horizons[side], shader.mix(open_horizon[side], tangent_cosine, support))
         sin_n = shader.sin(angle_n)
-        open_coverage = horizon_coverage(open_horizon, angle_n, sin_n, cos_n)
-        visible_coverage = horizon_coverage(horizons, angle_n, sin_n, cos_n)
-        # A single azimuth can integrate to less or more than one on an open
-        # plane. Accumulate the blocked part before quantizing the visibility.
-        blocked = shader.max(0.0, open_coverage - visible_coverage) * shader.mix(length_n, 1.0, 0.05)
-        return shader.vec4(shader.max(0.03, 1.0 - blocked))
+        coverage = horizon_coverage(horizons, angle_n, sin_n, cos_n)
+        small_radius = 0.5 * shader.saturate((10.0 - radius) * 0.01)
+        visibility = small_radius + coverage * shader.mix(length_n, 1.0, 0.05)
+        return shader.vec4(shader.max(0.03, visibility))
