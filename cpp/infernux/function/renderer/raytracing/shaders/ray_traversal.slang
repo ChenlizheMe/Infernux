@@ -294,7 +294,10 @@ bool ray_intersect_triangle<let Dynamic : bool>(RayPage page, TraceRay ray, RayP
     float denominator_error = ray_gamma(4.0f) * dot(abs(plane), abs(ray.direction)) +
                                 (1.0f + ray_gamma(3.0f)) * dot(plane_error, abs(ray.direction));
     distance = numerator / denominator;
+    // A rounded quotient can put an endpoint on the preceding float. Test the
+    // original ray interval in the plane equation as well, before accepting it.
     return distance > 0.0f && distance >= ray.minimum && distance <= maximum &&
+           abs(numerator) <= abs(denominator) * ray.maximum &&
            abs(numerator) > numerator_error && abs(denominator) > denominator_error;
 }
 

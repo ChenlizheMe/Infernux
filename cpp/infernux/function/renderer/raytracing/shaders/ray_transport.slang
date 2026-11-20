@@ -171,6 +171,12 @@ struct InxRayShadowHitPolicy : RayHitPolicy
     }
 };
 
+TraceRay inx_ray_open_segment(float3 origin, float3 delta)
+{
+    // The endpoint is at t = 1 for every length, including after an instance transform.
+    return {origin, 0.0, delta, asfloat(0x3f7fffffu)};
+}
+
 TraceRay inx_ray_light_visibility(float3 origin, InxTransportLight light)
 {
     if (light.directional)
@@ -178,9 +184,7 @@ TraceRay inx_ray_light_visibility(float3 origin, InxTransportLight light)
     float3 to_light = light.endpoint - origin;
     if (dot(to_light, light.sample.direction) <= 0.0)
         return {origin, 0.0, light.sample.direction, 0.0};
-    float distance = length(to_light);
-    // Leave the point/spot/rectangle endpoint outside the occlusion interval.
-    return {origin, 0.0, to_light / distance, asfloat(asuint(distance) - 1u)};
+    return inx_ray_open_segment(origin, to_light);
 }
 
 float3 inx_ray_direct_radiance(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
@@ -383,11 +387,8 @@ bool inx_ray_emitter_visible(RayPage page, float3 origin, InxRayEmitterSample sa
     float3 segment = sample.attributes.position_ws - origin;
     if (all(segment == float3(0.0)))
         return false;
-    // t is a fraction of the segment, so its open endpoint has the same
-    // representation at every length. Keep the ray aimed at the sampled point.
-    TraceRay visibility = {origin, 0.0, segment, asfloat(0x3f7fffffu)};
     InxRayEndpointHitPolicy material = {sample.endpoint};
-    return trace_visibility(page, visibility, 0xffffffffu, material);
+    return trace_visibility(page, inx_ray_open_segment(origin, segment), 0xffffffffu, material);
 }
 
 float3 inx_ray_emissive_direct(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
@@ -569,10 +570,9 @@ float3 inx_ray_cached_tail(RayPage page, RayHit hit, RaySurfaceHit attributes, I
         float3 origin = inx_ray_origin(attributes.position_ws, normal, attributes.position_error_ws);
         float3 endpoint = inx_ray_origin(anchor_surface.position_ws, asfloat(ng.xyz), anchor_surface.position_error_ws);
         float3 link = endpoint - origin;
-        float distance = length(link);
-        if (distance > 0.0)
+        if (any(link != float3(0.0)))
         {
-            TraceRay visibility = {origin, 0.0, link / distance, asfloat(asuint(distance) - 1u)};
+            TraceRay visibility = inx_ray_open_segment(origin, link);
             if (!inx_trace_lit_visibility(page, visibility, 0xffffffffu, 0.0))
                 continue;
         }
