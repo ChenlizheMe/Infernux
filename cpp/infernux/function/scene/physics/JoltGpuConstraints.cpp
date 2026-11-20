@@ -104,7 +104,7 @@ constexpr uint32_t P = Bit(Params), K = Bit(Work), S = Bit(Schedule), B = Bit(Bo
                    V = Bit(RootVotes);
 constexpr std::array<uint32_t, EntryCount> EntryPorts{
     P | K | S,
-    P | S,
+    P | S | Bit(Patches),
     P | K | S | B | Bit(Joints) | Bit(Sleeps),
     P | K | S | B | Bit(Shapes) | Bit(Patches) | Bit(Contacts) | Bit(Sleeps),
     P | K | B | C,
@@ -584,9 +584,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         value.select = {kind, banks[0], 0u, 0u};
         value.merge.z = count;
         Add(seed, count, value);
+        const uint32_t mergeCount = seed == SeedSort && kind == ConstraintPatch ? ConstraintInvalid : count;
         uint32_t source = 0;
         for (uint64_t width = ConstraintBlockSize; width < count; width *= 2u) {
-            value.merge = {banks[source], banks[source ^ 1u], count, Checked(width)};
+            value.merge = {banks[source], banks[source ^ 1u], mergeCount, Checked(width)};
             Add(MergeItems, count, value);
             source ^= 1u;
         }
@@ -675,12 +676,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
 
     uint32_t ChunkLimit(Entry entry) const
     {
-        if (localTopology) {
-            if (entry == InitWords)
-                return config.limits.x;
-            if (entry == BuildPatchRefs)
-                return config.counts.z;
-        }
+        if (localTopology && entry == InitWords)
+            return config.limits.x;
+        if (entry == BuildPatchRefs && (localTopology || contactLease->patchDispatch))
+            return config.counts.z;
         return Collective(entry) ? ConstraintBlockLimit : Summary(entry) ? 1u : ConstraintItemLimit;
     }
 
