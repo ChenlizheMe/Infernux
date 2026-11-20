@@ -4,14 +4,13 @@
 // Slang adaptation of MuJoCo Warp _src/collision_{core,primitive,primitive_core}.py.
 
 #include "model.slang"
+#include "contact.slang"
 
 static const uint GeomPlane = 0;
 static const uint GeomSphere = 2;
 static const uint GeomCapsule = 3;
 static const uint GeomEllipsoid = 4;
 static const uint GeomBox = 6;
-static const uint ContactConstraint = 1;
-static const uint ContactSensor = 2;
 static const float MinFriction = 1.0e-5;
 static const float MinValue = 1.0e-15;
 
@@ -36,20 +35,6 @@ struct ContactBasis
     float3 normal;
     float3 tangent;
     float3 bitangent;
-};
-
-struct Contact
-{
-    float4 positionDistance;
-    float4 normalMargin;
-    float4 tangentAdhesion;
-    float4 bitangent;
-    float4 reference;
-    float4 impedance;
-    float4 friction;
-    float4 extra;
-    uint4 geometry; // first geometry, second geometry, contact dimension, constraint/sensor flags
-    uint4 identity; // per-pair contact ordinal, sensor id
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> contactSettings; // geom count, candidate capacity, contact capacity, workers

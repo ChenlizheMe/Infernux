@@ -16,6 +16,7 @@ These Slang entries follow MuJoCo Warp's shared model and world-indexed data. Th
 | `euler.slang` | Velocity, position, time and warm-start advancement with optional implicit joint damping | `assemble_euler_mass`, `advance_velocity`, `advance_position`, `advance_time` |
 | `broadphase.slang` | Segmented sweep and prune with plane, sphere, axis-aligned box and oriented box filters | `sap_project`, `sap_merge`, `sap_find_ranges`, `sap_scan_ranges`, `sap_emit_pairs` |
 | `primitive_contacts.slang` | Plane against sphere, capsule, ellipsoid or box, and sphere against sphere or capsule | `clear_contact_count`, `collide_primitives` |
+| `contact_constraints.slang` | Sparse contact Jacobian, constraint row parameters and pyramidal or elliptic contact objective | `clear_constraint_counts`, `reserve_contact_rows`, `project_contact_rows`, `finish_contact_rows`, `seed_contact_acceleration`, `contact_residual`, `evaluate_contact_objective` |
 
 For worlds without active constraints, the mass solve produces the acceleration consumed by Euler. The port accepts applied generalized forces and actuator forces as inputs. Actuator dynamics and transmissions, tendon forces and armature, actuator-specific gravity compensation, the remaining narrowphase pairs, constraint assembly and solving, sleeping, CCD, and alternative integrators require their corresponding stages before full-step comparisons.
 
@@ -42,6 +43,12 @@ Set pair storage capacity per world through `sweepSettings`. The emission stage 
 ## Primitive contacts
 
 Clear the contact counters once before dispatching narrowphase. The primitive entry reads each world's candidate count on-device. Its material table stores geometry rows first and explicit pair overrides second. For geometry rows, the first three friction coefficients are sliding, torsional and rolling friction. For explicit pairs, supply the five contact coefficients. Contacts carry signed distance, frame, material, feature ordinal, and constraint and sensor flags. Contact counts retain any overflow beyond allocated storage, just as candidate counts do.
+
+## Contact constraints
+
+The contact row entries reserve contiguous CSR rows for each contact. They walk the two DOF chains, omitting shared ancestors, then project the contact frame onto the point and angular Jacobians. The continuous-time row update computes the reference acceleration and regularization from the projected velocity, material and world timestep. The setup entries select the initial acceleration, evaluate the constraint residual, and compute the force, cost and state for the chosen friction cone. The remaining solver must update generalized acceleration from the objective and write the final constraint forces before integration.
+
+The per-world row and nonzero counts retain overflow. Skip any incomplete matrix and report the exceeded capacity before publishing or integrating the step. Equality, limits, DOF friction loss and discrete integrator rows need their own producers.
 
 ## Shader compilation
 
