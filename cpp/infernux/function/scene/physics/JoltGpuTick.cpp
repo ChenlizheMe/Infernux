@@ -362,7 +362,7 @@ class JoltGpuTick::Impl
     };
     struct StageSpan
     {
-        JPH::GPU::Stage stage;
+        JPH::GPU::Stage stage{};
         JPH::GPU::Domain domain;
     };
 
@@ -414,6 +414,8 @@ class JoltGpuTick::Impl
         JPH::GPU::Stage stage;
         size_t phaseCount = 1;
         std::optional<rhi::ComputeCompletion> completion;
+        std::shared_ptr<rhi::ComputeReadback> validation;
+        std::vector<JPH::GPU::PhysicsStepStatus> statusRows;
         uint64_t opportunity = 0, gpuGrant = 0, transferGrant = 0, bytes = 0, started = 0;
         bool observed = false;
         uint64_t lastPoll = 0;
@@ -427,6 +429,7 @@ class JoltGpuTick::Impl
             return std::any_of(members.begin() + 1, members.end(), [](auto *member) { return member != nullptr; });
         }
         std::shared_ptr<SharedStage> prepared;
+        std::shared_ptr<rhi::ComputeBuffer> statusScratch;
         std::array<JoltGpuBodyBatchInputs, 3> bodyBatchInputs;
         size_t nextHost = 0, nextGpu = 0;
         uint64_t pollSerial = 0;
@@ -520,12 +523,24 @@ class JoltGpuTick::Impl
                     }
                 } catch (...) {
                     for (const auto &member : stage->members)
-                        member.tick->Fail();
+                        if (member.tick)
+                            member.tick->Fail();
                     throw;
                 }
             }
             if (!stage->observed) {
                 stage->observed = true;
+                if (auto validation = std::move(stage->validation)) {
+                    try {
+                        validation->ReadInto(stage->statusRows.data(),
+                                             stage->statusRows.size() * sizeof(JPH::GPU::PhysicsStepStatus));
+                    } catch (...) {
+                        for (const auto &member : stage->members)
+                            if (member.tick)
+                                member.tick->Fail();
+                        throw;
+                    }
+                }
                 const auto elapsed = stage->completion->GetDeviceElapsedNanoseconds();
                 if (elapsed)
                     work.ObserveResource(FrameWorkResource::Gpu, static_cast<uint64_t>(std::ceil(*elapsed)),
@@ -536,11 +551,16 @@ class JoltGpuTick::Impl
                 const auto estimate =
                     elapsed ? static_cast<uint64_t>(std::ceil(*elapsed)) : NowNanoseconds() - stage->started;
                 stage->owner->ObserveCost(stage->key, estimate);
-                if (stage->phaseCount == 1)
+                if (stage->statusRows.empty() && stage->phaseCount == 1)
                     ObserveUnitCost(stage->owner->stageEstimates[stage->stage], stage->members.size(), estimate);
                 // One packet measurement; the peer does not receive a second sample.
             }
             it = sharedStages.erase(it);
+            if (!stage->statusRows.empty() && status == Status::Running) {
+                const auto member = std::find_if(stage->members.begin(), stage->members.end(),
+                                                 [this](const auto &entry) { return entry.tick == this; });
+                JoltGpuSleep::ValidateStepStatus(stage->statusRows[member - stage->members.begin()]);
+            }
             work.ReportProgress();
         }
         if (submissionBusy && (busyOpportunity != work.Opportunity() || busyProgress != work.ProgressSerial() ||
@@ -645,6 +665,8 @@ class JoltGpuTick::Impl
     {
         if (lane->OtherReceipts(this))
             return false;
+        if (std::any_of(sharedStages.begin(), sharedStages.end(), [](const auto &stage) { return stage->completion; }))
+            return false;
         for (const auto *member : lane->members)
             if (member && member != this && member->tickParameters.selectedCounts.z &&
                 ((member->control.articulations && member->control.articulations->preparing) ||
@@ -669,6 +691,8 @@ class JoltGpuTick::Impl
 
     bool StartPressure()
     {
+        const bool droppedPublication =
+            lane->prepared && lane->prepared->owner == this && batchKind == PacketKind::FinalWork;
         lane->DropShared(this);
         if (!receipts.empty())
             return false;
@@ -721,7 +745,8 @@ class JoltGpuTick::Impl
         }
 
         if (status == Status::Running && finalPrepared && !snapshotComplete &&
-            (continuationKind == PacketKind::FinalWork || (batch && batchKind == PacketKind::FinalWork))) {
+            (droppedPublication || continuationKind == PacketKind::FinalWork ||
+             (batch && batchKind == PacketKind::FinalWork))) {
             CancelPackets();
             finalOutput.states.reset();
             finalOutput.joints.reset();
@@ -1524,7 +1549,7 @@ class JoltGpuTick::Impl
         const bool adjustable =
             (batchKind == PacketKind::NumericalWork || batchKind == PacketKind::Pressure) && bool(workMinimum);
         const bool prefix =
-            (lane->prepared && lane->prepared->owner == this) ||
+            (lane->prepared && lane->prepared->owner == this && batchKind == PacketKind::Stages) ||
             ((batchKind == PacketKind::Commands || batchKind == PacketKind::Stages) && batchEnd - batchBegin > 1);
         if (!batch || preservation || (!adjustable && !prefix) || batch->RequiresPreparation() ||
             batch->HasPreservationWork())
@@ -1540,11 +1565,12 @@ class JoltGpuTick::Impl
         const auto *packet = Submission();
         if (!packet)
             return false;
-        const bool indivisible = (lane->prepared && lane->prepared->owner == this && !preservation) ? false
-                                 : preservation ? packet->GetTransferBytes() <= 4
-                                 : batchKind == PacketKind::Commands || batchKind == PacketKind::Stages
-                                     ? batchEnd - batchBegin == 1
-                                     : true;
+        const bool indivisible =
+            (lane->prepared && lane->prepared->owner == this && batchKind == PacketKind::Stages && !preservation)
+                ? false
+            : preservation                                                         ? packet->GetTransferBytes() <= 4
+            : batchKind == PacketKind::Commands || batchKind == PacketKind::Stages ? batchEnd - batchBegin == 1
+                                                                                   : true;
         return work.CanAdmitResource(FrameWorkResource::Gpu, Prediction(SubmissionKey(*packet)), indivisible) &&
                (!packet->GetTransferBytes() ||
                 work.CanAdmitResource(FrameWorkResource::Transfer, packet->GetTransferBytes(), indivisible));
@@ -1554,16 +1580,16 @@ class JoltGpuTick::Impl
     {
         FrameWorkFacts facts;
         facts.observe = pressureObserved;
-        if (lane->prepared && lane->prepared->owner != this && lane->prepared->Includes(this)) {
-            facts.pending = true;
-            return facts;
-        }
         if (PressureRequested()) {
             facts.pending = true;
             if (receipts.empty())
                 facts.host.ready = true;
             else
                 facts.gpuBusy = true;
+            return facts;
+        }
+        if (lane->prepared && lane->prepared->owner != this && lane->prepared->Includes(this)) {
+            facts.pending = true;
             return facts;
         }
         if (!admissionEnabled && !pressureActive) {
@@ -1693,25 +1719,74 @@ class JoltGpuTick::Impl
         return true;
     }
 
+    std::shared_ptr<SharedStage> GatherStepStatus(uint64_t window, std::vector<rhi::ComputeBufferCopy> &copies,
+                                                  std::vector<rhi::ComputeBufferRead> &reads)
+    {
+        using JPH::GPU::PhysicsStepStatus;
+        constexpr auto rowBytes = sizeof(PhysicsStepStatus);
+        const auto limit = window / (2 * rowBytes);
+        if (limit < 2 || lane->focus || lane->prepared || !lane->HasOtherMember())
+            return {};
+
+        auto group = std::make_shared<SharedStage>();
+        group->owner = this;
+        group->members.push_back({this, {}, 0, {}});
+        for (auto *peer : lane->members) {
+            if (group->members.size() == limit)
+                break;
+            if (peer && peer != this && peer->admissionEnabled && peer->status == Status::Running && peer->stepStatus &&
+                peer->NumericalInputsAccepted() && !peer->finalPrepared)
+                group->members.push_back({peer, {}, 0, {}});
+        }
+        if (group->members.size() == 1)
+            return {};
+
+        const auto bytes = group->members.size() * rowBytes;
+        auto &scratch = lane->statusScratch;
+        if (!scratch || scratch->GetByteSize() < bytes) {
+            scratch = rhi::ComputeBuffer::TryCreatePrivate(
+                host, {bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1u});
+            if (!scratch)
+                return {};
+        }
+        group->statusRows.resize(group->members.size());
+        for (size_t i = 0; i < group->members.size(); ++i)
+            copies.push_back({group->members[i].tick->stepStatus, scratch, {0u, i * rowBytes, rowBytes}});
+        reads.push_back({scratch, 0u, bytes});
+        return group;
+    }
+
     std::shared_ptr<rhi::PreparedComputeBatch>
     PreparePublicationPacket(std::vector<rhi::ComputeBufferUpdate> uploads,
                              std::vector<rhi::ComputeDispatchDesc> dispatches,
-                             std::vector<rhi::ComputeBufferCopy> copies, bool readStepStatus)
+                             std::vector<rhi::ComputeBufferCopy> copies, bool readStepStatus, uint64_t window)
     {
         std::vector<rhi::ComputeBufferRead> reads;
-        if (readStepStatus)
+        auto group = readStepStatus ? GatherStepStatus(window, copies, reads) : nullptr;
+        if (readStepStatus && !group)
             reads.push_back({stepStatus, 0u, sizeof(JPH::GPU::PhysicsStepStatus)});
         auto packet = rhi::PrepareComputeBatch(host, std::move(uploads), std::move(dispatches), std::move(reads),
                                                std::move(copies));
-        if (readStepStatus)
+        if (group) {
+            group->validation = packet->Readback(0);
+            for (const auto &entry : group->members)
+                entry.tick->sharedStages.reserve(entry.tick->sharedStages.size() + 1);
+            for (const auto &entry : group->members)
+                entry.tick->sharedStages.push_back(group);
+            lane->prepared = std::move(group);
+        } else if (readStepStatus) {
             stepStatusPacket = packet;
+        }
         return packet;
     }
 
     JoltGpuControlWork PrepareSnapshot()
     {
-        if (!control.needsSnapshot)
-            return stepStatus ? JoltGpuControlWork{PreparePublicationPacket({}, {}, {}, true)} : JoltGpuControlWork{};
+        if (!control.needsSnapshot) {
+            const auto window = work.ResourceRemaining(FrameWorkResource::Transfer);
+            return stepStatus ? JoltGpuControlWork{PreparePublicationPacket({}, {}, {}, true, window)}
+                              : JoltGpuControlWork{};
+        }
         using namespace JPH::GPU;
         const auto &liveLayout = *storage.GetJointLayout();
         const auto slice = liveLayout.WorldSlice(finalOutput.jointBase, finalOutput.jointCount);
@@ -1803,8 +1878,8 @@ class JoltGpuTick::Impl
             control.prepareFinalWork = {};
             return prepare ? prepare(finalOutput) : JoltGpuControlWork{};
         }
-        auto packet =
-            PreparePublicationPacket(std::move(uploads), std::move(dispatches), std::move(copies), readStepStatus);
+        auto packet = PreparePublicationPacket(std::move(uploads), std::move(dispatches), std::move(copies),
+                                               readStepStatus, remaining);
         // The continuation only records later copies or freezes the accepted
         // destination before preparing queue-ordered final work. No CPU value
         // is decoded here. Tick publication still waits for every real receipt.
@@ -2162,22 +2237,25 @@ class JoltGpuTick::Impl
                   uint64_t started)
     {
         const auto kind = preservation ? PacketKind::Preservation : batchKind;
-        if (kind == PacketKind::Stages && lane->prepared && lane->prepared->owner == this) {
-            const auto stage = lane->prepared;
+        const auto stage = !preservation && lane->prepared && lane->prepared->owner == this ? lane->prepared : nullptr;
+        if (stage) {
             stage->completion.emplace(packet->GetCompletion());
+            stage->key = std::move(key);
             stage->opportunity = work.Opportunity();
             stage->gpuGrant = work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction);
             stage->bytes = packet->GetTransferBytes();
             stage->transferGrant =
                 stage->bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, stage->bytes) : 0;
             stage->started = started;
+            lane->prepared.reset();
+        }
+        if (stage && kind == PacketKind::Stages) {
             for (const auto &member : stage->members) {
                 member.tick->cursor = member.cursorEnd;
                 member.tick->stageCursor = member.end;
             }
             batch.reset();
             batchNumericalKey.clear();
-            lane->prepared.reset();
             try {
                 if (INXLOG_GET_LEVEL() == LOG_DEBUG)
                     INXLOG_DIAGNOSTIC("P4_SHARED_ACCEPT opportunity=", stage->opportunity, " owner_row=", selectedRow,
@@ -2191,6 +2269,11 @@ class JoltGpuTick::Impl
             }
             return;
         }
+        if (stage) {
+            for (const auto &member : stage->members)
+                if (auto *tick = member.tick)
+                    tick->stepStatusStorage = std::move(tick->stepStatus);
+        }
         const auto bytes = packet->GetTransferBytes();
         const bool prefix = kind == PacketKind::Stages || kind == PacketKind::Commands;
         const auto homogeneousStage = kind == PacketKind::Stages ? batchHomogeneousStage : std::nullopt;
@@ -2202,11 +2285,12 @@ class JoltGpuTick::Impl
             // validates that every accumulated status word is zero.
             stepStatusStorage = std::move(stepStatus);
         }
-        receipts.emplace_back(
-            Receipt{packet->GetCompletion(), std::move(key), kind, prefix ? batchEnd - batchBegin : 0, homogeneousStage,
-                    work.Opportunity(), work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
-                    bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0, bytes, started,
-                    kind == PacketKind::Stages ? inputs.GetGeometry() : workGeometry, std::move(stepValidation)});
+        if (!stage)
+            receipts.emplace_back(Receipt{
+                packet->GetCompletion(), std::move(key), kind, prefix ? batchEnd - batchBegin : 0, homogeneousStage,
+                work.Opportunity(), work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
+                bytes ? work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes) : 0, bytes, started,
+                kind == PacketKind::Stages ? inputs.GetGeometry() : workGeometry, std::move(stepValidation)});
         if (kind == PacketKind::Preservation) {
             preservation.reset();
         } else {
@@ -2439,6 +2523,16 @@ void JoltGpuTick::Impl::Lane::DropShared(Impl *member) noexcept
         bodyBatchInputs = {};
     if (!prepared || !prepared->Includes(member))
         return;
+    if (!prepared->statusRows.empty() && prepared->owner != member) {
+        // The unsubmitted snapshot still owns its recorded source buffers.
+        // Keep the owner's recorded offsets and omit delivery to this World.
+        const auto row = std::find_if(prepared->members.begin(), prepared->members.end(),
+                                      [member](const auto &entry) { return entry.tick == member; });
+        row->tick = nullptr;
+        const auto receipt = std::find(member->sharedStages.begin(), member->sharedStages.end(), prepared);
+        member->sharedStages.erase(receipt);
+        return;
+    }
     const auto stage = std::move(prepared);
     if (stage->owner->batch)
         stage->owner->batch->Cancel();
@@ -2450,9 +2544,11 @@ void JoltGpuTick::Impl::Lane::DropShared(Impl *member) noexcept
     stage->owner->submissionBusy = false;
     for (const auto &entry : stage->members) {
         auto *affected = entry.tick;
-        const auto found = std::find(affected->sharedStages.begin(), affected->sharedStages.end(), stage);
-        if (found != affected->sharedStages.end())
-            affected->sharedStages.erase(found);
+        if (!affected)
+            continue;
+        const auto receipt = std::find(affected->sharedStages.begin(), affected->sharedStages.end(), stage);
+        if (receipt != affected->sharedStages.end())
+            affected->sharedStages.erase(receipt);
     }
 }
 
@@ -2592,7 +2688,6 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     }
     auto packet = rhi::PrepareComputeBatch(a->host, std::move(uploads), std::move(dispatches));
     auto numericalKey = a->NumericalKey(numericalUnits);
-    stage->key = Impl::Key(*packet, numericalKey);
     // Finish fallible preparation before replacing proposals at the same
     // accepted cursors. Their accepted receipts and cursors stay untouched.
     for (const auto &entry : stage->members) {
@@ -2659,7 +2754,8 @@ bool JoltGpuTick::Impl::Lane::Advance(bool gpu, uint64_t token)
         } catch (...) {
             if (affected && affected->completion)
                 for (const auto &entry : affected->members)
-                    entry.tick->Fail();
+                    if (entry.tick)
+                        entry.tick->Fail();
             if (!HasOtherMember())
                 throw;
             return true; // Each World observes its own retained Failed status.

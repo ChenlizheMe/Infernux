@@ -474,6 +474,11 @@ void JoltGpuSleep::ValidateStepStatus(rhi::ComputeReadback &readback)
 {
     PhysicsStepStatus status{};
     readback.ReadInto(&status, sizeof(status));
+    ValidateStepStatus(status);
+}
+
+void JoltGpuSleep::ValidateStepStatus(const PhysicsStepStatus &status)
+{
     if (status.broadphase)
         throw std::runtime_error("GPU broadphase did not validate (status " + std::to_string(status.broadphase) + ")");
     if (status.topology)

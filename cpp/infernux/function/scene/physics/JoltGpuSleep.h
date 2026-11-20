@@ -25,6 +25,7 @@ class JoltGpuSleep final
     static void InitializeStepStatus(const std::shared_ptr<rhi::ComputeBuffer> &,
                                      std::vector<rhi::ComputeBufferUpdate> &);
     static void ValidateStepStatus(rhi::ComputeReadback &);
+    static void ValidateStepStatus(const JPH::GPU::PhysicsStepStatus &);
     [[nodiscard]] JoltGpuControlWork PrepareWake(const JoltGpuStorage &, const JoltGpuStepInputs &,
                                                  const JoltGpuConstraintTopology &,
                                                  const std::shared_ptr<rhi::ComputeBuffer> &status,
