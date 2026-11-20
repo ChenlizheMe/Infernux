@@ -370,28 +370,34 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         };
         config.layout.x = reserve(ConstraintScheduleHeaderWords);
         config.layout.y = reserve(1u);
-        config.layout.z = reserve(b);
-        config.layout.w = reserve(allRefs);
         config.references.x = reserve(2ull * j);
         config.references.y = reserve(2ull * p);
-        jointSort = {reserve(j), reserve(j)};
-        patchSort = {reserve(p), reserve(p)};
-        config.sources = {reserve(j), reserve(p), reserve(b), reserve(b)};
-        config.islands = {reserve(2ull * b), reserve(b), reserve(b), reserve(b)};
-        config.summary = {reserve(1u), reserve(1u), reserve(1u), reserve(1u)};
+        // Every numerical island uses at least one active reference. Each
+        // per-kind table has the same bound for its own reference stream.
+        config.sources = {reserve(j), reserve(p), reserve(std::min(b, j)), reserve(std::min(b, p))};
+        config.islands.x = reserve(2ull * std::min(b, allRefs));
         config.limits.w = reserve(b);
-        // One reusable hierarchy. Persistent summaries above never alias it.
-        uint32_t count = std::max(b, allRefs);
-        do {
-            const uint32_t blocks = Blocks(count);
-            // Level0 exclusive-prefix storage is config.islands.z. Only
-            // higher levels need a scratch prefix; reductions need none.
-            const uint32_t prefix = hierarchy.empty() ? 0u : reserve(count);
-            hierarchy.push_back({prefix, reserve(blocks), count});
-            if (blocks == 1u)
-                break;
-            count = blocks;
-        } while (true);
+        if (!localTopology) {
+            config.select.w = 1u;
+            config.layout.z = reserve(b);
+            config.layout.w = reserve(allRefs);
+            jointSort = {reserve(j), reserve(j)};
+            patchSort = {reserve(p), reserve(p)};
+            config.islands.y = reserve(b);
+            config.islands.z = reserve(b);
+            config.islands.w = reserve(b);
+            config.summary = {reserve(1u), reserve(1u), reserve(1u), reserve(1u)};
+            // One reusable hierarchy for multi-workgroup scans and reductions.
+            uint32_t count = std::max(b, allRefs);
+            do {
+                const uint32_t blocks = Blocks(count);
+                const uint32_t prefix = hierarchy.empty() ? 0u : reserve(count);
+                hierarchy.push_back({prefix, reserve(blocks), count});
+                if (blocks == 1u)
+                    break;
+                count = blocks;
+            } while (true);
+        }
         config.limits.x = Checked(words);
         BuildConnectivity();
     }
