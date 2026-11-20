@@ -15,8 +15,9 @@ These Slang entries follow MuJoCo Warp's shared model and world-indexed data. Th
 | `mass_solve.slang` | `factor_m` and `solve_m` with compact, scalar, tiled and sparse blocks | `factor_small_mass`, `factor_tiled_mass`, `factor_sparse_mass`, `solve_small_mass`, `solve_tiled_mass`, `solve_sparse_mass` |
 | `euler.slang` | Velocity, position, time and warm-start advancement with optional implicit joint damping | `assemble_euler_mass`, `advance_velocity`, `advance_position`, `advance_time` |
 | `broadphase.slang` | Segmented sweep and prune with plane, sphere, axis-aligned box and oriented box filters | `sap_project`, `sap_merge`, `sap_find_ranges`, `sap_scan_ranges`, `sap_emit_pairs` |
+| `primitive_contacts.slang` | Plane against sphere, capsule, ellipsoid or box, and sphere against sphere or capsule | `clear_contact_count`, `collide_primitives` |
 
-For worlds without active constraints, the mass solve produces the acceleration consumed by Euler. The port accepts applied generalized forces and actuator forces as inputs. Actuator dynamics and transmissions, tendon forces and armature, actuator-specific gravity compensation, narrowphase, constraint assembly and solving, sleeping, CCD, and alternative integrators require their corresponding stages before full-step comparisons.
+For worlds without active constraints, the mass solve produces the acceleration consumed by Euler. The port accepts applied generalized forces and actuator forces as inputs. Actuator dynamics and transmissions, tendon forces and armature, actuator-specific gravity compensation, the remaining narrowphase pairs, constraint assembly and solving, sleeping, CCD, and alternative integrators require their corresponding stages before full-step comparisons.
 
 The model contains the topology and inertial data shared by all worlds. `model.slang` defines records using 16-byte fields. Scalar generalized coordinates and the mass matrix remain tightly packed. Dispatch X addresses branches, bodies, joints or degrees of freedom, and dispatch Y addresses worlds. Dynamics arrays use a separate contiguous row per world. Quaternion order is `wxyz`. Matrix records store three padded rows.
 
@@ -37,6 +38,10 @@ Factor rows store packed dense block allocations followed by an optional CSR-sha
 Project bounds after geometry kinematics. The merge and inclusive scan entries use alternating buffers and strides of 1, 2, 4, and so on for the shared geometry count. The sweep workers take their work count from the final prefix sum for their world. The pair rule table follows the reference model's packed upper triangle and carries authored exclusions, explicit pair margins and sensor ids. Dispatches for an empty geometry set can be omitted when preparing the model.
 
 Set pair storage capacity per world through `sweepSettings`. The emission stage reports the total requested slot count. A following stage must consume at most the allocated range and propagate an overflow if the total exceeds it. Sleep filtering and per-world missing meshes require the matching model and state columns.
+
+## Primitive contacts
+
+Clear the contact counters once before dispatching narrowphase. The primitive entry reads each world's candidate count on-device. Its material table stores geometry rows first and explicit pair overrides second. For geometry rows, the first three friction coefficients are sliding, torsional and rolling friction. For explicit pairs, supply the five contact coefficients. Contacts carry signed distance, frame, material, feature ordinal, and constraint and sensor flags. Contact counts retain any overflow beyond allocated storage, just as candidate counts do.
 
 ## Shader compilation
 
