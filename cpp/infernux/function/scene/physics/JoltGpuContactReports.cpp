@@ -346,17 +346,17 @@ JoltGpuContactReports::Capture JoltGpuContactReports::Prepare(std::shared_ptr<co
         const auto &publication = *result->publication;
         if (publication.worldRow != params.selection.x || publication.bodyBase != params.selection.y ||
             publication.bodyCount != params.selectedCounts.x || publication.leafBase != params.selection.z ||
-            publication.leafCount != params.selectedCounts.y || uint64_t(lease->patchCount) * 22u > UINT32_MAX)
+            publication.leafCount != params.selectedCounts.y || uint64_t(lease->patchSlots) * 22u > UINT32_MAX)
             throw std::logic_error("Contact phase differs from accepted publication/range");
         if (stage == JoltGpuContactReportStage::BeforeVelocity) {
             if (substep != result->frames.size())
                 throw std::logic_error("Repeated/out-of-order contact seed");
-            result->frames.push_back({substep, lease->patchCount});
+            result->frames.push_back({substep, lease->patchSlots});
         }
         auto &frame = swept ? result->sweepFrames[substep].emplace_back(
-                                  JoltGpuContactReportResult::Frame{substep, lease->patchCount})
+                                  JoltGpuContactReportResult::Frame{substep, lease->patchSlots})
                             : result->frames.at(substep);
-        if (frame.capacity != lease->patchCount ||
+        if (frame.capacity != lease->patchSlots ||
             (stage == JoltGpuContactReportStage::AfterVelocity && (!frame.seeded || frame.finished)))
             throw std::logic_error("Contact phase lease mismatch");
         auto job = std::make_shared<Impl::Job>();

@@ -102,33 +102,33 @@ constexpr uint32_t Bit(Port port)
 }
 constexpr uint32_t P = Bit(Params), K = Bit(Work), S = Bit(Schedule), B = Bit(Bodies), C = Bit(Parents),
                    V = Bit(RootVotes);
-constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
-                                                      P | S,
-                                                      P | K | S | B | Bit(Joints) | Bit(Sleeps),
-                                                      P | K | S | B | Bit(Shapes) | Bit(Patches) | Bit(Contacts) |
-                                                          Bit(Sleeps),
-                                                      P | K | B | C,
-                                                      P | V,
-                                                      P | K | S | C | V,
-                                                      P | K | C | V,
-                                                      P | S | V | Bit(TopologyArguments),
-                                                      P | K | S | B | C,
-                                                      P | K | S | B | C,
-                                                      P | S,
-                                                      P | K | S,
-                                                      P | K | S,
-                                                      P | K | S,
-                                                      P | K | S | C,
-                                                      P | K | S,
-                                                      P | K | V,
-                                                      P | K | S | C | V,
-                                                      P | K | S | C | V,
-                                                      P | K | S,
-                                                      P | K | S,
-                                                      P | S,
-                                                      P | K | S | C,
-                                                      P | S | B | C | V | Bit(TopologyArguments) | Bit(StepStatus),
-                                                      P | S | B | C | Bit(TopologyArguments) | Bit(StepStatus)};
+constexpr std::array<uint32_t, EntryCount> EntryPorts{
+    P | K | S,
+    P | S,
+    P | K | S | B | Bit(Joints) | Bit(Sleeps),
+    P | K | S | B | Bit(Shapes) | Bit(Patches) | Bit(Contacts) | Bit(Sleeps),
+    P | K | B | C,
+    P | V,
+    P | K | S | C | V,
+    P | K | C | V,
+    P | S | V | Bit(TopologyArguments),
+    P | K | S | B | C,
+    P | K | S | B | C,
+    P | S,
+    P | K | S,
+    P | K | S,
+    P | K | S,
+    P | K | S | C,
+    P | K | S,
+    P | K | V,
+    P | K | S | C | V,
+    P | K | S | C | V,
+    P | K | S,
+    P | K | S,
+    P | S,
+    P | K | S | C,
+    P | S | B | C | V | Bit(Patches) | Bit(TopologyArguments) | Bit(StepStatus),
+    P | S | B | C | Bit(Patches) | Bit(TopologyArguments) | Bit(StepStatus)};
 
 struct PortLayout
 {
@@ -315,7 +315,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             throw std::invalid_argument("GPU constraints require the accepted tick host/contact workset");
         const uint32_t world = parameters.selection.x;
         const auto &range = storage.GetModel().worlds.at(world);
-        const uint32_t b = range.bodies.y, j = range.leaves.w, p = contactLease->patchCount;
+        const uint32_t b = range.bodies.y, j = range.leaves.w, p = contactLease->patchSlots;
         const uint32_t totalBodies = storage.GetBodyCount();
         if (!b || parameters.counts.x != totalBodies || parameters.counts.y != storage.GetWorldCount() ||
             parameters.counts.z != storage.GetShapeCount())

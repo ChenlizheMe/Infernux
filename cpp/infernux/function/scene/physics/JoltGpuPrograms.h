@@ -78,11 +78,11 @@ struct JoltGpuStageWork
     JPH::GPU::StageWork parameters;
 };
 
-/// One substep's accepted sparse contact resources. Counts describe logical
-/// candidates, never buffer capacity; writable contacts/arena share this lease.
+/// The selected substep's dispatch extent. The candidate header and shader
+/// parameters own the logical prefix even when the host uses a capacity bound.
 struct JoltGpuContactWorkset
 {
-    uint32_t patchCount = 0, maxPatchesPerWorld = 0;
+    uint32_t patchSlots = 0;
     std::shared_ptr<rhi::ComputeBuffer> parameters, contacts, patches;
 };
 

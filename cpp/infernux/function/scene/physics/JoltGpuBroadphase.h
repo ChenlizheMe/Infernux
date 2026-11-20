@@ -11,16 +11,23 @@ namespace infernux
 class JoltGpuBroadphase final
 {
   public:
+    /// One discrete collision workspace retained by the fixed-step owner.
+    struct Workspace
+    {
+        uint32_t patchCapacity = 0, nextCapacity = 0;
+        std::shared_ptr<rhi::ComputeBuffer> arena, arguments, parameters, patches, contacts, pairCount;
+    };
+
     JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetCode &target);
     [[nodiscard]] bool TryPrepareStartupPrograms();
 
     [[nodiscard]] JoltGpuControlWork
     Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
-            const JPH::GPU::StepParams &parameters,
-            std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed, bool swept = false);
+            const JPH::GPU::StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
+            Workspace &workspace, std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed,
+            bool swept = false);
 
-    // Clear only the numeric hint at cancellation/admission shutdown. No
-    // optional GPU allocation is retained between producer executions.
+    // The discrete workspace belongs to its fixed-step owner.
     void ResetCapacityHint() noexcept;
 
   private:

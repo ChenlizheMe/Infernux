@@ -1,7 +1,9 @@
 #include "JoltGpuBroadphase.h"
 #include "JoltGpuProgramSources.h"
+#include "JoltGpuSleep.h"
 
 #include <Jolt/GPU/BroadphaseTypes.h>
+#include <Jolt/GPU/ConstraintTypes.h>
 
 #include <algorithm>
 #include <array>
@@ -35,6 +37,7 @@ enum Port : uint8_t
     ResidentContacts,
     CandidateArena,
     PairCount,
+    StepStatus,
     PortCount
 };
 enum Entry : uint8_t
@@ -108,7 +111,7 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{
     A | P | K,
     A | P | Bit(PairCount),
     P | K | Bit(ResidentContacts),
-    A | P | K | Bit(ResidentStep) | Bit(CandidateArena) | Bit(Arguments),
+    A | P | K | Bit(ResidentStep) | Bit(CandidateArena) | Bit(Arguments) | Bit(StepStatus),
     P | K | Bit(CandidateArena),
     A | P | Bit(Bodies) | Bit(Shapes) | Bit(AuthorWorlds) | Bit(Bounds) | Bit(Joints) | Bit(ColliderPairs) |
         Bit(CandidateArena)};
@@ -148,7 +151,8 @@ constexpr PortLayout Ports[] = {
      1u,
      false},
     {"resident_patches", sizeof(ContactPatch), {"leaves"}, 1u, false},
-    {"pair_count", sizeof(uint32_t), {}, 1u, false}};
+    {"pair_count", sizeof(uint32_t), {}, 1u, false},
+    {"step_status", sizeof(uint32_t), {}, 1u, false}};
 
 constexpr uint32_t MaxDispatchesPerPacket = 16;
 constexpr uint32_t ActivePassesPerWindow = 4;
@@ -181,10 +185,10 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
         (uniform ? value.byteSize : resource.elementStride) != expected.stride ||
         (!uniform && resource.binding.readOnlyStorage != expected.readOnly))
         throw std::invalid_argument("Jolt GPU broadphase target differs from its shared layout");
-    if (port == PairCount) {
+    if (port == PairCount || port == StepStatus) {
         if (value.kind != ShaderValueKind::Scalar || value.scalar != ShaderScalarKind::UInt32 ||
             value.byteSize != sizeof(uint32_t) || value.rows != 1 || value.columns != 1 || !value.fields.empty())
-            throw std::invalid_argument("Jolt GPU broadphase pair count requires scalar uint32 atomic storage");
+            throw std::invalid_argument("Jolt GPU broadphase requires scalar uint32 atomic storage");
         return;
     }
     if (value.kind != ShaderValueKind::Struct || value.fields.size() != expected.stride / WordBytes)
@@ -250,7 +254,7 @@ class JoltGpuBroadphase::Impl
     }
     // A numeric capacity hint owns no optional GPU allocations. The current
     // workset alone retains the values still required by its real consumers.
-    std::array<uint32_t, 2> recentCapacity{};
+    uint32_t sweptCapacity = 0;
     rhi::ComputeHost host;
     std::array<Program, EntryCount> programs;
 };
@@ -296,9 +300,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     };
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
               JoltGpuPrograms &programs, const StepParams &settings,
+              const std::shared_ptr<rhi::ComputeBuffer> &stepStatus, Workspace &workspace,
               std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> callback, bool swept)
         : implementation(std::move(owner)), stagePrograms(programs), storageOwner(storage), acceptedInputs(inputs),
-          parameters(settings), completed(std::move(callback))
+          workspace(workspace), parameters(settings), completed(std::move(callback))
     {
         if (!implementation->host.SharesServicesWith(storage.GetHost()) || !completed)
             throw std::invalid_argument("Jolt GPU broadphase requires its tick owner and completion callback");
@@ -309,6 +314,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         settingsPorts[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
         settingsPorts[AuthorWorlds] = inputs.GetCaptured(Resource::Worlds);
         settingsPorts[Bounds] = storage.Get(Resource::Bounds) ? storage.Get(Resource::Bounds)->Freeze() : nullptr;
+        settingsPorts[StepStatus] = stepStatus;
         // The exclusive arena writer keeps this topology fixed. Broadphase
         // reads only joint directory/author metadata, so representation-history
         // retirement may update runtime words without retaining a COW reader.
@@ -386,9 +392,33 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const uint32_t previousPatches = swept ? 0u : storage.GetContactHistory(settings.selection.x).patchCount;
         // Use the preceding substep's accepted pair count to avoid allocating
         // quadratic contact storage for sparse single-group work.
-        const uint32_t pairLimit = smallPairs ? std::max(1u, leaves * (leaves - 1u) / 2u) : 0u;
-        ConfigureCapacity(smallPairs ? std::min(std::max(leaves, previousPatches), pairLimit)
-                                     : implementation->recentCapacity[config.round.y]);
+        const uint32_t pairLimit = smallPairs ? leaves * (leaves - 1u) / 2u : 0u;
+        // The whole model bound fits both the collision arena and the local
+        // island program. A device count can change within that bound without
+        // reopening host allocation or numerical scheduling.
+        const bool deviceCounts = smallPairs && !swept && !inputs.HasGenericGeometry() &&
+                                  settings.selectedCounts.x <= ConstraintLocalBodies && joints <= IslandJointQuantum &&
+                                  pairLimit <= IslandPatchQuantum;
+        config.round.z = uint32_t(deviceCounts);
+        if (deviceCounts)
+            workset->patchSlots = pairLimit;
+        auto previous = swept ? Workspace{} : std::exchange(workspace, {});
+        ConfigureCapacity(deviceCounts ? std::max(1u, pairLimit)
+                          : smallPairs ? std::min(std::max(leaves, previousPatches), std::max(1u, pairLimit))
+                          : swept      ? implementation->sweptCapacity
+                                       : previous.nextCapacity);
+        if (!swept) {
+            if (previous.arena && previous.arena->GetByteSize() == uint64_t(scratchWords) * WordBytes)
+                arena = std::move(previous.arena);
+            arguments = std::move(previous.arguments);
+            workset->parameters = std::move(previous.parameters);
+            if (!smallPairs)
+                pairCount = std::move(previous.pairCount);
+            if (previous.patchCapacity == capacity) {
+                candidateArena = std::move(previous.patches);
+                workset->contacts = std::move(previous.contacts);
+            }
+        }
     }
 
     uint32_t PointsPerPair() const
@@ -500,10 +530,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     {
         const bool block = entry == ScanBlocks || entry == ReduceBlocks;
         const uint32_t first = work.range.x, count = work.range.y;
-        const uint32_t limit = entry == PrepareIndirect     ? MaxDispatchesPerPacket - 1u
-                               : entry == PublishCandidates ? CollisionChunks(capacity)
-                               : block                      ? BroadphaseBlockLimit
-                                                            : BroadphaseItemLimit;
+        const bool publish = entry == PublishCandidates;
+        const uint32_t limit = entry == PrepareIndirect ? MaxDispatchesPerPacket - 1u
+                               : publish                ? CollisionChunks(capacity)
+                               : block                  ? BroadphaseBlockLimit
+                                                        : BroadphaseItemLimit;
         if (!count || count > limit)
             throw std::logic_error("Jolt GPU broadphase emitted an invalid bounded work unit");
         const auto slot = dispatches.size();
@@ -522,10 +553,12 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             uploads.push_back({uniform, 0, std::move(parameterBytes)});
         if (EntryPorts[entry] & K)
             uploads.push_back({workUniform, 0, Bytes(work)});
+        if (publish)
+            JoltGpuSleep::InitializeStepStatus(settingsPorts[StepStatus], uploads);
         const auto &program = implementation->programs[entry];
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = program.kernel;
-        dispatch.groupCountX = block ? count : SummaryEntry(entry) || entry == PublishCandidates ? 1u : Blocks(count);
+        dispatch.groupCountX = block ? count : SummaryEntry(entry) || publish ? 1u : Blocks(count);
         dispatch.indirectArguments = std::move(indirect);
         if (dispatch.groupCountX > implementation->host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
             throw std::length_error("Jolt GPU broadphase bounded work exceeds dispatch limits");
@@ -552,7 +585,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             dispatch.bufferAccesses.push_back(initialize || argumentWrite || resetCount
                                                   ? rhi::ComputeBufferAccess::Write
                                               : port == Arena || port == CandidateArena || port == ResidentStep ||
-                                                      (port == PairCount && entry == CollectRound)
+                                                      port == StepStatus || (port == PairCount && entry == CollectRound)
                                                   ? rhi::ComputeBufferAccess::ReadWrite
                                                   : rhi::ComputeBufferAccess::Read);
             if (initialize)
@@ -872,7 +905,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                             : Phase::FinalContacts;
                 break;
             case Phase::SmallPairs:
-                if (!Emit(BuildSmallPairs, 0, 1, config, uploads, dispatches))
+                if (!Emit(BuildSmallPairs, 0, 1u, config, uploads, dispatches))
                     return true;
                 config.merge.x = config.candidates.x;
                 phase = Phase::ResidentPublish;
@@ -1013,8 +1046,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         if (count || (result.z & CapacityNeeded)) {
             if (!count && result.x <= capacity)
                 throw std::runtime_error("Resident broadphase reported a false capacity gap");
-            workset->patchCount = result.x;
-            workset->maxPatchesPerWorld = result.w;
+            workset->patchSlots = result.x;
             requiredCapacity = result.x;
             // Grow only after a real GPU C>K result; never derive from B^2.
             const uint64_t previousCapacity = capacity;
@@ -1035,11 +1067,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             candidateArena.reset();
             phase = Phase::FinalCapacity;
         } else {
-            workset->patchCount = result.x;
-            workset->maxPatchesPerWorld = result.w;
-            if (!config.round.w)
-                implementation->recentCapacity[config.round.y] =
-                    result.x < capacity / 4u ? std::max(1u, capacity / 2u) : capacity;
+            workset->patchSlots = result.x;
         }
     }
 
@@ -1115,7 +1143,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         }
         const auto boundary = phase;
         std::vector<rhi::ComputeBufferRead> reads;
-        if (boundary == Phase::CountBoundary || boundary == Phase::Done)
+        const bool readCount = boundary == Phase::CountBoundary || (boundary == Phase::Done && !config.round.z);
+        if (readCount)
             reads.push_back({arena, uint64_t(config.workspace.y) * WordBytes, WordBytes});
         if (boundary == Phase::ActiveBoundary)
             reads.push_back({arena, uint64_t(config.activeState.x) * WordBytes, WordBytes});
@@ -1127,22 +1156,32 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         }
         if (dispatches.empty() && uploads.empty() && reads.empty())
             throw std::logic_error("Jolt GPU broadphase continuation produced an empty packet");
-        // Pure cursor transitions need acceptance, not CPU fence
-        // observation. Metadata decode and final workset handoff still wait.
-        const auto resumeAfter = reads.empty() && boundary != Phase::Done ? JoltGpuControlWork::ResumeAfter::Acceptance
-                                                                          : JoltGpuControlWork::ResumeAfter::Completion;
+        const auto resumeAfter =
+            reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
         auto packet =
             rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), std::move(reads));
         JoltGpuControlWork result{packet,
-                                  [self = shared_from_this(), packet, boundary]() -> JoltGpuControlWork {
-                                      if (boundary == Phase::CountBoundary || boundary == Phase::Done)
+                                  [self = shared_from_this(), packet, boundary, readCount]() -> JoltGpuControlWork {
+                                      if (readCount)
                                           self->Decode(packet, boundary == Phase::CountBoundary);
                                       if (boundary == Phase::ActiveBoundary)
                                           self->DecodeActive(packet);
                                       if (boundary == Phase::Done && self->phase == Phase::Done) {
-                                          // No optional scratch/args/uniform owner escapes
-                                          // this completed execution. The workset retains only
-                                          // the values needed by generic/topology/solver work.
+                                          const auto capacity = self->capacity;
+                                          const auto nextCapacity = self->workset->patchSlots < capacity / 4u
+                                                                        ? std::max(1u, capacity / 2u)
+                                                                        : capacity;
+                                          if (!self->config.round.y)
+                                              self->workspace = {capacity,
+                                                                 nextCapacity,
+                                                                 self->arena,
+                                                                 self->arguments,
+                                                                 self->workset->parameters,
+                                                                 self->candidateArena,
+                                                                 self->workset->contacts,
+                                                                 self->pairCount};
+                                          else if (!self->config.round.w)
+                                              self->implementation->sweptCapacity = nextCapacity;
                                           self->workset->parameters = self->workset->parameters->Freeze();
                                           self->workset->patches = self->candidateArena;
                                           auto callback = std::move(self->completed);
@@ -1165,6 +1204,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     JoltGpuPrograms &stagePrograms;
     const JoltGpuStorage &storageOwner;
     const JoltGpuStepInputs &acceptedInputs;
+    Workspace &workspace;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> settingsPorts;
     std::shared_ptr<rhi::ComputeBuffer> arena, arguments, candidateArena, pairCount;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, MaxDispatchesPerPacket> parameterSlots, workSlots;
@@ -1203,16 +1243,18 @@ bool JoltGpuBroadphase::TryPrepareStartupPrograms()
 
 JoltGpuControlWork
 JoltGpuBroadphase::Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
-                           const StepParams &parameters,
+                           const StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
+                           Workspace &workspace,
                            std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed, bool swept)
 {
-    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, std::move(completed), swept)
+    return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, stepStatus, workspace,
+                                             std::move(completed), swept)
         ->Next();
 }
 
 void JoltGpuBroadphase::ResetCapacityHint() noexcept
 {
-    m_impl->recentCapacity = {};
+    m_impl->sweptCapacity = 0;
 }
 
 } // namespace infernux

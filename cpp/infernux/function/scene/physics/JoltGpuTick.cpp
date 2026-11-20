@@ -208,6 +208,7 @@ class JoltGpuTick::Impl
         stepStatusPacket.reset();
         modelUpdate.reset();
         commandCursor.reset();
+        collisionWorkspace = {};
         submissionBusy = false;
     }
 
@@ -274,6 +275,7 @@ class JoltGpuTick::Impl
     JoltGpuStorage &storage;
     JoltGpuPrograms &programs;
     JoltGpuBroadphase &broadphase;
+    JoltGpuBroadphase::Workspace collisionWorkspace;
     JoltGpuNarrowphase &narrowphase;
     JoltGpuConstraints &constraints;
     rhi::ComputeHost host;
@@ -649,6 +651,7 @@ class JoltGpuTick::Impl
         lane->DropShared(this);
         if (!receipts.empty())
             return false;
+        collisionWorkspace = {};
         const bool capturedWitness =
             status == Status::Running && controlAccepted && !controlOnly &&
             (stageCursor.phase == Phase::SetupJoints || stageCursor.phase == Phase::ReportContactsBeforeVelocity ||
@@ -858,9 +861,9 @@ class JoltGpuTick::Impl
         case Domain::Shapes:
             return tickParameters.selectedCounts.y;
         case Domain::Patches:
-            return inputs.GetContacts() ? inputs.GetContacts()->patchCount : 0;
+            return inputs.GetContacts() ? inputs.GetContacts()->patchSlots : 0;
         case Domain::Contacts:
-            return inputs.GetContacts() ? inputs.GetContacts()->patchCount * JPH::GPU::MaxContactPointsPerPair : 0;
+            return inputs.GetContacts() ? inputs.GetContacts()->patchSlots * JPH::GPU::MaxContactPointsPerPair : 0;
         case Domain::Joints:
             return tickParameters.selectedCounts.z;
         default:
@@ -1005,13 +1008,13 @@ class JoltGpuTick::Impl
             next.phase = Phase::SweptBroadphase;
             break;
         case Phase::SweptBroadphase:
-            next.phase = inputs.GetSweepContacts()->patchCount ? Phase::ResolveSweep : Phase::IntegrateSwept;
+            next.phase = inputs.GetSweepContacts()->patchSlots ? Phase::ResolveSweep : Phase::IntegrateSwept;
             break;
         case Phase::ResolveSweep:
             next.phase = inputs.SweepImpactTime() ? Phase::SolveSweepEvent : Phase::IntegrateSwept;
             break;
         case Phase::SolveSweepEvent:
-            if (control.prepareContactReport && inputs.GetSweepContacts()->patchCount) {
+            if (control.prepareContactReport && inputs.GetSweepContacts()->patchSlots) {
                 next.phase = Phase::ReportSweep;
                 break;
             }
@@ -1214,7 +1217,7 @@ class JoltGpuTick::Impl
         }
 
         auto previous = storage.GetContactHistory(selectedRow);
-        JoltGpuContactHistory next{previous.buffer, inputs.GetContacts()->patchCount};
+        JoltGpuContactHistory next{previous.buffer, inputs.GetContacts()->patchSlots};
         if (next.buffer &&
             (next.buffer->GetByteSize() < next.ByteSize() || next.buffer->GetByteSize() / 4u > next.ByteSize()))
             next.buffer.reset();
@@ -1893,7 +1896,7 @@ class JoltGpuTick::Impl
                 PublishContactHistory();
                 inputs.ClearContacts();
                 SelectControlWork(
-                    broadphase.Prepare(storage, inputs, programs, tickParameters,
+                    broadphase.Prepare(storage, inputs, programs, tickParameters, stepStatus, collisionWorkspace,
                                        [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }),
                     PacketKind::NumericalWork);
                 return true;
@@ -1904,7 +1907,7 @@ class JoltGpuTick::Impl
             }
             if (stageCursor.phase == Phase::SweptBroadphase) {
                 SelectControlWork(broadphase.Prepare(
-                                      storage, inputs, programs, tickParameters,
+                                      storage, inputs, programs, tickParameters, stepStatus, collisionWorkspace,
                                       [this](auto contacts) {
                                           inputs.SetSweepContacts(std::move(contacts));
                                           NextSpan(stageCursor);

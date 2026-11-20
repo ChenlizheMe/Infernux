@@ -458,6 +458,8 @@ void JoltGpuSleep::ValidateStepStatus(rhi::ComputeReadback &readback)
 {
     PhysicsStepStatus status{};
     readback.ReadInto(&status, sizeof(status));
+    if (status.broadphase)
+        throw std::runtime_error("GPU broadphase did not validate (status " + std::to_string(status.broadphase) + ")");
     if (status.topology)
         throw std::runtime_error("GPU constraint topology did not validate (status " + std::to_string(status.topology) +
                                  ")");
@@ -484,7 +486,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     auto p = Selection(storage, selected);
     if (topology.bodyFirst != p.selected.y || topology.bodyCount != p.selected.z || !contacts)
         throw std::logic_error("GPU sleep wake requires its accepted substep topology");
-    if (selected.selectedCounts.z == 0 && contacts->patchCount == 0) {
+    if (selected.selectedCounts.z == 0 && contacts->patchSlots == 0) {
         done();
         return {};
     }
@@ -504,7 +506,7 @@ JoltGpuControlWork JoltGpuSleep::PrepareWake(const JoltGpuStorage &storage, cons
     p.layout.w = selected.selectedCounts.z;
     e->Add(SeedJoints, p.layout.z, p.layout.w, p);
     p.layout.z = 0u;
-    p.layout.w = contacts->patchCount;
+    p.layout.w = contacts->patchSlots;
     e->Add(SeedPatches, 0u, p.layout.w, p);
     e->Add(Wake, p.selected.y, p.selected.z, p);
     e->OnComplete([done = std::move(done)](auto &) { done(); });

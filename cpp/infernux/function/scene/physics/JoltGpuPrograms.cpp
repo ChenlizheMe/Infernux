@@ -705,10 +705,10 @@ bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs
         base = selected.selection.z;
         break;
     case Domain::Contacts:
-        count = uint64_t(RequireContacts(inputs).patchCount) * MaxContactPointsPerPair;
+        count = uint64_t(RequireContacts(inputs).patchSlots) * MaxContactPointsPerPair;
         break;
     case Domain::Patches:
-        count = RequireContacts(inputs).patchCount;
+        count = RequireContacts(inputs).patchSlots;
         break;
     case Domain::Joints:
         count = selected.selectedCounts.z;
@@ -1328,17 +1328,15 @@ const std::shared_ptr<rhi::ComputeBuffer> &JoltGpuStepInputs::GetCaptured(Resour
 
 void JoltGpuStepInputs::SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts)
 {
-    if (!contacts || contacts->patchCount > std::numeric_limits<uint32_t>::max() / MaxContactPointsPerPair ||
-        contacts->maxPatchesPerWorld > contacts->patchCount ||
-        ((contacts->patchCount == 0) != (contacts->maxPatchesPerWorld == 0)))
-        throw std::invalid_argument("Jolt GPU contact workset has invalid logical candidate counts");
+    if (!contacts || contacts->patchSlots > std::numeric_limits<uint32_t>::max() / MaxContactPointsPerPair)
+        throw std::invalid_argument("Jolt GPU contact workset has an invalid dispatch extent");
     const auto &authorWorlds = GetCaptured(Resource::Worlds);
     if (!authorWorlds)
         throw std::invalid_argument("Jolt GPU contact workset requires its captured author world prefix");
     for (const auto &buffer : {contacts->parameters, contacts->contacts, contacts->patches})
         if (!buffer || !authorWorlds->GetHost().SharesServicesWith(buffer->GetHost()))
             throw std::invalid_argument("Jolt GPU contact workset resources must share their captured compute owner");
-    const auto contactCount = uint64_t(contacts->patchCount) * MaxContactPointsPerPair;
+    const auto contactCount = uint64_t(contacts->patchSlots) * MaxContactPointsPerPair;
     if (contacts->parameters->GetByteSize() != sizeof(StepParams) ||
         contacts->contacts->GetByteSize() < std::max(uint64_t{1}, contactCount) * sizeof(Contact) ||
         contacts->contacts->GetByteSize() % sizeof(Contact) ||
