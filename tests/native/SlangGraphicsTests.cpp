@@ -153,8 +153,24 @@ void Run()
                                                        {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
     const auto &program = compiled.targets[0];
     DeviceShaderProgram computeProgram(device, program, {0});
-    const auto separate = SlangCompiler::Get().Compile({"separate_fragment", "separate_fragment.frag.py", kProgram}, {},
-                                                       {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+    std::string imageDeclarations, imageSum = "float imageSum = 0.0;\n";
+    for (uint32_t index = 0; index < 9; ++index) {
+        const auto suffix = std::to_string(index);
+        const auto binding = 4 + 2 * index;
+        imageDeclarations +=
+            "[[vk::binding(" + std::to_string(binding) + ", 0)]] Texture2D<float4> image" + suffix + ";\n";
+        imageDeclarations +=
+            "[[vk::binding(" + std::to_string(binding + 1) + ", 0)]] SamplerState sampler" + suffix + ";\n";
+        imageSum += "imageSum += image" + suffix + ".Sample(sampler" + suffix + ", input.uv).r;\n";
+    }
+    std::string fragmentSource = imageDeclarations + kProgram;
+    const auto identity = fragmentSource.find("    result.identity = ");
+    fragmentSource.insert(identity, imageSum);
+    fragmentSource.replace(fragmentSource.find("0xfedcba98u", identity), std::strlen("0xfedcba98u"),
+                           "imageSum > 0.0 ? 0xfedcba98u : 0u");
+    const auto separate =
+        SlangCompiler::Get().Compile({"separate_fragment", "separate_fragment.frag.py", fragmentSource}, {},
+                                     {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
     const std::vector<ShaderStageSelection> stages{{program, 1}, {separate.targets[0], 2}};
     DeviceShaderProgram graphicsProgram(device, stages);
 
@@ -326,6 +342,8 @@ void Run()
                                                                          : vertices;
                     groupDesc.buffers[groupDesc.bufferCount++] = {binding, type, value};
                 } else {
+                    Require(groupDesc.textureCount < groupDesc.textures.size(),
+                            "Reflected image and sampler bindings exceed RHI storage");
                     const auto image = resource.name == "generated"                       ? generatedStorage
                                        : resource.name == "scene.material.generatedImage" ? generatedSampled
                                                                                           : sourceView;
@@ -540,7 +558,7 @@ void Run()
     std::cout
         << "Slang indexed mesh, sparse attributes, nested matrix/array varying, reflected "
            "uniform/texture/sampler, UNORM-storage+sRGB-sampled view, "
-           "independent color/alpha blending, integer MRT, padded transfer and Compute-to-Vertex sharing passed\n";
+           "wide bind groups, independent color/alpha blending, integer MRT, padded transfer and Compute-to-Vertex sharing passed\n";
 }
 } // namespace
 

@@ -145,6 +145,18 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const std::vector<
     auto linked = LinkShaderStages(entries);
     m_impl->resources = std::move(linked.resources);
     m_impl->rootConstantBytes = linked.rootConstants ? static_cast<uint32_t>(linked.rootConstants->byteSize) : 0;
+    std::vector<rhi::BindingLayoutDesc> descriptions;
+    for (const auto &resource : m_impl->resources) {
+        if (resource.set >= rhi::GraphicsPipelineDesc::MaxBindingLayouts)
+            throw std::runtime_error("Shader exceeds the device program binding-set capacity: " + resource.name);
+        descriptions.resize(std::max(descriptions.size(), static_cast<size_t>(resource.set) + 1));
+        auto &set = descriptions[resource.set];
+        if (set.entryCount == set.entries.size())
+            throw std::runtime_error("Shader binding set " + std::to_string(resource.set) + " exceeds " +
+                                     std::to_string(set.entries.size()) + " entries at resource '" + resource.name +
+                                     "'");
+        set.entries[set.entryCount++] = resource.binding;
+    }
     for (const auto &selection : entries) {
         const auto &code = selection.program;
         const auto &entry = code.entries.at(selection.entry);
@@ -156,16 +168,6 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const std::vector<
         if (!module.IsValid())
             throw std::runtime_error("Device shader module creation failed: " + entry.name);
         m_impl->entries.push_back({entry.name, entry.stage, module});
-    }
-    std::vector<rhi::BindingLayoutDesc> descriptions;
-    for (const auto &resource : m_impl->resources) {
-        if (resource.set >= rhi::GraphicsPipelineDesc::MaxBindingLayouts)
-            throw std::runtime_error("Shader exceeds the device program binding-set capacity: " + resource.name);
-        descriptions.resize(std::max(descriptions.size(), static_cast<size_t>(resource.set) + 1));
-        auto &set = descriptions[resource.set];
-        if (set.entryCount == set.entries.size())
-            throw std::runtime_error("Shader exceeds the device binding-set capacity: " + resource.name);
-        set.entries[set.entryCount++] = resource.binding;
     }
     for (size_t index = 0; index < descriptions.size(); ++index) {
         const bool shared = index < sharedLayouts.size() && sharedLayouts[index].IsValid();

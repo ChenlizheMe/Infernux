@@ -401,8 +401,9 @@ enum class BindGroupLifetime : uint8_t
 
 struct BindGroupDesc
 {
-    static constexpr size_t MaxBufferBindings = 32;
-    static constexpr size_t MaxTextureBindings = 16;
+    // A binding layout can use every entry for the same resource kind.
+    static constexpr size_t MaxBufferBindings = BindingLayoutDesc::MaxEntries;
+    static constexpr size_t MaxTextureBindings = BindingLayoutDesc::MaxEntries;
 
     BindingLayoutHandle layout;
     BindGroupLifetime lifetime = BindGroupLifetime::Persistent;
