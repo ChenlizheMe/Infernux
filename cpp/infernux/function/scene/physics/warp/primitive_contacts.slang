@@ -3,23 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Slang adaptation of MuJoCo Warp _src/collision_{core,primitive,primitive_core}.py.
 
-#include "model.slang"
+#include "collision_geometry.slang"
 #include "contact.slang"
 
-static const uint GeomPlane = 0;
-static const uint GeomSphere = 2;
-static const uint GeomCapsule = 3;
-static const uint GeomEllipsoid = 4;
-static const uint GeomCylinder = 5;
-static const uint GeomBox = 6;
 static const float MinFriction = 1.0e-5;
-static const float MinValue = 1.0e-15;
-
-struct PrimitiveShape
-{
-    float4 size;
-    uint4 type;
-};
 
 struct ContactMaterial
 {
@@ -47,27 +34,12 @@ struct PrimitivePoint
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> contactSettings; // geom count, candidate capacity, contact capacity, workers
 [[vk::binding(1, 0)]] StructuredBuffer<CartesianFrame> geometryFrames;
-[[vk::binding(2, 0)]] StructuredBuffer<PrimitiveShape> shapes;
+[[vk::binding(2, 0)]] StructuredBuffer<CollisionShape> shapes;
 [[vk::binding(3, 0)]] StructuredBuffer<uint4> collisionPair;
 [[vk::binding(4, 0)]] RWStructuredBuffer<Atomic<uint>> collisionCount;
 [[vk::binding(5, 0)]] StructuredBuffer<ContactMaterial> materials;
 [[vk::binding(6, 0)]] RWStructuredBuffer<Contact> contacts;
 [[vk::binding(7, 0)]] RWStructuredBuffer<Atomic<uint>> contactCount;
-
-float3 frameAxis(CartesianFrame frame, uint axis)
-{
-    return float3(frame.row0[axis], frame.row1[axis], frame.row2[axis]);
-}
-
-float3 rotatePoint(CartesianFrame frame, float3 point)
-{
-    return float3(dot(frame.row0.xyz, point), dot(frame.row1.xyz, point), dot(frame.row2.xyz, point));
-}
-
-float3 inverseRotatePoint(CartesianFrame frame, float3 point)
-{
-    return float3(dot(frameAxis(frame, 0), point), dot(frameAxis(frame, 1), point), dot(frameAxis(frame, 2), point));
-}
 
 #include "box_contacts.slang"
 
@@ -314,8 +286,8 @@ void collide_primitives(uint3 id : SV_DispatchThreadID)
     for (uint item = id.x; item < count; item += settings.w)
     {
         const uint4 pair = collisionPair[id.y * settings.y + item];
-        const PrimitiveShape a = shapes[pair.x];
-        const PrimitiveShape b = shapes[pair.y];
+        const CollisionShape a = shapes[pair.x];
+        const CollisionShape b = shapes[pair.y];
         const uint typeA = a.type.x;
         const uint typeB = b.type.x;
         const bool planePair = typeA == GeomPlane && (typeB >= GeomSphere && typeB <= GeomBox);

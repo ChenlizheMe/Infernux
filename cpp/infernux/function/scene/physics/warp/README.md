@@ -48,6 +48,12 @@ Clear the contact counters once before dispatching narrowphase. The primitive en
 
 The box-pair reference is Warp's primitive SAT route. A full Warp step selects the convex route for box pairs unless `DisableBit.NATIVECCD` selects the primitive route. Plane-cylinder cap contacts use an in-plane radius direction when the cap is parallel to the plane, including rotated planes.
 
+## Convex distance
+
+`collision_geometry.slang` shares the collision shape layout and frame transforms with primitive narrowphase. `convex_support.slang` evaluates sphere, capsule, ellipsoid, cylinder, box and mesh-hull supports. Mesh geometry references its local hull vertices and optional adjacency table in read-only model buffers. The adjacency representation uses Warp's packed offsets and vertex IDs. The support cache tracks the last hull vertex for the life of the query.
+
+`convex_distance.slang` uses the signed-volume simplex reduction, duality gap and support-plane cutoff from Warp's GJK. The query runs in a frame translated to the first geometry's center. For shallow contacts the convex phase inflates the reduced-geometry witnesses by the radii and contact margins. For overlaps it retains the support pairs and vertex IDs needed by EPA. Close-to-collinear triangles compute normalized barycentric coordinates from a common origin to limit FP32 cancellation. The distance functions are available for the convex pass. Penetration expansion, contact manifold generation and publication require their corresponding stages.
+
 ## Contact constraints
 
 The contact row entries reserve contiguous CSR rows for each contact. They walk the two DOF chains, omitting shared ancestors, then project the contact frame onto the point and angular Jacobians. The continuous-time row update computes the reference acceleration and regularization from the projected velocity, material and world timestep. The setup entries select the initial acceleration, evaluate the constraint residual, and compute the force, cost and state for the chosen friction cone.
