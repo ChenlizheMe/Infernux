@@ -263,14 +263,11 @@ struct FullscreenPipelineCache::Impl
             if (rhi::IsStencilFormat(key.depthFormat))
                 desc.renderingSignature.stencilFormat = key.depthFormat;
         }
-        std::vector<uint32_t> selected;
-        for (uint32_t index = 0; index < key.program->code->entries.size(); ++index)
-            if (key.program->code->entries[index].stage != rhi::ShaderStage::Compute)
-                selected.push_back(index);
         // Geometry's shared view layout includes Forward+ buffers even when a
         // fullscreen entry only reads canonical lights. Reflect its actual set-1
         // subset so unused storage bindings do not consume the device's limit.
-        entry.rhi.program = std::make_shared<DeviceShaderProgram>(*device, *key.program->code, selected);
+        entry.rhi.program =
+            std::make_shared<DeviceShaderProgram>(*device, SelectGraphicsShaderEntries(*key.program->code));
         const auto &resources = entry.rhi.program->GetResources();
         entry.rhi.hasPerView =
             std::any_of(resources.begin(), resources.end(), [](const auto &resource) { return resource.set == 1; });

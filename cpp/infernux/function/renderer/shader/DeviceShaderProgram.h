@@ -31,6 +31,11 @@ struct ShaderStageLayout
 [[nodiscard]] INFERNUX_RENDER_CORE_API ShaderStageLayout
 LinkShaderStages(const std::vector<ShaderStageSelection> &entries);
 
+[[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<ShaderStageSelection>
+SelectGraphicsShaderEntries(const ShaderTargetCode &code);
+
+INFERNUX_RENDER_CORE_API void ValidateDeviceShaderBindings(const std::vector<ShaderStageSelection> &entries);
+
 /// Select a material pass from its retained multi-target publication. No
 /// compiler work or built-in shader-name dispatch belongs to device creation.
 [[nodiscard]] INFERNUX_RENDER_CORE_API std::vector<ShaderStageSelection>

@@ -53,7 +53,38 @@ std::vector<ShaderStageSelection> SelectEntries(const ShaderTargetCode &program,
         result.push_back({program, index});
     return result;
 }
+
+std::vector<rhi::BindingLayoutDesc> BuildBindingLayouts(const std::vector<ShaderResourceLayout> &resources)
+{
+    std::vector<rhi::BindingLayoutDesc> descriptions;
+    for (const auto &resource : resources) {
+        if (resource.set >= rhi::GraphicsPipelineDesc::MaxBindingLayouts)
+            throw std::invalid_argument("Shader exceeds the device program binding-set capacity: " + resource.name);
+        descriptions.resize(std::max(descriptions.size(), static_cast<size_t>(resource.set) + 1));
+        auto &set = descriptions[resource.set];
+        if (set.entryCount == set.entries.size())
+            throw std::invalid_argument("Shader binding set " + std::to_string(resource.set) + " exceeds " +
+                                        std::to_string(set.entries.size()) + " entries at resource '" + resource.name +
+                                        "'");
+        set.entries[set.entryCount++] = resource.binding;
+    }
+    return descriptions;
+}
 } // namespace
+
+std::vector<ShaderStageSelection> SelectGraphicsShaderEntries(const ShaderTargetCode &code)
+{
+    std::vector<ShaderStageSelection> result;
+    for (uint32_t index = 0; index < code.entries.size(); ++index)
+        if (code.entries[index].stage != rhi::ShaderStage::Compute)
+            result.push_back({code, index});
+    return result;
+}
+
+void ValidateDeviceShaderBindings(const std::vector<ShaderStageSelection> &entries)
+{
+    (void)BuildBindingLayouts(LinkShaderStages(entries).resources);
+}
 
 ShaderStageLayout LinkShaderStages(const std::vector<ShaderStageSelection> &entries)
 {
@@ -145,18 +176,7 @@ DeviceShaderProgram::DeviceShaderProgram(rhi::Device &device, const std::vector<
     auto linked = LinkShaderStages(entries);
     m_impl->resources = std::move(linked.resources);
     m_impl->rootConstantBytes = linked.rootConstants ? static_cast<uint32_t>(linked.rootConstants->byteSize) : 0;
-    std::vector<rhi::BindingLayoutDesc> descriptions;
-    for (const auto &resource : m_impl->resources) {
-        if (resource.set >= rhi::GraphicsPipelineDesc::MaxBindingLayouts)
-            throw std::runtime_error("Shader exceeds the device program binding-set capacity: " + resource.name);
-        descriptions.resize(std::max(descriptions.size(), static_cast<size_t>(resource.set) + 1));
-        auto &set = descriptions[resource.set];
-        if (set.entryCount == set.entries.size())
-            throw std::runtime_error("Shader binding set " + std::to_string(resource.set) + " exceeds " +
-                                     std::to_string(set.entries.size()) + " entries at resource '" + resource.name +
-                                     "'");
-        set.entries[set.entryCount++] = resource.binding;
-    }
+    const auto descriptions = BuildBindingLayouts(m_impl->resources);
     for (const auto &selection : entries) {
         const auto &code = selection.program;
         const auto &entry = code.entries.at(selection.entry);

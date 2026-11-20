@@ -18,6 +18,7 @@
 #include <atomic>
 #include <exception>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <pybind11/stl.h>
 #include <stdexcept>
@@ -451,6 +452,8 @@ void RegisterShaderCompilerBindings(py::module_ &m)
                                                             ShaderProjectSurfaceReader(*database));
                     auto compiled =
                         compiler.CompileAuthorProgram(prepared, {ShaderCodeTarget::SpirV, ShaderCodeTarget::Wgsl});
+                    if (nlohmann::json::parse(prepared.schema).at("domain") == "fullscreen")
+                        ShaderLoader::ValidateFullscreenProgram(compiled, path);
                     diagnostics = std::move(compiled.diagnostics);
                     valid = true;
                 } catch (const ShaderCompilationError &error) {

@@ -144,9 +144,10 @@ class Grayscale(shader.fullscreen):
         native.set_game_camera_enabled(True)
         frame, changed, ticket = 0, 0, None
         broken_source = None
+        oversized_source = None
 
         def after_draw():
-            nonlocal frame, changed, ticket, completed, broken_source
+            nonlocal frame, changed, ticket, completed, broken_source, oversized_source
             try:
                 frame += 1
                 if ticket is None and frame >= changed + 6:
@@ -183,9 +184,12 @@ class Grayscale(shader.fullscreen):
                         assert python_errors and all(Path(item.source_file) == rejected and item.source_line > 0
                                                      for item in python_errors)
                         assert Path(native._shader_reload_diagnostics[0]["path"]) == rejected
+                    elif pipeline.phase == 8:
+                        assert messages and all("exceeds 32 entries" in message for message in messages), messages
+                        assert Path(native._shader_reload_diagnostics[0]["path"]) == gray
                     else:
                         assert not messages, messages
-                    if pipeline.phase == 7:
+                    if pipeline.phase == 9:
                         completed = True
                         native.exit()
                         return
@@ -223,8 +227,34 @@ class Grayscale(shader.fullscreen):
                     elif pipeline.phase == 7:
                         palette.write_text(palette.read_text(encoding="utf-8").replace(" * 0.5,", " * 1.0,"), encoding="utf-8")
                         assert inx.Shader.reload(str(palette))
+                    elif pipeline.phase == 8:
+                        oversized_source = gray.read_text(encoding="utf-8")
+                        extra_inputs = "".join(
+                            f'    extra{i} = shader.input("extra{i}", shader.Color2D)\n' for i in range(16)
+                        )
+                        extra_samples = "".join(f" + shader.sample(self.extra{i}, uv)" for i in range(16))
+                        oversized = oversized_source.replace("    def main", extra_inputs + "    def main")
+                        oversized = oversized.replace("shader.sample(self.image, uv)",
+                                                      "shader.sample(self.image, uv)" + extra_samples)
+                        checked = inx.Shader.check(str(gray), source=oversized)
+                        assert not checked["valid"]
+                        assert checked["diagnostics"][0]["code"] == "fullscreen-layout"
+                        guid = database.get_guid_from_path(str(gray))
+                        registry = AssetManager._get_registry()
+                        version = registry.get_asset_version(guid)
+                        gray.write_text(oversized, encoding="utf-8")
+                        try:
+                            inx.Shader.reload(str(gray))
+                        except RuntimeError as error:
+                            assert "exceeds 32 entries" in str(error)
+                        else:
+                            raise AssertionError("An oversized layout must reject the replacement")
+                        assert registry.get_asset_version(guid) == version
+                    elif pipeline.phase == 9:
+                        gray.write_text(oversized_source, encoding="utf-8")
+                        assert inx.Shader.reload(str(gray))
                     changed, ticket = frame, None
-                if frame > 130:
+                if frame > 160:
                     raise AssertionError("Author fullscreen readback timed out")
             except BaseException as error:
                 failures.append(error)

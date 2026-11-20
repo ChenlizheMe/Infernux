@@ -1,6 +1,7 @@
 #include "ShaderLoader.h"
 
 #include <core/log/InxLog.h>
+#include <function/renderer/shader/DeviceShaderProgram.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetFormatRegistry.h>
@@ -199,6 +200,24 @@ std::shared_ptr<ShaderAsset> ShaderLoader::CompileAuthorAsset(const ShaderSource
                               CompileAuthorRecord(prepared, RuntimeShaderAuthorTarget(), std::move(dependencies)));
 }
 
+void ShaderLoader::ValidateFullscreenProgram(const ShaderCompilation &program, const std::string &path)
+{
+    for (const auto &code : program.targets) {
+        try {
+            ValidateDeviceShaderBindings(SelectGraphicsShaderEntries(code));
+        } catch (const std::invalid_argument &error) {
+            ShaderDiagnostic diagnostic;
+            diagnostic.code = "fullscreen-layout";
+            diagnostic.severity = "error";
+            diagnostic.path = path;
+            diagnostic.message = error.what();
+            diagnostic.phase = "link";
+            diagnostic.target = code.target == ShaderCodeTarget::SpirV ? "spirv" : "wgsl";
+            throw ShaderCompilationError({std::move(diagnostic)});
+        }
+    }
+}
+
 std::shared_ptr<ShaderAsset> ShaderLoader::RestoreAuthorAsset(const ShaderSourceModule &source, const std::string &guid,
                                                               ShaderAuthorProgramRecord record)
 {
@@ -212,9 +231,10 @@ std::shared_ptr<ShaderAsset> ShaderLoader::RestoreAuthorAsset(const ShaderSource
     asset->authoringSchema = std::move(record.schema);
     asset->authorSourceText = source.source;
     asset->renderMeta = ReadShaderAuthorRenderMeta(info);
-    if (schema.at("domain") == "fullscreen")
+    if (schema.at("domain") == "fullscreen") {
+        ValidateFullscreenProgram(*record.compilation, source.path);
         asset->programDomain = ShaderProgramDomain::Fullscreen;
-    else if (schema.at("domain") == "screen_ui")
+    } else if (schema.at("domain") == "screen_ui")
         asset->programDomain = ShaderProgramDomain::ScreenUI;
     else if (schema.at("domain") == "world_ui")
         asset->programDomain = ShaderProgramDomain::WorldUI;
@@ -280,6 +300,8 @@ void ShaderLoader::CookAuthorProgram(const AssetDatabase &database, const std::s
         else
             (void)CreateShaderAuthorMaterial(authorGuid, record->compilation, record->schema, vertexGuid);
         StoreShaderAuthorProgram(buildCache, selection, inputs, *record);
+    } else if (nlohmann::json::parse(record->schema).at("domain") == "fullscreen") {
+        ValidateFullscreenProgram(*record->compilation, database.GetPathFromGuid(authorGuid));
     }
     if (!StoreShaderAuthorProgram(library, selection, inputs, *record))
         throw std::runtime_error("Could not package shader program for " + authorGuid + " " + vertexGuid);

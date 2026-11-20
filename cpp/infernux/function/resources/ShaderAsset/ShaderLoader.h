@@ -11,6 +11,7 @@ struct ShaderStagePair;
 struct ShaderSourceModule;
 struct ShaderAuthorSource;
 struct ShaderAuthorProgramRecord;
+struct ShaderCompilation;
 enum class ShaderCodeTarget : uint8_t;
 class InxMaterial;
 
@@ -36,6 +37,7 @@ class ShaderLoader final : public IAssetLoader
                                                                          std::vector<std::string> dependencies);
     [[nodiscard]] static std::shared_ptr<ShaderAsset>
     RestoreAuthorAsset(const ShaderSourceModule &source, const std::string &guid, ShaderAuthorProgramRecord record);
+    static void ValidateFullscreenProgram(const ShaderCompilation &program, const std::string &path);
     static void CookAuthorProgram(const AssetDatabase &database, const std::string &authorGuid,
                                   const std::string &vertexGuid, ShaderCodeTarget target, const std::string &buildCache,
                                   const std::string &library);
