@@ -71,9 +71,7 @@ class RayDiffuseHistory(shader.fullscreen):
                     error = delta
                     previous = (shader.vec2(at) + 0.5) / shader.vec2(extent)
 
-        # Published lighting can change while the receiver stays in place.
-        age_limit = 24.0 if shader._ray_lighting_changed() else 48.0
-        age = shader.min(age_limit, 1.0 + old.x)
+        age = shader.min(48.0, 1.0 + old.x)
         sample = shader.clamp(previous, 0.5 / shader.vec2(extent), 1.0 - 0.5 / shader.vec2(extent))
         r = shader.lerp(shader.sample_level(self.old_red, sample, 0.0), r, 1.0 / age)
         g = shader.lerp(shader.sample_level(self.old_green, sample, 0.0), g, 1.0 / age)
