@@ -13,7 +13,7 @@ _log = logging.getLogger("infernux.library_sync")
 _SKIP = {"__pycache__"}
 _SYNC_MANIFEST = ".InfernuxResources.json"
 # Distribution metadata and build inputs never enter the asset catalog.
-_ASSET_DIRECTORIES = frozenset({"fonts", "icons", "materials", "shaders"})
+_ASSET_DIRECTORIES = frozenset({"fonts", "icons", "materials", "shaders", "textures"})
 
 
 def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:

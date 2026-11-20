@@ -17,6 +17,14 @@ def test_builtin_update_invalidates_startup_catalog_but_unchanged_launch_reuses_
     sync_resources(str(project))
     assert cache.read_text(encoding="utf-8") == "cached catalog"
 
+    noise = source / "textures" / "noise" / "sh_blue_noise.png"
+    noise.parent.mkdir(parents=True)
+    noise.write_bytes(b"builtin texture")
+    sync_resources(str(project))
+    assert not cache.exists()
+    assert (resources / noise.relative_to(source)).read_bytes() == noise.read_bytes()
+
+    cache.write_text("cached catalog", encoding="utf-8")
     shader.write_text('shader_id = "example/materials/lit"\n', encoding="utf-8")
     sync_resources(str(project))
     assert not cache.exists()
