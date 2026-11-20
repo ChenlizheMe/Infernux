@@ -85,8 +85,21 @@ struct JoltGpuContactWorkset
     uint32_t patchSlots = 0;
     std::shared_ptr<rhi::ComputeBuffer> parameters, contacts, patches;
     // The shader publishes these ranges when patchSlots is only a capacity.
-    std::optional<rhi::ComputeIndirectArguments> patchDispatch, setupDispatch;
+    std::optional<rhi::ComputeIndirectArguments> patchDispatch, setupDispatch, historyDispatch;
 };
+
+inline uint32_t JoltGpuStageItemLimit(JPH::GPU::Stage stage, JPH::GPU::Domain domain,
+                                      const JoltGpuContactWorkset *contacts) noexcept
+{
+    using namespace JPH::GPU;
+    if (contacts && contacts->setupDispatch) {
+        if (stage == Stage::SetupContacts)
+            return ConstraintLocalRefs * MaxContactPointsPerPair;
+        if (stage == Stage::StoreContactHistory)
+            return ConstraintLocalRefs;
+    }
+    return WorkItemLimit(domain);
+}
 
 // Sorted by the preceding substep's canonical leaf pair. Only the stored
 // prefix is readable when a larger device allocation is reused.

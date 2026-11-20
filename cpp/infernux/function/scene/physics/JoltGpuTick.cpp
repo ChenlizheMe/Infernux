@@ -892,7 +892,7 @@ class JoltGpuTick::Impl
         if (plan->solveArguments) {
             if (plan->jointRefCount || !plan->patchRefCount)
                 return 1u;
-            return std::clamp(JPH::GPU::IslandPatchQuantum / plan->patchRefCount, 1u, rounds);
+            return std::clamp(JPH::GPU::IslandPatchRoundVisits / plan->patchRefCount, 1u, rounds);
         }
         if (!plan->jointIslandCount && plan->maxPatchItems && plan->maxPatchItems < JPH::GPU::ContactParallelMinimum &&
             rounds <= JPH::GPU::IslandPatchQuantum / plan->maxPatchItems)
@@ -1140,7 +1140,7 @@ class JoltGpuTick::Impl
         const auto span = Span(next.phase);
         const auto quantum = span.domain == JPH::GPU::Domain::Bodies
                                  ? std::min(JPH::GPU::WorkItemLimit(span.domain), bodyLimit)
-                                 : JPH::GPU::WorkItemLimit(span.domain);
+                                 : JoltGpuStageItemLimit(span.stage, span.domain, inputs.GetContacts().get());
         JPH::GPU::StageWork parameters{};
         if (IslandDomain(span.domain) && inputs.GetConstraints()->solveArguments) {
             const uint32_t lanes = IslandCount(span.domain);

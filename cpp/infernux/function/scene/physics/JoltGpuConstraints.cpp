@@ -605,8 +605,14 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Add(Finalize, 1u);
     }
 
-    static uint32_t ChunkLimit(Entry entry)
+    uint32_t ChunkLimit(Entry entry) const
     {
+        if (localTopology) {
+            if (entry == InitWords)
+                return config.limits.x;
+            if (entry == BuildPatchRefs)
+                return config.counts.z;
+        }
         return Collective(entry) ? ConstraintBlockLimit : Summary(entry) ? 1u : ConstraintItemLimit;
     }
 

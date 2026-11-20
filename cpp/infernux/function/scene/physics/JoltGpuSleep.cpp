@@ -373,7 +373,9 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         };
         while (next < plan.size() && dispatches.size() < maximumDispatches) {
             const auto &op = plan[next];
-            uint32_t count = std::min(JoltGpuPoseWake::BodiesPerDispatch, op.count - offset);
+            const auto limit =
+                wakeArguments && op.entry == SeedPatches ? ConstraintLocalRefs : JoltGpuPoseWake::BodiesPerDispatch;
+            uint32_t count = std::min(limit, op.count - offset);
             auto params = uniform(op.parameters);
             StageWork range{{op.first + offset, count, 0u, 0u}};
             auto work = uniform(range);

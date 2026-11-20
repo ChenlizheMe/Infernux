@@ -171,11 +171,6 @@ uint32_t Blocks(uint32_t count)
     return count / BroadphaseBlockSize + static_cast<uint32_t>(count % BroadphaseBlockSize != 0);
 }
 
-uint32_t CollisionChunks(uint32_t count)
-{
-    return count / BroadphaseItemLimit + static_cast<uint32_t>(count % BroadphaseItemLimit != 0);
-}
-
 uint32_t DiscretePairBound(const JoltGpuModel &model, const WorldRange &world)
 {
     uint32_t active = 0, passive = 0, pairs = 0;
@@ -496,15 +491,26 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     bool ArgumentCapacity()
     {
         const uint64_t bytes =
-            std::max(MaxDispatchesPerPacket - 1u, CollisionChunks(capacity) + SetupChunks()) * WordBytes;
+            std::max(MaxDispatchesPerPacket - 1u, CollisionChunks() + ContactArgumentRecords()) * WordBytes;
         if (arguments && arguments->GetByteSize() < bytes)
             arguments.reset();
         return Endpoint(arguments, bytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
     }
 
-    uint32_t SetupChunks() const
+    uint32_t CollisionChunkSize() const
     {
-        return config.round.z ? CollisionChunks(capacity * MaxContactPointsPerPair) : 0u;
+        return config.round.z ? ConstraintLocalRefs : BroadphaseItemLimit;
+    }
+
+    uint32_t CollisionChunks() const
+    {
+        const auto size = CollisionChunkSize();
+        return capacity / size + uint32_t(capacity % size != 0u);
+    }
+
+    uint32_t ContactArgumentRecords() const
+    {
+        return config.round.z ? 2u : 0u;
     }
 
     bool Capacity()
@@ -567,7 +573,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const uint32_t first = work.range.x, count = work.range.y;
         const bool publish = entry == PublishCandidates;
         const uint32_t limit = entry == PrepareIndirect ? MaxDispatchesPerPacket - 1u
-                               : publish                ? CollisionChunks(capacity)
+                               : publish                ? CollisionChunks()
                                : block                  ? BroadphaseBlockLimit
                                                         : BroadphaseItemLimit;
         if (!count || count > limit)
@@ -1041,15 +1047,16 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 config.merge.x = sortSource;
                 phase = Phase::ResidentPublish;
                 break;
-            case Phase::ResidentPublish:
-                if (!EmitWork(PublishCandidates, StageWork{{0u, CollisionChunks(capacity), SetupChunks(), 0u}}, config,
-                              uploads, dispatches))
+            case Phase::ResidentPublish: {
+                const StageWork publication{{CollisionChunkSize(), CollisionChunks(), ContactArgumentRecords(), 0u}};
+                if (!EmitWork(PublishCandidates, publication, config, uploads, dispatches))
                     return true;
                 phase = config.round.y ? Phase::Done : Phase::Collide;
                 return true;
+            }
             case Phase::Collide: {
-                const uint32_t count = std::min(BroadphaseItemLimit, capacity - item);
-                const uint32_t record = item / BroadphaseItemLimit;
+                const uint32_t count = std::min(CollisionChunkSize(), capacity - item);
+                const uint32_t record = item / CollisionChunkSize();
                 stagePrograms.AppendResidentCollide(storageOwner, acceptedInputs, workset, capacity,
                                                     StageWork{{item, count, 0u, 0u}}, workSlots[dispatches.size()],
                                                     {arguments, uint64_t(record) * WordBytes}, uploads, dispatches);
@@ -1197,43 +1204,45 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
             reads.empty() ? JoltGpuControlWork::ResumeAfter::Acceptance : JoltGpuControlWork::ResumeAfter::Completion;
         auto packet =
             rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), std::move(reads));
-        JoltGpuControlWork result{packet,
-                                  [self = shared_from_this(), packet, boundary, readCount]() -> JoltGpuControlWork {
-                                      if (readCount)
-                                          self->Decode(packet, boundary == Phase::CountBoundary);
-                                      if (boundary == Phase::ActiveBoundary)
-                                          self->DecodeActive(packet);
-                                      if (boundary == Phase::Done && self->phase == Phase::Done) {
-                                          const auto capacity = self->capacity;
-                                          const auto nextCapacity = self->workset->patchSlots < capacity / 4u
-                                                                        ? std::max(1u, capacity / 2u)
-                                                                        : capacity;
-                                          if (!self->config.round.y)
-                                              self->workspace = {capacity,
-                                                                 nextCapacity,
-                                                                 self->arena,
-                                                                 self->arguments,
-                                                                 self->workset->parameters,
-                                                                 self->candidateArena,
-                                                                 self->workset->contacts,
-                                                                 self->pairCount};
-                                          else if (!self->config.round.w)
-                                              self->implementation->sweptCapacity = nextCapacity;
-                                          self->workset->parameters = self->workset->parameters->Freeze();
-                                          self->workset->patches = self->candidateArena;
-                                          if (self->config.round.z) {
-                                              self->workset->patchDispatch =
-                                                  rhi::ComputeIndirectArguments{self->arguments, 0u};
-                                              self->workset->setupDispatch = rhi::ComputeIndirectArguments{
-                                                  self->arguments, uint64_t(CollisionChunks(capacity)) * WordBytes};
-                                          }
-                                          auto callback = std::move(self->completed);
-                                          callback(self->workset);
-                                          return {};
-                                      }
-                                      return self->Next();
-                                  },
-                                  resumeAfter};
+        JoltGpuControlWork result{
+            packet,
+            [self = shared_from_this(), packet, boundary, readCount]() -> JoltGpuControlWork {
+                if (readCount)
+                    self->Decode(packet, boundary == Phase::CountBoundary);
+                if (boundary == Phase::ActiveBoundary)
+                    self->DecodeActive(packet);
+                if (boundary == Phase::Done && self->phase == Phase::Done) {
+                    const auto capacity = self->capacity;
+                    const auto nextCapacity =
+                        self->workset->patchSlots < capacity / 4u ? std::max(1u, capacity / 2u) : capacity;
+                    if (!self->config.round.y)
+                        self->workspace = {capacity,
+                                           nextCapacity,
+                                           self->arena,
+                                           self->arguments,
+                                           self->workset->parameters,
+                                           self->candidateArena,
+                                           self->workset->contacts,
+                                           self->pairCount};
+                    else if (!self->config.round.w)
+                        self->implementation->sweptCapacity = nextCapacity;
+                    self->workset->parameters = self->workset->parameters->Freeze();
+                    self->workset->patches = self->candidateArena;
+                    if (self->config.round.z) {
+                        const auto first = self->CollisionChunks();
+                        self->workset->patchDispatch = rhi::ComputeIndirectArguments{self->arguments, 0u};
+                        self->workset->setupDispatch =
+                            rhi::ComputeIndirectArguments{self->arguments, uint64_t(first) * WordBytes};
+                        self->workset->historyDispatch =
+                            rhi::ComputeIndirectArguments{self->arguments, uint64_t(first + 1u) * WordBytes};
+                    }
+                    auto callback = std::move(self->completed);
+                    callback(self->workset);
+                    return {};
+                }
+                return self->Next();
+            },
+            resumeAfter};
         if (limit > 2u)
             result.prepareMinimum = [self = shared_from_this(), packet, checkpoint] {
                 packet->Cancel();

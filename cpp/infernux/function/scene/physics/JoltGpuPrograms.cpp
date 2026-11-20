@@ -661,7 +661,7 @@ bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs
                   const StageWork &work)
 {
     const auto range = work.range;
-    const uint32_t quantum = WorkItemLimit(definition.domain);
+    const uint32_t quantum = JoltGpuStageItemLimit(definition.stage, definition.domain, inputs.GetContacts().get());
     if (IslandDomain(definition.domain)) {
         const auto &constraints = inputs.GetConstraints();
         if (!constraints)
@@ -678,7 +678,7 @@ bool ValidateWork(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs
             const auto iterations = wholeRounds ? range.x : 1u;
             if (!constraints->solveArguments || range.y != maximum || range.w != tableCount ||
                 (wholeRounds ? (constraints->jointRefCount || !iterations || iterations > rounds ||
-                                range.y > quantum / iterations)
+                                range.y > IslandPatchRoundVisits / iterations)
                              : range.x != 0u) ||
                 !ConstraintDeviceScheduleFits(constraints->bodyCount, constraints->jointRefCount,
                                               constraints->patchRefCount))
@@ -1525,12 +1525,15 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
     proof.reads.reserve(entry.bindings.size());
     proof.writes.reserve(entry.bindings.size());
     const auto range = work.parameters.range;
+    const auto &contacts = resident ? resident : inputs.GetContacts();
+    const auto &history = inputs.NextContactHistory();
+    const bool updateHistoryPrefix = work.stage == Stage::StoreContactHistory && contacts->historyDispatch &&
+                                     history.buffer->HasInitializedRange(0, history.ByteSize());
     for (size_t index = 0; index < entry.bindings.size(); ++index) {
         const auto &binding = entry.bindings[index];
         const bool writer = binding.access != rhi::ComputeBufferAccess::Read;
         const auto resource = Ports[binding.slot].resource;
         const auto input = InputIndex(resource);
-        const auto &contacts = resident ? resident : inputs.GetContacts();
         const auto &constraints = inputs.GetConstraints();
         const auto &buffer =
             resource == Resource::ArticulationControl
@@ -1550,7 +1553,10 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
             throw std::invalid_argument("Jolt GPU stage requires captured input: " +
                                         std::string(Ports[binding.slot].name));
         dispatch.buffers.push_back(buffer);
-        dispatch.bufferAccesses.push_back(binding.access);
+        const bool partialHistory = resource == Resource::ContactHistory && updateHistoryPrefix;
+        dispatch.bufferAccesses.push_back(partialHistory ? rhi::ComputeBufferAccess::ReadWrite : binding.access);
+        if (partialHistory)
+            proof.reads.push_back({static_cast<uint32_t>(index), 0, history.ByteSize()});
         if (binding.read) {
             if (resource == Resource::ArticulationControl) {
                 proof.reads.push_back(
@@ -1565,7 +1571,7 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
             else
                 proof.reads.push_back({static_cast<uint32_t>(index), 0, buffer->GetByteSize()});
         }
-        if (binding.completeWrite) {
+        if (binding.completeWrite && !partialHistory) {
             const auto complete = [&](uint64_t first, uint64_t count, uint64_t stride) {
                 const uint64_t offset = first * stride, bytes = count * stride;
                 if (offset > buffer->GetByteSize() || bytes > buffer->GetByteSize() - offset)
@@ -1608,12 +1614,10 @@ JoltGpuPrograms::BuildDispatch(const Entry &entry, const JoltGpuStorage &storage
         if (!joints && range.y >= ContactParallelMinimum)
             dispatch.groupCountX = range.w;
     }
-    if (definition.stage == Stage::SetupContacts) {
+    if (definition.stage == Stage::SetupContacts)
         dispatch.indirectArguments = inputs.GetContacts()->setupDispatch;
-        if (dispatch.indirectArguments)
-            dispatch.indirectArguments->offset +=
-                uint64_t(range.x / WorkItemLimit(Domain::Contacts)) * sizeof(ConstraintScheduleWord);
-    }
+    if (updateHistoryPrefix)
+        dispatch.indirectArguments = contacts->historyDispatch;
     const auto &maximum = m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount;
     if (!dispatch.groupCountX || !dispatch.groupCountY || !dispatch.groupCountZ || dispatch.groupCountX > maximum[0] ||
         dispatch.groupCountY > maximum[1] || dispatch.groupCountZ > maximum[2])
@@ -1631,8 +1635,8 @@ void JoltGpuPrograms::AppendResidentCollide(const JoltGpuStorage &storage, const
 {
     const auto range = work.range;
     if (!m_host.SharesServicesWith(storage.GetHost()) || !contacts || range.z || range.w || !range.y ||
-        range.y > WorkItemLimit(Domain::Patches) || range.x > capacity || range.y > capacity - range.x ||
-        !contacts->contacts ||
+        range.y > std::max(WorkItemLimit(Domain::Patches), ConstraintLocalRefs) || range.x > capacity ||
+        range.y > capacity - range.x || !contacts->contacts ||
         contacts->contacts->GetByteSize() < uint64_t(capacity) * MaxContactPointsPerPair * sizeof(Contact))
         throw std::invalid_argument("Resident collide requires its bounded admitted capacity");
     if (!uniform || uniform->IsFrozen() || uniform->GetByteSize() != sizeof(StageWork) ||
