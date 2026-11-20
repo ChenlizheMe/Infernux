@@ -863,28 +863,31 @@ InxScreenDiffuseTrace inx_march_diffuse_screen(TraceRay ray, float4x4 vp, InxUIn
         float3 far_end = inx_clip_diffuse_end(start, projected.xyz / denominator, 1.0e20);
         hit = inx_march_diffuse_segment(start, far_end, depths, extent, sample_grid, jitter, thickness, false, crossing);
     }
+    if (!hit)
+        return (InxScreenDiffuseTrace)0;
 
     float4 world = mul(inx_view.inverse_view_projection, float4(crossing, 1.0));
     float distance = length(world.xyz / world.w - ray.origin);
     return {min(distance, ray.maximum), saturate(crossing.xy * 0.5 + 0.5),
-            hit && distance > ray.minimum && distance < ray.maximum};
+            distance > ray.minimum && distance < ray.maximum};
 }
 
 InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D depths, float4 sample_grid,
                                      InxHistory2D history, InxUInt2D reprojection,
                                      InxBuffer_uint4 records, uint seed, uint index, uint2 pixel, bool temporal)
 {
-    float4x4 vp = mul(inx_view.projection, inx_view.view);
-    let screen = inx_march_diffuse_screen(ray, vp, depths, sample_grid, pixel, index);
-    if (screen.hit && temporal && history.valid)
+    if (temporal && history.valid)
     {
-        let light = inx_reproject_diffuse_radiance(screen, reprojection, history);
-        if (light.radiance.a > 0.0)
-            return light;
+        float4x4 vp = mul(inx_view.projection, inx_view.view);
+        let screen = inx_march_diffuse_screen(ray, vp, depths, sample_grid, pixel, index);
+        if (screen.hit)
+        {
+            let light = inx_reproject_diffuse_radiance(screen, reprojection, history);
+            if (light.radiance.a > 0.0)
+                return light;
+        }
     }
-    // Advance the triangle intersection interval while keeping all hit distances relative to the receiver.
-    // A screen hit without reusable radiance still needs to be evaluated by the world trace.
-    ray.minimum = min(max(0.1, screen.hit ? ray.minimum : screen.distance), ray.maximum);
+    // A half-resolution depth march cannot certify that the skipped world interval is empty.
     TraceRay world_ray = ray;
     if (page.root != ray_invalid_index)
     {
@@ -968,7 +971,7 @@ public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 geometric_nor
 
     // The camera far plane only limits the screen trace. Allow the world query
     // to see lighting and occluders outside the raster frustum.
-    TraceRay ray = {position, 0.0, direction, 100000.0};
+    TraceRay ray = {inx_ray_origin(position, geometric_normal), 0.0, direction, 100000.0};
     const float pdf = 0.15915494309;
     let hit = inx_ray_diffuse_incident(page, ray, screen_depth, sample_grid, history, reprojection, records,
                                        inx_ray_sample_hash(index), frame, cell * 2u, temporal);
