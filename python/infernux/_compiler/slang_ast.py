@@ -21,6 +21,7 @@ _BINARY = {
 _UNARY = {ast.UAdd: "+", ast.USub: "-", ast.Not: "!", ast.Invert: "~"}
 _COMPARE = {ast.Eq: "==", ast.NotEq: "!=", ast.Lt: "<", ast.LtE: "<=", ast.Gt: ">", ast.GtE: ">="}
 _FUNCTIONS = TYPES | INTRINSICS
+_FLOOR_DIVIDE_TYPES = frozenset(scalar + lanes for scalar in ("int", "uint", "float") for lanes in ("", "2", "3", "4"))
 _FLOAT_INTRINSICS = frozenset({
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
     "exp", "exp2", "log", "log2", "sqrt", "rsqrt", "floor", "ceil", "round", "trunc",
@@ -329,8 +330,8 @@ class SlangEmitter(ast.NodeVisitor):
             return "mul(" + self.visit(node.left) + ", " + self.visit(node.right) + ")"
         if isinstance(node.op, ast.FloorDiv):
             kind = self.infer(node)
-            if kind not in {"int", "uint", "float"}:
-                self.error(node, "GPU floor division requires scalar int, uint or float operands")
+            if kind not in _FLOOR_DIVIDE_TYPES:
+                self.error(node, "GPU floor division requires int, uint or float scalars or vectors")
             self.required_modules.add("inx_math")
             return f"inx_math::floor_div({kind}({self.visit(node.left)}), {kind}({self.visit(node.right)}))"
         if isinstance(node.op, ast.Div):

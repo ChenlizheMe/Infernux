@@ -33,6 +33,28 @@ public float floor_div(float a, float b)
 }
 
 [ForceInline]
+public vector<int, N> floor_div<let N : int>(vector<int, N> a, vector<int, N> b)
+{
+    vector<int, N> result;
+    [ForceUnroll]
+    for (int i = 0; i < N; ++i)
+        result[i] = floor_div(a[i], b[i]);
+    return result;
+}
+
+[ForceInline]
+public vector<uint, N> floor_div<let N : int>(vector<uint, N> a, vector<uint, N> b)
+{
+    return a / b;
+}
+
+[ForceInline]
+public vector<float, N> floor_div<let N : int>(vector<float, N> a, vector<float, N> b)
+{
+    return floor(a / b);
+}
+
+[ForceInline]
 public float2x2 inverse(float2x2 m)
 {
     return float2x2(m[1][1], -m[0][1], -m[1][0], m[0][0]) / determinant(m);

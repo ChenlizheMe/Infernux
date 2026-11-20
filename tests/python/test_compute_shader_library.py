@@ -124,14 +124,18 @@ class Preview(shader.fullscreen):
     assert changed.identity != primal.identity and changed.tasks != primal.tasks
 
 
-def test_scalar_floor_division_links_from_a_shared_shader_library(project, engine, monkeypatch):
+def test_floor_division_links_from_a_shared_shader_library(project, engine, monkeypatch):
     root, scripts = project
     (scripts / 'physical.shaderlib.py').write_text('''import infernux.shader as shader
 
 def scale(value: float) -> float:
     signed = shader.int(value) // -3
     unsigned = shader.uint(abs(value)) // shader.uint(3)
-    return value // 1.5 + shader.float(signed) + shader.float(unsigned)
+    pair = shader.ivec2(shader.int(value), -shader.int(value)) // shader.ivec2(3, -4)
+    counts = shader.uvec2(shader.uint(abs(value)), 16777219) // shader.uint(2)
+    coords = shader.vec2(value, -value) // 1.5
+    return (value // 1.5 + shader.float(signed) + shader.float(unsigned) +
+            shader.float(pair.x + pair.y) + shader.float(counts.x + counts.y - 8388609) + coords.y)
 ''', encoding='utf-8')
     preview = scripts / 'FloorDivision.frag.py'
     preview.write_text('''import infernux.shader as shader
@@ -154,7 +158,11 @@ class Preview(shader.fullscreen):
             assert wgsl.target == 'wgsl' and wgsl.tasks
             compute.prepare(declaration, (buffer,))
             compute.launch(declaration, (buffer,))
-        expected = [x // 1.5 + int(x) // -3 + int(abs(x)) // 3 + x + 1.0 for x in values]
+        expected = [
+            x // 1.5 + int(x) // -3 + int(abs(x)) // 3 +
+            int(x) // 3 + -int(x) // -4 + int(abs(x)) // 2 + -x // 1.5 + x + 1.0
+            for x in values
+        ]
         snapshot = buffer.get_data()
         try:
             np.testing.assert_array_equal(snapshot.numpy(), expected)
