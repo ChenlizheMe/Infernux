@@ -279,6 +279,8 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     assert lighting._input_bindings["primary_tex"] == primary.name
 
     observation = passes["Ray Diffuse Irradiance"]
+    assert "tail_cache" not in observation._input_bindings
+    assert ("Ray Tail Estimate" in passes) == specular
     assert observation._parameters == {"divisor": trace_divisor, "temporal": True}
     assert observation._input_bindings["primary"] == primary.name
     assert observation._input_bindings["world_ray_meshes"] == graph.get_buffer("world_ray_meshes").name

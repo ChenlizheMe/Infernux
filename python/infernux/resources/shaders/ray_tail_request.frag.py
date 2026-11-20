@@ -15,7 +15,6 @@ class RayTailRequest(shader.fullscreen):
     primary = shader.input("ray_primary_surface", shader.UInt2D)
     thin_layer = shader.input("thin_layer", shader.UInt2D)
     requests = shader.input("ray_tail_requests", shader.Buffer[shader.uvec4])
-    diffuse_enabled = shader.parameter.bool(default=True)
     specular_enabled = shader.parameter.bool(default=True)
     thin_enabled = shader.parameter.bool(default=False)
     temporal = shader.parameter.bool(default=True)
@@ -28,7 +27,7 @@ class RayTailRequest(shader.fullscreen):
         extent = shader.uvec2(shader.dimensions(self.primary, 0))
         pixel = shader.ivec2(shader.ray._tail_pixel(index + self.requests[1].w, extent))
         uv = (shader.vec2(pixel) + shader.vec2(0.5)) / shader.vec2(extent)
-        if self.thin_enabled and (not (self.diffuse_enabled or self.specular_enabled) or (index & 1) != 0):
+        if self.thin_enabled and (not self.specular_enabled or (index & 1) != 0):
             thin = shader.load(self.thin_layer, pixel, 0)
             if thin.x == 0:
                 return (shader.uvec4(0), shader.uvec4(0))
@@ -49,9 +48,7 @@ class RayTailRequest(shader.fullscreen):
             context = deferred_shading_context(uv, shader.vec2(pixel) + shader.vec2(0.5), depth,
                                                surface.normal_ws, metadata)
             normal = decode_octahedral_normal(shader.unpack_half_2x16(primary.z))
-            glossy = self.specular_enabled and (not self.diffuse_enabled or
-                     (surface.specular_highlights > 0.0 and (surface.metallic >= 1.0 or (index & 2) != 0)))
-            request = shader.ray._tail_request(surface, context, normal, metadata.y, glossy, self.temporal)
+            request = shader.ray._tail_request(surface, context, normal, metadata.y, True, self.temporal)
         if ctx.position.y < 1.0:
             return (request.identity, request.anchor)
         return (request.outgoing, request.normal)

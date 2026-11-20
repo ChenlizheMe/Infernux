@@ -151,7 +151,6 @@ def trace_diffuse(ctx, guides, divisor):
         p.set_textures({"primary": guides.primary, "screen_depth": screen_depth,
                         "previous_radiance": previous_radiance, "reprojection": reprojection})
         p.set_buffer("surface_records", guides.surface.sample("surface_records"))
-        p.set_buffer("tail_cache", graph._world_ray_tail_read())
         p.set_param("divisor", divisor or 1)
         p.set_param("temporal", ctx.reconstruct)
         p.write_color(packet)

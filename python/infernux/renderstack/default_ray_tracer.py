@@ -171,7 +171,7 @@ class DefaultRayTracer(RayTracer):
             frame._primary = guides.primary
         if ctx.transparency:
             frame._after_sky = partial(self.finish_transparency, ctx, guides)
-        elif guides is not None:
+        elif ctx.specular:
             _update_ray_tail(ctx, primary=guides.primary, thin=None)
         return frame
 
@@ -251,7 +251,6 @@ def _update_ray_tail(ctx, *, primary, thin):
         _bind_world(render_pass, world)
         for index, target in enumerate(requests):
             render_pass.write_color(target, slot=index)
-        render_pass.set_param("diffuse_enabled", ctx.diffuse)
         render_pass.set_param("specular_enabled", ctx.specular)
         render_pass.set_param("temporal", ctx.reconstruct)
         render_pass.set_param("thin_enabled", bool(thin))

@@ -396,23 +396,28 @@ bool inx_ray_emitter_visible(RayPage page, float3 origin, InxRayEmitterSample sa
     return trace_visibility(page, inx_ray_open_segment(origin, segment), 0xffffffffu, material);
 }
 
-float3 inx_ray_emissive_direct(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
+float3 inx_ray_emissive_direct<let PairedWithBsdf : bool>(RayPage page, RaySurfaceHit attributes, InxSurfaceData surface,
     float3 outgoing, float3 geometric, uint seed, float maximum, RayReflectedLightLobe guide)
 {
     let sample = inx_ray_emitter_sample(page, attributes.position_ws, inx_ray_uniform3(seed ^ 0x39aa145du), maximum);
     if (!sample.active || dot(geometric, sample.direction) <= 0.0)
         return float3(0.0);
     float3 normal = normalize(surface.normal_ws);
-    RayGgxMaterial material = ray_lit_ggx(surface.albedo, surface.metallic, surface.smoothness,
-                                          0.0, surface.specular_highlights);
-    float probability = inx_ray_diffuse_probability(surface, material, dot(normal, outgoing));
-    float bsdf_pdf = ray_reflected_light_pdf(normal, geometric, outgoing, sample.direction, material,
-                                              probability, guide);
     float3 response = inx_secondary_projected_bsdf(surface, normal, outgoing, sample.direction);
     if (!inx_ray_emitter_visible(page, inx_ray_origin(attributes.position_ws, geometric,
                                                      attributes.position_error_ws), sample))
         return float3(0.0);
-    return sample.emission * response * (inx_ray_mis_weight(sample.pdf, bsdf_pdf) / sample.pdf);
+    float weight = 1.0;
+    if (PairedWithBsdf)
+    {
+        RayGgxMaterial material = ray_lit_ggx(surface.albedo, surface.metallic, surface.smoothness,
+                                             0.0, surface.specular_highlights);
+        float probability = inx_ray_diffuse_probability(surface, material, dot(normal, outgoing));
+        float bsdf_pdf = ray_reflected_light_pdf(normal, geometric, outgoing, sample.direction, material,
+                                               probability, guide);
+        weight = inx_ray_mis_weight(sample.pdf, bsdf_pdf);
+    }
+    return sample.emission * response * (weight / sample.pdf);
 }
 
 // D owns analytic NEE and MIS-combined emissive/BSDF endpoint samples.
@@ -427,7 +432,7 @@ InxRayTransportTerm inx_ray_direct_sample(RayPage page, RaySurfaceHit attributes
     light_surface.smoothness = min(surface.smoothness, 1.0 - light_roughness);
     float3 radiance = inx_ray_direct_radiance(page, attributes, light_surface, metadata, records, outgoing, seed);
     float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
-    radiance += inx_ray_emissive_direct(page, attributes, surface, outgoing, geometric, seed, maximum, guide);
+    radiance += inx_ray_emissive_direct<true>(page, attributes, surface, outgoing, geometric, seed, maximum, guide);
     RayDirectionProposal proposal;
     float3 weight = inx_ray_secondary_weight(surface, geometric, outgoing, seed ^ 0xb5297a4du, sample_index, proposal, guide);
     if (!proposal.active || max(weight.r, max(weight.g, weight.b)) <= 0.0)
@@ -841,8 +846,7 @@ InxScreenDiffuseTrace inx_march_diffuse_screen(TraceRay ray, float4x4 vp, InxUIn
 
 InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D depths, float4 sample_grid,
                                      InxHistory2D history, InxUInt2D reprojection,
-                                     InxBuffer_uint4 records, InxBuffer_uint4 cache,
-                                     uint seed, uint index, float pdf, uint2 pixel, bool temporal)
+                                     InxBuffer_uint4 records, uint seed, uint index, uint2 pixel, bool temporal)
 {
     float4x4 vp = mul(inx_view.projection, inx_view.view);
     let screen = inx_march_diffuse_screen(ray, vp, depths, sample_grid, pixel, index);
@@ -855,9 +859,28 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D dept
     // Advance the triangle intersection interval while keeping all hit distances relative to the receiver.
     ray.minimum = min(max(0.1, screen.distance), ray.maximum);
     RayHit hit = inx_trace_lit_closest(page, ray, 0xffffffffu, 0.0);
-    float roughness = rsqrt(sqrt(max(402.1238597 * pdf - 1.0, 1.0)));
-    return inx_ray_radiance_at_hit(page, ray, hit, records, cache, seed, float3(1.0), roughness,
-                                   float4(0.0), index, 0.0, ray.origin);
+    if (hit.triangle_index == ray_invalid_index)
+        return inx_ray_signal_output(inx_environment_radiance(ray.direction), uint2(0u));
+    uint kind = inx_ray_participation(hit.surface_id);
+    if (!inx_ray_has_surface(kind))
+        return (InxRaySignal)0;
+
+    RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
+    InxSurfaceData surface;
+    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, surface);
+    uint2 witness = uint2(hit.surface_id, asuint(hit.distance));
+    if (kind == inx_ray_material_unlit)
+        return inx_ray_signal_output(inx_ray_unlit_radiance(attributes, surface), witness);
+
+    // The diffuse candidate resolves emission and direct lighting at this hit.
+    // Reflection and thin transmission own the additional secondary radiance cache.
+    surface.smoothness = min(surface.smoothness, 0.2);
+    float3 geometric = attributes.front_face ? attributes.geometric_normal_ws : -attributes.geometric_normal_ws;
+    float3 radiance = inx_ray_direct_radiance(page, attributes, surface,
+        inx_buffer_load(records, hit.surface_id * 3u), records, -ray.direction, seed);
+    radiance += inx_ray_emissive_direct<false>(page, attributes, surface, -ray.direction, geometric,
+                                             seed, ray.maximum, (RayReflectedLightLobe)0);
+    return inx_ray_signal_output(surface.emission + radiance, witness);
 }
 
 // The per-view sequence advances over the Hilbert order of each 64x64 ray tile.
@@ -882,7 +905,7 @@ uint inx_diffuse_hilbert(uint2 pixel)
 public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 geometric_normal, float3 shading_normal,
                                          uint2 cell, bool temporal,
                                          InxUInt2D screen_depth, float4 sample_grid, InxHistory2D history,
-                                         InxUInt2D reprojection, InxBuffer_uint4 records, InxBuffer_uint4 cache)
+                                         InxUInt2D reprojection, InxBuffer_uint4 records)
 {
     RayPage page = ray_page();
     if (page.status != ray_page_ready)
@@ -909,8 +932,8 @@ public InxRaySignal inx_ray_diffuse_sample(float3 position, float3 geometric_nor
 
     TraceRay ray = {position, 0.0, direction, inx_view.projection_params.y};
     const float pdf = 0.15915494309;
-    let hit = inx_ray_diffuse_incident(page, ray, screen_depth, sample_grid, history, reprojection, records, cache,
-                                       inx_ray_sample_hash(index), frame, pdf, cell * 2u, temporal);
+    let hit = inx_ray_diffuse_incident(page, ray, screen_depth, sample_grid, history, reprojection, records,
+                                       inx_ray_sample_hash(index), frame, cell * 2u, temporal);
     if (hit.radiance.a <= 0.0)
         return (InxRaySignal)0;
 

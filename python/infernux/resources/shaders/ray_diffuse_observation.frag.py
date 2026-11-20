@@ -13,7 +13,6 @@ class RayDiffuseObservation(shader.fullscreen):
     previous_radiance = shader.input("previous_radiance", shader.History2D, domain="scene_linear_hdr")
     reprojection = shader.input("reprojection", shader.UInt2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
-    tail_cache = shader.input("ray_tail_read", shader.Buffer[shader.uvec4])
     divisor = shader.parameter.int(default=4)
     temporal = shader.parameter.bool(default=True)
 
@@ -40,6 +39,6 @@ class RayDiffuseObservation(shader.fullscreen):
         sample_grid = shader.vec4(scale, scale + 0.25 - 0.5 * phase)
         sample = shader.ray._diffuse_sample(
             position, geometric_normal, shading_normal, shader.uvec2(cell), self.temporal, self.screen_depth, sample_grid,
-            self.previous_radiance, self.reprojection, self.surface_records, self.tail_cache
+            self.previous_radiance, self.reprojection, self.surface_records
         )
         return pack_ray_signal(sample.radiance, sample.witness)
