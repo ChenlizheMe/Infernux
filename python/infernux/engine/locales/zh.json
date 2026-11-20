@@ -864,6 +864,7 @@
   "renderstack.global_illumination": "全局光照（GI）",
   "renderstack.gi_intensity": "漫反射 GI 强度",
   "renderstack.gi_saturation": "间接光饱和度",
+  "renderstack.ssao": "屏幕空间环境光遮蔽（SSAO）",
   "renderstack.ssao_strength": "接触遮蔽强度（SSAO）",
   "renderstack.ssao_contrast": "接触遮蔽对比度",
   "renderstack.ray_specular": "光追镜面反射",

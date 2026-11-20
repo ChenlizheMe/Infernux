@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.ambient_visibility import adjust_diffuse_lighting
+from infernux.shader.lib.ambient_visibility import adjust_diffuse_lighting, ambient_occlusion_factor
 from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_raster_context
 from infernux.shader.lib.ray_signal import resolve_ray_diffuse, resolve_ray_specular
 
@@ -46,7 +46,7 @@ class DeferredRayLighting(shader.fullscreen):
         if self.specular_enabled:
             specular = resolve_ray_specular(self.ray_specular, self.primary_tex, self.normal_tex, pixel, packed.x,
                                             depth, surface.normal_ws, frame.z)
-        diffuse = adjust_diffuse_lighting(diffuse, self.ambient_visibility, pixel,
-                                          self.diffuse_intensity, self.diffuse_saturation,
-                                          self.ssao_strength, self.ssao_contrast)
+        diffuse = adjust_diffuse_lighting(diffuse, self.diffuse_intensity, self.diffuse_saturation)
+        surface.occlusion *= ambient_occlusion_factor(
+            self.ambient_visibility, pixel, self.ssao_strength, self.ssao_contrast, 0.1, 0.4)
         return shader.vec4(shader.lighting._shade_ray(surface, context, metadata.y, diffuse, specular), 1.0)

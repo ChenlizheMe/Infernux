@@ -278,7 +278,7 @@ class RenderPipeline(SerializedFieldCollectorMixin):
 
         return provide_surface_reprojection(context)
 
-    @geometry_buffer("ambient_visibility", dependencies={"ray_surface_reprojection"})
+    @geometry_buffer("ambient_visibility", dependencies={"ray_diffuse_guide"})
     def _provide_ambient_visibility(self, context):
         from infernux.renderstack._diffuse_irradiance import provide_ambient_visibility
 

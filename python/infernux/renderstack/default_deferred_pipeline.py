@@ -107,9 +107,9 @@ class DefaultDeferredPipeline(RenderPipeline):
     ``global_illumination`` enables diffuse indirect light. With GI active,
     ``ray_specular`` adds traced reflections. ``ray_quality`` sets the diffuse tracing rate.
     At zero GI saturation, bounced light keeps its luminance and takes on the
-    receiver's color. SSAO strength 0.1 applies the measured hemispherical visibility once.
-    Higher strengths deepen contact shadows, and contrast shapes partial occlusion. These controls act on the
-    displayed lighting. Light transport samples are kept on their native grid through reconstruction.
+    receiver's color. SSAO runs independently when enabled, and always guides GI
+    reconstruction. Strength and contrast apply to the indirect lighting.
+    Light transport samples stay on their native grid through reconstruction.
     Lighting resolves them against the full-resolution surface; specular
     paths use the full-resolution grid at every quality.
     """
@@ -126,6 +126,20 @@ class DefaultDeferredPipeline(RenderPipeline):
         tooltip="Shadow map resolution (width & height)",
         header="Shadows",
     )
+    ssao: bool = serialized_field(
+        default=False, header="Ambient Occlusion", display_name_key="renderstack.ssao",
+        tooltip="Screen-space ambient occlusion. Automatically enabled with Global Illumination.",
+        visible_when=lambda p: not p.global_illumination,
+    )
+    ssao_strength: float = serialized_field(
+        default=0.5, range=(0.0, 1.0), slider=True, display_name_key="renderstack.ssao_strength",
+        tooltip="Adjusts how strongly SSAO affects indirect lighting.",
+        visible_when=lambda p: p.ssao or p.global_illumination,
+    )
+    ssao_contrast: float = serialized_field(
+        default=1.0, range=(0.25, 4.0), slider=True, display_name_key="renderstack.ssao_contrast",
+        visible_when=lambda p: p.ssao or p.global_illumination,
+    )
     global_illumination: bool = serialized_field(
         default=False, header="Ray Tracing", display_name_key="renderstack.global_illumination",
     )
@@ -135,15 +149,6 @@ class DefaultDeferredPipeline(RenderPipeline):
     )
     gi_saturation: float = serialized_field(
         default=1.0, range=(0.0, 1.0), slider=True, display_name_key="renderstack.gi_saturation",
-        visible_when=attrgetter("global_illumination"),
-    )
-    ssao_strength: float = serialized_field(
-        default=0.5, range=(0.0, 1.0), slider=True, display_name_key="renderstack.ssao_strength",
-        tooltip="Adjusts the GTAO contribution to diffuse indirect lighting.",
-        visible_when=attrgetter("global_illumination"),
-    )
-    ssao_contrast: float = serialized_field(
-        default=1.0, range=(0.25, 4.0), slider=True, display_name_key="renderstack.ssao_contrast",
         visible_when=attrgetter("global_illumination"),
     )
     ray_specular: bool = serialized_field(
@@ -265,10 +270,12 @@ class DefaultDeferredPipeline(RenderPipeline):
             ctx.shade_deferred(frame, graph.get_texture(COLOR_TEXTURE),
                                name="Ray Scene Color" if frame.scene_color is not None else "DeferredLightingPass")
         else:
+            visibility = raw_gbuffer.sample("ambient_visibility") if self.ssao else None
             with graph.add_pass("DeferredLightingPass") as p:
                 p.write_color(COLOR_TEXTURE)
                 p.set_clear(color=DEFERRED_LIGHTING_CLEAR_COLOR)
-                draw_deferred_lighting(p, current.snapshot)
+                draw_deferred_lighting(p, current.snapshot, visibility=visibility,
+                                       strength=self.ssao_strength, contrast=self.ssao_contrast)
         whole_scene = frame is not None and frame.scene_color is not None
         if not whole_scene:
             with graph.add_pass("DeferredForwardFallbackPass") as p:

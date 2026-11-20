@@ -400,6 +400,21 @@ def test_screen_ui_records_scene_radiance_from_a_custom_pipeline_color_target():
     assert dict(capture.write_colors)[0] == target.name
 
 
+def test_ssao_can_run_without_ray_tracing():
+    pipeline = DefaultDeferredPipeline()
+    pipeline.ssao = True
+    graph = RenderGraph("standalone SSAO")
+    pipeline.define_topology(graph)
+    names = [p.name for p in graph.build().passes]
+    passes = {p.name: p for p in graph._passes}
+    temporal = passes["gbuffer/GTAO Temporal"]
+    assert names.index("gbuffer/Motion") < names.index(temporal.name) < names.index("DeferredLightingPass")
+    assert temporal._input_bindings["motion"] == passes["gbuffer/Motion"]._write_colors[0]
+    assert not temporal._parameters["use_reprojection"]
+    assert "Ray Diffuse Irradiance" not in passes and graph.get_buffer("world_ray_geometry") is None
+    assert passes["DeferredLightingPass"]._input_bindings["ambient_visibility"] == temporal._write_colors[0]
+
+
 def test_zero_contact_strength_preserves_visibility_guided_diffuse():
     pipeline = DefaultDeferredPipeline()
     pipeline.global_illumination = True

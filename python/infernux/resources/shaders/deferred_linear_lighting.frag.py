@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.ambient_visibility import adjust_diffuse_lighting
+from infernux.shader.lib.ambient_visibility import adjust_diffuse_lighting, ambient_occlusion_factor
 from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_raster_context
 from infernux.shader.lib.ray_signal import resolve_ray_diffuse, resolve_ray_specular
 
@@ -50,7 +50,7 @@ class DeferredLinearLighting(shader.fullscreen):
                                             depth, surface.normal_ws, frame.z)
         elif self.specular_mode == 1:
             specular = shader.load(self.specular_radiance, pixel, 0)
-        diffuse = adjust_diffuse_lighting(diffuse, self.ambient_visibility, pixel,
-                                          self.diffuse_intensity, self.diffuse_saturation,
-                                          self.ssao_strength, self.ssao_contrast)
+        diffuse = adjust_diffuse_lighting(diffuse, self.diffuse_intensity, self.diffuse_saturation)
+        surface.occlusion *= ambient_occlusion_factor(
+            self.ambient_visibility, pixel, self.ssao_strength, self.ssao_contrast, 0.1, 0.4)
         return shader.vec4(shader.lighting._shade_ray(surface, shading, metadata.y, diffuse, specular), 1.0)

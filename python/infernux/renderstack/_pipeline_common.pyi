@@ -39,7 +39,9 @@ def create_main_scene_targets(
 ) -> None: ...
 def create_deferred_gbuffer(graph: RenderGraph) -> None: ...
 def draw_deferred_lighting(
-    render_pass: RenderPassBuilder, *, albedo, normal, material, emission, object_data, depth,
+    render_pass: RenderPassBuilder,
+    buffers: Mapping[str, TextureHandle | BufferHandle],
+    *, visibility: TextureHandle | None = None, strength: float = 0.0, contrast: float = 1.0,
 ) -> None: ...
 def add_shadow_caster_pass(
     graph: RenderGraph,

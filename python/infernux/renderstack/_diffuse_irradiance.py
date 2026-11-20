@@ -102,6 +102,11 @@ def provide_ambient_visibility(context):
     graph = context.graph
     stem = f"_result/{context.source}/gtao"
     guide = context.sample("ray_diffuse_guide")
+    reprojection = context.has("ray_surface_reprojection")
+    if reprojection:
+        motion = context.sample("ray_surface_reprojection")
+    else:
+        motion = graph.get_pass_result(context.source).sample("motion")
     half = graph.create_texture(f"{stem}/half", format=Format.R16_SFLOAT, size_divisor=2, samples=1)
     full = graph.create_texture(f"{stem}/full", format=Format.R16_SFLOAT, samples=1)
     previous, current = graph.create_temporal_history(f"{stem}/history", format=Format.R8_UNORM)
@@ -115,8 +120,9 @@ def provide_ambient_visibility(context):
         p.write_color(full)
         p.fullscreen_quad("infernux/internal/gtao_upsample")
     with graph.add_pass(f"{context.source}/GTAO Temporal") as p:
-        p.set_textures({"visibility": full, "history": previous,
-                        "reprojection": context.sample("ray_surface_reprojection")})
+        p.set_textures({"visibility": full, "history": previous, "reprojection": motion if reprojection else guide,
+                        "motion": full if reprojection else motion})
+        p.set_param("use_reprojection", reprojection)
         p.write_color(current)
         p.fullscreen_quad("infernux/internal/gtao_temporal")
     return current

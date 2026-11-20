@@ -1,4 +1,5 @@
 import infernux.shader as shader
+from infernux.shader.lib.ambient_visibility import ambient_occlusion_factor
 from infernux.shader.lib.deferred_surface import decode_deferred_surface, deferred_raster_context
 
 
@@ -11,6 +12,9 @@ class DeferredLighting(shader.fullscreen):
     surface_tex = shader.input("gbuffer_surface", shader.UInt2D)
     depth_tex = shader.input("depth", shader.Depth2D)
     surface_records = shader.input("surface_records", shader.Buffer[shader.uvec4])
+    ambient_visibility = shader.input("ambient_visibility", shader.Color2D)
+    ssao_strength = shader.parameter.float(default=0.0)
+    ssao_contrast = shader.parameter.float(default=1.0)
 
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
         pixel = shader.ivec2(ctx.position.xy)
@@ -23,5 +27,7 @@ class DeferredLighting(shader.fullscreen):
         frame = shader.load(self.normal_tex, pixel, 0)
         emission = shader.load(self.emission_tex, pixel, 0)
         surface = decode_deferred_surface(base, frame, emission, packed.y)
+        surface.occlusion *= ambient_occlusion_factor(
+            self.ambient_visibility, pixel, self.ssao_strength, self.ssao_contrast, 0.0, 0.0)
         context = deferred_raster_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata, self.depth_tex)
         return shader.vec4(shader.lighting.shade(surface, context, metadata.y), 1.0)

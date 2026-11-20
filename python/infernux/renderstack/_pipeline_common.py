@@ -152,8 +152,13 @@ def draw_deferred_geometry(render_pass, depth, queue_range, sort_mode, material_
 
 def draw_deferred_lighting(
     render_pass: RenderPassBuilder, buffers: Mapping[str, TextureHandle | BufferHandle],
+    *, visibility: TextureHandle | None = None, strength: float = 0.0, contrast: float = 1.0,
 ) -> None:
     bind_deferred_surface(render_pass, buffers)
+    render_pass.set_texture("ambient_visibility", visibility or buffers["base_color"])
+    if visibility is not None:
+        render_pass.set_param("ssao_strength", strength)
+        render_pass.set_param("ssao_contrast", contrast)
     render_pass.fullscreen_quad("infernux/internal/deferred_lighting")
 
 

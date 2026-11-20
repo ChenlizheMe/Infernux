@@ -864,6 +864,7 @@
   "renderstack.global_illumination": "Global Illumination (GI)",
   "renderstack.gi_intensity": "Diffuse GI Intensity",
   "renderstack.gi_saturation": "Indirect Light Saturation",
+  "renderstack.ssao": "Screen-space Ambient Occlusion (SSAO)",
   "renderstack.ssao_strength": "Contact Occlusion (SSAO)",
   "renderstack.ssao_contrast": "Contact Occlusion Contrast",
   "renderstack.ray_specular": "Ray-Traced Reflections",

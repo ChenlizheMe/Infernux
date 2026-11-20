@@ -151,7 +151,7 @@ class RayTracingContext:
         Built-in estimates resolve directly in this pass. A custom tracer may
         supply linear lighting or replace the entire scene, including the sky.
         """
-        from infernux.renderstack._pipeline_common import bind_deferred_surface, deferred_surface_inputs
+        from infernux.renderstack._pipeline_common import bind_deferred_surface, deferred_surface_inputs, draw_deferred_lighting
 
         if result.scene_color is not None:
             if target is not result.scene_color:
@@ -169,10 +169,10 @@ class RayTracingContext:
         with self.graph.add_pass(name) as p:
             p.write_color(target)
             p.set_clear(color=(0.0, 0.0, 0.0, 1.0))
-            bind_deferred_surface(p, surface)
             if not enabled:
-                p.fullscreen_quad("infernux/internal/deferred_lighting")
+                draw_deferred_lighting(p, surface)
                 return
+            bind_deferred_surface(p, surface)
             # Unused sampler slots alias material inputs already bound to this
             # pass. No dummy images, standalone resolves or copies are created.
             primary = result._primary or surface["surface"]
