@@ -58,11 +58,12 @@ def _resolve(ctx, guides, coefficients, state):
 
 
 class DiffuseObservation(RayTracingSignal):
-    def __init__(self, ctx, guides, packet, reprojection, visibility):
+    def __init__(self, ctx, guides, packet, reprojection, visibility, half_geometry):
         super().__init__(partial(_read_observations, ctx, guides, packet))
         self.witness = packet
         self.reprojection = reprojection
         self.visibility = visibility
+        self.half_geometry = half_geometry
 
 
 def trace_grid(quality):
@@ -147,7 +148,7 @@ def trace_diffuse(ctx, guides, divisor):
         p.set_param("temporal", ctx.reconstruct)
         p.write_color(packet)
         p.fullscreen_quad("infernux/internal/ray_diffuse_observation")
-    return DiffuseObservation(ctx, guides, packet, reprojection, visibility)
+    return DiffuseObservation(ctx, guides, packet, reprojection, visibility, screen_depth)
 
 
 def reconstruct_diffuse(ctx, guides, observation):
@@ -169,7 +170,7 @@ def reconstruct_diffuse(ctx, guides, observation):
     visibility = observation.visibility or guides.surface.sample("surface_frame")
     with graph.add_pass("Ray Diffuse SH Gather") as p:
         p.set_textures({"observations": observation.witness, "primary": guides.primary,
-                        "ambient_visibility": visibility})
+                        "guide": observation.half_geometry, "ambient_visibility": visibility})
         p.set_param("use_visibility", observation.visibility is not None)
         p.set_param("divisor", divisor)
         _write_slots(p, fresh)
@@ -188,7 +189,7 @@ def reconstruct_diffuse(ctx, guides, observation):
         p.fullscreen_quad("infernux/internal/ray_diffuse_fill")
     with graph.add_pass("Ray Diffuse Recurrent Blur") as p:
         p.set_textures({**_sh_inputs(filled), "state": state, "primary": guides.primary,
-                        "visibility": visibility})
+                        "guide": observation.half_geometry, "visibility": visibility})
         p.set_param("use_visibility", observation.visibility is not None)
         _write_slots(p, filtered)
         p.fullscreen_quad("infernux/internal/ray_diffuse_blur")

@@ -23,10 +23,8 @@ def sh_guide_phase(index: shader.uint) -> shader.ivec2:
 
 
 def sh_guide_pixel(cell: shader.ivec2, grid: shader.ivec2, full: shader.ivec2, index: shader.uint) -> shader.ivec2:
-    offset = sh_guide_phase(index)
-    center = (shader.vec2(cell) + 0.5) * shader.vec2(full) / shader.vec2(grid)
-    return shader.clamp(shader.ivec2(shader.floor(center - 1.0)) + offset,
-                        shader.ivec2(0), full - shader.ivec2(1))
+    half = shader.max(full / 2, shader.ivec2(1))
+    return shader.clamp(2 * (cell * half / grid) + sh_guide_phase(index), shader.ivec2(0), full - 1)
 
 
 def sh_guide_normal(packed: shader.uint) -> shader.vec3:

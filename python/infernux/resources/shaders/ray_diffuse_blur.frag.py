@@ -1,6 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_pixel, sh_normal_weight
-from infernux.shader.lib.surface import decode_octahedral_normal
+from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_normal, sh_guide_pixel, sh_normal_weight
 
 
 class RayDiffuseBlur(shader.fullscreen):
@@ -11,6 +10,7 @@ class RayDiffuseBlur(shader.fullscreen):
     blue_sh = shader.input("blue_sh", shader.Color2D)
     state = shader.input("state", shader.Color2D)
     primary = shader.input("primary", shader.UInt2D)
+    guide = shader.input("guide", shader.UInt2D)
     visibility = shader.input("visibility", shader.Color2D)
     use_visibility = shader.parameter.bool(default=False)
 
@@ -20,16 +20,15 @@ class RayDiffuseBlur(shader.fullscreen):
         full = shader.ivec2(shader.dimensions(self.primary, 0))
         index = shader._view_sample_index()
         site = sh_guide_pixel(cell, extent, full, index)
-        receiver = shader.load(self.primary, site, 0)
+        geometry = shader.load(self.guide, site / 2, 0)
+        depth = shader.as_float(geometry.x)
         age = shader.load(self.state, cell, 0).x
-        if receiver.x == 0:
+        if depth <= 0.0:
             return (shader.vec4(0.0), shader.vec4(0.0), shader.vec4(0.0))
         mature = age > 33.0
         step = 1 if mature else 3
-        depth = shader.as_float(receiver.y)
-        n = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))
-        view_normal = (shader.camera().view_matrix @ shader.vec4(n, 0.0)).xyz
-        facing = shader.max(0.3, view_normal.z)
+        n = sh_guide_normal(geometry.y)
+        facing = shader.max(0.3, n.z)
         visibility = shader.load(self.visibility, site, 0).x if self.use_visibility else 0.0
 
         red = shader.vec4(0.0)
@@ -42,12 +41,12 @@ class RayDiffuseBlur(shader.fullscreen):
             if shader.any(at < shader.ivec2(0)) or shader.any(at >= extent):
                 continue
             pt = sh_guide_pixel(at, extent, full, index)
-            guide = shader.load(self.primary, pt, 0)
+            guide = shader.load(self.guide, pt / 2, 0)
             if shader.load(self.state, at, 0).y <= 0.0:
                 continue
-            normal = decode_octahedral_normal(shader.unpack_half_2x16(guide.z))
+            normal = sh_guide_normal(guide.y)
             other_vis = shader.load(self.visibility, pt, 0).x if self.use_visibility else 0.0
-            weight = sh_bilateral(depth, shader.as_float(guide.y), facing, visibility, other_vis)
+            weight = sh_bilateral(depth, shader.as_float(guide.x), facing, visibility, other_vis)
             weight *= sh_normal_weight(n, normal)
             if mature:
                 weight *= shader.exp2(-shader.float(offset.x * offset.x + offset.y * offset.y))
@@ -55,5 +54,5 @@ class RayDiffuseBlur(shader.fullscreen):
             green += shader.load(self.green_sh, at, 0) * weight
             blue += shader.load(self.blue_sh, at, 0) * weight
             total += weight
-        norm = 1.0 / shader.max(total, 1.0e-20)
+        norm = 1.0 / shader.max(total, 1.0e-10)
         return (red * norm, green * norm, blue * norm)
