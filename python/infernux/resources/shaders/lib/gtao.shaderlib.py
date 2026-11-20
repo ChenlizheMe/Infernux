@@ -21,3 +21,10 @@ def horizon_angle(cosine: float) -> float:
     root = shader.as_float(shader.uint(532487669) + (shader.as_uint(1.0 - bound) >> 1))
     angle = (1.570796 - 0.156583 * bound) * root
     return angle if cosine >= 0.0 else 3.141593 - angle
+
+
+def horizon_coverage(horizons: shader.vec2, normal_angle: float, normal_sine: float, normal_cosine: float) -> float:
+    a = 2.0 * horizon_angle(horizons.x)
+    b = -2.0 * horizon_angle(horizons.y)
+    return 0.25 * (2.0 * normal_cosine + (a + b) * normal_sine -
+                   shader.cos(a - normal_angle) - shader.cos(b - normal_angle))

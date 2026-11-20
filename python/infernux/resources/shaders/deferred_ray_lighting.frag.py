@@ -48,5 +48,5 @@ class DeferredRayLighting(shader.fullscreen):
                                             depth, surface.normal_ws, frame.z)
         diffuse = adjust_diffuse_lighting(diffuse, self.diffuse_intensity, self.diffuse_saturation)
         surface.occlusion *= ambient_occlusion_factor(
-            self.ambient_visibility, pixel, self.ssao_strength, self.ssao_contrast, 0.1, 0.4)
+            self.ambient_visibility, pixel, self.ssao_strength, self.ssao_contrast)
         return shader.vec4(shader.lighting._shade_ray(surface, context, metadata.y, diffuse, specular), 1.0)

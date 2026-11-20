@@ -769,7 +769,10 @@ float3 shade<let indirect_only : bool>(InxSurfaceData s, InxShadingContext ctx,
     }
     float3 k_s_env = f_schlick_roughness(F0, f90, ndot_v, perceptual_roughness);
     float3 k_d_env = (1.0 - k_s_env) * (1.0 - metallic);
-    float3 diffuse_irradiance = ray_diffuse.a > 0.0 ? ray_diffuse.rgb * INV_PI : sample_ambient_irradiance(N);
+    // Diffuse alpha is the contribution of traced irradiance in the material blend.
+    float3 diffuse_irradiance = ray_diffuse.rgb * INV_PI;
+    if (ray_diffuse.a < 1.0)
+        diffuse_irradiance = lerp(sample_ambient_irradiance(N), diffuse_irradiance, ray_diffuse.a);
     float3 diffuse_env = k_d_env * albedo * diffuse_irradiance * ao;
     float3 spec_env = ray_specular.rgb;
     if (!(ray_specular.a > 0.0)) {

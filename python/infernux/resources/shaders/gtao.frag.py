@@ -1,7 +1,7 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
 from infernux.shader.lib.ray_sh_filter import sh_guide_normal
-from infernux.shader.lib.gtao import hilbert_index, horizon_angle
+from infernux.shader.lib.gtao import hilbert_index, horizon_angle, horizon_coverage
 
 
 class GTAO(shader.fullscreen):
@@ -28,8 +28,9 @@ class GTAO(shader.fullscreen):
         radius = (0.125 / projection_scale) / shader.abs(scale * px_to_view.x * 0.9992)
         uv = (shader.vec2(pixel) + 0.5) / shader.vec2(size)
         center = (camera.view_matrix @ shader.vec4(world_position(uv, depth, camera), 1.0)).xyz
+        forward = shader.sign(center.z)
         origin = shader.vec3(center.xy, center.z * 0.9992) if orthographic else center * 0.9992
-        view = shader.vec3(0.0, 0.0, 1.0) if orthographic else shader.normalize(-origin)
+        view = shader.vec3(0.0, 0.0, -forward) if orthographic else shader.normalize(-origin)
         normal = shader.normalize(sh_guide_normal(packed.y))
 
         sample_index = hilbert_index(pixel) + 288 * int(shader._view_sample_index() & shader.uint(63))
@@ -55,14 +56,15 @@ class GTAO(shader.fullscreen):
                     z = linear_eye_depth(sample_depth, camera)
                     plane = shader.vec2(tap - pixel) * px_to_view
                     position = center.xy + plane if orthographic else (center.xy / eye_depth + plane) * z
-                    delta = shader.vec3(position, -z) - origin
+                    delta = shader.vec3(position, forward * z) - origin
                     distance = shader.length(delta)
                     support = shader.saturate(10.0 - 80.0 * projection_scale * distance)
                     tangent_cosine = shader.dot(delta, view) / shader.max(distance, 1e-6)
                     horizons[side] = shader.max(horizons[side], shader.mix(open_horizon[side], tangent_cosine, support))
-        a = 2.0 * horizon_angle(horizons.x)
-        b = -2.0 * horizon_angle(horizons.y)
-        integrated = 0.25 * (2.0 * cos_n + (a + b) * shader.sin(angle_n) -
-                             shader.cos(a - angle_n) - shader.cos(b - angle_n))
-        small_radius_bias = 0.5 * shader.saturate(0.01 * (10.0 - radius))
-        return shader.vec4(shader.max(0.03, small_radius_bias + shader.mix(length_n, 1.0, 0.05) * integrated))
+        sin_n = shader.sin(angle_n)
+        open_coverage = horizon_coverage(open_horizon, angle_n, sin_n, cos_n)
+        visible_coverage = horizon_coverage(horizons, angle_n, sin_n, cos_n)
+        # A single azimuth can integrate to less or more than one on an open
+        # plane. Accumulate the blocked part before quantizing the visibility.
+        blocked = shader.max(0.0, open_coverage - visible_coverage) * shader.mix(length_n, 1.0, 0.05)
+        return shader.vec4(shader.max(0.03, 1.0 - blocked))

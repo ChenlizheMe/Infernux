@@ -17,11 +17,9 @@ class GTAOTemporal(shader.fullscreen):
             return shader.vec4(center)
 
         size = shader.ivec2(shader.dimensions(self.visibility, 0))
-        # The regular motion pass includes the raster jitter delta. AO history
-        # uses the unjittered displacement also stored by the GI reprojection pass.
-        offset = -shader.unpack_half_2x16(shader.load(self.reprojection, pixel, 0).x) if self.use_reprojection else (
-            -shader.load(self.motion, pixel, 0).xy - shader._view_jitter_delta_uv())
-        previous = shader.sample_level(self.history, ctx.uv + offset, 0.0).x
+        motion = (shader.unpack_half_2x16(shader.load(self.reprojection, pixel, 0).x) if self.use_reprojection
+                  else shader.load(self.motion, pixel, 0).xy)
+        previous = shader.sample_level(self.history, ctx.uv - motion, 0.0).x
         total = 0.0
         mean = 0.0
         square = 0.0

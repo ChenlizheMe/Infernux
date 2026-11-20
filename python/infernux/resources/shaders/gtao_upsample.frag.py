@@ -16,9 +16,8 @@ class GTAOUpsample(shader.fullscreen):
         size = shader.ivec2(shader.dimensions(self.guide, 0))
         cell = shader.min(pixel / 2, size - 1)
         depth = shader.load(self.depth, pixel, 0)
-        center = shader.load(self.visibility, cell, 0).x
         if depth <= 0.0:
-            return shader.vec4(center)
+            return shader.vec4(1.0)
         world = decode_octahedral_normal(shader.load(self.frame, pixel, 0).xy)
         normal = (shader.camera().view_matrix @ shader.vec4(world, 0.0)).xyz
         total = 0.0
@@ -42,4 +41,4 @@ class GTAOUpsample(shader.fullscreen):
                 weight = spatial * normal_weight * shader.exp2(-200.0 * shader.abs(1.0 - depth / other_depth))
                 sum_ao += weight * shader.load(self.visibility, at, 0).x
                 total += weight
-        return shader.vec4(sum_ao / total if total > 1e-6 else center)
+        return shader.vec4(sum_ao / total if total > 1e-6 else 1.0)

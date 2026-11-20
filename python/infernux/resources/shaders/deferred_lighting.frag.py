@@ -28,6 +28,6 @@ class DeferredLighting(shader.fullscreen):
         emission = shader.load(self.emission_tex, pixel, 0)
         surface = decode_deferred_surface(base, frame, emission, packed.y)
         surface.occlusion *= ambient_occlusion_factor(
-            self.ambient_visibility, pixel, self.ssao_strength, self.ssao_contrast, 0.0, 0.0)
+            self.ambient_visibility, pixel, self.ssao_strength, self.ssao_contrast)
         context = deferred_raster_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata, self.depth_tex)
         return shader.vec4(shader.lighting.shade(surface, context, metadata.y), 1.0)

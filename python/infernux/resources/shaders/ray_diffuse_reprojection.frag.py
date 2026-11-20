@@ -19,7 +19,8 @@ class RayDiffuseReprojection(shader.fullscreen):
 
         extent = shader.ivec2(shader.dimensions(self.primary, 0))
         uv = (shader.vec2(pixel) + 0.5) / shader.vec2(extent)
-        previous = uv - shader.unpack_half_2x16(movement.z) + shader._view_jitter_delta_uv()
+        raster_motion = shader.unpack_half_2x16(movement.z)
+        previous = uv - raster_motion
         origin = shader.ivec2(shader.floor(previous * shader.vec2(extent) - 0.5))
         cam = shader.camera()
         point = world_position(uv, shader.as_float(surface.y), cam)
@@ -34,4 +35,7 @@ class RayDiffuseReprojection(shader.fullscreen):
             old = shader.load(self.previous_primary, at, 0)
             if old.x == surface.x and shader.abs(linear_eye_depth(shader.as_float(old.y), cam) - eye) <= tolerance:
                 mask |= shader.uint(1) << i
-        return shader.uvec4(movement.z, mask, shader.uint(0), shader.uint(0))
+        # Depth history is raster-aligned. Lighting history is reconstructed
+        # at unjittered pixel centers, so publish the geometric displacement.
+        motion = raster_motion - shader._view_jitter_delta_uv()
+        return shader.uvec4(shader.pack_half_2x16(motion), mask, shader.uint(0), shader.uint(0))

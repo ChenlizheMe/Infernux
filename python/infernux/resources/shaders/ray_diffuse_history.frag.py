@@ -41,8 +41,8 @@ class RayDiffuseHistory(shader.fullscreen):
         motion = shader.unpack_half_2x16(reproj.x)
         previous = (shader.vec2(cell) + 0.5) / shader.vec2(extent) - motion
         if mask != 15:
-            footprint = shader.frac(shader.vec2(source) +
-                                    (shader._view_jitter_delta_uv() - motion) * shader.vec2(full))
+            raster_motion = motion + shader._view_jitter_delta_uv()
+            footprint = shader.frac(shader.vec2(source) - raster_motion * shader.vec2(full))
             correction = shader.vec2(0.0)
             total = 0.0
             for i in range(4):
