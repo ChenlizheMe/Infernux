@@ -1168,11 +1168,11 @@ class JoltGpuTick::Impl
         Normalize(stageCursor);
     }
 
-    JoltGpuControlWork PrepareContactTopology()
+    JoltGpuContactTopologyStart PrepareContactTopology(const StageCursor &begin)
     {
         inputs.ClearConstraints();
         constraintTopology.reset();
-        auto setupEnd = stageCursor;
+        auto setupEnd = begin;
         std::optional<JoltGpuConstraintSetup> setup;
         // Setup can share the topology packet when it has no articulation
         // pressure witness on the host. Reporting observes the set-up rows.
@@ -2035,7 +2035,7 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::BuildTopology) {
-                SelectControlWork(PrepareContactTopology(), PacketKind::NumericalWork);
+                SelectControlWork(PrepareContactTopology(stageCursor).prepare(), PacketKind::NumericalWork);
                 return true;
             }
             if (stageCursor.phase == Phase::WakeComponents) {
@@ -2055,7 +2055,13 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::CompleteConvexContacts) {
-                SelectControlWork(narrowphase.Prepare(storage, inputs, work, narrowphaseWorkspace,
+                JoltGpuContactTopologyStart topology;
+                if (!control.participants && inputs.GetContacts()->patchSlots) {
+                    auto begin = stageCursor;
+                    NextSpan(begin);
+                    topology = PrepareContactTopology(begin);
+                }
+                SelectControlWork(narrowphase.Prepare(storage, inputs, work, narrowphaseWorkspace, std::move(topology),
                                                       [this] {
                                                           NextSpan(stageCursor);
                                                           Normalize(stageCursor);

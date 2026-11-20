@@ -1,5 +1,6 @@
 #include "JoltGpuNarrowphase.h"
 #include <Jolt/GPU/ConvexGeometryTypes.h>
+#include "JoltGpuConstraints.h"
 #include "JoltGpuGeometryStore.h"
 #include "JoltGpuProgramSources.h"
 
@@ -485,8 +486,11 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
         const bool advances =
             publishes && dispatches.size() + 2u <= maximum && AppendAdvance(rounds, uploads, dispatches);
         std::vector<rhi::ComputeBufferRead> reads;
+        JoltGpuContactTopologyStart::ObservePrefix observedTopology;
         if (advances) {
             dispatches.push_back(Dispatch(Progress));
+            if (topology.appendAfterCollision)
+                observedTopology = topology.appendAfterCollision(scratch, uploads, dispatches);
             reads.push_back({scratch, 0u, WordBytes});
         }
         if (dispatches.empty())
@@ -497,10 +501,12 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches), std::move(reads));
         auto work = Retain(
             {packet,
-             [self = shared_from_this(), packet, first, publishes, advances, rounds, started] {
+             [self = shared_from_this(), packet, first, publishes, advances, rounds, started,
+              observedTopology = std::move(observedTopology)] {
                  self->queueFirst = first;
                  self->phase = publishes ? Phase::AdvanceJobs : Phase::QueueJobs;
-                 return advances ? self->ContinueProgress(*packet, rounds, started, 0u) : self->Next();
+                 return advances ? self->ContinueProgress(*packet, rounds, started, 0u, observedTopology)
+                                 : self->Next();
              },
              advances ? JoltGpuControlWork::ResumeAfter::Completion : JoltGpuControlWork::ResumeAfter::Acceptance});
         work.numericalWorkUnits = advances ? rounds * ConvexJobAdvanceQuantum : 0u;
@@ -510,20 +516,24 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
     }
 
     JoltGpuControlWork ContinueProgress(rhi::PreparedComputeBatch &packet, uint32_t rounds,
-                                        std::chrono::steady_clock::time_point started, size_t costIndex)
+                                        std::chrono::steady_clock::time_point started, size_t costIndex,
+                                        const JoltGpuContactTopologyStart::ObservePrefix &observedTopology)
     {
         UInt4 result{};
         packet.Readback(0u)->ReadInto(&result, sizeof(result));
-        if (swept || result.y != 0u) {
+        if (swept || (result.y != 0u && (!observedTopology || result.x == QueryPending))) {
             // Tick sizes the next admitted span from actual accepted work.
-            // An empty convex list contains no numerical work to estimate.
+            // Skip empty lists and completed packets whose timing includes topology.
             const double observed = packet.GetCompletion().GetDeviceElapsedNanoseconds().value_or(
                 std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started).count());
             auto &estimate = swept ? implementation->advanceNanoseconds[costIndex] : workspace.advanceNanoseconds;
             estimate = std::max(observed / rounds, estimate * .75);
         }
-        if (result.x == QueryPending)
+        if (result.x == QueryPending) {
+            if (observedTopology)
+                observedTopology(false);
             return Next();
+        }
         if (result.x != QuerySuccess)
             throw std::runtime_error(std::string(phase == Phase::SolveEvent ? "GPU sweep event solver"
                                                  : swept                    ? "GPU linear sweep"
@@ -549,7 +559,9 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             std::memcpy(&*impact, &result.z, sizeof(float));
         }
         Finish(impact);
-        return {};
+        if (observedTopology)
+            return observedTopology(true);
+        return topology.prepare ? topology.prepare() : JoltGpuControlWork{};
     }
 
     void BeginResolve(Phase next, Entry entry, bool flatten = false)
@@ -706,13 +718,18 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                                       : findingContacts ? EventContactProgress
                                       : swept           ? SweepProgress
                                                         : Progress));
+        JoltGpuContactTopologyStart::ObservePrefix observedTopology;
+        if (maximumAdvances > 1u && topology.appendAfterCollision)
+            observedTopology = topology.appendAfterCollision(scratch, uploads, dispatches);
+        const bool hasTopology = bool(observedTopology);
         auto packet = rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches),
                                                {{scratch, 0u, WordBytes}});
-        auto work = Retain({packet, [self = shared_from_this(), packet, started, count, costIndex] {
-                                return self->ContinueProgress(*packet, count, started, costIndex);
+        auto work = Retain({packet, [self = shared_from_this(), packet, started, count, costIndex,
+                                     observedTopology = std::move(observedTopology)] {
+                                return self->ContinueProgress(*packet, count, started, costIndex, observedTopology);
                             }});
         work.numericalWorkUnits = swept ? 0u : count * ConvexJobAdvanceQuantum;
-        if (count > 1u)
+        if (count > 1u || hasTopology)
             work.prepareMinimum = [self = shared_from_this()] { return self->Next(1u); };
         return work;
     }
@@ -720,6 +737,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
     std::shared_ptr<Impl> implementation;
     std::shared_ptr<const JoltGpuContactWorkset> contactLease;
     std::shared_ptr<const JoltGpuGeometryLease> geometry;
+    JoltGpuContactTopologyStart topology;
     FrameWorkOwner &budget;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> frozen;
     std::shared_ptr<rhi::ComputeBuffer> scratch, workUniform;
@@ -748,12 +766,13 @@ JoltGpuNarrowphase::JoltGpuNarrowphase(rhi::ComputeHost &host, const ShaderTarge
 
 JoltGpuControlWork JoltGpuNarrowphase::Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                                FrameWorkOwner &budget, Workspace &resident,
-                                               std::function<void()> completed)
+                                               JoltGpuContactTopologyStart topology, std::function<void()> completed)
 {
-    return std::make_shared<Impl::Execution>(
-               m_impl, storage, inputs, budget, [done = std::move(completed)](std::optional<float>) { done(); }, false,
-               0.0f, false, false, &resident)
-        ->Next();
+    auto execution = std::make_shared<Impl::Execution>(
+        m_impl, storage, inputs, budget, [done = std::move(completed)](std::optional<float>) { done(); }, false, 0.0f,
+        false, false, &resident);
+    execution->topology = std::move(topology);
+    return execution->Next();
 }
 
 JoltGpuControlWork JoltGpuNarrowphase::PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,

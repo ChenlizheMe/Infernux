@@ -15,6 +15,18 @@ struct JoltGpuConstraintSetup
     std::function<void(std::shared_ptr<const JoltGpuConstraintWorkset>)> assembled;
 };
 
+// Two ways to record the same topology cursor. The collision packet can
+// include a device-gated prefix, with its host cursor committed on receipt.
+struct JoltGpuContactTopologyStart
+{
+    using ObservePrefix = std::function<JoltGpuControlWork(bool collisionComplete)>;
+    std::function<JoltGpuControlWork()> prepare;
+    std::function<ObservePrefix(const std::shared_ptr<rhi::ComputeBuffer> &completion,
+                                std::vector<rhi::ComputeBufferUpdate> &uploads,
+                                std::vector<rhi::ComputeDispatchDesc> &dispatches)>
+        appendAfterCollision;
+};
+
 /// Builds one substep topology, then resumes that SAME validated CC execution
 /// after wake and numerical Setup to publish the active solver schedule.
 /// No submission, polling loop, private ComputeHost or CPU graph reconstruction.
@@ -30,13 +42,14 @@ class JoltGpuConstraints final
             std::shared_ptr<rhi::ComputeBuffer> parameters, work;
         };
         std::shared_ptr<rhi::ComputeBuffer> schedule, parents, rootVotes, arguments;
+        std::shared_ptr<rhi::ComputeBuffer> gateSpans, gatedArguments;
         std::array<Uniforms, MaxDispatches> uniforms;
     };
 
     JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTargetCode &target);
     [[nodiscard]] bool TryPrepareStartupPrograms();
 
-    [[nodiscard]] JoltGpuControlWork
+    [[nodiscard]] JoltGpuContactTopologyStart
     PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
                     const JPH::GPU::StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
                     Workspace &workspace, std::optional<JoltGpuConstraintSetup> setup,

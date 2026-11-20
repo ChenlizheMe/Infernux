@@ -404,14 +404,14 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         // Use the preceding substep's accepted pair count to avoid allocating
         // quadratic contact storage for sparse single-group work.
         uint32_t pairLimit = smallPairs ? static_cast<uint32_t>(sweepUpperBound) : 0u;
-        const bool localDiscrete = !swept && !inputs.HasGenericGeometry() && sweepUpperBound <= BroadphaseSweepJobs &&
-                                   settings.selectedCounts.x <= ConstraintLocalBodies;
+        const bool localDiscrete =
+            !swept && sweepUpperBound <= BroadphaseSweepJobs && settings.selectedCounts.x <= ConstraintLocalBodies;
         if (localDiscrete) {
             const auto &model = storage.GetModel();
             pairLimit = DiscretePairBound(model, model.worlds[config.selection.x]);
         }
-        // The admitted model bounds both collision storage and the island
-        // directory. The device publishes and consumes the effective counts.
+        // The admitted model bounds storage. Both analytic and convex readers
+        // use the device's collision count when no host contact consumer needs it.
         const bool deviceCounts = mode == Mode::Discrete && localDiscrete &&
                                   ConstraintDeviceScheduleFits(settings.selectedCounts.x, joints, pairLimit);
         config.round.z = uint32_t(deviceCounts);
@@ -520,7 +520,7 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 return false;
             if (!Endpoint(candidateArena, (1ull + 2ull * capacity) * WordBytes) ||
                 !Endpoint(workset->contacts, uint64_t(std::max(1u, capacity * PointsPerPair())) * sizeof(Contact))) {
-                if (capacity && !config.round.w) {
+                if (capacity && !config.round.w && !config.round.z) {
                     // A historical K is not a mandatory lower bound. Drop all
                     // partial optimistic owners, then let the SAME execution
                     // run its cold CountBoundary with K=0. Nothing is replayed.

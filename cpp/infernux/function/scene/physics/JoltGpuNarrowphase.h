@@ -7,6 +7,7 @@
 
 namespace infernux
 {
+struct JoltGpuContactTopologyStart;
 
 /// Completes generic candidates after the Tick's original analytic initializer.
 /// Analytic families retain their existing kernels and budget planner; convex jobs keep
@@ -29,7 +30,7 @@ class JoltGpuNarrowphase final
 
     [[nodiscard]] JoltGpuControlWork Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                              FrameWorkOwner &budget, Workspace &resident,
-                                             std::function<void()> completed);
+                                             JoltGpuContactTopologyStart topology, std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
                                                    FrameWorkOwner &budget, float remainingSeconds, bool continuing,
                                                    std::function<void(std::optional<float>)> completed);
