@@ -1544,6 +1544,11 @@ class RenderGraph:
     def _scene_radiance_history(self):
         if self._scene_radiance is None:
             self._scene_radiance = self.create_temporal_history("_scene_radiance")
+            # Screen rays reuse this estimate through continuous lighting changes.
+            # A ray-world reset also invalidates the light carried by the prior image.
+            for texture in self._scene_radiance:
+                texture._depends_on_ray_world = True
+                texture._responds_to_ray_lighting = True
         return self._scene_radiance
 
     def _unwritten_scene_radiance_history(self):
