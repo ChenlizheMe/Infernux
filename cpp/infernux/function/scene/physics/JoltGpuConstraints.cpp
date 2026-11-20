@@ -67,6 +67,7 @@ enum Entry : uint8_t
     Finalize,
     WriteBodyRoots,
     BuildLocalTopology,
+    BuildLocalSchedule,
     EntryCount
 };
 constexpr std::array<std::string_view, EntryCount> EntryNames{"constraint_init_words",
@@ -93,7 +94,8 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"constraint_init_w
                                                               "constraint_write_islands",
                                                               "constraint_finalize",
                                                               "constraint_write_body_roots",
-                                                              "constraint_build_local_topology"};
+                                                              "constraint_build_local_topology",
+                                                              "constraint_build_local_schedule"};
 constexpr uint32_t Bit(Port port)
 {
     return 1u << port;
@@ -125,7 +127,8 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{P | K | S,
                                                       P | K | S,
                                                       P | S,
                                                       P | K | S | C,
-                                                      P | S | B | C | V | Bit(TopologyArguments) | Bit(StepStatus)};
+                                                      P | S | B | C | V | Bit(TopologyArguments) | Bit(StepStatus),
+                                                      P | S | B | C};
 
 struct PortLayout
 {
@@ -569,6 +572,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Add(BuildPatchRefs, config.counts.z);
         // Wake changes the active reference subset. The parent forest and
         // its published body roots are still the accepted substep's inputs.
+        if (localTopology) {
+            Add(BuildLocalSchedule, 1u);
+            return;
+        }
         ValidateReferences();
         config.references.z = Sort(ConstraintJoint, jointSort, config.counts.y);
         config.references.w = Sort(ConstraintPatch, patchSort, config.counts.z);
