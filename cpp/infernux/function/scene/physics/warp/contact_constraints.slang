@@ -5,34 +5,12 @@
 
 #include "model.slang"
 #include "contact.slang"
+#include "constraint_data.slang"
 
-static const uint EllipticCone = 1;
-static const uint UnclampedReference = 2;
-static const uint DisableWarmstart = 4;
 static const uint NegativeJacobian = 0x80000000u;
 static const float MinValue = 1.0e-15;
 static const float MinImpedance = 0.0001;
 static const float MaxImpedance = 0.9999;
-
-struct ConstraintRow
-{
-    uint4 layout; // first column, nonzero count, contact index, ordinal within contact
-    float4 state; // distance, include margin, J*qvel, reference acceleration
-    float4 weight; // inverse regularization, friction loss
-};
-
-struct ConstraintColumn
-{
-    uint dof;
-    float value;
-};
-
-struct ConstraintEvaluation
-{
-    float force;
-    float cost;
-    uint state;
-};
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> settings;
 [[vk::binding(1, 0)]] StructuredBuffer<Contact> contacts;
@@ -139,11 +117,6 @@ float3 contactDirection(Contact contact, uint axis)
     case 1: return contact.tangentAdhesion.xyz;
     default: return contact.bitangent.xyz;
     }
-}
-
-float contactFriction(Contact contact, uint axis)
-{
-    return axis < 4 ? contact.friction[axis] : contact.extra.y;
 }
 
 float jacobianValue(Contact contact, uint axis, float3 pointVelocity, float3 angularVelocity)

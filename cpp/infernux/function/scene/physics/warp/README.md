@@ -17,8 +17,9 @@ These Slang entries follow MuJoCo Warp's shared model and world-indexed data. Th
 | `broadphase.slang` | Segmented sweep and prune with plane, sphere, axis-aligned box and oriented box filters | `sap_project`, `sap_merge`, `sap_find_ranges`, `sap_scan_ranges`, `sap_emit_pairs` |
 | `primitive_contacts.slang` | Plane against sphere, capsule, ellipsoid or box, and sphere against sphere or capsule | `clear_contact_count`, `collide_primitives` |
 | `contact_constraints.slang` | Sparse contact Jacobian, constraint row parameters and pyramidal or elliptic contact objective | `clear_constraint_counts`, `reserve_contact_rows`, `project_contact_rows`, `finish_contact_rows`, `seed_contact_acceleration`, `contact_residual`, `evaluate_contact_objective` |
+| `contact_cg.slang` | Mass-preconditioned nonlinear conjugate gradient for rigid contact | `begin_contact_cg`, `cg_initial_mass_product`, `clear_constraint_projection`, `project_constraint_force`, `cg_gradient`, `cg_search_direction`, `cg_ray_mass_product`, `cg_ray_constraint_product`, `cg_ray_gauss`, `cg_line_search`, `cg_apply_step` |
 
-For worlds without active constraints, the mass solve produces the acceleration consumed by Euler. The port accepts applied generalized forces and actuator forces as inputs. Actuator dynamics and transmissions, tendon forces and armature, actuator-specific gravity compensation, the remaining narrowphase pairs, constraint assembly and solving, sleeping, CCD, and alternative integrators require their corresponding stages before full-step comparisons.
+The mass solve produces the smooth acceleration. The CG contact solve supplies the acceleration consumed by Euler in supported rigid-contact cases. The port accepts applied generalized forces and actuator forces as inputs. Actuator dynamics and transmissions, tendon forces and armature, actuator-specific gravity compensation, the remaining narrowphase pairs and row producers, Newton solving, sleeping, CCD, and alternative integrators require their corresponding stages.
 
 The model contains the topology and inertial data shared by all worlds. `model.slang` defines records using 16-byte fields. Scalar generalized coordinates and the mass matrix remain tightly packed. Dispatch X addresses branches, bodies, joints or degrees of freedom, and dispatch Y addresses worlds. Dynamics arrays use a separate contiguous row per world. Quaternion order is `wxyz`. Matrix records store three padded rows.
 
@@ -46,9 +47,13 @@ Clear the contact counters once before dispatching narrowphase. The primitive en
 
 ## Contact constraints
 
-The contact row entries reserve contiguous CSR rows for each contact. They walk the two DOF chains, omitting shared ancestors, then project the contact frame onto the point and angular Jacobians. The continuous-time row update computes the reference acceleration and regularization from the projected velocity, material and world timestep. The setup entries select the initial acceleration, evaluate the constraint residual, and compute the force, cost and state for the chosen friction cone. The remaining solver must update generalized acceleration from the objective and write the final constraint forces before integration.
+The contact row entries reserve contiguous CSR rows for each contact. They walk the two DOF chains, omitting shared ancestors, then project the contact frame onto the point and angular Jacobians. The continuous-time row update computes the reference acceleration and regularization from the projected velocity, material and world timestep. The setup entries select the initial acceleration, evaluate the constraint residual, and compute the force, cost and state for the chosen friction cone.
 
 The per-world row and nonzero counts retain overflow. Skip any incomplete matrix and report the exceeded capacity before publishing or integrating the step. Equality, limits, DOF friction loss and discrete integrator rows need their own producers.
+
+Prepare the symmetric mass adjacency once per model. Store `nv + 1` CSR offsets followed by pairs of a column DOF and its packed mass index, with the diagonal first in every row. CG reads the iteration and line search limits and packed matrix size from `cgOptions`. The world records in the constraint settings supply the convergence and line search tolerances in their last two words.
+
+Initialize the solver after the row assembly, mass factorization and warm-start selection. Clear and compute `Jᵀf`, form the gradient, apply the existing mass solve as the preconditioner, and update the Polak–Ribière direction. Compute the mass and Jacobian search products before the bracketed Newton line search. The accepted step updates acceleration, its mass product and the constraint residual. Re-evaluate the contact objective at that residual before forming the next gradient. A final gradient and direction check distinguishes convergence from hitting the budget. Project the final forces for publication. Worlds track status and line search exhaustion on-device. The bounded sequence can be recorded in one compute packet, with no intermediate host readback.
 
 ## Shader compilation
 
