@@ -348,8 +348,13 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Checked(12ull * j);
         Checked(2ull * b);
         const uint32_t allRefs = Checked(uint64_t(j) + p);
-        localTopology = ConstraintLocalTopologyFits(b, j, p);
-        fusedAssembly = ConstraintDeviceScheduleFits(b, j, p);
+        // The local forest contains only writers. A wider, mostly static
+        // world can compact its writer slots in one bounded workgroup.
+        const uint32_t writerSlots = b > ConstraintLocalBodies && b <= ConstraintLocalBodyScanLimit
+                                         ? storage.GetDiscretePairLimits(world).dynamicBodies
+                                         : b;
+        localTopology = ConstraintLocalTopologyFits(writerSlots, j, p);
+        fusedAssembly = ConstraintDeviceScheduleFits(writerSlots, j, p);
         frozen[Bodies] = inputs.GetCaptured(Resource::BodyModels);
         frozen[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
         // Joint directory/activity flags stay fixed under this arena writer.
@@ -417,8 +422,10 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                     break;
                 count = blocks;
             } while (true);
-        } else if (!fusedAssembly) {
-            if (j > SolverRows(ConstraintJoint))
+        } else {
+            if (b > ConstraintLocalBodies)
+                config.summary = {reserve(writerSlots), writerSlots, 0u, 0u};
+            if (!fusedAssembly && j > SolverRows(ConstraintJoint))
                 jointSort = {reserve(std::min(b, j)), reserve(std::min(b, j))};
         }
         PlanSolver(ConstraintJoint, j, jointDispatches);
@@ -766,8 +773,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             } else if (port == TopologyArguments) {
                 dispatch.bufferAccesses.push_back(rhi::ComputeBufferAccess::Write);
                 if (op.entry == BuildLocalTopology) {
-                    const auto groups = Blocks(std::max({config.counts.x, config.counts.y, config.counts.z}));
-                    proof.writes.push_back({binding, 0u, groups * WordBytes});
+                    proof.writes.push_back({binding, 0u, TopologyArgumentBytes});
                     proof.writes.push_back({binding, ConstraintLocalWakePatchDispatch * WordBytes, WordBytes});
                 } else if (op.entry == BuildLocalSchedule || op.entry == Finalize) {
                     proof.writes.push_back({binding, ConstraintLocalJointDispatch * WordBytes, 2u * WordBytes});

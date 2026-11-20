@@ -778,8 +778,10 @@ const JoltGpuStorage::DiscretePairLimits &JoltGpuStorage::GetDiscretePairLimits(
 
     const auto &range = m_model.worlds[world];
     uint64_t active = 0u, passive = 0u, candidates = 0u;
+    uint32_t dynamicBodies = 0u;
     for (uint32_t index = range.bodies.x; index < range.bodies.x + range.bodies.y; ++index) {
         const auto &body = m_model.bodies[index];
+        dynamicBodies += uint32_t(body.meta.z == MotionDynamic);
         if (!body.meta.y || (body.meta.z & MotionNotResident))
             continue;
         const auto first = m_model.shapes.begin() + body.meta.x;
@@ -796,7 +798,7 @@ const JoltGpuStorage::DiscretePairLimits &JoltGpuStorage::GetDiscretePairLimits(
     // Every projected job has an active leaf. The GPU may still have to
     // test same-body or nonresident passive leaves while enumerating it.
     const uint64_t projections = active * (range.leaves.y - active) + active * (active - (active != 0u)) / 2u;
-    return cached.emplace(DiscretePairLimits{candidates, projections, static_cast<uint32_t>(active)});
+    return cached.emplace(DiscretePairLimits{candidates, projections, static_cast<uint32_t>(active), dynamicBodies});
 }
 
 JoltGpuStorage::JoltGpuStorage(rhi::ComputeHost &host, JoltGpuModel modelData)

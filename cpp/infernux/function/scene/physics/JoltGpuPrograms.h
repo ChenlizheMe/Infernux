@@ -295,7 +295,7 @@ class JoltGpuStorage
     struct DiscretePairLimits
     {
         uint64_t candidates, projections;
-        uint32_t activeLeaves;
+        uint32_t activeLeaves, dynamicBodies;
     };
     [[nodiscard]] const DiscretePairLimits &GetDiscretePairLimits(uint32_t world) const;
     [[nodiscard]] uint32_t GetMaxLeavesPerWorld() const noexcept
