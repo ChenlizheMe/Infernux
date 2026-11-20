@@ -300,9 +300,11 @@ struct JoltGpuSleep::Impl::Execution : std::enable_shared_from_this<Execution>
         rhi::ComputeDispatchDesc dispatch;
         dispatch.kernel = owner->entries[op.entry].kernel;
         dispatch.groupCountX = Groups(count);
-        if (wakeArguments)
-            dispatch.indirectArguments = rhi::ComputeIndirectArguments{
-                wakeArguments, uint64_t(dispatch.groupCountX - 1u) * sizeof(ConstraintScheduleWord)};
+        if (wakeArguments) {
+            const auto record = op.entry == SeedPatches ? ConstraintLocalWakePatchDispatch : dispatch.groupCountX - 1u;
+            dispatch.indirectArguments =
+                rhi::ComputeIndirectArguments{wakeArguments, uint64_t(record) * sizeof(ConstraintScheduleWord)};
+        }
         rhi::ComputeDispatchProof proof;
         for (Port port : owner->entries[op.entry].ports) {
             auto buffer = port == Params ? params : port == Work ? work : buffers[port];

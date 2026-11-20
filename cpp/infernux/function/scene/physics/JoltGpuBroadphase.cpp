@@ -176,6 +176,30 @@ uint32_t CollisionChunks(uint32_t count)
     return count / BroadphaseItemLimit + static_cast<uint32_t>(count % BroadphaseItemLimit != 0);
 }
 
+uint32_t DiscretePairBound(const JoltGpuModel &model, const WorldRange &world)
+{
+    uint32_t active = 0, passive = 0, pairs = 0;
+    for (uint32_t index = world.bodies.x; index < world.bodies.x + world.bodies.y; ++index) {
+        const auto &body = model.bodies[index];
+        const auto motion = body.meta.z;
+        if (!body.meta.y || (motion & MotionNotResident))
+            continue;
+        const auto first = model.shapes.begin() + body.meta.x;
+        const auto bodyActive =
+            motion == MotionDynamic
+                ? body.meta.y
+                : static_cast<uint32_t>(std::count_if(
+                      first, first + body.meta.y, [](const auto &leaf) { return (leaf.meta.w & ShapeSensor) != 0u; }));
+        const auto bodyPassive = body.meta.y - bodyActive;
+        // Only distinct bodies with at least one dynamic or sensor leaf can
+        // pair. AABB, layers and ignored pairs can only reduce this bound.
+        pairs += bodyActive * (active + passive) + bodyPassive * active;
+        active += bodyActive;
+        passive += bodyPassive;
+    }
+    return pairs;
+}
+
 void ValidateLayout(Port port, const ShaderResourceLayout &resource)
 {
     const auto &expected = Ports[port];
@@ -301,10 +325,11 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
     Execution(std::shared_ptr<Impl> owner, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
               JoltGpuPrograms &programs, const StepParams &settings,
               const std::shared_ptr<rhi::ComputeBuffer> &stepStatus, Workspace &workspace,
-              std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> callback, bool swept)
+              std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> callback, Mode mode)
         : implementation(std::move(owner)), stagePrograms(programs), storageOwner(storage), acceptedInputs(inputs),
           workspace(workspace), parameters(settings), completed(std::move(callback))
     {
+        const bool swept = mode == Mode::Swept;
         if (!implementation->host.SharesServicesWith(storage.GetHost()) || !completed)
             throw std::invalid_argument("Jolt GPU broadphase requires its tick owner and completion callback");
         const uint32_t n = storage.GetShapeCount(), j = storage.GetJointCount(), w = storage.GetWorldCount();
@@ -392,13 +417,17 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
         const uint32_t previousPatches = swept ? 0u : storage.GetContactHistory(settings.selection.x).patchCount;
         // Use the preceding substep's accepted pair count to avoid allocating
         // quadratic contact storage for sparse single-group work.
-        const uint32_t pairLimit = smallPairs ? leaves * (leaves - 1u) / 2u : 0u;
-        // The whole model bound fits both the collision arena and the local
-        // island program. A device count can change within that bound without
-        // reopening host allocation or numerical scheduling.
-        const bool deviceCounts = smallPairs && !swept && !inputs.HasGenericGeometry() &&
-                                  settings.selectedCounts.x <= ConstraintLocalBodies && joints <= IslandJointQuantum &&
-                                  pairLimit <= IslandPatchQuantum;
+        uint32_t pairLimit = smallPairs ? leaves * (leaves - 1u) / 2u : 0u;
+        const bool localDiscrete =
+            smallPairs && !swept && !inputs.HasGenericGeometry() && settings.selectedCounts.x <= ConstraintLocalBodies;
+        if (localDiscrete) {
+            const auto &model = storage.GetModel();
+            pairLimit = DiscretePairBound(model, model.worlds[config.selection.x]);
+        }
+        // The admitted model bounds both collision storage and the island
+        // directory. The device publishes and consumes the effective counts.
+        const bool deviceCounts = mode == Mode::Discrete && localDiscrete &&
+                                  ConstraintDeviceScheduleFits(settings.selectedCounts.x, joints, pairLimit);
         config.round.z = uint32_t(deviceCounts);
         if (deviceCounts)
             workset->patchSlots = pairLimit;
@@ -466,10 +495,16 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
 
     bool ArgumentCapacity()
     {
-        const uint64_t bytes = std::max(MaxDispatchesPerPacket - 1u, CollisionChunks(capacity)) * WordBytes;
+        const uint64_t bytes =
+            std::max(MaxDispatchesPerPacket - 1u, CollisionChunks(capacity) + SetupChunks()) * WordBytes;
         if (arguments && arguments->GetByteSize() < bytes)
             arguments.reset();
         return Endpoint(arguments, bytes, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect);
+    }
+
+    uint32_t SetupChunks() const
+    {
+        return config.round.z ? CollisionChunks(capacity * MaxContactPointsPerPair) : 0u;
     }
 
     bool Capacity()
@@ -592,9 +627,10 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 proof.writes.push_back({binding,
                                         uint64_t(first) * (port == ResidentContacts ? sizeof(Contact) : WordBytes),
                                         uint64_t(count) * (port == ResidentContacts ? sizeof(Contact) : WordBytes)});
-            else if (argumentWrite)
-                proof.writes.push_back({binding, 0, uint64_t(count) * WordBytes});
-            else if (resetCount)
+            else if (argumentWrite) {
+                const auto records = count + (entry == PublishCandidates ? work.range.z : 0u);
+                proof.writes.push_back({binding, 0, uint64_t(records) * WordBytes});
+            } else if (resetCount)
                 proof.writes.push_back({binding, 0, sizeof(uint32_t)});
             else if (port == Bounds) {
                 const uint64_t bytes = uint64_t(config.selectedCounts.y) * sizeof(Aabb);
@@ -1006,7 +1042,8 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                 phase = Phase::ResidentPublish;
                 break;
             case Phase::ResidentPublish:
-                if (!Emit(PublishCandidates, 0, CollisionChunks(capacity), config, uploads, dispatches))
+                if (!EmitWork(PublishCandidates, StageWork{{0u, CollisionChunks(capacity), SetupChunks(), 0u}}, config,
+                              uploads, dispatches))
                     return true;
                 phase = config.round.y ? Phase::Done : Phase::Collide;
                 return true;
@@ -1184,6 +1221,12 @@ struct JoltGpuBroadphase::Impl::Execution : std::enable_shared_from_this<Executi
                                               self->implementation->sweptCapacity = nextCapacity;
                                           self->workset->parameters = self->workset->parameters->Freeze();
                                           self->workset->patches = self->candidateArena;
+                                          if (self->config.round.z) {
+                                              self->workset->patchDispatch =
+                                                  rhi::ComputeIndirectArguments{self->arguments, 0u};
+                                              self->workset->setupDispatch = rhi::ComputeIndirectArguments{
+                                                  self->arguments, uint64_t(CollisionChunks(capacity)) * WordBytes};
+                                          }
                                           auto callback = std::move(self->completed);
                                           callback(self->workset);
                                           return {};
@@ -1245,10 +1288,10 @@ JoltGpuControlWork
 JoltGpuBroadphase::Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
                            const StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
                            Workspace &workspace,
-                           std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed, bool swept)
+                           std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed, Mode mode)
 {
     return std::make_shared<Impl::Execution>(m_impl, storage, inputs, programs, parameters, stepStatus, workspace,
-                                             std::move(completed), swept)
+                                             std::move(completed), mode)
         ->Next();
 }
 

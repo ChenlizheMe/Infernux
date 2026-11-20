@@ -2026,7 +2026,8 @@ bool JoltGpuScene::TryPrepareStartupPrograms(bool hasLocalContacts)
 {
     const bool bodies = m_impl->programs.TryPrepareStartupPrograms(hasLocalContacts);
     const bool pairs = m_impl->broadphase.TryPrepareStartupPrograms();
-    return bodies && pairs;
+    const bool islands = !hasLocalContacts || m_impl->constraints.TryPrepareStartupPrograms();
+    return bodies && pairs && islands;
 }
 
 void JoltGpuScene::RequireParticipantBodies(RuntimeWorld &world,

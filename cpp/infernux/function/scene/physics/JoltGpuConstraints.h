@@ -20,6 +20,7 @@ class JoltGpuConstraints final
 {
   public:
     JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTargetCode &target);
+    [[nodiscard]] bool TryPrepareStartupPrograms();
 
     [[nodiscard]] JoltGpuControlWork
     PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,

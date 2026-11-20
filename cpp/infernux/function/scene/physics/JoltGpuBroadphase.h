@@ -18,6 +18,13 @@ class JoltGpuBroadphase final
         std::shared_ptr<rhi::ComputeBuffer> arena, arguments, parameters, patches, contacts, pairCount;
     };
 
+    enum class Mode
+    {
+        Discrete,
+        DiscreteWithHostCount,
+        Swept
+    };
+
     JoltGpuBroadphase(rhi::ComputeHost &host, const ShaderTargetCode &target);
     [[nodiscard]] bool TryPrepareStartupPrograms();
 
@@ -25,7 +32,7 @@ class JoltGpuBroadphase final
     Prepare(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs, JoltGpuPrograms &programs,
             const JPH::GPU::StepParams &parameters, const std::shared_ptr<rhi::ComputeBuffer> &stepStatus,
             Workspace &workspace, std::function<void(std::shared_ptr<const JoltGpuContactWorkset>)> completed,
-            bool swept = false);
+            Mode mode = Mode::Discrete);
 
     // The discrete workspace belongs to its fixed-step owner.
     void ResetCapacityHint() noexcept;

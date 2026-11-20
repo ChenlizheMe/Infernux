@@ -84,6 +84,8 @@ struct JoltGpuContactWorkset
 {
     uint32_t patchSlots = 0;
     std::shared_ptr<rhi::ComputeBuffer> parameters, contacts, patches;
+    // The shader publishes these ranges when patchSlots is only a capacity.
+    std::optional<rhi::ComputeIndirectArguments> patchDispatch, setupDispatch;
 };
 
 // Sorted by the preceding substep's canonical leaf pair. Only the stored

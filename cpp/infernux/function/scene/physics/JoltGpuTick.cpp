@@ -892,7 +892,7 @@ class JoltGpuTick::Impl
         if (plan->solveArguments) {
             if (plan->jointRefCount || !plan->patchRefCount)
                 return 1u;
-            return std::min(rounds, JPH::GPU::IslandPatchQuantum / plan->patchRefCount);
+            return std::clamp(JPH::GPU::IslandPatchQuantum / plan->patchRefCount, 1u, rounds);
         }
         if (!plan->jointIslandCount && plan->maxPatchItems && plan->maxPatchItems < JPH::GPU::ContactParallelMinimum &&
             rounds <= JPH::GPU::IslandPatchQuantum / plan->maxPatchItems)
@@ -1943,10 +1943,13 @@ class JoltGpuTick::Impl
             if (stageCursor.phase == Phase::Broadphase) {
                 PublishContactHistory();
                 inputs.ClearContacts();
-                SelectControlWork(
-                    broadphase.Prepare(storage, inputs, programs, tickParameters, stepStatus, collisionWorkspace,
-                                       [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }),
-                    PacketKind::NumericalWork);
+                const auto mode = control.prepareContactReport || control.participants
+                                      ? JoltGpuBroadphase::Mode::DiscreteWithHostCount
+                                      : JoltGpuBroadphase::Mode::Discrete;
+                SelectControlWork(broadphase.Prepare(
+                                      storage, inputs, programs, tickParameters, stepStatus, collisionWorkspace,
+                                      [this](auto contacts) { AcceptContactWorkset(std::move(contacts)); }, mode),
+                                  PacketKind::NumericalWork);
                 return true;
             }
             if (stageCursor.phase == Phase::PrepareSweep) {
@@ -1961,7 +1964,7 @@ class JoltGpuTick::Impl
                                           NextSpan(stageCursor);
                                           Normalize(stageCursor);
                                       },
-                                      true),
+                                      JoltGpuBroadphase::Mode::Swept),
                                   PacketKind::NumericalWork);
                 return true;
             }

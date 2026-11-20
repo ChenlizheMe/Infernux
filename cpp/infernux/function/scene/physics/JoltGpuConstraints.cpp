@@ -335,8 +335,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
         Checked(12ull * j);
         Checked(2ull * b);
         const uint32_t allRefs = Checked(uint64_t(j) + p);
-        localTopology = b <= ConstraintLocalBodies && allRefs <= ConstraintLocalRefs;
-        deviceSchedule = localTopology && j <= IslandJointQuantum && p <= IslandPatchQuantum;
+        localTopology = ConstraintLocalTopologyFits(b, j, p);
+        deviceSchedule = ConstraintDeviceScheduleFits(b, j, p);
         frozen[Bodies] = inputs.GetCaptured(Resource::BodyModels);
         frozen[Shapes] = inputs.GetCaptured(Resource::ShapeModels);
         // Joint directory/activity flags stay fixed under this arena writer.
@@ -683,6 +683,7 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
                 if (op.entry == BuildLocalTopology) {
                     const auto groups = Blocks(std::max({config.counts.x, config.counts.y, config.counts.z}));
                     proof.writes.push_back({binding, 0u, groups * WordBytes});
+                    proof.writes.push_back({binding, ConstraintLocalWakePatchDispatch * WordBytes, WordBytes});
                 } else if (op.entry == BuildLocalSchedule) {
                     proof.writes.push_back({binding, ConstraintLocalJointDispatch * WordBytes, 2u * WordBytes});
                 } else {
@@ -703,6 +704,8 @@ struct JoltGpuConstraints::Impl::Execution : std::enable_shared_from_this<Execut
             }
         }
         dispatch.proof = std::move(proof);
+        if (op.entry == BuildPatchRefs)
+            dispatch.indirectArguments = contactLease->patchDispatch;
         dispatches.push_back(std::move(dispatch));
         uniforms = {};
         return true;
@@ -954,6 +957,15 @@ JoltGpuConstraints::JoltGpuConstraints(rhi::ComputeHost &host, const ShaderTarge
     : m_impl(std::make_shared<Impl>(host, target))
 {
 }
+
+bool JoltGpuConstraints::TryPrepareStartupPrograms()
+{
+    bool ready = true;
+    for (const auto entry : {InitWords, Seed, BuildPatchRefs, BuildLocalTopology, BuildLocalSchedule})
+        ready &= m_impl->programs[entry].kernel->TryPreparePipeline();
+    return ready;
+}
+
 JoltGpuControlWork
 JoltGpuConstraints::PrepareTopology(const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
                                     JoltGpuPrograms &programs, const JPH::GPU::StepParams &parameters,
