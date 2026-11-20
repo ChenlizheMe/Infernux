@@ -85,8 +85,17 @@ def resolve_reduced_ray(signal: shader.UInt2D, primary: shader.UInt2D, frame: sh
     plane_band = 0.001 + 0.002 * linear_eye_depth(receiver_depth, camera)
     radiance = shader.vec3(0.0)
     total = 0.0
-    for tap in range(4):
-        cell = first + shader.ivec2(tap & 1, tap >> 1)
+    # A thin or partly occluded receiver can miss all four of the nearest trace sites.
+    # Visit their one-cell perimeter only when the inner square supplies no irradiance.
+    for tap in range(16):
+        if tap == 4 and total > 0.0:
+            break
+        offset_cell = shader.ivec2(tap & 1, tap >> 1)
+        if tap >= 12:
+            offset_cell = shader.ivec2((tap & 1) * 3 - 1, (tap - 12) >> 1)
+        elif tap >= 4:
+            offset_cell = shader.ivec2((tap & 3) - 1, ((tap - 4) >> 2) * 3 - 1)
+        cell = first + offset_cell
         if shader.any(cell < shader.ivec2(0)) or shader.any(cell >= extent):
             continue
         source = ray_grid_pixel(cell, extent, full)
