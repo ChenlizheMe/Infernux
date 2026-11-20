@@ -36,6 +36,7 @@ enum Port : uint8_t
     Joints,
     Jobs,
     Arguments,
+    SweepClock,
     PortCount
 };
 enum Entry : uint8_t
@@ -58,6 +59,7 @@ enum Entry : uint8_t
     SolveEvent,
     SolveJointEvent,
     EventProgress,
+    LinkedEventProgress,
     ReportEvent,
     ResumeMotion,
     EntryCount
@@ -80,6 +82,7 @@ constexpr std::array<std::string_view, EntryCount> EntryNames{"narrowphase_init_
                                                               "sweep_solve_event_islands",
                                                               "sweep_solve_event_joint_islands",
                                                               "sweep_event_progress",
+                                                              "sweep_linked_event_progress",
                                                               "sweep_report_event",
                                                               "sweep_resume_motion"};
 constexpr uint32_t Mask(Port port)
@@ -93,25 +96,28 @@ constexpr std::array<uint32_t, EntryCount> EntryPorts{Mask(Work) | Mask(Scratch)
                                                       JobPublicationPorts,
                                                       0xfdu | Mask(Work) | Mask(Jobs),
                                                       JobPublicationPorts,
-                                                      0x80u,
-                                                      0x7d7u,
-                                                      0x483u,
-                                                      0x481u,
+                                                      0x81u | Mask(Arguments),
+                                                      0x7d7u | Mask(SweepClock),
+                                                      0x483u | Mask(SweepClock),
+                                                      0x481u | Mask(Arguments) | Mask(SweepClock),
                                                       0x603u,
-                                                      0x202u,
+                                                      0x202u | Mask(SweepClock),
                                                       0x7f5u,
                                                       0xd03u,
                                                       0x523u,
                                                       0xd03u,
                                                       0x721u,
                                                       0xf21u,
-                                                      0x481u,
+                                                      0x481u | Mask(Arguments) | Mask(SweepClock),
+                                                      0x481u | Mask(Arguments) | Mask(SweepClock),
                                                       0x333u,
-                                                      0x303u};
+                                                      0x303u | Mask(SweepClock)};
 constexpr uint32_t HeaderWords = 4u, MaxSlots = 32u;
 constexpr uint32_t AdvancesPerPacket = JoltGpuNarrowphase::Workspace::AdvancesPerPacket;
 constexpr uint32_t ResolveDispatchesPerPacket = 4u;
+constexpr uint32_t MaxSweepDispatches = 16u;
 constexpr uint64_t WordBytes = sizeof(UInt4);
+static_assert(SweepMotionChunk == WorkItemLimit(Domain::Bodies));
 
 struct PortLayout
 {
@@ -149,6 +155,7 @@ constexpr std::array<PortLayout, PortCount> Ports{{
     {"joint_stream", sizeof(QueryRecordWord), {"value"}, 1u, false},
     {"convex_jobs", sizeof(uint32_t), {}, 1u, false},
     {"convex_dispatch_args", WordBytes, {}, 0u, false},
+    {"sweep_clock", WordBytes, {}, 0u, false},
 }};
 
 uint32_t Groups(uint32_t count)
@@ -166,7 +173,7 @@ void ValidateLayout(Port port, const ShaderResourceLayout &resource)
         (uniform ? value.byteSize : resource.elementStride) != expected.stride ||
         (!uniform && resource.binding.readOnlyStorage != expected.readOnly))
         throw std::invalid_argument("GPU narrowphase binding differs from shared POD: " + resource.name);
-    if (port == Geometry || port == Scratch || port == Arguments) {
+    if (port == Geometry || port == Scratch || port == Arguments || port == SweepClock) {
         if (value.kind != ShaderValueKind::Vector || value.scalar != ShaderScalarKind::UInt32 || value.rows != 1u ||
             value.columns != 4u || value.byteSize != WordBytes || !value.fields.empty())
             throw std::invalid_argument("GPU narrowphase geometry/scratch requires raw uint4 storage");
@@ -256,15 +263,38 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
         FinishEvent,
         Done
     };
+    using SweepOutcome = JoltGpuSweepOutcome;
+    enum class ResolutionDispatch
+    {
+        Direct,
+        EventLinks,
+        Motion
+    };
+    struct ResolveCursor
+    {
+        Entry entry = EntryCount;
+        uint32_t first = 0, parentPasses = 0;
+    };
+    struct SweepTail
+    {
+        std::optional<ResolveCursor> links, motion;
+        bool linkedSolve = false;
+        uint32_t integratedBodies = 0;
+
+        bool Recorded() const noexcept
+        {
+            return links || motion || integratedBodies;
+        }
+    };
 
     Execution(std::shared_ptr<Impl> implementation, const JoltGpuStorage &storage, const JoltGpuStepInputs &inputs,
-              FrameWorkOwner &budget, std::function<void(std::optional<float>)> completed, bool swept,
-              float sweepSeconds = 0.0f, bool continuing = false, bool reportImpacts = false,
+              FrameWorkOwner &budget, std::function<void(SweepOutcome, uint32_t)> completed,
+              JoltGpuPrograms *stagePrograms = nullptr, bool continuing = false, bool reportImpacts = false,
               Workspace *resident = nullptr)
-        : implementation(std::move(implementation)),
-          contactLease(swept ? inputs.GetSweepContacts() : inputs.GetContacts()), geometry(inputs.GetGeometry()),
-          budget(budget), completed(std::move(completed)), swept(swept), sweepSeconds(sweepSeconds),
-          continuing(continuing), reportImpacts(reportImpacts), resident(resident)
+        : implementation(std::move(implementation)), storage(storage), stepInputs(inputs), stagePrograms(stagePrograms),
+          contactLease(stagePrograms ? inputs.GetSweepContacts() : inputs.GetContacts()),
+          geometry(inputs.GetGeometry()), budget(budget), completed(std::move(completed)),
+          swept(stagePrograms != nullptr), continuing(continuing), reportImpacts(reportImpacts), resident(resident)
     {
         if (!this->implementation->host.SharesServicesWith(storage.GetHost()) || !contactLease || !this->completed)
             throw std::invalid_argument("GPU narrowphase requires the accepted Tick host/contact workset");
@@ -280,6 +310,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             frozen[Models] = inputs.GetCaptured(Resource::BodyModels);
             frozen[SweepBodies] = inputs.GetSweepBodies();
             frozen[SweepChoice] = inputs.GetSweepChoices();
+            frozen[SweepClock] = inputs.GetSweepClock();
             bodyCount = inputs.GetParameters().selectedCounts.x;
             jointCount = inputs.GetParameters().selectedCounts.z;
             if (jointCount)
@@ -369,7 +400,8 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             const uint32_t binding = static_cast<uint32_t>(dispatch.buffers.size());
             dispatch.buffers.push_back(buffer);
             uint64_t completeWrite = 0u;
-            if ((jobInit && (port == Scratch || port == SweepChoice)) || port == Arguments)
+            const bool startsClock = jobInit && phase == Phase::InitializeJobs && !continuing && port == SweepClock;
+            if ((jobInit && (port == Scratch || port == SweepChoice)) || port == Arguments || startsClock)
                 completeWrite = buffer->GetByteSize();
             else if (initialization && port == Scratch)
                 completeWrite = uint64_t(initialization->range.x) * WordBytes;
@@ -380,7 +412,8 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             const bool mutablePort = port == Scratch || (port == Patches && entry != QueueConvex) ||
                                      (port == Jobs && entry == QueueConvex) || port == Contacts ||
                                      port == SweepChoice || (writesMotion && port == SweepBodies) ||
-                                     (entry == SolveJointEvent && port == Joints);
+                                     (entry == SolveJointEvent && port == Joints) ||
+                                     (entry == SweepProgress && port == SweepClock);
             dispatch.bufferAccesses.push_back(completeWrite ? rhi::ComputeBufferAccess::Write
                                               : mutablePort ? rhi::ComputeBufferAccess::ReadWrite
                                                             : rhi::ComputeBufferAccess::Read);
@@ -396,7 +429,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
         return dispatch;
     }
 
-    void Finish(std::optional<float> impact = {})
+    void Finish(SweepOutcome outcome = SweepOutcome::NoImpact, uint32_t integratedBodies = 0u)
     {
         if (resident) {
             workspace.scratch = std::move(scratch);
@@ -406,7 +439,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
         }
         phase = Phase::Done;
         auto callback = std::move(completed);
-        callback(impact);
+        callback(outcome, integratedBodies);
     }
 
     uint32_t AdvanceRounds(size_t costIndex, uint32_t maximum) const
@@ -506,7 +539,7 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
               observedTopology = std::move(observedTopology)] {
                  self->queueFirst = first;
                  self->phase = publishes ? Phase::AdvanceJobs : Phase::QueueJobs;
-                 return advances ? self->ContinueProgress(*packet, rounds, started, 0u, observedTopology)
+                 return advances ? self->ContinueProgress(*packet, rounds, started, 0u, observedTopology, {})
                                  : self->Next();
              },
              advances ? JoltGpuControlWork::ResumeAfter::Completion : JoltGpuControlWork::ResumeAfter::Acceptance});
@@ -518,13 +551,19 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
 
     JoltGpuControlWork ContinueProgress(rhi::PreparedComputeBatch &packet, uint32_t rounds,
                                         std::chrono::steady_clock::time_point started, size_t costIndex,
-                                        const JoltGpuContactTopologyStart::ObservePrefix &observedTopology)
+                                        const JoltGpuContactTopologyStart::ObservePrefix &observedTopology,
+                                        const SweepTail &tail)
     {
         UInt4 result{};
         packet.Readback(0u)->ReadInto(&result, sizeof(result));
-        if (swept || (result.y != 0u && (!observedTopology || result.x == QueryPending))) {
+        const bool linkedSolve = tail.linkedSolve && result.w == SweepSolverReceipt &&
+                                 (result.x == QueryPending || result.x == QuerySuccess);
+        if (linkedSolve)
+            phase = Phase::SolveEvent;
+        if (!linkedSolve &&
+            (result.x == QueryPending || (swept ? !tail.Recorded() : result.y != 0u && !observedTopology))) {
             // Tick sizes the next admitted span from actual accepted work.
-            // Skip empty lists and completed packets whose timing includes topology.
+            // Completed packets which also consumed the result have mixed costs.
             const double observed = packet.GetCompletion().GetDeviceElapsedNanoseconds().value_or(
                 std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started).count());
             auto &estimate = swept ? implementation->advanceNanoseconds[costIndex] : workspace.advanceNanoseconds;
@@ -535,61 +574,64 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                 observedTopology(false);
             return Next();
         }
-        if (result.x != QuerySuccess)
+        if (result.x != QuerySuccess) {
+            if (swept && result.w == SweepUnsettled)
+                throw std::runtime_error("Continuous impacts did not settle at the current time");
+            if (swept && result.w == SweepMissingContact)
+                throw std::runtime_error("GPU continuous cast reached its impact time without a contact");
             throw std::runtime_error(std::string(phase == Phase::SolveEvent ? "GPU sweep event solver"
                                                  : swept                    ? "GPU linear sweep"
                                                                             : "GPU convex narrowphase") +
                                      " failed at candidate " + std::to_string(result.z) + " (reason " +
                                      std::to_string(result.w) + ")");
+        }
         if (phase == Phase::SolveEvent) {
-            if (expectLocalContact && result.z == 0u)
-                throw std::runtime_error("GPU continuous cast reached its impact time without a contact");
-            scratch.reset();
-            BeginResolve(Phase::FinishEvent, reportImpacts && contactLease->patchSlots ? ReportEvent : ResumeMotion);
-            return Resolve();
+            integratedBodies = tail.integratedBodies;
+            phase = Phase::FinishEvent;
+            return AcceptResolution(tail.motion.value_or(ResolveCursor{reportImpacts ? ReportEvent : ResumeMotion}));
         }
         if (swept && result.y != slots)
             throw std::runtime_error("GPU convex completion omitted an active job slot");
         if (phase == Phase::DiscoverEvent) {
-            BeginResolve(Phase::LinkEvent, jointCount ? JoinEventJoints : LinkEvent, bodyCount > 1u || jointCount > 0u);
-            return Resolve();
+            phase = Phase::LinkEvent;
+            return AcceptResolution(tail.links ? *tail.links : EventLinks());
         }
-        std::optional<float> impact;
-        if (swept && result.z != UINT32_MAX) {
-            impact.emplace();
-            std::memcpy(&*impact, &result.z, sizeof(float));
+        if (swept) {
+            sweepOutcome = static_cast<SweepOutcome>(result.z);
+            if (sweepOutcome != SweepOutcome::NoImpact) {
+                phase = Phase::MoveEvent;
+                return AcceptResolution(tail.motion.value_or(ResolveCursor{MoveToEvent}));
+            }
+            Finish(sweepOutcome, tail.integratedBodies);
+            return {};
         }
-        Finish(impact);
+        Finish();
         if (observedTopology)
             return observedTopology(true);
         return topology.prepare ? topology.prepare() : JoltGpuControlWork{};
     }
 
-    void BeginResolve(Phase next, Entry entry, bool flatten = false)
+    ResolveCursor EventLinks() const
     {
-        phase = next;
-        resolveFirst = 0u;
-        resolveEntry = entry;
-        resolveParentPasses = 0u;
-        if (flatten) {
-            if (entry != JoinEventJoints)
-                resolveEntry = FlattenRoots;
-            for (uint32_t links = bodyCount; links > 1u; links = 1u + (links - 1u) / 32u)
-                ++resolveParentPasses;
-            if (jointCount)
-                resolveParentPasses = std::max(1u, resolveParentPasses);
-        }
+        ResolveCursor cursor{jointCount ? JoinEventJoints : bodyCount > 1u ? FlattenRoots : LinkEvent};
+        for (uint32_t links = bodyCount; links > 1u; links = 1u + (links - 1u) / 32u)
+            ++cursor.parentPasses;
+        if (jointCount)
+            cursor.parentPasses = std::max(1u, cursor.parentPasses);
+        return cursor;
     }
 
-    JoltGpuControlWork Resolve(uint32_t maximum = ResolveDispatchesPerPacket)
+    void AppendResolution(ResolveCursor &next, uint32_t maximum, ResolutionDispatch mode,
+                          std::vector<rhi::ComputeBufferUpdate> &uploads,
+                          std::vector<rhi::ComputeDispatchDesc> &dispatches, size_t firstUniform = 0u)
     {
-        auto entry = resolveEntry;
-        auto first = resolveFirst;
-        auto parentPasses = resolveParentPasses;
-        std::vector<rhi::ComputeBufferUpdate> uploads;
-        std::vector<rhi::ComputeDispatchDesc> dispatches;
+        auto &[entry, first, parentPasses] = next;
         for (uint32_t slot = 0; slot < maximum && entry != EntryCount; ++slot) {
-            auto &uniform = slot == 0u ? workUniform : resolveUniforms[slot - 1u];
+            // The producer emits a command for the first bounded chunk of
+            // each consumer. A wider range resumes from its accepted cursor.
+            if (mode == ResolutionDispatch::Motion && first != 0u)
+                break;
+            auto &uniform = resolveUniforms[firstUniform + slot];
             if (!Allocate(uniform, sizeof(StageWork)))
                 break;
             const bool patchDomain = entry == LinkEvent || entry == ReportEvent;
@@ -597,16 +639,19 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             const uint32_t length = patchDomain ? contactLease->patchSlots : jointDomain ? jointCount : bodyCount;
             const uint32_t count = std::min(length - first, WorkItemLimit(Domain::Bodies));
             StageWork range{{first, count, 0u, 0u}};
-            if (entry == MoveToEvent || entry == ResumeMotion)
-                range.range.z = motionFraction;
             if (entry == FlattenRoots && parentPasses == 1u && jointCount)
                 range.range.z = 1u;
-            if (entry == ResumeMotion)
-                std::memcpy(&range.range.w, &sweepSeconds, sizeof(float));
             std::vector<uint8_t> bytes(sizeof(range));
             std::memcpy(bytes.data(), &range, sizeof(range));
             uploads.push_back({uniform, 0u, std::move(bytes)});
-            dispatches.push_back(Dispatch(entry, entry == LinkEvent || jointDomain ? 1u : count, uniform));
+            auto dispatch = Dispatch(entry, entry == LinkEvent || jointDomain ? 1u : count, uniform);
+            if (mode != ResolutionDispatch::Direct) {
+                const auto record = mode == ResolutionDispatch::EventLinks
+                                        ? (entry == FlattenRoots ? SweepFlattenDispatch : SweepLinkDispatch)
+                                        : (entry == ReportEvent ? SweepReportDispatch : SweepMotionDispatch);
+                dispatch.indirectArguments = rhi::ComputeIndirectArguments{frozen[Arguments], record * WordBytes};
+            }
+            dispatches.push_back(std::move(dispatch));
             first += count;
             if (first == length) {
                 first = 0u;
@@ -624,34 +669,86 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
                 }
             }
         }
+    }
+
+    JoltGpuControlWork AcceptResolution(ResolveCursor next)
+    {
+        if (next.entry != EntryCount) {
+            resolution = next;
+            return Resolve();
+        }
+        if (phase == Phase::MoveEvent) {
+            phase = Phase::InitializeEvent;
+            return Next();
+        }
+        if (phase == Phase::LinkEvent) {
+            phase = Phase::SolveEvent;
+            return Next();
+        }
+        Finish(sweepOutcome, integratedBodies);
+        return {};
+    }
+
+    JoltGpuControlWork Resolve(uint32_t maximum = ResolveDispatchesPerPacket)
+    {
+        auto next = resolution;
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        std::vector<rhi::ComputeDispatchDesc> dispatches;
+        AppendResolution(next, maximum, ResolutionDispatch::Direct, uploads, dispatches);
         if (dispatches.empty())
             return Retain({nullptr, [self = shared_from_this(), maximum] { return self->Resolve(maximum); }});
         const bool canSplit = dispatches.size() > 1;
         auto packet = rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches));
-        auto work = Retain({packet,
-                            [self = shared_from_this(), first, entry, parentPasses]() -> JoltGpuControlWork {
-                                if (entry == EntryCount) {
-                                    if (self->phase == Phase::MoveEvent) {
-                                        self->motionFraction = 0u;
-                                        self->phase = Phase::InitializeEvent;
-                                        return self->Next();
-                                    }
-                                    if (self->phase == Phase::LinkEvent) {
-                                        self->phase = Phase::SolveEvent;
-                                        return self->Next();
-                                    }
-                                    self->Finish();
-                                    return {};
-                                }
-                                self->resolveFirst = first;
-                                self->resolveEntry = entry;
-                                self->resolveParentPasses = parentPasses;
-                                return self->Resolve();
-                            },
+        auto work = Retain({packet, [self = shared_from_this(), next] { return self->AcceptResolution(next); },
                             JoltGpuControlWork::ResumeAfter::Acceptance});
         if (canSplit)
             work.prepareMinimum = [self = shared_from_this()] { return self->Resolve(1u); };
         return work;
+    }
+
+    void AppendSweepTail(SweepTail &result, bool solving, size_t firstUniform,
+                         std::vector<rhi::ComputeBufferUpdate> &uploads,
+                         std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        ResolveCursor next{solving ? (reportImpacts ? ReportEvent : ResumeMotion) : MoveToEvent};
+        const auto first = dispatches.size();
+        const auto slots = static_cast<uint32_t>(
+            std::min({size_t{2u}, MaxSweepDispatches - first, resolveUniforms.size() - firstUniform}));
+        AppendResolution(next, slots, ResolutionDispatch::Motion, uploads, dispatches, firstUniform);
+        if (dispatches.size() != first)
+            result.motion = next;
+        // An empty cast can integrate immediately. A last impact needs its
+        // entire motion applied first and any requested report consumed.
+        if (dispatches.size() < MaxSweepDispatches &&
+            (!solving || (sweepOutcome == SweepOutcome::LastImpact && !reportImpacts && next.entry == EntryCount))) {
+            const auto count = std::min(bodyCount, SweepMotionChunk);
+            const auto base = stepInputs.GetParameters().selection.y;
+            stagePrograms->AppendStages(storage, stepInputs, {{Stage::IntegrateSwept, {{base, count, 0u, 0u}}}},
+                                        uploads, dispatches);
+            dispatches.back().indirectArguments =
+                rhi::ComputeIndirectArguments{frozen[Arguments], SweepIntegrateDispatch * WordBytes};
+            result.integratedBodies = count;
+        }
+    }
+
+    void AppendEventContactTail(SweepTail &result, std::vector<rhi::ComputeBufferUpdate> &uploads,
+                                std::vector<rhi::ComputeDispatchDesc> &dispatches)
+    {
+        auto next = EventLinks();
+        const auto first = dispatches.size();
+        AppendResolution(next, ResolveDispatchesPerPacket, ResolutionDispatch::EventLinks, uploads, dispatches);
+        const auto usedUniforms = dispatches.size() - first;
+        if (usedUniforms == 0u)
+            return;
+        result.links = next;
+        if (next.entry != EntryCount || dispatches.size() + 2u > MaxSweepDispatches)
+            return;
+        auto solve = Dispatch(jointCount ? SolveJointEvent : SolveEvent, bodyCount);
+        solve.indirectArguments = rhi::ComputeIndirectArguments{frozen[Arguments], SweepSolveDispatch * WordBytes};
+        dispatches.push_back(std::move(solve));
+        dispatches.push_back(Dispatch(LinkedEventProgress));
+        result.linkedSolve = true;
+        AppendSweepTail(result, true, usedUniforms, uploads, dispatches);
     }
 
     JoltGpuControlWork Next(uint32_t maximumAdvances = AdvancesPerPacket)
@@ -671,25 +768,24 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
             if (frozen[SweepChoice] && frozen[SweepChoice]->GetByteSize() < choiceWords * sizeof(uint32_t))
                 frozen[SweepChoice].reset();
             if (!Allocate(workUniform, sizeof(StageWork)) ||
-                !Allocate(frozen[SweepChoice], choiceWords * sizeof(uint32_t)) || !AllocateScratch())
+                !Allocate(frozen[SweepChoice], choiceWords * sizeof(uint32_t)) ||
+                !Allocate(frozen[SweepClock], WordBytes) ||
+                !Allocate(frozen[Arguments], SweepArgumentWords * WordBytes, rhi::BufferUsageFlags::Indirect) ||
+                !AllocateScratch())
                 return Retain({nullptr, [self = shared_from_this()] { return self->Next(); }});
             retainChoices(frozen[SweepChoice]);
+            retainClock(frozen[SweepClock]);
         }
         const bool eventInitialize = phase == Phase::InitializeEvent;
         if (phase == Phase::InitializeJobs || eventInitialize) {
             const uint32_t mode = eventInitialize ? SweepEventContacts : continuing ? SweepContinuation : SweepInitial;
             StageWork work{{0u, contactLease->patchSlots, mode, 0u}};
-            std::memcpy(&work.range.w, &sweepSeconds, sizeof(float));
             std::vector<uint8_t> bytes(sizeof(work));
             std::memcpy(bytes.data(), &work, sizeof(work));
             auto packet = rhi::PrepareComputeBatch(implementation->host, {{workUniform, 0u, std::move(bytes)}},
                                                    {Dispatch(InitializeSweep)});
             return Retain({packet,
                            [self = shared_from_this(), eventInitialize] {
-                               if (eventInitialize && self->contactLease->patchSlots == 0u) {
-                                   self->BeginResolve(Phase::LinkEvent, JoinEventJoints, true);
-                                   return self->Resolve();
-                               }
                                self->phase = eventInitialize ? Phase::DiscoverEvent : Phase::AdvanceJobs;
                                return self->Next();
                            },
@@ -723,41 +819,50 @@ struct JoltGpuNarrowphase::Impl::Execution : std::enable_shared_from_this<Execut
         if (maximumAdvances > 1u && topology.appendAfterCollision)
             observedTopology = topology.appendAfterCollision(scratch, uploads, dispatches);
         const bool hasTopology = bool(observedTopology);
+        SweepTail tail;
+        if (swept && maximumAdvances > 1u) {
+            if (findingContacts)
+                AppendEventContactTail(tail, uploads, dispatches);
+            else
+                AppendSweepTail(tail, solvingEvent, 0u, uploads, dispatches);
+        }
         auto packet = rhi::PrepareComputeBatch(implementation->host, std::move(uploads), std::move(dispatches),
                                                {{scratch, 0u, WordBytes}});
-        auto work = Retain({packet, [self = shared_from_this(), packet, started, count, costIndex,
-                                     observedTopology = std::move(observedTopology)] {
-                                return self->ContinueProgress(*packet, count, started, costIndex, observedTopology);
-                            }});
+        auto work =
+            Retain({packet, [self = shared_from_this(), packet, started, count, costIndex,
+                             observedTopology = std::move(observedTopology), tail] {
+                        return self->ContinueProgress(*packet, count, started, costIndex, observedTopology, tail);
+                    }});
         work.numericalWorkUnits = swept ? 0u : count * ConvexJobAdvanceQuantum;
-        if (count > 1u || hasTopology)
+        if (count > 1u || hasTopology || tail.Recorded())
             work.prepareMinimum = [self = shared_from_this()] { return self->Next(1u); };
         return work;
     }
 
     std::shared_ptr<Impl> implementation;
+    const JoltGpuStorage &storage;
+    const JoltGpuStepInputs &stepInputs;
+    JoltGpuPrograms *stagePrograms;
     std::shared_ptr<const JoltGpuContactWorkset> contactLease;
     std::shared_ptr<const JoltGpuGeometryLease> geometry;
     JoltGpuContactTopologyStart topology;
     FrameWorkOwner &budget;
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> frozen;
     std::shared_ptr<rhi::ComputeBuffer> scratch, workUniform;
-    std::array<std::shared_ptr<rhi::ComputeBuffer>, ResolveDispatchesPerPacket - 1u> resolveUniforms;
-    std::function<void(std::optional<float>)> completed;
-    std::function<void(const std::shared_ptr<rhi::ComputeBuffer> &)> retainChoices;
+    std::array<std::shared_ptr<rhi::ComputeBuffer>, ResolveDispatchesPerPacket + 2u> resolveUniforms;
+    std::function<void(SweepOutcome, uint32_t)> completed;
+    std::function<void(const std::shared_ptr<rhi::ComputeBuffer> &)> retainChoices, retainClock;
     const bool swept;
-    const float sweepSeconds;
     const bool continuing;
     const bool reportImpacts;
-    bool expectLocalContact = false;
     Workspace *resident;
     Workspace workspace;
     uint32_t queueFirst = 0u;
-    uint32_t motionFraction = 0u;
+    uint32_t integratedBodies = 0u;
+    SweepOutcome sweepOutcome = SweepOutcome::NoImpact;
     Phase phase = Phase::InitializeJobs;
-    Entry resolveEntry = EntryCount;
-    uint32_t slots = 0u, scratchWords = 0u, bodyCount = 0u, jointCount = 0u, resolveFirst = 0u,
-             resolveParentPasses = 0u;
+    ResolveCursor resolution;
+    uint32_t slots = 0u, scratchWords = 0u, bodyCount = 0u, jointCount = 0u;
 };
 
 JoltGpuNarrowphase::JoltGpuNarrowphase(rhi::ComputeHost &host, const ShaderTargetCode &target)
@@ -770,37 +875,21 @@ JoltGpuControlWork JoltGpuNarrowphase::Prepare(const JoltGpuStorage &storage, co
                                                JoltGpuContactTopologyStart topology, std::function<void()> completed)
 {
     auto execution = std::make_shared<Impl::Execution>(
-        m_impl, storage, inputs, budget, [done = std::move(completed)](std::optional<float>) { done(); }, false, 0.0f,
-        false, false, &resident);
+        m_impl, storage, inputs, budget, [done = std::move(completed)](JoltGpuSweepOutcome, uint32_t) { done(); },
+        nullptr, false, false, &resident);
     execution->topology = std::move(topology);
     return execution->Next();
 }
 
 JoltGpuControlWork JoltGpuNarrowphase::PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
-                                                     FrameWorkOwner &budget, float remainingSeconds, bool continuing,
-                                                     std::function<void(std::optional<float>)> completed)
+                                                     JoltGpuPrograms &programs, FrameWorkOwner &budget, bool continuing,
+                                                     bool reportImpacts,
+                                                     std::function<void(JoltGpuSweepOutcome, uint32_t)> completed)
 {
-    auto execution = std::make_shared<Impl::Execution>(m_impl, storage, inputs, budget, std::move(completed), true,
-                                                       remainingSeconds, continuing);
+    auto execution = std::make_shared<Impl::Execution>(m_impl, storage, inputs, budget, std::move(completed), &programs,
+                                                       continuing, reportImpacts);
     execution->retainChoices = [&inputs](const auto &choices) { inputs.SetSweepChoices(choices); };
-    return execution->Next();
-}
-
-JoltGpuControlWork JoltGpuNarrowphase::PrepareSweepEvent(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
-                                                         FrameWorkOwner &budget, float fraction, float remainingSeconds,
-                                                         bool reportImpacts, std::function<void()> completed)
-{
-    auto execution = std::make_shared<Impl::Execution>(
-        m_impl, storage, inputs, budget, [done = std::move(completed)](std::optional<float>) { done(); }, true,
-        remainingSeconds, false, reportImpacts);
-    execution->expectLocalContact = true;
-    std::memcpy(&execution->motionFraction, &fraction, sizeof(fraction));
-    execution->retainChoices = [&inputs](const auto &choices) { inputs.SetSweepChoices(choices); };
-    // Without local rows, each body can reach the event and rebase its motion in one invocation.
-    if (execution->contactLease->patchSlots || execution->jointCount)
-        execution->BeginResolve(Impl::Execution::Phase::MoveEvent, MoveToEvent);
-    else
-        execution->BeginResolve(Impl::Execution::Phase::FinishEvent, ResumeMotion);
+    execution->retainClock = [&inputs](const auto &clock) { inputs.SetSweepClock(clock); };
     return execution->Next();
 }
 

@@ -336,7 +336,6 @@ class JoltGpuTick::Impl
         BuildSweptBounds,
         SweptBroadphase,
         ResolveSweep,
-        SolveSweepEvent,
         ReportSweep,
         Integrate,
         IntegrateSwept,
@@ -357,9 +356,7 @@ class JoltGpuTick::Impl
         uint32_t iteration = 0;
         uint32_t islandDispatch = 0;
         uint32_t localFirst = 0;
-        float sweepRemaining = 0.0f;
-        uint64_t sameTimeImpacts = 0;
-        bool sweepAdvanced = false;
+        JoltGpuSweepOutcome sweep = JoltGpuSweepOutcome::NoImpact;
     };
     struct StageSpan
     {
@@ -767,7 +764,7 @@ class JoltGpuTick::Impl
                phase == Phase::ClassifyArticulations || phase == Phase::ReportContactsBeforeVelocity ||
                phase == Phase::ReportContactsAfterVelocity || phase == Phase::PrepareContactStore ||
                phase == Phase::PrepareSweep || phase == Phase::SweptBroadphase || phase == Phase::ResolveSweep ||
-               phase == Phase::SolveSweepEvent || phase == Phase::ReportSweep;
+               phase == Phase::ReportSweep;
     }
 
     StageSpan Span(Phase phase, const JoltGpuStepInputs &bindings) const
@@ -818,7 +815,6 @@ class JoltGpuTick::Impl
         case Phase::PrepareSweep:
         case Phase::SweptBroadphase:
         case Phase::ResolveSweep:
-        case Phase::SolveSweepEvent:
         case Phase::ReportSweep:
         case Phase::CapturePrescribedBounds:
         case Phase::WakePrescribedBounds:
@@ -1009,16 +1005,14 @@ class JoltGpuTick::Impl
             next.phase = bindings.GetSweepContacts()->patchSlots ? Phase::ResolveSweep : Phase::IntegrateSwept;
             break;
         case Phase::ResolveSweep:
-            next.phase = bindings.SweepImpactTime() ? Phase::SolveSweepEvent : Phase::IntegrateSwept;
-            break;
-        case Phase::SolveSweepEvent:
-            if (control.prepareContactReport && bindings.GetSweepContacts()->patchSlots) {
+            if (next.sweep != JoltGpuSweepOutcome::NoImpact && control.prepareContactReport) {
                 next.phase = Phase::ReportSweep;
                 break;
             }
             [[fallthrough]];
         case Phase::ReportSweep:
-            next.phase = next.sweepRemaining > 0.0f ? Phase::BuildSweptBounds : Phase::IntegrateSwept;
+            next.phase =
+                next.sweep == JoltGpuSweepOutcome::MoreMotion ? Phase::BuildSweptBounds : Phase::IntegrateSwept;
             break;
         case Phase::Integrate:
         case Phase::IntegrateSwept:
@@ -1308,8 +1302,6 @@ class JoltGpuTick::Impl
     JoltGpuControlWork PrepareSweep()
     {
         inputs.SetSweepContacts(nullptr);
-        inputs.SetSweepChoices(nullptr);
-        inputs.SetSweepImpactTime({});
         if (!inputs.GetSweepBodies()) {
             auto bodies = rhi::ComputeBuffer::TryCreatePrivate(
                 host, {uint64_t(tickParameters.selectedCounts.x) * sizeof(JPH::GPU::SweepBody) / sizeof(uint32_t),
@@ -1318,9 +1310,7 @@ class JoltGpuTick::Impl
                 return {nullptr, [this] { return PrepareSweep(); }};
             inputs.SetSweepBodies(std::move(bodies));
         }
-        stageCursor.sweepRemaining = tickParameters.gravityDt.w;
-        stageCursor.sameTimeImpacts = 0;
-        stageCursor.sweepAdvanced = false;
+        stageCursor.sweep = JoltGpuSweepOutcome::NoImpact;
         NextSpan(stageCursor, inputs);
         Normalize(stageCursor, inputs);
         return {};
@@ -1986,31 +1976,16 @@ class JoltGpuTick::Impl
                 return true;
             }
             if (stageCursor.phase == Phase::ResolveSweep) {
-                SelectControlWork(narrowphase.PrepareSweeps(storage, inputs, work, stageCursor.sweepRemaining,
-                                                            stageCursor.sweepAdvanced,
-                                                            [this](std::optional<float> fraction) {
-                                                                inputs.SetSweepImpactTime(fraction);
+                SelectControlWork(narrowphase.PrepareSweeps(storage, inputs, programs, work,
+                                                            stageCursor.sweep == JoltGpuSweepOutcome::MoreMotion,
+                                                            bool(control.prepareContactReport),
+                                                            [this](JoltGpuSweepOutcome outcome, uint32_t integrated) {
+                                                                stageCursor.sweep = outcome;
                                                                 NextSpan(stageCursor, inputs);
+                                                                if (stageCursor.phase == Phase::IntegrateSwept)
+                                                                    stageCursor.localFirst = integrated;
                                                                 Normalize(stageCursor, inputs);
                                                             }),
-                                  PacketKind::NumericalWork);
-                return true;
-            }
-            if (stageCursor.phase == Phase::SolveSweepEvent) {
-                const float fraction = *inputs.SweepImpactTime();
-                const float remaining = stageCursor.sweepRemaining * (1.0f - fraction);
-                if (remaining < stageCursor.sweepRemaining)
-                    stageCursor.sameTimeImpacts = 0;
-                else if (++stageCursor.sameTimeImpacts > 64u + 4u * uint64_t(tickParameters.selectedCounts.x))
-                    throw std::runtime_error("Continuous impacts did not settle at the current time");
-                SelectControlWork(narrowphase.PrepareSweepEvent(storage, inputs, work, fraction, remaining,
-                                                                bool(control.prepareContactReport),
-                                                                [this, remaining] {
-                                                                    stageCursor.sweepRemaining = remaining;
-                                                                    stageCursor.sweepAdvanced = true;
-                                                                    NextSpan(stageCursor, inputs);
-                                                                    Normalize(stageCursor, inputs);
-                                                                }),
                                   PacketKind::NumericalWork);
                 return true;
             }

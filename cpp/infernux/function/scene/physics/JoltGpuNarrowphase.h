@@ -3,11 +3,17 @@
 #include "JoltGpuTick.h"
 
 #include <array>
-#include <optional>
 
 namespace infernux
 {
 struct JoltGpuContactTopologyStart;
+
+enum class JoltGpuSweepOutcome : uint32_t
+{
+    NoImpact = JPH::GPU::SweepNoImpact,
+    LastImpact = JPH::GPU::SweepLastImpact,
+    MoreMotion = JPH::GPU::SweepMoreMotion
+};
 
 /// Completes generic candidates after the Tick's original analytic initializer.
 /// Analytic families retain their existing kernels and budget planner; convex jobs keep
@@ -32,11 +38,9 @@ class JoltGpuNarrowphase final
                                              FrameWorkOwner &budget, Workspace &resident,
                                              JoltGpuContactTopologyStart topology, std::function<void()> completed);
     [[nodiscard]] JoltGpuControlWork PrepareSweeps(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
-                                                   FrameWorkOwner &budget, float remainingSeconds, bool continuing,
-                                                   std::function<void(std::optional<float>)> completed);
-    [[nodiscard]] JoltGpuControlWork PrepareSweepEvent(const JoltGpuStorage &storage, JoltGpuStepInputs &inputs,
-                                                       FrameWorkOwner &budget, float fraction, float remainingSeconds,
-                                                       bool reportImpacts, std::function<void()> completed);
+                                                   JoltGpuPrograms &programs, FrameWorkOwner &budget, bool continuing,
+                                                   bool reportImpacts,
+                                                   std::function<void(JoltGpuSweepOutcome, uint32_t)> completed);
 
   private:
     class Impl;

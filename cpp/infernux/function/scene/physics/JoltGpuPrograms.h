@@ -440,14 +440,6 @@ class JoltGpuStepInputs
     {
         return m_articulations;
     }
-    void SetSweepImpactTime(std::optional<float> fraction) noexcept
-    {
-        m_sweepImpactTime = fraction;
-    }
-    [[nodiscard]] std::optional<float> SweepImpactTime() const noexcept
-    {
-        return m_sweepImpactTime;
-    }
     void SetContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts);
     void ClearContacts() noexcept;
     [[nodiscard]] const std::shared_ptr<const JoltGpuContactWorkset> &GetContacts() const noexcept
@@ -469,6 +461,14 @@ class JoltGpuStepInputs
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetSweepChoices() const noexcept
     {
         return m_sweepChoices;
+    }
+    void SetSweepClock(std::shared_ptr<rhi::ComputeBuffer> clock) noexcept
+    {
+        m_sweepClock = std::move(clock);
+    }
+    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetSweepClock() const noexcept
+    {
+        return m_sweepClock;
     }
     void SetSweepContacts(std::shared_ptr<const JoltGpuContactWorkset> contacts) noexcept
     {
@@ -504,13 +504,13 @@ class JoltGpuStepInputs
     std::array<std::shared_ptr<rhi::ComputeBuffer>, 5> m_buffers;
     std::shared_ptr<rhi::ComputeBuffer> m_sweepBodies;
     std::shared_ptr<rhi::ComputeBuffer> m_sweepChoices;
+    std::shared_ptr<rhi::ComputeBuffer> m_sweepClock;
     std::shared_ptr<const JoltGpuContactWorkset> m_sweepContacts;
     std::shared_ptr<const JoltGpuContactWorkset> m_contacts;
     JoltGpuContactHistory m_previousContacts, m_nextContacts;
     std::shared_ptr<const JoltGpuColliderPairs> m_colliderPairs;
     std::shared_ptr<const JoltGpuConstraintWorkset> m_constraints;
     std::shared_ptr<JoltGpuArticulationState> m_articulations;
-    std::optional<float> m_sweepImpactTime;
 };
 
 /// One ready body unit. The caller retains the member/cursor and clean layout lease.
