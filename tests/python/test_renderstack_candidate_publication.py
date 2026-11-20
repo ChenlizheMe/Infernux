@@ -5,6 +5,7 @@ import inspect
 import pytest
 
 from infernux.core.assets import AssetManager
+from infernux.core.shader import Shader
 from infernux.debug import DebugConsole, LogEntry, LogType
 from infernux.lib import ConsolePanel, RenderGraphDescription
 from infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
@@ -175,7 +176,10 @@ def test_runtime_failure_is_deduplicated_and_clears_after_all_views_publish(publ
     assert [entry["message"] for entry in panel._get_visible_log_snapshot(10)] == ["authored runtime error"]
 
 
-def test_valid_probe_does_not_hide_native_publication_rejection(publication, monkeypatch):
+@pytest.mark.parametrize("recover_by_shader_publication", [False, True])
+def test_valid_probe_does_not_hide_native_publication_rejection(
+    publication, monkeypatch, recover_by_shader_publication
+):
     stack, generation, console, panel = publication
     state = seed_current_graph(stack)
     candidate = description("candidate", 2)
@@ -201,7 +205,10 @@ def test_valid_probe_does_not_hide_native_publication_rejection(publication, mon
     assert context.applied == [candidate]
     assert context.submitted == 0
     context.reject = None
-    stack.invalidate_graph()
+    if recover_by_shader_publication:
+        monkeypatch.setattr(Shader, "_runtime_revision", Shader._runtime_revision + 1)
+    else:
+        stack.invalidate_graph()
     stack.render(context, object())
     assert state.description is candidate
     assert stack.effect_compile_errors == ()

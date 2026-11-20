@@ -37,6 +37,7 @@ from typing import Dict, Optional
 from infernux.components.component import InxComponent
 from infernux.components.fields import FieldType, list_field
 from infernux.components.decorators import disallow_multiple, add_component_menu, execute_in_edit_mode
+from infernux.core.shader import Shader
 from infernux.debug import Debug
 from infernux.lib import _Infernux
 from infernux.renderstack._pipeline_common import (
@@ -62,6 +63,7 @@ class _ViewGraphState:
     errors: tuple[str, ...] = ()
     artifact_generation: int = 0
     attempted_artifact_generation: int = 0
+    rejected_shader_revision: int | None = None
     pipeline_error: str = ""
     rejected_texture_inputs: tuple = ()
 
@@ -739,6 +741,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         state.upload_revisions = {}
         state.build_failed = True
         state.attempted_artifact_generation = RenderEffectArtifactRegistry.topology_generation()
+        state.rejected_shader_revision = Shader._runtime_revision
         state.pipeline_error = (
             f"Pipeline graph publication rejected: native graph rejected '{description.name}' "
             f"(source_revision={description.source_revision}). This view was not submitted."
@@ -763,6 +766,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             state.bindings = []
             state.upload_revisions = {}
             state.build_failed = False
+            state.rejected_shader_revision = None
             state.rejected_texture_inputs = ()
         # A new declaration/parameter edit may reproduce the same error after
         # script publication has retired the preceding source diagnostics.
@@ -980,7 +984,10 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 )
                 if requires_rebuild:
                     self._clear_graph_cache()
-        elif any(texture.revision != revision for texture, revision in state.rejected_texture_inputs):
+        elif (
+            state.rejected_shader_revision is not None
+            and state.rejected_shader_revision != Shader._runtime_revision
+        ) or any(texture.revision != revision for texture, revision in state.rejected_texture_inputs):
             self._clear_graph_cache()
 
         # Lazy build graph topology (skip if last build failed)

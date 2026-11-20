@@ -1,6 +1,7 @@
 #include "ScriptableRenderContext.h"
 #include <chrono>
 #include <core/log/InxLog.h>
+#include <core/types/ShaderTypes.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
@@ -66,11 +67,16 @@ void ScriptableRenderContext::SetupCameraProperties()
 
 bool ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
 {
-    if (!m_recordedPlan)
-        return m_execution->apply(*this, desc);
-    m_recordedPlan->graph =
-        AcquireRenderGraphPublication(desc, m_captureServices.prepareMaterial, m_captureServices.acquireProgram);
-    return true;
+    try {
+        if (!m_recordedPlan)
+            return m_execution->apply(*this, desc);
+        m_recordedPlan->graph =
+            AcquireRenderGraphPublication(desc, m_captureServices.prepareMaterial, m_captureServices.acquireProgram);
+        return true;
+    } catch (const ShaderProgramSelectionError &error) {
+        INXLOG_ERROR("Render graph '", desc.name, "' could not acquire a shader program: ", error.what());
+        return false;
+    }
 }
 
 void ScriptableRenderContext::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)

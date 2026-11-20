@@ -3081,7 +3081,8 @@ void InxRenderer::PrepareSceneCameraPreview()
         view.pixelHeight = view.outputGeneration->height;
         ScriptableRenderContext capture(m_vkCore.get(), graph, m_viewRequestSerial, content, m_cameraPreviewFrame,
                                         view);
-        capture.RenderWithGraph(*m_sceneCameraPreviewDescription);
+        if (!capture.RenderWithGraph(*m_sceneCameraPreviewDescription))
+            return;
         const auto plan = capture.CapturePlan();
         ScriptableRenderContext context(m_vkCore.get(), graph, m_viewRequestSerial, content, *plan);
         context.ExecutePlan(plan);

@@ -6,7 +6,6 @@
 #include <function/resources/ShaderAsset/ShaderAsset.h>
 
 #include <algorithm>
-#include <stdexcept>
 
 namespace infernux
 {
@@ -29,11 +28,11 @@ std::shared_ptr<const FullscreenProgram> LoadFullscreenProgram(const std::string
         return {};
     const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
     if (!asset || !asset->program)
-        throw std::runtime_error("Fullscreen author program is unavailable: " + path);
+        throw ShaderProgramSelectionError("Fullscreen author program is unavailable: " + path);
     const auto target = std::find_if(asset->program->targets.begin(), asset->program->targets.end(),
                                      [targetKind](const auto &code) { return code.target == targetKind; });
     if (target == asset->program->targets.end())
-        throw std::logic_error("Fullscreen shader asset has no requested target: " + path);
+        throw ShaderProgramSelectionError("Fullscreen shader asset has no requested target: " + path);
     auto result = std::make_shared<FullscreenProgram>();
     result->assetGuid = std::move(guid);
     result->shaderId = asset->shaderId;

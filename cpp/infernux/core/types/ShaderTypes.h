@@ -67,7 +67,7 @@ enum class ShaderProgramDomain : unsigned char
     return "Unknown";
 }
 
-/// A rejected author selection is local to a material publication. It never
+/// A rejected author selection is local to a render publication. It never
 /// unwinds the editor frame or changes an accepted device program.
 class ShaderProgramSelectionError : public std::runtime_error
 {
