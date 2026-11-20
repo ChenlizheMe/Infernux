@@ -126,27 +126,6 @@ void cg_initial_mass_product(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void cg_ray_mass_product(uint3 id : SV_DispatchThreadID)
-{
-    const uint nv = settings[1].y;
-    if (id.x < nv && worlds[id.y].progress.y == Running)
-    {
-        const uint i = id.y * nv + id.x;
-        massProducts[i] = float2(massProducts[i].x, multiplyMass<true>(id.y, id.x));
-    }
-}
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void clear_constraint_projection(uint3 id : SV_DispatchThreadID)
-{
-    const uint nv = settings[1].y;
-    if (id.x < nv)
-        constraintForce[id.y * nv + id.x].store(0u);
-}
-
 void addConstraintForce(uint index, float value)
 {
     if (value == 0.0)
@@ -162,24 +141,56 @@ void addConstraintForce(uint index, float value)
     }
 }
 
+void syncCgProjection()
+{
+    __target_switch
+    {
+    case wgsl: __intrinsic_asm "storageBarrier()";
+    default: DeviceMemoryBarrierWithGroupSync();
+    }
+}
+
+void projectCgForce<let Publish : bool>(uint world, uint lane)
+{
+    const uint4 progress = worlds[world].progress;
+    const uint status = broadcastCg(progress.y, lane);
+    if (status == CapacityExceeded || (!Publish && status != Running))
+        return;
+    const uint nv = settings[1].y;
+    const uint dofBase = world * nv;
+    for (uint i = lane; i < nv; i += CgWidth)
+        constraintForce[dofBase + i].store(0u);
+    syncCgProjection();
+
+    const uint4 limit = settings[0];
+    const uint rowBase = world * limit.z;
+    const uint columnBase = world * limit.w;
+    for (uint i = lane; i < progress.z; i += CgWidth)
+    {
+        const uint index = rowBase + i;
+        const ConstraintRow row = rows[index];
+        const uint base = columnBase + row.layout.x;
+        const float force = evaluation[index].force;
+        for (uint j = 0; j < row.layout.y; ++j)
+        {
+            const ConstraintColumn column = columns[base + j];
+            addConstraintForce(dofBase + column.dof, column.value * force);
+        }
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void project_constraint_force(uint3 id : SV_DispatchThreadID)
+void cg_project_iteration(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    const uint4 progress = worlds[id.y].progress;
-    if (id.x >= progress.z || progress.y == CapacityExceeded)
-        return;
-    const uint4 limit = settings[0];
-    const uint index = id.y * limit.z + id.x;
-    const ConstraintRow row = rows[index];
-    const uint base = id.y * limit.w + row.layout.x;
-    const uint dofBase = id.y * settings[1].y;
-    const float force = evaluation[index].force;
-    for (uint i = 0; i < row.layout.y; ++i)
-    {
-        const ConstraintColumn column = columns[base + i];
-        addConstraintForce(dofBase + column.dof, column.value * force);
-    }
+    projectCgForce<false>(group.y, lane);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cg_publish_force(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    projectCgForce<true>(group.y, lane);
 }
 
 [shader("compute")]
@@ -271,7 +282,7 @@ void cg_ray_constraint_product(uint3 id : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void cg_ray_gauss(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void cg_ray_mass_and_gauss(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     const uint world = group.y;
     CgWorld state = worlds[world];
@@ -282,8 +293,10 @@ void cg_ray_gauss(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     for (uint i = lane; i < nv; i += CgWidth)
     {
         const uint index = world * nv + i;
-        const float2 mx = massProducts[index];
-        gauss += directionHistory[index].z * float2(mx.x - smoothForce[index], mx.y);
+        const float ma = massProducts[index].x;
+        const float mv = multiplyMass<true>(world, i);
+        massProducts[index] = float2(ma, mv);
+        gauss += directionHistory[index].z * float2(ma - smoothForce[index], mv);
     }
     gauss = reduceCg(float4(gauss, 0, 0), lane).xy;
     if (lane == 0)
