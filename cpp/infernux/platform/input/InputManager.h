@@ -108,10 +108,11 @@ struct ScreenState
 /// No script/action state, callbacks, platform handles or mutable routing owner.
 struct WorldGameplayRouting final
 {
+    using View = std::tuple<uint64_t, std::array<float, 4>, std::array<float, 4>>; // World, image, visible clip
     uint64_t selectedWorld = 0;
     bool broadcast = true;
     std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs;
-    std::vector<std::array<float, 4>> imageRects;
+    std::vector<View> views;
 };
 
 struct InputFrameSample final
@@ -135,6 +136,7 @@ struct InputFrameSample final
     bool accelerometerAvailable = false, gyroscopeAvailable = false;
     bool syntheticInputFrame = false, syntheticGameplayInput = false, syntheticHeld = false, anyKeyDown = false;
     bool gameplayFocused = true;
+    bool pointerActive = true;
     std::array<float, 2> gameplayViewportOrigin{}, gameplayViewportSize{}, gameplayRenderSize{};
     std::array<float, 4> gameplayTouchViewport{0, 0, 1, 1};
 };
@@ -193,6 +195,9 @@ class InputManager
     /// Call every admitted Host, including while another WorldFrame is open.
     /// Reads raw live members even under an older World InputReadScope.
     [[nodiscard]] InputFrameLease CaptureFrame();
+    [[nodiscard]] InputFrameLease CaptureWorldFrame(uint64_t worldId, uint64_t primaryWorld);
+    [[nodiscard]] uint64_t PointerWorldAt(float x, float y) const noexcept;
+    [[nodiscard]] bool HasGameplayPointer() const noexcept;
     /// Last admitted raw external lease, before per-World routing/consumption.
     [[nodiscard]] InputFrameLease GetWorldExternalInput(uint64_t worldId) const noexcept;
     /// Only equivalent, transient-free external samples may share one
@@ -205,7 +210,7 @@ class InputManager
                                                     uint64_t logicalFrameIndex);
     void SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcast,
                                  std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs,
-                                 std::vector<std::array<float, 4>> imageRects);
+                                 std::vector<WorldGameplayRouting::View> views);
     /// Exactly once per new WorldFrame admission; scope entry never consumes.
     [[nodiscard]] InputFrameLease BeginWorldFrameInput(uint64_t worldId, InputFrameLease external,
                                                        uint64_t logicalFrameIndex);
@@ -689,7 +694,19 @@ class InputManager
     std::array<float, 3> m_acceleration{};
     std::array<float, 3> m_gyroscopeRotationRate{};
     static bool CanCompareFrames(const InputFrameSample &left, const InputFrameSample &right, bool continuous) noexcept;
-    static void RouteWorldInput(uint64_t worldId, InputFrameSample &value);
+    struct WorldPointerEvents
+    {
+        uint64_t world;
+        float dx = 0, dy = 0, scrollX = 0, scrollY = 0;
+        uint32_t down = 0, up = 0;
+    };
+    WorldPointerEvents &PointerEventsFor(uint64_t world);
+    std::vector<WorldPointerEvents> m_pointerEvents, m_sealedPointerEvents;
+    std::array<uint64_t, INPUT_MAX_MOUSE_BUTTONS> m_buttonWorlds{};
+    uint64_t m_sealedPointerWorld = 0;
+    uint64_t m_lockedPointerWorld = 0;
+    mutable size_t m_lastPointerView = 0;
+    bool m_pointerOutsideWindow = false;
     void RequestMotionSensor(MotionSensorType type) const noexcept;
     void RefreshMotionSensorDemand() noexcept;
     uint8_t m_hostMotionSensorDemand = 0;
@@ -724,6 +741,8 @@ class InputManager
     [[nodiscard]] InputFrameSample *OverrideReadFrame();
     std::unordered_map<uint64_t, std::shared_ptr<InputFrameReadState>> m_worldReadStates;
     InputFrameLease m_capturedFrame;
+    InputFrameLease m_unpointedInput;
+    bool m_unpointedKeyboard = false;
     std::shared_ptr<const WorldGameplayRouting> m_worldGameplayRouting;
     uint64_t m_hostReadRevision = 0;
     uint64_t m_sampleIdentity = 0;
@@ -734,7 +753,6 @@ class InputManager
         SyntheticKeyDown,
         MouseDown,
         MouseUp,
-        Motion,
         Scroll,
         Text,
         Touch,
@@ -755,6 +773,7 @@ class InputManager
     std::vector<SampleEvent> m_sampleEvents;
     void InvalidateCapture() noexcept
     {
+        m_unpointedInput.reset();
         m_capturedFrame.reset();
     }
     void AppendSampleEvent(SampleEvent event);
@@ -762,6 +781,9 @@ class InputManager
     bool m_gameplayFocused = true;
     std::array<float, 2> m_gameplayViewportOrigin{}, m_gameplayViewportSize{}, m_gameplayRenderSize{};
     std::array<float, 4> m_gameplayTouchViewport{0, 0, 1, 1};
+    // World captures consume deltas independently of the live host-frame totals.
+    float m_pendingMouseDX = 0.f;
+    float m_pendingMouseDY = 0.f;
 
     // ---- Name → scancode lookup ----
     static std::unordered_map<std::string, int> s_nameToScancode;

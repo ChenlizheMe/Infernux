@@ -505,6 +505,19 @@ class UIEventProcessor:
         state.hover_target = None
         state.hover_canvas = None
 
+    def _leave_mouse(self) -> None:
+        state = self._pointers.get((PointerType.Mouse, _MOUSE_POINTER_ID))
+        if state is None or state.hover_target is None:
+            return
+        positions = state.last_canvas_positions
+        current = self._xy(positions[0]) if positions else (0.0, 0.0)
+        pointer = UIPointerFrame(_MOUSE_POINTER_ID, PointerType.Mouse, positions)
+        target = state.hover_target
+        event = self._make_event(pointer, current, (0.0, 0.0), state.hover_canvas, target,
+                                 canvas_size=state.hover_canvas_size)
+        state.hover_target = state.hover_canvas = None
+        self._dispatch_pointer_callback(target, "on_pointer_exit", event, current_runtime_epoch())
+
     def reset(self) -> None:
         """Cancel every active pointer transaction."""
 

@@ -87,33 +87,39 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
             onRequestClose();
     }
 
-    // These authored overrides replace the already-scaled global style.
+    // Unity-like top bar zones on one Mission Control strip:
+    //   LEFT  = brand + menus
+    //   CENTER = play transport (ToolbarPanel, same ###toolbar identity)
+    //   RIGHT = command palette + layout
+    // Menu hover stays neutral (ROLE_BG_HOVER); accent is reserved for
+    // selection / play — never for browsing File/Edit.
     const float dpi = ctx->GetDpiScale();
     const auto scaled = [dpi](ImVec2 size) { return ImVec2(size.x * dpi, size.y * dpi); };
     const float barHeight = EditorThemeRegistry::Float("TOP_BAR_HEIGHT") * dpi;
+    const float zoneGap = EditorThemeRegistry::Float("TOPBAR_ZONE_GAP") * dpi;
+    const float utilH = EditorThemeRegistry::Float("TOPBAR_UTIL_BTN_H") * dpi;
+    const float utilW = EditorThemeRegistry::Float("TOPBAR_UTIL_BTN_W") * dpi;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(EditorTheme::TOOLBAR_FRAME_PAD.x * dpi, (barHeight - ImGui::GetFontSize()) * 0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorTheme::TOOLBAR_ITEM_SPC));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorTheme::TOOLBAR_WIN_PAD));
     ImGui::PushStyleColor(ImGuiCol_MenuBarBg, EditorThemeRegistry::Color("MENU_BAR_BG"));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, EditorThemeRegistry::Color("POPUP_BG"));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorThemeRegistry::Color("HEADER_HOVERED"));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("HEADER_ACTIVE"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorThemeRegistry::Color("ROLE_BG_HOVER"));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, EditorThemeRegistry::Color("ROW_SELECTED"));
 
-    // Menus and transport append to the same native window. Its stable
-    // "toolbar" identity retains the existing command and focus ownership.
     const bool visible = ImGui::BeginViewportSideBar(
         "Toolbar###toolbar", ImGui::GetMainViewport(), ImGuiDir_Up, barHeight,
         ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
     if (visible && ImGui::BeginMenuBar()) {
         if (InxGUISemantics::IsCaptureEnabled())
             ctx->RecordSemanticWindow("menu_bar", "Main Menu", "menu_bar");
+
+        // ── LEFT: brand ──────────────────────────────────────────
         const auto logo = ctx->EditorIcon("icon");
         const float logoSize = 18.0f * dpi;
         ImGui::Dummy(ImVec2(logoSize, logoSize));
         if (logo) {
-            // Menu text uses a padded baseline, while Image starts at the
-            // row's top. Position the mark against the actual bar instead.
             const ImVec2 minimum(ImGui::GetItemRectMin().x, ImGui::GetWindowPos().y + (barHeight - logoSize) * 0.5f);
             ImGui::GetWindowDrawList()->AddImage((ImTextureID)(intptr_t)logo, minimum,
                                                  ImVec2(minimum.x + logoSize, minimum.y + logoSize));
@@ -123,35 +129,55 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
             ctx->PushMonoFont();
             ImGui::TextUnformatted("INFERNUX");
             ctx->PopFont();
-            ImGui::SameLine(0.0f, 12.0f * dpi);
+            ImGui::SameLine(0.0f, zoneGap);
         }
+
+        // ── LEFT: menus ──────────────────────────────────────────
         RenderProjectMenu(ctx);
         RenderEditMenu(ctx);
         RenderSceneMenu(ctx);
         RenderDynamicMenus(ctx);
         RenderWindowMenu(ctx);
 
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 230.0f * dpi);
-        ImGui::SetCursorPosY((barHeight - 28 * dpi) * 0.5f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f * dpi, 4.0f * dpi));
+        // ── RIGHT utilities (center reserved for Toolbar transport) ─
+        const std::string layoutLabel = T("menu.layout");
+        const float padX = 8.0f * dpi;
+        const float gap = zoneGap * 0.5f;
+        const float layoutW = ImGui::CalcTextSize(layoutLabel.c_str()).x + 2.0f * padX + utilH;
+        const float rightInset = EditorThemeRegistry::Vec2("BLEED_PADDING").x * dpi;
+        const float utilityY = (barHeight - utilH) * 0.5f;
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - rightInset - utilW - gap - layoutW, utilityY));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padX, (utilH - ImGui::GetFontSize()) * 0.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, EditorThemeRegistry::Float("TOOLBAR_FRAME_RND") * dpi);
+        EditorTheme::PushGhostButtonStyle();
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, EditorThemeRegistry::Color("BTN_GHOST"));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, EditorThemeRegistry::Color("BTN_GHOST_HOVERED"));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, EditorThemeRegistry::Color("BTN_GHOST_ACTIVE"));
         const bool canOpenPalette = CanExecuteCommand("command_palette.open");
         ImGui::BeginDisabled(!canOpenPalette);
-        ctx->PushMonoFont();
-        if (ImGui::Button("Ctrl+Shift+P", ImVec2(128.0f * dpi, 28.0f * dpi)))
+        if (ctx->IconButton("topbar_palette", "glyphs/search", "", utilW, utilH))
             ExecuteCommand("command_palette.open", "menu");
-        ctx->PopFont();
         ImGui::EndDisabled();
         if (InxGUISemantics::IsCaptureEnabled())
             ctx->RecordSemanticItem("button", T("command_palette.title"), canOpenPalette, "menu.command_palette");
-        ImGui::SameLine(0.0f, 8.0f * dpi);
-        ImGui::SetCursorPosY((barHeight - 28 * dpi) * 0.5f);
-        if (ctx->BeginCombo("##main_layout", T("menu.layout"), ImGuiComboFlags_WidthFitPreview)) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            ctx->SetTooltip(T("command_palette.title") + "  ·  Ctrl+Shift+P");
+
+        ImGui::SameLine(0.0f, gap);
+        ImGui::SetCursorPosY(utilityY);
+        ImGui::SetNextItemWidth(layoutW);
+        const bool layoutOpen = ctx->BeginCombo("##main_layout", layoutLabel);
+        if (InxGUISemantics::IsCaptureEnabled())
+            ctx->RecordSemanticItem("combo", layoutLabel, true, "menu.layout");
+        if (layoutOpen) {
             const bool canReset = CanExecuteCommand("window.reset_layout");
             if (SemanticMenuItem(ctx, T("menu.reset_layout"), "", false, canReset, "menu.layout.reset"))
                 ExecuteCommand("window.reset_layout", "menu");
             ctx->EndCombo();
         }
-        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(6);
+        ImGui::PopStyleVar(3);
         ImGui::EndMainMenuBar();
     } else {
         ImGui::End();
@@ -233,6 +259,9 @@ void MenuBarPanel::RenderEditMenu(InxGUIContext *ctx)
     if (SemanticMenuItem(ctx, T("menu.preferences"), "", false, CanExecuteCommand("window.open.preferences"),
                          "menu.edit.preferences"))
         ExecuteCommand("window.open.preferences", "menu");
+    if (SemanticMenuItem(ctx, T("themes.title"), "", IsCommandChecked("window.open.themes"),
+                         CanExecuteCommand("window.open.themes"), "menu.edit.themes"))
+        ExecuteCommand("window.open.themes", "menu");
 
     ctx->EndMenu();
 }

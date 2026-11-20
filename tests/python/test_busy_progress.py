@@ -55,13 +55,12 @@ def test_helper_uses_the_editor_font_theme_and_process(monkeypatch):
     from infernux.engine.i18n import get_locale
 
     commands = []
-    monkeypatch.setattr(lib, "get_editor_theme", lambda: "amber")
+    monkeypatch.setattr(lib, "get_editor_theme", lambda: "tests/appearance/theme")
     monkeypatch.setattr(subprocess, "Popen", lambda command, **kwargs: commands.append(command))
     progress = BusyProgress()
     assert commands[0][1:] == [
         resources.engine_font_path,
-        resources.engine_font_cjk_path,
-        "amber",
+        "tests/appearance/theme",
         get_locale(),
         str(os.getpid()),
     ]

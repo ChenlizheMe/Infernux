@@ -18,6 +18,17 @@ from .runtime_scene_transaction import (
 class SceneDocumentTransaction(_RuntimeSceneDocumentTransaction):
     """Complete an editor scene transaction and refresh editor Gizmos."""
 
+    def __init__(self, scene, *, prepare_content=None, after_publish=None, **kwargs):
+        self.content_reconciliation_count = 0
+
+        def finish_content():
+            if after_publish is not None:
+                after_publish()
+            if prepare_content is not None:
+                self.content_reconciliation_count = int(bool(prepare_content()))
+
+        super().__init__(scene, after_publish=finish_content, **kwargs)
+
     def poll(self, *, admit_assets: bool = False) -> bool:
         if (
             admit_assets

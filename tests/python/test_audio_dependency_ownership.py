@@ -4,7 +4,7 @@ import wave
 
 import pytest
 
-from infernux.lib import AssetDependencyGraph, AudioClip
+from infernux.lib import AssetDependencyGraph, AudioClip, AudioEngine
 from infernux.core.assets import AssetManager
 
 
@@ -97,3 +97,69 @@ def test_track_edit_workflow_keeps_shared_clip_edges_until_the_last_reference(au
     document["tracks"][0].pop("clip_guid")
     assert source.deserialize(json.dumps(document))
     assert not graph.has_dependency(identity, first) and identity not in graph.get_dependents(first)
+
+
+def test_failed_audio_rejects_new_voices_from_a_retained_clip_and_recovers(audio_assets):
+    source, _graph, _identity, guids, paths, database = audio_assets
+    audio = AudioEngine.instance()
+    write_wave(paths[0], frames=44100 * 4)
+    assert AssetManager.reimport_asset(str(paths[0]), database=database)
+    retained = source.get_track_clip(0)
+    source.play_one_shot(retained)
+    source.play(0)
+    assert source.is_track_playing(0)
+    before = audio.real_voice_count + audio.virtual_voice_count
+    assert before >= 2
+
+    paths[0].write_bytes(b"invalid current audio")
+    rejected = AssetManager.reimport_asset(str(paths[0]), database=database)
+    assert not rejected and database.get_import_error(guids[0])
+    assert retained.is_loaded  # Submitted voices still own their original PCM.
+    assert not source.is_track_playing(0)
+    assert source.get_track_clip_guid(0) == guids[0]
+    assert source.get_track_clip(0) is None
+    in_flight = audio.real_voice_count + audio.virtual_voice_count
+    assert in_flight == before - 1
+    source.play_one_shot(retained)
+    assert audio.real_voice_count + audio.virtual_voice_count == in_flight
+    source.set_track_clip(0, retained)
+    assert source.get_track_clip_guid(0) == guids[0]
+    assert source.get_track_clip(0) is None
+    source.play(0)
+    assert not source.is_track_playing(0)
+
+    write_wave(paths[0], frames=44100 * 3)
+    repaired = AssetManager.reimport_asset(str(paths[0]), database=database)
+    assert repaired, repaired.error
+    source.set_track_clip(0, retained)
+    assert source.get_track_clip(0).duration == pytest.approx(3)
+    source.play(0)
+    assert source.is_track_playing(0)
+    source.play_one_shot(retained)
+    assert audio.real_voice_count + audio.virtual_voice_count == in_flight + 2
+
+
+def test_failed_audio_preview_uses_the_current_resource_failure(engine, tmp_path):
+    database = engine.get_asset_database()
+    audio = AudioEngine.instance()
+    path = tmp_path / "Preview.wav"
+    write_wave(path)
+    imported = database.import_asset(str(path))
+    assert imported, imported.error
+    try:
+        assert audio.play_preview(str(path))
+        audio.stop_preview()
+        path.write_bytes(b"invalid current preview audio")
+        database.reimport_asset(str(path))
+        assert not audio.play_preview(str(path))
+        error = database.get_import_error(imported.guid)
+        assert "Audio" in error
+        assert not audio.play_preview(str(path))
+        assert database.get_import_error(imported.guid) == error
+        write_wave(path)
+        assert AssetManager.reimport_asset(str(path), database=database)
+        assert audio.play_preview(str(path))
+        assert not database.get_import_error(imported.guid)
+    finally:
+        audio.stop_preview()
+        database.delete_asset(str(path))

@@ -89,9 +89,22 @@ constexpr float TOOLBAR_FRAME_RND = 0.0f;
 // (reuses TOOLBAR_FRAME_PAD / TOOLBAR_ITEM_SPC / TOOLBAR_WIN_PAD)
 
 // ── Popup spacing ────────────────────────────────────────────────────
-constexpr ImVec2 POPUP_WIN_PAD{12.0f, 10.0f};
-constexpr ImVec2 POPUP_ITEM_SPC{10.0f, 8.0f};
-constexpr ImVec2 POPUP_FRAME_PAD{8.0f, 6.0f};
+// Dense menus / context / combo — mirrors EditorThemeTable.inl MENU_* / POPUP_*.
+constexpr ImVec2 POPUP_WIN_PAD{8.0f, 6.0f};
+constexpr ImVec2 POPUP_ITEM_SPC{8.0f, 2.0f};
+constexpr ImVec2 POPUP_FRAME_PAD{8.0f, 3.0f};
+constexpr ImVec2 MENU_WIN_PAD{8.0f, 6.0f};
+constexpr ImVec2 MENU_ITEM_SPC{8.0f, 2.0f};
+constexpr ImVec2 MENU_FRAME_PAD{8.0f, 3.0f};
+constexpr float MENU_ITEM_HEIGHT = 22.0f;
+constexpr ImVec2 BLEED_PADDING{8.0f, 8.0f};
+constexpr ImVec2 MODAL_WIN_PAD{16.0f, 14.0f};
+constexpr ImVec2 MODAL_ITEM_SPC{10.0f, 8.0f};
+constexpr ImVec2 MODAL_FRAME_PAD{10.0f, 6.0f};
+constexpr float TOPBAR_ZONE_GAP = 12.0f;
+constexpr float TOPBAR_DIVIDER_H = 18.0f;
+constexpr float TOPBAR_UTIL_BTN_H = 28.0f;
+constexpr float TOPBAR_UTIL_BTN_W = 28.0f;
 
 // ── Status bar spacing ───────────────────────────────────────────────
 constexpr ImVec2 STATUS_BAR_WIN_PAD{6.0f, 4.0f};
@@ -119,7 +132,6 @@ constexpr float DND_REORDER_LINE_THICKNESS = 1.0f;
 constexpr float DND_PARENT_OUTLINE_THICKNESS = 1.5f;
 constexpr float DND_REORDER_SEPARATOR_H = 8.0f;
 constexpr float DND_REORDER_HIT_ABOVE = 4.0f;
-constexpr const char *PREFAB_ICON = "\xe2\x97\x86"; // ◆ U+25C6
 
 // ── Icons (Unicode glyphs) ───────────────────────────────────────────
 constexpr const char *ICON_WARNING = "\xe2\x96\xb2"; // ▲ U+25B2

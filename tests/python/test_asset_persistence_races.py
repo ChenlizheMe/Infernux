@@ -11,7 +11,7 @@ from infernux.core.assets import (
 )
 from infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
 from infernux.engine.path_utils import path_key
-from infernux.engine.resources_manager import ResourceChangeHandler, _AssetImportNotReady
+from infernux.engine.resources_manager import ResourceChangeHandler, _AssetLocalWritePending
 
 
 @pytest.fixture(autouse=True)
@@ -155,7 +155,7 @@ def test_dirty_scene_external_change_preserves_memory_and_enters_conflict(
         classmethod(lambda _cls, *args, **kwargs: calls.append(args)),
     )
 
-    ResourceChangeHandler(_Engine())._commit_modified(str(path.resolve()))
+    ResourceChangeHandler(_Engine(), project_path=str(tmp_path))._commit_modified(str(path.resolve()))
 
     assert calls == []
     assert controller.reloads == 0
@@ -235,9 +235,9 @@ def test_pending_self_write_is_deferred_without_marking_conflict(monkeypatch, tm
         "instance",
         classmethod(lambda _cls: _Documents()),
     )
-    handler = ResourceChangeHandler(_Engine())
+    handler = ResourceChangeHandler(_Engine(), project_path=str(tmp_path))
 
-    with pytest.raises(_AssetImportNotReady, match="local document write is still pending"):
+    with pytest.raises(_AssetLocalWritePending, match="local document write is still pending"):
         handler._commit_modified(str(path.resolve()))
 
 
@@ -302,6 +302,6 @@ def test_registered_and_unregistered_imports_share_external_publish(monkeypatch,
         classmethod(lambda _cls: _Documents()),
     )
 
-    ResourceChangeHandler(_Engine())._commit_modified(resolved)
+    ResourceChangeHandler(_Engine(), project_path=str(tmp_path))._commit_modified(resolved)
 
     assert published == [resolved]

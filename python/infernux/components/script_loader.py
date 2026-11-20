@@ -60,11 +60,10 @@ _class_literal_defaults = WeakKeyDictionary()
 _module_literal_defaults = WeakKeyDictionary()
 _NOT_LITERAL = object()
 
-# One retirable lifetime per published script source. 050 keeps its own
-# transactional reload and runtime worlds; the owner only adds attribution so
-# callbacks that outlive their module generation are rejected instead of
-# silently running stale code (048's reload-ownership contract).
-_reload_source_owners: dict = {}
+# A source has a separate lifetime in each World module namespace. A
+# successful body update keeps that lifetime for existing instances and their
+# forwarded callbacks. Rejecting the saved source closes every World owner.
+_reload_source_owners: dict[str, dict[str, object]] = {}
 
 
 def _bind_reload_source_owner(file_path: str, module_name: str, module) -> None:
@@ -72,32 +71,37 @@ def _bind_reload_source_owner(file_path: str, module_name: str, module) -> None:
     from infernux.engine.reload.owners import ReloadOwner
 
     key = path_key(file_path)
-    previous = _reload_source_owners.pop(key, None)
-    owner = ReloadOwner({file_path})
+    owners = _reload_source_owners.setdefault(key, {})
+    owner = owners.get(module_name)
+    if owner is None:
+        owner = ReloadOwner({file_path})
+        owner.bind_modules((module_name,))
+        owner.start_admission()
+        owners[module_name] = owner
     module.__dict__["__infernux_reload_owner__"] = owner
-    owner.bind_modules((module_name,))
-    _reload_source_owners[key] = owner
-    if previous is not None:
-        try:
-            previous.close()
-        except Exception as exc:  # cleanup failures must not abort a publish
-            from infernux.debug import Debug
-
-            Debug.log_warning(f"retired script owner cleanup failed: {exc}")
 
 
-def _retire_reload_source_owner(file_path: str) -> None:
+def _retire_reload_source_owner(file_path: str, *, module_name: str | None = None) -> None:
     from infernux.engine.path_utils import path_key
 
-    owner = _reload_source_owners.pop(path_key(file_path), None)
-    if owner is None:
+    key = path_key(file_path)
+    owners = _reload_source_owners.get(key)
+    if not owners:
         return
-    try:
-        owner.close()
-    except Exception as exc:
-        from infernux.debug import Debug
+    if module_name is None:
+        retiring = tuple(_reload_source_owners.pop(key).values())
+    else:
+        owner = owners.pop(module_name, None)
+        retiring = (owner,) if owner is not None else ()
+        if not owners:
+            del _reload_source_owners[key]
+    for owner in retiring:
+        try:
+            owner.close()
+        except Exception as exc:
+            from infernux.debug import Debug
 
-        Debug.log_warning(f"script owner cleanup failed: {exc}")
+            Debug.log_warning(f"script owner cleanup failed: {exc}")
 
 
 def _module_literal(value, visiting):
@@ -1482,21 +1486,24 @@ def retire_script_module(file_path: str) -> object | None:
     callers invoke this only after the durable asset mutation succeeds.
     """
     from infernux.lib import SceneManager, _Infernux
-    _retire_reload_source_owner(file_path)
     manager = SceneManager.instance()
-    if int(manager._current_runtime_world_id) == int(manager._authoring_runtime_world_id):
+    authoring = int(manager._current_runtime_world_id) == int(manager._authoring_runtime_world_id)
+    if authoring:
         from .registry import unregister_component_script
+        from infernux.engine.script_source import retire_module_code
+
         for identity in manager._runtime_world_ids:
             with _Infernux._RuntimeWorldScope(identity):
                 unregister_component_script(file_path)
                 retire_script_module(file_path)
-    if int(manager._current_runtime_world_id) == int(manager._authoring_runtime_world_id):
-        from infernux.engine.script_source import retire_module_code
         retire_module_code(file_path)
+        _retire_reload_source_owner(file_path)
     canonical = get_script_module_name(file_path)
     module_name = _runtime_module_name(file_path) if canonical else None
     if not module_name:
         return None
+    if not authoring:
+        _retire_reload_source_owner(file_path, module_name=module_name)
     module = sys.modules.get(module_name)
     if module is None:
         return None
@@ -2211,6 +2218,8 @@ def _load_asset_component_types(
         guid = mutation.guid
     if not guid:
         raise ScriptLoadError(f"Failed to resolve GUID for script: {file_path}")
+    if get_script_error_by_path(file_path):
+        return (), guid
 
     # A script file is one identity/publication unit even when it declares
     # several components. Methods on one component may refer to sibling types
@@ -2226,7 +2235,12 @@ def _load_asset_component_types(
     already_published = bool(component_types) and all(
         candidate._asset_script_guid_ == guid for candidate in component_types
     )
-    if not already_published:
+    managed_publication = bool(component_types) and all(
+        (owner := vars(candidate).get("__infernux_reload_owner__")) is not None
+        and owner.coordinator is not None and owner.active
+        for candidate in component_types
+    )
+    if not already_published and not managed_publication:
         component_types = tuple(load_all_components_from_file(file_path, register=False))
     if component_types and not already_published:
         from infernux.components.component_identity import bind_asset_script_guid

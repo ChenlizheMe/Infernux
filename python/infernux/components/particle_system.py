@@ -1783,6 +1783,8 @@ class ParticleSystem(InxComponent):
             return False
         self._ensure_runtime_state(playing=bool(self._playing))
         graph_ref = get_raw_field_value(self, "graph")
+        if ParticleArtifactRegistry.error(guid=getattr(graph_ref, "guid", "")):
+            return False
         now = time.monotonic()
         if not force and now < self._compile_retry_at:
             guid = str(getattr(graph_ref, "guid", "") or "").strip()
@@ -2619,6 +2621,14 @@ class ParticleSystem(InxComponent):
         artifact = ParticleArtifactRegistry.get(
             guid=getattr(graph_ref, "guid", ""),
         )
+        if artifact is None and ParticleArtifactRegistry.error(guid=getattr(graph_ref, "guid", "")):
+            if self._has_runtime():
+                source = self._artifact_source_key
+                self._remove_gpu_emitters()
+                self._clear_runtime_state()
+                self._artifact_source_key = source
+                ParticleSystem._hot_reload_systems[id(self)] = self
+            return
         materials = self._output_materials.values()
         schema_changed = shader_revision != self._shader_runtime_revision and any(
             Shader._surface_schemas.get(Shader._fragment_key(material), ((), 0))[1] > self._shader_runtime_revision
@@ -2645,7 +2655,7 @@ class ParticleSystem(InxComponent):
             if system._has_runtime():
                 system._sync_serialized_instance_overrides()
                 system._apply_pending_runtime_rebuild()
-                system._reload_published_artifact_if_needed()
+            system._reload_published_artifact_if_needed()
 
     def _runtime_at(self, emitter_index: int):
         if type(emitter_index) is not int:

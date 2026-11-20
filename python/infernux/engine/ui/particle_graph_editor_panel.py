@@ -157,11 +157,6 @@ _PARAMETER_CREATE_TYPES = (
 _PARAMETER_DRAG_PAYLOAD = "PARTICLE_PARAMETER"
 _EVENT_DRAG_PAYLOAD = "PARTICLE_EVENT"
 
-# Shared workspace list row chrome (Emitters / Parameters / Events tabs).
-_WORKSPACE_EMITTER_ON = (0.34, 0.72, 0.42, 1.0)
-_WORKSPACE_EMITTER_OFF = (0.42, 0.42, 0.45, 1.0)
-_WORKSPACE_EVENT_TYPE = (0.72, 0.45, 0.88, 1.0)
-
 
 def _mesh_reference_display(reference: AssetReference) -> str:
     builtin = builtin_mesh_name(reference)
@@ -2748,7 +2743,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 GraphElementRef(GraphElementKind.EVENT_TYPE, event_type.stable_id),
                 event_type.name,
                 str(event_type.queue_capacity),
-                _WORKSPACE_EVENT_TYPE,
+                Theme.GRAPH_EVENT_DOT,
                 semantic_kind="particle_event_type",
                 semantic_id=(
                     f"particle_graph.event_type.{event_type.stable_id}"
@@ -2833,7 +2828,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             GraphWorkspaceEntry(
                 GraphElementRef(GraphElementKind.EMITTER, emitter.stable_id),
                 emitter.name,
-                dot_color=_WORKSPACE_EMITTER_ON,
+                dot_color=Theme.SUCCESS_TEXT,
                 semantic_kind="particle_emitter",
                 semantic_id=f"particle_graph.emitter.{index}",
                 selected=index == self._emitter_index,

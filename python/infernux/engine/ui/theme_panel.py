@@ -97,23 +97,26 @@ class ThemePanel(CatalogBrowserPanel):
         gap = metric(ctx, Theme.INSPECTOR_SECTION_GAP)
         line_height = ctx.calc_text_size("M")[1] + metric(
             ctx, 2 * Theme.GLOBAL_FRAME_PAD[1] + Theme.TOOLBAR_ITEM_SPC[1])
-        summary_h = line_height * 3 + metric(ctx, 2 * Theme.PROJECT_PANEL_PAD[1])
+        builtin = row["builtin"]
+        summary_h = line_height * (2 if builtin else 3) + metric(ctx, 2 * Theme.PROJECT_PANEL_PAD[1])
         footer_h = metric(ctx, 46.0)
         start_y, height = ctx.get_cursor_pos_y(), ctx.get_content_region_avail_height()
         footer_y = start_y + max(0.0, height - footer_h)
-        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
+        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.ROLE_BG_RAISED)
         if ctx.begin_child("##theme_summary", 0.0, summary_h, True, Theme.WINDOW_FLAGS_NO_SCROLL):
             ctx.label(row["name"])
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
-            ctx.label(row["author"] or (t("themes.engine_author") if row["builtin"] else "—"))
-            ctx.label(t("themes.source.builtin") if row["builtin"] else row["reference"] + "  " + row["version"])
+            if not builtin:
+                ctx.label(row["author"] or "—")
+            ctx.label(t("themes.source.builtin") if builtin else row["reference"] + "  " + row["version"])
             ctx.pop_style_color()
         ctx.end_child()
         ctx.pop_style_color()
         ctx.set_cursor_pos_y(start_y + summary_h + gap)
         if ctx.begin_child("##theme_detail_content", 0.0,
                            max(1.0, footer_y - start_y - summary_h - gap * 2), True):
-            ctx.text_wrapped(row["description"] or t("themes.no_description"))
+            description = t("themes.builtin_description") if builtin else row["description"]
+            ctx.text_wrapped(description or t("themes.no_description"))
             ctx.dummy(0.0, gap)
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
             ctx.label(t("themes.identity"))
@@ -130,8 +133,8 @@ class ThemePanel(CatalogBrowserPanel):
                 ctx.label(t("themes.source.file"))
                 ctx.text_wrapped(row["path"])
                 ctx.pop_style_color()
-            ctx.dummy(0.0, gap)
-            ctx.text_wrapped(t("themes.authoring_hint"))
+                ctx.dummy(0.0, gap)
+                ctx.text_wrapped(t("themes.authoring_hint"))
             ctx.dummy(0.0, gap)
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
             ctx.text_wrapped(t("themes.editor_only"))
@@ -141,7 +144,7 @@ class ThemePanel(CatalogBrowserPanel):
         self._render_footer(ctx, service, row, footer_h)
 
     def _render_footer(self, ctx, service, row, height):
-        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
+        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.ROLE_BG_BASE)
         if ctx.begin_child("##theme_detail_footer", 0.0, height, True, Theme.WINDOW_FLAGS_NO_SCROLL):
             if row["reference"]:
                 if ctx.button(t("themes.manage_plugin") + "##theme_plugin"):

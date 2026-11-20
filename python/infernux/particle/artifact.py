@@ -1,4 +1,4 @@
-"""Save-time Particle AOT artifact registry with last-known-good publication."""
+"""Save-time Particle AOT products for the current accepted source revision."""
 
 from __future__ import annotations
 
@@ -155,6 +155,7 @@ class ParticleArtifactRegistry:
     ] = {}
     _revision = 0
     _request_generation: dict[str, int] = {}
+    _failed_sources: dict[str, str] = {}
     _next_request_generation = 0
     _lock = threading.RLock()
     # Serialize durable publications without holding the runtime-reader lock
@@ -170,6 +171,7 @@ class ParticleArtifactRegistry:
             cls._shader_schema_revisions.clear()
             cls._runtime_decode_cache.clear()
             cls._request_generation.clear()
+            cls._failed_sources.clear()
             cls._revision = 0
 
     @classmethod
@@ -326,6 +328,31 @@ class ParticleArtifactRegistry:
             return cls._current_unlocked(path, guid)
 
     @classmethod
+    def error(cls, path: str = "", *, guid: str = "") -> str:
+        with cls._lock:
+            return cls._failed_sources.get(cls._source_key(path, guid), "") or cls._failed_sources.get(
+                cls._source_key(path), ""
+            )
+
+    @classmethod
+    def invalidate(cls, path: str, *, guid: str = "", error: str, request_generation=None) -> None:
+        identity = cls._source_key(path)
+        with cls._publication_lock, cls._lock:
+            if request_generation is not None and cls._request_generation.get(identity) != request_generation:
+                return
+            keys = {identity, cls._source_key(path, guid)}
+            previous = cls._current_unlocked(path, guid)
+            if previous is not None:
+                keys.update(key for key, artifact in cls._artifacts.items() if artifact is previous)
+            for key in keys:
+                cls._artifacts.pop(key, None)
+                cls._failed_sources[key] = error
+            cls._revision += 1
+            cls._runtime_decode_cache = {
+                key: value for key, value in cls._runtime_decode_cache.items() if key[0] not in keys
+            }
+
+    @classmethod
     def iter_project_sources(cls, project_root: str) -> list[tuple[str, str]]:
         """Return ``(source_path, guid)`` for every particle authoring source."""
         root = resolved_path(project_root)
@@ -444,7 +471,9 @@ class ParticleArtifactRegistry:
                     )
                     if raise_on_error:
                         raise ParticleArtifactError(message) from exc
-                    Debug.log_error(message)
+                    from infernux.engine.ui.asset_load_errors import report_asset_load_error
+
+                    report_asset_load_error(source_path, message)
         return {"compiled": compiled, "skipped": skipped, "failed": failed}
 
     @classmethod
@@ -676,6 +705,25 @@ class ParticleArtifactRegistry:
         write_scope=None,
     ) -> ParticleArtifact:
         source_path = resolved_path(path)
+        request_generation = cls._begin_request(cls._source_key(source_path))
+        try:
+            return cls._compile_path(
+                source_path, guid=guid, force_recompile=force_recompile,
+                runtime_artifact_path=runtime_artifact_path, write_scope=write_scope,
+                request_generation=request_generation,
+            )
+        except ParticleArtifactSuperseded:
+            raise
+        except Exception as exc:
+            cls.invalidate(source_path, guid=guid, error=str(exc), request_generation=request_generation)
+            raise
+
+    @classmethod
+    def _compile_path(
+        cls, path: str, *, guid: str, force_recompile: bool, runtime_artifact_path: str,
+        write_scope, request_generation: int,
+    ) -> ParticleArtifact:
+        source_path = resolved_path(path)
         from infernux.core.document_store import PathWriteScope
 
         with PathWriteScope.begin_write([source_path], write_scope or PathWriteScope()) as source_scope:
@@ -686,7 +734,7 @@ class ParticleArtifactRegistry:
             source_kind = "script" if source_path.lower().endswith(".particle.py") else "graph"
             path_identity = cls._source_key(source_path)
             key = cls._source_key(source_path, guid)
-            ticket = cls._begin_request(path_identity)
+            ticket = request_generation
 
             try:
                 graph_asset = (
@@ -1007,6 +1055,8 @@ class ParticleArtifactRegistry:
     def _current_unlocked(
         cls, path: str, guid: str = ""
     ) -> ParticleArtifact | None:
+        if cls._failed_sources.get(cls._source_key(path, guid)) or cls._failed_sources.get(cls._source_key(path)):
+            return None
         return cls._artifacts.get(cls._source_key(path, guid)) or cls._artifacts.get(
             cls._source_key(path)
         )
@@ -1015,6 +1065,8 @@ class ParticleArtifactRegistry:
     def _register_unlocked(
         cls, artifact: ParticleArtifact, key: str, path_identity: str
     ) -> None:
+        cls._failed_sources.pop(key, None)
+        cls._failed_sources.pop(path_identity, None)
         cls._artifacts[key] = artifact
         cls._artifacts[path_identity] = artifact
 

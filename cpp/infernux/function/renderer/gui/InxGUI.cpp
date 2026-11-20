@@ -403,6 +403,9 @@ void InxGUI::SetGUIFonts(const std::string &uiFontPath, const std::string &uiCjk
         throw std::logic_error("InxGUI::SetGUIFonts(): GUI is not initialized");
 
     EditorDpiState &dpiState = GetEditorDpiState();
+    if (m_uiFont && dpiState.uiFontPath == uiFontPath && dpiState.uiCjkFontPath == uiCjkFontPath &&
+        dpiState.monoFontPath == monoFontPath && dpiState.fontSize == fontSize)
+        return;
     dpiState.uiFontPath = uiFontPath;
     dpiState.uiCjkFontPath = uiCjkFontPath;
     dpiState.monoFontPath = monoFontPath;
@@ -428,6 +431,7 @@ bool InxGUI::ReloadGUIFont()
     textlayout::ClearFontCache();
     textlayout::SetDefaultFont(nullptr);
     InxGUIContext::s_monoFont = nullptr;
+    m_uiFont = nullptr;
     io.Fonts->Clear();
 
     // Font size is in the same window units as layout and hit testing. ImGui
@@ -435,20 +439,19 @@ bool InxGUI::ReloadGUIFont()
     float scaledSize = dpiState.fontSize * m_dpiScale;
     INXLOG_DEBUG("Loading fonts at ", scaledSize, "px (base ", dpiState.fontSize, " x scale ", m_dpiScale, ")");
 
-    // The UI face merges Inter and Noto Sans SC. Players can use it for
-    // numeric widgets too, with a single default font stack.
+    // The bundled face covers UI, numeric fields and gameplay text. A caller
+    // can supply distinct custom faces without duplicating the default atlas.
     ImFont *uiFont = textlayout::LoadEngineFont(dpiState.uiFontPath, {dpiState.uiCjkFontPath}, scaledSize);
     ImFont *monoFont = uiFont;
-    if (uiFont != nullptr && !dpiState.monoFontPath.empty())
+    if (uiFont != nullptr && !dpiState.monoFontPath.empty() && dpiState.monoFontPath != dpiState.uiFontPath)
         monoFont = textlayout::LoadEngineFont(dpiState.monoFontPath, {}, scaledSize);
     if (uiFont == nullptr || monoFont == nullptr) {
         INXLOG_ERROR("InxGUI::ReloadGUIFont(): engine fonts failed to load; GUI text is unavailable");
         return false;
     }
 
-    // Editor widgets use the UI face; gameplay text keeps the bundled mono
-    // face unless a UIText component names a Font asset of its own.
-    io.FontDefault = theme_drawing::ActiveStyles().monospace ? monoFont : uiFont;
+    m_uiFont = uiFont;
+    io.FontDefault = !m_playerMode && theme_drawing::ActiveStyles().monospace ? monoFont : uiFont;
     textlayout::SetDefaultFont(monoFont);
     InxGUIContext::s_monoFont = monoFont;
 
@@ -879,6 +882,8 @@ void InxGUI::BuildScheduledFrame(bool canCollectRetiredFonts)
     if (!m_playerMode && input.IsCursorLocked() && ImGui::GetCurrentContext()->OpenPopupStack.Size != 0)
         input.SetEditorCursorCaptureAllowed(false);
     EditorShortcutInput::PrepareFrame(input.IsCursorLocked());
+    ImGui::GetIO().FontDefault =
+        !m_playerMode && theme_drawing::ActiveStyles().monospace ? InxGUIContext::s_monoFont : m_uiFont;
     ImGui::NewFrame();
     // Dear ImGui may leave later transitions in InputEventsQueue. Only a synthetic input
     // batch may re-arm the scheduler, and it has a fixed four-build budget;

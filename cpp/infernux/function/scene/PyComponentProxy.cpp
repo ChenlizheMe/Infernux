@@ -1,6 +1,8 @@
 #include "PyComponentProxy.h"
 #include "Collider.h"
 #include "GameObject.h"
+#include "Scene.h"
+#include "SceneManager.h"
 #include "physics/PhysicsContactTypes.h"
 #include <algorithm>
 #include <bindings/python/JsonPyBridge.h>
@@ -178,12 +180,14 @@ PyComponentProxy::~PyComponentProxy()
     m_pyComponent = py::object();
 }
 
-void CallCachedLifecycleNoArg(py::object callable, std::string typeName, const char *displayName)
+bool CallCachedLifecycleNoArg(py::object callable, std::string typeName, const char *displayName)
 {
     try {
-        callable();
+        const py::object result = callable();
+        return result.ptr() != Py_False;
     } catch (const py::error_already_set &e) {
         INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
+        return false;
     }
 }
 
@@ -331,6 +335,28 @@ void PyComponentProxy::ResetLifecycleForPlay()
     SyncPythonMirror();
 }
 
+void PyComponentProxy::InitializeRecoveredScript(bool enabled)
+{
+    ResetLifecycleForPlay();
+    SetEnabled(enabled);
+    auto *object = GetGameObject();
+    if (!object || !object->IsActiveInHierarchy())
+        return;
+    auto *scene = object->GetScene();
+    if (!scene)
+        return;
+
+    const ObjectHandle identity = GetHandle();
+    const auto epoch = SceneManager::Instance().GetSimulationEpoch();
+    CallAwake();
+    if (SceneManager::Instance().GetSimulationEpoch() != epoch)
+        return;
+    auto *current = Component::FindByComponentId(identity.id);
+    if (current == this && current->GetLifetimeGeneration() == identity.generation && IsEnabled() &&
+        scene->HasStarted())
+        scene->QueueComponentStart(this);
+}
+
 void PyComponentProxy::RefreshPythonLifecycleDispatch()
 {
     py::gil_scoped_acquire acquire;
@@ -430,10 +456,12 @@ void PyComponentProxy::Awake()
 
         // Call Python awake
         const ObjectHandle identity = GetHandle();
-        CallCachedLifecycleNoArg(m_callAwake, m_typeName, "awake");
+        const bool initialized = CallCachedLifecycleNoArg(m_callAwake, m_typeName, "awake");
         auto *current = Component::FindByComponentId(identity.id);
-        if (current == this && current->GetLifetimeGeneration() == identity.generation)
+        if (current == this && current->GetLifetimeGeneration() == identity.generation) {
+            m_hasAwake = initialized;
             SyncPythonMirror();
+        }
     } catch (const py::error_already_set &e) {
         INXLOG_ERROR("[PyComponentProxy] Error in ", m_typeName, ".awake setup: ", e.what());
     }
@@ -456,10 +484,12 @@ void PyComponentProxy::Start()
         return;
 
     const ObjectHandle identity = GetHandle();
-    CallCachedLifecycleNoArg(m_callStart, m_typeName, "start");
+    const bool initialized = CallCachedLifecycleNoArg(m_callStart, m_typeName, "start");
     auto *current = Component::FindByComponentId(identity.id);
-    if (current == this && current->GetLifetimeGeneration() == identity.generation)
+    if (current == this && current->GetLifetimeGeneration() == identity.generation) {
+        m_hasStarted = initialized;
         SyncPythonMirror();
+    }
 }
 
 void PyComponentProxy::OnDisable()

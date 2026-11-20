@@ -71,11 +71,12 @@ def exercise(project, case):
             assert texture.pixel_width == 2
         version = registry.get_asset_version(guid)
         if case == "ticket-preview-residency":
-            # Another consumer can populate and then release the same unchanged
-            # content while a preview ticket is waiting for owner publication.
+            # A prepared preview owns its CPU payload. Memory pressure cannot
+            # evict the shared resident entry while that ticket retains it.
             registry.load_texture_by_guid(guid)
             registry.cpu_budget_bytes = 1
-            assert not registry.is_loaded(guid)
+            registry.trim_cpu_budget()
+            assert registry.is_loaded(guid)
         if case in ("deleted", "restored", "ticket-deleted"):
             source.unlink()
             meta.unlink()
@@ -120,23 +121,29 @@ def exercise(project, case):
                 else:
                     assert current.pixel_width == (2 if case == "ticket-moved" else 3)
                     assert current.file_path.replace("\\", "/") == source.as_posix()
+        elif case in ("failed", "failed-recovered"):
+            assert database.get_import_error(guid)
+            assert not registry.is_loaded(guid)
+            assert registry.load_texture_by_guid(guid) is None
+            assert registry.get_asset_version(guid) == version
+            if case == "failed-recovered":
+                write_png(source, 3)
+                database.refresh()
+                current = registry.load_texture_by_guid(guid)
+                assert current is not None and current.pixel_width == 3
+                assert not database.get_import_error(guid)
+                assert registry.get_asset_version(guid) > version
         else:
             current = registry.load_texture_by_guid(guid)
             assert current is texture, "refresh replaced a live resource object"
             assert current.file_path.replace("\\", "/") == source.as_posix()
             assert current.pixel_width == (3 if case == "modified" else 2)
-            if case in ("unchanged", "failed", "failed-recovered", "moved"):
+            if case in ("unchanged", "moved"):
                 assert registry.get_asset_version(guid) == version
             else:
                 assert registry.get_asset_version(guid) > version
             if case == "settings":
                 assert current.srgb == settings["metadata"]["srgb"]["value"]
-            if case == "failed-recovered":
-                write_png(source, 3)
-                database.refresh()
-                assert registry.load_texture_by_guid(guid) is texture
-                assert texture.pixel_width == 3
-                assert registry.get_asset_version(guid) > version
     finally:
         engine.exit()
 

@@ -4,7 +4,6 @@ import importlib.util
 import json
 from pathlib import Path
 import textwrap
-
 import pytest
 
 
@@ -35,6 +34,47 @@ def test_invalid_project_fails_closed_and_writes_atomic_evidence(tmp_path):
     assert payload["target"] == "web-wasm32"
     assert payload["diagnostics"][0]["code"] == "build.project.invalid"
     assert not tuple(report.parent.glob(".*.tmp"))
+
+
+@pytest.mark.parametrize("working_payload", [False, True])
+def test_source_platform_is_installed_before_export_and_owns_generated_files(tmp_path, monkeypatch, working_payload):
+    from infernux.plugins import PluginRegistry
+    from infernux.version import ENGINE_COMPATIBILITY_VERSION
+
+    module = _module()
+    source = tmp_path / "source/package"
+    (source / "editor/infernux_web/player").mkdir(parents=True)
+    (source / "inx_package.json").write_text(json.dumps({
+        "reference": "infernux/platform-web", "version": "1.0.0", "engine": "==" + ENGINE_COMPATIBILITY_VERSION,
+    }), encoding="utf-8")
+    (source / "editor/infernux_web/player/runtime.bin").write_bytes(b"source-runtime")
+    (source / "editor/infernux_web/source_only.txt").write_text("source", encoding="utf-8")
+    (source / "runtime").mkdir()
+    (source / "runtime/common.txt").write_text("preserved", encoding="utf-8")
+    working = tmp_path / "working/editor"
+    (working / "infernux_web/player").mkdir(parents=True)
+    (working / "infernux_web/player/runtime.bin").write_bytes(b"working-runtime")
+    project = tmp_path / "project"
+    (project / "Assets").mkdir(parents=True)
+    (project / "ProjectSettings").mkdir()
+    monkeypatch.setenv("INFERNUX_PACKAGE_CACHE_ROOT", str(tmp_path / "cache"))
+    monkeypatch.setitem(module.PLUGIN_EDITORS, "web", source / "editor")
+
+    module._install_source_platform(project, "web-wasm32", editor_root_override=working if working_payload else None)
+
+    installed = project / "Packages/infernux/platform-web"
+    payload = installed / "editor/infernux_web/player"
+    assert (payload / "runtime.bin").read_bytes() == (b"working-runtime" if working_payload else b"source-runtime")
+    assert (installed / "runtime/common.txt").read_text(encoding="utf-8") == "preserved"
+    assert (installed / "editor/infernux_web/source_only.txt").exists() is not working_payload
+    registry = PluginRegistry(str(project))
+    record = registry.installed_package_for_path(str(payload))
+    assert record["reference"] == "infernux/platform-web"
+    assert any(item["logical_path"] == "editor/infernux_web/player/runtime.bin" for item in record["files"])
+    # The Release pass must retain the candidate already installed for the
+    # Development pass, including repaired outputs and their ownership IDs.
+    module._install_source_platform(project, "web-wasm32", editor_root_override=working if working_payload else None)
+    assert registry.installed_package_for_path(str(payload))["transaction_id"] == record["transaction_id"]
 
 
 @pytest.mark.parametrize("explicit_editor", [False, True])

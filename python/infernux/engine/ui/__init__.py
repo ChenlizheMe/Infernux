@@ -29,6 +29,7 @@ _EXPORTS = {
     "BuildSettingsPanel": (".build_settings_panel", "BuildSettingsPanel"),
     "ProjectSettingsPanel": (".project_settings_panel", "ProjectSettingsPanel"),
     "PreferencesPanel": (".preferences_panel", "PreferencesPanel"),
+    "ThemePanel": (".theme_panel", "ThemePanel"),
     "HistoryPanel": (".history_panel", "HistoryPanel"),
     "PluginPanel": (".plugin_panel", "PluginPanel"),
     "ThemePanel": (".theme_panel", "ThemePanel"),

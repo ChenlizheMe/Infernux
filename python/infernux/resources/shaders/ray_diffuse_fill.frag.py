@@ -1,6 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.ray_sh_filter import sh_clip_history, sh_guide_pixel
-from infernux.shader.lib.surface import decode_octahedral_normal
+from infernux.shader.lib.ray_sh_filter import sh_clip_history, sh_facing, sh_guide_normal, sh_guide_pixel
 
 
 class RayDiffuseFill(shader.fullscreen):
@@ -12,6 +11,7 @@ class RayDiffuseFill(shader.fullscreen):
     state = shader.input("state", shader.Color2D)
     old_state = shader.input("old_state", shader.History2D)
     primary = shader.input("primary", shader.UInt2D)
+    guide = shader.input("guide", shader.UInt2D)
 
     def main(self, ctx: shader.fragment_input) -> tuple[shader.vec4, shader.vec4, shader.vec4, shader.vec4]:
         cell = shader.ivec2(ctx.position.xy)
@@ -22,11 +22,9 @@ class RayDiffuseFill(shader.fullscreen):
         extent = shader.ivec2(shader.dimensions(self.state, 0))
         full = shader.ivec2(shader.dimensions(self.primary, 0))
         site = sh_guide_pixel(cell, extent, full, shader._view_sample_index())
-        surface = shader.load(self.primary, site, 0)
-        normal = decode_octahedral_normal(shader.unpack_half_2x16(surface.z))
-        depth = shader.as_float(surface.y)
-        view_normal = (shader.camera().view_matrix @ shader.vec4(normal, 0.0)).xyz
-        facing = shader.max(0.3, view_normal.z)
+        geometry = shader.load(self.guide, site / 2, 0)
+        depth = shader.as_float(geometry.x)
+        facing = sh_facing(sh_guide_normal(geometry.y))
 
         red = shader.vec4(0.0)
         green = shader.vec4(0.0)

@@ -101,10 +101,18 @@ def _source_builtins(namespace):
 
 
 def remove_module(name):
-    module = sys.modules.pop(name, None)
+    module = sys.modules.get(name)
+    if module is None:
+        return
+    from infernux.components.serializable_object import _publish_serializable_types
+
+    # The live module carries the catalog chosen by its loader. Retire its
+    # declarations before removing the namespace that identifies that catalog.
+    _publish_serializable_types({}, {name}, modules={name: module})
+    sys.modules.pop(name)
     parent, _, child = name.rpartition(".")
     namespace = sys.modules.get(parent)
-    if module is not None and namespace is not None and vars(namespace).get(child) is module:
+    if namespace is not None and vars(namespace).get(child) is module:
         delattr(namespace, child)
 
 
@@ -224,13 +232,14 @@ class ModuleBatch(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             raise
 
     def _exec_module(self, module):
-        from infernux.components.serializable_object import _candidate_serializable_scope
+        from infernux.components.serializable_object import _candidate_serializable_scope, _declaration_catalog
         from infernux.renderstack.render_effect_compiler import _capture_source_effect_features
         from .contributions import contribution_scope
         from infernux.engine.path_utils import path_key
 
         result = self.sources[module.__name__]
         self.modules[module.__name__] = module
+        module.__infernux_serializable_catalog__ = _declaration_catalog(module.__name__, self.modules)
         from .owners import current_owner
         module.__infernux_reload_owner__ = current_owner()
         module.__builtins__ = _source_builtins(vars(module))

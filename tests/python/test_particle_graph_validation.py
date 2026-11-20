@@ -369,7 +369,7 @@ def test_failed_newer_particle_compile_invalidates_older_in_flight_result(tmp_pa
     assert json.loads(Path(published.artifact_path).read_text(encoding="utf-8"))["hir"]["name"] == "Baseline"
 
 
-def test_particle_aot_failure_preserves_last_known_good_and_cache_hit(tmp_path, monkeypatch):
+def test_particle_aot_failure_retires_current_product_and_repaired_source_reuses_cache(tmp_path, monkeypatch):
     from infernux.engine import project_context
     from infernux.particle import artifact as artifact_module
 
@@ -385,7 +385,8 @@ def test_particle_aot_failure_preserves_last_known_good_and_cache_hit(tmp_path, 
     path.write_text('{"broken": true}', encoding="utf-8")
     with pytest.raises(ParticleArtifactError, match="AOT compile failed"):
         ParticleArtifactRegistry.compile_path(str(path))
-    assert ParticleArtifactRegistry.get(str(path)) == published
+    assert ParticleArtifactRegistry.get(str(path)) is None
+    assert ParticleArtifactRegistry.error(str(path))
 
     asset.save(str(path))
     current = ParticleArtifactRegistry.get(str(path))

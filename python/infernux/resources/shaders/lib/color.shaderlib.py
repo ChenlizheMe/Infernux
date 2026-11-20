@@ -27,6 +27,12 @@ def linear_to_srgb(rgb: shader.vec3) -> shader.vec3:
     return shader.vec3(_encode(rgb.r), _encode(rgb.g), _encode(rgb.b))
 
 
+def final_overlay_color(linear_rgb: shader.vec3) -> shader.vec3:
+    if shader.view().display_rgb_output:
+        return linear_to_srgb(linear_rgb)
+    return linear_rgb
+
+
 def rgb_to_hsv(rgb: shader.vec3) -> shader.vec3:
     k = shader.vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0)
     p = shader.lerp(shader.vec4(rgb.bg, k.wz), shader.vec4(rgb.gb, k.xy), shader.step(rgb.b, rgb.g))

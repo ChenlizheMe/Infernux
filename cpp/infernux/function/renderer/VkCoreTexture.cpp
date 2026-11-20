@@ -254,6 +254,8 @@ FrameWorkSource InxVkCoreModular::GetTextureWorkSource(FrameWorkOwner &owner)
                                                           pending->second.contentGeneration};
                 INXLOG_ERROR("Texture step failed for GUID '", guid, "': ", error.what());
                 m_pendingTextureUploads.erase(pending);
+                if (auto *database = AssetRegistry::Instance().GetAssetDatabase())
+                    database->ReportRuntimeLoadFailure(guid, std::string("Texture GPU upload failed: ") + error.what());
                 m_materialPipelineManager.RefreshMaterialsUsingTexture(guid);
                 progressed = true;
             }
@@ -268,8 +270,9 @@ FrameWorkSource InxVkCoreModular::GetTextureWorkSource(FrameWorkOwner &owner)
 void InxVkCoreModular::PumpPendingTextureLoads()
 {
     auto &registry = AssetRegistry::Instance();
-    const auto *database = registry.GetAssetDatabase();
+    auto *database = registry.GetAssetDatabase();
     std::vector<std::string> changedTextures;
+    std::vector<std::pair<std::string, std::string>> failedTextures;
     for (auto pending = m_pendingTextureAssetLoads.begin(); pending != m_pendingTextureAssetLoads.end();) {
         if (!registry.IsAssetLoadContentCurrent(pending->second)) {
             changedTextures.push_back(pending->first);
@@ -320,10 +323,13 @@ void InxVkCoreModular::PumpPendingTextureLoads()
         } catch (const std::exception &error) {
             m_failedTextureUploads[pending->first] = {request.guid, request.runtimeVersion, request.contentGeneration};
             changedTextures.push_back(request.guid);
+            failedTextures.emplace_back(request.guid, std::string("Texture preparation failed: ") + error.what());
             INXLOG_ERROR("Texture preparation failed for GUID '", request.guid, "': ", error.what());
         }
         pending = m_pendingTextureUploads.erase(pending);
     }
+    for (const auto &[guid, error] : failedTextures)
+        database->ReportRuntimeLoadFailure(guid, error);
     std::sort(changedTextures.begin(), changedTextures.end());
     changedTextures.erase(std::unique(changedTextures.begin(), changedTextures.end()), changedTextures.end());
     for (const auto &guid : changedTextures)
@@ -380,6 +386,8 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
     std::string texturePath;
     auto &registry = AssetRegistry::Instance();
     auto *adb = registry.GetAssetDatabase();
+    if (adb && !adb->GetImportError(textureGuid).empty())
+        return {TextureResolveStatus::Failed, {}};
     if (adb && waitForPreparation && (!m_frameWorkOwner || !m_frameWorkOwner->IsActive()) &&
         adb->IsStagingRuntimeArtifact(textureGuid, ResourceType::Texture))
         adb->CompleteRuntimeArtifactPublication();
@@ -586,6 +594,7 @@ TextureResolveResult InxVkCoreModular::ResolveTextureAsset(const std::string &te
     } catch (const std::exception &error) {
         m_failedTextureUploads[cacheKey] = {textureGuid, runtimeVersion, contentGeneration};
         m_pendingTextureUploads.erase(cacheKey);
+        adb->ReportRuntimeLoadFailure(textureGuid, std::string("Texture preparation failed: ") + error.what());
         progressed = true;
         INXLOG_ERROR("Texture preparation failed for GUID '", textureGuid, "': ", error.what());
         return {TextureResolveStatus::Failed, {}};

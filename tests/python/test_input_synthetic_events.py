@@ -17,6 +17,7 @@ from infernux.lib import (
     set_gui_semantic_capture_enabled,
 )
 from tests.python.test_player_resident_scene_api import (
+    _activate_player,
     _configure_player_contract,
     player_runtime,
 )
@@ -247,7 +248,7 @@ def test_game_capture_is_resolved_before_component_update(
             catalog = PlayerRuntimeAssetCatalog.from_documents(
                 editor_project, {"artifacts": []}, {"entries": []})
             _configure_player_contract(player.session, catalog)
-            assert player.session.activate()
+            _activate_player(player)
             runtime_scene = scenes.get_active_scene()
             assert runtime_scene is not scene
             consumer, = runtime_scene.find("Click consumer").get_py_components()

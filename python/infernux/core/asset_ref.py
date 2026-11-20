@@ -86,13 +86,16 @@ class AssetRefBase:
         Returns the asset object, or ``None`` if not found.
         Subclasses override ``_do_resolve``.
         """
+        from infernux.core.assets import AssetManager
+
+        if self._guid and AssetManager._current_asset_error(self._guid):
+            self.invalidate()
+            return None
         revision = self._cache_revision
         if self._cached is not None and (revision is None or revision.current):
             return self._cached
         if not self._guid:
             return None
-        from infernux.core.assets import AssetManager
-
         self._cache_revision = AssetManager._reference_revision(self._guid)
         self._cached = None
         self._cached = self._do_resolve()

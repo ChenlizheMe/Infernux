@@ -404,7 +404,11 @@ inline ImFont *LoadEngineFont(const std::string &path, const std::vector<std::st
     config.MergeMode = true;
     config.DstFont = font;
     for (const std::string &mergePath : mergePaths) {
+        if (mergePath == path)
+            continue;
         const std::string normalizedMerge = NormalizeFontPath(mergePath);
+        if (normalizedMerge == normalizedPath)
+            continue;
         if (normalizedMerge.empty() ||
             atlas->AddFontFromFileTTF(normalizedMerge.c_str(), sizePixels, &config) == nullptr) {
             INXLOG_ERROR("Engine font merge source could not be loaded: '", mergePath, "' (into '", path, "')");

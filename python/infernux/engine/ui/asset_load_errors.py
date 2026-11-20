@@ -55,7 +55,7 @@ class _AssetLoadErrorDialog:
             return
         self.requested = False
         try:
-            if not self.presenter.database.get_import_error(entry["guid"]):
+            if entry is None or not self.presenter.database.get_import_error(entry["guid"]):
                 self.close(ctx)
                 return
             from .igui import IGUI
@@ -131,23 +131,25 @@ class AssetLoadErrors:
 
     def report(self, path: str, error: str) -> None:
         guid = self.database.get_guid_from_path(path)
-        if guid:
+        if guid and self.database.get_import_error(guid) != error:
             self.database.report_asset_load_failure(guid, error)
         key = lexical_path_key(path)
         entry = dict(self.errors.get(key, {}))
         entry.update(guid=guid, path=path, error=error)
         self.errors[key] = entry
-        if not path.casefold().endswith(".scene"):
-            self._pending[guid or key] = entry
+        if guid and "modified_ns" in entry and not path.casefold().endswith(".scene"):
+            self._pending[guid] = entry
         self._publish_diagnostic(entry)
         self._publish_changes()
 
     def clear(self, path: str) -> None:
         """A successful import or deletion ends a path-only failure."""
         key = lexical_path_key(path)
-        self.errors.pop(key, None)
-        self._pending.pop(key, None)
-        self._seen.pop(key, None)
+        entry = self.errors.pop(key, None)
+        if entry is not None:
+            self._pending.pop(entry["guid"], None)
+            self._seen.pop(entry["guid"], None)
+        Debug.resolve_diagnostic("asset.import", key)
         self._publish_changes()
 
     @staticmethod
@@ -165,7 +167,11 @@ class AssetLoadErrors:
     def show(self, path: str) -> None:
         entry = self.errors.get(lexical_path_key(path))
         if entry is not None:
-            self._pending[entry["guid"]] = entry
+            # A path-only failure has no catalog row to retry in the dialog.
+            if entry["guid"] and "modified_ns" in entry:
+                self._pending[entry["guid"]] = entry
+            else:
+                Debug.log_error(entry["error"], source_file=entry["path"])
 
     def poll(self) -> None:
         generation = self.database.query_generation
@@ -173,7 +179,8 @@ class AssetLoadErrors:
             self.generation = generation
             entries = self.database.get_import_failures()
             current = {entry["guid"] for entry in entries}
-            errors = {lexical_path_key(entry["path"]): entry for entry in entries}
+            errors = {key: entry for key, entry in self.errors.items() if not entry["guid"]}
+            errors.update((lexical_path_key(entry["path"]), entry) for entry in entries)
             for entry in DebugConsole.instance().get_diagnostics("asset.import"):
                 if entry.diagnostic_key not in errors:
                     Debug.resolve_diagnostic("asset.import", entry.diagnostic_key)
@@ -209,3 +216,11 @@ def report_asset_load_error(path: str, error: str) -> None:
         presenter.report(path, error)
     else:
         AssetLoadErrors._publish_diagnostic({"path": path, "error": error})
+
+
+def clear_asset_load_error(path: str) -> None:
+    presenter = AssetLoadErrors.instance()
+    if presenter is None:
+        Debug.resolve_diagnostic("asset.import", lexical_path_key(path))
+    else:
+        presenter.clear(path)

@@ -316,6 +316,8 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     resolve = passes["Ray Diffuse Resolved Irradiance"]
     assert blur._input_bindings["visibility"] == visibility.name
     assert gather._input_bindings["guide"] == blur._input_bindings["guide"] == screen._write_colors[0]
+    assert fill._input_bindings["guide"] == history._input_bindings["guide"] == screen._write_colors[0]
+    assert history._input_bindings["fresh_error"] == gather._write_colors[3]
     assert history._input_bindings["reprojection"] == surface_reprojection._write_colors[0]
     for slot, channel in enumerate(("red", "green", "blue")):
         assert history._input_bindings[f"fresh_{channel}"] == gather._write_colors[slot]

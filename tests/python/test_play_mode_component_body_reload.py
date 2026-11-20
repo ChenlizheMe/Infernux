@@ -2426,6 +2426,99 @@ def test_script_delete_batch_is_transactional_in_edit_and_play(
     assert failing_obj.get_py_components() == (second,)
 
 
+def test_failed_saved_script_stops_callbacks_and_repairs_component_in_place(component_script, scene):
+    from infernux.components.missing_script import MissingScript
+    from infernux.engine.resources_manager import ResourceChangeHandler
+    from infernux.runtime_services import register_update
+
+    guid = "repair-saved-script-guid"
+    source = textwrap.dedent("""
+        import infernux as inx
+
+        class SavedScriptProbe(inx.InxComponent):
+            value: int = inx.serialized_field(default=7)
+
+            def tick(self, delta):
+                return "first"
+    """)
+    path, (component_type,) = component_script("SavedScriptProbe.py", source, guid)
+    database = _ScriptBatchAssetDatabase({str(path): guid})
+    handler = ResourceChangeHandler(SimpleNamespace(get_asset_database=lambda: database))
+    manager = PlayModeManager()
+    owner = scene.create_game_object("Saved script owner")
+    component = component_type()
+    owner.add_py_component(component)
+    component_id = component.component_id
+    component.value = 41
+    registration = register_update(component.tick)
+    try:
+        assert registration.enabled
+        path.write_text(source.replace('return "first"', 'return "second"'), encoding="utf-8")
+        handler._check_script(str(path))
+        handler.process_pending_reloads(force=True)
+        assert component.tick(0.0) == "second"
+        assert registration.enabled
+
+        path.write_text("def invalid(:\n", encoding="utf-8")
+        handler._check_script(str(path))
+        handler.process_pending_reloads(force=True)
+        (missing,) = owner.get_py_components()
+        assert isinstance(missing, MissingScript)
+        assert missing.component_id == component_id
+        assert missing._preserved_fields["value"] == 41
+        assert not registration.enabled
+        assert component_type.__module__ not in sys.modules
+
+        path.write_text(source.replace('return "first"', 'return "repaired"'), encoding="utf-8")
+        handler._check_script(str(path))
+        handler.process_pending_reloads(force=True)
+        (restored,) = owner.get_py_components()
+        assert not isinstance(restored, MissingScript)
+        assert restored.component_id == component_id
+        assert restored.value == 41
+        assert restored.tick(0.0) == "repaired"
+        assert not get_script_error_by_path(str(path))
+    finally:
+        registration.close()
+        handler.cleanup()
+
+
+@pytest.mark.parametrize("initialization", ["awake", "on_enable"])
+def test_repaired_initialization_rebinds_the_native_component(component_script, scene, initialization):
+    guid = "repair-initialization-guid"
+    source = textwrap.dedent(f'''
+        import infernux as inx
+
+        class FailedInitialization(inx.InxComponent):
+            _execute_in_edit_mode_ = True
+            value: int = inx.serialized_field(default=7)
+
+            def {initialization}(self):
+                raise RuntimeError("expected initialization failure")
+    ''')
+    path, (component_type,) = component_script("FailedInitialization.py", source, guid)
+    owner = scene.create_game_object("Failed initialization")
+    component = owner.add_py_component(component_type())
+    component_id = component.component_id
+    component.value = 41
+    assert not component.enabled
+    component.enabled = True
+    assert not component.enabled
+
+    repaired = source.replace('raise RuntimeError("expected initialization failure")', "self.ready = True")
+    path.write_text(repaired, encoding="utf-8")
+    manager = PlayModeManager()
+    batch = manager.prepare_script_reload_batch((ScriptReloadBatchInput(str(path), script_guid=guid),))
+    outcome = manager.commit_script_reload_batch(batch)
+    assert outcome.success, outcome.error
+    manager.finalize_script_reload_batch(batch)
+
+    (restored,) = owner.get_py_components()
+    assert restored is not component
+    assert restored.component_id == component_id and restored.value == 41
+    assert restored.enabled and restored.ready
+
+
 def test_batch_rebinds_cross_module_candidate_types_to_stable_live_identity(
     component_script,
     monkeypatch,

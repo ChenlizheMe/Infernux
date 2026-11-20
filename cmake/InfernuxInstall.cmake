@@ -206,6 +206,14 @@ install(
 )
 
 install(
+    DIRECTORY "${CMAKE_SOURCE_DIR}/python/infernux_automation/"
+    DESTINATION "python/infernux_automation"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    FILES_MATCHING PATTERN "*.py"
+    PATTERN "__pycache__" EXCLUDE
+)
+
+install(
     FILES
         "${CMAKE_SOURCE_DIR}/python/infernux_project_lock.py"
         "${CMAKE_SOURCE_DIR}/python/infernux_editor.py"

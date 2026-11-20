@@ -310,7 +310,17 @@ void InxView::ProcessEvent(bool pace, bool profileInput)
     };
     const auto inputFrameStart = stamp();
     // Begin a new input frame: clear transition edges and per-frame deltas.
-    InputManager::Instance().BeginFrame();
+    auto &input = InputManager::Instance();
+    input.BeginFrame();
+#ifdef _WIN32
+    // Docked panels share one OS window. Moving between them changes the
+    // gameplay recipient, not the Windows input device registration.
+    const bool viewportMouse = m_isPlayMode && input.IsEditorInputManaged();
+    if (m_window && viewportMouse != m_viewportMouse) {
+        SDL_SetBooleanProperty(SDL_GetWindowProperties(m_window), "infernux.window.viewport_mouse", viewportMouse);
+        m_viewportMouse = viewportMouse;
+    }
+#endif
     const auto inputFrameReady = stamp();
     m_needsImmediateGuiRefresh = false;
     m_currentImGuiEventDispatchMs = 0.0;
@@ -403,6 +413,7 @@ void InxView::ProcessEvent(bool pace, bool profileInput)
     // adjacent motion from the same source. A cursor warp must be observed
     // before its successor so its synthetic delta can be removed.
     std::optional<SDL_Event> pendingMouseMotion;
+    uint64_t pendingMotionWorld = 0;
     auto flushMouseMotion = [&]() {
         if (!pendingMouseMotion)
             return;
@@ -426,16 +437,18 @@ void InxView::ProcessEvent(bool pace, bool profileInput)
         }
         if (queuedEvent.type == SDL_EVENT_MOUSE_MOTION) {
             ++pacing.mouseMotionEventCount;
+            const auto world = InputManager::Instance().PointerWorldAt(queuedEvent.motion.x, queuedEvent.motion.y);
             if (InputManager::Instance().HasPendingCursorWarp()) {
                 flushMouseMotion();
                 hadInputEvent = ProcessOneEvent(queuedEvent) || hadInputEvent;
                 ++pacing.dispatchedMouseMotionCount;
             } else if (pendingMouseMotion && pendingMouseMotion->motion.windowID == queuedEvent.motion.windowID &&
-                       pendingMouseMotion->motion.which == queuedEvent.motion.which) {
+                       pendingMouseMotion->motion.which == queuedEvent.motion.which && pendingMotionWorld == world) {
                 MergeMouseMotion(*pendingMouseMotion, queuedEvent);
             } else {
                 flushMouseMotion();
                 pendingMouseMotion = queuedEvent;
+                pendingMotionWorld = world;
             }
             return;
         }
@@ -476,19 +489,26 @@ void InxView::ProcessEvent(bool pace, bool profileInput)
         processQueuedEvent(firstEvent);
     }
 
-    // Preserve SDL's complete native event semantics. Only adjacent motion
-    // events are coalesced after SDL has translated them.
-    const auto nextEvent = [&](SDL_Event &event) {
-        if (!profileInput)
-            return SDL_PollEvent(&event);
-        const auto before = Clock::now();
-        const bool available = SDL_PollEvent(&event);
-        pacing.inputSdlPollMs += milliseconds(before, Clock::now());
-        return available;
-    };
-    SDL_Event event{};
-    while (nextEvent(event)) {
-        processQueuedEvent(event);
+    // SDL's wait has already pumped the OS queue if it returned an event.
+    // Read one bounded snapshot. A high-rate device takes one queue lock per
+    // batch and events posted by callbacks belong to the next iteration.
+    SDL_Event batch[32];
+    constexpr int batchSize = static_cast<int>(std::size(batch));
+    auto readStart = stamp();
+    if (!gotFirstEvent)
+        SDL_PumpEvents();
+    int count = SDL_PeepEvents(batch, batchSize, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST);
+    int remaining = count == batchSize ? SDL_PeepEvents(nullptr, 0, SDL_PEEKEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) : 0;
+    for (;;) {
+        if (profileInput)
+            pacing.inputSdlPollMs += milliseconds(readStart, Clock::now());
+        for (int i = 0; i < count; ++i)
+            processQueuedEvent(batch[i]);
+        if (remaining <= 0 || count <= 0)
+            break;
+        readStart = stamp();
+        count = SDL_PeepEvents(batch, std::min(remaining, batchSize), SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST);
+        remaining -= count;
     }
     flushMouseMotion();
     const auto queuedEnd = stamp();
@@ -540,8 +560,8 @@ bool InxView::ProcessOneEvent(SDL_Event &event, bool syntheticScreenCoordinates)
         if (gameInput && keyboard) {
             gameInput = InxGUISemantics::ReceivesKeyboard(input.GetEditorGameWindowId());
         } else if (gameInput && !input.IsCursorLocked()) {
-            const float x = mouseButton ? event.button.x : input.GetMousePositionX();
-            const float y = mouseButton ? event.button.y : input.GetMousePositionY();
+            const float x = mouseButton ? event.button.x : event.wheel.mouse_x;
+            const float y = mouseButton ? event.button.y : event.wheel.mouse_y;
             gameInput = input.IsInEditorGameInputRect(x, y) &&
                         InxGUISemantics::ReceivesPointerAt(input.GetEditorGameWindowId(), x, y);
         }
@@ -924,6 +944,9 @@ void InxView::Quit()
         input.SetWindow(nullptr);
         SDL_DestroyWindow(m_window);
         m_window = nullptr;
+#ifdef _WIN32
+        m_viewportMouse = false;
+#endif
     }
     // Note: We intentionally don't call SDL_Quit() here to avoid
     // affecting other parts of the application (like a launcher).

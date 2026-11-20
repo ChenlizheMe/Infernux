@@ -5,7 +5,8 @@ import threading
 import time
 import types
 import uuid
-from infernux._source_kinds import is_host_python_source, source_extension
+from importlib.machinery import EXTENSION_SUFFIXES
+from infernux._source_kinds import is_gpu_source, is_host_python_source, source_extension
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -21,6 +22,7 @@ from infernux.engine.path_utils import (
 )
 from infernux.engine.project_context import (
     get_project_script_roots,
+    is_preload_python_library,
     is_project_component_script,
     package_script_role,
 )
@@ -36,6 +38,9 @@ from infernux.engine.import_coordinator import (
     is_document_store_temporary_path,
 )
 from infernux.debug import Debug
+
+
+_NATIVE_SOURCE_SUFFIXES = tuple(EXTENSION_SUFFIXES)
 
 
 class _AssetImportNotReady(RuntimeError):
@@ -67,8 +72,8 @@ def _reject_failed_asset_import(path, result) -> None:
         or source.lower().endswith((".particlegraph", ".particle.py"))
         for source in (lower, result.previous_path)
     )
-    if compiled_source and result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED:
-        raise _AssetImportRejected(result.error, compiled=True)
+    if result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED:
+        raise _AssetImportRejected(result.error, compiled=compiled_source)
 
 
 class _AssetLocalWritePending(_AssetImportNotReady):
@@ -282,8 +287,30 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if self._reload is None:
             from infernux.engine.reload.coordinator import ReloadCoordinator
 
-            self._reload = ReloadCoordinator(self._project_path, adapter=_NoOpReloadAdapter())
+            self._reload = ReloadCoordinator(
+                self._project_path,
+                adapter=_NoOpReloadAdapter(),
+                on_publish=self._on_managed_source_published,
+            )
         return self._reload
+
+    def _on_managed_source_published(self, path: str) -> None:
+        from infernux.host.queries import emit_signal
+
+        emit_signal("scripts.changed", {"path": path})
+        manager = ResourcesManager.instance()
+        if manager is not None:
+            for callback in tuple(manager._script_reload_callbacks.get(path_key(path), ())):
+                callback(path)
+            manager.notify_script_catalog_changed(path, "modified")
+
+    def _is_managed_script_source(self, path: str) -> bool:
+        coordinator = self._reload
+        return coordinator is not None and (
+            coordinator.graph.module_for_path(path) is not None
+            or package_script_role(path, self._project_path) == "editor"
+            or is_preload_python_library(path)
+        )
 
     @property
     def dependency_graph(self):
@@ -1296,6 +1323,46 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if self._initial_scan_transaction_id == state.transaction_id:
             self._initial_scan_transaction_id = None
 
+    def _retire_rejected_script_sources(self, state, surviving_paths) -> None:
+        from infernux.components.registry import unregister_component_script
+        from infernux.components.script_loader import get_script_error_by_path, retire_script_module, set_script_error
+        from infernux.engine.play_mode import PlayModeManager
+        from infernux.host.queries import emit_signal
+        from infernux.renderstack.discovery import retire_rejected_discovery_source
+
+        if isinstance(state.error, _ScriptSourceChanged):
+            return
+        rejected = tuple(
+            path for path in surviving_paths
+            if not state.initial_scan or not state.results[path_key(path)].succeeded
+        )
+        if not rejected:
+            return
+        graph = self._dependency_graph
+        paths = dict.fromkeys((*rejected, *state.retire_paths))
+        if graph is not None:
+            for identity in graph.affected_closure(rejected):
+                record = graph.module_for_path(identity.path_key)
+                if record is not None:
+                    paths[record.source_path] = None
+        reason = next(
+            (value for path in rejected if (value := get_script_error_by_path(path))),
+            str(state.error or "Saved script revision could not be published"),
+        )
+        play_mode = PlayModeManager.instance()
+        resources = ResourcesManager.instance()
+        for path in paths:
+            error = get_script_error_by_path(path) or reason
+            set_script_error(path, error)
+            guid = self._asset_database.get_guid_from_path(path)
+            if play_mode is not None and guid:
+                play_mode.mark_components_missing_for_script(guid, path, error=error)
+            unregister_component_script(path)
+            retire_script_module(path)
+            if retire_rejected_discovery_source(path, error) and resources is not None:
+                resources.notify_script_catalog_changed(path, "modified")
+        emit_signal("scripts.changed")
+
     def _discard_failed_script_transaction(
         self,
         state: _ScriptPublicationTransaction,
@@ -1305,17 +1372,21 @@ class ResourceChangeHandler(FileSystemEventHandler):
         # A member can be superseded while another member of this transaction
         # is still current.  Discard only the surviving old-generation subset;
         # the collector owns the newer generation and must keep it pending.
+        rejected_paths = []
         surviving_paths = []
         for path in state.expected_paths:
             result = state.results.get(path_key(path))
-            current = self._script_change_collector.current_result(path)
             if (
                 result is not None
-                and current is not None
-                and current.generation == result.generation
                 and result.change.transaction_id == state.transaction_id
+                and self._script_change_collector.latest(path) == result.change.revision
             ):
-                surviving_paths.append(path)
+                # A rejected publisher releases its claim and removes the
+                # completed result. The disk revision still owns retirement.
+                rejected_paths.append(path)
+                if self._script_change_collector.current_result(path) is not None:
+                    surviving_paths.append(path)
+        self._retire_rejected_script_sources(state, rejected_paths)
         discarded = True
         if surviving_paths:
             discarded = self._script_change_collector.abort_transaction(
@@ -1521,6 +1592,15 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 return False
         elif event.kind is not AssetFsEventKind.META_MODIFIED and self._is_source_watcher_echo(event):
             return False
+        if self._reload is not None and event.kind not in (
+            AssetFsEventKind.META_DELETED, AssetFsEventKind.META_MODIFIED,
+        ):
+            native_paths = tuple(
+                path for path in (event.path, event.destination)
+                if path and path.casefold().endswith(_NATIVE_SOURCE_SUFFIXES)
+            )
+            if native_paths:
+                self._reload.retire_native_sources(native_paths)
         from infernux.engine.interaction import ActionOrigin, action_origin_scope
 
         with action_origin_scope(ActionOrigin.EXTERNAL):
@@ -1669,8 +1749,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
 
     def _source_ready_for_import(self, path: str) -> bool:
         try:
-            if stat.S_ISREG(os.stat(path).st_mode):
-                return True
+            mode = os.stat(path).st_mode
         except FileNotFoundError:
             # An atomic save can leave a late create/modify notification for
             # its vanished staging file. Only a registered path still owns work.
@@ -1678,13 +1757,23 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 return False
         except OSError as exc:
             raise _AssetImportNotReady(f"asset file is not ready: {path}: {exc}") from exc
+        else:
+            if stat.S_ISREG(mode):
+                return True
+            from infernux.core.assets import AssetManager
+
+            AssetManager._report_import_failure(
+                path, f"Asset is not a regular file: {path}", database=self._asset_database,
+            )
+            return False
         raise _AssetImportNotReady(f"asset file is not ready: {path}")
 
     def _publish_created(self, path, result) -> None:
+        from infernux.core.asset_types import SHADER_EXTENSIONS
         from infernux.core.assets import AssetManager
 
         if is_host_python_source(path):
-            if is_project_component_script(path, self._dependency_graph.project_root):
+            if self._is_managed_script_source(path) or is_project_component_script(path, self._dependency_graph.project_root):
                 self._check_script(path, catalog_event="created")
             elif package_script_role(path, self._dependency_graph.project_root) == "editor":
                 manager = ResourcesManager.instance()
@@ -1694,7 +1783,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "created")
-        elif path.lower().endswith((".vert", ".frag")):
+        elif source_extension(path) in SHADER_EXTENSIONS:
             # First import only writes metadata. Shader GPU modules are
             # published by reimport, the same edge effect dependencies use.
             published = AssetManager.reimport_asset(
@@ -1709,7 +1798,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 )
                 raise _AssetImportNotReady(f"shader publish failed: {path}: {detail}")
             self._notify_shader_reloaded(path)
-        elif path.lower().endswith((".glsl", ".shadingmodel")):
+        elif is_gpu_source(path):
             self._notify_shader_reloaded(path)
         elif path.lower().endswith(".prefab"):
             # A restored GUID is a new catalog entry, but existing instances
@@ -1816,7 +1905,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
             documents.publish_external_resource_change(path, guid=published_guid)
         script_change = is_host_python_source(path)
         if script_change:
-            if is_project_component_script(path, self._dependency_graph.project_root):
+            if self._is_managed_script_source(path):
+                if not metadata_only:
+                    self._check_script(path, catalog_event="modified")
+            elif is_project_component_script(path, self._dependency_graph.project_root):
                 self._check_script(path, catalog_event="modified")
             elif (
                 not metadata_only
@@ -1833,7 +1925,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "modified")
-        elif path.lower().endswith((".vert", ".frag", ".glsl", ".shadingmodel")):
+        elif is_gpu_source(path):
             self._notify_shader_reloaded(path)
         elif path.lower().endswith(".prefab"):
             from infernux.engine.scene_manager import SceneFileManager
@@ -1894,6 +1986,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if source_guid:
                 self._commit_deleted(old_path, guid_hint=source_guid)
             return
+        from infernux.core.asset_types import SHADER_EXTENSIONS
         from infernux.core.assets import AssetManager
         result = AssetManager.move_asset(
             old_path,
@@ -1921,7 +2014,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if not result:
             _reject_failed_asset_import(new_path, result)
             raise RuntimeError(f"moved asset runtime publication failed: {new_path}: {result.error}")
-        if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
+        if source_extension(old_path) != source_extension(new_path):
             # A real move preserves GUID identity, but changing the extension
             # changes the authoritative importer and resource metadata type.
             result = AssetManager.reimport_asset(
@@ -1946,7 +2039,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(new_path, "moved")
-        elif new_path.lower().endswith((".vert", ".frag")):
+        elif source_extension(new_path) in SHADER_EXTENSIONS:
             result = AssetManager.reimport_asset(
                 new_path,
                 database=self._asset_database,
@@ -1957,7 +2050,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 raise RuntimeError(f"moved shader reimport failed: {new_path}")
             self._notify_shader_reloaded(new_path)
             self._rejected_compiled_assets.discard(path_key(new_path))
-        elif new_path.lower().endswith((".glsl", ".shadingmodel")):
+        elif is_gpu_source(new_path):
             self._notify_shader_reloaded(new_path)
             self._rejected_compiled_assets.discard(path_key(new_path))
 
@@ -1966,8 +2059,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
         from infernux.components.registry import unregister_component_script
         from infernux.components.script_loader import clear_deleted_script_errors, retire_script_module
 
-        unregister_component_script(path)
-        retire_script_module(path)
+        if self._is_managed_script_source(path):
+            self._reload.request((), removed=(path,))
+            self._reload.compile_pending()
+            self._reload.drain()
+        else:
+            unregister_component_script(path)
+            retire_script_module(path)
         clear_deleted_script_errors(path)
         Debug.clear_source_entries(path)
         if self._dependency_graph is not None and self._dependency_graph.module_for_path(path) is not None:
@@ -1981,6 +2079,11 @@ class ResourceChangeHandler(FileSystemEventHandler):
         """Apply one script-domain transition after the asset move commits."""
         old_script = is_host_python_source(old_path)
         new_script = is_host_python_source(new_path)
+        if new_script and (self._is_managed_script_source(old_path) or self._is_managed_script_source(new_path)):
+            if old_script:
+                self._retire_script_path(old_path)
+            self._check_script(new_path, origin=origin, catalog_event="moved")
+            return
         if self._is_gameplay_script_source(new_path):
             self._submit_moved_script(old_path, new_path, origin=origin)
             return
@@ -2052,6 +2155,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
     ):
         """Capture exact bytes and submit one immutable frontend revision."""
         if not is_host_python_source(file_path):
+            return None
+        if transaction_id is None and self._is_managed_script_source(file_path):
+            snapshots = {resolved_path(file_path): source} if source is not None else None
+            try:
+                self._reload.ensure_ready((file_path,), snapshots=snapshots)
+            except RuntimeError as exc:
+                Debug.log_error(str(exc), source_file=file_path)
             return None
         if source is None:
             try:

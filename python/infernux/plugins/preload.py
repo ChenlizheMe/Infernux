@@ -154,19 +154,21 @@ class PreloadManager:
     def _coordinator(self):
         if self._reload is None:
             from infernux.engine.reload.coordinator import ReloadCoordinator
+
             self._reload_adapter = _ReloadPreloads(self)
-            if self.runtime:
+            resource_module = sys.modules.get("infernux.engine.resources_manager")
+            resources = resource_module.ResourcesManager.instance() if resource_module is not None else None
+            if resources is not None and path_key(resources._project_path) == path_key(self.project_root):
+                self._reload = resources._ensure_event_handler().reload
+                self._reload.adapter.add(self._reload_adapter)
+            elif self.runtime:
                 self._reload = ReloadCoordinator(self.project_root, adapter=self._reload_adapter)
                 self._owns_reload = True
             else:
-                from infernux.engine.resources_manager import ResourcesManager
                 from infernux.engine.reload.components import ComponentAdapter
-                resources = ResourcesManager.instance()
-                if resources is not None and path_key(resources._project_path) == path_key(self.project_root):
-                    self._reload = resources._ensure_event_handler().reload
-                else:
-                    self._reload = ReloadCoordinator(self.project_root, adapter=ComponentAdapter(lambda: ()))
-                    self._owns_reload = True
+
+                self._reload = ReloadCoordinator(self.project_root, adapter=ComponentAdapter(lambda: ()))
+                self._owns_reload = True
                 self._reload.adapter.add(self._reload_adapter)
         return self._reload
 
@@ -269,6 +271,8 @@ class PreloadManager:
             paths = {state.source_path for state in states}
             paths.update(record.source_path for record in self._module_only_imports.values())
             paths.update(item.path for item in self._candidate_declarations(self._catalog_declarations()))
+            paths.update(record.source_path for record in self._reload.graph.snapshot().modules
+                         if self._package_for_path(record.source_path))
             self._unload_paths(paths)
         for state in reversed(states):
             if not state.unload_completed:
@@ -1432,14 +1436,9 @@ def _execute_module_file(module_name: str, path: str) -> types.ModuleType:
 
 
 def _unpublish_module(name: str) -> None:
-    module = sys.modules.pop(name, None)
-    if module is not None:
-        from infernux.components.serializable_object import _publish_serializable_types
-        _publish_serializable_types({}, {name})
-    parent_name, _, child_name = name.rpartition(".")
-    parent = sys.modules.get(parent_name)
-    if module is not None and parent is not None and getattr(parent, child_name, None) is module:
-        delattr(parent, child_name)
+    from infernux.engine.reload.modules import remove_module
+
+    remove_module(name)
 
 
 def _ensure_module_parents(module_name: str, path: str, package_reference: str) -> None:

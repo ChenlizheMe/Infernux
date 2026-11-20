@@ -4030,6 +4030,13 @@ CaptureSnapshot InxRenderer::QueryCapture(uint64_t captureId) const
     return m_captureService->Query(captureId);
 }
 
+void InxRenderer::SetCaptureCompletionCallback(std::function<void(uint64_t)> callback)
+{
+    if (!m_captureService)
+        throw std::logic_error("Capture service is not initialized");
+    m_captureService->SetCompletionCallback(std::move(callback));
+}
+
 bool InxRenderer::CancelCapture(uint64_t captureId)
 {
     if (!m_captureService || !m_captureService->Cancel(captureId))

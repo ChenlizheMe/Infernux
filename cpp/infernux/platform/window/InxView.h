@@ -249,6 +249,9 @@ class InxView
     bool m_eventWatchInstalled = false;
     bool m_ownsMotionSensors = false;
     bool m_isPlayMode = false;
+#ifdef _WIN32
+    bool m_viewportMouse = false;
+#endif
     bool m_activateWhenShown = true;
     bool m_revealAfterFirstPresentation = false;
     bool m_activateAfterFirstPresentation = false;

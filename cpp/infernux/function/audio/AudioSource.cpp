@@ -571,6 +571,8 @@ void AudioSource::SetTrackTime(int trackIndex, double seconds)
 
 void AudioSource::PlayOneShot(std::shared_ptr<AudioClip> clip, float volumeScale)
 {
+    if (clip && !clip->GetGuid().empty())
+        clip = AssetRegistry::Instance().LoadAsset<AudioClip>(clip->GetGuid(), ResourceType::Audio);
     if (!clip || !clip->IsLoaded()) {
         INXLOG_WARN("AudioSource::PlayOneShot: clip is null or not loaded.");
         return;
@@ -829,6 +831,20 @@ void AudioSource::ApplyOneShotGain(int voiceIndex)
 // Internal voice management
 // ============================================================================
 
+namespace
+{
+SDL_AudioStream *CreateAssetVoice(AudioEngine &engine, AudioSource *source, AudioClip *clip, double startSeconds = 0.0)
+{
+    std::string streamError;
+    auto *stream = engine.CreateVoice(source, clip, startSeconds, &streamError);
+    if (!streamError.empty() && !clip->GetGuid().empty()) {
+        if (auto *database = AssetRegistry::Instance().GetAssetDatabase())
+            database->ReportRuntimeLoadFailure(clip->GetGuid(), "Audio streaming voice failed: " + streamError);
+    }
+    return stream;
+}
+} // namespace
+
 void AudioSource::StartVoice(int trackIndex)
 {
     auto &engine = AudioEngine::Instance();
@@ -839,7 +855,7 @@ void AudioSource::StartVoice(int trackIndex)
 
     auto &track = m_tracks[trackIndex];
     const auto clip = track.GetClip();
-    track.stream = engine.CreateVoice(this, clip.get(), track.startTime);
+    track.stream = CreateAssetVoice(engine, this, clip.get(), track.startTime);
     if (!track.stream) {
         INXLOG_ERROR("AudioSource::StartVoice: failed to create voice for track ", trackIndex);
         return;
@@ -886,7 +902,7 @@ void AudioSource::StartOneShotVoice(int voiceIndex, std::shared_ptr<AudioClip> c
     voice.clip = std::move(clip);
     voice.volumeScale = volumeScale;
     voice.playOrder = m_nextOneShotPlayOrder++;
-    voice.stream = engine.CreateVoice(this, voice.clip.get());
+    voice.stream = CreateAssetVoice(engine, this, voice.clip.get());
     if (!voice.stream) {
         INXLOG_ERROR("AudioSource::StartOneShotVoice: failed to create pooled voice ", voiceIndex);
         voice.clip.reset();

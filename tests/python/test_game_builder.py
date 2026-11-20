@@ -1494,9 +1494,7 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     (final_dir / "_socket.pyd").write_bytes(b"socket")
     fonts = final_dir / "infernux/resources/fonts"
     fonts.mkdir(parents=True)
-    (fonts / "MapleMono-CN-Regular.ttf").write_bytes(b"editor mono")
-    (fonts / "Inter-VF.ttf").write_bytes(b"default UI")
-    (fonts / "NotoSansSC-Regular.ttf").write_bytes(b"default CJK")
+    (fonts / "MapleMono-CN-Regular.ttf").write_bytes(b"default font")
 
     builder._pack_core_runtime_archive(str(final_dir))
 
@@ -1504,9 +1502,9 @@ def test_pack_core_runtime_moves_full_native_closure_off_root(tmp_path):
     assert "infernux/lib/_Infernux.pyd" in paths
     assert "infernux/lib/InfernuxFoundation.dll" in paths
     assert "infernux/lib/InfernuxRendererRuntime.dll" in paths
-    assert "infernux/resources/fonts/Inter-VF.ttf" in paths
-    assert "infernux/resources/fonts/NotoSansSC-Regular.ttf" in paths
-    assert "infernux/resources/fonts/MapleMono-CN-Regular.ttf" in paths
+    assert {name for name in paths if name.startswith("infernux/resources/fonts/")} == {
+        "infernux/resources/fonts/MapleMono-CN-Regular.ttf",
+    }
     assert "stdlib/_socket.pyd" in paths
     assert (final_dir / "_InfernuxBootstrap.pyd").is_file()
     assert (final_dir / "InfernuxFoundation.dll").is_file()

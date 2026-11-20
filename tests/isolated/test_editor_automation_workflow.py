@@ -159,7 +159,7 @@ def exercise(project):
 
         class Changes(FileSystemEventHandler):
             def on_any_event(self, event):
-                if Path(getattr(event, "dest_path", "") or event.src_path) == descriptor:
+                if event.event_type in {"created", "moved"} and Path(event.dest_path or event.src_path) == descriptor:
                     arrived.set()
 
         observer = Observer()
@@ -167,6 +167,8 @@ def exercise(project):
         observer.start()
         state = bootstrap.plugin_manager.install_package(str(archive), install_dependencies=False)
         assert state.loaded, state
+        if descriptor.is_file():
+            arrived.set()
         print("PLUGIN_INSTALLED", flush=True)
         theme_root = project / "ThemeSource"
         subprocess.run([sys.executable, str(repo / "scripts/plugins/export_theme_template.py"), str(theme_root)],

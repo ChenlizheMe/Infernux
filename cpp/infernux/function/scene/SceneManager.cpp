@@ -1418,7 +1418,8 @@ void SceneManager::RecordHostFrame(RuntimeWorld &world, float deltaTime, bool au
     if (automaticHost && world.inputTimeline && world.inputTimeline->automaticFrame &&
         world.simulation.fixedPhase != RuntimeWorld::FixedPhase::Idle)
         world.inputTimeline->currentFixedWaitSeconds += deltaTime;
-    auto input = InputManager::Instance().CaptureFrame();
+    const auto *primary = GetPrimaryRuntimeWorld();
+    auto input = InputManager::Instance().CaptureWorldFrame(world.id, primary ? primary->id : m_authoringWorld->id);
     bool inputBoundary = false;
     if (automaticHost) {
         const auto previous = !world.frame.pending.empty() ? world.frame.pending.back().input
@@ -2365,12 +2366,13 @@ void SceneManager::RequestRuntimeSteps(const std::vector<RuntimeStepRequest> &re
     }
     if (requests.empty())
         return;
-    const auto input = InputManager::Instance().CaptureFrame();
+    const auto *primary = GetPrimaryRuntimeWorld();
     for (const auto &request : requests) {
         auto &world = *FindRuntimeWorld(request.worldId);
         world.simulation.pausedStepUnscaledDeltaTime = request.unscaledDeltaTime;
         world.frame.stepLogicalFrameTarget = world.frame.generation + 1;
-        world.frame.stepInput = input;
+        world.frame.stepInput =
+            InputManager::Instance().CaptureWorldFrame(world.id, primary ? primary->id : m_authoringWorld->id);
         world.simulation.pausedStepPending = true;
         world.simulation.stepFrameOpen = true;
         // An admitted old F keeps its original time debt and accumulator debit.

@@ -428,8 +428,13 @@ bool AssetRegistry::ReloadAsset(const std::string &guid)
         RemoveEntry(it);
         return true;
     }
-    if (!loaderIt->second->Reload(it->second.payload, path, guid, m_assetDb.get()))
+    try {
+        if (!loaderIt->second->Reload(it->second.payload, path, guid, m_assetDb.get()))
+            return false;
+    } catch (const std::exception &error) {
+        m_assetDb->ReportRuntimeLoadFailure(guid, std::string("Runtime reload failed: ") + error.what());
         return false;
+    }
     RefreshEntryBytes(it->second);
     it->second.lastAccessSerial = ++m_accessSerial;
     it->second.version = NextRuntimeVersion(guid);
@@ -630,6 +635,13 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::BeginAssetLoad(const std::string
     ticket->m_ownerThread = m_ownerThread;
     ticket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
     ticket->m_expectedContentGeneration = m_assetContentGenerations[guid];
+
+    if (const auto error = m_assetDb->GetImportError(guid); !error.empty()) {
+        ticket->m_sourcePath = m_assetDb->GetPathFromGuid(guid);
+        ticket->m_failure = std::make_exception_ptr(std::runtime_error(error));
+        ticket->m_rejected = true;
+        return ticket;
+    }
 
     const auto cached = m_loadedAssets.find(guid);
     if (!replaceMesh && cached != m_loadedAssets.end()) {

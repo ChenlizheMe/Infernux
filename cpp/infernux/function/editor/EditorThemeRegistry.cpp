@@ -9,6 +9,8 @@ namespace infernux
 namespace
 {
 
+constexpr char kDefaultTheme[] = "infernux";
+
 struct ThemeData
 {
     std::unordered_map<std::string, ImVec4> colors;
@@ -59,7 +61,11 @@ void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4>
            {"POPUP_BG", "HEADER", "INSPECTOR_HEADER_PRIMARY", "INSPECTOR_HEADER_SECONDARY", "INSPECTOR_HEADER_TERTIARY",
             "INSPECTOR_HEADER_LIST", "PREFAB_HEADER_BG", "PROJECT_EXPAND_STRIP_BG", "PROJECT_SUBASSET_CELL_BG",
             "UI_EDITOR_CANVAS_HEADER_BG", "GRAPH_NODE_HEADER"});
-    derive("ROLE_BG_HOVER", {"HIERARCHY_ROW_HOVER", "BTN_SUBTLE_HOVER", "FRAME_BG_HOVERED"});
+    derive("ROLE_BG_HOVER",
+           {"HIERARCHY_ROW_HOVER", "BTN_HOVERED", "BTN_SUBTLE_HOVER", "INSPECTOR_INLINE_BTN_HOVER", "FRAME_BG_HOVERED",
+            "HEADER_HOVERED", "INSPECTOR_HEADER_PRIMARY_HOVERED", "INSPECTOR_HEADER_SECONDARY_HOVERED",
+            "INSPECTOR_HEADER_TERTIARY_HOVERED", "INSPECTOR_HEADER_LIST_HOVERED", "SPLITTER_HOVER",
+            "PROJECT_EXPAND_STRIP_HOVER", "SCENE_OVERLAY_COMBO_HOVER"});
     derive("ROLE_TEXT", {"TEXT", "LOG_INFO", "META_TEXT", "UI_EDITOR_CANVAS_HEADER_TEXT", "CURVE_EDITOR_KEY",
                          "SCENE_TOOL_ICON", "SCENE_TOOL_ICON_SELECTED", "GRAPH_GRID", "GRAPH_GRID_MAJOR"});
     derive("ROLE_TEXT_DIM",
@@ -93,15 +99,10 @@ void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4>
                 theme.colors.at(token) = Alpha(Mix(theme.colors.at(surface), theme.colors.at("ROLE_ACCENT"), strength),
                                                theme.colors.at(token).w);
         };
-        tint({"BTN_HOVERED", "BTN_SUBTLE_HOVER", "INSPECTOR_INLINE_BTN_HOVER", "FRAME_BG_HOVERED", "HEADER_HOVERED",
-              "INSPECTOR_HEADER_PRIMARY_HOVERED", "INSPECTOR_HEADER_SECONDARY_HOVERED",
-              "INSPECTOR_HEADER_TERTIARY_HOVERED", "INSPECTOR_HEADER_LIST_HOVERED", "SPLITTER_HOVER",
-              "PROJECT_EXPAND_STRIP_HOVER", "SCENE_OVERLAY_COMBO_HOVER"},
-             "ROLE_BG_HOVER", 0.18f);
-        tint({"BTN_ACTIVE", "FRAME_BG_ACTIVE", "HEADER_ACTIVE", "INSPECTOR_HEADER_PRIMARY_ACTIVE",
-              "INSPECTOR_HEADER_SECONDARY_ACTIVE", "INSPECTOR_HEADER_TERTIARY_ACTIVE", "INSPECTOR_HEADER_LIST_ACTIVE",
-              "SPLITTER_ACTIVE", "SCENE_OVERLAY_COMBO_ACTIVE", "UI_EDITOR_CANVAS_HEADER_BG_FOC",
-              "CURVE_EDITOR_TANGENT"},
+        tint({"INSPECTOR_HEADER_PRIMARY_ACTIVE"}, "ROLE_BG_HOVER", 0.12f);
+        tint({"BTN_ACTIVE", "FRAME_BG_ACTIVE", "HEADER_ACTIVE", "INSPECTOR_HEADER_SECONDARY_ACTIVE",
+              "INSPECTOR_HEADER_TERTIARY_ACTIVE", "INSPECTOR_HEADER_LIST_ACTIVE", "SPLITTER_ACTIVE",
+              "SCENE_OVERLAY_COMBO_ACTIVE", "UI_EDITOR_CANVAS_HEADER_BG_FOC", "CURVE_EDITOR_TANGENT"},
              "ROLE_BG_SURFACE", 0.32f);
         tint({"INSPECTOR_HEADER_SELECTED"}, "ROLE_BG_RAISED", 0.35f);
         tint({"INSPECTOR_HEADER_SELECTED_HOVERED"}, "ROLE_BG_RAISED", 0.45f);
@@ -109,38 +110,19 @@ void DeriveRoles(ThemeData &theme, const std::unordered_map<std::string, ImVec4>
     }
 }
 
-ThemeData MakeAccentVariant(const ThemeData &base, const ImVec4 &accent)
-{
-    ThemeData theme = base;
-    theme.colors["ROLE_ACCENT"] = accent;
-    DeriveRoles(theme, {{"ROLE_ACCENT", accent}});
-    return theme;
-}
-
-ThemeData CanonicalBaseTheme()
-{
-    auto theme = BuildBaseTheme();
-    return theme;
-}
-
 struct Registry
 {
     std::unordered_map<std::string, ThemeData> themes;
     std::unordered_map<std::string, std::string> owners;
     std::vector<std::string> order;
-    std::string active;
+    std::string active = kDefaultTheme;
     unsigned long generation = 1;
     float displayScale = 1.0f;
     std::function<void()> changed;
 
     Registry()
     {
-        ThemeData base = CanonicalBaseTheme();
-        Add("infernux", base);
-        Add("mission_control", base);
-        Add("graphite", MakeAccentVariant(base, ImVec4(0.30f, 0.56f, 0.86f, 1.0f))); // steel blue
-        Add("amber", MakeAccentVariant(base, ImVec4(0.92f, 0.62f, 0.22f, 1.0f)));    // instrument amber
-        active = "infernux";
+        Add(kDefaultTheme, BuildBaseTheme());
     }
 
     void Add(const std::string &name, const ThemeData &data)
@@ -278,7 +260,7 @@ static ThemeData BuildDeclaredTheme(const std::unordered_map<std::string, ImVec4
                                     const std::unordered_map<std::string, ImVec2> &vec2s,
                                     const std::unordered_map<std::string, float> &floats)
 {
-    auto base = CanonicalBaseTheme();
+    auto base = BuildBaseTheme();
     for (const auto &[key, value] : colors) {
         if ((key.rfind("UI_DEFAULT_", 0) == 0) || !base.colors.count(key))
             throw std::invalid_argument("Unknown editor color token: " + key);
@@ -376,9 +358,9 @@ void EditorThemeRegistry::ReplaceOwner(const std::string &owner, const std::vect
         registry.owners[theme.name] = owner;
     }
     if (!preferred.empty())
-        registry.active = registry.themes.count(preferred) ? preferred : "infernux";
+        registry.active = registry.themes.count(preferred) ? preferred : kDefaultTheme;
     else if (!registry.themes.count(registry.active))
-        registry.active = "infernux";
+        registry.active = kDefaultTheme;
     if (oldName != registry.active || !SameTheme(oldData, registry.Active()))
         PublishActiveChange();
 }
@@ -449,10 +431,10 @@ void EditorThemeRegistry::ApplyImGuiColors()
 
     const ImVec4 accent = Color("ROLE_ACCENT");
     const ImVec4 bg = Color("WINDOW_BG");
-    const ImVec4 surf = Color("FRAME_BG");
+    const ImVec4 surf = Color("ROLE_BG_SURFACE");
+    const ImVec4 dock = Mix(bg, ImVec4(0, 0, 0, 1), 0.35f);
     const ImVec4 hover = Color("ROLE_BG_HOVER");
     const ImVec4 text = Color("TEXT");
-    const ImVec4 dim = Color("TEXT_DISABLED");
     const ImVec4 border = Color("BORDER");
     const ImVec4 panelFocus = Color("SELECTION_BG");
 
@@ -462,7 +444,7 @@ void EditorThemeRegistry::ApplyImGuiColors()
     c[ImGuiCol_Text] = text;
     c[ImGuiCol_TextDisabled] = Color("TEXT_DISABLED");
     c[ImGuiCol_TextSelectedBg] = Alpha(accent, 0.35f);
-    c[ImGuiCol_InputTextCursor] = text;
+    c[ImGuiCol_InputTextCursor] = accent;
     c[ImGuiCol_TextLink] = accent;
     c[ImGuiCol_UnsavedMarker] = accent;
     c[ImGuiCol_TreeLines] = border;
@@ -477,9 +459,9 @@ void EditorThemeRegistry::ApplyImGuiColors()
 
     // Title / menu
     // Dock tab strips draw with TitleBg; they sit on the void tone.
-    c[ImGuiCol_TitleBg] = Color("MENU_BAR_BG");
-    c[ImGuiCol_TitleBgActive] = Color("MENU_BAR_BG");
-    c[ImGuiCol_TitleBgCollapsed] = Alpha(Color("MENU_BAR_BG"), 0.75f);
+    c[ImGuiCol_TitleBg] = dock;
+    c[ImGuiCol_TitleBgActive] = dock;
+    c[ImGuiCol_TitleBgCollapsed] = Alpha(dock, 0.75f);
     c[ImGuiCol_MenuBarBg] = Color("MENU_BAR_BG");
 
     // Scrollbar
@@ -493,11 +475,11 @@ void EditorThemeRegistry::ApplyImGuiColors()
     // Slider grabs are warm-white plates; the accent belongs to the filled track.
     c[ImGuiCol_SliderGrab] = text;
     c[ImGuiCol_SliderGrabActive] = Mix(text, accent, 0.35f);
-    c[ImGuiCol_NavHighlight] = transparent;
+    c[ImGuiCol_NavCursor] = accent;
     c[ImGuiCol_NavWindowingHighlight] = Alpha(accent, 0.70f);
     c[ImGuiCol_NavWindowingDimBg] = Alpha(bg, 0.20f);
 
-    // Buttons — surface with an accent-tinted hover/active for clear feedback.
+    // Buttons reserve the accent tint for pressed and selected states.
     c[ImGuiCol_Button] = Color("BTN_NORMAL");
     c[ImGuiCol_ButtonHovered] = Color("BTN_HOVERED");
     c[ImGuiCol_ButtonActive] = Color("BTN_ACTIVE");
@@ -512,8 +494,8 @@ void EditorThemeRegistry::ApplyImGuiColors()
     c[ImGuiCol_Border] = border;
     c[ImGuiCol_BorderShadow] = transparent;
     c[ImGuiCol_Separator] = border;
-    c[ImGuiCol_SeparatorHovered] = Alpha(accent, 0.60f);
-    c[ImGuiCol_SeparatorActive] = Alpha(accent, 0.80f);
+    c[ImGuiCol_SeparatorHovered] = Color("SPLITTER_HOVER");
+    c[ImGuiCol_SeparatorActive] = Color("SPLITTER_ACTIVE");
 
     // Resize grip
     c[ImGuiCol_ResizeGrip] = transparent;
@@ -523,7 +505,7 @@ void EditorThemeRegistry::ApplyImGuiColors()
     // Tabs
     // Inactive tabs have no plate; the strip itself reads as void.
     c[ImGuiCol_Tab] = transparent;
-    c[ImGuiCol_TabHovered] = Alpha(text, 0.04f);
+    c[ImGuiCol_TabHovered] = hover;
     c[ImGuiCol_TabSelected] = bg;
     // A focused editor panel uses the canonical Infernux selection red at
     // full opacity. The dimmed overline below intentionally keeps its current
@@ -535,7 +517,7 @@ void EditorThemeRegistry::ApplyImGuiColors()
 
     // Docking
     c[ImGuiCol_DockingPreview] = Alpha(accent, 0.25f);
-    c[ImGuiCol_DockingEmptyBg] = Mix(bg, ImVec4(0, 0, 0, 1), 0.4f);
+    c[ImGuiCol_DockingEmptyBg] = dock;
 
     // Plots
     c[ImGuiCol_PlotLines] = Mix(surf, text, 0.45f);

@@ -1040,6 +1040,8 @@ TIMELINEFSM_EXTENSIONS = frozenset({".timelinefsm"})
 def asset_category_from_extension(ext: str) -> Optional[str]:
     """Return the editor asset category for a file extension."""
     ext = ext.lower()
+    if ext == ".scene":
+        return "scene"
     if ext in MATERIAL_EXTENSIONS:
         return "material"
     if ext in PHYSIC_MATERIAL_EXTENSIONS:

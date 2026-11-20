@@ -55,6 +55,16 @@ def run(dispatcher, hit, **kwargs):
     dispatcher.process(object(), (1, 1), (100, 100), hit=hit, **kwargs)
 
 
+def test_drag_across_world_tiles_releases_original_object(mouse):
+    probe, dispatcher, hit, _state, _queries = mouse
+    run(dispatcher, hit, button_state=(True, True, False))
+    probe.events.clear()
+    dispatcher.leave()
+    dispatcher.leave()
+    dispatcher.process(object(), (-1, -1), (100, 100), hit=None, button_state=(False, False, True))
+    assert probe.events == ["exit", "up"]
+
+
 def test_unpublished_class_edit_cannot_change_a_mouse_callback(mouse, monkeypatch):
     probe, dispatcher, hit, _state, _queries = mouse
     monkeypatch.setattr(MouseProbe, "on_mouse_over", lambda self: self.events.append("unpublished"))

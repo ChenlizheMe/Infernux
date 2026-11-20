@@ -24,6 +24,15 @@ from infernux.host.queries import emit_signal
 from infernux_automation import AutomationClient, AutomationError
 
 
+@pytest.fixture
+def mcp_server_factory(monkeypatch):
+    engine_root = Path(__file__).resolve().parents[2]
+    monkeypatch.syspath_prepend(str(engine_root / "external/plugins/infernux_mcp/package/editor"))
+    from infernux_mcp.server import create_server
+
+    return create_server
+
+
 @contextmanager
 def host(project, *, lease=90):
     registry = OperationRegistry()
@@ -168,12 +177,11 @@ def test_real_prompt_hook_requires_an_event_id_and_deduplicates_retries(tmp_path
         assert hook("real-A")["reports"] == []
 
 
-def test_mcp_two_sessions_disconnect_and_bad_observe_do_not_leak(tmp_path):
+def test_mcp_two_sessions_disconnect_and_bad_observe_do_not_leak(tmp_path, mcp_server_factory):
     from fastmcp import Client
-    from infernux_mcp.server import create_server
 
     async def scenario(bridge, engine):
-        service = create_server(tmp_path)
+        service = mcp_server_factory(tmp_path)
         async with Client(service) as second:
             async with Client(service) as first:
                 a = await first.call_tool("observe", {"operation": "test.audit.read", "arguments": {}})
@@ -192,19 +200,18 @@ def test_mcp_two_sessions_disconnect_and_bad_observe_do_not_leak(tmp_path):
         asyncio.run(scenario(bridge, engine))
 
 
-def test_streamable_http_session_delete_releases_only_that_clients_queries(tmp_path):
+def test_streamable_http_session_delete_releases_only_that_clients_queries(tmp_path, mcp_server_factory):
     import socket
     from time import monotonic
     import uvicorn
     from fastmcp import Client
-    from infernux_mcp.server import create_server
 
     with host(tmp_path) as (bridge, engine, state):
         channel = socket.socket()
         channel.bind(("127.0.0.1", 0))
         channel.listen()
         endpoint = f"http://127.0.0.1:{channel.getsockname()[1]}/mcp"
-        service = create_server(tmp_path)
+        service = mcp_server_factory(tmp_path)
         server = uvicorn.Server(uvicorn.Config(service.http_app(path="/mcp"), log_level="warning"))
         thread = Thread(target=lambda: server.run(sockets=[channel]), daemon=True)
         thread.start()
@@ -236,9 +243,8 @@ def test_streamable_http_session_delete_releases_only_that_clients_queries(tmp_p
         assert not thread.is_alive()
 
 
-def test_disconnect_keeps_running_job_handle_and_applied_effect(tmp_path):
+def test_disconnect_keeps_running_job_handle_and_applied_effect(tmp_path, mcp_server_factory):
     from fastmcp import Client
-    from infernux_mcp.server import create_server
 
     with host(tmp_path) as (bridge, engine, state):
         started, finish = Event(), Event()
@@ -250,7 +256,7 @@ def test_disconnect_keeps_running_job_handle_and_applied_effect(tmp_path):
         bridge.registry.register(operation("test.audit.work", OperationKind.WORKFLOW, "Owned job",
                                             work, capability="test.write"))
         async def scenario():
-            async with Client(create_server(tmp_path)) as client:
+            async with Client(mcp_server_factory(tmp_path)) as client:
                 result = await client.call_tool("operation_submit", {"operation": "test.audit.work", "arguments": {}})
                 return result.data["job_id"]
         try:
@@ -305,7 +311,7 @@ def test_bridge_shutdown_finishes_all_cleanup_and_keeps_newer_instance_descripto
         second.close()
 
 
-def test_public_plugin_operations_publish_update_and_uninstall_the_real_package(tmp_path, monkeypatch):
+def test_public_plugin_operations_publish_update_and_uninstall_the_real_package(tmp_path, mcp_server_factory):
     from infernux.plugins import InxPackage, PluginManager
     from infernux.plugins.cache import SharedPackageCache
     project = tmp_path / "project"
@@ -332,7 +338,6 @@ def test_public_plugin_operations_publish_update_and_uninstall_the_real_package(
     bridge = AutomationBridge(project, registry=registry)
     def invoke(identifier, arguments):
         from fastmcp import Client
-        from infernux_mcp.server import create_server
         async def scenario():
             async def owner_ticks():
                 while True:
@@ -340,7 +345,7 @@ def test_public_plugin_operations_publish_update_and_uninstall_the_real_package(
                     await asyncio.sleep(0.001)
             tick = asyncio.create_task(owner_ticks())
             try:
-                async with Client(create_server(project)) as client:
+                async with Client(mcp_server_factory(project)) as client:
                     result = await client.call_tool("operation_call", {"operation": identifier, "arguments": arguments})
                     return result.data
             finally:

@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <function/editor/ConsolePanel.h>
 #include <function/editor/EditorObjectIcon.h>
 #include <function/editor/InspectorPanel.h>
@@ -16,7 +17,7 @@
 // drawn. That must not destroy the rows still borrowed by the native frame.
 static void CheckSelectionDuringFieldDraw(bool multi, bool selectAsset)
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1280, 900);
@@ -91,7 +92,7 @@ static void CheckSelectionDuringFieldDraw(bool multi, bool selectAsset)
 
 static void CheckDiagnosticInspector()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1280, 900);
@@ -170,7 +171,7 @@ static void CheckDiagnosticInspector()
 
 static void CheckObjectHeaderIcons()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1280, 900);

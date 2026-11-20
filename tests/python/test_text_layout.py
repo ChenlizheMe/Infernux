@@ -208,7 +208,7 @@ def test_native_character_geometry_translates_rotates_hides_and_resets(engine, s
     options = {"rotation": 0.0, "clip": False}
 
     class Submission:
-        def submit(self):
+        def submit(self, **_view):
             renderer = engine.get_screen_ui_renderer()
             renderer.begin_frame(64, 64)
             renderer.add_filled_rect(layer, 0, 0, 64, 64, 0, 0, 0, 1)

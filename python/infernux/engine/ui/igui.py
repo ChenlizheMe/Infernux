@@ -181,14 +181,11 @@ class IGUI:
         # highlight doesn't interfere — we draw our own outline.
         ctx.push_style_color(ImGuiCol.DragDropTarget, 0.0, 0.0, 0.0, 0.0)
         if ctx.begin_drag_drop_target():
-            if outline:
-                IGUI._draw_item_outline(
-                    ctx, *Theme.DND_DROP_OUTLINE, Theme.DND_DROP_OUTLINE_THICKNESS
-                )
-            payload = ctx.accept_drag_drop_payload(accept_type)
-            if payload is not None:
-                on_drop(payload)
-                accepted = True
+            if IGUI._drop_hover(ctx, (accept_type,), outline):
+                payload = ctx.accept_drag_drop_payload(accept_type)
+                if payload is not None:
+                    on_drop(payload)
+                    accepted = True
             ctx.end_drag_drop_target()
         ctx.pop_style_color(1)
         return accepted
@@ -208,11 +205,8 @@ class IGUI:
         accepted = False
         ctx.push_style_color(ImGuiCol.DragDropTarget, 0.0, 0.0, 0.0, 0.0)
         if ctx.begin_drag_drop_target():
-            if outline:
-                IGUI._draw_item_outline(
-                    ctx, *Theme.DND_DROP_OUTLINE, Theme.DND_DROP_OUTLINE_THICKNESS
-                )
-            for dt in accept_types:
+            matched = IGUI._drop_hover(ctx, accept_types, outline)
+            for dt in accept_types if matched else ():
                 payload = ctx.accept_drag_drop_payload(dt)
                 if payload is not None:
                     on_drop(dt, payload)
@@ -937,6 +931,26 @@ class IGUI:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _drop_hover(ctx: InxGUIContext, accept_types: Sequence[str], outline: bool) -> bool:
+        """Outline the hovered target; on a type mismatch show the expected type."""
+        payload_type = ctx.get_drag_drop_payload_type()
+        if payload_type is None or payload_type in accept_types:
+            if outline:
+                IGUI._draw_item_outline(
+                    ctx, *Theme.DND_DROP_OUTLINE, Theme.DND_DROP_OUTLINE_THICKNESS
+                )
+            return True
+        if outline:
+            IGUI._draw_item_outline(ctx, *Theme.ERROR_TEXT, Theme.DND_DROP_OUTLINE_THICKNESS)
+        ctx.set_tooltip("需要 " + " / ".join(IGUI._payload_label(t) for t in accept_types))
+        return False
+
+    @staticmethod
+    def _payload_label(payload_type: str) -> str:
+        words = payload_type.removesuffix("_FILE").split("_")
+        return " ".join(w.capitalize() for w in words)
+
+    @staticmethod
     def _draw_item_outline(
         ctx: InxGUIContext,
         r: float, g: float, b: float, a: float,
@@ -969,3 +983,45 @@ class IGUI:
             a,
             Theme.DND_REORDER_LINE_THICKNESS,
         )
+
+    # ------------------------------------------------------------------
+    # Layout primitives — token-driven spacing so panels never hand-tune gaps.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def section(ctx: InxGUIContext, title: str) -> None:
+        """Dim uppercase section caption followed by a BORDER hairline."""
+        ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP)
+        ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
+        ctx.label(title.upper())
+        ctx.pop_style_color(1)
+        y = ctx.get_item_rect_max_y() + 2.0
+        x1 = ctx.get_window_pos_x() + ctx.get_cursor_pos_x()
+        x2 = x1 + ctx.get_content_region_avail_width()
+        ctx.draw_line(x1, y, x2, y, *Theme.BORDER, 1.0)
+        ctx.dummy(0.0, Theme.INSPECTOR_SECTION_GAP * 0.5)
+
+    @staticmethod
+    def row(ctx: InxGUIContext, *items, gap: float | None = None) -> None:
+        """Draw callables ``item(ctx)`` on one line separated by a token gap."""
+        spacing = Theme.MENU_ITEM_SPC[0] if gap is None else gap
+        for index, item in enumerate(items):
+            if index:
+                ctx.same_line(0.0, spacing)
+            item(ctx)
+
+    @staticmethod
+    @contextmanager
+    def split(ctx: InxGUIContext, table_id: str, ratios: tuple[float, ...]) -> Iterator[bool]:
+        """Proportional columns; caller advances with ``ctx.table_next_column()``."""
+        opened = ctx.begin_table(table_id, len(ratios), 3 << 13, 0.0)  # SizingStretchProp
+        if not opened:
+            yield False
+            return
+        try:
+            for index, weight in enumerate(ratios):
+                ctx.table_setup_column(f"##{table_id}_{index}", 1 << 3, weight, index)  # WidthStretch
+            ctx.table_next_row()
+            yield True
+        finally:
+            ctx.end_table()

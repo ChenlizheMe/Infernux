@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json as _json
 from dataclasses import dataclass, field
+from contextlib import nullcontext
 from typing import Dict, Optional
 
 from infernux.components.component import InxComponent
@@ -55,7 +56,6 @@ class _ViewGraphState:
     """One output-sample contract; graph and effect bindings never cross variants."""
 
     description: object = None
-    last_valid_description: object = None
     build_failed: bool = False
     bindings: list = field(default_factory=list)
     upload_revisions: dict = field(default_factory=dict)
@@ -199,10 +199,10 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     _output_samples: int = 0
     _resource_bus: Optional[ResourceBus] = None
     _pipeline_module = None  # module object for watchdog hot-reload subscription
+    _pipeline_owner = None
     _pipeline_param_store: Dict[str, Dict[str, object]] = None
     _pipeline_catalog_signature: tuple = ()
     _topology_probe_cache = None
-    _last_valid_topology_probe = None
     _topology_probe_error: str = ""
     _pipeline_source_file: str = ""
     _pipeline_console_source: str = ""
@@ -267,6 +267,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         """Dispose pipeline resources and promote another active stack if needed."""
         self._observe_effect_slots(())
         self._unregister_pipeline_catalog_reload()
+        self._unregister_pipeline_reload()
         self._clear_pipeline_diagnostic()
         scene = self._owning_scene
         key = RenderStack._scene_key(scene)
@@ -278,7 +279,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         self._pipeline = None
         self._graph_states = None
         self._active_graph_state = None
-        self._last_valid_topology_probe = None
         self._topology_probe_error = ""
         self._resource_bus = None
         if was_active:
@@ -614,6 +614,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         self._save_current_pipeline_params()
         self.pipeline_class_name = pipeline_class_name
         self._pipeline = None
+        self._pipeline_source_file = ""
         self._cached_ips = None
         self.invalidate_graph()
 
@@ -674,7 +675,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 self._shadow_lights_present = self.pipeline.shadows_enabled
             self.pipeline._defining_graph = g
             try:
-                self.pipeline.define_topology(g)
+                owner = self._pipeline_owner
+                with owner.enter() if owner is not None else nullcontext():
+                    self.pipeline.define_topology(g)
             finally:
                 self.pipeline._defining_graph = None
             # Keep the Inspector probe consistent with build(): custom
@@ -682,22 +685,15 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             ensure_standard_post_process_points(g)
             ensure_standard_screen_ui_tail(g)
         except Exception as exc:
-            has_last_valid_probe = self._last_valid_topology_probe is not None
             diagnostic = f"Pipeline topology is invalid: {type(exc).__name__}: {exc}."
-            if has_last_valid_probe:
-                diagnostic += " The last valid Inspector topology remains active."
-            else:
-                diagnostic += " No valid Inspector topology has been published."
+            diagnostic += " Current Inspector topology is unavailable."
             # This probe describes Inspector topology, not runtime publication.
             # The renderer owns the Console diagnostic for a rejected candidate.
             self._topology_probe_error = diagnostic
-            if has_last_valid_probe:
-                return self._last_valid_topology_probe
             raise
 
         self._topology_probe_error = ""
         self._topology_probe_cache = g
-        self._last_valid_topology_probe = g
         return g
 
     def _clear_pipeline_diagnostic(self) -> None:
@@ -738,15 +734,15 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         from infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
 
         state = self._graph_state
+        state.description = None
+        state.bindings = []
+        state.upload_revisions = {}
         state.build_failed = True
         state.attempted_artifact_generation = RenderEffectArtifactRegistry.topology_generation()
         state.pipeline_error = (
             f"Pipeline graph publication rejected: native graph rejected '{description.name}' "
             f"(source_revision={description.source_revision}). This view was not submitted."
         )
-        # Description/bindings are shared by views with the same sample count;
-        # a refusal in this view cannot discard another view's valid candidate.
-        # Nor did it re-record parameter blocks or invalidate their upload facts.
         self._publish_pipeline_diagnostic()
 
     def invalidate_graph(self) -> None:
@@ -756,15 +752,14 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         """
         for state in (self._graph_states or {}).values():
             state.description = None
+            state.bindings = []
+            state.upload_revisions = {}
             state.build_failed = False
             state.rejected_texture_inputs = ()
         # A new declaration/parameter edit may reproduce the same error after
         # script publication has retired the preceding source diagnostics.
         self._pipeline_console_message = ""
         self._topology_probe_cache = None
-        # Keep the bindings and upload revisions paired with the last valid
-        # graph until a replacement graph has built successfully. A rejected
-        # edit must not disable live parameters on the graph still on screen.
 
     def _observe_effect_slots(self, slots) -> None:
         # Subscribe when topology changes. Disabled slots must also wake the graph.
@@ -890,7 +885,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             self._shadow_lights_present = self.pipeline.shadows_enabled
         self.pipeline._defining_graph = graph
         try:
-            self.pipeline.define_topology(graph)
+            owner = self._pipeline_owner
+            with owner.enter() if owner is not None else nullcontext():
+                self.pipeline.define_topology(graph)
         finally:
             self.pipeline._defining_graph = None
         from infernux.renderstack.render_effect_compiler import (
@@ -923,8 +920,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             graph.set_output(COLOR_TEXTURE)
 
         description = graph.build()
-        # Publish bindings only after the complete candidate topology built.
-        # A failed build must leave the previous artifact's parameters intact.
+        # Publish bindings only after the complete current topology built.
         self._graph_state.artifact_generation = RenderEffectArtifactRegistry.topology_generation()
         self._graph_state.bindings = compiled_effects
         self._graph_state.errors = tuple(effect_errors)
@@ -989,7 +985,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             if AssetManager.refresh_pending():
                 return
             culling = context.cull()
-            previous_graph = state.last_valid_description
             try:
                 state.description = self.build_graph(output_samples=self._output_samples)
             except Exception as exc:
@@ -997,25 +992,17 @@ class RenderStack(PipelineReloadMixin, InxComponent):
                 state.pipeline_error = f"Pipeline graph build rejected: {type(exc).__name__}: {exc}."
                 from infernux.rendergraph.graph import _rejected_render_texture_inputs
 
-                state.rejected_texture_inputs = _rejected_render_texture_inputs(exc, previous_graph)
-                if state.rejected_texture_inputs:
-                    state.build_failed = True
-                    self._publish_pipeline_diagnostic()
-                    return
-                if previous_graph is not None:
-                    state.build_failed = True
-                    self._publish_pipeline_diagnostic()
-                    state.description = previous_graph
-                else:
-                    state.build_failed = True
-                    raise RuntimeError(
-                        "RenderStack could not build its selected pipeline graph"
-                    ) from exc
+                state.rejected_texture_inputs = _rejected_render_texture_inputs(exc, None)
+                state.build_failed = True
+                state.description = None
+                state.bindings = []
+                state.upload_revisions = {}
+                self._publish_pipeline_diagnostic()
+                return
 
             if not context.apply_graph(state.description):
                 self._reject_graph_publication(state.description)
                 return
-            state.last_valid_description = state.description
             if not state.build_failed:
                 state.pipeline_error = ""
                 self._publish_pipeline_diagnostic()
@@ -1025,7 +1012,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             if not context.render_with_graph(state.description, updates):
                 self._reject_graph_publication(state.description)
                 return
-            state.last_valid_description = state.description
 
     def _collect_effect_parameter_updates(self, context, *, force=False):
         state = self._graph_state
@@ -1093,7 +1079,6 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         pipelines = self.discover_pipelines()
         cls = pipelines.get(self.pipeline_class_name)
         if cls is None:
-            self._pipeline_source_file = ""
             from infernux.renderstack.discovery import discovery_import_failures
 
             failures = discovery_import_failures()
@@ -1107,7 +1092,10 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             )
 
         self._pipeline_source_file = inspect.getsourcefile(cls)
-        pipeline = cls()
+        from infernux.engine.reload.owners import owner_for
+        owner = owner_for(cls)
+        with owner.enter() if owner is not None else nullcontext():
+            pipeline = cls()
         # Register watchdog callback for hot-reload
         self._register_pipeline_reload(cls)
         return pipeline

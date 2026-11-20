@@ -1620,6 +1620,7 @@ void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
         bool moved = false;
     };
     std::vector<Change> changes;
+    std::vector<std::string> unavailable;
     for (const auto &[guid, metadata] : previous.metas) {
         if (!metadata->HasKey("import_owner_guid") && m_metas.find(guid) == m_metas.end())
             changes.push_back({guid, metadata->GetResourceType(), AssetEvent::Deleted});
@@ -1628,8 +1629,13 @@ void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
         if (metadata->HasKey("import_owner_guid"))
             continue; // Model-owned resources have their own publication below.
         const auto result = m_importResults.find(guid);
-        if (result != m_importResults.end() && !result->second.succeeded)
-            continue; // An unsuccessful import does not replace the last valid runtime payload.
+        if (result != m_importResults.end() && !result->second.succeeded) {
+            const auto oldResult = previous.importResults.find(guid);
+            if (oldResult == previous.importResults.end() || oldResult->second.succeeded ||
+                oldResult->second.error != result->second.error)
+                unavailable.push_back(guid);
+            continue;
+        }
         const auto old = previous.metas.find(guid);
         if (old == previous.metas.end()) {
             changes.push_back({guid, metadata->GetResourceType(), AssetEvent::Modified});
@@ -1673,13 +1679,17 @@ void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
                 registry->UpdateLoadedAssetPath(change.guid, m_guidToPath.at(change.guid));
             if (change.event == AssetEvent::Modified && change.type != ResourceType::Mesh) {
                 const bool loaded = registry->IsLoaded(change.guid);
-                if (!registry->ReloadAsset(change.guid) && loaded)
-                    throw std::runtime_error("Could not publish refreshed runtime asset: " + change.guid);
+                if (!registry->ReloadAsset(change.guid) && loaded && GetImportError(change.guid).empty())
+                    ReportRuntimeLoadFailure(change.guid, "Could not publish refreshed runtime asset: " + change.guid);
             }
         }
     }
+    for (const auto &guid : unavailable)
+        PublishUnavailableAssetBindings(*this, registry, guid);
     auto &graph = *m_dependencyGraph;
     for (const auto &change : changes) {
+        if (change.event == AssetEvent::Modified && !GetImportError(change.guid).empty())
+            continue;
         if (registry && change.event == AssetEvent::Modified && change.type == ResourceType::Mesh &&
             registry->NotifySourceImported(change.guid, change.type))
             continue;
@@ -4761,21 +4771,28 @@ void AssetDatabase::FinishReimport(AssetMutationResult &result, const CachedFile
     else
         UpdateCachedFileState(result.path, false);
     m_assetIndexDirty = true;
-    const auto previous = LoadQuerySnapshot();
-    const auto changedSubAssets = PublishQuerySnapshotForPaths({result.path});
     if (notify) {
         m_runtimeLoadFailures.erase(result.guid);
         m_importResults[result.guid] = {true, {}};
+    }
+    const auto previous = LoadQuerySnapshot();
+    const auto changedSubAssets = PublishQuerySnapshotForPaths({result.path});
+    if (notify) {
         ClearRuntimeLoadFailuresForDependents(result.guid);
         PublishModelSubAssetEvents(previous, &changedSubAssets);
         auto *registry = BoundRegistry();
         const bool meshPublication =
             registry && registry->NotifySourceImported(result.guid, result.resourceType, repairTicket);
         // Python owns ordinary script dependency and live class publication.
-        if (result.resourceType != ResourceType::Script && !meshPublication)
+        const auto error = GetImportError(result.guid);
+        if (!error.empty()) {
+            result.errorCode = AssetMutationErrorCode::RuntimeApplyFailed;
+            result.error = error;
+        } else if (result.resourceType != ResourceType::Script && !meshPublication) {
             m_dependencyGraph->NotifyEvent(result.guid, result.resourceType, AssetEvent::Modified);
+        }
     }
-    result.succeeded = true;
+    result.succeeded = result.error.empty();
     result.databaseCommitted = true;
     result.changed = true;
     result.queryGeneration = GetQueryGeneration();

@@ -17,6 +17,7 @@ class RuntimePointerState:
     mouse: MouseEventDispatcher = field(default_factory=MouseEventDispatcher)
     scene_token: tuple[int, int] | None = None
     frame: int = -1
+    receiving_pointer: bool = False
 
     def discard(self) -> None:
         self.ui.discard()
@@ -29,6 +30,24 @@ class RuntimePointerState:
         self.discard()
         self.scene_token = token
         return True
+
+
+def has_view_pointer(view, native):
+    if native._sampled_pointer_active or native.touch_count:
+        return True
+    previous = view._world_pointer_states.get(native._read_world_id)
+    if previous is not None and previous.receiving_pointer:
+        with world_pointer_state(view) as pointer:
+            pointer.receiving_pointer = False
+            if native._sampled_game_focused and all(native._sampled_game_viewport_size):
+                pointer.ui._leave_mouse()
+                pointer.mouse.leave()
+            else:
+                try:
+                    pointer.ui.reset()
+                finally:
+                    pointer.mouse.reset()
+    return False
 
 
 def discard_world_pointer_state(view, identity):

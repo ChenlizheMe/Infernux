@@ -4,44 +4,44 @@
     {
       "reference": "infernux/mcp",
       "name": "Infernux MCP",
-      "version": "0.2.1",
-      "intro": "Let an MCP-compatible AI agent drive the Infernux Editor.",
+      "version": "0.3.0",
+      "intro": "Independent standard MCP service connected to the engine Automation Host.",
       "intros": {
-        "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
+        "zh-CN": "独立的标准 MCP 服务，通过公共自动化接口连接引擎。"
       },
       "artifact": "infernux.mcp.inxpkg",
-      "engine": ">=0.4.3",
+      "engine": ">=0.4.8",
       "dependencies": [],
       "repository": "https://github.com/InfernuxEngine/infernux_mcp",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.2.1/infernux.mcp.inxpkg"
+        "location": "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.3.0/infernux.mcp.inxpkg"
       },
       "category": "editor_tools",
       "targets": [],
       "pages": [
         {
           "id": "operations",
-          "title": "Usage",
+          "title": "Infernux MCP",
           "path": "plugin_pages/operations.md",
           "format": "markdown"
         },
         {
           "id": "operations",
-          "title": "使用",
+          "title": "Infernux MCP",
           "path": "plugin_pages/operations.zh-CN.md",
           "format": "markdown",
           "locale": "zh-CN"
         },
         {
           "id": "trust",
-          "title": "Local toolbox",
+          "title": "Local service lifecycle",
           "path": "plugin_pages/trust.md",
           "format": "markdown"
         },
         {
           "id": "trust",
-          "title": "本机工具箱",
+          "title": "本机服务与生命周期",
           "path": "plugin_pages/trust.zh-CN.md",
           "format": "markdown",
           "locale": "zh-CN"
@@ -51,18 +51,18 @@
     {
       "reference": "infernux/platform-android",
       "name": "Infernux Android Platform",
-      "version": "0.2.20",
+      "version": "0.4.8",
       "intro": "Build Infernux games for Android with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
       },
       "artifact": "infernux.platform-android.inxpkg",
-      "engine": ">=0.4.3",
+      "engine": "==0.4.8",
       "dependencies": [],
       "repository": "https://github.com/InfernuxEngine/infernux_android",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.2.20/infernux.platform-android.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.4.8/infernux.platform-android.inxpkg"
       },
       "category": "platform_build",
       "targets": [
@@ -88,18 +88,18 @@
     {
       "reference": "infernux/platform-linux",
       "name": "Infernux Linux Platform",
-      "version": "0.2.20",
+      "version": "0.4.8",
       "intro": "Build Infernux games for Linux with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Linux。"
       },
       "artifact": "infernux.platform-linux.inxpkg",
-      "engine": ">=0.4.3",
+      "engine": "==0.4.8",
       "dependencies": [],
       "repository": "https://github.com/InfernuxEngine/infernux_linux",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.2.20/infernux.platform-linux.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.4.8/infernux.platform-linux.inxpkg"
       },
       "category": "platform_build",
       "targets": [
@@ -124,18 +124,18 @@
     {
       "reference": "infernux/platform-web",
       "name": "Infernux Web Platform",
-      "version": "0.2.24",
+      "version": "0.4.8",
       "intro": "Build Infernux games for browsers with WebGPU.",
       "intros": {
         "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
       },
       "artifact": "infernux.platform-web.inxpkg",
-      "engine": ">=0.4.3",
+      "engine": "==0.4.8",
       "dependencies": [],
       "repository": "https://github.com/InfernuxEngine/infernux_web",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.24/infernux.platform-web.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.4.8/infernux.platform-web.inxpkg"
       },
       "category": "platform_build",
       "targets": [
@@ -160,18 +160,18 @@
     {
       "reference": "infernux/platform-windows",
       "name": "Infernux Windows Platform",
-      "version": "0.2.21",
+      "version": "0.4.8",
       "intro": "Build Infernux games for Windows with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Windows。"
       },
       "artifact": "infernux.platform-windows.inxpkg",
-      "engine": ">=0.4.3",
+      "engine": "==0.4.8",
       "dependencies": [],
       "repository": "https://github.com/InfernuxEngine/infernux_windows",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.2.21/infernux.platform-windows.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.4.8/infernux.platform-windows.inxpkg"
       },
       "category": "platform_build",
       "targets": [

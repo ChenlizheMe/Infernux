@@ -45,7 +45,7 @@ PACKAGE_ENTRY_PREFIX = "package/"
 _GUID_NAMESPACE = uuid.UUID("2bd3f0e2-0e94-4a61-bfe4-146b96bb66ab")
 _IGNORED_PARTS = frozenset({".git", "__pycache__"})
 _CONTROL_NAMES = frozenset({"requirements.txt"})
-_CONTROL_DIRECTORIES = frozenset({"plugin_pages"})
+_CONTROL_DIRECTORIES = frozenset({"plugin_pages", "themes"})
 _SOURCE_FIELDS = frozenset(
     {"$schema", "reference", "name", "version", "intro", "intros", "engine", "pages", "category"}
 )

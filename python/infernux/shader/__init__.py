@@ -240,6 +240,7 @@ class ViewContext:
     dithering: bool
     stop_nans: bool
     opaque_output: bool
+    display_rgb_output: bool
 
 
 class SurfaceData:

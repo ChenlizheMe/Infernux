@@ -27,6 +27,7 @@ class _Database:
     def __init__(self, order):
         self.order = order
         self.paths = {"old.txt": "guid"}
+        self.import_errors = {}
 
     def get_guid_from_path(self, path):
         return self.paths.get(path, "")
@@ -41,7 +42,11 @@ class _Database:
 
     def reimport_asset(self, path):
         self.order.append("db-reimport")
+        self.import_errors.pop(self.get_guid_from_path(path), None)
         return _result("reimport", path, succeeded=path in self.paths)
+
+    def report_runtime_load_failure(self, guid, error):
+        self.import_errors[guid] = error
 
     def get_meta_by_guid(self, guid):
         return _Metadata() if guid == "guid" else None
@@ -66,6 +71,9 @@ class _Registry:
 
     def is_loaded(self, guid):
         return guid == "guid"
+
+    def get_asset_residency(self, guid):
+        return SimpleNamespace(runtime_version=1)
 
     def reload_asset(self, guid):
         self.order.append("registry-reload")
@@ -92,14 +100,14 @@ class _Metadata:
 
 class _NativeEngine:
     has_renderer = True
-    _shader_reload_sources = ("old.vert",)
+    _shader_reload_sources = ("old.vert.py",)
     _shader_reload_diagnostics = ()
 
     def __init__(self, order):
         self.order = order
 
     def reload_shader_runtime(self, path, previous_shader_id):
-        assert path == "old.vert"
+        assert path == "old.vert.py"
         assert previous_shader_id == "previous-shader"
         self.order.append("shader-runtime")
         return ""
@@ -112,15 +120,17 @@ class _FailingNativeEngine(_NativeEngine):
 
 
 def _isolate_side_effects(monkeypatch, order):
+    from infernux.engine.ui.asset_load_errors import clear_asset_load_error
+
+    def publish(_cls, path, event="modified", **_kwargs):
+        clear_asset_load_error(path)
+        order.append(f"editor-{event}")
+
     AssetManager._watcher_echo_suppression.clear()
     registry = _Registry(order)
     monkeypatch.setattr(AssetManager, "_get_registry", classmethod(lambda _cls: registry))
     monkeypatch.setattr(AssetManager, "invalidate", classmethod(lambda _cls, _guid: order.append("py-evict")))
-    monkeypatch.setattr(
-        AssetManager,
-        "_publish_asset_content_change",
-        classmethod(lambda _cls, _path, event="modified", **_kwargs: order.append(f"editor-{event}")),
-    )
+    monkeypatch.setattr(AssetManager, "_publish_asset_content_change", classmethod(publish))
     monkeypatch.setattr(AssetManager, "_invalidate_project_panel_cache", classmethod(lambda _cls: None))
 
 
@@ -153,7 +163,7 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
     console = DebugConsole.instance()
     order = []
     database = _Database(order)
-    database.paths = {"old.vert": "guid"}
+    database.paths = {"old.vert.py": "guid"}
     _isolate_side_effects(monkeypatch, order)
     monkeypatch.setattr(
         AssetManager,
@@ -161,7 +171,7 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
         classmethod(lambda _cls: _FailingNativeEngine(order)),
     )
 
-    result = AssetManager.reimport_asset("old.vert", database=database)
+    result = AssetManager.reimport_asset("old.vert.py", database=database)
 
     assert not result
     assert result.database_committed is True
@@ -171,7 +181,7 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
     entries = console.get_entries()
     assert len(entries) == 1
     assert entries[0].log_type is LogType.ERROR
-    assert entries[0].source_file == "old.vert"
+    assert entries[0].source_file == "old.vert.py"
     assert entries[0].message == "shader compile failed"
 
     # Corrected source retires its diagnostic only after runtime publication.
@@ -181,7 +191,7 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
         "_native_engine",
         classmethod(lambda _cls: _NativeEngine(order)),
     )
-    assert AssetManager.reimport_asset("old.vert", database=database)
+    assert AssetManager.reimport_asset("old.vert.py", database=database)
     assert [entry.message for entry in console.get_entries()] == ["unrelated error"]
 
 
@@ -217,8 +227,9 @@ def test_compiled_asset_failure_has_source_diagnostic_until_corrected(monkeypatc
     assert len(entries) == 1
     assert entries[0].log_type is LogType.ERROR
     assert entries[0].source_file == path
-    assert entries[0].message == result.error
+    assert entries[0].stack_trace == result.error
     assert "missing_probe" in result.error
+    assert database.import_errors[database.paths[path]] == result.error
     assert "editor-created" not in order
 
     # Another rejected save replaces the source diagnostic; unrelated errors

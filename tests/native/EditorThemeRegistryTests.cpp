@@ -25,6 +25,7 @@ int main()
 {
     using infernux::EditorThemeRegistry;
 
+    assert(EditorThemeRegistry::ThemeNames() == std::vector<std::string>{"infernux"});
     const ImVec4 accent = EditorThemeRegistry::Color("ROLE_ACCENT");
     assert(accent.w == 1.0f);
 
@@ -42,8 +43,32 @@ int main()
     ExpectMissingToken("float", [] { (void)EditorThemeRegistry::Float("INFERNUX_TEST_MISSING_TOKEN"); });
 
     ImGui::CreateContext();
-    assert(EditorThemeRegistry::SetActiveTheme("graphite"));
     EditorThemeRegistry::ApplyImGuiColors();
+    assert(ImGui::GetColorU32(ImGuiCol_WindowBg) == IM_COL32(22, 23, 24, 255));
+    assert(ImGui::GetColorU32(ImGuiCol_ChildBg) == IM_COL32(28, 29, 31, 255));
+    assert(ImGui::GetColorU32(ImGuiCol_FrameBg) == IM_COL32(17, 18, 19, 255));
+    assert(ImGui::GetColorU32(ImGuiCol_TitleBg) == IM_COL32(14, 15, 16, 255));
+    assert(ImGui::GetColorU32(ImGuiCol_DockingEmptyBg) == ImGui::GetColorU32(ImGuiCol_TitleBg));
+    assert(ImGui::GetColorU32(ImGuiCol_MenuBarBg) == IM_COL32(10, 11, 12, 255));
+    const ImU32 neutralHover = IM_COL32(42, 43, 46, 255);
+    assert(ImGui::GetColorU32(ImGuiCol_ButtonHovered) == neutralHover);
+    assert(ImGui::GetColorU32(ImGuiCol_HeaderHovered) == neutralHover);
+    assert(ImGui::GetColorU32(ImGuiCol_TabHovered) == neutralHover);
+    assert(ImGui::GetColorU32(ImGuiCol_NavCursor) == ImGui::ColorConvertFloat4ToU32(accent));
+    assert(ImGui::ColorConvertFloat4ToU32(EditorThemeRegistry::Color("INSPECTOR_HEADER_PRIMARY_ACTIVE")) ==
+           IM_COL32(63, 46, 50, 255));
+
+    const ImVec4 customSurface(0.82f, 0.78f, 0.64f, 1.0f);
+    const ImVec4 customField(0.72f, 0.70f, 0.58f, 1.0f);
+    EditorThemeRegistry::Register("tests/palette", "theme:tests/palette",
+                                  {{"ROLE_ACCENT", ImVec4(0.30f, 0.56f, 0.86f, 1.0f)},
+                                   {"ROLE_BG_SURFACE", customSurface},
+                                   {"FRAME_BG", customField}},
+                                  {}, {});
+    assert(EditorThemeRegistry::SetActiveTheme("tests/palette"));
+    assert(ImGui::GetColorU32(ImGuiCol_ButtonHovered) == neutralHover);
+    assert(ImGui::GetColorU32(ImGuiCol_ChildBg) == ImGui::ColorConvertFloat4ToU32(customSurface));
+    assert(ImGui::GetColorU32(ImGuiCol_FrameBg) == ImGui::ColorConvertFloat4ToU32(customField));
     const ImVec4 standardSelection = EditorThemeRegistry::Color("SELECTION_BG");
     const ImVec4 variantAccent = EditorThemeRegistry::Color("ROLE_ACCENT");
     const ImVec4 text = EditorThemeRegistry::Color("TEXT");
@@ -68,6 +93,12 @@ int main()
     const ImVec4 prefabText = EditorThemeRegistry::Color("PREFAB_TEXT");
     assert(prefabText.x == variantAccent.x && prefabText.y == variantAccent.y && prefabText.z == variantAccent.z);
     assert(variantAccent.x != baseLogError.x);
+
+    EditorThemeRegistry::RemoveOwner("theme:tests/palette");
+    assert(EditorThemeRegistry::ActiveTheme() == "infernux");
+    assert(EditorThemeRegistry::ThemeNames() == std::vector<std::string>{"infernux"});
+    assert(ImGui::GetColorU32(ImGuiCol_ChildBg) == IM_COL32(28, 29, 31, 255));
+
     ImGui::DestroyContext();
 
     return 0;

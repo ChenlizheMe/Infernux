@@ -197,8 +197,22 @@ void RegisterAudioBindings(py::module_ &m)
         .def("get_bus_muted", &AudioEngine::GetBusMuted, py::arg("bus_name"), "Get a named bus mute state")
         .def("pause_all", &AudioEngine::PauseAll, "Pause all audio playback")
         .def("resume_all", &AudioEngine::ResumeAll, "Resume all audio playback")
-        .def("play_preview", &AudioEngine::PlayPreview, py::arg("file_path"),
-             "Play an Editor audio-asset preview through the shared device")
+        .def(
+            "play_preview",
+            [](AudioEngine &engine, const std::string &path) {
+                auto &registry = AssetRegistry::Instance();
+                auto *database = registry.GetAssetDatabase();
+                const auto guid = database ? database->GetGuidFromPath(path) : std::string{};
+                if (guid.empty())
+                    return engine.PlayPreview(path);
+                auto clip = registry.LoadAsset<AudioClip>(guid, ResourceType::Audio);
+                std::string streamError;
+                const bool started = engine.PlayPreviewClip(path, std::move(clip), &streamError);
+                if (!streamError.empty())
+                    database->ReportRuntimeLoadFailure(guid, "Audio streaming preview failed: " + streamError);
+                return started;
+            },
+            py::arg("file_path"), "Play an Editor audio-asset preview through the shared device")
         .def("stop_preview", &AudioEngine::StopPreview, "Stop the active Editor audio-asset preview")
         .def("is_preview_playing", &AudioEngine::IsPreviewPlaying, py::arg("file_path") = "",
              "Whether an Editor audio preview is currently playing")

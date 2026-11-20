@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -68,9 +69,14 @@ def build(source_root: Path, output_root: Path, catalog_path: Path, releases_pat
         artifact = f"{reference.replace('/', '.')}.inxpkg"
         if bool(source_entry.get("default", False)):
             expected_outputs.add(artifact)
-            metadata = InxPackage.export_source(
-                str(plugin_source), str(output_root / artifact), profile="release",
-            ).metadata
+            archive = (output_root / artifact).resolve()
+            packager = source_entry.get("packager")
+            if packager:
+                subprocess.run([sys.executable, str(plugin_source / packager), "build", str(archive)],
+                               check=True)
+                metadata = InxPackage.inspect(str(archive)).metadata
+            else:
+                metadata = InxPackage.export_source(str(plugin_source), str(archive), profile="release").metadata
         else:
             # Independent platform releases own their archives. Catalog refresh
             # needs metadata only, not another serialization of every runtime.
@@ -85,6 +91,8 @@ def build(source_root: Path, output_root: Path, catalog_path: Path, releases_pat
                 f"{reference.replace('/', '.')}/{metadata.get('version', '')}/{artifact}"
             ),
         }
+        if source_entry.get("packager"):
+            source["location"] = f"{repository}/releases/download/v{metadata['version']}/{artifact}"
         registry.append(
             {
                 "reference": reference,

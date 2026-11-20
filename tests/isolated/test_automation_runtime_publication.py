@@ -35,8 +35,8 @@ def probe(project):
     play = engine._play_mode_manager
     registration = bridge._attach_runtime_observations(engine.get_runtime_change_journal(), native, play)
     client = AutomationClient(project)
-    scene = native.create_scene("Automation publication probe")
-    native.set_active_scene(scene)
+    scene = native.get_active_scene()
+    assert scene is not None
     actor = scene.create_game_object("Observed actor")
     read_count = []
     def read():
@@ -47,9 +47,9 @@ def probe(project):
     registry.register(operation("test.publication.read", OperationKind.QUERY, "Read actual native transform",
                                 read, capability="test.read", owner="publication-probe"))
 
-    def pump(futures, timeout=8):
+    def pump_until(ready, timeout=8):
         deadline = monotonic() + timeout
-        while not all(future.done() for future in futures):
+        while not ready():
             assert monotonic() < deadline, "Actual native publication did not complete"
             engine.tick(1.0 / 60.0)
             Event().wait(0.001)
@@ -60,14 +60,14 @@ def probe(project):
         with ThreadPoolExecutor(max_workers=3) as workers:
             watch = client.observe("test.publication.read")
             initial = workers.submit(client.observation, watch["id"], after=0)
-            pump([initial])
+            pump_until(initial.done)
             assert initial.result()["value"] == {"x": 0.0}
             assert registration.enabled
             # This is the native Transform write used by game scripts/physics,
             # outside ActionJournal and outside any Host mutation operation.
             actor.transform.position = Vector3(5, 0, 0)
             changed = workers.submit(client.observation, watch["id"], after=initial.result()["revision"], timeout=5)
-            pump([changed])
+            pump_until(changed.done)
             assert changed.result()["value"] == {"x": 5.0}, {"snapshot": changed.result(),
                 "journal_revision": engine.get_runtime_change_journal().revision,
                 "transform_serial": native.get_global_transform_serial(), "reads": len(read_count)}
@@ -80,13 +80,13 @@ def probe(project):
                 engine.tick(1.0 / 60.0)
             assert len(read_count) == count
 
-            native.play()
-            native.pause()
-            play._state = PlayModeState.PAUSED
+            assert play.enter_play_mode()
+            pump_until(lambda: play.state == PlayModeState.PLAYING)
+            assert play.pause()
             start_sequence = int(play.step_sequence)
             start_frames = int(native.runtime_frame_count)
             requests = [workers.submit(client.call, "infernux.runtime.step", {"timeout_seconds": 5.0}) for _ in range(2)]
-            pump(requests)
+            pump_until(lambda: all(request.done() for request in requests))
             receipts = [request.result() for request in requests]
             assert sorted(receipt["target_step_sequence"] for receipt in receipts) == [start_sequence + 1, start_sequence + 2]
             for receipt in receipts:
@@ -99,8 +99,9 @@ def probe(project):
     finally:
         client.close()
         bridge.close()
-        if native.is_playing():
-            native.stop()
+        if play.is_playing:
+            assert play.exit_play_mode()
+            pump_until(lambda: play.state == PlayModeState.EDIT)
         engine.exit()
 
 

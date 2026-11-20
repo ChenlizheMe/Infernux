@@ -240,7 +240,7 @@ class Theme:
 
     # -- Regular Button -----------------------------------------------
     BTN_NORMAL        : RGBA = (0.137, 0.141, 0.153, 1.0)  # Normal (raised #232427)
-    BTN_HOVERED       : RGBA = (0.247, 0.180, 0.196, 1.0)  # Hovered (hover + 12% accent)
+    BTN_HOVERED       : RGBA = (0.165, 0.169, 0.180, 1.0)  # Neutral hover
     BTN_ACTIVE        : RGBA = (0.350, 0.178, 0.200, 1.0)  # Active (raised + 30% accent)
 
     # -- Ghost Button ( )
@@ -271,7 +271,7 @@ class Theme:
     # ══════════════════════════════════════════════════════════════════════
 
     HEADER            : RGBA = (0.137, 0.141, 0.153, 1.0)  # Normal (raised)
-    HEADER_HOVERED    : RGBA = (0.288, 0.186, 0.203, 1.0)  # Hovered (hover + 18% accent)
+    HEADER_HOVERED    : RGBA = (0.165, 0.169, 0.180, 1.0)  # Neutral hover
     HEADER_ACTIVE     : RGBA = (0.370, 0.197, 0.219, 1.0)  # Active (hover + 30% accent)
     SELECTION_BG      : RGBA = (0.847, 0.263, 0.310, 1.0)  # Selection bg (accent #D8434F)
     HIERARCHY_ROW_HOVER    : RGBA = (0.165, 0.169, 0.180, 1.0)  # Neutral hover plate
@@ -282,7 +282,7 @@ class Theme:
     #  Splitter Colors
     # ══════════════════════════════════════════════════════════════════════
 
-    SPLITTER_HOVER    : RGBA = (0.288, 0.186, 0.203, 0.6)  # Hovered (accent tint)
+    SPLITTER_HOVER    : RGBA = (0.165, 0.169, 0.180, 0.6)  # Neutral hover
     SPLITTER_ACTIVE   : RGBA = (0.370, 0.197, 0.219, 0.8)  # Active
 
     # ══════════════════════════════════════════════════════════════════════
@@ -380,7 +380,7 @@ class Theme:
     # -- Inspector Header Colors
     INSPECTOR_HEADER_PRIMARY    : RGBA = (0.110, 0.114, 0.122, 1.0)  # Primary (surface #1C1D1F)
     INSPECTOR_HEADER_PRIMARY_HOVERED : RGBA = (0.165, 0.169, 0.180, 1.0)  # Primary hovered (hover plate)
-    INSPECTOR_HEADER_PRIMARY_ACTIVE  : RGBA = (0.288, 0.186, 0.203, 1.0)  # Primary active (accent tint)
+    INSPECTOR_HEADER_PRIMARY_ACTIVE  : RGBA = (0.247, 0.180, 0.196, 1.0)  # Hover + 12% accent
     INSPECTOR_HEADER_SELECTED   : RGBA = (0.228, 0.138, 0.152, 1.0)  # Selected component header (surface + 16% accent)
     INSPECTOR_HEADER_SELECTED_HOVERED : RGBA = (0.272, 0.147, 0.163, 1.0)
     INSPECTOR_HEADER_SELECTED_ACTIVE  : RGBA = (0.316, 0.156, 0.175, 1.0)
@@ -396,7 +396,7 @@ class Theme:
 
     # -- Inspector Inline Buttons
     INSPECTOR_INLINE_BTN_IDLE  : RGBA = (0.137, 0.141, 0.153, 1.0)  # Idle (raised)
-    INSPECTOR_INLINE_BTN_HOVER : RGBA = (0.247, 0.180, 0.196, 1.0)  # Hover (accent tint)
+    INSPECTOR_INLINE_BTN_HOVER : RGBA = (0.165, 0.169, 0.180, 1.0)  # Neutral hover
     INSPECTOR_INLINE_BTN_ACTIVE: RGBA = (0.847, 0.263, 0.310, 1.0)  # Active (accent #D8434F)
     INSPECTOR_INLINE_BTN_ON    : RGBA = (0.705, 0.239, 0.279, 1.0)  # Toggled on (dimmer accent)
     INSPECTOR_INLINE_BTN_GAP   : float = 4.0  # Button gap
@@ -521,7 +521,7 @@ class Theme:
 
     # -- Scene Overlay Dropdown
     SCENE_OVERLAY_COMBO_BG    : RGBA = (0.110, 0.114, 0.122, 0.85)  # Background (surface)
-    SCENE_OVERLAY_COMBO_HOVER : RGBA = (0.247, 0.180, 0.196, 0.90)  # Hover (accent tint)
+    SCENE_OVERLAY_COMBO_HOVER : RGBA = (0.165, 0.169, 0.180, 0.90)  # Neutral hover
     SCENE_OVERLAY_COMBO_ACTIVE: RGBA = (0.208, 0.153, 0.169, 0.95)  # Active (accent tint)
     SCENE_OVERLAY_PILL_BG     : RGBA = (0.055, 0.059, 0.063, 0.82)  # Viewport pill plate
     SCENE_OVERLAY_PILL_EDGE   : RGBA = (1.0, 1.0, 1.0, 0.08)  # Viewport pill hairline
@@ -1049,7 +1049,7 @@ def active_editor_theme() -> str:
     return str(_native_get())
 
 
-# Convenience API on the Theme class: Theme.set_theme("amber") / Theme.list_themes()
+# Convenience API on the Theme class: Theme.set_theme("infernux") / Theme.list_themes()
 Theme.set_theme = staticmethod(set_editor_theme)
 Theme.list_themes = staticmethod(list_editor_themes)
 Theme.active_theme = staticmethod(active_editor_theme)

@@ -751,11 +751,11 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
 // Internal: Composite Pass
 // ============================================================================
 
-void OutlineRenderer::RecordCompositeDraw(VkCommandBuffer cmdBuf)
+void OutlineRenderer::RecordCompositeDraw(VkCommandBuffer cmdBuf, bool writesDisplayRgb)
 {
     if (!m_resourcesReady || !HasActiveOutline() || cmdBuf == VK_NULL_HANDLE)
         return;
-    const auto color = inx::color::SrgbToLinear(m_outlineColor);
+    const auto color = writesDisplayRgb ? m_outlineColor : inx::color::SrgbToLinear(m_outlineColor);
     const ShaderParameterValue values[] = {
         std::array<float, 4>{color.r, color.g, color.b, color.a},
         std::array<float, 2>{1.0f / m_sceneRenderTarget->GetWidth(), 1.0f / m_sceneRenderTarget->GetHeight()},

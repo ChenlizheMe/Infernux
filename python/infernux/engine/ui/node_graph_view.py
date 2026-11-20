@@ -96,7 +96,7 @@ _LINK_THICKNESS = 2.0
 _LINK_SEGMENTS = 28
 
 # NASA-style: near-black panels, neutral gray; selection uses editor theme red
-# Unity VFX-style context: saturated header, recessed body slot.
+# Context node: solid header, recessed body slot.
 
 
 _NODE_GRAPH_EDIT_CONTEXT_MENU = (
@@ -1063,7 +1063,7 @@ class NodeGraphView:
         body_color = Theme.FRAME_BG if is_context else Theme.GRAPH_NODE_BG
         ctx.draw_filled_rect(sx, sy, sx + w, sy + h, *body_color, rounding)
 
-        # Header — Unity VFX contexts use a solid coloured title bar.
+        # Header: context nodes use a solid title bar.
         accent = self._resolve_node_header_color(layout)
         is_domain_header = is_context or layout.node.uid in self.domain_header_nodes
         if is_domain_header:
@@ -1076,7 +1076,7 @@ class NodeGraphView:
         flat_h = min(rounding, hdr_h * 0.5)
         ctx.draw_filled_rect(sx, sy + hdr_h - flat_h, sx + w, sy + hdr_h, *hdr, 0)
 
-        # Recessed block-slot area for context nodes (Unity VFX Context look).
+        # Recessed block-slot area for context nodes.
         if is_context:
             slot_pad = 6.0 * z
             slot_top = sy + hdr_h + 4.0 * z

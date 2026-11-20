@@ -211,7 +211,7 @@ def test_render_effect_aot_artifact_distinguishes_dynamic_and_structural_edits(
     assert RenderEffectArtifactRegistry.topology_generation() == first_generation + 1
 
 
-def test_render_effect_failed_compile_preserves_last_known_good_artifact(
+def test_render_effect_failed_compile_retires_runtime_artifact_until_repair(
     tmp_path,
     monkeypatch,
 ):
@@ -229,8 +229,13 @@ def test_render_effect_failed_compile_preserves_last_known_good_artifact(
     with pytest.raises(RenderEffectCompileError, match="unknown parameters"):
         RenderEffectArtifactRegistry.compile_and_publish(str(path), guid="bloom-guid")
 
-    assert RenderEffectArtifactRegistry.get(str(path), "bloom-guid") == published
+    assert RenderEffectArtifactRegistry.get(str(path), "bloom-guid") is None
+    assert "unknown parameters" in RenderEffectArtifactRegistry.error(str(path), "bloom-guid")
     assert Path(published.artifact_path).read_text(encoding="utf-8") == artifact_text
+    _write_effect(path)
+    repaired, _ = RenderEffectArtifactRegistry.compile_and_publish(str(path), guid="bloom-guid")
+    assert RenderEffectArtifactRegistry.get(str(path), "bloom-guid") is repaired
+    assert not RenderEffectArtifactRegistry.error(str(path), "bloom-guid")
 
 
 def test_asset_publish_updates_loaded_render_effect_in_place(tmp_path, monkeypatch):

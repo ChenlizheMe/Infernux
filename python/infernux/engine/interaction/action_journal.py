@@ -169,6 +169,8 @@ class EditorActionJournal:
             if command_id:
                 previous.command_id = str(command_id).strip()
             self._revision += 1
+            from infernux.host.queries import emit_signal
+            emit_signal("world.changed")
             self._dispose_action(action)
             self._dispose_entries(discarded_redo)
             return JournalPushResult(
@@ -192,6 +194,8 @@ class EditorActionJournal:
         self._entries.append(entry)
         self._cursor += 1
         self._revision += 1
+        from infernux.host.queries import emit_signal
+        emit_signal("world.changed")
 
         dropped: tuple[JournalEntry, ...] = ()
         overflow = len(self._entries) - self.max_entries
@@ -221,6 +225,8 @@ class EditorActionJournal:
             raise RuntimeError("undo journal cursor changed during replay")
         self._cursor -= 1
         self._revision += 1
+        from infernux.host.queries import emit_signal
+        emit_signal("world.changed")
 
     def commit_redo(self, entry: JournalEntry) -> None:
         current = self.peek_redo()
@@ -228,6 +234,8 @@ class EditorActionJournal:
             raise RuntimeError("redo journal cursor changed during replay")
         self._cursor += 1
         self._revision += 1
+        from infernux.host.queries import emit_signal
+        emit_signal("world.changed")
 
     def discard_replay_entry(self, direction: str, entry: JournalEntry) -> None:
         """Remove an unrestorable entry at the active Undo/Redo cursor."""
@@ -240,6 +248,8 @@ class EditorActionJournal:
         if direction == "undo":
             self._cursor -= 1
         self._revision += 1
+        from infernux.host.queries import emit_signal
+        emit_signal("world.changed")
         self._dispose_action(entry.action)
 
     def operation_entries(self, operation_id: str) -> tuple[JournalEntry, ...]:
@@ -287,6 +297,8 @@ class EditorActionJournal:
         self._entries.append(entry)
         self._cursor = len(self._entries)
         self._revision += 1
+        from infernux.host.queries import emit_signal
+        emit_signal("world.changed")
         return entry
 
     def clear(self) -> None:
@@ -294,6 +306,8 @@ class EditorActionJournal:
         self._entries.clear()
         self._cursor = 0
         self._revision += 1
+        from infernux.host.queries import emit_signal
+        emit_signal("world.changed")
         self._dispose_entries(entries)
 
     def validate(self) -> None:

@@ -25,17 +25,15 @@
 // Python GIL is occupied. EOF also closes the window if the Editor exits.
 int main(int argc, char **argv)
 {
-    if (argc != 6) {
-        std::fprintf(
-            stderr,
-            "Usage: InfernuxEditorProgress <editor-font> <editor-cjk-font> <editor-theme> <locale> <editor-pid>\n");
+    if (argc != 5) {
+        std::fprintf(stderr, "Usage: InfernuxEditorProgress <editor-font> <editor-theme> <locale> <editor-pid>\n");
         return 1;
     }
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::fprintf(stderr, "%s\n", SDL_GetError());
         return 1;
     }
-    const bool chinese = std::string(argv[4]) == "zh";
+    const bool chinese = std::string(argv[3]) == "zh";
     const char *title = chinese ? "INFERNUX · 正在准备场景" : "INFERNUX · Preparing scene";
     SDL_Window *window = SDL_CreateWindow(title, 560, 205,
                                           SDL_WINDOW_HIDDEN | SDL_WINDOW_BORDERLESS | SDL_WINDOW_UTILITY |
@@ -48,7 +46,7 @@ int main(int argc, char **argv)
         return 1;
     }
 #ifdef _WIN32
-    const DWORD editorPid = std::strtoul(argv[5], nullptr, 10);
+    const DWORD editorPid = std::strtoul(argv[4], nullptr, 10);
     const auto progressWindow = static_cast<HWND>(
         SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
 #endif
@@ -65,17 +63,15 @@ int main(int argc, char **argv)
     io.LogFilename = nullptr;
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
-    infernux::EditorThemeRegistry::SetActiveTheme(argv[3]);
+    infernux::EditorThemeRegistry::SetActiveTheme(argv[2]);
     infernux::EditorThemeRegistry::ApplyImGuiColors();
     ImGuiStyle &style = ImGui::GetStyle();
     infernux::EditorThemeRegistry::ConfigureImGuiDimensions(style);
     style.ScaleAllSizes(dpi);
     style.FontSizeBase = infernux::EditorThemeRegistry::Float("EDITOR_FONT_SIZE") * dpi;
     io.FontDefault = io.Fonts->AddFontFromFileTTF(argv[1], style.FontSizeBase);
-    ImFontConfig cjkConfig;
-    cjkConfig.MergeMode = true;
-    if (io.FontDefault == nullptr || io.Fonts->AddFontFromFileTTF(argv[2], style.FontSizeBase, &cjkConfig) == nullptr) {
-        std::fprintf(stderr, "Could not load the editor fonts: %s + %s\n", argv[1], argv[2]);
+    if (io.FontDefault == nullptr) {
+        std::fprintf(stderr, "Could not load the editor font: %s\n", argv[1]);
         ImGui_ImplSDLRenderer3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();

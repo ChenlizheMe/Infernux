@@ -596,6 +596,16 @@ class ReloadableCallbackRegistry:
             if existing.matches(callback):
                 return existing
         self._callbacks.append(reference)
+        owner = reference.reload_owner
+        if owner is not None:
+            registry = weakref.ref(self)
+
+            def unregister():
+                current = registry()
+                if current is not None:
+                    current.remove_listener(reference)
+
+            owner.add_cleanup(unregister)
         return reference
 
     def remove_listener(self, callback: Callable[..., Any] | ReloadableCallbackRef) -> None:

@@ -444,7 +444,7 @@ class PluginPanel(_PluginFeedback, EditorPanel):
         ctx.pop_style_var(1)
 
         ctx.set_cursor_pos_y(footer_y)
-        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
+        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.ROLE_BG_BASE)
         footer_visible = ctx.begin_child("##plugin_list_footer", 0.0, footer_h, padding=True)
         if footer_visible:
             if ctx.button(
@@ -507,7 +507,7 @@ class PluginPanel(_PluginFeedback, EditorPanel):
 
     @staticmethod
     def _render_detail_summary(ctx, name, reference, version, status, status_color, height) -> None:
-        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
+        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.ROLE_BG_RAISED)
         visible = ctx.begin_child(
             "##plugin_summary", 0.0, height, False, Theme.WINDOW_FLAGS_NO_SCROLL, padding=True,
         )
@@ -672,7 +672,7 @@ class PluginPanel(_PluginFeedback, EditorPanel):
     def _render_detail_footer(self, ctx, manager, row, reference, key, installed, height) -> None:
         source = self._source_text(row)
         location = self._plugin_location(manager, row, source)
-        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
+        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.ROLE_BG_BASE)
         visible = ctx.begin_child("##plugin_detail_footer", 0.0, height, padding=True)
         if visible:
             footer_start_x = ctx.get_cursor_pos_x()
@@ -925,10 +925,6 @@ class PluginPanel(_PluginFeedback, EditorPanel):
         if not syntax:
             self._set_message(t("plugins.install_confirm.empty"), "error")
             return
-        from .plugin_install_confirmation import (
-            PluginInstallConfirmationCoordinator,
-        )
-
         if update:
             if kind != "source":
                 raise ValueError("Only an InxPackage source can be updated")
@@ -938,18 +934,12 @@ class PluginPanel(_PluginFeedback, EditorPanel):
         else:
             work = lambda report: manager.install_pip(syntax, progress=report)
 
-        requested = PluginInstallConfirmationCoordinator.instance().request(
-            kind,
-            syntax,
-            lambda: self._begin_install(
-                manager,
-                label=syntax,
-                work=work,
-                action="update" if update else kind,
-            ),
+        self._begin_install(
+            manager,
+            label=syntax,
+            work=work,
+            action="update" if update else kind,
         )
-        if not requested:
-            self._set_message(t("plugins.install_progress.busy"), "info")
 
     def _begin_install(self, manager: PluginManager, *, label: str, work, action: str) -> None:
         from .plugin_install_progress import PluginInstallProgressService
@@ -1157,7 +1147,7 @@ class InxPackageImportPanel(_PluginFeedback, EditorPanel):
         footer_y = start_y + max(0.0, available_h - footer_h)
         content_h = max(_metric(ctx, 48.0), footer_y - gap - content_y)
 
-        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
+        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.ROLE_BG_RAISED)
         summary_visible = ctx.begin_child(
             "##inxpackage_summary", 0.0, summary_h, True, Theme.WINDOW_FLAGS_NO_SCROLL
         )
@@ -1202,7 +1192,7 @@ class InxPackageImportPanel(_PluginFeedback, EditorPanel):
         ctx.end_child()
 
         ctx.set_cursor_pos_y(footer_y)
-        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.FRAME_BG)
+        ctx.push_style_color(ImGuiCol.ChildBg, *Theme.ROLE_BG_BASE)
         footer_visible = ctx.begin_child(
             "##inxpackage_footer", 0.0, footer_h, True, Theme.WINDOW_FLAGS_NO_SCROLL
         )

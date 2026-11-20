@@ -71,7 +71,8 @@ class AudioEngine
     /// @param clip The AudioClip to play
     /// @return Stream handle, or nullptr on failure
     /// Starts unbound: configure the mix, then call SetVoicePaused(false).
-    SDL_AudioStream *CreateVoice(AudioSource *source, AudioClip *clip, double startSeconds = 0.0);
+    SDL_AudioStream *CreateVoice(AudioSource *source, AudioClip *clip, double startSeconds = 0.0,
+                                 std::string *streamError = nullptr);
 
     /// @brief Destroy a voice stream and unbind it from the device
     /// @param stream The stream to destroy
@@ -100,6 +101,8 @@ class AudioEngine
 
     /// Play one non-spatial clip through the shared audio device.
     bool PlayPreview(const std::string &filePath);
+    bool PlayPreviewClip(const std::string &filePath, std::shared_ptr<AudioClip> clip,
+                         std::string *streamError = nullptr);
     void StopPreview();
     [[nodiscard]] bool IsPreviewPlaying(const std::string &filePath = {}) const;
     [[nodiscard]] std::string GetPreviewPath() const;

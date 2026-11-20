@@ -999,8 +999,11 @@ class AnimClip2DEditorPanel(EditorPanel):
         # Keep room for a useful image; small windows scroll the whole workspace.
         row_min_h = header_h + max(160.0, seq_grid_h)
         row_h = max(row_min_h, min(260.0, remaining_h - palette_min_h - 8.0))
-        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, 8.0, 8.0)
-        ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, 12.0, 8.0)
+        dpi = editor_dpi_scale(ctx)
+        px, py = Theme.WORKSPACE_PADDING
+        sx, sy = Theme.CONTENT_SPACING
+        ctx.push_style_var_vec2(ImGuiStyleVar.ItemSpacing, max(sx, 8.0) * dpi, max(sy, 8.0) * dpi)
+        ctx.push_style_var_vec2(ImGuiStyleVar.WindowPadding, px * dpi, py * dpi)
         try:
             ctx.begin_child(
                 "##animclip_preview", preview_w, row_h if wide else header_h + 160.0,

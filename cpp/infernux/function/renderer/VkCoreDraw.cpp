@@ -688,7 +688,7 @@ void InxVkCoreModular::ReleaseActiveDrawLists() noexcept
 
 void InxVkCoreModular::DrawSceneFiltered(
     VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, rhi::BindGroupHandle perViewGroup,
-    vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix, int queueMin, int queueMax,
+    vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix, RenderDrawSet drawSet, int queueMin, int queueMax,
     const std::string &sortMode, const std::string &overrideMaterial, const std::string &passTag,
     const MaterialPassPipelineDescriptor *pipelineDescriptor, GraphMaterialFilter materialFilter,
     const RendererSelection *selection, uint64_t excludedObjectId, bool requireSourceDepthWrite,
@@ -765,10 +765,7 @@ void InxVkCoreModular::DrawSceneFiltered(
     m_eligibleScratch.clear();
 
     const auto &activeDrawCalls = drawCalls();
-    // SceneRenderGraph marks its skybox callback explicitly. Do not infer this
-    // from a queue number: user-authored pipelines are allowed to reuse any
-    // queue value.
-    const bool skyboxPass = passTag == "__infernux_internal_skybox";
+    const bool skyboxPass = drawSet == RenderDrawSet::Skybox;
     const uint64_t materialPublicationGeneration = m_materialPipelineManager.GetPublicationGeneration();
     auto staticFilterCache = m_staticFilteredListCaches.end();
     if (!selection && excludedObjectId == 0 && !requireSourceDepthWrite && overrideMaterial.empty() &&
@@ -779,8 +776,9 @@ void InxVkCoreModular::DrawSceneFiltered(
                              return cache.drawListActivation == m_drawListActivation &&
                                     cache.materialPublicationGeneration == materialPublicationGeneration &&
                                     cache.queueMin == queueMin && cache.queueMax == queueMax &&
-                                    cache.target == activePass.target && cache.materialFilter == materialFilter &&
-                                    cache.sortMode == sortMode && cache.passTag == passTag;
+                                    cache.drawSet == drawSet && cache.target == activePass.target &&
+                                    cache.materialFilter == materialFilter && cache.sortMode == sortMode &&
+                                    cache.passTag == passTag;
                          });
     }
     const bool reusedStaticFilter = staticFilterCache != m_staticFilteredListCaches.end();
@@ -832,7 +830,7 @@ void InxVkCoreModular::DrawSceneFiltered(
         }
         if (!dc.frustumVisible)
             continue;
-        if (skyboxPass != (dc.identity.domain == RenderDomain::Skybox))
+        if (drawSet != DrawSetForDomain(dc.identity.domain))
             continue;
 
         const std::shared_ptr<InxMaterial> *materialOwner = overrideMatOwner ? &overrideMatOwner : &drawMaterial;
@@ -1064,6 +1062,7 @@ void InxVkCoreModular::DrawSceneFiltered(
         cache.target = activePass.target;
         cache.materialFilter = materialFilter;
         cache.sortMode = sortMode;
+        cache.drawSet = drawSet;
         cache.passTag = passTag;
         cache.draws = m_eligibleScratch;
         cache.sequenceKey = m_nextStaticFilteredSequenceKey++;
@@ -1885,6 +1884,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         ResolvedShadowMaterial lastResolvedShadowResources{};
         for (size_t drawCallIndex = 0; drawCallIndex < activeShadowDrawCalls.size(); ++drawCallIndex) {
             const DrawCall &dc = activeShadowDrawCalls[drawCallIndex];
+            if (DrawSetForDomain(dc.identity.domain) != RenderDrawSet::Scene)
+                continue;
             // Empty renderer slots use DefaultLit in both color and shadow
             // draws, including the first primitive in a fresh project.
             const auto &material = GetDrawMaterial(dc);

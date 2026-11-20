@@ -47,7 +47,7 @@ class PreferencesPanel(SettingsWorkspaceMixin, EditorPanel):
         self._settings_page = "appearance"
 
     SETTINGS_PAGES = (
-        ("appearance", "prefs.appearance", "prefs.appearance_hint", "theme language font 外观 语言 字体"),
+        ("appearance", "prefs.appearance", "prefs.appearance_hint", "language 外观 语言"),
         ("shortcuts", "prefs.shortcuts", "prefs.shortcuts_hint", "keyboard bindings 快捷键 按键"),
         ("tools", "prefs.external_tools", "prefs.tools_hint", "ide blender editor 外部工具"),
     )
@@ -66,16 +66,6 @@ class PreferencesPanel(SettingsWorkspaceMixin, EditorPanel):
         dpi = editor_dpi_scale(ctx)
         if page == "appearance":
             self._render_language(ctx, dpi)
-            from .inspector_utils import field_label
-            from .theme import Theme
-            names = [name for name in Theme.list_themes() if name != "mission_control"]
-            current = Theme.active_theme()
-            if current == "mission_control":
-                current = "infernux"
-            field_label(ctx, t("prefs.theme"), ctx.inspector_label_width())
-            selected = ctx.combo("##editor_theme", names.index(current), [t(f"theme.{name}") for name in names])
-            if names[selected] != current:
-                Theme.set_theme(names[selected])
         elif page == "shortcuts":
             self._render_shortcuts(ctx, dpi)
         elif page == "tools":

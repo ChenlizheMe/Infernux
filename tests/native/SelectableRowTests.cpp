@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <function/renderer/gui/InxGUIContext.h>
 #include <imgui.h>
 
@@ -25,7 +26,7 @@ struct InkBounds
 
 static void CheckRow(float scale, float windowWidth)
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1200, 700);
@@ -66,8 +67,10 @@ static void CheckRow(float scale, float windowWidth)
                 status.Add(vertex.pos);
         }
         assert(name.found && status.found);
-        assert(name.minX >= origin.x + 10.0f * scale);
-        assert(status.maxX <= rowMax.x - 10.0f * scale);
+        // Maple Mono's glyph ink can extend slightly beyond its layout box.
+        const float inkOverhang = 0.5f * scale;
+        assert(name.minX >= origin.x + 10.0f * scale - inkOverhang);
+        assert(status.maxX <= rowMax.x - 10.0f * scale + inkOverhang);
         assert(name.maxX < status.minX);
         const float rowCenter = (rowMin.y + rowMax.y) * 0.5f;
         assert(std::abs((name.minY + name.maxY) * 0.5f - rowCenter) <= 2.0f * scale);
@@ -84,7 +87,7 @@ static void CheckRow(float scale, float windowWidth)
 
 static void CheckPropertyGroups(float scale, float windowWidth)
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1200, 700);
@@ -155,7 +158,7 @@ static void CheckPropertyGroups(float scale, float windowWidth)
 
 static void CheckAutoHeightIconButton()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(640, 480);
@@ -184,7 +187,7 @@ static void CheckAutoHeightIconButton()
 
 static void CheckResizablePopup()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(1280, 720);
@@ -218,7 +221,7 @@ static void CheckResizablePopup()
 
 static void CheckRangedSliderEditReporting(bool integer)
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(640, 480);

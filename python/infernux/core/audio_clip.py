@@ -63,6 +63,13 @@ class AudioClip(ResourceProxy):
         Returns:
             An AudioClip instance, or None if loading failed.
         """
+        from infernux.core.assets import AssetManager
+
+        database = AssetManager._asset_database
+        guid = str(database.get_guid_from_path(file_path) or "") if database is not None else ""
+        if guid:
+            native = AssetManager._get_registry().load_audio_by_guid(guid)
+            return AudioClip(native) if native is not None else None
         native = _require_native_audio_clip()()
         if native.load_from_file(file_path):
             return AudioClip(native)

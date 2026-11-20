@@ -52,6 +52,41 @@ def test_retiring_command_owner_allows_started_authoring_to_finish():
     assert calls == ["committed"]
 
 
+@pytest.mark.parametrize("immediate", [False, True])
+def test_queue_callback_derived_services_keep_source_ownership_without_completed_task_leaks(immediate):
+    from infernux.engine.reload.owners import ReloadOwner
+    from infernux.runtime_services import install_runtime_service, get_runtime_service
+
+    queue = MainThreadCommandQueue()
+    if immediate:
+        queue.drain(0)
+    owner = ReloadOwner(("queue-service-source",))
+    owner.active = True
+    service = object()
+    name = f"host-queue-derived-service-{immediate}"
+
+    def install():
+        install_runtime_service(name, service)
+        return 42
+
+    try:
+        with owner.enter():
+            future = queue.submit("install service", install)
+        queue.drain()
+        assert future.result(0) == 42
+        assert get_runtime_service(name) is service
+        cleanup_count = len(owner._cleanup)
+        for index in range(64):
+            with owner.enter():
+                done = queue.submit("completed task", lambda: index)
+            assert done.result(0) == index
+        assert not owner._children
+        assert len(owner._cleanup) == cleanup_count
+    finally:
+        owner.close()
+    assert get_runtime_service(name) is None
+
+
 def _schema(
     operation_id: str = "test.math.add",
     *,

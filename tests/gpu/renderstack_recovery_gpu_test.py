@@ -74,7 +74,7 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--proof',type=Path)
     args=parser.parse_args()
-    proof={'passed':False,'package':inx.__file__,'phases':[],'scope':'Independent installed GPU: exact missing_probe guard, failed effect pass/texture/buffer/bus rollback, last graph retention under duplicate stage, no per-frame retries, repaired topology with a deliberately different constant shader output. No Editor pixels.'}
+    proof={'passed':False,'package':inx.__file__,'phases':[],'scope':'Independent installed GPU: exact missing_probe guard, failed effect pass/texture/buffer/bus rollback, no graph submission under duplicate stage, no per-frame retries, and repaired topology with a different shader output.'}
     with tempfile.TemporaryDirectory(prefix='infernux-recovery-proof-') as folder:
         project=Path(folder)
         for name in ('Assets','Packages','ProjectSettings'):
@@ -95,13 +95,35 @@ def main():
             scene.create_game_object('Recovery Camera').add_component(inx.Camera)
             pipeline=RecoveryPipeline();host.stack._pipeline=pipeline;frontend.set_render_pipeline(host);native.set_game_camera_enabled(True)
             effects={key:RenderEffect(RenderEffectAsset('audit.recovery.'+key)) for key in ('missing_probe','allocate_then_fail')}
-            phases=('baseline','missing_probe_guard','allocation_failure_rolled_back','duplicate_topology_retains_accepted_output','repaired_topology_changes_output','clean_restored')
-            phase=frames=changed=0;ticket=None;last_builds=None
+            phases=('baseline','missing_probe_guard','allocation_failure_rolled_back','duplicate_topology_stops_submission','repaired_topology_changes_output','clean_restored')
+            phase=frames=changed=0;ticket=None
+            rejected_ticks = 0
+            rejected_snapshot = None
             game_frames = GameFrames(native)
 
             def after_draw():
-                nonlocal phase,frames,changed,ticket,complete,last_builds
+                nonlocal phase,frames,changed,ticket,complete,rejected_ticks,rejected_snapshot
                 try:
+                    if phase == 3:
+                        state = host.stack._graph_state
+                        if not state.build_failed:
+                            return
+                        assert state.description is None
+                        assert 'scene_probe' in state.pipeline_error and 'unique' in state.pipeline_error.lower()
+                        executions = native.renderer_frame_snapshot['game_render_graph_execution_count']
+                        if rejected_snapshot is None:
+                            rejected_snapshot = (executions, pipeline.builds)
+                        assert rejected_snapshot == (executions, pipeline.builds)
+                        rejected_ticks += 1
+                        if rejected_ticks == 8:
+                            proof['phases'].append({'phase': phases[phase], 'builds': pipeline.builds,
+                                                    'error': state.pipeline_error, 'executions': executions})
+                            print('PASS', phases[phase], flush=True)
+                            phase += 1
+                            pipeline.duplicate = False
+                            host.stack.invalidate_graph()
+                            changed = frames
+                        return
                     if not game_frames.advance():
                         return
                     frames+=1
@@ -116,14 +138,11 @@ def main():
                         if phase==1:assert len(errors)==1 and 'route_probe/recovery-slot' in errors[0] and 'missing_probe' in errors[0],errors
                         if phase in (2,4):assert any('deliberate effect-stage failure' in e for e in errors),errors
                         if phase in (0,5):assert not errors,errors
-                        assert state.build_failed==(phase==3),(phases[phase],errors)
+                        assert not state.build_failed,(phases[phase],errors)
                         description=state.description
                         assert not any('OrphanPass' in p.name for p in description.passes)
                         assert not any('orphan_texture' in t.name for t in description.textures)
                         assert not any('orphan_buffer' in b.name for b in description.buffers)
-                        if phase==3:
-                            assert 'scene_probe' in str(errors) and 'unique' in str(errors).lower(),errors
-                            assert pipeline.builds==last_builds,'Rejected topology retried during steady frames'
                         proof['phases'].append({'phase':phases[phase],'rgb':pixels[32,48,:3].tolist(),'revision':description.source_revision,'errors':list(errors),'builds':pipeline.builds})
                         print('PASS',phases[phase],flush=True)
                         if phase==5:complete=True;native.exit();return
@@ -133,11 +152,9 @@ def main():
                             host.stack.effect_slots=[EffectSlot(stage_id='route_probe',slot_id='recovery-slot',effect=RenderEffectRef(effect=effects[key]))]
                         elif phase==3:
                             pipeline.duplicate=True;pipeline.version=1
-                        elif phase==4:pipeline.duplicate=False
                         elif phase==5:host.stack.effect_slots=[]
                         host.stack.invalidate_graph()
-                        changed=frames;ticket=None;last_builds=None
-                    if phase==3 and frames==changed+6:last_builds=pipeline.builds
+                        changed=frames;ticket=None
                     if frames>220:raise AssertionError('Recovery proof timed out')
                 except BaseException as error:
                     failures.append(error);native.exit()

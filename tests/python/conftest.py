@@ -46,7 +46,7 @@ from infernux.lib import (
     InputManager,
     lib_dir,
 )
-from infernux.resources import resources_path
+from infernux.resources import resources_path, engine_ui_font_path, engine_font_cjk_path, engine_mono_font_path
 from infernux.input import Input
 from infernux.components._component_lifecycle import RuntimeExecutionScheduler
 from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
@@ -72,6 +72,7 @@ def _reset_editor_interaction_state():
 
     previous_core = EditorInteractionCore._instance
     from infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.resources_manager import ResourcesManager
     from infernux.core.material import Material
     from infernux.renderstack.render_effect import RenderEffect
 
@@ -81,6 +82,8 @@ def _reset_editor_interaction_state():
     # short-lived manager for their own scenario.  Keeping that manager alive
     # makes editor-only preview behavior depend on test order.
     PlayModeManager._instance = None
+    previous_resources = ResourcesManager._instance
+    ResourcesManager._instance = None
     registry = DocumentRegistry()
     clipboard = ClipboardService()
     try:
@@ -102,6 +105,7 @@ def _reset_editor_interaction_state():
         # session fixture does not require a Python PlayModeManager; tests that
         # need one create it explicitly and own it for that test.
         PlayModeManager._instance = None
+        ResourcesManager._instance = previous_resources
         # A failed transition test can deliberately leave its manager in a
         # recovery state. Its process-wide save policy belongs to that test.
         Material._suppress_auto_save, RenderEffect._suppress_auto_save = previous_save_suppression
@@ -132,6 +136,7 @@ def engine():
     eng = NativeEngine(lib_dir)
     eng.set_log_level(LogLevel.Warn)
     eng.init_renderer(64, 64, project, resources_path)
+    eng.set_gui_fonts(engine_ui_font_path, engine_font_cjk_path, engine_mono_font_path, 16)
     try:
         yield eng
     finally:

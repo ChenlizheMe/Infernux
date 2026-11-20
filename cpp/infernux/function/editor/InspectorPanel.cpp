@@ -2057,8 +2057,7 @@ void InspectorPanel::RenderAddComponentPopup(InxGUIContext *ctx)
 
             const float rowHeight = ImGui::GetTextLineHeight() + ImGui::GetFontSize() * 0.55f;
             for (const auto &cat : categoryOrder) {
-                // Muted category header, Unity-style section grouping.
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.55f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, infernux::EditorThemeRegistry::Color("TEXT_DIM"));
                 ImGui::TextUnformatted(cat.c_str());
                 ImGui::PopStyleColor();
                 ImGui::Separator();

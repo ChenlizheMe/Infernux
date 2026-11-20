@@ -443,7 +443,8 @@ void BindPyComponentProxy(py::module_ &m)
         .def("refresh_python_lifecycle_dispatch", &PyComponentProxy::RefreshPythonLifecycleDispatch,
              "Refresh cached non-frame lifecycle wrappers and physics callback gates")
         .def("_reset_lifecycle_for_play", &PyComponentProxy::ResetLifecycleForPlay,
-             "Internal Edit-to-Play lifecycle reset for a fresh Python mirror");
+             "Internal Edit-to-Play lifecycle reset for a fresh Python mirror")
+        .def("_initialize_recovered_script", &PyComponentProxy::InitializeRecoveredScript, py::arg("enabled"));
 }
 
 } // namespace infernux::scene_binding

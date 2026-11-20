@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_normal, sh_guide_pixel, sh_normal_weight
+from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_facing, sh_guide_normal, sh_guide_pixel, sh_normal_weight
 
 
 class RayDiffuseBlur(shader.fullscreen):
@@ -28,7 +28,7 @@ class RayDiffuseBlur(shader.fullscreen):
         mature = age > 33.0
         step = 1 if mature else 3
         n = sh_guide_normal(geometry.y)
-        facing = shader.max(0.3, n.z)
+        facing = sh_facing(n)
         visibility = shader.load(self.visibility, site, 0).x if self.use_visibility else 0.0
 
         red = shader.vec4(0.0)

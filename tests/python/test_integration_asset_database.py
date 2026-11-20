@@ -595,7 +595,7 @@ class SparksGraph(ParticleScript):
         ParticleArtifactRegistry.clear()
 
 
-def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engine, tmp_path: Path):
+def test_particle_graph_reimport_retires_invalid_generation_and_recovers(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "StableSmoke.particlegraph"
     valid = ParticleGraphAsset(stable_id="stable-smoke")
@@ -617,8 +617,16 @@ def test_particle_graph_reimport_keeps_last_known_good_on_semantic_failure(engin
         assert not result
         assert result.database_committed is True
         assert result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
-        assert "keeping last-known-good" in result.error
-        assert ParticleArtifactRegistry.get(str(source), guid=imported.guid) == published
+        assert "mandatory root" in result.error
+        assert ParticleArtifactRegistry.get(str(source), guid=imported.guid) is None
+        assert asset_db.get_import_error(imported.guid) == result.error
+
+        source.write_text(json.dumps(valid.to_dict()), encoding="utf-8")
+        repaired = AssetManager.reimport_asset(str(source), database=asset_db)
+        assert repaired, repaired.error
+        assert repaired.guid == imported.guid
+        assert ParticleArtifactRegistry.get(str(source), guid=imported.guid) is not None
+        assert not asset_db.get_import_error(imported.guid)
     finally:
         if asset_db.contains_path(str(source)):
             asset_db.delete_asset(str(source))

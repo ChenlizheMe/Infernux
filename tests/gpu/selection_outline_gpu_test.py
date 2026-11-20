@@ -27,6 +27,12 @@ class NoSkyPipeline(RenderPipeline):
         pipeline.screen_ui()
 
 
+class JitteredGizmoPipeline(NoSkyPipeline):
+    def define_topology(self, graph):
+        super().define_topology(graph)
+        graph.set_temporal_jitter()
+
+
 VERTEX = '''import infernux.shader as shader
 class OutlineShift(shader.vert):
     shader_id = "tests/outline/shift"
@@ -119,7 +125,7 @@ def main():
                 camera.add_component("Camera")
                 frontend.resize_game_render_target(160, 120)
                 engine.set_game_camera_enabled(True)
-            pipeline = NoSkyPipeline()
+            pipeline = JitteredGizmoPipeline() if args.check == "gizmo" else NoSkyPipeline()
             pipeline.samples = args.samples
             frontend.set_render_pipeline(pipeline)
             frame, changed = 0, 0
@@ -136,6 +142,18 @@ def main():
                         pixels = ticket.result_numpy().copy().astype(np.float32)
                         if stage == "baseline_readback":
                             baseline = pixels
+                            graph = engine.renderer_frame_snapshot
+                            if args.check == "game-alpha":
+                                assert "_EditorGizmos" not in graph["game_render_graph_pass_names"]
+                            elif args.check == "gizmo":
+                                passes = graph["scene_render_graph_pass_names"]
+                                depth = passes.index("__EditorOverlayDepth")
+                                assert passes.index("_WorldUI") < depth < passes.index("_ComponentGizmos"), passes
+                                terminal = passes[passes.index("_ComponentGizmos"):]
+                                assert terminal[:2] == ["_ComponentGizmos", "_EditorGizmos"], terminal
+                                assert terminal[terminal.index("_EditorTools") + 1:] == (
+                                    (["__SceneFinalMsaaResolve"] if args.samples > 1 else []) + ["__SceneOutputExport"]
+                                ), terminal
                             blue = (pixels[..., 2] > .9) & (pixels[..., 0] < .05)
                             print("Scene pixel maxima", pixels.max(axis=(0, 1)).tolist(), "blue", int(blue.sum()), flush=True)
                             if not blue.any():
@@ -164,10 +182,13 @@ def main():
                             print("No-sky background alpha", float(baseline[..., 3][background].min()),
                                   "outline background pixels", int((outline & background).sum()), flush=True)
                             if args.check == "gizmo":
-                                green = (pixels[..., 1] > .8) & (pixels[..., 0] < .05) & (pixels[..., 2] < .05)
+                                # A one-pixel wire can straddle two pixel rows. MSAA
+                                # resolves each row to its fraction of covered samples.
+                                green = (pixels[..., 1] > .01) & (pixels[..., 0] < .05) & (pixels[..., 2] < .05)
                                 gizmo_on_black = green & background
-                                print("Gizmo pixels over black background", int(gizmo_on_black.sum()), flush=True)
-                                assert gizmo_on_black.sum() > 20, "Gizmo was not drawn over empty background"
+                                coverage = pixels[..., 1][gizmo_on_black].sum()
+                                print("Gizmo coverage over black background", float(coverage), flush=True)
+                                assert coverage > 20, "Gizmo was not drawn over empty background"
                                 assert np.all(pixels[..., 3][gizmo_on_black] == 1.0), "Gizmo remains invisible through alpha"
                                 completed = True
                                 engine.exit()

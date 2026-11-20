@@ -36,6 +36,8 @@ def _camera_preview_graph():
 class SceneViewOverlaysMixin:
     """SceneViewOverlaysMixin method group for SceneViewPanel."""
 
+    _overlay_tools_rect = None
+
     def _render_overlays_and_shortcuts(
         self,
         ctx,
@@ -623,6 +625,8 @@ class SceneViewOverlaysMixin:
     def _draw_gizmo_overlay(self, ctx: InxGUIContext, vp: ViewportInfo) -> bool:
         """Keep scene tools left and viewport settings right, clear of the axes."""
         dpi = editor_dpi_scale(ctx)
+        if self._overlay_tools_rect is not None:
+            self._draw_overlay_pill(ctx, *self._overlay_tools_rect)
         ctx.begin_group()
         hovered = self._draw_coord_space_dropdown(ctx)
         # Measure the combo height so tool buttons match exactly
@@ -632,6 +636,10 @@ class SceneViewOverlaysMixin:
         ctx.end_group()
         tools_right = ctx.get_item_rect_max_x()
         tools_top = ctx.get_item_rect_min_y()
+        self._overlay_tools_rect = (
+            ctx.get_item_rect_min_x() - 4 * dpi, tools_top - 3 * dpi,
+            tools_right + 4 * dpi, ctx.get_item_rect_max_y() + 3 * dpi,
+        )
         self._viewport_overlay_rows = 1
         from .editor_services import EditorServices
         controls = EditorServices.instance().editor_controls
@@ -644,13 +652,18 @@ class SceneViewOverlaysMixin:
             if settings_left < tools_right + 12 * dpi:
                 settings_top += combo_h + 8 * dpi
                 self._viewport_overlay_rows = 2
-            ctx.draw_filled_rect(settings_left - 4 * dpi, settings_top - 3 * dpi,
-                                 settings_left + settings_width + 4 * dpi, settings_top + combo_h + 3 * dpi,
-                                 *Theme.SCENE_OVERLAY_COMBO_BG)
+            self._draw_overlay_pill(ctx, settings_left - 4 * dpi, settings_top - 3 * dpi,
+                                    settings_left + settings_width + 4 * dpi, settings_top + combo_h + 3 * dpi)
             ctx.set_cursor_screen_pos(settings_left, settings_top)
             controls.render_viewport_controls(ctx)
             hovered = ctx.is_item_hovered() or hovered
         return hovered
+
+    @staticmethod
+    def _draw_overlay_pill(ctx: InxGUIContext, min_x: float, min_y: float, max_x: float, max_y: float) -> None:
+        ctx.draw_filled_rect(min_x, min_y, max_x, max_y, *Theme.SCENE_OVERLAY_PILL_BG)
+        ctx.draw_rect(min_x, min_y, max_x, max_y, *Theme.SCENE_OVERLAY_PILL_EDGE)
+
 
     def _draw_coord_space_dropdown(self, ctx: InxGUIContext) -> bool:
         """Draw Global/Local coordinate-space dropdown in the top-left corner."""

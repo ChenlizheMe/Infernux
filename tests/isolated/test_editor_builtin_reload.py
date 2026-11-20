@@ -91,8 +91,8 @@ def exercise(project):
             # presents the full catalog/details window, rather than a dropdown.
             def choose():
                 service = bootstrap.plugin_manager.themes
-                service.select("graphite")
-                repaired._selected = "graphite"
+                service.select("infernux")
+                repaired._selected = "infernux"
             call(choose)
             output = Path(__file__).resolve().parents[2] / "out/implementation-review/editor-theme-detail.png"
             output.parent.mkdir(parents=True, exist_ok=True)

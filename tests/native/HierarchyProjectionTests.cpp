@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 // CPU ImGui frames exercise the production HierarchyPanel without a renderer.
 // Seed the panel's pending Shift release state, then execute its real
 // VisiblePreRender callback. Explicit-instantiation access avoids a product edit.
@@ -373,7 +374,7 @@ static int ExtendedCases(nlohmann::json &report)
 
 int main()
 {
-    ImGui::CreateContext();
+    CreateImGuiTestContext();
     auto &io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.DisplaySize = ImVec2(900, 900);

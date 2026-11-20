@@ -528,10 +528,12 @@ class Input(metaclass=_InputMeta):
         consume the delta. Cursor lock reports relative device motion, without
         axis sensitivity, frame-time, or Game View display-scale multipliers.
         """
-        if not Input._accepts_game_input():
-            return (0.0, 0.0)
         mgr = _NativeInputManager.instance()
-        return (mgr.mouse_delta_x, mgr.mouse_delta_y)
+        # A World sample already contains only the movement routed to its
+        # camera. Moving across Game tiles does not transfer keyboard focus.
+        if Input._accepts_game_input() or (mgr._read_world_id and mgr._sampled_pointer_active):
+            return (mgr.mouse_delta_x, mgr.mouse_delta_y)
+        return (0.0, 0.0)
 
     # ------------------------------------------------------------------
     # Axis helpers — Unity: Input.GetAxis / GetAxisRaw
@@ -550,10 +552,13 @@ class Input(metaclass=_InputMeta):
 
         Returns ``0.0`` for unknown axis names.
         """
+        name = axis_name.lower()
+        if name in ("mouse x", "mouse y"):
+            dx, dy = Input.get_mouse_delta()
+            return (dx if name == "mouse x" else dy) * Input.mouse_sensitivity
         if not Input._accepts_game_input():
             return 0.0
         mgr = _NativeInputManager.instance()
-        name = axis_name.lower()
         if name == "horizontal":
             val = 0.0
             if mgr.get_game_key(_NativeInputManager.name_to_scancode("d")) or \
@@ -572,10 +577,6 @@ class Input(metaclass=_InputMeta):
                mgr.get_game_key(_NativeInputManager.name_to_scancode("down")):
                 val -= 1.0
             return val
-        elif name == "mouse x":
-            return mgr.mouse_delta_x * Input.mouse_sensitivity
-        elif name == "mouse y":
-            return mgr.mouse_delta_y * Input.mouse_sensitivity
         elif name in ("mouse scrollwheel", "mouse scroll wheel"):
             return mgr.game_scroll_delta_y
         return 0.0

@@ -106,9 +106,13 @@ class MouseEventDispatcher:
                     call(pressed, "on_mouse_up_as_button")
 
     def reset(self) -> None:
+        self._pressed_object = None
+        self.leave()
+
+    def leave(self) -> None:
+        """End hover once while retaining the owner of an outstanding press."""
         previous = self._hover_object
         self._hover_object = None
-        self._pressed_object = None
         self._reset_revision += 1
         if previous is not None:
             self._call(self._components(previous), "on_mouse_exit", current_runtime_epoch(), self._reset_revision)

@@ -439,6 +439,11 @@ def register_preload_python_library(owner: str, path: str) -> None:
     roots = _preload_python_libraries.get(owner, ())
     if root not in roots:
         _preload_python_libraries[owner] = (*roots, root)
+        from infernux.engine.reload.owners import current_owner
+
+        reload_owner = current_owner()
+        if reload_owner is not None and reload_owner.coordinator is not None:
+            reload_owner.coordinator.register_owned_library(reload_owner, root)
     from infernux.engine.script_source import track_preload_sources
     track_preload_sources()
 

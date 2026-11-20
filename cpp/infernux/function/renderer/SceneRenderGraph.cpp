@@ -1198,11 +1198,12 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     globals.worldSpaceCameraPos = glm::vec4(glm::vec3(glm::inverse(view)[3]), 1.0f);
     globals.projectionParams = camera.projectionParams;
     globals.zBufferParams = camera.zBufferParams;
-    globals.viewOptions =
-        MakeViewOptions(m_cameraDithering, m_cameraStopNaNs, m_renderView.kind == rhi::RenderViewKind::Scene,
-                        m_rayHistoryWorld.AcceptedGeometry(), static_cast<uint32_t>(m_executionCount),
-                        m_cameraHistoryValid ? m_temporalJitterNdc - m_previousJitterNdc : glm::vec2(0.0f));
+    globals.viewOptions = MakeViewOptions(
+        m_cameraDithering, m_cameraStopNaNs, m_renderView.kind == rhi::RenderViewKind::Scene,
+        m_rayHistoryWorld.AcceptedGeometry(), static_cast<uint32_t>(m_executionCount),
+        m_cameraHistoryValid ? m_temporalJitterNdc - m_previousJitterNdc : glm::vec2(0.0f), WritesDisplayRgb());
     globals.viewOptions.x |= m_rayHistoryWorld.ViewFlags();
+    globals.rasterJitterPixels = m_temporalJitterNdc * glm::vec2(width, height) * 0.5f;
     if (!rhiDevice.WriteBuffer(frame.globals.buffer, 0, &globals, sizeof(globals))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local globals UBO");
         return false;
@@ -1506,6 +1507,33 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     RenderGraphDescription normalizedDesc;
     try {
         normalizedDesc = NormalizeRenderGraphForOutput(desc, HasOutputTexture(), m_renderView.samples);
+        if (m_renderView.kind == rhi::RenderViewKind::Scene && !normalizedDesc.outputTexture.empty()) {
+            auto &textures = normalizedDesc.textures;
+            auto color = std::find_if(textures.begin(), textures.end(),
+                                      [](const auto &texture) { return texture.IsViewColor(); });
+            if (color == textures.end()) {
+                auto &target = textures.emplace_back();
+                target.name = "__EditorDisplayColor";
+                target.role = GraphTextureRole::Camera;
+                target.format = m_renderView.colorFormat;
+                target.samples = 0;
+                color = std::prev(textures.end());
+            }
+            // A custom pipeline can publish a transient or persistent image.
+            // Compose that output into the camera before adding editor-only draws.
+            if (color->name != normalizedDesc.outputTexture) {
+                auto &copy = normalizedDesc.passes.emplace_back();
+                copy.name = "__EditorDisplaySource";
+                copy.readTextures = {normalizedDesc.outputTexture};
+                copy.writeColors = {{0, color->name}};
+                auto &command = copy.commands.emplace_back();
+                command.type = GraphCommandType::FullscreenQuad;
+                command.shaderName = "infernux/internal/fullscreen_copy";
+                command.fullscreenProgram = m_vkCore->AcquireFullscreenProgram(command.shaderName);
+                command.inputBindings = {{"source_tex", normalizedDesc.outputTexture}};
+                normalizedDesc.outputTexture = color->name;
+            }
+        }
         m_worldRayTailUse = ResolveGraphRayTailUse(normalizedDesc);
         SetRayLitProgram(ResolveGraphRayLitProgram(normalizedDesc));
         for (auto &pass : normalizedDesc.passes) {
@@ -1659,15 +1687,16 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             switch (commandType) {
             case GraphCommandType::DrawRenderers:
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), GetViewGlobalsBinding(),
-                                          m_drawView, queueMin, queueMax, sortMode, overrideMaterial, passTag,
-                                          &materialPass, materialFilter, command->rendererSelection.get(), 0, false,
+                                          m_drawView, RenderDrawSet::Scene, queueMin, queueMax, sortMode,
+                                          overrideMaterial, passTag, &materialPass, materialFilter,
+                                          command->rendererSelection.get(), 0, false,
                                           UsesInstanceMotion(materialPass.target) ? &m_motionHistory : nullptr,
                                           command->overrideMaterialValue);
                 break;
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), GetViewGlobalsBinding(),
-                                          m_drawView, skyboxQueue, skyboxQueue, "", "", "__infernux_internal_skybox",
+                                          m_drawView, RenderDrawSet::Skybox, skyboxQueue, skyboxQueue, "", "", "",
                                           &materialPass);
                 break;
             }
@@ -1710,65 +1739,6 @@ bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             }
         };
     }
-
-    // ========================================================================
-    // Auto-append _ComponentGizmos pass (queue 10000-20000).
-    // Python-defined per-component gizmos, rendered with depth testing
-    // against existing scene geometry. Runs before editor gizmos.
-    // ========================================================================
-    static constexpr int COMP_GIZMO_QUEUE_MIN = 10000;
-    static constexpr int COMP_GIZMO_QUEUE_MAX = 20000;
-    static const std::string kComponentGizmosPassName = "_ComponentGizmos";
-    const auto editorOverlayPass = GetEditorOverlayMaterialPass();
-    m_pythonCallbacks[kComponentGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
-                                                                                    uint32_t h) {
-#if INFERNUX_FRAME_PROFILE
-        const auto region = vkCore->BeginGpuProfileRegion(ctx.GetCommandBuffer(), "_ComponentGizmos");
-        try {
-            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(),
-                                      GetViewGlobalsBinding(), m_drawView, COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX,
-                                      "", "", "", &editorOverlayPass);
-        } catch (...) {
-            vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
-            throw;
-        }
-        vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
-#else
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), GetViewGlobalsBinding(),
-                                  m_drawView, COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "",
-                                  &editorOverlayPass);
-#endif
-    };
-
-    // ========================================================================
-    // Auto-append editor gizmos pass (queue 20001-25000).
-    // This ensures grid/gizmos always render after all user-defined passes,
-    // regardless of what queue ranges the user pipeline declares.
-    // In game view (no gizmo draw calls), DrawSceneFiltered finds nothing
-    // in this range and the pass is effectively a no-op.
-    // ========================================================================
-    static constexpr int GIZMO_QUEUE_MIN = 20001;
-    static constexpr int GIZMO_QUEUE_MAX = 25000;
-    static const std::string kEditorGizmosPassName = "_EditorGizmos";
-    m_pythonCallbacks[kEditorGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
-                                                                                 uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), GetViewGlobalsBinding(),
-                                  m_drawView, GIZMO_QUEUE_MIN, GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
-    };
-
-    // ========================================================================
-    // Auto-append editor tools pass (queue 25001-30000).
-    // Translation/rotation/scale handles rendered on top of everything
-    // (no depth test). In game view, no draw calls exist in this range.
-    // ========================================================================
-    static constexpr int TOOLS_QUEUE_MIN = 25001;
-    static constexpr int TOOLS_QUEUE_MAX = 30000;
-    static const std::string kEditorToolsPassName = "_EditorTools";
-    m_pythonCallbacks[kEditorToolsPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
-                                                                                uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), GetViewGlobalsBinding(),
-                                  m_drawView, TOOLS_QUEUE_MIN, TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
-    };
 
     // Rebuilt callbacks borrow commands from normalizedDesc. Retain that
     // storage even when only the target signature changed, so those commands
@@ -1949,8 +1919,9 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
         }
         const int minimum = skybox ? EngineConfig::Get().skyboxQueue : command->queueMin;
         const int maximum = skybox ? minimum : command->queueMax;
+        const auto drawSet = skybox ? RenderDrawSet::Skybox : RenderDrawSet::Scene;
         const auto visit = [&](const DrawCall &draw) {
-            if (!draw.frustumVisible || skybox != (draw.identity.domain == RenderDomain::Skybox))
+            if (!draw.frustumVisible || DrawSetForDomain(draw.identity.domain) != drawSet)
                 return;
             if (command->rendererSelection && !command->rendererSelection->Find(draw.identity))
                 return;
@@ -3276,14 +3247,13 @@ bool SceneRenderGraph::RegisterGraphTextures(uint32_t width, uint32_t height,
     return true;
 }
 
-vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
-                                                    vk::ResourceHandle depthTarget, uint32_t width, uint32_t height)
+vk::ResourceHandle SceneRenderGraph::AppendGizmoPass(const char *name, vk::ResourceHandle colorTarget,
+                                                     vk::ResourceHandle depthTarget, int queueMin, int queueMax,
+                                                     const char *sortMode)
 {
-    auto callbackIt = m_pythonCallbacks.find(name);
-    if (callbackIt == m_pythonCallbacks.end())
-        return colorTarget;
-
-    auto callback = callbackIt->second;
+    const auto pipeline = GetEditorOverlayMaterialPass();
+    const auto width = m_width;
+    const auto height = m_height;
     const vk::ResourceHandle rendererListHandle = m_visibleRendererList;
     InxVkCoreModular *vkCore = m_vkCore;
     vk::ResourceHandle writtenColor;
@@ -3297,19 +3267,107 @@ vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk:
             builder.SkipCallbackWhenRendererListsEmpty();
         }
         builder.SetRenderArea(width, height);
-        return [callback, width, height, rendererListHandle, vkCore](vk::RenderContext &ctx) {
+        return [=](vk::RenderContext &ctx) {
             if (rendererListHandle.IsValid()) {
                 const RendererList *rendererList = ctx.GetRendererList(rendererListHandle);
                 const auto *drawCalls = rendererList ? &rendererList->DrawCalls() : nullptr;
                 if (!vkCore->UsesDrawCalls(drawCalls))
                     vkCore->SetDrawCalls(drawCalls);
             }
-            if (callback) {
-                callback(ctx, width, height);
-            }
+#if INFERNUX_FRAME_PROFILE
+            const auto region = vkCore->BeginGpuProfileRegion(ctx.GetCommandBuffer(), name);
+#endif
+            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), width, height, GetEditorOverlayBindGroup(),
+                                      GetViewGlobalsBinding(), m_drawView, RenderDrawSet::EditorOverlay, queueMin,
+                                      queueMax, sortMode, "", "", &pipeline);
+#if INFERNUX_FRAME_PROFILE
+            vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
+#endif
         };
     });
     return writtenColor.IsValid() ? writtenColor : colorTarget;
+}
+
+vk::ResourceHandle SceneRenderGraph::AppendEditorOverlayDepth(vk::ResourceHandle sceneDepth, uint32_t width,
+                                                              uint32_t height)
+{
+    if (!m_pythonGraphDesc.temporalJitter || !sceneDepth.IsValid())
+        return sceneDepth;
+
+    // The resolved image and editor primitives use pixel centres. Replay the
+    // camera's depth-writing mesh passes there so thin lines on a surface see
+    // the same occluder on every jitter phase.
+    const auto &textures = m_pythonGraphDesc.textures;
+    const auto cameraDepth =
+        std::find_if(textures.begin(), textures.end(), [](const auto &texture) { return texture.IsViewDepth(); });
+    if (cameraDepth == textures.end())
+        return sceneDepth;
+    std::vector<const GraphPassDesc *> sources;
+    float clearDepth = 0.0f;
+    const auto &passes = m_pythonGraphDesc.passes;
+    for (auto it = passes.rbegin(); it != passes.rend(); ++it) {
+        if (it->writeDepth != cameraDepth->name)
+            continue;
+        if (const auto *draw = it->PrimaryCommand()) {
+            if (draw->type == GraphCommandType::DrawRenderers) {
+                sources.push_back(&*it);
+            } else if (draw->type != GraphCommandType::DrawWorldUI &&
+                       !(draw->type == GraphCommandType::FullscreenQuad && !draw->depthWrite)) {
+                // World UI tests the attached depth without writing it. Keep
+                // custom depth producers authoritative when replay is impossible.
+                return sceneDepth;
+            }
+        }
+        if (it->clearDepth) {
+            clearDepth = it->clearDepthValue;
+            break;
+        }
+    }
+    if (sources.empty())
+        return sceneDepth;
+
+    auto pipeline = GetEditorOverlayMaterialPass();
+    pipeline.target = ShaderCompileTarget::Depth;
+    pipeline.colorFormats.clear();
+    pipeline.depthReadOnly = false;
+    vk::ResourceHandle depth;
+    m_renderGraph->AddPass("__EditorOverlayDepth", [&](vk::PassBuilder &builder) {
+        depth = builder.WriteDepth(builder.CreateDepthStencil("__EditorOverlayDepth", width, height,
+                                                              rhi::ToVkFormat(pipeline.depthFormat),
+                                                              static_cast<VkSampleCountFlagBits>(pipeline.samples)));
+        builder.SetClearDepth(clearDepth, 0);
+        builder.ReadRendererList(m_visibleRendererList);
+        builder.SetRenderArea(width, height);
+        std::vector<GraphCommandDesc> commands;
+        for (auto it = sources.rbegin(); it != sources.rend(); ++it) {
+            const auto *pass = *it;
+            commands.push_back(*pass->PrimaryCommand());
+            DeclareMaterialBufferReads(builder, pass->name);
+            const auto inputs = m_drawTextureInputs.find(pass->name);
+            if (inputs != m_drawTextureInputs.end()) {
+                for (const auto &generation : inputs->second) {
+                    const auto source = m_renderGraph->ImportRenderTexture(
+                        "__DrawTexture/" + generation->sampledColor->GetSourceId(), generation);
+                    builder.Read(generation->multisampleColor ? source.resolve : source.color,
+                                 rhi::RenderTextureSampleStages);
+                }
+            }
+        }
+        return [this, commands = std::move(commands), pipeline, width, height](vk::RenderContext &ctx) {
+            const auto *list = ctx.GetRendererList(m_visibleRendererList);
+            const auto *draws = list ? &list->DrawCalls() : nullptr;
+            if (!m_vkCore->UsesDrawCalls(draws))
+                m_vkCore->SetDrawCalls(draws);
+            for (const auto &draw : commands) {
+                m_vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), width, height, GetEditorOverlayBindGroup(),
+                                            GetViewGlobalsBinding(), m_drawView, RenderDrawSet::Scene, draw.queueMin,
+                                            draw.queueMax, draw.sortMode, draw.overrideMaterial, draw.passTag,
+                                            &pipeline, draw.materialFilter, draw.rendererSelection.get(), 0, true,
+                                            nullptr, draw.overrideMaterialValue);
+            }
+        };
+    });
+    return depth;
 }
 
 vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle displayTarget)
@@ -3344,7 +3402,7 @@ vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle disp
             const RendererList *list = context.GetRendererList(rendererList);
             if (list)
                 m_outlineRenderer->RecordMaskDraws(
-                    context.GetCommandBuffer(), list->DrawCalls(), GetPerViewBindGroup(),
+                    context.GetCommandBuffer(), list->DrawCalls(), GetEditorOverlayBindGroup(),
                     m_vkCore->GetDeviceContext().GetRhiDevice().Resolve(GetViewGlobalsBinding().buffer));
         };
     });
@@ -3353,17 +3411,17 @@ vk::ResourceHandle SceneRenderGraph::AppendEditorOutline(vk::ResourceHandle disp
         return displayTarget;
 
     vk::ResourceHandle composited;
-    m_renderGraph->AddPass("__EditorOutlineComposite",
-                           [this, width, height, displayTarget, writtenMask, &composited](vk::PassBuilder &builder) {
-                               builder.Read(writtenMask, rhi::PipelineStage::FragmentShader);
-                               composited = builder.WriteColor(displayTarget, 0);
-                               builder.SetDepthTest(false);
-                               builder.SetRenderArea(width, height);
-                               return [this](vk::RenderContext &context) {
-                                   if (m_outlineRenderer)
-                                       m_outlineRenderer->RecordCompositeDraw(context.GetCommandBuffer());
-                               };
-                           });
+    m_renderGraph->AddPass("__EditorOutlineComposite", [this, width, height, displayTarget, writtenMask,
+                                                        &composited](vk::PassBuilder &builder) {
+        builder.Read(writtenMask, rhi::PipelineStage::FragmentShader);
+        composited = builder.WriteColor(displayTarget, 0);
+        builder.SetDepthTest(false);
+        builder.SetRenderArea(width, height);
+        return [this](vk::RenderContext &context) {
+            if (m_outlineRenderer)
+                m_outlineRenderer->RecordCompositeDraw(context.GetCommandBuffer(), WritesDisplayRgb());
+        };
+    });
     return composited.IsValid() ? composited : displayTarget;
 }
 
@@ -4236,22 +4294,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
         const auto cameraClearOverride = ResolveCameraClearOverride();
         m_mainClearPassName.clear();
 
-        // Scene overlays are authored in linear space. Composite them before
-        // the final display encode so icons, handles, outlines and the grid all
-        // share the same color contract as scene geometry. Player/Game graphs
-        // never receive these editor-only passes.
-        bool sceneOverlaysAppended = false;
-        const auto appendSceneOverlays = [&]() {
-            if (sceneOverlaysAppended || m_renderView.kind != rhi::RenderViewKind::Scene)
-                return;
-            m_importedColorTarget =
-                AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
-            m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
-            m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
-            m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
-            sceneOverlaysAppended = true;
-        };
-
         const bool trackInputs = std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
                                              [](const auto &buffer) { return buffer.input != nullptr; });
         const bool trackPersistentTextures =
@@ -4289,10 +4331,6 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 width = m_viewport.Output()->description.width;
                 height = m_viewport.Output()->description.height;
                 backbufferDirtySinceResolve = true;
-            }
-            if (command && command->type == GraphCommandType::FullscreenQuad &&
-                command->shaderName == "infernux/internal/display_encode") {
-                appendSceneOverlays();
             }
             const auto isPersistent = [&](const std::string &name) {
                 const auto texture = texDescMap.find(name);
@@ -5326,11 +5364,11 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                             const auto *draws = list ? &list->DrawCalls() : nullptr;
                             if (!vkCore->UsesDrawCalls(draws))
                                 vkCore->SetDrawCalls(draws);
-                            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(),
-                                                      GetViewGlobalsBinding(), m_drawView, opaqueCommand.queueMin,
-                                                      opaqueCommand.queueMax, opaqueCommand.sortMode, "",
-                                                      opaqueCommand.passTag, &replayPipeline,
-                                                      opaqueCommand.materialFilter, nullptr, excludedId, true);
+                            vkCore->DrawSceneFiltered(
+                                ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(), GetViewGlobalsBinding(),
+                                m_drawView, RenderDrawSet::Scene, opaqueCommand.queueMin, opaqueCommand.queueMax,
+                                opaqueCommand.sortMode, "", opaqueCommand.passTag, &replayPipeline,
+                                opaqueCommand.materialFilter, nullptr, excludedId, true);
                         };
                     });
                     alternateDepths.emplace(excludedId, writtenAlternateDepth);
@@ -5737,10 +5775,14 @@ void SceneRenderGraph::BuildRenderGraph(bool buffersPrepared, const std::vector<
                 });
             }
 
-        // Custom author pipelines may omit the built-in display encode. Keep
-        // their editor overlays observable at the graph tail without adding
-        // anything to Game/Player graphs.
-        appendSceneOverlays();
+        // Terminal Scene raster stage. Only resolve and publication follow.
+        if (m_renderView.kind == rhi::RenderViewKind::Scene) {
+            const auto overlayDepth = AppendEditorOverlayDepth(sharedDepth, width, height);
+            auto color = AppendGizmoPass("_ComponentGizmos", m_importedColorTarget, overlayDepth, 10000, 20000);
+            color = AppendGizmoPass("_EditorGizmos", color, overlayDepth, 20001, 25000);
+            color = AppendEditorOutline(color);
+            publishResourceVersion(AppendGizmoPass("_EditorTools", color, overlayDepth, 25001, 30000, "preserve"));
+        }
     }
 
     // Set output for proper resource tracking and dead-pass culling.

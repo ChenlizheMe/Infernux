@@ -56,6 +56,9 @@ def _published_module(module: types.ModuleType) -> types.ModuleType:
     current = sys.modules.get(name)
     if type(current) is types.ModuleType and _module_source(current) == _module_source(module):
         return current
+    owner = types.ModuleType.__getattribute__(module, "__dict__").get("__infernux_reload_owner__")
+    if owner is not None and owner.closed:
+        raise ReferenceError(f"Project module '{name}' has been retired")
     return module
 
 
@@ -88,6 +91,9 @@ class _PublishedFunction:
     def __wrapped__(self):
         module = sys.modules.get(self.module)
         if type(module) is not types.ModuleType or _module_source(module) != self.source:
+            owner = self.original.__globals__.get("__infernux_reload_owner__")
+            if owner is not None and owner.closed:
+                raise ReferenceError(f"Project function '{self.module}.{self.name}' has been retired")
             return self.original
         function = vars(module).get(self.name)
         if callable(function) and getattr(function, "__wrapped__", None) is not self:
@@ -950,6 +956,12 @@ class CandidateImportTransaction:
         from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
 
         assert_runtime_dispatch_safe_point()
+        from infernux.components.script_loader import _bind_reload_source_owner
+
+        for name, module in self._modules.items():
+            source = _module_source(module)
+            if source and name not in self._overlay_names:
+                _bind_reload_source_owner(source, name, module)
         self._published_names = frozenset((*self._modules, *self._reused_lkg))
         self._finalized = True
         self._before.clear()

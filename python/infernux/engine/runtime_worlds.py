@@ -216,12 +216,14 @@ class ProjectModules:
                     accepted_code.execute(vars(module))
                 if any(path.is_relative_to(root) for root in self.roots):
                     from infernux.components.script_loader import (
-                        _class_literal_defaults, _declared_class_literals, _remember_module_literals,
+                        _bind_reload_source_owner, _class_literal_defaults, _declared_class_literals,
+                        _remember_module_literals,
                     )
                     from .script_closure_reload import remember_closure_code
                     _class_literal_defaults.update(_declared_class_literals((module,)))
                     _remember_module_literals(module)
                     remember_closure_code(module, code)
+                    _bind_reload_source_owner(str(path), qualified, module)
                 if accepted_code is not None:
                     from .script_source import publish_module_code
                     module.__infernux_accepted_code__ = accepted_code
@@ -268,9 +270,14 @@ class ProjectModules:
         return self.load(name.split('.')[0])
 
     def close(self):
+        from infernux.components.script_loader import _retire_reload_source_owner
+
         for name in tuple(sys.modules):
             if name == self.prefix or name.startswith(self.prefix + '.'):
-                sys.modules.pop(name, None)
+                module = sys.modules.pop(name, None)
+                source = vars(module).get('__file__') if module is not None else None
+                if source:
+                    _retire_reload_source_owner(source, module_name=name)
         self.modules.clear()
         self.specifications.clear()
         self.published.clear()

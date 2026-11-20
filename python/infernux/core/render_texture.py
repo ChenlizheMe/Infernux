@@ -125,7 +125,13 @@ class RenderTexture(ResourceProxy):
         engine = Application._current_engine()
         if engine is None:
             raise RuntimeError("RenderTexture requires a running graphical engine")
-        return cls._from_native(engine.get_native_engine()._load_render_texture(guid))
+        target = engine.get_native_engine()._load_render_texture(guid)
+        if target is None:
+            from infernux.core.assets import AssetManager
+
+            error = AssetManager._current_asset_error(guid)
+            raise ValueError(f"RenderTexture {guid}: {error or 'requires an imported asset GUID'}")
+        return cls._from_native(target)
 
     @property
     def guid(self) -> str:

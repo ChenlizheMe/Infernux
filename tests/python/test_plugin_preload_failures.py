@@ -151,3 +151,36 @@ def test_failed_reload_retires_live_service_and_reports_current_source(package_p
     state = manager.reload('test/live-service')
     assert state.loaded and not state.error
     assert manager.preloads.states[identity].instance is not original
+
+
+def test_reload_releases_shared_library_serializable_types(package_project):
+    from infernux.components.serializable_object import get_serializable_class
+
+    _root, manager, install = package_project
+    reference = "test/serializable-provider"
+    type_id = "tests.serializable_provider.options"
+    state = install(reference, {
+        "runtime/startup.py": """
+from infernux.lifecycle import InxPreload
+class Startup(InxPreload):
+    def preload(self, context):
+        context.own_python_library("runtime/serializable_provider")
+        from serializable_provider import Options
+        self.options = Options
+""",
+        "runtime/serializable_provider/__init__.py": f"""
+from infernux.components import SerializableObject
+class Options(SerializableObject):
+    __serialized_type_id__ = {type_id!r}
+""",
+    })
+    assert state.loaded and not state.error, state.error
+    original = get_serializable_class(type_id)
+    assert original is not None
+    state = manager.reload(reference)
+    assert state.loaded and not state.error, state.error
+    current = get_serializable_class(type_id)
+    assert current is not None and current is not original
+    assert current.__module__ == original.__module__
+    manager.uninstall(reference)
+    assert get_serializable_class(type_id) is None

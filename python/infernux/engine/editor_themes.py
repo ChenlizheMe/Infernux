@@ -11,11 +11,7 @@ from infernux.engine.ui.theme import Theme, active_editor_theme, list_editor_the
 from infernux import lib as native
 from infernux.theme_data import validate_theme_document
 
-_BUILTINS = (
-    ("infernux", "Infernux", "The built-in editor theme."),
-    ("graphite", "Graphite", "A steel blue editor accent."),
-    ("amber", "Amber", "A warm amber editor accent."),
-)
+_DEFAULT_THEME = "infernux"
 
 
 class EditorThemes:
@@ -39,8 +35,15 @@ class EditorThemes:
         self._tokens = {"colors": tuple(native.get_editor_theme_colors()),
                         "vec2s": tuple(native.get_editor_theme_vec2s()),
                         "floats": tuple(native.get_editor_theme_floats())}
-        selected = PreferencesStore().get("editor_theme", "infernux")
-        self.selection = selected if isinstance(selected, str) and selected else "infernux"
+        preferences = PreferencesStore()
+        selected = preferences.get("editor_theme", _DEFAULT_THEME)
+        # Package theme IDs are qualified and can be restored when their package loads.
+        self.selection = (
+            selected if isinstance(selected, str) and ("/" in selected or selected in list_editor_themes())
+            else _DEFAULT_THEME
+        )
+        if self.selection != selected:
+            preferences.set("editor_theme", self.selection)
         self.revision = 0
         self._catalog = ()
         self._publishing = False
@@ -93,9 +96,8 @@ class EditorThemes:
 
     def _rebuild_catalog(self, *, content_changed=False):
         active = active_editor_theme()
-        rows = [dict(id=theme_id, name=name, author="Infernux", description=description,
-                     reference="", version="", path="", available=True, error="", builtin=True)
-                for theme_id, name, description in _BUILTINS]
+        rows = [dict(id=_DEFAULT_THEME, name="Infernux", author="Infernux", description="The built-in editor theme.",
+                     reference="", version="", path="", available=True, error="", builtin=True)]
         for owner in sorted(self._package_rows):
             rows.extend(self._package_rows[owner])
         if self.selection not in {row["id"] for row in rows}:
@@ -205,7 +207,7 @@ class EditorThemes:
             self.remove_package(owner[len("theme:"):])
         for record in records:
             self.refresh_package(str(record["reference"]))
-        selected = self.selection if self.selection in list_editor_themes() else "infernux"
+        selected = self.selection if self.selection in list_editor_themes() else _DEFAULT_THEME
         _set_editor_theme_native(selected)
         self._rebuild_catalog()
 

@@ -12,6 +12,7 @@ from infernux.engine.reload.components import ComponentAdapter
 from infernux.engine.reload.coordinator import ReloadCoordinator
 from infernux.engine.deferred_task import DeferredTaskRunner
 from infernux.engine.ui import theme
+from infernux.lib import remove_editor_themes
 from infernux.runtime_services import get_runtime_service, install_runtime_service, remove_runtime_service
 
 
@@ -169,6 +170,32 @@ def test_deferred_source_retirement_cancels_remaining_steps_and_completion(reloa
     assert module.calls == ["first"]
 
 
+def test_commands_and_handles_retire_with_their_script(reload_project, monkeypatch):
+    from infernux.engine.interaction.commands import EditorCommand, EditorCommandRegistry
+    from infernux.engine.interaction.handles import EditorHandleProvider, EditorHandleRegistry
+
+    _scene, coordinator, write = reload_project
+    path = write("EditorToolsSource", "def callback(context): pass\n")
+    coordinator.ensure_ready((path,))
+    module = sys.modules["EditorToolsSource"]
+    command_id = "test.source_command"
+    monkeypatch.setattr(EditorCommandRegistry, "_instance", None)
+    monkeypatch.setattr(EditorHandleRegistry, "_instance", None)
+    commands, handles = EditorCommandRegistry(), EditorHandleRegistry()
+    commands.register(EditorCommand(command_id, module.callback))
+    provider = EditorHandleProvider("test.source_handle", module.callback)
+    handles.register(provider)
+    assert commands.can_execute(command_id)
+    assert handles.providers == (provider,)
+
+    module.__infernux_reload_owner__.stop_admission()
+    assert not commands.can_execute(command_id)
+    write("EditorToolsSource", "def bad(:\n")
+    coordinator.request((path,))
+    assert commands.get(command_id) is None
+    assert handles.providers == ()
+
+
 def test_deferred_submit_owner_cancels_core_callbacks(reload_project):
     _scene, coordinator, write = reload_project
     path = write("EditorDeferredSubmitter", "value = 1\n")
@@ -258,7 +285,8 @@ def test_theme_listener_owns_work_created_when_core_changes_theme(reload_project
     previous = theme.active_editor_theme()
     coordinator.ensure_ready((path,))
     try:
-        assert theme.set_editor_theme("amber" if previous != "amber" else "graphite")
+        theme.register_editor_theme("tests/theme-listener", {"ROLE_ACCENT": (0.3, 0.56, 0.86, 1.0)})
+        assert theme.set_editor_theme("tests/theme-listener")
         assert get_runtime_service("editor-theme-derived") is not None
         write("EditorThemeServiceOwner", "def bad(:\n")
         coordinator.request((path,))
@@ -266,6 +294,7 @@ def test_theme_listener_owns_work_created_when_core_changes_theme(reload_project
     finally:
         remove_runtime_service("editor-theme-derived")
         theme.set_editor_theme(previous)
+        remove_editor_themes("theme:tests/theme-listener")
 
 
 def test_theme_snapshot_skips_listener_retired_by_previous_listener(reload_project):
@@ -282,10 +311,12 @@ def test_theme_snapshot_skips_listener_retired_by_previous_listener(reload_proje
     previous = theme.active_editor_theme()
     install_runtime_service("editor-theme-retire", lambda: coordinator.request((), removed=(second,)))
     try:
-        assert theme.set_editor_theme("amber" if previous != "amber" else "graphite")
+        theme.register_editor_theme("tests/theme-listener", {"ROLE_ACCENT": (0.3, 0.56, 0.86, 1.0)})
+        assert theme.set_editor_theme("tests/theme-listener")
         assert b.calls == []
     finally:
         remove_a()
         remove_b()
         remove_runtime_service("editor-theme-retire")
         theme.set_editor_theme(previous)
+        remove_editor_themes("theme:tests/theme-listener")

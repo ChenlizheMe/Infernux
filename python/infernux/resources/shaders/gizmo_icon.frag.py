@@ -1,4 +1,5 @@
 import infernux.shader as shader
+from infernux.shader.lib.color import final_overlay_color
 
 
 class GizmoIcon(shader.surface):
@@ -14,5 +15,5 @@ class GizmoIcon(shader.surface):
 
     def surface(self, ctx: shader.SurfaceContext) -> shader.SurfaceData:
         sampled = shader.sample_bias(self.albedo_map, ctx.uv0, -0.75)
-        return shader.SurfaceData(albedo=sampled.rgb * ctx.color * self.base_color.rgb,
+        return shader.SurfaceData(albedo=final_overlay_color(sampled.rgb * ctx.color * self.base_color.rgb),
                                   alpha=sampled.a * self.base_color.a)

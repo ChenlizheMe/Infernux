@@ -202,6 +202,25 @@ def invalidate_discovery_cache(source_path: str | None = None) -> None:
         conflicts.clear()
 
 
+def retire_rejected_discovery_source(source_path: str, error: str) -> bool:
+    """Drop the failed source from the pipeline/pass/effect catalog."""
+    from infernux.renderstack.render_effect_compiler import (
+        _registered_effect_source_paths, _retire_source_effect_features,
+    )
+
+    key = path_key(source_path)
+    name = _loaded_script_modules.get(key)
+    if name is None and key not in _registered_effect_source_paths():
+        return False
+    if name is not None:
+        sys.modules.pop(name, None)
+    _retire_source_effect_features(source_path)
+    _loaded_scripts.discard(key)
+    _script_import_failures[key] = error
+    invalidate_discovery_cache(source_path)
+    return True
+
+
 def discovery_import_failures() -> dict[str, str]:
     """Return current project script import failures keyed by source path.
 
@@ -408,12 +427,16 @@ def _known_project_sources(search_root: str) -> list[str]:
 
 def _import_source_paths(paths) -> None:
     """Import explicit project source paths through the shared discovery cache."""
+    from infernux.components.script_loader import _bind_reload_source_owner, get_script_error_by_path
+    from infernux.engine.path_utils import resolved_path
+    from infernux.engine.reload.modules import coordinator_for_path
+
     _prune_deleted_loaded_scripts()
     for full in paths:
         fn = os.path.basename(full)
         is_pyc = fn.endswith(".pyc")
         norm = path_key(full)
-        if norm in _loading_script_paths:
+        if norm in _loading_script_paths or (not is_pyc and get_script_error_by_path(full)):
             continue
         try:
             stat = os.stat(full)
@@ -422,6 +445,17 @@ def _import_source_paths(paths) -> None:
         stamp = (stat.st_mtime_ns, stat.st_size)
 
         if norm in _loaded_scripts and _loaded_script_stamps.get(norm) == stamp:
+            continue
+
+        coordinator = coordinator_for_path(full)
+        state = coordinator.states.get(resolved_path(full)) if coordinator is not None else None
+        if state is not None:
+            if state.status == "active":
+                record = coordinator.graph.module_for_path(full)
+                _loaded_scripts.add(norm)
+                _loaded_script_modules[norm] = record.id.module_name
+                _loaded_script_stamps[norm] = stamp
+                _script_import_failures.pop(norm, None)
             continue
 
         mod_name = _loaded_script_modules.get(norm)
@@ -451,10 +485,11 @@ def _import_source_paths(paths) -> None:
                             code = compile(stream.read(), full, "exec", dont_inherit=True)
                         exec(code, mod.__dict__)
             except Exception as exc:
-                if previous is None:
-                    sys.modules.pop(mod_name, None)
-                else:
-                    sys.modules[mod_name] = previous
+                sys.modules.pop(mod_name, None)
+                if previous is not None:
+                    from infernux.components.script_loader import _retire_reload_source_owner
+                    _retire_reload_source_owner(full, module_name=mod_name)
+                retire_rejected_discovery_source(full, str(exc))
                 _loaded_scripts.discard(norm)
                 _script_import_failures[norm] = f"{type(exc).__name__}: {exc}"
                 continue
@@ -465,6 +500,7 @@ def _import_source_paths(paths) -> None:
                 # or restoration of its previous published namespace.
                 invalidate_discovery_cache()
             _loaded_scripts.add(norm)
+            _bind_reload_source_owner(full, mod_name, mod)
             _loaded_script_modules[norm] = mod_name
             _loaded_script_stamps[norm] = stamp
             _script_import_failures.pop(norm, None)
@@ -487,7 +523,7 @@ def _prune_deleted_loaded_scripts() -> None:
         _script_import_failures.pop(norm, None)
         _retire_source_effect_features(norm)
         mod_name = _loaded_script_modules.pop(norm, "")
-        if mod_name:
+        if mod_name.startswith("_infernux_disc_"):
             sys.modules.pop(mod_name, None)
 
 

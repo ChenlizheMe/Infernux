@@ -3475,7 +3475,8 @@ uint32_t InxGUIContext::RenderObjectFieldChrome(const std::string &fieldId, cons
                              pickerMin.y + ((pickerMax.y - pickerMin.y) - drawSize) * 0.5f};
         if (pickerTextureId != 0 && drawSize > 0.0f) {
             drawList->AddImage(ToImTextureID(pickerTextureId), drawMin,
-                               ImVec2(drawMin.x + drawSize, drawMin.y + drawSize));
+                               ImVec2(drawMin.x + drawSize, drawMin.y + drawSize), ImVec2(0, 0), ImVec2(1, 1),
+                               ImGui::GetColorU32(ImGuiCol_Text));
         }
     }
 

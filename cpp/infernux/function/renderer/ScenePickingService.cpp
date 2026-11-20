@@ -320,8 +320,8 @@ void ScenePickingService::Record(VkCommandBuffer commandBuffer, uint32_t targetW
     pickingPass.colorFormats = {rhi::PixelFormat::RG32UInt};
     pickingPass.depthFormat = rhi::FromVkFormat(target.depthFormat);
     pickingPass.samples = rhi::SampleCount::One;
-    m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perView.group, viewGlobals, viewMatrix, 0,
-                              5000, "front_to_back", {}, {}, &pickingPass);
+    m_core->DrawSceneFiltered(commandBuffer, target.width, target.height, perView.group, viewGlobals, viewMatrix,
+                              RenderDrawSet::Scene, 0, 5000, "front_to_back", {}, {}, &pickingPass);
     if (particleEntries && !particleEntries->empty()) {
         particle::GpuParticleViewConstants view;
         const glm::mat4 inverseView = glm::inverse(viewMatrix);

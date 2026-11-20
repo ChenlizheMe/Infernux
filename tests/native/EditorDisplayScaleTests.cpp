@@ -1,3 +1,4 @@
+#include "ImGuiTestFont.h"
 #include <platform/window/EditorDisplayScale.h>
 #include <function/renderer/gui/GuiPresentationGeometry.h>
 #include <function/renderer/gui/EditorGuiFrameScheduler.h>
@@ -73,7 +74,7 @@ void CheckFrame(float displayScale, float pixelDensity)
     io.Fonts->Clear();
     ImFontConfig font;
     font.SizePixels = 18.0f * uiScale;
-    io.Fonts->AddFontDefault(&font);
+    InstallImGuiTestFont(font.SizePixels);
     // Same publication as ReloadGUIFont: Clear() can write the *previous*
     // current font size back into style during a warm reload in ImGui 1.92.
     ImGui::GetStyle().FontSizeBase = font.SizePixels;

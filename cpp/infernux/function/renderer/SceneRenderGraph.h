@@ -293,6 +293,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     {
         return m_pythonGraphDesc.outputDisplayEncoded;
     }
+
     [[nodiscard]] SceneRenderTarget *GetOutputTarget() const noexcept
     {
         return m_outputTarget && m_outputTexture ? m_outputTarget.get() : m_screenTarget;
@@ -874,12 +875,13 @@ class SceneRenderGraph : public NativeLifetimeOwner
 
     [[nodiscard]] MaterialPassPipelineDescriptor GetEditorOverlayMaterialPass() const;
 
-    /**
-     * @brief Append a system auto-pass (gizmos / editor tools) that draws
-     * into the backbuffer with read-only depth testing.
-     */
-    vk::ResourceHandle AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
-                                      vk::ResourceHandle depthTarget, uint32_t width, uint32_t height);
+    [[nodiscard]] bool WritesDisplayRgb() const noexcept
+    {
+        return OutputDisplayEncoded() && !rhi::IsSrgbFormat(m_renderView.colorFormat);
+    }
+
+    vk::ResourceHandle AppendGizmoPass(const char *name, vk::ResourceHandle colorTarget, vk::ResourceHandle depthTarget,
+                                       int queueMin, int queueMax, const char *sortMode = "");
 
     /**
      * @brief Set the graph output handle for dead-pass culling.
@@ -888,6 +890,7 @@ class SceneRenderGraph : public NativeLifetimeOwner
     vk::ResourceHandle CopyViewportRegion(const std::string &name, vk::ResourceHandle source,
                                           vk::ResourceHandle destination, rhi::TextureAspect aspect, bool restore);
     void ImportViewportDestination();
+    vk::ResourceHandle AppendEditorOverlayDepth(vk::ResourceHandle sceneDepth, uint32_t width, uint32_t height);
     vk::ResourceHandle AppendEditorOutline(vk::ResourceHandle displayTarget);
 
     /**

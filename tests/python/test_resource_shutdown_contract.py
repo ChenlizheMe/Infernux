@@ -42,6 +42,7 @@ def _manager(database: _Database, handler: _Handler) -> ResourcesManager:
     manager._event_handler = handler
     manager._frontend_worker_running = False
     manager._startup_prepared = False
+    manager._engine_source_scopes = None
     manager._script_catalog_publications = {}
     return manager
 

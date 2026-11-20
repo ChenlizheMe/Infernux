@@ -369,7 +369,9 @@ class AssetManager:
         Returns:
             The loaded asset wrapper, or None.
         """
-        # Check cache
+        if cls._current_asset_error(guid):
+            cls.invalidate(guid)
+            return None
         cached = cls._get_cached(guid)
         if cached is not None:
             return cached
@@ -379,7 +381,8 @@ class AssetManager:
         # authored source path.
         from infernux.application import Application
 
-        if Application.is_player():
+        player = Application.is_player()
+        if player:
             from infernux.engine.project_context import resolve_runtime_asset_guid, runtime_asset_extension
 
             path = resolve_runtime_asset_guid(guid)
@@ -394,12 +397,21 @@ class AssetManager:
 
         resolved_type = asset_type or (AnimationClip3D if "::subanim:" in path else cls._type_from_extension(ext))
 
-        if resolved_type is Texture:
-            asset = Texture._load_asset(guid)
-        elif resolved_type is AnimationClip3D and "::subanim:" in path:
-            asset = AnimationClip3D._load_imported_guid(guid, path, cls.require_asset_database())
-        else:
-            asset = cls._load_by_type(path, resolved_type)
+        try:
+            if resolved_type is Texture:
+                asset = Texture._load_asset(guid)
+            elif resolved_type is AnimationClip3D and "::subanim:" in path:
+                asset = AnimationClip3D._load_imported_guid(guid, path, cls.require_asset_database())
+            else:
+                asset = cls._load_by_type(path, resolved_type)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            error = f"Runtime load failed: {exc}"
+            if player:
+                from infernux.debug import Debug
+                Debug.log_error(error, source_file=path)
+            else:
+                cls._report_import_failure(path, error, guid=guid, runtime=True)
+            return None
         if asset is not None:
             if hasattr(asset, "_guid"):
                 try:
@@ -797,23 +809,6 @@ class AssetManager:
         }.get(origin_value, "editor")
         manager = ResourcesManager.instance()
         if manager is not None:
-            from infernux.engine.project_context import package_script_role
-
-            project_root = (
-                manager.project_path
-                if isinstance(manager, ResourcesManager)
-                else None
-            )
-            if project_root and package_script_role(path, project_root) == "editor":
-                # Editor package code belongs to the package preload lifetime.
-                # Sending it through the gameplay component frontend rejects
-                # legitimate lifecycle declarations (threads, sockets, and
-                # process-owned services) before the package manager can
-                # publish the new generation.
-                manager.notify_script_catalog_changed(
-                    path, catalog_event or "modified"
-                )
-                return
             manager.submit_script_change(
                 path,
                 origin=collector_origin,
@@ -832,7 +827,7 @@ class AssetManager:
         if not result:
             if not result.database_committed:
                 cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
-            cls._report_import_failure(path, result.error)
+            cls._report_import_failure(path, result.error, guid=result.guid, database=asset_database)
             return result
 
         return cls._publish_import_result(
@@ -841,10 +836,17 @@ class AssetManager:
         )
 
     @classmethod
-    def _report_import_failure(cls, path, error) -> None:
+    def _report_import_failure(cls, path, error, *, guid="", database=None, runtime=False) -> None:
         """Publish a failed import through the shared asset-error presenter."""
         from infernux.engine.ui.asset_resource_preview import invalidate_resource_preview
 
+        database = database if database is not None else cls._asset_database
+        if not guid and database is not None:
+            guid = database.get_guid_from_path(path)
+        if guid:
+            cls.invalidate(guid)
+            if runtime and database is not None:
+                database.report_runtime_load_failure(guid, error)
         invalidate_resource_preview(path)
         cls._invalidate_font_ui_cache(path)
         from infernux.engine.ui.asset_load_errors import report_asset_load_error
@@ -861,7 +863,7 @@ class AssetManager:
             result.error = dependency_error
             return result
 
-        effect_error = cls._compile_render_effect_runtime(path, result.guid)
+        effect_error = cls._compile_render_effect_runtime(path, result.guid, database=database)
         if effect_error:
             from infernux.lib import AssetMutationErrorCode
 
@@ -924,7 +926,7 @@ class AssetManager:
                   else asset_database.reimport_asset(path, settings=import_settings))
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
-            cls._report_import_failure(path, result.error)
+            cls._report_import_failure(path, result.error, guid=guid, database=asset_database)
             return result
         runtime_already_reloaded = bool(
             before_version is not None and registry is not None
@@ -978,7 +980,7 @@ class AssetManager:
                 cls._submit_internal_script_change(path, catalog_event="modified")
             return result
 
-        effect_error = cls._compile_render_effect_runtime(path, guid)
+        effect_error = cls._compile_render_effect_runtime(path, guid, database=database)
         if effect_error:
             from infernux.lib import AssetMutationErrorCode
 
@@ -1100,7 +1102,7 @@ class AssetManager:
                 cls._shader_diagnostic_roots[owner] = (source, remaining)
 
     @classmethod
-    def _compile_render_effect_runtime(cls, path: str, guid: str) -> str:
+    def _compile_render_effect_runtime(cls, path: str, guid: str, *, database=None) -> str:
         """Compile and publish an effect artifact before notifying live users."""
         if os.path.splitext(path)[1].lower() not in RENDER_EFFECT_EXTENSIONS:
             return ""
@@ -1126,8 +1128,8 @@ class AssetManager:
             cls._publish_compile_diagnostic(path)
             return ""
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            error = f"render effect compile failed; keeping last-known-good: {exc}"
-            cls._publish_compile_diagnostic(path, error)
+            error = f"render effect compile failed: {exc}"
+            cls._report_import_failure(path, error, guid=guid, database=database, runtime=True)
             return error
 
     @staticmethod
@@ -1148,9 +1150,9 @@ class AssetManager:
         """Compile ParticleGraph/ParticleScript before publishing file changes."""
         if not cls._is_particle_source(path):
             return ""
-        try:
-            from infernux.particle.artifact import ParticleArtifactRegistry
+        from infernux.particle.artifact import ParticleArtifactRegistry, ParticleArtifactSuperseded
 
+        try:
             runtime_artifact_path = ""
             if database is not None:
                 from infernux.lib import ResourceType
@@ -1170,9 +1172,11 @@ class AssetManager:
             )
             cls._publish_compile_diagnostic(path)
             return ""
+        except ParticleArtifactSuperseded:
+            raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            error = f"particle compile failed; keeping last-known-good: {exc}"
-            cls._publish_compile_diagnostic(path, error)
+            error = f"particle compile failed: {exc}"
+            cls._report_import_failure(path, error, guid=guid, database=database, runtime=True)
             return error
 
     @classmethod
@@ -1186,6 +1190,9 @@ class AssetManager:
         """Publish one committed database consequence to Interaction Core."""
         if not path:
             return
+        from infernux.engine.ui.asset_load_errors import clear_asset_load_error
+
+        clear_asset_load_error(path)
         cls._invalidate_font_ui_cache(path)
         # Dropped mutation events desynchronize every listener (panels,
         # preload catalogs, undo); failures must surface.
@@ -2203,6 +2210,15 @@ class AssetManager:
             return None
         path = cls._asset_database.get_path_from_guid(guid)
         return path if path else None
+
+    @classmethod
+    def _current_asset_error(cls, guid: str) -> str:
+        from infernux.application import Application
+
+        if not guid or Application.is_player():
+            return ""
+        lookup = getattr(cls._asset_database, "get_import_error", None)
+        return str(lookup(guid) or "") if lookup is not None else ""
 
     @classmethod
     def _get_cached(cls, guid: str) -> Optional[Any]:

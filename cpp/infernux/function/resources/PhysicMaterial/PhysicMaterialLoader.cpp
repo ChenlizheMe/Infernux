@@ -27,17 +27,12 @@ RuntimeAssetPayload PhysicMaterialLoader::Load(const std::string &filePath, cons
 {
     if (filePath.empty() || guid.empty())
         throw std::invalid_argument("PhysicMaterialLoader requires a file path and GUID");
-    try {
-        auto material = std::make_shared<PhysicMaterial>();
-        material->DeserializeDocument(ReadDocument(filePath));
-        material->SetFilePath(filePath);
-        material->SetName(FromFsPath(ToFsPath(filePath).stem()));
-        material->SetGuid(guid);
-        return material;
-    } catch (const std::exception &exception) {
-        INXLOG_ERROR("PhysicMaterialLoader failed for '", filePath, "': ", exception.what());
-        return nullptr;
-    }
+    auto material = std::make_shared<PhysicMaterial>();
+    material->DeserializeDocument(ReadDocument(filePath));
+    material->SetFilePath(filePath);
+    material->SetName(FromFsPath(ToFsPath(filePath).stem()));
+    material->SetGuid(guid);
+    return material;
 }
 
 bool PhysicMaterialLoader::Reload(const RuntimeAssetPayload &existing, const std::string &filePath,
@@ -46,18 +41,13 @@ bool PhysicMaterialLoader::Reload(const RuntimeAssetPayload &existing, const std
     auto material = existing.Get<PhysicMaterial>();
     if (!material)
         throw std::invalid_argument("PhysicMaterialLoader cannot reload a null instance");
-    try {
-        PhysicMaterial staged;
-        staged.DeserializeDocument(ReadDocument(filePath));
-        material->CopyValuesFrom(staged);
-        material->SetFilePath(filePath);
-        material->SetName(FromFsPath(ToFsPath(filePath).stem()));
-        material->SetGuid(guid);
-        return true;
-    } catch (const std::exception &exception) {
-        INXLOG_ERROR("PhysicMaterialLoader reload failed for '", filePath, "': ", exception.what());
-        return false;
-    }
+    PhysicMaterial staged;
+    staged.DeserializeDocument(ReadDocument(filePath));
+    material->CopyValuesFrom(staged);
+    material->SetFilePath(filePath);
+    material->SetName(FromFsPath(ToFsPath(filePath).stem()));
+    material->SetGuid(guid);
+    return true;
 }
 
 size_t PhysicMaterialLoader::EstimateRuntimeBytes(const RuntimeAssetPayload &payload) const

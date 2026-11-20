@@ -493,11 +493,11 @@ void AudioEngine::Update(float deltaTime)
     RebalanceVoices();
 }
 
-SDL_AudioStream *AudioEngine::CreateVoice(AudioSource *source, AudioClip *clip, double startSeconds)
+SDL_AudioStream *AudioEngine::CreateVoice(AudioSource *source, AudioClip *clip, double startSeconds,
+                                          std::string *streamError)
 {
-    if (!m_initialized || !clip || !clip->IsLoaded()) {
+    if (!m_initialized || !clip || !clip->IsLoaded())
         return nullptr;
-    }
 
     SDL_AudioSpec playbackSpec = {};
     playbackSpec.format = SDL_AUDIO_F32;
@@ -521,6 +521,8 @@ SDL_AudioStream *AudioEngine::CreateVoice(AudioSource *source, AudioClip *clip, 
             voiceState->streaming = clip->CreateStream(static_cast<uint64_t>(voiceState->cursor));
         } catch (const std::exception &e) {
             INXLOG_ERROR("Cannot prepare streaming voice: ", e.what());
+            if (streamError)
+                *streamError = e.what();
             return nullptr;
         }
     }
@@ -812,11 +814,19 @@ bool AudioEngine::PlayPreview(const std::string &filePath)
     if (!m_initialized || filePath.empty())
         return false;
 
-    StopPreview();
     auto clip = std::make_shared<AudioClip>();
-    if (!clip->LoadFromFile(filePath))
+    if (!clip->LoadFromFile(filePath)) {
+        StopPreview();
         return false;
-    SDL_AudioStream *stream = CreateVoice(nullptr, clip.get());
+    }
+    return PlayPreviewClip(filePath, std::move(clip));
+}
+
+bool AudioEngine::PlayPreviewClip(const std::string &filePath, std::shared_ptr<AudioClip> clip,
+                                  std::string *streamError)
+{
+    StopPreview();
+    SDL_AudioStream *stream = CreateVoice(nullptr, clip.get(), 0.0, streamError);
     if (!stream)
         return false;
     UpdateVoiceMix(stream, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, false);

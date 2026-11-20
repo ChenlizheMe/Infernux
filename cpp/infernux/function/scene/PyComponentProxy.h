@@ -198,10 +198,10 @@ class PyComponentProxy : public Component
     void RebindPythonMirror();
     /// Refresh already-created builtin wrappers after native ownership moves.
     static void RebindBuiltinComponentMirrors(const std::vector<Component *> &components);
-    /// Prepare a fresh scripting-domain instance for the next Play lifecycle.
-    /// Runtime hot reload must not call this because it intentionally keeps
-    /// Awake/Start state alive while only replacing executable method bodies.
+    /// Prepare a fresh scripting-domain instance for the next activation.
     void ResetLifecycleForPlay();
+    /// Initialize a replacement for an unavailable script after publication.
+    void InitializeRecoveredScript(bool enabled);
     /// Refresh cached Python lifecycle wrappers and native phase gates after
     /// an in-place class-body reload. This never invokes user lifecycle code.
     void RefreshPythonLifecycleDispatch();

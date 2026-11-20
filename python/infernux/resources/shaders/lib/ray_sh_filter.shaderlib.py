@@ -1,6 +1,14 @@
 import infernux.shader as shader
 
 
+def sh_facing(view_normal: shader.vec3) -> float:
+    projection = shader.camera().projection_matrix
+    # Reverse-Z perspective and orthographic projections both increase
+    # clip-W minus clip-Z in the forward direction.
+    toward_eye = -shader.sign(projection[3][2] - projection[2][2])
+    return shader.max(0.3, toward_eye * view_normal.z)
+
+
 def sh_bilateral(depth: float, other_depth: float, facing: float, visibility: float, other_visibility: float) -> float:
     relative_depth = shader.abs(1.0 - other_depth / shader.max(depth, 1.0e-8))
     return shader.exp2(-shader.min(30.0, 80.0 * facing * relative_depth) -

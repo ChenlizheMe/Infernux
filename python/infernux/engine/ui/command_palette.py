@@ -44,7 +44,8 @@ class CommandPalettePresenter:
         if request_focus:
             ctx.set_keyboard_focus_here()
         dpi = ctx.get_dpi_scale()
-        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, 8 * dpi, 8 * dpi)
+        # 16 px font + 2 * 7 px padding = 30 px search field (spec 8.11).
+        ctx.push_style_var_vec2(ImGuiStyleVar.FramePadding, 8 * dpi, 7 * dpi)
         ctx.set_next_item_width(-1.0)
         query = ctx.input_text_with_hint(
             "##command_palette_search", t("command_palette.search"),

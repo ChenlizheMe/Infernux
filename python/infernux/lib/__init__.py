@@ -830,6 +830,20 @@ Scene.active_game_cameras = property(
 )
 
 
+def _record_component_dependency(component):
+    """A script result creates the same source edge as an obtained service."""
+    provider = getattr(component, "_reload_owner", None)
+    if provider is not None:
+        from infernux.engine.reload.owners import current_owner
+
+        consumer = current_owner()
+        if (consumer is not None and consumer.coordinator is not None
+                and consumer.coordinator is provider.coordinator
+                and consumer.source_owner is not provider.source_owner):
+            consumer.coordinator.record_owner_dependency(consumer, provider)
+    return component
+
+
 def _resolve_public_component(component):
     if component is None:
         return None
@@ -837,14 +851,14 @@ def _resolve_public_component(component):
     py_component_getter = getattr(component, "get_py_component", None)
     if callable(py_component_getter):
         try:
-            return py_component_getter()
+            return _record_component_dependency(py_component_getter())
         except InvalidNativeObjectError:
             return None
 
     if _resolve_builtin_wrapper(type(component)) is not None:
         return _wrap_native_builtin_component(component)
 
-    return component
+    return _record_component_dependency(component)
 
 
 def _unwrap_component_argument(game_object, component):
@@ -889,7 +903,7 @@ def _game_object_get_component(self, component_type):
     if isinstance(component_type, str):
         python_component = _find_python_component_by_name(self, component_type)
         if python_component is not None:
-            return python_component
+            return _record_component_dependency(python_component)
 
     python_component_cls = _resolve_python_component_class(component_type)
     if python_component_cls is not None:
@@ -899,9 +913,11 @@ def _game_object_get_component(self, component_type):
 
     resolved_type_name = getattr(component_type, "_cpp_type_name", "") or getattr(component_type, "__name__", "")
     if resolved_type_name:
-        return _call_native_game_object("get_component", _native_game_object_get_component, self, resolved_type_name)
+        return _record_component_dependency(
+            _call_native_game_object("get_component", _native_game_object_get_component, self, resolved_type_name))
 
-    return _call_native_game_object("get_component", _native_game_object_get_component, self, component_type)
+    return _record_component_dependency(
+        _call_native_game_object("get_component", _native_game_object_get_component, self, component_type))
 
 
 def _python_component_matches_type(component, component_type) -> bool:
@@ -921,10 +937,10 @@ def _python_component_matches_type(component, component_type) -> bool:
 def _game_object_get_py_component(self, component_type):
     component = _native_game_object_get_py_component(self, component_type)
     if component is not None:
-        return component
+        return _record_component_dependency(component)
     for candidate in self.get_py_components() or ():
         if _python_component_matches_type(candidate, component_type):
-            return candidate
+            return _record_component_dependency(candidate)
     return None
 
 
@@ -947,7 +963,7 @@ def _game_object_get_components(self, component_type=None):
     if isinstance(component_type, str):
         python_components = _find_python_components_by_name(self, component_type)
         if python_components:
-            return python_components
+            return [_record_component_dependency(component) for component in python_components]
 
     python_component_cls = _resolve_python_component_class(component_type)
     if python_component_cls is not None:
@@ -957,7 +973,7 @@ def _game_object_get_components(self, component_type=None):
             if _python_component_matches_type(component, python_component_cls)
         ]
         if python_components:
-            return python_components
+            return [_record_component_dependency(component) for component in python_components]
 
     if isinstance(component_type, str):
         return self.get_cpp_components(component_type)
@@ -978,7 +994,7 @@ def _game_object_get_component_in_children(self, component_type, include_inactiv
     )
     builtin_wrapper_cls = _resolve_builtin_wrapper(component_type)
     if builtin_wrapper_cls is None and result is not None:
-        return result
+        return _record_component_dependency(result)
     python_component_cls = _resolve_python_component_class(component_type)
     if builtin_wrapper_cls is None and python_component_cls is not None:
         def find_python_component(current):
@@ -1009,7 +1025,7 @@ def _game_object_get_component_in_parent(self, component_type, include_inactive=
     )
     builtin_wrapper_cls = _resolve_builtin_wrapper(component_type)
     if builtin_wrapper_cls is None and result is not None:
-        return result
+        return _record_component_dependency(result)
     python_component_cls = _resolve_python_component_class(component_type)
     if builtin_wrapper_cls is None and python_component_cls is not None:
         current = self

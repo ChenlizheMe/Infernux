@@ -414,12 +414,12 @@ class ReloadCoordinator:
                 self._unavailable.add(name)
                 if path not in self._restart_only:
                     remove_module(name)
+                else:
+                    from infernux.components.serializable_object import _publish_serializable_types
+                    _publish_serializable_types({}, {name})
             unregister_component_script(path)
-            from infernux.components.serializable_object import _publish_serializable_types
             from infernux.renderstack.render_effect_compiler import _publish_effect_features
 
-            if name:
-                _publish_serializable_types({}, {name})
             _publish_effect_features((), source_key=path_key(path))
             self._ready.pop(path, None)
             if retirement_error is not None or path in removed or path in self._restart_only:
@@ -682,12 +682,10 @@ class ReloadCoordinator:
             except Exception as exc:
                 errors.append(exc)
             from infernux.components.registry import unregister_component_script
-            from infernux.components.serializable_object import _publish_serializable_types
             from infernux.renderstack.render_effect_compiler import _publish_effect_features
             for name, result in candidate.batch.sources.items():
                 try:
                     unregister_component_script(result.path)
-                    _publish_serializable_types({}, {name})
                     _publish_effect_features((), source_key=path_key(result.path))
                 except Exception as exc:
                     errors.append(exc)

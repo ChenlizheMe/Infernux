@@ -30,7 +30,7 @@ from infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
 from infernux.ui.ui_event_system import _mouse_pointer_frames
 from infernux.ui.ui_button import UIButton
 from infernux.ui.ui_canvas_utils import runtime_ui_scenes
-from infernux.engine.runtime_input_state import RuntimePointerState, world_pointer_state
+from infernux.engine.runtime_input_state import RuntimePointerState, has_view_pointer, world_pointer_state
 from infernux.ui.inx_ui_screen_component import clear_rect_cache
 from .game_input_policy import should_process_game_ui_events, should_route_game_input
 from .runtime_canvas_snapshot import (
@@ -41,7 +41,7 @@ from .editor_panel import EditorPanel
 from .closable_panel import ClosablePanel
 from .igui import IGUI
 from .panel_registry import editor_panel
-from .theme import Theme, ImGuiStyleVar
+from .theme import Theme, ImGuiCol, ImGuiStyleVar
 from .viewport_utils import capture_viewport_info
 from infernux.debug import Debug
 
@@ -697,11 +697,15 @@ class GameViewPanel(EditorPanel):
         )
         ctx.same_line(0, 6.0 * dpi)
         ctx.align_text_to_frame_padding()
-        color_count = Theme.push_inline_button_style(ctx, active=self._fit_mode)
+        fit_bg = Theme.BTN_SUBTLE_HOVER if self._fit_mode else Theme.BTN_NORMAL
+        ctx.push_style_color(ImGuiCol.Button, *fit_bg)
+        ctx.push_style_color(ImGuiCol.ButtonHovered, *Theme.BTN_SUBTLE_HOVER)
+        ctx.push_style_color(ImGuiCol.ButtonActive, *Theme.BTN_SUBTLE_HOVER)
+        ctx.push_style_color(ImGuiCol.Text, *(Theme.TEXT if self._fit_mode else Theme.TEXT_DIM))
         ctx.push_style_var_float(ImGuiStyleVar.FrameBorderSize, 0.0)
         ctx.button(f"{fit_label}##game_view_fit", self._fit_scale, width=fit_w, height=0)
         ctx.pop_style_var(1)
-        ctx.pop_style_color(color_count)
+        ctx.pop_style_color(4)
 
         return target_w, target_h, fit_scale
 
@@ -921,7 +925,7 @@ class GameViewPanel(EditorPanel):
                 ctx.invisible_button(f'##GameWorldInput{world}',float(draw_w),float(draw_h))
                 viewport = capture_viewport_info(ctx)
                 rect = (viewport.image_min_x,viewport.image_min_y,float(draw_w),float(draw_h))
-                routes[world] = (rect,int(sample.width),int(sample.height),ctx.get_item_visible_rect())
+                routes[world] = (rect,sample_width,sample_height,ctx.get_item_visible_rect())
                 ctx.record_semantic_item('viewport',f'World {ordinals[world]}',True,
                                          f'{self.window_id}.world.{world}.viewport')
                 if viewport.is_hovered:
@@ -940,16 +944,14 @@ class GameViewPanel(EditorPanel):
         self._last_screen_routes = routes
         if self._captured_world_id not in routes:
             self._captured_world_id = 0
-        source_world = (self._captured_world_id if self._captured_world_id else
-                        hovered if self._world_view.input_mode == 0 and hovered else self._world_view.world_id)
-        route = routes.get(source_world)
-        if route is None:
+        source_world = self._captured_world_id or hovered or self._world_view.world_id
+        if not routes:
             Input.set_game_focused(False)
-            native._set_world_game_view(0,True,[],[])
+            native._set_world_game_view(self._world_view.world_id, self._world_view.input_mode == 0, [], [])
             Input.set_game_viewport_size(0.,0.)
             native.set_editor_game_viewport((0,0,0,0),(0,0,0,0))
             return
-        rect,width,height,_clip = route
+        rect, width, height, _clip = routes[source_world] if source_world in routes else next(iter(routes.values()))
         self._route_game_input(ctx,width,height,clicked)
         Input.set_game_viewport_origin(rect[0],rect[1])
         Input.set_game_viewport_size(rect[2],rect[3])
@@ -970,7 +972,7 @@ class GameViewPanel(EditorPanel):
                 extent = (status['width'], status['height'])
             outputs.append((world, *extent))
         native._set_world_game_view(self._world_view.world_id,self._world_view.input_mode == 0,outputs,
-                                    [value[3] for value in routes.values()])
+                                    [(world, value[0], value[3]) for world, value in routes.items()])
         if not held:
             self._captured_world_id = 0  # Release sample still uses its original capture tile.
 
@@ -1114,11 +1116,15 @@ class GameViewPanel(EditorPanel):
 
     def process_runtime_input(self):
         """Consume one World's admitted external input sample once."""
-        with world_pointer_state(self):
+        native = _NativeInputManager.instance()
+        if not has_view_pointer(self, native):
+            return
+        with world_pointer_state(self) as pointer:
+            pointer.receiving_pointer = True
             if not Input.is_game_focused():
                 self._reset_pointer_input()
                 return
-            target_w, target_h = _NativeInputManager.instance()._sampled_game_render_size
+            target_w, target_h = native._sampled_game_render_size
             if target_w > 0 and target_h > 0:
                 self._process_ui_events(int(target_w), int(target_h))
 

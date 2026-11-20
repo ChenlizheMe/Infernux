@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 from infernux.debug import Debug
-from infernux.lib import InxGUIRenderable, InxGUIContext, InputManager, _get_native_game_camera
+from infernux.lib import InxGUIRenderable, InxGUIContext, InputManager, SceneManager, _get_native_game_camera
 from infernux.input import Input, TouchPhase
 from infernux.engine.ui.viewport_utils import capture_viewport_info
 from infernux.engine.build_settings import BUILD_SETTINGS_DEFAULTS, normalize_render_output
@@ -31,7 +31,7 @@ from infernux.engine.runtime_screen_ui import (
     map_runtime_ui_pointer,
     map_runtime_ui_pointers,
 )
-from infernux.engine.runtime_input_state import RuntimePointerState, world_pointer_state
+from infernux.engine.runtime_input_state import RuntimePointerState, has_view_pointer, world_pointer_state
 from infernux.ui.ui_canvas_utils import runtime_ui_scenes
 
 
@@ -142,6 +142,7 @@ class PlayerGUI(InxGUIRenderable):
         super().__init__()
         self._engine = engine
         self._pointer_state = _PlayerPointerState()
+        self._presented_pointer_view = None
         self._world_pointer_states = {}
         self._active_pointer_world = None
         from weakref import ref
@@ -331,6 +332,7 @@ class PlayerGUI(InxGUIRenderable):
 
         game_tex = self._engine.get_game_texture_id()
         if not game_tex or not self._engine.get_native_engine().game_presentation_ready:
+            self._publish_pointer_view(None)
             return
 
         ctx.set_cursor_pos_x(ctx.get_cursor_pos_x() + pad_x)
@@ -339,12 +341,31 @@ class PlayerGUI(InxGUIRenderable):
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
 
-        InputManager.instance()._set_game_view_output(float(target_w), float(target_h), touch_viewport)
+        native = InputManager.instance()
+        native._set_game_view_output(float(target_w), float(target_h), touch_viewport)
+        rect = (vp.image_min_x, vp.image_min_y, float(display_w), float(display_h))
+        self._publish_pointer_view((target_w, target_h, rect, ctx.get_item_visible_rect()))
+
+    def _publish_pointer_view(self, view):
+        world = SceneManager.instance()._current_runtime_world_id
+        identity = (world, view)
+        if self._presented_pointer_view == identity:
+            return
+        native = InputManager.instance()
+        if view is None:
+            native._set_world_game_view(world, True, [], [])
+        else:
+            width, height, image, clip = view
+            native._set_world_game_view(world, True, [(world, width, height)], [(world, image, clip)])
+        self._presented_pointer_view = identity
 
     def process_runtime_input(self):
         """Dispatch gameplay mouse/touch only in the admitted World Input phase."""
+        native = InputManager.instance()
+        if not has_view_pointer(self, native):
+            return
         with world_pointer_state(self) as pointer:
-            native = InputManager.instance()
+            pointer.receiving_pointer = True
             frame = native.frame_index
             if pointer.frame == frame:
                 return

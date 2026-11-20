@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <utility>
 
 namespace infernux
 {
@@ -113,7 +114,7 @@ void InputManager::SetGameplayFocused(bool value)
 {
     if (auto *sample = OverrideReadFrame())
         sample->gameplayFocused = value;
-    else {
+    else if (m_gameplayFocused != value) {
         m_gameplayFocused = value;
         ++m_hostReadRevision;
         InvalidateCapture();
@@ -123,7 +124,7 @@ void InputManager::SetGameplayViewportOrigin(float x, float y)
 {
     if (auto *sample = OverrideReadFrame())
         sample->gameplayViewportOrigin = {x, y};
-    else {
+    else if (m_gameplayViewportOrigin != std::array<float, 2>{x, y}) {
         m_gameplayViewportOrigin = {x, y};
         ++m_hostReadRevision;
         InvalidateCapture();
@@ -133,7 +134,7 @@ void InputManager::SetGameplayViewportSize(float x, float y)
 {
     if (auto *sample = OverrideReadFrame())
         sample->gameplayViewportSize = {x, y};
-    else {
+    else if (m_gameplayViewportSize != std::array<float, 2>{x, y}) {
         m_gameplayViewportSize = {x, y};
         ++m_hostReadRevision;
         InvalidateCapture();
@@ -145,7 +146,8 @@ void InputManager::SetGameplayViewOutput(float width, float height, std::array<f
     if (auto *sample = OverrideReadFrame()) {
         sample->gameplayRenderSize = {width, height};
         sample->gameplayTouchViewport = touchViewport;
-    } else {
+    } else if (m_gameplayRenderSize != std::array<float, 2>{width, height} ||
+               m_gameplayTouchViewport != touchViewport) {
         m_gameplayRenderSize = {width, height};
         m_gameplayTouchViewport = touchViewport;
         InvalidateCapture();
@@ -201,11 +203,12 @@ void InputManager::ClearSampleTransients(InputFrameSample &sample)
 }
 void InputManager::SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcast,
                                            std::vector<std::tuple<uint64_t, uint32_t, uint32_t>> outputs,
-                                           std::vector<std::array<float, 4>> imageRects)
+                                           std::vector<WorldGameplayRouting::View> views)
 {
     if (InputReadScope::Current())
         throw std::logic_error("World tile routing is recorded by the Host, not a gameplay callback");
     std::sort(outputs.begin(), outputs.end());
+    std::sort(views.begin(), views.end());
     if (!selectedWorld && outputs.empty()) {
         if (m_worldGameplayRouting) {
             m_worldGameplayRouting.reset();
@@ -215,47 +218,147 @@ void InputManager::SetWorldGameplayRouting(uint64_t selectedWorld, bool broadcas
     }
     if (m_worldGameplayRouting && m_worldGameplayRouting->selectedWorld == selectedWorld &&
         m_worldGameplayRouting->broadcast == broadcast && m_worldGameplayRouting->outputs == outputs &&
-        m_worldGameplayRouting->imageRects == imageRects)
+        m_worldGameplayRouting->views == views)
         return;
     auto routing = std::make_shared<WorldGameplayRouting>();
     routing->selectedWorld = selectedWorld;
     routing->broadcast = broadcast;
     routing->outputs = std::move(outputs);
-    routing->imageRects = std::move(imageRects);
+    routing->views = std::move(views);
     m_worldGameplayRouting = std::move(routing);
+    if (m_cursorLocked && !m_lockedPointerWorld)
+        m_lockedPointerWorld = selectedWorld;
     InvalidateCapture();
 }
 
-void InputManager::RouteWorldInput(uint64_t worldId, InputFrameSample &value)
+uint64_t InputManager::PointerWorldAt(float x, float y) const noexcept
 {
-    if (const auto &routing = value.worldRouting) {
-        const auto output = std::lower_bound(routing->outputs.begin(), routing->outputs.end(), worldId,
-                                             [](const auto &entry, uint64_t id) { return std::get<0>(entry) < id; });
-        value.gameplayRenderSize = output != routing->outputs.end() && std::get<0>(*output) == worldId
-                                       ? std::array<float, 2>{float(std::get<1>(*output)), float(std::get<2>(*output))}
-                                       : std::array<float, 2>{0, 0};
-        if (!routing->broadcast && routing->selectedWorld != worldId) {
-            value.gameplayFocused = false;
-            value.keys.fill(0);
-            value.keyDown.fill(0);
-            value.keyUp.fill(0);
-            value.gameKeyOwned.fill(0);
-            value.mouseButtons.fill(0);
-            value.mouseDown.fill(0);
-            value.mouseUp.fill(0);
-            value.gameMouseOwned.fill(0);
-            for (auto &mouse : value.gameMouseFrames)
-                mouse = {};
-            value.mouseX = value.mouseY = value.mouseDX = value.mouseDY = 0;
-            value.scrollX = value.scrollY = 0;
-            value.gameScroll = {};
-            value.inputString.clear();
-            value.gameInputString.clear();
-            value.touches.clear();
-            value.droppedFiles.clear();
-            value.anyKeyDown = value.syntheticGameplayInput = value.syntheticHeld = false;
+    if (!m_worldGameplayRouting || m_editorMouseCaptured || (!m_screenState.focused && !m_hasSyntheticMousePosition))
+        return 0;
+    const bool locked = IsCursorLocked();
+    if (!locked && m_pointerOutsideWindow)
+        return 0;
+    const auto &views = m_worldGameplayRouting->views;
+    const auto hit = [&](const WorldGameplayRouting::View &view) {
+        const auto &clip = std::get<2>(view);
+        return locked ? std::get<0>(view) == m_lockedPointerWorld
+                      : x >= clip[0] && y >= clip[1] && x < clip[0] + clip[2] && y < clip[1] + clip[3];
+    };
+    if (m_lastPointerView < views.size() && hit(views[m_lastPointerView]))
+        return std::get<0>(views[m_lastPointerView]);
+    for (size_t i = 0; i < views.size(); ++i) {
+        if (i != m_lastPointerView && hit(views[i])) {
+            m_lastPointerView = i;
+            return std::get<0>(views[i]);
         }
     }
+    return 0;
+}
+
+InputManager::WorldPointerEvents &InputManager::PointerEventsFor(uint64_t world)
+{
+    for (auto &events : m_pointerEvents)
+        if (events.world == world)
+            return events;
+    return m_pointerEvents.emplace_back(WorldPointerEvents{world});
+}
+
+bool InputManager::HasGameplayPointer() const noexcept
+{
+    const auto *sample = InputReadScope::Current();
+    return !sample || sample->pointerActive;
+}
+
+InputFrameLease InputManager::CaptureWorldFrame(uint64_t worldId, uint64_t primaryWorld)
+{
+    const auto host = CaptureFrame();
+    const auto &routing = host->worldRouting;
+    const bool primaryViewport = !routing && worldId == primaryWorld;
+    if (primaryViewport && (!m_editorCursorCaptureManaged ||
+                            (!m_editorMouseCaptured && m_editorGameInputRect[2] > 0 && m_editorGameInputRect[3] > 0 &&
+                             (IsCursorLocked() || IsInEditorGameInputRect(m_mouseX, m_mouseY)))))
+        return host;
+    const bool hovered = routing && m_sealedPointerWorld == worldId;
+    const bool keyboard = !routing || routing->broadcast || routing->selectedWorld == worldId;
+    auto origin = host->gameplayViewportOrigin;
+    auto size = host->gameplayViewportSize;
+    auto renderSize = host->gameplayRenderSize;
+    if (routing) {
+        const auto output = std::lower_bound(routing->outputs.begin(), routing->outputs.end(), worldId,
+                                             [](const auto &entry, uint64_t id) { return std::get<0>(entry) < id; });
+        renderSize = output != routing->outputs.end() && std::get<0>(*output) == worldId
+                         ? std::array<float, 2>{float(std::get<1>(*output)), float(std::get<2>(*output))}
+                         : std::array<float, 2>{};
+        const auto view = std::lower_bound(routing->views.begin(), routing->views.end(), worldId,
+                                           [](const auto &entry, uint64_t id) { return std::get<0>(entry) < id; });
+        if (view != routing->views.end() && std::get<0>(*view) == worldId) {
+            const auto &[x, y, w, h] = std::get<1>(*view);
+            origin = {x, y};
+            size = {w, h};
+        } else {
+            size = {};
+        }
+    }
+    const auto events = std::find_if(m_sealedPointerEvents.begin(), m_sealedPointerEvents.end(),
+                                     [worldId](const auto &event) { return event.world == worldId; });
+    // An unpointed World reads the same immutable projection as other Worlds
+    // with this viewport and keyboard routing. Each still owns its logical input.
+    const bool shared = !primaryViewport && !hovered && events == m_sealedPointerEvents.end() &&
+                        std::find(m_buttonWorlds.begin(), m_buttonWorlds.end(), worldId) == m_buttonWorlds.end();
+    if (shared && m_unpointedInput && keyboard == m_unpointedKeyboard &&
+        origin == m_unpointedInput->gameplayViewportOrigin && size == m_unpointedInput->gameplayViewportSize &&
+        renderSize == m_unpointedInput->gameplayRenderSize)
+        return m_unpointedInput;
+    auto sample = std::make_shared<InputFrameSample>(*host);
+    auto &value = *sample;
+    value.gameplayViewportOrigin = origin;
+    value.gameplayViewportSize = size;
+    value.gameplayRenderSize = renderSize;
+    if (!keyboard) {
+        value.keys.fill(0);
+        value.keyDown.fill(0);
+        value.keyUp.fill(0);
+        value.gameKeyOwned.fill(0);
+        value.inputString.clear();
+        value.gameInputString.clear();
+        value.touches.clear();
+        value.droppedFiles.clear();
+        value.anyKeyDown = value.syntheticGameplayInput = value.syntheticHeld = false;
+    }
+    const auto e = events == m_sealedPointerEvents.end() ? WorldPointerEvents{worldId} : *events;
+    value.pointerActive = hovered || e.up || e.down;
+    value.mouseDX = e.dx;
+    value.mouseDY = e.dy;
+    value.scrollX = e.scrollX;
+    value.scrollY = e.scrollY;
+    value.gameScroll = {e.scrollX, e.scrollY};
+    if (hovered) {
+        value.mouseX = std::get<0>(host->gameMouseFrames[0]);
+        value.mouseY = std::get<1>(host->gameMouseFrames[0]);
+    } else {
+        value.mouseX = value.gameplayViewportOrigin[0] - 1;
+        value.mouseY = value.gameplayViewportOrigin[1] - 1;
+    }
+    for (size_t i = 0; i < value.mouseButtons.size(); ++i) {
+        const auto bit = 1u << i;
+        const bool held = host->mouseButtons[i] && m_buttonWorlds[i] == worldId;
+        const bool down = (e.down & bit) != 0;
+        const bool up = (e.up & bit) != 0 || (primaryViewport && host->mouseUp[i] && host->gameMouseOwned[i]);
+        value.pointerActive |= up;
+        value.mouseButtons[i] = held;
+        value.mouseDown[i] = down;
+        value.mouseUp[i] = up;
+        value.gameMouseOwned[i] = held || down || up;
+        value.gameMouseFrames[i] = {value.mouseX, value.mouseY, e.scrollX, e.scrollY, held, down, up};
+    }
+    // Keyboard focus and broadcasts are independent of mouse hit testing.
+    if (!keyboard && !value.pointerActive && events == m_sealedPointerEvents.end())
+        value.gameplayFocused = false;
+    if (shared) {
+        m_unpointedInput = sample;
+        m_unpointedKeyboard = keyboard;
+    }
+    return sample;
 }
 
 InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameLease external,
@@ -272,7 +375,6 @@ InputFrameLease InputManager::BeginWorldFrameInput(uint64_t worldId, InputFrameL
     auto value = std::make_shared<InputFrameSample>(*external);
     if (state->lastExternalSample == external->sampleIdentity)
         ClearSampleTransients(*value);
-    RouteWorldInput(worldId, *value);
     value->logical = true;
     value->logicalFrameIndex = logicalFrameIndex;
     value->sourceSampleIdentity = external->sampleIdentity;
@@ -337,9 +439,9 @@ bool InputManager::CanCompareFrames(const InputFrameSample &left, const InputFra
     };
     // Routing already preserves its immutable owner when its fields are
     // unchanged. A different owner remains an ordered input boundary.
-    return left.worldRouting == right.worldRouting && left.keys == right.keys &&
-           left.gameKeyOwned == right.gameKeyOwned && left.mouseButtons == right.mouseButtons &&
-           left.gameMouseOwned == right.gameMouseOwned &&
+    return left.worldRouting == right.worldRouting && left.pointerActive == right.pointerActive &&
+           left.keys == right.keys && left.gameKeyOwned == right.gameKeyOwned &&
+           left.mouseButtons == right.mouseButtons && left.gameMouseOwned == right.gameMouseOwned &&
            std::equal(left.gameMouseFrames.begin(), left.gameMouseFrames.end(), right.gameMouseFrames.begin(),
                       [continuous](const auto &a, const auto &b) {
                           return continuous ? std::tie(std::get<2>(a), std::get<3>(a), std::get<4>(a), std::get<5>(a),
@@ -380,11 +482,9 @@ InputFrameLease InputManager::ComposeWorldInput(uint64_t worldId, InputFrameLeas
 {
     auto value = std::make_shared<InputFrameSample>(*held);
     ClearSampleTransients(*value);
-    RouteWorldInput(worldId, *value);
     std::vector<TouchState> touches;
     for (const auto &source : events) {
-        auto event = *source;
-        RouteWorldInput(worldId, event);
+        const auto &event = *source;
         for (size_t i = 0; i < value->keys.size(); ++i) {
             value->keyDown[i] |= event.keyDown[i];
             value->keyUp[i] |= event.keyUp[i];
@@ -392,6 +492,7 @@ InputFrameLease InputManager::ComposeWorldInput(uint64_t worldId, InputFrameLeas
         for (size_t i = 0; i < value->mouseButtons.size(); ++i) {
             value->mouseDown[i] |= event.mouseDown[i];
             value->mouseUp[i] |= event.mouseUp[i];
+            value->pointerActive |= event.mouseDown[i] || event.mouseUp[i];
             std::get<5>(value->gameMouseFrames[i]) |= std::get<5>(event.gameMouseFrames[i]);
             std::get<6>(value->gameMouseFrames[i]) |= std::get<6>(event.gameMouseFrames[i]);
         }
@@ -485,14 +586,8 @@ InputFrameLease InputManager::CaptureFrame()
         sample->gameKeyOwned.fill(1);
     }
     sample->mouseButtons = m_mouseButtons;
-    for (size_t i = 0; i < sample->gameMouseOwned.size(); ++i) {
-        sample->gameMouseOwned[i] = IsGameMouseButtonOwned(static_cast<int>(i));
-        sample->gameMouseFrames[i] = GetGameMouseFrameState(static_cast<int>(i));
-    }
     sample->mouseX = m_mouseX;
     sample->mouseY = m_mouseY;
-    sample->mouseDX = m_mouseDX;
-    sample->mouseDY = m_mouseDY;
     sample->scrollX = m_scrollX;
     sample->scrollY = m_scrollY;
     sample->gameScroll = m_gameScroll;
@@ -519,6 +614,11 @@ InputFrameLease InputManager::CaptureFrame()
     // only this sealed occurrence prefix, shared by all Host admissions.
     auto originalTouches = std::move(sample->touches);
     ClearSampleTransients(*sample);
+    sample->mouseDX = std::exchange(m_pendingMouseDX, 0.f);
+    sample->mouseDY = std::exchange(m_pendingMouseDY, 0.f);
+    m_sealedPointerEvents.swap(m_pointerEvents);
+    m_pointerEvents.clear();
+    m_sealedPointerWorld = PointerWorldAt(m_mouseX, m_mouseY);
     for (auto &touch : originalTouches) {
         const bool terminal = touch.phase == TouchPhase::Ended || touch.phase == TouchPhase::Canceled;
         const bool changed = std::any_of(m_sampleEvents.begin(), m_sampleEvents.end(), [&](const auto &event) {
@@ -549,10 +649,6 @@ InputFrameLease InputManager::CaptureFrame()
             break;
         case SampleEventKind::MouseUp:
             sample->mouseUp[event.index] = 1;
-            break;
-        case SampleEventKind::Motion:
-            sample->mouseDX += event.x;
-            sample->mouseDY += event.y;
             break;
         case SampleEventKind::Scroll:
             sample->scrollX += event.x;
@@ -601,12 +697,17 @@ InputFrameLease InputManager::CaptureFrame()
         }
     }
     sample->syntheticGameplayInput = sample->syntheticInputFrame || m_syntheticHeldCount != 0;
-    for (size_t index = 0; index < sample->gameMouseFrames.size(); ++index) {
-        auto &mouse = sample->gameMouseFrames[index];
-        std::get<2>(mouse) = sample->gameScroll.first;
-        std::get<3>(mouse) = sample->gameScroll.second;
-        std::get<5>(mouse) = sample->gameMouseOwned[index] && sample->mouseDown[index];
-        std::get<6>(mouse) = sample->gameMouseOwned[index] && sample->mouseUp[index];
+    const auto [x, y] = IsCursorLocked() ? CursorLockPosition(true) : std::pair{m_mouseX, m_mouseY};
+    for (size_t i = 0; i < sample->gameMouseFrames.size(); ++i) {
+        const bool owned = !m_editorCursorCaptureManaged || (m_gameMouseButtonOwnership & (1u << i));
+        sample->gameMouseOwned[i] = owned;
+        sample->gameMouseFrames[i] = {x,
+                                      y,
+                                      sample->gameScroll.first,
+                                      sample->gameScroll.second,
+                                      owned && sample->mouseButtons[i],
+                                      owned && sample->mouseDown[i],
+                                      owned && sample->mouseUp[i]};
     }
     m_sampleEvents.clear();
     m_capturedFrame = std::move(sample);
@@ -762,7 +863,7 @@ InputManager::InputManager()
 
 void InputManager::BeginFrame()
 {
-    m_capturedFrame.reset();
+    InvalidateCapture();
     m_sampleEvents.clear();
     ++m_frameIndex;
     m_keyDown.fill(0);
@@ -773,6 +874,8 @@ void InputManager::BeginFrame()
     // Clear per-frame deltas
     m_mouseDX = 0.f;
     m_mouseDY = 0.f;
+    m_pendingMouseDX = m_pendingMouseDY = 0.f;
+    m_pointerEvents.clear();
     m_scrollX = 0.f;
     m_scrollY = 0.f;
     m_gameScroll = {};
@@ -841,12 +944,18 @@ void InputManager::ProcessPointerButtonEvent(int button, bool pressed, bool game
             else
                 m_gameMouseButtonOwnership &= ~(1u << button);
             m_mouseButtonDown[index] = 1;
+            m_buttonWorlds[index] = gameInput ? PointerWorldAt(m_mouseX, m_mouseY) : 0;
+            if (m_buttonWorlds[index])
+                PointerEventsFor(m_buttonWorlds[index]).down |= 1u << index;
             AppendSampleEvent({SampleEventKind::MouseDown, button});
         }
         m_mouseButtons[index] = 1;
     } else {
         if (m_mouseButtons[index] != 0) {
             m_mouseButtonUp[index] = 1;
+            if (m_buttonWorlds[index])
+                PointerEventsFor(m_buttonWorlds[index]).up |= 1u << index;
+            m_buttonWorlds[index] = 0;
             AppendSampleEvent({SampleEventKind::MouseUp, button});
         }
         m_mouseButtons[index] = 0;
@@ -858,6 +967,7 @@ void InputManager::ProcessPointerButtonEvent(int button, bool pressed, bool game
 void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY)
 {
     InvalidateCapture();
+    m_pointerOutsideWindow = false;
     if (m_warpMotionPending) {
         m_warpMotionPending = false;
         if (std::abs(x - m_warpTargetX) <= 1.0f && std::abs(y - m_warpTargetY) <= 1.0f) {
@@ -870,7 +980,15 @@ void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, flo
     m_mouseY = y;
     m_mouseDX += deltaX;
     m_mouseDY += deltaY;
-    AppendSampleEvent({SampleEventKind::Motion, 0, deltaX, deltaY});
+    m_pendingMouseDX += deltaX;
+    m_pendingMouseDY += deltaY;
+    if (deltaX != 0 || deltaY != 0) {
+        if (const auto world = PointerWorldAt(x, y)) {
+            auto &events = PointerEventsFor(world);
+            events.dx += deltaX;
+            events.dy += deltaY;
+        }
+    }
     if (m_editorMouseCaptured) {
         m_editorMouseDX += deltaX;
         m_editorMouseDY += deltaY;
@@ -879,6 +997,13 @@ void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, flo
 
 void InputManager::ProcessScrollEvent(float deltaX, float deltaY, bool gameInput)
 {
+    if (gameInput) {
+        if (const auto world = PointerWorldAt(m_mouseX, m_mouseY)) {
+            auto &events = PointerEventsFor(world);
+            events.scrollX += deltaX;
+            events.scrollY += deltaY;
+        }
+    }
     m_scrollX += deltaX;
     m_scrollY += deltaY;
     AppendSampleEvent({SampleEventKind::Scroll, 0, deltaX, deltaY, gameInput});
@@ -1229,6 +1354,8 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event, bool gameInput)
 
     // ---- Mouse wheel ----
     case SDL_EVENT_MOUSE_WHEEL:
+        m_mouseX = event.wheel.mouse_x;
+        m_mouseY = event.wheel.mouse_y;
         ProcessScrollEvent(event.wheel.x, event.wheel.y, gameInput);
         break;
 
@@ -1293,6 +1420,14 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event, bool gameInput)
     }
 
     // ---- Window focus lost → release editor drag capture and clear inputs ----
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        m_pointerOutsideWindow = true;
+        InvalidateCapture();
+        break;
+    case SDL_EVENT_WINDOW_MOUSE_ENTER:
+        m_pointerOutsideWindow = false;
+        InvalidateCapture();
+        break;
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         ProcessFocusEvent(false);
         break;
@@ -1330,6 +1465,7 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event, bool gameInput)
 void InputManager::SetSyntheticMousePosition(float x, float y)
 {
     InvalidateCapture();
+    m_pointerOutsideWindow = false;
     m_mouseX = x;
     m_mouseY = y;
     m_syntheticMouseX = x;
@@ -1348,8 +1484,10 @@ bool InputManager::GetSyntheticMousePosition(float &x, float &y) const
 
 void InputManager::ReleaseSyntheticMousePosition()
 {
-    InvalidateCapture();
-    m_hasSyntheticMousePosition = false;
+    if (m_hasSyntheticMousePosition) {
+        m_hasSyntheticMousePosition = false;
+        InvalidateCapture();
+    }
 }
 
 void InputManager::MarkSyntheticInputForFrame()
@@ -1579,11 +1717,7 @@ bool InputManager::IsGameMouseButtonOwned(int button) const
 bool InputManager::IsInEditorGameInputRect(float x, float y) const
 {
     if (m_worldGameplayRouting)
-        return std::any_of(m_worldGameplayRouting->imageRects.begin(), m_worldGameplayRouting->imageRects.end(),
-                           [x, y](const auto &rect) {
-                               const auto &[left, top, width, height] = rect;
-                               return x >= left && y >= top && x < left + width && y < top + height;
-                           });
+        return PointerWorldAt(x, y) != 0;
     const auto &[left, top, width, height] = m_editorGameInputRect;
     return x >= left && y >= top && x < left + width && y < top + height;
 }
@@ -1602,7 +1736,7 @@ bool InputManager::IsEditorGameInputEvent(const SDL_Event &event) const
                (IsCursorLocked() || IsInEditorGameInputRect(event.button.x, event.button.y));
     }
     case SDL_EVENT_MOUSE_WHEEL:
-        return IsCursorLocked() || IsInEditorGameInputRect(m_mouseX, m_mouseY);
+        return IsCursorLocked() || IsInEditorGameInputRect(event.wheel.mouse_x, event.wheel.mouse_y);
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const auto code = event.key.scancode;
@@ -1692,6 +1826,11 @@ void InputManager::ResetAll()
     m_mouseButtonUp.fill(0);
     m_mouseX = m_mouseY = 0.f;
     m_mouseDX = m_mouseDY = 0.f;
+    m_pendingMouseDX = m_pendingMouseDY = 0.f;
+    m_pointerEvents.clear();
+    m_sealedPointerEvents.clear();
+    m_buttonWorlds.fill(0);
+    m_pointerOutsideWindow = false;
     m_editorMouseDX = m_editorMouseDY = 0.f;
     m_scrollX = m_scrollY = 0.f;
     m_gameScroll = {};
@@ -1720,6 +1859,7 @@ void InputManager::ResetPhysicalInputForFocusLoss()
     // the shared query arrays from it after clearing physical input.
     const auto syntheticKeys = m_syntheticKeys;
     const auto syntheticMouseButtons = m_syntheticMouseButtons;
+    const auto buttonWorlds = m_buttonWorlds;
     const uint32_t gameMouseButtonOwnership = m_gameMouseButtonOwnership;
     const uint32_t syntheticHeldCount = m_syntheticHeldCount;
     auto interruptedTouches = std::move(m_touches);
@@ -1746,8 +1886,10 @@ void InputManager::ResetPhysicalInputForFocusLoss()
     }
     for (size_t index = 0; index < m_syntheticMouseButtons.size(); ++index) {
         m_mouseButtons[index] = m_syntheticMouseButtons[index];
-        if (m_syntheticMouseButtons[index] != 0)
+        if (m_syntheticMouseButtons[index] != 0) {
+            m_buttonWorlds[index] = buttonWorlds[index];
             m_gameMouseButtonOwnership |= gameMouseButtonOwnership & (1u << index);
+        }
     }
 }
 
@@ -1886,9 +2028,14 @@ void InputManager::SetCursorLocked(bool locked)
     if (locked == m_cursorLocked)
         return;
 
-    m_cursorLocked = locked;
-    if (locked)
+    if (locked) {
+        m_lockedPointerWorld = PointerWorldAt(m_mouseX, m_mouseY);
+        if (!m_lockedPointerWorld && m_worldGameplayRouting)
+            m_lockedPointerWorld = m_worldGameplayRouting->selectedWorld;
         m_warpMotionPending = false;
+    }
+    m_cursorLocked = locked;
+    InvalidateCapture();
     ApplyCursorState();
 }
 
@@ -1907,6 +2054,7 @@ void InputManager::SetEditorCursorCaptureAllowed(bool allowed)
         return;
     m_editorCursorCaptureManaged = true;
     m_editorCursorCaptureAllowed = allowed;
+    InvalidateCapture();
     m_mouseDX = m_mouseDY = m_scrollX = m_scrollY = 0.0f;
     m_gameScroll = {};
     ApplyCursorState();
@@ -1955,6 +2103,7 @@ void InputManager::SetEditorMouseCapture(bool captured)
     m_editorMouseDX = 0.f;
     m_editorMouseDY = 0.f;
     m_editorMouseCaptured = captured;
+    InvalidateCapture();
     ApplyCursorState();
 }
 
@@ -1968,6 +2117,13 @@ std::pair<float, float> InputManager::ConsumeEditorMouseDelta()
 
 std::pair<float, float> InputManager::CursorLockPosition(bool gameLocked) const
 {
+    if (gameLocked && m_worldGameplayRouting && m_lockedPointerWorld) {
+        const auto world = PointerWorldAt(m_mouseX, m_mouseY);
+        if (world == m_lockedPointerWorld) {
+            const auto &[x, y, w, h] = std::get<1>(m_worldGameplayRouting->views[m_lastPointerView]);
+            return {x + w * 0.5f, y + h * 0.5f};
+        }
+    }
     if (gameLocked && m_editorCursorCaptureManaged) {
         const auto &[x, y, width, height] = m_editorGameViewport;
         return {x + width * 0.5f, y + height * 0.5f};

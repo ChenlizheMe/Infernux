@@ -37,9 +37,12 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, Asset
     // for display, but is never used to recover identity or locate an asset.
     // A GUID-less shader_id denotes a symbolic built-in shader program and
     // deliberately contributes no AssetDatabase dependency edge.
-    const std::string resolvedPath = reference.guid.empty() ? std::string{} : database->GetPathFromGuid(reference.guid);
-
-    if (!resolvedPath.empty()) {
+    if (!reference.guid.empty()) {
+        const auto resolvedPath = database->GetPathFromGuid(reference.guid);
+        if (resolvedPath.empty())
+            throw std::runtime_error("Material shader GUID is unavailable: " + reference.guid);
+        if (const auto error = database->GetImportError(reference.guid); !error.empty())
+            throw std::runtime_error("Material shader dependency failed: " + resolvedPath + ": " + error);
         reference.pathHint = resolvedPath;
 
         const auto meta = database->GetMetaByPath(resolvedPath);

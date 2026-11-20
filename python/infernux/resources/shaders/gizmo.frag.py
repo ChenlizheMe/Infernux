@@ -8,4 +8,6 @@ class Gizmo(shader.frag):
     cast_shadows = False
 
     def main(self, ctx: shader.mesh_input) -> shader.vec4:
+        if shader.view().display_rgb_output:
+            return shader.vec4(ctx.color, 1.0)
         return shader.vec4(srgb_to_linear(ctx.color), 1.0)

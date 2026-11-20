@@ -1,5 +1,5 @@
 import infernux.shader as shader
-from infernux.shader.lib.camera import world_position, clip_position
+from infernux.shader.lib.color import final_overlay_color
 
 
 class Grid(shader.frag):
@@ -20,24 +20,19 @@ class Grid(shader.frag):
         density_fade = 1.0 - shader.smoothstep(0.5, 1.0, shader.max(width.x, width.y))
         return shader.max(coverage.x, coverage.y) * density_fade
 
-    def intersection(self, near: shader.vec3, far: shader.vec3) -> float:
-        direction = far - near
-        if shader.abs(direction.y) < 0.0001:
-            return -1.0
-        return -near.y / direction.y
-
     def main(self, ctx: shader.mesh_input) -> shader.FragmentOutput:
         camera = shader.camera()
         view = shader.view()
         uv = ctx.position.xy * view.pixel_size
-        near = world_position(uv, 1.0, camera)
-        far = world_position(uv, 0.5, camera)
-        t = self.intersection(near, far)
-        shader.clip(t)
-        position = near + t * (far - near)
-        projected = clip_position(position, camera)
-        depth = projected.z / projected.w
+        # Unproject in homogeneous coordinates. The grid crosses y=0 at
+        # origin.y + depth * axis.y = 0, including for an orthographic camera.
+        origin = camera.inverse_view_projection_matrix @ shader.vec4(2.0 * uv.x - 1.0, 1.0 - 2.0 * uv.y, 0.0, 1.0)
+        axis = camera.inverse_view_projection_matrix @ shader.vec4(0.0, 0.0, 1.0, 0.0)
+        shader.clip(shader.abs(axis.y) - 0.0000001)
+        depth = -origin.y / axis.y
         shader.clip(shader.min(depth, 1.0 - depth))
+        hit = origin + depth * axis
+        position = hit.xyz / hit.w
         coord = position.xz
         minor = self.grid_line(coord)
         major = self.grid_line(coord / 10.0)
@@ -51,4 +46,8 @@ class Grid(shader.frag):
         angle_fade = shader.smoothstep(0.0, 0.15, shader.abs(direction.y))
         alpha = line_alpha * distance_fade * angle_fade
         shader.clip(alpha - 0.005)
-        return shader.FragmentOutput(color=shader.vec4(shader.vec3(0.6038), alpha), depth=depth)
+        # Cover rounding in floating-point and 24-bit fixed-point depth when the
+        # rasterised floor and the analytical grid share the same plane.
+        bias = shader.max(depth * 0.000001, 2.0 / 16777215.0)
+        return shader.FragmentOutput(color=shader.vec4(final_overlay_color(shader.vec3(0.6038)), alpha),
+                                     depth=shader.min(1.0, depth + bias))

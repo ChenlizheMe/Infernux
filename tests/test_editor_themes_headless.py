@@ -227,13 +227,13 @@ def test_public_theme_selection_uses_editor_preferences_and_preserves_failure_fa
     path = write(service)
     service.refresh_all()
     service.select("tests/theme/sample")
-    assert Theme.set_theme("amber")
-    assert service.selection == PreferencesStore().get("editor_theme") == "amber"
+    assert Theme.set_theme("infernux")
+    assert service.selection == PreferencesStore().get("editor_theme") == "infernux"
     service.refresh_all()
-    assert native.get_editor_theme() == "amber"
-    assert set_editor_theme("amber"), "Selecting the current theme still succeeds"
+    assert native.get_editor_theme() == "infernux"
+    assert set_editor_theme("infernux"), "Selecting the current theme still succeeds"
     assert not set_editor_theme("tests/theme/missing")
-    assert service.selection == "amber"
+    assert service.selection == "infernux"
 
     assert set_editor_theme("tests/theme/sample")
     path.write_text("{ broken", encoding="utf-8")
@@ -243,23 +243,41 @@ def test_public_theme_selection_uses_editor_preferences_and_preserves_failure_fa
     path.write_text('{"id":"sample"}', encoding="utf-8")
     service.resource_changed(path)
     assert native.get_editor_theme() == "tests/theme/sample"
-    assert Theme.set_theme("amber")
+    assert Theme.set_theme("infernux")
     service.close()
     restarted = EditorThemes(service.root, service.registry)
     try:
         restarted.refresh_all()
-        assert native.get_editor_theme() == "amber"
+        assert native.get_editor_theme() == "infernux"
     finally:
         restarted.close()
 
 
 def test_public_theme_selection_without_editor_only_changes_native_tokens(isolated_preferences):
     assert EditorThemes.instance() is None
-    assert Theme.set_theme("graphite")
-    assert native.get_editor_theme() == "graphite"
-    assert Theme.ROLE_ACCENT == native.get_editor_theme_colors()["ROLE_ACCENT"]
-    assert PreferencesStore().get("editor_theme") is None
-    assert not Theme.set_theme("missing")
+    Theme.register_theme("tests/direct", {"ROLE_ACCENT": (0.3, 0.56, 0.86, 1.0)})
+    try:
+        assert Theme.set_theme("tests/direct")
+        assert native.get_editor_theme() == "tests/direct"
+        assert Theme.ROLE_ACCENT == native.get_editor_theme_colors()["ROLE_ACCENT"]
+        assert PreferencesStore().get("editor_theme") is None
+        assert not Theme.set_theme("missing")
+    finally:
+        native.remove_editor_themes("theme:tests/direct")
+
+
+@pytest.mark.parametrize("retired_theme", ["mission_control", "graphite", "amber"])
+def test_retired_builtin_preference_resolves_to_the_only_builtin(tmp_path, isolated_preferences, retired_theme):
+    prefs = PreferencesStore()
+    prefs.set("editor_theme", retired_theme)
+    service = EditorThemes(tmp_path, Registry())
+    try:
+        service.refresh_all()
+        assert service.selection == prefs.get("editor_theme") == native.get_editor_theme() == "infernux"
+        assert native.list_editor_themes() == ["infernux"]
+        assert [row["id"] for row in service.catalog()] == ["infernux"]
+    finally:
+        service.close()
 
 
 def export_template(destination):
@@ -376,9 +394,9 @@ def test_catalog_change_signals_do_not_poll_or_publish_unchanged_data(service, m
     service.select("tests/theme/sample")
     assert len(signals) == 2
     assert signals[-1][1]["selection"] == "tests/theme/sample"
-    native.set_editor_theme("amber")
+    native.set_editor_theme("infernux")
     assert len(signals) == 3
-    assert next(row for row in service.catalog() if row["id"] == "amber")["active"]
+    assert next(row for row in service.catalog() if row["id"] == "infernux")["active"]
 
 
 def test_package_install_finishes_after_originating_panel_is_retired(tmp_path, isolated_preferences):

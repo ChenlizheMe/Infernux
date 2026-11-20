@@ -36,6 +36,11 @@ foreach(_public_file IN ITEMS
     "infernux/__init__.py"
     "infernux/__init__.pyi"
     "infernux/py.typed"
+    "infernux_automation/__init__.py"
+    "infernux_automation/__main__.py"
+    "infernux_automation/client.py"
+    "infernux_automation/delivery.py"
+    "infernux_automation/claude_hook.py"
 )
     if(NOT EXISTS "${_verify_root}/${_public_file}")
         message(FATAL_ERROR "Wheel is missing public Python API file: ${_public_file}")

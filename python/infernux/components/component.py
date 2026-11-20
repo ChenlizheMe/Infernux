@@ -351,7 +351,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
             # Keep the Python mirror authoritative for direct lifecycle calls
             # made before the next native state synchronization.  The native
             # proxy remains authoritative for the actual scene traversal.
-            self._enabled = value
+            self._enabled = value and self.__dict__.get('_initialization_error') is None
             if previous != value:
                 from ._component_lifecycle import notify_runtime_component_changed
                 notify_runtime_component_changed(self)

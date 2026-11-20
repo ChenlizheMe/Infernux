@@ -57,6 +57,7 @@ expected = {
     "hierarchy": "Window", "history": "Window", "inspector": "Window",
     "project": "Window", "scene_view": "Window", "tag_layer_settings": "",
     "project_settings": "",
+      "themes": "",
     "ui_editor": "Window",
 }
 actual = {key: info.menu_path for key, info in bootstrap.window_manager.get_registered_types().items()}

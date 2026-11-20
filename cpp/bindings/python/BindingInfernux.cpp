@@ -2355,6 +2355,22 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             },
             py::arg("capture_id"), "Return status and metadata for an engine capture request")
         .def(
+            "set_capture_completion_callback",
+            [](Infernux &self, py::object callback) {
+                auto *renderer = self.GetRenderer();
+                if (!renderer)
+                    throw std::logic_error("Capture callbacks require graphical renderer initialization");
+                if (callback.is_none()) {
+                    renderer->SetCaptureCompletionCallback({});
+                } else {
+                    renderer->SetCaptureCompletionCallback([callback = py::function(callback)](uint64_t captureId) {
+                        py::gil_scoped_acquire gil;
+                        callback(captureId);
+                    });
+                }
+            },
+            py::arg("callback"))
+        .def(
             "cancel_capture",
             [](Infernux &self, uint64_t captureId) {
                 auto *renderer = self.GetRenderer();

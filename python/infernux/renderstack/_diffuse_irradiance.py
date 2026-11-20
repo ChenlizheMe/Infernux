@@ -169,6 +169,7 @@ def reconstruct_diffuse(ctx, guides, observation):
     old_state, state = ctx.view.history("diffuse/state", format=Format.RG16_SFLOAT, size_divisor=divisor,
                                        respond_to_lighting=True)
     fresh = _sh_textures(graph, f"{stem}/gathered", divisor)
+    fresh_error = graph.create_texture(f"{stem}/gathered/error", format=Format.R16_SFLOAT, size_divisor=divisor, samples=1)
     reprojection = _sh_textures(graph, f"{stem}/reprojected", divisor)
     reprojected_state = graph.create_texture(f"{stem}/reprojected/state", format=Format.RG16_SFLOAT,
                                              size_divisor=divisor, samples=1)
@@ -179,18 +180,19 @@ def reconstruct_diffuse(ctx, guides, observation):
                         "guide": observation.half_geometry, "ambient_visibility": visibility})
         p.set_param("use_visibility", observation.visibility is not None)
         p.set_param("divisor", divisor)
-        _write_slots(p, fresh)
+        _write_slots(p, (*fresh, fresh_error))
         p.fullscreen_quad("infernux/internal/ray_diffuse_gather")
     with graph.add_pass("Ray Diffuse Reconstruction") as p:
         p.set_textures({**dict(zip(("fresh_red", "fresh_green", "fresh_blue"), fresh)),
                         **dict(zip(("old_red", "old_green", "old_blue"), old)),
-                        "old_state": old_state, "primary": guides.primary, "reprojection": observation.reprojection})
-        p.set_buffer("geometry", ctx.world.geometry)
+                        "fresh_error": fresh_error, "old_state": old_state, "primary": guides.primary,
+                        "guide": observation.half_geometry,
+                        "reprojection": observation.reprojection})
         _write_slots(p, (*reprojection, reprojected_state))
         p.fullscreen_quad("infernux/internal/ray_diffuse_history")
     with graph.add_pass("Ray Diffuse Fill Disocclusion") as p:
         p.set_textures({**_sh_inputs(reprojection), "state": reprojected_state, "old_state": old_state,
-                        "primary": guides.primary})
+                        "primary": guides.primary, "guide": observation.half_geometry})
         _write_slots(p, (*filled, state))
         p.fullscreen_quad("infernux/internal/ray_diffuse_fill")
     with graph.add_pass("Ray Diffuse Recurrent Blur") as p:

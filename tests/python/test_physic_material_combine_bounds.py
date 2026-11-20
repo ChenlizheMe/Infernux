@@ -45,7 +45,7 @@ def test_combine_preserves_original_integer_and_atomicity(field, entry, value):
 def test_asset_reload_rejects_wrapped_mode_without_partial_publication(engine, tmp_path, field, value):
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
-    source = tmp_path / "Combine.physmat"
+    source = tmp_path / "Combine.physicmaterial"
     before = {"friction": 0.5, "bounciness": 0.25, "friction_combine": 2, "bounce_combine": 2}
     source.write_text(json.dumps(before), encoding="utf-8")
     imported = database.import_asset(str(source))
@@ -63,10 +63,13 @@ def test_asset_reload_rejects_wrapped_mode_without_partial_publication(engine, t
             version = registry.get_asset_residency(guid).runtime_version
             assert not registry.reload_asset(guid)
             assert material.serialize_document() == before
-            assert registry.get_asset_residency(guid).runtime_version == version
+            assert not registry.is_loaded(guid)
+            assert registry.load_physic_material_by_guid(guid) is None
             source.write_text(json.dumps(before | {field: 1}), encoding="utf-8")
-            assert registry.reload_asset(guid)
-            assert getattr(material, field) == 1
+            repaired = database.reimport_asset(str(source))
+            assert repaired, repaired.error
+            material = registry.load_physic_material_by_guid(guid)
+            assert material is not None and getattr(material, field) == 1
         assert material.guid == guid
         assert registry.load_physic_material_by_guid(guid) is material
     finally:

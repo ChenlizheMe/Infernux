@@ -6,6 +6,7 @@
       "repository": "https://github.com/InfernuxEngine/infernux_mcp",
       "category": "editor_tools",
       "targets": [],
+      "packager": "package.py",
       "default": true
     },
     {

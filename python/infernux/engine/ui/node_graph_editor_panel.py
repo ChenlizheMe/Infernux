@@ -68,6 +68,7 @@ from .floating_workspace_panel import (
     render_workspace_add_header,
 )
 from .node_graph_view import NodeGraphView
+from .theme import Theme
 from .graph_details import GraphDetailContributor, GraphDetailHost
 from .inspector_utils import preserve_ui_float_precision, render_color_value_bar
 
@@ -226,7 +227,7 @@ class GraphWorkspaceEntry:
     element: GraphElementRef
     primary: str
     secondary: str = ""
-    dot_color: tuple[float, float, float, float] = (0.7, 0.7, 0.7, 1.0)
+    dot_color: tuple[float, float, float, float] = Theme.TEXT_DIM
     semantic_kind: str = "graph_element"
     semantic_id: str = ""
     semantic_string_value: str = ""

@@ -36,15 +36,11 @@ def test_player_keeps_engine_notices_from_source_and_installed_wheel(tmp_path, m
     source = Path(__file__).resolve().parents[2]
     expected = {
         "LICENSE": (source / "LICENSE").read_bytes(),
+        "external/pybind11/LICENSE": (source / "external/pybind11/LICENSE").read_bytes(),
+        "external/zlib/LICENSE": (source / "external/zlib/LICENSE").read_bytes(),
         "utf8proc/LICENSE.md": (source / "licenses/utf8proc/LICENSE.md").read_bytes(),
         "python/infernux/resources/fonts/MapleMono-LICENSE.txt": (
             source / "python/infernux/resources/fonts/MapleMono-LICENSE.txt"
-        ).read_bytes(),
-        "python/infernux/resources/fonts/Inter-LICENSE.txt": (
-            source / "python/infernux/resources/fonts/Inter-LICENSE.txt"
-        ).read_bytes(),
-        "python/infernux/resources/fonts/NotoSansSC-LICENSE.txt": (
-            source / "python/infernux/resources/fonts/NotoSansSC-LICENSE.txt"
         ).read_bytes(),
     }
     if installed:
@@ -54,7 +50,7 @@ def test_player_keeps_engine_notices_from_source_and_installed_wheel(tmp_path, m
         (dist_info / "METADATA").write_text("Name: infernux\nVersion: 0.4.3\n", encoding="utf-8")
         records = []
         for name, content in expected.items():
-            relative = name if name == "LICENSE" or name.startswith("python/") else "licenses/" + name
+            relative = name if name == "LICENSE" or name.startswith(("python/", "external/")) else "licenses/" + name
             target = dist_info / "licenses" / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)

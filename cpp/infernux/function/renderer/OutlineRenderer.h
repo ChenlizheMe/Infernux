@@ -145,7 +145,7 @@ class OutlineRenderer
                          rhi::BindGroupHandle perViewGroup, VkBuffer viewGlobalsBuffer);
 
     /// @brief Record the fullscreen edge composite inside the active graph pass.
-    void RecordCompositeDraw(VkCommandBuffer cmdBuf);
+    void RecordCompositeDraw(VkCommandBuffer cmdBuf, bool writesDisplayRgb);
 
   private:
     // ========================================================================

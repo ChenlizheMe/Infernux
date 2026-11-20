@@ -19,7 +19,7 @@ from infernux.engine.resources_manager import (
     ResourcesManager,
     _is_plugin_editor_translation_catalog,
 )
-from infernux.engine.path_utils import path_key
+from infernux.engine.path_utils import path_key, resolved_path
 from infernux.debug import Debug
 from infernux.lib import AssetMutationResult, RuntimeMode
 
@@ -311,7 +311,7 @@ def test_invalid_native_asset_waits_for_source_change_instead_of_retrying(monkey
 @pytest.mark.parametrize(
     "extension",
     [
-        ".glsl",
+        ".shaderlib.py",
     ],
 )
 def test_rejected_dependency_move_is_terminal_and_exact_revert_can_recover(monkeypatch, tmp_path, extension):
@@ -831,7 +831,7 @@ def test_frontend_worker_does_not_publish_or_update_graph(monkeypatch, tmp_path)
     assert handler._script_change_collector.last_known_good(str(path)) is not None
 
 
-def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(monkeypatch, tmp_path):
+def test_reload_rejection_retires_live_body_at_resources_safe_point(monkeypatch, tmp_path):
     from infernux.engine.play_mode import PlayModeManager, ScriptReloadOutcome
 
     database = _AssetDatabaseProbe()
@@ -841,6 +841,7 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(monkey
     manager._event_handler = handler
     path = tmp_path / "controller.py"
     path.write_text("value = 'A'\n", encoding="utf-8")
+    database.guid_by_path[resolved_path(path)] = "controller"
     monkeypatch.setattr(
         "infernux.components.registry.register_component_script",
         lambda _path, **_kwargs: None,
@@ -859,6 +860,12 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(monkey
     )
 
     class _PlayModeProbe:
+        def mark_components_missing_for_script(self, guid, filename, *, error):
+            assert guid == "controller"
+            assert path_key(filename) == path_key(path)
+            assert error == "schema rejected"
+            live_body.clear()
+
         def prepare_script_reload_batch(self, revisions):
             return SimpleNamespace(revisions=tuple(revisions))
 
@@ -893,7 +900,8 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(monkey
 
     current_lkg = handler._script_change_collector.journal.last_known_good(str(path))
     assert current_lkg == first_lkg
-    assert live_body["value"] == "A"
+    assert live_body == {}
+    assert path.read_text(encoding="utf-8") == "value = 'B'\n"
 
 
 def test_real_observer_is_owned_joinable_and_commits_on_main(monkeypatch, tmp_path):
@@ -952,7 +960,7 @@ def test_engine_exit_drains_resources_before_plugin_and_native_cleanup(monkeypat
     engine._play_mode_manager = None
     engine._player_runtime = None
     engine._runtime_scene_manager = None
-    engine._runtime_scheduler = SimpleNamespace(clear=lambda: None)
+    engine._authoring_scheduler = SimpleNamespace(clear=lambda: None)
     engine._resources_manager = SimpleNamespace(cleanup=lambda: order.append("resources"))
     engine._engine = SimpleNamespace(_require_cleanup_boundary=lambda: None,
                                      cleanup=lambda: order.append("native"))
@@ -1109,6 +1117,7 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
         def __init__(self):
             self.batch = _Batch()
             self.rollback_count = 0
+            self.retired = []
 
         def prepare_script_reload_batch(self, _revisions):
             return self.batch
@@ -1121,6 +1130,11 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
         def rollback_script_reload_batch(self, batch):
             assert batch is self.batch
             self.rollback_count += 1
+
+        def mark_components_missing_for_script(self, guid, path, *, error):
+            assert self.rollback_count == 1
+            assert "second Edit member rejected" in error
+            self.retired.append(guid)
 
     owner = _FailingEditOwner()
     monkeypatch.setattr(
@@ -1135,6 +1149,7 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
     handler._drain_script_results()
 
     assert owner.rollback_count == 1
+    assert owner.retired == ["first-edit-failure-guid", "second-edit-failure-guid"]
     assert handler._script_change_collector.last_known_good(str(first)) is None
     assert handler._script_change_collector.last_known_good(str(second)) is None
 
@@ -1216,6 +1231,7 @@ def test_lkg_commit_failure_rolls_back_live_and_committed_dependency_graph(
             self.commit_count = 0
             self.rollback_count = 0
             self.finalize_count = 0
+            self.retired = []
 
         def prepare_script_reload_batch(self, _revisions):
             return self.batch
@@ -1233,6 +1249,10 @@ def test_lkg_commit_failure_rolls_back_live_and_committed_dependency_graph(
 
         def finalize_script_reload_batch(self, _batch):
             self.finalize_count += 1
+
+        def mark_components_missing_for_script(self, guid, path, *, error):
+            assert not self.batch.committed
+            self.retired.append(guid)
 
     owner = _Owner()
     monkeypatch.setattr(
@@ -1253,6 +1273,7 @@ def test_lkg_commit_failure_rolls_back_live_and_committed_dependency_graph(
     assert owner.commit_count == 1
     assert owner.rollback_count == 1
     assert owner.finalize_count == 0
+    assert owner.retired == ["lkg-rollback-guid"]
     assert handler._script_change_collector.last_known_good(str(script)) is None
     after_record = handler.dependency_graph.module_for_path(str(script))
     assert after_record is not None

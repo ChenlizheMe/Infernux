@@ -16,13 +16,13 @@ icon_path: str
 """Absolute path to the engine window icon (``resources/icons/icon.png``)."""
 
 engine_font_path: str
-"""Absolute path to the default gameplay text face (``MapleMono-CN-Regular.ttf``)."""
+"""Absolute path to the default editor and gameplay face (``MapleMono-CN-Regular.ttf``)."""
 
 engine_ui_font_path: str
-"""Absolute path to the interface face (``Inter-VF.ttf``)."""
+"""The shared default font used for editor interface text."""
 
 engine_font_cjk_path: str
-"""Absolute path to the CJK face merged into the UI font (``NotoSansSC-Regular.ttf``)."""
+"""The shared default font, which includes CJK glyphs."""
 
 engine_mono_font_path: str
 """Absolute path to the bundled monospace face (``MapleMono-CN-Regular.ttf``)."""

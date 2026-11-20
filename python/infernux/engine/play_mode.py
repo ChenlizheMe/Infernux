@@ -147,13 +147,14 @@ class _MissingScriptRecoveryMember:
     script_guid: str
     state: dict
     enabled: bool
+    previous_enabled: bool
     awake_called: bool
     has_started: bool
     execution_order: int
 
 
 class _MissingScriptRecoveryTransaction:
-    """Publish real types and atomically replace matching MissingScript values."""
+    """Replace unavailable script instances and initialize repairs after publication."""
 
     def __init__(
         self,
@@ -246,8 +247,8 @@ class _MissingScriptRecoveryTransaction:
                 member.missing_component,
                 instance,
                 enabled=member.enabled,
-                awake_called=member.awake_called,
-                has_started=member.has_started,
+                awake_called=False,
+                has_started=False,
                 execution_order=member.execution_order,
             )
             self._prepared.append((member, instance))
@@ -287,8 +288,8 @@ class _MissingScriptRecoveryTransaction:
                     member.missing_component,
                     instance,
                     enabled=member.enabled,
-                    awake_called=member.awake_called,
-                    has_started=member.has_started,
+                    awake_called=False,
+                    has_started=False,
                     execution_order=member.execution_order,
                 )
                 self._replaced.append((member, instance))
@@ -325,7 +326,7 @@ class _MissingScriptRecoveryTransaction:
                 self.manager._copy_replacement_lifecycle_state(
                     instance,
                     member.missing_component,
-                    enabled=member.enabled,
+                    enabled=member.previous_enabled,
                     awake_called=member.awake_called,
                     has_started=member.has_started,
                     execution_order=member.execution_order,
@@ -354,6 +355,11 @@ class _MissingScriptRecoveryTransaction:
         if self._finalized:
             return
         self.body_transaction.finalize()
+        for member, instance in self._replaced:
+            member.missing_component._retire_lifecycle_diagnostics()
+            native = instance._get_bound_native_component()
+            if native is not None:
+                native._initialize_recovered_script(member.enabled)
         self._prepared.clear()
         self._replaced.clear()
         self._finalized = True
@@ -380,6 +386,9 @@ class WorldScriptDeleteBatch:
 
     def rollback(self):
         self.publication.rollback()
+
+    def finalize(self):
+        self.publication.finalize()
 
 
 class ScriptDeleteBatch:
@@ -448,6 +457,12 @@ class ScriptDeleteBatch:
         except Exception:
             self.rollback()
             raise
+
+    def finalize(self) -> None:
+        from infernux.execution import close_component_execution
+
+        for member in self._replaced:
+            close_component_execution(member.old_component)
 
     def rollback(self) -> None:
         if self._rolled_back:
@@ -1539,7 +1554,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             else execution_order
         )
 
-    def prepare_script_delete_batch(self, script_guid, file_path):
+    def prepare_script_delete_batch(self, script_guid, file_path, *, error=None):
         from infernux.lib import _Infernux
         from infernux.engine.runtime_worlds import WorldScriptPublication
         manager = self._get_scene_manager()
@@ -1547,7 +1562,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         try:
             for identity in (manager._authoring_runtime_world_id, *manager._runtime_world_ids):
                 with _Infernux._RuntimeWorldScope(identity):
-                    batch = self._prepare_script_delete_current_world(script_guid, file_path)
+                    batch = self._prepare_script_delete_current_world(script_guid, file_path, error=error)
                     prepared.append((identity, batch))
         except BaseException:
             WorldScriptPublication(prepared, deletion=True).rollback()
@@ -1558,6 +1573,8 @@ class PlayModeManager(PlayModeSerializationMixin):
         self,
         script_guid: str,
         file_path: str,
+        *,
+        error: str | None = None,
     ) -> ScriptDeleteBatch:
         """Stage missing-script replacements for Edit or Play mode."""
         if self._state not in (
@@ -1569,9 +1586,9 @@ class PlayModeManager(PlayModeSerializationMixin):
         if not target_guid:
             raise ValueError("script deletion requires an asset GUID")
         scenes = self._scenes_for_script_reload()
-        if not scenes:
+        if not scenes and error is None:
             raise RuntimeError("no resident scene for script deletion")
-        from infernux.components.missing_script import create_missing_script_component
+        from infernux.components.missing_script import MissingScript, create_missing_script_component
         from infernux.components.registry import component_types_for_script_path
 
         members = []
@@ -1579,6 +1596,9 @@ class PlayModeManager(PlayModeSerializationMixin):
             for obj in scene.get_all_objects():
                 for index, component in enumerate(list(obj.get_py_components() or ())):
                     if str(getattr(component, "_script_guid", "") or "") != target_guid:
+                        continue
+                    if error is not None and isinstance(component, MissingScript):
+                        component._broken_error = error
                         continue
                     state = self._serialize_py_component(component)
                     fields = dict(state.get("fields", {}))
@@ -1591,9 +1611,10 @@ class PlayModeManager(PlayModeSerializationMixin):
                         module_name=state.get("module_name", ""),
                         qualified_name=state.get("qualified_name", ""),
                         fields=fields,
-                        error=f"Script asset is missing: {file_path}",
+                        error=error or f"Script asset is missing: {file_path}",
                     )
-                    missing.enabled = bool(state.get("enabled", True))
+                    missing._reload_enabled = component.__dict__.get("_reload_enabled", state["enabled"])
+                    missing.enabled = bool(state["enabled"])
                     missing._script_path = str(file_path or "")
                     missing._deserialize_fields_document(
                         fields,
@@ -1683,7 +1704,8 @@ class PlayModeManager(PlayModeSerializationMixin):
                     guid = str(getattr(component, "_script_guid", "") or "")
                     if not guid:
                         continue
-                    if isinstance(component, MissingScript):
+                    if (isinstance(component, MissingScript)
+                            or component.__dict__.get("_initialization_error") is not None):
                         missing_by_guid.setdefault(guid, []).append(
                             (
                                 obj.id,
@@ -1754,7 +1776,8 @@ class PlayModeManager(PlayModeSerializationMixin):
                         file_path=path or revision.file_path,
                         script_guid=guid,
                         state=state,
-                        enabled=bool(state.get("enabled", True)),
+                        enabled=bool(component.__dict__.get("_reload_enabled", state.get("enabled", True))),
+                        previous_enabled=bool(state.get("enabled", True)),
                         awake_called=bool(getattr(component, "_awake_called", False)),
                         has_started=bool(getattr(component, "_has_started", False)),
                         execution_order=int(getattr(component, "_execution_order", 0)),
@@ -1864,10 +1887,11 @@ class PlayModeManager(PlayModeSerializationMixin):
             return ScriptReloadOutcome(False, True, 0, message)
 
 
-    def mark_components_missing_for_script(self, script_guid: str, file_path: str) -> int:
-        """Atomically replace deleted-script instances with MissingScript."""
-        batch = self.prepare_script_delete_batch(script_guid, file_path)
+    def mark_components_missing_for_script(self, script_guid: str, file_path: str, *, error=None) -> int:
+        """Replace instances of an unavailable source while retaining their authored fields."""
+        batch = self.prepare_script_delete_batch(script_guid, file_path, error=error)
         replaced = self.commit_script_delete_batch(batch)
+        batch.finalize()
         if replaced:
             from infernux.engine.undo import _bump_inspector_structure
 

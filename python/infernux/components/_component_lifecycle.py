@@ -818,8 +818,9 @@ class RuntimeExecutionScheduler:
                     break
                 # The cursor names both the receiver and its coroutine tail.
                 # Pause after a callback resumes that tail, never the callback.
+                owner = component._reload_owner
                 if component._physics_preparing or component._is_destroyed or not component._runtime_active_in_hierarchy or (
-                        editor_only and not component._execute_in_edit_mode):
+                        editor_only and not component._execute_in_edit_mode) or (owner is not None and not owner.active):
                     counters["phase_skips"] += 1
                     cursor[0] += 1
                     cursor[1] = 0
@@ -1302,6 +1303,7 @@ class ComponentLifecycleMixin:
     _component_id = 0
     _registered_go_id = None
     _runtime_scheduler_world_id = 0
+    _reload_owner = None
 
     def _resolve_runtime_method(self, name: str, *, epoch: Any = None) -> Any:
         """Resolve a helper through the owner-published runtime epoch."""
@@ -1320,6 +1322,11 @@ class ComponentLifecycleMixin:
         for this call, so a body publication is visible to the next safe-point
         callback without retaining the previous Python function.
         """
+        owner = self._reload_owner
+        if owner is not None and not owner.active and method_name not in (
+            "on_disable", "on_destroy", "on_before_serialize",
+        ):
+            return False
         try:
             if epoch is None:
                 from infernux.engine.runtime_dispatch import current_runtime_epoch
@@ -1337,6 +1344,9 @@ class ComponentLifecycleMixin:
                 self._resolve_lifecycle_exception(method_name)
             return True
         except Exception as exc:
+            if method_name in ("awake", "on_enable", "start"):
+                self._initialization_error = exc
+                self._disable_after_initialization_exception(exc)
             self._report_lifecycle_exception(exc, method_name)
             return False
 
@@ -1357,18 +1367,24 @@ class ComponentLifecycleMixin:
         for method_name in tuple(self.__dict__.get("_failed_lifecycle_callbacks", ())):
             self._resolve_lifecycle_exception(method_name)
 
-    def _disable_after_awake_exception(self):
-        """Unity disables a script component if its Awake throws."""
-        self._enabled = False
-
-        cpp_component = getattr(self, '_cpp_component', None)
-        if cpp_component is None:
-            return
-
+    def _disable_after_initialization_exception(self, error):
+        self.__dict__.setdefault("_reload_enabled", self.enabled)
         try:
-            cpp_component.enabled = False
+            self.enabled = False
         except RuntimeError:
+            self._enabled = False
             self._invalidate_native_binding()
+        try:
+            self.stop_all_coroutines()
+        except Exception as cleanup_error:
+            from infernux.debug import Debug
+
+            Debug.log_exception(cleanup_error)
+        finally:
+            close_component_execution(self)
+        owner = self.__dict__.get("_reload_owner")
+        if owner is not None and owner.coordinator is not None and self._script_path:
+            owner.coordinator.queue_initialization_failure(self._script_path, error)
 
     def _request_physics_activation(self):
         from infernux.physics.participant import _request_physics_activation
@@ -1376,18 +1392,23 @@ class ComponentLifecycleMixin:
 
     def _call_awake(self):
         """Internal: Trigger awake lifecycle."""
+        if self.__dict__.get("_initialization_error") is not None:
+            return False
         if self._awake_called:
-            return
+            return True
         self._awake_called = True
-        if not self._safe_lifecycle_call("awake"):
-            self._disable_after_awake_exception()
+        self._awake_called = self._safe_lifecycle_call("awake")
+        return self._awake_called
 
     def _call_start(self):
         """Internal: Trigger start lifecycle if not already called."""
+        if self.__dict__.get("_initialization_error") is not None:
+            return False
         if self._has_started:
-            return
+            return True
         self._has_started = True
-        self._safe_lifecycle_call("start")
+        self._has_started = self._safe_lifecycle_call("start")
+        return self._has_started
 
     def _call_update(self, delta_time: float):
         """Internal: Trigger update lifecycle."""

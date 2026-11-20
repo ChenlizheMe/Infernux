@@ -276,6 +276,8 @@ class AssetMutationService:
             raise TypeError("asset observer must be callable")
         if callback not in self._listeners:
             self._listeners.append(callback)
+            from infernux.engine.reload.owners import own_cleanup
+            own_cleanup(callback, lambda: self.remove_observer(callback))
 
     def remove_observer(
         self,

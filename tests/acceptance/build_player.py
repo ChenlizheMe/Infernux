@@ -9,7 +9,9 @@ import importlib
 import json
 import os
 import platform
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -157,6 +159,38 @@ def _installed_exporter_registry(
     return registry
 
 
+def _install_source_platform(project: Path, target: str, *, editor_root_override: Path | None = None):
+    """Install the platform package once so both acceptance builds share its payload."""
+    from infernux.plugins import InxPackage, PluginManager, PluginRegistry
+
+    platform_name = EXPORTERS[target][0]
+    if PluginRegistry(str(project)).is_installed(f"infernux/platform-{platform_name}"):
+        return
+
+    source = PLUGIN_EDITORS[platform_name].resolve().parent
+    editor = editor_root_override.expanduser().resolve() if editor_root_override else source / "editor"
+    cache = project / "Library" / "PlatformAcceptance"
+    cache.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("INFERNUX_PACKAGE_CACHE_ROOT", str(cache / "packages"))
+    with tempfile.TemporaryDirectory(prefix="install-", dir=cache) as temporary:
+        stage = Path(temporary) / "package"
+        stage.mkdir()
+        for member in source.iterdir():
+            if member.name.casefold() == "editor":
+                continue
+            if member.is_dir():
+                shutil.copytree(member, stage / member.name)
+            else:
+                shutil.copy2(member, stage / member.name)
+        shutil.copytree(editor, stage / "editor")
+        archive = InxPackage.export_source(str(stage), str(Path(temporary) / "platform.inxpkg"))
+        manager = PluginManager(str(project), runtime=True, installation_only=True)
+        try:
+            manager.install_package(archive.package_path, install_dependencies=False)
+        finally:
+            manager.shutdown()
+
+
 def _prepare_project_registry(project: Path, *, runtime_host: bool = True):
     """Load project-authored types before cooking project data assets.
 
@@ -267,7 +301,7 @@ def _parser() -> argparse.ArgumentParser:
         "--plugin-editor-root",
         type=Path,
         help=(
-            "Explicit editor root for the selected source platform plugin. "
+            "Editor payload to install for the selected source platform plugin. "
             "Release engineering uses this to consume an out-of-source working package."
         ),
     )
@@ -380,12 +414,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         progress=on_progress,
     )
-    selected_editor = arguments.plugin_editor_root
-    if not arguments.installed and selected_editor is None:
-        platform_name = EXPORTERS[arguments.target][0]
-        selected_editor = PLUGIN_EDITORS[platform_name]
+    if not arguments.installed:
+        _install_source_platform(project, arguments.target, editor_root_override=arguments.plugin_editor_root)
     registry = _installed_exporter_registry(
-        project, arguments.target, editor_root_override=selected_editor,
+        project, arguments.target, editor_root_override=arguments.plugin_editor_root,
     )
     service = BuildService(registry)
     try:

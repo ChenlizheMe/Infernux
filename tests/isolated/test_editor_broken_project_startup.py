@@ -28,6 +28,7 @@ def exercise(project):
     assets = project / "Assets"
     assets.mkdir()
     (project / "ProjectSettings").mkdir()
+    (project / "ProjectSettings/requirements.txt").write_text("", encoding="utf-8")
     bad_script = assets / "BrokenStartup.py"
     bad_script.write_text("def invalid(:\n", encoding="utf-8")
     bad_scene = assets / "Broken.scene"

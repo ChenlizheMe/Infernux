@@ -337,6 +337,7 @@ class InxGUI
     uint64_t m_surfaceGrainUpload = 0;
     uint64_t m_surfaceHexUpload = 0;
     std::array<uint64_t, 4> m_surfacePatternUploads{};
+    ImFont *m_uiFont = nullptr;
     bool m_hasDrawData = false;
     std::vector<uint64_t> m_drawTextureIds;
     std::vector<const ImTextureData *> m_drawManagedTextures;

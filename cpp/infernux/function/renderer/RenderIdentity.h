@@ -23,12 +23,32 @@ enum class RenderDomain : uint8_t
 
 using RenderDomainMask = uint32_t;
 
+enum class RenderDrawSet : uint8_t
+{
+    Scene,
+    Skybox,
+    EditorOverlay,
+};
+
+[[nodiscard]] constexpr RenderDrawSet DrawSetForDomain(RenderDomain domain) noexcept
+{
+    switch (domain) {
+    case RenderDomain::ComponentGizmo:
+    case RenderDomain::EditorGizmo:
+    case RenderDomain::EditorTool:
+        return RenderDrawSet::EditorOverlay;
+    case RenderDomain::Skybox:
+        return RenderDrawSet::Skybox;
+    default:
+        return RenderDrawSet::Scene;
+    }
+}
+
 /// Synthetic editor geometry depends on its own shader/topology/alpha mask.
 /// A generic scene error/default material cannot represent these primitives.
 [[nodiscard]] constexpr bool RenderDomainRequiresDedicatedMaterial(RenderDomain domain) noexcept
 {
-    return domain == RenderDomain::ComponentGizmo || domain == RenderDomain::EditorGizmo ||
-           domain == RenderDomain::EditorTool || domain == RenderDomain::Skybox;
+    return DrawSetForDomain(domain) != RenderDrawSet::Scene;
 }
 
 [[nodiscard]] constexpr RenderDomainMask RenderDomainBit(RenderDomain domain) noexcept

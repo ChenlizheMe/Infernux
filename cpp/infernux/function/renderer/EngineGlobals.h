@@ -23,7 +23,7 @@ namespace infernux
  * belong to
  * Material/Renderer set 0.
  *
- * Nine 16-byte rows share one camera-local uniform allocation.
+ * Ten 16-byte rows share one camera-local uniform allocation.
  */
 struct EngineGlobalsUBO
 {
@@ -58,16 +58,20 @@ struct EngineGlobalsUBO
 
     /// x = view flags, y = last accepted ray geometry, z = packed jitter delta in UV, w = accepted view samples.
     alignas(16) glm::uvec4 viewOptions{0u};
+
+    /// Current projection displacement in top-left raster pixels.
+    alignas(16) glm::vec2 rasterJitterPixels{0.0f};
 };
 
-static_assert(sizeof(EngineGlobalsUBO) == 144, "EngineGlobalsUBO must contain nine 16-byte rows");
+static_assert(sizeof(EngineGlobalsUBO) == 160, "EngineGlobalsUBO must contain ten 16-byte rows");
 
 [[nodiscard]] inline glm::uvec4 MakeViewOptions(bool dithering, bool stopNaNs, bool opaqueOutput,
                                                 uint32_t previousRayGeometry = 0, uint32_t sampleIndex = 0,
-                                                glm::vec2 jitterNdcDelta = {})
+                                                glm::vec2 jitterNdcDelta = {}, bool writesDisplayRgb = false)
 {
     const uint32_t flags = static_cast<uint32_t>(dithering) | (static_cast<uint32_t>(stopNaNs) << 1u) |
-                           (static_cast<uint32_t>(opaqueOutput) << 2u);
+                           (static_cast<uint32_t>(opaqueOutput) << 2u) |
+                           (static_cast<uint32_t>(writesDisplayRgb) << 3u);
     // Both native projections express positive raster Y down. Convert NDC to top-left texture UV.
     return {flags, previousRayGeometry, glm::packHalf2x16(jitterNdcDelta * 0.5f), sampleIndex};
 }

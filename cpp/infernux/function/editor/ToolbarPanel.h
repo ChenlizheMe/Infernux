@@ -84,6 +84,10 @@ class ToolbarPanel : public EditorPanel
   protected:
     void OnRenderContent(InxGUIContext *ctx) override;
     ImGuiWindowFlags GetWindowFlags() const override;
+    bool UsesContentBleed() const override
+    {
+        return false;
+    }
     void PreRender(InxGUIContext *ctx) override;
     void PostRender(InxGUIContext *ctx) override;
 

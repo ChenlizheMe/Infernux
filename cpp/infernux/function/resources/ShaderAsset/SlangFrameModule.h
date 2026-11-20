@@ -18,6 +18,7 @@ public uint inx_previous_ray_geometry_serial() { return inx_globals.view_options
 public bool inx_ray_lighting_changed() { return (inx_globals.view_options.x & 16u) != 0u; }
 public bool inx_ray_proposals_changed() { return (inx_globals.view_options.x & 32u) != 0u; }
 public float2 inx_view_jitter_delta_uv() { return unpackHalf2x16ToFloat(inx_globals.view_options.z); }
+public float2 inx_view_jitter_pixels() { return inx_globals.raster_jitter_pixels; }
 public struct InxViewContext
 {
     public float2 size;
@@ -29,6 +30,7 @@ public struct InxViewContext
     public bool dithering;
     public bool stop_nans;
     public bool opaque_output;
+    public bool display_rgb_output;
 };
 public InxViewContext inx_view_context()
 {
@@ -42,6 +44,7 @@ public InxViewContext inx_view_context()
     result.dithering = (inx_globals.view_options.x & 1u) != 0u;
     result.stop_nans = (inx_globals.view_options.x & 2u) != 0u;
     result.opaque_output = (inx_globals.view_options.x & 4u) != 0u;
+    result.display_rgb_output = (inx_globals.view_options.x & 8u) != 0u;
     return result;
 }
 )slang"};

@@ -328,9 +328,9 @@ class InxVkCoreModular
      * @param overrideMaterial If non-empty, all objects use this material name
      */
     void DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width, uint32_t height, rhi::BindGroupHandle perViewGroup,
-                           vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix, int queueMin, int queueMax,
-                           const std::string &sortMode = "", const std::string &overrideMaterial = "",
-                           const std::string &passTag = "",
+                           vk::ViewGlobalsBinding &viewGlobals, const glm::mat4 &viewMatrix, RenderDrawSet drawSet,
+                           int queueMin, int queueMax, const std::string &sortMode = "",
+                           const std::string &overrideMaterial = "", const std::string &passTag = "",
                            const MaterialPassPipelineDescriptor *pipelineDescriptor = nullptr,
                            GraphMaterialFilter materialFilter = GraphMaterialFilter::All,
                            const RendererSelection *selection = nullptr, uint64_t excludedObjectId = 0,
@@ -1701,6 +1701,7 @@ class InxVkCoreModular
         int queueMax = 0;
         ShaderCompileTarget target = ShaderCompileTarget::Forward;
         GraphMaterialFilter materialFilter = GraphMaterialFilter::All;
+        RenderDrawSet drawSet = RenderDrawSet::Scene;
         std::string sortMode;
         std::string passTag;
         std::vector<SortableDrawCall> draws;

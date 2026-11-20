@@ -155,6 +155,7 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
     database = SimpleNamespace(
+        get_import_error=lambda _guid: "",
         get_guid_from_path=lambda candidate: "structural-guid" if str(candidate).casefold() == path.casefold() else "",
         dependency_graph=engine.get_asset_database().dependency_graph,
         get_path_from_guid=lambda guid: path if guid == "structural-guid" else "",

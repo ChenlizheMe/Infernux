@@ -3381,7 +3381,7 @@ void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item
         ctx->Label(std::string(gdIt->second.label) + ": " + item.name);
     } else {
         ctx->SetDragDropPayload(DRAG_TYPE_PROJECT_ITEM, item.path);
-        ctx->Label("Item: " + item.name);
+        ctx->Label(item.name);
     }
 
     ctx->EndDragDropSource();
@@ -3420,8 +3420,10 @@ void ProjectPanel::RenderItemLabel(InxGUIContext *ctx, const FileItem &item, flo
             m_renameFocusRequested = false;
         }
 
+        const float textW = ImGui::CalcTextSize(m_renameBuf.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        const float renameW = std::min(std::max(iconSize, textW), ctx->GetContentRegionAvailWidth());
         ctx->SetCursorPosX(cellStartX);
-        ctx->SetNextItemWidth(iconSize);
+        ctx->SetNextItemWidth(renameW);
         ctx->TextInput("##rename_" + item.path, m_renameBuf);
         ctx->RecordSemanticItem("text_input", "Name", true, "project.rename.input");
 

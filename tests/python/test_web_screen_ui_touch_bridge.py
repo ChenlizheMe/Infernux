@@ -10,6 +10,7 @@ import infernux.engine.runtime_screen_ui as runtime_screen_ui
 import infernux.engine.ui.runtime_canvas_snapshot as canvas_snapshot
 import infernux.input as input_module
 from infernux.input import TouchPhase
+from infernux.ui.enums import RenderMode
 from infernux.ui.ui_event_data import PointerButton, PointerType
 
 
@@ -29,6 +30,7 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse_buttons(monkeypatch):
     exec(compile(ast.Module(body=[function], type_ignores=[]), str(BOOTSTRAP), "exec"), bootstrap)
 
     canvas = SimpleNamespace(
+        render_mode=RenderMode.ScreenOverlay,
         reference_width=1280,
         reference_height=720,
         set_input_logical_size=lambda *_: None,
@@ -59,6 +61,7 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse_buttons(monkeypatch):
     )
     scene_pointer_frames = []
     bootstrap["_mouse_event_dispatcher"] = SimpleNamespace(
+        needs_scene_hit=lambda: True,
         process=lambda *args, **kwargs: scene_pointer_frames.append((args, kwargs)),
         discard=lambda: None,
     )

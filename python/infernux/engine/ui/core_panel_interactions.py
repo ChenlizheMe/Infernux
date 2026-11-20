@@ -366,7 +366,7 @@ def hierarchy_panel_interaction(
                 allow_when_captured=True,
             ),
         ),
-        owned_selection_domains=frozenset({SelectionDomain.SCENE_OBJECT}),
+        owned_selection_domains=frozenset({SelectionDomain.SCENE_OBJECT, SelectionDomain.SETTINGS_ELEMENT}),
         adapter_factory=bind,
     )
 

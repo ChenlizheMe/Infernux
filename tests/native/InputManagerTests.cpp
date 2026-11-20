@@ -115,6 +115,51 @@ bool CheckInputFrameContracts()
           near(input.GetTouch(0).deltaY, .2f) && near(input.GetTouch(1).deltaX, .2f) &&
           near(input.GetTouch(1).deltaY, -.2f), "devices_accumulate_independently");
     input.ResetAll();
+    const std::array<float, 4> left{10, 0, 40, 40}, right{60, 0, 40, 40};
+    input.SetWorldGameplayRouting(7, true, {{7, 80, 80}, {8, 120, 120}, {9, 80, 80}},
+                                 {{7, left, left}, {8, right, {62, 0, 38, 40}}});
+    input.BeginFrame();
+    input.ProcessPointerMotionEvent(11, 12, 1, 2);
+    input.ProcessPointerButtonEvent(0, true, true);
+    input.ProcessPointerMotionEvent(61, 12, 50, 0); // Clipped margin outside both views.
+    input.ProcessPointerMotionEvent(63, 12, 2, 0);
+    input.ProcessScrollEvent(0, 1, true);
+    input.ProcessPointerButtonEvent(0, false, true);
+    input.ProcessKeyEvent(4, true, true);
+    const auto a = input.CaptureWorldFrame(7, 7), b = input.CaptureWorldFrame(8, 7), c = input.CaptureWorldFrame(9, 7);
+    check(a->mouseDX == 1 && a->mouseDY == 2 && b->mouseDX == 2 && b->mouseDY == 0 && c->mouseDX == 0,
+          "tile_delta_follows_each_event");
+    check(a->mouseDown[0] && a->mouseUp[0] && !b->mouseUp[0] && !b->mouseDown[0] && a->scrollY == 0 &&
+          b->scrollY == 1, "release_returns_to_press_owner_and_wheel_follows_hover");
+    check(b->mouseX - b->gameplayViewportOrigin[0] == 3 && a->keys[4] && b->keys[4] && c->keys[4] &&
+          !c->pointerActive, "each_tile_uses_its_image_origin_and_keyboard_still_broadcasts");
+    input.BeginFrame();
+    input.ProcessPointerMotionEvent(55, 4, -8, -8);
+    check(!input.CaptureWorldFrame(7, 7)->pointerActive && !input.CaptureWorldFrame(8, 7)->pointerActive,
+          "tile_gap_has_no_pointer");
+    input.SetWorldGameplayRouting(7, false, {{7, 80, 80}, {8, 120, 120}}, {{8, right, right}});
+    input.ProcessPointerMotionEvent(65, 8, 10, 4);
+    const auto other = input.CaptureWorldFrame(8, 7);
+    check(other->pointerActive && other->mouseDX == 10 && other->keys[4] == 0, "mouse_is_independent_of_keyboard_selection");
+    input.SetCursorLocked(true);
+    input.SetWorldGameplayRouting(7, false, {{7, 80, 80}, {8, 120, 120}}, {{7, left, left}, {8, right, right}});
+    input.ProcessPointerMotionEvent(20, 4, -4, 1);
+    const auto locked = input.CaptureWorldFrame(8, 7);
+    check(locked->pointerActive && locked->mouseDX == -4 && locked->mouseX == 80 && !input.CaptureWorldFrame(7, 7)->pointerActive &&
+          std::get<0>(locked->gameMouseFrames[0]) == 80, "locked_pointer_retains_tile_and_its_center");
+    input.SetCursorLocked(false);
+    input.SetEditorMouseCapture(true);
+    input.ProcessPointerMotionEvent(65, 4, 2, 1);
+    check(!input.CaptureWorldFrame(8, 7)->pointerActive && input.CaptureWorldFrame(8, 7)->mouseDX == 0,
+          "editor_camera_capture_excludes_game_tiles");
+    input.SetEditorMouseCapture(false);
+    SDL_Event leave{};
+    leave.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+    input.ProcessSDLEvent(leave, false);
+    check(!input.CaptureWorldFrame(8, 7)->pointerActive, "window_leave_exits_last_game_tile");
+    input.SetWorldGameplayRouting(0, true, {}, {});
+    check(input.CaptureWorldFrame(8, 7)->mouseDX == 0, "secondary_player_world_has_no_mouse");
+    input.ResetAll();
     std::cout << "INPUT_FRAME_SUMMARY passed=" << passed << " failed=" << failed << '\n';
     return failed == 0;
 }
@@ -125,6 +170,21 @@ int main()
     if (!CheckInputFrameContracts())
         return 1;
     auto &input = InputManager::Instance();
+    input.ResetAll();
+    input.BeginFrame();
+    input.ProcessPointerMotionEvent(4, 2, 4, 2);
+    input.ProcessPointerMotionEvent(3, 5, -1, 3);
+    auto firstMotion = input.CaptureFrame();
+    if (firstMotion->mouseDX != 3 || firstMotion->mouseDY != 5 || input.CaptureFrame() != firstMotion)
+        return 1;
+    input.ProcessPointerMotionEvent(5, 4, 2, -1);
+    auto nextMotion = input.CaptureFrame();
+    if (nextMotion->mouseDX != 2 || nextMotion->mouseDY != -1 || input.GetMouseDeltaX() != 5 ||
+        input.GetMouseDeltaY() != 4)
+        return 1;
+    input.BeginFrame();
+    if (input.CaptureFrame()->mouseDX != 0 || input.CaptureFrame()->mouseDY != 0)
+        return 1;
     input.ResetAll();
 
     // Native cursor polling must not steal hover between remote move and click.
@@ -504,8 +564,9 @@ int main()
     assert(!input.IsEditorGameInputEvent(editorRelease)); // Moving in cannot transfer a press.
     SDL_Event wheel{};
     wheel.type = SDL_EVENT_MOUSE_WHEEL;
+    wheel.wheel.mouse_x = wheel.wheel.mouse_y = 20;
     assert(input.IsEditorGameInputEvent(wheel));
-    input.ProcessPointerMotionEvent(95, 20, 0, 0);
+    wheel.wheel.mouse_x = 95;
     assert(!input.IsEditorGameInputEvent(wheel));
     auto gameKey = KeyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_W);
     assert(input.IsEditorGameInputEvent(gameKey));
