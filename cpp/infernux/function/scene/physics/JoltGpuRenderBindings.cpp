@@ -1,4 +1,5 @@
 #include "JoltGpuRenderBindings.h"
+#include "JoltGpuRenderPoses.h"
 #include "PhysicsECSStore.h"
 
 #include "../GameObject.h"
@@ -16,6 +17,7 @@
 #include <functional>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -441,9 +443,35 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
     return prepared;
 }
 
-bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
-                                    const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration)
+JoltGpuRenderBindings::Export JoltGpuRenderBindings::PrepareExport(SnapshotPtr snapshot, const ResolveBody &resolve,
+                                                                   const PhysicsGpuPoseSource &poses,
+                                                                   const JoltGpuRenderPoses &program) const
 {
+    Export result;
+    result.bindings = Prepare(std::move(snapshot), resolve);
+    auto work = program.Prepare(poses, result.bindings.nodes, result.bindings.bindings);
+    result.packet = std::move(work.batch);
+    result.models = std::move(work.models);
+    result.bounds = std::move(work.bounds);
+    return result;
+}
+
+void JoltGpuRenderBindings::Export::Seal()
+{
+    if (!packet)
+        return;
+    models = models->Freeze();
+    bounds = bounds->Freeze();
+    packet.reset();
+}
+
+bool JoltGpuRenderBindings::Publish(const Export &work, uint64_t numericalGeneration)
+{
+    if (work.packet)
+        throw std::logic_error("GPU pose export must be sealed before scene publication");
+    const auto &prepared = work.bindings;
+    const auto &models = work.models;
+    const auto &bounds = work.bounds;
     const auto &snapshot = *prepared.snapshot;
     if (snapshot.lifetime != m_impl->lifetime)
         return false; // A completed old job cannot reacquire bindings after Stop.

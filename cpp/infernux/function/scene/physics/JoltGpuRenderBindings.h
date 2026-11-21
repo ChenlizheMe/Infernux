@@ -12,6 +12,11 @@
 namespace infernux
 {
 class RuntimeWorld;
+class JoltGpuRenderPoses;
+namespace rhi
+{
+class PreparedComputeBatch;
+}
 
 class JoltGpuRenderBindings final
 {
@@ -37,6 +42,22 @@ class JoltGpuRenderBindings final
         std::vector<Target> targets;
     };
 
+    struct Export
+    {
+        [[nodiscard]] const std::shared_ptr<rhi::PreparedComputeBatch> &Packet() const noexcept
+        {
+            return packet;
+        }
+        /// Seal after the export receipt, while these endpoints still name this work.
+        void Seal();
+
+      private:
+        friend class JoltGpuRenderBindings;
+        Prepared bindings;
+        std::shared_ptr<rhi::PreparedComputeBatch> packet;
+        std::shared_ptr<rhi::ComputeBuffer> models, bounds;
+    };
+
     JoltGpuRenderBindings();
     ~JoltGpuRenderBindings();
     JoltGpuRenderBindings(const JoltGpuRenderBindings &) = delete;
@@ -49,14 +70,14 @@ class JoltGpuRenderBindings final
     [[nodiscard]] bool NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const;
     /// Resolves accepted actor identities and COMs against the captured author
     /// hierarchy. Never reads newer Transform values while preparing GPU work.
-    [[nodiscard]] Prepared Prepare(SnapshotPtr snapshot, const ResolveBody &resolve) const;
+    [[nodiscard]] Export PrepareExport(SnapshotPtr snapshot, const ResolveBody &resolve,
+                                       const PhysicsGpuPoseSource &poses, const JoltGpuRenderPoses &program) const;
 
     /// Called only for the completed export packet, including an empty mapping.
     /// Each renderer keeps a count-one endpoint selecting the packed buffers.
     /// False retains the previous automatic generation when live author
     /// metadata no longer matches. Manual and retired targets leave this set.
-    [[nodiscard]] bool Publish(const Prepared &prepared, const std::shared_ptr<rhi::ComputeBuffer> &models,
-                               const std::shared_ptr<rhi::ComputeBuffer> &bounds, uint64_t numericalGeneration);
+    [[nodiscard]] bool Publish(const Export &output, uint64_t numericalGeneration);
     /// World calls this for teleport/reset, independently of ordinary ticks.
     void MarkDiscontinuity(uint32_t bodyId);
     void RetireBody(uint32_t bodyId) noexcept;
@@ -64,6 +85,7 @@ class JoltGpuRenderBindings final
     void Clear() noexcept;
 
   private:
+    [[nodiscard]] Prepared Prepare(SnapshotPtr snapshot, const ResolveBody &resolve) const;
     struct Impl;
     std::unique_ptr<Impl> m_impl;
 };

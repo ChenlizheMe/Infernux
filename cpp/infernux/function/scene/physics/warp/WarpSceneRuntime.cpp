@@ -513,6 +513,8 @@ void WarpSceneRuntime::Finish()
     } else if (kind == Packet::Reports) {
         FinishReports(*packet);
     } else {
+        if (auto seal = std::exchange(m_sealConsumer, {}))
+            seal();
         auto publication = std::exchange(m_pendingPublication, std::nullopt);
         PublishCompleted(std::move(*publication));
     }
@@ -592,12 +594,15 @@ void WarpSceneRuntime::FinishReports(const rhi::PreparedComputeBatch &packet)
 
 void WarpSceneRuntime::PrepareConsumer(WarpFixedPublication publication)
 {
-    if (m_operation->consumer)
-        m_packet = m_operation->consumer(publication);
-    if (m_packet) {
+    auto work = m_operation->consumer ? m_operation->consumer(publication) : PublicationWork{};
+    if (work.packet) {
+        m_packet = std::move(work.packet);
+        m_sealConsumer = std::move(work.seal);
         m_pendingPublication.emplace(std::move(publication));
         m_packetKind = Packet::Consumer;
     } else {
+        if (work.seal)
+            work.seal();
         PublishCompleted(std::move(publication));
     }
 }
@@ -638,6 +643,7 @@ void WarpSceneRuntime::Retire() noexcept
     m_initialPublication.reset();
     m_publication.reset();
     m_pendingPublication.reset();
+    m_sealConsumer = {};
     if (m_packet && !m_packet->GetSubmission().IsValid()) {
         m_packet->Cancel();
         m_packet.reset();

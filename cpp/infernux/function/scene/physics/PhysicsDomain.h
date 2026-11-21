@@ -127,8 +127,7 @@ struct PhysicsDomain final
             JoltGpuRenderBindings::SnapshotPtr snapshot;
             Keys keys{};
             uint64_t numericalGeneration = 0;
-            std::optional<JoltGpuRenderBindings::Prepared> bindings;
-            JoltGpuRenderPoseBatch output;
+            std::optional<JoltGpuRenderBindings::Export> output;
             std::shared_ptr<const JoltGpuScene::Publication> publication;
         };
         JoltGpuRenderBindings bindings;

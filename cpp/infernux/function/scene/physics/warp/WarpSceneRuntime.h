@@ -163,8 +163,12 @@ class WarpSceneRuntime final
     /// The startup receipt has fixed index zero and requires no readback.
     [[nodiscard]] std::optional<WarpFixedPublication> TakeInitial();
 
-    using PublicationConsumer =
-        std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const WarpFixedPublication &completed)>;
+    struct PublicationWork
+    {
+        std::shared_ptr<rhi::PreparedComputeBatch> packet;
+        std::function<void()> seal;
+    };
+    using PublicationConsumer = std::function<PublicationWork(const WarpFixedPublication &completed)>;
 
     /// Own the fixed identity until its publication is consumed. The device
     /// profile reports status only, while the host profile includes motion.
@@ -172,7 +176,8 @@ class WarpSceneRuntime final
     /// effect until changed again. They do not rewind with simulated motion.
     /// A required consumer prepares device work after the numerical receipt.
     /// The whole fixed publication becomes available once that work completes.
-    /// The callback only prepares the packet. This source performs admission and submission.
+    /// This source performs admission and submission, then seals the consumer's
+    /// outputs after its receipt and before releasing the fixed publication.
     void BeginFixed(std::vector<ContactStreamIdentity> identities, const std::vector<WarpSceneBodyCommand> &commands,
                     bool host, bool captureContacts = false, const std::vector<WarpSceneDriveUpdate> &drives = {},
                     PublicationConsumer consumer = {});
@@ -250,6 +255,7 @@ class WarpSceneRuntime final
     std::optional<WarpFixedPublication> m_initialPublication;
     std::optional<WarpFixedPublication> m_pendingPublication;
     std::optional<WarpFixedPublication> m_publication;
+    std::function<void()> m_sealConsumer;
     uint64_t m_generation = 1;
     uint64_t m_fixedGpuNanoseconds = 0;
     Packet m_packetKind = Packet::Initialize;

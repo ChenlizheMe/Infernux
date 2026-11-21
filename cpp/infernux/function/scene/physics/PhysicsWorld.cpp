@@ -898,14 +898,7 @@ void PhysicsWorld::ObserveGpuPublication(PhysicsDomain &domain, bool numericalCh
             FrameWorkOwner::Scope publication(*m_gpuWork);
             auto &rendering = domain.rendering;
             const auto &job = rendering.pending;
-            if (job && job->bindings && job->publication == p) {
-                // Preserve this complete value before another Prepare reuses
-                // the live output endpoints, even while the fixed gate waits.
-                if (job->output.models)
-                    job->output.models = job->output.models->Freeze();
-                if (job->output.bounds)
-                    job->output.bounds = job->output.bounds->Freeze();
-                job->output.batch.reset();
+            if (job && job->output && job->publication == p) {
                 job->numericalGeneration = domain.queryGeneration.load(std::memory_order_acquire);
                 rendering.ready = job;
             }
@@ -1074,8 +1067,7 @@ PhysicsPosePublication PhysicsWorld::PublishRenderPoses() const
         if (!job)
             return {};
         FrameWorkOwner::Scope publication(*m_gpuWork);
-        const bool gpuPublished = rendering.bindings.Publish(*job->bindings, job->output.models, job->output.bounds,
-                                                             job->numericalGeneration);
+        const bool gpuPublished = rendering.bindings.Publish(*job->output, job->numericalGeneration);
         if (gpuPublished)
             rendering.checkedKeys = job->keys;
         else
@@ -1111,8 +1103,9 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
     rendering.pending = job;
     return [this, &domain, job = std::move(job)](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         auto &state = domain.rendering;
-        job->bindings = state.bindings.Prepare(
-            job->snapshot, [&](PhysicsActorHandle handle, uint32_t bodyId) -> std::optional<PhysicsGpuBodyPoseBinding> {
+        job->output = state.bindings.PrepareExport(
+            job->snapshot,
+            [&](PhysicsActorHandle handle, uint32_t bodyId) -> std::optional<PhysicsGpuBodyPoseBinding> {
                 const auto slot = publication->directory->FindBodySlot(bodyId);
                 if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
                     return std::nullopt;
@@ -1121,16 +1114,11 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
                     return std::nullopt;
                 const auto &center = actor->rootCenterOfMass;
                 return PhysicsGpuBodyPoseBinding{bodyId, slot - publication->bodyBase, {center.x, center.y, center.z}};
-            });
-        job->output = m_gpuRenderProgram->Prepare({publication->bodyStates, 0, publication->bodyCount},
-                                                  job->bindings->nodes, job->bindings->bindings);
+            },
+            {publication->bodyStates, 0, publication->bodyCount}, *m_gpuRenderProgram);
         job->publication = publication;
-        return ContinueJoltGpuControlWork(job->output.batch, [job] {
-            if (job->output.models)
-                job->output.models = job->output.models->Freeze();
-            if (job->output.bounds)
-                job->output.bounds = job->output.bounds->Freeze();
-            job->output.batch.reset();
+        return ContinueJoltGpuControlWork(job->output->Packet(), [job] {
+            job->output->Seal();
             return JoltGpuControlWork{};
         });
     };
