@@ -5,6 +5,7 @@
 static const uint EllipticCone = 1;
 static const uint UnclampedReference = 2;
 static const uint DisableWarmstart = 4;
+static const uint DiscreteConstraints = 8;
 
 static const uint ContactRow = 0;
 static const uint EqualityRow = 1;

@@ -137,19 +137,20 @@ void emit_spatial_equality_rows(uint3 id : SV_DispatchThreadID)
     const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
     const float impedancePosition = sqrt(dot(linearError, linearError) + dot(angularError, angularError));
     const float timestep = asfloat(settings[2 + id.y].x);
-    const bool unclamped = (config.w & UnclampedReference) != 0;
+    const bool unclamped = (config.w & (UnclampedReference | DiscreteConstraints)) != 0;
     const float3 kbi = impedanceParameters(parameters, impedancePosition, timestep, unclamped);
     const uint rowBase = id.y * limits.z + block.x;
     for (uint axis = 0; axis < 3; ++axis)
     {
         rows[rowBase + axis] = makeConstraintRow(uint4(block.y + axis * source.w, source.w, source.x, axis),
-            EqualityRow, kbi, linearError[axis], 0.0, linearVelocity[axis], asfloat(reference.z), 0.0, linearShift[axis]);
+            EqualityRow, kbi, linearError[axis], 0.0, linearVelocity[axis], asfloat(reference.z), 0.0, linearShift[axis],
+            timestep, config.w, parameters.reference.x);
         if (weld)
         {
             const uint ordinal = axis + 3;
             rows[rowBase + ordinal] = makeConstraintRow(uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
                 EqualityRow, kbi, angularError[axis], 0.0, angularVelocity[axis], asfloat(reference.w), 0.0,
-                angularShift[axis]);
+                angularShift[axis], timestep, config.w, parameters.reference.x);
         }
     }
 }

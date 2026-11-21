@@ -126,8 +126,11 @@ void emit_tendon_constraint_rows(uint3 id : SV_DispatchThreadID)
         if (source.x != EqualityRow || value != 0.0)
             columns[columnBase + activeWidth++] = {min(a, b), value};
     }
-    const float3 kbi = impedanceParameters(constraint.parameters, distance, asfloat(settings[2 + id.y].x),
-                                           (settings[1].w & UnclampedReference) != 0);
+    const uint flags = settings[1].w;
+    const float timestep = asfloat(settings[2 + id.y].x);
+    const float3 kbi = impedanceParameters(constraint.parameters, distance, timestep,
+                                           (flags & (UnclampedReference | DiscreteConstraints)) != 0);
     rows[id.y * limits.z + block.x] = makeConstraintRow(uint4(block.y, activeWidth, source.w, 0), source.x,
-        kbi, distance, margin, velocity, constraint.extra.y, constraint.extra.z, 0.0);
+        kbi, distance, margin, velocity, constraint.extra.y, constraint.extra.z, 0.0,
+        timestep, flags, constraint.parameters.reference.x);
 }

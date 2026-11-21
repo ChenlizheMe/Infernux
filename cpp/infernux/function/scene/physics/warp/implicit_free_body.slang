@@ -19,6 +19,7 @@
 [[vk::binding(10, 0)]] StructuredBuffer<float> rhs;
 [[vk::binding(11, 0)]] RWStructuredBuffer<float> acceleration;
 [[vk::binding(12, 0)]] RWStructuredBuffer<float> symmetricMass;
+[[vk::binding(13, 0)]] StructuredBuffer<uint> coupledDofs;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -78,9 +79,7 @@ void solveFreeBody(inout float matrix[6][6], inout float value[6])
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void solve_implicit_free_bodies(uint3 id : SV_DispatchThreadID)
+void solveFreeBodyGyro<let Discrete : bool>(uint3 id)
 {
     const uint2 configuration = freeBodies[0].xy; // body count and damping enabled
     if (id.x >= configuration.x)
@@ -89,6 +88,12 @@ void solve_implicit_free_bodies(uint3 id : SV_DispatchThreadID)
     const uint2 root = freeBodies[id.x + 1].xy;
     const uint bodyIndex = id.y * dimensions.state.z + root.x;
     const uint dofBase = id.y * dimensions.state.y + root.y;
+    if (Discrete)
+    {
+        for (uint i = 0; i < 6; ++i)
+            if (coupledDofs[dofBase + i] != 0)
+                return;
+    }
     const uint massBase = id.y * dimensions.layout.w;
     const float dt = timestep[id.y];
     float matrix[6][6];
@@ -115,7 +120,7 @@ void solve_implicit_free_bodies(uint3 id : SV_DispatchThreadID)
             matrix[col][row] = entry;
             columnDof = dofs[columnDof].indices.y;
         }
-        if (configuration.y != 0)
+        if (!Discrete && configuration.y != 0)
             matrix[row][row] += dt * dampingDerivative(damping[index].xyz, qvel[dofBase + row]);
         value[row] = rhs[dofBase + row];
     }
@@ -149,4 +154,18 @@ void solve_implicit_free_bodies(uint3 id : SV_DispatchThreadID)
     solveFreeBody(matrix, value);
     for (uint row = 0; row < 6; ++row)
         acceleration[dofBase + row] = value[row];
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void solve_implicit_free_bodies(uint3 id : SV_DispatchThreadID)
+{
+    solveFreeBodyGyro<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void solve_discrete_free_bodies(uint3 id : SV_DispatchThreadID)
+{
+    solveFreeBodyGyro<true>(id);
 }

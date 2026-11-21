@@ -24,3 +24,9 @@ float contactFriction(Contact contact, uint axis)
 {
     return axis < 4 ? contact.friction[axis] : contact.extra.y;
 }
+
+uint contactConstraintRows(Contact contact, bool elliptic)
+{
+    const uint dimension = contact.geometry.z;
+    return elliptic || dimension == 1 ? dimension : 2 * (dimension - 1);
+}

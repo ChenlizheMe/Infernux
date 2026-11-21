@@ -99,8 +99,10 @@ void emit_joint_constraint_rows(uint3 id : SV_DispatchThreadID)
         columns[columnBase + i] = {dof[i], jacobian[i]};
         velocity += jacobian[i] * qvel[dofBase + dof[i]];
     }
-    const float3 kbi = impedanceParameters(constraint.parameters, distance, asfloat(settings[2 + id.y].x),
-                                           (config.w & UnclampedReference) != 0);
+    const float timestep = asfloat(settings[2 + id.y].x);
+    const float3 kbi = impedanceParameters(constraint.parameters, distance, timestep,
+                                           (config.w & (UnclampedReference | DiscreteConstraints)) != 0);
     rows[id.y * limits.z + block.x] = makeConstraintRow(uint4(block.y, width, source.w, 0), source.x, kbi,
-        distance, margin, velocity, constraint.extra.y, constraint.extra.z, 0.0);
+        distance, margin, velocity, constraint.extra.y, constraint.extra.z, 0.0,
+        timestep, config.w, constraint.parameters.reference.x);
 }

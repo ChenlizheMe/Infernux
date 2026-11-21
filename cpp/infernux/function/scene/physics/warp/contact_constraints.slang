@@ -80,8 +80,7 @@ void reserve_contact_rows(uint3 id : SV_DispatchThreadID)
             ++width;
         }
 
-        const uint dimension = contact.geometry.z;
-        const uint height = dimension == 1 || (config.w & EllipticCone) != 0 ? dimension : 2 * (dimension - 1);
+        const uint height = contactConstraintRows(contact, (config.w & EllipticCone) != 0);
         const uint2 block = reserveConstraintBlock(id.y, height, width);
         if (block.x == NoIndex)
             continue;
@@ -177,7 +176,7 @@ void finish_contact_rows(uint3 id : SV_DispatchThreadID)
     const float2 world = asfloat(settings[2 + id.y].xy);
     const uint count = min(contactCount[id.y].load(), limits.y);
     const bool elliptic = (config.w & EllipticCone) != 0;
-    const bool unclamped = (config.w & UnclampedReference) != 0;
+    const bool unclamped = (config.w & (UnclampedReference | DiscreteConstraints)) != 0;
     for (uint i = id.x; id.x < config.z && i < count; i += config.z)
     {
         const uint index = id.y * limits.y + i;
@@ -194,11 +193,12 @@ void finish_contact_rows(uint3 id : SV_DispatchThreadID)
         const float position = contact.positionDistance.w - contact.normalMargin.w;
         const float3 kbi = impedanceParameters(contact.reference.xy, contact.impedance, contact.extra.x, position,
                                                world.x, unclamped);
-        const float diagonal = constraintDiagonal(weight, kbi.z);
+        const float4 response = constraintResponse(ContactRow, kbi, weight, world.x, config.w, contact.reference.x);
         const float2 frictionReference = any(contact.reference.zw != float2(0.0)) ?
                                             contact.reference.zw : contact.reference.xy;
         const float tangentialDamping = impedanceParameters(frictionReference, contact.impedance, contact.extra.x,
                                                             position, world.x, unclamped).y;
+        const float tangentialFactor = (config.w & DiscreteConstraints) != 0 ? 1.0 + world.x * tangentialDamping : 1.0;
         const uint base = id.y * limits.w + span.z;
         const uint dofBase = id.y * config.y;
         for (uint row = 0; row < span.y; ++row)
@@ -210,14 +210,14 @@ void finish_contact_rows(uint3 id : SV_DispatchThreadID)
                 const ConstraintColumn column = columns[columnStart + j];
                 velocity += column.value * qvel[dofBase + column.dof];
             }
-            float d = diagonal;
-            float acceleration = -kbi.x * kbi.z * position - kbi.y * velocity;
+            float d = response.x;
+            float acceleration = constraintAcceleration(response, position, velocity, 0.0);
             if (elliptic && row > 0)
             {
                 const float mu = contactFriction(contact, row - 1);
                 const float scale = row == 1 ? ratio : ratio * friction * friction / (mu * mu);
                 d /= scale;
-                acceleration = -tangentialDamping * velocity;
+                acceleration = -tangentialDamping * velocity / tangentialFactor;
             }
             else if (contact.tangentAdhesion.w != 0.0)
                 acceleration += contact.tangentAdhesion.w / (d * (elliptic ? 1 : span.y));

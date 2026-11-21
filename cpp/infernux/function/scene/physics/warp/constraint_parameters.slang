@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025 The Newton Developers
 // SPDX-FileCopyrightText: 2026 Infernux contributors
 // SPDX-License-Identifier: Apache-2.0
-// MuJoCo Warp _src/constraint.py continuous-time row parameters.
+// MuJoCo Warp _src/constraint.py continuous and discrete row parameters.
 
 static const float ConstraintMinValue = 1.0e-15;
 static const float MinImpedance = 0.0001;
@@ -58,11 +58,38 @@ float3 impedanceParameters(ConstraintParameters parameters, float position, floa
                                position, timestep, unclampedReference);
 }
 
-ConstraintRow makeConstraintRow(uint4 layout, uint kind, float3 kbi, float position, float margin,
-                                float velocity, float inverseWeight, float friction, float accelerationShift)
+float4 constraintResponse(uint kind, float3 kbi, float weight, float timestep, uint flags, float referenceTime)
 {
-    const float stiffness = isFrictionConstraint(kind) ? 0.0 : kbi.x;
-    const float reference = -stiffness * kbi.z * position - kbi.y * velocity - accelerationShift;
-    return {layout, float4(position + margin, margin, velocity, reference),
-            constraintDiagonal(inverseWeight, kbi.z), friction, kind};
+    float stiffness = isFrictionConstraint(kind) ? 0.0 : kbi.x * kbi.z;
+    float damping = kbi.y;
+    if ((flags & DiscreteConstraints) == 0)
+        return float4(constraintDiagonal(weight, kbi.z), stiffness, damping, 1.0);
+
+    const float excess = timestep * timestep * stiffness;
+    if ((flags & UnclampedReference) == 0 && referenceTime > 0.0 && excess > 1.0 &&
+        (kind == ContactRow || kind == LimitRow || kind == TendonLimitRow))
+    {
+        const float limit = MaxImpedance * (1.0 - kbi.z) / (kbi.z * (1.0 - MaxImpedance));
+        stiffness = 1.0 / (timestep * timestep);
+        damping = min(damping / sqrt(excess), max(0.0, limit - 2.0) / timestep);
+    }
+    const float scaledStiffness = timestep * stiffness;
+    const float factor = 1.0 + timestep * (damping + scaledStiffness);
+    const float regularization = max(ConstraintMinValue, weight * (1.0 - kbi.z) / kbi.z);
+    const float minimum = max(ConstraintMinValue, weight * (1.0 - MaxImpedance) / MaxImpedance);
+    return float4(1.0 / max(regularization / factor, minimum), stiffness, damping + scaledStiffness, factor);
+}
+
+float constraintAcceleration(float4 response, float position, float velocity, float shift)
+{
+    return (-response.y * position - response.z * velocity - shift) / response.w;
+}
+
+ConstraintRow makeConstraintRow(uint4 layout, uint kind, float3 kbi, float position, float margin,
+                                float velocity, float inverseWeight, float friction, float accelerationShift,
+                                float timestep, uint flags, float referenceTime)
+{
+    const float4 response = constraintResponse(kind, kbi, inverseWeight, timestep, flags, referenceTime);
+    const float reference = constraintAcceleration(response, position, velocity, accelerationShift);
+    return {layout, float4(position + margin, margin, velocity, reference), response.x, friction, kind};
 }
