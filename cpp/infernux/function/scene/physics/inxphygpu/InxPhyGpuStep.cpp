@@ -1084,6 +1084,50 @@ BodyBoundsSlots AddPublishedBodyBounds(StepBuilder &b, const GeometrySlots &geom
 }
 } // namespace
 
+InxPhyGpuPairQuery::InxPhyGpuPairQuery(rhi::ComputeHost &host, ShaderCodeTarget target)
+{
+    StepBuilder builder(host, target, 1);
+    const auto data = builder.Slot(9 * 4, BufferUsageFlags::TransferDestination);
+    // One EPA worker. Two records per vertex, then its faces and separate horizon indices.
+    const auto scratch = builder.Slot((2 * 101 + 1158) * 4);
+    const auto horizon = builder.Slot(512);
+    const auto result = builder.Slot(3 * 4, BufferUsageFlags::TransferSource);
+    auto dispatch = builder.Dispatch("pair_query", "compute_penetration", 1,
+                                     {{0, data, R}, {1, scratch, W}, {2, horizon, W}, {3, result, W, true}});
+    std::vector<std::shared_ptr<rhi::ComputeBuffer>> buffers;
+    for (const auto &slot : builder.slots) {
+        auto buffer = rhi::ComputeBuffer::TryCreatePrivate(host, slot.allocation);
+        if (!buffer)
+            throw std::runtime_error("Could not allocate inxphygpu pair query storage");
+        buffers.push_back(std::move(buffer));
+    }
+    m_dispatch = BindDispatch(std::move(dispatch), buffers);
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuPairQuery::Prepare(rhi::ComputeHost &host,
+                                                                       const std::vector<ModelWords> &data)
+{
+    const auto bytes = data.size() * sizeof(ModelWords);
+    auto &input = m_dispatch.buffers[0];
+    if (bytes > input->GetByteSize()) {
+        auto desc = input->GetDesc();
+        desc.elementCount = bytes / sizeof(uint32_t);
+        auto buffer = rhi::ComputeBuffer::TryCreatePrivate(host, desc);
+        if (!buffer)
+            throw std::runtime_error("Could not allocate inxphygpu pair geometry");
+        input = std::move(buffer);
+    }
+    auto dispatch = m_dispatch;
+    dispatch.proof->reads.front().byteSize = bytes;
+    std::vector<rhi::ComputeBufferUpdate> updates(1);
+    auto &upload = updates.front();
+    upload.buffer = input;
+    upload.data.resize(bytes);
+    std::memcpy(upload.data.data(), data.data(), bytes);
+    return rhi::PrepareComputeBatch(host, std::move(updates), {std::move(dispatch)},
+                                    {{m_dispatch.buffers[3], 0, 3 * sizeof(ModelVector)}});
+}
+
 PreparedInxPhyGpuRayQuery InxPhyGpuPublishedRayQuery::Build(rhi::ComputeHost &host, ShaderCodeTarget target,
                                                             const InxPhyGpuModel &model,
                                                             const InxPhyGpuCollisionModel &collision, uint32_t capacity,

@@ -19,23 +19,12 @@ struct GpuParticleCollisionDevicePayload;
 [[nodiscard]] JoltGpuControlWork PrepareJoltGpuQueryWork(std::function<JoltGpuControlWork()> prepare,
                                                          std::exception_ptr &error);
 
-/// Native explicit operands use the same immutable geometry arena as the publication.
-/// CPU shapes/handles carry author intent until the existing writer accepts capture.
-struct JoltGpuQueryGeometry
-{
-    std::shared_ptr<JoltGpuGeometryStore> store;
-    JoltGpuGeometryHandles operands;
-    std::vector<JPH::RefConst<JPH::Shape>> shapes;
-};
-
-/// Exact publication identity and typed records share their real packet/receipt owners.
 struct JoltGpuQueryResult
 {
     std::shared_ptr<const JoltGpuScene::Publication> publication;
     uint64_t numericalGeneration = 0;
     // Buffer generation AND exact immutable ranges survive all query/export consumers.
     std::shared_ptr<const JoltGpuGeometryLease> geometry;
-    std::vector<JPH::RefConst<JPH::Shape>> explicitShapes;
     std::shared_ptr<rhi::ComputeBuffer> hits;
     // QuerySpan[queryCount] is the byte-zero prefix; the retained backing
     // control also owns private CA and generic-job state.
@@ -108,9 +97,7 @@ class JoltGpuQueries final
     JoltGpuQueries(rhi::ComputeHost &host, const ShaderTargetCode &target);
     [[nodiscard]] JoltGpuPreparedQuery Prepare(std::shared_ptr<const JoltGpuScene::Publication> publication,
                                                const std::vector<JPH::GPU::QueryInput> &queries,
-                                               const std::vector<JPH::GPU::QueryPrimitive> &primitives,
-                                               uint64_t numericalGeneration, uint32_t castIterationQuantum = 32,
-                                               JoltGpuQueryGeometry geometry = {}) const;
+                                               uint64_t numericalGeneration, uint32_t castIterationQuantum = 32) const;
 
     [[nodiscard]] JoltGpuPreparedParticleExport
     PrepareParticleExport(const std::shared_ptr<const JoltGpuScene::Publication> &publication,
@@ -119,11 +106,6 @@ class JoltGpuQueries final
                           uint64_t topologyRevision = 1) const;
 
   private:
-    [[nodiscard]] JoltGpuPreparedQuery PrepareCaptured(std::shared_ptr<const JoltGpuScene::Publication> publication,
-                                                       const std::vector<JPH::GPU::QueryInput> &queries,
-                                                       const std::vector<JPH::GPU::QueryPrimitive> &primitives,
-                                                       uint64_t numericalGeneration, uint32_t castIterationQuantum,
-                                                       const std::shared_ptr<JoltGpuQueryResult> &result) const;
     struct Execution;
     static JoltGpuControlWork Continue(const std::shared_ptr<Execution> &execution);
     struct Program

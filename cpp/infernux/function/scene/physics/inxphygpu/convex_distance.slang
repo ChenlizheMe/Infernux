@@ -71,12 +71,17 @@ float3 tuneConvexDirection(float3 direction, float norm, float3 simplex[4], uint
 }
 
 ConvexDistance gjkDistance(inout ConvexGeometry first, inout ConvexGeometry second, float tolerance,
-                           float cutoff, uint iterations, StructuredBuffer<uint4> model)
+                           float cutoff, uint iterations, StructuredBuffer<uint4> model, bool seedCoincident = false)
 {
     const bool discrete = convexDiscreteGeometry(first) && convexDiscreteGeometry(second);
     const float gapTolerance = discrete ? 0.0 : 0.5 * tolerance * tolerance;
     const float minNorm = discrete ? MinValue : tolerance;
     float3 direction = first.frame.position.xyz - second.frame.position.xyz;
+    if (seedCoincident && all(direction == 0.0))
+    {
+        const float3 axis = float3(1.0, 0.0, 0.0);
+        direction = convexSupport(first, -axis, model).point - convexSupport(second, axis, model).point;
+    }
     float norm = length(direction);
     float previousNorm = 0.0;
     float4 weights = float4(1.0, 0.0, 0.0, 0.0);
@@ -175,7 +180,8 @@ float shrinkConvexGeometry(inout ConvexGeometry geometry, bool polygonalPair)
 
 // Use frames rebased to the first shape's origin, including for the EPA consumer.
 ConvexDistance convexDistancePhase(inout ConvexGeometry first, inout ConvexGeometry second, float tolerance,
-                                   float cutoff, uint iterations, StructuredBuffer<uint4> model, out bool needsPenetration)
+                                   float cutoff, uint iterations, StructuredBuffer<uint4> model,
+                                   out bool needsPenetration, bool seedCoincident = false)
 {
     needsPenetration = false;
     if (first.margin > 0.0 || second.margin > 0.0 || first.shape.type.x <= GeomCapsule ||
@@ -211,7 +217,7 @@ ConvexDistance convexDistancePhase(inout ConvexGeometry first, inout ConvexGeome
             }
         }
     }
-    const ConvexDistance result = gjkDistance(first, second, tolerance, cutoff, iterations, model);
+    const ConvexDistance result = gjkDistance(first, second, tolerance, cutoff, iterations, model, seedCoincident);
     needsPenetration = result.distance <= tolerance && result.count >= 2 && !result.separated;
     return result;
 }

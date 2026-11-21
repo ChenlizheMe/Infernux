@@ -20,7 +20,7 @@ RWStructuredBuffer<QuerySummary> query_summary;
 RWStructuredBuffer<QueryRecordWord> query_hits;
 ConstantBuffer<QueryCastParams> query_cast_params;
 
-// One immutable request stream: Input144 records precede Primitive80 suffix. Identity records likewise share one resource.
+// One immutable stream of geometric query inputs.
 QueryInput query_load_input(uint index)
 {
     uint base = index * 9u;
@@ -35,18 +35,6 @@ QueryInput query_load_input(uint index)
     request.lifetime = query_inputs[base + 7u].value;
     request.geometryReference = query_inputs[base + 8u].value;
     return request;
-}
-
-QueryPrimitive query_load_primitive(uint index)
-{
-    uint base = query_params.counts.x * 9u + index * 5u;
-    QueryPrimitive primitive;
-    primitive.meta = query_inputs[base].value;
-    primitive.geometry = asfloat(query_inputs[base + 1u].value);
-    primitive.position = asfloat(query_inputs[base + 2u].value);
-    primitive.rotation = asfloat(query_inputs[base + 3u].value);
-    primitive.geometryReference = query_inputs[base + 4u].value;
-    return primitive;
 }
 
 // The first request-count UInt4 words retain the public QuerySpan prefix.
@@ -826,23 +814,6 @@ void query_evaluate(uint3 tid : SV_DispatchThreadID)
         query_cast_advance(request, begin, cast);
         count = cast.cursor.z;
         status = cast.cursor.w;
-    }
-    else if (request.meta.x == QueryPenetration)
-    {
-        QueryPrimitive other = query_load_primitive(request.source.y);
-        JphPairMetric metric = jph_pair_metric(request.meta.z, request.positionMaximum.xyz, request.rotation, request.geometry,
-                                              other.meta.x, other.position.xyz, other.rotation, other.geometry);
-        status = query_metric_status(metric);
-        if (status == QuerySuccess && metric.separation < 0.0f)
-        {
-            QueryHit hit = query_miss();
-            hit.meta.yw = uint2(1u, metric.feature);
-            hit.positionDistance = float4(metric.pointB, 0.0f);
-            hit.normalFraction = float4(-metric.normal, 0.0f);
-            hit.pointADepth = float4(metric.pointA, -metric.separation);
-            query_store_hit(begin, hit);
-            count = 1u;
-        }
     }
     else
     {

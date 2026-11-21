@@ -186,13 +186,8 @@ bool Finite(const Float4 &value)
 }
 
 void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotation, const UInt4 &reference,
-                      const std::shared_ptr<const JoltGpuGeometryLease> &lease, uint32_t flags = 0)
+                      const std::shared_ptr<const JoltGpuGeometryLease> &lease)
 {
-    const uint32_t triangleFlags = ShapeOneSidedTriangle | (7u << ShapeTriangleActiveEdgeShift);
-    const bool triangle = (flags & ShapeOneSidedTriangle) != 0u;
-    if ((flags & ~(ShapeSensor | triangleFlags)) || (!triangle && (flags & triangleFlags)) ||
-        (triangle && type != ShapeConvexHull))
-        throw JoltGpuQueryRequestError("Jolt GPU query primitive has invalid shape flags");
     if (!Finite(geometry) || !Finite(rotation))
         throw JoltGpuQueryRequestError("Jolt GPU query geometry and rotation must be finite");
     const double length = double(rotation.x) * rotation.x + double(rotation.y) * rotation.y +
@@ -200,20 +195,9 @@ void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotat
     if (std::abs(length - 1.0) > 1.0e-3)
         throw JoltGpuQueryRequestError("Jolt GPU query rotation must be a unit quaternion");
     if (type == ShapeConvexHull) {
-        if (geometry.x < 0 || (!triangle && (geometry.y || geometry.z || geometry.w)) || !reference.x ||
-            reference.y < 5 || !lease || !lease->Contains(reference))
+        if (geometry.x < 0 || geometry.y || geometry.z || geometry.w || !reference.x || reference.y < 5 || !lease ||
+            !lease->Contains(reference))
             throw JoltGpuQueryRequestError("Jolt GPU Hull requires its exact retained geometry range");
-        if (triangle) {
-            const auto entry = std::find_if(lease->records.begin(), lease->records.end(), [&](const auto &value) {
-                return value && value->reference.x == reference.x && value->reference.y == reference.y;
-            });
-            const auto *record = entry == lease->records.end() ? nullptr : (*entry)->record.get();
-            if (geometry.x != 0 || !record || record->convexRadius != 0 || record->words.size() < 5 ||
-                record->words[0].z != 3u || record->words[0].w != 2u ||
-                std::abs(geometry.y * geometry.y + geometry.z * geometry.z + geometry.w * geometry.w - 1.0f) > 1e-4f)
-                throw JoltGpuQueryRequestError(
-                    "Jolt GPU triangle requires its exact planar three-point hull and CCW unit normal");
-        }
         return;
     }
     if (reference.x || reference.y || reference.z || reference.w)
@@ -237,20 +221,15 @@ void ValidateGeometry(uint32_t type, const Float4 &geometry, const Float4 &rotat
     }
 }
 
-void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t bodyBase, uint32_t bodyCount,
-                   bool hasPublication, const std::shared_ptr<const JoltGpuGeometryLease> &lease)
+void ValidateInput(const QueryInput &query, uint32_t bodyBase, uint32_t bodyCount,
+                   const std::shared_ptr<const JoltGpuGeometryLease> &lease)
 {
-    const bool hasReference = query.geometryReference.x || query.geometryReference.y || query.geometryReference.z ||
-                              query.geometryReference.w;
-    if (hasReference && query.meta.x != QueryShapeCast && query.meta.x != QueryPenetration &&
-        query.meta.x != QueryOverlap)
-        throw JoltGpuQueryRequestError("Jolt GPU query operation has no explicit geometry operand");
     const bool hasLifetime = query.lifetime.x || query.lifetime.y;
     if (query.lifetime.z || query.lifetime.w)
         throw JoltGpuQueryRequestError("GPU query source lifetime reserved words must be zero");
     const bool cast = query.meta.x == QueryShapeCast;
     const bool sweep = cast && (query.meta.w & QuerySweepPolicy);
-    if ((!cast && (query.meta.x < QueryOverlap || query.meta.x > QueryPenetration)) || query.meta.y > QueryAny ||
+    if ((!cast && query.meta.x != QueryOverlap) || query.meta.y > QueryAny || query.source.y ||
         (query.meta.w & ~(QueryExcludeBody | (cast ? (QuerySweepPolicy | QuerySweepPairPolicy) : 0u))) ||
         ((query.meta.w & QuerySweepPairPolicy) && !sweep) || query.filter.y > 1 ||
         (!sweep && (query.source.z || query.source.w || hasLifetime)) ||
@@ -260,27 +239,12 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
     if ((query.meta.w & QueryExcludeBody) ? (query.source.x < bodyBase || query.source.x - bodyBase >= bodyCount)
                                           : query.source.x != InvalidQueryBodySlot)
         throw JoltGpuQueryRequestError("Jolt GPU query excluded body differs from its retained publication");
-    if (query.meta.x == QueryPenetration) {
-        if (query.source.y >= primitiveCount || query.meta.w || query.positionMaximum.w != 0)
-            throw JoltGpuQueryRequestError(
-                "Jolt GPU pair query requires an explicit second primitive and no world policy");
-        ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
-    } else {
-        if (!hasPublication || query.source.y)
-            throw JoltGpuQueryRequestError("Jolt GPU world query requires one retained publication");
-        if (cast) {
-            if (query.positionMaximum.w <= 0 ||
-                (query.direction.x == 0 && query.direction.y == 0 && query.direction.z == 0))
-                throw JoltGpuQueryRequestError(
-                    "Jolt GPU shape cast requires nonzero direction and positive maximum distance");
-            ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
-        } else {
-            if (query.positionMaximum.w != 0)
-                throw JoltGpuQueryRequestError("Jolt GPU non-sweep query maximum must be zero");
-            if (query.meta.x == QueryOverlap)
-                ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
-        }
-    }
+    if (cast &&
+        (query.positionMaximum.w <= 0 || (query.direction.x == 0 && query.direction.y == 0 && query.direction.z == 0)))
+        throw JoltGpuQueryRequestError("Jolt GPU shape cast requires nonzero direction and positive maximum distance");
+    if (!cast && query.positionMaximum.w != 0)
+        throw JoltGpuQueryRequestError("Jolt GPU non-sweep query maximum must be zero");
+    ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
 }
 
 rhi::ComputeBufferAccess Access(uint8_t stage, uint8_t port)
@@ -521,58 +485,14 @@ JoltGpuControlWork PrepareJoltGpuQueryWork(std::function<JoltGpuControlWork()> p
 }
 
 JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene::Publication> publication,
-                                             const std::vector<QueryInput> &queries,
-                                             const std::vector<QueryPrimitive> &primitives,
-                                             uint64_t numericalGeneration, uint32_t castIterationQuantum,
-                                             JoltGpuQueryGeometry geometry) const
+                                             const std::vector<QueryInput> &queries, uint64_t numericalGeneration,
+                                             uint32_t castIterationQuantum) const
 {
     auto result = std::make_shared<JoltGpuQueryResult>();
-    result->explicitShapes = std::move(geometry.shapes);
-    if (publication) {
-        if (geometry.store && geometry.store != publication->geometryStore)
-            throw JoltGpuQueryRequestError("Explicit and published geometry must share one compatible arena");
-        geometry.store = publication->geometryStore;
-    }
-    if (geometry.operands.empty() && publication && publication->geometry) {
-        result->geometry = publication->geometry;
-        return PrepareCaptured(std::move(publication), queries, primitives, numericalGeneration, castIterationQuantum,
-                               result);
-    }
-    if (!geometry.store)
-        return PrepareCaptured(std::move(publication), queries, primitives, numericalGeneration, castIterationQuantum,
-                               result);
-    if (publication && publication->geometry)
-        geometry.operands.insert(geometry.operands.end(), publication->geometry->records.begin(),
-                                 publication->geometry->records.end());
-    // The immutable handles pin both explicit operands before capture begins.
-    // Store work uses the same writer budget/receipts; no synchronous upload.
-    auto service = std::make_shared<JoltGpuQueries>(*this);
-    auto capture = geometry.store->PrepareCapture(
-        std::move(geometry.operands),
-        [result](std::shared_ptr<const JoltGpuGeometryLease> lease) { result->geometry = std::move(lease); });
-    auto next = [service, result, publication = std::move(publication), queries, primitives, numericalGeneration,
-                 castIterationQuantum]() {
-        return service
-            ->PrepareCaptured(publication, queries, primitives, numericalGeneration, castIterationQuantum, result)
-            .work;
-    };
-    return {result, ContinueJoltGpuControlWork(std::move(capture), std::move(next))};
-}
-
-JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltGpuScene::Publication> publication,
-                                                     const std::vector<QueryInput> &queries,
-                                                     const std::vector<QueryPrimitive> &primitives,
-                                                     uint64_t numericalGeneration, uint32_t castIterationQuantum,
-                                                     const std::shared_ptr<JoltGpuQueryResult> &result) const
-{
+    result->geometry = publication->geometry;
     const uint64_t queryCount = queries.size();
-    if (queryCount > std::numeric_limits<uint32_t>::max() || primitives.size() > std::numeric_limits<uint32_t>::max())
+    if (queryCount > UINT32_MAX)
         throw JoltGpuQueryRequestError("Jolt GPU query input count exceeds device indexing");
-    const auto inputBytes = CheckedBytes(queryCount, sizeof(QueryInput));
-    const auto primitiveBytes = CheckedBytes(primitives.size(), sizeof(QueryPrimitive));
-    const auto requestWords = inputBytes / sizeof(QueryRecordWord) + primitiveBytes / sizeof(QueryRecordWord);
-    if (requestWords > std::numeric_limits<uint32_t>::max())
-        throw JoltGpuQueryRequestError("Jolt GPU query request words exceed device indexing");
     std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
     uint32_t bodyBase = 0, bodyCount = 0, leafBase = 0, leafCount = 0;
     uint32_t totalBodies = 0, totalLeaves = 0;
@@ -606,25 +526,12 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         if (totalLeaves)
             frozen(Shapes, CheckedBytes(totalLeaves, sizeof(ShapeModel)));
     }
-    for (const auto &primitive : primitives) {
-        if (primitive.meta.z || primitive.meta.w || !Finite(primitive.position) || primitive.position.w)
-            throw std::invalid_argument("Jolt GPU explicit query primitive has invalid pose or padding");
-        ValidateGeometry(primitive.meta.x, primitive.geometry, primitive.rotation, primitive.geometryReference,
-                         result->geometry, primitive.meta.y);
-    }
     for (const auto &query : queries)
-        ValidateInput(query, primitives.size(), bodyBase, bodyCount, bool(publication), result->geometry);
-    const bool geometric = std::any_of(queries.begin(), queries.end(), [](const auto &query) {
-        return query.meta.x == QueryOverlap || query.meta.x == QueryPenetration || query.meta.x == QueryShapeCast;
-    });
-    bool generic = geometric && std::any_of(primitives.begin(), primitives.end(), [](const auto &primitive) {
-                       return primitive.meta.x == ShapeCylinder || primitive.meta.x == ShapeConvexHull;
-                   });
-    generic |= geometric && std::any_of(queries.begin(), queries.end(), [](const auto &query) {
-                   return query.meta.z == ShapeCylinder || query.meta.z == ShapeConvexHull;
-               });
-    // Producer captures this bit in its existing accepted-directory loop.
-    generic |= geometric && publication && publication->hasGenericGeometry;
+        ValidateInput(query, bodyBase, bodyCount, result->geometry);
+    const bool generic =
+        publication->hasGenericGeometry || std::any_of(queries.begin(), queries.end(), [](const auto &query) {
+            return query.meta.z == ShapeCylinder || query.meta.z == ShapeConvexHull;
+        });
     if (!queries.empty() && (!result->geometry || !result->geometry->buffer ||
                              !m_host.SharesServicesWith(result->geometry->buffer->GetHost())))
         throw JoltGpuQueryRequestError("GPU query requires its compatible initialized geometry lease");
@@ -632,9 +539,8 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         std::any_of(queries.begin(), queries.end(), [](const auto &query) { return query.meta.x == QueryShapeCast; });
     if (!castIterationQuantum)
         throw JoltGpuQueryRequestError("Jolt GPU cast iteration quantum must be positive");
-    const bool knownCount = std::all_of(queries.begin(), queries.end(), [](const auto &query) {
-        return (query.meta.x <= QueryPenetration || query.meta.x == QueryShapeCast) && query.meta.y == QueryClosest;
-    });
+    const bool knownCount =
+        std::all_of(queries.begin(), queries.end(), [](const auto &query) { return query.meta.y == QueryClosest; });
     const auto stride = knownCount ? 1u : std::max({1u, bodyCount, leafCount});
     const uint64_t records = queryCount * stride;
     if (records > std::numeric_limits<uint32_t>::max())
@@ -708,17 +614,12 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     }
     const QueryParams parameters{
         {result->queryCount, bodyBase, bodyCount, leafCount},
-        {static_cast<uint32_t>(primitives.size()), stride, capacity, 0},
+        {0, stride, capacity, 0},
         {result->publication ? result->publication->worldRow : 0u, bodyBase, leafBase,
          result->publication ? result->publication->jointBase : 0u},
         {bodyCount, leafCount, result->publication ? result->publication->jointCount : 0u, 0u}};
     upload(Parameters, Bytes(&parameters, 1));
-    // Geometric requests and their explicit primitives share one immutable word stream.
-    std::vector<uint8_t> requestData(static_cast<size_t>(CheckedBytes(requestWords, sizeof(QueryRecordWord))));
-    std::memcpy(requestData.data(), queries.data(), static_cast<size_t>(inputBytes));
-    if (primitiveBytes)
-        std::memcpy(requestData.data() + inputBytes, primitives.data(), static_cast<size_t>(primitiveBytes));
-    upload(Inputs, std::move(requestData));
+    upload(Inputs, Bytes(queries.data(), queries.size()));
     std::shared_ptr<QueryPolicyCopy> copy;
     const bool hasSweep = std::any_of(queries.begin(), queries.end(),
                                       [](const auto &query) { return (query.meta.w & QuerySweepPolicy) != 0; });

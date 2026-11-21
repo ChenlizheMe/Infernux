@@ -346,6 +346,51 @@ InxPhyGpuGeometryType CookGeometry(const JPH::TransformedShape &leaf, InxPhyGpuC
 }
 } // namespace
 
+std::vector<ModelWords> CookInxPhyGpuPair(const InxPhyGpuQueryShape &first, const InxPhyGpuQueryShape &second)
+{
+    InxPhyGpuModel model;
+    model.bodies.resize(1);
+    model.dimensions.layout[0] = 2;
+    std::vector<InxPhyGpuCollisionGeometry> shapes;
+    std::array<ModelPose, 2> poses;
+    GeometryCache cache;
+    uint32_t index = 0;
+    for (const auto *source : {&first, &second}) {
+        const auto leaves = CollectPhysicsShapeLeaves(source->shape, 1);
+        if (leaves.empty())
+            return {};
+        if (leaves.size() != 1)
+            throw std::invalid_argument("Explicit GPU Collider queries require one convex shape or triangle");
+        const auto &leaf = leaves.front().shape;
+        auto &shape = shapes.emplace_back();
+        const auto kind = CookGeometry(leaf, shape, cache);
+        if (kind == TriangleMesh && shape.mesh->faces.size() != 1)
+            throw std::invalid_argument("Explicit GPU Collider queries require a convex mesh or a single triangle");
+        auto rotation = source->rotation * Rotation(leaf.mShapeRotation);
+        if (kind == Capsule || kind == Cylinder) {
+            constexpr float halfRoot = 0.7071067811865475f;
+            rotation *= glm::quat(halfRoot, -halfRoot, 0.0f, 0.0f);
+        }
+        // Work around the requested first body origin, even when the scene is far from world zero.
+        const auto center = (source->position - first.position) +
+                            source->rotation * Vector(leaf.mShapePositionCOM + source->shape.GetCenterOfMass());
+        poses[index++] = Pose(center, rotation);
+        model.geometries.emplace_back().indices = {0, kind, 0, 0};
+    }
+    auto cooked = BuildInxPhyGpuCollisionModel(model, shapes, {});
+    auto words = std::move(cooked.convexData);
+    if (words.empty())
+        words.resize(1);
+    words.front()[0] = static_cast<uint32_t>(words.size());
+    for (uint32_t i = 0; i < poses.size(); ++i) {
+        words.push_back(Bits(cooked.shapes[i].size));
+        words.push_back(cooked.shapes[i].type);
+        words.push_back(Bits(poses[i].position));
+        words.push_back(Bits(poses[i].rotation));
+    }
+    return words;
+}
+
 ModelSixDOFControls PackSixDOFControls(const SixDOFJointSettings &s)
 {
     const JointMotion motion[]{s.xMotion, s.yMotion, s.zMotion, s.angularXMotion, s.angularYMotion, s.angularZMotion};

@@ -61,6 +61,17 @@ struct InxPhyGpuSceneCapture
     std::vector<InxPhyGpuSceneSurfaceIdentity> surfaces;
 };
 
+struct InxPhyGpuQueryShape
+{
+    const JPH::Shape &shape;
+    glm::vec3 position;
+    glm::quat rotation;
+};
+
+/// Cook explicit, unpublished poses into the native convex-query layout.
+[[nodiscard]] std::vector<ModelWords> CookInxPhyGpuPair(const InxPhyGpuQueryShape &first,
+                                                        const InxPhyGpuQueryShape &second);
+
 struct InxPhyGpuSceneBodyBinding
 {
     uint64_t objectId;

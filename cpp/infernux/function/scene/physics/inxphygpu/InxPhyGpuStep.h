@@ -120,6 +120,17 @@ struct InxPhyGpuDeviceRays
 
 struct PreparedInxPhyGpuRayQuery;
 
+class InxPhyGpuPairQuery final
+{
+  public:
+    InxPhyGpuPairQuery(rhi::ComputeHost &host, ShaderCodeTarget target);
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> Prepare(rhi::ComputeHost &host,
+                                                                     const std::vector<ModelWords> &data);
+
+  private:
+    rhi::ComputeDispatchDesc m_dispatch;
+};
+
 /// Queries consume an accepted pose buffer and their immutable geometry.
 class InxPhyGpuPublishedRayQuery
 {

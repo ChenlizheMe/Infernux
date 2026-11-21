@@ -597,7 +597,6 @@ struct JPH_GPU_ALIGN BodyCommandParams
 
 JPH_GPU_CONSTANT(InvalidQueryBodySlot, 0xFFFFFFFFu);
 JPH_GPU_CONSTANT(QueryOverlap, 1);
-JPH_GPU_CONSTANT(QueryPenetration, 3);
 JPH_GPU_CONSTANT(QueryShapeCast, 4);
 JPH_GPU_CONSTANT(QueryClosest, 0);
 JPH_GPU_CONSTANT(QueryAll, 1);
@@ -619,7 +618,7 @@ struct JPH_GPU_ALIGN QueryParams
 {
     // Request count, selected global body base/count, selected leaf count.
     JPH_GPU_UINT4 counts;
-    // Explicit primitive count, scratch record stride, record capacity, padding.
+    // Reserved, scratch record stride, record capacity, padding.
     JPH_GPU_UINT4 sizes;
     // Same selected layout address as StepParams; model/shape indices remain global.
     // BodyState indices are globalSlot-selection.y in the compact completed output.
@@ -633,7 +632,7 @@ struct JPH_GPU_ALIGN QueryInput
     JPH_GPU_UINT4 meta;
     // Layer mask, include sensors, exact Collider ID low/high when requested.
     JPH_GPU_UINT4 filter;
-    // Excluded body slot; second primitive / gather target slot. zw carry motion fields,
+    // Excluded body slot. zw carry motion fields,
     // the sweeping GameObject.
     JPH_GPU_UINT4 source;
     // Ray origin / point / query shape center / bounds center; w maximum travel.
@@ -664,15 +663,6 @@ struct JPH_GPU_ALIGN QueryCastState
     JPH_GPU_FLOAT4 normal;
     // Total request work units, current pair steps, restart used, no-progress count.
     JPH_GPU_UINT4 iteration;
-};
-
-struct JPH_GPU_ALIGN QueryPrimitive
-{
-    JPH_GPU_UINT4 meta; // Shape type, then zero padding.
-    JPH_GPU_FLOAT4 geometry;
-    JPH_GPU_FLOAT4 position;
-    JPH_GPU_FLOAT4 rotation;
-    JPH_GPU_UINT4 geometryReference;
 };
 
 struct JPH_GPU_ALIGN QueryBodyIdentity
@@ -862,13 +852,11 @@ JPH_GPU_CHECK_TYPE(QueryCastParams, 16);
 JPH_GPU_CHECK_TYPE(QueryCastState, 64);
 static_assert(offsetof(QueryCastState, progress) == 16 && offsetof(QueryCastState, normal) == 32 &&
               offsetof(QueryCastState, iteration) == 48);
-JPH_GPU_CHECK_TYPE(QueryPrimitive, 80);
 JPH_GPU_CHECK_TYPE(QueryBodyIdentity, 16);
 JPH_GPU_CHECK_TYPE(QueryHit, 64);
 JPH_GPU_CHECK_TYPE(QueryRecordWord, 16);
 JPH_GPU_CHECK_TYPE(QuerySpan, 16);
 JPH_GPU_CHECK_TYPE(QuerySummary, 16);
-static_assert(offsetof(QueryPrimitive, geometryReference) == 64);
 static_assert(offsetof(QueryInput, geometry) == 96 && offsetof(QueryInput, filter) == 16 &&
               offsetof(QueryInput, lifetime) == 112 && offsetof(QueryInput, geometryReference) == 128);
 static_assert(offsetof(ColliderPairKey, a) == 0 && offsetof(ColliderPairKey, b) == 16);

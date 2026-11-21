@@ -54,7 +54,6 @@ class JoltGpuJoints;
 struct JoltGpuQueryResult;
 struct PhysicsGpuMotionRead;
 struct PhysicsGpuMotionExport;
-struct JoltGpuQueryGeometry;
 struct PreparedCpuActor;
 struct PhysicsStaticBoundaryModel;
 struct PreparedGpuActor;
@@ -74,6 +73,7 @@ struct InxPhyGpuFixedPublication;
 struct InxPhyGpuRay;
 struct InxPhyGpuDeviceRays;
 struct InxPhyGpuPreparedRayBatch;
+class InxPhyGpuPairQuery;
 } // namespace physics::inxphygpu
 } // namespace infernux
 
@@ -915,10 +915,6 @@ class PhysicsWorld
                                                    const physics::inxphygpu::InxPhyGpuDeviceRays *,
                                                    const PhysicsDeviceRayOutputs &) const;
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
-    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(PhysicsDomain &domain,
-                                                                       const JPH::GPU::QueryInput &request,
-                                                                       const JPH::GPU::QueryPrimitive &other,
-                                                                       JoltGpuQueryGeometry geometry) const;
     [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &, const JPH::GPU::QueryInput &,
                                                          const JoltCpuQueries::Shape &) const;
     [[nodiscard]] bool QueryClosestCast(PhysicsDomain &, const JPH::GPU::QueryInput &, const JoltCpuQueries::Shape &,
@@ -982,6 +978,7 @@ class PhysicsWorld
     std::unordered_map<uint32_t, BodyRegistration> m_bodyActors;
     std::unordered_map<uint64_t, PhysicsDomain *> m_cpuJointDomains;
     std::unordered_set<PhysicsDomain *> m_domains;
+    mutable std::unique_ptr<physics::inxphygpu::InxPhyGpuPairQuery> m_gpuPairQuery;
 };
 
 } // namespace infernux
