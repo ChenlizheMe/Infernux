@@ -962,10 +962,7 @@ class PhysicsWorld
                       PhysicsGpuMotionExport &motion, PhysicsGpuBoxExport &boxes, std::exception_ptr &requestError,
                       bool deferExport = false) const;
     [[nodiscard]] std::shared_ptr<const PhysicsShapeGeometry>
-    ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::PublishedLeaf &leaf,
-                         const JPH::GPU::QueryShapeState &record) const;
-    [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> GatherBodyShapes(PhysicsDomain &domain, uint32_t bodyId,
-                                                                       bool queryTriggers) const;
+    ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::PublishedLeaf &leaf) const;
     void MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbodyStateBatch &batch,
                                const PhysicsGpuMotionRead &hostMotion, const PhysicsGpuBoxExport &boxes, bool numerical,
                                PhysicsStateFields cachedFields = static_cast<PhysicsStateFields>(0x1ff)) const;

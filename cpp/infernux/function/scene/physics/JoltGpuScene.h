@@ -64,6 +64,11 @@ class JoltGpuScene final
         std::shared_ptr<const JoltGpuGeometryHandle> geometry;
         bool sensor = false;
         uint32_t layer = 0;
+        uint32_t shapeType = 0, frictionCombine = 0, bounceCombine = 0;
+        JPH::GPU::Float4 dimensions{};
+        glm::vec3 centerOfMassOffset{0.0f};
+        glm::quat localRotation{1.0f, 0.0f, 0.0f, 0.0f};
+        float friction = 0.0f, bounciness = 0.0f;
     };
 
     struct LeafAddress
@@ -94,7 +99,6 @@ class JoltGpuScene final
         JPH::GPU::BodyModel physicalModel{};
         uint64_t shapeRevision = 0;
         JPH::RefConst<JPH::Shape> authoredShape;
-        std::vector<PhysicsGpuBoxAuthor> boxes;
     };
 
     struct PublishedJoint

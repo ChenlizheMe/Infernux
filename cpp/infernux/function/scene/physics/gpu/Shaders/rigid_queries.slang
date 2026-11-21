@@ -88,11 +88,6 @@ void query_store_cast_state(uint index, QueryCastState state)
     query_control[base + 3u] = state.iteration;
 }
 
-uint query_record_words()
-{
-    return query_params.sizes.w == QueryOutputShape ? 9u : 4u;
-}
-
 QueryHit query_load_hit(uint record)
 {
     uint base = record * 4u;
@@ -115,23 +110,9 @@ void query_store_hit(uint record, QueryHit hit)
 
 void query_clear_candidate(uint record)
 {
-    uint words = query_record_words();
+    const uint words = 4u;
     for (uint word = 0u; word < words; ++word)
         query_candidates[record * words + word].value = word == 0u ? uint4(InvalidQueryBodySlot, 0u, InvalidQueryBodySlot, 0u) : uint4(0u);
-}
-
-void query_store_shape(uint record, QueryShapeState shape)
-{
-    uint base = record * 9u;
-    query_candidates[base].value = shape.meta;
-    query_candidates[base + 1u].value = shape.surface;
-    query_candidates[base + 2u].value = asuint(shape.geometry);
-    query_candidates[base + 3u].value = asuint(shape.center);
-    query_candidates[base + 4u].value = asuint(shape.rotation);
-    query_candidates[base + 5u].value = asuint(shape.bodyCenterOfMass);
-    query_candidates[base + 6u].value = asuint(shape.linearVelocity);
-    query_candidates[base + 7u].value = asuint(shape.angularVelocity);
-    query_candidates[base + 8u].value = asuint(shape.material);
 }
 
 float3 query_box_face_normal(float3 point, float3 half_extent)
@@ -552,63 +533,6 @@ bool query_valid_quaternion(float4 q)
     return all(isfinite(q)) && isfinite(length) && length > 0.0f;
 }
 
-void query_gather_shapes(QueryInput request, uint begin, inout uint count, inout uint status)
-{
-    uint first = request.source.y == InvalidQueryBodySlot ? query_params.counts.y : request.source.y;
-    uint end = request.source.y == InvalidQueryBodySlot ? query_params.counts.y + query_params.counts.z : first + 1u;
-    for (uint slot = first; slot < end && status == QuerySuccess; ++slot)
-    {
-        BodyModel model = body_models[slot];
-        if (!jph_resident(model))
-            continue;
-        BodyState state = body_states[slot - query_params.selection.y];
-        if (!query_valid_quaternion(state.rotation) || !all(isfinite(state.positionCOM)) ||
-            !all(isfinite(state.linearVelocity)) || !all(isfinite(state.angularVelocity)))
-        {
-            status = QueryNumericalFailure;
-            break;
-        }
-        state.rotation = normalize(state.rotation);
-        for (uint ordinal = 0u; ordinal < model.meta.y; ++ordinal)
-        {
-            uint leaf = model.meta.x + ordinal;
-            if (leaf < query_params.selection.z || leaf - query_params.selection.z >= query_params.selectedCounts.y)
-            {
-                status = QueryNumericalFailure;
-                break;
-            }
-            ShapeModel shape = shape_models[leaf];
-            if ((request.meta.z != QueryAllShapeTypes && shape.meta.x != request.meta.z) ||
-                !query_accepts(request, shape, slot))
-                continue;
-            float3 center;
-            float4 rotation;
-            query_leaf_pose(shape, state, center, rotation);
-            float3 low, high;
-            query_leaf_bounds(shape, state, low, high);
-            if (!all(isfinite(center)) || !query_valid_quaternion(rotation) || !all(isfinite(shape.geometry)) ||
-                !all(isfinite(shape.material.xy)) || !all(isfinite(low)) || !all(isfinite(high)))
-            {
-                status = QueryNumericalFailure;
-                break;
-            }
-            QueryShapeState output;
-            output.meta = uint4(slot, 1u, leaf, (jph_sensor(shape) ? QueryShapeSensor : 0u) |
-                                                (jph_nonstatic(model) ? QueryShapeMoving : 0u));
-            output.surface = uint4(1u << shape.surface.x, shape.meta.x, shape.surface.z, shape.surface.w);
-            output.geometry = shape.geometry;
-            output.center = float4(center, 0.0f);
-            output.rotation = normalize(rotation);
-            output.bodyCenterOfMass = float4(state.positionCOM.xyz, 0.0f);
-            output.linearVelocity = float4(state.linearVelocity.xyz, 0.0f);
-            output.angularVelocity = float4(state.angularVelocity.xyz, 0.0f);
-            output.material = float4(shape.material.xy, 0.0f, 0.0f);
-            query_store_shape(begin + count, output);
-            ++count;
-        }
-    }
-}
-
 float3 query_cast_support(uint type, float4 rotation, float4 geometry, float3 n)
 {
     float3 core = float3(0.0f);
@@ -932,18 +856,6 @@ void query_evaluate(uint3 tid : SV_DispatchThreadID)
     if (index >= query_params.counts.x)
         return;
     QueryInput request = query_load_input(index);
-    if (request.meta.x == QueryGatherShapes)
-    {
-        uint count = 0u, status = QuerySuccess;
-        uint first = request.source.z;
-        query_gather_shapes(request, first, count, status);
-        for (uint row = count; row < request.source.w; ++row)
-            query_clear_candidate(first + row);
-        QuerySpan span;
-        span.range = uint4(0u, count, status, first);
-        query_store_span(index, span);
-        return;
-    }
     uint begin = index * query_params.sizes.y;
     for (uint row = 0u; row < query_params.sizes.y; ++row)
         query_clear_candidate(begin + row);
@@ -1082,11 +994,6 @@ void query_scan(uint3 tid : SV_DispatchThreadID)
     for (uint index = 0u; index < query_params.counts.x; ++index)
     {
         QuerySpan span = query_load_span(index);
-        // Projected host motion and fixed-row device batches retain their
-        // length/padding validation in the GPU summary, avoiding a redundant
-        // 16-byte span readback per row.
-        if (query_params.selectedCounts.w != 0u && (span.range.y != 1u || span.range.w != 0u))
-            status = max(status, QueryNumericalFailure);
         span.range.x = count;
         count += span.range.y;
         if (span.range.z == QueryPending)
@@ -1122,17 +1029,14 @@ void query_compact(uint3 tid : SV_DispatchThreadID)
                 high = middle;
         }
         QuerySpan source = query_load_span(low);
-        uint begin = query_params.sizes.w == QueryOutputShape ? source.range.w : low * query_params.sizes.y;
+        uint begin = low * query_params.sizes.y;
         source_record = begin + (index - source.range.x);
     }
     // One writer per final index, including the unused tail. A sparse scatter
     // plus concurrent clearing would race and would not prove initialization.
-    uint words = query_record_words();
+    const uint words = 4u;
     for (uint word = 0u; word < words; ++word)
         query_hits[index * words + word].value = source_record != InvalidQueryBodySlot
             ? query_candidates[source_record * words + word].value
             : word == 0u ? uint4(InvalidQueryBodySlot, 0u, InvalidQueryBodySlot, 0u) : uint4(0u);
 }
-
-// Projection only: scalar storage preserves contiguous float3 and row-major
-// 3x3 output layouts without any CPU numerical materialization/reupload.

@@ -1,8 +1,8 @@
-// Engine-owned particle ABI projection. Included by the common query artifact;
-// QueryRecordWord, QueryShapeState and rigid quaternion helpers are in scope.
+// Particle collision records projected from the accepted body and leaf buffers.
+// Included by the query artifact for its binding and rigid shape layout.
 struct ParticleExportParameters
 {
-    uint4 counts; // Output rows, static rows, source rows, previous rows.
+    uint4 counts; // Output rows, static rows, first body slot, previous rows.
     uint4 revision;
 };
 struct ParticleExportRow
@@ -34,16 +34,21 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
     if (row >= particle_export_params.counts.x)
         return;
     ParticleExportRow mapping = particle_export_rows[row];
-    uint source = mapping.selection.x * 9u;
     uint destination = row * 22u;
-    uint4 meta = query_hits[source].value;
-    uint4 surface = query_hits[source + 1u].value;
-    ShapeModel leaf = shape_models[meta.z];
-    if (any(leaf.source.xy != mapping.identity.xy) || any(leaf.source.zw != mapping.selection.zw) || leaf.meta.x != surface.y)
+    const ShapeModel leaf = shape_models[mapping.selection.x];
+    BodyState state = body_states[leaf.meta.y - particle_export_params.counts.z];
+    if (!query_valid_quaternion(state.rotation))
+    {
         particle_export_failure();
-    float4 geometry = asfloat(query_hits[source + 2u].value);
-    float3 center = asfloat(query_hits[source + 3u].value).xyz;
-    float4 q = asfloat(query_hits[source + 4u].value);
+        return;
+    }
+    state.rotation = normalize(state.rotation);
+    float3 center;
+    float4 q;
+    query_leaf_pose(leaf, state, center, q);
+    q = normalize(q);
+    const float4 geometry = leaf.geometry;
+    const uint kind = leaf.meta.x;
     float3 x = jph_rotate(q, float3(1, 0, 0));
     float3 y = jph_rotate(q, float3(0, 1, 0));
     float3 z = jph_rotate(q, float3(0, 0, 1));
@@ -53,32 +58,32 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
     float4 shape = float4(0.0f);
     float3 extent = float3(0.0f);
     uint type = 0u;
-    if (surface.y == ShapeBox)
+    if (kind == ShapeBox)
     {
         float3 core = max(geometry.xyz - geometry.w, float3(0.0f));
         extent = abs(x) * core.x + abs(y) * core.y + abs(z) * core.z + geometry.w;
         shape = float4(2.0f * geometry.xyz, geometry.w);
         type = 0u;
     }
-    else if (surface.y == ShapeSphere)
+    else if (kind == ShapeSphere)
     {
         extent = float3(geometry.w);
         shape.x = geometry.w;
         type = 1u;
     }
-    else if (surface.y == ShapeCapsule)
+    else if (kind == ShapeCapsule)
     {
         extent = abs(y) * geometry.y + geometry.w;
         shape = float4(geometry.w, 2.0f * (geometry.y + geometry.w), 1.0f, 0.0f);
         type = 2u;
     }
-    else if (surface.y == ShapeCylinder)
+    else if (kind == ShapeCylinder)
     {
         extent = abs(y) * geometry.y + geometry.x * sqrt(max(float3(0), 1.0f - y * y));
         shape = geometry;
         type = 5u;
     }
-    else if (surface.y == ShapeConvexHull)
+    else if (kind == ShapeConvexHull)
     {
         float3 halfExtent = 0.5f * (mapping.localBoundsMax.xyz - mapping.localBoundsMin.xyz);
         extent = abs(x) * halfExtent.x + abs(y) * halfExtent.y + abs(z) * halfExtent.z;
@@ -87,7 +92,7 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
     else
         particle_export_failure();
     float3 boundsCenter = center;
-    if (surface.y == ShapeConvexHull)
+    if (kind == ShapeConvexHull)
         boundsCenter += jph_rotate(q, 0.5f * (mapping.localBoundsMin.xyz + mapping.localBoundsMax.xyz));
     float4 low = float4(boundsCenter - extent, 0.0f);
     float4 high = float4(boundsCenter + extent, 0.0f);
@@ -102,10 +107,8 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
         previousLow = asfloat(particle_export_previous[previous + 15u].value);
         previousHigh = asfloat(particle_export_previous[previous + 16u].value);
     }
-    float4 material = asfloat(query_hits[source + 8u].value);
-    material.zw = float2(surface.zw);
-    uint flags = ((meta.w & QueryShapeSensor) != 0u ? 1u : 0u) |
-                 ((meta.w & QueryShapeMoving) != 0u ? 2u : 0u) | 4u;
+    const float4 material = float4(leaf.material.xy, float2(leaf.surface.zw));
+    const uint flags = (jph_sensor(leaf) ? 1u : 0u) | (row >= particle_export_params.counts.y ? 2u : 0u) | 4u;
     particle_export_records[destination].value = asuint(float4(x.x, y.x, z.x, center.x));
     particle_export_records[destination + 1u].value = asuint(float4(x.y, y.y, z.y, center.y));
     particle_export_records[destination + 2u].value = asuint(float4(x.z, y.z, z.z, center.z));
@@ -116,21 +119,18 @@ void particle_collision_project(uint3 tid : SV_DispatchThreadID)
     particle_export_records[destination + 7u].value = asuint(previous1);
     particle_export_records[destination + 8u].value = asuint(previous2);
     particle_export_records[destination + 9u].value = asuint(shape);
-    particle_export_records[destination + 10u].value = surface.y == ShapeConvexHull ? leaf.geometryReference : uint4(0u);
-    particle_export_records[destination + 11u].value = query_hits[source + 6u].value;
-    particle_export_records[destination + 12u].value = query_hits[source + 7u].value;
-    particle_export_records[destination + 13u].value = query_hits[source + 5u].value;
+    particle_export_records[destination + 10u].value = kind == ShapeConvexHull ? leaf.geometryReference : uint4(0u);
+    particle_export_records[destination + 11u].value = asuint(float4(state.linearVelocity.xyz, 0.0f));
+    particle_export_records[destination + 12u].value = asuint(float4(state.angularVelocity.xyz, 0.0f));
+    particle_export_records[destination + 13u].value = asuint(float4(state.positionCOM.xyz, 0.0f));
     particle_export_records[destination + 14u].value = asuint(material);
     particle_export_records[destination + 15u].value = asuint(low);
     particle_export_records[destination + 16u].value = asuint(high);
     particle_export_records[destination + 17u].value = asuint(previousLow);
     particle_export_records[destination + 18u].value = asuint(previousHigh);
-    particle_export_records[destination + 19u].value = uint4(type, surface.x, flags, 0u);
+    particle_export_records[destination + 19u].value = uint4(type, 1u << leaf.surface.x, flags, 0u);
     particle_export_records[destination + 20u].value = mapping.identity;
     particle_export_records[destination + 21u].value = uint4(mapping.selection.zw, 0u, 0u);
-    bool moving = (meta.w & QueryShapeMoving) != 0u;
-    if (meta.y != 1u || moving != (row >= particle_export_params.counts.y))
-        particle_export_failure();
     for (uint word = 0u; word < 19u; ++word)
         if (word != 10u && !all(isfinite(asfloat(particle_export_records[destination + word].value))))
             particle_export_failure();

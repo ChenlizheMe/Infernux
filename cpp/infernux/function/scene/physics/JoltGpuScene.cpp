@@ -1176,18 +1176,16 @@ class JoltGpuScene::Impl
             publishedLeaf.shape = leaf.shape;
             publishedLeaf.geometry = geometry->Intern(leaf.geometryRecord);
             publishedLeaf.sensor = (leaf.model.meta.w & ShapeSensor) != 0;
-            if (leaf.model.meta.x == ShapeBox) {
-                const auto &centerOffset = leaf.model.localPositionCOM;
-                const auto &rotation = leaf.model.localRotation;
-                const auto &extent = leaf.model.geometry;
-                identity->boxes.push_back({{centerOffset.x, centerOffset.y, centerOffset.z},
-                                           {rotation.w, rotation.x, rotation.y, rotation.z},
-                                           {extent.x, extent.y, extent.z},
-                                           leaf.model.material.x,
-                                           leaf.model.material.y,
-                                           leaf.memberIndex,
-                                           publishedLeaf.sensor});
-            }
+            const auto &centerOffset = leaf.model.localPositionCOM;
+            const auto &rotation = leaf.model.localRotation;
+            publishedLeaf.shapeType = leaf.model.meta.x;
+            publishedLeaf.dimensions = leaf.model.geometry;
+            publishedLeaf.centerOfMassOffset = {centerOffset.x, centerOffset.y, centerOffset.z};
+            publishedLeaf.localRotation = {rotation.w, rotation.x, rotation.y, rotation.z};
+            publishedLeaf.friction = leaf.model.material.x;
+            publishedLeaf.bounciness = leaf.model.material.y;
+            publishedLeaf.frictionCombine = leaf.model.surface.z;
+            publishedLeaf.bounceCombine = leaf.model.surface.w;
             identity->leaves.push_back(std::move(publishedLeaf));
         }
         auto change = std::make_shared<ActorChange>();
@@ -2503,8 +2501,7 @@ void JoltGpuScene::RunPublicationObservation(RuntimeWorld &world, const std::sha
             m_impl->observationOwner = nullptr;
             m_impl->observationPublication.reset();
         }
-        // Private friend entry: only Host gather/pose factories, with no external exports,
-        // supply this work. Their kernels read Publication and write private query results.
+        // Read the retained publication and write only private result buffers.
         m_impl->observationOwner = &domain;
         m_impl->observationCursor = &read;
         m_impl->observationPublication = publication;
