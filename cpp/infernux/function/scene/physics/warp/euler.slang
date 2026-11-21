@@ -4,6 +4,7 @@
 // Slang adaptation of MuJoCo Warp _src/forward.py semi-implicit advancement.
 
 #include "model.slang"
+#include "integrate_position.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
 [[vk::binding(1, 0)]] StructuredBuffer<JointModel> joints;
@@ -59,28 +60,20 @@ void advance_position(uint3 id : SV_DispatchThreadID)
     const JointModel joint = joints[id.x];
     const float dt = timestep[id.y];
     const uint type = joint.indices.x;
-    uint pos = id.y * size.state.x + joint.indices.y;
-    uint velocity = id.y * size.state.y + joint.indices.z;
+    const uint pos = id.y * size.state.x + joint.indices.y;
+    const uint velocity = id.y * size.state.y + joint.indices.z;
+    float3 linear = float3(0.0);
+    float3 angular = float3(0.0);
     if (type == JointFree)
     {
-        qpos[pos] += dt * qvel[velocity];
-        qpos[pos + 1] += dt * qvel[velocity + 1];
-        qpos[pos + 2] += dt * qvel[velocity + 2];
-        pos += 3;
-        velocity += 3;
+        linear = float3(qvel[velocity], qvel[velocity + 1], qvel[velocity + 2]);
+        angular = float3(qvel[velocity + 3], qvel[velocity + 4], qvel[velocity + 5]);
     }
-    if (type == JointFree || type == JointBall)
-    {
-        const float4 orientation = float4(qpos[pos], qpos[pos + 1], qpos[pos + 2], qpos[pos + 3]);
-        const float3 angular = float3(qvel[velocity], qvel[velocity + 1], qvel[velocity + 2]);
-        const float4 next = integrateQuat(orientation, angular, dt);
-        qpos[pos] = next.x;
-        qpos[pos + 1] = next.y;
-        qpos[pos + 2] = next.z;
-        qpos[pos + 3] = next.w;
-    }
+    else if (type == JointBall)
+        angular = float3(qvel[velocity], qvel[velocity + 1], qvel[velocity + 2]);
     else
-        qpos[pos] += dt * qvel[velocity];
+        linear.x = qvel[velocity];
+    integrateJointPosition(type, pos, linear, angular, dt, qpos, qpos);
 }
 
 [shader("compute")]

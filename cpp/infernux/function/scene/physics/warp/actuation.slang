@@ -7,6 +7,7 @@
 #include "model.slang"
 #include "tendon_data.slang"
 #include "contact_force_projection.slang"
+#include "rk4_tableau.slang"
 
 static const uint ActivationIntegrator = 1;
 static const uint ActivationFilter = 2;
@@ -91,6 +92,9 @@ struct TendonActuatorGroup
 [[vk::binding(17, 0)]] StructuredBuffer<uint> tendonActuatorList;
 [[vk::binding(23, 0)]] RWStructuredBuffer<float> actuatorMoments;
 [[vk::binding(25, 0)]] StructuredBuffer<float> qfrcGravityCompensation;
+[[vk::binding(30, 0)]] StructuredBuffer<uint4> rkActuatorStage;
+[[vk::binding(31, 0)]] RWStructuredBuffer<float2> rkActivation;
+[[vk::binding(32, 0)]] RWStructuredBuffer<float2> rkActuatorMotion;
 
 #include "site_transmission.slang"
 #include "body_transmission.slang"
@@ -133,7 +137,7 @@ float nearestSetpoint(float value, float reference, float period)
     return value;
 }
 
-float nextActivation(ActuatorModel actuator, float previous, float derivative, float dt)
+float nextActivation(ActuatorModel actuator, float previous, float derivative, float dt, bool limit = true)
 {
     if (actuator.modes.x == ActivationFilterExact)
     {
@@ -142,7 +146,7 @@ float nextActivation(ActuatorModel actuator, float previous, float derivative, f
     }
     const float value = previous + derivative * dt;
     const float2 range = actuator.controlActivationRange.zw;
-    return (actuator.indices.w & LimitActivation) != 0 ? clamp(value, range.x, range.y) : value;
+    return limit && (actuator.indices.w & LimitActivation) != 0 ? clamp(value, range.x, range.y) : value;
 }
 
 float2 jointActuatorMotion(ActuatorModel actuator, uint world, inout float3 firstMoment, out float3 lastMoment)
@@ -357,4 +361,66 @@ void advance_activation(uint3 id : SV_DispatchThreadID)
     const ActivationState state = activation[index];
     const float next = nextActivation(actuator, state.value, state.derivative, dt);
     activation[index].value = nearestSetpoint(next, values.x, servoPeriod(actuator));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_rk4_activation(uint3 id : SV_DispatchThreadID)
+{
+    const uint4 sizes = actuatorDimensions[0];
+    if (id.x >= sizes.x)
+        return;
+    const uint actuatorIndex = id.y * sizes.x + id.x;
+    const uint3 settings = rkActuatorStage[0].xyz; // stage, restore length, restore velocity
+    const uint stage = settings.x;
+    const bool last = stage == Rk4FinalStage;
+    const float2 motion = actuatorStep[actuatorIndex].values.xy;
+    if (stage == 0)
+        rkActuatorMotion[actuatorIndex] = motion;
+
+    float2 advancementMotion = motion;
+    if (last)
+    {
+        const float2 initialMotion = rkActuatorMotion[actuatorIndex];
+        advancementMotion = float2(settings.y != 0 ? initialMotion.x : motion.x,
+                                    settings.z != 0 ? initialMotion.y : motion.y);
+        actuatorStep[actuatorIndex].values.xy = advancementMotion;
+    }
+
+    const ActuatorModel actuator = actuators[id.x];
+    if (actuator.indices.z == NoIndex)
+        return;
+    const uint base = id.y * sizes.z + actuator.indices.z;
+    const float dt = timestep[id.y];
+    const float weight = rk4Weight(stage);
+    if (actuator.modes.x == ActivationDcMotor)
+    {
+        const ActuatorDynamicsModel dynamics = actuatorDynamics[actuator.dynamicsIndex];
+        const uint mask = dynamics.layout.y;
+        for (uint slot = MotorSlew; slot <= MotorCurrent; slot <<= 1u)
+        {
+            if ((mask & slot) == 0)
+                continue;
+            const uint index = motorStateIndex(base, mask, slot);
+            const ActivationState current = activation[index];
+            float2 state = stage == 0 ? float2(current.value, 0.0) : rkActivation[index];
+            state.y += weight * current.derivative;
+            if (!last)
+                rkActivation[index] = state;
+            // Warp applies the motor slot updates at full dt, including trial stages.
+            const ActivationState initial = {state.x, last ? state.y : current.derivative};
+            const float next = advanceMotorSlot(actuator, dynamics, slot, initial, advancementMotion.y, dt);
+            activation[index] = {next, initial.derivative};
+        }
+        return;
+    }
+
+    const ActivationState current = activation[base];
+    float2 state = stage == 0 ? float2(current.value, 0.0) : rkActivation[base];
+    state.y += weight * current.derivative;
+    if (!last)
+        rkActivation[base] = state;
+    const float derivative = last ? state.y : current.derivative;
+    const float next = nextActivation(actuator, state.x, derivative * rk4StepScale(stage), dt, last);
+    activation[base] = {last ? nearestSetpoint(next, advancementMotion.x, servoPeriod(actuator)) : next, derivative};
 }
