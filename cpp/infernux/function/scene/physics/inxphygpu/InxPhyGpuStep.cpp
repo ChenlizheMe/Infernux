@@ -357,6 +357,8 @@ ContactSlots AddCollision(StepBuilder &b, const InxPhyGpuModel &model, const Inx
 struct RaySlots
 {
     uint32_t inputs, hits, settings;
+    uint32_t inputSettings = NoModelIndex;
+    ComputeWorkDispatch pack;
 };
 
 struct BodyControlSlots
@@ -427,7 +429,15 @@ RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpu
                                {8, nodes, R},
                                {9, bounds, R}}));
     describeFrames(work.back());
-    return {inputs, hits, query};
+    RaySlots result{inputs, hits, query, NoModelIndex, {}};
+    if (published) {
+        result.inputSettings = b.Seed("packedSceneRaySettings", 8, nullptr);
+        // Only the selected external views are bound in the prepared packet.
+        result.pack =
+            b.Dispatch("ray_queries", "pack_scene_rays", layout.raysPerWorld,
+                       {{10, result.inputSettings, R}, {11, inputs, R}, {12, inputs, R}, {13, inputs, W, true}});
+    }
+    return result;
 }
 
 struct ContactResponse
@@ -1441,6 +1451,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             rayWork.push_back(BindDispatch(std::move(dispatch), buffers));
         if (publishedRaysEnabled) {
             publishedRays.settings = buffers[raySlots->settings];
+            publishedRays.inputSettings = buffers[raySlots->inputSettings];
+            publishedRays.pack = BindDispatch(std::move(raySlots->pack), buffers);
             publishedRays.geometryCount = model.dimensions.layout[0];
             publishedRays.bodyCount = nb;
             publishedRays.capacity = rayLayout.raysPerWorld;
@@ -1570,7 +1582,8 @@ InxPhyGpuStep::PrepareRays(bool publish, std::vector<rhi::ComputeBufferUpdate> u
 
 InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
                                                               bool publish,
-                                                              std::vector<rhi::ComputeBufferUpdate> updates) const
+                                                              std::vector<rhi::ComputeBufferUpdate> updates,
+                                                              const InxPhyGpuDeviceRays *deviceRays) const
 {
     const auto &plan = m_publishedRays;
     if (!plan.settings || rayCount == 0 || rayCount > plan.capacity)
@@ -1588,7 +1601,35 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
     std::memcpy(params.data.data(), settings.data(), params.data.size());
 
     std::vector<rhi::ComputeDispatchDesc> dispatches;
-    dispatches.reserve(m_rayWork.size() + size_t(bool(plan.geometry.kernel)));
+    dispatches.reserve(m_rayWork.size() + size_t(bool(plan.geometry.kernel)) + size_t(deviceRays != nullptr));
+    const auto inputBytes = uint64_t{rayCount} * sizeof(InxPhyGpuRay);
+    if (deviceRays) {
+        const auto &rays = *deviceRays;
+        if (!std::isfinite(rays.maxDistance) || rays.maxDistance <= 0)
+            throw std::invalid_argument("Device raycast requires a positive finite maximum distance");
+        const auto vectorBytes = uint64_t{rayCount} * 3 * sizeof(float);
+        const auto checkView = [&](const PhysicsDeviceVectorInput &view) {
+            const auto end = view.buffer ? std::min(view.byteEnd, view.buffer->GetByteSize()) : 0u;
+            if (!view.buffer || view.buffer->GetDesc().scalarType != ComputeScalarType::Float32 ||
+                view.byteOffset % sizeof(float) != 0 || view.byteOffset > end || vectorBytes > end - view.byteOffset ||
+                (view.byteOffset + vectorBytes) / sizeof(float) > UINT32_MAX)
+                throw std::invalid_argument("Device raycast requires a complete packed float3 input view");
+            return static_cast<uint32_t>(view.byteOffset / sizeof(float));
+        };
+        std::array<ModelWords, 2> inputSettings{
+            ModelWords{rayCount, checkView(rays.origins), checkView(rays.directions), 0}, rays.filter};
+        std::memcpy(&inputSettings[0][3], &rays.maxDistance, sizeof(float));
+        auto &upload = updates.emplace_back(
+            rhi::ComputeBufferUpdate{plan.inputSettings, 0, std::vector<uint8_t>(sizeof(inputSettings))});
+        std::memcpy(upload.data.data(), inputSettings.data(), upload.data.size());
+        auto &pack = dispatches.emplace_back(plan.pack);
+        pack.groupCountX = (rayCount - 1) / 64 + 1;
+        pack.buffers[1] = rays.origins.buffer;
+        pack.buffers[2] = rays.directions.buffer;
+        pack.proof->reads[1] = {1, rays.origins.byteOffset, vectorBytes};
+        pack.proof->reads[2] = {2, rays.directions.byteOffset, vectorBytes};
+        pack.proof->writes.front().byteSize = inputBytes;
+    }
     if (plan.geometry.kernel) {
         auto &geometry = dispatches.emplace_back(plan.geometry);
         geometry.groupCountY = 1;
@@ -1610,7 +1651,7 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
     auto &trace = dispatches.back();
     trace.groupCountX = (rayCount - 1) / 64 + 1;
     trace.buffers[6] = plan.output;
-    trace.proof->reads[1].byteSize = uint64_t{rayCount} * sizeof(InxPhyGpuRay);
+    trace.proof->reads[1].byteSize = inputBytes;
     trace.proof->writes.front().byteSize = bytes;
     std::vector<rhi::ComputeBufferRead> reads;
     if (publish)

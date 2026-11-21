@@ -34,6 +34,7 @@
 #include "function/scene/physics/HingeJointBatch.h"
 #include "function/scene/physics/JoltGpuQueries.h"
 #include "function/scene/physics/PhysicsContactTypes.h"
+#include "function/scene/physics/PhysicsDeviceVectorInput.h"
 #include "function/scene/physics/PhysicsWorld.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -615,7 +616,7 @@ py::dict RaycastFromDevice(const ComputeView &origins, const ComputeView &direct
     const auto operand = [&](const ComputeView &view, const char *name) {
         RequireComputeView(view, name, rhi::ComputeScalarType::Float32, 3, host);
         const auto &[buffer, offset, rows] = view;
-        return JoltGpuQueryVector3Input{buffer, offset, offset + rows * 3 * sizeof(float)};
+        return PhysicsDeviceVectorInput{buffer, offset, offset + rows * 3 * sizeof(float)};
     };
     const auto originView = operand(origins, "origins");
     const auto directionView = operand(directions, "directions");

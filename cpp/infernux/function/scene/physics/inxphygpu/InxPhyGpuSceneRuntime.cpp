@@ -461,6 +461,19 @@ InxPhyGpuSceneBodyRead InxPhyGpuSceneRuntime::PrepareBodyRead(const InxPhyGpuFix
     return result;
 }
 
+InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareDeviceRaycast(const InxPhyGpuFixedPublication &publication,
+                                                                   uint32_t world,
+                                                                   const InxPhyGpuDeviceRays &rays) const
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu ray batch does not match its scene publication");
+    InxPhyGpuSceneRayBatch result;
+    const auto source = publication.PoseSource(world);
+    result.identity = publication.worlds[world].identity;
+    result.query = m_step->PreparePublishedRays(source, rays.count, false, {}, &rays);
+    return result;
+}
+
 InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareRaycast(const InxPhyGpuFixedPublication &publication,
                                                              uint32_t world, const std::vector<InxPhyGpuRay> &rays,
                                                              bool readback) const

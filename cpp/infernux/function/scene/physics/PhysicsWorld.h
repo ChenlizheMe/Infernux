@@ -16,6 +16,7 @@
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsContactPublication.h"
 #include "PhysicsContactTypes.h"
+#include "PhysicsDeviceVectorInput.h"
 #include "PhysicsParticipant.h"
 #include "PhysicsRaycastHit.h"
 #include "PhysicsTargetReference.h"
@@ -587,7 +588,7 @@ class PhysicsWorld
     /// Read packed float3 sensor buffers directly on the GPU. Inputs are staged
     /// before any export, including when input and output views share storage.
     [[nodiscard]] PhysicsRigidbodyBatchSource
-    RaycastInto(const JoltGpuQueryVector3Input &origins, const JoltGpuQueryVector3Input &directions, size_t count,
+    RaycastInto(const PhysicsDeviceVectorInput &origins, const PhysicsDeviceVectorInput &directions, size_t count,
                 float maxDistance, const std::vector<JoltGpuQueryExportBinding> &exports,
                 uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 

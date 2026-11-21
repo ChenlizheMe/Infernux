@@ -44,6 +44,32 @@ static const uint RayGroupSize = 64;
 [[vk::binding(7, 0)]] RWStructuredBuffer<PhysicsRayHit> rayHits;
 [[vk::binding(8, 0)]] StructuredBuffer<uint4> rayIndex;
 [[vk::binding(9, 0)]] StructuredBuffer<RayBvhBounds> rayBounds;
+[[vk::binding(10, 0)]] StructuredBuffer<uint4> packedRaySettings; // Count, origin and direction scalar offsets, limit; filter.
+[[vk::binding(11, 0)]] StructuredBuffer<float> packedRayOrigins;
+[[vk::binding(12, 0)]] StructuredBuffer<float> packedRayDirections;
+[[vk::binding(13, 0)]] RWStructuredBuffer<PhysicsRay> packedRays;
+
+[shader("compute")]
+[numthreads(RayGroupSize, 1, 1)]
+void pack_scene_rays(uint3 id : SV_DispatchThreadID)
+{
+    const uint4 settings = packedRaySettings[0];
+    if (id.x >= settings.x)
+        return;
+    const uint first = 3u * id.x;
+    const uint o = settings.y + first, d = settings.z + first;
+    const float3 origin = float3(packedRayOrigins[o], packedRayOrigins[o + 1], packedRayOrigins[o + 2]);
+    const float3 direction = float3(packedRayDirections[d], packedRayDirections[d + 1], packedRayDirections[d + 2]);
+    const float scale = max(max(abs(direction.x), abs(direction.y)), abs(direction.z));
+    const bool valid = all(isfinite(origin)) && all(isfinite(direction)) && scale > 0.0;
+    PhysicsRay ray = {float4(0.0), float4(0.0), packedRaySettings[1]};
+    if (valid)
+    {
+        ray.originLimit = float4(origin, asfloat(settings.w));
+        ray.direction.xyz = normalize(direction / scale);
+    }
+    packedRays[id.x] = ray;
+}
 
 float rayDot(float3 a, float3 b)
 {
@@ -456,6 +482,12 @@ void raycast_worlds(uint3 id : SV_DispatchThreadID)
     if (id.x >= settings.y)
         return;
     const PhysicsRay ray = rays[(id.y % settings.z) * settings.y + id.x];
+    const uint output = id.y * settings.y + id.x;
+    if (ray.originLimit.w <= 0.0)
+    {
+        rayHits[output] = {float4(0.0, 0.0, 0.0, -1.0), uint4(NoIndex)};
+        return;
+    }
     RaySurface best = {float3(0.0), ray.originLimit.w};
     uint4 winner = uint4(NoIndex);
     const uint base = id.y * settings.x;
@@ -486,7 +518,6 @@ void raycast_worlds(uint3 id : SV_DispatchThreadID)
         node = links.z;
     }
 
-    const uint output = id.y * settings.y + id.x;
     if (winner.x == NoIndex)
         rayHits[output] = {float4(0.0, 0.0, 0.0, -1.0), winner};
     else

@@ -3684,8 +3684,8 @@ PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const float *origins, cons
     return ExportRaycastBatch(requests, exports);
 }
 
-PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const JoltGpuQueryVector3Input &origins,
-                                                      const JoltGpuQueryVector3Input &directions, size_t count,
+PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const PhysicsDeviceVectorInput &origins,
+                                                      const PhysicsDeviceVectorInput &directions, size_t count,
                                                       float maximum,
                                                       const std::vector<JoltGpuQueryExportBinding> &exports,
                                                       uint32_t layers, bool triggers) const

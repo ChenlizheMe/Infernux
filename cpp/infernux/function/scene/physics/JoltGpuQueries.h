@@ -2,6 +2,7 @@
 
 #include "JoltGpuGeometryStore.h"
 #include "JoltGpuScene.h"
+#include "PhysicsDeviceVectorInput.h"
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -58,18 +59,9 @@ struct JoltGpuQueryExportBinding
     uint64_t byteEnd = UINT64_MAX;   // Exclusive end of the caller's writable view.
 };
 
-/// Packed float3 input view. Shader indexing, not descriptor offsets, selects
-/// its range so ordinary 12-byte vector offsets do not require device alignment.
-struct JoltGpuQueryVector3Input
-{
-    std::shared_ptr<rhi::ComputeBuffer> buffer;
-    uint64_t byteOffset = 0;
-    uint64_t byteEnd = UINT64_MAX;
-};
-
 struct JoltGpuQueryRayInputs
 {
-    JoltGpuQueryVector3Input origins, directions;
+    PhysicsDeviceVectorInput origins, directions;
     uint32_t count = 0;
 };
 

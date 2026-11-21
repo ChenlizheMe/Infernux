@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../PhysicsDeviceVectorInput.h"
 #include "../PhysicsGpuPoseSource.h"
 #include "InxPhyGpuModel.h"
 
@@ -91,6 +92,14 @@ struct InxPhyGpuPreparedRayBatch
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
     std::shared_ptr<rhi::ComputeBuffer> hits;
     uint32_t count = 0;
+};
+
+struct InxPhyGpuDeviceRays
+{
+    PhysicsDeviceVectorInput origins, directions;
+    uint32_t count;
+    float maxDistance;
+    ModelWords filter{UINT32_MAX, NoModelIndex, InxPhyGpuRayIncludeStatic | InxPhyGpuRayIncludeTriggers, 0};
 };
 
 enum class InxPhyGpuBodyCommandKind : uint32_t
@@ -217,9 +226,10 @@ class InxPhyGpuStep
 
     /// Query a frozen scene publication. Only the selected world is refit
     /// and only the requested ray prefix is dispatched or read back.
-    [[nodiscard]] InxPhyGpuPreparedRayBatch
-    PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount, bool publish,
-                         std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
+    [[nodiscard]] InxPhyGpuPreparedRayBatch PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
+                                                                 bool publish,
+                                                                 std::vector<rhi::ComputeBufferUpdate> updates = {},
+                                                                 const InxPhyGpuDeviceRays *deviceRays = nullptr) const;
 
     [[nodiscard]] const InxPhyGpuRayBuffers &Rays() const noexcept
     {
@@ -261,8 +271,8 @@ class InxPhyGpuStep
     };
     struct PublishedRays
     {
-        std::shared_ptr<rhi::ComputeBuffer> settings;
-        rhi::ComputeDispatchDesc geometry;
+        std::shared_ptr<rhi::ComputeBuffer> settings, inputSettings;
+        rhi::ComputeDispatchDesc geometry, pack;
         mutable std::shared_ptr<rhi::ComputeBuffer> output;
         uint32_t geometryCount = 0, bodyCount = 0, capacity = 0;
     };
