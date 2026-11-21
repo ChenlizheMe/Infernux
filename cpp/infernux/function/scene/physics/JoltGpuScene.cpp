@@ -2197,7 +2197,7 @@ PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand value, c
     return m_impl->QueueCommand(id, value, author);
 }
 
-void JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command)
+PhysicsTargetSource JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetAuthor *author)
 {
     const auto vector = [](const glm::vec3 &v) -> Float4 { return {v.x, v.y, v.z, 0}; };
     const auto rotation = [](const glm::quat &q) -> Float4 { return {q.x, q.y, q.z, q.w}; };
@@ -2226,6 +2226,16 @@ void JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command)
         constexpr std::array<uint32_t, 3> commands{CommandAddForce, CommandAddTorque, CommandAddForceAtPosition};
         queue(commands[static_cast<size_t>(force->kind)], static_cast<uint32_t>(force->mode), vector(force->value),
               vector(force->point));
+    } else if (const auto *move = std::get_if<PhysicsBodyCommand::KinematicMove>(&command.operation)) {
+        BodyCommand packet{};
+        packet.meta.y = move->position ? (move->rotation ? CommandMovePose : CommandMovePosition) : CommandMoveRotation;
+        if (move->position)
+            packet.value = vector(*move->position);
+        if (move->rotation)
+            packet.auxiliary = rotation(*move->rotation);
+        packet.value.w = move->duration;
+        packet.rootCOM.w = move->maxSpeed;
+        return QueueCommand(command.bodyId, packet, author);
     } else {
         const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
         queue(CommandResetMotion, 0);
@@ -2233,6 +2243,7 @@ void JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command)
         queue(CommandSetLinearVelocity, 0, vector(reset.linear));
         queue(CommandSetAngularVelocity, 0, vector(reset.angular));
     }
+    return {};
 }
 
 void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents)

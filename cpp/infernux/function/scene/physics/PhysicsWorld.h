@@ -11,6 +11,7 @@
 #include "JoltCpuQueries.h"
 #include "JoltGpuQueries.h"
 #include "JoltGpuScene.h"
+#include "PhysicsBodyCommand.h"
 #include "PhysicsBodyState.h"
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsContactPublication.h"
@@ -927,7 +928,7 @@ class PhysicsWorld
                          const std::function<void(PreparedGpuActor &)> &editGpu = {});
     void QueueBodyPose(uint32_t bodyId, const glm::vec3 *position, const glm::quat *rotation, bool cancelMove);
     void QueueBodyVelocity(uint32_t bodyId, const glm::vec3 &velocity, bool angular);
-    PhysicsTargetSource QueueKinematicBodyCommand(uint32_t bodyId, const JPH::GPU::BodyCommand &,
+    PhysicsTargetSource QueueKinematicBodyCommand(uint32_t bodyId, const PhysicsBodyCommand::KinematicMove &,
                                                   const PhysicsTargetAuthor * = nullptr);
     void RefreshGpuActor(PhysicsDomain &domain, uint32_t bodyId,
                          const std::function<void(PreparedGpuActor &)> &edit = {});

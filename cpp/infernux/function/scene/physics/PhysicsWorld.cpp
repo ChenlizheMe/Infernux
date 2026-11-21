@@ -4083,38 +4083,40 @@ void PhysicsWorld::RestoreColliderPairs(RuntimeWorld &world, const PhysicsCollid
     }
 }
 
-PhysicsTargetSource PhysicsWorld::QueueKinematicBodyCommand(uint32_t id, const BodyCommand &command,
+PhysicsTargetSource PhysicsWorld::QueueKinematicBodyCommand(uint32_t id, const PhysicsBodyCommand::KinematicMove &move,
                                                             const PhysicsTargetAuthor *author)
 {
     RequireOwnerThread();
+    if (!std::isfinite(move.duration) || move.duration <= 0 || !std::isfinite(move.maxSpeed) || move.maxSpeed < 0)
+        throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");
     auto &domain = DomainForBody(id);
     const auto backend = m_bodyActors.at(id).backend;
     if (backend == Backend::StaticBoundary)
         throw std::logic_error("Kinematic movement requires an admitted Rigidbody");
     (void)KinematicBody(ActorForBody(id));
     if (backend == Backend::Cpu) {
-        JoltCpuControl::KinematicMove move{std::nullopt, std::nullopt, command.value.w, command.rootCOM.w};
-        if (command.meta.y != CommandMoveRotation)
-            move.position = CpuPosition(command.value);
-        if (command.meta.y != CommandMovePosition)
-            move.rotation = CpuRotation(command.auxiliary);
-        return domain.cpuControl->QueueMove(id, std::move(move), author);
+        JoltCpuControl::KinematicMove native{std::nullopt, std::nullopt, move.duration, move.maxSpeed};
+        if (move.position)
+            native.position = CpuPosition(Vector(*move.position));
+        if (move.rotation)
+            native.rotation = CpuRotation(Rotation(*move.rotation));
+        return domain.cpuControl->QueueMove(id, std::move(native), author);
     }
     RequireGpu(domain);
-    return m_gpuScene->QueueCommand(id, command, author);
+    return m_gpuScene->QueueBodyCommand({id, move}, author);
 }
 void PhysicsWorld::MoveBodyKinematic(uint32_t id, const glm::vec3 &position, const glm::quat &rotation, float dt,
                                      float maxSpeed)
 {
-    (void)QueueKinematicBodyCommand(id, MoveCommand(CommandMovePose, position, rotation, dt, maxSpeed));
+    (void)QueueKinematicBodyCommand(id, {position, rotation, dt, maxSpeed});
 }
 void PhysicsWorld::MoveBodyKinematicPosition(uint32_t id, const glm::vec3 &position, float dt)
 {
-    (void)QueueKinematicBodyCommand(id, MoveCommand(CommandMovePosition, position, glm::quat(1, 0, 0, 0), dt));
+    (void)QueueKinematicBodyCommand(id, {position, std::nullopt, dt});
 }
 void PhysicsWorld::MoveBodyKinematicRotation(uint32_t id, const glm::quat &rotation, float dt)
 {
-    (void)QueueKinematicBodyCommand(id, MoveCommand(CommandMoveRotation, glm::vec3(0), rotation, dt));
+    (void)QueueKinematicBodyCommand(id, {std::nullopt, rotation, dt});
 }
 PhysicsTargetSource PhysicsWorld::MoveBodyKinematicAuthored(uint32_t id, const glm::vec3 &position,
                                                             const glm::quat &rotation, uint32_t channels, float dt,
@@ -4127,9 +4129,6 @@ PhysicsTargetSource PhysicsWorld::MoveBodyKinematicAuthored(uint32_t id, const g
     constexpr uint32_t rotationChannel = static_cast<uint32_t>(PhysicsTargetChannels::Rotation);
     if (channels == 0 || (channels & ~(positionChannel | rotationChannel)) != 0)
         throw std::invalid_argument("Authored kinematic movement requires position or rotation channels");
-    const auto kind = channels == positionChannel   ? CommandMovePosition
-                      : channels == rotationChannel ? CommandMoveRotation
-                                                    : CommandMovePose;
     PhysicsTargetAuthor author;
     author.rigidbody = PhysicsTargetReference(&body);
     author.ownerTransform = PhysicsTargetReference(body.GetGameObject()->GetTransform());
@@ -4137,7 +4136,11 @@ PhysicsTargetSource PhysicsWorld::MoveBodyKinematicAuthored(uint32_t id, const g
     author.positionRevision = authoredRevision[0];
     author.rotationRevision = authoredRevision[1];
     author.channels = static_cast<uint8_t>(channels);
-    return QueueKinematicBodyCommand(id, MoveCommand(kind, position, rotation, dt, maxSpeed), &author);
+    return QueueKinematicBodyCommand(id,
+                                     {channels & positionChannel ? std::make_optional(position) : std::nullopt,
+                                      channels & rotationChannel ? std::make_optional(rotation) : std::nullopt, dt,
+                                      maxSpeed},
+                                     &author);
 }
 void PhysicsWorld::RecordStaticPose(PhysicsDomain &domain, uint32_t id, const glm::vec3 *position,
                                     const glm::quat *rotation, bool cancelMove)

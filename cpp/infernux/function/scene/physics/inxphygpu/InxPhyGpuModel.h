@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace infernux::physics::inxphygpu
@@ -50,6 +51,21 @@ struct ModelPose
     ModelVector position{};
     ModelVector rotation{1.0f, 0.0f, 0.0f, 0.0f}; // wxyz
 };
+
+struct ModelRigidMotion
+{
+    static constexpr float Unlimited = std::numeric_limits<float>::max();
+    float linearDamping = 0.0f, angularDamping = 0.0f;
+    float maxLinearVelocity = Unlimited, maxAngularVelocity = Unlimited;
+
+    [[nodiscard]] bool HasSettings() const noexcept
+    {
+        return linearDamping != 0.0f || angularDamping != 0.0f || maxLinearVelocity != Unlimited ||
+               maxAngularVelocity != Unlimited;
+    }
+};
+
+static_assert(sizeof(ModelRigidMotion) == sizeof(ModelVector));
 
 enum class ModelJointType : uint32_t
 {
@@ -155,6 +171,7 @@ struct InxPhyGpuModel
     std::vector<float> initialVelocities; // Empty initializes all velocity coordinates to zero.
     std::vector<ModelPose> initialKinematicPoses;
     std::vector<ModelPose> initialStaticPoses;
+    std::vector<ModelRigidMotion> sceneBodyMotion; // Shared by independent scene bodies in device row order.
     std::vector<ModelWords> sceneJoints;
     std::vector<ModelWords> initialSceneJointParameters; // Packed by joint kind, shared as the seed for each world.
 };

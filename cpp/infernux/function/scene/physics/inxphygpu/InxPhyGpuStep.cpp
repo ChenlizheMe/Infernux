@@ -8,6 +8,7 @@
 #include "PhysicsRayIndex.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <stdexcept>
@@ -909,6 +910,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     const auto velocities =
         b.Seed("qvel", nv, model.initialVelocities.empty() ? nullptr : model.initialVelocities.data(), worlds);
     const auto applied = b.Seed("appliedForce", nv, nullptr, worlds);
+    const bool sceneDynamics = !model.sceneBodyMotion.empty();
+    const auto sceneMotion = sceneDynamics ? b.Shared("sceneBodyMotion", model.sceneBodyMotion) : NoModelIndex;
     const auto states = bodyCommandCapacity != 0
                             ? b.Slot(worldWords(20 * uint64_t{nb} + 4), BufferUsageFlags::TransferSource)
                             : NoModelIndex;
@@ -1160,6 +1163,16 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                             true));
         }
         b.dispatches.insert(b.dispatches.end(), massSolves.begin(), massSolves.end());
+        if (sceneDynamics)
+            b.Add("acceleration", "damp_scene_free_motion", nb,
+                  {{0, dimensions, R},
+                   {5, force, RW},
+                   {6, bodies, R},
+                   {7, pose, R},
+                   {8, velocities, R},
+                   {9, solved, RW},
+                   {10, stepSizes, R},
+                   {11, sceneMotion, R}});
         if (contactSlots && solver) {
             const ContactDynamics dynamics{dofs,
                                            bodies,
@@ -1208,32 +1221,34 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             initializeFrom(kinematicsPass);
             for (size_t pass = beginInertia; pass < endInertia; ++pass)
                 initializeFrom(pass);
-            b.Add("euler", "advance_contact_velocity", nv,
-                  {{0, dimensions, R},
-                   {2, stepSizes, R},
-                   {3, response->acceleration, R},
-                   {4, velocities, RW},
-                   {6, warmstart, W},
-                   {8, response->acceleration, R},
-                   {15, response->status, R}});
-            b.Add("euler", "advance_contact_position", nj,
-                  {{0, dimensions, R},
-                   {1, joints, R},
-                   {2, stepSizes, R},
-                   {4, velocities, R},
-                   {5, positions, RW},
-                   {15, response->status, R}});
-        } else {
-            b.Add("euler", "advance_velocity", nv,
-                  {{0, dimensions, R},
-                   {2, stepSizes, R},
-                   {3, solved, R},
-                   {4, velocities, RW},
-                   {6, warmstart, W, true},
-                   {8, solved, R}});
-            b.Add("euler", "advance_position", nj,
-                  {{0, dimensions, R}, {1, joints, R}, {2, stepSizes, R}, {4, velocities, R}, {5, positions, RW}});
         }
+        const auto acceleration = response ? response->acceleration : solved;
+        if (!sceneDynamics) {
+            std::vector<Use> integrateVelocity{{0, dimensions, R},           {2, stepSizes, R},
+                                               {3, acceleration, R},         {4, velocities, RW},
+                                               {6, warmstart, W, !response}, {8, acceleration, R}};
+            if (response)
+                integrateVelocity.push_back({15, response->status, R});
+            b.dispatches.push_back(
+                b.Bind("euler", response ? "advance_contact_velocity" : "advance_velocity", nv, integrateVelocity));
+        }
+        std::vector<Use> integratePosition{{0, dimensions, R},
+                                           {1, joints, R},
+                                           {2, stepSizes, R},
+                                           {4, velocities, sceneDynamics ? RW : R},
+                                           {5, positions, RW}};
+        if (response)
+            integratePosition.push_back({15, response->status, R});
+        if (sceneDynamics) {
+            integratePosition.push_back({3, acceleration, R});
+            integratePosition.push_back({6, warmstart, W, !response});
+            integratePosition.push_back({17, bodies, R});
+            integratePosition.push_back({18, sceneMotion, R});
+        }
+        const auto *entry = sceneDynamics ? (response ? "advance_scene_contact_position" : "advance_scene_position")
+                                          : (response ? "advance_contact_position" : "advance_position");
+        if (nj != 0)
+            b.dispatches.push_back(b.Bind("euler", entry, nj, integratePosition));
     }
     std::vector<Use> clockUses{{2, fixedSizes, R}, {7, clocks, RW}};
     if (response)
@@ -1283,31 +1298,16 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     if (controlSlots) {
         const auto &[spans, commands, force, saved, prescribed, fixedSteps] = *controlSlots;
         const auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
-        applyCommands = b.Dispatch("body_controls", "apply_body_commands", bodyCommandCapacity,
-                                   {{0, dimensions, R},
-                                    {1, bodies, R},
-                                    {2, joints, R},
-                                    {3, spans, R},
-                                    {4, commands, R},
-                                    {5, positions, RW},
-                                    {6, velocities, RW},
-                                    {7, mocap, RW},
-                                    {8, force, RW},
-                                    {11, saved, RW},
-                                    {12, prescribed, RW},
-                                    {15, fixedSteps, R},
-                                    {16, staticPoses, RW}});
-        editCommands = b.Dispatch("body_controls", "edit_body_state", bodyCommandCapacity,
-                                  {{0, dimensions, R},
-                                   {1, bodies, R},
-                                   {2, joints, R},
-                                   {3, spans, R},
-                                   {4, commands, R},
-                                   {5, positions, RW},
-                                   {6, velocities, RW},
-                                   {7, mocap, RW},
-                                   {12, prescribed, RW},
-                                   {16, staticPoses, RW}});
+        std::vector<Use> commandBindings{
+            {0, dimensions, R}, {1, bodies, R},      {2, joints, R}, {3, spans, R},        {4, commands, R},
+            {5, positions, RW}, {6, velocities, RW}, {7, mocap, RW}, {12, prescribed, RW}, {16, staticPoses, RW}};
+        if (sceneDynamics)
+            commandBindings.push_back({21, sceneMotion, R});
+        editCommands = b.Bind("body_controls", sceneDynamics ? "edit_scene_body_state" : "edit_body_state",
+                              bodyCommandCapacity, commandBindings);
+        commandBindings.insert(commandBindings.end(), {{8, force, RW}, {11, saved, RW}, {15, fixedSteps, R}});
+        applyCommands = b.Bind("body_controls", sceneDynamics ? "apply_scene_body_commands" : "apply_body_commands",
+                               bodyCommandCapacity, commandBindings);
         if (multiple)
             drive = b.Dispatch("body_controls", "advance_commanded_substep", bodyCommandCapacity,
                                {{0, dimensions, R},
@@ -1692,6 +1692,9 @@ uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> com
             throw std::invalid_argument("inxphygpu body command does not match its world or motion type");
         if (!integrate && (move || (force && static_cast<uint32_t>(command.mode) < 2)))
             throw std::invalid_argument("Continuous forces and kinematic targets require a fixed step");
+        if (move && (!std::isfinite(command.point[0]) || command.point[0] <= 0.0f || !std::isfinite(command.point[1]) ||
+                     command.point[1] < 0.0f))
+            throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");
         if (index == 0 || key(command) != key(commands[index - 1]))
             spans.push_back({command.world, command.body, index, 0});
         ++spans.back()[3];

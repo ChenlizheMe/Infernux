@@ -372,6 +372,12 @@ void InxPhyGpuSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyC
     } else if (const auto *force = std::get_if<PhysicsBodyCommand::Force>(&command.operation)) {
         constexpr std::array<Kind, 3> kinds{Kind::Force, Kind::Torque, Kind::ForceAtPosition};
         append(kinds[static_cast<size_t>(force->kind)], vector(force->value), force->mode, vector(force->point));
+    } else if (const auto *move = std::get_if<PhysicsBodyCommand::KinematicMove>(&command.operation)) {
+        const ModelVector timing{move->duration, move->maxSpeed};
+        if (move->position)
+            append(Kind::MovePosition, vector(*move->position), {}, timing);
+        if (move->rotation)
+            append(Kind::MoveRotation, rotation(*move->rotation), {}, timing);
     } else {
         const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
         append(Kind::ResetMotion);

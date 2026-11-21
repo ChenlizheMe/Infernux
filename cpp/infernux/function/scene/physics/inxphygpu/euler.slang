@@ -7,6 +7,7 @@
 #include "damping.slang"
 #include "integrate_position.slang"
 #include "linear_dispatch.slang"
+#include "scene_motion.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
 [[vk::binding(1, 0)]] StructuredBuffer<JointModel> joints;
@@ -25,6 +26,8 @@
 [[vk::binding(14, 0)]] StructuredBuffer<uint2> awakeWork;
 [[vk::binding(15, 0)]] StructuredBuffer<uint> contactStepStatus;
 [[vk::binding(16, 0)]] RWStructuredBuffer<uint> fixedSteps;
+[[vk::binding(17, 0)]] StructuredBuffer<BodyModel> sceneBodies;
+[[vk::binding(18, 0)]] StructuredBuffer<SceneRigidMotion> sceneMotion;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -70,6 +73,59 @@ void advancePosition(uint jointIndex, uint world)
     else
         linear.x = qvel[velocity];
     integrateJointPosition(type, pos, linear, angular, dt, qpos, qpos);
+}
+
+void advanceSceneBody(uint jointIndex, uint world)
+{
+    const ModelDimensions size = model[0];
+    const JointModel joint = joints[jointIndex];
+    const uint body = joint.indices.w;
+    const uint pos = world * size.state.x + joint.indices.y;
+    const uint vel = world * size.state.y + joint.indices.z;
+    const float dt = timestep[world];
+    const SceneRigidMotion motion = sceneMotion[body];
+    const float3 center = sceneBodies[body].inertialPosition.xyz;
+    const float4 rotation = float4(qpos[pos + 3], qpos[pos + 4], qpos[pos + 5], qpos[pos + 6]);
+    const float3 offset = rotateVector(center, rotation);
+    const float3 before = float3(qvel[vel + 3], qvel[vel + 4], qvel[vel + 5]);
+    const float3 linearAccel = float3(qacc[vel], qacc[vel + 1], qacc[vel + 2]);
+    const float3 spinAccel = float3(qacc[vel + 3], qacc[vel + 4], qacc[vel + 5]);
+    const float3 originVelocity = float3(qvel[vel], qvel[vel + 1], qvel[vel + 2]) + dt * linearAccel;
+    const float3 integratedSpin = before + dt * spinAccel;
+    const float3 integratedCenter = originVelocity + cross(rotateVector(integratedSpin, rotation), offset) +
+        dt * centerTransport(rotateVector(before, rotation), offset);
+    const float3 centerVelocity = clampSceneSpeed(integratedCenter, motion.velocityLimit.x);
+    const float3 spin = clampSceneSpeed(integratedSpin, motion.velocityLimit.y);
+    // Integrate the center of mass. The generalized translation lives at the body origin.
+    const float4 next = integrateQuat(rotation, spin, dt);
+    const float3 nextOffset = rotateVector(center, next);
+    const float3 nextVelocity = centerVelocity - cross(rotateVector(spin, next), nextOffset);
+    for (uint axis = 0; axis < 3; ++axis)
+    {
+        qpos[pos + axis] += dt * centerVelocity[axis] + offset[axis] - nextOffset[axis];
+        qvel[vel + axis] = nextVelocity[axis];
+        qvel[vel + 3 + axis] = spin[axis];
+        qaccWarmstart[vel + axis] = linearAccel[axis];
+        qaccWarmstart[vel + 3 + axis] = spinAccel[axis];
+    }
+    for (uint lane = 0; lane < 4; ++lane)
+        qpos[pos + 3 + lane] = next[lane];
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_scene_position(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < model[0].state.w)
+        advanceSceneBody(id.x, id.y);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_scene_contact_position(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < model[0].state.w && contactStepStatus[id.y] == 0)
+        advanceSceneBody(id.x, id.y);
 }
 
 [shader("compute")]

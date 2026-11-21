@@ -123,7 +123,7 @@ struct InxPhyGpuBodyCommand
         InxPhyGpuPoseCommandFlags poseFlags;
     };
     ModelVector value{}; // World xyz, or wxyz for rotations.
-    ModelVector point{}; // World point for ForceAtPosition.
+    ModelVector point{}; // Application point for force, or (duration, maxSpeed) for kinematic targets.
 };
 
 struct InxPhyGpuJointParameterUpdate

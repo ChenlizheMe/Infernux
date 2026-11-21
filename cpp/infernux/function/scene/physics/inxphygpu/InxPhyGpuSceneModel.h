@@ -41,6 +41,7 @@ struct InxPhyGpuSceneActor
     bool kinematic = false;
     bool useGravity = true;
     std::vector<InxPhyGpuSceneCollider> colliders;
+    ModelRigidMotion motion;
 };
 
 struct InxPhyGpuSceneSurfaceIdentity

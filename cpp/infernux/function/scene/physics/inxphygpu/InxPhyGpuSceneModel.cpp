@@ -11,6 +11,7 @@
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -374,6 +375,7 @@ InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author)
         source.useGravity = body->useGravity;
         if (!source.kinematic) {
             source.mass = body->mass;
+            source.motion = {body->drag, body->angularDrag, body->maxLinearVelocity, body->maxAngularVelocity};
             source.linearVelocity = result.publication.linearVelocity.value_or(glm::vec3(0.0f));
             source.angularVelocity = result.publication.angularVelocity.value_or(glm::vec3(0.0f));
         }
@@ -480,6 +482,14 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
     result.bodies.reserve(actors.size());
     auto &initial = result.model.initialVelocities;
     initial.resize(result.model.dofs.size());
+    auto &motion = result.model.sceneBodyMotion;
+    if (std::any_of(actors.begin(), actors.end(),
+                    [](const auto &actor) { return actor.mass && actor.motion.HasSettings(); }))
+        motion.resize(result.model.bodies.size());
+    const auto clampSpeed = [](glm::vec3 speed, float cap) {
+        const auto squared = glm::dot(speed, speed);
+        return squared > cap * cap ? speed * (cap / std::sqrt(squared)) : speed;
+    };
     for (size_t index = 0; index < actors.size(); ++index) {
         const auto &actor = actors[index];
         const auto row = result.model.bodyRows[index];
@@ -490,9 +500,12 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
         result.bodies.push_back({actor.objectId, row, qpos, qvel, static_cast<uint32_t>(actor.colliders.size())});
         if (qvel == NoModelIndex)
             continue;
+        if (!motion.empty())
+            motion[row] = actor.motion;
         const auto center = actor.rotation * Vector(JPH::RVec3(actor.shape->GetCenterOfMass()));
-        const auto linear = actor.linearVelocity - glm::cross(actor.angularVelocity, center);
-        const auto angular = glm::inverse(actor.rotation) * actor.angularVelocity;
+        const auto spin = clampSpeed(actor.angularVelocity, actor.motion.maxAngularVelocity);
+        const auto linear = clampSpeed(actor.linearVelocity, actor.motion.maxLinearVelocity) - glm::cross(spin, center);
+        const auto angular = glm::inverse(actor.rotation) * spin;
         for (uint32_t axis = 0; axis < 3; ++axis) {
             initial[qvel + axis] = linear[axis];
             initial[qvel + axis + 3] = angular[axis];

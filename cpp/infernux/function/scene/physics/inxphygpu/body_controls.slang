@@ -4,6 +4,7 @@
 #include "model.slang"
 #include "prescribed_motion.slang"
 #include "linear_dispatch.slang"
+#include "scene_motion.slang"
 
 static const uint SetPosition = 0;
 static const uint SetRotation = 1;
@@ -32,7 +33,8 @@ struct SavedMotion
     float3 center;
     uint step;
     Pose start;
-    Pose target;
+    float4 centerTravel;
+    float4 angularTravel;
     float4 worldForce;
     float4 worldTorque;
 };
@@ -58,6 +60,7 @@ struct SavedMotion
 [[vk::binding(18, 0)]] RWStructuredBuffer<float> importedClocks;
 [[vk::binding(19, 0)]] RWStructuredBuffer<uint> importedSteps;
 [[vk::binding(20, 0)]] StructuredBuffer<uint> previousAddresses;
+[[vk::binding(21, 0)]] StructuredBuffer<SceneRigidMotion> sceneMotion;
 
 float4 conjugate(float4 rotation)
 {
@@ -141,7 +144,8 @@ void import_body_states(uint3 id : SV_DispatchThreadID)
     }
 }
 
-void applyDynamic<let Integrate : bool>(uint index, uint4 span, ModelDimensions size, BodyModel body)
+void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint4 span, ModelDimensions size,
+                                                               BodyModel body)
 {
     const uint2 offset = freeAddresses(size, body, span.x);
     Pose pose = loadOrigin(offset.x);
@@ -210,6 +214,12 @@ void applyDynamic<let Integrate : bool>(uint index, uint4 span, ModelDimensions 
                 spin += rotateVector(rotateVector(angular, inverseAxes) / body.inertiaMass.xyz, axes);
             }
         }
+        if (SceneLimits)
+        {
+            const float2 limits = sceneMotion[span.y].velocityLimit;
+            speed = clampSceneSpeed(speed, limits.x);
+            spin = clampSceneSpeed(spin, limits.y);
+        }
     }
     const float4 inverse = conjugate(pose.rotation);
     storeOrigin(offset.x, pose);
@@ -217,13 +227,26 @@ void applyDynamic<let Integrate : bool>(uint index, uint4 span, ModelDimensions 
     store3(qvel, offset.y + 3, rotateVector(spin, inverse));
     if (!Integrate)
         return;
-    saved[index] = {undo, float4(originSpeed, 0.0), float4(localSpin, 0.0), float3(0.0), 0u, undo, undo,
+    saved[index] = {undo, float4(originSpeed, 0.0), float4(localSpin, 0.0), float3(0.0), 0u,
+                    undo, float4(0.0), float4(0.0),
                     float4(force, 0.0), float4(torque, 0.0)};
     if (spans[0].z == 1u)
     {
         store3(commandedForce, offset.y, force);
         store3(commandedForce, offset.y + 3, rotateVector(torque + cross(shift, force), inverse));
     }
+}
+
+void writeKinematicStep(uint row, uint world, BodyModel body, Pose start, float3 travel, float3 path, float fraction,
+                        float timestep)
+{
+    const float3 center = start.position.xyz + centerOffset(body, start) + travel * fraction;
+    const float4 rotation = integrateQuat(start.rotation, path, fraction);
+    Pose pose = {float4(0.0), rotation};
+    pose.position.xyz = center - centerOffset(body, pose);
+    const float3 spin = rotateVector(path, start.rotation) / timestep;
+    mocap[row] = pose;
+    prescribed[row] = {float4(travel / timestep, 0.0), float4(spin, 0.0), center, fixedSteps[world] + 1u};
 }
 
 void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimensions size, BodyModel body)
@@ -233,30 +256,46 @@ void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimension
     Pose target = origin;
     const Pose undo = origin;
     bool cancelDrive = false;
+    bool moving = false;
+    float2 timing = float2(0.0);
     for (uint i = span.z; i < span.z + span.w; ++i)
     {
         const BodyCommand command = commands[i];
         switch (command.fields.z)
         {
         case MovePosition:
+            if (!moving)
+                target = origin;
             target.position.xyz = command.value.xyz;
+            timing = command.point.xy;
+            moving = true;
             break;
         case MoveRotation:
+            if (!moving)
+                target = origin;
             target.rotation = normalize(command.value);
+            timing = command.point.xy;
+            moving = true;
             break;
         case SetPosition:
             origin.position.xyz = command.value.xyz;
-            target = origin;
-            cancelDrive = cancelDrive || (command.fields.w & PreserveDrive) == 0;
+            if ((command.fields.w & PreserveDrive) == 0)
+            {
+                cancelDrive = true;
+                moving = false;
+            }
             break;
         case SetRotation:
             origin.rotation = normalize(command.value);
-            target = origin;
-            cancelDrive = cancelDrive || (command.fields.w & PreserveDrive) == 0;
+            if ((command.fields.w & PreserveDrive) == 0)
+            {
+                cancelDrive = true;
+                moving = false;
+            }
             break;
         case ResetMotion:
-            target = origin;
             cancelDrive = true;
+            moving = false;
             break;
         }
     }
@@ -270,21 +309,35 @@ void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimension
         prescribed[row] = motion;
         return;
     }
+    const float timestep = asfloat(spans[0].y);
+    float3 travel = float3(0.0);
+    float3 path = float3(0.0);
+    if (moving)
+    {
+        const float3 delta = target.position.xyz - origin.position.xyz;
+        const float distance = length(delta);
+        const float limit = timing.x * timing.y;
+        if (timing.y > 0.0 && distance > limit)
+        {
+            origin.position.xyz = target.position.xyz - delta * (limit / distance);
+            origin.rotation = target.rotation;
+        }
+        const float3 startCenter = origin.position.xyz + centerOffset(body, origin);
+        const float3 endCenter = target.position.xyz + centerOffset(body, target);
+        const float fraction = timestep / timing.x;
+        travel = (endCenter - startCenter) * fraction;
+        path = rotationVector(mulQuat(conjugate(origin.rotation), target.rotation)) * fraction;
+    }
     const PrescribedMotion previous = prescribed[row];
-    saved[index] = {undo, previous.linear, previous.angular, previous.center, previous.step, origin, target,
+    saved[index] = {undo, previous.linear, previous.angular, previous.center, previous.step, origin,
+                    float4(travel, 0.0), float4(path, 0.0),
                     float4(0.0), float4(0.0)};
     if (spans[0].z > 1u)
     {
         mocap[row] = origin;
         return;
     }
-    const float timestep = asfloat(spans[0].y);
-    const float3 startCenter = origin.position.xyz + centerOffset(body, origin);
-    const float3 endCenter = target.position.xyz + centerOffset(body, target);
-    const float3 linear = (endCenter - startCenter) / timestep;
-    const float3 angular = rotationVector(mulQuat(target.rotation, conjugate(origin.rotation))) / timestep;
-    prescribed[row] = {float4(linear, 0.0), float4(angular, 0.0), endCenter, fixedSteps[span.x] + 1u};
-    mocap[row] = target;
+    writeKinematicStep(row, span.x, body, origin, travel, path, 1.0, timestep);
 }
 
 [shader("compute")]
@@ -317,23 +370,10 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
     const float alpha = float(next) / float(control.z);
     const float dt = asfloat(control.y);
     const uint row = span.x * model[0].layout.y + body.hierarchy.w;
-    const Pose previous = mocap[row];
-    const float3 path = rotationVector(mulQuat(conjugate(motion.start.rotation), motion.target.rotation));
-    Pose target = motion.target;
-    if (next != control.z)
-    {
-        target.position = float4(lerp(motion.start.position.xyz, motion.target.position.xyz, alpha), 0.0);
-        target.rotation = integrateQuat(motion.start.rotation, path, alpha);
-    }
-    const float3 before = previous.position.xyz + centerOffset(body, previous);
-    const float3 center = target.position.xyz + centerOffset(body, target);
-    const float3 linear = (center - before) * (float(control.z) / dt);
-    const float3 angular = rotateVector(path, motion.start.rotation) / dt;
-    mocap[row] = target;
-    prescribed[row] = {float4(linear, 0.0), float4(angular, 0.0), center, fixedSteps[span.x] + 1u};
+    writeKinematicStep(row, span.x, body, motion.start, motion.centerTravel.xyz, motion.angularTravel.xyz, alpha, dt);
 }
 
-void applyBodyCommands<let Integrate : bool>(uint index)
+void applyBodyCommands<let Integrate : bool, let SceneLimits : bool>(uint index)
 {
     if (index >= spans[0].x)
         return;
@@ -356,7 +396,7 @@ void applyBodyCommands<let Integrate : bool>(uint index)
         staticPoses[row] = pose;
     }
     else if (body.hierarchy.w == NoIndex)
-        applyDynamic<Integrate>(index, span, model[0], body);
+        applyDynamic<Integrate, SceneLimits>(index, span, model[0], body);
     else
         applyKinematic<Integrate>(index, span, model[0], body);
 }
@@ -365,14 +405,28 @@ void applyBodyCommands<let Integrate : bool>(uint index)
 [numthreads(64, 1, 1)]
 void apply_body_commands(uint3 id : SV_DispatchThreadID)
 {
-    applyBodyCommands<true>(linearWorkIndex<64>(id));
+    applyBodyCommands<true, false>(linearWorkIndex<64>(id));
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void edit_body_state(uint3 id : SV_DispatchThreadID)
 {
-    applyBodyCommands<false>(linearWorkIndex<64>(id));
+    applyBodyCommands<false, false>(linearWorkIndex<64>(id));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void apply_scene_body_commands(uint3 id : SV_DispatchThreadID)
+{
+    applyBodyCommands<true, true>(linearWorkIndex<64>(id));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void edit_scene_body_state(uint3 id : SV_DispatchThreadID)
+{
+    applyBodyCommands<false, true>(linearWorkIndex<64>(id));
 }
 
 void finishCommands<let HasStatus : bool>(uint index)

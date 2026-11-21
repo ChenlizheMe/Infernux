@@ -6,6 +6,10 @@ On Vulkan, a fixed step can replay the recorded compute commands for each numeri
 
 A replacement scene layout can initialize from its last accepted device publication. It matches worlds by ID and simulation epoch, then matches surviving bodies by ID and actor generation. A compute pass imports the matching body poses, velocities and fixed clocks in the initialization packet. New worlds and bodies use the authored seeds. The previous publication remains available to existing consumers, and the new layout builds its own contact and solver scratch.
 
+Scene rigidbody motion settings are shared across a compiled batch. Linear and angular damping and speed limits act on the free velocity before contact and joint solving. The same change updates the smooth generalized force and acceleration used by the solver. Immediate velocity commands apply the limits in command order. Pose integration advances the center of mass and converts the result back to the published body origin.
+
+Kinematic targets carry the requested duration and optional Transform drive speed limit. Commands compose position and rotation in author order. The solver derives the prescribed center-of-mass velocity from that duration, uses it across the fixed tick's collision substeps, and samples the resulting pose at the fixed boundary. A subsequent tick without a move holds the accepted pose.
+
 ## Ported stages
 
 | Module | MuJoCo Warp stages | Slang entries |
