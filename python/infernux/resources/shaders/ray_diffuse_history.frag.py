@@ -30,6 +30,8 @@ class RayDiffuseHistory(shader.fullscreen):
         depth = shader.as_float(shader.load(self.guide, source >> 1, 0).x)
         state = shader.vec4(0.0, depth, 0.0, 0.0)
         r = shader.load(self.fresh_red, cell, 0)
+        has_current = r.x >= 0.0
+        r.x = shader.max(0.0, r.x)
         g = shader.load(self.fresh_green, cell, 0)
         b = shader.load(self.fresh_blue, cell, 0)
         reproj = shader.load(self.reprojection, source, 0)
@@ -79,9 +81,10 @@ class RayDiffuseHistory(shader.fullscreen):
         if old.x <= 0.0 or error > 0.03 * expected:
             return (r, g, b, state)
 
-        age = shader.min(48.0, 1.0 + old.x)
+        age = shader.min(48.0, old.x + (1.0 if has_current else 0.0))
+        blend = 1.0 / age if has_current else 0.0
         sample = shader.clamp(previous, 0.5 / shader.vec2(extent), 1.0 - 0.5 / shader.vec2(extent))
-        r = shader.lerp(shader.sample_level(self.old_red, sample, 0.0), r, 1.0 / age)
-        g = shader.lerp(shader.sample_level(self.old_green, sample, 0.0), g, 1.0 / age)
-        b = shader.lerp(shader.sample_level(self.old_blue, sample, 0.0), b, 1.0 / age)
+        r = shader.lerp(shader.sample_level(self.old_red, sample, 0.0), r, blend)
+        g = shader.lerp(shader.sample_level(self.old_green, sample, 0.0), g, blend)
+        b = shader.lerp(shader.sample_level(self.old_blue, sample, 0.0), b, blend)
         return (sh_clip_history(r), sh_clip_history(g), sh_clip_history(b), shader.vec4(age, depth, 0.0, 0.0))

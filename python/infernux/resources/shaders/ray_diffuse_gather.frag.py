@@ -64,4 +64,8 @@ class RayDiffuseGather(shader.fullscreen):
             b += body.b * basis
             total += w
         norm = 1.0 / shader.max(total, 1.0e-5)
-        return (sh_coefficients(r * norm), sh_coefficients(g * norm), sh_coefficients(b * norm))
+        # A negative DC term marks an estimate with no usable candidate.
+        # Valid black irradiance has a zero DC term.
+        red = sh_coefficients(r * norm)
+        red.x = red.x if total > 0.0 else -1.0
+        return (red, sh_coefficients(g * norm), sh_coefficients(b * norm))
