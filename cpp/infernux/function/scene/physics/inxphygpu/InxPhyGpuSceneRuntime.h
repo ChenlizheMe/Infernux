@@ -21,6 +21,7 @@ namespace infernux::physics::inxphygpu
 
 struct InxPhyGpuSceneLayout;
 struct InxPhyGpuScenePoseTargets;
+struct InxPhyGpuSceneKinematicTargets;
 
 struct InxPhyGpuRegisteredBody
 {
@@ -107,6 +108,7 @@ struct InxPhyGpuFixedPublication
     friend class InxPhyGpuSceneRuntime;
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
+    std::shared_ptr<const InxPhyGpuSceneKinematicTargets> m_kinematicTargets;
     std::vector<std::pair<uint32_t, uint32_t>> m_pendingWrenchRows;
     std::shared_ptr<rhi::ComputeBuffer> m_pendingWrenches;
     bool m_integrated = false;
@@ -200,6 +202,7 @@ class InxPhyGpuSceneRuntime final
                     std::vector<PhysicsFixedInputs> fixedInputs = {});
     /// Apply body edits at the last accepted simulation time. Force and
     /// acceleration accumulate device wrenches for the next accepted fixed step.
+    /// Kinematic targets also wait for that step, while pose edits publish immediately.
     void BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
                     PublicationConsumer consumer = {});
     [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakePublication();
@@ -248,6 +251,7 @@ class InxPhyGpuSceneRuntime final
         std::vector<PhysicsFixedInputs> fixedInputs;
         std::shared_ptr<const InxPhyGpuScenePoseTargets> poseTargets{};
         std::vector<std::pair<uint32_t, uint32_t>> pendingWrenchRows{};
+        std::shared_ptr<const InxPhyGpuSceneKinematicTargets> kinematicTargets{};
     };
     struct Receipt
     {
@@ -265,7 +269,7 @@ class InxPhyGpuSceneRuntime final
     void Observe();
     bool Submit();
     void Finish();
-    [[nodiscard]] InxPhyGpuFixedPublication CapturePublication(const rhi::PreparedComputeBatch &packet) const;
+    [[nodiscard]] InxPhyGpuFixedPublication CapturePublication(rhi::SubmissionTicket submission) const;
     void RetainWrenches(InxPhyGpuFixedPublication &publication, std::vector<std::pair<uint32_t, uint32_t>> rows) const;
     void FinishFixed(const rhi::PreparedComputeBatch &packet);
     void FinishReports(const rhi::PreparedComputeBatch &packet);
@@ -278,6 +282,7 @@ class InxPhyGpuSceneRuntime final
     std::unique_ptr<InxPhyGpuStep> m_step;
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
+    std::shared_ptr<const InxPhyGpuSceneKinematicTargets> m_kinematicTargets;
     std::vector<std::pair<uint32_t, uint32_t>> m_pendingWrenchRows;
     uint32_t m_bodyCount;
     bool m_contactReportsConfigured;
