@@ -19,12 +19,25 @@ struct WarpCollisionCapacity
     uint32_t contactsPerWorld = 0;
 };
 
+struct WarpContactSolver
+{
+    // In compiled body order. Compute these at the reference pose when cooking the model.
+    std::vector<float> bodyInverseWeights;
+    uint32_t rowsPerWorld = 0;
+    uint32_t columnsPerWorld = 0;
+    uint32_t iterations = 12;
+    uint32_t lineIterations = 10;
+    float tolerance = 1.0e-6f;
+    float lineTolerance = 0.01f;
+};
+
 struct WarpContactStream
 {
     // Counts retain the requested sizes even when a stream runs out of capacity.
     std::shared_ptr<rhi::ComputeBuffer> candidateCount;
     std::shared_ptr<rhi::ComputeBuffer> contactCounts;
     std::shared_ptr<rhi::ComputeBuffer> records;
+    std::shared_ptr<rhi::ComputeBuffer> stepStatus;
 };
 
 struct PreparedWarpStep
@@ -38,13 +51,14 @@ struct PreparedWarpStep
 class WarpStep
 {
   public:
-    /// Smooth rigid dynamics and Euler integration with optional resident primitive contact detection.
+    /// Resident rigid dynamics with optional primitive detection and constraint response.
     [[nodiscard]] static PreparedWarpStep Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model,
                                                 uint32_t worlds, float timestep, const ModelVector &gravity,
                                                 const WarpCollisionModel *collision = nullptr,
-                                                WarpCollisionCapacity capacity = {});
+                                                WarpCollisionCapacity capacity = {},
+                                                const WarpContactSolver *solver = nullptr);
 
-    /// An optional tail copy publishes qpos, qvel, and clocks in that order, each in world order.
+    /// The ordered snapshot holds qpos, qvel, clocks and, with contact response, a uint32 status per world.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     Prepare(bool publish, std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
 

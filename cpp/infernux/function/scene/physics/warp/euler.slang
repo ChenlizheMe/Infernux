@@ -23,6 +23,7 @@
 [[vk::binding(12, 0)]] RWStructuredBuffer<float> eulerMassMatrix;
 [[vk::binding(13, 0)]] StructuredBuffer<uint> awakeCounts;
 [[vk::binding(14, 0)]] StructuredBuffer<uint2> awakeWork;
+[[vk::binding(15, 0)]] StructuredBuffer<uint> contactStepStatus;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -115,4 +116,28 @@ void advance_awake_position(uint3 id : SV_DispatchThreadID)
 void advance_time(uint3 id : SV_DispatchThreadID)
 {
     time[id.y] += timestep[id.y];
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_contact_velocity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < model[0].state.y && contactStepStatus[id.y] == 0)
+        advanceVelocity(id.x, id.y);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_contact_position(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < model[0].state.w && contactStepStatus[id.y] == 0)
+        advancePosition(id.x, id.y);
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void advance_contact_time(uint3 id : SV_DispatchThreadID)
+{
+    if (contactStepStatus[id.y] == 0)
+        time[id.y] += timestep[id.y];
 }

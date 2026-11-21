@@ -6,6 +6,62 @@
 #include "contact_solve_common.slang"
 
 [[vk::binding(24, 0)]] StructuredBuffer<uint> awakeWorldFlags;
+[[vk::binding(25, 0)]] StructuredBuffer<uint> candidateCount;
+[[vk::binding(26, 0)]] StructuredBuffer<uint> contactCounts;
+[[vk::binding(27, 0)]] RWStructuredBuffer<uint> contactStepStatus;
+[[vk::binding(28, 0)]] RWStructuredBuffer<uint4> contactSolveDispatches;
+
+groupshared uint activeRowMaximum[CgWidth];
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void prepare_contact_solve_dispatches(uint lane : SV_GroupIndex)
+{
+    uint worldCount, stride;
+    worlds.GetDimensions(worldCount, stride);
+    uint activeRows = 0;
+    for (uint world = lane; world < worldCount; world += CgWidth)
+    {
+        const uint4 progress = worlds[world].progress;
+        if (progress.y == Running)
+            activeRows = max(activeRows, progress.z);
+    }
+    activeRowMaximum[lane] = activeRows;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint width = CgWidth / 2; width > 0; width >>= 1)
+    {
+        if (lane < width)
+            activeRowMaximum[lane] = max(activeRowMaximum[lane], activeRowMaximum[lane + width]);
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (lane == 0)
+    {
+        const uint rows = (activeRowMaximum[0] + CgWidth - 1) / CgWidth;
+        const uint dofs = (settings[1].y + CgWidth - 1) / CgWidth;
+        const uint batch = rows > 0 ? worldCount : 0;
+        const uint3 massGroups = cgOptions[2].xyz;
+        contactSolveDispatches[0] = uint4(1, batch, 1, 0);
+        contactSolveDispatches[1] = uint4(dofs, batch, 1, 0);
+        contactSolveDispatches[2] = uint4(rows, batch, 1, 0);
+        contactSolveDispatches[3] = uint4(max(rows, dofs), batch, 1, 0);
+        contactSolveDispatches[4] = uint4(massGroups.x, batch, 1, 0);
+        contactSolveDispatches[5] = uint4(massGroups.y, batch, 1, 0);
+        contactSolveDispatches[6] = uint4(massGroups.z, batch, 1, 0);
+    }
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void finish_contact_step(uint3 id : SV_DispatchThreadID)
+{
+    const uint progress = worlds[id.y].progress.y;
+    const uint candidates = candidateCount[0] > cgOptions[1].x ? 1u : 0u;
+    const uint contactsOverflow = contactCounts[id.y] > settings[0].y ? 2u : 0u;
+    const uint constraintsOverflow = progress == CapacityExceeded ? 4u : 0u;
+    const uint invalid = progress == InvalidFactor || progress == Running ? 8u : 0u;
+    // A bounded solve may integrate its best accepted iterate. Capacity failure cannot.
+    contactStepStatus[id.y] = candidates | contactsOverflow | constraintsOverflow | invalid;
+}
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
