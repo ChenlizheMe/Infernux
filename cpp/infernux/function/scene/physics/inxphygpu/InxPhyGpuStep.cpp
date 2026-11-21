@@ -1690,7 +1690,8 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
             if (view.buffer->IsFrozen())
                 throw std::invalid_argument("Device raycast destinations must be writable");
             for (uint32_t prior = 0; prior < field; ++prior)
-                if (view.buffer == views[prior]->buffer && offsets[field] < offsets[prior] + rayCount * lanes[prior] &&
+                if (view.buffer->GetAllocation() == views[prior]->buffer->GetAllocation() &&
+                    offsets[field] < offsets[prior] + rayCount * lanes[prior] &&
                     offsets[prior] < offsets[field] + rayCount * lanes[field])
                     throw std::invalid_argument("Device raycast destinations must not overlap");
             project.buffers[field + 3] = view.buffer;

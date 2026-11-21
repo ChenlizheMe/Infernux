@@ -1093,11 +1093,11 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
 }
 
 JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_ptr<JoltGpuQueryResult>> &results,
-                                                 const std::vector<JoltGpuQueryExportBinding> &bindings) const
+                                                 const std::vector<PhysicsDeviceQueryOutput> &bindings) const
 {
     m_host.RequireAlive();
     for (const auto &binding : bindings)
-        if (binding.field > JoltGpuQueryExportField::HitValid)
+        if (binding.field > PhysicsDeviceQueryField::HitValid)
             throw JoltGpuQueryRequestError("Jolt GPU export has an unknown field");
     std::array<std::shared_ptr<JoltGpuQueryResult>, 3> sources;
     const JoltGpuScene::Publication *publication = nullptr;
@@ -1131,6 +1131,25 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
     if ((!sources[QueryOutputMotion] && !sources[QueryOutputShape] && !sources[QueryOutputHit]) || bindings.empty())
         return {};
     constexpr std::array<uint32_t, 17> Widths{3, 4, 3, 3, 3, 3, 9, 1, 3, 3, 4, 1, 1, 3, 3, 1, 1};
+    constexpr std::array<uint32_t, Widths.size()> ShaderFields{
+        QueryExportMotionPosition,
+        QueryExportMotionRotation,
+        QueryExportMotionCenterOfMass,
+        QueryExportMotionLinearVelocity,
+        QueryExportMotionAngularVelocity,
+        QueryExportMotionInverseMass,
+        QueryExportMotionInverseInertia,
+        QueryExportShapeBodyIndex,
+        QueryExportShapeCenter,
+        QueryExportShapeHalfExtents,
+        QueryExportShapeRotation,
+        QueryExportShapeFriction,
+        QueryExportShapeBounciness,
+        QueryExportHitPoint,
+        QueryExportHitNormal,
+        QueryExportHitDistance,
+        QueryExportHitValid,
+    };
     struct Target
     {
         std::shared_ptr<JoltGpuQueryResult> source;
@@ -1144,12 +1163,12 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
         if (field >= Widths.size() || !binding.buffer || binding.buffer->IsFrozen() ||
             !m_host.SharesServicesWith(binding.buffer->GetHost()) || binding.byteOffset % sizeof(uint32_t))
             throw JoltGpuQueryRequestError("Jolt GPU export field or destination differs from its compute owner");
-        const bool motion = field <= static_cast<uint32_t>(JoltGpuQueryExportField::MotionInverseInertia);
-        const bool hit = field >= static_cast<uint32_t>(JoltGpuQueryExportField::HitPoint);
+        const bool motion = field <= static_cast<uint32_t>(PhysicsDeviceQueryField::MotionInverseInertia);
+        const bool hit = field >= static_cast<uint32_t>(PhysicsDeviceQueryField::HitPoint);
         const auto &source = sources[motion ? QueryOutputMotion : hit ? QueryOutputHit : QueryOutputShape];
         if (!source)
             throw JoltGpuQueryRequestError("Jolt GPU export has no matching typed query source");
-        if (binding.field == JoltGpuQueryExportField::ShapeHalfExtents && !source->shapeBoxesOnly)
+        if (binding.field == PhysicsDeviceQueryField::ShapeHalfExtents && !source->shapeBoxesOnly)
             throw JoltGpuQueryRequestError("Jolt GPU box export requires an exclusively Box selection");
         const uint32_t total = source->summaryValue.counts.x;
         const uint32_t first = binding.recordFirst;
@@ -1157,8 +1176,8 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
         if (first > total || count > total - first)
             throw JoltGpuQueryRequestError("GPU export selection exceeds its completed typed source");
         const auto &desc = binding.buffer->GetDesc();
-        const auto scalar = binding.field == JoltGpuQueryExportField::ShapeBodyIndex ? rhi::ComputeScalarType::Int32
-                            : binding.field == JoltGpuQueryExportField::HitValid     ? rhi::ComputeScalarType::UInt32
+        const auto scalar = binding.field == PhysicsDeviceQueryField::ShapeBodyIndex ? rhi::ComputeScalarType::Int32
+                            : binding.field == PhysicsDeviceQueryField::HitValid     ? rhi::ComputeScalarType::UInt32
                                                                                      : rhi::ComputeScalarType::Float32;
         const auto lanes = Widths[field] == 9 ? 1u : Widths[field];
         const auto bytes = CheckedBytes(uint64_t(count) * Widths[field], sizeof(uint32_t));
@@ -1198,7 +1217,8 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
             continue;
         const auto &source = target.source;
         const QueryExportParams parameters{
-            {source->outputFormat, target.field, target.count, static_cast<uint32_t>(target.offset / sizeof(uint32_t))},
+            {source->outputFormat, ShaderFields[target.field], target.count,
+             static_cast<uint32_t>(target.offset / sizeof(uint32_t))},
             {source->queryCount, source->recordBytes / 16, Widths[target.field], 0},
             {target.first, target.bodyIndex, target.bodyIndex != UINT32_MAX ? 1u : 0u, 0u}};
         auto uniform = rhi::ComputeBuffer::TryCreatePrivate(

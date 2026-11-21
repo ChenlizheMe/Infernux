@@ -32,9 +32,9 @@
 #include "function/scene/SwingTwistJoint.h"
 #include "function/scene/TagLayerManager.h"
 #include "function/scene/physics/HingeJointBatch.h"
-#include "function/scene/physics/JoltGpuQueries.h"
 #include "function/scene/physics/PhysicsContactTypes.h"
 #include "function/scene/physics/PhysicsDeviceBufferRange.h"
+#include "function/scene/physics/PhysicsDeviceQueryOutput.h"
 #include "function/scene/physics/PhysicsWorld.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -547,9 +547,9 @@ void RequireComputeView(const ComputeView &view, const char *name, rhi::ComputeS
     host = &buffer->GetHost();
 }
 
-JoltGpuQueryExportBinding ComputeOutput(py::dict &output, const char *name, JoltGpuQueryExportField field,
-                                        rhi::ComputeScalarType scalarType, uint8_t lanes, uint64_t elementCount,
-                                        rhi::ComputeHost *&host)
+PhysicsDeviceQueryOutput ComputeOutput(py::dict &output, const char *name, PhysicsDeviceQueryField field,
+                                       rhi::ComputeScalarType scalarType, uint8_t lanes, uint64_t elementCount,
+                                       rhi::ComputeHost *&host)
 {
     const auto key = py::str(name);
     if (!output.contains(key))
@@ -562,15 +562,15 @@ JoltGpuQueryExportBinding ComputeOutput(py::dict &output, const char *name, Jolt
     const uint64_t stride = lanes * sizeof(uint32_t);
     if (elementCount > capacity)
         throw py::value_error(std::string("GPU state output '") + name + "' has the wrong type or capacity");
-    JoltGpuQueryExportBinding binding{field, std::move(buffer)};
+    PhysicsDeviceQueryOutput binding{field, std::move(buffer)};
     binding.byteOffset = offset;
     binding.byteEnd = offset + capacity * stride;
     return binding;
 }
 
-std::vector<JoltGpuQueryExportBinding> RaycastExports(py::dict &output, uint64_t count, rhi::ComputeHost *&host)
+std::vector<PhysicsDeviceQueryOutput> RaycastExports(py::dict &output, uint64_t count, rhi::ComputeHost *&host)
 {
-    using Field = JoltGpuQueryExportField;
+    using Field = PhysicsDeviceQueryField;
     using Scalar = rhi::ComputeScalarType;
     return {
         ComputeOutput(output, "hit", Field::HitValid, Scalar::UInt32, 1, count, host),
@@ -627,9 +627,9 @@ py::dict RaycastFromDevice(const ComputeView &origins, const ComputeView &direct
                                                                    queryTriggers));
 }
 
-std::vector<JoltGpuQueryExportBinding> RigidbodyStateExports(py::dict output, uint64_t count, rhi::ComputeHost *&host)
+std::vector<PhysicsDeviceQueryOutput> RigidbodyStateExports(py::dict output, uint64_t count, rhi::ComputeHost *&host)
 {
-    using Field = JoltGpuQueryExportField;
+    using Field = PhysicsDeviceQueryField;
     using Scalar = rhi::ComputeScalarType;
     return {
         ComputeOutput(output, "position", Field::MotionPosition, Scalar::Float32, 3, count, host),
@@ -855,9 +855,9 @@ py::dict GetRigidbodyBoxStates(const std::vector<RigidbodyStateSource> &sources,
     return WriteRigidbodyBoxArrays(batch.boxes, output);
 }
 
-std::vector<JoltGpuQueryExportBinding> RigidbodyBoxExports(py::dict output, rhi::ComputeHost *&host)
+std::vector<PhysicsDeviceQueryOutput> RigidbodyBoxExports(py::dict output, rhi::ComputeHost *&host)
 {
-    using Field = JoltGpuQueryExportField;
+    using Field = PhysicsDeviceQueryField;
     using Scalar = rhi::ComputeScalarType;
     // The device collector determines the exact Box prefix. The common export
     // continuation validates that prefix against every retained target capacity.

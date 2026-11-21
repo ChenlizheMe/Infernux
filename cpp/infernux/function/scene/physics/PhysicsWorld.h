@@ -9,7 +9,6 @@
  */
 
 #include "JoltCpuQueries.h"
-#include "JoltGpuQueries.h"
 #include "JoltGpuScene.h"
 #include "PhysicsBodyCommand.h"
 #include "PhysicsBodyState.h"
@@ -17,6 +16,7 @@
 #include "PhysicsContactPublication.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsDeviceBufferRange.h"
+#include "PhysicsDeviceQueryOutput.h"
 #include "PhysicsParticipant.h"
 #include "PhysicsRaycastHit.h"
 #include "PhysicsTargetReference.h"
@@ -52,9 +52,15 @@ class JoltGpuQueries;
 class JoltCpuQueries;
 class JoltGpuJoints;
 struct JoltGpuQueryResult;
+struct JoltGpuQueryGeometry;
+struct JoltGpuQueryRayInputs;
 struct PreparedCpuActor;
 struct PhysicsStaticBoundaryModel;
 struct PreparedGpuActor;
+namespace particle
+{
+struct GpuParticleCollisionDevicePayload;
+}
 namespace rhi
 {
 class ComputeHost;
@@ -541,11 +547,11 @@ class PhysicsWorld
                                                             PhysicsStateFields fields = PhysicsStateFields::All) const;
     [[nodiscard]] PhysicsRigidbodyStateBatch
     GatherRigidbodyStates(const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
-                          bool queryTriggers, const std::vector<JoltGpuQueryExportBinding> &exports = {}) const;
+                          bool queryTriggers, const std::vector<PhysicsDeviceQueryOutput> &exports = {}) const;
     [[nodiscard]] PhysicsRigidbodyStateBatch
     GatherRigidbodyStatesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layers,
                                   bool queryTriggers, PhysicsStateFields fields, bool includeBoxes,
-                                  const std::vector<JoltGpuQueryExportBinding> &exports = {}) const;
+                                  const std::vector<PhysicsDeviceQueryOutput> &exports = {}) const;
     [[nodiscard]] std::optional<PhysicsPenetrationResult>
     ComputePenetration(const Collider &a, const glm::vec3 &positionA, const glm::quat &rotationA, const Collider &b,
                        const glm::vec3 &positionB, const glm::quat &rotationB) const;
@@ -581,7 +587,7 @@ class PhysicsWorld
     /// The completed buffers retain their RHI writer dependency; only query metadata is read back.
     [[nodiscard]] PhysicsRigidbodyBatchSource RaycastInto(const float *originsXYZ, const float *directionsXYZ,
                                                           size_t count, float maxDistance,
-                                                          const std::vector<JoltGpuQueryExportBinding> &exports,
+                                                          const std::vector<PhysicsDeviceQueryOutput> &exports,
                                                           uint32_t layerMask = GetDefaultQueryLayerMask(),
                                                           bool queryTriggers = true) const;
 
@@ -589,7 +595,7 @@ class PhysicsWorld
     /// before any export, including when input and output views share storage.
     [[nodiscard]] PhysicsRigidbodyBatchSource
     RaycastInto(const PhysicsDeviceBufferRange &origins, const PhysicsDeviceBufferRange &directions, size_t count,
-                float maxDistance, const std::vector<JoltGpuQueryExportBinding> &exports,
+                float maxDistance, const std::vector<PhysicsDeviceQueryOutput> &exports,
                 uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
     /// Publish pending authored collider state on the engine owner thread.
@@ -895,13 +901,13 @@ class PhysicsWorld
              const std::vector<JPH::GPU::QueryInput> &, uint64_t sweepColliderId = 0,
              uint64_t sweepColliderGeneration = 0, uint32_t sweepBodyId = UINT32_MAX) const;
     PhysicsRigidbodyBatchSource ExportRaycastBatch(const std::vector<JPH::GPU::QueryInput> &requests,
-                                                   const std::vector<JoltGpuQueryExportBinding> &exports,
-                                                   std::optional<JoltGpuQueryRayInputs> rays = {}) const;
+                                                   const std::vector<PhysicsDeviceQueryOutput> &exports,
+                                                   const JoltGpuQueryRayInputs *rays = nullptr) const;
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(PhysicsDomain &domain,
                                                                        const JPH::GPU::QueryInput &request,
                                                                        const JPH::GPU::QueryPrimitive &other,
-                                                                       JoltGpuQueryGeometry geometry = {}) const;
+                                                                       JoltGpuQueryGeometry geometry) const;
     [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &, const JPH::GPU::QueryInput &,
                                                          const JoltCpuQueries::Shape &) const;
     [[nodiscard]] bool QueryClosestCast(PhysicsDomain &, const JPH::GPU::QueryInput &, const JoltCpuQueries::Shape &,
@@ -912,7 +918,7 @@ class PhysicsWorld
                                      bool triggers) const;
     [[nodiscard]] PhysicsRigidbodyStateBatch
     GatherRigidbodyStateRows(const std::vector<Rigidbody *> &, PhysicsStateFields, bool includeBoxes, bool triggers,
-                             const std::vector<JoltGpuQueryExportBinding> &, bool sealed,
+                             const std::vector<PhysicsDeviceQueryOutput> &, bool sealed,
                              const std::shared_ptr<const JoltGpuScene::Publication> &) const;
     [[nodiscard]] RaycastHit DecodeQueryHit(const JoltGpuQueryResult &result, const JPH::GPU::QueryHit &record) const;
     [[nodiscard]] bool CanQueueRigidbodyCommand(uint32_t bodyId, const Rigidbody &) const;
@@ -940,7 +946,7 @@ class PhysicsWorld
     [[nodiscard]] JoltGpuControlWork
     PrepareStateBatch(PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
                       const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
-                      bool queryTriggers, const std::vector<JoltGpuQueryExportBinding> &exports,
+                      bool queryTriggers, const std::vector<PhysicsDeviceQueryOutput> &exports,
                       PhysicsRigidbodyStateBatch &batch, std::shared_ptr<JoltGpuQueryResult> &motion,
                       std::shared_ptr<JoltGpuQueryResult> &shapes, std::exception_ptr &requestError,
                       bool deferExport = false) const;

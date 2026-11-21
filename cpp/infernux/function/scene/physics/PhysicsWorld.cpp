@@ -114,10 +114,10 @@ PhysicsBodyMotionState DecodeMotion(const JoltGpuScene::Publication &publication
 }
 constexpr std::array<uint32_t, 13> kStateExportWidths{3, 4, 3, 3, 3, 3, 9, 1, 3, 3, 4, 1, 1};
 
-std::array<float, 9> StateExportFloats(JoltGpuQueryExportField field, const PhysicsBodyMotionState &state,
+std::array<float, 9> StateExportFloats(PhysicsDeviceQueryField field, const PhysicsBodyMotionState &state,
                                        const PhysicsBoxShapeState &shape)
 {
-    using Field = JoltGpuQueryExportField;
+    using Field = PhysicsDeviceQueryField;
     const auto vector = [](glm::vec3 v) { return std::array<float, 9>{v.x, v.y, v.z}; };
     const auto quaternion = [](glm::quat q) { return std::array<float, 9>{q.x, q.y, q.z, q.w}; };
     switch (field) {
@@ -156,10 +156,10 @@ std::array<float, 9> StateExportFloats(JoltGpuQueryExportField field, const Phys
 std::shared_ptr<rhi::PreparedComputeBatch>
 PrepareCpuStateExports(const PhysicsRigidbodyStateBatch &batch, const std::vector<uint8_t> &cpuRows,
                        const std::vector<std::vector<PhysicsRigidbodyBoxState>> &boxes,
-                       const std::vector<uint64_t> &shapeFirst, const std::vector<JoltGpuQueryExportBinding> &bindings,
+                       const std::vector<uint64_t> &shapeFirst, const std::vector<PhysicsDeviceQueryOutput> &bindings,
                        bool includeBoxes)
 {
-    using Field = JoltGpuQueryExportField;
+    using Field = PhysicsDeviceQueryField;
     if (!bindings.front().buffer)
         throw JoltGpuQueryRequestError("Physics aggregate export requires a compute destination");
     auto &host = bindings.front().buffer->GetHost();
@@ -2894,15 +2894,15 @@ void PhysicsWorld::ResetBodyMotionStates(const std::vector<PhysicsBodyMotionStat
 JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
     PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
     const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes, bool triggers,
-    const std::vector<JoltGpuQueryExportBinding> &exports, PhysicsRigidbodyStateBatch &batch,
+    const std::vector<PhysicsDeviceQueryOutput> &exports, PhysicsRigidbodyStateBatch &batch,
     std::shared_ptr<JoltGpuQueryResult> &motion, std::shared_ptr<JoltGpuQueryResult> &shapes,
     std::exception_ptr &requestError, bool deferExport) const
 {
     return PrepareJoltGpuQueryWork(
         [&]() -> JoltGpuControlWork {
             for (const auto &binding : exports)
-                if (binding.field > JoltGpuQueryExportField::ShapeBounciness ||
-                    (!includeBoxes && binding.field >= JoltGpuQueryExportField::ShapeBodyIndex))
+                if (binding.field > PhysicsDeviceQueryField::ShapeBounciness ||
+                    (!includeBoxes && binding.field >= PhysicsDeviceQueryField::ShapeBodyIndex))
                     throw JoltGpuQueryRequestError("Physics export requires its requested state family");
             batch.bodies = bodies;
             batch.states.resize(bodies.size());
@@ -2910,7 +2910,7 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
             const bool numericMotion =
                 (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) != 0 ||
                 std::any_of(exports.begin(), exports.end(), [](const auto &value) {
-                    return value.field <= JoltGpuQueryExportField::MotionInverseInertia;
+                    return value.field <= PhysicsDeviceQueryField::MotionInverseInertia;
                 });
             motionInputs.reserve(numericMotion ? bodies.size() : 0);
             shapeInputs.reserve(includeBoxes ? bodies.size() : 0);
@@ -3040,7 +3040,7 @@ void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbody
 PhysicsRigidbodyStateBatch
 PhysicsWorld::GatherRigidbodyStates(const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields,
                                     bool includeBoxes, bool triggers,
-                                    const std::vector<JoltGpuQueryExportBinding> &exports) const
+                                    const std::vector<PhysicsDeviceQueryOutput> &exports) const
 {
     return GatherRigidbodyStateRows(bodies, fields, includeBoxes, triggers, exports, false, {});
 }
@@ -3048,7 +3048,7 @@ PhysicsWorld::GatherRigidbodyStates(const std::vector<Rigidbody *> &bodies, Phys
 PhysicsRigidbodyStateBatch
 PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields,
                                        bool includeBoxes, bool triggers,
-                                       const std::vector<JoltGpuQueryExportBinding> &exports, bool sealed,
+                                       const std::vector<PhysicsDeviceQueryOutput> &exports, bool sealed,
                                        const std::shared_ptr<const JoltGpuScene::Publication> &gpu) const
 {
     RequireOwnerThread();
@@ -3069,7 +3069,7 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
     std::unordered_map<PhysicsDomain *, size_t> byOwner;
     std::vector<uint8_t> cpuRows;
     const bool exportMotion = std::any_of(exports.begin(), exports.end(), [](const auto &value) {
-        return value.field <= JoltGpuQueryExportField::MotionInverseInertia;
+        return value.field <= PhysicsDeviceQueryField::MotionInverseInertia;
     });
     const auto cpuFields = exportMotion ? PhysicsStateFields::All : fields;
     for (size_t row = 0; row < bodies.size(); ++row) {
@@ -3193,13 +3193,13 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
         if (group.shapes)
             sources.push_back(group.shapes);
         for (size_t local = 0; local < group.indices.size(); ++local) {
-            std::vector<JoltGpuQueryExportBinding> targets;
+            std::vector<PhysicsDeviceQueryOutput> targets;
             const auto row = group.indices[local];
             for (auto target : exports) {
                 const auto field = static_cast<uint32_t>(target.field);
                 if (field >= kStateExportWidths.size())
                     throw JoltGpuQueryRequestError("Physics aggregate export has an unknown field");
-                const bool motion = field <= static_cast<uint32_t>(JoltGpuQueryExportField::MotionInverseInertia);
+                const bool motion = field <= static_cast<uint32_t>(PhysicsDeviceQueryField::MotionInverseInertia);
                 const uint64_t outputRow = motion ? row : shapeFirst[row];
                 const uint64_t byteAdvance = outputRow * kStateExportWidths[field] * sizeof(uint32_t);
                 if (byteAdvance > UINT64_MAX - target.byteOffset)
@@ -3235,7 +3235,7 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
 PhysicsRigidbodyStateBatch
 PhysicsWorld::GatherRigidbodyStatesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layers,
                                             bool triggers, PhysicsStateFields fields, bool includeBoxes,
-                                            const std::vector<JoltGpuQueryExportBinding> &exports) const
+                                            const std::vector<PhysicsDeviceQueryOutput> &exports) const
 {
     auto &domain = CurrentDomain();
     SealSpatialQuery(domain);
@@ -3667,7 +3667,7 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
 
 PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const float *origins, const float *directions, size_t count,
                                                       float maximum,
-                                                      const std::vector<JoltGpuQueryExportBinding> &exports,
+                                                      const std::vector<PhysicsDeviceQueryOutput> &exports,
                                                       uint32_t layers, bool triggers) const
 {
     if ((count && (!origins || !directions)) || count > UINT32_MAX)
@@ -3687,7 +3687,7 @@ PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const float *origins, cons
 PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const PhysicsDeviceBufferRange &origins,
                                                       const PhysicsDeviceBufferRange &directions, size_t count,
                                                       float maximum,
-                                                      const std::vector<JoltGpuQueryExportBinding> &exports,
+                                                      const std::vector<PhysicsDeviceQueryOutput> &exports,
                                                       uint32_t layers, bool triggers) const
 {
     if (count > UINT32_MAX || !std::isfinite(maximum) || maximum <= 0)
@@ -3696,13 +3696,13 @@ PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const PhysicsDeviceBufferR
     // packed on the GPU, never uploaded as N author-side QueryInput records.
     auto input = Query(QueryRay, QueryClosest, layers, triggers);
     QueryRayInput(input, {}, {1, 0, 0}, maximum);
-    return ExportRaycastBatch({input}, exports,
-                              JoltGpuQueryRayInputs{origins, directions, static_cast<uint32_t>(count)});
+    const JoltGpuQueryRayInputs rays{origins, directions, static_cast<uint32_t>(count)};
+    return ExportRaycastBatch({input}, exports, &rays);
 }
 
 PhysicsRigidbodyBatchSource PhysicsWorld::ExportRaycastBatch(const std::vector<QueryInput> &requests,
-                                                             const std::vector<JoltGpuQueryExportBinding> &exports,
-                                                             std::optional<JoltGpuQueryRayInputs> rays) const
+                                                             const std::vector<PhysicsDeviceQueryOutput> &exports,
+                                                             const JoltGpuQueryRayInputs *rays) const
 {
     RequireOwnerThread();
     auto &domain = CurrentDomain();
@@ -3710,7 +3710,7 @@ PhysicsRigidbodyBatchSource PhysicsWorld::ExportRaycastBatch(const std::vector<Q
     if (!domain.UsesGpu())
         throw std::invalid_argument("Device raycast output requires a GPU physics scene");
     for (const auto &binding : exports)
-        if (binding.field < JoltGpuQueryExportField::HitPoint || binding.field > JoltGpuQueryExportField::HitValid)
+        if (binding.field < PhysicsDeviceQueryField::HitPoint || binding.field > PhysicsDeviceQueryField::HitValid)
             throw std::invalid_argument("Device raycast output requires hit projection fields");
     // The same publication represents an empty scene and produces one miss per ray.
     RequireGpu(domain);
@@ -3723,7 +3723,7 @@ PhysicsRigidbodyBatchSource PhysicsWorld::ExportRaycastBatch(const std::vector<Q
         return PrepareJoltGpuQueryWork(
             [&] {
                 auto query = m_gpuQueries->Prepare(accepted, requests, {}, generation, JoltGpuQueryReadback::Device, 32,
-                                                   {}, rays);
+                                                   {}, rays ? std::make_optional(*rays) : std::nullopt);
                 result = query.result;
                 return ContinueJoltGpuControlWork(std::move(query.work), [this, result = query.result, &exports] {
                     if (result->GetSummary().counts.y != QuerySuccess)

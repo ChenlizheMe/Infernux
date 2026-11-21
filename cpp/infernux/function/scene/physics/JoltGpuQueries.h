@@ -3,6 +3,7 @@
 #include "JoltGpuGeometryStore.h"
 #include "JoltGpuScene.h"
 #include "PhysicsDeviceBufferRange.h"
+#include "PhysicsDeviceQueryOutput.h"
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -27,38 +28,6 @@ enum class JoltGpuQueryReadback
     DeviceWithSpans, // A host consumer needs the per-input offsets of a variable-size device result.
     HostProjected    // Host motion fields use compact physical blocks; other families retain Host layout.
 };
-enum class JoltGpuQueryExportField : uint32_t
-{
-    MotionPosition = JPH::GPU::QueryExportMotionPosition,
-    MotionRotation = JPH::GPU::QueryExportMotionRotation,
-    MotionCenterOfMass = JPH::GPU::QueryExportMotionCenterOfMass,
-    MotionLinearVelocity = JPH::GPU::QueryExportMotionLinearVelocity,
-    MotionAngularVelocity = JPH::GPU::QueryExportMotionAngularVelocity,
-    MotionInverseMass = JPH::GPU::QueryExportMotionInverseMass,
-    MotionInverseInertia = JPH::GPU::QueryExportMotionInverseInertia,
-    ShapeBodyIndex = JPH::GPU::QueryExportShapeBodyIndex,
-    ShapeCenter = JPH::GPU::QueryExportShapeCenter,
-    ShapeHalfExtents = JPH::GPU::QueryExportShapeHalfExtents,
-    ShapeRotation = JPH::GPU::QueryExportShapeRotation,
-    ShapeFriction = JPH::GPU::QueryExportShapeFriction,
-    ShapeBounciness = JPH::GPU::QueryExportShapeBounciness,
-    HitPoint = JPH::GPU::QueryExportHitPoint,
-    HitNormal = JPH::GPU::QueryExportHitNormal,
-    HitDistance = JPH::GPU::QueryExportHitDistance,
-    HitValid = JPH::GPU::QueryExportHitValid,
-};
-
-struct JoltGpuQueryExportBinding
-{
-    JoltGpuQueryExportField field;
-    std::shared_ptr<rhi::ComputeBuffer> buffer;
-    uint64_t byteOffset = 0;
-    uint32_t recordFirst = 0;
-    uint32_t recordCount = UINT32_MAX;
-    uint32_t bodyIndex = UINT32_MAX; // Aggregate input row for shape body-index projection.
-    uint64_t byteEnd = UINT64_MAX;   // Exclusive end of the caller's writable view.
-};
-
 struct JoltGpuQueryRayInputs
 {
     PhysicsDeviceBufferRange origins, directions;
@@ -181,7 +150,7 @@ class JoltGpuQueries final
     /// Prepare after the gather metadata receipt, inside the same source's
     /// continuation. Writes only the validated prefix; no CPU numerical upload.
     [[nodiscard]] JoltGpuControlWork PrepareExport(const std::vector<std::shared_ptr<JoltGpuQueryResult>> &results,
-                                                   const std::vector<JoltGpuQueryExportBinding> &bindings) const;
+                                                   const std::vector<PhysicsDeviceQueryOutput> &bindings) const;
 
     [[nodiscard]] JoltGpuPreparedParticleExport
     PrepareParticleExport(const std::shared_ptr<JoltGpuQueryResult> &shapes,
