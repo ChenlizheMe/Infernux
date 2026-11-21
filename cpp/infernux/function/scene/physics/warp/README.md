@@ -202,7 +202,9 @@ Reuse the snapshot allocation with the recipe and declare it a complete write. R
 
 ## Shader compilation
 
-Each entry compiles to SPIR-V or WGSL. The following command compiles the branch traversal from this directory.
+The engine shader cooker builds the `warp_physics` program archive for SPIR-V or WGSL. The archive retains each entry's storage bindings and workgroup dimensions. The actuation program includes the body and site transmission entries. The constraint, CG, Newton, and mass-solve programs also have variants that resolve the compact active-world indices. Native runtime builds link the SPIR-V archive, and `LoadWarpProgram` retrieves a program for the selected device target. The Web player still needs runtime integration. Its current device request caps storage buffers per shader stage at 12, and `evaluate_discrete_actuators` uses 13.
+
+The following command compiles the branch traversal from this directory for an isolated entry check.
 
 ```sh
 slangc position.slang -entry kinematics_branch -target spirv -profile spirv_1_5 -o kinematics_branch.spv

@@ -5,7 +5,9 @@
 #include <function/resources/ShaderAsset/SlangUIModule.h>
 #include <function/scene/physics/JoltGpuProgramSources.h>
 #include <function/scene/physics/gpu/PhysicsStages.h>
+#include <function/scene/physics/warp/WarpProgramSources.h>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
@@ -171,6 +173,35 @@ void CookPhysics(const std::filesystem::path &root, ShaderCodeTarget target, con
     });
 }
 
+void CookWarpPhysics(const std::filesystem::path &root, ShaderCodeTarget target, const std::filesystem::path &output)
+{
+    const auto directory = root / "cpp/infernux/function/scene/physics/warp";
+    std::vector<ShaderSourceModule> sources;
+    for (const auto &file : std::filesystem::directory_iterator(directory)) {
+        if (file.path().extension() == ".slang")
+            sources.push_back({"inx_warp_" + file.path().stem().u8string(), file.path().filename().u8string(),
+                               ReadSource(file.path())});
+    }
+    std::sort(sources.begin(), sources.end(), [](const auto &a, const auto &b) { return a.path < b.path; });
+    using physics::warp::WarpProgramSources;
+    WritePrograms(output, "InfernuxWarpPhysicsArchive", std::size(WarpProgramSources), [&](unsigned index) {
+        const auto &program = WarpProgramSources[index];
+        const std::string path = std::string(program.module) + ".slang";
+        const auto found =
+            std::find_if(sources.begin(), sources.end(), [&](const auto &file) { return file.path == path; });
+        if (found == sources.end())
+            throw std::runtime_error("Missing Warp physics source: " + path);
+        auto source = *found;
+        if (program.awakeWorlds)
+            source.source = "#define INX_AWAKE_SOLVER_WORLDS 1\n#line 1\n" + source.source;
+        std::vector<ShaderSourceModule> libraries;
+        libraries.reserve(sources.size() - 1);
+        libraries.insert(libraries.end(), sources.begin(), found);
+        libraries.insert(libraries.end(), found + 1, sources.end());
+        return SlangCompiler::Get().Compile(source, libraries, {target}, true);
+    });
+}
+
 void CookUI(ShaderCodeTarget target, const std::filesystem::path &output)
 {
     const ShaderSourceModule *const programs[] = {&GetSlangEditorUIModule(), &GetSlangScreenUIModule(),
@@ -196,7 +227,7 @@ int main(int argc, char **argv)
 try {
     if (argc != 5)
         throw std::invalid_argument(
-            "Usage: InfernuxJoltGpuCook <physics|ui|scene> <engine-source> <spirv|wgsl> <output.c>");
+            "Usage: InfernuxJoltGpuCook <physics|warp_physics|ui|scene> <engine-source> <spirv|wgsl> <output.c>");
     const std::string_view kind = argv[1];
     const auto root = std::filesystem::u8path(argv[2]);
     const std::string_view format = argv[3];
@@ -206,6 +237,8 @@ try {
     const auto output = std::filesystem::u8path(argv[4]);
     if (kind == "physics")
         CookPhysics(root, target, output);
+    else if (kind == "warp_physics")
+        CookWarpPhysics(root, target, output);
     else if (kind == "ui")
         CookUI(target, output);
     else if (kind == "scene")

@@ -90,6 +90,13 @@ function(infernux_cook_jolt_gpu_programs target format)
         "${_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
 endfunction()
 
+function(infernux_cook_warp_physics_programs target format)
+    set(_warp "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../cpp/infernux/function/scene/physics/warp")
+    file(GLOB _shader_sources CONFIGURE_DEPENDS "${_warp}/*.slang")
+    infernux_cook_program_archive(${target} ${format} warp_physics WarpPhysicsArchive.c ${_shader_sources}
+        "${_warp}/WarpProgramSources.h")
+endfunction()
+
 function(infernux_cook_ui_programs target format)
     infernux_cook_program_archive(${target} ${format} ui UIShaderArchive.c
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../cpp/infernux/function/resources/ShaderAsset/SlangUIModule.h")
