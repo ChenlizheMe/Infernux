@@ -1,5 +1,6 @@
 #pragma once
 
+#include "PhysicsBodyState.h"
 #include "PhysicsECSStore.h"
 #include "PhysicsGpuPoseSource.h"
 #include "inxphygpu/render_pose_layout.slang"
@@ -15,8 +16,24 @@ class RuntimeWorld;
 class PhysicsGpuRenderPoses;
 namespace rhi
 {
+class ComputeHost;
 class PreparedComputeBatch;
-}
+} // namespace rhi
+
+/// Read the origin and rotation from the selected frozen pose rows. The read
+/// packet carries only their two float4s and has no dependency on a solver.
+struct PhysicsGpuPoseRead
+{
+    std::shared_ptr<rhi::PreparedComputeBatch> packet;
+
+    [[nodiscard]] static PhysicsGpuPoseRead Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
+                                                    std::vector<PhysicsGpuBodyPoseBinding> selected);
+    [[nodiscard]] std::vector<PhysicsBodyPoseUpdate> Read() const;
+
+  private:
+    PhysicsGpuPoseSource::Layout m_layout{};
+    std::vector<PhysicsGpuBodyPoseBinding> m_selected;
+};
 
 class PhysicsGpuRenderBindings final
 {

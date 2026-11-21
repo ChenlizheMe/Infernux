@@ -147,9 +147,8 @@ struct PhysicsDomain final
     {
         std::shared_ptr<const JoltGpuScene::Publication> publication;
         uint64_t generation = 0;
-        PhysicsRigidbodyStateBatch batch;
-        std::shared_ptr<JoltGpuQueryResult> motion, shapes;
-        std::exception_ptr error;
+        PhysicsGpuPoseRead read;
+        std::vector<uint64_t> shapeRevisions;
     };
     std::shared_ptr<PresentationPoseReads> presentationPoseReads;
     uint32_t presentationPoseReadDepth = 0;

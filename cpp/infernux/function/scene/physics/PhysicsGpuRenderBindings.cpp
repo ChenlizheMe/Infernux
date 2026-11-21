@@ -14,6 +14,7 @@
 #include <function/renderer/RenderPoseBuffer.h>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -24,6 +25,48 @@
 
 namespace infernux
 {
+PhysicsGpuPoseRead PhysicsGpuPoseRead::Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
+                                               std::vector<PhysicsGpuBodyPoseBinding> selected)
+{
+    PhysicsGpuPoseRead read;
+    read.m_layout = source.layout;
+    read.m_selected = std::move(selected);
+    std::vector<rhi::ComputeBufferRead> ranges;
+    ranges.reserve(read.m_selected.size());
+    for (const auto &body : read.m_selected) {
+        if (body.row >= source.bodyCount)
+            throw std::out_of_range("GPU physics pose row belongs to another world");
+        ranges.push_back({source.states, (source.firstRow + body.row) * source.rowBytes, 8 * sizeof(float)});
+    }
+    if (!ranges.empty())
+        read.packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(ranges));
+    return read;
+}
+
+std::vector<PhysicsBodyPoseUpdate> PhysicsGpuPoseRead::Read() const
+{
+    std::vector<PhysicsBodyPoseUpdate> poses;
+    poses.reserve(m_selected.size());
+    for (size_t index = 0; index < m_selected.size(); ++index) {
+        std::array<float, 8> values;
+        packet->Readback(index)->ReadInto(values.data(), sizeof(values));
+        const auto &body = m_selected[index];
+        const bool origin = m_layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
+        auto rotation = origin ? glm::quat(values[4], values[5], values[6], values[7])
+                               : glm::quat(values[7], values[4], values[5], values[6]);
+        const float squaredLength = glm::dot(rotation, rotation);
+        if (!std::isfinite(squaredLength) || squaredLength <= 1e-12f || !std::isfinite(values[0]) ||
+            !std::isfinite(values[1]) || !std::isfinite(values[2]))
+            throw std::runtime_error("Accepted GPU physics state has an invalid pose");
+        rotation /= std::sqrt(squaredLength);
+        glm::vec3 position(values[0], values[1], values[2]);
+        if (!origin)
+            position -= rotation * glm::vec3(body.centerOffset[0], body.centerOffset[1], body.centerOffset[2]);
+        poses.push_back({body.id, position, rotation});
+    }
+    return poses;
+}
+
 namespace
 {
 constexpr uint32_t NoNode = UINT32_MAX;

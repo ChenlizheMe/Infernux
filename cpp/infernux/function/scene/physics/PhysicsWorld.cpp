@@ -98,6 +98,19 @@ glm::vec3 Vector(const Float4 &v)
 {
     return {v.x, v.y, v.z};
 }
+
+PhysicsGpuPoseSource ScenePoseSource(const JoltGpuScene::Publication &p)
+{
+    return {p.bodyStates, 0, p.bodyCount, sizeof(JPH::GPU::BodyState)};
+}
+
+PhysicsGpuBodyPoseBinding ScenePoseBinding(const JoltGpuScene::Publication &p,
+                                           const JoltGpuScene::PublishedActor &actor)
+{
+    const auto &center = actor.rootCenterOfMass;
+    return {actor.bodyId, actor.slot - p.bodyBase, {center.x, center.y, center.z}};
+}
+
 PhysicsBodyMotionState DecodeMotion(const JoltGpuScene::Publication &publication, const QueryMotionState &record)
 {
     if (record.meta.x >= publication.directory->actors.size() || !publication.directory->actors[record.meta.x] ||
@@ -1219,7 +1232,7 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
     return [this, &domain, job = std::move(job)](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         auto &state = domain.rendering;
         const PhysicsGpuRenderBindings::Source source{
-            {publication->bodyStates, 0, publication->bodyCount, sizeof(JPH::GPU::BodyState)},
+            ScenePoseSource(*publication),
             [&](PhysicsActorHandle handle, uint32_t bodyId) -> std::optional<PhysicsGpuBodyPoseBinding> {
                 const auto slot = publication->directory->FindBodySlot(bodyId);
                 if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
@@ -1227,8 +1240,7 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
                 const auto &actor = publication->directory->actors[slot];
                 if (!actor || actor->actor != handle)
                     return std::nullopt;
-                const auto &center = actor->rootCenterOfMass;
-                return PhysicsGpuBodyPoseBinding{bodyId, slot - publication->bodyBase, {center.x, center.y, center.z}};
+                return ScenePoseBinding(*publication, *actor);
             }};
         job->output = state.bindings.PrepareExport(job->snapshot, source, *m_gpuRenderProgram);
         job->receipt = publication;
@@ -3482,12 +3494,16 @@ bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std
         if (!AdvanceGpuJob(domain, false))
             return false;
         domain.presentationPoseReads.reset();
-        if (job->error)
-            std::rethrow_exception(job->error);
         if (job->publication != publication ||
             job->generation != domain.queryGeneration.load(std::memory_order_acquire))
             return false;
-        MaterializeStateBatch(domain, job->batch, job->motion, job->shapes, true, fields);
+        FrameWorkOwner::Scope materialize(*m_gpuWork);
+        const auto poses = job->read.Read();
+        for (size_t index = 0; index < poses.size(); ++index) {
+            const auto &pose = poses[index];
+            PhysicsBodyMotionState state{pose.bodyId, job->shapeRevisions[index], pose.position, pose.rotation};
+            domain.requestedMotion[pose.bodyId] = {job->generation, state, fields};
+        }
     }
     std::vector<Rigidbody *> missing;
     std::unordered_set<Rigidbody *> selected;
@@ -3506,12 +3522,22 @@ bool PhysicsWorld::ServicePresentationPoseReads(PhysicsDomain &domain, const std
     job->generation = domain.queryGeneration.load(std::memory_order_acquire);
     AdmissionScope admission(*m_gpuScene, domain.owner);
     FrameWorkOwner::Scope preparation(*m_gpuWork);
-    auto work = PrepareStateBatch(domain, publication, missing, fields, false, false, {}, job->batch, job->motion,
-                                  job->shapes, job->error);
-    if (job->error)
-        std::rethrow_exception(job->error);
+    std::vector<PhysicsGpuBodyPoseBinding> bindings;
+    bindings.reserve(missing.size());
+    job->shapeRevisions.reserve(missing.size());
+    for (const auto *body : missing) {
+        const auto slot = publication->directory->FindBodySlot(body->GetBodyId());
+        if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
+            throw JoltGpuQueryRequestError("Presentation pose requires an accepted body identity");
+        const auto &actor = *publication->directory->actors[slot];
+        if (actor.rigidbodyComponentId != body->GetComponentID() || actor.rigidbody != body->GetECSHandle())
+            throw JoltGpuQueryRequestError("Presentation pose differs from its retained Rigidbody");
+        bindings.push_back(ScenePoseBinding(*publication, actor));
+        job->shapeRevisions.push_back(actor.shapeRevision);
+    }
+    job->read = PhysicsGpuPoseRead::Prepare(*m_gpuHost, ScenePoseSource(*publication), std::move(bindings));
     // The accepted Work retains every referenced result/batch even if Stop drops the domain slot.
-    work = ContinueJoltGpuControlWork(std::move(work), [job] { return JoltGpuControlWork{}; });
+    auto work = ContinueJoltGpuControlWork(job->read.packet, [job] { return JoltGpuControlWork{}; });
     if (!m_gpuScene->TryBeginWork(domain.owner, work, false))
         return false;
     domain.presentationPoseReads = std::move(job);
@@ -3568,6 +3594,8 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
         return state;
     }
     PhysicsBodyMotionState result;
+    PhysicsGpuPoseRead pose;
+    uint64_t generation = 0;
     std::shared_ptr<JoltGpuQueryResult> motion;
     std::exception_ptr error;
     RunControl(
@@ -3581,16 +3609,22 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
                     const auto &identity = *publication->directory->actors[slot];
                     result.bodyId = id;
                     result.shapeRevision = identity.shapeRevision;
-                    if ((static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) == 0)
+                    const auto numeric = static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All);
+                    if (numeric == 0)
                         return {};
+                    generation = domain.queryGeneration.load(std::memory_order_acquire) +
+                                 static_cast<uint64_t>(domain.controlNumericalChange);
+                    if ((numeric & ~static_cast<uint32_t>(PresentationPoseFields)) == 0) {
+                        pose = PhysicsGpuPoseRead::Prepare(*m_gpuHost, ScenePoseSource(*publication),
+                                                           {ScenePoseBinding(*publication, identity)});
+                        return pose.packet;
+                    }
                     auto input = Query(QueryGatherMotion, QueryClosest, 0, false);
                     input.meta.z = 0;
                     input.source.y = slot;
                     input.source.z = static_cast<uint32_t>(fields);
                     input.geometry = identity.rootCenterOfMass;
-                    auto prepared = m_gpuQueries->Prepare(publication, {input}, {},
-                                                          domain.queryGeneration.load(std::memory_order_acquire) +
-                                                              static_cast<uint64_t>(domain.controlNumericalChange));
+                    auto prepared = m_gpuQueries->Prepare(publication, {input}, {}, generation);
                     motion = prepared.result;
                     return std::move(prepared.work);
                 },
@@ -3599,7 +3633,13 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
         true);
     if (error)
         std::rethrow_exception(error);
-    if (motion) {
+    if (pose.packet) {
+        FrameWorkOwner::Scope materialize(*m_gpuWork);
+        const auto sample = pose.Read().front();
+        result.position = sample.position;
+        result.rotation = sample.rotation;
+        domain.requestedMotion[id] = {generation, result, PresentationPoseFields};
+    } else if (motion) {
         FrameWorkOwner::Scope materialize(*m_gpuWork);
         result = DecodeMotion(*motion->publication, motion->ReadMotion().at(0));
         domain.requestedMotion[id] = {motion->numericalGeneration, result, static_cast<PhysicsStateFields>(0x1ff)};
