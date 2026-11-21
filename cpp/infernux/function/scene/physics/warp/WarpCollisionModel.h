@@ -1,0 +1,70 @@
+// SPDX-FileCopyrightText: 2026 Infernux contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#pragma once
+
+#include "WarpModel.h"
+
+#include <optional>
+
+namespace infernux::physics::warp
+{
+
+struct WarpContactMaterial
+{
+    ModelVector parameters{0.0f, 0.0f, 1.0f, 0.0f}; // Margin, gap, solver mix, adhesion.
+    ModelVector reference{0.02f, 1.0f, 0.0f, 0.0f};
+    ModelVector impedance{0.9f, 0.95f, 0.001f, 0.5f};
+    ModelVector friction{1.0f, 0.005f, 0.0001f, 0.0f};
+    ModelVector extra{2.0f, 0.0001f, 0.0f, 0.0f};
+    std::array<int32_t, 4> dimensions{3, 0, 0, 0};
+};
+
+struct WarpCollisionGeometry
+{
+    ModelVector size{};
+    ModelVector center{};
+    ModelVector halfExtent{};
+    float radius = 0.0f;
+    WarpContactMaterial material;
+};
+
+struct WarpCollisionPair
+{
+    uint32_t firstGeometry;
+    uint32_t secondGeometry;
+    std::optional<WarpContactMaterial> material; // An explicit physical pair overrides the default filter.
+    int32_t sensor = -1;
+    bool suppressContact = false;
+};
+
+struct WarpLocalBound
+{
+    ModelVector center;
+    ModelVector halfExtent;
+    ModelVector radii;
+    ModelWords geometry;
+};
+
+struct WarpCollisionShape
+{
+    ModelVector size;
+    ModelWords type;
+};
+
+struct WarpCollisionModel
+{
+    std::vector<WarpLocalBound> bounds;
+    std::vector<WarpCollisionShape> shapes;
+    std::vector<WarpContactMaterial> materials;
+    std::vector<ModelWords> pairRules;
+    bool filterConnectedBodies = true;
+};
+
+/// Build rows in the same geometry order as model.geometries. Pair overrides can arrive in any order.
+[[nodiscard]] WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model,
+                                                         const std::vector<WarpCollisionGeometry> &geometries,
+                                                         std::vector<WarpCollisionPair> pairs,
+                                                         bool filterConnectedBodies = true);
+
+} // namespace infernux::physics::warp

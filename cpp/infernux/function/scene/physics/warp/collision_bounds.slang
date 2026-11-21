@@ -7,7 +7,7 @@ struct LocalBound
     float4 center;
     float4 halfExtent;
     float4 radii; // bounding radius, margin + gap, maximum explicit pair margin + gap
-    uint4 geometry; // MuJoCo geometry type
+    uint4 geometry; // type, body row, collision type mask, collision affinity mask
 };
 
 struct ProjectedBound

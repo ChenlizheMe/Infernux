@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "WarpStep.h"
+#include "WarpCollisionModel.h"
 #include "WarpProgramSources.h"
 
 #include <algorithm>
@@ -72,7 +73,8 @@ class StepBuilder
     template <class T> uint32_t Shared(std::string name, const std::vector<T> &table)
     {
         static_assert(sizeof(T) % sizeof(uint32_t) == 0);
-        return Seed(std::move(name), table.size() * (sizeof(T) / sizeof(uint32_t)), table.data());
+        const auto words = std::max(size_t{1}, table.size()) * (sizeof(T) / sizeof(uint32_t));
+        return Seed(std::move(name), words, table.empty() ? nullptr : table.data());
     }
 
     ComputeWorkDispatch Dispatch(std::string_view module, std::string_view name, uint32_t x,
@@ -91,8 +93,8 @@ class StepBuilder
         const auto width = entry->workgroupSize[0];
         result.groupCountX = groups ? x : (x - 1) / width + 1;
         result.groupCountY = worlds;
+        auto &kernel = kernels[&*entry];
         std::vector<ComputeBufferBinding> descriptors;
-        descriptors.reserve(uses.size());
         result.bindings.reserve(uses.size());
         for (const auto &use : uses) {
             const std::array<uint32_t, 2> key{0, use.binding};
@@ -106,13 +108,17 @@ class StepBuilder
             if (use.complete)
                 result.completeWrites.push_back({static_cast<uint32_t>(result.bindings.size()), 0, range.byteSize});
             result.bindings.push_back({range, use.access});
-            descriptors.push_back({use.binding, resource->binding.type, resource->binding.readOnlyStorage});
+            if (!kernel)
+                descriptors.push_back({use.binding, resource->binding.type, resource->binding.readOnlyStorage});
         }
-        const ShaderModuleDesc shader{target == ShaderCodeTarget::SpirV ? ShaderSourceLanguage::SpirV
-                                                                        : ShaderSourceLanguage::Wgsl,
-                                      entry->code.data(), entry->code.size()};
-        result.kernel = std::make_shared<ComputeKernel>(host, shader, entry->name, std::move(descriptors), 0,
-                                                        ComputeKernel::PipelineCreation::FirstDispatch);
+        if (!kernel) {
+            const ShaderModuleDesc shader{target == ShaderCodeTarget::SpirV ? ShaderSourceLanguage::SpirV
+                                                                            : ShaderSourceLanguage::Wgsl,
+                                          entry->code.data(), entry->code.size()};
+            kernel = std::make_shared<ComputeKernel>(host, shader, entry->name, std::move(descriptors), 0,
+                                                     ComputeKernel::PipelineCreation::FirstDispatch);
+        }
+        result.kernel = kernel;
         return result;
     }
 
@@ -133,7 +139,98 @@ class StepBuilder
     ComputeHost &host;
     ShaderCodeTarget target;
     std::unordered_map<std::string_view, ShaderTargetCode> programs;
+    std::unordered_map<const ShaderEntryPointCode *, std::shared_ptr<ComputeKernel>> kernels;
 };
+
+struct ContactSlots
+{
+    uint32_t candidateCount;
+    uint32_t counts;
+    uint32_t records;
+};
+
+ContactSlots AddPrimitiveCollision(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
+                                   uint32_t dimensions, uint32_t pose, WarpCollisionCapacity capacity)
+{
+    const auto ng = model.dimensions.layout[0];
+    const auto geometryWords = uint64_t{ng} * b.worlds;
+    const auto geometries = b.Shared("geometries", model.geometries);
+    const auto bounds = b.Shared("localBounds", collision.bounds);
+    const auto rules = b.Shared("collisionPairRules", collision.pairRules);
+    const auto frames = b.Slot(16 * geometryWords);
+    const auto projected = b.Slot(28 * geometryWords);
+    const uint32_t sorts[] = {b.Slot(2 * geometryWords), b.Slot(2 * geometryWords)};
+    const uint32_t scans[] = {b.Slot(geometryWords), b.Slot(geometryWords)};
+    const auto pairCount = b.Slot(1, BufferUsageFlags::TransferSource);
+    const auto pairs = b.Seed("collisionCandidates", 5 * uint64_t{capacity.candidates}, nullptr);
+    const auto workers = ng;
+    constexpr uint32_t boundsFilters = 15;
+    constexpr uint32_t parentFilter = 16;
+    const auto filters = boundsFilters | (collision.filterConnectedBodies ? parentFilter : 0);
+    const ModelWords options{0, capacity.candidates, filters, workers};
+    const auto emitSettings = b.Seed("sweepEmission", 4, &options);
+    b.Add("position", "geom_local_to_global", ng,
+          {{0, dimensions, R}, {6, pose, R}, {9, geometries, R}, {10, frames, W, true}});
+    b.Add("broadphase", "sap_project", ng,
+          {{0, dimensions, R}, {2, bounds, R}, {3, frames, R}, {4, projected, W, true}, {6, sorts[0], W, true}});
+    std::vector<uint32_t> strides;
+    uint32_t currentSort = 0;
+    for (uint64_t width = 1; width < ng; width *= 2) {
+        const auto stride = static_cast<uint32_t>(width);
+        const ModelWords values{stride, 0, 0, 0};
+        const auto settings = b.Seed("sweepStride" + std::to_string(stride), 4, &values);
+        strides.push_back(settings);
+        b.Add("broadphase", "sap_merge", ng,
+              {{0, dimensions, R}, {1, settings, R}, {5, sorts[currentSort], R}, {6, sorts[1 - currentSort], W, true}});
+        currentSort = 1 - currentSort;
+    }
+    b.Add("broadphase", "sap_find_ranges", ng,
+          {{0, dimensions, R},
+           {4, projected, R},
+           {5, sorts[currentSort], R},
+           {8, scans[0], W, true},
+           {10, pairCount, W, true}});
+    uint32_t currentScan = 0;
+    for (const auto settings : strides) {
+        b.Add("broadphase", "sap_scan_ranges", ng,
+              {{0, dimensions, R}, {1, settings, R}, {7, scans[currentScan], R}, {8, scans[1 - currentScan], W, true}});
+        currentScan = 1 - currentScan;
+    }
+    b.Add("broadphase", "sap_emit_pairs", workers,
+          {{0, dimensions, R},
+           {1, emitSettings, R},
+           {4, projected, R},
+           {5, sorts[currentSort], R},
+           {7, scans[currentScan], R},
+           {9, rules, R},
+           {10, pairCount, RW},
+           {11, pairs, W}});
+
+    const std::array<ModelWords, 2> narrowOptions{{{ng, capacity.candidates, capacity.contactsPerWorld, 0}, {}}};
+    const auto settings = b.Seed("contactSettings", 8, &narrowOptions);
+    const auto shapes = b.Shared("collisionShapes", collision.shapes);
+    const auto materials = b.Shared("collisionMaterials", collision.materials);
+    const auto counts = b.Slot(b.worlds, BufferUsageFlags::TransferSource);
+    const auto contacts = b.Slot(40 * uint64_t{b.worlds} * capacity.contactsPerWorld, BufferUsageFlags::TransferSource);
+    const auto arguments = b.Slot(8, BufferUsageFlags::Indirect);
+    b.Add("primitive_contacts", "prepare_narrowphase", 1,
+          {{0, settings, R}, {4, pairCount, R}, {7, counts, W, true}, {8, arguments, W, true}});
+    auto narrow = b.Dispatch("primitive_contacts", "collide_primitives", capacity.candidates,
+                             {{0, settings, R},
+                              {1, frames, R},
+                              {2, shapes, R},
+                              {3, pairs, R},
+                              {4, pairCount, R},
+                              {5, materials, R},
+                              {6, contacts, W},
+                              {7, counts, RW}});
+    constexpr uint32_t linearGroupsPerRow = 65535;
+    narrow.groupCountY = (narrow.groupCountX - 1) / linearGroupsPerRow + 1;
+    narrow.groupCountX = std::min(narrow.groupCountX, linearGroupsPerRow);
+    narrow.indirectArguments = ComputeWorkRange{arguments, 0, ComputeIndirectArguments::ByteSize};
+    b.dispatches.push_back(std::move(narrow));
+    return {pairCount, counts, contacts};
+}
 
 ComputeDispatchDesc BindSnapshot(ComputeWorkDispatch command,
                                  const std::vector<std::shared_ptr<ComputeBuffer>> &buffers)
@@ -156,7 +253,8 @@ ComputeDispatchDesc BindSnapshot(ComputeWorkDispatch command,
 } // namespace
 
 PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model,
-                                 uint32_t worlds, float timestep, const ModelVector &gravity)
+                                 uint32_t worlds, float timestep, const ModelVector &gravity,
+                                 const WarpCollisionModel *collision, WarpCollisionCapacity capacity)
 {
     if (worlds == 0)
         throw std::invalid_argument("Warp step requires a world");
@@ -173,17 +271,23 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     const auto positions = b.Seed("qpos", nq, model.initialPositions.data(), worlds);
     const auto velocities = b.Seed("qvel", nv, nullptr, worlds);
     const auto applied = b.Seed("appliedForce", nv, nullptr, worlds);
-    if (nv != 0) {
-        const auto bodies = b.Shared("bodies", model.bodies);
-        const auto joints = b.Shared("joints", model.joints);
-        const auto dofs = b.Shared("dofs", model.dofs);
-        const auto leaves = b.Shared("branches", model.branches);
+    const bool detectContacts = collision && model.dimensions.layout[0] != 0;
+    std::optional<ContactSlots> contactSlots;
+    struct
+    {
+        uint32_t bodies, joints, leaves, pose, jointPose;
+    } kinematics{};
+    if (nv != 0 || detectContacts) {
+        auto &[bodies, joints, leaves, pose, jointPose] = kinematics;
+        bodies = b.Shared("bodies", model.bodies);
+        joints = b.Shared("joints", model.joints);
+        leaves = b.Shared("branches", model.branches);
         const auto mocap = nm == 0
                                ? b.Seed("kinematicPoses", 8, nullptr)
                                : b.Seed("kinematicPoses", uint64_t{8} * nm, model.initialKinematicPoses.data(), worlds);
         std::vector<ModelPose> initialBodies(nb);
-        const auto pose = b.Seed("bodyPose", uint64_t{8} * nb, initialBodies.data(), worlds);
-        const auto jointPose = b.Slot(worldWords(uint64_t{8} * nj));
+        pose = b.Seed("bodyPose", uint64_t{8} * nb, initialBodies.data(), worlds);
+        jointPose = b.Slot(worldWords(uint64_t{8} * nj));
         b.Add("position", "kinematics_branch", branches,
               {{0, dimensions, R},
                {1, bodies, R},
@@ -192,7 +296,17 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                {4, leaves, R},
                {5, mocap, R},
                {6, pose, RW},
-               {7, jointPose, W, true}});
+               {7, jointPose, W, nj != 0}});
+        if (detectContacts) {
+            if (collision->bounds.size() != model.dimensions.layout[0] || capacity.candidates == 0 ||
+                capacity.contactsPerWorld == 0)
+                throw std::invalid_argument("Warp collision requires geometry rows and nonzero stream capacities");
+            contactSlots = AddPrimitiveCollision(b, model, *collision, dimensions, pose, capacity);
+        }
+    }
+    if (nv != 0) {
+        const auto &[bodies, joints, leaves, pose, jointPose] = kinematics;
+        const auto dofs = b.Shared("dofs", model.dofs);
         const auto gravities = b.Seed("gravity", 4, &gravity, worlds);
         const auto zeroForce = b.Seed("zeroForce", nv, nullptr, worlds);
         const auto inertialFrame = b.Slot(worldWords(uint64_t{16} * nb));
@@ -356,15 +470,19 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     for (auto &upload : b.initial)
         initial.push_back({buffers[upload.slot], 0, std::move(upload.data)});
     auto initialize = rhi::PrepareComputeBatch(host, std::move(initial), {});
-    auto step = std::unique_ptr<WarpStep>(
-        new WarpStep(work, BindSnapshot(std::move(snapshot), buffers), positions, velocities, applied));
+    WarpContactStream contacts;
+    if (contactSlots)
+        contacts = {buffers[contactSlots->candidateCount], buffers[contactSlots->counts],
+                    buffers[contactSlots->records]};
+    auto step = std::unique_ptr<WarpStep>(new WarpStep(work, BindSnapshot(std::move(snapshot), buffers), positions,
+                                                       velocities, applied, std::move(contacts)));
     return {std::move(step), std::move(initialize)};
 }
 
 WarpStep::WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot,
-                   uint32_t positions, uint32_t velocities, uint32_t appliedForces)
+                   uint32_t positions, uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
-      m_appliedForces(appliedForces)
+      m_appliedForces(appliedForces), m_contacts(std::move(contacts))
 {
 }
 

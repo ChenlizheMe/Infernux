@@ -116,7 +116,7 @@ Factor rows store packed dense block allocations followed by an optional CSR-sha
 
 ## Broadphase
 
-Project bounds after geometry kinematics. The merge and inclusive scan entries use alternating buffers and strides of 1, 2, 4, and so on for the shared geometry count. The sweep workers take their work count from the final prefix sum for their world. The pair rule table follows the reference model's packed upper triangle and carries authored exclusions, explicit pair margins and sensor ids. Dispatches for an empty geometry set can be omitted when preparing the model.
+Project bounds after geometry kinematics. The merge and inclusive scan entries use alternating buffers and strides of 1, 2, 4, and so on for the shared geometry count. The sweep workers take their work count from the final prefix sum for their world. The pair rule table has one row per geometry, one sentinel, and one row per authored override. The shader evaluates masks, welded owners, dynamic participation and optional parent filtering, then looks for a pair-specific override. Explicit material pairs bypass those default filters. Sensors can retain detection for an excluded physical pair. Dispatches for an empty geometry set are omitted.
 
 Set the batch candidate capacity through `sweepSettings`. The emission stage appends candidate records to a shared stream. Each record holds two geometry IDs, an explicit pair ID, a sensor ID, and the originating world. The global counter retains the total requested count, including requests beyond the allocation. Reject an overflowed step at its completion boundary. Sleep filtering and per-world missing meshes require the matching model and state columns.
 
@@ -196,7 +196,7 @@ After integration, measure weighted velocity and external activity. Reduce the m
 
 ## Fixed-step state publication
 
-`WarpStep` binds the cooked programs to a native `ComputeWorkRecipe`. It uploads the shared model and seeds the world rows together, then reuses the same work storage for each fixed step. The native recipe currently executes the smooth dynamics through Euler integration. Collision, constraints, and scene ownership still need to join this recipe before it can advance ordinary GPU scenes.
+`WarpStep` binds the cooked programs to a native `ComputeWorkRecipe`. It uploads the shared model and seeds the world rows together, then reuses the same work storage for each fixed step. When supplied a collision model, the recipe computes geometry frames, sweep candidates, and primitive contacts; the primitive dispatch size comes from the device candidate count. The resulting contact stream is available to device consumers and keeps the requested counts on overflow. The native recipe advances smooth dynamics through Euler integration. Constraint response, convex and terrain dispatches, and scene ownership still need to join it before it can advance ordinary GPU scenes.
 
 For a host consumer, run `snapshot_generalized_state` after the last step writes. Dispatch X over the larger of the position and velocity widths, with at least one group, and Y over the worlds. Bind the complete clock span for the exact batch. The snapshot stores `worlds × nq` position scalars, then `worlds × nv` velocity scalars, then one clock per world. Each section preserves world order.
 

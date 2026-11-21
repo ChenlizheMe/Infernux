@@ -12,6 +12,7 @@ static const uint FilterPlane = 1;
 static const uint FilterSphere = 2;
 static const uint FilterAabb = 4;
 static const uint FilterObb = 8;
+static const uint FilterParent = 16;
 
 struct SortKey
 {
@@ -36,7 +37,9 @@ struct CollisionPairRule
 [[vk::binding(6, 0)]] RWStructuredBuffer<SortKey> sortOutput;
 [[vk::binding(7, 0)]] StructuredBuffer<uint> scanInput;
 [[vk::binding(8, 0)]] RWStructuredBuffer<uint> scanOutput;
-[[vk::binding(9, 0)]] StructuredBuffer<CollisionPairRule> pairRules;
+// Geometry rows: welded body, welded parent, dynamic, first exception.
+// Exception rows: second geometry, explicit pair or policy, sensor, margin bits.
+[[vk::binding(9, 0)]] StructuredBuffer<uint4> pairRules;
 [[vk::binding(10, 0)]] RWStructuredBuffer<Atomic<uint>> collisionCount;
 [[vk::binding(11, 0)]] RWStructuredBuffer<CollisionCandidate> collisionPair;
 
@@ -189,6 +192,43 @@ bool boundsOverlap(ProjectedBound a, ProjectedBound b, CollisionPairRule rule, u
     return true;
 }
 
+CollisionPairRule collisionRule(uint first, uint second, ProjectedBound one, ProjectedBound two, uint filters)
+{
+    const uint a = min(first, second);
+    const uint b = max(first, second);
+    const uint4 bodyA = pairRules[first];
+    const uint4 bodyB = pairRules[second];
+    const bool mask = ((one.geometry.z & two.geometry.w) | (two.geometry.z & one.geometry.w)) != 0;
+    const bool connected = (filters & FilterParent) != 0 && bodyA.x != 0 && bodyB.x != 0 &&
+                           (bodyA.x == bodyB.y || bodyB.x == bodyA.y);
+    const bool physical = mask && bodyA.x != bodyB.x && (bodyA.z | bodyB.z) != 0 && !connected;
+    CollisionPairRule rule = {physical ? -1 : -2, -1, 0.0, 0};
+    uint lo = pairRules[a].w;
+    const uint end = pairRules[a + 1].w;
+    uint hi = end;
+    while (lo < hi)
+    {
+        const uint middle = (lo + hi) / 2;
+        if (pairRules[middle].x < b)
+            lo = middle + 1;
+        else
+            hi = middle;
+    }
+    if (lo < end)
+    {
+        const uint4 exception = pairRules[lo];
+        if (exception.x == b)
+        {
+            const int policy = asint(exception.y);
+            if (policy != -1)
+                rule.pair = policy;
+            rule.sensor = asint(exception.z);
+            rule.margin = asfloat(exception.w);
+        }
+    }
+    return rule;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void sap_emit_pairs(uint3 id : SV_DispatchThreadID)
@@ -214,14 +254,11 @@ void sap_emit_pairs(uint3 id : SV_DispatchThreadID)
         const uint previous = lo == 0 ? 0 : scanInput[base + lo - 1];
         const uint first = sortInput[base + lo].geometry;
         const uint second = sortInput[base + lo + work - previous + 1].geometry;
-        const uint a = min(first, second);
-        const uint b = max(first, second);
-        const uint pairIndex = a * (2 * count - 1 - a) / 2 + b - a - 1;
-        const CollisionPairRule rule = pairRules[pairIndex];
-        if (rule.pair < -1 && rule.sensor < 0)
-            continue;
         const ProjectedBound one = worldBounds[base + first];
         const ProjectedBound two = worldBounds[base + second];
+        const CollisionPairRule rule = collisionRule(first, second, one, two, settings.z);
+        if (rule.pair < -1 && rule.sensor < 0)
+            continue;
         if (rule.sensor < 0 && !boundsOverlap(one, two, rule, settings.z))
             continue;
         const uint destination = collisionCount[0].add(1);
