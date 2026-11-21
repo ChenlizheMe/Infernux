@@ -601,21 +601,12 @@ JPH_GPU_CONSTANT(QueryClosestPoint, 2);
 JPH_GPU_CONSTANT(QueryBodyBounds, 3);
 JPH_GPU_CONSTANT(QueryPenetration, 4);
 JPH_GPU_CONSTANT(QueryGatherShapes, 5);
-JPH_GPU_CONSTANT(QueryGatherMotion, 6);
 JPH_GPU_CONSTANT(QueryShapeCast, 7);
 JPH_GPU_CONSTANT(QueryAllShapeTypes, 0xFFFFFFFFu);
 JPH_GPU_CONSTANT(QueryOutputHit, 0);
 JPH_GPU_CONSTANT(QueryOutputShape, 1);
-JPH_GPU_CONSTANT(QueryOutputMotion, 2);
 JPH_GPU_CONSTANT(QueryShapeSensor, 1);
 JPH_GPU_CONSTANT(QueryShapeMoving, 2);
-JPH_GPU_CONSTANT(QueryExportMotionPosition, 0);
-JPH_GPU_CONSTANT(QueryExportMotionRotation, 1);
-JPH_GPU_CONSTANT(QueryExportMotionCenterOfMass, 2);
-JPH_GPU_CONSTANT(QueryExportMotionLinearVelocity, 3);
-JPH_GPU_CONSTANT(QueryExportMotionAngularVelocity, 4);
-JPH_GPU_CONSTANT(QueryExportMotionInverseMass, 5);
-JPH_GPU_CONSTANT(QueryExportMotionInverseInertia, 6);
 JPH_GPU_CONSTANT(QueryExportShapeBodyIndex, 7);
 JPH_GPU_CONSTANT(QueryExportShapeCenter, 8);
 JPH_GPU_CONSTANT(QueryExportShapeHalfExtents, 9);
@@ -672,13 +663,6 @@ struct JPH_GPU_ALIGN QueryInput
     JPH_GPU_UINT4 lifetime;
     // Exact explicit first operand; never inferred from current global cook.
     JPH_GPU_UINT4 geometryReference;
-};
-
-// Fixed-row motion reads carry the identity from the same publication as the slot.
-struct JPH_GPU_ALIGN QueryMotionInput
-{
-    JPH_GPU_UINT4 body; // Global slot, stable BodyID, padding.
-    JPH_GPU_FLOAT4 rootCenterOfMass;
 };
 
 struct JPH_GPU_ALIGN QueryCastParams
@@ -739,45 +723,6 @@ struct JPH_GPU_ALIGN QueryShapeState
     JPH_GPU_FLOAT4 linearVelocity;
     JPH_GPU_FLOAT4 angularVelocity;
     JPH_GPU_FLOAT4 material;
-};
-
-// Physical Float4 block addresses of QueryMotionState. Field selection is
-// translated once by the host; shader and host expansion share only this ABI.
-JPH_GPU_CONSTANT(QueryMotionBlockMeta, 0);
-JPH_GPU_CONSTANT(QueryMotionBlockPositionInverseMass, 1);
-JPH_GPU_CONSTANT(QueryMotionBlockRotation, 2);
-JPH_GPU_CONSTANT(QueryMotionBlockCenterOfMass, 3);
-JPH_GPU_CONSTANT(QueryMotionBlockLinearVelocity, 4);
-JPH_GPU_CONSTANT(QueryMotionBlockAngularVelocity, 5);
-JPH_GPU_CONSTANT(QueryMotionBlockInverseInertia0, 6);
-JPH_GPU_CONSTANT(QueryMotionBlockInverseInertia1, 7);
-JPH_GPU_CONSTANT(QueryMotionBlockInverseInertia2, 8);
-JPH_GPU_CONSTANT(QueryMotionBlockInertia0, 9);
-JPH_GPU_CONSTANT(QueryMotionBlockInertia1, 10);
-JPH_GPU_CONSTANT(QueryMotionBlockInertia2, 11);
-JPH_GPU_CONSTANT(QueryMotionBlockCount, 12);
-JPH_GPU_CONSTANT(QueryMotionAllBlocks, (1u << QueryMotionBlockCount) - 1u);
-JPH_GPU_CONSTANT(QueryMotionInertiaBlocks,
-                 (1u << QueryMotionBlockInverseInertia0) | (1u << QueryMotionBlockInverseInertia1) |
-                     (1u << QueryMotionBlockInverseInertia2) | (1u << QueryMotionBlockInertia0) |
-                     (1u << QueryMotionBlockInertia1) | (1u << QueryMotionBlockInertia2));
-
-struct JPH_GPU_ALIGN QueryMotionState
-{
-    // Body slot, valid, public body ID, frozen translation axes (x=1, y=2, z=4).
-    JPH_GPU_UINT4 meta;
-    // Body origin xyz and raw scalar physical inverse mass; meta.w projects its three axes.
-    JPH_GPU_FLOAT4 positionInverseMass;
-    JPH_GPU_FLOAT4 rotation;
-    JPH_GPU_FLOAT4 centerOfMass;
-    JPH_GPU_FLOAT4 linearVelocity;
-    JPH_GPU_FLOAT4 angularVelocity;
-    JPH_GPU_FLOAT4 inverseInertia0;
-    JPH_GPU_FLOAT4 inverseInertia1;
-    JPH_GPU_FLOAT4 inverseInertia2;
-    JPH_GPU_FLOAT4 inertia0;
-    JPH_GPU_FLOAT4 inertia1;
-    JPH_GPU_FLOAT4 inertia2;
 };
 
 struct JPH_GPU_ALIGN QueryExportParams
@@ -950,7 +895,6 @@ JPH_GPU_CHECK_TYPE(BodyCommandParams, 16);
 JPH_GPU_CHECK_TYPE(QueryParams, 64);
 static_assert(offsetof(QueryParams, selection) == 32 && offsetof(QueryParams, selectedCounts) == 48);
 JPH_GPU_CHECK_TYPE(QueryInput, 144);
-JPH_GPU_CHECK_TYPE(QueryMotionInput, 32);
 JPH_GPU_CHECK_TYPE(ColliderPairKey, 32);
 JPH_GPU_CHECK_TYPE(QueryCastParams, 16);
 JPH_GPU_CHECK_TYPE(QueryCastState, 64);
@@ -961,19 +905,6 @@ JPH_GPU_CHECK_TYPE(QueryBodyIdentity, 16);
 JPH_GPU_CHECK_TYPE(QueryHit, 64);
 JPH_GPU_CHECK_TYPE(QueryRecordWord, 16);
 JPH_GPU_CHECK_TYPE(QueryShapeState, 144);
-JPH_GPU_CHECK_TYPE(QueryMotionState, 192);
-static_assert(sizeof(QueryMotionState) == QueryMotionBlockCount * sizeof(UInt4));
-static_assert(offsetof(QueryMotionState, positionInverseMass) == QueryMotionBlockPositionInverseMass * sizeof(UInt4) &&
-              offsetof(QueryMotionState, rotation) == QueryMotionBlockRotation * sizeof(UInt4) &&
-              offsetof(QueryMotionState, centerOfMass) == QueryMotionBlockCenterOfMass * sizeof(UInt4) &&
-              offsetof(QueryMotionState, linearVelocity) == QueryMotionBlockLinearVelocity * sizeof(UInt4) &&
-              offsetof(QueryMotionState, angularVelocity) == QueryMotionBlockAngularVelocity * sizeof(UInt4) &&
-              offsetof(QueryMotionState, inverseInertia0) == QueryMotionBlockInverseInertia0 * sizeof(UInt4) &&
-              offsetof(QueryMotionState, inverseInertia1) == QueryMotionBlockInverseInertia1 * sizeof(UInt4) &&
-              offsetof(QueryMotionState, inverseInertia2) == QueryMotionBlockInverseInertia2 * sizeof(UInt4) &&
-              offsetof(QueryMotionState, inertia0) == QueryMotionBlockInertia0 * sizeof(UInt4) &&
-              offsetof(QueryMotionState, inertia1) == QueryMotionBlockInertia1 * sizeof(UInt4) &&
-              offsetof(QueryMotionState, inertia2) == QueryMotionBlockInertia2 * sizeof(UInt4));
 JPH_GPU_CHECK_TYPE(QueryExportParams, 48);
 static_assert(offsetof(QueryExportParams, selection) == 32);
 static_assert(offsetof(QueryRecordWord, value) == 0 && offsetof(QueryExportParams, sizes) == 16);
@@ -981,12 +912,6 @@ static_assert(offsetof(QueryShapeState, surface) == 16 && offsetof(QueryShapeSta
               offsetof(QueryShapeState, center) == 48 && offsetof(QueryShapeState, rotation) == 64 &&
               offsetof(QueryShapeState, bodyCenterOfMass) == 80 && offsetof(QueryShapeState, linearVelocity) == 96 &&
               offsetof(QueryShapeState, angularVelocity) == 112 && offsetof(QueryShapeState, material) == 128);
-static_assert(offsetof(QueryMotionState, positionInverseMass) == 16 && offsetof(QueryMotionState, rotation) == 32 &&
-              offsetof(QueryMotionState, centerOfMass) == 48 && offsetof(QueryMotionState, linearVelocity) == 64 &&
-              offsetof(QueryMotionState, angularVelocity) == 80 && offsetof(QueryMotionState, inverseInertia0) == 96 &&
-              offsetof(QueryMotionState, inverseInertia1) == 112 &&
-              offsetof(QueryMotionState, inverseInertia2) == 128 && offsetof(QueryMotionState, inertia0) == 144 &&
-              offsetof(QueryMotionState, inertia1) == 160 && offsetof(QueryMotionState, inertia2) == 176);
 JPH_GPU_CHECK_TYPE(QuerySpan, 16);
 JPH_GPU_CHECK_TYPE(QuerySummary, 16);
 static_assert(offsetof(QueryPrimitive, geometryReference) == 64);

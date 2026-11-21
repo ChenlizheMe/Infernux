@@ -129,6 +129,48 @@ PhysicsGpuMotionBinding SceneMotionBinding(const JoltGpuScene::Publication &publ
 
 constexpr std::array<uint32_t, 13> kStateExportWidths{3, 4, 3, 3, 3, 3, 9, 1, 3, 3, 4, 1, 1};
 
+bool IsMotionExport(const PhysicsDeviceQueryOutput &binding)
+{
+    return binding.field <= PhysicsDeviceQueryField::MotionInverseInertia;
+}
+
+void ValidateStateExportOverlap(const std::vector<PhysicsDeviceQueryOutput> &bindings, size_t bodies, size_t boxes)
+{
+    std::vector<uint64_t> sizes;
+    sizes.reserve(bindings.size());
+    for (const auto &binding : bindings) {
+        const auto total = IsMotionExport(binding) ? bodies : boxes;
+        const uint64_t count = binding.recordCount == UINT32_MAX ? total - std::min(size_t{binding.recordFirst}, total)
+                                                                 : binding.recordCount;
+        const auto size = count * kStateExportWidths[static_cast<size_t>(binding.field)] * sizeof(uint32_t);
+        if (!binding.buffer || size > UINT64_MAX - binding.byteOffset)
+            throw JoltGpuQueryRequestError("Physics state export has an invalid destination");
+        for (size_t index = 0; index < sizes.size(); ++index) {
+            const auto &prior = bindings[index];
+            if ((prior.buffer->GetAllocation() == binding.buffer->GetAllocation() ||
+                 prior.buffer->GetWriterStateIdentity() == binding.buffer->GetWriterStateIdentity()) &&
+                size && sizes[index] && binding.byteOffset < prior.byteOffset + sizes[index] &&
+                prior.byteOffset < binding.byteOffset + size)
+                throw JoltGpuQueryRequestError("Physics state export output ranges overlap");
+        }
+        sizes.push_back(size);
+    }
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> PrepareMotionExports(const PhysicsGpuRenderPoses &program,
+                                                                const PhysicsGpuMotionExport &source,
+                                                                const std::vector<PhysicsDeviceQueryOutput> &outputs,
+                                                                const std::vector<size_t> &rows = {})
+{
+    try {
+        return program.PrepareMotion(source, outputs, rows);
+    } catch (const std::invalid_argument &error) {
+        throw JoltGpuQueryRequestError(error.what());
+    } catch (const std::length_error &error) {
+        throw JoltGpuQueryRequestError(error.what());
+    }
+}
+
 std::array<float, 9> StateExportFloats(PhysicsDeviceQueryField field, const PhysicsBodyMotionState &state,
                                        const PhysicsBoxShapeState &shape)
 {
@@ -3009,8 +3051,8 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
     PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
     const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes, bool triggers,
     const std::vector<PhysicsDeviceQueryOutput> &exports, PhysicsRigidbodyStateBatch &batch,
-    PhysicsGpuMotionRead &hostMotion, std::shared_ptr<JoltGpuQueryResult> &motion,
-    std::shared_ptr<JoltGpuQueryResult> &shapes, std::exception_ptr &requestError, bool deferExport) const
+    PhysicsGpuMotionRead &hostMotion, PhysicsGpuMotionExport &motion, std::shared_ptr<JoltGpuQueryResult> &shapes,
+    std::exception_ptr &requestError, bool deferExport) const
 {
     return PrepareJoltGpuQueryWork(
         [&]() -> JoltGpuControlWork {
@@ -3020,16 +3062,13 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
                     throw JoltGpuQueryRequestError("Physics export requires its requested state family");
             batch.bodies = bodies;
             batch.states.resize(bodies.size());
-            std::vector<QueryInput> motionInputs, shapeInputs;
+            std::vector<QueryInput> shapeInputs;
             std::vector<PhysicsGpuMotionBinding> hostBodies;
-            const bool numericMotion =
-                (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) != 0 ||
-                std::any_of(exports.begin(), exports.end(), [](const auto &value) {
-                    return value.field <= PhysicsDeviceQueryField::MotionInverseInertia;
-                });
             const bool host = exports.empty();
-            hostBodies.reserve(numericMotion && host ? bodies.size() : 0);
-            motionInputs.reserve(numericMotion && !host ? bodies.size() : 0);
+            const bool numericMotion =
+                host ? (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All)) != 0
+                     : std::any_of(exports.begin(), exports.end(), IsMotionExport);
+            hostBodies.reserve(numericMotion ? bodies.size() : 0);
             shapeInputs.reserve(includeBoxes ? bodies.size() : 0);
             for (size_t index = 0; index < bodies.size(); ++index) {
                 auto *body = bodies[index];
@@ -3044,16 +3083,8 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
                     throw JoltGpuQueryRequestError("Physics batch Rigidbody differs from its retained publication");
                 batch.states[index].bodyId = identity.bodyId;
                 batch.states[index].shapeRevision = identity.shapeRevision;
-                if (numericMotion && host) {
+                if (numericMotion)
                     hostBodies.push_back(SceneMotionBinding(*publication, identity));
-                } else if (numericMotion) {
-                    auto input = Query(QueryGatherMotion, QueryClosest, 0, false);
-                    input.meta.z = 0;
-                    input.source.y = slot;
-                    input.source.z = static_cast<uint32_t>(fields);
-                    input.geometry = identity.rootCenterOfMass;
-                    motionInputs.push_back(input);
-                }
                 if (includeBoxes) {
                     auto input = Query(QueryGatherShapes, QueryAll, UINT32_MAX, triggers);
                     input.meta.z = ShapeBox;
@@ -3069,49 +3100,47 @@ JoltGpuControlWork PhysicsWorld::PrepareStateBatch(
             const auto readback = deferExport       ? JoltGpuQueryReadback::DeviceWithSpans
                                   : exports.empty() ? JoltGpuQueryReadback::Host
                                                     : JoltGpuQueryReadback::Device;
-            JoltGpuPreparedQuery first, second;
-            if (!hostBodies.empty()) {
+            JoltGpuControlWork reads;
+            if (numericMotion && host) {
                 hostMotion = PhysicsGpuMotionRead::Prepare(*m_gpuHost, ScenePoseSource(*publication),
                                                            std::move(hostBodies), fields);
-                first.work = hostMotion.packet;
-            } else if (!motionInputs.empty()) {
-                first = m_gpuQueries->Prepare(publication, motionInputs, {}, generation, readback);
-                motion = first.result;
+                reads = hostMotion.packet;
+            } else if (numericMotion) {
+                motion = {ScenePoseSource(*publication), std::move(hostBodies)};
             }
+            JoltGpuControlWork shapeWork;
             if (!shapeInputs.empty()) {
-                second = m_gpuQueries->Prepare(publication, shapeInputs, {}, generation, readback);
+                auto second = m_gpuQueries->Prepare(publication, shapeInputs, {}, generation, readback);
                 shapes = second.result;
+                shapeWork = std::move(second.work);
             }
-            return ContinueJoltGpuControlWork(
-                std::move(first.work), [this, &domain, motionResult = motion, shapeResult = shapes,
-                                        work = std::move(second.work), &batch, exports, deferExport]() mutable {
-                    if (motionResult && motionResult->GetSummary().counts.y != QuerySuccess)
+            reads = ContinueJoltGpuControlWork(std::move(reads),
+                                               [work = std::move(shapeWork)]() mutable { return std::move(work); });
+            return ContinueJoltGpuControlWork(std::move(reads), [this, &motion, shapeResult = shapes, &batch, exports,
+                                                                 deferExport] {
+                if (shapeResult) {
+                    const auto &summary = shapeResult->GetSummary();
+                    if (summary.counts.y != QuerySuccess)
                         return JoltGpuControlWork{};
-                    return ContinueJoltGpuControlWork(
-                        std::move(work), [this, &domain, motionResult, shapeResult, &batch, exports, deferExport] {
-                            if (shapeResult) {
-                                const auto &summary = shapeResult->GetSummary();
-                                if (summary.counts.y != QuerySuccess)
-                                    return JoltGpuControlWork{};
-                                batch.boxCount = summary.counts.x;
-                            }
-                            if (exports.empty() || deferExport)
-                                return JoltGpuControlWork{};
-                            std::vector<std::shared_ptr<JoltGpuQueryResult>> results;
-                            if (motionResult)
-                                results.push_back(motionResult);
-                            if (shapeResult)
-                                results.push_back(shapeResult);
-                            return m_gpuQueries->PrepareExport(results, exports);
-                        });
-                });
+                    batch.boxCount = summary.counts.x;
+                }
+                if (exports.empty() || deferExport)
+                    return JoltGpuControlWork{};
+                ValidateStateExportOverlap(exports, batch.states.size(), batch.boxCount);
+                std::vector<PhysicsDeviceQueryOutput> motionTargets, shapeTargets;
+                for (const auto &binding : exports)
+                    (IsMotionExport(binding) ? motionTargets : shapeTargets).push_back(binding);
+                auto motionWork = PrepareMotionExports(*m_gpuRenderProgram, motion, motionTargets);
+                auto shapesWork = m_gpuQueries->PrepareShapeExport(shapeResult, shapeTargets);
+                return ContinueJoltGpuControlWork(std::move(motionWork),
+                                                  [work = std::move(shapesWork)]() mutable { return std::move(work); });
+            });
         },
         requestError);
 }
 
 void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbodyStateBatch &batch,
                                          const PhysicsGpuMotionRead &hostMotion,
-                                         const std::shared_ptr<JoltGpuQueryResult> &motion,
                                          const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical,
                                          PhysicsStateFields cachedFields) const
 {
@@ -3121,8 +3150,7 @@ void PhysicsWorld::MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbody
         const auto generation = batch.sources.front().numericalGeneration;
         for (const auto &state : batch.states)
             domain.requestedMotion[state.bodyId] = {generation, state, cachedFields};
-    } else if (motion)
-        (void)motion->GetRecordCount();
+    }
     if (shapes) {
         if (numerical) {
             const auto &spans = shapes->ReadSpans();
@@ -3177,7 +3205,8 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
         std::vector<size_t> indices;
         PhysicsRigidbodyStateBatch batch;
         PhysicsGpuMotionRead hostMotion;
-        std::shared_ptr<JoltGpuQueryResult> motion, shapes;
+        PhysicsGpuMotionExport motion;
+        std::shared_ptr<JoltGpuQueryResult> shapes;
     };
     std::vector<Group> groups;
     std::unordered_map<PhysicsDomain *, size_t> byOwner;
@@ -3252,12 +3281,11 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
             if (sealed) {
                 ObserveSpatialGpuQuery(domain, gpu, prepare);
             } else {
-                RunControl(domain, prepare, exports.empty());
+                RunControl(domain, prepare, true);
             }
             if (error)
                 std::rethrow_exception(error);
-            MaterializeStateBatch(domain, group.batch, group.hostMotion, group.motion, group.shapes, exports.empty(),
-                                  fields);
+            MaterializeStateBatch(domain, group.batch, group.hostMotion, group.shapes, exports.empty(), fields);
             // One world's query rows already follow caller order. The device can export
             // the entire batch, including the owning body of each compound shape.
             if (direct)
@@ -3293,36 +3321,36 @@ PhysicsWorld::GatherRigidbodyStateRows(const std::vector<Rigidbody *> &bodies, P
     if (exports.empty())
         return batch;
     auto cpuTransfers = PrepareCpuStateExports(batch, cpuRows, boxes, shapeFirst, exports, includeBoxes);
+    std::vector<PhysicsDeviceQueryOutput> motionTargets, shapeTargets;
+    for (const auto &binding : exports)
+        (IsMotionExport(binding) ? motionTargets : shapeTargets).push_back(binding);
+    for (auto &target : motionTargets) {
+        target.recordFirst = 0;
+        target.recordCount = UINT32_MAX;
+    }
     std::vector<std::pair<PhysicsDomain *, JoltGpuControlWork>> plannedExports;
     for (auto &group : groups) {
         if (group.backend == Backend::Cpu)
             continue;
-        JoltGpuControlWork work;
-        std::vector<std::shared_ptr<JoltGpuQueryResult>> sources;
-        if (group.motion)
-            sources.push_back(group.motion);
-        if (group.shapes)
-            sources.push_back(group.shapes);
-        for (size_t local = 0; local < group.indices.size(); ++local) {
+        JoltGpuControlWork work = PrepareMotionExports(*m_gpuRenderProgram, group.motion, motionTargets, group.indices);
+        for (size_t local = 0; !shapeTargets.empty() && local < group.indices.size(); ++local) {
             std::vector<PhysicsDeviceQueryOutput> targets;
             const auto row = group.indices[local];
-            for (auto target : exports) {
+            for (auto target : shapeTargets) {
                 const auto field = static_cast<uint32_t>(target.field);
                 if (field >= kStateExportWidths.size())
                     throw JoltGpuQueryRequestError("Physics aggregate export has an unknown field");
-                const bool motion = field <= static_cast<uint32_t>(PhysicsDeviceQueryField::MotionInverseInertia);
-                const uint64_t outputRow = motion ? row : shapeFirst[row];
-                const uint64_t byteAdvance = outputRow * kStateExportWidths[field] * sizeof(uint32_t);
+                const uint64_t byteAdvance = shapeFirst[row] * kStateExportWidths[field] * sizeof(uint32_t);
                 if (byteAdvance > UINT64_MAX - target.byteOffset)
                     throw JoltGpuQueryRequestError("Physics aggregate export destination offset overflow");
                 target.byteOffset += byteAdvance;
-                target.recordFirst = motion ? static_cast<uint32_t>(local) : group.shapes->ReadSpans()[local].range.x;
-                target.recordCount = motion ? 1u : shapeCounts[row];
+                target.recordFirst = group.shapes->ReadSpans()[local].range.x;
+                target.recordCount = shapeCounts[row];
                 target.bodyIndex = static_cast<uint32_t>(row);
                 targets.push_back(std::move(target));
             }
             if (!targets.empty()) {
-                auto projected = m_gpuQueries->PrepareExport(sources, targets);
+                auto projected = m_gpuQueries->PrepareShapeExport(group.shapes, targets);
                 work = ContinueJoltGpuControlWork(
                     std::move(work), [projected = std::move(projected)]() mutable { return std::move(projected); });
             }

@@ -53,6 +53,7 @@ class JoltCpuQueries;
 class JoltGpuJoints;
 struct JoltGpuQueryResult;
 struct PhysicsGpuMotionRead;
+struct PhysicsGpuMotionExport;
 struct JoltGpuQueryGeometry;
 struct PreparedCpuActor;
 struct PhysicsStaticBoundaryModel;
@@ -958,7 +959,7 @@ class PhysicsWorld
                       const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
                       bool queryTriggers, const std::vector<PhysicsDeviceQueryOutput> &exports,
                       PhysicsRigidbodyStateBatch &batch, PhysicsGpuMotionRead &hostMotion,
-                      std::shared_ptr<JoltGpuQueryResult> &motion, std::shared_ptr<JoltGpuQueryResult> &shapes,
+                      PhysicsGpuMotionExport &motion, std::shared_ptr<JoltGpuQueryResult> &shapes,
                       std::exception_ptr &requestError, bool deferExport = false) const;
     [[nodiscard]] std::shared_ptr<const PhysicsShapeGeometry>
     ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::PublishedLeaf &leaf,
@@ -967,7 +968,6 @@ class PhysicsWorld
                                                                        bool queryTriggers) const;
     void MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbodyStateBatch &batch,
                                const PhysicsGpuMotionRead &hostMotion,
-                               const std::shared_ptr<JoltGpuQueryResult> &motion,
                                const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical,
                                PhysicsStateFields cachedFields = static_cast<PhysicsStateFields>(0x1ff)) const;
 

@@ -136,8 +136,8 @@ class JoltGpuQueries final
 
     /// Prepare after the gather metadata receipt, inside the same source's
     /// continuation. Writes only the validated prefix; no CPU numerical upload.
-    [[nodiscard]] JoltGpuControlWork PrepareExport(const std::vector<std::shared_ptr<JoltGpuQueryResult>> &results,
-                                                   const std::vector<PhysicsDeviceQueryOutput> &bindings) const;
+    [[nodiscard]] JoltGpuControlWork PrepareShapeExport(const std::shared_ptr<JoltGpuQueryResult> &source,
+                                                        const std::vector<PhysicsDeviceQueryOutput> &bindings) const;
 
     [[nodiscard]] JoltGpuPreparedParticleExport
     PrepareParticleExport(const std::shared_ptr<JoltGpuQueryResult> &shapes,

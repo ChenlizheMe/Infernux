@@ -92,7 +92,7 @@ void query_store_cast_state(uint index, QueryCastState state)
 
 uint query_record_words()
 {
-    return query_params.sizes.w == QueryOutputShape ? 9u : query_params.sizes.w == QueryOutputMotion ? 12u : 4u;
+    return query_params.sizes.w == QueryOutputShape ? 9u : 4u;
 }
 
 QueryHit query_load_hit(uint record)
@@ -136,22 +136,6 @@ void query_store_shape(uint record, QueryShapeState shape)
     query_candidates[base + 8u].value = asuint(shape.material);
 }
 
-void query_store_motion(uint record, QueryMotionState motion)
-{
-    uint base = record * 12u;
-    query_hits[base].value = motion.meta;
-    query_hits[base + 1u].value = asuint(motion.positionInverseMass);
-    query_hits[base + 2u].value = asuint(motion.rotation);
-    query_hits[base + 3u].value = asuint(motion.centerOfMass);
-    query_hits[base + 4u].value = asuint(motion.linearVelocity);
-    query_hits[base + 5u].value = asuint(motion.angularVelocity);
-    query_hits[base + 6u].value = asuint(motion.inverseInertia0);
-    query_hits[base + 7u].value = asuint(motion.inverseInertia1);
-    query_hits[base + 8u].value = asuint(motion.inverseInertia2);
-    query_hits[base + 9u].value = asuint(motion.inertia0);
-    query_hits[base + 10u].value = asuint(motion.inertia1);
-    query_hits[base + 11u].value = asuint(motion.inertia2);
-}
 float3 query_box_face_normal(float3 point, float3 half_extent)
 {
     // BoxShape::GetSurfaceNormal: nearest outer face, lowest axis on ties.
@@ -627,59 +611,6 @@ void query_gather_shapes(QueryInput request, uint begin, inout uint count, inout
     }
 }
 
-uint query_write_motion(uint index)
-{
-    QueryMotionInput request;
-    request.body = query_inputs[index * 2u].value;
-    request.rootCenterOfMass = asfloat(query_inputs[index * 2u + 1u].value);
-    uint slot = request.body.x;
-    BodyModel model = body_models[slot];
-    BodyState state = body_states[slot - query_params.selection.y];
-    if (!query_valid_quaternion(state.rotation) || !all(isfinite(state.positionCOM)) ||
-        !all(isfinite(state.linearVelocity)) || !all(isfinite(state.angularVelocity)))
-    {
-        return QueryNumericalFailure;
-    }
-    state.rotation = normalize(state.rotation);
-    QueryMotionState output;
-    output.meta = uint4(slot, 1u, request.body.y, uint(model.mass.y));
-    output.positionInverseMass = float4(state.positionCOM.xyz - jph_rotate(state.rotation, request.rootCenterOfMass.xyz), 0.0f);
-    output.rotation = state.rotation;
-    output.centerOfMass = float4(state.positionCOM.xyz, 0.0f);
-    output.linearVelocity = float4(state.linearVelocity.xyz, 0.0f);
-    output.angularVelocity = float4(state.angularVelocity.xyz, 0.0f);
-    output.inverseInertia0 = output.inverseInertia1 = output.inverseInertia2 = float4(0.0f);
-    output.inertia0 = output.inertia1 = output.inertia2 = float4(0.0f);
-    if (jph_dynamic(model))
-    {
-        float3 diagonal = model.invInertiaDiagonal.xyz;
-        if (!all(isfinite(diagonal)) || any(diagonal <= 0.0f) || !isfinite(model.mass.x) || model.mass.x <= 0.0f ||
-            !query_valid_quaternion(model.inertiaRotation))
-        {
-            return QueryNumericalFailure;
-        }
-        float3 inertia = 1.0f / diagonal;
-        float4 principal = normalize(jph_quat_mul(state.rotation, model.inertiaRotation));
-        // Raw scalar physical inverse mass; projected translation is a tensor.
-        output.positionInverseMass.w = model.mass.x;
-        output.inverseInertia0 = float4(jph_inverse_inertia(model, state, float3(1, 0, 0)), 0.0f);
-        output.inverseInertia1 = float4(jph_inverse_inertia(model, state, float3(0, 1, 0)), 0.0f);
-        output.inverseInertia2 = float4(jph_inverse_inertia(model, state, float3(0, 0, 1)), 0.0f);
-        output.inertia0 = float4(jph_rotate(principal, inertia * jph_inverse_rotate(principal, float3(1, 0, 0))), 0.0f);
-        output.inertia1 = float4(jph_rotate(principal, inertia * jph_inverse_rotate(principal, float3(0, 1, 0))), 0.0f);
-        output.inertia2 = float4(jph_rotate(principal, inertia * jph_inverse_rotate(principal, float3(0, 0, 1))), 0.0f);
-    }
-    if (!all(isfinite(output.positionInverseMass)) || !all(isfinite(output.inverseInertia0)) ||
-        !all(isfinite(output.inverseInertia1)) || !all(isfinite(output.inverseInertia2)) ||
-        !all(isfinite(output.inertia0)) || !all(isfinite(output.inertia1)) || !all(isfinite(output.inertia2)))
-    {
-        return QueryNumericalFailure;
-    }
-    query_store_motion(index, output);
-    return QuerySuccess;
-}
-
-
 float3 query_cast_support(uint type, float4 rotation, float4 geometry, float3 n)
 {
     float3 core = float3(0.0f);
@@ -995,27 +926,6 @@ void query_cast_advance(QueryInput request, uint begin, inout QueryCastState sta
 
 #include "rigid_convex_queries.slang"
 
-// A typed motion batch has exactly one output per request, in request order.
-// Read the retained state directly; geometric searches and hit compaction are independent.
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void query_read_motion(uint3 tid : SV_DispatchThreadID)
-{
-    uint index = tid.x;
-    if (index >= query_params.counts.x)
-        return;
-    uint status = query_write_motion(index);
-    if (status != QuerySuccess)
-    {
-        QueryMotionState invalid = (QueryMotionState)0;
-        invalid.meta = uint4(InvalidQueryBodySlot, 0u, InvalidQueryBodySlot, 0u);
-        query_store_motion(index, invalid);
-    }
-    QuerySpan span;
-    span.range = uint4(index, 1u, status, 0u);
-    query_store_span(index, span);
-}
-
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void query_evaluate(uint3 tid : SV_DispatchThreadID)
@@ -1240,27 +1150,7 @@ void query_export(uint3 tid : SV_DispatchThreadID)
     uint base = source_row * query_export_params.sizes.y;
     uint destination = query_export_params.output.w + row * query_export_params.sizes.z;
     uint4 value = uint4(0u);
-    if (field == QueryExportMotionPosition) value = query_hits[base + 1u].value;
-    else if (field == QueryExportMotionRotation) value = query_hits[base + 2u].value;
-    else if (field == QueryExportMotionCenterOfMass) value = query_hits[base + 3u].value;
-    else if (field == QueryExportMotionLinearVelocity) value = query_hits[base + 4u].value;
-    else if (field == QueryExportMotionAngularVelocity) value = query_hits[base + 5u].value;
-    else if (field == QueryExportMotionInverseMass)
-    {
-        uint frozenTranslation = query_hits[base].value.w;
-        uint inverseMass = query_hits[base + 1u].value.w;
-        value = uint4((frozenTranslation & 1u) != 0u ? 0u : inverseMass,
-                      (frozenTranslation & 2u) != 0u ? 0u : inverseMass,
-                      (frozenTranslation & 4u) != 0u ? 0u : inverseMass, 0u);
-    }
-    else if (field == QueryExportMotionInverseInertia)
-    {
-        for (uint axis = 0u; axis < 3u; ++axis)
-            for (uint column = 0u; column < 3u; ++column)
-                query_export_values[destination + axis * 3u + column] = query_hits[base + 6u + column].value[axis];
-        return;
-    }
-    else if (field == QueryExportShapeBodyIndex)
+    if (field == QueryExportShapeBodyIndex)
     {
         uint low = 0u, high = query_export_params.sizes.x;
         while (low < high)

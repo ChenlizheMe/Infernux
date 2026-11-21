@@ -30,6 +30,12 @@ struct PhysicsGpuMotionBinding
     uint32_t frozenTranslation = 0, frozenRotation = 0;
 };
 
+struct PhysicsGpuMotionExport
+{
+    PhysicsGpuPoseSource poses;
+    std::vector<PhysicsGpuMotionBinding> bodies;
+};
+
 /// Reads only the selected channels of frozen body rows. Mass, lock axes and
 /// shape identity belong to the same accepted author record as the motion.
 struct PhysicsGpuMotionRead

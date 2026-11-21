@@ -1,5 +1,6 @@
 #pragma once
 
+#include "PhysicsDeviceQueryOutput.h"
 #include "PhysicsGpuPoseSource.h"
 #include "inxphygpu/render_pose_layout.slang"
 #include <function/renderer/rhi/RhiComputeKernel.h>
@@ -7,6 +8,7 @@
 
 namespace infernux
 {
+struct PhysicsGpuMotionExport;
 
 struct PhysicsGpuRenderPoseBatch
 {
@@ -35,6 +37,10 @@ class PhysicsGpuRenderPoses final
     Prepare(const PhysicsGpuPoseSource &output, const std::vector<physics::gpu_render::PoseNode> &nodes,
             const std::vector<physics::gpu_render::PoseBinding> &bindings) const;
 
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareMotion(const PhysicsGpuMotionExport &source, const std::vector<PhysicsDeviceQueryOutput> &outputs,
+                  const std::vector<size_t> &scatter = {}) const;
+
   private:
     struct Entry
     {
@@ -47,7 +53,7 @@ class PhysicsGpuRenderPoses final
         std::shared_ptr<rhi::ComputeBuffer> buffer;
     };
     rhi::ComputeHost m_host;
-    Entry m_nodes, m_meshes;
+    Entry m_nodes, m_meshes, m_motion;
     mutable InputCache m_parameters, m_nodeInputs, m_bindingInputs;
     mutable std::vector<InputCache> m_levelParameters;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_nodeModels, m_models, m_bounds;
