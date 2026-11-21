@@ -15,7 +15,8 @@ inline constexpr uint32_t NoModelIndex = UINT32_MAX;
 using ModelWords = std::array<uint32_t, 4>;
 using ModelVector = std::array<float, 4>;
 
-using ModelHingeDrive = std::array<ModelVector, 2>;
+using ModelJointVectors = std::array<ModelVector, 2>;
+using ModelSwingTwistControls = std::array<ModelWords, 4>;
 
 struct WarpHingeDrive
 {
@@ -23,7 +24,7 @@ struct WarpHingeDrive
     float target = 0.0f, stiffness = 0.0f, damping = 0.0f, maxTorque = 0.0f;
     float jointDamping = 0.0f, frictionTorque = 0.0f, armature = 0.0f;
 
-    [[nodiscard]] ModelHingeDrive Pack() const noexcept
+    [[nodiscard]] ModelJointVectors Pack() const noexcept
     {
         return {
             {{target, stiffness, damping, enabled ? maxTorque : 0.0f}, {jointDamping, frictionTorque, armature, 0.0f}}};
@@ -41,12 +42,6 @@ struct WarpJointLimits
 struct WarpDistanceSpring
 {
     float stiffness = 0.0f, damping = 0.0f;
-};
-
-struct ModelSceneJointParameters
-{
-    ModelWords limits{};
-    ModelHingeDrive response{}; // Hinge motor and passive response, or distance spring.
 };
 
 struct ModelPose
@@ -160,7 +155,7 @@ struct WarpModel
     std::vector<ModelPose> initialKinematicPoses;
     std::vector<ModelPose> initialStaticPoses;
     std::vector<ModelWords> sceneJoints;
-    std::vector<ModelSceneJointParameters> initialSceneJointParameters;
+    std::vector<ModelWords> initialSceneJointParameters; // Packed by joint kind, shared as the seed for each world.
 };
 
 /// Compile shared topology and initial coordinates. The source can name parents in any order.

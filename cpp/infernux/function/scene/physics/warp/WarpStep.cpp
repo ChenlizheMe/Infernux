@@ -26,8 +26,8 @@ constexpr auto RW = Access::ReadWrite;
 static_assert(sizeof(WarpRay) == 48);
 static_assert(sizeof(WarpRayHit) == 32);
 static_assert(sizeof(WarpBodyCommand) == 48);
-static_assert(sizeof(ModelHingeDrive) == 32);
-static_assert(sizeof(ModelSceneJointParameters) == 48);
+static_assert(sizeof(ModelJointVectors) == 32);
+static_assert(sizeof(ModelWords) == 16 && sizeof(ModelVector) == 16);
 static_assert(sizeof(WarpDistanceSpring) == 8);
 static_assert(sizeof(WarpBodyState) == 80);
 static_assert(sizeof(WarpContactReport) == 96);
@@ -615,7 +615,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
         const auto jointCount = model.sceneJoints[0][0];
         const auto modelRows = b.Shared("sceneJoints", model.sceneJoints);
         const auto &parameters = model.initialSceneJointParameters;
-        const auto parameterWords = sizeof(ModelSceneJointParameters) / sizeof(uint32_t);
+        const auto parameterWords = sizeof(ModelWords) / sizeof(uint32_t);
         jointParameters =
             b.Seed("sceneJointParameters", parameterWords * parameters.size(), parameters.data(), b.worlds);
         if (dyn.prescribedMotion != NoModelIndex)
@@ -1678,20 +1678,22 @@ void WarpStep::AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &disp
 void WarpStep::SceneJointParameters::Append(std::vector<rhi::ComputeBufferUpdate> &updates,
                                             std::vector<WarpJointParameterUpdate> values) const
 {
-    const auto key = [](const auto &value) { return std::tuple(value.world, value.row, value.value.index()); };
+    const auto key = [](const auto &value) { return std::tie(value.world, value.offset); };
     // Keep the last edit for each field while combining adjacent transfer ranges.
     std::stable_sort(values.begin(), values.end(), [&](const auto &a, const auto &b) { return key(a) < key(b); });
     rhi::ComputeBufferUpdate *range = nullptr;
-    constexpr auto rowBytes = sizeof(ModelSceneJointParameters);
-    for (const auto &value : values) {
-        if (value.row >= stride || value.world >= buffer->GetByteSize() / (rowBytes * uint64_t{stride}))
-            throw std::invalid_argument("Warp joint update does not match its enrolled world or row");
-        const auto field = std::holds_alternative<ModelWords>(value.value)
-                               ? offsetof(ModelSceneJointParameters, limits)
-                               : offsetof(ModelSceneJointParameters, response);
-        const auto offset = (uint64_t{value.world} * stride + value.row) * rowBytes + field;
+    constexpr auto recordBytes = sizeof(ModelWords);
+    for (size_t index = 0; index < values.size(); ++index) {
+        const auto &value = values[index];
+        if (index + 1 < values.size() && key(value) == key(values[index + 1]))
+            continue;
+        const auto record = uint64_t{value.world} * stride + value.offset;
         std::visit(
             [&](const auto &data) {
+                if (value.offset >= stride || sizeof(data) > (uint64_t{stride} - value.offset) * recordBytes ||
+                    !buffer || record >= buffer->GetByteSize() / recordBytes)
+                    throw std::invalid_argument("Warp joint update does not match its enrolled world or record");
+                const auto offset = record * recordBytes;
                 if (!range || offset > range->offset + range->data.size())
                     range = &updates.emplace_back(rhi::ComputeBufferUpdate{buffer, offset, {}});
                 const auto local = static_cast<size_t>(offset - range->offset);

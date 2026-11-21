@@ -129,8 +129,8 @@ struct WarpBodyCommand
 struct WarpJointParameterUpdate
 {
     uint32_t world;
-    uint32_t row;
-    std::variant<ModelWords, ModelHingeDrive, WarpDistanceSpring> value;
+    uint32_t offset; // In ModelWords records within one world.
+    std::variant<ModelWords, ModelJointVectors, WarpDistanceSpring, ModelSwingTwistControls> value;
 };
 
 enum class WarpBodyPublication

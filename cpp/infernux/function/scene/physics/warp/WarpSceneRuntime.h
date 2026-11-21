@@ -54,7 +54,8 @@ struct WarpSceneJointUpdate
 {
     uint64_t worldId;
     uint64_t jointId;
-    std::variant<WarpJointLimits, WarpHingeDrive, WarpDistanceSpring> value;
+    std::variant<WarpJointLimits, WarpHingeDrive, WarpDistanceSpring, WarpSwingTwistParameters, WarpSwingTwistTargets>
+        value;
 };
 
 struct WarpSceneBodyCommand

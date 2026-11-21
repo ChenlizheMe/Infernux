@@ -97,6 +97,22 @@ struct WarpSceneDistance
     float stiffness = 0.0f, damping = 0.0f;
 };
 
+struct WarpSwingTwistTargets
+{
+    glm::vec4 orientation{0, 0, 0, 1}; // Authored XYZW, in constraint space.
+    glm::vec3 angularVelocity{0.0f};   // Degrees/s, in owner constraint space.
+
+    [[nodiscard]] ModelJointVectors Pack() const;
+};
+
+struct WarpSwingTwistParameters
+{
+    ModelSwingTwistControls controls;
+    WarpSwingTwistTargets targets;
+
+    explicit WarpSwingTwistParameters(const SwingTwistJointSettings &settings);
+};
+
 struct WarpSceneJoint
 {
     uint32_t ownerActor;
@@ -121,6 +137,7 @@ struct WarpSceneJointBinding
     uint32_t row = NoModelIndex;
     WarpSceneJointKind kind = WarpSceneJointKind::Fixed;
     bool autoDistance = false;
+    uint32_t parameterOffset = 0; // In ModelWords records within one world.
 };
 
 struct WarpSceneModel

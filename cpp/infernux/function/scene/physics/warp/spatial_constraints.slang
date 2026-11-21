@@ -21,12 +21,6 @@ struct HingeDrive
     float4 passive;
 };
 
-struct SceneJointParameters
-{
-    uint4 limits; // Enabled, minimum and maximum as float bits.
-    HingeDrive response; // Distance uses the first two response values for stiffness and damping.
-};
-
 [[vk::binding(1, 0)]] StructuredBuffer<uint4> spatialModel;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> equalityActive;
 [[vk::binding(3, 0)]] StructuredBuffer<Pose> bodyPose;
@@ -40,7 +34,7 @@ struct SceneJointParameters
 [[vk::binding(14, 0)]] StructuredBuffer<uint> sceneFixedSteps;
 [[vk::binding(15, 0)]] RWStructuredBuffer<SpatialMotion> sceneBodyVelocity;
 [[vk::binding(16, 0)]] StructuredBuffer<ModelDimensions> sceneDimensions;
-[[vk::binding(17, 0)]] StructuredBuffer<SceneJointParameters> sceneParameters;
+[[vk::binding(17, 0)]] StructuredBuffer<uint4> sceneParameters;
 
 struct SpatialEndpoint
 {
@@ -264,8 +258,8 @@ AngularRows swingTwistRows(uint record, float4 relative, float3 relativeVelocity
 {
     AngularRows result;
     result.count = 0u;
-    const float4 angles = asfloat(spatialModel[record]); // Twist min/max, plane (Z), normal (Y).
-    const uint3 modes = spatialModel[record + 1].xyz;
+    const float4 angles = asfloat(sceneParameters[record]); // Twist min/max, plane (Z), normal (Y).
+    const uint3 modes = sceneParameters[record + 1].xyz;
     const SwingTwistCoordinates coordinates = swingTwistCoordinates(relative);
     const float3 swing = coordinates.swing;
     const float2 swingLimits = angles.wz;
@@ -330,15 +324,15 @@ AngularRows swingTwistRows(uint record, float4 relative, float3 relativeVelocity
         }
     }
 
-    const float4 springs = asfloat(spatialModel[record + 2]);
-    const float3 caps = asfloat(spatialModel[record + 3].xyz);
+    const float4 springs = asfloat(sceneParameters[record + 2]);
+    const float3 caps = asfloat(sceneParameters[record + 3].xyz);
     float4 offset = float4(0.0);
     if (modes.y >= 2 || modes.z >= 2)
     {
-        const float4 target = limitSwingTwistTarget(asfloat(spatialModel[record + 4]), angles, elliptic);
+        const float4 target = limitSwingTwistTarget(asfloat(sceneParameters[record + 4]), angles, elliptic);
         offset = mulQuat(conjugateQuaternion(relative), dot(relative, target) < 0.0 ? -target : target);
     }
-    const float3 velocity = asfloat(spatialModel[record + 5].xyz);
+    const float3 velocity = asfloat(sceneParameters[record + 5].xyz);
     for (uint axis = 0; axis < 3; ++axis)
     {
         const bool isTwist = axis == 0;
@@ -367,7 +361,7 @@ AngularRows swingTwistRows(uint record, float4 relative, float3 relativeVelocity
 
 void emitSpatialRows<let SceneJoint : bool>(uint3 id)
 {
-    const uint4 model = spatialModel[0]; // Descriptor count, then angular data offset or equality activation stride.
+    const uint4 model = spatialModel[0]; // Descriptor count, then parameter or equality activation stride.
     if (id.x >= model.x)
         return;
     const uint record = 1 + (SceneJoint ? SceneJointWords : SpatialEqualityWords) * id.x;
@@ -410,28 +404,33 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
                        (slider ? slideVelocity.z : dot(radial, pointVelocity));
     const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
     const float timestep = asfloat(settings[2 + id.y].x);
-    const uint parameterIndex = id.y * model.x + id.x;
-    const uint4 controls = SceneJoint ? sceneParameters[parameterIndex].limits : uint4(0u);
+    const uint parameterIndex = id.y * model.y + joint.y;
     AxialRows axial;
     axial.count = 0;
     AngularRows swing;
     swing.count = 0;
-    if (hinge)
+    if (swingTwist)
+        swing = swingTwistRows(parameterIndex, relative, relativeVelocity, asfloat(reference.w), timestep);
+    else if (hinge)
     {
+        const uint4 controls = sceneParameters[parameterIndex];
         const float theta = wrapHingeAngle(2.0 * atan2(relative.w, relative.x));
-        const HingeDrive drive = sceneParameters[parameterIndex].response;
+        const HingeDrive drive = {asfloat(sceneParameters[parameterIndex + 1]),
+                                  asfloat(sceneParameters[parameterIndex + 2])};
         axial = hingeRows(controls, drive, theta, speed, asfloat(reference.w), timestep, config.w, parameters);
     }
-    else if (controls.x != 0)
+    else if (slider || distance)
     {
-        const float2 limit = asfloat(controls.yz);
-        const float2 spring = distance ? sceneParameters[parameterIndex].response.motor.xy : float2(0.0);
-        // A range starting at zero permits its attachment points to cross.
-        appendAxisLimit<true>(axial, limit, slider ? slide.z : separationLength, speed, asfloat(reference.z),
-                              timestep, config.w, parameters, spring, !distance || limit.x > 0.0);
+        const uint4 controls = sceneParameters[parameterIndex];
+        if (controls.x != 0)
+        {
+            const float2 limit = asfloat(controls.yz);
+            const float2 spring = distance ? asfloat(sceneParameters[parameterIndex + 1].xy) : float2(0.0);
+            // A range starting at zero permits its attachment points to cross.
+            appendAxisLimit<true>(axial, limit, slider ? slide.z : separationLength, speed, asfloat(reference.z),
+                                  timestep, config.w, parameters, spring, !distance || limit.x > 0.0);
+        }
     }
-    else if (swingTwist)
-        swing = swingTwistRows(model.y + joint.y, relative, relativeVelocity, asfloat(reference.w), timestep);
     const uint totalRows = span.w + axial.count + swing.count;
     if (totalRows == 0)
         return;

@@ -84,7 +84,8 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
     constexpr size_t descriptorWords = 10;
     auto &model = scene.model;
     scene.jointBindings.resize(joints.size());
-    std::vector<ModelWords> descriptors(1), support, angularSettings;
+    auto &parameters = model.initialSceneJointParameters;
+    std::vector<ModelWords> descriptors(1), support;
     for (size_t index = 0; index < joints.size(); ++index) {
         const auto &joint = joints[index];
         const auto &owner = actors.at(joint.ownerActor);
@@ -132,7 +133,8 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         }
         const auto id = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
         const auto kind = static_cast<WarpSceneJointKind>(joint.settings.index());
-        scene.jointBindings[index] = {id, kind, distance && distance->autoDistance};
+        const auto parameterOffset = static_cast<uint32_t>(parameters.size());
+        scene.jointBindings[index] = {id, kind, distance && distance->autoDistance, parameterOffset};
         descriptors.push_back({id, a.body, b.body, static_cast<uint32_t>(support.size()) - first});
         const uint32_t equalityRows = distance ? 0u : (swing ? 3u : (hinge || slider ? 5u : 6u));
         descriptors.push_back({a.body, b.body, first, equalityRows});
@@ -146,44 +148,36 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         weights[0] = model.bodies[a.body].subtree[0];
         weights[1] = model.bodies[b.body].subtree[0];
         descriptors.push_back(weights);
-        descriptors.push_back({static_cast<uint32_t>(kind), static_cast<uint32_t>(angularSettings.size()), 0, 0});
-        ModelSceneJointParameters parameters;
+        descriptors.push_back({static_cast<uint32_t>(kind), parameterOffset, 0, 0});
         if (hinge) {
-            parameters.limits = WarpJointLimits{hinge->useLimits, hinge->minimum, hinge->maximum}.Pack();
-            parameters.response = hinge->drive.Pack();
+            parameters.push_back(WarpJointLimits{hinge->useLimits, hinge->minimum, hinge->maximum}.Pack());
+            for (const auto &word : hinge->drive.Pack())
+                parameters.push_back(Bits(word));
         } else if (slider) {
-            parameters.limits = WarpJointLimits{slider->useLimits, slider->minimum, slider->maximum}.Pack();
+            parameters.push_back(WarpJointLimits{slider->useLimits, slider->minimum, slider->maximum}.Pack());
         } else if (distance) {
             const auto rest = glm::length(connectedPoint - point);
             const auto minimum = distance->autoDistance ? rest : distance->minimum;
             const auto maximum = distance->autoDistance ? rest : distance->maximum;
-            parameters.limits = WarpJointLimits{true, minimum, maximum}.Pack();
-            parameters.response[0] = {distance->stiffness, distance->damping, 0.0f, 0.0f};
+            parameters.push_back(WarpJointLimits{true, minimum, maximum}.Pack());
+            parameters.push_back(Bits({distance->stiffness, distance->damping, 0.0f, 0.0f}));
         } else if (swing) {
-            const auto target = glm::normalize(swing->targetOrientation);
-            angularSettings.push_back(
-                Bits({glm::radians(swing->minimumTwistAngle), glm::radians(swing->maximumTwistAngle),
-                      glm::radians(swing->planeHalfConeAngle), glm::radians(swing->normalHalfConeAngle)}));
-            angularSettings.push_back({static_cast<uint32_t>(swing->swingType),
-                                       static_cast<uint32_t>(swing->swingMotorMode),
-                                       static_cast<uint32_t>(swing->twistMotorMode), 0});
-            angularSettings.push_back(Bits({swing->swingMotorStiffness, swing->swingMotorDamping,
-                                            swing->twistMotorStiffness, swing->twistMotorDamping}));
-            angularSettings.push_back(
-                Bits({swing->swingMotorMaxTorque, swing->twistMotorMaxTorque, swing->frictionTorque, 0.0f}));
-            angularSettings.push_back(Bits({target.w, target.x, target.y, target.z}));
-            angularSettings.push_back(Bits(Point(glm::radians(swing->targetAngularVelocity))));
+            const WarpSwingTwistParameters packed(*swing);
+            parameters.insert(parameters.end(), packed.controls.begin(), packed.controls.end());
+            for (const auto &word : packed.targets.Pack())
+                parameters.push_back(Bits(word));
         }
-        model.initialSceneJointParameters.push_back(parameters);
     }
     const auto count = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
     if (count == 0)
         return;
-    descriptors[0] = {count, static_cast<uint32_t>(descriptors.size() + support.size()), 0, 0};
+    // The shared scene kernel has a parameter binding even for an all-fixed model.
+    if (parameters.empty())
+        parameters.emplace_back();
+    descriptors[0] = {count, static_cast<uint32_t>(parameters.size()), 0, 0};
     for (size_t row = 2; row < descriptors.size(); row += descriptorWords)
         descriptors[row][2] += static_cast<uint32_t>(descriptors.size());
     descriptors.insert(descriptors.end(), support.begin(), support.end());
-    descriptors.insert(descriptors.end(), angularSettings.begin(), angularSettings.end());
     model.sceneJoints = std::move(descriptors);
 }
 
@@ -292,6 +286,24 @@ WarpGeometryType CookGeometry(const JPH::TransformedShape &leaf, WarpCollisionGe
     }
 }
 } // namespace
+
+ModelJointVectors WarpSwingTwistTargets::Pack() const
+{
+    const auto target = glm::normalize(orientation);
+    return {{{target.w, target.x, target.y, target.z}, Point(glm::radians(angularVelocity))}};
+}
+
+WarpSwingTwistParameters::WarpSwingTwistParameters(const SwingTwistJointSettings &settings)
+    : controls{{Bits({glm::radians(settings.minimumTwistAngle), glm::radians(settings.maximumTwistAngle),
+                      glm::radians(settings.planeHalfConeAngle), glm::radians(settings.normalHalfConeAngle)}),
+                {static_cast<uint32_t>(settings.swingType), static_cast<uint32_t>(settings.swingMotorMode),
+                 static_cast<uint32_t>(settings.twistMotorMode), 0},
+                Bits({settings.swingMotorStiffness, settings.swingMotorDamping, settings.twistMotorStiffness,
+                      settings.twistMotorDamping}),
+                Bits({settings.swingMotorMaxTorque, settings.twistMotorMaxTorque, settings.frictionTorque, 0.0f})}},
+      targets{settings.targetOrientation, settings.targetAngularVelocity}
+{
+}
 
 WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author)
 {

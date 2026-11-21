@@ -265,18 +265,28 @@ void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
                  (joint.autoDistance || !limits->enabled || minimum < 0.0f)))
                 throw std::invalid_argument(
                     "Warp joint limits must match the enrolled constraint and its authored mode");
-            updates.push_back({world, joint.row, limits->Pack()});
+            updates.push_back({world, joint.parameterOffset, limits->Pack()});
         } else if (const auto *drive = std::get_if<WarpHingeDrive>(&update.value)) {
             if (joint.kind != WarpSceneJointKind::Hinge)
                 throw std::invalid_argument("Warp hinge drive requires an enrolled hinge");
-            updates.push_back({world, joint.row, drive->Pack()});
-        } else {
-            const auto &spring = std::get<WarpDistanceSpring>(update.value);
-            if (joint.kind != WarpSceneJointKind::Distance || !std::isfinite(spring.stiffness) ||
-                !std::isfinite(spring.damping) || spring.stiffness < 0.0f || spring.damping < 0.0f)
+            updates.push_back({world, joint.parameterOffset + 1, drive->Pack()});
+        } else if (const auto *spring = std::get_if<WarpDistanceSpring>(&update.value)) {
+            if (joint.kind != WarpSceneJointKind::Distance || !std::isfinite(spring->stiffness) ||
+                !std::isfinite(spring->damping) || spring->stiffness < 0.0f || spring->damping < 0.0f)
                 throw std::invalid_argument(
                     "Warp distance spring requires finite nonnegative coefficients on a distance joint");
-            updates.push_back({world, joint.row, spring});
+            updates.push_back({world, joint.parameterOffset + 1, *spring});
+        } else {
+            if (joint.kind != WarpSceneJointKind::SwingTwist)
+                throw std::invalid_argument("Warp swing-twist parameters require an enrolled swing-twist joint");
+            constexpr uint32_t targetOffset = sizeof(ModelSwingTwistControls) / sizeof(ModelWords);
+            if (const auto *parameters = std::get_if<WarpSwingTwistParameters>(&update.value)) {
+                updates.push_back({world, joint.parameterOffset, parameters->controls});
+                updates.push_back({world, joint.parameterOffset + targetOffset, parameters->targets.Pack()});
+            } else {
+                updates.push_back({world, joint.parameterOffset + targetOffset,
+                                   std::get<WarpSwingTwistTargets>(update.value).Pack()});
+            }
         }
     }
     BeginOperation({std::move(identities), std::move(actions), std::move(updates), host, captureContacts,
