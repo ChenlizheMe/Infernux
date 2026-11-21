@@ -42,6 +42,7 @@ struct WarpFixedPublication
     std::shared_ptr<rhi::ComputeBuffer> bodyStates;
     std::vector<WarpFixedWorld> worlds;
     std::vector<WarpBodyState> hostBodies;
+    std::vector<std::vector<WarpContactReport>> contacts;
     uint32_t bodiesPerWorld = 0;
 
     [[nodiscard]] PhysicsGpuPoseSource PoseSource(uint32_t world) const;
@@ -61,8 +62,8 @@ class WarpSceneRuntime final
   public:
     WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target, const WarpSceneModel &scene,
                      std::vector<WarpRegisteredWorld> worlds, float timestep, const ModelVector &gravity,
-                     WarpCollisionCapacity collisionCapacity, const WarpContactSolver &solver,
-                     uint32_t commandCapacity);
+                     WarpCollisionCapacity collisionCapacity, const WarpContactSolver &solver, uint32_t commandCapacity,
+                     bool contactReports = false);
     ~WarpSceneRuntime();
     WarpSceneRuntime(const WarpSceneRuntime &) = delete;
     WarpSceneRuntime &operator=(const WarpSceneRuntime &) = delete;
@@ -75,7 +76,8 @@ class WarpSceneRuntime final
 
     /// Own the fixed identity until its publication is consumed. The device
     /// profile reports status only, while the host profile includes motion.
-    void BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands, bool host);
+    void BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands, bool host,
+                    bool captureContacts = false);
     [[nodiscard]] std::optional<WarpFixedPublication> TakeFixed();
     [[nodiscard]] std::optional<WarpHostBody> ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
                                                            uint32_t engineBody) const;
@@ -88,7 +90,8 @@ class WarpSceneRuntime final
     {
         Initialize,
         Preserve,
-        Fixed
+        Fixed,
+        Reports,
     };
     struct World
     {
@@ -101,6 +104,7 @@ class WarpSceneRuntime final
         std::vector<ContactStreamIdentity> identities;
         std::vector<WarpBodyCommand> commands;
         bool host;
+        bool captureContacts;
     };
     struct Receipt
     {
@@ -115,7 +119,9 @@ class WarpSceneRuntime final
     void Observe();
     bool Submit();
     void Finish();
-    void PublishFixed();
+    void FinishFixed(const rhi::PreparedComputeBatch &packet);
+    void FinishReports(const rhi::PreparedComputeBatch &packet);
+    void PublishFixed(WarpFixedPublication publication);
 
     FrameWorkOwner &m_work;
     rhi::ComputeHost m_host;
@@ -123,9 +129,11 @@ class WarpSceneRuntime final
     std::unique_ptr<WarpStep> m_step;
     std::vector<World> m_worlds;
     uint32_t m_bodyCount;
+    bool m_contactReportsConfigured;
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;
     std::optional<Receipt> m_receipt;
     std::optional<Fixed> m_fixed;
+    std::optional<WarpFixedPublication> m_contactPublication;
     std::optional<WarpFixedPublication> m_publication;
     uint64_t m_generation = 1;
     uint64_t m_fixedGpuNanoseconds = 0;

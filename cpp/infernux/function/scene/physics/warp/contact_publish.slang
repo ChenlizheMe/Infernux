@@ -94,7 +94,7 @@ ContactMaterial resolveMaterial(uint4 pair, uint geomCount)
 }
 
 void writeContact(uint world, uint4 pair, uint ordinal, float distance, float3 point, ContactBasis basis,
-                  ContactMaterial material, uint capacity, uint secondSubShape = 0)
+                  ContactMaterial material, uint capacity, uint secondSubShape = NoIndex)
 {
     const float margin = material.parameters.x;
     const bool detected = distance < margin + material.parameters.y;
@@ -117,6 +117,6 @@ void writeContact(uint world, uint4 pair, uint ordinal, float distance, float3 p
     contact.friction = max(material.friction, float4(MinFriction));
     contact.extra = float4(material.extra.x, max(material.extra.y, MinFriction), 0.0, 0.0);
     contact.geometry = uint4(pair.xy, dim, (constraint ? ContactConstraint : 0u) | (sensor ? ContactSensor : 0u));
-    contact.identity = uint4(ordinal, pair.w, 0, secondSubShape);
+    contact.identity = uint4(ordinal, pair.w, NoIndex, secondSubShape);
     contacts[world * capacity + slot] = contact;
 }

@@ -45,6 +45,12 @@ struct WarpContactStream
     std::shared_ptr<rhi::ComputeBuffer> narrowphaseStatus;
 };
 
+struct WarpContactReport
+{
+    ModelVector pointSeparation, normal, relativeVelocity, impulse;
+    ModelWords endpoints, identity;
+};
+
 enum WarpRayFlags : uint32_t
 {
     WarpRayIncludeStatic = 1,
@@ -129,12 +135,11 @@ class WarpStep
 {
   public:
     /// Resident rigid dynamics with optional collision detection and constraint response.
-    [[nodiscard]] static PreparedWarpStep Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model,
-                                                uint32_t worlds, float timestep, const ModelVector &gravity,
-                                                const WarpCollisionModel *collision = nullptr,
-                                                WarpCollisionCapacity capacity = {},
-                                                const WarpContactSolver *solver = nullptr,
-                                                WarpRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0);
+    [[nodiscard]] static PreparedWarpStep
+    Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model, uint32_t worlds, float timestep,
+          const ModelVector &gravity, const WarpCollisionModel *collision = nullptr,
+          WarpCollisionCapacity capacity = {}, const WarpContactSolver *solver = nullptr,
+          WarpRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0, bool contactReports = false);
 
     /// The ordered snapshot holds qpos, qvel, clocks and, with contact response, a uint32 status per world.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
@@ -144,7 +149,16 @@ class WarpStep
     /// restores its previous motions along with its fixed clock.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPublication publication,
-                      std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
+                      std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false) const;
+
+    /// A reporting step appends the world counts to its readbacks. Read only
+    /// accepted worlds' populated ranges before issuing another step.
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareContactReports(const std::vector<uint32_t> &acceptedCounts) const;
+    [[nodiscard]] bool HasContactReports() const noexcept
+    {
+        return bool(m_reports.records);
+    }
 
     /// World-major body rows (including the world row), followed by one
     /// ModelWords record per world with the clock bits, solver status and accepted step ordinal.
@@ -179,10 +193,16 @@ class WarpStep
         uint32_t worlds = 0;
         uint32_t timestep = 0;
     };
+    struct ContactReports
+    {
+        std::shared_ptr<rhi::ComputeBuffer> records;
+        rhi::ComputeDispatchDesc capture;
+        uint32_t capacity = 0;
+    };
 
     WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
              uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,
-             std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls);
+             std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls, ContactReports reports);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -193,6 +213,7 @@ class WarpStep
     WarpRayBuffers m_rays;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     BodyControls m_controls;
+    ContactReports m_reports;
 };
 
 } // namespace infernux::physics::warp

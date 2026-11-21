@@ -26,6 +26,7 @@ inline constexpr WarpProgramSource WarpProgramSources[] = {
     {"contact_cg"},
     {"contact_constraints"},
     {"contact_newton"},
+    {"contact_reports"},
     {"convex_contacts"},
     {"discrete_constraints"},
     {"discrete_metric"},

@@ -26,6 +26,7 @@ static_assert(sizeof(WarpRay) == 48);
 static_assert(sizeof(WarpRayHit) == 32);
 static_assert(sizeof(WarpBodyCommand) == 48);
 static_assert(sizeof(WarpBodyState) == 80);
+static_assert(sizeof(WarpContactReport) == 96);
 static_assert(static_cast<uint32_t>(ForceMode::Force) == 0 && static_cast<uint32_t>(ForceMode::Acceleration) == 1 &&
               static_cast<uint32_t>(ForceMode::Impulse) == 2 && static_cast<uint32_t>(ForceMode::VelocityChange) == 3);
 
@@ -388,6 +389,8 @@ struct ContactResponse
     uint32_t acceleration;
     uint32_t status;
     uint32_t topology;
+    uint32_t reportRecords = NoModelIndex;
+    std::optional<ComputeWorkDispatch> capture;
 };
 
 struct ReferenceWeights
@@ -448,6 +451,7 @@ struct ContactDynamics
     uint32_t motionModel;
     uint32_t fixedSteps;
     uint32_t prescribedMotion;
+    uint32_t bodyVelocity;
 };
 
 uint32_t FloatWord(float value)
@@ -459,7 +463,8 @@ uint32_t FloatWord(float value)
 
 ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const ContactSlots &stream,
                                    WarpCollisionCapacity capacity, const WarpContactSolver &solver, float timestep,
-                                   const ContactDynamics &dyn, std::vector<ComputeWorkDispatch> precondition)
+                                   const ContactDynamics &dyn, std::vector<ComputeWorkDispatch> precondition,
+                                   bool contactReports)
 {
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
@@ -694,7 +699,37 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {26, stream.counts, R},
            {27, status, W, true},
            {30, stream.narrowphaseStatus, R}});
-    return {acceleration, status, contactTopology};
+    ContactResponse response{acceleration, status, contactTopology, NoModelIndex, {}};
+    if (contactReports) {
+        const auto output = b.Zero("contactReports", across(24 * uint64_t{contacts}), BufferUsageFlags::TransferSource);
+        response.reportRecords = output;
+        response.capture = dyn.prescribedMotion == NoModelIndex
+                               ? b.Dispatch("contact_reports", "capture_contact_reports", contacts,
+                                            {{0, settings, R},
+                                             {1, stream.records, R},
+                                             {2, stream.counts, R},
+                                             {3, contactTopology, R},
+                                             {4, reservations, R},
+                                             {5, evaluation, R},
+                                             {6, dyn.bodyVelocity, R},
+                                             {7, dyn.subtreeCom, R},
+                                             {8, status, R},
+                                             {9, output, W}})
+                               : b.Dispatch("contact_reports", "capture_controlled_contact_reports", contacts,
+                                            {{0, settings, R},
+                                             {1, stream.records, R},
+                                             {2, stream.counts, R},
+                                             {3, contactTopology, R},
+                                             {4, reservations, R},
+                                             {5, evaluation, R},
+                                             {6, dyn.bodyVelocity, R},
+                                             {7, dyn.subtreeCom, R},
+                                             {8, status, R},
+                                             {9, output, W},
+                                             {11, dyn.prescribedMotion, R},
+                                             {12, dyn.fixedSteps, R}});
+    }
+    return response;
 }
 
 ComputeDispatchDesc BindDispatch(ComputeWorkDispatch command,
@@ -721,7 +756,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                  uint32_t worlds, float timestep, const ModelVector &gravity,
                                  const WarpCollisionModel *collision, WarpCollisionCapacity capacity,
                                  const WarpContactSolver *solver, WarpRayBatchLayout rayLayout,
-                                 uint32_t bodyCommandCapacity)
+                                 uint32_t bodyCommandCapacity, bool contactReports)
 {
     if (worlds == 0)
         throw std::invalid_argument("Warp step requires a world");
@@ -983,9 +1018,10 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                            warmstart,
                                            dimensions,
                                            controlSlots ? controlSlots->fixedSteps : NoModelIndex,
-                                           controlSlots && nm != 0 ? controlSlots->prescribed : NoModelIndex};
+                                           controlSlots && nm != 0 ? controlSlots->prescribed : NoModelIndex,
+                                           bodyVelocity};
             response = AddContactResponse(b, model, *contactSlots, capacity, *solver, timestep, dynamics,
-                                          std::move(massSolves));
+                                          std::move(massSolves), contactReports);
             reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
             const std::array singleWorld{
                 positions, pose,        jointPose, inertialFrame, subtreeCom,
@@ -1176,18 +1212,23 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         for (auto &dispatch : bodyPublication)
             controls.publication.push_back(BindDispatch(std::move(dispatch), buffers));
     }
+    ContactReports reports;
+    if (response && response->capture)
+        reports = {buffers[response->reportRecords], BindDispatch(std::move(*response->capture), buffers),
+                   capacity.contactsPerWorld};
     auto step = std::unique_ptr<WarpStep>(new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions,
                                                        velocities, applied, std::move(contacts), std::move(rays),
-                                                       std::move(rayWork), std::move(controls)));
+                                                       std::move(rayWork), std::move(controls), std::move(reports)));
     return {std::move(step), std::move(initialize)};
 }
 
 WarpStep::WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot,
                    uint32_t positions, uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts,
-                   WarpRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls)
+                   WarpRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
+                   ContactReports reports)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
       m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
-      m_rayWork(std::move(rayWork)), m_controls(std::move(controls))
+      m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports))
 {
 }
 
@@ -1218,13 +1259,14 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareRays(bool publish,
     return rhi::PrepareComputeBatch(host, std::move(updates), m_rayWork, std::move(reads));
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch>
-WarpStep::PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPublication publication,
-                            std::vector<rhi::ComputeBufferUpdate> updates) const
+std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vector<WarpBodyCommand> commands,
+                                                                       WarpBodyPublication publication,
+                                                                       std::vector<rhi::ComputeBufferUpdate> updates,
+                                                                       bool captureContacts) const
 {
     if (!m_controls.states)
         throw std::logic_error("Warp step has no rigid body control layout");
-    if (commands.empty() && publication == WarpBodyPublication::None)
+    if (commands.empty() && publication == WarpBodyPublication::None && !captureContacts)
         return Prepare(false, std::move(updates));
     if (commands.size() > m_controls.capacity)
         throw std::length_error("Warp fixed step body command capacity exceeded");
@@ -1268,6 +1310,8 @@ WarpStep::PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPubli
     if (spanCount != 0)
         commandDispatch(m_controls.apply);
     m_work->AppendDispatches(dispatches);
+    if (captureContacts && m_reports.records)
+        dispatches.push_back(m_reports.capture);
     if (spanCount != 0)
         commandDispatch(m_controls.finish);
     if (publication != WarpBodyPublication::None)
@@ -1279,8 +1323,28 @@ WarpStep::PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPubli
         const auto headers = sizeof(ModelWords) * uint64_t{m_controls.worlds};
         reads.push_back({m_controls.states, m_controls.states->GetByteSize() - headers, headers});
     }
+    if (captureContacts && m_reports.records)
+        reads.push_back({m_contacts.contactCounts, 0, m_contacts.contactCounts->GetByteSize()});
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareContactReports(const std::vector<uint32_t> &counts) const
+{
+    std::vector<rhi::ComputeBufferRead> reads;
+    for (size_t world = 0; world < counts.size(); ++world) {
+        const auto count = counts[world];
+        if (count > m_reports.capacity)
+            throw std::logic_error("Accepted Warp contact report count exceeds its world capacity");
+        if (count != 0) {
+            const auto base = world * m_reports.capacity * sizeof(WarpContactReport);
+            reads.push_back({m_reports.records, base, count * sizeof(WarpContactReport)});
+        }
+    }
+    if (reads.empty())
+        return {};
+    auto host = m_work->GetRecipe().GetHost();
+    return rhi::PrepareComputeBatch(host, {}, {}, std::move(reads));
 }
 
 std::shared_ptr<rhi::ComputeBuffer> WarpStep::BodyStates() const noexcept
