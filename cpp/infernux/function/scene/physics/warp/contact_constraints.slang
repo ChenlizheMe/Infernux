@@ -29,7 +29,7 @@ static const uint NegativeJacobian = 0x80000000u;
 // settings[1] holds body count, DOF count, worker count and cone/reference flags.
 // The remaining records hold each world's timestep and inverse square root of impratio as float bits.
 // topology stores one geom-to-body record per geom, then body records with last DOF of the welded body,
-// root body and translational inverse weight as float bits.
+// root body, translational inverse weight as float bits and subtree body count.
 uint4 contactBody(uint geometry)
 {
     return topology[settings[0].x + topology[geometry].x];

@@ -30,6 +30,7 @@ static const uint ReferenceSite = 32;
 static const uint JointTransmission = 0;
 static const uint TendonTransmission = 1;
 static const uint SiteTransmission = 2;
+static const uint BodyTransmission = 3;
 
 struct ActuatorModel
 {
@@ -87,10 +88,14 @@ struct TendonActuatorGroup
 [[vk::binding(15, 0)]] StructuredBuffer<float> tendonJacobian;
 [[vk::binding(16, 0)]] StructuredBuffer<TendonActuatorGroup> tendonActuatorGroups;
 [[vk::binding(17, 0)]] StructuredBuffer<uint> tendonActuatorList;
+[[vk::binding(21, 0)]] StructuredBuffer<float4> transmissionTreeCom;
+[[vk::binding(22, 0)]] StructuredBuffer<SpatialMotion> transmissionCenteredDof;
+[[vk::binding(23, 0)]] RWStructuredBuffer<float> actuatorMoments;
 [[vk::binding(24, 0)]] StructuredBuffer<DofModel> actuationDofs;
 [[vk::binding(25, 0)]] StructuredBuffer<float> qfrcGravityCompensation;
 
 #include "site_transmission.slang"
+#include "body_transmission.slang"
 #include "actuator_dynamics.slang"
 
 float4 jointRotation(uint address)
@@ -187,7 +192,7 @@ void evaluate_actuators(uint3 id : SV_DispatchThreadID)
         const TendonState state = tendonState[id.y * actuatorDimensions[1].y + actuator.indices.x];
         motion = firstMoment.x * float2(state.length, state.velocity);
     }
-    else if (transmission == SiteTransmission)
+    else if (transmission == SiteTransmission || transmission == BodyTransmission)
         motion = actuatorStep[index].values.xy;
     else
         motion = jointActuatorMotion(actuator, id.y, firstMoment, lastMoment);
@@ -320,8 +325,8 @@ void project_actuator_force(uint3 id : SV_DispatchThreadID)
         const uint transmission = actuators[edge.x].modes.w;
         if (transmission == TendonTransmission)
             moment = step.firstMoment.x * tendonJacobian[id.y * actuatorDimensions[1].z + edge.y];
-        else if (transmission == SiteTransmission)
-            moment = siteActuatorMoment[id.y * actuatorDimensions[0].w + edge.y];
+        else if (transmission == SiteTransmission || transmission == BodyTransmission)
+            moment = actuatorMoments[id.y * actuatorDimensions[0].w + edge.y];
         else
             moment = edge.y < 3 ? step.firstMoment[edge.y] : step.lastMoment[edge.y - 3];
         force += moment * step.values.z;
