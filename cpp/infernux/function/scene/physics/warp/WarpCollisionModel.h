@@ -5,6 +5,7 @@
 
 #include "WarpModel.h"
 
+#include <memory>
 #include <optional>
 
 namespace infernux::physics::warp
@@ -20,6 +21,25 @@ struct WarpContactMaterial
     std::array<int32_t, 4> dimensions{3, 0, 0, 0};
 };
 
+struct WarpHullFace
+{
+    std::vector<uint32_t> vertices; // Convex loop in outward winding order.
+    ModelVector normal{};
+};
+
+struct WarpConvexHull
+{
+    std::vector<ModelVector> vertices;
+    std::vector<WarpHullFace> faces;
+};
+
+struct WarpHeightfield
+{
+    uint32_t rows = 0;
+    uint32_t columns = 0;
+    std::vector<float> samples; // Row-major normalized elevations.
+};
+
 struct WarpCollisionGeometry
 {
     ModelVector size{};
@@ -27,6 +47,8 @@ struct WarpCollisionGeometry
     ModelVector halfExtent{};
     float radius = 0.0f;
     WarpContactMaterial material;
+    std::shared_ptr<const WarpConvexHull> hull;
+    std::shared_ptr<const WarpHeightfield> heightfield;
 };
 
 struct WarpCollisionPair
@@ -58,7 +80,10 @@ struct WarpCollisionModel
     std::vector<WarpCollisionShape> shapes;
     std::vector<WarpContactMaterial> materials;
     std::vector<ModelWords> pairRules;
+    std::vector<ModelWords> convexData;
     bool filterConnectedBodies = true;
+    bool convexPairs = false;
+    bool heightfields = false;
 };
 
 /// Build rows in the same geometry order as model.geometries. Pair overrides can arrive in any order.

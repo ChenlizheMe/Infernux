@@ -168,10 +168,11 @@ struct ContactSlots
     uint32_t candidateCount;
     uint32_t counts;
     uint32_t records;
+    uint32_t narrowphaseStatus;
 };
 
-ContactSlots AddPrimitiveCollision(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
-                                   uint32_t dimensions, uint32_t pose, WarpCollisionCapacity capacity)
+ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
+                          uint32_t dimensions, uint32_t pose, WarpCollisionCapacity capacity)
 {
     const auto ng = model.dimensions.layout[0];
     const auto geometryWords = uint64_t{ng} * b.worlds;
@@ -227,7 +228,14 @@ ContactSlots AddPrimitiveCollision(StepBuilder &b, const WarpModel &model, const
            {10, pairCount, RW},
            {11, pairs, W}});
 
-    const std::array<ModelWords, 2> narrowOptions{{{ng, capacity.candidates, capacity.contactsPerWorld, 0}, {}}};
+    constexpr uint64_t workerLimit = 1024;
+    const auto pairUpperBound = std::min(workerLimit, uint64_t{ng} * (ng - 1) / 2) * b.worlds;
+    const bool advanced = !collision.convexData.empty();
+    const auto convexWorkers =
+        advanced ? static_cast<uint32_t>(std::min({uint64_t{capacity.candidates}, workerLimit, pairUpperBound})) : 0u;
+    constexpr uint32_t convexManifolds = 3;
+    const std::array<ModelWords, 2> narrowOptions{{{ng, capacity.candidates, capacity.contactsPerWorld, convexWorkers},
+                                                   {collision.convexPairs ? convexManifolds : 0u, 0, 0, 0}}};
     const auto settings = b.Seed("contactSettings", 8, &narrowOptions);
     const auto shapes = b.Shared("collisionShapes", collision.shapes);
     const auto materials = b.Shared("collisionMaterials", collision.materials);
@@ -249,7 +257,42 @@ ContactSlots AddPrimitiveCollision(StepBuilder &b, const WarpModel &model, const
     LinearGrid(narrow);
     narrow.indirectArguments = ComputeWorkRange{arguments, 0, ComputeIndirectArguments::ByteSize};
     b.dispatches.push_back(std::move(narrow));
-    return {pairCount, counts, contacts};
+
+    const auto status = convexWorkers != 0 ? b.Slot(b.worlds) : b.Zero("narrowphaseStatus", b.worlds);
+    if (convexWorkers != 0) {
+        const auto data = b.Shared("convexModel", collision.convexData);
+        const auto &layout = collision.convexData[0];
+        const auto polygonRecords = 5 * uint64_t{collision.convexData[1][3]};
+        const auto candidateRecords = 2 * uint64_t{collision.convexData[3][2]};
+        const auto workerRecords = 2 * uint64_t{layout[1]} + layout[2] + std::max(polygonRecords, candidateRecords);
+        const auto scratch = b.Slot(4 * convexWorkers * workerRecords);
+        const auto horizon = b.Slot(uint64_t{convexWorkers} * layout[3]);
+        b.Add("convex_contacts", "clear_convex_status", 1, {{11, status, W, true}});
+        const auto narrowphase = [&](std::string_view module, std::string_view name) {
+            auto dispatch = b.Dispatch(module, name, convexWorkers,
+                                       {{0, settings, R},
+                                        {1, frames, R},
+                                        {2, shapes, R},
+                                        {3, pairs, R},
+                                        {4, pairCount, R},
+                                        {5, materials, R},
+                                        {6, contacts, W},
+                                        {7, counts, RW},
+                                        {8, data, R},
+                                        {9, scratch, W},
+                                        {10, horizon, W},
+                                        {11, status, RW}});
+            LinearGrid(dispatch);
+            dispatch.indirectArguments =
+                ComputeWorkRange{arguments, sizeof(ModelWords), ComputeIndirectArguments::ByteSize};
+            b.dispatches.push_back(std::move(dispatch));
+        };
+        if (collision.convexPairs)
+            narrowphase("convex_contacts", "collide_convex");
+        if (collision.heightfields)
+            narrowphase("heightfield_contacts", "collide_heightfield");
+    }
+    return {pairCount, counts, contacts, status};
 }
 
 struct ContactResponse
@@ -541,7 +584,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {16, worldState, R},
            {25, stream.candidateCount, R},
            {26, stream.counts, R},
-           {27, status, W, true}});
+           {27, status, W, true},
+           {30, stream.narrowphaseStatus, R}});
     return {acceleration, status, contactTopology};
 }
 
@@ -617,7 +661,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             if (collision->bounds.size() != model.dimensions.layout[0] || capacity.candidates == 0 ||
                 capacity.contactsPerWorld == 0)
                 throw std::invalid_argument("Warp collision requires geometry rows and nonzero stream capacities");
-            contactSlots = AddPrimitiveCollision(b, model, *collision, dimensions, pose, capacity);
+            contactSlots = AddCollision(b, model, *collision, dimensions, pose, capacity);
         }
     }
     if (nv != 0) {
@@ -870,9 +914,12 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     auto initialize = rhi::PrepareComputeBatch(host, std::move(initial), std::move(initialDispatches));
     WarpContactStream contacts;
     if (contactSlots)
-        contacts = {buffers[contactSlots->candidateCount], buffers[contactSlots->counts],
-                    buffers[contactSlots->records], response ? buffers[response->status] : nullptr,
-                    response ? buffers[response->topology] : nullptr};
+        contacts = {buffers[contactSlots->candidateCount],
+                    buffers[contactSlots->counts],
+                    buffers[contactSlots->records],
+                    response ? buffers[response->status] : nullptr,
+                    response ? buffers[response->topology] : nullptr,
+                    buffers[contactSlots->narrowphaseStatus]};
     auto step = std::unique_ptr<WarpStep>(new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions,
                                                        velocities, applied, std::move(contacts)));
     return {std::move(step), std::move(initialize)};

@@ -6,7 +6,6 @@
 #include "convex_penetration.slang"
 #include "convex_features.slang"
 
-static const uint ConvexClipCapacity = 5;
 
 struct ConvexManifold
 {

@@ -8,7 +8,6 @@
 #include "heightfield_geometry.slang"
 #include "linear_dispatch.slang"
 
-static const uint HeightfieldCapacityExceeded = 6;
 static const float HeightfieldContactSpacing = 1.0e-3;
 
 [[vk::binding(8, 0)]] StructuredBuffer<uint4> convexModel;

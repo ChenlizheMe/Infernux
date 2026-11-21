@@ -37,6 +37,7 @@ struct WarpContactStream
     std::shared_ptr<rhi::ComputeBuffer> records;
     std::shared_ptr<rhi::ComputeBuffer> stepStatus;
     std::shared_ptr<rhi::ComputeBuffer> topology;
+    std::shared_ptr<rhi::ComputeBuffer> narrowphaseStatus;
 };
 
 struct PreparedWarpStep
@@ -50,7 +51,7 @@ struct PreparedWarpStep
 class WarpStep
 {
   public:
-    /// Resident rigid dynamics with optional primitive detection and constraint response.
+    /// Resident rigid dynamics with optional collision detection and constraint response.
     [[nodiscard]] static PreparedWarpStep Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model,
                                                 uint32_t worlds, float timestep, const ModelVector &gravity,
                                                 const WarpCollisionModel *collision = nullptr,

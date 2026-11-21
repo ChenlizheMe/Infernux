@@ -6,8 +6,6 @@
 #include "convex_distance.slang"
 #include "convex_polytope.slang"
 
-static const uint EpaDegenerate = 3;
-static const uint EpaIterationLimit = 4;
 
 struct ConvexPenetration
 {

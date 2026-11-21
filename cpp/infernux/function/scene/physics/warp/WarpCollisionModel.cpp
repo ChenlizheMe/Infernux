@@ -4,15 +4,184 @@
 #include "WarpCollisionModel.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
 
 namespace infernux::physics::warp
 {
 static_assert(sizeof(WarpLocalBound) == 64);
 static_assert(sizeof(WarpCollisionShape) == 32);
 static_assert(sizeof(WarpContactMaterial) == 96);
+
+namespace
+{
+enum Geometry : uint32_t
+{
+    Heightfield = 1,
+    Capsule = 3,
+    Ellipsoid = 4,
+    Cylinder = 5,
+    Box = 6,
+    Hull = 7,
+};
+
+ModelWords FloatWords(const ModelVector &value)
+{
+    ModelWords words;
+    std::memcpy(words.data(), value.data(), sizeof(words));
+    return words;
+}
+
+void AppendScalars(std::vector<ModelWords> &records, const std::vector<uint32_t> &scalars)
+{
+    const auto first = records.size();
+    records.resize(first + (scalars.size() + 3) / 4);
+    for (size_t index = 0; index < scalars.size(); ++index)
+        records[first + index / 4][index % 4] = scalars[index];
+}
+
+struct PackedHull
+{
+    ModelWords shape;
+    ModelWords topology;
+    ModelVector center{};
+    ModelVector halfExtent{};
+    float radius = 0.0f;
+};
+
+struct ConvexData
+{
+    explicit ConvexData(size_t geometries) : topology(geometries, {NoModelIndex, NoModelIndex, 0, 0})
+    {
+    }
+
+    const PackedHull &AddHull(const WarpConvexHull &hull)
+    {
+        const auto cached = hulls.find(&hull);
+        if (cached != hulls.end())
+            return cached->second;
+        const auto count = static_cast<uint32_t>(hull.vertices.size());
+        const auto faces = static_cast<uint32_t>(hull.faces.size());
+        if (count < 4 || faces < 4)
+            throw std::invalid_argument("Warp convex hull has no closed surface");
+
+        PackedHull packed;
+        packed.shape = {Hull, static_cast<uint32_t>(vertices.size()), count, NoModelIndex};
+        auto minimum = hull.vertices.front(), maximum = minimum;
+        for (const auto &vertex : hull.vertices) {
+            vertices.push_back(FloatWords(vertex));
+            packed.radius = std::max(packed.radius, std::hypot(vertex[0], vertex[1], vertex[2]));
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                minimum[axis] = std::min(minimum[axis], vertex[axis]);
+                maximum[axis] = std::max(maximum[axis], vertex[axis]);
+            }
+        }
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            packed.center[axis] = (maximum[axis] + minimum[axis]) * 0.5f;
+            packed.halfExtent[axis] = (maximum[axis] - minimum[axis]) * 0.5f;
+        }
+
+        const auto faceStart = static_cast<uint32_t>(topology.size());
+        const auto incidenceStart = faceStart + faces;
+        packed.topology = {faceStart, incidenceStart, 0, 0};
+        std::vector<std::vector<uint32_t>> incident(count);
+        std::vector<std::vector<uint32_t>> neighbors(count);
+        for (uint32_t face = 0; face < faces; ++face) {
+            const auto &source = hull.faces[face];
+            const auto size = static_cast<uint32_t>(source.vertices.size());
+            if (size < 3 ||
+                std::any_of(
+                    source.vertices.begin(), source.vertices.end(), [count](uint32_t index) { return index >= count; }))
+                throw std::invalid_argument("Invalid Warp convex hull face loop");
+            polygonVertices = std::max(polygonVertices, size);
+            topology.push_back({static_cast<uint32_t>(links.size()), size, static_cast<uint32_t>(vertices.size()), 0});
+            vertices.push_back(FloatWords(source.normal));
+            links.insert(links.end(), source.vertices.begin(), source.vertices.end());
+            for (uint32_t i = 0; i < size; ++i) {
+                const auto a = source.vertices[i];
+                const auto b = source.vertices[(i + 1) % size];
+                incident[a].push_back(face);
+                neighbors[a].push_back(b);
+                neighbors[b].push_back(a);
+            }
+        }
+        for (const auto &adjacent : incident) {
+            topology.push_back({static_cast<uint32_t>(links.size()), static_cast<uint32_t>(adjacent.size()), 0, 0});
+            links.insert(links.end(), adjacent.begin(), adjacent.end());
+        }
+        if (count >= 10) {
+            const auto graph = static_cast<uint32_t>(adjacency.size());
+            packed.shape[3] = graph;
+            adjacency.resize(adjacency.size() + 2 + 2 * uint64_t{count});
+            adjacency[graph] = count;
+            adjacency[graph + 1] = faces;
+            const auto neighborStart = static_cast<uint32_t>(adjacency.size());
+            for (uint32_t vertex = 0; vertex < count; ++vertex) {
+                auto &adjacent = neighbors[vertex];
+                std::sort(adjacent.begin(), adjacent.end());
+                const auto unique = std::unique(adjacent.begin(), adjacent.end());
+                adjacency[graph + 2 + vertex] = static_cast<uint32_t>(adjacency.size()) - neighborStart;
+                adjacency[graph + 2 + count + vertex] = vertex;
+                adjacency.insert(adjacency.end(), adjacent.begin(), unique);
+                adjacency.push_back(NoModelIndex);
+            }
+        }
+        return hulls.emplace(&hull, std::move(packed)).first->second;
+    }
+
+    uint32_t AddHeightfield(const WarpHeightfield &field, const ModelVector &size)
+    {
+        if (field.rows < 2 || field.columns < 2 || field.samples.size() != uint64_t{field.rows} * field.columns ||
+            size[0] <= 0 || size[1] <= 0 || size[2] < 0 || size[3] < 0)
+            throw std::invalid_argument("Invalid Warp heightfield grid");
+        const auto [sample, inserted] = sampleOffsets.try_emplace(&field, static_cast<uint32_t>(samples.size()));
+        if (inserted) {
+            for (const float height : field.samples) {
+                uint32_t word;
+                std::memcpy(&word, &height, sizeof(word));
+                samples.push_back(word);
+            }
+        }
+        const auto row = static_cast<uint32_t>(heightfields.size() / 2);
+        heightfields.push_back({field.rows, field.columns, sample->second, 0});
+        heightfields.push_back(FloatWords(size));
+        return row;
+    }
+
+    std::vector<ModelWords> Finish() const
+    {
+        // The reference collision loop uses a bounded GJK and EPA budget.
+        constexpr uint32_t iterations = 50;
+        std::vector<ModelWords> result(4);
+        result[0] = {0, iterations + 5, 6 + 12 * iterations, 128};
+        result[1] = {FloatWords({1.0e-6f, 0, 0, 0})[0], iterations, iterations, polygonVertices};
+        ModelWords offsets;
+        offsets[0] = static_cast<uint32_t>(result.size());
+        result.insert(result.end(), vertices.begin(), vertices.end());
+        offsets[1] = static_cast<uint32_t>(result.size());
+        AppendScalars(result, adjacency);
+        offsets[2] = static_cast<uint32_t>(result.size());
+        result.insert(result.end(), topology.begin(), topology.end());
+        offsets[3] = static_cast<uint32_t>(result.size());
+        AppendScalars(result, links);
+        result[2] = offsets;
+        result[3] = {static_cast<uint32_t>(result.size()), static_cast<uint32_t>(result.size() + heightfields.size()),
+                     heightfields.empty() ? 0u : 50u, 0};
+        result.insert(result.end(), heightfields.begin(), heightfields.end());
+        AppendScalars(result, samples);
+        return result;
+    }
+
+    uint32_t polygonVertices = 4;
+    std::vector<ModelWords> vertices, topology, heightfields;
+    std::vector<uint32_t> adjacency, links, samples;
+    std::unordered_map<const WarpConvexHull *, PackedHull> hulls;
+    std::unordered_map<const WarpHeightfield *, uint32_t> sampleOffsets;
+};
+} // namespace
 
 WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::vector<WarpCollisionGeometry> &geometries,
                                            std::vector<WarpCollisionPair> pairs, bool filterConnectedBodies)
@@ -34,6 +203,9 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
     result.materials.reserve(count + pairs.size());
     result.pairRules.resize(uint64_t{count} + 1);
     result.pairRules.reserve(result.pairRules.size() + pairs.size());
+    ConvexData convex(count);
+    uint32_t boxCount = 0, cylinderCount = 0;
+    bool hasCapsule = false;
     for (uint32_t geom = 0; geom < count; ++geom) {
         const auto &source = geometries[geom];
         const auto [body, type, collisionType, collisionAffinity] = model.geometries[geom].indices;
@@ -45,8 +217,39 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
                                  {source.radius, material.parameters[0] + material.parameters[1], 0, 0},
                                  {type, body, collisionType, collisionAffinity}});
         result.shapes.push_back({source.size, {type, 0, 0, 0}});
+        auto &bounds = result.bounds.back();
+        auto &shape = result.shapes.back();
+        if (type == Hull) {
+            if (!source.hull)
+                throw std::invalid_argument("Warp convex mesh requires its cooked hull");
+            const auto &hull = convex.AddHull(*source.hull);
+            shape.type = hull.shape;
+            convex.topology[geom] = hull.topology;
+            bounds.center = hull.center;
+            bounds.halfExtent = hull.halfExtent;
+            bounds.radii[0] = hull.radius;
+        } else if (type == Heightfield) {
+            if (!source.heightfield)
+                throw std::invalid_argument("Warp heightfield requires its sample grid");
+            shape.type[1] = convex.AddHeightfield(*source.heightfield, source.size);
+            const auto [x, y, height, depth] = source.size;
+            bounds.center = {0, 0, (height - depth) * 0.5f, 0};
+            bounds.halfExtent = {x, y, (height + depth) * 0.5f, 0};
+            bounds.radii[0] = std::hypot(x, y, std::max(height, depth));
+            result.heightfields = true;
+        }
+        result.convexPairs |= type == Hull || type == Ellipsoid;
+        boxCount += uint32_t(type == Box);
+        cylinderCount += uint32_t(type == Cylinder);
+        hasCapsule |= type == Capsule;
         result.materials.push_back(material);
         result.pairRules[geom] = {weld, weldParent, uint32_t(model.bodies[weld].dofs[1] != 0), 0};
+    }
+    result.convexPairs |= boxCount > 1 || cylinderCount > 1 || (cylinderCount != 0 && (boxCount != 0 || hasCapsule));
+    if (result.convexPairs || result.heightfields) {
+        if (cylinderCount != 0)
+            convex.polygonVertices = std::max(convex.polygonVertices, 16u);
+        result.convexData = convex.Finish();
     }
 
     for (auto &pair : pairs) {

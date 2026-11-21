@@ -3,11 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Adapted from MuJoCo Warp _src/collision_gjk.py, EPA polytope storage and seeding.
 
+#include "convex_status.slang"
+
 static const uint EpaVertexMask = 0x3ffu;
 static const uint EpaDeletedFace = 0x80000000u;
 static const uint EpaInvalidFace = 0x40000000u;
-static const uint EpaBoundary = 1;
-static const uint EpaCapacity = 2;
 
 struct ConvexPolytope
 {

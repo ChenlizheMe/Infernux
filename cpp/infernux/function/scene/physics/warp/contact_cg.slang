@@ -4,12 +4,14 @@
 // Slang adaptation of MuJoCo Warp _src/solver.py preconditioned CG.
 
 #include "contact_solve_common.slang"
+#include "convex_status.slang"
 
 [[vk::binding(24, 0)]] StructuredBuffer<uint> awakeWorldFlags;
 [[vk::binding(25, 0)]] StructuredBuffer<uint> candidateCount;
 [[vk::binding(26, 0)]] StructuredBuffer<uint> contactCounts;
 [[vk::binding(27, 0)]] RWStructuredBuffer<uint> contactStepStatus;
 [[vk::binding(28, 0)]] RWStructuredBuffer<uint4> contactSolveDispatches;
+[[vk::binding(30, 0)]] StructuredBuffer<uint> narrowphaseStatus;
 
 groupshared uint activeRowMaximum[CgWidth];
 
@@ -59,8 +61,9 @@ void finish_contact_step(uint3 id : SV_DispatchThreadID)
     const uint contactsOverflow = contactCounts[id.y] > settings[0].y ? 2u : 0u;
     const uint constraintsOverflow = progress == CapacityExceeded ? 4u : 0u;
     const uint invalid = progress == InvalidFactor || progress == Running ? 8u : 0u;
+    const uint workspaceOverflow = (narrowphaseStatus[id.y] & ConvexCapacityFlags) != 0 ? 16u : 0u;
     // A bounded solve may integrate its best accepted iterate. Capacity failure cannot.
-    contactStepStatus[id.y] = candidates | contactsOverflow | constraintsOverflow | invalid;
+    contactStepStatus[id.y] = candidates | contactsOverflow | constraintsOverflow | invalid | workspaceOverflow;
 }
 
 [shader("compute")]
