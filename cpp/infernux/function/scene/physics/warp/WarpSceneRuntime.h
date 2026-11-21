@@ -42,8 +42,9 @@ struct WarpFixedPublication
     std::shared_ptr<rhi::ComputeBuffer> bodyStates;
     std::vector<WarpFixedWorld> worlds;
     std::vector<WarpBodyState> hostBodies;
-    std::vector<std::vector<WarpContactReport>> contacts;
+    std::vector<std::vector<WarpContactReport>> contacts; // Substep-major, then enrolled world.
     uint32_t bodiesPerWorld = 0;
+    uint32_t substeps = 1;
 
     [[nodiscard]] PhysicsGpuPoseSource PoseSource(uint32_t world) const;
 };
@@ -63,7 +64,7 @@ class WarpSceneRuntime final
     WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target, const WarpSceneModel &scene,
                      std::vector<WarpRegisteredWorld> worlds, float timestep, const ModelVector &gravity,
                      WarpCollisionCapacity collisionCapacity, const WarpContactSolver &solver, uint32_t commandCapacity,
-                     bool contactReports = false);
+                     bool contactReports = false, uint32_t substeps = 1);
     ~WarpSceneRuntime();
     WarpSceneRuntime(const WarpSceneRuntime &) = delete;
     WarpSceneRuntime &operator=(const WarpSceneRuntime &) = delete;

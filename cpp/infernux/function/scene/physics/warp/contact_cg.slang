@@ -63,7 +63,8 @@ void finish_contact_step(uint3 id : SV_DispatchThreadID)
     const uint invalid = progress == InvalidFactor || progress == Running ? 8u : 0u;
     const uint workspaceOverflow = (narrowphaseStatus[id.y] & ConvexCapacityFlags) != 0 ? 16u : 0u;
     // A bounded solve may integrate its best accepted iterate. Capacity failure cannot.
-    contactStepStatus[id.y] = candidates | contactsOverflow | constraintsOverflow | invalid | workspaceOverflow;
+    const uint earlier = cgOptions[1].y > 1u ? contactStepStatus[id.y] : 0u;
+    contactStepStatus[id.y] = earlier | candidates | contactsOverflow | constraintsOverflow | invalid | workspaceOverflow;
 }
 
 [shader("compute")]

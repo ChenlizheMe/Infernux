@@ -22,7 +22,8 @@ PhysicsGpuPoseSource WarpFixedPublication::PoseSource(uint32_t world) const
 WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target,
                                    const WarpSceneModel &scene, std::vector<WarpRegisteredWorld> worlds, float timestep,
                                    const ModelVector &gravity, WarpCollisionCapacity collisionCapacity,
-                                   const WarpContactSolver &solver, uint32_t commandCapacity, bool contactReports)
+                                   const WarpContactSolver &solver, uint32_t commandCapacity, bool contactReports,
+                                   uint32_t substeps)
     : m_work(work), m_host(host), m_bodyCount(scene.model.dimensions.state[2]),
       m_contactReportsConfigured(contactReports)
 {
@@ -46,7 +47,7 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
     }
     auto prepared =
         WarpStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_worlds.size()), timestep, gravity,
-                        &scene.collision, collisionCapacity, &solver, {}, commandCapacity, contactReports);
+                        &scene.collision, collisionCapacity, &solver, {}, commandCapacity, contactReports, substeps);
     if (!prepared.step)
         throw std::runtime_error("Could not allocate the Warp scene world layout");
     m_step = std::move(prepared.step);
@@ -218,6 +219,7 @@ void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
     result.submission = packet.GetSubmission();
     result.bodyStates = m_step->BodyStates()->Freeze();
     result.bodiesPerWorld = m_bodyCount;
+    result.substeps = m_step->Substeps();
     size_t offset = 0;
     if (m_fixed->host) {
         result.hostBodies.resize(uint64_t{m_bodyCount} * m_worlds.size());
@@ -234,18 +236,18 @@ void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
         result.worlds.push_back({identity, time, header[1], header[2]});
     }
     if (m_fixed->captureContacts) {
-        result.contacts.resize(m_worlds.size());
+        result.contacts.resize(m_worlds.size() * result.substeps);
         if (m_step->HasContactReports()) {
             auto receipt = packet.Readback(1);
             (void)receipt->IsComplete();
             const auto counts = receipt->GetData();
-            std::vector<uint32_t> acceptedCounts(m_worlds.size());
-            for (size_t world = 0; world < m_worlds.size(); ++world)
-                if (result.worlds[world].status == 0)
-                    std::memcpy(&acceptedCounts[world], counts.data() + world * sizeof(uint32_t), sizeof(uint32_t));
+            std::vector<uint32_t> acceptedCounts(result.contacts.size());
+            for (size_t row = 0; row < acceptedCounts.size(); ++row)
+                if (result.worlds[row % m_worlds.size()].status == 0)
+                    std::memcpy(&acceptedCounts[row], counts.data() + row * sizeof(uint32_t), sizeof(uint32_t));
             if (auto next = m_step->PrepareContactReports(acceptedCounts)) {
-                for (size_t world = 0; world < m_worlds.size(); ++world)
-                    result.contacts[world].resize(acceptedCounts[world]);
+                for (size_t row = 0; row < acceptedCounts.size(); ++row)
+                    result.contacts[row].resize(acceptedCounts[row]);
                 m_contactPublication.emplace(std::move(result));
                 m_packet = std::move(next);
                 return;

@@ -30,12 +30,16 @@ struct SavedMotion
     float4 angular;
     float3 center;
     uint step;
+    Pose start;
+    Pose target;
+    float4 worldForce;
+    float4 worldTorque;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
 [[vk::binding(1, 0)]] StructuredBuffer<BodyModel> bodies;
 [[vk::binding(2, 0)]] StructuredBuffer<JointModel> joints;
-[[vk::binding(3, 0)]] StructuredBuffer<uint4> spans; // count/timestep, then world/body/start/count
+[[vk::binding(3, 0)]] StructuredBuffer<uint4> spans; // count/fixed dt/substeps, then world/body/start/count
 [[vk::binding(4, 0)]] StructuredBuffer<BodyCommand> commands;
 [[vk::binding(5, 0)]] RWStructuredBuffer<float> qpos;
 [[vk::binding(6, 0)]] RWStructuredBuffer<float> qvel;
@@ -94,7 +98,7 @@ void applyDynamic(uint index, uint4 span, ModelDimensions size, BodyModel body)
     Pose pose = loadOrigin(offset.x);
     const float3 originSpeed = load3(qvel, offset.y);
     const float3 localSpin = load3(qvel, offset.y + 3);
-    saved[index] = {pose, float4(originSpeed, 0.0), float4(localSpin, 0.0), float3(0.0), 0u};
+    const Pose undo = pose;
     float3 shift = centerOffset(body, pose);
     float3 spin = rotateVector(localSpin, pose.rotation);
     float3 speed = originSpeed + cross(spin, shift);
@@ -162,8 +166,13 @@ void applyDynamic(uint index, uint4 span, ModelDimensions size, BodyModel body)
     storeOrigin(offset.x, pose);
     store3(qvel, offset.y, speed - cross(spin, shift));
     store3(qvel, offset.y + 3, rotateVector(spin, inverse));
-    store3(commandedForce, offset.y, force);
-    store3(commandedForce, offset.y + 3, rotateVector(torque + cross(shift, force), inverse));
+    saved[index] = {undo, float4(originSpeed, 0.0), float4(localSpin, 0.0), float3(0.0), 0u, undo, undo,
+                    float4(force, 0.0), float4(torque, 0.0)};
+    if (spans[0].z == 1u)
+    {
+        store3(commandedForce, offset.y, force);
+        store3(commandedForce, offset.y + 3, rotateVector(torque + cross(shift, force), inverse));
+    }
 }
 
 void applyKinematic(uint index, uint4 span, ModelDimensions size, BodyModel body)
@@ -172,7 +181,7 @@ void applyKinematic(uint index, uint4 span, ModelDimensions size, BodyModel body
     Pose origin = mocap[row];
     Pose target = origin;
     const PrescribedMotion previous = prescribed[row];
-    saved[index] = {origin, previous.linear, previous.angular, previous.center, previous.step};
+    const Pose undo = origin;
     for (uint i = span.z; i < span.z + span.w; ++i)
     {
         const BodyCommand command = commands[i];
@@ -197,6 +206,13 @@ void applyKinematic(uint index, uint4 span, ModelDimensions size, BodyModel body
             break;
         }
     }
+    saved[index] = {undo, previous.linear, previous.angular, previous.center, previous.step, origin, target,
+                    float4(0.0), float4(0.0)};
+    if (spans[0].z > 1u)
+    {
+        mocap[row] = origin;
+        return;
+    }
     const float timestep = asfloat(spans[0].y);
     const float3 startCenter = origin.position.xyz + centerOffset(body, origin);
     const float3 endCenter = target.position.xyz + centerOffset(body, target);
@@ -204,6 +220,50 @@ void applyKinematic(uint index, uint4 span, ModelDimensions size, BodyModel body
     const float3 angular = rotationVector(mulQuat(target.rotation, conjugate(origin.rotation))) / timestep;
     prescribed[row] = {float4(linear, 0.0), float4(angular, 0.0), endCenter, fixedSteps[span.x] + 1u};
     mocap[row] = target;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
+{
+    const uint index = linearWorkIndex<64>(id);
+    if (index >= spans[0].x)
+        return;
+    const uint4 span = spans[index + 1];
+    const BodyModel body = bodies[span.y];
+    const SavedMotion motion = saved[index];
+    if (body.hierarchy.w == NoIndex)
+    {
+        const uint2 address = freeAddresses(model[0], body, span.x);
+        const Pose pose = loadOrigin(address.x);
+        const float3 force = motion.worldForce.xyz;
+        const float3 torque = motion.worldTorque.xyz + cross(centerOffset(body, pose), force);
+        store3(commandedForce, address.y, force);
+        store3(commandedForce, address.y + 3, rotateVector(torque, conjugate(pose.rotation)));
+        return;
+    }
+
+    uint count, stride;
+    fixedSteps.GetDimensions(count, stride);
+    const uint next = fixedSteps[count - 1u] + 1u;
+    const uint4 control = spans[0];
+    const float alpha = float(next) / float(control.z);
+    const float dt = asfloat(control.y);
+    const uint row = span.x * model[0].layout.y + body.hierarchy.w;
+    const Pose previous = mocap[row];
+    const float3 path = rotationVector(mulQuat(conjugate(motion.start.rotation), motion.target.rotation));
+    Pose target = motion.target;
+    if (next != control.z)
+    {
+        target.position = float4(lerp(motion.start.position.xyz, motion.target.position.xyz, alpha), 0.0);
+        target.rotation = integrateQuat(motion.start.rotation, path, alpha);
+    }
+    const float3 before = previous.position.xyz + centerOffset(body, previous);
+    const float3 center = target.position.xyz + centerOffset(body, target);
+    const float3 linear = (center - before) * (float(control.z) / dt);
+    const float3 angular = rotateVector(path, motion.start.rotation) / dt;
+    mocap[row] = target;
+    prescribed[row] = {float4(linear, 0.0), float4(angular, 0.0), center, fixedSteps[span.x] + 1u};
 }
 
 [shader("compute")]

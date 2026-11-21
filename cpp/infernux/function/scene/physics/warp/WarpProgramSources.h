@@ -31,6 +31,7 @@ inline constexpr WarpProgramSource WarpProgramSources[] = {
     {"discrete_constraints"},
     {"discrete_metric"},
     {"euler"},
+    {"fixed_substeps"},
     {"heightfield_contacts"},
     {"implicit_free_body"},
     {"implicit"},

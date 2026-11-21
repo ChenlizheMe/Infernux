@@ -104,6 +104,13 @@ class StepBuilder
     ComputeWorkDispatch Dispatch(std::string_view module, std::string_view name, uint32_t x,
                                  std::initializer_list<Use> uses, bool groups = false)
     {
+        return Bind(module, name, x, uses, groups);
+    }
+
+    template <class Uses>
+    ComputeWorkDispatch Bind(std::string_view module, std::string_view name, uint32_t x, const Uses &uses,
+                             bool groups = false)
+    {
         auto foundProgram = programs.find(module);
         if (foundProgram == programs.end())
             foundProgram = programs.emplace(module, LoadWarpProgram(module, target)).first;
@@ -332,14 +339,14 @@ struct BodyControlSlots
     uint32_t spans, commands, force, saved, prescribed, fixedSteps;
 };
 
-BodyControlSlots BindBodyControls(StepBuilder &b, const WarpModel &model, uint32_t capacity)
+BodyControlSlots BindBodyControls(StepBuilder &b, const WarpModel &model, uint32_t capacity, bool multiple)
 {
     return {b.Seed("bodyCommandSpans", 4 * (uint64_t{capacity} + 1), nullptr),
             b.Seed("bodyCommands", 12 * uint64_t{capacity}, nullptr),
             b.Zero("commandedForce", uint64_t{model.dimensions.state[1]} * b.worlds),
-            b.Zero("savedMotions", 20 * uint64_t{capacity}),
+            b.Zero("savedMotions", 44 * uint64_t{capacity}),
             b.Zero("prescribedMotion", 12 * uint64_t{std::max(1u, model.dimensions.layout[1])} * b.worlds),
-            b.Zero("acceptedFixedSteps", b.worlds)};
+            b.Zero("acceptedFixedSteps", uint64_t{b.worlds} + uint32_t(multiple))};
 }
 
 RaySlots AddRayWork(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
@@ -464,7 +471,7 @@ uint32_t FloatWord(float value)
 ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const ContactSlots &stream,
                                    WarpCollisionCapacity capacity, const WarpContactSolver &solver, float timestep,
                                    const ContactDynamics &dyn, std::vector<ComputeWorkDispatch> precondition,
-                                   bool contactReports)
+                                   bool contactReports, uint32_t substeps)
 {
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
@@ -562,7 +569,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                                  {16, evaluation, W}});
 
     std::array<ModelWords, 3> options{{{solver.iterations, solver.lineIterations, model.dimensions.layout[3], 0},
-                                       {capacity.candidates, 0, 0, 0},
+                                       {capacity.candidates, substeps, 0, 0},
                                        {}}};
     const auto indirectSlot = b.Slot(7 * 4, BufferUsageFlags::Indirect);
     enum DispatchExtent : uint32_t
@@ -586,7 +593,10 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
     const auto history = b.Zero("contactSearchHistory", across(4 * uint64_t{nv}));
     const auto products = b.Zero("contactMassProducts", across(2 * uint64_t{nv}));
     const auto ray = b.Zero("contactSearchRay", across(rows));
-    const auto status = b.Slot(b.worlds);
+    const bool multiple = substeps > 1;
+    const auto status = multiple ? b.Zero("fixedStepStatus", across(uint64_t{1} + (contactReports ? substeps : 0)),
+                                          contactReports ? BufferUsageFlags::TransferSource : BufferUsageFlags::None)
+                                 : b.Slot(b.worlds);
     for (uint32_t index = 0; index < precondition.size(); ++index) {
         auto &solve = precondition[index];
         options[2][index] = solve.groupCountX;
@@ -697,37 +707,31 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {16, worldState, R},
            {25, stream.candidateCount, R},
            {26, stream.counts, R},
-           {27, status, W, true},
+           {27, status, multiple ? RW : W, !multiple},
            {30, stream.narrowphaseStatus, R}});
     ContactResponse response{acceleration, status, contactTopology, NoModelIndex, {}};
     if (contactReports) {
-        const auto output = b.Zero("contactReports", across(24 * uint64_t{contacts}), BufferUsageFlags::TransferSource);
+        const auto output =
+            b.Zero("contactReports", across(24 * uint64_t{contacts} * substeps), BufferUsageFlags::TransferSource);
         response.reportRecords = output;
-        response.capture = dyn.prescribedMotion == NoModelIndex
-                               ? b.Dispatch("contact_reports", "capture_contact_reports", contacts,
-                                            {{0, settings, R},
-                                             {1, stream.records, R},
-                                             {2, stream.counts, R},
-                                             {3, contactTopology, R},
-                                             {4, reservations, R},
-                                             {5, evaluation, R},
-                                             {6, dyn.bodyVelocity, R},
-                                             {7, dyn.subtreeCom, R},
-                                             {8, status, R},
-                                             {9, output, W}})
-                               : b.Dispatch("contact_reports", "capture_controlled_contact_reports", contacts,
-                                            {{0, settings, R},
-                                             {1, stream.records, R},
-                                             {2, stream.counts, R},
-                                             {3, contactTopology, R},
-                                             {4, reservations, R},
-                                             {5, evaluation, R},
-                                             {6, dyn.bodyVelocity, R},
-                                             {7, dyn.subtreeCom, R},
-                                             {8, status, R},
-                                             {9, output, W},
-                                             {11, dyn.prescribedMotion, R},
-                                             {12, dyn.fixedSteps, R}});
+        const bool prescribed = dyn.prescribedMotion != NoModelIndex;
+        std::vector<Use> uses{{0, settings, R},
+                              {1, stream.records, R},
+                              {2, stream.counts, R},
+                              {3, contactTopology, R},
+                              {4, reservations, R},
+                              {5, evaluation, R},
+                              {6, dyn.bodyVelocity, R},
+                              {7, dyn.subtreeCom, R},
+                              {8, status, multiple ? RW : R},
+                              {9, output, W}};
+        if (prescribed)
+            uses.push_back({11, dyn.prescribedMotion, R});
+        if (prescribed || multiple)
+            uses.push_back({12, dyn.fixedSteps, R});
+        const auto *entry = multiple ? (prescribed ? "capture_controlled_contact_substep" : "capture_contact_substep")
+                                     : (prescribed ? "capture_controlled_contact_reports" : "capture_contact_reports");
+        response.capture = b.Bind("contact_reports", entry, contacts, uses);
     }
     return response;
 }
@@ -756,10 +760,12 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                  uint32_t worlds, float timestep, const ModelVector &gravity,
                                  const WarpCollisionModel *collision, WarpCollisionCapacity capacity,
                                  const WarpContactSolver *solver, WarpRayBatchLayout rayLayout,
-                                 uint32_t bodyCommandCapacity, bool contactReports)
+                                 uint32_t bodyCommandCapacity, bool contactReports, uint32_t substeps)
 {
     if (worlds == 0)
         throw std::invalid_argument("Warp step requires a world");
+    if (substeps == 0 || (substeps > 1 && bodyCommandCapacity == 0))
+        throw std::invalid_argument("Warp fixed substeps require a controlled step layout");
 
     const auto [nq, nv, nb, nj] = model.dimensions.state;
     if (!model.initialVelocities.empty() && model.initialVelocities.size() != nv)
@@ -770,7 +776,10 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     const auto worldWords = [worlds](uint64_t words) { return words * worlds; };
     StepBuilder b(host, target, worlds);
     const auto dimensions = b.Seed("model", 8, &model.dimensions);
-    const auto stepSizes = b.Seed("timestep", 1, &timestep, worlds);
+    const bool multiple = substeps > 1;
+    const float substepDt = timestep / static_cast<float>(substeps);
+    const auto stepSizes = b.Seed("timestep", 1, &substepDt, worlds);
+    const auto fixedSizes = multiple ? b.Seed("fixedTimestep", 1, &timestep, worlds) : stepSizes;
     const auto clocks = b.Seed("time", 1, nullptr, worlds);
     const auto positions = b.Seed("qpos", nq, model.initialPositions.data(), worlds);
     const auto velocities =
@@ -794,7 +803,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             if (body.hierarchy[3] != NoModelIndex)
                 controls.motion[index] = KinematicControl;
         }
-        controlSlots = BindBodyControls(b, model, bodyCommandCapacity);
+        controlSlots = BindBodyControls(b, model, bodyCommandCapacity, multiple);
     }
     const bool detectContacts = collision && model.dimensions.layout[0] != 0;
     const bool traceRays = rayLayout.raysPerWorld != 0;
@@ -804,6 +813,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     std::optional<RaySlots> raySlots;
     std::optional<ContactSlots> contactSlots;
     std::optional<ContactResponse> response;
+    uint32_t warmstart = NoModelIndex;
     std::optional<ReferenceWeights> reference;
     const auto kinematicsPass = b.dispatches.size();
     struct
@@ -869,8 +879,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         const auto bias = b.Slot(worldWords(nv));
         const auto force = b.Slot(worldWords(nv));
         const auto solved = b.Seed("acceleration", nv, nullptr, worlds);
-        const auto warmstart =
-            contactSlots && solver ? b.Zero("warmstartAcceleration", worldWords(nv)) : b.Slot(worldWords(nv));
+        warmstart = contactSlots && solver ? b.Zero("warmstartAcceleration", worldWords(nv)) : b.Slot(worldWords(nv));
 
         const auto beginInertia = b.dispatches.size();
         b.Add("position", "body_inertial_frames", nb,
@@ -1020,8 +1029,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                            controlSlots ? controlSlots->fixedSteps : NoModelIndex,
                                            controlSlots && nm != 0 ? controlSlots->prescribed : NoModelIndex,
                                            bodyVelocity};
-            response = AddContactResponse(b, model, *contactSlots, capacity, *solver, timestep, dynamics,
-                                          std::move(massSolves), contactReports);
+            response = AddContactResponse(b, model, *contactSlots, capacity, *solver, substepDt, dynamics,
+                                          std::move(massSolves), contactReports, substeps);
             reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
             const std::array singleWorld{
                 positions, pose,        jointPose, inertialFrame, subtreeCom,
@@ -1070,16 +1079,47 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                   {{0, dimensions, R}, {1, joints, R}, {2, stepSizes, R}, {4, velocities, R}, {5, positions, RW}});
         }
     }
-    if (controlSlots && response)
-        b.Add("euler", "advance_contact_controlled_time", 1,
-              {{2, stepSizes, R}, {7, clocks, RW}, {15, response->status, R}, {16, controlSlots->fixedSteps, RW}});
-    else if (controlSlots)
-        b.Add("euler", "advance_controlled_time", 1,
-              {{2, stepSizes, R}, {7, clocks, RW}, {16, controlSlots->fixedSteps, RW}});
-    else if (response)
-        b.Add("euler", "advance_contact_time", 1, {{2, stepSizes, R}, {7, clocks, RW}, {15, response->status, R}});
-    else
-        b.Add("euler", "advance_time", 1, {{2, stepSizes, R}, {7, clocks, RW}});
+    std::vector<Use> clockUses{{2, fixedSizes, R}, {7, clocks, RW}};
+    if (response)
+        clockUses.push_back({15, response->status, R});
+    if (controlSlots)
+        clockUses.push_back({16, controlSlots->fixedSteps, RW});
+    const auto *clockEntry = response ? (controlSlots ? "advance_contact_controlled_time" : "advance_contact_time")
+                                      : (controlSlots ? "advance_controlled_time" : "advance_time");
+    auto clock = b.Bind("euler", clockEntry, 1, clockUses);
+    if (!multiple)
+        b.dispatches.push_back(std::move(clock));
+
+    std::vector<ComputeWorkDispatch> begin;
+    ComputeWorkDispatch advance, restore, drive;
+    if (multiple) {
+        const auto place = controlSlots->fixedSteps;
+        begin.push_back(b.Dispatch("fixed_substeps", "begin_substeps", 1, {{5, place, RW}}));
+        begin.back().groupCountY = 1;
+        advance = b.Dispatch("fixed_substeps", "advance_substep", 1, {{5, place, RW}});
+        advance.groupCountY = 1;
+    }
+    if (multiple && response) {
+        const auto width = uint64_t{nq} + 2 * uint64_t{nv};
+        if (worldWords(width) > UINT32_MAX)
+            throw std::length_error("Warp fixed step checkpoint exceeds the device address range");
+        const auto backup = b.Slot(worldWords(width));
+        const auto rows = static_cast<uint32_t>(width);
+        begin.push_back(b.Dispatch("fixed_substeps", "checkpoint_fixed_step", rows,
+                                   {{0, dimensions, R},
+                                    {1, positions, R},
+                                    {2, velocities, R},
+                                    {3, warmstart, R},
+                                    {4, backup, W, true},
+                                    {6, response->status, W}}));
+        restore = b.Dispatch("fixed_substeps", "restore_rejected_fixed_step", rows,
+                             {{0, dimensions, R},
+                              {1, positions, W},
+                              {2, velocities, W},
+                              {3, warmstart, W},
+                              {4, backup, R},
+                              {6, response->status, R}});
+    }
 
     std::vector<ComputeWorkDispatch> bodyPublication;
     ComputeWorkDispatch applyCommands, finishCommands;
@@ -1100,6 +1140,18 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                     {11, saved, RW},
                                     {12, prescribed, RW},
                                     {15, fixedSteps, R}});
+        if (multiple)
+            drive = b.Dispatch("body_controls", "advance_commanded_substep", bodyCommandCapacity,
+                               {{0, dimensions, R},
+                                {1, bodies, R},
+                                {2, joints, R},
+                                {3, spans, R},
+                                {5, positions, R},
+                                {7, mocap, RW},
+                                {8, force, W},
+                                {11, saved, R},
+                                {12, prescribed, W},
+                                {15, fixedSteps, R}});
         finishCommands =
             response ? b.Dispatch("body_controls", "finish_contact_body_commands", bodyCommandCapacity,
                                   {{0, dimensions, R},
@@ -1214,37 +1266,84 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     }
     ContactReports reports;
     if (response && response->capture)
-        reports = {buffers[response->reportRecords], BindDispatch(std::move(*response->capture), buffers),
+        reports = {buffers[response->reportRecords],
+                   buffers[multiple ? response->status : contactSlots->counts],
+                   BindDispatch(std::move(*response->capture), buffers),
+                   multiple ? worlds * sizeof(uint32_t) : 0,
+                   worldWords(substeps) * sizeof(uint32_t),
                    capacity.contactsPerWorld};
-    auto step = std::unique_ptr<WarpStep>(new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions,
-                                                       velocities, applied, std::move(contacts), std::move(rays),
-                                                       std::move(rayWork), std::move(controls), std::move(reports)));
+    FixedSubsteps schedule;
+    schedule.count = substeps;
+    if (multiple) {
+        for (auto &dispatch : begin)
+            schedule.begin.push_back(BindDispatch(std::move(dispatch), buffers));
+        if (drive.kernel)
+            schedule.drive = BindDispatch(std::move(drive), buffers);
+        if (advance.kernel)
+            schedule.advance = BindDispatch(std::move(advance), buffers);
+        if (restore.kernel)
+            schedule.restore = BindDispatch(std::move(restore), buffers);
+        schedule.clock = BindDispatch(std::move(clock), buffers);
+    }
+    auto step = std::unique_ptr<WarpStep>(new WarpStep(
+        work, BindDispatch(std::move(snapshot), buffers), positions, velocities, applied, std::move(contacts),
+        std::move(rays), std::move(rayWork), std::move(controls), std::move(reports), std::move(schedule)));
     return {std::move(step), std::move(initialize)};
 }
 
 WarpStep::WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot,
                    uint32_t positions, uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts,
                    WarpRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
-                   ContactReports reports)
+                   ContactReports reports, FixedSubsteps substeps)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
       m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
-      m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports))
+      m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports)),
+      m_substeps(std::move(substeps))
 {
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::Prepare(bool publish,
                                                              std::vector<rhi::ComputeBufferUpdate> updates) const
 {
-    if (!publish)
+    if (!publish && m_substeps.count == 1)
         return m_work->PrepareBatch(std::move(updates));
-    std::vector<rhi::ComputeDispatchDesc> dispatches;
-    dispatches.reserve(m_work->GetRecipe().GetDispatches().size() + 1);
-    m_work->AppendDispatches(dispatches);
-    dispatches.push_back(m_snapshot);
-    const auto &snapshot = m_snapshot.buffers[4]; // Binding 4 is the snapshot output in both entries.
+    auto dispatches = m_substeps.begin;
+    AppendFixedWork(dispatches, 0, false);
+    std::vector<rhi::ComputeBufferRead> reads;
+    if (publish) {
+        dispatches.push_back(m_snapshot);
+        const auto &snapshot = m_snapshot.buffers[4]; // Binding 4 is the snapshot output in both entries.
+        reads.push_back({snapshot, 0, snapshot->GetByteSize()});
+    }
     auto host = m_work->GetRecipe().GetHost();
-    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches),
-                                    {{snapshot, 0, snapshot->GetByteSize()}});
+    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+}
+
+void WarpStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispatches, uint32_t spans,
+                               bool captureContacts) const
+{
+    auto drive = m_substeps.drive;
+    const bool driving = spans != 0 && drive.kernel;
+    if (driving) {
+        drive.groupCountX = (spans - 1) / 64 + 1;
+        LinearGrid(drive);
+    }
+    const bool reporting = captureContacts && m_reports.records;
+    const auto width = m_work->GetRecipe().GetDispatches().size() + driving + reporting + (driving || reporting);
+    dispatches.reserve(dispatches.size() + m_substeps.count * width + 2);
+    for (uint32_t substep = 0; substep < m_substeps.count; ++substep) {
+        if (driving)
+            dispatches.push_back(drive);
+        m_work->AppendDispatches(dispatches);
+        if (reporting)
+            dispatches.push_back(m_reports.capture);
+        if ((driving || reporting) && substep + 1 < m_substeps.count)
+            dispatches.push_back(m_substeps.advance);
+    }
+    if (m_substeps.restore.kernel)
+        dispatches.push_back(m_substeps.restore);
+    if (m_substeps.clock.kernel)
+        dispatches.push_back(m_substeps.clock);
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareRays(bool publish,
@@ -1271,7 +1370,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vect
     if (commands.size() > m_controls.capacity)
         throw std::length_error("Warp fixed step body command capacity exceeded");
 
-    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    auto dispatches = m_substeps.begin;
     const auto key = [](const auto &command) { return std::tie(command.world, command.body); };
     uint32_t spanCount = 0;
     if (!commands.empty()) {
@@ -1293,7 +1392,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vect
             ++spans.back()[3];
         }
         spanCount = static_cast<uint32_t>(spans.size() - 1);
-        spans[0] = {spanCount, m_controls.timestep, 0, 0};
+        spans[0] = {spanCount, m_controls.timestep, m_substeps.count, 0};
         auto &spansUpload = updates.emplace_back(
             rhi::ComputeBufferUpdate{m_controls.spans, 0, std::vector<uint8_t>(spans.size() * sizeof(ModelWords))});
         std::memcpy(spansUpload.data.data(), spans.data(), spansUpload.data.size());
@@ -1309,9 +1408,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vect
     };
     if (spanCount != 0)
         commandDispatch(m_controls.apply);
-    m_work->AppendDispatches(dispatches);
-    if (captureContacts && m_reports.records)
-        dispatches.push_back(m_reports.capture);
+    AppendFixedWork(dispatches, spanCount, captureContacts);
     if (spanCount != 0)
         commandDispatch(m_controls.finish);
     if (publication != WarpBodyPublication::None)
@@ -1324,7 +1421,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vect
         reads.push_back({m_controls.states, m_controls.states->GetByteSize() - headers, headers});
     }
     if (captureContacts && m_reports.records)
-        reads.push_back({m_contacts.contactCounts, 0, m_contacts.contactCounts->GetByteSize()});
+        reads.push_back({m_reports.counts, m_reports.countsOffset, m_reports.countsBytes});
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
 }

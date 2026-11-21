@@ -135,11 +135,13 @@ class WarpStep
 {
   public:
     /// Resident rigid dynamics with optional collision detection and constraint response.
-    [[nodiscard]] static PreparedWarpStep
-    Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model, uint32_t worlds, float timestep,
-          const ModelVector &gravity, const WarpCollisionModel *collision = nullptr,
-          WarpCollisionCapacity capacity = {}, const WarpContactSolver *solver = nullptr,
-          WarpRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0, bool contactReports = false);
+    [[nodiscard]] static PreparedWarpStep Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model,
+                                                uint32_t worlds, float timestep, const ModelVector &gravity,
+                                                const WarpCollisionModel *collision = nullptr,
+                                                WarpCollisionCapacity capacity = {},
+                                                const WarpContactSolver *solver = nullptr,
+                                                WarpRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0,
+                                                bool contactReports = false, uint32_t substeps = 1);
 
     /// The ordered snapshot holds qpos, qvel, clocks and, with contact response, a uint32 status per world.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
@@ -158,6 +160,10 @@ class WarpStep
     [[nodiscard]] bool HasContactReports() const noexcept
     {
         return bool(m_reports.records);
+    }
+    [[nodiscard]] uint32_t Substeps() const noexcept
+    {
+        return m_substeps.count;
     }
 
     /// World-major body rows (including the world row), followed by one
@@ -195,14 +201,24 @@ class WarpStep
     };
     struct ContactReports
     {
-        std::shared_ptr<rhi::ComputeBuffer> records;
+        std::shared_ptr<rhi::ComputeBuffer> records, counts;
         rhi::ComputeDispatchDesc capture;
+        uint64_t countsOffset = 0, countsBytes = 0;
         uint32_t capacity = 0;
     };
+    struct FixedSubsteps
+    {
+        uint32_t count = 1;
+        std::vector<rhi::ComputeDispatchDesc> begin;
+        rhi::ComputeDispatchDesc drive, advance, restore, clock;
+    };
+
+    void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, uint32_t spans, bool captureContacts) const;
 
     WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
              uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,
-             std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls, ContactReports reports);
+             std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls, ContactReports reports,
+             FixedSubsteps substeps);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -214,6 +230,7 @@ class WarpStep
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     BodyControls m_controls;
     ContactReports m_reports;
+    FixedSubsteps m_substeps;
 };
 
 } // namespace infernux::physics::warp

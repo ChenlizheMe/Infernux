@@ -24,12 +24,12 @@ struct ContactReport
 [[vk::binding(5, 0)]] StructuredBuffer<ConstraintEvaluation> evaluation;
 [[vk::binding(6, 0)]] StructuredBuffer<SpatialMotion> bodyVelocity;
 [[vk::binding(7, 0)]] StructuredBuffer<float4> treeCom;
-[[vk::binding(8, 0)]] StructuredBuffer<uint> stepStatus;
+[[vk::binding(8, 0)]] RWStructuredBuffer<uint> stepStatus;
 [[vk::binding(9, 0)]] RWStructuredBuffer<ContactReport> reports;
 [[vk::binding(11, 0)]] StructuredBuffer<PrescribedMotion> prescribed;
 [[vk::binding(12, 0)]] StructuredBuffer<uint> fixedSteps;
 
-float3 pointSpeed<let HasPrescribed : bool>(uint geometry, uint world, float3 point)
+float3 pointSpeed<let HasPrescribed : bool, let Multiple : bool>(uint geometry, uint world, float3 point)
 {
     const uint4 limits = settings[0];
     const uint4 layout = settings[1];
@@ -40,7 +40,7 @@ float3 pointSpeed<let HasPrescribed : bool>(uint geometry, uint world, float3 po
         prescribed.GetDimensions(rows, stride);
         counts.GetDimensions(worlds, stride);
         const PrescribedMotion motion = prescribed[world * (rows / worlds) + address.y];
-        if (motion.step == fixedSteps[world])
+        if (motion.step == fixedSteps[world] + (Multiple ? 1u : 0u))
             return motion.linear.xyz + cross(motion.angular.xyz, point - motion.center);
     }
     const uint root = topology[limits.x + address.x].y;
@@ -49,10 +49,20 @@ float3 pointSpeed<let HasPrescribed : bool>(uint geometry, uint world, float3 po
     return velocity.linear.xyz + cross(velocity.angular.xyz, point - treeCom[base + root].xyz);
 }
 
-void reportContacts<let HasPrescribed : bool>(uint3 id)
+void reportContacts<let HasPrescribed : bool, let Multiple : bool>(uint3 id)
 {
     const uint4 limits = settings[0];
-    if (stepStatus[id.y] != 0u || id.x >= min(counts[id.y], limits.y))
+    const uint count = stepStatus[id.y] == 0u ? min(counts[id.y], limits.y) : 0u;
+    uint output = id.y;
+    if (Multiple)
+    {
+        uint worlds, stride;
+        counts.GetDimensions(worlds, stride);
+        output += fixedSteps[worlds] * worlds;
+        if (id.x == 0)
+            stepStatus[worlds + output] = count;
+    }
+    if (id.x >= count)
         return;
 
     const uint index = id.y * limits.y + id.x;
@@ -71,10 +81,10 @@ void reportContacts<let HasPrescribed : bool>(uint3 id)
                      evaluation[base + 2u].force * source.bitangent.xyz;
     }
     const float3 point = source.positionDistance.xyz;
-    const float3 relative = pointSpeed<HasPrescribed>(source.geometry.y, id.y, point) -
-                            pointSpeed<HasPrescribed>(source.geometry.x, id.y, point);
+    const float3 relative = pointSpeed<HasPrescribed, Multiple>(source.geometry.y, id.y, point) -
+                            pointSpeed<HasPrescribed, Multiple>(source.geometry.x, id.y, point);
     const float dt = asfloat(settings[2 + id.y].x);
-    reports[index] = {source.positionDistance, float4(source.normalMargin.xyz, 0.0), float4(relative, 0.0),
+    reports[output * limits.y + id.x] = {source.positionDistance, float4(source.normalMargin.xyz, 0.0), float4(relative, 0.0),
                       float4(dt * force, 0.0), uint4(source.geometry.xy, source.identity.zw),
                       uint4(source.identity.x, uint(trigger), uint(span.y != 0u), 0u)};
 }
@@ -83,12 +93,26 @@ void reportContacts<let HasPrescribed : bool>(uint3 id)
 [numthreads(64, 1, 1)]
 void capture_contact_reports(uint3 id : SV_DispatchThreadID)
 {
-    reportContacts<false>(id);
+    reportContacts<false, false>(id);
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void capture_controlled_contact_reports(uint3 id : SV_DispatchThreadID)
 {
-    reportContacts<true>(id);
+    reportContacts<true, false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void capture_contact_substep(uint3 id : SV_DispatchThreadID)
+{
+    reportContacts<false, true>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void capture_controlled_contact_substep(uint3 id : SV_DispatchThreadID)
+{
+    reportContacts<true, true>(id);
 }
