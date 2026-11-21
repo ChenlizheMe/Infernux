@@ -272,10 +272,13 @@ WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author)
         }
     }
     source.colliders.reserve(author.surfaces.size());
-    for (const auto &surface : author.surfaces)
+    result.surfaces.reserve(author.surfaces.size());
+    for (const auto &surface : author.surfaces) {
         source.colliders.push_back({surface.colliderId, surface.generation, surface.layer, surface.collisionMask,
                                     surface.friction, surface.sensor, surface.restitution, surface.frictionCombine,
                                     surface.bounceCombine});
+        result.surfaces.push_back({surface.target, surface.gameObjectId, surface.colliderId});
+    }
     return result;
 }
 
@@ -327,7 +330,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
             }
             geometries.push_back({index, kind, 1u << surface.layer, surface.collisionMask,
                                   Pose(center + Vector(leaf.mShapePositionCOM), rotation)});
-            result.geometries.push_back({surface, shape.subShape});
+            result.geometries.push_back({surface, shape.subShape, member});
         }
     }
     firstGeometry.push_back(static_cast<uint32_t>(geometries.size()));
@@ -353,7 +356,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
         const uint32_t firstJoint = body.hierarchy[1];
         const uint32_t qpos = firstJoint == NoModelIndex ? NoModelIndex : result.model.joints[firstJoint].indices[1];
         const uint32_t qvel = body.dofs[0];
-        result.bodies.push_back({actor.objectId, row, qpos, qvel});
+        result.bodies.push_back({actor.objectId, row, qpos, qvel, static_cast<uint32_t>(actor.colliders.size())});
         if (qvel == NoModelIndex)
             continue;
         const auto center = actor.rotation * Vector(JPH::RVec3(actor.shape->GetCenterOfMass()));

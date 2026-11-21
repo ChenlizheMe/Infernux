@@ -40,10 +40,18 @@ struct WarpSceneActor
     std::vector<WarpSceneCollider> colliders;
 };
 
+struct WarpSceneSurfaceIdentity
+{
+    PhysicsTargetReference target;
+    uint64_t gameObjectId;
+    uint64_t colliderId;
+};
+
 struct WarpSceneCapture
 {
     WarpSceneActor actor;
     PhysicsActorPublication publication;
+    std::vector<WarpSceneSurfaceIdentity> surfaces;
 };
 
 struct WarpSceneBodyBinding
@@ -52,12 +60,14 @@ struct WarpSceneBodyBinding
     uint32_t bodyRow;
     uint32_t position;
     uint32_t velocity;
+    uint32_t surfaceCount;
 };
 
 struct WarpSceneGeometryBinding
 {
     WarpSceneCollider collider;
     uint32_t subShape;
+    uint32_t surface;
 };
 
 struct WarpSceneHinge

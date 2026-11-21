@@ -7,6 +7,8 @@
 #include "../PhysicsContactTypes.h"
 #include "../PhysicsECSStore.h"
 #include "../PhysicsGpuPoseSource.h"
+#include "../PhysicsRaycastHit.h"
+#include "WarpSceneModel.h"
 #include "WarpStep.h"
 
 #include <core/threading/FrameWorkOwner.h>
@@ -15,7 +17,6 @@
 namespace infernux::physics::warp
 {
 
-struct WarpSceneModel;
 struct WarpSceneLayout;
 
 struct WarpRegisteredBody
@@ -23,6 +24,7 @@ struct WarpRegisteredBody
     uint32_t bodyId;
     uint64_t shapeRevision;
     PhysicsActorHandle actor{};
+    std::vector<WarpSceneSurfaceIdentity> surfaces{}; // Author collider order.
 };
 
 struct WarpRegisteredHinge
@@ -83,6 +85,20 @@ struct WarpSceneRayBatch
 {
     ContactStreamIdentity identity;
     WarpPreparedRayBatch query;
+
+    /// Materialize the ordinary scene hits on the owner thread after submission.
+    /// Consumes the host readback. The batch retains the queried world's layout.
+    [[nodiscard]] std::vector<RaycastHit> ReadHostHits() const;
+
+  private:
+    friend class WarpSceneRuntime;
+    struct RayLine
+    {
+        glm::vec3 origin, direction;
+    };
+    std::shared_ptr<const WarpSceneLayout> m_layout;
+    std::vector<RayLine> m_lines;
+    uint32_t m_world = 0;
 };
 
 /// Fixed-step source for one compiled layout and its enrolled scene worlds.

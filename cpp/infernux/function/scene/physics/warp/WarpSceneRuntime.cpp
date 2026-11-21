@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "WarpSceneRuntime.h"
-#include "WarpSceneModel.h"
 
 #include <algorithm>
 #include <cstring>
@@ -29,6 +28,7 @@ struct WarpSceneLayout
         }
     };
     std::vector<World> worlds;
+    std::vector<uint32_t> geometrySurfaces; // Shared topology, indexed by device geometry row.
 };
 
 PhysicsGpuPoseSource WarpFixedPublication::PoseSource(uint32_t world) const
@@ -50,6 +50,40 @@ std::optional<PhysicsGpuBodyPoseBinding> WarpFixedPublication::FindPoseBody(uint
     return PhysicsGpuBodyPoseBinding{bodyId, *row};
 }
 
+std::vector<RaycastHit> WarpSceneRayBatch::ReadHostHits() const
+{
+    if (!m_layout)
+        throw std::logic_error("Warp scene ray batch has no host results");
+    std::vector<WarpRayHit> records(query.count);
+    query.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(WarpRayHit));
+    const auto &world = m_layout->worlds[m_world];
+    std::vector<RaycastHit> hits(records.size());
+    for (size_t index = 0; index < records.size(); ++index) {
+        const auto &record = records[index];
+        const auto &[geometry, body, subShape, triangle] = record.identity;
+        if (geometry == NoModelIndex)
+            continue;
+        const auto &binding = world.bodies[body];
+        const auto &line = m_lines[index];
+        auto &hit = hits[index];
+        hit.distance = record.normalDistance[3];
+        hit.point = line.origin + line.direction * hit.distance;
+        hit.normal = {record.normalDistance[0], record.normalDistance[1], record.normalDistance[2]};
+        hit.bodyId = binding.bodyId;
+        hit.subShapeId = subShape;
+        hit.triangleIndex = triangle;
+        if (!binding.surfaces.empty()) {
+            const auto &surface = binding.surfaces[m_layout->geometrySurfaces[geometry]];
+            hit.target = surface.target;
+            hit.gameObjectId = surface.gameObjectId;
+            hit.colliderId = surface.colliderId;
+            hit.gameObject = hit.target.GetGameObject();
+            hit.collider = hit.target.GetCollider();
+        }
+    }
+    return hits;
+}
+
 WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target,
                                    const WarpSceneModel &scene, std::vector<WarpRegisteredWorld> worlds, float timestep,
                                    const ModelVector &gravity, WarpCollisionCapacity collisionCapacity,
@@ -62,18 +96,24 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
         throw std::invalid_argument("Warp scene requires worlds and a body command capacity");
     auto layout = std::make_shared<WarpSceneLayout>();
     layout->worlds.reserve(worlds.size());
+    layout->geometrySurfaces.reserve(scene.geometries.size());
+    for (const auto &geometry : scene.geometries)
+        layout->geometrySurfaces.push_back(geometry.surface);
     std::unordered_set<uint64_t> ids;
-    for (const auto &source : worlds) {
+    for (auto &source : worlds) {
         if (source.bodies.size() != scene.bodies.size() || !ids.insert(source.worldId).second)
             throw std::invalid_argument("Warp scene world does not match its shared model");
         WarpSceneLayout::World world{source.worldId, std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
         world.rows.reserve(source.bodies.size());
         for (size_t index = 0; index < source.bodies.size(); ++index) {
-            const auto &binding = source.bodies[index];
-            const auto row = scene.bodies[index].bodyRow;
+            auto &binding = source.bodies[index];
+            const auto &authored = scene.bodies[index];
+            const auto row = authored.bodyRow;
             if (binding.bodyId == UINT32_MAX || !world.rows.emplace(binding.bodyId, row).second)
                 throw std::invalid_argument("Duplicate or invalid Warp scene body identity");
-            world.bodies[row] = binding;
+            if (!binding.surfaces.empty() && binding.surfaces.size() != authored.surfaceCount)
+                throw std::invalid_argument("Warp scene collider identities must match the shared model");
+            world.bodies[row] = std::move(binding);
         }
         world.hinges.reserve(source.hinges.size());
         for (const auto &binding : source.hinges) {
@@ -164,9 +204,19 @@ WarpSceneRayBatch WarpSceneRuntime::PrepareRaycast(const WarpFixedPublication &p
     std::vector<uint8_t> inputs(rays.size() * sizeof(WarpRay));
     if (!inputs.empty())
         std::memcpy(inputs.data(), rays.data(), inputs.size());
-    return {publication.worlds[world].identity,
-            m_step->PreparePublishedRays(source, static_cast<uint32_t>(rays.size()), readback,
-                                         {{m_step->Rays().inputs, 0, std::move(inputs)}})};
+    WarpSceneRayBatch result;
+    result.identity = publication.worlds[world].identity;
+    result.query = m_step->PreparePublishedRays(source, static_cast<uint32_t>(rays.size()), readback,
+                                                {{m_step->Rays().inputs, 0, std::move(inputs)}});
+    if (readback) {
+        result.m_layout = publication.m_layout;
+        result.m_world = world;
+        result.m_lines.reserve(rays.size());
+        for (const auto &ray : rays)
+            result.m_lines.push_back({{ray.originLimit[0], ray.originLimit[1], ray.originLimit[2]},
+                                      {ray.direction[0], ray.direction[1], ray.direction[2]}});
+    }
+    return result;
 }
 
 FrameWorkFacts WarpSceneRuntime::Describe() const

@@ -16,6 +16,7 @@
 #include "PhysicsContactPublication.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsParticipant.h"
+#include "PhysicsRaycastHit.h"
 #include "PhysicsTargetReference.h"
 
 #include <array>
@@ -181,27 +182,6 @@ struct PhysicsShapeState
     float bounciness = 0.0f;
     uint32_t frictionCombine = 0;
     uint32_t bounceCombine = 0;
-};
-
-/**
- * @brief Result of a physics raycast (Unity: RaycastHit).
- */
-struct RaycastHit
-{
-    glm::vec3 point{0.0f};               ///< World-space hit point
-    glm::vec3 normal{0.0f};              ///< Surface normal at hit
-    float distance = 0.0f;               ///< Distance from ray origin
-    uint32_t bodyId = 0xFFFFFFFF;        ///< Stable engine body identity
-    uint32_t subShapeId = 0;             ///< Jolt sub-shape identity inside the body
-    uint32_t triangleIndex = 0xFFFFFFFF; ///< Cooked triangle index for non-convex mesh hits
-    GameObject *gameObject = nullptr;    ///< Hit GameObject
-    Collider *collider = nullptr;        ///< Hit Collider component
-    PhysicsTargetReference target;       ///< Safe identity for retained query values
-    // Stable numeric identities captured while the published query epoch
-    // is held.  Batch bindings must use these rather than dereferencing the
-    // raw convenience pointers after the native query boundary has ended.
-    uint64_t gameObjectId = 0;
-    uint64_t colliderId = 0;
 };
 
 /// Fixed-step wall time. Jolt includes its collision/solver jobs and their wait.
