@@ -57,7 +57,8 @@ class Engine(RuntimeWorldHost):
         self._initialize_world_runtime(self._application_role)
         self._render_pipeline = None  # prevents GC of pybind11 trampoline
         self._gizmos_collector = None  # lazy-init GizmosCollector
-        self._scene_view_visible = self._mode == RuntimeMode.Graphical and not _PLAYER_MODE
+        # The Scene panel enables this when it first presents its viewport.
+        self._scene_view_visible = False
         # Authoritative Scene View Gizmos switch. Keep this Python-side so it
         # gates user callbacks and geometry construction before any native or
         # GPU work is recorded.

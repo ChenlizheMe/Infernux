@@ -632,12 +632,12 @@ class BootstrapPanelsMixin:
                     native = bootstrap.engine.get_native_engine()
                     scene = bootstrap.scene_view
                     game = bootstrap.game_view
-                    scene_ready = (not scene._content_presented_this_frame or not scene._scene_viewport_presented or not world_id
+                    scene_ready = (not scene.is_content_visible() or not scene._scene_viewport_presented or not world_id
                                    or native._editor_scene_presentation()[3] == world_id)
                     expected = tuple(world for world, state, _error, display in view.rows
                                      if display and state in ('ready', 'preparing')
                                      and (view.layout != 0 or world == world_id))
-                    game_ready = (not game._content_presented_this_frame or not game._game_viewport_presented
+                    game_ready = (not game.is_content_visible() or not game._game_viewport_presented
                                   or game._play_ready_worlds == expected)
                     if scene_ready and game_ready:
                         # Both visible views switch on the next GUI build. Cached
