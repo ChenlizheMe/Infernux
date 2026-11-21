@@ -13,7 +13,7 @@ namespace infernux::physics::warp
 /// identities captured at admission. Clones supply their own endpoint directory.
 [[nodiscard]] PhysicsContactPublication::Frame
 DecodeWarpContactFrame(std::vector<WarpContactReport> reports,
-                       const std::vector<PhysicsContactPublication::Endpoint> &geometry,
+                       const std::function<PhysicsContactPublication::Endpoint(uint32_t)> &resolveGeometry,
                        const PhysicsContactPublication::Policy &policy);
 
 } // namespace infernux::physics::warp

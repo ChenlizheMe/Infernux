@@ -46,6 +46,7 @@ struct WarpSceneSurfaceIdentity
     PhysicsTargetReference target;
     uint64_t gameObjectId;
     uint64_t colliderId;
+    uint64_t generation = 0;
 };
 
 struct WarpSceneCapture

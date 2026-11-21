@@ -5,7 +5,7 @@
 
 #include "../PhysicsBodyCommand.h"
 #include "../PhysicsBodyState.h"
-#include "../PhysicsContactTypes.h"
+#include "../PhysicsContactPublication.h"
 #include "../PhysicsECSStore.h"
 #include "../PhysicsGpuPoseSource.h"
 #include "../PhysicsRaycastHit.h"
@@ -26,6 +26,7 @@ struct WarpRegisteredBody
     uint64_t shapeRevision;
     PhysicsActorHandle actor{};
     std::vector<WarpSceneSurfaceIdentity> surfaces{}; // Author collider order.
+    PhysicsTargetReference bodyTarget{};
 };
 
 struct WarpRegisteredHinge
@@ -50,9 +51,15 @@ struct WarpSceneSetup
 
 struct WarpSceneDriveUpdate
 {
-    uint32_t world;
+    uint64_t worldId;
     uint64_t jointId;
     WarpHingeDrive drive;
+};
+
+struct WarpSceneBodyCommand
+{
+    uint64_t worldId;
+    PhysicsBodyCommand command;
 };
 
 struct WarpFixedWorld
@@ -76,10 +83,14 @@ struct WarpFixedPublication
     [[nodiscard]] PhysicsGpuPoseSource PoseSource(uint32_t world) const;
     [[nodiscard]] std::optional<PhysicsGpuBodyPoseBinding> FindPoseBody(uint32_t world, PhysicsActorHandle actor,
                                                                         uint32_t bodyId) const;
+    /// Consume the accepted world's reports in solver substep order.
+    void PublishContacts(uint32_t world, PhysicsContactPublication &destination,
+                         const PhysicsContactPublication::Policy &policy);
 
   private:
     friend class WarpSceneRuntime;
     std::shared_ptr<const WarpSceneLayout> m_layout;
+    bool m_integrated = false;
 };
 
 struct WarpHostBody
@@ -162,8 +173,8 @@ class WarpSceneRuntime final
     /// A required consumer prepares device work after the numerical receipt.
     /// The whole fixed publication becomes available once that work completes.
     /// The callback only prepares the packet. This source performs admission and submission.
-    void BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands, bool host,
-                    bool captureContacts = false, std::vector<WarpSceneDriveUpdate> drives = {},
+    void BeginFixed(std::vector<ContactStreamIdentity> identities, const std::vector<WarpSceneBodyCommand> &commands,
+                    bool host, bool captureContacts = false, const std::vector<WarpSceneDriveUpdate> &drives = {},
                     PublicationConsumer consumer = {});
     /// Apply immediate body edits at the last accepted simulation time.
     /// Reuses the same completion and optional consumer as a fixed step.
@@ -213,6 +224,7 @@ class WarpSceneRuntime final
     };
 
     [[nodiscard]] FrameWorkFacts Describe() const;
+    void EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command, std::vector<WarpBodyCommand> &out) const;
     void BeginOperation(Operation operation);
     bool Advance(bool gpu, uint64_t token);
     void Observe();

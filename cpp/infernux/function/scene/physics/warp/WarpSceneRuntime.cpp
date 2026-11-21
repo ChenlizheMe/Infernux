@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "WarpSceneRuntime.h"
+#include "WarpContactPublication.h"
 
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace infernux::physics::warp
 {
@@ -16,7 +16,6 @@ struct WarpSceneLayout
 {
     struct World
     {
-        uint64_t id;
         std::vector<WarpRegisteredBody> bodies; // Device row, including world row zero.
         std::unordered_map<uint32_t, uint32_t> rows;
         std::unordered_map<uint64_t, uint32_t> hinges;
@@ -27,8 +26,21 @@ struct WarpSceneLayout
             return found == rows.end() ? std::nullopt : std::make_optional(found->second);
         }
     };
+    struct Geometry
+    {
+        uint32_t body, surface, subshape;
+    };
     std::vector<World> worlds;
-    std::vector<uint32_t> geometrySurfaces; // Shared topology, indexed by device geometry row.
+    std::unordered_map<uint64_t, uint32_t> worldRows;
+    std::vector<Geometry> geometries;
+
+    [[nodiscard]] uint32_t WorldRow(uint64_t id) const
+    {
+        const auto found = worldRows.find(id);
+        if (found == worldRows.end())
+            throw std::invalid_argument("Warp scene command requires an enrolled world");
+        return found->second;
+    }
 };
 
 namespace
@@ -62,6 +74,32 @@ std::optional<PhysicsGpuBodyPoseBinding> WarpFixedPublication::FindPoseBody(uint
     if (!row || layout.bodies[*row].actor != actor)
         return std::nullopt;
     return PhysicsGpuBodyPoseBinding{bodyId, *row};
+}
+
+void WarpFixedPublication::PublishContacts(uint32_t world, PhysicsContactPublication &destination,
+                                           const PhysicsContactPublication::Policy &policy)
+{
+    const auto &fixed = worlds.at(world);
+    if (!m_integrated || fixed.status != 0)
+        throw std::logic_error("Contact publication requires an accepted Warp fixed step");
+    if (!policy.Requested()) {
+        destination.PublishEmpty(fixed.identity);
+        return;
+    }
+    if (contacts.size() != size_t{substeps} * worlds.size())
+        throw std::logic_error("Accepted Warp step does not carry the requested contact reports");
+    const auto &layout = m_layout->worlds[world];
+    const std::function<PhysicsContactPublication::Endpoint(uint32_t)> resolve = [&](uint32_t geometry) {
+        const auto &shape = m_layout->geometries.at(geometry);
+        const auto &body = layout.bodies[shape.body];
+        const auto &surface = body.surfaces.at(shape.surface);
+        return PhysicsContactPublication::Endpoint{body.bodyId,        shape.subshape, surface.colliderId,
+                                                   surface.generation, surface.target, body.bodyTarget};
+    };
+    destination.Publish(fixed.identity, policy, substeps, [&](uint32_t substep) {
+        auto &reports = contacts[size_t{substep} * worlds.size() + world];
+        return DecodeWarpContactFrame(std::move(reports), resolve, policy);
+    });
 }
 
 std::vector<WarpHostBody> WarpSceneBodyRead::ReadHostBodies() const
@@ -103,7 +141,7 @@ std::vector<RaycastHit> WarpSceneRayBatch::ReadHostHits() const
         hit.subShapeId = subShape;
         hit.triangleIndex = triangle;
         if (!binding.surfaces.empty()) {
-            const auto &surface = binding.surfaces[m_layout->geometrySurfaces[geometry]];
+            const auto &surface = binding.surfaces[m_layout->geometries[geometry].surface];
             hit.target = surface.target;
             hit.gameObjectId = surface.gameObjectId;
             hit.colliderId = surface.colliderId;
@@ -126,15 +164,18 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
         throw std::invalid_argument("Warp scene requires worlds and a body command capacity");
     auto layout = std::make_shared<WarpSceneLayout>();
     layout->worlds.reserve(worlds.size());
+    layout->worldRows.reserve(worlds.size());
     m_acceptedWorlds.reserve(worlds.size());
-    layout->geometrySurfaces.reserve(scene.geometries.size());
-    for (const auto &geometry : scene.geometries)
-        layout->geometrySurfaces.push_back(geometry.surface);
-    std::unordered_set<uint64_t> ids;
+    layout->geometries.reserve(scene.geometries.size());
+    for (size_t row = 0; row < scene.geometries.size(); ++row) {
+        const auto &geometry = scene.geometries[row];
+        layout->geometries.push_back({scene.model.geometries[row].indices[0], geometry.surface, geometry.subShape});
+    }
     for (auto &source : worlds) {
-        if (source.bodies.size() != scene.bodies.size() || !ids.insert(source.worldId).second)
+        if (source.bodies.size() != scene.bodies.size() ||
+            !layout->worldRows.emplace(source.worldId, static_cast<uint32_t>(layout->worlds.size())).second)
             throw std::invalid_argument("Warp scene world does not match its shared model");
-        WarpSceneLayout::World world{source.worldId, std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
+        WarpSceneLayout::World world{std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
         world.rows.reserve(source.bodies.size());
         for (size_t index = 0; index < source.bodies.size(); ++index) {
             auto &binding = source.bodies[index];
@@ -184,73 +225,84 @@ std::optional<WarpFixedPublication> WarpSceneRuntime::TakeInitial()
     return std::exchange(m_initialPublication, std::nullopt);
 }
 
-void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands,
-                                  bool host, bool captureContacts, std::vector<WarpSceneDriveUpdate> drives,
-                                  PublicationConsumer consumer)
+void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
+                                  const std::vector<WarpSceneBodyCommand> &commands, bool host, bool captureContacts,
+                                  const std::vector<WarpSceneDriveUpdate> &drives, PublicationConsumer consumer)
 {
     if (captureContacts && !m_contactReportsConfigured)
         throw std::logic_error("Warp scene was prepared without contact report storage");
     const auto &worlds = m_layout->worlds;
     if (identities.size() != worlds.size())
         throw std::invalid_argument("Warp fixed step requires an identity per world");
-    for (size_t world = 0; world < identities.size(); ++world)
-        if (identities[world].worldId != worlds[world].id)
-            throw std::invalid_argument("Warp fixed step identities must follow the enrolled world order");
+    for (size_t world = 0; world < identities.size(); ++world) {
+        const auto &next = identities[world];
+        const auto &previous = m_acceptedWorlds[world].identity;
+        if (next.worldId != previous.worldId || next.simulationEpoch != previous.simulationEpoch ||
+            next.fixedStepIndex <= previous.fixedStepIndex)
+            throw std::invalid_argument("Warp fixed step must advance the enrolled world and epoch");
+    }
+    std::vector<WarpBodyCommand> actions;
+    actions.reserve(commands.size());
+    for (const auto &entry : commands)
+        EncodeBodyCommand(m_layout->WorldRow(entry.worldId), entry.command, actions);
     std::vector<WarpHingeDriveUpdate> updates;
     updates.reserve(drives.size());
-    for (const auto &update : drives)
-        updates.push_back({update.world, worlds.at(update.world).hinges.at(update.jointId), update.drive.Pack()});
-    BeginOperation({std::move(identities), std::move(commands), std::move(updates), host, captureContacts,
+    for (const auto &update : drives) {
+        const auto world = m_layout->WorldRow(update.worldId);
+        updates.push_back({world, worlds[world].hinges.at(update.jointId), update.drive.Pack()});
+    }
+    BeginOperation({std::move(identities), std::move(actions), std::move(updates), host, captureContacts,
                     std::move(consumer), true});
 }
 
 void WarpSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
                                   PublicationConsumer consumer)
 {
-    const auto &worlds = m_layout->worlds;
-    const auto world = std::find_if(worlds.begin(), worlds.end(), [worldId](const auto &w) { return w.id == worldId; });
-    if (world == worlds.end())
-        throw std::invalid_argument("Warp scene edit requires an enrolled world");
-    const auto worldRow = static_cast<uint32_t>(world - worlds.begin());
+    const auto world = m_layout->WorldRow(worldId);
     std::vector<WarpBodyCommand> edits;
     edits.reserve(commands.size());
-    const auto vector = [](const glm::vec3 &v) -> ModelVector { return {v.x, v.y, v.z, 0.0f}; };
-    const auto rotation = [](const glm::quat &q) -> ModelVector { return {q.w, q.x, q.y, q.z}; };
-    using Kind = WarpBodyCommandKind;
-    for (const auto &command : commands) {
-        const auto row = world->BodyRow(command.bodyId);
-        if (!row)
-            throw std::invalid_argument("Warp scene edit requires an accepted body in the selected world");
-        const auto append = [&](Kind kind, ModelVector value = {}, ForceMode mode = {},
-                                ModelVector point = {}) -> WarpBodyCommand & {
-            return edits.emplace_back(WarpBodyCommand{worldRow, *row, kind, mode, value, point});
-        };
-        if (const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation)) {
-            const auto flags = pose->cancelDrive ? WarpPoseCommandFlags::None : WarpPoseCommandFlags::PreserveDrive;
-            if (pose->position)
-                append(Kind::SetPosition, vector(*pose->position)).poseFlags = flags;
-            if (pose->rotation)
-                append(Kind::SetRotation, rotation(*pose->rotation)).poseFlags = flags;
-        } else if (const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation)) {
-            if (velocity->linear)
-                append(Kind::SetLinearVelocity, vector(*velocity->linear));
-            if (velocity->angular)
-                append(Kind::SetAngularVelocity, vector(*velocity->angular));
-        } else if (const auto *force = std::get_if<PhysicsBodyCommand::Force>(&command.operation)) {
-            constexpr std::array<Kind, 3> kinds{Kind::Force, Kind::Torque, Kind::ForceAtPosition};
-            append(kinds[static_cast<size_t>(force->kind)], vector(force->value), force->mode, vector(force->point));
-        } else {
-            const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
-            append(Kind::ResetMotion);
-            append(Kind::SetPosition, vector(reset.position));
-            append(Kind::SetRotation, rotation(reset.rotation));
-            append(Kind::SetLinearVelocity, vector(reset.linear));
-            append(Kind::SetAngularVelocity, vector(reset.angular));
-        }
-    }
+    for (const auto &command : commands)
+        EncodeBodyCommand(world, command, edits);
     if (edits.empty())
         throw std::invalid_argument("Warp scene edit requires at least one body command");
     BeginOperation({{}, std::move(edits), {}, false, false, std::move(consumer), false});
+}
+
+void WarpSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
+                                         std::vector<WarpBodyCommand> &out) const
+{
+    const auto row = m_layout->worlds[world].BodyRow(command.bodyId);
+    if (!row)
+        throw std::invalid_argument("Warp scene command requires an accepted body in the selected world");
+    const auto vector = [](const glm::vec3 &v) -> ModelVector { return {v.x, v.y, v.z, 0.0f}; };
+    const auto rotation = [](const glm::quat &q) -> ModelVector { return {q.w, q.x, q.y, q.z}; };
+    using Kind = WarpBodyCommandKind;
+    const auto append = [&](Kind kind, ModelVector value = {}, ForceMode mode = {},
+                            ModelVector point = {}) -> WarpBodyCommand & {
+        return out.emplace_back(WarpBodyCommand{world, *row, kind, mode, value, point});
+    };
+    if (const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation)) {
+        const auto flags = pose->cancelDrive ? WarpPoseCommandFlags::None : WarpPoseCommandFlags::PreserveDrive;
+        if (pose->position)
+            append(Kind::SetPosition, vector(*pose->position)).poseFlags = flags;
+        if (pose->rotation)
+            append(Kind::SetRotation, rotation(*pose->rotation)).poseFlags = flags;
+    } else if (const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation)) {
+        if (velocity->linear)
+            append(Kind::SetLinearVelocity, vector(*velocity->linear));
+        if (velocity->angular)
+            append(Kind::SetAngularVelocity, vector(*velocity->angular));
+    } else if (const auto *force = std::get_if<PhysicsBodyCommand::Force>(&command.operation)) {
+        constexpr std::array<Kind, 3> kinds{Kind::Force, Kind::Torque, Kind::ForceAtPosition};
+        append(kinds[static_cast<size_t>(force->kind)], vector(force->value), force->mode, vector(force->point));
+    } else {
+        const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
+        append(Kind::ResetMotion);
+        append(Kind::SetPosition, vector(reset.position));
+        append(Kind::SetRotation, rotation(reset.rotation));
+        append(Kind::SetLinearVelocity, vector(reset.linear));
+        append(Kind::SetAngularVelocity, vector(reset.angular));
+    }
 }
 
 void WarpSceneRuntime::BeginOperation(Operation operation)
@@ -484,6 +536,7 @@ void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
     (void)readback->IsComplete(); // The enclosing packet receipt is already complete.
     const auto data = readback->GetData();
     auto result = CapturePublication(packet);
+    result.m_integrated = true;
     const auto worldCount = m_layout->worlds.size();
     size_t offset = 0;
     if (m_operation->host) {

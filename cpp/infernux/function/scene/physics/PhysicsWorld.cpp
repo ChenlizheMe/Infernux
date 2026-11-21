@@ -3809,9 +3809,11 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
         auto author = PhysicsActorAuthoring::Capture(actor);
         if (!author)
             return nullptr;
+        const auto bodyTarget = author->body ? author->body->target : PhysicsTargetReference{};
         auto prepared = PrepareWarpSceneActor(std::move(*author));
         rowById.emplace(id, static_cast<uint32_t>(actors.size()));
-        registration.bodies.push_back({id, binding.stagedShapeRevision, binding.actor, std::move(prepared.surfaces)});
+        registration.bodies.push_back(
+            {id, binding.stagedShapeRevision, binding.actor, std::move(prepared.surfaces), bodyTarget});
         actors.push_back(std::move(prepared.actor));
         if (const auto *joint = actor.owner->GetComponent<Joint>(); joint && joint->GetPhysicsConstraintId() != 0)
             activeJoints.push_back(joint);

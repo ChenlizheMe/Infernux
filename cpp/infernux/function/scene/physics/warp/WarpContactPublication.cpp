@@ -8,7 +8,7 @@ namespace infernux::physics::warp
 
 PhysicsContactPublication::Frame
 DecodeWarpContactFrame(std::vector<WarpContactReport> reports,
-                       const std::vector<PhysicsContactPublication::Endpoint> &geometry,
+                       const std::function<PhysicsContactPublication::Endpoint(uint32_t)> &resolveGeometry,
                        const PhysicsContactPublication::Policy &policy)
 {
     // Narrowphase reserves contact slots on device. Use authored geometry and
@@ -21,8 +21,8 @@ DecodeWarpContactFrame(std::vector<WarpContactReport> reports,
     result.points.reserve(reports.size());
     const auto xyz = [](const ModelVector &value) { return glm::vec3(value[0], value[1], value[2]); };
     for (const auto &report : reports) {
-        auto a = geometry.at(report.endpoints[0]);
-        auto b = geometry.at(report.endpoints[1]);
+        auto a = resolveGeometry(report.endpoints[0]);
+        auto b = resolveGeometry(report.endpoints[1]);
         if (report.endpoints[2] != NoModelIndex)
             a.subshape = report.endpoints[2];
         if (report.endpoints[3] != NoModelIndex)

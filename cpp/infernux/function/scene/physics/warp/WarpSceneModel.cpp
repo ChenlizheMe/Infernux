@@ -277,7 +277,7 @@ WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author)
         source.colliders.push_back({surface.colliderId, surface.generation, surface.layer, surface.collisionMask,
                                     surface.friction, surface.sensor, surface.restitution, surface.frictionCombine,
                                     surface.bounceCombine});
-        result.surfaces.push_back({surface.target, surface.gameObjectId, surface.colliderId});
+        result.surfaces.push_back({surface.target, surface.gameObjectId, surface.colliderId, surface.generation});
     }
     return result;
 }
