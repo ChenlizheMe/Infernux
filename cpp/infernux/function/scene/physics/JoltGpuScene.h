@@ -62,6 +62,7 @@ class JoltGpuScene final
         JPH::RefConst<JPH::Shape> shape;
         std::shared_ptr<const JoltGpuGeometryHandle> geometry;
         bool sensor = false;
+        uint32_t layer = 0;
     };
 
     struct LeafAddress

@@ -107,6 +107,49 @@ struct InxPhyGpuRayOutputs
     PhysicsDeviceBufferRange point, normal, distance, hit;
 };
 
+struct PreparedInxPhyGpuRayQuery;
+
+/// Closest queries consume an accepted pose buffer and their immutable geometry.
+class InxPhyGpuPublishedRayQuery
+{
+  public:
+    [[nodiscard]] static PreparedInxPhyGpuRayQuery Build(rhi::ComputeHost &host, ShaderCodeTarget target,
+                                                         const InxPhyGpuModel &model,
+                                                         const InxPhyGpuCollisionModel &collision, uint32_t capacity,
+                                                         uint32_t sourceBodyCount,
+                                                         const std::vector<uint32_t> &centerOfMassRows);
+
+    [[nodiscard]] InxPhyGpuPreparedRayBatch Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
+                                                    uint32_t rayCount, bool readback,
+                                                    std::vector<rhi::ComputeBufferUpdate> updates,
+                                                    const InxPhyGpuDeviceRays *deviceRays = nullptr,
+                                                    const InxPhyGpuRayOutputs *outputs = nullptr) const;
+    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Inputs() const noexcept
+    {
+        return m_inputs;
+    }
+    [[nodiscard]] uint32_t Capacity() const noexcept
+    {
+        return m_capacity;
+    }
+
+  private:
+    friend class InxPhyGpuStep;
+    std::shared_ptr<rhi::ComputeBuffer> m_inputs, m_settings, m_inputSettings, m_outputSettings;
+    rhi::ComputeDispatchDesc m_geometry, m_pack, m_project;
+    std::vector<rhi::ComputeDispatchDesc> m_rayWork;
+    mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
+    mutable std::shared_ptr<rhi::ComputeBuffer> m_output;
+    uint32_t m_geometryCount = 0, m_bodyCount = 0, m_capacity = 0;
+    PhysicsGpuPoseSource::Layout m_layout = PhysicsGpuPoseSource::Layout::OriginWXYZ;
+};
+
+struct PreparedInxPhyGpuRayQuery
+{
+    InxPhyGpuPublishedRayQuery query;
+    std::vector<rhi::ComputeBufferUpdate> initialize;
+};
+
 enum class InxPhyGpuBodyCommandKind : uint32_t
 {
     SetPosition,
@@ -275,13 +318,6 @@ class InxPhyGpuStep
         void Append(std::vector<rhi::ComputeBufferUpdate> &updates,
                     std::vector<InxPhyGpuJointParameterUpdate> values) const;
     };
-    struct PublishedRays
-    {
-        std::shared_ptr<rhi::ComputeBuffer> settings, inputSettings, outputSettings;
-        rhi::ComputeDispatchDesc geometry, pack, project;
-        mutable std::shared_ptr<rhi::ComputeBuffer> output;
-        uint32_t geometryCount = 0, bodyCount = 0, capacity = 0;
-    };
     struct FixedSubsteps
     {
         uint32_t count = 1;
@@ -300,7 +336,7 @@ class InxPhyGpuStep
                   uint32_t velocities, uint32_t appliedForces, InxPhyGpuContactStream contacts,
                   InxPhyGpuRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
                   ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
-                  PublishedRays publishedRays);
+                  InxPhyGpuPublishedRayQuery publishedRays);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -315,7 +351,7 @@ class InxPhyGpuStep
     FixedSubsteps m_substeps;
     std::shared_ptr<rhi::ComputeReplayCache> m_fixedReplay = rhi::MakeComputeReplayCache();
     SceneJointParameters m_jointParameters;
-    PublishedRays m_publishedRays;
+    InxPhyGpuPublishedRayQuery m_publishedRays;
 };
 
 } // namespace infernux::physics::inxphygpu

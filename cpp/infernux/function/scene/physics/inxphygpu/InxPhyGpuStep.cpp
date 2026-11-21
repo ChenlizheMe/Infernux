@@ -214,10 +214,11 @@ struct GeometrySlots
 };
 
 GeometrySlots BindGeometry(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
-                           bool rays)
+                           bool rays, const std::vector<ModelGeometry> *poseGeometry = nullptr)
 {
     const auto count = model.dimensions.layout[0];
-    return {b.Shared("geometries", model.geometries), b.Shared("localBounds", collision.bounds),
+    return {b.Shared("geometries", poseGeometry ? *poseGeometry : model.geometries),
+            b.Shared("localBounds", collision.bounds),
             count != 0 ? b.Slot(16 * uint64_t{count} * b.worlds) : b.Seed("geometryFrames", 16, nullptr),
             b.Shared("collisionShapes", collision.shapes),
             rays || !collision.convexData.empty() ? b.Shared("convexModel", collision.convexData) : NoModelIndex};
@@ -901,6 +902,62 @@ ComputeDispatchDesc BindDispatch(ComputeWorkDispatch command,
 }
 } // namespace
 
+PreparedInxPhyGpuRayQuery InxPhyGpuPublishedRayQuery::Build(rhi::ComputeHost &host, ShaderCodeTarget target,
+                                                            const InxPhyGpuModel &model,
+                                                            const InxPhyGpuCollisionModel &collision, uint32_t capacity,
+                                                            uint32_t sourceBodyCount,
+                                                            const std::vector<uint32_t> &centerOfMassRows)
+{
+    StepBuilder b(host, target, 1);
+    auto poseGeometry = model.geometries;
+    for (auto &geometry : poseGeometry) {
+        const auto row = geometry.indices[0];
+        const auto &center = model.bodies[row].inertiaPose.position;
+        geometry.indices[0] = centerOfMassRows[row];
+        for (uint32_t axis = 0; axis < 3; ++axis)
+            geometry.pose.position[axis] -= center[axis];
+    }
+    const auto geometry = BindGeometry(b, model, collision, true, &poseGeometry);
+    std::vector<ComputeWorkDispatch> rayWork;
+    auto ray = AddRayWork(b, model, collision, geometry, {capacity, true}, rayWork, true);
+    ComputeWorkDispatch worldPoses;
+    if (!poseGeometry.empty())
+        worldPoses = b.Dispatch(
+            "position", "published_com_geom_to_global", model.dimensions.layout[0],
+            {{9, geometry.geometries, R}, {10, geometry.frames, W, true}, {11, ray.hits, R}, {12, ray.settings, R}});
+    std::vector<std::shared_ptr<rhi::ComputeBuffer>> buffers;
+    buffers.reserve(b.slots.size());
+    for (const auto &slot : b.slots) {
+        auto buffer = rhi::ComputeBuffer::TryCreatePrivate(host, slot.allocation);
+        if (!buffer)
+            throw std::runtime_error("Could not allocate inxphygpu ray query storage");
+        buffers.push_back(std::move(buffer));
+    }
+    PreparedInxPhyGpuRayQuery prepared;
+    for (auto &upload : b.initial)
+        if (upload.slot != ray.inputs && upload.slot != ray.settings && upload.slot != ray.inputSettings &&
+            upload.slot != ray.outputSettings)
+            prepared.initialize.push_back({buffers[upload.slot], 0, std::move(upload.data)});
+    auto &query = prepared.query;
+    query.m_layout = PhysicsGpuPoseSource::Layout::CenterOfMassXYZW;
+    query.m_geometryCount = model.dimensions.layout[0];
+    query.m_bodyCount = sourceBodyCount;
+    query.m_capacity = capacity;
+    query.m_inputs = buffers[ray.inputs];
+    query.m_settings = buffers[ray.settings];
+    query.m_inputSettings = buffers[ray.inputSettings];
+    query.m_outputSettings = buffers[ray.outputSettings];
+    query.m_pack = BindDispatch(std::move(ray.pack), buffers);
+    query.m_project = BindDispatch(std::move(ray.project), buffers);
+    if (worldPoses.kernel)
+        query.m_geometry = BindDispatch(std::move(worldPoses), buffers);
+    for (auto &dispatch : b.initialize)
+        query.m_initialize.push_back(BindDispatch(std::move(dispatch), buffers));
+    for (auto &dispatch : rayWork)
+        query.m_rayWork.push_back(BindDispatch(std::move(dispatch), buffers));
+    return prepared;
+}
+
 PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target, const InxPhyGpuModel &model,
                                            uint32_t worlds, float timestep, const ModelVector &gravity,
                                            const InxPhyGpuCollisionModel *collision,
@@ -1455,23 +1512,25 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                     buffers[contactSlots->narrowphaseStatus]};
     InxPhyGpuRayBuffers rays;
     std::vector<rhi::ComputeDispatchDesc> rayWork;
-    PublishedRays publishedRays;
+    InxPhyGpuPublishedRayQuery publishedRays;
     if (raySlots) {
         rays = {buffers[raySlots->inputs], publishedRaysEnabled ? nullptr : buffers[raySlots->hits]};
         rayWork.reserve(rayDispatches.size());
         for (auto &dispatch : rayDispatches)
             rayWork.push_back(BindDispatch(std::move(dispatch), buffers));
         if (publishedRaysEnabled) {
-            publishedRays.settings = buffers[raySlots->settings];
-            publishedRays.inputSettings = buffers[raySlots->inputSettings];
-            publishedRays.outputSettings = buffers[raySlots->outputSettings];
-            publishedRays.pack = BindDispatch(std::move(raySlots->pack), buffers);
-            publishedRays.project = BindDispatch(std::move(raySlots->project), buffers);
-            publishedRays.geometryCount = model.dimensions.layout[0];
-            publishedRays.bodyCount = nb;
-            publishedRays.capacity = rayLayout.raysPerWorld;
+            publishedRays.m_inputs = rays.inputs;
+            publishedRays.m_settings = buffers[raySlots->settings];
+            publishedRays.m_inputSettings = buffers[raySlots->inputSettings];
+            publishedRays.m_outputSettings = buffers[raySlots->outputSettings];
+            publishedRays.m_pack = BindDispatch(std::move(raySlots->pack), buffers);
+            publishedRays.m_project = BindDispatch(std::move(raySlots->project), buffers);
+            publishedRays.m_geometryCount = model.dimensions.layout[0];
+            publishedRays.m_bodyCount = nb;
+            publishedRays.m_capacity = rayLayout.raysPerWorld;
+            publishedRays.m_rayWork = std::move(rayWork);
             if (publishedGeometry.kernel)
-                publishedRays.geometry = BindDispatch(std::move(publishedGeometry), buffers);
+                publishedRays.m_geometry = BindDispatch(std::move(publishedGeometry), buffers);
         }
     }
     if (controlSlots) {
@@ -1524,7 +1583,7 @@ InxPhyGpuStep::InxPhyGpuStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi
                              InxPhyGpuContactStream contacts, InxPhyGpuRayBuffers rays,
                              std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
                              ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
-                             PublishedRays publishedRays)
+                             InxPhyGpuPublishedRayQuery publishedRays)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
       m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
       m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports)),
@@ -1600,24 +1659,34 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
                                                               const InxPhyGpuDeviceRays *deviceRays,
                                                               const InxPhyGpuRayOutputs *outputs) const
 {
-    const auto &plan = m_publishedRays;
-    if (!plan.settings || rayCount == 0 || rayCount > plan.capacity)
+    auto host = m_work->GetRecipe().GetHost();
+    return m_publishedRays.Prepare(host, source, rayCount, publish, std::move(updates), deviceRays, outputs);
+}
+
+InxPhyGpuPreparedRayBatch
+InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, uint32_t rayCount,
+                                    bool publish, std::vector<rhi::ComputeBufferUpdate> updates,
+                                    const InxPhyGpuDeviceRays *deviceRays, const InxPhyGpuRayOutputs *outputs) const
+{
+    if (!m_settings || rayCount == 0 || rayCount > m_capacity)
         throw std::invalid_argument("inxphygpu published ray batch exceeds the scene query layout");
-    constexpr uint64_t maxRows = UINT32_MAX / 5u;
-    if (!source.states || source.layout != PhysicsGpuPoseSource::Layout::OriginWXYZ ||
-        source.bodyCount != plan.bodyCount || source.firstRow > maxRows ||
-        source.bodyCount > maxRows - source.firstRow ||
-        (source.firstRow + source.bodyCount) * sizeof(InxPhyGpuBodyState) > source.states->GetByteSize())
+    const uint32_t wordsPerRow = m_layout == PhysicsGpuPoseSource::Layout::OriginWXYZ ? 5u : 4u;
+    const uint64_t maxRows = UINT32_MAX / wordsPerRow;
+    const uint64_t rowBytes = wordsPerRow * sizeof(ModelVector);
+    if (m_geometry.kernel &&
+        (!source.states || source.layout != m_layout || source.rowBytes != rowBytes ||
+         source.bodyCount != m_bodyCount || source.firstRow > maxRows || source.bodyCount > maxRows - source.firstRow ||
+         (source.firstRow + source.bodyCount) * rowBytes > source.states->GetByteSize()))
         throw std::invalid_argument("inxphygpu ray query requires a complete published body slot range");
 
-    const ModelWords settings{plan.geometryCount, rayCount, 1, static_cast<uint32_t>(source.firstRow)};
+    const ModelWords settings{m_geometryCount, rayCount, 1, static_cast<uint32_t>(source.firstRow)};
     auto &params =
-        updates.emplace_back(rhi::ComputeBufferUpdate{plan.settings, 0, std::vector<uint8_t>(sizeof(settings))});
+        updates.emplace_back(rhi::ComputeBufferUpdate{m_settings, 0, std::vector<uint8_t>(sizeof(settings))});
     std::memcpy(params.data.data(), settings.data(), params.data.size());
 
-    std::vector<rhi::ComputeDispatchDesc> dispatches;
-    dispatches.reserve(m_rayWork.size() + size_t(bool(plan.geometry.kernel)) + size_t(deviceRays != nullptr) +
-                       size_t(outputs != nullptr));
+    auto dispatches = std::exchange(m_initialize, {});
+    dispatches.reserve(dispatches.size() + m_rayWork.size() + size_t(bool(m_geometry.kernel)) +
+                       size_t(deviceRays != nullptr) + size_t(outputs != nullptr));
     const auto inputBytes = uint64_t{rayCount} * sizeof(InxPhyGpuRay);
     const auto scalarOffset = [](const PhysicsDeviceBufferRange &view, uint64_t bytes, ComputeScalarType scalar) {
         const auto end = view.buffer ? std::min(view.byteEnd, view.buffer->GetByteSize()) : 0u;
@@ -1638,9 +1707,9 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
             rays.filter};
         std::memcpy(&inputSettings[0][3], &rays.maxDistance, sizeof(float));
         auto &upload = updates.emplace_back(
-            rhi::ComputeBufferUpdate{plan.inputSettings, 0, std::vector<uint8_t>(sizeof(inputSettings))});
+            rhi::ComputeBufferUpdate{m_inputSettings, 0, std::vector<uint8_t>(sizeof(inputSettings))});
         std::memcpy(upload.data.data(), inputSettings.data(), upload.data.size());
-        auto &pack = dispatches.emplace_back(plan.pack);
+        auto &pack = dispatches.emplace_back(m_pack);
         pack.groupCountX = (rayCount - 1) / 64 + 1;
         pack.buffers[1] = rays.origins.buffer;
         pack.buffers[2] = rays.directions.buffer;
@@ -1648,27 +1717,25 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
         pack.proof->reads[2] = {2, rays.directions.byteOffset, vectorBytes};
         pack.proof->writes.front().byteSize = inputBytes;
     }
-    if (plan.geometry.kernel) {
-        auto &geometry = dispatches.emplace_back(plan.geometry);
+    if (m_geometry.kernel) {
+        auto &geometry = dispatches.emplace_back(m_geometry);
         geometry.groupCountY = 1;
         geometry.buffers[2] = source.states;
-        geometry.proof->reads[1] = {2, source.firstRow * sizeof(InxPhyGpuBodyState),
-                                    uint64_t{source.bodyCount} * sizeof(InxPhyGpuBodyState)};
-        geometry.proof->writes.front().byteSize = 4 * sizeof(ModelVector) * plan.geometryCount;
+        geometry.proof->reads[1] = {2, source.firstRow * rowBytes, source.bodyCount * rowBytes};
+        geometry.proof->writes.front().byteSize = 4 * sizeof(ModelVector) * m_geometryCount;
     }
     dispatches.insert(dispatches.end(), m_rayWork.begin(), m_rayWork.end());
     for (auto &dispatch : dispatches)
         dispatch.groupCountY = 1;
 
     const auto bytes = uint64_t{rayCount} * sizeof(InxPhyGpuRayHit);
-    auto host = m_work->GetRecipe().GetHost();
-    if (!plan.output || plan.output.use_count() != 1 || plan.output->GetByteSize() < bytes)
-        plan.output = std::make_shared<rhi::ComputeBuffer>(
+    if (!m_output || m_output.use_count() != 1 || m_output->GetByteSize() < bytes)
+        m_output = std::make_shared<rhi::ComputeBuffer>(
             host, rhi::ComputeBufferDesc{bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1,
                                          rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource});
     auto &trace = dispatches.back();
     trace.groupCountX = (rayCount - 1) / 64 + 1;
-    trace.buffers[6] = plan.output;
+    trace.buffers[6] = m_output;
     trace.proof->reads[1].byteSize = inputBytes;
     trace.proof->writes.front().byteSize = bytes;
     if (outputs) {
@@ -1676,10 +1743,10 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
                                                                     &outputs->distance, &outputs->hit};
         constexpr std::array<uint32_t, 4> lanes{3, 3, 1, 1};
         std::array<uint32_t, 4> offsets{};
-        auto &project = dispatches.emplace_back(plan.project);
+        auto &project = dispatches.emplace_back(m_project);
         project.groupCountX = (rayCount - 1) / 64 + 1;
         project.groupCountY = 1;
-        project.buffers[2] = plan.output;
+        project.buffers[2] = m_output;
         project.proof->reads[1].byteSize = inputBytes;
         project.proof->reads[2].byteSize = bytes;
         for (uint32_t field = 0; field < views.size(); ++field) {
@@ -1700,13 +1767,13 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
         const std::array<ModelWords, 2> outputSettings{ModelWords{rayCount, offsets[0], offsets[1], offsets[2]},
                                                        ModelWords{offsets[3], 0, 0, 0}};
         auto &upload = updates.emplace_back(
-            rhi::ComputeBufferUpdate{plan.outputSettings, 0, std::vector<uint8_t>(sizeof(outputSettings))});
+            rhi::ComputeBufferUpdate{m_outputSettings, 0, std::vector<uint8_t>(sizeof(outputSettings))});
         std::memcpy(upload.data.data(), outputSettings.data(), upload.data.size());
     }
     std::vector<rhi::ComputeBufferRead> reads;
     if (publish)
-        reads.push_back({plan.output, 0, bytes});
-    return {rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads)), plan.output,
+        reads.push_back({m_output, 0, bytes});
+    return {rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads)), m_output,
             rayCount};
 }
 

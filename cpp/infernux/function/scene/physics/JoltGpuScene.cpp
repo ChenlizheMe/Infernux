@@ -1087,6 +1087,7 @@ class JoltGpuScene::Impl
             publishedLeaf.subShapeId = leaf.subShapeID.GetValue();
             publishedLeaf.subShapeBits = leaf.subShapeBits;
             publishedLeaf.memberIndex = leaf.memberIndex;
+            publishedLeaf.layer = leaf.model.surface.x;
             publishedLeaf.shape = leaf.shape;
             publishedLeaf.geometry = geometry->Intern(leaf.geometryRecord);
             publishedLeaf.sensor = (leaf.model.meta.w & ShapeSensor) != 0;

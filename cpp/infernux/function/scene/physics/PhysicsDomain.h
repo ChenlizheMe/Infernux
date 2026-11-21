@@ -22,6 +22,7 @@ class RuntimeWorld;
 class JoltCpuScene;
 class JoltCpuControl;
 class PhysicsConstraintOwner;
+struct PhysicsSceneRayPlan;
 
 /// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
 /// Worker services and GPU storage/submission remain shared between worlds.
@@ -148,5 +149,6 @@ struct PhysicsDomain final
     uint64_t presentationPoseReadGeneration = 0;
     // A collision graph can consume static GPU boundaries without a Rigidbody.
     std::weak_ptr<const void> particleCollisionConsumer;
+    std::unique_ptr<PhysicsSceneRayPlan> sceneRays;
 };
 } // namespace infernux

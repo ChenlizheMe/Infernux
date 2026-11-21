@@ -60,6 +60,14 @@
 
 namespace infernux
 {
+struct PhysicsSceneRayPlan
+{
+    std::shared_ptr<const JoltGpuScene::PublicationDirectory> directory;
+    uint32_t bodyBase = 0, bodyCount = 0;
+    physics::inxphygpu::InxPhyGpuPublishedRayQuery query;
+    std::vector<RaycastHit> surfaces; // Geometry rows, resolved only when a read completes.
+};
+
 namespace
 {
 using namespace JPH::GPU;
@@ -268,13 +276,17 @@ void TargetCollider(QueryInput &request, const Collider &collider)
     request.filter.z = static_cast<uint32_t>(id);
     request.filter.w = static_cast<uint32_t>(id >> 32);
 }
+void ValidateRayInput(const glm::vec3 &origin, const glm::vec3 &direction, float maximum)
+{
+    if (!Finite(origin) || !Finite(direction) || !std::isfinite(maximum) || maximum <= 0 || direction == glm::vec3(0))
+        throw std::invalid_argument("Physics ray requires finite inputs, positive distance and nonzero direction");
+}
+
 void QueryRayInput(QueryInput &request, const glm::vec3 &origin, const glm::vec3 &direction, float maximum)
 {
-    request.positionMaximum = Vector(origin);
-    request.direction = Vector(direction);
-    if (!std::isfinite(maximum) || maximum <= 0 || (direction.x == 0 && direction.y == 0 && direction.z == 0))
-        throw std::invalid_argument("Physics ray requires positive finite distance and nonzero direction");
-    request.positionMaximum.w = maximum;
+    ValidateRayInput(origin, direction, maximum);
+    request.positionMaximum = {origin.x, origin.y, origin.z, maximum};
+    request.direction = {direction.x, direction.y, direction.z, 0.0f};
 }
 void QuerySphereInput(QueryInput &request, const glm::vec3 &center, float radius)
 {
@@ -393,6 +405,64 @@ ShaderCodeTarget PhysicsShaderTarget(const rhi::ComputeHost &host)
     default:
         throw std::runtime_error("Unsupported physics shader target");
     }
+}
+
+std::pair<std::unique_ptr<PhysicsSceneRayPlan>, std::vector<rhi::ComputeBufferUpdate>>
+BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publication, uint32_t capacity)
+{
+    using namespace physics::inxphygpu;
+    auto plan = std::make_unique<PhysicsSceneRayPlan>();
+    plan->directory = publication.directory;
+    plan->bodyBase = publication.bodyBase;
+    plan->bodyCount = publication.bodyCount;
+    std::vector<InxPhyGpuSceneActor> actors;
+    std::vector<std::vector<RaycastHit>> surfaces;
+    std::vector<uint32_t> slots;
+    const auto &directory = *publication.directory;
+    for (uint32_t row = 0; row < publication.bodyCount; ++row) {
+        const auto slot = publication.bodyBase + row;
+        if (slot >= directory.actors.size() || !directory.residentBodies[slot])
+            continue;
+        const auto &actor = *directory.actors[slot];
+        if (actor.leaves.empty())
+            continue;
+        auto &source = actors.emplace_back();
+        source.shape = actor.authoredShape;
+        source.kinematic = actor.acceptedMotionType != MotionStatic;
+        source.objectId = actor.owner.gameObjectId;
+        auto &members = surfaces.emplace_back();
+        slots.push_back(row);
+        for (const auto &leaf : actor.leaves) {
+            const auto index = leaf.memberIndex;
+            if (members.size() <= index) {
+                members.resize(index + 1);
+                source.colliders.resize(index + 1);
+            }
+            source.colliders[index] = {leaf.colliderId, leaf.colliderGeneration, leaf.layer, UINT32_MAX, 0.0f,
+                                       leaf.sensor};
+            auto &surface = members[index];
+            surface.target = leaf.surfaceTarget;
+            surface.bodyId = actor.bodyId;
+            surface.gameObjectId = leaf.surfaceGameObjectId;
+            surface.colliderId = leaf.colliderId;
+        }
+    }
+    const auto model = BuildInxPhyGpuSceneModel(actors);
+    std::vector<uint32_t> poseRows(model.model.bodies.size()), authorRows(model.model.bodies.size());
+    for (size_t i = 0; i < model.model.bodyRows.size(); ++i) {
+        const auto row = model.model.bodyRows[i];
+        poseRows[row] = slots[i];
+        authorRows[row] = static_cast<uint32_t>(i);
+    }
+    plan->surfaces.reserve(model.geometries.size());
+    for (size_t row = 0; row < model.geometries.size(); ++row) {
+        const auto body = model.model.geometries[row].indices[0];
+        plan->surfaces.push_back(surfaces[authorRows[body]][model.geometries[row].surface]);
+    }
+    auto prepared = InxPhyGpuPublishedRayQuery::Build(host, PhysicsShaderTarget(host), model.model, model.collision,
+                                                      capacity, publication.bodyCount, poseRows);
+    plan->query = std::move(prepared.query);
+    return {std::move(plan), std::move(prepared.initialize)};
 }
 Rigidbody &KinematicBody(const PhysicsActorData &actor)
 {
@@ -711,6 +781,7 @@ void PhysicsWorld::RetireGpuPartition(PhysicsDomain &domain)
         return;
     m_gpuScene->RetirePartition(domain.owner);
     domain.lastPublication.reset();
+    domain.sceneRays.reset();
     domain.gpuContacts.Close();
     domain.queuedColliderPairs.reset();
     domain.presentationPoseReads.reset();
@@ -747,6 +818,7 @@ void PhysicsWorld::Shutdown()
         domain->cpuPublication = {};
         domain->cpuFixedAdmitted = false;
         domain->lastPublication.reset();
+        domain->sceneRays.reset();
         domain->queuedColliderPairs.reset();
         domain->requestedMotion.clear();
     }
@@ -3602,10 +3674,9 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
             if (count && (!origins || !directions || !hits || !mask || count > UINT32_MAX))
                 throw std::invalid_argument("Raycast batch requires valid arrays within the query index range");
             for (size_t i = 0; i < count; ++i) {
-                auto input = Query(QueryRay, QueryClosest, layers, triggers);
                 const auto offset = i * 3;
-                QueryRayInput(input, {origins[offset], origins[offset + 1], origins[offset + 2]},
-                              {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
+                ValidateRayInput({origins[offset], origins[offset + 1], origins[offset + 2]},
+                                 {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
             }
             std::fill_n(hits, count, RaycastHit{});
             std::fill_n(mask, count, uint8_t{0});
@@ -3625,38 +3696,80 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
     if (!origins || !directions || !hits || !mask || count > UINT32_MAX)
         throw std::invalid_argument("Raycast batch requires valid arrays within the query index range");
 
-    const auto request = Query(QueryRay, QueryClosest, layers, triggers);
     if (domain.cpuScene) {
         const std::shared_lock queryRead(domain.cpuScene->QueryMutex());
         JoltCpuQueries(*domain.cpuScene)
             .RaycastBatch(origins, directions, count, maximum, hits, mask, {layers, triggers}, profile);
     } else if (const auto gpu = ReadGpuSpatialQueryPublication(domain)) {
-        std::vector<QueryInput> requests;
-        requests.reserve(count);
+        using namespace physics::inxphygpu;
+        std::vector<InxPhyGpuRay> rays;
+        rays.reserve(count);
+        const uint32_t filter = InxPhyGpuRayIncludeStatic | (triggers ? InxPhyGpuRayIncludeTriggers : 0u);
         for (size_t i = 0; i < count; ++i) {
             const auto offset = i * 3;
-            auto input = request;
-            QueryRayInput(input, {origins[offset], origins[offset + 1], origins[offset + 2]},
-                          {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
-            requests.push_back(input);
+            const glm::vec3 origin{origins[offset], origins[offset + 1], origins[offset + 2]};
+            const glm::vec3 direction{directions[offset], directions[offset + 1], directions[offset + 2]};
+            ValidateRayInput(origin, direction, maximum);
+            const auto axis = glm::abs(direction);
+            const auto unit = glm::normalize(direction / std::max({axis.x, axis.y, axis.z}));
+            rays.push_back({{origin.x, origin.y, origin.z, maximum},
+                            {unit.x, unit.y, unit.z, 0.0f},
+                            {layers, NoModelIndex, filter, 0u}});
         }
-        const auto result = RunQuery(domain, gpu, requests);
+        std::unique_ptr<PhysicsSceneRayPlan> replacement;
+        auto *plan = domain.sceneRays.get();
+        InxPhyGpuPreparedRayBatch batch;
+        ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
+            std::vector<rhi::ComputeBufferUpdate> uploads;
+            if (!plan || plan->directory != accepted->directory || plan->bodyBase != accepted->bodyBase ||
+                plan->bodyCount != accepted->bodyCount || plan->query.Capacity() < count) {
+                const auto capacity = std::max(count, plan ? size_t{plan->query.Capacity()} : size_t{64});
+                auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, static_cast<uint32_t>(capacity));
+                replacement = std::move(prepared.first);
+                uploads = std::move(prepared.second);
+                plan = replacement.get();
+            }
+            auto &input = uploads.emplace_back(rhi::ComputeBufferUpdate{
+                plan->query.Inputs(), 0, std::vector<uint8_t>(rays.size() * sizeof(InxPhyGpuRay))});
+            std::memcpy(input.data.data(), rays.data(), input.data.size());
+            batch = plan->query.Prepare(*m_gpuHost,
+                                        {accepted->bodyStates, 0, accepted->bodyCount, sizeof(JPH::GPU::BodyState)},
+                                        static_cast<uint32_t>(count), true, std::move(uploads));
+            return JoltGpuControlWork{batch.packet};
+        });
+        if (replacement)
+            domain.sceneRays = std::move(replacement);
         FrameWorkOwner::Scope materialize(*m_gpuWork);
-        const auto &records = result->ReadHits();
-        if (records.size() != count)
-            throw std::runtime_error("GPU closest query did not produce one complete record per request");
+        std::vector<InxPhyGpuRayHit> records(count);
+        batch.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(InxPhyGpuRayHit));
         for (size_t i = 0; i < count; ++i) {
-            hits[i] = DecodeQueryHit(*result, records[i]);
-            mask[i] = static_cast<uint8_t>(records[i].meta.y != 0);
+            const auto &[normalDistance, identity] = records[i];
+            const auto geometry = identity[0];
+            if (geometry == NoModelIndex) {
+                hits[i] = {};
+                mask[i] = 0;
+                continue;
+            }
+            auto &hit = hits[i];
+            hit = plan->surfaces.at(geometry);
+            hit.subShapeId = identity[2];
+            hit.triangleIndex = identity[3];
+            hit.distance = normalDistance[3];
+            hit.normal = {normalDistance[0], normalDistance[1], normalDistance[2]};
+            const auto &ray = rays[i];
+            hit.point = glm::vec3(ray.originLimit[0], ray.originLimit[1], ray.originLimit[2]) +
+                        glm::vec3(ray.direction[0], ray.direction[1], ray.direction[2]) * hit.distance;
+            hit.collider = hit.target.GetCollider();
+            hit.gameObject = hit.target.GetGameObject();
+            mask[i] = 1;
             if (profile)
-                profile->publishedHits += mask[i];
+                ++profile->publishedHits;
         }
     } else {
         for (size_t i = 0; i < count; ++i) {
-            auto input = request;
             const auto offset = i * 3;
-            QueryRayInput(input, {origins[offset], origins[offset + 1], origins[offset + 2]},
-                          {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
+            ValidateRayInput({origins[offset], origins[offset + 1], origins[offset + 2]},
+                             {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
         }
         std::fill_n(hits, count, RaycastHit{});
         std::fill_n(mask, count, uint8_t{0});
