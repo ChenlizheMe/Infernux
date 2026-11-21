@@ -498,6 +498,26 @@ InxPhyGpuSceneBodyRead InxPhyGpuSceneRuntime::PrepareBodyRead(const InxPhyGpuFix
     return result;
 }
 
+InxPhyGpuPreparedJointMotion InxPhyGpuSceneRuntime::PrepareJointMotion(const InxPhyGpuFixedPublication &publication,
+                                                                       uint32_t world,
+                                                                       const std::vector<uint64_t> &jointIds,
+                                                                       bool readback) const
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu joint motion does not match its scene publication");
+    const auto source = publication.PoseSource(world);
+    const auto &joints = m_layout->worlds[world].joints;
+    std::vector<uint32_t> rows;
+    rows.reserve(jointIds.size());
+    for (const auto id : jointIds) {
+        const auto joint = joints.find(id);
+        if (joint == joints.end())
+            throw std::invalid_argument("inxphygpu joint motion requires an accepted joint in the selected world");
+        rows.push_back(joint->second.row);
+    }
+    return m_step->PrepareJointMotion(source, rows, readback);
+}
+
 InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareDeviceRaycast(const InxPhyGpuFixedPublication &publication,
                                                                    uint32_t world, const InxPhyGpuDeviceRays &rays,
                                                                    const PhysicsDeviceRayOutputs *outputs) const

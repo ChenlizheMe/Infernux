@@ -203,6 +203,11 @@ class InxPhyGpuSceneRuntime final
     /// copies adjacent rows together and reads each selected row at most once.
     [[nodiscard]] InxPhyGpuSceneBodyRead PrepareBodyRead(const InxPhyGpuFixedPublication &publication, uint32_t world,
                                                          const std::vector<uint32_t> &engineBodies) const;
+    /// Resolve stable joint IDs in the selected accepted world and keep the
+    /// requested order. The result can feed a device consumer without readback.
+    [[nodiscard]] InxPhyGpuPreparedJointMotion PrepareJointMotion(const InxPhyGpuFixedPublication &publication,
+                                                                  uint32_t world, const std::vector<uint64_t> &jointIds,
+                                                                  bool readback) const;
     /// Prepare against the chosen completed world. The result retains device
     /// rows and can optionally carry an exact host hit readback.
     [[nodiscard]] InxPhyGpuSceneRayBatch PrepareRaycast(const InxPhyGpuFixedPublication &publication, uint32_t world,

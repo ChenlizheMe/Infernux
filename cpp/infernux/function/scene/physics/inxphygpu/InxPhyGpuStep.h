@@ -228,6 +228,21 @@ struct InxPhyGpuStateHandoff
     std::vector<uint32_t> addresses;
 };
 
+struct InxPhyGpuJointMotion
+{
+    ModelVector coordinate;  // Angle/speed, distance/speed or connected-frame position.
+    ModelVector orientation; // Connected-frame quaternion in wxyz order.
+};
+
+struct InxPhyGpuPreparedJointMotion
+{
+    std::shared_ptr<rhi::PreparedComputeBatch> packet;
+    std::shared_ptr<rhi::ComputeBuffer> motion;
+    uint32_t count = 0;
+
+    [[nodiscard]] std::vector<InxPhyGpuJointMotion> ReadHostMotion() const;
+};
+
 /// Resident state and fixed-step work for worlds that share one compiled model.
 class InxPhyGpuStep
 {
@@ -275,6 +290,9 @@ class InxPhyGpuStep
     /// ModelWords record per world with the clock bits, solver status and accepted step ordinal.
     [[nodiscard]] std::shared_ptr<rhi::ComputeBuffer> BodyStates() const noexcept;
 
+    [[nodiscard]] InxPhyGpuPreparedJointMotion
+    PrepareJointMotion(const PhysicsGpuPoseSource &source, const std::vector<uint32_t> &rows, bool readback) const;
+
     /// Enqueue after the state to query. Device consumers enqueue before the next
     /// batch that writes the same hit buffer. A CPU publication pins its own snapshot.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
@@ -317,9 +335,10 @@ class InxPhyGpuStep
         uint64_t countsOffset = 0, countsBytes = 0;
         uint32_t capacity = 0;
     };
-    struct SceneJointParameters
+    struct SceneJoints
     {
-        std::shared_ptr<rhi::ComputeBuffer> buffer;
+        std::shared_ptr<rhi::ComputeBuffer> parameters, descriptors;
+        std::shared_ptr<rhi::ComputeKernel> motionKernel;
         uint32_t stride = 0;
 
         void Append(std::vector<rhi::ComputeBufferUpdate> &updates,
@@ -350,7 +369,7 @@ class InxPhyGpuStep
     InxPhyGpuStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
                   uint32_t velocities, uint32_t appliedForces, InxPhyGpuContactStream contacts,
                   InxPhyGpuRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
-                  ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
+                  ContactReports reports, FixedSubsteps substeps, SceneJoints sceneJoints,
                   InxPhyGpuPublishedRayQuery publishedRays, FixedInputs fixedInputs);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
@@ -365,7 +384,7 @@ class InxPhyGpuStep
     ContactReports m_reports;
     FixedSubsteps m_substeps;
     std::shared_ptr<rhi::ComputeReplayCache> m_fixedReplay = rhi::MakeComputeReplayCache();
-    SceneJointParameters m_jointParameters;
+    SceneJoints m_sceneJoints;
     InxPhyGpuPublishedRayQuery m_publishedRays;
     FixedInputs m_fixedInputs;
 };

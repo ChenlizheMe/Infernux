@@ -14,6 +14,7 @@ static const uint SceneHinge = 1;
 static const uint SceneSlider = 2;
 static const uint SceneDistance = 3;
 static const uint SceneSwingTwist = 4;
+static const uint SceneSixDOF = 5;
 
 struct HingeDrive
 {
@@ -36,6 +37,9 @@ struct HingeDrive
 [[vk::binding(16, 0)]] StructuredBuffer<ModelDimensions> sceneDimensions;
 [[vk::binding(17, 0)]] StructuredBuffer<uint4> sceneParameters;
 [[vk::binding(18, 0)]] StructuredBuffer<SceneBodyActivity> sceneActivity;
+[[vk::binding(19, 0)]] StructuredBuffer<float4> publishedStates;
+[[vk::binding(20, 0)]] StructuredBuffer<uint> motionRequest;
+[[vk::binding(21, 0)]] RWStructuredBuffer<float4> jointMotion;
 
 struct SpatialEndpoint
 {
@@ -88,6 +92,63 @@ float wrapHingeAngle(float angle)
 {
     const float turn = 2.0 * PhysicsPi;
     return angle - turn * floor((angle + PhysicsPi) / turn);
+}
+
+float hingeCoordinate(float4 relative)
+{
+    return wrapHingeAngle(2.0 * atan2(relative.w, relative.x));
+}
+
+SpatialEndpoint publishedEndpoint(uint row, float3 localAnchor, float4 localFrame)
+{
+    const uint base = 5 * row;
+    const float4 rotation = publishedStates[base + 1];
+    const float3 point = publishedStates[base].xyz + rotateVector(localAnchor, rotation);
+    const float3 offset = point - publishedStates[base + 2].xyz;
+    const float3 omega = publishedStates[base + 4].xyz;
+    return {point, offset, publishedStates[base + 3].xyz + cross(omega, offset), omega,
+            mulQuat(rotation, localFrame)};
+}
+
+// Uses the same bound frames as the solver. The publication retains origin,
+// COM and world-space velocity, so this reads only the addressed endpoints.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void read_scene_joint_motion(uint3 id : SV_DispatchThreadID)
+{
+    const uint index = id.x + id.y * (65535u * 64u);
+    if (index >= motionRequest[0])
+        return;
+    const uint record = 1u + SceneJointWords * motionRequest[2u + index];
+    const uint firstBody = motionRequest[1];
+    const uint2 bodies = spatialModel[record].yz;
+    const SpatialEndpoint a = publishedEndpoint(firstBody + bodies.x, asfloat(spatialModel[record + 4].xyz),
+                                                asfloat(spatialModel[record + 6]));
+    const SpatialEndpoint b = publishedEndpoint(firstBody + bodies.y, asfloat(spatialModel[record + 5].xyz),
+                                                asfloat(spatialModel[record + 7]));
+    const uint kind = spatialModel[record + 9].x;
+    const float4 inverse = conjugateQuaternion(b.orientation);
+    const float4 relative = normalize(mulQuat(inverse, a.orientation));
+    const float3 separation = a.point - b.point;
+    const float3 velocity = a.pointVelocity - b.pointVelocity;
+    float3 coordinate = float3(0.0);
+    if (kind == SceneHinge)
+    {
+        const float3 axis = rotateVector(float3(0.0, 0.0, 1.0), a.orientation);
+        coordinate.xy = float2(hingeCoordinate(relative), dot(axis, a.omega - b.omega));
+    }
+    else if (kind == SceneSlider)
+        coordinate.xy = float2(rotateVector(separation, inverse).z,
+            rotateVector(velocity - cross(b.omega, separation), inverse).z);
+    else if (kind == SceneDistance)
+    {
+        const float distance = length(separation);
+        coordinate.xy = float2(distance, distance > 0.0 ? dot(separation, velocity) / distance : 0.0);
+    }
+    else if (kind == SceneSixDOF)
+        coordinate = rotateVector(separation, inverse);
+    jointMotion[2u * index] = float4(coordinate, 0.0);
+    jointMotion[2u * index + 1u] = relative;
 }
 
 void appendAxisResponse(inout AxialRows result, float reference, float diagonal, uint kind, float cap)
@@ -420,7 +481,6 @@ void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
                                                asfloat(spatialModel[record + 6]));
     const SpatialEndpoint b = equalityEndpoint(bodyBase, source.z, span.y, reference.y, anchorB,
                                                asfloat(spatialModel[record + 7]));
-    const float4 orientationAInverse = conjugateQuaternion(a.orientation);
     const float4 orientationBInverse = conjugateQuaternion(b.orientation);
     const float4 relative = mulQuat(orientationBInverse, a.orientation);
     const float3 relativeVelocity = rotateVector(a.omega - b.omega, orientationBInverse);
@@ -429,9 +489,9 @@ void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
     const float3 pointVelocity = a.pointVelocity - b.pointVelocity;
     const float separationLength = distance ? length(separation) : 0.0;
     const float3 radial = separationLength > 0.0 ? separation / separationLength : float3(0.0, 1.0, 0.0);
-    const float3 slide = slider ? rotateVector(-separation, orientationAInverse) : float3(0.0);
+    const float3 slide = slider ? rotateVector(separation, orientationBInverse) : float3(0.0);
     const float3 slideVelocity = slider ?
-        rotateVector(-pointVelocity + cross(a.omega, separation), orientationAInverse) : float3(0.0);
+        rotateVector(pointVelocity - cross(b.omega, separation), orientationBInverse) : float3(0.0);
     const float speed = hinge ? dot(hingeAxis, a.omega - b.omega) :
                        (slider ? slideVelocity.z : dot(radial, pointVelocity));
     const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
@@ -446,7 +506,7 @@ void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
     else if (hinge)
     {
         const uint4 controls = sceneParameters[parameterIndex];
-        const float theta = wrapHingeAngle(2.0 * atan2(relative.w, relative.x));
+        const float theta = hingeCoordinate(relative);
         const HingeDrive drive = {asfloat(sceneParameters[parameterIndex + 1]),
                                   asfloat(sceneParameters[parameterIndex + 2])};
         axial = hingeRows(controls, drive, theta, speed, asfloat(reference.w), timestep, config.w, parameters);
@@ -492,7 +552,7 @@ void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
         const float3 linearDot = (inA ? pointJacobianDerivative(motion, derivative, a) : float3(0.0)) -
                                  (inB ? pointJacobianDerivative(motion, derivative, b) : float3(0.0));
         const float3 linearJacobian = slider ? rotateVector(
-            -linear + (inA ? cross(motion.angular.xyz, separation) : float3(0.0)), orientationAInverse) : linear;
+            linear - (inB ? cross(motion.angular.xyz, separation) : float3(0.0)), orientationBInverse) : linear;
         for (uint axis = 0; axis < linearRows; ++axis)
             columns[columnBase + axis * source.w + j] = {support.x, linearJacobian[axis]};
         linearVelocity += linear * speed;
@@ -510,7 +570,7 @@ void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
                 columns[columnBase + (axis + linearRows) * source.w + j] = {support.x, angular[axis]};
             angularVelocity += angular * speed;
         }
-        if (slider && inA)
+        if (slider && inB)
             sliderAngularShift += derivative.angular.xyz * speed;
         if (axial.count != 0)
         {
@@ -554,11 +614,11 @@ void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
     }
     if (slider)
     {
-        // The prismatic frame follows the owner. Its rotating axes contribute to J-dot.
+        // The connected prismatic frame's rotating axes contribute to J-dot.
         linearError = float3(slide.xy, 0.0);
         linearVelocity = slideVelocity;
-        linearShift = rotateVector(-linearShift + cross(sliderAngularShift, separation) +
-            cross(a.omega, 2.0 * pointVelocity - cross(a.omega, separation)), orientationAInverse);
+        linearShift = rotateVector(linearShift - cross(sliderAngularShift, separation) -
+            cross(b.omega, 2.0 * pointVelocity - cross(b.omega, separation)), orientationBInverse);
         axialShift = linearShift.z;
     }
     else if (distance)

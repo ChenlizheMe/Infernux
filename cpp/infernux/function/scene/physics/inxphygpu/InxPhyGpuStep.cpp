@@ -31,6 +31,7 @@ static_assert(sizeof(ModelJointVectors) == 32);
 static_assert(sizeof(ModelWords) == 16 && sizeof(ModelVector) == 16);
 static_assert(sizeof(InxPhyGpuDistanceSpring) == 8);
 static_assert(sizeof(InxPhyGpuBodyState) == 80);
+static_assert(sizeof(InxPhyGpuJointMotion) == 32);
 static_assert(sizeof(InxPhyGpuContactReport) == 96);
 static_assert(static_cast<uint32_t>(ForceMode::Force) == 0 && static_cast<uint32_t>(ForceMode::Acceleration) == 1 &&
               static_cast<uint32_t>(ForceMode::Impulse) == 2 && static_cast<uint32_t>(ForceMode::VelocityChange) == 3);
@@ -124,6 +125,32 @@ class StepBuilder
     ComputeWorkDispatch Bind(std::string_view module, std::string_view name, uint32_t x, const Uses &uses,
                              bool groups = false)
     {
+        const auto &[program, entry] = Resolve(module, name);
+        ComputeWorkDispatch result;
+        const auto width = entry.workgroupSize[0];
+        result.groupCountX = groups ? x : (x - 1) / width + 1;
+        result.groupCountY = worlds;
+        result.bindings.reserve(uses.size());
+        for (const auto &use : uses) {
+            const auto range = Range(use.slot);
+            if (use.complete)
+                result.completeWrites.push_back({static_cast<uint32_t>(result.bindings.size()), 0, range.byteSize});
+            result.bindings.push_back({range, use.access});
+        }
+        result.kernel = Kernel(program, entry, uses, [](const Use &use) { return use.binding; });
+        return result;
+    }
+
+    std::shared_ptr<ComputeKernel> Kernel(std::string_view module, std::string_view name,
+                                          std::initializer_list<uint32_t> bindings)
+    {
+        const auto &[program, entry] = Resolve(module, name);
+        return Kernel(program, entry, bindings, [](uint32_t binding) { return binding; });
+    }
+
+    std::pair<const ShaderTargetCode &, const ShaderEntryPointCode &> Resolve(std::string_view module,
+                                                                              std::string_view name)
+    {
         auto foundProgram = programs.find(module);
         if (foundProgram == programs.end())
             foundProgram = programs.emplace(module, LoadInxPhyGpuProgram(module, target)).first;
@@ -132,42 +159,41 @@ class StepBuilder
                                         [name](const auto &item) { return item.name == name; });
         if (entry == program.entries.end())
             throw std::logic_error("inxphygpu step program has no entry " + std::string(name));
-        if (entry->bindings.size() != uses.size())
-            throw std::logic_error("inxphygpu step resource count for " + std::string(name) + ": shader declares " +
-                                   std::to_string(entry->bindings.size()) + ", step binds " +
-                                   std::to_string(uses.size()));
+        return {program, *entry};
+    }
 
-        ComputeWorkDispatch result;
-        const auto width = entry->workgroupSize[0];
-        result.groupCountX = groups ? x : (x - 1) / width + 1;
-        result.groupCountY = worlds;
-        auto &kernel = kernels[&*entry];
+    template <class Bindings, class Projection>
+    std::shared_ptr<ComputeKernel> Kernel(const ShaderTargetCode &program, const ShaderEntryPointCode &entry,
+                                          const Bindings &bindings, Projection bindingOf)
+    {
+        if (entry.bindings.size() != bindings.size())
+            throw std::logic_error("inxphygpu step resource count for " + entry.name + ": shader declares " +
+                                   std::to_string(entry.bindings.size()) + ", step binds " +
+                                   std::to_string(bindings.size()));
+        auto &kernel = kernels[&entry];
         std::vector<ComputeBufferBinding> descriptors;
-        result.bindings.reserve(uses.size());
-        for (const auto &use : uses) {
-            const std::array<uint32_t, 2> key{0, use.binding};
-            const auto resource = std::find_if(program.resources.begin(), program.resources.end(), [&](const auto &r) {
-                return r.set == key[0] && r.binding.binding == key[1];
-            });
-            if (resource == program.resources.end() ||
-                std::find(entry->bindings.begin(), entry->bindings.end(), key) == entry->bindings.end())
-                throw std::logic_error("inxphygpu step resource is absent from " + std::string(name));
-            const auto range = Range(use.slot);
-            if (use.complete)
-                result.completeWrites.push_back({static_cast<uint32_t>(result.bindings.size()), 0, range.byteSize});
-            result.bindings.push_back({range, use.access});
-            if (!kernel)
-                descriptors.push_back({use.binding, resource->binding.type, resource->binding.readOnlyStorage});
+        for (const auto &use : bindings) {
+            const auto binding = bindingOf(use);
+            const std::array<uint32_t, 2> key{0, binding};
+            if (std::find(entry.bindings.begin(), entry.bindings.end(), key) == entry.bindings.end())
+                throw std::logic_error("inxphygpu step resource is absent from " + entry.name);
+            if (!kernel) {
+                const auto resource =
+                    std::find_if(program.resources.begin(), program.resources.end(),
+                                 [&](const auto &r) { return r.set == key[0] && r.binding.binding == key[1]; });
+                if (resource == program.resources.end())
+                    throw std::logic_error("inxphygpu step resource has no layout in " + entry.name);
+                descriptors.push_back({binding, resource->binding.type, resource->binding.readOnlyStorage});
+            }
         }
         if (!kernel) {
             const ShaderModuleDesc shader{target == ShaderCodeTarget::SpirV ? ShaderSourceLanguage::SpirV
                                                                             : ShaderSourceLanguage::Wgsl,
-                                          entry->code.data(), entry->code.size()};
-            kernel = std::make_shared<ComputeKernel>(host, shader, entry->name, std::move(descriptors), 0,
+                                          entry.code.data(), entry.code.size()};
+            kernel = std::make_shared<ComputeKernel>(host, shader, entry.name, std::move(descriptors), 0,
                                                      ComputeKernel::PipelineCreation::FirstDispatch);
         }
-        result.kernel = kernel;
-        return result;
+        return kernel;
     }
 
     void Add(std::string_view module, std::string_view name, uint32_t x, std::initializer_list<Use> uses,
@@ -589,7 +615,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
                                    InxPhyGpuCollisionCapacity capacity, const InxPhyGpuContactSolver &solver,
                                    float timestep, const ContactDynamics &dyn,
                                    std::vector<ComputeWorkDispatch> precondition, bool contactReports,
-                                   uint32_t substeps, uint32_t maxStorageBuffers, const SceneWakeWork &wake)
+                                   uint32_t substeps, uint32_t maxStorageBuffers, const SceneWakeWork &wake,
+                                   uint32_t sceneJoints)
 {
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
@@ -624,7 +651,6 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
         topology[ng + body] = {lastDof, record.subtree[0], 0, record.subtree[1]};
     }
     const auto contactTopology = b.Shared("contactTopology", topology);
-    const auto sceneJoints = model.sceneJoints.empty() ? NoModelIndex : b.Shared("sceneJoints", model.sceneJoints);
     if (wake.control)
         AddSceneWakeWork(b, model, dyn, wake, &stream, contacts, settings, contactTopology, sceneJoints);
     const auto across = [count = b.worlds](uint64_t words) { return words * count; };
@@ -1038,6 +1064,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     const auto worldWords = [worlds](uint64_t words) { return words * worlds; };
     StepBuilder b(host, target, worlds);
     const auto dimensions = b.Seed("model", 8, &model.dimensions);
+    const auto sceneJointDescriptors =
+        model.sceneJoints.empty() ? NoModelIndex : b.Shared("sceneJoints", model.sceneJoints);
     const bool multiple = substeps > 1;
     const float substepDt = timestep / static_cast<float>(substeps);
     const auto stepSizes = b.Seed("timestep", 1, &substepDt, worlds);
@@ -1329,9 +1357,9 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         const auto groups = controlSlots ? b.Zero("sceneWakeGroups", worldWords(4 * uint64_t{nb})) : NoModelIndex;
         const SceneWakeWork wake{controlSlots ? &*controlSlots : nullptr, groups, applied};
         if (contactSlots && solver) {
-            response = AddContactResponse(b, model, *contactSlots, capacity, *solver, substepDt, dynamics,
-                                          std::move(massSolves), contactReports, substeps,
-                                          host.device.GetCapabilities().limits.maxStorageBuffersPerStage, wake);
+            response = AddContactResponse(
+                b, model, *contactSlots, capacity, *solver, substepDt, dynamics, std::move(massSolves), contactReports,
+                substeps, host.device.GetCapabilities().limits.maxStorageBuffersPerStage, wake, sceneJointDescriptors);
             reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
             const std::array singleWorld{positions,
                                          pose,
@@ -1673,10 +1701,16 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                    multiple ? worlds * sizeof(uint32_t) : 0,
                    worldWords(substeps) * sizeof(uint32_t),
                    capacity.contactsPerWorld};
-    SceneJointParameters jointParameters;
-    if (response && response->jointParameters != NoModelIndex)
-        jointParameters = {buffers[response->jointParameters],
-                           static_cast<uint32_t>(model.initialSceneJointParameters.size())};
+    SceneJoints sceneJoints;
+    if (sceneJointDescriptors != NoModelIndex) {
+        sceneJoints.descriptors = buffers[sceneJointDescriptors];
+        if (controlSlots)
+            sceneJoints.motionKernel = b.Kernel("spatial_constraints", "read_scene_joint_motion", {1, 19, 20, 21});
+        if (response) {
+            sceneJoints.parameters = buffers[response->jointParameters];
+            sceneJoints.stride = static_cast<uint32_t>(model.initialSceneJointParameters.size());
+        }
+    }
     FixedSubsteps schedule;
     schedule.count = substeps;
     for (auto &dispatch : begin)
@@ -1698,7 +1732,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     auto step = std::unique_ptr<InxPhyGpuStep>(new InxPhyGpuStep(
         work, BindDispatch(std::move(snapshot), buffers), positions, velocities, applied, std::move(contacts),
         std::move(rays), std::move(rayWork), std::move(controls), std::move(reports), std::move(schedule),
-        std::move(jointParameters), std::move(publishedRays), std::move(fixedInputs)));
+        std::move(sceneJoints), std::move(publishedRays), std::move(fixedInputs)));
     return {std::move(step), std::move(initialize)};
 }
 
@@ -1706,13 +1740,13 @@ InxPhyGpuStep::InxPhyGpuStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi
                              uint32_t positions, uint32_t velocities, uint32_t appliedForces,
                              InxPhyGpuContactStream contacts, InxPhyGpuRayBuffers rays,
                              std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
-                             ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
+                             ContactReports reports, FixedSubsteps substeps, SceneJoints sceneJoints,
                              InxPhyGpuPublishedRayQuery publishedRays, FixedInputs fixedInputs)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
       m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
       m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports)),
-      m_substeps(std::move(substeps)), m_jointParameters(std::move(jointParameters)),
-      m_publishedRays(std::move(publishedRays)), m_fixedInputs(std::move(fixedInputs))
+      m_substeps(std::move(substeps)), m_sceneJoints(std::move(sceneJoints)), m_publishedRays(std::move(publishedRays)),
+      m_fixedInputs(std::move(fixedInputs))
 {
 }
 
@@ -1932,7 +1966,7 @@ InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, Inx
     }
     std::sort(wakeRows.begin(), wakeRows.end());
     wakeRows.erase(std::unique(wakeRows.begin(), wakeRows.end()), wakeRows.end());
-    m_jointParameters.Append(updates, std::move(jointUpdates));
+    m_sceneJoints.Append(updates, std::move(jointUpdates));
     for (const auto row : wakeRows) {
         const uint32_t jointEdited = 1;
         auto &bytes = updates
@@ -2042,8 +2076,8 @@ void InxPhyGpuStep::AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> 
                                                                               : m_controls.publish);
 }
 
-void InxPhyGpuStep::SceneJointParameters::Append(std::vector<rhi::ComputeBufferUpdate> &updates,
-                                                 std::vector<InxPhyGpuJointParameterUpdate> values) const
+void InxPhyGpuStep::SceneJoints::Append(std::vector<rhi::ComputeBufferUpdate> &updates,
+                                        std::vector<InxPhyGpuJointParameterUpdate> values) const
 {
     const auto key = [](const auto &value) { return std::tie(value.world, value.offset); };
     // Keep the last edit for each field while combining adjacent transfer ranges.
@@ -2058,11 +2092,11 @@ void InxPhyGpuStep::SceneJointParameters::Append(std::vector<rhi::ComputeBufferU
         std::visit(
             [&](const auto &data) {
                 if (value.offset >= stride || sizeof(data) > (uint64_t{stride} - value.offset) * recordBytes ||
-                    !buffer || record >= buffer->GetByteSize() / recordBytes)
+                    !parameters || record >= parameters->GetByteSize() / recordBytes)
                     throw std::invalid_argument("inxphygpu joint update does not match its enrolled world or record");
                 const auto offset = record * recordBytes;
                 if (!range || offset > range->offset + range->data.size())
-                    range = &updates.emplace_back(rhi::ComputeBufferUpdate{buffer, offset, {}});
+                    range = &updates.emplace_back(rhi::ComputeBufferUpdate{parameters, offset, {}});
                 const auto local = static_cast<size_t>(offset - range->offset);
                 range->data.resize(local + sizeof(data));
                 std::memcpy(range->data.data() + local, &data, sizeof(data));
@@ -2129,6 +2163,55 @@ InxPhyGpuStep::PrepareContactReports(const std::vector<uint32_t> &counts) const
 std::shared_ptr<rhi::ComputeBuffer> InxPhyGpuStep::BodyStates() const noexcept
 {
     return m_controls.states;
+}
+
+std::vector<InxPhyGpuJointMotion> InxPhyGpuPreparedJointMotion::ReadHostMotion() const
+{
+    std::vector<InxPhyGpuJointMotion> result(count);
+    if (count != 0)
+        packet->Readback(0)->ReadInto(result.data(), uint64_t{count} * sizeof(InxPhyGpuJointMotion));
+    return result;
+}
+
+InxPhyGpuPreparedJointMotion InxPhyGpuStep::PrepareJointMotion(const PhysicsGpuPoseSource &source,
+                                                               const std::vector<uint32_t> &rows, bool readback) const
+{
+    if (rows.empty())
+        return {};
+    constexpr auto bodyBytes = sizeof(InxPhyGpuBodyState);
+    if (!m_sceneJoints.motionKernel || source.layout != PhysicsGpuPoseSource::Layout::OriginWXYZ ||
+        source.rowBytes != bodyBytes)
+        throw std::invalid_argument("inxphygpu joint motion requires its native scene body publication");
+    const auto count = static_cast<uint32_t>(rows.size());
+    const auto resultBytes = uint64_t{count} * sizeof(InxPhyGpuJointMotion);
+    auto host = m_work->GetRecipe().GetHost();
+    using Usage = rhi::BufferUsageFlags;
+    auto request = std::make_shared<rhi::ComputeBuffer>(
+        host, rhi::ComputeBufferDesc{uint64_t{count} + 2, rhi::ComputeScalarType::UInt32, 1,
+                                     Usage::Storage | Usage::TransferDestination});
+    auto motion = std::make_shared<rhi::ComputeBuffer>(
+        host, rhi::ComputeBufferDesc{resultBytes / sizeof(float), rhi::ComputeScalarType::Float32, 1,
+                                     Usage::Storage | Usage::TransferSource});
+    const uint32_t header[]{count, static_cast<uint32_t>(source.firstRow)};
+    rhi::ComputeBufferUpdate upload{request, 0, std::vector<uint8_t>(request->GetByteSize())};
+    std::memcpy(upload.data.data(), header, sizeof(header));
+    std::memcpy(upload.data.data() + sizeof(header), rows.data(), uint64_t{count} * sizeof(uint32_t));
+    rhi::ComputeDispatchDesc dispatch;
+    dispatch.kernel = m_sceneJoints.motionKernel;
+    dispatch.buffers = {m_sceneJoints.descriptors, source.states, request, motion};
+    dispatch.bufferAccesses = {R, R, R, W};
+    dispatch.groupCountX = (count - 1) / 64 + 1;
+    LinearGrid(dispatch);
+    dispatch.proof = rhi::ComputeDispatchProof{{{0, 0, m_sceneJoints.descriptors->GetByteSize()},
+                                                {1, source.firstRow * bodyBytes, source.bodyCount * bodyBytes},
+                                                {2, 0, request->GetByteSize()}},
+                                               {{3, 0, resultBytes}},
+                                               {}};
+    std::vector<rhi::ComputeBufferRead> reads;
+    if (readback)
+        reads.push_back({motion, 0, resultBytes});
+    auto packet = rhi::PrepareComputeBatch(host, {std::move(upload)}, {std::move(dispatch)}, std::move(reads));
+    return {std::move(packet), std::move(motion), count};
 }
 
 const std::shared_ptr<rhi::ComputeBuffer> &InxPhyGpuStep::Positions() const noexcept
