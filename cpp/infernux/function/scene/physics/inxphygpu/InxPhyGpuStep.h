@@ -157,6 +157,14 @@ struct PreparedInxPhyGpuStep
     std::shared_ptr<rhi::PreparedComputeBatch> initialize;
 };
 
+struct InxPhyGpuStateHandoff
+{
+    std::shared_ptr<rhi::ComputeBuffer> states;
+    // World-major, one source uint4 address per destination body. Body zero
+    // maps the fixed-step header. NoModelIndex keeps the authored seed.
+    std::vector<uint32_t> addresses;
+};
+
 /// Resident state and fixed-step work for worlds that share one compiled model.
 class InxPhyGpuStep
 {
@@ -167,7 +175,7 @@ class InxPhyGpuStep
           const ModelVector &gravity, const InxPhyGpuCollisionModel *collision = nullptr,
           InxPhyGpuCollisionCapacity capacity = {}, const InxPhyGpuContactSolver *solver = nullptr,
           InxPhyGpuRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0, bool contactReports = false,
-          uint32_t substeps = 1);
+          uint32_t substeps = 1, const InxPhyGpuStateHandoff &handoff = {});
 
     /// The ordered snapshot holds qpos, qvel, clocks and, with contact response, a uint32 status per world.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>

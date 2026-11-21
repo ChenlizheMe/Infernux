@@ -4,6 +4,8 @@ The native inxphygpu Slang modules follow MuJoCo Warp's shared model and world-i
 
 On Vulkan, a fixed step can replay the recorded compute commands for each numerical substep. Replay requires the same pipelines, bindings and dispatch parameters. Indirect dispatch counts continue to come from device buffers. Uploads, contact collection and result publication are recorded for the current step.
 
+A replacement scene layout can initialize from its last accepted device publication. It matches worlds by ID and simulation epoch, then matches surviving bodies by ID and actor generation. A compute pass imports the matching body poses, velocities and fixed clocks in the initialization packet. New worlds and bodies use the authored seeds. The previous publication remains available to existing consumers, and the new layout builds its own contact and solver scratch.
+
 ## Ported stages
 
 | Module | MuJoCo Warp stages | Slang entries |

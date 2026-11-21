@@ -152,7 +152,8 @@ class InxPhyGpuSceneRuntime final
                           const InxPhyGpuSceneModel &scene, std::vector<InxPhyGpuRegisteredWorld> worlds,
                           float timestep, const ModelVector &gravity, InxPhyGpuCollisionCapacity collisionCapacity,
                           const InxPhyGpuContactSolver &solver, uint32_t commandCapacity, bool contactReports = false,
-                          uint32_t substeps = 1, InxPhyGpuRayBatchLayout rayLayout = {});
+                          uint32_t substeps = 1, InxPhyGpuRayBatchLayout rayLayout = {},
+                          const InxPhyGpuFixedPublication *previous = nullptr);
     ~InxPhyGpuSceneRuntime();
     InxPhyGpuSceneRuntime(const InxPhyGpuSceneRuntime &) = delete;
     InxPhyGpuSceneRuntime &operator=(const InxPhyGpuSceneRuntime &) = delete;
@@ -163,8 +164,8 @@ class InxPhyGpuSceneRuntime final
     }
     [[nodiscard]] std::optional<uint32_t> BodyRow(uint32_t world, uint32_t engineBody) const;
 
-    /// Take the initialized poses before admitting the first fixed step.
-    /// The startup receipt has fixed index zero and requires no readback.
+    /// Take initialized poses before stepping. A refreshed scene begins at
+    /// its previous accepted fixed index. Initialization requires no readback.
     [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakeInitial();
 
     struct PublicationWork

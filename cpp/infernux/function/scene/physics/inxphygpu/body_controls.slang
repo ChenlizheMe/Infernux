@@ -54,6 +54,10 @@ struct SavedMotion
 [[vk::binding(14, 0)]] RWStructuredBuffer<uint4> bodyStates;
 [[vk::binding(15, 0)]] StructuredBuffer<uint> fixedSteps;
 [[vk::binding(16, 0)]] RWStructuredBuffer<Pose> staticPoses;
+[[vk::binding(17, 0)]] StructuredBuffer<uint4> previousStates;
+[[vk::binding(18, 0)]] RWStructuredBuffer<float> importedClocks;
+[[vk::binding(19, 0)]] RWStructuredBuffer<uint> importedSteps;
+[[vk::binding(20, 0)]] StructuredBuffer<uint> previousAddresses;
 
 float4 conjugate(float4 rotation)
 {
@@ -92,6 +96,49 @@ uint2 freeAddresses(ModelDimensions size, BodyModel body, uint world)
 float3 centerOffset(BodyModel body, Pose pose)
 {
     return rotateVector(body.inertialPosition.xyz, pose.rotation);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void import_body_states(uint3 id : SV_DispatchThreadID)
+{
+    const ModelDimensions size = model[0];
+    if (id.x >= size.state.z)
+        return;
+    const uint first = id.y * size.state.z;
+    const uint address = previousAddresses[first + id.x];
+    if (address == NoIndex)
+        return;
+    if (id.x == 0)
+    {
+        const uint4 header = previousStates[address];
+        importedClocks[id.y] = asfloat(header.x);
+        importedSteps[id.y] = header.z;
+        return;
+    }
+    const BodyModel body = bodies[id.x];
+    const Pose pose = {asfloat(previousStates[address]), asfloat(previousStates[address + 1])};
+    const float3 linear = asfloat(previousStates[address + 3].xyz);
+    const float3 spin = asfloat(previousStates[address + 4].xyz);
+    const float3 shift = centerOffset(body, pose);
+    if (body.dofs.y != 0)
+    {
+        const uint2 offset = freeAddresses(size, body, id.y);
+        storeOrigin(offset.x, pose);
+        store3(qvel, offset.y, linear - cross(spin, shift));
+        store3(qvel, offset.y + 3, rotateVector(spin, conjugate(pose.rotation)));
+    }
+    else if (body.hierarchy.w != NoIndex)
+    {
+        const uint row = id.y * size.layout.y + body.hierarchy.w;
+        mocap[row] = pose;
+        const uint accepted = previousStates[previousAddresses[first]].z;
+        prescribed[row] = {float4(linear, 0.0), float4(spin, 0.0), pose.position.xyz + shift, accepted};
+    }
+    else if (body.dofs.z != 0)
+    {
+        staticPoses[id.y * bodies[0].dofs.w + body.dofs.z - 1] = pose;
+    }
 }
 
 void applyDynamic<let Integrate : bool>(uint index, uint4 span, ModelDimensions size, BodyModel body)

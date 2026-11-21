@@ -158,7 +158,8 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                                              std::vector<InxPhyGpuRegisteredWorld> worlds, float timestep,
                                              const ModelVector &gravity, InxPhyGpuCollisionCapacity collisionCapacity,
                                              const InxPhyGpuContactSolver &solver, uint32_t commandCapacity,
-                                             bool contactReports, uint32_t substeps, InxPhyGpuRayBatchLayout rayLayout)
+                                             bool contactReports, uint32_t substeps, InxPhyGpuRayBatchLayout rayLayout,
+                                             const InxPhyGpuFixedPublication *previous)
     : m_work(work), m_host(host), m_bodyCount(scene.model.dimensions.state[2]),
       m_contactReportsConfigured(contactReports)
 {
@@ -198,10 +199,39 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
         m_acceptedWorlds.push_back({{source.worldId, source.simulationEpoch, 0}, 0.0f, 0, 0});
         layout->worlds.push_back(std::move(world));
     }
+    InxPhyGpuStateHandoff handoff;
+    if (previous) {
+        const uint64_t header = 5 * uint64_t{previous->bodiesPerWorld} * previous->worlds.size();
+        for (size_t next = 0; next < worlds.size(); ++next) {
+            auto &accepted = m_acceptedWorlds[next];
+            const auto old = previous->m_layout->worldRows.find(accepted.identity.worldId);
+            if (old == previous->m_layout->worldRows.end())
+                continue;
+            const auto &prior = previous->worlds[old->second];
+            if (prior.identity.simulationEpoch != accepted.identity.simulationEpoch)
+                continue;
+            if (prior.status != 0)
+                throw std::invalid_argument("inxphygpu topology handoff requires an accepted fixed publication");
+            if (!handoff.states) {
+                handoff.states = previous->bodyStates;
+                handoff.addresses.resize(uint64_t{m_bodyCount} * worlds.size(), NoModelIndex);
+            }
+            accepted = prior;
+            const uint64_t first = next * uint64_t{m_bodyCount};
+            handoff.addresses[first] = static_cast<uint32_t>(header + old->second);
+            const auto &oldWorld = previous->m_layout->worlds[old->second];
+            for (const auto &[id, row] : layout->worlds[next].rows) {
+                const auto actor = layout->worlds[next].bodies[row].actor;
+                const auto oldRow = oldWorld.BodyRow(id);
+                if (oldRow && actor.IsValid() && actor == oldWorld.bodies[*oldRow].actor)
+                    handoff.addresses[first + row] = 5 * (old->second * previous->bodiesPerWorld + *oldRow);
+            }
+        }
+    }
     m_layout = std::move(layout);
     auto prepared = InxPhyGpuStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_layout->worlds.size()),
                                          timestep, gravity, &scene.collision, collisionCapacity, &solver, rayLayout,
-                                         commandCapacity, contactReports, substeps);
+                                         commandCapacity, contactReports, substeps, handoff);
     if (!prepared.step)
         throw std::runtime_error("Could not allocate the inxphygpu scene world layout");
     m_step = std::move(prepared.step);

@@ -883,7 +883,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                            const InxPhyGpuCollisionModel *collision,
                                            InxPhyGpuCollisionCapacity capacity, const InxPhyGpuContactSolver *solver,
                                            InxPhyGpuRayBatchLayout rayLayout, uint32_t bodyCommandCapacity,
-                                           bool contactReports, uint32_t substeps)
+                                           bool contactReports, uint32_t substeps, const InxPhyGpuStateHandoff &handoff)
 {
     if (worlds == 0)
         throw std::invalid_argument("inxphygpu step requires a world");
@@ -1279,6 +1279,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
 
     ComputeWorkDispatch applyCommands, editCommands, finishCommands, publishPose, publishBodies,
         publishBodiesWithStatus;
+    const auto firstBodyPublication = b.initialize.size();
     if (controlSlots) {
         const auto &[spans, commands, force, saved, prescribed, fixedSteps] = *controlSlots;
         const auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
@@ -1367,6 +1368,26 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                            {4, snapshotSlot, W, true}});
     const auto residentSlots = b.slots.size();
     const auto residentPorts = b.ports.size();
+    if (handoff.states) {
+        if (!controlSlots || handoff.addresses.size() != worldWords(nb))
+            throw std::invalid_argument("inxphygpu topology handoff requires one mapping per controlled body");
+        const auto addresses = b.Shared("topologyHandoff", handoff.addresses);
+        // The frozen source is attached to this initialization dispatch below.
+        b.initialize.insert(b.initialize.begin() + firstBodyPublication,
+                            b.Dispatch("body_controls", "import_body_states", nb,
+                                       {{0, dimensions, R},
+                                        {1, kinematics.bodies, R},
+                                        {2, kinematics.joints, R},
+                                        {5, positions, RW},
+                                        {6, velocities, RW},
+                                        {7, kinematics.mocap, RW},
+                                        {12, controlSlots->prescribed, RW},
+                                        {16, kinematics.staticPoses, RW},
+                                        {18, clocks, RW},
+                                        {19, controlSlots->fixedSteps, RW},
+                                        {20, addresses, R},
+                                        {17, positions, R}}));
+    }
     if (reference)
         InitializeWeights(b, model, *reference);
     std::vector<rhi::ComputeBufferDesc> initializationStorage;
@@ -1394,8 +1415,13 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         initial.push_back({initializationBuffers[upload.slot], 0, std::move(upload.data)});
     std::vector<rhi::ComputeDispatchDesc> initialDispatches;
     initialDispatches.reserve(b.initialize.size());
-    for (auto &clear : b.initialize)
-        initialDispatches.push_back(BindDispatch(std::move(clear), initializationBuffers));
+    for (auto &dispatch : b.initialize)
+        initialDispatches.push_back(BindDispatch(std::move(dispatch), initializationBuffers));
+    if (handoff.states) {
+        auto &importState = initialDispatches[firstBodyPublication];
+        importState.buffers.back() = handoff.states;
+        importState.proof->reads.back().byteSize = handoff.states->GetByteSize();
+    }
     auto initialize = rhi::PrepareComputeBatch(host, std::move(initial), std::move(initialDispatches));
     InxPhyGpuContactStream contacts;
     if (contactSlots)
