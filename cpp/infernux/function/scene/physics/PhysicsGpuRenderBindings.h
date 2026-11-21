@@ -20,19 +20,42 @@ class ComputeHost;
 class PreparedComputeBatch;
 } // namespace rhi
 
-/// Read the origin and rotation from the selected frozen pose rows. The read
-/// packet carries only their two float4s and has no dependency on a solver.
-struct PhysicsGpuPoseRead
+struct PhysicsGpuMotionBinding
+{
+    PhysicsGpuBodyPoseBinding pose;
+    uint64_t shapeRevision = 0;
+    float inverseMass = 0;
+    glm::vec3 inverseInertia{0.0f};
+    glm::quat inertiaFrame{1.0f, 0.0f, 0.0f, 0.0f};
+    uint32_t frozenTranslation = 0, frozenRotation = 0;
+};
+
+/// Reads only the selected channels of frozen body rows. Mass, lock axes and
+/// shape identity belong to the same accepted author record as the motion.
+struct PhysicsGpuMotionRead
 {
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
 
-    [[nodiscard]] static PhysicsGpuPoseRead Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
-                                                    std::vector<PhysicsGpuBodyPoseBinding> selected);
-    [[nodiscard]] std::vector<PhysicsBodyPoseUpdate> Read() const;
+    [[nodiscard]] static PhysicsGpuMotionRead Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
+                                                      std::vector<PhysicsGpuMotionBinding> selected,
+                                                      PhysicsStateFields fields);
+    [[nodiscard]] bool Empty() const noexcept
+    {
+        return m_selected.empty();
+    }
+    [[nodiscard]] std::vector<PhysicsBodyMotionState> Read() const;
 
   private:
+    struct Range
+    {
+        uint32_t first, count;
+    };
     PhysicsGpuPoseSource::Layout m_layout{};
-    std::vector<PhysicsGpuBodyPoseBinding> m_selected;
+    PhysicsStateFields m_fields = PhysicsStateFields::None;
+    std::vector<PhysicsGpuMotionBinding> m_selected;
+    std::vector<uint32_t> m_rows;
+    std::vector<Range> m_ranges;
+    size_t m_uniqueRows = 0;
 };
 
 class PhysicsGpuRenderBindings final

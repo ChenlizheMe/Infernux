@@ -25,7 +25,6 @@ enum class JoltGpuQueryReadback
     Host,
     Device,
     DeviceWithSpans, // A host consumer needs the per-input offsets of a variable-size device result.
-    HostProjected    // Host motion fields use compact physical blocks; other families retain Host layout.
 };
 /// Native explicit operands use the same immutable geometry arena as the publication.
 /// CPU shapes/handles carry author intent until the existing writer accepts capture.
@@ -63,7 +62,6 @@ struct JoltGpuQueryResult
     [[nodiscard]] uint32_t GetRecordCount();
     [[nodiscard]] const std::vector<JPH::GPU::QueryHit> &ReadHits();
     [[nodiscard]] const std::vector<JPH::GPU::QueryShapeState> &ReadShapes();
-    [[nodiscard]] const std::vector<JPH::GPU::QueryMotionState> &ReadMotion();
     [[nodiscard]] const std::vector<JPH::GPU::QuerySpan> &ReadSpans();
 
   private:
@@ -82,9 +80,7 @@ struct JoltGpuQueryResult
     bool shapeBoxesOnly = false;
     std::vector<JPH::GPU::QueryHit> hostHits;
     std::vector<JPH::GPU::QueryShapeState> hostShapes;
-    std::vector<JPH::GPU::QueryMotionState> hostMotion;
     std::vector<JPH::GPU::QuerySpan> hostSpans;
-    std::vector<uint32_t> projectedMotionBlocks;
 };
 
 struct JoltGpuPreparedQuery

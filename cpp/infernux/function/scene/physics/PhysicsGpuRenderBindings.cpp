@@ -25,46 +25,131 @@
 
 namespace infernux
 {
-PhysicsGpuPoseRead PhysicsGpuPoseRead::Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
-                                               std::vector<PhysicsGpuBodyPoseBinding> selected)
+namespace
 {
-    PhysicsGpuPoseRead read;
+struct MotionLayout
+{
+    bool origin;
+    uint32_t center, linear, angular;
+};
+
+MotionLayout MotionLanes(PhysicsGpuPoseSource::Layout layout)
+{
+    const bool origin = layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
+    return origin ? MotionLayout{true, 2, 3, 4} : MotionLayout{false, 0, 2, 3};
+}
+
+glm::vec3 AllowedMotionAxes(uint32_t mask)
+{
+    return {mask & 1u ? 0.0f : 1.0f, mask & 2u ? 0.0f : 1.0f, mask & 4u ? 0.0f : 1.0f};
+}
+} // namespace
+
+PhysicsGpuMotionRead PhysicsGpuMotionRead::Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
+                                                   std::vector<PhysicsGpuMotionBinding> selected,
+                                                   PhysicsStateFields fields)
+{
+    PhysicsGpuMotionRead read;
     read.m_layout = source.layout;
+    read.m_fields = fields;
     read.m_selected = std::move(selected);
-    std::vector<rhi::ComputeBufferRead> ranges;
-    ranges.reserve(read.m_selected.size());
-    for (const auto &body : read.m_selected) {
-        if (body.row >= source.bodyCount)
-            throw std::out_of_range("GPU physics pose row belongs to another world");
-        ranges.push_back({source.states, (source.firstRow + body.row) * source.rowBytes, 8 * sizeof(float)});
+    const auto layout = MotionLanes(source.layout);
+    const auto has = [fields](PhysicsStateFields field) { return HasPhysicsStateField(fields, field); };
+    const bool position = has(PhysicsStateFields::Position);
+    const bool rotation =
+        has(PhysicsStateFields::Rotation) || has(PhysicsStateFields::InverseInertia) || (position && !layout.origin);
+    const uint32_t mask = (position ? 1u : 0u) | (rotation ? 2u : 0u) |
+                          (has(PhysicsStateFields::CenterOfMass) ? 1u << layout.center : 0u) |
+                          (has(PhysicsStateFields::LinearVelocity) ? 1u << layout.linear : 0u) |
+                          (has(PhysicsStateFields::AngularVelocity) ? 1u << layout.angular : 0u);
+    for (uint32_t lane = 0; lane <= layout.angular; ++lane) {
+        if ((mask & (1u << lane)) == 0)
+            continue;
+        if (read.m_ranges.empty() || read.m_ranges.back().first + read.m_ranges.back().count != lane)
+            read.m_ranges.push_back({lane, 1});
+        else
+            ++read.m_ranges.back().count;
     }
+
+    constexpr auto laneBytes = 4 * sizeof(float);
+    std::vector<rhi::ComputeBufferRead> ranges;
+    std::unordered_map<uint32_t, uint32_t> rows;
+    read.m_rows.reserve(read.m_selected.size());
+    rows.reserve(read.m_selected.size());
+    for (const auto &body : read.m_selected) {
+        if (body.pose.row >= source.bodyCount)
+            throw std::out_of_range("GPU physics motion row belongs to another world");
+        const auto [row, inserted] = rows.try_emplace(body.pose.row, static_cast<uint32_t>(rows.size()));
+        read.m_rows.push_back(row->second);
+        if (inserted) {
+            const auto offset = (source.firstRow + body.pose.row) * source.rowBytes;
+            for (const auto range : read.m_ranges)
+                ranges.push_back({source.states, offset + range.first * laneBytes, range.count * laneBytes});
+        }
+    }
+    read.m_uniqueRows = rows.size();
     if (!ranges.empty())
         read.packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(ranges));
     return read;
 }
 
-std::vector<PhysicsBodyPoseUpdate> PhysicsGpuPoseRead::Read() const
+std::vector<PhysicsBodyMotionState> PhysicsGpuMotionRead::Read() const
 {
-    std::vector<PhysicsBodyPoseUpdate> poses;
-    poses.reserve(m_selected.size());
-    for (size_t index = 0; index < m_selected.size(); ++index) {
-        std::array<float, 8> values;
-        packet->Readback(index)->ReadInto(values.data(), sizeof(values));
-        const auto &body = m_selected[index];
-        const bool origin = m_layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
-        auto rotation = origin ? glm::quat(values[4], values[5], values[6], values[7])
-                               : glm::quat(values[7], values[4], values[5], values[6]);
-        const float squaredLength = glm::dot(rotation, rotation);
-        if (!std::isfinite(squaredLength) || squaredLength <= 1e-12f || !std::isfinite(values[0]) ||
-            !std::isfinite(values[1]) || !std::isfinite(values[2]))
-            throw std::runtime_error("Accepted GPU physics state has an invalid pose");
-        rotation /= std::sqrt(squaredLength);
-        glm::vec3 position(values[0], values[1], values[2]);
-        if (!origin)
-            position -= rotation * glm::vec3(body.centerOffset[0], body.centerOffset[1], body.centerOffset[2]);
-        poses.push_back({body.id, position, rotation});
+    using Row = std::array<std::array<float, 4>, 5>;
+    std::vector<Row> raw(m_uniqueRows);
+    size_t receipt = 0;
+    for (auto &row : raw)
+        for (const auto range : m_ranges)
+            packet->Readback(receipt++)->ReadInto(row[range.first].data(), range.count * sizeof(row.front()));
+    const auto layout = MotionLanes(m_layout);
+    const auto has = [this](PhysicsStateFields field) { return HasPhysicsStateField(m_fields, field); };
+    const auto vector = [](const auto &v) {
+        if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2]))
+            throw std::runtime_error("Accepted GPU physics motion contains a nonfinite vector");
+        return glm::vec3(v[0], v[1], v[2]);
+    };
+    std::vector<PhysicsBodyMotionState> result;
+    result.reserve(m_selected.size());
+    for (size_t i = 0; i < m_selected.size(); ++i) {
+        const auto &binding = m_selected[i];
+        const auto &row = raw[m_rows[i]];
+        auto &state = result.emplace_back(PhysicsBodyMotionState{binding.pose.id, binding.shapeRevision});
+        if (has(PhysicsStateFields::Rotation) || has(PhysicsStateFields::InverseInertia) ||
+            (has(PhysicsStateFields::Position) && !layout.origin)) {
+            const auto &q = row[1];
+            const auto rotation = layout.origin ? glm::quat(q[0], q[1], q[2], q[3]) : glm::quat(q[3], q[0], q[1], q[2]);
+            const float squaredLength = glm::dot(rotation, rotation);
+            if (!std::isfinite(squaredLength) || squaredLength <= 0.0f)
+                throw std::runtime_error("Accepted GPU physics motion contains an invalid rotation");
+            state.rotation = rotation / std::sqrt(squaredLength);
+        }
+        if (has(PhysicsStateFields::Position)) {
+            state.position = vector(row[0]);
+            if (!layout.origin) {
+                const auto &offset = binding.pose.centerOffset;
+                state.position -= state.rotation * glm::vec3(offset[0], offset[1], offset[2]);
+            }
+        }
+        if (has(PhysicsStateFields::CenterOfMass))
+            state.centerOfMass = vector(row[layout.center]);
+        if (has(PhysicsStateFields::LinearVelocity))
+            state.linearVelocity = vector(row[layout.linear]);
+        if (has(PhysicsStateFields::AngularVelocity))
+            state.angularVelocity = vector(row[layout.angular]);
+        if (has(PhysicsStateFields::InverseMass))
+            state.inverseMass = binding.inverseMass * AllowedMotionAxes(binding.frozenTranslation);
+        if (has(PhysicsStateFields::InverseInertia) && binding.inverseMass != 0.0f) {
+            const auto axes = glm::mat3_cast(glm::normalize(state.rotation * binding.inertiaFrame));
+            const auto inverse = binding.inverseInertia;
+            const auto allowed = AllowedMotionAxes(binding.frozenRotation);
+            for (glm::length_t column = 0; column < 3; ++column) {
+                const auto direction = glm::vec3(axes[0][column], axes[1][column], axes[2][column]);
+                state.inertia[column] = axes * (direction / inverse);
+                state.inverseInertia[column] = allowed * (axes * (direction * inverse)) * allowed[column];
+            }
+        }
     }
-    return poses;
+    return result;
 }
 
 namespace

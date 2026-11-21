@@ -136,35 +136,8 @@ void query_store_shape(uint record, QueryShapeState shape)
     query_candidates[base + 8u].value = asuint(shape.material);
 }
 
-uint4 query_motion_block(QueryMotionState motion, uint block)
-{
-    if (block == QueryMotionBlockMeta) return motion.meta;
-    if (block == QueryMotionBlockPositionInverseMass) return asuint(motion.positionInverseMass);
-    if (block == QueryMotionBlockRotation) return asuint(motion.rotation);
-    if (block == QueryMotionBlockCenterOfMass) return asuint(motion.centerOfMass);
-    if (block == QueryMotionBlockLinearVelocity) return asuint(motion.linearVelocity);
-    if (block == QueryMotionBlockAngularVelocity) return asuint(motion.angularVelocity);
-    if (block == QueryMotionBlockInverseInertia0) return asuint(motion.inverseInertia0);
-    if (block == QueryMotionBlockInverseInertia1) return asuint(motion.inverseInertia1);
-    if (block == QueryMotionBlockInverseInertia2) return asuint(motion.inverseInertia2);
-    if (block == QueryMotionBlockInertia0) return asuint(motion.inertia0);
-    if (block == QueryMotionBlockInertia1) return asuint(motion.inertia1);
-    if (block == QueryMotionBlockInertia2) return asuint(motion.inertia2);
-    return uint4(0u);
-}
-
 void query_store_motion(uint record, QueryMotionState motion)
 {
-    uint blocks = query_params.selectedCounts.w & QueryMotionAllBlocks;
-    if (blocks != 0u && blocks != QueryMotionAllBlocks)
-    {
-        uint cursor = record * countbits(blocks);
-        [unroll]
-        for (uint block = 0u; block < QueryMotionBlockCount; ++block)
-            if ((blocks & (1u << block)) != 0u)
-                query_hits[cursor++].value = query_motion_block(motion, block);
-        return;
-    }
     uint base = record * 12u;
     query_hits[base].value = motion.meta;
     query_hits[base + 1u].value = asuint(motion.positionInverseMass);

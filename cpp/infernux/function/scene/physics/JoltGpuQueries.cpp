@@ -743,41 +743,7 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     if (records > std::numeric_limits<uint32_t>::max())
         throw JoltGpuQueryRequestError("Jolt GPU query scratch capacity exceeds device indexing");
     const auto capacity = static_cast<uint32_t>(records);
-    // Only typed Host batches opt in. The same motion invocation writes one
-    // selected Float4 stream per input row; device exports keep their full ABI.
-    uint32_t projectedMotionBlocks = 0;
-    if (readback == JoltGpuQueryReadback::HostProjected && format == QueryOutputMotion) {
-        uint32_t requested = 0;
-        for (const auto &query : queries)
-            requested |= query.source.z & static_cast<uint32_t>(PhysicsStateFields::All);
-        if (requested) {
-            const auto fields = static_cast<PhysicsStateFields>(requested);
-            const auto select = [&](uint32_t block) { projectedMotionBlocks |= 1u << block; };
-            select(QueryMotionBlockMeta);
-            if (HasPhysicsStateField(fields, PhysicsStateFields::Position) ||
-                HasPhysicsStateField(fields, PhysicsStateFields::InverseMass))
-                select(QueryMotionBlockPositionInverseMass);
-            if (HasPhysicsStateField(fields, PhysicsStateFields::Rotation))
-                select(QueryMotionBlockRotation);
-            if (HasPhysicsStateField(fields, PhysicsStateFields::CenterOfMass))
-                select(QueryMotionBlockCenterOfMass);
-            if (HasPhysicsStateField(fields, PhysicsStateFields::LinearVelocity))
-                select(QueryMotionBlockLinearVelocity);
-            if (HasPhysicsStateField(fields, PhysicsStateFields::AngularVelocity))
-                select(QueryMotionBlockAngularVelocity);
-            if (HasPhysicsStateField(fields, PhysicsStateFields::InverseInertia))
-                projectedMotionBlocks |= QueryMotionInertiaBlocks;
-            result->projectedMotionBlocks.reserve(QueryMotionBlockCount);
-            for (uint32_t block = 0; block < QueryMotionBlockCount; ++block)
-                if (projectedMotionBlocks & (1u << block))
-                    result->projectedMotionBlocks.push_back(block);
-        }
-    }
-    const uint32_t storageRecordBytes =
-        result->projectedMotionBlocks.empty()
-            ? recordBytes
-            : static_cast<uint32_t>(result->projectedMotionBlocks.size()) * sizeof(QueryRecordWord);
-    const auto words = storageRecordBytes / sizeof(QueryRecordWord);
+    const auto words = recordBytes / sizeof(QueryRecordWord);
     if (capacity > std::numeric_limits<uint32_t>::max() / words)
         throw JoltGpuQueryRequestError("Jolt GPU query record words exceed device indexing");
     // Span/CA control fits within the already required per-request input.
@@ -850,13 +816,12 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
         const ShapeModel shape{};
         upload(Shapes, Bytes(&shape, 1));
     }
-    const QueryParams parameters{
-        {result->queryCount, bodyBase, bodyCount, leafCount},
-        {static_cast<uint32_t>(primitives.size()), stride, capacity, format},
-        {result->publication ? result->publication->worldRow : 0u, bodyBase, leafBase,
-         result->publication ? result->publication->jointBase : 0u},
-        {bodyCount, leafCount, result->publication ? result->publication->jointCount : 0u,
-         projectedMotionBlocks | (knownCount && IsDeviceResult(readback) ? QueryFixedRowMapping : 0u)}};
+    const QueryParams parameters{{result->queryCount, bodyBase, bodyCount, leafCount},
+                                 {static_cast<uint32_t>(primitives.size()), stride, capacity, format},
+                                 {result->publication ? result->publication->worldRow : 0u, bodyBase, leafBase,
+                                  result->publication ? result->publication->jointBase : 0u},
+                                 {bodyCount, leafCount, result->publication ? result->publication->jointCount : 0u,
+                                  knownCount && IsDeviceResult(readback) ? QueryFixedRowMapping : 0u}};
     upload(Parameters, Bytes(&parameters, 1));
     if (motion) {
         // Motion requests name one retained actor each, including duplicate rows.
@@ -997,7 +962,7 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     if (!generic && (knownCount || IsDeviceResult(readback))) {
         if (!IsDeviceResult(readback)) {
             result->hitReadbackIndex = static_cast<uint32_t>(reads.size());
-            reads.push_back({result->hits, 0, CheckedBytes(result->queryCount, storageRecordBytes)});
+            reads.push_back({result->hits, 0, CheckedBytes(result->queryCount, recordBytes)});
         }
         if (result->NeedsHostSpans()) {
             result->spanReadbackIndex = static_cast<uint32_t>(reads.size());
@@ -1043,8 +1008,6 @@ JoltGpuControlWork JoltGpuQueries::PrepareExport(const std::vector<std::shared_p
     for (const auto &result : results) {
         if (!result)
             continue;
-        if (!result->projectedMotionBlocks.empty() && result->projectedMotionBlocks.size() != QueryMotionBlockCount)
-            throw JoltGpuQueryRequestError("GPU exports require the full device motion record layout");
         if (captured && (publication != result->publication.get() || generation != result->numericalGeneration))
             throw JoltGpuQueryRequestError(
                 "Jolt GPU typed exports must retain one publication and numerical generation");
@@ -1372,7 +1335,7 @@ bool JoltGpuQueryResult::NeedsHostSpans() const
 {
     if (IsDeviceResult(readback))
         return readback == JoltGpuQueryReadback::DeviceWithSpans && !knownCount;
-    return projectedMotionBlocks.empty();
+    return true;
 }
 
 void JoltGpuQueryResult::Materialize()
@@ -1424,17 +1387,6 @@ void ValidateRecord(const QueryShapeState &shape)
         shape.material.w)
         throw std::runtime_error("Jolt GPU query returned an invalid or nonfinite shape record");
 }
-void ValidateRecord(const QueryMotionState &motion)
-{
-    if (motion.meta.y != 1 || !Finite(motion.positionInverseMass) || !Finite(motion.rotation) ||
-        !Finite(motion.centerOfMass) || !Finite(motion.linearVelocity) || !Finite(motion.angularVelocity) ||
-        !Finite(motion.inverseInertia0) || !Finite(motion.inverseInertia1) || !Finite(motion.inverseInertia2) ||
-        !Finite(motion.inertia0) || !Finite(motion.inertia1) || !Finite(motion.inertia2) ||
-        motion.positionInverseMass.w < 0 || motion.centerOfMass.w || motion.linearVelocity.w ||
-        motion.angularVelocity.w || motion.inverseInertia0.w || motion.inverseInertia1.w || motion.inverseInertia2.w ||
-        motion.inertia0.w || motion.inertia1.w || motion.inertia2.w)
-        throw std::runtime_error("Jolt GPU query returned an invalid or nonfinite motion record");
-}
 } // namespace
 
 template <class T> const std::vector<T> &JoltGpuQueryResult::ReadTyped(uint32_t format, std::vector<T> &records)
@@ -1451,22 +1403,8 @@ template <class T> const std::vector<T> &JoltGpuQueryResult::ReadTyped(uint32_t 
         if (count && !tailBatch->Readback(hitReadbackIndex)->IsComplete())
             throw std::logic_error("Jolt GPU query records require their completed receipt");
         records.resize(count);
-        const bool expand =
-            !projectedMotionBlocks.empty() && projectedMotionBlocks.size() * sizeof(QueryRecordWord) != sizeof(T);
-        if (count && expand) {
-            std::fill(records.begin(), records.end(), T{});
-            const auto stride = CheckedBytes(projectedMotionBlocks.size(), sizeof(QueryRecordWord));
-            std::vector<uint8_t> packed(static_cast<size_t>(CheckedBytes(count, stride)));
-            tailBatch->Readback(hitReadbackIndex)->ReadInto(packed.data(), packed.size());
-            for (uint32_t row = 0; row < count; ++row)
-                for (size_t block = 0; block < projectedMotionBlocks.size(); ++block)
-                    std::memcpy(reinterpret_cast<uint8_t *>(&records[row]) +
-                                    projectedMotionBlocks[block] * sizeof(QueryRecordWord),
-                                packed.data() + row * stride + block * sizeof(QueryRecordWord),
-                                sizeof(QueryRecordWord));
-        } else if (count) {
+        if (count)
             tailBatch->Readback(hitReadbackIndex)->ReadInto(records.data(), CheckedBytes(count, sizeof(T)));
-        }
         for (const auto &record : records)
             ValidateRecord(record);
         recordsMaterialized = true;
@@ -1494,10 +1432,6 @@ const std::vector<QueryHit> &JoltGpuQueryResult::ReadHits()
 const std::vector<QueryShapeState> &JoltGpuQueryResult::ReadShapes()
 {
     return ReadTyped(QueryOutputShape, hostShapes);
-}
-const std::vector<QueryMotionState> &JoltGpuQueryResult::ReadMotion()
-{
-    return ReadTyped(QueryOutputMotion, hostMotion);
 }
 const std::vector<QuerySpan> &JoltGpuQueryResult::ReadSpans()
 {
