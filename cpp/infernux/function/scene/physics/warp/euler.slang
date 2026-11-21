@@ -6,6 +6,7 @@
 #include "model.slang"
 #include "damping.slang"
 #include "integrate_position.slang"
+#include "awake_dispatch.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
 [[vk::binding(1, 0)]] StructuredBuffer<JointModel> joints;
@@ -20,6 +21,8 @@
 [[vk::binding(10, 0)]] StructuredBuffer<float4> dofDamping;
 [[vk::binding(11, 0)]] StructuredBuffer<float> massMatrix;
 [[vk::binding(12, 0)]] RWStructuredBuffer<float> eulerMassMatrix;
+[[vk::binding(13, 0)]] StructuredBuffer<uint> awakeCounts;
+[[vk::binding(14, 0)]] StructuredBuffer<uint2> awakeWork;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -37,30 +40,22 @@ void assemble_euler_mass(uint3 id : SV_DispatchThreadID)
     eulerMassMatrix[diagonal] = massMatrix[diagonal] + timestep[id.y] * derivative;
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void advance_velocity(uint3 id : SV_DispatchThreadID)
+void advanceVelocity(uint dof, uint world)
 {
     const uint count = model[0].state.y;
-    if (id.x >= count)
-        return;
-    const uint index = id.y * count + id.x;
-    qvel[index] += qacc[index] * timestep[id.y];
+    const uint index = world * count + dof;
+    qvel[index] += qacc[index] * timestep[world];
     qaccWarmstart[index] = solvedAcceleration[index];
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void advance_position(uint3 id : SV_DispatchThreadID)
+void advancePosition(uint jointIndex, uint world)
 {
     const ModelDimensions size = model[0];
-    if (id.x >= size.state.w)
-        return;
-    const JointModel joint = joints[id.x];
-    const float dt = timestep[id.y];
+    const JointModel joint = joints[jointIndex];
+    const float dt = timestep[world];
     const uint type = joint.indices.x;
-    const uint pos = id.y * size.state.x + joint.indices.y;
-    const uint velocity = id.y * size.state.y + joint.indices.z;
+    const uint pos = world * size.state.x + joint.indices.y;
+    const uint velocity = world * size.state.y + joint.indices.z;
     float3 linear = float3(0.0);
     float3 angular = float3(0.0);
     if (type == JointFree)
@@ -73,6 +68,46 @@ void advance_position(uint3 id : SV_DispatchThreadID)
     else
         linear.x = qvel[velocity];
     integrateJointPosition(type, pos, linear, angular, dt, qpos, qpos);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_velocity(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < model[0].state.y)
+        advanceVelocity(id.x, id.y);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_position(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < model[0].state.w)
+        advancePosition(id.x, id.y);
+}
+
+[shader("compute")]
+[numthreads(AwakeThreads, 1, 1)]
+void advance_awake_velocity(uint3 id : SV_DispatchThreadID)
+{
+    const uint index = awakeWorkIndex(id);
+    if (index < awakeCounts[0])
+    {
+        const uint2 work = awakeWork[index];
+        advanceVelocity(work.x, work.y);
+    }
+}
+
+[shader("compute")]
+[numthreads(AwakeThreads, 1, 1)]
+void advance_awake_position(uint3 id : SV_DispatchThreadID)
+{
+    const uint index = awakeWorkIndex(id);
+    if (index < awakeCounts[1])
+    {
+        const uint2 work = awakeWork[index];
+        advancePosition(work.x, work.y);
+    }
 }
 
 [shader("compute")]
