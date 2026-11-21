@@ -5,21 +5,24 @@
 
 #include "../PhysicsBodyState.h"
 #include "../PhysicsContactTypes.h"
+#include "../PhysicsECSStore.h"
 #include "../PhysicsGpuPoseSource.h"
 #include "WarpStep.h"
 
 #include <core/threading/FrameWorkOwner.h>
-#include <unordered_map>
+#include <functional>
 
 namespace infernux::physics::warp
 {
 
 struct WarpSceneModel;
+struct WarpSceneLayout;
 
 struct WarpRegisteredBody
 {
     uint32_t bodyId;
     uint64_t shapeRevision;
+    PhysicsActorHandle actor{};
 };
 
 struct WarpRegisteredHinge
@@ -61,6 +64,12 @@ struct WarpFixedPublication
     uint32_t substeps = 1;
 
     [[nodiscard]] PhysicsGpuPoseSource PoseSource(uint32_t world) const;
+    [[nodiscard]] std::optional<PhysicsGpuBodyPoseBinding> FindPoseBody(uint32_t world, PhysicsActorHandle actor,
+                                                                        uint32_t bodyId) const;
+
+  private:
+    friend class WarpSceneRuntime;
+    std::shared_ptr<const WarpSceneLayout> m_layout;
 };
 
 struct WarpHostBody
@@ -89,12 +98,19 @@ class WarpSceneRuntime final
     }
     [[nodiscard]] std::optional<uint32_t> BodyRow(uint32_t world, uint32_t engineBody) const;
 
+    using FixedConsumer =
+        std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const WarpFixedPublication &completed)>;
+
     /// Own the fixed identity until its publication is consumed. The device
     /// profile reports status only, while the host profile includes motion.
     /// Drive edits change authored settings at this boundary and remain in
     /// effect until changed again. They do not rewind with simulated motion.
+    /// A required consumer prepares device work after the numerical receipt.
+    /// The whole fixed publication becomes available once that work completes.
+    /// The callback only prepares the packet. This source performs admission and submission.
     void BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands, bool host,
-                    bool captureContacts = false, std::vector<WarpSceneDriveUpdate> drives = {});
+                    bool captureContacts = false, std::vector<WarpSceneDriveUpdate> drives = {},
+                    FixedConsumer consumer = {});
     [[nodiscard]] std::optional<WarpFixedPublication> TakeFixed();
     [[nodiscard]] std::optional<WarpHostBody> ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
                                                            uint32_t engineBody) const;
@@ -109,13 +125,7 @@ class WarpSceneRuntime final
         Preserve,
         Fixed,
         Reports,
-    };
-    struct World
-    {
-        uint64_t id;
-        std::vector<WarpRegisteredBody> bodies; // Device row, including world row zero.
-        std::unordered_map<uint32_t, uint32_t> rows;
-        std::unordered_map<uint64_t, uint32_t> hinges;
+        Consumer,
     };
     struct Fixed
     {
@@ -124,6 +134,7 @@ class WarpSceneRuntime final
         std::vector<WarpHingeDriveUpdate> drives;
         bool host;
         bool captureContacts;
+        FixedConsumer consumer;
     };
     struct Receipt
     {
@@ -140,23 +151,24 @@ class WarpSceneRuntime final
     void Finish();
     void FinishFixed(const rhi::PreparedComputeBatch &packet);
     void FinishReports(const rhi::PreparedComputeBatch &packet);
+    void PrepareConsumer(WarpFixedPublication publication);
     void PublishFixed(WarpFixedPublication publication);
 
     FrameWorkOwner &m_work;
     rhi::ComputeHost m_host;
     FrameWorkOwner::SourceId m_source = 0;
     std::unique_ptr<WarpStep> m_step;
-    std::vector<World> m_worlds;
+    std::shared_ptr<const WarpSceneLayout> m_layout;
     uint32_t m_bodyCount;
     bool m_contactReportsConfigured;
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;
     std::optional<Receipt> m_receipt;
     std::optional<Fixed> m_fixed;
-    std::optional<WarpFixedPublication> m_contactPublication;
+    std::optional<WarpFixedPublication> m_pendingPublication;
     std::optional<WarpFixedPublication> m_publication;
     uint64_t m_generation = 1;
     uint64_t m_fixedGpuNanoseconds = 0;
-    bool m_initialized = false;
+    Packet m_packetKind = Packet::Initialize;
     bool m_retiring = false;
 };
 

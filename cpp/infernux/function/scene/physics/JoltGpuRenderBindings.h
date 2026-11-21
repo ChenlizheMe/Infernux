@@ -1,31 +1,24 @@
 #pragma once
 
-#include "JoltGpuScene.h"
+#include "PhysicsECSStore.h"
+#include "PhysicsGpuPoseSource.h"
+#include "gpu/PhysicsTypes.h"
 
 #include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
 
-namespace JPH::GPU
-{
-struct PoseNode;
-}
-
 namespace infernux
 {
+class RuntimeWorld;
+
 class JoltGpuRenderBindings final
 {
   public:
     struct Snapshot;
     using SnapshotPtr = std::shared_ptr<const Snapshot>;
-    struct BodyPoseBinding
-    {
-        uint32_t id;
-        uint32_t row;
-        JPH::GPU::Float4 centerOffset{};
-    };
-    using ResolveBody = std::function<std::optional<BodyPoseBinding>(PhysicsActorHandle)>;
+    using ResolveBody = std::function<std::optional<PhysicsGpuBodyPoseBinding>(PhysicsActorHandle, uint32_t bodyId)>;
     struct Prepared
     {
         std::vector<JPH::GPU::PoseNode> nodes;
@@ -56,7 +49,6 @@ class JoltGpuRenderBindings final
     [[nodiscard]] bool NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const;
     /// Resolves accepted actor identities and COMs against the captured author
     /// hierarchy. Never reads newer Transform values while preparing GPU work.
-    [[nodiscard]] Prepared Prepare(SnapshotPtr snapshot, const JoltGpuScene::Publication &publication) const;
     [[nodiscard]] Prepared Prepare(SnapshotPtr snapshot, const ResolveBody &resolve) const;
 
     /// Called only for the completed export packet, including an empty mapping.

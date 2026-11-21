@@ -37,14 +37,6 @@ glm::quat Multiply(const glm::quat &left, const glm::quat &right)
     return {q[3], q[0], q[1], q[2]};
 }
 
-struct ActorHandleHash
-{
-    size_t operator()(PhysicsActorHandle handle) const noexcept
-    {
-        return std::hash<uint64_t>{}((uint64_t(handle.generation) << 32) | handle.index);
-    }
-};
-
 // Active state follows the live GameObject graph, which can differ from a
 // pending snapshot after reparenting. Share ancestors without recursive calls.
 struct ActiveHierarchy
@@ -373,31 +365,15 @@ bool JoltGpuRenderBindings::NeedsExport(const Snapshot &snapshot, uint64_t numer
     return false;
 }
 
-JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snapshot,
-                                                               const JoltGpuScene::Publication &publication) const
-{
-    std::unordered_map<PhysicsActorHandle, BodyPoseBinding, ActorHandleHash> actorByHandle;
-    actorByHandle.reserve(publication.bodyCount);
-    for (uint32_t local = 0; local < publication.bodyCount; ++local) {
-        const auto &actor = publication.directory->actors[publication.bodyBase + local];
-        if (actor)
-            actorByHandle.emplace(actor->actor, BodyPoseBinding{actor->bodyId, local, actor->rootCenterOfMass});
-    }
-    return Prepare(std::move(snapshot), [&](PhysicsActorHandle handle) -> std::optional<BodyPoseBinding> {
-        const auto found = actorByHandle.find(handle);
-        return found == actorByHandle.end() ? std::nullopt : std::make_optional(found->second);
-    });
-}
-
 JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snapshot, const ResolveBody &resolve) const
 {
     Prepared prepared;
     prepared.snapshot = std::move(snapshot);
     const auto &captured = *prepared.snapshot;
-    std::vector<std::optional<BodyPoseBinding>> actors;
+    std::vector<std::optional<PhysicsGpuBodyPoseBinding>> actors;
     actors.reserve(captured.transforms.size());
     for (const auto &transform : captured.transforms)
-        actors.push_back(resolve(transform.actor));
+        actors.push_back(transform.bodyId == UINT32_MAX ? std::nullopt : resolve(transform.actor, transform.bodyId));
     std::vector<uint32_t> nodeIndices(captured.transforms.size(), NoNode);
     for (size_t i = 0; i < actors.size(); ++i)
         if (actors[i]) {
@@ -423,7 +399,8 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
         if (actors[i]) {
             auto &node = prepared.nodes[nodeIndices[i]];
             node.bodyParent = {actors[i]->row, parent.root == NoNode ? NoNode : nodeIndices[parent.root], 0, 0};
-            node.rootCOM = actors[i]->centerOffset;
+            const auto &center = actors[i]->centerOffset;
+            node.rootCOM = {center[0], center[1], center[2], 0};
             node.localScale = Float4(glm::vec4(transform.scale, 0));
             node.parentRotation = {parent.rotation.x, parent.rotation.y, parent.rotation.z, parent.rotation.w};
             node.parentLocalToAncestor0 = Float4(parent.affine[0]);

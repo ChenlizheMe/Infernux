@@ -1108,7 +1108,17 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
     rendering.pending = job;
     return [this, &domain, job = std::move(job)](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         auto &state = domain.rendering;
-        job->bindings = state.bindings.Prepare(job->snapshot, *publication);
+        job->bindings = state.bindings.Prepare(
+            job->snapshot, [&](PhysicsActorHandle handle, uint32_t bodyId) -> std::optional<PhysicsGpuBodyPoseBinding> {
+                const auto slot = publication->directory->FindBodySlot(bodyId);
+                if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
+                    return std::nullopt;
+                const auto &actor = publication->directory->actors[slot];
+                if (!actor || actor->actor != handle)
+                    return std::nullopt;
+                const auto &center = actor->rootCenterOfMass;
+                return PhysicsGpuBodyPoseBinding{bodyId, slot - publication->bodyBase, {center.x, center.y, center.z}};
+            });
         job->output = m_gpuRenderProgram->Prepare({publication->bodyStates, 0, publication->bodyCount},
                                                   job->bindings->nodes, job->bindings->bindings);
         job->publication = publication;

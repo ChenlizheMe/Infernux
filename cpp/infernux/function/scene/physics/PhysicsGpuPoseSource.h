@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 
@@ -13,6 +14,13 @@ class ComputeBuffer;
 
 namespace infernux
 {
+
+struct PhysicsGpuBodyPoseBinding
+{
+    uint32_t id;
+    uint32_t row;
+    std::array<float, 3> centerOffset{};
+};
 
 /// Rows in a completed GPU publication. Authoring binds solver-neutral local
 /// body rows; the exporter addresses the corresponding world in this buffer.
