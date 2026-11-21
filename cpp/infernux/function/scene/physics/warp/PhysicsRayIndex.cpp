@@ -141,7 +141,6 @@ uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, std::span<cons
     const auto nodeStart = descriptor + 1;
     const auto nodeCount = static_cast<uint32_t>(tree.nodes.size());
     const auto faceStart = nodeStart + 2 * nodeCount;
-    records.reserve(static_cast<size_t>(faceStart) + faces.size());
     records.push_back({nodeStart, faceStart, nodeCount, 0});
     for (uint32_t index = 0; index < nodeCount; ++index) {
         const auto &node = tree.nodes[index];
