@@ -3,12 +3,6 @@
 
 #include "WarpSceneModel.h"
 
-#include "../../Collider.h"
-#include "../../GameObject.h"
-#include "../../Rigidbody.h"
-#include "../../TagLayerManager.h"
-#include "../../Transform.h"
-#include "../../TransformECSStore.h"
 #include "../PhysicsShapeLeaves.h"
 
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
@@ -259,42 +253,29 @@ WarpGeometryType CookGeometry(const JPH::TransformedShape &leaf, WarpCollisionGe
 }
 } // namespace
 
-std::optional<WarpSceneCapture> CaptureWarpSceneActor(const PhysicsActorData &actor)
+WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author)
 {
-    TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
-    std::vector<Collider *> members;
-    auto shape = BuildActorShape(actor, nullptr, nullptr, &members);
-    if (!shape)
-        return std::nullopt;
-
-    const auto *rigidbody = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
-    const auto *transform = actor.owner->GetTransform();
     WarpSceneCapture result{};
-    result.publication = PhysicsActorPublication::Capture(actor, members, rigidbody);
+    result.publication = std::move(author.publication);
     auto &source = result.actor;
-    source.objectId = actor.owner->GetID();
-    source.shape = std::move(shape);
-    source.position = transform->GetPosition();
-    source.rotation = transform->GetWorldRotation();
-    if (rigidbody) {
-        source.kinematic = rigidbody->IsKinematic();
-        source.useGravity = rigidbody->GetUseGravity();
+    source.objectId = author.objectId;
+    source.shape = std::move(author.shape);
+    source.position = author.position;
+    source.rotation = author.rotation;
+    if (const auto &body = author.body) {
+        source.kinematic = body->kinematic;
+        source.useGravity = body->useGravity;
         if (!source.kinematic) {
-            const auto &properties = rigidbody->GetAuthoredMassProperties();
-            source.mass = PrepareBodyMass(source.shape.GetPtr(), rigidbody->GetMass(),
-                                          properties ? &*properties : nullptr, transform->GetWorldScale());
+            source.mass = body->mass;
             source.linearVelocity = result.publication.linearVelocity.value_or(glm::vec3(0.0f));
             source.angularVelocity = result.publication.angularVelocity.value_or(glm::vec3(0.0f));
         }
     }
-    source.colliders.reserve(members.size());
-    for (const auto *collider : members) {
-        const int layer = collider->GetGameObject()->GetLayer();
-        source.colliders.push_back(
-            {collider->GetComponentID(), collider->GetLifetimeGeneration(), static_cast<uint32_t>(layer),
-             TagLayerManager::Instance().GetLayerCollisionMask(layer), collider->GetFriction(), collider->IsTrigger(),
-             collider->GetBounciness(), collider->GetFrictionCombine(), collider->GetBounceCombine()});
-    }
+    source.colliders.reserve(author.surfaces.size());
+    for (const auto &surface : author.surfaces)
+        source.colliders.push_back({surface.colliderId, surface.generation, surface.layer, surface.collisionMask,
+                                    surface.friction, surface.sensor, surface.restitution, surface.frictionCombine,
+                                    surface.bounceCombine});
     return result;
 }
 

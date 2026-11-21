@@ -1,16 +1,13 @@
 #pragma once
 
+#include <Jolt/Physics/Collision/Shape/Shape.h>
 #include "PhysicsECSStore.h"
-#include <cstddef>
+#include "PhysicsMass.h"
+#include "PhysicsTargetReference.h"
+#include <function/resources/PhysicMaterial/PhysicMaterial.h>
 #include <memory>
 #include <optional>
 #include <vector>
-
-namespace JPH
-{
-class Shape;
-template <class T> class RefConst;
-} // namespace JPH
 
 namespace infernux
 {
@@ -28,14 +25,15 @@ struct PhysicsActorPublication
     std::optional<uint64_t> sharedGeometryRevision;
     std::optional<glm::vec3> linearVelocity, angularVelocity;
 
-    /// Capture inside the author's pose scope, after all contributing shapes are ready.
-    [[nodiscard]] static PhysicsActorPublication Capture(const PhysicsActorData &,
-                                                         const std::vector<Collider *> &members, const Rigidbody *);
     void AcceptGeometry(PhysicsActorHandle actor, uint32_t bodyId, uint64_t shapeRevision) const noexcept;
     /// The backend calls this only after it accepts the captured initial velocities.
     void ConsumeInitialVelocities(PhysicsActorHandle actor, uint32_t bodyId) const noexcept;
 
   private:
+    friend struct PhysicsActorAuthoring;
+
+    [[nodiscard]] static PhysicsActorPublication Capture(const PhysicsActorData &,
+                                                         const std::vector<Collider *> &members, const Rigidbody *);
     struct ColliderCenter
     {
         PhysicsECSStore::ColliderHandle collider;
@@ -50,11 +48,47 @@ struct PhysicsActorPublication
     std::vector<MeshPublication> meshPublications;
 };
 
+struct PhysicsSurfaceAuthoring
+{
+    PhysicsTargetReference target;
+    uint64_t colliderId, generation;
+    uint32_t layer, collisionMask;
+    float friction, restitution;
+    PhysicsMaterialCombine frictionCombine, bounceCombine;
+    bool sensor;
+    uint64_t gameObjectId = 0;
+};
+
+struct PhysicsRigidbodyAuthoring
+{
+    PhysicsTargetReference target;
+    std::optional<PreparedBodyMass> mass;
+    int constraints, collisionDetectionMode;
+    float drag, angularDrag, maxLinearVelocity, maxAngularVelocity;
+    bool kinematic, useGravity;
+};
+
+/// Backend-independent component and shape input belonging to one author pose.
+/// The owner publishes the captured geometry and consumes staged velocities
+/// only after the selected backend accepts them.
+struct PhysicsActorAuthoring
+{
+    JPH::RefConst<JPH::Shape> shape;
+    glm::vec3 position, scale;
+    glm::quat rotation;
+    uint64_t objectId;
+    int objectLayer;
+    std::vector<PhysicsSurfaceAuthoring> surfaces;
+    std::optional<PhysicsRigidbodyAuthoring> body;
+    PhysicsActorPublication publication;
+
+    /// A pending child cook leaves the entire previous actor revision in use.
+    [[nodiscard]] static std::optional<PhysicsActorAuthoring> Capture(const PhysicsActorData &actor);
+};
+
 /// Owner-thread authoring: capture all active collider geometry as one shape.
 /// Null means the whole candidate is not ready; pending children still begin
 /// cooking. Returned children already contain world scale, so relative actor
 /// transforms contribute only rigid translation and rotation.
-JPH::RefConst<JPH::Shape> BuildActorShape(const PhysicsActorData &actor, const Collider *exclude = nullptr,
-                                          size_t *outShapeCount = nullptr,
-                                          std::vector<Collider *> *outMembers = nullptr);
+JPH::RefConst<JPH::Shape> BuildActorShape(const PhysicsActorData &actor);
 } // namespace infernux

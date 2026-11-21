@@ -1,15 +1,7 @@
 #include <Jolt/Jolt.h>
 
-#include "../Collider.h"
-#include "../GameObject.h"
 #include "../Rigidbody.h"
-#include "../TagLayerManager.h"
-#include "../Transform.h"
-#include "../TransformECSStore.h"
 #include "JoltGpuActor.h"
-#include "PhysicsECSStore.h"
-#include "PhysicsMass.h"
-#include "PhysicsShapeAuthoring.h"
 
 #include <algorithm>
 #include <limits>
@@ -23,19 +15,19 @@ static_assert(static_cast<uint32_t>(PhysicsMaterialCombine::Average) == JPH::GPU
               static_cast<uint32_t>(PhysicsMaterialCombine::Multiply) == JPH::GPU::MaterialCombineMultiply &&
               static_cast<uint32_t>(PhysicsMaterialCombine::Maximum) == JPH::GPU::MaterialCombineMaximum);
 
-void RefreshGpuActorSurface(JPH::GPU::ShapeModel &leaf, const Collider &collider)
-{
-    const int layer = collider.GetGameObject()->GetLayer();
-    leaf.material.x = collider.GetFriction();
-    leaf.material.y = collider.GetBounciness();
-    leaf.surface = {static_cast<uint32_t>(layer), TagLayerManager::Instance().GetLayerCollisionMask(layer),
-                    static_cast<uint32_t>(collider.GetFrictionCombine()),
-                    static_cast<uint32_t>(collider.GetBounceCombine())};
-    leaf.meta.w = (leaf.meta.w & ~JPH::GPU::ShapeSensor) | (collider.IsTrigger() ? JPH::GPU::ShapeSensor : 0u);
-}
-
 namespace
 {
+void WriteSurface(JPH::GPU::ShapeModel &leaf, const PhysicsSurfaceAuthoring &surface)
+{
+    leaf.material.x = surface.friction;
+    leaf.material.y = surface.restitution;
+    leaf.surface = {surface.layer, surface.collisionMask, static_cast<uint32_t>(surface.frictionCombine),
+                    static_cast<uint32_t>(surface.bounceCombine)};
+    leaf.meta.w = (leaf.meta.w & ~JPH::GPU::ShapeSensor) | (surface.sensor ? JPH::GPU::ShapeSensor : 0u);
+    leaf.source.x = static_cast<uint32_t>(surface.colliderId);
+    leaf.source.y = static_cast<uint32_t>(surface.colliderId >> 32);
+}
+
 PreparedGpuActor PrepareShapeModel(JPH::RefConst<JPH::Shape> shape, size_t memberCount, const glm::vec3 &position,
                                    const glm::quat &rotation, const glm::vec3 &scale, uint32_t motion,
                                    uint32_t worldIndex)
@@ -68,41 +60,30 @@ void PreparedGpuActor::SetOriginPose(const glm::vec3 &position, const glm::quat 
     initialState.rotation = {rotation.x, rotation.y, rotation.z, rotation.w};
 }
 
-std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &actor, uint32_t bodySlot,
-                                                    uint32_t worldIndex)
+PreparedGpuActor PrepareJoltGpuActor(PhysicsActorAuthoring actor, uint32_t bodySlot, uint32_t worldIndex)
 {
-    TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
-    std::vector<Collider *> members;
-    auto shape = BuildActorShape(actor, nullptr, nullptr, &members);
-    if (!shape)
-        return std::nullopt;
-
-    const auto *rigidbody = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
-    if (rigidbody && (rigidbody->GetConstraints() & ~126) != 0)
+    const auto &body = actor.body;
+    if (body && (body->constraints & ~126) != 0)
         throw std::invalid_argument("Rigidbody constraints contain unknown bits");
-    const auto *transform = actor.owner->GetTransform();
-    const auto motion = rigidbody ? (rigidbody->IsKinematic() ? JPH::GPU::MotionKinematic : JPH::GPU::MotionDynamic)
-                                  : JPH::GPU::MotionStatic;
-    auto prepared = PrepareShapeModel(shape, members.size(), transform->GetPosition(), transform->GetWorldRotation(),
-                                      transform->GetWorldScale(), motion, worldIndex);
-    prepared.publication = PhysicsActorPublication::Capture(actor, members, rigidbody);
-    if (rigidbody) {
-        const auto &properties = rigidbody->GetAuthoredMassProperties();
-        if (!rigidbody->IsKinematic() || properties || !shape->MustBeStatic()) {
-            const auto mass = PrepareBodyMass(shape.GetPtr(), rigidbody->GetMass(), properties ? &*properties : nullptr,
-                                              transform->GetWorldScale());
+    const auto motion =
+        body ? (body->kinematic ? JPH::GPU::MotionKinematic : JPH::GPU::MotionDynamic) : JPH::GPU::MotionStatic;
+    auto prepared = PrepareShapeModel(std::move(actor.shape), actor.surfaces.size(), actor.position, actor.rotation,
+                                      actor.scale, motion, worldIndex);
+    prepared.publication = std::move(actor.publication);
+    if (body) {
+        if (body->mass) {
+            const auto &mass = *body->mass;
             prepared.body.mass.x = 1.0f / mass.mass;
             prepared.body.invInertiaDiagonal = {mass.inverse.GetX(), mass.inverse.GetY(), mass.inverse.GetZ(), 0.0f};
             prepared.body.inertiaRotation = {mass.axes.GetX(), mass.axes.GetY(), mass.axes.GetZ(), mass.axes.GetW()};
         }
-        prepared.body.mass.y = float((rigidbody->GetConstraints() >> 1) & 7);
-        prepared.body.mass.z = float((rigidbody->GetConstraints() >> 4) & 7);
-        prepared.body.mass.w = rigidbody->GetUseGravity() ? 1.0f : 0.0f;
-        prepared.body.damping = {rigidbody->GetDrag(), rigidbody->GetAngularDrag(), rigidbody->GetMaxLinearVelocity(),
-                                 rigidbody->GetMaxAngularVelocity()};
-        const auto detection = static_cast<CollisionDetectionMode>(rigidbody->GetCollisionDetectionMode());
+        prepared.body.mass.y = float((body->constraints >> 1) & 7);
+        prepared.body.mass.z = float((body->constraints >> 4) & 7);
+        prepared.body.mass.w = body->useGravity ? 1.0f : 0.0f;
+        prepared.body.damping = {body->drag, body->angularDrag, body->maxLinearVelocity, body->maxAngularVelocity};
+        const auto detection = static_cast<CollisionDetectionMode>(body->collisionDetectionMode);
         if (motion == JPH::GPU::MotionDynamic && detection != CollisionDetectionMode::Discrete) {
-            const float radius = shape->GetInnerRadius();
+            const float radius = prepared.authoredShape->GetInnerRadius();
             prepared.body.invInertiaDiagonal.w =
                 detection == CollisionDetectionMode::ContinuousDynamic ? -radius : radius;
         }
@@ -113,20 +94,15 @@ std::optional<PreparedGpuActor> PrepareJoltGpuActor(const PhysicsActorData &acto
             prepared.initialState.angularVelocity = {angular->x, angular->y, angular->z, 0.0f};
     }
     for (auto &leaf : prepared.geometry.leaves) {
-        const auto *collider = members[leaf.memberIndex];
         leaf.model.meta.y = bodySlot;
-        RefreshGpuActorSurface(leaf.model, *collider);
-        const uint64_t id = collider->GetComponentID();
-        leaf.model.source.x = static_cast<uint32_t>(id);
-        leaf.model.source.y = static_cast<uint32_t>(id >> 32);
+        WriteSurface(leaf.model, actor.surfaces[leaf.memberIndex]);
     }
-    if (!rigidbody && !members.empty() &&
-        std::all_of(members.begin(), members.end(), [](const Collider *member) { return member->IsTrigger(); }))
+    if (!body && !actor.surfaces.empty() &&
+        std::all_of(actor.surfaces.begin(), actor.surfaces.end(), [](const auto &surface) { return surface.sensor; }))
         prepared.sleep.policy.x |= 2u;
-    prepared.members.reserve(members.size());
-    for (const auto *member : members)
-        prepared.members.push_back({PhysicsTargetReference(member), member->GetComponentID(),
-                                    member->GetLifetimeGeneration(), member->GetGameObject()->GetID()});
+    prepared.members.reserve(actor.surfaces.size());
+    for (const auto &surface : actor.surfaces)
+        prepared.members.push_back({surface.target, surface.colliderId, surface.generation, surface.gameObjectId});
     return prepared;
 }
 

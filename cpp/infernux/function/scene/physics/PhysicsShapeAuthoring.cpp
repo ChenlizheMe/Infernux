@@ -8,7 +8,9 @@
 #include "../GameObject.h"
 #include "../MeshCollider.h"
 #include "../Rigidbody.h"
+#include "../TagLayerManager.h"
 #include "../Transform.h"
+#include "../TransformECSStore.h"
 #include "PhysicsECSStore.h"
 #include "PhysicsShapeAuthoring.h"
 
@@ -88,18 +90,26 @@ void PhysicsActorPublication::ConsumeInitialVelocities(PhysicsActorHandle handle
         data.hasAngularVelocity = false;
 }
 
-JPH::RefConst<JPH::Shape> BuildActorShape(const PhysicsActorData &actor, const Collider *exclude, size_t *outShapeCount,
-                                          std::vector<Collider *> *outMembers)
+namespace
+{
+const Rigidbody *ActiveRigidbody(const PhysicsActorData &actor)
+{
+    return actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
+}
+
+JPH::RefConst<JPH::Shape> BuildShape(const PhysicsActorData &actor, const Rigidbody *body,
+                                     const glm::vec3 &actorPosition, const glm::quat &actorRotation,
+                                     const glm::vec3 &actorScale, std::vector<Collider *> *members)
 {
     auto *go = actor.owner;
+    const auto inverseRotation = glm::inverse(actorRotation);
     std::vector<std::pair<Collider *, JPH::RefConst<JPH::Shape>>> childShapes;
     const auto &colliders = actor.colliders;
     childShapes.reserve(colliders.size());
     bool complete = true;
 
     for (auto *col : colliders) {
-        if (!col || col == exclude || col->IsBeingDestroyed() || !col->IsEnabled() ||
-            !col->GetGameObject()->IsActiveInHierarchy()) {
+        if (!col || col->IsBeingDestroyed() || !col->IsEnabled() || !col->GetGameObject()->IsActiveInHierarchy()) {
             continue;
         }
 
@@ -108,10 +118,8 @@ JPH::RefConst<JPH::Shape> BuildActorShape(const PhysicsActorData &actor, const C
             if (child->GetSubType() == JPH::EShapeSubType::Empty)
                 continue; // Empty children have no geometry or compound mass.
             if (col->GetGameObject() != go) {
-                const auto *actorTransform = go->GetTransform();
                 const auto *childTransform = col->GetGameObject()->GetTransform();
-                const auto inverseRotation = glm::inverse(actorTransform->GetWorldRotation());
-                const auto position = inverseRotation * (childTransform->GetPosition() - actorTransform->GetPosition());
+                const auto position = inverseRotation * (childTransform->GetPosition() - actorPosition);
                 const auto rotation = glm::normalize(inverseRotation * childTransform->GetWorldRotation());
                 // Each primitive already bakes world scale. Only the rigid
                 // relative pose belongs here; a full inverse matrix scales twice.
@@ -127,18 +135,13 @@ JPH::RefConst<JPH::Shape> BuildActorShape(const PhysicsActorData &actor, const C
         }
     }
 
-    if (!complete) {
-        if (outShapeCount)
-            *outShapeCount = 0;
+    if (!complete)
         return nullptr;
-    }
 
-    if (outShapeCount)
-        *outShapeCount = childShapes.size();
-    if (outMembers) {
-        outMembers->reserve(childShapes.size());
+    if (members) {
+        members->reserve(childShapes.size());
         for (const auto &child : childShapes)
-            outMembers->push_back(child.first);
+            members->push_back(child.first);
     }
 
     JPH::RefConst<JPH::Shape> shape;
@@ -157,14 +160,71 @@ JPH::RefConst<JPH::Shape> BuildActorShape(const PhysicsActorData &actor, const C
             return nullptr;
         shape = result.Get();
     }
-    if (auto *body = actor.rigidbody; body && body->IsEnabled()) {
+    if (body) {
         if (const auto &properties = body->GetAuthoredMassProperties()) {
-            const auto center = properties->center * go->GetTransform()->GetWorldScale();
+            const auto center = properties->center * actorScale;
             const JPH::Vec3 offset = JPH::Vec3(center.x, center.y, center.z) - shape->GetCenterOfMass();
             shape = new JPH::OffsetCenterOfMassShape(shape, offset);
         }
     }
     return shape;
+}
+} // namespace
+
+JPH::RefConst<JPH::Shape> BuildActorShape(const PhysicsActorData &actor)
+{
+    const auto *transform = actor.owner->GetTransform();
+    return BuildShape(actor, ActiveRigidbody(actor), transform->GetPosition(), transform->GetWorldRotation(),
+                      transform->GetWorldScale(), nullptr);
+}
+
+std::optional<PhysicsActorAuthoring> PhysicsActorAuthoring::Capture(const PhysicsActorData &actor)
+{
+    TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
+    PhysicsActorAuthoring result{};
+    const auto *transform = actor.owner->GetTransform();
+    result.position = transform->GetPosition();
+    result.rotation = transform->GetWorldRotation();
+    result.scale = transform->GetWorldScale();
+    result.objectId = actor.owner->GetID();
+    result.objectLayer = actor.owner->GetLayer();
+
+    const auto *body = ActiveRigidbody(actor);
+    std::vector<Collider *> members;
+    result.shape = BuildShape(actor, body, result.position, result.rotation, result.scale, &members);
+    if (!result.shape)
+        return std::nullopt;
+
+    auto &layers = TagLayerManager::Instance();
+    result.surfaces.reserve(members.size());
+    for (const auto *collider : members) {
+        const auto *object = collider->GetGameObject();
+        const auto layer = object->GetLayer();
+        result.surfaces.push_back({PhysicsTargetReference(collider), collider->GetComponentID(),
+                                   collider->GetLifetimeGeneration(), static_cast<uint32_t>(layer),
+                                   layers.GetLayerCollisionMask(layer), collider->GetFriction(),
+                                   collider->GetBounciness(), collider->GetFrictionCombine(),
+                                   collider->GetBounceCombine(), collider->IsTrigger(), object->GetID()});
+    }
+    if (body) {
+        result.body = PhysicsRigidbodyAuthoring{PhysicsTargetReference(body),
+                                                std::nullopt,
+                                                body->GetConstraints(),
+                                                body->GetCollisionDetectionMode(),
+                                                body->GetDrag(),
+                                                body->GetAngularDrag(),
+                                                body->GetMaxLinearVelocity(),
+                                                body->GetMaxAngularVelocity(),
+                                                body->IsKinematic(),
+                                                body->GetUseGravity()};
+        const auto &properties = body->GetAuthoredMassProperties();
+        // A prescribed non-convex boundary needs no dynamic inertia.
+        if (!result.body->kinematic || properties || !result.shape->MustBeStatic())
+            result.body->mass = PrepareBodyMass(result.shape.GetPtr(), body->GetMass(),
+                                                properties ? &*properties : nullptr, result.scale);
+    }
+    result.publication = PhysicsActorPublication::Capture(actor, members, body);
+    return result;
 }
 
 } // namespace infernux

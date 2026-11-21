@@ -4,11 +4,7 @@
 #include <Jolt/Physics/Collision/Shape/CompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 
-#include "../Collider.h"
-#include "../GameObject.h"
 #include "../Rigidbody.h"
-#include "../Transform.h"
-#include "../TransformECSStore.h"
 #include "JoltCpuActor.h"
 #include "JoltCpuScene.h"
 #include "PhysicsLayers.h"
@@ -22,13 +18,14 @@ namespace infernux
 {
 namespace
 {
-JPH::ObjectLayer BodyLayer(const PhysicsActorData &actor, const std::vector<Collider *> &members, bool moving)
+JPH::ObjectLayer BodyLayer(const PhysicsActorAuthoring &actor)
 {
-    if (members.empty())
-        return PhysicsObjectLayers::Encode(actor.owner->GetLayer(), moving);
-    const int layer = members.front()->GetGameObject()->GetLayer();
-    for (const auto *member : members)
-        if (member->GetGameObject()->GetLayer() != layer)
+    const bool moving = actor.body.has_value();
+    if (actor.surfaces.empty())
+        return PhysicsObjectLayers::Encode(actor.objectLayer, moving);
+    const auto layer = actor.surfaces.front().layer;
+    for (const auto &surface : actor.surfaces)
+        if (surface.layer != layer)
             return moving ? PhysicsObjectLayers::MIXED_MOVING : PhysicsObjectLayers::MIXED_NON_MOVING;
     return PhysicsObjectLayers::Encode(layer, moving);
 }
@@ -86,63 +83,44 @@ BodyMobility ReadMobility(const JPH::Body &body)
 }
 } // namespace
 
-std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &actor)
+PreparedCpuActor PrepareJoltCpuActor(PhysicsActorAuthoring actor)
 {
-    TransformECSStore::PhysicsPoseReadScope authoring(TransformECSStore::Instance());
     PreparedCpuActor prepared;
-    std::vector<Collider *> members;
-    auto shape = BuildActorShape(actor, nullptr, nullptr, &members);
-    if (!shape)
-        return std::nullopt;
-    prepared.surfaces.reserve(members.size());
-    for (const auto *collider : members) {
-        const auto layer = collider->GetGameObject()->GetLayer();
-        prepared.surfaces.push_back(
-            {PhysicsTargetReference(collider), collider->GetComponentID(), collider->GetLifetimeGeneration(),
-             static_cast<uint32_t>(layer), TagLayerManager::Instance().GetLayerCollisionMask(layer),
-             collider->GetFriction(), collider->GetBounciness(), collider->GetFrictionCombine(),
-             collider->GetBounceCombine(), collider->IsTrigger(), collider->GetGameObject()->GetID()});
-    }
-
-    const auto *body = actor.rigidbody && actor.rigidbody->IsEnabled() ? actor.rigidbody : nullptr;
-    prepared.bodyTarget = PhysicsTargetReference(body);
-    prepared.publication = PhysicsActorPublication::Capture(actor, members, body);
-    const auto *transform = actor.owner->GetTransform();
-    const auto position = transform->GetPosition();
-    const auto rotation = transform->GetWorldRotation();
-    const auto scale = transform->GetWorldScale();
+    const auto layer = BodyLayer(actor);
+    prepared.surfaces = std::move(actor.surfaces);
+    prepared.publication = std::move(actor.publication);
+    const auto &body = actor.body;
+    const auto &position = actor.position;
+    const auto &rotation = actor.rotation;
+    const auto &scale = actor.scale;
     prepared.rootScale = JPH::Vec3(scale.x, scale.y, scale.z);
     // Jolt cannot solve a dynamic body with all six axes locked. Such a body
     // is an immovable kinematic boundary internally; the component stays a
     // dynamic Rigidbody, with its real mass available when axes are unlocked.
-    const bool frozen = body && body->GetConstraints() == static_cast<int>(RigidbodyConstraints::FreezeAll);
+    const bool frozen = body && body->constraints == static_cast<int>(RigidbodyConstraints::FreezeAll);
     prepared.frozen = frozen;
-    prepared.authoredDynamic = body && !body->IsKinematic();
-    const auto motion = !body                           ? JPH::EMotionType::Static
-                        : body->IsKinematic() || frozen ? JPH::EMotionType::Kinematic
-                                                        : JPH::EMotionType::Dynamic;
+    prepared.authoredDynamic = body && !body->kinematic;
+    const auto motion = !body                       ? JPH::EMotionType::Static
+                        : body->kinematic || frozen ? JPH::EMotionType::Kinematic
+                                                    : JPH::EMotionType::Dynamic;
     auto &settings = prepared.settings;
-    settings = JPH::BodyCreationSettings(shape, JPH::RVec3(position.x, position.y, position.z),
-                                         JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w), motion,
-                                         BodyLayer(actor, members, body != nullptr));
-    settings.mAllowDynamicOrKinematic = body != nullptr;
+    settings = JPH::BodyCreationSettings(actor.shape, JPH::RVec3(position.x, position.y, position.z),
+                                         JPH::Quat(rotation.x, rotation.y, rotation.z, rotation.w), motion, layer);
+    settings.mAllowDynamicOrKinematic = body.has_value();
     settings.mApplyGyroscopicForce = true;
     settings.mIsSensor = !prepared.surfaces.empty() && std::all_of(prepared.surfaces.begin(), prepared.surfaces.end(),
                                                                    [](const auto &surface) { return surface.sensor; });
     // Preserve per-Collider material/filter/trigger identity in compounds.
-    settings.mUseManifoldReduction = members.size() <= 1;
+    settings.mUseManifoldReduction = prepared.surfaces.size() <= 1;
     settings.mCollideKinematicVsNonDynamic = true;
     if (!prepared.surfaces.empty()) {
         settings.mFriction = prepared.surfaces.front().friction;
         settings.mRestitution = prepared.surfaces.front().restitution;
     }
     if (body) {
-        const auto &properties = body->GetAuthoredMassProperties();
-        // Prescribed non-convex motion needs DOFs and velocity, not invented
-        // volume or inertia. A later dynamic conversion prepares real mass.
-        if (!body->IsKinematic() || properties || !shape->MustBeStatic()) {
-            prepared.mass =
-                PrepareBodyMass(shape.GetPtr(), body->GetMass(), properties ? &*properties : nullptr, scale);
+        prepared.bodyTarget = body->target;
+        prepared.mass = body->mass;
+        if (prepared.mass) {
             const auto &mass = *prepared.mass;
             const auto axes = JPH::Mat44::sRotation(mass.axes);
             settings.mOverrideMassProperties = JPH::EOverrideMassProperties::MassAndInertiaProvided;
@@ -150,17 +128,17 @@ std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &acto
             settings.mMassPropertiesOverride.mInertia =
                 axes * JPH::Mat44::sScale(mass.inverse.Reciprocal()) * axes.Transposed3x3();
         }
-        settings.mAllowedDOFs = static_cast<JPH::EAllowedDOFs>((~(body->GetConstraints() >> 1)) & 0x3f);
-        prepared.collisionDetectionMode = body->GetCollisionDetectionMode();
+        settings.mAllowedDOFs = static_cast<JPH::EAllowedDOFs>((~(body->constraints >> 1)) & 0x3f);
+        prepared.collisionDetectionMode = body->collisionDetectionMode;
         settings.mMotionQuality =
-            motion == JPH::EMotionType::Dynamic && !members.empty() && prepared.collisionDetectionMode != 0
+            motion == JPH::EMotionType::Dynamic && !prepared.surfaces.empty() && prepared.collisionDetectionMode != 0
                 ? JPH::EMotionQuality::LinearCast
                 : JPH::EMotionQuality::Discrete;
-        settings.mLinearDamping = body->GetDrag();
-        settings.mAngularDamping = body->GetAngularDrag();
-        settings.mMaxLinearVelocity = body->GetMaxLinearVelocity();
-        settings.mMaxAngularVelocity = body->GetMaxAngularVelocity();
-        settings.mGravityFactor = body->GetUseGravity() ? 1.0f : 0.0f;
+        settings.mLinearDamping = body->drag;
+        settings.mAngularDamping = body->angularDrag;
+        settings.mMaxLinearVelocity = body->maxLinearVelocity;
+        settings.mMaxAngularVelocity = body->maxAngularVelocity;
+        settings.mGravityFactor = body->useGravity ? 1.0f : 0.0f;
 
         if (const auto &linear = prepared.publication.linearVelocity; !frozen && linear)
             settings.mLinearVelocity = JPH::Vec3(linear->x, linear->y, linear->z);

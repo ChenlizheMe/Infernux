@@ -2276,20 +2276,19 @@ uint32_t PhysicsWorld::StageNewBody(const PhysicsActorData &actor, PhysicsActorH
     auto &domain = DomainForActor(actor);
     auto &store = PhysicsECSStore::Instance();
     const bool boundary = backend == Backend::StaticBoundary;
+    auto authoring = PhysicsActorAuthoring::Capture(actor);
+    if (!authoring)
+        return UINT32_MAX;
     std::optional<PreparedGpuActor> gpu;
     std::optional<PreparedCpuActor> cpu;
     if (domain.UsesGpu()) {
-        gpu = PrepareJoltGpuActor(actor, 0, 0);
-        if (!gpu)
-            return UINT32_MAX;
+        gpu = PrepareJoltGpuActor(std::move(*authoring), 0, 0);
         if (!boundary && (!EnsureGpuReady(domain) || !CanStageNewGpuBody(domain))) {
             store.QueueBodyCreation(handle);
             return UINT32_MAX;
         }
     } else {
-        cpu = PrepareJoltCpuActor(actor);
-        if (!cpu)
-            return UINT32_MAX;
+        cpu = PrepareJoltCpuActor(std::move(*authoring));
         if (!boundary)
             EnsureCpuReady(domain);
     }
@@ -2387,22 +2386,22 @@ bool PhysicsWorld::RebindBody(PhysicsActorData &actor)
 
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     const auto revision = entry.stagedShapeRevision + 1;
+    const bool gpuWorld = domain.UsesGpu();
+    if (gpuWorld && stage && (!EnsureGpuReady(domain) || (!entry.stagedOn && !CanStageNewGpuBody(domain)))) {
+        store.QueueBodyCreation(entry.actor);
+        return false;
+    }
+    auto authoring = PhysicsActorAuthoring::Capture(actor);
+    if (!authoring)
+        return false;
     std::optional<PreparedCpuActor> cpu;
     std::optional<PreparedGpuActor> gpu;
-    if (domain.UsesGpu()) {
-        if (stage && (!EnsureGpuReady(domain) || (!entry.stagedOn && !CanStageNewGpuBody(domain)))) {
-            store.QueueBodyCreation(entry.actor);
-            return false;
-        }
+    if (gpuWorld) {
         const auto slot = entry.stagedOn ? m_gpuScene->FindBody(id).slot : 0;
-        gpu = PrepareJoltGpuActor(actor, slot, 0);
-        if (!gpu)
-            return false;
+        gpu = PrepareJoltGpuActor(std::move(*authoring), slot, 0);
         gpu->publication.sharedGeometryRevision = revision;
     } else {
-        cpu = PrepareJoltCpuActor(actor);
-        if (!cpu)
-            return false;
+        cpu = PrepareJoltCpuActor(std::move(*authoring));
         cpu->publication.sharedGeometryRevision = revision;
         if (stage)
             EnsureCpuReady(domain);
@@ -2506,35 +2505,34 @@ void PhysicsWorld::StageActorModel(PhysicsActorData &actor, const PhysicsActorDa
     RequireHealthyStep(domain);
     auto &entry = m_bodyActors.at(actor.bodyId);
     const auto revision = entry.stagedShapeRevision + 1;
+    auto authoring = PhysicsActorAuthoring::Capture(author);
+    if (!authoring)
+        return;
     if (domain.UsesGpu()) {
         const auto slot = entry.HasGpuBody() ? m_gpuScene->FindBody(actor.bodyId).slot : 0;
-        auto prepared = PrepareJoltGpuActor(author, slot, 0);
-        if (!prepared)
-            return;
+        auto prepared = PrepareJoltGpuActor(std::move(*authoring), slot, 0);
         if (editGpu)
-            editGpu(*prepared);
-        prepared->publication.sharedGeometryRevision = revision;
+            editGpu(prepared);
+        prepared.publication.sharedGeometryRevision = revision;
         if (entry.staticModel)
-            entry.staticModel->ApplyPose(*prepared);
+            entry.staticModel->ApplyPose(prepared);
         if (entry.HasGpuBody()) {
             RequireGpu(domain);
-            m_gpuScene->StageActor(actor.bodyId, std::move(*prepared));
+            m_gpuScene->StageActor(actor.bodyId, std::move(prepared));
         } else {
-            entry.staticModel->Hold(std::move(*prepared));
+            entry.staticModel->Hold(std::move(prepared));
         }
     } else {
-        auto prepared = PrepareJoltCpuActor(author);
-        if (!prepared)
-            return;
+        auto prepared = PrepareJoltCpuActor(std::move(*authoring));
         if (editCpu)
-            editCpu(*prepared);
-        prepared->publication.sharedGeometryRevision = revision;
+            editCpu(prepared);
+        prepared.publication.sharedGeometryRevision = revision;
         if (entry.staticModel)
-            entry.staticModel->ApplyPose(*prepared);
+            entry.staticModel->ApplyPose(prepared);
         if (entry.HasCpuBody())
-            domain.cpuControl->StageActor(actor.bodyId, entry.actor, std::move(*prepared));
+            domain.cpuControl->StageActor(actor.bodyId, entry.actor, std::move(prepared));
         else
-            entry.staticModel->Hold(std::move(*prepared));
+            entry.staticModel->Hold(std::move(prepared));
     }
     entry.stagedShapeRevision = revision;
     if (!entry.staticModel && actor.rigidbody)

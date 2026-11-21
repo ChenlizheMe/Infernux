@@ -86,8 +86,7 @@ struct WarpSceneModel
     std::vector<uint32_t> hingeRows; // Author joint order, NoModelIndex for nonmoving hinges or other joints.
 };
 
-/// Capture on the owner thread. A pending shape cook leaves publication untouched.
-[[nodiscard]] std::optional<WarpSceneCapture> CaptureWarpSceneActor(const PhysicsActorData &actor);
+[[nodiscard]] WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author);
 
 /// Translate one authored topology. The result owns no scene objects or Jolt shapes.
 [[nodiscard]] WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors,

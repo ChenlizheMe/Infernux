@@ -12,21 +12,12 @@
 namespace infernux
 {
 
-/// Owner-thread capture of ordinary components for the native CPU solver.
+/// Prepared authoring for the native CPU solver.
 /// Geometry, COM and inertia use the same authoring functions as GPU actors.
 /// Initial velocities are consumed by the owner only after creation succeeds.
 struct PreparedCpuActor
 {
-    struct Surface
-    {
-        PhysicsTargetReference target;
-        uint64_t colliderId, generation;
-        uint32_t layer, collisionMask;
-        float friction, restitution;
-        PhysicsMaterialCombine frictionCombine, bounceCombine;
-        bool sensor;
-        uint64_t gameObjectId = 0;
-    };
+    using Surface = PhysicsSurfaceAuthoring;
     JPH::BodyCreationSettings settings;
     JPH::Vec3 rootScale = JPH::Vec3::sOne();
     std::optional<PreparedBodyMass> mass;
@@ -38,8 +29,6 @@ struct PreparedCpuActor
     PhysicsActorPublication publication;
 };
 
-/// Null means a complete collider cook is still pending. No body or backend
-/// state is created, and no authored input is consumed at this boundary.
-[[nodiscard]] std::optional<PreparedCpuActor> PrepareJoltCpuActor(const PhysicsActorData &actor);
+[[nodiscard]] PreparedCpuActor PrepareJoltCpuActor(PhysicsActorAuthoring actor);
 
 } // namespace infernux
