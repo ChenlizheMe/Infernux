@@ -18,16 +18,6 @@ static_assert(sizeof(WarpContactMaterial) == 96);
 
 namespace
 {
-enum Geometry : uint32_t
-{
-    Heightfield = 1,
-    Capsule = 3,
-    Ellipsoid = 4,
-    Cylinder = 5,
-    Box = 6,
-    Hull = 7,
-};
-
 ModelWords FloatWords(const ModelVector &value)
 {
     ModelWords words;
@@ -243,7 +233,8 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
         cylinderCount += uint32_t(type == Cylinder);
         hasCapsule |= type == Capsule;
         result.materials.push_back(material);
-        result.pairRules[geom] = {weld, weldParent, uint32_t(model.bodies[weld].dofs[1] != 0), 0};
+        const uint32_t flags = uint32_t(model.bodies[weld].dofs[1] != 0) | (uint32_t(source.trigger) << 1);
+        result.pairRules[geom] = {weld, weldParent, flags, 0};
     }
     result.convexPairs |= boxCount > 1 || cylinderCount > 1 || (cylinderCount != 0 && (boxCount != 0 || hasCapsule));
     if (result.convexPairs || result.heightfields) {

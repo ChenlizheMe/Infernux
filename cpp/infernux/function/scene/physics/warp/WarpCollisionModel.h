@@ -11,6 +11,18 @@
 namespace infernux::physics::warp
 {
 
+enum WarpGeometryType : uint32_t
+{
+    Plane = 0,
+    Heightfield = 1,
+    Sphere = 2,
+    Capsule = 3,
+    Ellipsoid = 4,
+    Cylinder = 5,
+    Box = 6,
+    Hull = 7,
+};
+
 struct WarpContactMaterial
 {
     ModelVector parameters{0.0f, 0.0f, 1.0f, 0.0f}; // Margin, gap, solver mix, adhesion.
@@ -49,6 +61,7 @@ struct WarpCollisionGeometry
     WarpContactMaterial material;
     std::shared_ptr<const WarpConvexHull> hull;
     std::shared_ptr<const WarpHeightfield> heightfield;
+    bool trigger = false;
 };
 
 struct WarpCollisionPair

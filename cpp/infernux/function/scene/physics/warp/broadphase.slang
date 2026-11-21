@@ -25,7 +25,7 @@ struct CollisionPairRule
     int pair;
     int sensor;
     float margin;
-    uint unused;
+    bool distanceSensor;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
@@ -201,8 +201,12 @@ CollisionPairRule collisionRule(uint first, uint second, ProjectedBound one, Pro
     const bool mask = ((one.geometry.z & two.geometry.w) | (two.geometry.z & one.geometry.w)) != 0;
     const bool connected = (filters & FilterParent) != 0 && bodyA.x != 0 && bodyB.x != 0 &&
                            (bodyA.x == bodyB.y || bodyB.x == bodyA.y);
-    const bool physical = mask && bodyA.x != bodyB.x && (bodyA.z | bodyB.z) != 0 && !connected;
-    CollisionPairRule rule = {physical ? -1 : -2, -1, 0.0, 0};
+    const uint flags = bodyA.z | bodyB.z;
+    const bool enabled = mask && bodyA.x != bodyB.x && (flags & 1) != 0 && !connected;
+    const bool trigger = enabled && (flags & 2) != 0;
+    const uint triggerGeometry = (bodyA.z & 2) == 0 ? second : ((bodyB.z & 2) == 0 ? first : a);
+    CollisionPairRule rule = {trigger ? OverlapTrigger : (enabled ? -1 : -2),
+                              trigger ? int(triggerGeometry) : -1, 0.0, false};
     uint lo = pairRules[a].w;
     const uint end = pairRules[a + 1].w;
     uint hi = end;
@@ -222,7 +226,11 @@ CollisionPairRule collisionRule(uint first, uint second, ProjectedBound one, Pro
             const int policy = asint(exception.y);
             if (policy != -1)
                 rule.pair = policy;
-            rule.sensor = asint(exception.z);
+            if (asint(exception.z) >= 0)
+            {
+                rule.sensor = asint(exception.z);
+                rule.distanceSensor = true;
+            }
             rule.margin = asfloat(exception.w);
         }
     }
@@ -259,7 +267,7 @@ void sap_emit_pairs(uint3 id : SV_DispatchThreadID)
         const CollisionPairRule rule = collisionRule(first, second, one, two, settings.z);
         if (rule.pair < -1 && rule.sensor < 0)
             continue;
-        if (rule.sensor < 0 && !boundsOverlap(one, two, rule, settings.z))
+        if (!rule.distanceSensor && !boundsOverlap(one, two, rule, settings.z))
             continue;
         const uint destination = collisionCount[0].add(1);
         if (destination < settings.y)

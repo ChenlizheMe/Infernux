@@ -15,5 +15,6 @@ struct CollisionCandidate
     }
 };
 
+static const int OverlapTrigger = -3;
 static const uint PrimitiveCollisionThreads = 64;
 static const uint ConvexCollisionThreads = 32;

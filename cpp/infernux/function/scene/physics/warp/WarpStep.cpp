@@ -618,6 +618,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         throw std::invalid_argument("Warp step requires a world");
 
     const auto [nq, nv, nb, nj] = model.dimensions.state;
+    if (!model.initialVelocities.empty() && model.initialVelocities.size() != nv)
+        throw std::invalid_argument("Warp initial velocities must match the model degrees of freedom");
     const auto nm = model.dimensions.layout[1];
     const auto branches = model.dimensions.layout[2];
     const auto packedMass = model.dimensions.layout[3];
@@ -627,7 +629,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     const auto stepSizes = b.Seed("timestep", 1, &timestep, worlds);
     const auto clocks = b.Seed("time", 1, nullptr, worlds);
     const auto positions = b.Seed("qpos", nq, model.initialPositions.data(), worlds);
-    const auto velocities = b.Seed("qvel", nv, nullptr, worlds);
+    const auto velocities =
+        b.Seed("qvel", nv, model.initialVelocities.empty() ? nullptr : model.initialVelocities.data(), worlds);
     const auto applied = b.Seed("appliedForce", nv, nullptr, worlds);
     const bool detectContacts = collision && model.dimensions.layout[0] != 0;
     std::optional<ContactSlots> contactSlots;
@@ -736,9 +739,23 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         b.Add("bias", "bias_force_world", 1, {{0, dimensions, R}, {1, bodies, R}, {12, subtreeForce, RW}});
         b.Add("bias", "project_bias", nv,
               {{0, dimensions, R}, {5, centeredDof, R}, {12, subtreeForce, R}, {13, dofs, R}, {14, bias, W, true}});
+        auto passiveForce = zeroForce;
+        if (std::any_of(model.bodies.begin(), model.bodies.end(),
+                        [](const auto &body) { return body.subtreeMass[1] != 0.0f; })) {
+            passiveForce = b.Slot(worldWords(nv));
+            b.Add("wrench", "project_passive_gravity_compensation", nv,
+                  {{0, dimensions, R},
+                   {1, bodies, R},
+                   {2, inertialFrame, R},
+                   {3, subtreeCom, R},
+                   {4, gravities, R},
+                   {7, dofs, R},
+                   {8, centeredDof, R},
+                   {12, passiveForce, W, true}});
+        }
         b.Add("acceleration", "assemble_smooth_force", nv,
               {{0, dimensions, R},
-               {1, zeroForce, R},
+               {1, passiveForce, R},
                {2, bias, R},
                {3, zeroForce, R},
                {4, applied, R},

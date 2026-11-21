@@ -99,7 +99,7 @@ void writeContact(uint world, uint4 pair, uint ordinal, float distance, float3 p
     const float margin = material.parameters.x;
     const bool detected = distance < margin + material.parameters.y;
     const bool constraint = asint(pair.z) >= -1 && detected;
-    const bool sensor = asint(pair.w) >= 0;
+    const bool sensor = asint(pair.w) >= 0 && (asint(pair.z) != OverlapTrigger || detected);
     if (!constraint && !sensor)
         return;
 

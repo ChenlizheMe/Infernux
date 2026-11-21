@@ -31,6 +31,12 @@ struct WrenchAtTreeCenter
 [[vk::binding(11, 0)]] RWStructuredBuffer<float> qfrcPassive;
 [[vk::binding(12, 0)]] RWStructuredBuffer<float> qfrcGravityCompensation;
 
+SpatialMotion gravityWrench(BodyModel body, float3 offset, float3 acceleration)
+{
+    const float3 force = -acceleration * (body.inertiaMass.w * body.subtreeMass.y);
+    return spatial(cross(offset, force), force);
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void center_body_wrenches(uint3 id : SV_DispatchThreadID)
@@ -44,8 +50,8 @@ void center_body_wrenches(uint3 id : SV_DispatchThreadID)
     const float3 offset = inertialFrame[index].position.xyz - subtreeCom[base + body.subtree.x].xyz;
     BodyWrench applied = bodyWrench[index];
     applied.angular.xyz += cross(offset, applied.linear.xyz);
-    const float3 gravityForce = -gravity[id.y].xyz * (body.inertiaMass.w * body.subtreeMass.y);
-    const BodyWrench compensation = {float4(cross(offset, gravityForce), 0.0), float4(gravityForce, 0.0)};
+    const SpatialMotion gravityForce = gravityWrench(body, offset, gravity[id.y].xyz);
+    const BodyWrench compensation = {gravityForce.angular, gravityForce.linear};
     centeredWrench[index] = {applied, compensation};
 }
 
@@ -77,4 +83,31 @@ void project_body_wrenches(uint3 id : SV_DispatchThreadID)
     if ((dof.flags & GravityCompensatedByActuator) == 0)
         qfrcPassive[dofIndex] += gravityCompensation;
     qfrcAppliedWithWrenches[dofIndex] = qfrcApplied[dofIndex] + spatialDot(coordinate, applied);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void project_passive_gravity_compensation(uint3 id : SV_DispatchThreadID)
+{
+    const ModelDimensions size = model[0];
+    if (id.x >= size.state.y)
+        return;
+    const uint dofIndex = id.y * size.state.y + id.x;
+    const DofModel dof = dofs[id.x];
+    float compensation = 0.0;
+    if ((dof.flags & GravityCompensatedByActuator) == 0)
+    {
+        const uint first = dof.indices.x;
+        const uint end = first + bodies[first].subtree.y;
+        const uint base = id.y * size.state.z;
+        const SpatialMotion coordinate = centeredDof[dofIndex];
+        const float3 center = subtreeCom[base + bodies[first].subtree.x].xyz;
+        const float3 acceleration = gravity[id.y].xyz;
+        for (uint index = first; index < end; ++index)
+        {
+            const float3 offset = inertialFrame[base + index].position.xyz - center;
+            compensation += spatialDot(coordinate, gravityWrench(bodies[index], offset, acceleration));
+        }
+    }
+    qfrcGravityCompensation[dofIndex] = compensation;
 }

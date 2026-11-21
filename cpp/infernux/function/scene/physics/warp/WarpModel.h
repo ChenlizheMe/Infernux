@@ -121,6 +121,7 @@ struct WarpModel
     std::vector<uint32_t> massAdjacency;
     ModelMassFactors massFactors;
     std::vector<float> initialPositions;
+    std::vector<float> initialVelocities; // Empty initializes all velocity coordinates to zero.
     std::vector<ModelPose> initialKinematicPoses;
 };
 
