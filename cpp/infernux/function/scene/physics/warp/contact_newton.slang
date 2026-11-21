@@ -18,7 +18,8 @@ struct ContactMetric
 
 [[vk::binding(20, 0)]] RWStructuredBuffer<Atomic<uint>> hessianPattern;
 [[vk::binding(22, 0)]] RWStructuredBuffer<Atomic<uint>> hessianValues;
-[[vk::binding(23, 0)]] RWStructuredBuffer<ContactMetric> contactMetric;
+
+groupshared ContactMetric currentContactMetric;
 
 uint tileCount()
 {
@@ -306,17 +307,8 @@ void add_newton_mass(uint3 id : SV_DispatchThreadID)
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void build_newton_contact_metric(uint3 id : SV_DispatchThreadID)
+ContactMetric evaluateNewtonContactMetric(uint world, uint index, ConstraintRow row)
 {
-    id = solverDispatchId(id);
-    const uint4 progress = worlds[id.y].progress;
-    if (id.x >= progress.z || progress.y != Running)
-        return;
-    const uint4 limits = settings[0];
-    const uint index = id.y * limits.z + id.x;
-    const ConstraintRow row = rows[index];
     const uint status = evaluation[index].state;
     ContactMetric metric;
     metric.low = float4(status == QuadraticConstraint ? row.diagonal : 0.0, 0.0, 0.0, 0.0);
@@ -325,11 +317,11 @@ void build_newton_contact_metric(uint3 id : SV_DispatchThreadID)
     metric.count = status == QuadraticConstraint ? 1u : 0u;
     if (status == EllipticMiddleState)
     {
-        const Contact contact = contacts[id.y * limits.y + row.layout.z];
+        const Contact contact = contacts[world * settings[0].y + row.layout.z];
         const uint ordinal = row.layout.w;
         const uint first = index - ordinal;
         const uint dimension = contact.geometry.z;
-        const float mu = contact.friction.x * asfloat(settings[2 + id.y].y);
+        const float mu = contact.friction.x * asfloat(settings[2 + world].y);
         const float mu2 = mu * mu;
         const float dm = rows[first].diagonal / max(CgMinValue, mu2 * (1.0 + mu2));
         float norm = 0.0;
@@ -363,7 +355,7 @@ void build_newton_contact_metric(uint3 id : SV_DispatchThreadID)
         metric.firstRow = first;
         metric.count = dimension;
     }
-    contactMetric[index] = metric;
+    return metric;
 }
 
 void addHessianValue(uint address, float value)
@@ -381,15 +373,11 @@ void addHessianValue(uint address, float value)
     }
 }
 
-void addNewtonContact(uint world, uint rowIndex, uint lane)
+void addNewtonContact(uint world, ConstraintRow row, ContactMetric metric, uint lane)
 {
-    const uint4 limits = settings[0];
-    const uint index = world * limits.z + rowIndex;
-    const ContactMetric metric = contactMetric[index];
     if (metric.count == 0)
         return;
-    const ConstraintRow row = rows[index];
-    const uint base = world * limits.w;
+    const uint base = world * settings[0].w;
     const uint colBase = base + row.layout.x;
     const uint count = tileCount();
     const uint words = patternWords(count);
@@ -426,11 +414,21 @@ void add_newton_contacts(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     group = solverDispatchId(group);
     const uint4 progress = worlds[group.y].progress;
-    if (progress.y != Running)
+    if (broadcastCg(progress.y, lane) != Running)
         return;
-    const uint groups = cgOptions[1].x;
-    for (uint row = group.x; row < progress.z; row += groups)
-        addNewtonContact(group.y, row, lane);
+    const uint groups = broadcastCg(cgOptions[1].x, lane);
+    const uint rowCount = broadcastCg(progress.z, lane);
+    const uint base = group.y * settings[0].z;
+    for (uint row = group.x; row < rowCount; row += groups)
+    {
+        const uint index = base + row;
+        const ConstraintRow constraint = rows[index];
+        if (lane == 0)
+            currentContactMetric = evaluateNewtonContactMetric(group.y, index, constraint);
+        GroupMemoryBarrierWithGroupSync();
+        addNewtonContact(group.y, constraint, currentContactMetric, lane);
+        GroupMemoryBarrierWithGroupSync();
+    }
 }
 
 groupshared float diagonalTile[NewtonTileArea];
@@ -447,29 +445,29 @@ void storeHessian(uint address, float value)
     hessianValues[address].store(asuint(value));
 }
 
-// Reverse block Cholesky maintains the upper factor R of H = R Rᵀ.
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void factor_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+struct NewtonComponent
 {
-    group = solverDispatchId(group);
-    const uint world = group.y;
-    const CgWorld state = worlds[world];
-    if (broadcastCg(state.progress.y, lane) != Running)
-        return;
-    const uint count = broadcastCg(tileCount(), lane);
-    const uint words = patternWords(count);
-    const uint offsets = componentOffsetBase(world, count, words);
-    const uint begin = broadcastCg(hessianPattern[offsets + group.x].load(), lane);
-    const uint end = broadcastCg(hessianPattern[offsets + group.x + 1].load(), lane);
-    const uint members = offsets + count + 1;
+    uint world;
+    uint tileCount;
+    uint patternWords;
+    uint firstMember;
+    uint length;
+};
+
+// Reverse block Cholesky maintains the upper factor R of H = R Rᵀ.
+bool factorNewtonComponent(NewtonComponent component, uint lane)
+{
+    const uint world = component.world;
+    const uint count = component.tileCount;
+    const uint words = component.patternWords;
+    const uint members = component.firstMember;
+    const uint length = component.length;
     const uint x = lane / NewtonTile;
     const uint y = lane % NewtonTile;
-    const uint length = end - begin;
     for (uint reverse = 0; reverse < length; ++reverse)
     {
         const uint earlier = length - 1 - reverse;
-        const uint pivot = hessianPattern[members + begin + earlier].load();
+        const uint pivot = hessianPattern[members + earlier].load();
         const uint diagonal = tileAddress(world, pivot, pivot, count, words);
         diagonalTile[lane] = loadHessian(diagonal + lane);
         GroupMemoryBarrierWithGroupSync();
@@ -488,7 +486,7 @@ void factor_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             {
                 if (lane == 0)
                     hessianPattern[factorErrorAddress(world, count, words)].store(1);
-                return;
+                return false;
             }
             if (y == inner && x < inner)
                 diagonalTile[lane] /= diagonalTile[entry];
@@ -502,7 +500,7 @@ void factor_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 
         for (uint i = lane; i < earlier * NewtonTile; i += CgWidth)
         {
-            const uint row = hessianPattern[members + begin + i / NewtonTile].load();
+            const uint row = hessianPattern[members + i / NewtonTile].load();
             if (!hasTile(world, pivot, row, count, words))
                 continue;
             const uint base = tileAddress(world, pivot, row, count, words) + (i % NewtonTile) * NewtonTile;
@@ -551,6 +549,7 @@ void factor_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         }
         syncNewtonStorage();
     }
+    return true;
 }
 
 float directionValue(uint base, uint dof, uint nv)
@@ -558,30 +557,18 @@ float directionValue(uint base, uint dof, uint nv)
     return dof < nv ? directionHistory[base + dof].z : 0.0;
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void solveNewtonDirection(NewtonComponent component, uint lane)
 {
-    group = solverDispatchId(group);
-    const uint world = group.y;
-    const CgWorld state = worlds[world];
-    if (broadcastCg(state.progress.y, lane) != Running)
-        return;
+    const uint world = component.world;
+    const uint count = component.tileCount;
+    const uint words = component.patternWords;
+    const uint members = component.firstMember;
+    const uint length = component.length;
     const uint nv = settings[1].y;
-    const uint count = broadcastCg(tileCount(), lane);
-    const uint words = patternWords(count);
-    if (broadcastCg(hessianPattern[factorErrorAddress(world, count, words)].load(), lane) != 0)
-        return;
-    const uint offsets = componentOffsetBase(world, count, words);
-    const uint begin = broadcastCg(hessianPattern[offsets + group.x].load(), lane);
-    const uint length = broadcastCg(hessianPattern[offsets + group.x + 1].load() - begin, lane);
-    if (length == 0)
-        return;
-    const uint members = offsets + count + 1;
     const uint base = world * nv;
     for (uint i = lane; i < length * NewtonTile; i += CgWidth)
     {
-        const uint tile = hessianPattern[members + begin + i / NewtonTile].load();
+        const uint tile = hessianPattern[members + i / NewtonTile].load();
         const uint dof = tile * NewtonTile + i % NewtonTile;
         if (dof < nv)
             directionHistory[base + dof] = float4(0.0, 0.0, -gradient[base + dof], 0.0);
@@ -591,7 +578,7 @@ void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     for (uint reverse = 0; reverse < length; ++reverse)
     {
         const uint earlier = length - 1 - reverse;
-        const uint col = hessianPattern[members + begin + earlier].load();
+        const uint col = hessianPattern[members + earlier].load();
         const uint diagonal = tileAddress(world, col, col, count, words);
         if (lane == 0)
         {
@@ -610,7 +597,7 @@ void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         GroupMemoryBarrierWithGroupSync();
         for (uint i = lane; i < earlier * NewtonTile; i += CgWidth)
         {
-            const uint row = hessianPattern[members + begin + i / NewtonTile].load();
+            const uint row = hessianPattern[members + i / NewtonTile].load();
             if (!hasTile(world, col, row, count, words))
                 continue;
             const uint address = tileAddress(world, col, row, count, words) + (i % NewtonTile) * NewtonTile;
@@ -625,7 +612,7 @@ void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 
     for (uint i = 0; i < length; ++i)
     {
-        const uint col = hessianPattern[members + begin + i].load();
+        const uint col = hessianPattern[members + i].load();
         const uint diagonal = tileAddress(world, col, col, count, words);
         if (lane < NewtonTile)
         {
@@ -665,6 +652,28 @@ void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         }
         syncNewtonStorage();
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void solve_newton_components(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    group = solverDispatchId(group);
+    const uint world = group.y;
+    if (broadcastCg(worlds[world].progress.y, lane) != Running)
+        return;
+    const uint count = broadcastCg(tileCount(), lane);
+    const uint words = patternWords(count);
+    const uint offsets = componentOffsetBase(world, count, words);
+    const uint begin = broadcastCg(hessianPattern[offsets + group.x].load(), lane);
+    const uint length = broadcastCg(hessianPattern[offsets + group.x + 1].load() - begin, lane);
+    if (length == 0)
+        return;
+
+    const NewtonComponent component = {world, count, words, offsets + count + 1 + begin, length};
+    const bool factored = factorNewtonComponent(component, lane);
+    if (broadcastCg(uint(factored), lane) != 0)
+        solveNewtonDirection(component, lane);
 }
 
 [shader("compute")]
