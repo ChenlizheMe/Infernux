@@ -5,6 +5,7 @@
 
 #include "collision_geometry.slang"
 #include "contact_publish.slang"
+#include "linear_dispatch.slang"
 
 struct PrimitivePoint
 {
@@ -161,155 +162,167 @@ void writePlaneCylinderContacts(uint world, uint4 pair, float3 plane, ContactBas
     writeContact(world, pair, 3, sideDistance, sidePoint - lateral, basis, material, capacity);
 }
 
+[[vk::binding(8, 0)]] RWStructuredBuffer<uint4> narrowphaseDispatches;
+
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void clear_contact_count(uint3 id : SV_DispatchThreadID)
+void prepare_narrowphase(uint3 id : SV_DispatchThreadID)
 {
     contactCount[id.y].store(0u);
+    if (id.y == 0)
+    {
+        const uint4 settings = contactSettings[0];
+        const uint pairs = collisionWorkCount(settings);
+        narrowphaseDispatches[0] = linearDispatch<PrimitiveCollisionThreads>(pairs);
+        narrowphaseDispatches[1] = linearDispatch<ConvexCollisionThreads>(min(pairs, settings.w));
+    }
+}
+
+void collidePrimitivePair(uint4 pair, uint world, uint4 settings)
+{
+    const uint geometryBase = world * settings.x;
+    const CollisionShape a = shapes[pair.x];
+    const CollisionShape b = shapes[pair.y];
+    const uint typeA = a.type.x;
+    const uint typeB = b.type.x;
+    const bool planePair = typeA == GeomPlane && (typeB >= GeomSphere && typeB <= GeomBox);
+    const bool spherePair = typeA == GeomSphere &&
+                            (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomCylinder || typeB == GeomBox);
+    const bool capsulePair = typeA == GeomCapsule && (typeB == GeomCapsule || typeB == GeomBox);
+    const bool boxPair = typeA == GeomBox && typeB == GeomBox &&
+                         (contactSettings[1].x & UseConvexBoxes) == 0;
+    if (!planePair && !spherePair && !capsulePair && !boxPair)
+        return;
+
+    const CartesianFrame frameA = geometryFrames[geometryBase + pair.x];
+    const CartesianFrame frameB = geometryFrames[geometryBase + pair.y];
+    const float3 centerA = frameA.position.xyz;
+    const float3 centerB = frameB.position.xyz;
+    const ContactMaterial material = resolveMaterial(pair, settings.x);
+    if (boxPair)
+    {
+        const float margin = material.parameters.x + material.parameters.y;
+        const BoxManifold manifold = boxBoxContact(frameA, a.size.xyz, frameB, b.size.xyz, margin);
+        if (manifold.count != 0)
+        {
+            const ContactBasis basis = makeBasis(manifold.normal);
+            for (uint i = 0; i < manifold.count; ++i)
+            {
+                const float4 point = manifold.points[i];
+                writeContact(world, pair, i, point.w, point.xyz, basis, material, settings.z);
+            }
+        }
+        return;
+    }
+    if (spherePair)
+    {
+        PrimitivePoint result;
+        if (typeB == GeomBox)
+            result = sphereBoxContact(centerA, a.size.x, frameB, b.size.xyz);
+        else if (typeB == GeomCylinder)
+            result = sphereCylinderContact(centerA, a.size.x, frameB, b.size.xy);
+        else
+        {
+            float3 closest = centerB;
+            if (typeB == GeomCapsule)
+            {
+                const float3 axis = frameAxis(frameB, 2);
+                const float along = clamp(dot(centerA - centerB, axis), -b.size.y, b.size.y);
+                closest += axis * along;
+            }
+            result = sphereContact(centerA, a.size.x, closest, b.size.x);
+        }
+        writeContact(world, pair, 0, result.distance, result.point, makeBasis(result.normal), material, settings.z);
+        return;
+    }
+    if (capsulePair)
+    {
+        if (typeB == GeomBox)
+        {
+            PrimitivePoint first, second;
+            const uint points = capsuleBoxContacts(frameA, a.size.xy, frameB, b.size.xyz, first, second);
+            for (uint i = 0; i < points; ++i)
+            {
+                const PrimitivePoint result = i == 0 ? first : second;
+                writeContact(world, pair, i, result.distance, result.point, makeBasis(result.normal), material,
+                             settings.z);
+            }
+            return;
+        }
+        const float3 halfA = frameAxis(frameA, 2) * a.size.y;
+        const float3 halfB = frameAxis(frameB, 2) * b.size.y;
+        const float3 startA = centerA - halfA;
+        const float3 startB = centerB - halfB;
+        const float3 spanA = (centerA + halfA) - startA;
+        const float3 spanB = (centerB + halfB) - startB;
+        float2 first, second;
+        const uint points = segmentWeights(startA, spanA, startB, spanB, first, second);
+        for (uint i = 0; i < points; ++i)
+        {
+            const float2 weights = i == 0 ? first : second;
+            const PrimitivePoint result = sphereContact(startA + spanA * weights.x, a.size.x,
+                                                        startB + spanB * weights.y, b.size.x);
+            writeContact(world, pair, i, result.distance, result.point, makeBasis(result.normal), material, settings.z);
+        }
+        return;
+    }
+
+    const float3 normal = frameAxis(frameA, 2);
+    ContactBasis basis = makeBasis(normal);
+    if (typeB == GeomCylinder)
+    {
+        writePlaneCylinderContacts(world, pair, centerA, basis, frameB, b.size.xy, material, settings.z);
+        return;
+    }
+    const float3 capsuleAxis = frameAxis(frameB, 2);
+    uint pointCount = 1;
+    if (typeB == GeomCapsule)
+    {
+        const float3 projected = capsuleAxis - normal * dot(normal, capsuleAxis);
+        const float projectedLength = length(projected);
+        const float3 tangent = projectedLength < 0.5 ? basisReference(normal) : projected / projectedLength;
+        basis = {normal, tangent, cross(normal, tangent)};
+        pointCount = 2;
+    }
+    else if (typeB == GeomBox)
+        pointCount = 8;
+
+    for (uint pointId = 0; pointId < pointCount; ++pointId)
+    {
+        float3 closest = centerB;
+        if (typeB == GeomSphere || typeB == GeomCapsule)
+        {
+            if (typeB == GeomCapsule)
+                closest += capsuleAxis * (pointId == 0 ? b.size.y : -b.size.y);
+            closest -= normal * b.size.x;
+        }
+        else if (typeB == GeomEllipsoid)
+        {
+            const float3 localNormal = inverseRotatePoint(frameB, normal);
+            closest += rotatePoint(frameB, -normalize(localNormal * b.size.xyz) * b.size.xyz);
+        }
+        else
+        {
+            const float3 corner = float3((pointId & 1u) != 0 ? b.size.x : -b.size.x,
+                                         (pointId & 2u) != 0 ? b.size.y : -b.size.y,
+                                         (pointId & 4u) != 0 ? b.size.z : -b.size.z);
+            closest += rotatePoint(frameB, corner);
+        }
+        const float distance = dot(closest - centerA, normal);
+        const float3 point = closest - 0.5 * distance * normal;
+        writeContact(world, pair, pointId, distance, point, basis, material, settings.z);
+    }
 }
 
 [shader("compute")]
-[numthreads(64, 1, 1)]
+[numthreads(PrimitiveCollisionThreads, 1, 1)]
 void collide_primitives(uint3 id : SV_DispatchThreadID)
 {
+    const uint index = linearWorkIndex<PrimitiveCollisionThreads>(id);
     const uint4 settings = contactSettings[0];
-    if (id.x >= settings.w)
+    if (index >= collisionWorkCount(settings))
         return;
-    const uint count = min(collisionCount[id.y].load(), settings.y);
-    const uint geometryBase = id.y * settings.x;
-    for (uint item = id.x; item < count; item += settings.w)
-    {
-        const uint4 pair = collisionPair[id.y * settings.y + item];
-        const CollisionShape a = shapes[pair.x];
-        const CollisionShape b = shapes[pair.y];
-        const uint typeA = a.type.x;
-        const uint typeB = b.type.x;
-        const bool planePair = typeA == GeomPlane && (typeB >= GeomSphere && typeB <= GeomBox);
-        const bool spherePair = typeA == GeomSphere &&
-                                (typeB == GeomSphere || typeB == GeomCapsule || typeB == GeomCylinder || typeB == GeomBox);
-        const bool capsulePair = typeA == GeomCapsule && (typeB == GeomCapsule || typeB == GeomBox);
-        const bool boxPair = typeA == GeomBox && typeB == GeomBox &&
-                             (contactSettings[1].x & UseConvexBoxes) == 0;
-        if (!planePair && !spherePair && !capsulePair && !boxPair)
-            continue;
 
-        const CartesianFrame frameA = geometryFrames[geometryBase + pair.x];
-        const CartesianFrame frameB = geometryFrames[geometryBase + pair.y];
-        const float3 centerA = frameA.position.xyz;
-        const float3 centerB = frameB.position.xyz;
-        const ContactMaterial material = resolveMaterial(pair, settings.x);
-        if (boxPair)
-        {
-            const float margin = material.parameters.x + material.parameters.y;
-            const BoxManifold manifold = boxBoxContact(frameA, a.size.xyz, frameB, b.size.xyz, margin);
-            if (manifold.count != 0)
-            {
-                const ContactBasis basis = makeBasis(manifold.normal);
-                for (uint i = 0; i < manifold.count; ++i)
-                {
-                    const float4 point = manifold.points[i];
-                    writeContact(id.y, pair, i, point.w, point.xyz, basis, material, settings.z);
-                }
-            }
-            continue;
-        }
-        if (spherePair)
-        {
-            PrimitivePoint result;
-            if (typeB == GeomBox)
-                result = sphereBoxContact(centerA, a.size.x, frameB, b.size.xyz);
-            else if (typeB == GeomCylinder)
-                result = sphereCylinderContact(centerA, a.size.x, frameB, b.size.xy);
-            else
-            {
-                float3 closest = centerB;
-                if (typeB == GeomCapsule)
-                {
-                    const float3 axis = frameAxis(frameB, 2);
-                    const float along = clamp(dot(centerA - centerB, axis), -b.size.y, b.size.y);
-                    closest += axis * along;
-                }
-                result = sphereContact(centerA, a.size.x, closest, b.size.x);
-            }
-            writeContact(id.y, pair, 0, result.distance, result.point, makeBasis(result.normal), material, settings.z);
-            continue;
-        }
-        if (capsulePair)
-        {
-            if (typeB == GeomBox)
-            {
-                PrimitivePoint first, second;
-                const uint points = capsuleBoxContacts(frameA, a.size.xy, frameB, b.size.xyz, first, second);
-                for (uint i = 0; i < points; ++i)
-                {
-                    const PrimitivePoint result = i == 0 ? first : second;
-                    writeContact(id.y, pair, i, result.distance, result.point, makeBasis(result.normal), material,
-                                 settings.z);
-                }
-                continue;
-            }
-            const float3 halfA = frameAxis(frameA, 2) * a.size.y;
-            const float3 halfB = frameAxis(frameB, 2) * b.size.y;
-            const float3 startA = centerA - halfA;
-            const float3 startB = centerB - halfB;
-            const float3 spanA = (centerA + halfA) - startA;
-            const float3 spanB = (centerB + halfB) - startB;
-            float2 first, second;
-            const uint points = segmentWeights(startA, spanA, startB, spanB, first, second);
-            for (uint i = 0; i < points; ++i)
-            {
-                const float2 weights = i == 0 ? first : second;
-                const PrimitivePoint result = sphereContact(startA + spanA * weights.x, a.size.x,
-                                                            startB + spanB * weights.y, b.size.x);
-                writeContact(id.y, pair, i, result.distance, result.point, makeBasis(result.normal), material, settings.z);
-            }
-            continue;
-        }
-
-        const float3 normal = frameAxis(frameA, 2);
-        ContactBasis basis = makeBasis(normal);
-        if (typeB == GeomCylinder)
-        {
-            writePlaneCylinderContacts(id.y, pair, centerA, basis, frameB, b.size.xy, material, settings.z);
-            continue;
-        }
-        const float3 capsuleAxis = frameAxis(frameB, 2);
-        uint pointCount = 1;
-        if (typeB == GeomCapsule)
-        {
-            const float3 projected = capsuleAxis - normal * dot(normal, capsuleAxis);
-            const float projectedLength = length(projected);
-            const float3 tangent = projectedLength < 0.5 ? basisReference(normal) : projected / projectedLength;
-            basis = {normal, tangent, cross(normal, tangent)};
-            pointCount = 2;
-        }
-        else if (typeB == GeomBox)
-            pointCount = 8;
-
-        for (uint pointId = 0; pointId < pointCount; ++pointId)
-        {
-            float3 closest = centerB;
-            if (typeB == GeomSphere || typeB == GeomCapsule)
-            {
-                if (typeB == GeomCapsule)
-                    closest += capsuleAxis * (pointId == 0 ? b.size.y : -b.size.y);
-                closest -= normal * b.size.x;
-            }
-            else if (typeB == GeomEllipsoid)
-            {
-                const float3 localNormal = inverseRotatePoint(frameB, normal);
-                closest += rotatePoint(frameB, -normalize(localNormal * b.size.xyz) * b.size.xyz);
-            }
-            else
-            {
-                const float3 corner = float3((pointId & 1u) != 0 ? b.size.x : -b.size.x,
-                                             (pointId & 2u) != 0 ? b.size.y : -b.size.y,
-                                             (pointId & 4u) != 0 ? b.size.z : -b.size.z);
-                closest += rotatePoint(frameB, corner);
-            }
-            const float distance = dot(closest - centerA, normal);
-            const float3 point = closest - 0.5 * distance * normal;
-            writeContact(id.y, pair, pointId, distance, point, basis, material, settings.z);
-        }
-    }
+    const CollisionCandidate candidate = collisionPair[index];
+    collidePrimitivePair(candidate.pair(), candidate.world, settings);
 }

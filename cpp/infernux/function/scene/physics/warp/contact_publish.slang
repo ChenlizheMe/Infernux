@@ -4,6 +4,7 @@
 // Slang adaptation of MuJoCo Warp _src/collision_{core,primitive,primitive_core}.py.
 
 #include "contact.slang"
+#include "collision_candidate.slang"
 
 static const float MinFriction = 1.0e-5;
 static const uint UseConvexBoxes = 1;
@@ -26,16 +27,21 @@ struct ContactBasis
     float3 bitangent;
 };
 
-// First record: geom count, candidate capacity, contact capacity, primitive workers.
+// First record: geom count, batch candidate capacity, contact capacity per world, batch convex worker capacity.
 // Second record: flags.
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> contactSettings;
 [[vk::binding(1, 0)]] StructuredBuffer<CartesianFrame> geometryFrames;
 [[vk::binding(2, 0)]] StructuredBuffer<CollisionShape> shapes;
-[[vk::binding(3, 0)]] StructuredBuffer<uint4> collisionPair;
-[[vk::binding(4, 0)]] RWStructuredBuffer<Atomic<uint>> collisionCount;
+[[vk::binding(3, 0)]] StructuredBuffer<CollisionCandidate> collisionPair;
+[[vk::binding(4, 0)]] StructuredBuffer<uint> collisionCount;
 [[vk::binding(5, 0)]] StructuredBuffer<ContactMaterial> materials;
 [[vk::binding(6, 0)]] RWStructuredBuffer<Contact> contacts;
 [[vk::binding(7, 0)]] RWStructuredBuffer<Atomic<uint>> contactCount;
+
+uint collisionWorkCount(uint4 settings)
+{
+    return min(collisionCount[0], settings.y);
+}
 
 float3 basisReference(float3 normal)
 {

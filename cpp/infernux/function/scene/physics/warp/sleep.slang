@@ -6,7 +6,7 @@
 #include "model.slang"
 #include "contact.slang"
 #include "constraint_data.slang"
-#include "awake_dispatch.slang"
+#include "linear_dispatch.slang"
 
 struct TreeActivity
 {
@@ -289,8 +289,8 @@ void publish_awake_work(uint3 id : SV_DispatchThreadID)
 [numthreads(1, 1, 1)]
 void emit_awake_dispatches(uint3 id : SV_DispatchThreadID)
 {
-    awakeDispatches[0] = awakeDispatch(awakeCounts[0].load());
-    awakeDispatches[1] = awakeDispatch(awakeCounts[1].load());
+    awakeDispatches[0] = linearDispatch<64>(awakeCounts[0].load());
+    awakeDispatches[1] = linearDispatch<64>(awakeCounts[1].load());
 }
 
 [shader("compute")]

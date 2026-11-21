@@ -6,7 +6,7 @@
 #include "model.slang"
 #include "damping.slang"
 #include "integrate_position.slang"
-#include "awake_dispatch.slang"
+#include "linear_dispatch.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
 [[vk::binding(1, 0)]] StructuredBuffer<JointModel> joints;
@@ -87,10 +87,10 @@ void advance_position(uint3 id : SV_DispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(AwakeThreads, 1, 1)]
+[numthreads(64, 1, 1)]
 void advance_awake_velocity(uint3 id : SV_DispatchThreadID)
 {
-    const uint index = awakeWorkIndex(id);
+    const uint index = linearWorkIndex<64>(id);
     if (index < awakeCounts[0])
     {
         const uint2 work = awakeWork[index];
@@ -99,10 +99,10 @@ void advance_awake_velocity(uint3 id : SV_DispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(AwakeThreads, 1, 1)]
+[numthreads(64, 1, 1)]
 void advance_awake_position(uint3 id : SV_DispatchThreadID)
 {
-    const uint index = awakeWorkIndex(id);
+    const uint index = linearWorkIndex<64>(id);
     if (index < awakeCounts[1])
     {
         const uint2 work = awakeWork[index];

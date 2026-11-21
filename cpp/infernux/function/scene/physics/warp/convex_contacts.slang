@@ -5,6 +5,7 @@
 
 #include "convex_manifold.slang"
 #include "contact_publish.slang"
+#include "linear_dispatch.slang"
 
 [[vk::binding(8, 0)]] StructuredBuffer<uint4> convexModel;
 [[vk::binding(9, 0)]] RWStructuredBuffer<uint4> convexScratch;
@@ -111,26 +112,26 @@ void clear_convex_status(uint3 id : SV_DispatchThreadID)
 }
 
 [shader("compute")]
-[numthreads(32, 1, 1)]
+[numthreads(ConvexCollisionThreads, 1, 1)]
 void collide_convex(uint3 id : SV_DispatchThreadID)
 {
-    const uint4 layout = convexModel[0]; // workers per world, EPA vertex, face and horizon capacities
-    if (id.x >= layout.x)
-        return;
     const uint4 settings = contactSettings[0];
+    const uint pairCount = collisionWorkCount(settings);
+    const uint worker = linearWorkIndex<ConvexCollisionThreads>(id);
+    if (worker >= min(pairCount, settings.w))
+        return;
+    const uint4 layout = convexModel[0]; // EPA vertex, face and horizon capacities in yzw
     const uint flags = contactSettings[1].x;
     const uint4 options = convexModel[1]; // tolerance bits, GJK iterations, EPA iterations, max polygon sides
     const float tolerance = asfloat(options.x);
-    const uint worker = id.y * layout.x + id.x;
     const uint base = worker * (2 * layout.y + layout.z + 5 * options.w);
     const ConvexPolytope workspace = {base, base + 2 * layout.y, worker * layout.w, layout.y, layout.z, layout.w,
                                       0, 0, float3(0.0)};
     const uint clipBase = workspace.faceBase + layout.z;
-    const uint geometryBase = id.y * settings.x;
-    const uint pairCount = min(collisionCount[id.y].load(), settings.y);
-    for (uint item = id.x; item < pairCount; item += layout.x)
+    for (uint item = worker; item < pairCount; item += settings.w)
     {
-        const uint4 pair = collisionPair[id.y * settings.y + item];
+        const CollisionCandidate candidate = collisionPair[item];
+        const uint4 pair = candidate.pair();
         const CollisionShape shapeA = shapes[pair.x];
         const CollisionShape shapeB = shapes[pair.y];
         const uint typeA = shapeA.type.x;
@@ -140,6 +141,7 @@ void collide_convex(uint3 id : SV_DispatchThreadID)
             continue;
 
         const ContactMaterial material = resolveMaterial(pair, settings.x);
+        const uint geometryBase = candidate.world * settings.x;
         const float margin = material.parameters.x;
         const float gap = material.parameters.y;
         const bool sensor = asint(pair.w) >= 0;
@@ -148,7 +150,7 @@ void collide_convex(uint3 id : SV_DispatchThreadID)
         ConvexGeometry b = {geometryFrames[geometryBase + pair.y], shapeB, margin, -1};
         if (planeHull)
         {
-            collidePlaneHull(id.y, pair, a.frame, b, material, settings.z, clipBase, options.w);
+            collidePlaneHull(candidate.world, pair, a.frame, b, material, settings.z, clipBase, options.w);
             continue;
         }
         const float3 origin = a.frame.position.xyz;
@@ -161,7 +163,7 @@ void collide_convex(uint3 id : SV_DispatchThreadID)
             result = expandConvexPenetration(seed, a, b, tolerance, options.z, workspace, convexModel,
                                              convexScratch, convexHorizon);
         if (result.status >= EpaCapacity)
-            convexStatus[id.y].or(1u << result.status);
+            convexStatus[candidate.world].or(1u << result.status);
         if (result.distance >= ConvexFarDistance || (!sensor && result.distance >= gap))
             continue;
 
@@ -197,7 +199,7 @@ void collide_convex(uint3 id : SV_DispatchThreadID)
         }
         if (manifold.status != 0)
         {
-            convexStatus[id.y].or(1u << manifold.status);
+            convexStatus[candidate.world].or(1u << manifold.status);
             continue;
         }
         float3 normal = result.distance <= 0.0 ? manifold.direction : -manifold.direction;
@@ -212,7 +214,7 @@ void collide_convex(uint3 id : SV_DispatchThreadID)
         {
             const float4 point = manifold.points[i];
             const float separation = manifold.count > 1 ? point.w + margin : distance;
-            writeContact(id.y, pair, i, separation, origin + point.xyz, basis, material, settings.z);
+            writeContact(candidate.world, pair, i, separation, origin + point.xyz, basis, material, settings.z);
         }
     }
 }

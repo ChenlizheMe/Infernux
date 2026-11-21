@@ -6,6 +6,7 @@
 #include "convex_penetration.slang"
 #include "contact_publish.slang"
 #include "heightfield_geometry.slang"
+#include "linear_dispatch.slang"
 
 static const uint HeightfieldCapacityExceeded = 6;
 static const float HeightfieldContactSpacing = 1.0e-3;
@@ -234,27 +235,28 @@ void collideHeightfieldPair(uint world, uint4 pair, CollisionShape terrain, Coll
 }
 
 [shader("compute")]
-[numthreads(32, 1, 1)]
+[numthreads(ConvexCollisionThreads, 1, 1)]
 void collide_heightfield(uint3 id : SV_DispatchThreadID)
 {
-    const uint4 layout = convexModel[0];
-    if (id.x >= layout.x)
-        return;
     const uint4 settings = contactSettings[0];
+    const uint pairCount = collisionWorkCount(settings);
+    const uint worker = linearWorkIndex<ConvexCollisionThreads>(id);
+    if (worker >= min(pairCount, settings.w))
+        return;
+    const uint4 layout = convexModel[0];
     const uint4 options = convexModel[1];
     const uint candidateCapacity = convexModel[3].z;
-    const uint worker = id.y * layout.x + id.x;
     const uint base = worker * (2u * layout.y + layout.z + 2u * candidateCapacity);
     const ConvexPolytope workspace = {base, base + 2u * layout.y, worker * layout.w, layout.y, layout.z, layout.w,
                                      0, 0, float3(0.0)};
-    const uint pairCount = min(collisionCount[id.y].load(), settings.y);
-    for (uint item = id.x; item < pairCount; item += layout.x)
+    for (uint item = worker; item < pairCount; item += settings.w)
     {
-        const uint4 pair = collisionPair[id.y * settings.y + item];
+        const CollisionCandidate candidate = collisionPair[item];
+        const uint4 pair = candidate.pair();
         const CollisionShape terrain = shapes[pair.x];
         const CollisionShape other = shapes[pair.y];
         if (terrain.type.x == GeomHeightfield && other.type.x >= GeomSphere && other.type.x <= GeomMesh)
-            collideHeightfieldPair(id.y, pair, terrain, other, settings, options, workspace,
+            collideHeightfieldPair(candidate.world, pair, terrain, other, settings, options, workspace,
                 workspace.faceBase + layout.z, candidateCapacity);
     }
 }

@@ -5,6 +5,7 @@
 
 #include "model.slang"
 #include "collision_bounds.slang"
+#include "collision_candidate.slang"
 
 static const float UnboundedRadius = 1.0e10;
 static const uint FilterPlane = 1;
@@ -27,7 +28,7 @@ struct CollisionPairRule
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
-[[vk::binding(1, 0)]] StructuredBuffer<uint4> sweepSettings; // merge/scan stride, capacity per world, filter, workers
+[[vk::binding(1, 0)]] StructuredBuffer<uint4> sweepSettings; // merge/scan stride, batch capacity, filter, workers
 [[vk::binding(2, 0)]] StructuredBuffer<LocalBound> localBounds;
 [[vk::binding(3, 0)]] StructuredBuffer<CartesianFrame> geomFrame;
 [[vk::binding(4, 0)]] RWStructuredBuffer<ProjectedBound> worldBounds;
@@ -37,7 +38,7 @@ struct CollisionPairRule
 [[vk::binding(8, 0)]] RWStructuredBuffer<uint> scanOutput;
 [[vk::binding(9, 0)]] StructuredBuffer<CollisionPairRule> pairRules;
 [[vk::binding(10, 0)]] RWStructuredBuffer<Atomic<uint>> collisionCount;
-[[vk::binding(11, 0)]] RWStructuredBuffer<uint4> collisionPair; // geoms, explicit pair id, sensor id
+[[vk::binding(11, 0)]] RWStructuredBuffer<CollisionCandidate> collisionPair;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -128,8 +129,8 @@ void sap_find_ranges(uint3 id : SV_DispatchThreadID)
     }
     const uint range = min(count - 1, lo) - id.x;
     scanOutput[base + id.x] = range;
-    if (id.x == 0)
-        collisionCount[id.y].store(0);
+    if (id.x == 0 && id.y == 0)
+        collisionCount[0].store(0);
 }
 
 [shader("compute")]
@@ -223,11 +224,12 @@ void sap_emit_pairs(uint3 id : SV_DispatchThreadID)
         const ProjectedBound two = worldBounds[base + second];
         if (rule.sensor < 0 && !boundsOverlap(one, two, rule, settings.z))
             continue;
-        const uint destination = collisionCount[id.y].add(1);
+        const uint destination = collisionCount[0].add(1);
         if (destination < settings.y)
         {
             const uint2 pair = one.geometry.x <= two.geometry.x ? uint2(first, second) : uint2(second, first);
-            collisionPair[id.y * settings.y + destination] = uint4(pair, asuint(rule.pair), asuint(rule.sensor));
+            const CollisionCandidate candidate = {pair.x, pair.y, asuint(rule.pair), asuint(rule.sensor), id.y};
+            collisionPair[destination] = candidate;
         }
     }
 }
