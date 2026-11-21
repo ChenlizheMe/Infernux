@@ -413,6 +413,7 @@ InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author)
     if (const auto &body = author.body) {
         source.kinematic = body->kinematic;
         source.useGravity = body->useGravity;
+        source.frozenAxes = (static_cast<uint32_t>(body->constraints) >> 1) & 63u;
         if (!source.kinematic) {
             source.mass = body->mass;
             source.motion = {body->drag, body->angularDrag, body->maxLinearVelocity, body->maxAngularVelocity};
@@ -524,7 +525,7 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
     initial.resize(result.model.dofs.size());
     auto &motion = result.model.sceneBodyMotion;
     if (std::any_of(actors.begin(), actors.end(),
-                    [](const auto &actor) { return actor.mass && actor.motion.HasSettings(); }))
+                    [](const auto &actor) { return actor.mass && (actor.motion.HasSettings() || actor.frozenAxes); }))
         motion.resize(result.model.bodies.size());
     const auto clampSpeed = [](glm::vec3 speed, float cap) {
         const auto squared = glm::dot(speed, speed);
@@ -534,6 +535,7 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
         const auto &actor = actors[index];
         const auto row = result.model.bodyRows[index];
         auto &body = result.model.bodies[row];
+        body.subtree[3] = actor.frozenAxes;
         if (actor.mass) {
             const auto bounds = actor.shape->GetLocalBounds();
             body.subtreeMass[2] = (bounds.GetCenter().Abs() + bounds.GetExtent()).Length();
@@ -547,8 +549,16 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
         if (!motion.empty())
             motion[row] = actor.motion;
         const auto center = actor.rotation * Vector(JPH::RVec3(actor.shape->GetCenterOfMass()));
-        const auto spin = clampSpeed(actor.angularVelocity, actor.motion.maxAngularVelocity);
-        const auto linear = clampSpeed(actor.linearVelocity, actor.motion.maxLinearVelocity) - glm::cross(spin, center);
+        auto spin = actor.angularVelocity;
+        auto speed = actor.linearVelocity;
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            if (actor.frozenAxes & (1u << axis))
+                speed[axis] = 0.0f;
+            if (actor.frozenAxes & (8u << axis))
+                spin[axis] = 0.0f;
+        }
+        spin = clampSpeed(spin, actor.motion.maxAngularVelocity);
+        const auto linear = clampSpeed(speed, actor.motion.maxLinearVelocity) - glm::cross(spin, center);
         const auto angular = glm::inverse(actor.rotation) * spin;
         for (uint32_t axis = 0; axis < 3; ++axis) {
             initial[qvel + axis] = linear[axis];

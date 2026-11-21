@@ -40,6 +40,7 @@ struct HingeDrive
 [[vk::binding(19, 0)]] StructuredBuffer<float4> publishedStates;
 [[vk::binding(20, 0)]] StructuredBuffer<uint> motionRequest;
 [[vk::binding(21, 0)]] RWStructuredBuffer<float4> jointMotion;
+[[vk::binding(22, 0)]] StructuredBuffer<uint> sceneLockedBodies;
 
 struct SpatialEndpoint
 {
@@ -455,6 +456,74 @@ bool jointHasAwakeEndpoint(uint world, uint2 endpoints)
     const uint base = world * settings[1].x;
     return (sceneBodies[endpoints.x].dofs.y != 0 && sceneActivity[base + endpoints.x].group == NoIndex) ||
            (sceneBodies[endpoints.y].dofs.y != 0 && sceneActivity[base + endpoints.y].group == NoIndex);
+}
+
+void emitSceneAxisLocks<let Controlled : bool>(uint3 id)
+{
+    uint count, stride;
+    sceneLockedBodies.GetDimensions(count, stride);
+    if (id.x >= count)
+        return;
+    const uint bodyRow = sceneLockedBodies[id.x];
+    const uint4 config = settings[1];
+    const uint bodyIndex = id.y * config.x + bodyRow;
+    if (Controlled && sceneActivity[bodyIndex].group != NoIndex)
+        return;
+    const BodyModel body = sceneBodies[bodyRow];
+    const uint mask = body.subtree.w;
+    const uint width = body.dofs.y;
+    const uint2 block = reserveConstraintBlock(id.y, countbits(mask), width);
+    if (block.x == NoIndex)
+        return;
+
+    const uint4 limits = settings[0];
+    const uint dofBase = id.y * config.y + body.dofs.x;
+    uint column = id.y * limits.w + block.y;
+    uint row = id.y * limits.z + block.x;
+    const SpatialMotion motion = bodyVelocity[bodyIndex];
+    const float4 rotation = bodyPose[bodyIndex].rotation;
+    const float4 inertiaInverse = conjugateQuaternion(mulQuat(rotation, body.inertialRotation));
+    const float3 transport = centerTransport(motion.angular.xyz, rotateVector(body.inertialPosition.xyz, rotation));
+    const float invDt = 1.0 / asfloat(settings[2 + id.y].x);
+    for (uint bit = 0; bit < 6u; ++bit)
+    {
+        if ((mask & (1u << bit)) == 0u)
+            continue;
+        const bool angular = bit >= 3u;
+        const uint axis = bit % 3u;
+        const float speed = angular ? motion.angular[axis] : motion.linear[axis];
+        float weight = 1.0 / body.inertiaMass.w;
+        if (angular)
+        {
+            float3 direction = float3(0.0);
+            direction[axis] = 1.0;
+            const float3 principal = rotateVector(direction, inertiaInverse);
+            weight = dot(principal, principal / body.inertiaMass.xyz);
+        }
+        const float target = -speed * invDt - (angular ? 0.0 : transport[axis]);
+        rows[row++] = {uint4(column - id.y * limits.w, width, bodyRow, bit), float4(0.0, 0.0, speed, target),
+                      constraintDiagonal(weight, MaxImpedance), 0.0, EqualityRow};
+        // The independent free body's centered motion basis is already based at its COM.
+        for (uint entry = 0; entry < width; ++entry)
+        {
+            const SpatialMotion basis = centeredDof[dofBase + entry];
+            columns[column++] = {body.dofs.x + entry, angular ? basis.angular[axis] : basis.linear[axis]};
+        }
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void emit_scene_axis_locks(uint3 id : SV_DispatchThreadID)
+{
+    emitSceneAxisLocks<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void emit_controlled_scene_axis_locks(uint3 id : SV_DispatchThreadID)
+{
+    emitSceneAxisLocks<true>(id);
 }
 
 void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)

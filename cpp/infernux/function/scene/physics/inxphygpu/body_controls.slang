@@ -125,8 +125,8 @@ void import_body_states(uint3 id : SV_DispatchThreadID)
     }
     const BodyModel body = bodies[id.x];
     const Pose pose = {asfloat(previousStates[address]), asfloat(previousStates[address + 1])};
-    const float3 linear = asfloat(previousStates[address + 3].xyz);
-    const float3 spin = asfloat(previousStates[address + 4].xyz);
+    const float3 linear = projectSceneAxes(asfloat(previousStates[address + 3].xyz), body.subtree.w);
+    const float3 spin = projectSceneAxes(asfloat(previousStates[address + 4].xyz), body.subtree.w >> 3u);
     const float3 shift = centerOffset(body, pose);
     if (body.dofs.y != 0)
     {
@@ -236,6 +236,8 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
                 if (operation == AddForceAtPosition)
                     angular = cross(command.point.xyz - pose.position.xyz - shift, linear);
             }
+            linear = projectSceneAxes(linear, body.subtree.w);
+            angular = projectSceneAxes(angular, body.subtree.w >> 3u);
             if (continuous)
             {
                 force += linear;
@@ -247,6 +249,8 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
                 spin += rotateVector(rotateVector(angular, inverseAxes) / body.inertiaMass.xyz, axes);
             }
         }
+        speed = projectSceneAxes(speed, body.subtree.w);
+        spin = projectSceneAxes(spin, body.subtree.w >> 3u);
         if (SceneLimits)
         {
             const float2 limits = sceneMotion[span.y].velocityLimit;
@@ -389,8 +393,9 @@ void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensio
         const float3 startCenter = origin.position.xyz + centerOffset(body, origin);
         const float3 endCenter = target.position.xyz + centerOffset(body, target);
         const float fraction = timestep / timing.x;
-        travel = (endCenter - startCenter) * fraction;
-        path = rotationVector(mulQuat(conjugate(origin.rotation), target.rotation)) * fraction;
+        travel = projectSceneAxes(endCenter - startCenter, body.subtree.w) * fraction;
+        path = projectSceneSpin(rotationVector(mulQuat(conjugate(origin.rotation), target.rotation)), origin.rotation,
+                                body.subtree.w >> 3u) * fraction;
     }
     const PrescribedMotion previous = prescribed[row];
     saved[index] = {undo, previous.linear, previous.angular, previous.center, previous.step, origin,

@@ -21,7 +21,7 @@ struct ModelDimensions
 struct BodyModel
 {
     uint4 hierarchy; // parent, first joint, joint count, mocap row
-    uint4 subtree; // root, subtree body count, output branch, unused
+    uint4 subtree; // root, subtree body count, output branch, frozen scene axes
     float4 position;
     float4 rotation;
     float4 inertialPosition;

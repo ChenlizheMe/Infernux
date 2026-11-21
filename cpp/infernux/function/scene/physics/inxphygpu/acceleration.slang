@@ -57,8 +57,10 @@ void damp_scene_free_motion(uint3 id : SV_DispatchThreadID)
     const float3 linear =
         originVelocity + cross(rotateVector(spin, orientation), offset) + dt * centerTransport(previousSpin, offset);
     const float2 damping = max(float2(0.0), 1.0 - dt * motion.damping);
-    const float3 linearDelta = clampSceneSpeed(linear * damping.x, motion.velocityLimit.x) - linear;
-    const float3 spinDelta = clampSceneSpeed(spin * damping.y, motion.velocityLimit.y) - spin;
+    const float3 linearDelta = clampSceneSpeed(projectSceneAxes(linear * damping.x, body.subtree.w),
+                                               motion.velocityLimit.x) - linear;
+    const float3 spinDelta = clampSceneSpeed(projectSceneSpin(spin * damping.y, orientation, body.subtree.w >> 3u),
+                                             motion.velocityLimit.y) - spin;
     if (all(linearDelta == 0.0) && all(spinDelta == 0.0))
         return;
 

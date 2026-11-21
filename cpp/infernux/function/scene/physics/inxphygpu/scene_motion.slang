@@ -21,6 +21,21 @@ float3 clampSceneSpeed(float3 velocity, float limit)
     return squared > limit * limit ? velocity * (limit * rsqrt(squared)) : velocity;
 }
 
+float3 projectSceneAxes(float3 value, uint frozenAxes)
+{
+    return float3((frozenAxes & 1u) != 0u ? 0.0 : value.x,
+                  (frozenAxes & 2u) != 0u ? 0.0 : value.y,
+                  (frozenAxes & 4u) != 0u ? 0.0 : value.z);
+}
+
+float3 projectSceneSpin(float3 localSpin, float4 rotation, uint frozenAxes)
+{
+    if (frozenAxes == 0u)
+        return localSpin;
+    const float3 worldSpin = projectSceneAxes(rotateVector(localSpin, rotation), frozenAxes);
+    return rotateVector(worldSpin, float4(rotation.x, -rotation.yzw));
+}
+
 float3 centerTransport(float3 spin, float3 offset)
 {
     return cross(spin, cross(spin, offset));

@@ -625,8 +625,26 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
     if (solver.rowsPerWorld == 0 || solver.columnsPerWorld == 0 || solver.iterations == 0 || solver.lineIterations == 0)
         throw std::invalid_argument("inxphygpu contact response requires nonzero solver limits");
 
-    const auto rows = solver.rowsPerWorld;
-    const auto columns = solver.columnsPerWorld;
+    std::vector<uint32_t> lockedBodies;
+    uint64_t rowCapacity = solver.rowsPerWorld;
+    uint64_t columnCapacity = solver.columnsPerWorld;
+    for (uint32_t row = 1; row < nb; ++row) {
+        const auto &body = model.bodies[row];
+        const auto mask = body.subtree[3];
+        if (!mask || !body.dofs[1])
+            continue;
+        lockedBodies.push_back(row);
+        for (uint32_t axis = 0; axis < 6; ++axis) {
+            if (mask & (1u << axis)) {
+                ++rowCapacity;
+                columnCapacity += body.dofs[1];
+            }
+        }
+    }
+    if (rowCapacity > UINT32_MAX || columnCapacity > UINT32_MAX)
+        throw std::length_error("inxphygpu constraint capacity exceeds its device index range");
+    const auto rows = static_cast<uint32_t>(rowCapacity);
+    const auto columns = static_cast<uint32_t>(columnCapacity);
     const auto contacts = capacity.contactsPerWorld;
     constexpr uint32_t ellipticCone = 1;
     const ModelWords worldDefaults{FloatWord(timestep), FloatWord(1.0f), FloatWord(solver.tolerance),
@@ -759,6 +777,17 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
         };
         addJoints(wake.control ? "emit_controlled_scene_joint_rows" : "emit_scene_joint_rows", jointCount - sixCount);
         addJoints(wake.control ? "emit_controlled_scene_six_dof_rows" : "emit_scene_six_dof_rows", sixCount);
+    }
+    if (!lockedBodies.empty()) {
+        const auto bodyRows = b.Shared("sceneLockedBodies", lockedBodies);
+        std::vector<Use> bindings{{0, settings, R},          {3, dyn.bodyPose, R},   {5, counters, RW},
+                                  {6, dyn.centeredDof, R},   {7, rowStore, W},       {8, columnStore, W},
+                                  {10, dyn.bodyVelocity, R}, {12, dyn.bodyModel, R}, {22, bodyRows, R}};
+        if (wake.control)
+            bindings.push_back({18, wake.control->activity, R});
+        const auto *entry = wake.control ? "emit_controlled_scene_axis_locks" : "emit_scene_axis_locks";
+        b.dispatches.push_back(
+            b.Bind("spatial_constraints", entry, static_cast<uint32_t>(lockedBodies.size()), bindings));
     }
     b.Add("contact_constraints", "seed_contact_acceleration", nv,
           {{0, settings, R},

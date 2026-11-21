@@ -95,8 +95,10 @@ void advanceSceneBody(uint jointIndex, uint world)
     const float3 integratedSpin = before + dt * spinAccel;
     const float3 integratedCenter = originVelocity + cross(rotateVector(integratedSpin, rotation), offset) +
         dt * centerTransport(rotateVector(before, rotation), offset);
-    const float3 centerVelocity = clampSceneSpeed(integratedCenter, motion.velocityLimit.x);
-    const float3 spin = clampSceneSpeed(integratedSpin, motion.velocityLimit.y);
+    const uint frozenAxes = sceneBodies[body].subtree.w;
+    const float3 centerVelocity = clampSceneSpeed(projectSceneAxes(integratedCenter, frozenAxes), motion.velocityLimit.x);
+    const float3 spin = clampSceneSpeed(projectSceneSpin(integratedSpin, rotation, frozenAxes >> 3u),
+                                       motion.velocityLimit.y);
     // Integrate the center of mass. The generalized translation lives at the body origin.
     const float4 next = integrateQuat(rotation, spin, dt);
     const float3 nextOffset = rotateVector(center, next);
