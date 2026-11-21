@@ -62,47 +62,65 @@ PhysicsGpuMotionRead PhysicsGpuMotionRead::Prepare(rhi::ComputeHost &host, const
                           (has(PhysicsStateFields::CenterOfMass) ? 1u << layout.center : 0u) |
                           (has(PhysicsStateFields::LinearVelocity) ? 1u << layout.linear : 0u) |
                           (has(PhysicsStateFields::AngularVelocity) ? 1u << layout.angular : 0u);
-    for (uint32_t lane = 0; lane <= layout.angular; ++lane) {
-        if ((mask & (1u << lane)) == 0)
-            continue;
-        if (read.m_ranges.empty() || read.m_ranges.back().first + read.m_ranges.back().count != lane)
-            read.m_ranges.push_back({lane, 1});
-        else
-            ++read.m_ranges.back().count;
-    }
+    for (uint32_t lane = 0; lane <= layout.angular; ++lane)
+        if (mask & (1u << lane))
+            read.m_laneOffsets[lane] = read.m_rowWords++;
 
-    constexpr auto laneBytes = 4 * sizeof(float);
-    std::vector<rhi::ComputeBufferRead> ranges;
-    std::unordered_map<uint32_t, uint32_t> rows;
-    read.m_rows.reserve(read.m_selected.size());
+    read.m_rows.resize(read.m_selected.size());
+    std::vector<std::pair<uint32_t, size_t>> rows;
     rows.reserve(read.m_selected.size());
-    for (const auto &body : read.m_selected) {
+    for (size_t index = 0; index < read.m_selected.size(); ++index) {
+        const auto &body = read.m_selected[index];
         if (body.pose.row >= source.bodyCount)
             throw std::out_of_range("GPU physics motion row belongs to another world");
-        const auto [row, inserted] = rows.try_emplace(body.pose.row, static_cast<uint32_t>(rows.size()));
-        read.m_rows.push_back(row->second);
-        if (inserted) {
-            const auto offset = (source.firstRow + body.pose.row) * source.rowBytes;
-            for (const auto range : read.m_ranges)
-                ranges.push_back({source.states, offset + range.first * laneBytes, range.count * laneBytes});
-        }
+        rows.emplace_back(body.pose.row, index);
     }
-    read.m_uniqueRows = rows.size();
+    std::sort(rows.begin(), rows.end());
+    constexpr auto laneBytes = 4 * sizeof(float);
+    std::vector<rhi::ComputeBufferRead> ranges;
+    uint32_t previous = UINT32_MAX;
+    for (const auto &[row, index] : rows) {
+        if (row != previous) {
+            const auto base = (source.firstRow + row) * source.rowBytes;
+            for (uint32_t lane = 0; lane <= layout.angular; ++lane) {
+                if ((mask & (1u << lane)) == 0)
+                    continue;
+                const auto offset = base + lane * laneBytes;
+                if (ranges.empty() || ranges.back().offset + ranges.back().byteSize != offset) {
+                    ranges.push_back({source.states, offset, laneBytes});
+                    read.m_transferWords.push_back(1);
+                } else {
+                    ranges.back().byteSize += laneBytes;
+                    ++read.m_transferWords.back();
+                }
+            }
+            ++read.m_uniqueRows;
+            previous = row;
+        }
+        read.m_rows[index] = static_cast<uint32_t>(read.m_uniqueRows - 1);
+    }
     if (!ranges.empty())
         read.packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(ranges));
     return read;
 }
 
-std::vector<PhysicsBodyMotionState> PhysicsGpuMotionRead::Read() const
+std::vector<PhysicsBodyMotionState> PhysicsGpuMotionRead::Read(std::vector<bool> *sleeping) const
 {
-    using Row = std::array<std::array<float, 4>, 5>;
-    std::vector<Row> raw(m_uniqueRows);
-    size_t receipt = 0;
-    for (auto &row : raw)
-        for (const auto range : m_ranges)
-            packet->Readback(receipt++)->ReadInto(row[range.first].data(), range.count * sizeof(row.front()));
+    using Word = std::array<float, 4>;
+    std::vector<Word> raw(m_uniqueRows * m_rowWords);
+    size_t wordsRead = 0;
+    for (size_t receipt = 0; receipt < m_transferWords.size(); ++receipt) {
+        const size_t words = m_transferWords[receipt];
+        packet->Readback(receipt)->ReadInto(raw[wordsRead].data(), words * sizeof(Word));
+        wordsRead += words;
+    }
     const auto layout = MotionLanes(m_layout);
     const auto has = [this](PhysicsStateFields field) { return HasPhysicsStateField(m_fields, field); };
+    if (sleeping) {
+        if (!layout.origin || !has(PhysicsStateFields::CenterOfMass))
+            throw std::logic_error("GPU motion read does not carry body activity");
+        sleeping->resize(m_selected.size());
+    }
     const auto vector = [](const auto &v) {
         if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2]))
             throw std::runtime_error("Accepted GPU physics motion contains a nonfinite vector");
@@ -112,11 +130,13 @@ std::vector<PhysicsBodyMotionState> PhysicsGpuMotionRead::Read() const
     result.reserve(m_selected.size());
     for (size_t i = 0; i < m_selected.size(); ++i) {
         const auto &binding = m_selected[i];
-        const auto &row = raw[m_rows[i]];
+        const auto word = [&](uint32_t lane) -> const Word & {
+            return raw[size_t{m_rows[i]} * m_rowWords + m_laneOffsets[lane]];
+        };
         auto &state = result.emplace_back(PhysicsBodyMotionState{binding.pose.id, binding.shapeRevision});
         if (has(PhysicsStateFields::Rotation) || has(PhysicsStateFields::InverseInertia) ||
             (has(PhysicsStateFields::Position) && !layout.origin)) {
-            const auto &q = row[1];
+            const auto &q = word(1);
             const auto rotation = layout.origin ? glm::quat(q[0], q[1], q[2], q[3]) : glm::quat(q[3], q[0], q[1], q[2]);
             const float squaredLength = glm::dot(rotation, rotation);
             if (!std::isfinite(squaredLength) || squaredLength <= 0.0f)
@@ -124,18 +144,20 @@ std::vector<PhysicsBodyMotionState> PhysicsGpuMotionRead::Read() const
             state.rotation = rotation / std::sqrt(squaredLength);
         }
         if (has(PhysicsStateFields::Position)) {
-            state.position = vector(row[0]);
+            state.position = vector(word(0));
             if (!layout.origin) {
                 const auto &offset = binding.pose.centerOffset;
                 state.position -= state.rotation * glm::vec3(offset[0], offset[1], offset[2]);
             }
         }
         if (has(PhysicsStateFields::CenterOfMass))
-            state.centerOfMass = vector(row[layout.center]);
+            state.centerOfMass = vector(word(layout.center));
+        if (sleeping)
+            (*sleeping)[i] = word(layout.center)[3] != 0.0f;
         if (has(PhysicsStateFields::LinearVelocity))
-            state.linearVelocity = vector(row[layout.linear]);
+            state.linearVelocity = vector(word(layout.linear));
         if (has(PhysicsStateFields::AngularVelocity))
-            state.angularVelocity = vector(row[layout.angular]);
+            state.angularVelocity = vector(word(layout.angular));
         if (has(PhysicsStateFields::InverseMass))
             state.inverseMass = binding.inverseMass * AllowedMotionAxes(binding.frozenTranslation);
         if (has(PhysicsStateFields::InverseInertia) && binding.inverseMass != 0.0f) {

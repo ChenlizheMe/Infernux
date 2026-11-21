@@ -49,18 +49,17 @@ struct PhysicsGpuMotionRead
     {
         return m_selected.empty();
     }
-    [[nodiscard]] std::vector<PhysicsBodyMotionState> Read() const;
+    /// OriginWXYZ publications can also return the activity bit from their COM lane.
+    [[nodiscard]] std::vector<PhysicsBodyMotionState> Read(std::vector<bool> *sleeping = nullptr) const;
 
   private:
-    struct Range
-    {
-        uint32_t first, count;
-    };
     PhysicsGpuPoseSource::Layout m_layout{};
     PhysicsStateFields m_fields = PhysicsStateFields::None;
     std::vector<PhysicsGpuMotionBinding> m_selected;
     std::vector<uint32_t> m_rows;
-    std::vector<Range> m_ranges;
+    std::array<uint8_t, 5> m_laneOffsets{};
+    std::vector<size_t> m_transferWords;
+    uint8_t m_rowWords = 0;
     size_t m_uniqueRows = 0;
 };
 

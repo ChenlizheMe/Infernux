@@ -7,7 +7,7 @@
 #include "../PhysicsBodyState.h"
 #include "../PhysicsContactPublication.h"
 #include "../PhysicsECSStore.h"
-#include "../PhysicsGpuPoseSource.h"
+#include "../PhysicsGpuRenderBindings.h"
 #include "../PhysicsRaycastHit.h"
 #include "InxPhyGpuSceneModel.h"
 #include "InxPhyGpuStep.h"
@@ -96,6 +96,7 @@ struct InxPhyGpuFixedPublication
     [[nodiscard]] PhysicsGpuPoseSource PoseSource(uint32_t world) const;
     [[nodiscard]] std::optional<PhysicsGpuBodyPoseBinding> FindPoseBody(uint32_t world, PhysicsActorHandle actor,
                                                                         uint32_t bodyId) const;
+    [[nodiscard]] PhysicsGpuMotionExport GatherMotion(uint32_t world, const std::vector<uint32_t> &bodies) const;
     [[nodiscard]] PhysicsGpuBoxExport GatherBoxes(uint32_t world, const std::vector<uint32_t> &bodies,
                                                   bool includeTriggers) const;
     /// Consume the accepted world's reports in solver substep order.
@@ -127,14 +128,7 @@ struct InxPhyGpuSceneBodyRead
 
   private:
     friend class InxPhyGpuSceneRuntime;
-    struct Body
-    {
-        uint32_t id, packedRow;
-        uint64_t shapeRevision;
-    };
-    std::vector<Body> m_bodies;
-    std::vector<uint32_t> m_rangeRows;
-    uint32_t m_uniqueRows = 0;
+    PhysicsGpuMotionRead m_motion;
 };
 
 struct InxPhyGpuSceneRayBatch
@@ -209,8 +203,8 @@ class InxPhyGpuSceneRuntime final
     [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakePublication();
     [[nodiscard]] std::optional<InxPhyGpuHostBody> ReadHostBody(const InxPhyGpuFixedPublication &publication,
                                                                 uint32_t world, uint32_t engineBody) const;
-    /// Read only requested bodies from a frozen device publication. One packet
-    /// copies adjacent rows together and reads each selected row at most once.
+    /// Read requested bodies from a frozen device publication. A duplicate body
+    /// uses the same readback and retains its position in the requested order.
     [[nodiscard]] InxPhyGpuSceneBodyRead PrepareBodyRead(const InxPhyGpuFixedPublication &publication, uint32_t world,
                                                          const std::vector<uint32_t> &engineBodies) const;
     /// Resolve stable joint IDs in the selected accepted world and keep the

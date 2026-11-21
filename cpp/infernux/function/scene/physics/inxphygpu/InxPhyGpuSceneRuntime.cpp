@@ -37,6 +37,7 @@ struct InxPhyGpuSceneLayout
     std::unordered_map<uint64_t, uint32_t> worldRows;
     std::vector<Geometry> geometries;
     std::vector<std::vector<PhysicsGpuBoxAuthor>> boxes;
+    std::vector<PhysicsGpuMotionBinding> motion;
 
     [[nodiscard]] uint32_t WorldRow(uint64_t id) const
     {
@@ -121,6 +122,23 @@ InxPhyGpuFixedPublication::FindPoseBody(uint32_t world, PhysicsActorHandle actor
     return PhysicsGpuBodyPoseBinding{bodyId, *row};
 }
 
+PhysicsGpuMotionExport InxPhyGpuFixedPublication::GatherMotion(uint32_t world,
+                                                               const std::vector<uint32_t> &bodies) const
+{
+    PhysicsGpuMotionExport result{PoseSource(world), {}};
+    const auto &layout = m_layout->worlds[world];
+    result.bodies.reserve(bodies.size());
+    for (const auto id : bodies) {
+        const auto row = layout.BodyRow(id);
+        if (!row)
+            throw std::invalid_argument("inxphygpu motion selection requires an accepted body in the selected world");
+        auto &binding = result.bodies.emplace_back(m_layout->motion[*row]);
+        binding.pose.id = id;
+        binding.shapeRevision = layout.bodies[*row].shapeRevision;
+    }
+    return result;
+}
+
 PhysicsGpuBoxExport InxPhyGpuFixedPublication::GatherBoxes(uint32_t world, const std::vector<uint32_t> &bodies,
                                                            bool includeTriggers) const
 {
@@ -165,17 +183,19 @@ void InxPhyGpuFixedPublication::PublishContacts(uint32_t world, PhysicsContactPu
 
 std::vector<InxPhyGpuHostBody> InxPhyGpuSceneBodyRead::ReadHostBodies() const
 {
-    std::vector<InxPhyGpuBodyState> records(m_uniqueRows);
-    size_t offset = 0;
-    for (size_t index = 0; index < m_rangeRows.size(); ++index) {
-        const auto count = m_rangeRows[index];
-        packet->Readback(index)->ReadInto(records.data() + offset, uint64_t{count} * sizeof(InxPhyGpuBodyState));
-        offset += count;
-    }
+    std::vector<bool> sleeping;
+    const auto samples = m_motion.Read(&sleeping);
     std::vector<InxPhyGpuHostBody> bodies;
-    bodies.reserve(m_bodies.size());
-    for (const auto &body : m_bodies)
-        bodies.push_back(DecodeHostBody(records[body.packedRow], body.id, body.shapeRevision));
+    bodies.reserve(samples.size());
+    for (size_t index = 0; index < samples.size(); ++index) {
+        const auto &body = samples[index];
+        bodies.push_back({{body.bodyId, body.position, body.rotation},
+                          body.shapeRevision,
+                          body.centerOfMass,
+                          body.linearVelocity,
+                          body.angularVelocity,
+                          sleeping[index]});
+    }
     return bodies;
 }
 
@@ -231,6 +251,20 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     m_acceptedWorlds.reserve(worlds.size());
     layout->geometries.reserve(scene.geometries.size());
     layout->boxes.resize(m_bodyCount);
+    layout->motion.reserve(m_bodyCount);
+    for (uint32_t row = 0; row < m_bodyCount; ++row) {
+        const auto &body = scene.model.bodies[row];
+        auto &motion = layout->motion.emplace_back(PhysicsGpuMotionBinding{{UINT32_MAX, row}});
+        const auto &inertia = body.inertiaMass;
+        if (inertia[3] > 0) {
+            motion.inverseMass = 1.0f / inertia[3];
+            motion.inverseInertia = {1.0f / inertia[0], 1.0f / inertia[1], 1.0f / inertia[2]};
+            const auto &rotation = body.inertiaPose.rotation;
+            motion.inertiaFrame = {rotation[0], rotation[1], rotation[2], rotation[3]};
+            motion.frozenTranslation = body.subtree[3] & 7u;
+            motion.frozenRotation = (body.subtree[3] >> 3u) & 7u;
+        }
+    }
     for (size_t row = 0; row < scene.geometries.size(); ++row) {
         const auto &geometry = scene.geometries[row];
         const auto &shape = scene.model.geometries[row];
@@ -573,42 +607,17 @@ InxPhyGpuSceneBodyRead InxPhyGpuSceneRuntime::PrepareBodyRead(const InxPhyGpuFix
 {
     if (publication.m_layout != m_layout)
         throw std::invalid_argument("inxphygpu body read does not match its scene publication");
-    const auto source = publication.PoseSource(world);
-    const auto &layout = m_layout->worlds[world];
+    auto source = publication.GatherMotion(world, engineBodies);
+    constexpr auto fields = static_cast<PhysicsStateFields>(static_cast<uint32_t>(PhysicsStateFields::Position) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::Rotation) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::CenterOfMass) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::LinearVelocity) |
+                                                            static_cast<uint32_t>(PhysicsStateFields::AngularVelocity));
     InxPhyGpuSceneBodyRead result;
     result.identity = publication.worlds[world].identity;
-    result.m_bodies.resize(engineBodies.size());
-    std::vector<std::pair<uint32_t, size_t>> rows;
-    rows.reserve(engineBodies.size());
-    for (size_t index = 0; index < engineBodies.size(); ++index) {
-        const auto row = layout.BodyRow(engineBodies[index]);
-        if (!row)
-            throw std::invalid_argument("inxphygpu body read requires an accepted body in the selected world");
-        rows.emplace_back(*row, index);
-    }
-    std::sort(rows.begin(), rows.end());
-
-    constexpr auto bytes = sizeof(InxPhyGpuBodyState);
-    uint32_t previous = NoModelIndex;
-    std::vector<rhi::ComputeBufferRead> reads;
-    for (const auto &[row, index] : rows) {
-        if (row != previous) {
-            if (reads.empty() || row != previous + 1) {
-                reads.push_back({source.states, (source.firstRow + row) * bytes, 0});
-                result.m_rangeRows.push_back(0);
-            }
-            reads.back().byteSize += bytes;
-            ++result.m_rangeRows.back();
-            ++result.m_uniqueRows;
-            previous = row;
-        }
-        const auto &body = layout.bodies[row];
-        result.m_bodies[index] = {body.bodyId, result.m_uniqueRows - 1, body.shapeRevision};
-    }
-    if (!reads.empty()) {
-        auto host = m_host;
-        result.packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(reads));
-    }
+    auto host = m_host;
+    result.m_motion = PhysicsGpuMotionRead::Prepare(host, source.poses, std::move(source.bodies), fields);
+    result.packet = result.m_motion.packet;
     return result;
 }
 
