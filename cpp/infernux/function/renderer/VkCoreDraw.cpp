@@ -1295,6 +1295,7 @@ void InxVkCoreModular::DrawSceneFiltered(
     VkPipeline currentPipeline = VK_NULL_HANDLE;
     VkPipelineLayout currentLayout = VK_NULL_HANDLE;
     VkDescriptorSet currentDescriptorSet = VK_NULL_HANDLE;
+    VkPipelineLayout perViewLayout = VK_NULL_HANDLE;
     VkDescriptorSet currentGlobalsSet = VK_NULL_HANDLE;
     VkPipelineLayout globalsPipelineLayout = VK_NULL_HANDLE;
     InxMaterial *currentMaterialRaw = nullptr;
@@ -1687,8 +1688,12 @@ void InxVkCoreModular::DrawSceneFiltered(
             currentLayout = pipelineLayout;
 
             const ShaderProgram *program = resolved.program.get();
+            // A set 0 rebind with the same pipeline layout leaves the view
+            // descriptor set bound across material changes.
+            const bool viewLayoutChanged = perViewLayout != pipelineLayout;
+            perViewLayout = pipelineLayout;
 
-            if (program && program->HasDeclaredDescriptorSet(1)) {
+            if (viewLayoutChanged && program && program->HasDeclaredDescriptorSet(1)) {
                 vkdebug::CmdBindDescriptorSetsTracked("VkCoreDraw.DrawSceneFiltered.Set1", cmdBuf,
                                                       VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
                                                       &perViewDescriptorSet, 0, nullptr);
