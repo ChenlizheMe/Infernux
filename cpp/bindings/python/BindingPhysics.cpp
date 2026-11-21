@@ -547,9 +547,8 @@ void RequireComputeView(const ComputeView &view, const char *name, rhi::ComputeS
     host = &buffer->GetHost();
 }
 
-PhysicsDeviceQueryOutput ComputeOutput(py::dict &output, const char *name, PhysicsDeviceQueryField field,
-                                       rhi::ComputeScalarType scalarType, uint8_t lanes, uint64_t elementCount,
-                                       rhi::ComputeHost *&host)
+PhysicsDeviceBufferRange ComputeOutputRange(py::dict &output, const char *name, rhi::ComputeScalarType scalarType,
+                                            uint8_t lanes, uint64_t elementCount, rhi::ComputeHost *&host)
 {
     const auto key = py::str(name);
     if (!output.contains(key))
@@ -562,21 +561,28 @@ PhysicsDeviceQueryOutput ComputeOutput(py::dict &output, const char *name, Physi
     const uint64_t stride = lanes * sizeof(uint32_t);
     if (elementCount > capacity)
         throw py::value_error(std::string("GPU state output '") + name + "' has the wrong type or capacity");
-    PhysicsDeviceQueryOutput binding{field, std::move(buffer)};
-    binding.byteOffset = offset;
-    binding.byteEnd = offset + capacity * stride;
+    return {std::move(buffer), offset, offset + capacity * stride};
+}
+
+PhysicsDeviceQueryOutput ComputeOutput(py::dict &output, const char *name, PhysicsDeviceQueryField field,
+                                       rhi::ComputeScalarType scalarType, uint8_t lanes, uint64_t elementCount,
+                                       rhi::ComputeHost *&host)
+{
+    auto range = ComputeOutputRange(output, name, scalarType, lanes, elementCount, host);
+    PhysicsDeviceQueryOutput binding{field, std::move(range.buffer)};
+    binding.byteOffset = range.byteOffset;
+    binding.byteEnd = range.byteEnd;
     return binding;
 }
 
-std::vector<PhysicsDeviceQueryOutput> RaycastExports(py::dict &output, uint64_t count, rhi::ComputeHost *&host)
+PhysicsDeviceRayOutputs RaycastExports(py::dict &output, uint64_t count, rhi::ComputeHost *&host)
 {
-    using Field = PhysicsDeviceQueryField;
     using Scalar = rhi::ComputeScalarType;
     return {
-        ComputeOutput(output, "hit", Field::HitValid, Scalar::UInt32, 1, count, host),
-        ComputeOutput(output, "point", Field::HitPoint, Scalar::Float32, 3, count, host),
-        ComputeOutput(output, "normal", Field::HitNormal, Scalar::Float32, 3, count, host),
-        ComputeOutput(output, "distance", Field::HitDistance, Scalar::Float32, 1, count, host),
+        ComputeOutputRange(output, "point", Scalar::Float32, 3, count, host),
+        ComputeOutputRange(output, "normal", Scalar::Float32, 3, count, host),
+        ComputeOutputRange(output, "distance", Scalar::Float32, 1, count, host),
+        ComputeOutputRange(output, "hit", Scalar::UInt32, 1, count, host),
     };
 }
 

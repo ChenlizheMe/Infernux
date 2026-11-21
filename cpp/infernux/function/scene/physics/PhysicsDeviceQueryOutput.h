@@ -25,10 +25,6 @@ enum class PhysicsDeviceQueryField : uint32_t
     ShapeRotation,
     ShapeFriction,
     ShapeBounciness,
-    HitPoint,
-    HitNormal,
-    HitDistance,
-    HitValid,
 };
 
 struct PhysicsDeviceQueryOutput

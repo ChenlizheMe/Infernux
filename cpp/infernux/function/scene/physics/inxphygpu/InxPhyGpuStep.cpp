@@ -1657,7 +1657,7 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
                                                               bool publish,
                                                               std::vector<rhi::ComputeBufferUpdate> updates,
                                                               const InxPhyGpuDeviceRays *deviceRays,
-                                                              const InxPhyGpuRayOutputs *outputs) const
+                                                              const PhysicsDeviceRayOutputs *outputs) const
 {
     auto host = m_work->GetRecipe().GetHost();
     return m_publishedRays.Prepare(host, source, rayCount, publish, std::move(updates), deviceRays, outputs);
@@ -1666,7 +1666,7 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
 InxPhyGpuPreparedRayBatch
 InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, uint32_t rayCount,
                                     bool publish, std::vector<rhi::ComputeBufferUpdate> updates,
-                                    const InxPhyGpuDeviceRays *deviceRays, const InxPhyGpuRayOutputs *outputs) const
+                                    const InxPhyGpuDeviceRays *deviceRays, const PhysicsDeviceRayOutputs *outputs) const
 {
     if (!m_settings || rayCount == 0 || rayCount > m_capacity)
         throw std::invalid_argument("inxphygpu published ray batch exceeds the scene query layout");
@@ -1688,9 +1688,10 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
     dispatches.reserve(dispatches.size() + m_rayWork.size() + size_t(bool(m_geometry.kernel)) +
                        size_t(deviceRays != nullptr) + size_t(outputs != nullptr));
     const auto inputBytes = uint64_t{rayCount} * sizeof(InxPhyGpuRay);
-    const auto scalarOffset = [](const PhysicsDeviceBufferRange &view, uint64_t bytes, ComputeScalarType scalar) {
+    const auto scalarOffset = [&host](const PhysicsDeviceBufferRange &view, uint64_t bytes, ComputeScalarType scalar) {
         const auto end = view.buffer ? std::min(view.byteEnd, view.buffer->GetByteSize()) : 0u;
-        if (!view.buffer || view.buffer->GetDesc().scalarType != scalar || view.byteOffset % sizeof(uint32_t) != 0 ||
+        if (!view.buffer || !host.SharesServicesWith(view.buffer->GetHost()) ||
+            view.buffer->GetDesc().scalarType != scalar || view.byteOffset % sizeof(uint32_t) != 0 ||
             view.byteOffset > end || bytes > end - view.byteOffset ||
             (view.byteOffset + bytes) / sizeof(uint32_t) > UINT32_MAX)
             throw std::invalid_argument("Device raycast requires a complete scalar-aligned buffer range");

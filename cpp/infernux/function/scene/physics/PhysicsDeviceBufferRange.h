@@ -17,4 +17,9 @@ struct PhysicsDeviceBufferRange
     uint64_t byteOffset = 0;
     uint64_t byteEnd = UINT64_MAX;
 };
+
+struct PhysicsDeviceRayOutputs
+{
+    PhysicsDeviceBufferRange point, normal, distance, hit;
+};
 } // namespace infernux

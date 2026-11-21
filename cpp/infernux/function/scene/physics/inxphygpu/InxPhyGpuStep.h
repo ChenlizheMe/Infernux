@@ -102,11 +102,6 @@ struct InxPhyGpuDeviceRays
     ModelWords filter{UINT32_MAX, NoModelIndex, InxPhyGpuRayIncludeStatic | InxPhyGpuRayIncludeTriggers, 0};
 };
 
-struct InxPhyGpuRayOutputs
-{
-    PhysicsDeviceBufferRange point, normal, distance, hit;
-};
-
 struct PreparedInxPhyGpuRayQuery;
 
 /// Closest queries consume an accepted pose buffer and their immutable geometry.
@@ -123,7 +118,7 @@ class InxPhyGpuPublishedRayQuery
                                                     uint32_t rayCount, bool readback,
                                                     std::vector<rhi::ComputeBufferUpdate> updates,
                                                     const InxPhyGpuDeviceRays *deviceRays = nullptr,
-                                                    const InxPhyGpuRayOutputs *outputs = nullptr) const;
+                                                    const PhysicsDeviceRayOutputs *outputs = nullptr) const;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Inputs() const noexcept
     {
         return m_inputs;
@@ -274,11 +269,11 @@ class InxPhyGpuStep
 
     /// Query a frozen scene publication. Only the selected world is refit
     /// and only the requested ray prefix is dispatched or read back.
-    [[nodiscard]] InxPhyGpuPreparedRayBatch PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
-                                                                 bool publish,
-                                                                 std::vector<rhi::ComputeBufferUpdate> updates = {},
-                                                                 const InxPhyGpuDeviceRays *deviceRays = nullptr,
-                                                                 const InxPhyGpuRayOutputs *outputs = nullptr) const;
+    [[nodiscard]] InxPhyGpuPreparedRayBatch
+    PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount, bool publish,
+                         std::vector<rhi::ComputeBufferUpdate> updates = {},
+                         const InxPhyGpuDeviceRays *deviceRays = nullptr,
+                         const PhysicsDeviceRayOutputs *outputs = nullptr) const;
 
     [[nodiscard]] const InxPhyGpuRayBuffers &Rays() const noexcept
     {

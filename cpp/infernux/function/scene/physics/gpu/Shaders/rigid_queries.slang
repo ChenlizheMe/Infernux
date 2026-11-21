@@ -22,47 +22,6 @@ ConstantBuffer<QueryExportParams> query_export_params;
 RWStructuredBuffer<uint> query_export_values;
 ConstantBuffer<QueryCastParams> query_cast_params;
 
-struct QueryRayInputParams
-{
-    uint4 source;
-    uint4 filter;
-    float4 maximum;
-};
-ConstantBuffer<QueryRayInputParams> query_ray_params;
-StructuredBuffer<float> query_ray_origins;
-StructuredBuffer<float> query_ray_directions;
-RWStructuredBuffer<QueryRecordWord> query_ray_inputs;
-
-// Scalar indexing accepts packed float3 views at arbitrary 4-byte offsets.
-// Capture all input rows before any query/export can overwrite shared storage.
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void query_init_rays(uint3 tid : SV_DispatchThreadID)
-{
-    uint index = tid.x;
-    if (index >= query_ray_params.source.x)
-        return;
-    uint origin = query_ray_params.source.y + index * 3u;
-    uint direction = query_ray_params.source.z + index * 3u;
-    float3 p = float3(query_ray_origins[origin], query_ray_origins[origin + 1u], query_ray_origins[origin + 2u]);
-    float3 d = float3(query_ray_directions[direction], query_ray_directions[direction + 1u], query_ray_directions[direction + 2u]);
-    bool valid = all(isfinite(p)) && all(isfinite(d)) && any(d != 0.0f);
-    float3 unit = valid ? jph_capsule_unit(d) : float3(0.0f);
-    valid = valid && all(isfinite(unit)) && any(unit != 0.0f);
-    uint base = index * 9u;
-    query_ray_inputs[base].value = uint4(QueryRay, QueryClosest, ShapeSphere, 0u);
-    query_ray_inputs[base + 1u].value = query_ray_params.filter;
-    query_ray_inputs[base + 2u].value = uint4(InvalidQueryBodySlot, 0u, 0u, 0u);
-    // A zero maximum is a private invalid-ray sentinel, checked even in an
-    // empty scene before the analytic/generic query branches start.
-    query_ray_inputs[base + 3u].value = asuint(float4(valid ? p : float3(0.0f), valid ? query_ray_params.maximum.x : 0.0f));
-    query_ray_inputs[base + 4u].value = asuint(float4(unit, 0.0f));
-    query_ray_inputs[base + 5u].value = asuint(float4(0.0f, 0.0f, 0.0f, 1.0f));
-    query_ray_inputs[base + 6u].value = uint4(0u);
-    query_ray_inputs[base + 7u].value = uint4(0u);
-    query_ray_inputs[base + 8u].value = uint4(0u);
-}
-
 // One immutable request stream: Input144 records precede Primitive80 suffix. Identity records likewise share one resource.
 QueryInput query_load_input(uint index)
 {
@@ -1385,15 +1344,6 @@ void query_export(uint3 tid : SV_DispatchThreadID)
     else if (field == QueryExportShapeRotation) value = query_hits[base + 4u].value;
     else if (field == QueryExportShapeFriction) value.x = query_hits[base + 8u].value.x;
     else if (field == QueryExportShapeBounciness) value.x = query_hits[base + 8u].value.y;
-    else if (field >= QueryExportHitPoint && field <= QueryExportHitValid)
-    {
-        bool valid = query_hits[base].value.y != 0u;
-        if (field == QueryExportHitPoint && valid) value = query_hits[base + 1u].value;
-        else if (field == QueryExportHitNormal && valid) value = query_hits[base + 2u].value;
-        else if (field == QueryExportHitDistance)
-            value.x = valid ? query_hits[base + 1u].value.w : 0x7f800000u; // Positive infinity on miss.
-        else if (field == QueryExportHitValid) value.x = valid ? 1u : 0u;
-    }
     for (uint scalar = 0u; scalar < query_export_params.sizes.z; ++scalar)
         query_export_values[destination + scalar] = value[scalar];
 }

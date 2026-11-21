@@ -207,7 +207,7 @@ class InxPhyGpuSceneRuntime final
     /// Pack the selected float3 ranges on-device and retain the hits with this publication identity.
     [[nodiscard]] InxPhyGpuSceneRayBatch PrepareDeviceRaycast(const InxPhyGpuFixedPublication &publication,
                                                               uint32_t world, const InxPhyGpuDeviceRays &rays,
-                                                              const InxPhyGpuRayOutputs *outputs = nullptr) const;
+                                                              const PhysicsDeviceRayOutputs *outputs = nullptr) const;
     [[nodiscard]] FrameWorkWaitResult WaitForProgress(uint64_t nanoseconds);
     void Retire() noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;

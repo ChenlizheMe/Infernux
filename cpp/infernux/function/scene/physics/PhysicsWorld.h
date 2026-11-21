@@ -53,7 +53,6 @@ class JoltCpuQueries;
 class JoltGpuJoints;
 struct JoltGpuQueryResult;
 struct JoltGpuQueryGeometry;
-struct JoltGpuQueryRayInputs;
 struct PreparedCpuActor;
 struct PhysicsStaticBoundaryModel;
 struct PreparedGpuActor;
@@ -70,6 +69,9 @@ namespace physics::inxphygpu
 {
 struct InxPhyGpuSceneSetup;
 struct InxPhyGpuFixedPublication;
+struct InxPhyGpuRay;
+struct InxPhyGpuDeviceRays;
+struct InxPhyGpuPreparedRayBatch;
 } // namespace physics::inxphygpu
 } // namespace infernux
 
@@ -586,19 +588,20 @@ class PhysicsWorld
                       RaycastBatchProfile *outProfile = nullptr) const;
 
     /// Project closest-hit rows directly to compute buffers in the current GPU scene.
-    /// The completed buffers retain their RHI writer dependency; only query metadata is read back.
+    /// The completed buffers retain their RHI writer dependency with no ray readback.
     [[nodiscard]] PhysicsRigidbodyBatchSource RaycastInto(const float *originsXYZ, const float *directionsXYZ,
                                                           size_t count, float maxDistance,
-                                                          const std::vector<PhysicsDeviceQueryOutput> &exports,
+                                                          const PhysicsDeviceRayOutputs &outputs,
                                                           uint32_t layerMask = GetDefaultQueryLayerMask(),
                                                           bool queryTriggers = true) const;
 
     /// Read packed float3 sensor buffers directly on the GPU. Inputs are staged
     /// before any export, including when input and output views share storage.
-    [[nodiscard]] PhysicsRigidbodyBatchSource
-    RaycastInto(const PhysicsDeviceBufferRange &origins, const PhysicsDeviceBufferRange &directions, size_t count,
-                float maxDistance, const std::vector<PhysicsDeviceQueryOutput> &exports,
-                uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
+    [[nodiscard]] PhysicsRigidbodyBatchSource RaycastInto(const PhysicsDeviceBufferRange &origins,
+                                                          const PhysicsDeviceBufferRange &directions, size_t count,
+                                                          float maxDistance, const PhysicsDeviceRayOutputs &outputs,
+                                                          uint32_t layerMask = GetDefaultQueryLayerMask(),
+                                                          bool queryTriggers = true) const;
 
     /// Publish pending authored collider state on the engine owner thread.
     /// @return true when the synchronization boundary has completed.
@@ -902,9 +905,13 @@ class PhysicsWorld
     RunQuery(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
              const std::vector<JPH::GPU::QueryInput> &, uint64_t sweepColliderId = 0,
              uint64_t sweepColliderGeneration = 0, uint32_t sweepBodyId = UINT32_MAX) const;
-    PhysicsRigidbodyBatchSource ExportRaycastBatch(const std::vector<JPH::GPU::QueryInput> &requests,
-                                                   const std::vector<PhysicsDeviceQueryOutput> &exports,
-                                                   const JoltGpuQueryRayInputs *rays = nullptr) const;
+    [[nodiscard]] physics::inxphygpu::InxPhyGpuPreparedRayBatch
+    RunClosestGpuRays(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
+                      const std::vector<physics::inxphygpu::InxPhyGpuRay> &,
+                      const physics::inxphygpu::InxPhyGpuDeviceRays *, const PhysicsDeviceRayOutputs *) const;
+    PhysicsRigidbodyBatchSource ExportRaycastBatch(const std::vector<physics::inxphygpu::InxPhyGpuRay> &,
+                                                   const physics::inxphygpu::InxPhyGpuDeviceRays *,
+                                                   const PhysicsDeviceRayOutputs &) const;
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> RunGeometryQuery(PhysicsDomain &domain,
                                                                        const JPH::GPU::QueryInput &request,

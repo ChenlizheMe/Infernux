@@ -2,7 +2,6 @@
 
 #include "JoltGpuGeometryStore.h"
 #include "JoltGpuScene.h"
-#include "PhysicsDeviceBufferRange.h"
 #include "PhysicsDeviceQueryOutput.h"
 #include <array>
 #include <cstdint>
@@ -28,12 +27,6 @@ enum class JoltGpuQueryReadback
     DeviceWithSpans, // A host consumer needs the per-input offsets of a variable-size device result.
     HostProjected    // Host motion fields use compact physical blocks; other families retain Host layout.
 };
-struct JoltGpuQueryRayInputs
-{
-    PhysicsDeviceBufferRange origins, directions;
-    uint32_t count = 0;
-};
-
 /// Native explicit operands use the same immutable geometry arena as the publication.
 /// CPU shapes/handles carry author intent until the existing writer accepts capture.
 struct JoltGpuQueryGeometry
@@ -139,13 +132,11 @@ class JoltGpuQueries final
 {
   public:
     JoltGpuQueries(rhi::ComputeHost &host, const ShaderTargetCode &target);
-    [[nodiscard]] JoltGpuPreparedQuery Prepare(std::shared_ptr<const JoltGpuScene::Publication> publication,
-                                               const std::vector<JPH::GPU::QueryInput> &queries,
-                                               const std::vector<JPH::GPU::QueryPrimitive> &primitives,
-                                               uint64_t numericalGeneration,
-                                               JoltGpuQueryReadback readback = JoltGpuQueryReadback::Host,
-                                               uint32_t castIterationQuantum = 32, JoltGpuQueryGeometry geometry = {},
-                                               std::optional<JoltGpuQueryRayInputs> rays = {}) const;
+    [[nodiscard]] JoltGpuPreparedQuery
+    Prepare(std::shared_ptr<const JoltGpuScene::Publication> publication,
+            const std::vector<JPH::GPU::QueryInput> &queries, const std::vector<JPH::GPU::QueryPrimitive> &primitives,
+            uint64_t numericalGeneration, JoltGpuQueryReadback readback = JoltGpuQueryReadback::Host,
+            uint32_t castIterationQuantum = 32, JoltGpuQueryGeometry geometry = {}) const;
 
     /// Prepare after the gather metadata receipt, inside the same source's
     /// continuation. Writes only the validated prefix; no CPU numerical upload.
@@ -164,8 +155,7 @@ class JoltGpuQueries final
                                                        const std::vector<JPH::GPU::QueryPrimitive> &primitives,
                                                        uint64_t numericalGeneration, JoltGpuQueryReadback readback,
                                                        uint32_t castIterationQuantum,
-                                                       const std::shared_ptr<JoltGpuQueryResult> &result,
-                                                       const std::optional<JoltGpuQueryRayInputs> &rays) const;
+                                                       const std::shared_ptr<JoltGpuQueryResult> &result) const;
     struct Execution;
     static JoltGpuControlWork Continue(const std::shared_ptr<Execution> &execution);
     struct Program
@@ -174,6 +164,6 @@ class JoltGpuQueries final
         std::vector<uint8_t> ports;
     };
     rhi::ComputeHost m_host;
-    std::array<Program, 13> m_programs;
+    std::array<Program, 12> m_programs;
 };
 } // namespace infernux

@@ -464,6 +464,31 @@ BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publi
     plan->query = std::move(prepared.query);
     return {std::move(plan), std::move(prepared.initialize)};
 }
+
+physics::inxphygpu::ModelWords SceneRayFilter(uint32_t layers, bool triggers)
+{
+    using namespace physics::inxphygpu;
+    return {layers, NoModelIndex, InxPhyGpuRayIncludeStatic | (triggers ? InxPhyGpuRayIncludeTriggers : 0u), 0u};
+}
+
+std::vector<physics::inxphygpu::InxPhyGpuRay> PackSceneRays(const float *origins, const float *directions, size_t count,
+                                                            float maximum, uint32_t layers, bool triggers)
+{
+    using namespace physics::inxphygpu;
+    std::vector<InxPhyGpuRay> rays;
+    rays.reserve(count);
+    const auto filter = SceneRayFilter(layers, triggers);
+    for (size_t row = 0; row < count; ++row) {
+        const auto offset = row * 3;
+        const glm::vec3 origin{origins[offset], origins[offset + 1], origins[offset + 2]};
+        const glm::vec3 direction{directions[offset], directions[offset + 1], directions[offset + 2]};
+        ValidateRayInput(origin, direction, maximum);
+        const auto axis = glm::abs(direction);
+        const auto unit = glm::normalize(direction / std::max({axis.x, axis.y, axis.z}));
+        rays.push_back({{origin.x, origin.y, origin.z, maximum}, {unit.x, unit.y, unit.z, 0.0f}, filter});
+    }
+    return rays;
+}
 Rigidbody &KinematicBody(const PhysicsActorData &actor)
 {
     auto *body = actor.rigidbody;
@@ -3659,6 +3684,41 @@ void PhysicsWorld::RaycastBatch(const float *origins, const float *directions, s
     RaycastBatchPublished(origins, directions, count, maximum, hits, mask, layers, triggers, generation, profile, false,
                           cpuEpoch);
 }
+physics::inxphygpu::InxPhyGpuPreparedRayBatch PhysicsWorld::RunClosestGpuRays(
+    PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
+    const std::vector<physics::inxphygpu::InxPhyGpuRay> &rays, const physics::inxphygpu::InxPhyGpuDeviceRays *device,
+    const PhysicsDeviceRayOutputs *outputs) const
+{
+    using namespace physics::inxphygpu;
+    const size_t count = device ? device->count : rays.size();
+    std::unique_ptr<PhysicsSceneRayPlan> replacement;
+    auto *plan = domain.sceneRays.get();
+    InxPhyGpuPreparedRayBatch batch;
+    ObserveSpatialGpuQuery(domain, publication, [&](const auto &accepted) {
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        if (!plan || plan->directory != accepted->directory || plan->bodyBase != accepted->bodyBase ||
+            plan->bodyCount != accepted->bodyCount || plan->query.Capacity() < count) {
+            const auto capacity = std::max(count, plan ? size_t{plan->query.Capacity()} : size_t{64});
+            auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, static_cast<uint32_t>(capacity));
+            replacement = std::move(prepared.first);
+            uploads = std::move(prepared.second);
+            plan = replacement.get();
+        }
+        if (!device) {
+            auto &input = uploads.emplace_back(rhi::ComputeBufferUpdate{
+                plan->query.Inputs(), 0, std::vector<uint8_t>(rays.size() * sizeof(InxPhyGpuRay))});
+            std::memcpy(input.data.data(), rays.data(), input.data.size());
+        }
+        batch =
+            plan->query.Prepare(*m_gpuHost, {accepted->bodyStates, 0, accepted->bodyCount, sizeof(JPH::GPU::BodyState)},
+                                static_cast<uint32_t>(count), !outputs, std::move(uploads), device, outputs);
+        return JoltGpuControlWork{batch.packet};
+    });
+    if (replacement)
+        domain.sceneRays = std::move(replacement);
+    return batch;
+}
+
 void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *directions, size_t count, float maximum,
                                          RaycastHit *hits, uint8_t *mask, uint32_t layers, bool triggers,
                                          uint64_t *generation, RaycastBatchProfile *profile, bool,
@@ -3702,43 +3762,8 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
             .RaycastBatch(origins, directions, count, maximum, hits, mask, {layers, triggers}, profile);
     } else if (const auto gpu = ReadGpuSpatialQueryPublication(domain)) {
         using namespace physics::inxphygpu;
-        std::vector<InxPhyGpuRay> rays;
-        rays.reserve(count);
-        const uint32_t filter = InxPhyGpuRayIncludeStatic | (triggers ? InxPhyGpuRayIncludeTriggers : 0u);
-        for (size_t i = 0; i < count; ++i) {
-            const auto offset = i * 3;
-            const glm::vec3 origin{origins[offset], origins[offset + 1], origins[offset + 2]};
-            const glm::vec3 direction{directions[offset], directions[offset + 1], directions[offset + 2]};
-            ValidateRayInput(origin, direction, maximum);
-            const auto axis = glm::abs(direction);
-            const auto unit = glm::normalize(direction / std::max({axis.x, axis.y, axis.z}));
-            rays.push_back({{origin.x, origin.y, origin.z, maximum},
-                            {unit.x, unit.y, unit.z, 0.0f},
-                            {layers, NoModelIndex, filter, 0u}});
-        }
-        std::unique_ptr<PhysicsSceneRayPlan> replacement;
-        auto *plan = domain.sceneRays.get();
-        InxPhyGpuPreparedRayBatch batch;
-        ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
-            std::vector<rhi::ComputeBufferUpdate> uploads;
-            if (!plan || plan->directory != accepted->directory || plan->bodyBase != accepted->bodyBase ||
-                plan->bodyCount != accepted->bodyCount || plan->query.Capacity() < count) {
-                const auto capacity = std::max(count, plan ? size_t{plan->query.Capacity()} : size_t{64});
-                auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, static_cast<uint32_t>(capacity));
-                replacement = std::move(prepared.first);
-                uploads = std::move(prepared.second);
-                plan = replacement.get();
-            }
-            auto &input = uploads.emplace_back(rhi::ComputeBufferUpdate{
-                plan->query.Inputs(), 0, std::vector<uint8_t>(rays.size() * sizeof(InxPhyGpuRay))});
-            std::memcpy(input.data.data(), rays.data(), input.data.size());
-            batch = plan->query.Prepare(*m_gpuHost,
-                                        {accepted->bodyStates, 0, accepted->bodyCount, sizeof(JPH::GPU::BodyState)},
-                                        static_cast<uint32_t>(count), true, std::move(uploads));
-            return JoltGpuControlWork{batch.packet};
-        });
-        if (replacement)
-            domain.sceneRays = std::move(replacement);
+        const auto rays = PackSceneRays(origins, directions, count, maximum, layers, triggers);
+        const auto batch = RunClosestGpuRays(domain, gpu, rays, nullptr, nullptr);
         FrameWorkOwner::Scope materialize(*m_gpuWork);
         std::vector<InxPhyGpuRayHit> records(count);
         batch.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(InxPhyGpuRayHit));
@@ -3751,7 +3776,7 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
                 continue;
             }
             auto &hit = hits[i];
-            hit = plan->surfaces.at(geometry);
+            hit = domain.sceneRays->surfaces.at(geometry);
             hit.subShapeId = identity[2];
             hit.triangleIndex = identity[3];
             hit.distance = normalDistance[3];
@@ -3779,76 +3804,42 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
 }
 
 PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const float *origins, const float *directions, size_t count,
-                                                      float maximum,
-                                                      const std::vector<PhysicsDeviceQueryOutput> &exports,
+                                                      float maximum, const PhysicsDeviceRayOutputs &outputs,
                                                       uint32_t layers, bool triggers) const
 {
     if ((count && (!origins || !directions)) || count > UINT32_MAX)
         throw std::invalid_argument("Raycast batch requires valid arrays within the query index range");
-    std::vector<QueryInput> requests;
-    requests.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        auto input = Query(QueryRay, QueryClosest, layers, triggers);
-        const auto offset = i * 3;
-        QueryRayInput(input, {origins[offset], origins[offset + 1], origins[offset + 2]},
-                      {directions[offset], directions[offset + 1], directions[offset + 2]}, maximum);
-        requests.push_back(input);
-    }
-    return ExportRaycastBatch(requests, exports);
+    return ExportRaycastBatch(PackSceneRays(origins, directions, count, maximum, layers, triggers), nullptr, outputs);
 }
 
 PhysicsRigidbodyBatchSource PhysicsWorld::RaycastInto(const PhysicsDeviceBufferRange &origins,
                                                       const PhysicsDeviceBufferRange &directions, size_t count,
-                                                      float maximum,
-                                                      const std::vector<PhysicsDeviceQueryOutput> &exports,
+                                                      float maximum, const PhysicsDeviceRayOutputs &outputs,
                                                       uint32_t layers, bool triggers) const
 {
     if (count > UINT32_MAX || !std::isfinite(maximum) || maximum <= 0)
         throw std::invalid_argument("GPU raycast requires a valid count and positive finite maximum distance");
-    // A single validated template describes the family. Numerical rays are
-    // packed on the GPU, never uploaded as N author-side QueryInput records.
-    auto input = Query(QueryRay, QueryClosest, layers, triggers);
-    QueryRayInput(input, {}, {1, 0, 0}, maximum);
-    const JoltGpuQueryRayInputs rays{origins, directions, static_cast<uint32_t>(count)};
-    return ExportRaycastBatch({input}, exports, &rays);
+    const physics::inxphygpu::InxPhyGpuDeviceRays rays{origins, directions, static_cast<uint32_t>(count), maximum,
+                                                       SceneRayFilter(layers, triggers)};
+    return ExportRaycastBatch({}, &rays, outputs);
 }
 
-PhysicsRigidbodyBatchSource PhysicsWorld::ExportRaycastBatch(const std::vector<QueryInput> &requests,
-                                                             const std::vector<PhysicsDeviceQueryOutput> &exports,
-                                                             const JoltGpuQueryRayInputs *rays) const
+PhysicsRigidbodyBatchSource PhysicsWorld::ExportRaycastBatch(const std::vector<physics::inxphygpu::InxPhyGpuRay> &host,
+                                                             const physics::inxphygpu::InxPhyGpuDeviceRays *device,
+                                                             const PhysicsDeviceRayOutputs &outputs) const
 {
     RequireOwnerThread();
     auto &domain = CurrentDomain();
     RequireHealthyStep(domain);
     if (!domain.UsesGpu())
         throw std::invalid_argument("Device raycast output requires a GPU physics scene");
-    for (const auto &binding : exports)
-        if (binding.field < PhysicsDeviceQueryField::HitPoint || binding.field > PhysicsDeviceQueryField::HitValid)
-            throw std::invalid_argument("Device raycast output requires hit projection fields");
     // The same publication represents an empty scene and produces one miss per ray.
     RequireGpu(domain);
     SealSpatialQuery(domain);
     const auto publication = ReadGpuQueryPublication(domain);
     const auto generation = domain.queryGeneration.load(std::memory_order_acquire);
-    std::exception_ptr error;
-    std::shared_ptr<JoltGpuQueryResult> result;
-    ObserveSpatialGpuQuery(domain, publication, [&](const auto &accepted) {
-        return PrepareJoltGpuQueryWork(
-            [&] {
-                auto query = m_gpuQueries->Prepare(accepted, requests, {}, generation, JoltGpuQueryReadback::Device, 32,
-                                                   {}, rays ? std::make_optional(*rays) : std::nullopt);
-                result = query.result;
-                return ContinueJoltGpuControlWork(std::move(query.work), [this, result = query.result, &exports] {
-                    if (result->GetSummary().counts.y != QuerySuccess)
-                        return JoltGpuControlWork{};
-                    return m_gpuQueries->PrepareExport({result}, exports);
-                });
-            },
-            error);
-    });
-    if (error)
-        std::rethrow_exception(error);
-    (void)result->GetRecordCount(); // Deliver a numerical error to the caller without failing the world.
+    if (device ? device->count != 0 : !host.empty())
+        (void)RunClosestGpuRays(domain, publication, host, device, &outputs);
     return {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex, generation};
 }
 

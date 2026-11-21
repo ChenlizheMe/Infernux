@@ -485,7 +485,7 @@ InxPhyGpuSceneBodyRead InxPhyGpuSceneRuntime::PrepareBodyRead(const InxPhyGpuFix
 
 InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareDeviceRaycast(const InxPhyGpuFixedPublication &publication,
                                                                    uint32_t world, const InxPhyGpuDeviceRays &rays,
-                                                                   const InxPhyGpuRayOutputs *outputs) const
+                                                                   const PhysicsDeviceRayOutputs *outputs) const
 {
     if (publication.m_layout != m_layout)
         throw std::invalid_argument("inxphygpu ray batch does not match its scene publication");

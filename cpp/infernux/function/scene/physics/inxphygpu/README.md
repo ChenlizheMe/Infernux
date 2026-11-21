@@ -172,6 +172,8 @@ Clear convex status once per step. Schedule `collide_convex` after primitive con
 
 The device scene query packs caller-owned origin and direction ranges on the GPU. It can write point, normal, distance and hit flag ranges in the same submission. Input ranges can share storage with the outputs because the pack finishes before projection. A projected miss writes a zero point and normal, positive infinite distance and a zero hit flag.
 
+The ordinary closest-hit scene APIs use this query plan for both host and device callers. The plan reuses immutable geometry from the accepted scene layout and reads the current published pose buffer directly. Results name the same accepted world and fixed step as the pose source.
+
 ## Contact constraints
 
 The contact row entries reserve contiguous CSR rows for each contact. They walk the two DOF chains, omitting shared ancestors, then project the contact frame onto the point and angular Jacobians. The continuous-time row update computes the reference acceleration and regularization from the projected velocity, material and world timestep. The setup entries select the initial acceleration, evaluate the constraint residual, and compute the force, cost and state for the chosen friction cone.
