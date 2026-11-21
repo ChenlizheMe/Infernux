@@ -92,7 +92,7 @@ float3 centerOffset(BodyModel body, Pose pose)
     return rotateVector(body.inertialPosition.xyz, pose.rotation);
 }
 
-void applyDynamic(uint index, uint4 span, ModelDimensions size, BodyModel body)
+void applyDynamic<let Integrate : bool>(uint index, uint4 span, ModelDimensions size, BodyModel body)
 {
     const uint2 offset = freeAddresses(size, body, span.x);
     Pose pose = loadOrigin(offset.x);
@@ -166,6 +166,8 @@ void applyDynamic(uint index, uint4 span, ModelDimensions size, BodyModel body)
     storeOrigin(offset.x, pose);
     store3(qvel, offset.y, speed - cross(spin, shift));
     store3(qvel, offset.y + 3, rotateVector(spin, inverse));
+    if (!Integrate)
+        return;
     saved[index] = {undo, float4(originSpeed, 0.0), float4(localSpin, 0.0), float3(0.0), 0u, undo, undo,
                     float4(force, 0.0), float4(torque, 0.0)};
     if (spans[0].z == 1u)
@@ -175,12 +177,11 @@ void applyDynamic(uint index, uint4 span, ModelDimensions size, BodyModel body)
     }
 }
 
-void applyKinematic(uint index, uint4 span, ModelDimensions size, BodyModel body)
+void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimensions size, BodyModel body)
 {
     const uint row = span.x * size.layout.y + body.hierarchy.w;
     Pose origin = mocap[row];
     Pose target = origin;
-    const PrescribedMotion previous = prescribed[row];
     const Pose undo = origin;
     for (uint i = span.z; i < span.z + span.w; ++i)
     {
@@ -206,6 +207,13 @@ void applyKinematic(uint index, uint4 span, ModelDimensions size, BodyModel body
             break;
         }
     }
+    if (!Integrate)
+    {
+        mocap[row] = origin;
+        prescribed[row] = {float4(0.0), float4(0.0), origin.position.xyz + centerOffset(body, origin), 0u};
+        return;
+    }
+    const PrescribedMotion previous = prescribed[row];
     saved[index] = {undo, previous.linear, previous.angular, previous.center, previous.step, origin, target,
                     float4(0.0), float4(0.0)};
     if (spans[0].z > 1u)
@@ -266,19 +274,30 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
     prescribed[row] = {float4(linear, 0.0), float4(angular, 0.0), center, fixedSteps[span.x] + 1u};
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void apply_body_commands(uint3 id : SV_DispatchThreadID)
+void applyBodyCommands<let Integrate : bool>(uint index)
 {
-    const uint index = linearWorkIndex<64>(id);
     if (index >= spans[0].x)
         return;
     const uint4 span = spans[index + 1];
     const BodyModel body = bodies[span.y];
     if (body.hierarchy.w == NoIndex)
-        applyDynamic(index, span, model[0], body);
+        applyDynamic<Integrate>(index, span, model[0], body);
     else
-        applyKinematic(index, span, model[0], body);
+        applyKinematic<Integrate>(index, span, model[0], body);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void apply_body_commands(uint3 id : SV_DispatchThreadID)
+{
+    applyBodyCommands<true>(linearWorkIndex<64>(id));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void edit_body_state(uint3 id : SV_DispatchThreadID)
+{
+    applyBodyCommands<false>(linearWorkIndex<64>(id));
 }
 
 void finishCommands<let HasStatus : bool>(uint index)

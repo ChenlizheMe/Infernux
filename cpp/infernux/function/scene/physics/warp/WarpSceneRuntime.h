@@ -145,7 +145,7 @@ class WarpSceneRuntime final
     /// The startup receipt has fixed index zero and requires no readback.
     [[nodiscard]] std::optional<WarpFixedPublication> TakeInitial();
 
-    using FixedConsumer =
+    using PublicationConsumer =
         std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const WarpFixedPublication &completed)>;
 
     /// Own the fixed identity until its publication is consumed. The device
@@ -157,8 +157,11 @@ class WarpSceneRuntime final
     /// The callback only prepares the packet. This source performs admission and submission.
     void BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands, bool host,
                     bool captureContacts = false, std::vector<WarpSceneDriveUpdate> drives = {},
-                    FixedConsumer consumer = {});
-    [[nodiscard]] std::optional<WarpFixedPublication> TakeFixed();
+                    PublicationConsumer consumer = {});
+    /// Apply immediate body edits at the last accepted simulation time.
+    /// Reuses the same completion and optional consumer as a fixed step.
+    void BeginEdits(std::vector<WarpBodyCommand> commands, PublicationConsumer consumer = {});
+    [[nodiscard]] std::optional<WarpFixedPublication> TakePublication();
     [[nodiscard]] std::optional<WarpHostBody> ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
                                                            uint32_t engineBody) const;
     /// Read only requested bodies from a frozen device publication. One packet
@@ -179,17 +182,19 @@ class WarpSceneRuntime final
         Initialize,
         Preserve,
         Fixed,
+        Edit,
         Reports,
         Consumer,
     };
-    struct Fixed
+    struct Operation
     {
         std::vector<ContactStreamIdentity> identities;
         std::vector<WarpBodyCommand> commands;
         std::vector<WarpHingeDriveUpdate> drives;
         bool host;
         bool captureContacts;
-        FixedConsumer consumer;
+        PublicationConsumer consumer;
+        bool integrate;
     };
     struct Receipt
     {
@@ -200,6 +205,7 @@ class WarpSceneRuntime final
     };
 
     [[nodiscard]] FrameWorkFacts Describe() const;
+    void BeginOperation(Operation operation);
     bool Advance(bool gpu, uint64_t token);
     void Observe();
     bool Submit();
@@ -208,7 +214,7 @@ class WarpSceneRuntime final
     void FinishFixed(const rhi::PreparedComputeBatch &packet);
     void FinishReports(const rhi::PreparedComputeBatch &packet);
     void PrepareConsumer(WarpFixedPublication publication);
-    void PublishFixed(WarpFixedPublication publication);
+    void PublishCompleted(WarpFixedPublication publication);
 
     FrameWorkOwner &m_work;
     rhi::ComputeHost m_host;
@@ -219,7 +225,8 @@ class WarpSceneRuntime final
     bool m_contactReportsConfigured;
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;
     std::optional<Receipt> m_receipt;
-    std::optional<Fixed> m_fixed;
+    std::optional<Operation> m_operation;
+    std::vector<WarpFixedWorld> m_acceptedWorlds;
     std::optional<WarpFixedPublication> m_initialPublication;
     std::optional<WarpFixedPublication> m_pendingPublication;
     std::optional<WarpFixedPublication> m_publication;

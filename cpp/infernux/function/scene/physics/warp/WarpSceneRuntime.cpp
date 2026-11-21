@@ -16,7 +16,7 @@ struct WarpSceneLayout
 {
     struct World
     {
-        ContactStreamIdentity initial;
+        uint64_t id;
         std::vector<WarpRegisteredBody> bodies; // Device row, including world row zero.
         std::unordered_map<uint32_t, uint32_t> rows;
         std::unordered_map<uint64_t, uint32_t> hinges;
@@ -126,6 +126,7 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
         throw std::invalid_argument("Warp scene requires worlds and a body command capacity");
     auto layout = std::make_shared<WarpSceneLayout>();
     layout->worlds.reserve(worlds.size());
+    m_acceptedWorlds.reserve(worlds.size());
     layout->geometrySurfaces.reserve(scene.geometries.size());
     for (const auto &geometry : scene.geometries)
         layout->geometrySurfaces.push_back(geometry.surface);
@@ -133,8 +134,7 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
     for (auto &source : worlds) {
         if (source.bodies.size() != scene.bodies.size() || !ids.insert(source.worldId).second)
             throw std::invalid_argument("Warp scene world does not match its shared model");
-        WarpSceneLayout::World world{
-            {source.worldId, source.simulationEpoch, 0}, std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
+        WarpSceneLayout::World world{source.worldId, std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
         world.rows.reserve(source.bodies.size());
         for (size_t index = 0; index < source.bodies.size(); ++index) {
             auto &binding = source.bodies[index];
@@ -152,6 +152,7 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
             if (row == NoModelIndex || !world.hinges.emplace(binding.jointId, row).second)
                 throw std::invalid_argument("Duplicate or invalid Warp scene hinge identity");
         }
+        m_acceptedWorlds.push_back({{source.worldId, source.simulationEpoch, 0}, 0.0f, 0, 0});
         layout->worlds.push_back(std::move(world));
     }
     m_layout = std::move(layout);
@@ -185,30 +186,42 @@ std::optional<WarpFixedPublication> WarpSceneRuntime::TakeInitial()
 
 void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands,
                                   bool host, bool captureContacts, std::vector<WarpSceneDriveUpdate> drives,
-                                  FixedConsumer consumer)
+                                  PublicationConsumer consumer)
 {
-    if (m_retiring || m_fixed || m_publication)
-        throw std::logic_error("Warp scene still owns a fixed step");
     if (captureContacts && !m_contactReportsConfigured)
         throw std::logic_error("Warp scene was prepared without contact report storage");
     const auto &worlds = m_layout->worlds;
     if (identities.size() != worlds.size())
         throw std::invalid_argument("Warp fixed step requires an identity per world");
     for (size_t world = 0; world < identities.size(); ++world)
-        if (identities[world].worldId != worlds[world].initial.worldId)
+        if (identities[world].worldId != worlds[world].id)
             throw std::invalid_argument("Warp fixed step identities must follow the enrolled world order");
     std::vector<WarpHingeDriveUpdate> updates;
     updates.reserve(drives.size());
     for (const auto &update : drives)
         updates.push_back({update.world, worlds.at(update.world).hinges.at(update.jointId), update.drive.Pack()});
+    BeginOperation({std::move(identities), std::move(commands), std::move(updates), host, captureContacts,
+                    std::move(consumer), true});
+}
+
+void WarpSceneRuntime::BeginEdits(std::vector<WarpBodyCommand> commands, PublicationConsumer consumer)
+{
+    if (commands.empty())
+        throw std::invalid_argument("Warp scene edit requires at least one body command");
+    BeginOperation({{}, std::move(commands), {}, false, false, std::move(consumer), false});
+}
+
+void WarpSceneRuntime::BeginOperation(Operation operation)
+{
+    if (m_retiring || m_operation || m_publication)
+        throw std::logic_error("Warp scene still owns a physics operation");
     m_initialPublication.reset();
-    m_fixed.emplace(Fixed{std::move(identities), std::move(commands), std::move(updates), host, captureContacts,
-                          std::move(consumer)});
+    m_operation.emplace(std::move(operation));
     ++m_generation;
     m_work.Wake(m_source);
 }
 
-std::optional<WarpFixedPublication> WarpSceneRuntime::TakeFixed()
+std::optional<WarpFixedPublication> WarpSceneRuntime::TakePublication()
 {
     return std::exchange(m_publication, std::nullopt);
 }
@@ -297,13 +310,13 @@ WarpSceneRayBatch WarpSceneRuntime::PrepareRaycast(const WarpFixedPublication &p
 FrameWorkFacts WarpSceneRuntime::Describe() const
 {
     FrameWorkFacts facts;
-    facts.pending = m_fixed || m_packet || m_receipt;
+    facts.pending = m_operation || m_packet || m_receipt;
     facts.observe = m_receipt.has_value();
     if (m_receipt) {
         facts.gpuBusy = !m_receipt->ready;
         facts.host = {m_generation, 0, m_receipt->ready, false};
     } else if (m_packet && (m_preservation || !(m_packet->RequiresPreparation() || m_packet->HasPreservationWork()))) {
-        facts.gpu = {m_generation, 0, true, static_cast<bool>(m_fixed)};
+        facts.gpu = {m_generation, 0, true, static_cast<bool>(m_operation)};
     } else if (facts.pending) {
         facts.host = {m_generation, 0, true, false};
     }
@@ -326,12 +339,17 @@ bool WarpSceneRuntime::Advance(bool gpu, uint64_t token)
         if (!prepared.ready)
             return false;
         m_preservation = std::move(prepared.copy);
-    } else {
-        const auto output = m_fixed->host ? WarpBodyPublication::Cpu : WarpBodyPublication::Status;
-        m_packet = m_step->PrepareControlled(m_fixed->commands, output, {}, m_fixed->captureContacts, m_fixed->drives);
+    } else if (m_operation->integrate) {
+        const auto output = m_operation->host ? WarpBodyPublication::Cpu : WarpBodyPublication::Status;
+        m_packet = m_step->PrepareControlled(m_operation->commands, output, {}, m_operation->captureContacts,
+                                             m_operation->drives);
         m_packetKind = Packet::Fixed;
-        m_fixed->commands.clear();
-        m_fixed->drives.clear();
+        m_operation->commands.clear();
+        m_operation->drives.clear();
+    } else {
+        m_packet = m_step->PrepareEdits(m_operation->commands);
+        m_packetKind = Packet::Edit;
+        m_operation->commands.clear();
     }
     ++m_generation;
     return true;
@@ -387,19 +405,22 @@ void WarpSceneRuntime::Finish()
     if (m_retiring)
         return;
     if (kind == Packet::Initialize) {
-        if (!m_fixed) {
+        if (!m_operation) {
             auto result = CapturePublication(*packet);
-            for (const auto &world : m_layout->worlds)
-                result.worlds.push_back({world.initial, 0.0f, 0, 0});
+            result.worlds = m_acceptedWorlds;
             m_initialPublication.emplace(std::move(result));
         }
-    } else if (kind == Packet::Fixed)
+    } else if (kind == Packet::Fixed) {
         FinishFixed(*packet);
-    else if (kind == Packet::Reports)
+    } else if (kind == Packet::Edit) {
+        auto result = CapturePublication(*packet);
+        result.worlds = m_acceptedWorlds;
+        PrepareConsumer(std::move(result));
+    } else if (kind == Packet::Reports) {
         FinishReports(*packet);
-    else {
+    } else {
         auto publication = std::exchange(m_pendingPublication, std::nullopt);
-        PublishFixed(std::move(*publication));
+        PublishCompleted(std::move(*publication));
     }
 }
 
@@ -423,12 +444,12 @@ void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
     auto result = CapturePublication(packet);
     const auto worldCount = m_layout->worlds.size();
     size_t offset = 0;
-    if (m_fixed->host) {
+    if (m_operation->host) {
         result.hostBodies.resize(uint64_t{m_bodyCount} * worldCount);
         offset = result.hostBodies.size() * sizeof(WarpBodyState);
         std::memcpy(result.hostBodies.data(), data.data(), offset);
     }
-    for (const auto &identity : m_fixed->identities) {
+    for (const auto &identity : m_operation->identities) {
         ModelWords header;
         std::memcpy(header.data(), data.data() + offset, sizeof(header));
         offset += sizeof(header);
@@ -436,7 +457,7 @@ void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
         std::memcpy(&time, header.data(), sizeof(time));
         result.worlds.push_back({identity, time, header[1], header[2]});
     }
-    if (m_fixed->captureContacts) {
+    if (m_operation->captureContacts) {
         result.contacts.resize(worldCount * result.substeps);
         if (m_step->HasContactReports()) {
             auto receipt = packet.Readback(1);
@@ -476,19 +497,23 @@ void WarpSceneRuntime::FinishReports(const rhi::PreparedComputeBatch &packet)
 
 void WarpSceneRuntime::PrepareConsumer(WarpFixedPublication publication)
 {
-    if (m_fixed->consumer)
-        m_packet = m_fixed->consumer(publication);
+    if (m_operation->consumer)
+        m_packet = m_operation->consumer(publication);
     if (m_packet) {
         m_pendingPublication.emplace(std::move(publication));
         m_packetKind = Packet::Consumer;
     } else {
-        PublishFixed(std::move(publication));
+        PublishCompleted(std::move(publication));
     }
 }
 
-void WarpSceneRuntime::PublishFixed(WarpFixedPublication publication)
+void WarpSceneRuntime::PublishCompleted(WarpFixedPublication publication)
 {
-    m_fixed.reset();
+    if (m_operation->integrate)
+        for (size_t i = 0; i < publication.worlds.size(); ++i)
+            if (publication.worlds[i].status == 0)
+                m_acceptedWorlds[i] = publication.worlds[i];
+    m_operation.reset();
     m_publication.emplace(std::move(publication));
 }
 
@@ -514,7 +539,7 @@ FrameWorkWaitResult WarpSceneRuntime::WaitForProgress(uint64_t nanoseconds)
 void WarpSceneRuntime::Retire() noexcept
 {
     m_retiring = true;
-    m_fixed.reset();
+    m_operation.reset();
     m_initialPublication.reset();
     m_publication.reset();
     m_pendingPublication.reset();

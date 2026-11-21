@@ -170,6 +170,10 @@ class WarpStep
                       std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false,
                       std::vector<WarpHingeDriveUpdate> drives = {}) const;
 
+    /// Absolute edits and impulses publish new poses at the current fixed time.
+    /// Time-dependent force and movement commands are admitted by the fixed step.
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareEdits(std::vector<WarpBodyCommand> commands) const;
+
     /// A reporting step appends the world counts to its readbacks. Read only
     /// accepted worlds' populated ranges before issuing another step.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
@@ -215,8 +219,7 @@ class WarpStep
     struct BodyControls
     {
         std::shared_ptr<rhi::ComputeBuffer> commands, spans, states;
-        rhi::ComputeDispatchDesc apply, finish;
-        std::vector<rhi::ComputeDispatchDesc> publication;
+        rhi::ComputeDispatchDesc apply, edit, finish, pose, publish, publishWithStatus;
         std::vector<uint8_t> motion;
         uint32_t capacity = 0;
         uint32_t worlds = 0;
@@ -251,6 +254,10 @@ class WarpStep
     };
 
     void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, uint32_t spans, bool captureContacts) const;
+    uint32_t AppendBodyCommands(std::vector<WarpBodyCommand> commands, bool integrate,
+                                std::vector<rhi::ComputeBufferUpdate> &updates,
+                                std::vector<rhi::ComputeDispatchDesc> &dispatches) const;
+    void AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &dispatches, bool includeStatus) const;
 
     WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
              uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,

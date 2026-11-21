@@ -1179,8 +1179,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                               {6, response->status, R}});
     }
 
-    std::vector<ComputeWorkDispatch> bodyPublication;
-    ComputeWorkDispatch applyCommands, finishCommands;
+    ComputeWorkDispatch applyCommands, editCommands, finishCommands, publishPose, publishBodies,
+        publishBodiesWithStatus;
     if (controlSlots) {
         const auto &[spans, commands, force, saved, prescribed, fixedSteps] = *controlSlots;
         const auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
@@ -1197,6 +1197,16 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                     {11, saved, RW},
                                     {12, prescribed, RW},
                                     {15, fixedSteps, R}});
+        editCommands = b.Dispatch("body_controls", "edit_body_state", bodyCommandCapacity,
+                                  {{0, dimensions, R},
+                                   {1, bodies, R},
+                                   {2, joints, R},
+                                   {3, spans, R},
+                                   {4, commands, R},
+                                   {5, positions, RW},
+                                   {6, velocities, RW},
+                                   {7, mocap, RW},
+                                   {12, prescribed, W}});
         if (multiple)
             drive = b.Dispatch("body_controls", "advance_commanded_substep", bodyCommandCapacity,
                                {{0, dimensions, R},
@@ -1225,18 +1235,16 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                      : b.Dispatch("body_controls", "finish_body_commands", bodyCommandCapacity,
                                   {{0, dimensions, R}, {1, bodies, R}, {2, joints, R}, {3, spans, R}, {8, force, RW}});
         if (branches != 0) {
-            bodyPublication.push_back(b.dispatches[kinematicsPass]);
-            b.initialize.push_back(bodyPublication.back());
+            publishPose = b.dispatches[kinematicsPass];
+            b.initialize.push_back(publishPose);
         }
         std::vector<Use> stateBindings{{0, dimensions, R},  {1, bodies, R}, {6, velocities, R},    {9, clocks, R},
                                        {12, prescribed, R}, {13, pose, R},  {14, states, W, true}, {15, fixedSteps, R}};
-        auto initialState = b.Bind("body_controls", "publish_body_states", nb, stateBindings);
-        b.initialize.push_back(initialState);
+        publishBodies = b.Bind("body_controls", "publish_body_states", nb, stateBindings);
+        b.initialize.push_back(publishBodies);
         if (response) {
             stateBindings.insert(stateBindings.begin() + 4, {10, response->status, R});
-            bodyPublication.push_back(b.Bind("body_controls", "publish_contact_body_states", nb, stateBindings));
-        } else {
-            bodyPublication.push_back(std::move(initialState));
+            publishBodiesWithStatus = b.Bind("body_controls", "publish_contact_body_states", nb, stateBindings);
         }
     }
 
@@ -1318,9 +1326,13 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         controls.spans = buffers[controlSlots->spans];
         controls.states = buffers[states];
         controls.apply = BindDispatch(std::move(applyCommands), buffers);
+        controls.edit = BindDispatch(std::move(editCommands), buffers);
         controls.finish = BindDispatch(std::move(finishCommands), buffers);
-        for (auto &dispatch : bodyPublication)
-            controls.publication.push_back(BindDispatch(std::move(dispatch), buffers));
+        if (publishPose.kernel)
+            controls.pose = BindDispatch(std::move(publishPose), buffers);
+        controls.publish = BindDispatch(std::move(publishBodies), buffers);
+        if (publishBodiesWithStatus.kernel)
+            controls.publishWithStatus = BindDispatch(std::move(publishBodiesWithStatus), buffers);
     }
     ContactReports reports;
     if (response && response->capture)
@@ -1481,52 +1493,17 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vect
     m_hinges.Append(updates, std::move(drives));
     if (commands.empty() && publication == WarpBodyPublication::None && !captureContacts)
         return Prepare(false, std::move(updates));
-    if (commands.size() > m_controls.capacity)
-        throw std::length_error("Warp fixed step body command capacity exceeded");
-
     auto dispatches = m_substeps.begin;
-    const auto key = [](const auto &command) { return std::tie(command.world, command.body); };
-    uint32_t spanCount = 0;
-    if (!commands.empty()) {
-        std::stable_sort(commands.begin(), commands.end(),
-                         [&](const auto &a, const auto &b) { return key(a) < key(b); });
-        std::vector<ModelWords> spans(1);
-        for (uint32_t index = 0; index < commands.size(); ++index) {
-            const auto &command = commands[index];
-            const auto kind = command.kind;
-            const auto motion = m_controls.motion.at(command.body);
-            const bool move = kind == WarpBodyCommandKind::MovePosition || kind == WarpBodyCommandKind::MoveRotation;
-            const bool dynamic =
-                kind >= WarpBodyCommandKind::SetLinearVelocity && kind <= WarpBodyCommandKind::ForceAtPosition;
-            if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != KinematicControl) ||
-                (dynamic && motion != DynamicControl))
-                throw std::invalid_argument("Warp body command does not match its world or motion type");
-            if (index == 0 || key(command) != key(commands[index - 1]))
-                spans.push_back({command.world, command.body, index, 0});
-            ++spans.back()[3];
-        }
-        spanCount = static_cast<uint32_t>(spans.size() - 1);
-        spans[0] = {spanCount, m_controls.timestep, m_substeps.count, 0};
-        auto &spansUpload = updates.emplace_back(
-            rhi::ComputeBufferUpdate{m_controls.spans, 0, std::vector<uint8_t>(spans.size() * sizeof(ModelWords))});
-        std::memcpy(spansUpload.data.data(), spans.data(), spansUpload.data.size());
-        auto &commandsUpload = updates.emplace_back(rhi::ComputeBufferUpdate{
-            m_controls.commands, 0, std::vector<uint8_t>(commands.size() * sizeof(WarpBodyCommand))});
-        std::memcpy(commandsUpload.data.data(), commands.data(), commandsUpload.data.size());
-    }
-
-    const auto commandDispatch = [&](rhi::ComputeDispatchDesc command) {
-        command.groupCountX = (spanCount - 1) / 64 + 1;
-        LinearGrid(command);
-        dispatches.push_back(std::move(command));
-    };
-    if (spanCount != 0)
-        commandDispatch(m_controls.apply);
+    const auto spanCount = AppendBodyCommands(std::move(commands), true, updates, dispatches);
     AppendFixedWork(dispatches, spanCount, captureContacts);
-    if (spanCount != 0)
-        commandDispatch(m_controls.finish);
+    if (spanCount != 0) {
+        auto finish = m_controls.finish;
+        finish.groupCountX = (spanCount - 1) / 64 + 1;
+        LinearGrid(finish);
+        dispatches.push_back(std::move(finish));
+    }
     if (publication != WarpBodyPublication::None)
-        dispatches.insert(dispatches.end(), m_controls.publication.begin(), m_controls.publication.end());
+        AppendBodyPublication(dispatches, true);
     std::vector<rhi::ComputeBufferRead> reads;
     if (publication == WarpBodyPublication::Cpu)
         reads.push_back({m_controls.states, 0, m_controls.states->GetByteSize()});
@@ -1538,6 +1515,69 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vect
         reads.push_back({m_reports.counts, m_reports.countsOffset, m_reports.countsBytes});
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareEdits(std::vector<WarpBodyCommand> commands) const
+{
+    std::vector<rhi::ComputeBufferUpdate> updates;
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    AppendBodyCommands(std::move(commands), false, updates, dispatches);
+    AppendBodyPublication(dispatches, false);
+    auto host = m_work->GetRecipe().GetHost();
+    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches));
+}
+
+uint32_t WarpStep::AppendBodyCommands(std::vector<WarpBodyCommand> commands, bool integrate,
+                                      std::vector<rhi::ComputeBufferUpdate> &updates,
+                                      std::vector<rhi::ComputeDispatchDesc> &dispatches) const
+{
+    if (commands.empty())
+        return 0;
+    if (commands.size() > m_controls.capacity)
+        throw std::length_error("Warp body command capacity exceeded");
+    const auto key = [](const auto &command) { return std::tie(command.world, command.body); };
+    std::stable_sort(commands.begin(), commands.end(), [&](const auto &a, const auto &b) { return key(a) < key(b); });
+    std::vector<ModelWords> spans(1);
+    for (uint32_t index = 0; index < commands.size(); ++index) {
+        const auto &command = commands[index];
+        const auto kind = command.kind;
+        const auto motion = m_controls.motion.at(command.body);
+        const bool move = kind == WarpBodyCommandKind::MovePosition || kind == WarpBodyCommandKind::MoveRotation;
+        const bool force = kind >= WarpBodyCommandKind::Force && kind <= WarpBodyCommandKind::ForceAtPosition;
+        const bool dynamic =
+            kind >= WarpBodyCommandKind::SetLinearVelocity && kind <= WarpBodyCommandKind::ForceAtPosition;
+        if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != KinematicControl) ||
+            (dynamic && motion != DynamicControl))
+            throw std::invalid_argument("Warp body command does not match its world or motion type");
+        if (!integrate && (move || (force && static_cast<uint32_t>(command.mode) < 2)))
+            throw std::invalid_argument("Continuous forces and kinematic targets require a fixed step");
+        if (index == 0 || key(command) != key(commands[index - 1]))
+            spans.push_back({command.world, command.body, index, 0});
+        ++spans.back()[3];
+    }
+
+    const auto spanCount = static_cast<uint32_t>(spans.size() - 1);
+    spans[0] = {spanCount, m_controls.timestep, m_substeps.count, 0};
+    auto &spansUpload = updates.emplace_back(
+        rhi::ComputeBufferUpdate{m_controls.spans, 0, std::vector<uint8_t>(spans.size() * sizeof(ModelWords))});
+    std::memcpy(spansUpload.data.data(), spans.data(), spansUpload.data.size());
+    auto &commandsUpload = updates.emplace_back(rhi::ComputeBufferUpdate{
+        m_controls.commands, 0, std::vector<uint8_t>(commands.size() * sizeof(WarpBodyCommand))});
+    std::memcpy(commandsUpload.data.data(), commands.data(), commandsUpload.data.size());
+
+    auto apply = integrate ? m_controls.apply : m_controls.edit;
+    apply.groupCountX = (spanCount - 1) / 64 + 1;
+    LinearGrid(apply);
+    dispatches.push_back(std::move(apply));
+    return spanCount;
+}
+
+void WarpStep::AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &dispatches, bool includeStatus) const
+{
+    if (m_controls.pose.kernel)
+        dispatches.push_back(m_controls.pose);
+    dispatches.push_back(includeStatus && m_controls.publishWithStatus.kernel ? m_controls.publishWithStatus
+                                                                              : m_controls.publish);
 }
 
 void WarpStep::HingeDrives::Append(std::vector<rhi::ComputeBufferUpdate> &updates,
