@@ -20,6 +20,7 @@ inline constexpr WarpProgramSource WarpProgramSources[] = {
     {"acceleration"},
     {"actuation"},
     {"bias"},
+    {"body_controls"},
     {"broadphase"},
     {"contact_adhesion"},
     {"contact_cg"},

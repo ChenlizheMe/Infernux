@@ -24,6 +24,7 @@
 [[vk::binding(13, 0)]] StructuredBuffer<uint> awakeCounts;
 [[vk::binding(14, 0)]] StructuredBuffer<uint2> awakeWork;
 [[vk::binding(15, 0)]] StructuredBuffer<uint> contactStepStatus;
+[[vk::binding(16, 0)]] RWStructuredBuffer<uint> fixedSteps;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -140,4 +141,25 @@ void advance_contact_time(uint3 id : SV_DispatchThreadID)
 {
     if (contactStepStatus[id.y] == 0)
         time[id.y] += timestep[id.y];
+}
+
+void advanceControlledClock(uint world)
+{
+    time[world] += timestep[world];
+    fixedSteps[world] += 1u;
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void advance_controlled_time(uint3 id : SV_DispatchThreadID)
+{
+    advanceControlledClock(id.y);
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void advance_contact_controlled_time(uint3 id : SV_DispatchThreadID)
+{
+    if (contactStepStatus[id.y] == 0)
+        advanceControlledClock(id.y);
 }

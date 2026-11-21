@@ -7,6 +7,11 @@
 
 #include <function/renderer/rhi/RhiComputeKernel.h>
 
+namespace infernux
+{
+enum class ForceMode;
+}
+
 namespace infernux::physics::warp
 {
 
@@ -72,6 +77,45 @@ struct WarpRayBuffers
     std::shared_ptr<rhi::ComputeBuffer> hits;
 };
 
+enum class WarpBodyCommandKind : uint32_t
+{
+    SetPosition,
+    SetRotation,
+    SetLinearVelocity,
+    SetAngularVelocity,
+    Force,
+    Torque,
+    ForceAtPosition,
+    MovePosition,
+    MoveRotation,
+    ResetMotion,
+};
+
+struct WarpBodyCommand
+{
+    uint32_t world;
+    uint32_t body;
+    WarpBodyCommandKind kind;
+    ForceMode mode{};
+    ModelVector value{}; // World xyz, or wxyz for rotations.
+    ModelVector point{}; // World point for ForceAtPosition.
+};
+
+enum class WarpBodyPublication
+{
+    None,
+    Device,
+    Cpu,
+};
+
+struct WarpBodyState
+{
+    ModelPose pose;
+    ModelVector centerOfMass;
+    ModelVector linearVelocity;
+    ModelVector angularVelocity;
+};
+
 struct PreparedWarpStep
 {
     std::unique_ptr<WarpStep> step;
@@ -89,11 +133,21 @@ class WarpStep
                                                 const WarpCollisionModel *collision = nullptr,
                                                 WarpCollisionCapacity capacity = {},
                                                 const WarpContactSolver *solver = nullptr,
-                                                WarpRayBatchLayout rayLayout = {});
+                                                WarpRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0);
 
     /// The ordered snapshot holds qpos, qvel, clocks and, with contact response, a uint32 status per world.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     Prepare(bool publish, std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
+
+    /// Commands for one body retain their submitted order. A rejected world
+    /// restores its previous motions along with its fixed clock.
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPublication publication,
+                      std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
+
+    /// World-major body rows (including the world row), followed by one
+    /// ModelWords record per world with the clock bits, solver status and accepted step ordinal.
+    [[nodiscard]] std::shared_ptr<rhi::ComputeBuffer> BodyStates() const noexcept;
 
     /// Enqueue after the state to query. Device consumers enqueue before the next
     /// batch that writes the same hit buffer. A CPU publication pins its own snapshot.
@@ -114,9 +168,20 @@ class WarpStep
     }
 
   private:
+    struct BodyControls
+    {
+        std::shared_ptr<rhi::ComputeBuffer> commands, spans, states;
+        rhi::ComputeDispatchDesc apply, finish;
+        std::vector<rhi::ComputeDispatchDesc> publication;
+        std::vector<uint8_t> motion;
+        uint32_t capacity = 0;
+        uint32_t worlds = 0;
+        uint32_t timestep = 0;
+    };
+
     WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
              uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,
-             std::vector<rhi::ComputeDispatchDesc> rayWork);
+             std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -126,6 +191,7 @@ class WarpStep
     WarpContactStream m_contacts;
     WarpRayBuffers m_rays;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
+    BodyControls m_controls;
 };
 
 } // namespace infernux::physics::warp

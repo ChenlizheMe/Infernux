@@ -9,6 +9,7 @@
 #include "constraint_parameters.slang"
 #include "constraint_stream.slang"
 #include "solver_worlds.slang"
+#include "prescribed_motion.slang"
 
 static const uint NegativeJacobian = 0x80000000u;
 
@@ -25,6 +26,9 @@ static const uint NegativeJacobian = 0x80000000u;
 [[vk::binding(14, 0)]] RWStructuredBuffer<float> acceleration;
 [[vk::binding(15, 0)]] RWStructuredBuffer<float> residuals;
 [[vk::binding(16, 0)]] RWStructuredBuffer<ConstraintEvaluation> evaluation;
+[[vk::binding(17, 0)]] StructuredBuffer<ModelDimensions> motionModel;
+[[vk::binding(18, 0)]] StructuredBuffer<PrescribedMotion> prescribedMotion;
+[[vk::binding(19, 0)]] StructuredBuffer<uint> fixedSteps;
 
 // settings[0] holds geometry count and per-world contact, row and column capacities.
 // settings[1] holds body count, DOF count, worker count and cone/reference flags.
@@ -119,6 +123,32 @@ float jacobianValue(Contact contact, uint axis, float3 pointVelocity, float3 ang
                       dot(contactDirection(contact, axis - 3), angularVelocity);
 }
 
+float contactRowVelocity(Contact contact, uint row, uint count, bool elliptic, float3 linear, float3 angular)
+{
+    if (elliptic)
+        return jacobianValue(contact, row, linear, angular);
+    float value = dot(contact.normalMargin.xyz, linear);
+    if (count > 1)
+    {
+        const uint axis = row / 2 + 1;
+        const float direction = (row & 1u) == 0 ? 1.0 : -1.0;
+        value += direction * contactFriction(contact, axis - 1) * jacobianValue(contact, axis, linear, angular);
+    }
+    return value;
+}
+
+SpatialMotion contactPrescribedMotion(uint geometry, uint world, uint step, float3 point)
+{
+    const uint row = topology[geometry].y;
+    if (row != NoIndex)
+    {
+        const PrescribedMotion motion = prescribedMotion[world * motionModel[0].layout.y + row];
+        if (motion.step == step)
+            return spatial(motion.angular.xyz, motion.linear.xyz + cross(motion.angular.xyz, point - motion.center));
+    }
+    return spatial(float3(0.0), float3(0.0));
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void project_contact_rows(uint3 id : SV_DispatchThreadID)
@@ -150,27 +180,13 @@ void project_contact_rows(uint3 id : SV_DispatchThreadID)
             const float sign = negative ? -1.0 : 1.0;
             const float3 angular = sign * coordinate.angular.xyz;
             const float3 linear = sign * coordinate.linear.xyz + cross(angular, negative ? offsetA : offsetB);
-            const float normal = dot(contact.normalMargin.xyz, linear);
             for (uint row = 0; row < span.y; ++row)
-            {
-                float value = normal;
-                if (elliptic)
-                    value = jacobianValue(contact, row, linear, angular);
-                else if (span.y > 1)
-                {
-                    const uint axis = row / 2 + 1;
-                    const float direction = (row & 1u) == 0 ? 1.0 : -1.0;
-                    value += direction * contactFriction(contact, axis - 1) * jacobianValue(contact, axis, linear, angular);
-                }
-                columns[base + row * span.w + j] = {dof, value};
-            }
+                columns[base + row * span.w + j] = {dof, contactRowVelocity(contact, row, span.y, elliptic, linear, angular)};
         }
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void finish_contact_rows(uint3 id : SV_DispatchThreadID)
+void finishContactRows<let Prescribed : bool>(uint3 id)
 {
     const uint4 limits = settings[0];
     const uint4 config = settings[1];
@@ -202,9 +218,21 @@ void finish_contact_rows(uint3 id : SV_DispatchThreadID)
         const float tangentialFactor = (config.w & DiscreteConstraints) != 0 ? 1.0 + world.x * tangentialDamping : 1.0;
         const uint base = id.y * limits.w + span.z;
         const uint dofBase = id.y * config.y;
+        float3 prescribedLinear = float3(0.0);
+        float3 prescribedAngular = float3(0.0);
+        if (Prescribed)
+        {
+            const uint step = fixedSteps[id.y] + 1u;
+            const float3 point = contact.positionDistance.xyz;
+            const SpatialMotion a = contactPrescribedMotion(contact.geometry.x, id.y, step, point);
+            const SpatialMotion b = contactPrescribedMotion(contact.geometry.y, id.y, step, point);
+            prescribedLinear = b.linear.xyz - a.linear.xyz;
+            prescribedAngular = b.angular.xyz - a.angular.xyz;
+        }
         for (uint row = 0; row < span.y; ++row)
         {
-            float velocity = 0.0;
+            float velocity = Prescribed ? contactRowVelocity(contact, row, span.y, elliptic, prescribedLinear,
+                                                              prescribedAngular) : 0.0;
             const uint columnStart = base + row * span.w;
             for (uint j = 0; j < span.w; ++j)
             {
@@ -233,6 +261,20 @@ void finish_contact_rows(uint3 id : SV_DispatchThreadID)
             rows[id.y * limits.z + span.x + row] = result;
         }
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void finish_contact_rows(uint3 id : SV_DispatchThreadID)
+{
+    finishContactRows<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void finish_controlled_contact_rows(uint3 id : SV_DispatchThreadID)
+{
+    finishContactRows<true>(id);
 }
 
 uint activeConstraintRows(uint world, uint4 limits)
