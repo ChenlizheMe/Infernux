@@ -14,4 +14,6 @@ def adjust_diffuse_lighting(diffuse: shader.vec4, intensity: float, saturation: 
     if intensity <= 0.0 or diffuse.a <= 0.0:
         return shader.vec4(0.0)
     color = shader.mix(diffuse.rgb, shader.vec3(luminance(diffuse.rgb)), 1.0 - saturation)
-    return shader.vec4(color * shader.max(1.0, intensity), shader.saturate(intensity))
+    # Scale the resolved coverage without promoting a partial estimate to full coverage.
+    coverage = shader.saturate(diffuse.a) * shader.saturate(intensity)
+    return shader.vec4(color * shader.max(1.0, intensity), coverage)
