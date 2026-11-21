@@ -458,6 +458,17 @@ try {
         if (!layout)
             throw ShaderCompilationError(FailureDiagnostics("reflect", source.path, diagnostics, targetName));
         AppendDiagnostics(result, diagnostics, "reflect", targetName);
+        if (entryPoint && layout->getEntryPointByIndex(0)->getStage() != SLANG_STAGE_COMPUTE)
+            throw ShaderCompilationError({{"compiler.entry_stage",
+                                           "error",
+                                           source.path,
+                                           0,
+                                           0,
+                                           0,
+                                           0,
+                                           "Entry '" + *entryPoint + "' must be declared with [shader(\"compute\")]",
+                                           "find_entry",
+                                           {}}});
         target.resources = ReflectSlangResources(layout->getGlobalParamsTypeLayout());
         const auto rootParameters = ReflectSlangRootParameters(layout->getGlobalParamsTypeLayout());
 

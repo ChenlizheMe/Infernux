@@ -546,6 +546,22 @@ def test_selected_slang_entry_reuses_only_the_same_frontend_snapshot():
     assert compile_entry('calibrateFloat', libraries=revised, precise=False, targets=('spirv', 'wgsl'))[0]
 
 
+def test_selected_slang_compute_entry_rejects_fragment_at_the_source():
+    source = '[shader("fragment")] float4 shade() : SV_Target { return float4(1, 0, 0, 1); }'
+    path = 'Assets/Kernels/stage_mismatch.slang'
+    with pytest.raises(_Infernux.ShaderCompilationError) as caught:
+        _Infernux._compile_shader_program(source, path, 'stage_mismatch', entry_point='shade')
+    diagnostic = caught.value.diagnostics[0]
+    assert diagnostic['code'] == 'compiler.entry_stage'
+    assert diagnostic['path'] == path
+    assert 'shade' in diagnostic['message']
+
+    program = _Infernux._compile_shader_program(source, path, 'stage_mismatch')
+    assert [(target['target'], target['entries'][0]['stage']) for target in program['targets']] == [
+        ('spirv', 'fragment'), ('wgsl', 'fragment'),
+    ]
+
+
 def test_native_slang_generic_module_prepares_typed_work_and_cooks_both_entries(project, engine, monkeypatch):
     work_script = _write_calibration_project(project)
     data = project / 'build/Data'

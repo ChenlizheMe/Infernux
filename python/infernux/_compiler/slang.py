@@ -995,8 +995,6 @@ def compile_slang_kernel(path, entry_point, domain, libraries, constants, params
 
 def _slang_dispatch_artifact(compiled, path, entry_point, domain, modules, key):
     entry, = compiled["entries"]
-    if entry["stage"] != "compute":
-        raise ValueError(f"Entry '{entry_point}' must be declared with [shader(\"compute\")]")
     width, height, depth = entry["workgroup_size"]
     if width <= 0 or height != 1 or depth != 1:
         raise ValueError(f"Slang compute entry '{entry_point}' requires [numthreads(x, 1, 1)]")
