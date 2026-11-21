@@ -906,10 +906,9 @@ class PhysicsWorld
              const std::vector<JPH::GPU::QueryInput> &, uint64_t sweepColliderId = 0,
              uint64_t sweepColliderGeneration = 0, uint32_t sweepBodyId = UINT32_MAX) const;
     [[nodiscard]] physics::inxphygpu::InxPhyGpuPreparedRayBatch
-    RunClosestGpuRays(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
-                      const std::vector<physics::inxphygpu::InxPhyGpuRay> &,
-                      const physics::inxphygpu::InxPhyGpuDeviceRays *, const PhysicsDeviceRayOutputs *,
-                      const Collider *target = nullptr) const;
+    RunGpuRays(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
+               const std::vector<physics::inxphygpu::InxPhyGpuRay> &, const physics::inxphygpu::InxPhyGpuDeviceRays *,
+               const PhysicsDeviceRayOutputs *, const Collider *target = nullptr, uint32_t allHitCapacity = 0) const;
     PhysicsRigidbodyBatchSource ExportRaycastBatch(const std::vector<physics::inxphygpu::InxPhyGpuRay> &,
                                                    const physics::inxphygpu::InxPhyGpuDeviceRays *,
                                                    const PhysicsDeviceRayOutputs &) const;

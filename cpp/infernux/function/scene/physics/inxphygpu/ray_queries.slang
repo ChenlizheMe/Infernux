@@ -36,7 +36,13 @@ struct RaySurface
 static const RaySurface RayMiss = {float3(0.0), -1.0};
 static const uint RayGroupSize = 64;
 
-[[vk::binding(0, 0)]] StructuredBuffer<uint4> raySettings; // geometry count, rays per world, input world rows, unused
+struct RayHitStream
+{
+    uint count;
+    uint capacity;
+};
+
+[[vk::binding(0, 0)]] StructuredBuffer<uint4> raySettings; // Geometry count, rays per world, input rows (or all-hit capacity), pose offset.
 [[vk::binding(1, 0)]] StructuredBuffer<PhysicsRay> rays;
 [[vk::binding(2, 0)]] StructuredBuffer<CartesianFrame> rayFrames;
 [[vk::binding(3, 0)]] StructuredBuffer<CollisionShape> rayShapes;
@@ -308,8 +314,16 @@ RaySurface rayHeightfield(float3 origin, float3 direction, uint field)
     return best;
 }
 
-RaySurface rayMesh(float3 origin, float3 direction, CollisionShape shape, float maximum, bool backFaces,
-                   out uint subShape, out uint assetFace)
+void appendRayHit(inout RayHitStream stream, RaySurface surface, uint4 identity)
+{
+    if (stream.count < stream.capacity)
+        rayHits[1 + stream.count] = {float4(surface.normal, surface.distance), identity};
+    ++stream.count;
+}
+
+RaySurface rayMesh<let All : bool>(float3 origin, float3 direction, CollisionShape shape, float maximum, bool backFaces,
+                                 uint geometry, uint body, CartesianFrame frame, inout RayHitStream stream,
+                                 out uint subShape, out uint assetFace)
 {
     const TriangleMeshTree tree = triangleMeshTree(rayModel, shape);
     float3 b0, b1;
@@ -343,7 +357,13 @@ RaySurface rayMesh(float3 origin, float3 direction, CollisionShape shape, float 
                     (!backFaces && dot(hit.normal, direction) >= 0.0))
                     continue;
                 const uint id = triangleMeshSubShape(rayModel, tree, triangle.w);
-                if (!found || hit.distance < best.distance || id < subShape)
+                if (All)
+                {
+                    const RaySurface world = {rotatePoint(frame, hit.normal), hit.distance};
+                    appendRayHit(stream, world, uint4(geometry, body, id,
+                        triangleMeshFeature(rayModel, tree, triangle.w, 2)));
+                }
+                else if (!found || hit.distance < best.distance || id < subShape)
                 {
                     best = hit;
                     subShape = id;
@@ -401,10 +421,8 @@ RaySurface rayHull(float3 origin, float3 direction, CollisionShape shape, uint g
     return {depth <= 0.0 ? nearest : front, earliest};
 }
 
-RaySurface rayGeometrySurface(float3 origin, float3 direction, CollisionShape shape, uint geometry, float maximum,
-                              bool backFaces, inout uint subShape, out uint assetFace)
+RaySurface rayGeometrySurface(float3 origin, float3 direction, CollisionShape shape, uint geometry)
 {
-    assetFace = NoIndex;
     const float3 size = shape.size.xyz;
     switch (shape.type.x)
     {
@@ -455,20 +473,18 @@ RaySurface rayGeometrySurface(float3 origin, float3 direction, CollisionShape sh
         return rayHeightfield(origin, direction, shape.type.y);
     case GeomMesh:
         return rayHull(origin, direction, shape, geometry);
-    case GeomTriangleMesh:
-        return rayMesh(origin, direction, shape, maximum, backFaces, subShape, assetFace);
     default:
         return RayMiss;
     }
 }
 
-RaySurface rayWorldSurface(CartesianFrame frame, PhysicsRay ray, CollisionShape shape, uint geometry,
-                           inout uint subShape, out uint assetFace)
+RaySurface rayWorldSurface<let All : bool>(CartesianFrame frame, PhysicsRay ray, CollisionShape shape, uint geometry,
+                                          uint body, inout RayHitStream stream, inout uint subShape, out uint assetFace)
 {
     const float3 offset = ray.originLimit.xyz - frame.position.xyz;
+    assetFace = NoIndex;
     if (shape.type.x == GeomSphere)
     {
-        assetFace = NoIndex;
         const float radius = shape.size.x;
         const float squared = dot(offset, offset);
         if (squared <= radius * radius)
@@ -479,12 +495,19 @@ RaySurface rayWorldSurface(CartesianFrame frame, PhysicsRay ray, CollisionShape 
         const float3 point = ray.originLimit.xyz + ray.direction.xyz * distance;
         return {normalize(point - frame.position.xyz), distance};
     }
-    const RaySurface local = rayGeometrySurface(rayLocalVector(frame, offset), rayLocalVector(frame, ray.direction.xyz),
-        shape, geometry, ray.originLimit.w, (ray.filter.z & RayHitBackFaces) != 0, subShape, assetFace);
+    const float3 origin = rayLocalVector(frame, offset);
+    const float3 direction = rayLocalVector(frame, ray.direction.xyz);
+    RaySurface local;
+    if (shape.type.x == GeomTriangleMesh)
+        local = rayMesh<All>(origin, direction, shape, ray.originLimit.w, (ray.filter.z & RayHitBackFaces) != 0,
+                             geometry, body, frame, stream, subShape, assetFace);
+    else
+        local = rayGeometrySurface(origin, direction, shape, geometry);
     return {rotatePoint(frame, local.normal), local.distance};
 }
 
-void testRayGeometry(PhysicsRay ray, uint base, uint geometry, inout RaySurface best, inout uint4 winner)
+void testRayGeometry<let All : bool>(PhysicsRay ray, uint base, uint geometry, inout RayHitStream stream,
+                                    inout RaySurface best, inout uint4 winner)
 {
     const uint4 metadata = rayGeometry[geometry];
     const uint surfaceFlags = RayIncludeStatic | RayIncludeTriggers;
@@ -495,9 +518,14 @@ void testRayGeometry(PhysicsRay ray, uint base, uint geometry, inout RaySurface 
     ray.originLimit.w = best.distance;
     uint subShape = metadata.w;
     uint assetFace;
-    const RaySurface surface = rayWorldSurface(rayFrames[base + geometry], ray, rayShapes[geometry], geometry,
-                                               subShape, assetFace);
-    if (surface.distance >= 0.0 && (surface.distance < best.distance ||
+    const RaySurface surface = rayWorldSurface<All>(rayFrames[base + geometry], ray, rayShapes[geometry], geometry,
+                                                     metadata.x, stream, subShape, assetFace);
+    if (All)
+    {
+        if (surface.distance >= 0.0 && surface.distance <= best.distance)
+            appendRayHit(stream, surface, uint4(geometry, metadata.x, subShape, assetFace));
+    }
+    else if (surface.distance >= 0.0 && (surface.distance < best.distance ||
         (surface.distance == best.distance && geometry < winner.x)))
     {
         best = surface;
@@ -505,16 +533,14 @@ void testRayGeometry(PhysicsRay ray, uint base, uint geometry, inout RaySurface 
     }
 }
 
-[shader("compute")]
-[numthreads(RayGroupSize, 1, 1)]
-void raycast_worlds(uint3 id : SV_DispatchThreadID)
+void traceWorldRay<let All : bool>(uint3 id)
 {
     const uint4 settings = raySettings[0];
     if (id.x >= settings.y)
         return;
-    const PhysicsRay ray = rays[(id.y % settings.z) * settings.y + id.x];
+    const PhysicsRay ray = rays[All ? 0 : (id.y % settings.z) * settings.y + id.x];
     const uint output = id.y * settings.y + id.x;
-    if (ray.originLimit.w <= 0.0)
+    if (!All && ray.originLimit.w <= 0.0)
     {
         rayHits[output] = {float4(0.0, 0.0, 0.0, -1.0), uint4(NoIndex)};
         return;
@@ -522,16 +548,17 @@ void raycast_worlds(uint3 id : SV_DispatchThreadID)
     RaySurface best = {float3(0.0), ray.originLimit.w};
     uint4 winner = uint4(NoIndex);
     const uint base = id.y * settings.x;
-    if ((ray.filter.z & RayTargetGeometry) != 0)
+    RayHitStream stream = {0u, All ? settings.z : 0u};
+    if (!All && (ray.filter.z & RayTargetGeometry) != 0)
     {
         for (uint geometry = ray.filter.x; geometry < ray.filter.y; ++geometry)
-            testRayGeometry(ray, base, geometry, best, winner);
+            testRayGeometry<All>(ray, base, geometry, stream, best, winner);
         rayHits[output] = {float4(best.normal, winner.x == NoIndex ? -1.0 : best.distance), winner};
         return;
     }
     const uint4 index = rayIndex[0];
     for (uint plane = 0; plane < index.w; ++plane)
-        testRayGeometry(ray, base, rayIndexAt(rayIndex, index.z, plane), best, winner);
+        testRayGeometry<All>(ray, base, rayIndexAt(rayIndex, index.z, plane), stream, best, winner);
 
     const uint nodeCount = rayIndex[1].x;
     const uint boundsBase = id.y * nodeCount;
@@ -551,13 +578,33 @@ void raycast_worlds(uint3 id : SV_DispatchThreadID)
         {
             const uint end = links.x + (links.y & ~BvhLeaf);
             for (uint i = links.x; i < end; ++i)
-                testRayGeometry(ray, base, rayIndexAt(rayIndex, index.y, i), best, winner);
+                testRayGeometry<All>(ray, base, rayIndexAt(rayIndex, index.y, i), stream, best, winner);
         }
         node = links.z;
     }
 
-    if (winner.x == NoIndex)
+    if (All)
+    {
+        rayHits[0] = {float4(0.0), uint4(stream.count, 0, 0, 0)};
+        for (uint i = stream.count; i < stream.capacity; ++i)
+            rayHits[1 + i] = {float4(0.0, 0.0, 0.0, -1.0), uint4(NoIndex)};
+    }
+    else if (winner.x == NoIndex)
         rayHits[output] = {float4(0.0, 0.0, 0.0, -1.0), winner};
     else
         rayHits[output] = {float4(best.normal, best.distance), winner};
+}
+
+[shader("compute")]
+[numthreads(RayGroupSize, 1, 1)]
+void raycast_worlds(uint3 id : SV_DispatchThreadID)
+{
+    traceWorldRay<false>(id);
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void raycast_world_all()
+{
+    traceWorldRay<true>(uint3(0));
 }

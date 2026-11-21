@@ -513,42 +513,6 @@ QueryHit query_leaf(QueryInput request, ShapeModel shape, BodyState state, uint 
         status = QueryNumericalFailure;
         return hit;
     }
-    if (request.meta.x == QueryRay)
-    {
-        float3 direction = jph_capsule_unit(request.direction.xyz);
-        float3 local_origin = jph_inverse_rotate(rotation, request.positionMaximum.xyz - center);
-        float3 local_direction = jph_inverse_rotate(rotation, direction);
-        if (!all(isfinite(local_origin)) || !all(isfinite(local_direction)))
-        {
-            status = QueryNumericalFailure;
-            return hit;
-        }
-        float distance;
-        float3 normal;
-        bool found;
-        if (shape.meta.x == ShapeSphere)
-            found = query_sphere(local_origin, local_direction, shape.geometry.w, request.positionMaximum.w, distance, normal);
-        else if (shape.meta.x == ShapeBox)
-            found = query_rounded_box(local_origin, local_direction, shape.geometry, request.positionMaximum.w, distance, normal);
-        else if (shape.meta.x == ShapeCapsule)
-            found = query_capsule(local_origin, local_direction, shape.geometry.y, shape.geometry.w,
-                                  request.positionMaximum.w, distance, normal);
-        else
-        {
-            status = QueryUnsupported;
-            return hit;
-        }
-        if (found)
-        {
-            hit.meta = uint4(shape.meta.y, 1u, leaf, 0u);
-            hit.positionDistance = float4(request.positionMaximum.xyz + direction * distance, distance);
-            hit.normalFraction = float4(jph_rotate(rotation, normal), request.positionMaximum.w > 0.0f ? distance / request.positionMaximum.w : 0.0f);
-            hit.pointADepth = float4(hit.positionDistance.xyz, 0.0f);
-            if (!all(isfinite(hit.positionDistance)) || !all(isfinite(hit.normalFraction)))
-                status = QueryNumericalFailure;
-        }
-        return hit;
-    }
     uint query_type = request.meta.x == QueryClosestPoint ? ShapeSphere : request.meta.z;
     float4 query_geometry = request.meta.x == QueryClosestPoint ? float4(0.0f) : request.geometry;
     JphPairMetric metric = jph_pair_metric(query_type, request.positionMaximum.xyz, request.rotation, query_geometry,
@@ -1109,11 +1073,7 @@ void query_evaluate(uint3 tid : SV_DispatchThreadID)
     cast.progress = float4(0.0f, 3.402823466e+38f, 0.0f, request.positionMaximum.w);
     cast.normal = float4(0.0f);
     cast.iteration = uint4(0u);
-    if (request.meta.x == QueryRay && request.positionMaximum.w == 0.0f)
-    {
-        cast.cursor.w = status = QueryNumericalFailure;
-    }
-    else if (cvx_query_slots() != 0u && cvx_query_deferred(request))
+    if (cvx_query_slots() != 0u && cvx_query_deferred(request))
     {
         cast.cursor.y = 0u;
         cast.cursor.w = status = QueryPending;

@@ -283,7 +283,7 @@ void ValidateRayInput(const glm::vec3 &origin, const glm::vec3 &direction, float
         throw std::invalid_argument("Physics ray requires finite inputs, positive distance and nonzero direction");
 }
 
-void QueryRayInput(QueryInput &request, const glm::vec3 &origin, const glm::vec3 &direction, float maximum)
+void SetShapeCastPath(QueryInput &request, const glm::vec3 &origin, const glm::vec3 &direction, float maximum)
 {
     ValidateRayInput(origin, direction, maximum);
     request.positionMaximum = {origin.x, origin.y, origin.z, maximum};
@@ -3711,10 +3711,11 @@ void PhysicsWorld::RaycastBatch(const float *origins, const float *directions, s
     RaycastBatchPublished(origins, directions, count, maximum, hits, mask, layers, triggers, generation, profile, false,
                           cpuEpoch);
 }
-physics::inxphygpu::InxPhyGpuPreparedRayBatch PhysicsWorld::RunClosestGpuRays(
-    PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
-    const std::vector<physics::inxphygpu::InxPhyGpuRay> &rays, const physics::inxphygpu::InxPhyGpuDeviceRays *device,
-    const PhysicsDeviceRayOutputs *outputs, const Collider *target) const
+physics::inxphygpu::InxPhyGpuPreparedRayBatch
+PhysicsWorld::RunGpuRays(PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
+                         const std::vector<physics::inxphygpu::InxPhyGpuRay> &rays,
+                         const physics::inxphygpu::InxPhyGpuDeviceRays *device, const PhysicsDeviceRayOutputs *outputs,
+                         const Collider *target, uint32_t allHitCapacity) const
 {
     using namespace physics::inxphygpu;
     const size_t count = device ? device->count : rays.size();
@@ -3746,9 +3747,9 @@ physics::inxphygpu::InxPhyGpuPreparedRayBatch PhysicsWorld::RunClosestGpuRays(
                 std::memcpy(input.data.data(), rays.data(), input.data.size());
             }
         }
-        batch =
-            plan->query.Prepare(*m_gpuHost, {accepted->bodyStates, 0, accepted->bodyCount, sizeof(JPH::GPU::BodyState)},
-                                static_cast<uint32_t>(count), !outputs, std::move(uploads), device, outputs);
+        batch = plan->query.Prepare(
+            *m_gpuHost, {accepted->bodyStates, 0, accepted->bodyCount, sizeof(JPH::GPU::BodyState)},
+            static_cast<uint32_t>(count), !outputs, std::move(uploads), device, outputs, allHitCapacity);
         return JoltGpuControlWork{batch.packet};
     });
     if (replacement && batch.packet)
@@ -3800,7 +3801,7 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
     } else if (const auto gpu = ReadGpuSpatialQueryPublication(domain)) {
         using namespace physics::inxphygpu;
         const auto rays = PackSceneRays(origins, directions, count, maximum, layers, triggers);
-        const auto batch = RunClosestGpuRays(domain, gpu, rays, nullptr, nullptr);
+        const auto batch = RunGpuRays(domain, gpu, rays, nullptr, nullptr);
         FrameWorkOwner::Scope materialize(*m_gpuWork);
         std::vector<InxPhyGpuRayHit> records(count);
         batch.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(InxPhyGpuRayHit));
@@ -3858,7 +3859,7 @@ PhysicsRigidbodyBatchSource PhysicsWorld::ExportRaycastBatch(const std::vector<p
     const auto publication = ReadGpuQueryPublication(domain);
     const auto generation = domain.queryGeneration.load(std::memory_order_acquire);
     if (device ? device->count != 0 : !host.empty())
-        (void)RunClosestGpuRays(domain, publication, host, device, &outputs);
+        (void)RunGpuRays(domain, publication, host, device, &outputs);
     return {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex, generation};
 }
 
@@ -4515,7 +4516,7 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
     const float coordinates[3] = {origin.x, origin.y, origin.z};
     const float axes[3] = {direction.x, direction.y, direction.z};
     const auto rays = PackSceneRays(coordinates, axes, 1, maximum, UINT32_MAX, true);
-    const auto batch = RunClosestGpuRays(domain, publication, rays, nullptr, nullptr, &collider);
+    const auto batch = RunGpuRays(domain, publication, rays, nullptr, nullptr, &collider);
     if (!batch.packet)
         return false;
     FrameWorkOwner::Scope materialize(*m_gpuWork);
@@ -4560,8 +4561,7 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
                                                  uint32_t layers, bool triggers) const
 {
     auto &domain = CurrentDomain();
-    auto request = Query(QueryRay, QueryAll, layers, triggers);
-    QueryRayInput(request, origin, direction, maximum);
+    ValidateRayInput(origin, direction, maximum);
     SealSpatialQuery(domain);
     if (domain.cpuScene)
         return JoltCpuQueries(*domain.cpuScene).RaycastAll(origin, direction, maximum, {layers, triggers});
@@ -4569,14 +4569,30 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
     std::vector<RaycastHit> hits;
     if (!gpu)
         return hits;
-    const auto result = RunQuery(domain, gpu, {request});
-    {
+    const float coordinates[3] = {origin.x, origin.y, origin.z};
+    const float axes[3] = {direction.x, direction.y, direction.z};
+    const auto rays = PackSceneRays(coordinates, axes, 1, maximum, layers, triggers);
+    using physics::inxphygpu::InxPhyGpuRayHit;
+    const auto read = [&](uint32_t capacity) {
+        const auto batch = RunGpuRays(domain, gpu, rays, nullptr, nullptr, nullptr, capacity);
+        std::vector<InxPhyGpuRayHit> rows(size_t{capacity} + 1);
         FrameWorkOwner::Scope materialize(*m_gpuWork);
-        const auto &records = result->ReadHits();
-        hits.reserve(records.size());
-        for (const auto &record : records)
-            hits.push_back(DecodeQueryHit(*result, record));
-    }
+        batch.packet->Readback(0)->ReadInto(rows.data(), rows.size() * sizeof(InxPhyGpuRayHit));
+        return rows;
+    };
+    // Read a short result prefix. Dense intersections expand to the exact size
+    // against the same retained poses, regardless of the scene's triangle count.
+    constexpr uint32_t capacity = 32;
+    auto rows = read(capacity);
+    const uint32_t count = rows.front().identity[0];
+    if (count > capacity)
+        rows = read(count);
+    hits.resize(count);
+    for (size_t i = 0; i < hits.size(); ++i)
+        (void)DecodeSceneRayHit(*domain.sceneRays, rays.front(), rows[i + 1], hits[i]);
+    std::sort(hits.begin(), hits.end(), [](const RaycastHit &a, const RaycastHit &b) {
+        return std::tie(a.distance, a.bodyId, a.subShapeId) < std::tie(b.distance, b.bodyId, b.subShapeId);
+    });
     return hits;
 }
 
@@ -4649,7 +4665,7 @@ bool PhysicsWorld::SphereCast(const glm::vec3 &center, float radius, const glm::
     auto &domain = CurrentDomain();
     auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
     QuerySphereInput(request, center, radius);
-    QueryRayInput(request, center, direction, maximum);
+    SetShapeCastPath(request, center, direction, maximum);
     return QueryClosestCast(domain, request, JoltCpuQueries::Sphere{center, radius}, hit);
 }
 bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
@@ -4659,7 +4675,7 @@ bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents
     auto &domain = CurrentDomain();
     auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
     QueryBoxInput(request, center, halfExtents, rotation);
-    QueryRayInput(request, center, direction, maximum);
+    SetShapeCastPath(request, center, direction, maximum);
     return QueryClosestCast(domain, request, JoltCpuQueries::Box{center, halfExtents, rotation}, hit);
 }
 bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
@@ -4697,7 +4713,7 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
         if (primitive->primitive.meta.y & ShapeOneSidedTriangle)
             request.geometry = {request.geometry.x, 0, 0, 0};
         request.rotation = primitive->primitive.rotation;
-        QueryRayInput(request, Vector(primitive->primitive.position), displacement, static_cast<float>(distance));
+        SetShapeCastPath(request, Vector(primitive->primitive.position), displacement, static_cast<float>(distance));
         request.source.z = static_cast<uint32_t>(objectId);
         request.source.w = static_cast<uint32_t>(objectId >> 32);
         request.filter.z = static_cast<uint32_t>(colliderId);
@@ -4716,7 +4732,7 @@ bool PhysicsWorld::CapsuleCast(const glm::vec3 &a, const glm::vec3 &b, float rad
     auto &domain = CurrentDomain();
     auto request = Query(QueryShapeCast, QueryClosest, layers, triggers);
     QueryCapsuleInput(request, a, b, radius);
-    QueryRayInput(request, Vector(request.positionMaximum), direction, maximum);
+    SetShapeCastPath(request, Vector(request.positionMaximum), direction, maximum);
     return QueryClosestCast(domain, request, JoltCpuQueries::Capsule{a, b, radius}, hit);
 }
 std::shared_ptr<const PhysicsShapeGeometry> PhysicsWorld::ResolveShapeGeometry(PhysicsDomain &domain,

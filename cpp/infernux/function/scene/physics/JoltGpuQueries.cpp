@@ -308,7 +308,7 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
     }
     const bool cast = query.meta.x == QueryShapeCast;
     const bool sweep = cast && (query.meta.w & QuerySweepPolicy);
-    if ((!cast && query.meta.x > QueryPenetration) || query.meta.y > QueryAny ||
+    if ((!cast && (query.meta.x < QueryOverlap || query.meta.x > QueryPenetration)) || query.meta.y > QueryAny ||
         (query.meta.w &
          ~(QueryTargetCollider | QueryExcludeBody | (cast ? (QuerySweepPolicy | QuerySweepPairPolicy) : 0u))) ||
         (sweep && (query.meta.w & QueryTargetCollider)) || ((query.meta.w & QuerySweepPairPolicy) && !sweep) ||
@@ -327,15 +327,15 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
     } else {
         if (!hasPublication || query.source.y)
             throw JoltGpuQueryRequestError("Jolt GPU world query requires one retained publication");
-        if (query.meta.x == QueryRay || cast) {
+        if (cast) {
             if (query.positionMaximum.w <= 0 ||
                 (query.direction.x == 0 && query.direction.y == 0 && query.direction.z == 0))
-                throw JoltGpuQueryRequestError("Jolt GPU ray requires nonzero direction and positive maximum distance");
-            if (cast)
-                ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
+                throw JoltGpuQueryRequestError(
+                    "Jolt GPU shape cast requires nonzero direction and positive maximum distance");
+            ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
         } else {
             if (query.positionMaximum.w != 0)
-                throw JoltGpuQueryRequestError("Jolt GPU non-ray query maximum must be zero");
+                throw JoltGpuQueryRequestError("Jolt GPU non-sweep query maximum must be zero");
             if (query.meta.x == QueryOverlap)
                 ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
             if (query.meta.x == QueryBodyBounds &&
@@ -697,8 +697,8 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
             throw JoltGpuQueryRequestError("Jolt GPU gather body slot has no retained actor identity");
     }
     const bool geometric = std::any_of(queries.begin(), queries.end(), [](const auto &query) {
-        return query.meta.x == QueryRay || query.meta.x == QueryOverlap || query.meta.x == QueryClosestPoint ||
-               query.meta.x == QueryPenetration || query.meta.x == QueryShapeCast;
+        return query.meta.x == QueryOverlap || query.meta.x == QueryClosestPoint || query.meta.x == QueryPenetration ||
+               query.meta.x == QueryShapeCast;
     });
     bool generic = geometric && std::any_of(primitives.begin(), primitives.end(), [](const auto &primitive) {
                        return primitive.meta.x == ShapeCylinder || primitive.meta.x == ShapeConvexHull;

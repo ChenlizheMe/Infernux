@@ -105,7 +105,7 @@ struct InxPhyGpuDeviceRays
 
 struct PreparedInxPhyGpuRayQuery;
 
-/// Closest queries consume an accepted pose buffer and their immutable geometry.
+/// Queries consume an accepted pose buffer and their immutable geometry.
 class InxPhyGpuPublishedRayQuery
 {
   public:
@@ -115,11 +115,10 @@ class InxPhyGpuPublishedRayQuery
                                                          uint32_t sourceBodyCount,
                                                          const std::vector<uint32_t> &centerOfMassRows);
 
-    [[nodiscard]] InxPhyGpuPreparedRayBatch Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
-                                                    uint32_t rayCount, bool readback,
-                                                    std::vector<rhi::ComputeBufferUpdate> updates,
-                                                    const InxPhyGpuDeviceRays *deviceRays = nullptr,
-                                                    const PhysicsDeviceRayOutputs *outputs = nullptr) const;
+    [[nodiscard]] InxPhyGpuPreparedRayBatch
+    Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, uint32_t rayCount, bool readback,
+            std::vector<rhi::ComputeBufferUpdate> updates, const InxPhyGpuDeviceRays *deviceRays = nullptr,
+            const PhysicsDeviceRayOutputs *outputs = nullptr, uint32_t allHitCapacity = 0) const;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Inputs() const noexcept
     {
         return m_inputs;
@@ -132,7 +131,7 @@ class InxPhyGpuPublishedRayQuery
   private:
     friend class InxPhyGpuStep;
     std::shared_ptr<rhi::ComputeBuffer> m_inputs, m_settings, m_inputSettings, m_outputSettings;
-    rhi::ComputeDispatchDesc m_geometry, m_pack, m_project;
+    rhi::ComputeDispatchDesc m_geometry, m_pack, m_project, m_traceAll;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_output;

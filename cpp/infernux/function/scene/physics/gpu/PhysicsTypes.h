@@ -596,7 +596,6 @@ struct JPH_GPU_ALIGN BodyCommandParams
 };
 
 JPH_GPU_CONSTANT(InvalidQueryBodySlot, 0xFFFFFFFFu);
-JPH_GPU_CONSTANT(QueryRay, 0);
 JPH_GPU_CONSTANT(QueryOverlap, 1);
 JPH_GPU_CONSTANT(QueryClosestPoint, 2);
 JPH_GPU_CONSTANT(QueryBodyBounds, 3);

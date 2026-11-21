@@ -12,7 +12,7 @@ uint cvx_query_slots()
 }
 bool cvx_query_deferred(QueryInput request)
 {
-    return request.meta.x==QueryRay || request.meta.x==QueryOverlap || request.meta.x==QueryClosestPoint ||
+    return request.meta.x==QueryOverlap || request.meta.x==QueryClosestPoint ||
            request.meta.x==QueryPenetration || request.meta.x==QueryShapeCast;
 }
 CvxOperand cvx_query_request(QueryInput request)
@@ -43,7 +43,7 @@ CvxOperand cvx_query_target(QueryInput request,uint leaf,float3 origin=float3(0.
 bool cvx_query_backfacing(QueryInput request,CvxOperand target)
 {
     if(!cvx_is_triangle(target) || request.meta.x==QueryClosestPoint) return false;
-    if(request.meta.x==QueryRay || request.meta.x==QueryShapeCast)
+    if(request.meta.x==QueryShapeCast)
         return dot(cvx_triangle_normal(target),jph_capsule_unit(request.direction.xyz))>0;
     return (request.meta.x==QueryOverlap || request.meta.x==QueryPenetration)
            && cvx_triangle_backfacing(target,request.positionMaximum.xyz);
@@ -119,163 +119,6 @@ void cvx_query_collect_unit(uint b)
 
 // CylinderShape::CastRay/RayCylinder: full cylinder (the convex radius is an
 // internal support convention, not a rounded ray volume). Scale coordinates.
-bool cvx_query_cylinder(float3 origin,float3 direction,float radius,float height,float maximum,out float distance,out float3 normal)
-{
-    float scale=max(jph_capsule_max_abs(origin),max(radius,height));
-    float3 p=origin/scale; float r=radius/scale,h=height/scale;
-    float c=dot(p.xz,p.xz)-r*r,enter=0.0f; bool radial=true;
-    if(c>0) {
-        float a=dot(direction.xz,direction.xz),d=dot(p.xz,direction.xz);
-        if(a==0 || d>=0) radial=false;
-        else {
-            float2 perpendicular=p.xz-direction.xz*(d/a); float disc=a*(r*r-dot(perpendicular,perpendicular));
-            if(disc<0) radial=false;
-            else enter=query_entering_distance(d,a,sqrt(disc),c,1.0f);
-        }
-    }
-    distance=0; normal=float3(0,-1,0);
-    if(!radial) return false;
-    if(abs(p.y+enter*direction.y)>h) {
-        if(direction.y==0) return false;
-        enter=((direction.y<0?h:-h)-p.y)/direction.y;
-        if(enter<0 || dot(p.xz+enter*direction.xz,p.xz+enter*direction.xz)>r*r) return false;
-    }
-    distance=enter*scale; if(distance>maximum || distance<0) return false;
-    float3 at=p+enter*direction; float radialLength=length(at.xz);
-    if(abs(radialLength-r)<abs(abs(at.y)-h)) normal=float3(at.x/radialLength,0,at.z/radialLength);
-    else normal=float3(0,at.y>0?1.0f:-1.0f,0);
-    return true;
-}
-QueryHit cvx_query_ray_hit(QueryInput request,uint leaf,CvxOperand target,float distance,float3 normal)
-{
-    QueryHit hit=query_miss(); hit.meta=uint4(shape_models[leaf].meta.y,1,leaf,0);
-    hit.positionDistance=float4(request.positionMaximum.xyz+jph_capsule_unit(request.direction.xyz)*distance,distance);
-    // Native triangle rays return the authored CCW face normal. The two
-    // planes of the exact planar hull are not an outward-normal tie breaker.
-    float3 worldNormal=cvx_is_triangle(target)?cvx_triangle_normal(target):jph_rotate(target.rotation,normal);
-    hit.normalFraction=float4(worldNormal,request.positionMaximum.w>0?distance/request.positionMaximum.w:0);
-    hit.pointADepth=float4(hit.positionDistance.xyz,0); return hit;
-}
-float2 cvx_query_triangle_project(float3 point,uint x,uint y,uint z,float2 shear)
-{
-    precise float2 projected=float2(point[x],point[y])-shear*point[z];
-    return projected;
-}
-float cvx_query_triangle_edge(float2 a,float2 b)
-{
-    // Evaluate opposite windings in the same operand order, even on targets
-    // that contract multiply-subtract, then restore the directed edge sign.
-    bool reversed=b.x<a.x || (b.x==a.x && b.y<a.y);
-    float2 lo=reversed?b:a,hi=reversed?a:b;
-    precise float edge=lo.x*hi.y-lo.y*hi.x;
-    return reversed?-edge:edge;
-}
-void cvx_query_triangle_ray(uint b,QueryInput request,uint leaf,CvxOperand target)
-{
-    uint count,first;
-    if(!cvx_hull_header(query_geometry,target,count,first,true)) { cvx_query_failure(b,63u); return; }
-    uint base=target.geometryReference.x;
-    uint vertices=query_geometry[base+2u].z;
-    if(vertices==0u) { cvx_query_failure(b,63u); return; }
-
-    ShapeModel shape=shape_models[leaf];
-    BodyState body=body_states[shape.meta.y-query_params.selection.y];
-    float3 meshOriginCOM=float3(shape.localPositionCOM.w,shape.material.zw);
-    float3 originInBody=jph_inverse_rotate(body.rotation,request.positionMaximum.xyz-body.positionCOM.xyz);
-    float3 origin=jph_inverse_rotate(shape.localRotation,originInBody-meshOriginCOM);
-    float3 directionInBody=jph_inverse_rotate(body.rotation,jph_capsule_unit(request.direction.xyz));
-    float3 direction=jph_inverse_rotate(shape.localRotation,directionInBody);
-    if(!all(isfinite(origin)) || !all(isfinite(direction))) { cvx_query_failure(b,62u); return; }
-
-    // Project along the dominant ray axis. Adjacent leaves use the same ray
-    // frame and project the same bit-identical mesh vertices.
-    float3 d=abs(direction);
-    uint z=d.x>=d.y && d.x>=d.z?0u:(d.y>=d.z?1u:2u);
-    uint x=(z+1u)%3u,y=(z+2u)%3u;
-    if(direction[z]==0.0f) { cvx_query_next_leaf(b); return; }
-    float2 shear=float2(direction[x],direction[y])/direction[z];
-    float3 a=asfloat(query_geometry[base+vertices]).xyz-origin;
-    float3 p=asfloat(query_geometry[base+vertices+1u]).xyz-origin;
-    float3 c=asfloat(query_geometry[base+vertices+2u]).xyz-origin;
-    float2 pa=cvx_query_triangle_project(a,x,y,z,shear);
-    float2 pb=cvx_query_triangle_project(p,x,y,z,shear);
-    float2 pc=cvx_query_triangle_project(c,x,y,z,shear);
-    float3 weights=float3(cvx_query_triangle_edge(pb,pc),cvx_query_triangle_edge(pc,pa),
-                          cvx_query_triangle_edge(pa,pb));
-    if(!all(isfinite(weights))) { cvx_query_failure(b,62u); return; }
-    float area=weights.x+weights.y+weights.z;
-    if(!isfinite(area)) { cvx_query_failure(b,62u); return; }
-    if(area==0.0f || (any(weights<0.0f) && any(weights>0.0f))) { cvx_query_next_leaf(b); return; }
-
-    float distance=dot(weights/area,float3(a[z],p[z],c[z]))/direction[z];
-    if(!isfinite(distance)) { cvx_query_failure(b,62u); return; }
-    if(distance<0.0f || distance>request.positionMaximum.w) { cvx_query_next_leaf(b); return; }
-    cvx_query_collect_begin(b,cvx_query_ray_hit(request,leaf,target,distance,float3(0.0f)));
-}
-void cvx_query_ray_begin(uint b,QueryInput request,uint leaf,CvxOperand target)
-{
-    float3 origin=jph_inverse_rotate(target.rotation,request.positionMaximum.xyz-target.center.xyz);
-    float3 direction=jph_inverse_rotate(target.rotation,jph_capsule_unit(request.direction.xyz));
-    if(!all(isfinite(origin)) || !all(isfinite(direction))) { cvx_query_failure(b,62u); return; }
-    if(target.meta.x==ShapeCylinder) {
-        float distance; float3 normal;
-        if(cvx_query_cylinder(origin,direction,target.geometry.x,target.geometry.y,request.positionMaximum.w,distance,normal))
-            cvx_query_collect_begin(b,cvx_query_ray_hit(request,leaf,target,distance,normal));
-        else cvx_query_next_leaf(b);
-        return;
-    }
-    uint count,first;
-    if(!cvx_hull_header(query_geometry,target,count,first,true)) { cvx_query_failure(b,63u); return; }
-    uint4 header=query_geometry[target.geometryReference.x];
-    cvx_put(query_control,b,50,float4(origin,0)); cvx_put(query_control,b,51,float4(direction,0));
-    cvx_put(query_control,b,52,float4(0,request.positionMaximum.w,3.402823466e38f,0));
-    query_control[b+49u]=uint4(0,0,0,0); query_control[b+48u].y=3u;
-    if(header.w==2u) {
-        uint planes=query_geometry[target.geometryReference.x+1u].z;
-        float4 plane=asfloat(query_geometry[target.geometryReference.x+planes]); float projection=dot(plane.xyz,direction);
-        if(abs(projection*request.positionMaximum.w)<1e-12f) { cvx_query_next_leaf(b); return; }
-        float distance=-(dot(plane.xyz,origin)+plane.w)/projection;
-        if(distance<0 || distance>request.positionMaximum.w) { cvx_query_next_leaf(b); return; }
-        cvx_put(query_control,b,52,float4(distance,distance,3.402823466e38f,0)); query_control[b+48u].y=4u;
-    }
-}
-void cvx_query_ray_unit(uint b)
-{
-    uint index=query_control[b+48u].x; QueryInput request=query_load_input(index);
-    QueryCastState state=query_load_cast_state(index); CvxOperand target=cvx_query_target(request,state.cursor.x);
-    uint base=target.geometryReference.x; uint4 header=query_geometry[base],layout=query_geometry[base+1u];
-    uint4 cursor=query_control[b+49u]; float3 origin=cvx_f(query_control,b,50).xyz,direction=cvx_f(query_control,b,51).xyz;
-    float4 range=cvx_f(query_control,b,52); uint phase=query_control[b+48u].y;
-    if(phase==3u) {
-        if(cursor.x==header.w) { query_control[b+49u].x=0; query_control[b+48u].y=5u; return; }
-        float4 plane=asfloat(query_geometry[base+layout.z+cursor.x]); float d=dot(plane.xyz,origin)+plane.w,projection=dot(plane.xyz,direction);
-        if(abs(projection*request.positionMaximum.w)>=1e-12f) {
-            float distance=-d/projection;
-            if(projection<0) range.x=max(range.x,distance); else range.y=min(range.y,distance);
-        } else if(d>0) { cvx_query_next_leaf(b); return; }
-        if(range.x>range.y || range.y<0) { cvx_query_next_leaf(b); return; }
-        cvx_put(query_control,b,52,range); ++query_control[b+49u].x; return;
-    }
-    if(phase==4u) {
-        uint4 face=query_geometry[base+layout.w];
-        if(cursor.x==face.y) { query_control[b+49u].x=0; query_control[b+48u].y=5u; return; }
-        uint loops=query_geometry[base+2u].x;
-        uint previous=face.x+(cursor.x==0u?face.y-1u:cursor.x-1u),current=face.x+cursor.x;
-        uint ai=query_geometry[base+loops+previous/4u][previous%4u],bi=query_geometry[base+loops+current/4u][current%4u];
-        float3 a=asfloat(query_geometry[base+layout.x+ai]).xyz,p=asfloat(query_geometry[base+layout.x+bi]).xyz;
-        float3 planeNormal=asfloat(query_geometry[base+layout.z+face.z]).xyz;
-        if(dot(cross(p-a,origin+range.x*direction-a),planeNormal)<0) { cvx_query_next_leaf(b); return; }
-        ++query_control[b+49u].x; return;
-    }
-    // GetSurfaceNormal chooses the nearest native full plane, first on ties.
-    if(cursor.x==header.w) {
-        cvx_query_collect_begin(b,cvx_query_ray_hit(request,state.cursor.x,target,range.x,cvx_f(query_control,b,53).xyz)); return;
-    }
-    float4 plane=asfloat(query_geometry[base+layout.z+cursor.x]); float distance=abs(dot(plane.xyz,origin+range.x*direction)+plane.w);
-    if(cursor.x==0u || distance<range.z) { range.z=distance; cvx_put(query_control,b,52,range); cvx_put(query_control,b,53,float4(plane.xyz,0)); }
-    ++query_control[b+49u].x;
-}
-
 void cvx_query_metric_begin(uint b,QueryInput request,CvxOperand target)
 {
     CvxOperand a=cvx_query_request(request);
@@ -351,14 +194,6 @@ void cvx_query_visit(uint b,QueryInput request)
     CvxOperand target=cvx_query_target(request,leaf,cast?request.positionMaximum.xyz:float3(0.0f));
     if(!all(isfinite(target.center)) || !query_valid_quaternion(target.rotation)) { cvx_query_failure(b,65u); return; }
     if(cvx_query_backfacing(request,target)) { cvx_query_next_leaf(b); return; }
-    if(request.meta.x==QueryRay) {
-        if(shape.meta.x<=ShapeCapsule) {
-            uint status; QueryHit hit=query_leaf(request,shape,body_states[slot-query_params.selection.y],leaf,status);
-            if(status!=QuerySuccess) { cvx_query_failure(b,66u); return; } cvx_query_collect_begin(b,hit);
-        } else if(cvx_is_triangle(target)) cvx_query_triangle_ray(b,request,leaf,target);
-        else cvx_query_ray_begin(b,request,leaf,target);
-        return;
-    }
     bool analytic=request.meta.z<=ShapeCapsule && shape.meta.x<=ShapeCapsule;
     if(cast && analytic) {
         // One original CA step per worker unit, not an entire quantum nested
@@ -410,7 +245,7 @@ void query_advance_jobs(uint3 tid:SV_DispatchThreadID)
             cvx_advance(query_geometry,query_control,b,1u);
             if(query_control[b].x==CvxFailure) cvx_query_failure(b,query_control[b].w);
             else if(query_control[b].x==CvxSuccess) cvx_query_metric_complete(b,request);
-        } else if(phase>=3u && phase<=5u) cvx_query_ray_unit(b);
+        }
         else if(phase==6u) {
             uint result=cvx_cast_unit(query_geometry,query_control,b);
             if(result==CvxCastError) cvx_query_failure(b,query_control[b].w);
