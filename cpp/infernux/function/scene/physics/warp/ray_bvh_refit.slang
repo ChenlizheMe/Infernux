@@ -4,14 +4,16 @@
 // Scene BVH refit adapted from MuJoCo Warp _src/bvh.py.
 
 #include "collision_bounds.slang"
+#include "collision_geometry.slang"
 #include "ray_bvh_layout.slang"
 
 static const uint RefitGroupSize = 64;
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> refitSettings; // geometry count and first batch
-[[vk::binding(1, 0)]] StructuredBuffer<ProjectedBound> refitGeometry;
+[[vk::binding(1, 0)]] StructuredBuffer<LocalBound> refitGeometry;
 [[vk::binding(2, 0)]] StructuredBuffer<uint4> refitIndex;
 [[vk::binding(3, 0)]] RWStructuredBuffer<RayBvhBounds> refitBounds;
+[[vk::binding(4, 0)]] StructuredBuffer<CartesianFrame> refitFrames;
 
 RayBvhBounds refitLeaf(uint first, uint count, uint order, uint geomBase)
 {
@@ -19,9 +21,13 @@ RayBvhBounds refitLeaf(uint first, uint count, uint order, uint geomBase)
     float3 high = -low;
     for (uint i = first; i < first + count; ++i)
     {
-        const ProjectedBound shape = refitGeometry[geomBase + rayIndexAt(refitIndex, order, i)];
-        const float3 center = shape.centerUpper.xyz;
-        const float3 extent = shape.aabbHalfMargin.xyz;
+        const uint geometry = rayIndexAt(refitIndex, order, i);
+        const LocalBound shape = refitGeometry[geometry];
+        const CartesianFrame frame = refitFrames[geomBase + geometry];
+        const float3 half = shape.halfExtent.xyz;
+        const float3 center = frame.position.xyz + rotatePoint(frame, shape.center.xyz);
+        const float3 extent = abs(frameAxis(frame, 0)) * half.x +
+                              abs(frameAxis(frame, 1)) * half.y + abs(frameAxis(frame, 2)) * half.z;
         const float3 padded = extent + (abs(center) + extent) * 4.7683716e-7;
         low = min(low, center - padded);
         high = max(high, center + padded);

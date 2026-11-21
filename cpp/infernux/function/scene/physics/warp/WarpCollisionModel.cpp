@@ -175,15 +175,12 @@ struct ConvexData
             packed.center[axis] = 0.5f * (upper[axis] + lower[axis]);
             packed.halfExtent[axis] = 0.5f * (upper[axis] - lower[axis]);
         }
-        const auto metadata = meshRecords.size();
-        meshRecords[descriptor][3] = static_cast<uint32_t>(metadata);
-        meshRecords.resize(metadata + (mesh.features.size() + 1) / 2);
-        for (size_t i = 0; i < mesh.features.size(); ++i) {
-            auto &record = meshRecords[metadata + i / 2];
-            const auto [id, edges] = mesh.features[i];
-            record[2 * (i % 2)] = id;
-            record[2 * (i % 2) + 1] = edges;
-        }
+        meshRecords[descriptor][3] = static_cast<uint32_t>(meshRecords.size());
+        std::vector<uint32_t> metadata;
+        metadata.reserve(mesh.features.size() * 3);
+        for (const auto &feature : mesh.features)
+            metadata.insert(metadata.end(), feature.begin(), feature.end());
+        AppendScalars(meshRecords, metadata);
         return triangleMeshes.emplace(&mesh, packed).first->second;
     }
 
@@ -240,6 +237,7 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
     result.bounds.reserve(count);
     result.shapes.reserve(count);
     result.materials.reserve(count + pairs.size());
+    result.rayGeometry.reserve(count);
     result.pairRules.resize(uint64_t{count} + 1);
     result.pairRules.reserve(result.pairRules.size() + pairs.size());
     ConvexData convex(count);
@@ -293,6 +291,9 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
         result.materials.push_back(material);
         const uint32_t flags = uint32_t(model.bodies[weld].dofs[1] != 0) | (uint32_t(source.trigger) << 1);
         result.pairRules[geom] = {weld, weldParent, flags, 0};
+        const bool isStatic = (flags & 1) == 0 && model.bodies[weld].hierarchy[3] == NoModelIndex;
+        const uint32_t rayFlags = uint32_t(isStatic) | (uint32_t(source.trigger) << 1);
+        result.rayGeometry.push_back({body, collisionType, rayFlags, source.subShape});
     }
     result.convexPairs |= boxCount > 1 || cylinderCount > 1 || (cylinderCount != 0 && (boxCount != 0 || hasCapsule));
     if (result.convexPairs || result.heightfields || result.triangleMeshes) {

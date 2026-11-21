@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PhysicsRayIndex.h"
+#include "WarpCollisionModel.h"
 
 #include <algorithm>
+#include <glm/gtc/quaternion.hpp>
 #include <utility>
 
 namespace infernux::physics::warp
@@ -122,6 +124,49 @@ PhysicsRayIndex BuildPhysicsRayIndex(const std::vector<spatial::Bounds> &finiteB
         }
     }
     return result;
+}
+
+PhysicsRayIndex BuildWarpRayIndex(const WarpModel &model, const WarpCollisionModel &collision)
+{
+    struct Frame
+    {
+        glm::vec3 position{0.0f};
+        glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+
+        Frame Append(const ModelPose &pose) const
+        {
+            const auto &p = pose.position;
+            const auto &q = pose.rotation;
+            return {position + rotation * glm::vec3(p[0], p[1], p[2]), rotation * glm::quat(q[0], q[1], q[2], q[3])};
+        }
+    };
+    std::vector<Frame> bodies(model.bodies.size());
+    for (uint32_t index = 1; index < model.bodies.size(); ++index) {
+        const auto &body = model.bodies[index];
+        bodies[index] = bodies[body.hierarchy[0]].Append(body.pose);
+    }
+
+    std::vector<spatial::Bounds> bounds;
+    std::vector<uint32_t> finiteIds, planes;
+    bounds.reserve(model.geometries.size());
+    finiteIds.reserve(model.geometries.size());
+    for (uint32_t index = 0; index < model.geometries.size(); ++index) {
+        const auto &geometry = model.geometries[index];
+        if (geometry.indices[1] == Plane) {
+            planes.push_back(index);
+            continue;
+        }
+        const auto frame = bodies[geometry.indices[0]].Append(geometry.pose);
+        const auto &shape = collision.bounds[index];
+        const auto &p = shape.center;
+        const auto &h = shape.halfExtent;
+        const auto rotation = glm::mat3_cast(frame.rotation);
+        const auto center = frame.position + rotation * glm::vec3(p[0], p[1], p[2]);
+        const auto extent = glm::abs(rotation[0]) * h[0] + glm::abs(rotation[1]) * h[1] + glm::abs(rotation[2]) * h[2];
+        bounds.push_back({center - extent, center + extent});
+        finiteIds.push_back(index);
+    }
+    return BuildPhysicsRayIndex(bounds, finiteIds, planes);
 }
 
 uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, const std::vector<glm::vec3> &vertices,

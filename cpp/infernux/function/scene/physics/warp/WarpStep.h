@@ -40,6 +40,38 @@ struct WarpContactStream
     std::shared_ptr<rhi::ComputeBuffer> narrowphaseStatus;
 };
 
+enum WarpRayFlags : uint32_t
+{
+    WarpRayIncludeStatic = 1,
+    WarpRayIncludeTriggers = 2,
+    WarpRayHitBackFaces = 4,
+};
+
+struct WarpRay
+{
+    ModelVector originLimit{}; // xyz origin and maximum distance.
+    ModelVector direction{};   // Unit direction in xyz.
+    ModelWords filter{UINT32_MAX, NoModelIndex, WarpRayIncludeStatic | WarpRayIncludeTriggers, 0};
+};
+
+struct WarpRayHit
+{
+    ModelVector normalDistance; // World normal and distance (-1 for a miss).
+    ModelWords identity;        // Geometry row, body row, subshape ID, asset face index.
+};
+
+struct WarpRayBatchLayout
+{
+    uint32_t raysPerWorld = 0;
+    bool sharedRays = false; // One input row broadcast to every world.
+};
+
+struct WarpRayBuffers
+{
+    std::shared_ptr<rhi::ComputeBuffer> inputs;
+    std::shared_ptr<rhi::ComputeBuffer> hits;
+};
+
 struct PreparedWarpStep
 {
     std::unique_ptr<WarpStep> step;
@@ -56,11 +88,22 @@ class WarpStep
                                                 uint32_t worlds, float timestep, const ModelVector &gravity,
                                                 const WarpCollisionModel *collision = nullptr,
                                                 WarpCollisionCapacity capacity = {},
-                                                const WarpContactSolver *solver = nullptr);
+                                                const WarpContactSolver *solver = nullptr,
+                                                WarpRayBatchLayout rayLayout = {});
 
     /// The ordered snapshot holds qpos, qvel, clocks and, with contact response, a uint32 status per world.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     Prepare(bool publish, std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
+
+    /// Enqueue after the state to query. Device consumers enqueue before the next
+    /// batch that writes the same hit buffer. A CPU publication pins its own snapshot.
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareRays(bool publish, std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
+
+    [[nodiscard]] const WarpRayBuffers &Rays() const noexcept
+    {
+        return m_rays;
+    }
 
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Positions() const noexcept;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Velocities() const noexcept;
@@ -72,7 +115,8 @@ class WarpStep
 
   private:
     WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
-             uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts);
+             uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,
+             std::vector<rhi::ComputeDispatchDesc> rayWork);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -80,6 +124,8 @@ class WarpStep
     uint32_t m_velocities;
     uint32_t m_appliedForces;
     WarpContactStream m_contacts;
+    WarpRayBuffers m_rays;
+    std::vector<rhi::ComputeDispatchDesc> m_rayWork;
 };
 
 } // namespace infernux::physics::warp

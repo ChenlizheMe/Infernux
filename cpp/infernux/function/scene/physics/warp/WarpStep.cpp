@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "WarpStep.h"
+#include "PhysicsRayIndex.h"
 #include "WarpCollisionModel.h"
 #include "WarpProgramSources.h"
 
@@ -19,6 +20,8 @@ using Access = ComputeBufferAccess;
 constexpr auto R = Access::Read;
 constexpr auto W = Access::Write;
 constexpr auto RW = Access::ReadWrite;
+static_assert(sizeof(WarpRay) == 48);
+static_assert(sizeof(WarpRayHit) == 32);
 
 struct Use
 {
@@ -171,15 +174,27 @@ struct ContactSlots
     uint32_t narrowphaseStatus;
 };
 
+struct GeometrySlots
+{
+    uint32_t geometries, bounds, frames, shapes, data;
+};
+
+GeometrySlots BindGeometry(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision, bool rays)
+{
+    const auto count = model.dimensions.layout[0];
+    return {b.Shared("geometries", model.geometries), b.Shared("localBounds", collision.bounds),
+            count != 0 ? b.Slot(16 * uint64_t{count} * b.worlds) : b.Seed("geometryFrames", 16, nullptr),
+            b.Shared("collisionShapes", collision.shapes),
+            rays || !collision.convexData.empty() ? b.Shared("convexModel", collision.convexData) : NoModelIndex};
+}
+
 ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
-                          uint32_t dimensions, uint32_t pose, WarpCollisionCapacity capacity)
+                          uint32_t dimensions, const GeometrySlots &geometry, WarpCollisionCapacity capacity)
 {
     const auto ng = model.dimensions.layout[0];
     const auto geometryWords = uint64_t{ng} * b.worlds;
-    const auto geometries = b.Shared("geometries", model.geometries);
-    const auto bounds = b.Shared("localBounds", collision.bounds);
+    const auto bounds = geometry.bounds, frames = geometry.frames, shapes = geometry.shapes, data = geometry.data;
     const auto rules = b.Shared("collisionPairRules", collision.pairRules);
-    const auto frames = b.Slot(16 * geometryWords);
     const auto projected = b.Slot(28 * geometryWords);
     const uint32_t sorts[] = {b.Slot(2 * geometryWords), b.Slot(2 * geometryWords)};
     const uint32_t scans[] = {b.Slot(geometryWords), b.Slot(geometryWords)};
@@ -191,8 +206,6 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
     const auto filters = boundsFilters | (collision.filterConnectedBodies ? parentFilter : 0);
     const ModelWords options{0, capacity.candidates, filters, workers};
     const auto emitSettings = b.Seed("sweepEmission", 4, &options);
-    b.Add("position", "geom_local_to_global", ng,
-          {{0, dimensions, R}, {6, pose, R}, {9, geometries, R}, {10, frames, W, true}});
     b.Add("broadphase", "sap_project", ng,
           {{0, dimensions, R}, {2, bounds, R}, {3, frames, R}, {4, projected, W, true}, {6, sorts[0], W, true}});
     std::vector<uint32_t> strides;
@@ -237,7 +250,6 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
     const std::array<ModelWords, 2> narrowOptions{{{ng, capacity.candidates, capacity.contactsPerWorld, convexWorkers},
                                                    {collision.convexPairs ? convexManifolds : 0u, 0, 0, 0}}};
     const auto settings = b.Seed("contactSettings", 8, &narrowOptions);
-    const auto shapes = b.Shared("collisionShapes", collision.shapes);
     const auto materials = b.Shared("collisionMaterials", collision.materials);
     const auto counts = b.Slot(b.worlds, BufferUsageFlags::TransferSource);
     const auto contacts =
@@ -260,7 +272,6 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
 
     const auto status = convexWorkers != 0 ? b.Slot(b.worlds) : b.Zero("narrowphaseStatus", b.worlds);
     if (convexWorkers != 0) {
-        const auto data = b.Shared("convexModel", collision.convexData);
         const auto &layout = collision.convexData[0];
         const auto polygonRecords = 5 * uint64_t{collision.convexData[1][3]};
         const auto candidateRecords = 2 * uint64_t{collision.convexData[3][2]};
@@ -295,6 +306,53 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
             narrowphase("triangle_mesh_contacts", "collide_triangle_mesh");
     }
     return {pairCount, counts, contacts, status};
+}
+
+struct RaySlots
+{
+    uint32_t inputs, hits;
+};
+
+RaySlots AddRayWork(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
+                    const GeometrySlots &geometry, WarpRayBatchLayout layout, std::vector<ComputeWorkDispatch> &work)
+{
+    const auto inputRows = layout.sharedRays ? 1u : b.worlds;
+    const auto rayTotal = uint64_t{layout.raysPerWorld} * b.worlds;
+    if (rayTotal > UINT32_MAX)
+        throw std::length_error("Warp ray batch exceeds the shader address space");
+    const auto inputs = b.Seed("rays", 12 * uint64_t{layout.raysPerWorld} * inputRows, nullptr);
+    const auto hits = b.Slot(8 * rayTotal, BufferUsageFlags::TransferSource);
+    const auto geometryCount = model.dimensions.layout[0];
+    const ModelWords settings{geometryCount, layout.raysPerWorld, inputRows, 0};
+    const auto query = b.Seed("raySettings", 4, &settings);
+    const auto index = BuildWarpRayIndex(model, collision);
+    const auto nodes = b.Shared("rayIndex", index.records);
+    const auto bounds = b.Zero("rayBounds", 8 * uint64_t{std::max(1u, index.nodeCount)} * b.worlds);
+    const auto metadata = b.Shared("rayGeometry", collision.rayGeometry);
+    const auto refit = [&](uint32_t first, uint32_t count, bool complete) {
+        const ModelWords options{geometryCount, first, 0, 0};
+        const auto slot = b.Seed(first == 0 ? "rayRefitSubtrees" : "rayRefitRoot", 4, &options);
+        work.push_back(b.Dispatch(
+            "ray_bvh_refit", "refit_ray_bvh", count,
+            {{0, slot, R}, {1, geometry.bounds, R}, {2, nodes, R}, {3, bounds, RW, complete}, {4, geometry.frames, R}},
+            true));
+    };
+    if (index.refitSubtrees != 0) {
+        refit(0, index.refitSubtrees, !index.refitRoot);
+        if (index.refitRoot)
+            refit(index.refitSubtrees, 1, true);
+    }
+    work.push_back(b.Dispatch("ray_queries", "raycast_worlds", layout.raysPerWorld,
+                              {{0, query, R},
+                               {1, inputs, R},
+                               {2, geometry.frames, R},
+                               {3, geometry.shapes, R},
+                               {4, metadata, R},
+                               {5, geometry.data, R},
+                               {7, hits, W, true},
+                               {8, nodes, R},
+                               {9, bounds, R}}));
+    return {inputs, hits};
 }
 
 struct ContactResponse
@@ -614,7 +672,7 @@ ComputeDispatchDesc BindDispatch(ComputeWorkDispatch command,
 PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model,
                                  uint32_t worlds, float timestep, const ModelVector &gravity,
                                  const WarpCollisionModel *collision, WarpCollisionCapacity capacity,
-                                 const WarpContactSolver *solver)
+                                 const WarpContactSolver *solver, WarpRayBatchLayout rayLayout)
 {
     if (worlds == 0)
         throw std::invalid_argument("Warp step requires a world");
@@ -635,6 +693,11 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         b.Seed("qvel", nv, model.initialVelocities.empty() ? nullptr : model.initialVelocities.data(), worlds);
     const auto applied = b.Seed("appliedForce", nv, nullptr, worlds);
     const bool detectContacts = collision && model.dimensions.layout[0] != 0;
+    const bool traceRays = rayLayout.raysPerWorld != 0;
+    if (traceRays && model.dimensions.layout[0] != 0 && !collision)
+        throw std::invalid_argument("Warp rays require the compiled collision geometry");
+    std::vector<ComputeWorkDispatch> rayDispatches;
+    std::optional<RaySlots> raySlots;
     std::optional<ContactSlots> contactSlots;
     std::optional<ContactResponse> response;
     std::optional<ReferenceWeights> reference;
@@ -666,8 +729,22 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             if (collision->bounds.size() != model.dimensions.layout[0] || capacity.candidates == 0 ||
                 capacity.contactsPerWorld == 0)
                 throw std::invalid_argument("Warp collision requires geometry rows and nonzero stream capacities");
-            contactSlots = AddCollision(b, model, *collision, dimensions, pose, capacity);
+            const auto geometry = BindGeometry(b, model, *collision, traceRays);
+            b.Add("position", "geom_local_to_global", model.dimensions.layout[0],
+                  {{0, dimensions, R}, {6, pose, R}, {9, geometry.geometries, R}, {10, geometry.frames, W, true}});
+            if (traceRays) {
+                if (branches != 0)
+                    rayDispatches.push_back(b.dispatches[kinematicsPass]);
+                rayDispatches.push_back(b.dispatches.back());
+                raySlots = AddRayWork(b, model, *collision, geometry, rayLayout, rayDispatches);
+            }
+            contactSlots = AddCollision(b, model, *collision, dimensions, geometry, capacity);
         }
+    }
+    if (traceRays && !detectContacts) {
+        const WarpCollisionModel empty;
+        const auto geometry = BindGeometry(b, model, empty, true);
+        raySlots = AddRayWork(b, model, empty, geometry, rayLayout, rayDispatches);
     }
     if (nv != 0) {
         const auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
@@ -939,15 +1016,26 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                     response ? buffers[response->status] : nullptr,
                     response ? buffers[response->topology] : nullptr,
                     buffers[contactSlots->narrowphaseStatus]};
-    auto step = std::unique_ptr<WarpStep>(new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions,
-                                                       velocities, applied, std::move(contacts)));
+    WarpRayBuffers rays;
+    std::vector<rhi::ComputeDispatchDesc> rayWork;
+    if (raySlots) {
+        rays = {buffers[raySlots->inputs], buffers[raySlots->hits]};
+        rayWork.reserve(rayDispatches.size());
+        for (auto &dispatch : rayDispatches)
+            rayWork.push_back(BindDispatch(std::move(dispatch), buffers));
+    }
+    auto step =
+        std::unique_ptr<WarpStep>(new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions, velocities,
+                                               applied, std::move(contacts), std::move(rays), std::move(rayWork)));
     return {std::move(step), std::move(initialize)};
 }
 
 WarpStep::WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot,
-                   uint32_t positions, uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts)
+                   uint32_t positions, uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts,
+                   WarpRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
-      m_appliedForces(appliedForces), m_contacts(std::move(contacts))
+      m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
+      m_rayWork(std::move(rayWork))
 {
 }
 
@@ -964,6 +1052,18 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::Prepare(bool publish,
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches),
                                     {{snapshot, 0, snapshot->GetByteSize()}});
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareRays(bool publish,
+                                                                 std::vector<rhi::ComputeBufferUpdate> updates) const
+{
+    if (!m_rays.hits)
+        throw std::logic_error("Warp step has no ray query layout");
+    std::vector<rhi::ComputeBufferRead> reads;
+    if (publish)
+        reads.push_back({m_rays.hits, 0, m_rays.hits->GetByteSize()});
+    auto host = m_work->GetRecipe().GetHost();
+    return rhi::PrepareComputeBatch(host, std::move(updates), m_rayWork, std::move(reads));
 }
 
 const std::shared_ptr<rhi::ComputeBuffer> &WarpStep::Positions() const noexcept

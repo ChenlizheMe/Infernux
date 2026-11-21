@@ -8,6 +8,9 @@
 namespace infernux::physics::warp
 {
 
+struct WarpModel;
+struct WarpCollisionModel;
+
 using RayIndexWord = std::array<uint32_t, 4>;
 
 struct PhysicsRayIndex
@@ -23,6 +26,10 @@ struct PhysicsRayIndex
 [[nodiscard]] PhysicsRayIndex BuildPhysicsRayIndex(const std::vector<spatial::Bounds> &finiteBounds,
                                                    const std::vector<uint32_t> &geometryIds,
                                                    const std::vector<uint32_t> &planeIds);
+
+/// Place leaves according to the authored reference pose. The device refits
+/// actual bounds at the selected query point.
+[[nodiscard]] PhysicsRayIndex BuildWarpRayIndex(const WarpModel &model, const WarpCollisionModel &collision);
 
 /// Append a mesh-local tree and return its descriptor index. Face indices address
 /// the same immutable vertex array as the convex and ray geometry programs.

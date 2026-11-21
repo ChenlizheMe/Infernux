@@ -58,7 +58,7 @@ struct WarpTriangleMesh
 {
     std::vector<glm::vec3> vertices;
     std::vector<std::array<uint32_t, 3>> faces;
-    std::vector<std::array<uint32_t, 2>> features; // Native triangle ID and active edges, in face order.
+    std::vector<std::array<uint32_t, 3>> features; // Native triangle ID, active edges and asset face index.
 };
 
 struct WarpCollisionGeometry
@@ -71,6 +71,7 @@ struct WarpCollisionGeometry
     std::shared_ptr<const WarpConvexHull> hull;
     std::shared_ptr<const WarpHeightfield> heightfield;
     bool trigger = false;
+    uint32_t subShape = 0;
     std::shared_ptr<const WarpTriangleMesh> mesh;
     uint32_t meshPath = 0;
     uint32_t meshPathBits = 0;
@@ -105,6 +106,7 @@ struct WarpCollisionModel
     std::vector<WarpCollisionShape> shapes;
     std::vector<WarpContactMaterial> materials;
     std::vector<ModelWords> pairRules;
+    std::vector<ModelWords> rayGeometry; // Body row, layer mask, flags, subshape.
     std::vector<ModelWords> convexData;
     bool filterConnectedBodies = true;
     bool convexPairs = false;

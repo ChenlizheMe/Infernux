@@ -7,18 +7,23 @@
 #include "convex_model.slang"
 #include "heightfield_geometry.slang"
 #include "ray_bvh_layout.slang"
+#include "triangle_mesh_geometry.slang"
+
+static const uint RayIncludeStatic = 1;
+static const uint RayIncludeTriggers = 2;
+static const uint RayHitBackFaces = 4;
 
 struct PhysicsRay
 {
     float4 originLimit;
     float4 direction;
-    uint4 filter; // layer mask, excluded body, include static, unused
+    uint4 filter; // Layer mask, excluded body, flags, unused.
 };
 
 struct PhysicsRayHit
 {
     float4 normalDistance;
-    uint4 geometry; // geometry index, body index, unused, unused
+    uint4 geometry; // Geometry row, body row, subshape ID, asset face index.
 };
 
 struct RaySurface
@@ -34,9 +39,8 @@ static const uint RayGroupSize = 64;
 [[vk::binding(1, 0)]] StructuredBuffer<PhysicsRay> rays;
 [[vk::binding(2, 0)]] StructuredBuffer<CartesianFrame> rayFrames;
 [[vk::binding(3, 0)]] StructuredBuffer<CollisionShape> rayShapes;
-[[vk::binding(4, 0)]] StructuredBuffer<uint4> rayGeometry; // body, layer bits, static flag, triangle range descriptor
+[[vk::binding(4, 0)]] StructuredBuffer<uint4> rayGeometry; // Body row, layer bits, flags, subshape ID.
 [[vk::binding(5, 0)]] StructuredBuffer<uint4> rayModel;
-[[vk::binding(6, 0)]] StructuredBuffer<uint4> rayMeshes;
 [[vk::binding(7, 0)]] RWStructuredBuffer<PhysicsRayHit> rayHits;
 [[vk::binding(8, 0)]] StructuredBuffer<uint4> rayIndex;
 [[vk::binding(9, 0)]] StructuredBuffer<RayBvhBounds> rayBounds;
@@ -248,20 +252,23 @@ RaySurface rayHeightfield(float3 origin, float3 direction, uint field)
     return best;
 }
 
-RaySurface rayMesh(float3 origin, float3 direction, uint descriptor, float maximum)
+RaySurface rayMesh(float3 origin, float3 direction, CollisionShape shape, float maximum, bool backFaces,
+                   out uint subShape, out uint assetFace)
 {
-    const uint3 layout = rayMeshes[descriptor].xyz; // bounds, triangles, node count
+    const TriangleMeshTree tree = triangleMeshTree(rayModel, shape);
     float3 b0, b1;
     rayTriangleBasis(direction, b0, b1);
     const RaySlabs slabs = raySlabs(origin, direction);
     RaySurface best = {float3(0.0), maximum};
-    uint winner = NoIndex;
+    subShape = NoIndex;
+    assetFace = NoIndex;
+    bool found = false;
     uint node = 0;
-    while (node < layout.z)
+    while (node < tree.nodeCount)
     {
-        const uint address = layout.x + 2 * node;
-        const uint4 low = rayMeshes[address];
-        const uint4 high = rayMeshes[address + 1];
+        const uint address = tree.nodeBase + 2 * node;
+        const uint4 low = rayModel[address];
+        const uint4 high = rayModel[address + 1];
         const bool overlaps = rayBoundsOverlap(slabs, asfloat(low.xyz), asfloat(high.xyz), best.distance);
         if ((high.w & BvhLeaf) == 0)
         {
@@ -273,24 +280,75 @@ RaySurface rayMesh(float3 origin, float3 direction, uint descriptor, float maxim
             const uint end = low.w + (high.w & ~BvhLeaf);
             for (uint i = low.w; i < end; ++i)
             {
-                const uint4 triangle = rayMeshes[layout.y + i];
+                const uint4 triangle = rayModel[tree.faceBase + i];
                 const RaySurface hit = rayTriangle(origin, direction, b0, b1, convexVertex(rayModel, triangle.x),
                     convexVertex(rayModel, triangle.y), convexVertex(rayModel, triangle.z));
-                if (nearerRaySurface(hit.distance, best) || (hit.distance >= 0.0 && hit.distance == best.distance &&
-                    triangle.w < winner))
+                if (hit.distance < 0.0 || hit.distance > best.distance ||
+                    (!backFaces && dot(hit.normal, direction) >= 0.0))
+                    continue;
+                const uint id = triangleMeshSubShape(rayModel, tree, triangle.w);
+                if (!found || hit.distance < best.distance || id < subShape)
                 {
                     best = hit;
-                    winner = triangle.w;
+                    subShape = id;
+                    assetFace = triangleMeshFeature(rayModel, tree, triangle.w, 2);
+                    found = true;
                 }
             }
         }
         ++node;
     }
-    return winner == NoIndex ? RayMiss : best;
+    return found ? best : RayMiss;
 }
 
-RaySurface rayGeometrySurface(float3 origin, float3 direction, CollisionShape shape, uint meshDescriptor, float maximum)
+RaySurface rayHull(float3 origin, float3 direction, CollisionShape shape, uint geometry)
 {
+    const uint2 faces = convexTopology(rayModel, geometry).xy;
+    float earliest = 0.0;
+    float latest = 3.402823e38;
+    float depth = -latest;
+    float3 front = float3(0.0);
+    float3 nearest = float3(0.0);
+    for (uint i = faces.x; i < faces.y; ++i)
+    {
+        const uint4 face = convexTopology(rayModel, i);
+        const float3 normal = convexVertex(rayModel, face.z);
+        const float3 point = convexVertex(rayModel, shape.type.y + convexLink(rayModel, face.x));
+        const float gap = dot(origin - point, normal);
+        if (gap > depth)
+        {
+            depth = gap;
+            nearest = normal;
+        }
+        const float speed = dot(direction, normal);
+        if (abs(speed) <= MinValue)
+        {
+            if (gap > 0.0)
+                return RayMiss;
+        }
+        else if (speed < 0.0)
+        {
+            const float time = -gap / speed;
+            if (time > earliest)
+            {
+                earliest = time;
+                front = normal;
+            }
+        }
+        else
+        {
+            latest = min(latest, -gap / speed);
+        }
+        if (earliest > latest)
+            return RayMiss;
+    }
+    return {depth <= 0.0 ? nearest : front, earliest};
+}
+
+RaySurface rayGeometrySurface(float3 origin, float3 direction, CollisionShape shape, uint geometry, float maximum,
+                              bool backFaces, inout uint subShape, out uint assetFace)
+{
+    assetFace = NoIndex;
     const float3 size = shape.size.xyz;
     switch (shape.type.x)
     {
@@ -304,33 +362,61 @@ RaySurface rayGeometrySurface(float3 origin, float3 direction, CollisionShape sh
         }
         return RayMiss;
     case GeomCapsule:
+        const float3 spine = float3(0.0, 0.0, clamp(origin.z, -size.y, size.y));
+        const float3 radial = origin - spine;
+        if (dot(radial, radial) <= size.x * size.x)
+            return {dot(radial, radial) > MinValue ? normalize(radial) : -direction, 0.0};
         return rayRoundCylinder(origin, direction, size.xy, true);
     case GeomCylinder:
+        const float radius = length(origin.xy);
+        if (radius <= size.x && abs(origin.z) <= size.y)
+        {
+            if (size.x - radius >= size.y - abs(origin.z))
+                return {float3(0.0, 0.0, origin.z < 0.0 ? -1.0 : 1.0), 0.0};
+            return {radius > MinValue ? float3(origin.xy / radius, 0.0) : float3(1.0, 0.0, 0.0), 0.0};
+        }
         return rayRoundCylinder(origin, direction, size.xy, false);
     case GeomEllipsoid:
         const float3 inverse2 = 1.0 / (size * size);
         const float3 scaled = inverse2 * direction;
+        if (dot(inverse2 * origin, origin) <= 1.0)
+            return {dot(origin, origin) > MinValue ? normalize(inverse2 * origin) : -direction, 0.0};
         const float ellipsoid = nearestRayRoot(rayRoots(dot(scaled, direction), dot(scaled, origin),
             dot(inverse2 * origin, origin) - 1.0));
         return ellipsoid < 0.0 ? RayMiss : RaySurface(normalize(inverse2 * (origin + ellipsoid * direction)), ellipsoid);
     case GeomBox:
+        const float3 gap = size - abs(origin);
+        if (all(gap >= 0.0))
+        {
+            const uint axis = gap.x <= gap.y && gap.x <= gap.z ? 0 : (gap.y <= gap.z ? 1 : 2);
+            float3 normal = float3(0.0);
+            normal[axis] = origin[axis] < 0.0 ? -1.0 : 1.0;
+            return {normal, 0.0};
+        }
         float faces[6];
         return rayBox(origin, direction, size, faces);
     case GeomHeightfield:
         return rayHeightfield(origin, direction, shape.type.y);
     case GeomMesh:
-        return rayMesh(origin, direction, meshDescriptor, maximum);
+        return rayHull(origin, direction, shape, geometry);
+    case GeomTriangleMesh:
+        return rayMesh(origin, direction, shape, maximum, backFaces, subShape, assetFace);
     default:
         return RayMiss;
     }
 }
 
-RaySurface rayWorldSurface(CartesianFrame frame, PhysicsRay ray, CollisionShape shape, uint meshDescriptor)
+RaySurface rayWorldSurface(CartesianFrame frame, PhysicsRay ray, CollisionShape shape, uint geometry,
+                           inout uint subShape, out uint assetFace)
 {
     const float3 offset = ray.originLimit.xyz - frame.position.xyz;
     if (shape.type.x == GeomSphere)
     {
+        assetFace = NoIndex;
         const float radius = shape.size.x;
+        const float squared = dot(offset, offset);
+        if (squared <= radius * radius)
+            return {squared > MinValue ? normalize(offset) : -normalize(ray.direction.xyz), 0.0};
         const float distance = nearestRayRoot(raySphereRoots(offset, ray.direction.xyz, radius * radius));
         if (distance < 0.0)
             return RayMiss;
@@ -338,22 +424,27 @@ RaySurface rayWorldSurface(CartesianFrame frame, PhysicsRay ray, CollisionShape 
         return {normalize(point - frame.position.xyz), distance};
     }
     const RaySurface local = rayGeometrySurface(rayLocalVector(frame, offset), rayLocalVector(frame, ray.direction.xyz),
-        shape, meshDescriptor, ray.originLimit.w);
+        shape, geometry, ray.originLimit.w, (ray.filter.z & RayHitBackFaces) != 0, subShape, assetFace);
     return {rotatePoint(frame, local.normal), local.distance};
 }
 
-void testRayGeometry(PhysicsRay ray, uint base, uint geometry, inout RaySurface best, inout uint winner)
+void testRayGeometry(PhysicsRay ray, uint base, uint geometry, inout RaySurface best, inout uint4 winner)
 {
     const uint4 metadata = rayGeometry[geometry];
-    if ((metadata.y & ray.filter.x) == 0 || metadata.x == ray.filter.y || (metadata.z != 0 && ray.filter.z == 0))
+    const uint surfaceFlags = RayIncludeStatic | RayIncludeTriggers;
+    if ((metadata.y & ray.filter.x) == 0 || metadata.x == ray.filter.y ||
+        (metadata.z & surfaceFlags & ~ray.filter.z) != 0)
         return;
     ray.originLimit.w = best.distance;
-    const RaySurface surface = rayWorldSurface(rayFrames[base + geometry], ray, rayShapes[geometry], metadata.w);
+    uint subShape = metadata.w;
+    uint assetFace;
+    const RaySurface surface = rayWorldSurface(rayFrames[base + geometry], ray, rayShapes[geometry], geometry,
+                                               subShape, assetFace);
     if (surface.distance >= 0.0 && (surface.distance < best.distance ||
-        (surface.distance == best.distance && geometry < winner)))
+        (surface.distance == best.distance && geometry < winner.x)))
     {
         best = surface;
-        winner = geometry;
+        winner = uint4(geometry, metadata.x, subShape, assetFace);
     }
 }
 
@@ -366,7 +457,7 @@ void raycast_worlds(uint3 id : SV_DispatchThreadID)
         return;
     const PhysicsRay ray = rays[(id.y % settings.z) * settings.y + id.x];
     RaySurface best = {float3(0.0), ray.originLimit.w};
-    uint winner = NoIndex;
+    uint4 winner = uint4(NoIndex);
     const uint base = id.y * settings.x;
     const uint4 index = rayIndex[0];
     for (uint plane = 0; plane < index.w; ++plane)
@@ -396,8 +487,8 @@ void raycast_worlds(uint3 id : SV_DispatchThreadID)
     }
 
     const uint output = id.y * settings.y + id.x;
-    if (winner == NoIndex)
-        rayHits[output] = {float4(0.0, 0.0, 0.0, -1.0), uint4(NoIndex, NoIndex, 0u, 0u)};
+    if (winner.x == NoIndex)
+        rayHits[output] = {float4(0.0, 0.0, 0.0, -1.0), winner};
     else
-        rayHits[output] = {float4(best.normal, best.distance), uint4(winner, rayGeometry[winner].x, 0u, 0u)};
+        rayHits[output] = {float4(best.normal, best.distance), winner};
 }

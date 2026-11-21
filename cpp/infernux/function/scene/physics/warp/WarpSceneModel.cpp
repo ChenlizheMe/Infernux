@@ -81,7 +81,8 @@ std::shared_ptr<const WarpTriangleMesh> CookTriangleMesh(const JPH::MeshShape &s
                 mesh->vertices.push_back(point);
             face[corner] = index->second;
         }
-        mesh->features.push_back({triangle.mSubShapeID.GetValue(), triangle.mActiveEdges});
+        mesh->features.push_back(
+            {triangle.mSubShapeID.GetValue(), triangle.mActiveEdges, shape.GetTriangleUserData(triangle.mSubShapeID)});
     }
     return mesh;
 }
@@ -222,6 +223,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors)
             const auto kind = CookGeometry(leaf, shape, cache);
             shape.material.friction[0] = surface.friction;
             shape.trigger = surface.trigger;
+            shape.subShape = leaf.mSubShapeIDCreator.GetID().GetValue();
             glm::quat rotation = Rotation(leaf.mShapeRotation);
             if (kind == Capsule || kind == Cylinder) {
                 // Jolt axial primitives run along +Y. Warp primitives run along +Z.
@@ -230,7 +232,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors)
             }
             geometries.push_back({index, kind, 1u << surface.layer, surface.collisionMask,
                                   Pose(center + Vector(leaf.mShapePositionCOM), rotation)});
-            result.geometries.push_back({surface, leaf.mSubShapeIDCreator.GetID().GetValue()});
+            result.geometries.push_back({surface, shape.subShape});
         }
     }
     result.model = BuildWarpModel(bodies, geometries);

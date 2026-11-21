@@ -4,6 +4,7 @@
 #include "contact_publish.slang"
 #include "convex_manifold.slang"
 #include "linear_dispatch.slang"
+#include "triangle_mesh_geometry.slang"
 
 static const uint MeshBvhLeaf = 1u << 31;
 
@@ -191,17 +192,14 @@ void collideMeshPair(CollisionCandidate candidate, CollisionShape other, Collisi
                                convexSupport(shape, -y, convexModel).point.y,
                                convexSupport(shape, -z, convexModel).point.z) - inflate;
     const uint2 hullTopology = other.type.x == GeomMesh ? convexTopology(convexModel, pair.x).xy : uint2(NoIndex);
-    const uint meshBase = convexModel[4].x;
-    const uint4 descriptor = convexModel[meshBase + mesh.type.y];
-    const uint pathBits = mesh.type.w;
-    const uint path = mesh.type.z & ((1u << pathBits) - 1u);
+    const TriangleMeshTree tree = triangleMeshTree(convexModel, mesh);
 
     MeshManifold contacts;
     contacts.count = 0;
     uint node = 0;
-    while (node < descriptor.z)
+    while (node < tree.nodeCount)
     {
-        const uint address = meshBase + descriptor.x + 2 * node;
+        const uint address = tree.nodeBase + 2 * node;
         const uint4 lo = convexModel[address];
         const uint4 hi = convexModel[address + 1];
         const bool overlaps = all(upper >= asfloat(lo.xyz)) && all(lower <= asfloat(hi.xyz));
@@ -215,16 +213,15 @@ void collideMeshPair(CollisionCandidate candidate, CollisionShape other, Collisi
             const uint end = lo.w + (hi.w & ~MeshBvhLeaf);
             for (uint i = lo.w; i < end; ++i)
             {
-                const uint4 triangle = convexModel[meshBase + descriptor.y + i];
+                const uint4 triangle = convexModel[tree.faceBase + i];
                 const float3 a = convexVertex(convexModel, triangle.x);
                 const float3 b = convexVertex(convexModel, triangle.y);
                 const float3 c = convexVertex(convexModel, triangle.z);
                 if (any(upper < min(a, min(b, c))) || any(lower > max(a, max(b, c))))
                     continue;
-                const uint4 metadata = convexModel[meshBase + descriptor.w + triangle.w / 2];
-                const uint offset = 2u * (triangle.w % 2);
-                const uint subshape = path | (metadata[offset] << pathBits);
-                collideMeshTriangle(world, shape, hullTopology, a, b, c, metadata[offset + 1], subshape,
+                const uint subshape = triangleMeshSubShape(convexModel, tree, triangle.w);
+                const uint edges = triangleMeshFeature(convexModel, tree, triangle.w, 1);
+                collideMeshTriangle(world, shape, hullTopology, a, b, c, edges, subshape,
                                     material, options, workspace, contacts);
             }
         }
