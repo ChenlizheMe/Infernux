@@ -58,6 +58,28 @@ InxPhyGpuHostBody DecodeHostBody(const InxPhyGpuBodyState &raw, uint32_t bodyId,
 }
 } // namespace
 
+std::optional<uint32_t> InxPhyGpuFixedPublication::FindAcceptedWorld(ContactStreamIdentity identity) const
+{
+    if (!m_layout)
+        return std::nullopt;
+    const auto found = m_layout->worldRows.find(identity.worldId);
+    if (found == m_layout->worldRows.end())
+        return std::nullopt;
+    const auto &world = worlds[found->second];
+    if (world.status != 0 || world.identity.simulationEpoch != identity.simulationEpoch ||
+        world.identity.fixedStepIndex != identity.fixedStepIndex)
+        return std::nullopt;
+    return found->second;
+}
+
+std::optional<InxPhyGpuSceneJointReference> InxPhyGpuFixedPublication::FindJointReference(uint32_t world,
+                                                                                          uint64_t jointId) const
+{
+    const auto &joints = m_layout->worlds.at(world).joints;
+    const auto found = joints.find(jointId);
+    return found == joints.end() ? std::nullopt : std::make_optional(found->second.reference);
+}
+
 PhysicsGpuPoseSource InxPhyGpuFixedPublication::PoseSource(uint32_t world) const
 {
     if (worlds.at(world).status != 0)

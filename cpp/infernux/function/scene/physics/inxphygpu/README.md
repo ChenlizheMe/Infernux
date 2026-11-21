@@ -10,6 +10,8 @@ Scene rigidbody motion settings are shared across a compiled batch. Linear and a
 
 Kinematic targets carry the requested duration and optional Transform drive speed limit. Commands compose position and rotation in author order. The solver derives the prescribed center-of-mass velocity from that duration, uses it across the fixed tick's collision substeps, and samples the resulting pose at the fixed boundary. A subsequent tick without a move holds the accepted pose.
 
+A live topology refresh takes the last accepted publication for the same world, simulation epoch and fixed step. Joint identities retain their bound frames and automatic rest lengths across row changes. Changed body scale applies to the retained local anchors, and an explicit joint rebind captures a new reference. The device state transfer retains the same accepted fixed step.
+
 ## Ported stages
 
 | Module | MuJoCo Warp stages | Slang entries |

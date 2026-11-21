@@ -42,6 +42,7 @@ struct InxPhyGpuSceneActor
     bool useGravity = true;
     std::vector<InxPhyGpuSceneCollider> colliders;
     ModelRigidMotion motion;
+    glm::vec3 scale{1.0f};
 };
 
 struct InxPhyGpuSceneSurfaceIdentity
@@ -96,6 +97,7 @@ struct InxPhyGpuSceneDistance
     bool autoDistance = true;
     float minimum = 0.0f, maximum = 0.0f;
     float stiffness = 0.0f, damping = 0.0f;
+    glm::vec3 localAnchor{0.0f}; // Author coordinates for axes collapsed when the joint bound.
 };
 
 struct InxPhyGpuSwingTwistTargets
@@ -116,6 +118,21 @@ struct InxPhyGpuSwingTwistParameters
 
 [[nodiscard]] ModelSixDOFControls PackSixDOFControls(const SixDOFJointSettings &settings);
 
+struct InxPhyGpuSceneJointFrame
+{
+    glm::vec3 anchor{0.0f};
+    glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 bindScale{1.0f};
+    glm::vec3 localAnchor{0.0f};
+};
+
+/// Endpoint frames are body-local, or world-space for an endpoint without a body.
+struct InxPhyGpuSceneJointReference
+{
+    InxPhyGpuSceneJointFrame owner, connected;
+    float distance = 0.0f;
+};
+
 struct InxPhyGpuSceneJoint
 {
     uint32_t ownerActor;
@@ -126,6 +143,8 @@ struct InxPhyGpuSceneJoint
     std::variant<std::monostate, InxPhyGpuSceneHinge, InxPhyGpuSceneSlider, InxPhyGpuSceneDistance,
                  SwingTwistJointSettings, SixDOFJointSettings>
         settings;
+    std::optional<InxPhyGpuSceneJointReference> reference{};
+    glm::vec3 ownerLocalAnchor{0.0f};
 };
 
 enum class InxPhyGpuSceneJointKind : uint32_t
@@ -144,6 +163,7 @@ struct InxPhyGpuSceneJointBinding
     InxPhyGpuSceneJointKind kind = InxPhyGpuSceneJointKind::Fixed;
     bool autoDistance = false;
     uint32_t parameterOffset = 0; // In ModelWords records within one world.
+    InxPhyGpuSceneJointReference reference;
 };
 
 struct InxPhyGpuSceneModel

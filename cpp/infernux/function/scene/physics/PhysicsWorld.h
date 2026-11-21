@@ -69,7 +69,8 @@ class PreparedComputeBatch;
 namespace physics::inxphygpu
 {
 struct InxPhyGpuSceneSetup;
-}
+struct InxPhyGpuFixedPublication;
+} // namespace physics::inxphygpu
 } // namespace infernux
 
 // Author geometry is shared; native bodies remain private to their backend.
@@ -278,10 +279,11 @@ class PhysicsWorld
     /// False retains the same epoch/step and its shared-source continuation.
     bool Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
     void ConfigureSceneBackend(RuntimeWorld &world, PhysicsBackend backend);
-    /// Compile registered scene topology before its first fixed step. A pending
-    /// actor cook produces no setup, so a partial world cannot reach the solver.
+    /// Compile registered topology at a fixed boundary. A live refresh uses
+    /// the last accepted publication's joint frames and hands off its state.
     [[nodiscard]] std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneSetup>
-    CaptureInxPhyGpuSceneSetup(RuntimeWorld &world) const;
+    CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
+                               const physics::inxphygpu::InxPhyGpuFixedPublication *previous = nullptr) const;
     std::shared_ptr<PhysicsParticipant> RegisterParticipant(const Component &component,
                                                             PhysicsParticipant::Recipes recipes,
                                                             PhysicsParticipant::Controls controls, uint32_t count,

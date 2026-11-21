@@ -61,15 +61,20 @@ struct SceneJointEndpoint
 };
 
 SceneJointEndpoint BindSceneJointEndpoint(const InxPhyGpuModel &model, const std::vector<InxPhyGpuSceneActor> &actors,
-                                          uint32_t actorIndex, const glm::vec3 &worldAnchor,
-                                          const glm::quat &worldRotation)
+                                          uint32_t actorIndex, const InxPhyGpuSceneJointFrame &frame)
 {
     if (actorIndex == NoModelIndex)
-        return {0, worldAnchor, worldRotation};
+        return {0, frame.anchor, frame.orientation};
     const auto &actor = actors.at(actorIndex);
-    const auto inverse = glm::conjugate(actor.rotation);
-    SceneJointEndpoint endpoint{model.bodyRows[actorIndex], inverse * (worldAnchor - actor.position),
-                                inverse * worldRotation};
+    SceneJointEndpoint endpoint{model.bodyRows[actorIndex], frame.anchor, frame.orientation};
+    for (glm::length_t axis = 0; axis < 3; ++axis) {
+        const auto scale = actor.scale[axis];
+        const auto bind = frame.bindScale[axis];
+        if (scale == bind)
+            continue;
+        endpoint.anchor[axis] =
+            bind == 0.0f ? frame.anchor[axis] + frame.localAnchor[axis] * scale : frame.anchor[axis] * (scale / bind);
+    }
     if (actor.mass) {
         const auto axes = actor.mass->inverse;
         endpoint.inverseInertia = (axes.GetX() + axes.GetY() + axes.GetZ()) / 3.0f;
@@ -78,6 +83,57 @@ SceneJointEndpoint BindSceneJointEndpoint(const InxPhyGpuModel &model, const std
             1.0f / actor.mass->mass + (2.0f / 3.0f) * glm::dot(offset, offset) * endpoint.inverseInertia;
     }
     return endpoint;
+}
+
+InxPhyGpuSceneJointReference CaptureSceneJointReference(const std::vector<InxPhyGpuSceneActor> &actors,
+                                                        const InxPhyGpuSceneJoint &joint)
+{
+    const auto &owner = actors.at(joint.ownerActor);
+    const auto point = owner.position + owner.rotation * joint.ownerAnchor;
+    const auto *hinge = std::get_if<InxPhyGpuSceneHinge>(&joint.settings);
+    const auto *slider = std::get_if<InxPhyGpuSceneSlider>(&joint.settings);
+    const auto *distance = std::get_if<InxPhyGpuSceneDistance>(&joint.settings);
+    const auto *swing = std::get_if<SwingTwistJointSettings>(&joint.settings);
+    const auto *six = std::get_if<SixDOFJointSettings>(&joint.settings);
+    glm::quat rotation = owner.rotation;
+    if (hinge || slider) {
+        const auto axis = hinge ? hinge->axis : slider->axis;
+        const auto minimum = hinge ? hinge->minimum : slider->minimum;
+        const auto maximum = hinge ? hinge->maximum : slider->maximum;
+        if (glm::dot(axis, axis) <= 1e-12f || minimum > maximum)
+            throw std::invalid_argument("inxphygpu axial scene joint requires a nonzero axis and ordered limits");
+        const auto z = glm::normalize(axis);
+        const auto up = std::abs(z.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+        const auto x = glm::normalize(glm::cross(up, z));
+        rotation *= glm::quat_cast(glm::mat3(x, glm::cross(z, x), z));
+    } else if (swing) {
+        const auto x = glm::normalize(swing->twistAxis);
+        const auto y = glm::normalize(glm::cross(swing->planeAxis, x));
+        rotation *= glm::normalize(glm::quat_cast(glm::mat3(x, y, glm::cross(x, y))));
+    } else if (six) {
+        const auto x = glm::normalize(six->axis);
+        const auto z = glm::normalize(glm::cross(x, six->secondaryAxis));
+        rotation *= glm::normalize(glm::quat_cast(glm::mat3(x, glm::cross(z, x), z)));
+    }
+    const auto encode = [&](uint32_t actorRow, const glm::vec3 &anchor, const glm::vec3 &localAnchor) {
+        if (actorRow == NoModelIndex)
+            return InxPhyGpuSceneJointFrame{anchor, rotation};
+        const auto &actor = actors.at(actorRow);
+        const auto inverse = glm::conjugate(actor.rotation);
+        return InxPhyGpuSceneJointFrame{inverse * (anchor - actor.position), inverse * rotation, actor.scale,
+                                        localAnchor};
+    };
+    auto connectedPoint = point;
+    if (distance) {
+        connectedPoint = distance->connectedAnchor;
+        if (joint.connectedActor != NoModelIndex) {
+            const auto &connected = actors.at(joint.connectedActor);
+            connectedPoint = connected.position + connected.rotation * connectedPoint;
+        }
+    }
+    return {encode(joint.ownerActor, point, joint.ownerLocalAnchor),
+            encode(joint.connectedActor, connectedPoint, distance ? distance->localAnchor : glm::vec3(0.0f)),
+            glm::length(connectedPoint - point)};
 }
 
 void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuSceneActor> &actors,
@@ -96,43 +152,14 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
     uint32_t sixCount = 0;
     for (const auto index : ordered) {
         const auto &joint = joints[index];
-        const auto &owner = actors.at(joint.ownerActor);
-        const auto point = owner.position + owner.rotation * joint.ownerAnchor;
         const auto *hinge = std::get_if<InxPhyGpuSceneHinge>(&joint.settings);
         const auto *slider = std::get_if<InxPhyGpuSceneSlider>(&joint.settings);
         const auto *distance = std::get_if<InxPhyGpuSceneDistance>(&joint.settings);
         const auto *swing = std::get_if<SwingTwistJointSettings>(&joint.settings);
         const auto *six = std::get_if<SixDOFJointSettings>(&joint.settings);
-        glm::quat rotation = owner.rotation;
-        if (hinge || slider) {
-            const auto axis = hinge ? hinge->axis : slider->axis;
-            const auto minimum = hinge ? hinge->minimum : slider->minimum;
-            const auto maximum = hinge ? hinge->maximum : slider->maximum;
-            if (glm::dot(axis, axis) <= 1e-12f || minimum > maximum)
-                throw std::invalid_argument("inxphygpu axial scene joint requires a nonzero axis and ordered limits");
-            const auto z = glm::normalize(axis);
-            const auto up = std::abs(z.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
-            const auto x = glm::normalize(glm::cross(up, z));
-            rotation *= glm::quat_cast(glm::mat3(x, glm::cross(z, x), z));
-        } else if (swing) {
-            const auto x = glm::normalize(swing->twistAxis);
-            const auto y = glm::normalize(glm::cross(swing->planeAxis, x));
-            rotation *= glm::normalize(glm::quat_cast(glm::mat3(x, y, glm::cross(x, y))));
-        } else if (six) {
-            const auto x = glm::normalize(six->axis);
-            const auto z = glm::normalize(glm::cross(x, six->secondaryAxis));
-            rotation *= glm::normalize(glm::quat_cast(glm::mat3(x, glm::cross(z, x), z)));
-        }
-        auto connectedPoint = point;
-        if (distance) {
-            connectedPoint = distance->connectedAnchor;
-            if (joint.connectedActor != NoModelIndex) {
-                const auto &connected = actors.at(joint.connectedActor);
-                connectedPoint = connected.position + connected.rotation * connectedPoint;
-            }
-        }
-        const auto a = BindSceneJointEndpoint(model, actors, joint.ownerActor, point, rotation);
-        const auto b = BindSceneJointEndpoint(model, actors, joint.connectedActor, connectedPoint, rotation);
+        const auto reference = joint.reference ? *joint.reference : CaptureSceneJointReference(actors, joint);
+        const auto a = BindSceneJointEndpoint(model, actors, joint.ownerActor, reference.owner);
+        const auto b = BindSceneJointEndpoint(model, actors, joint.connectedActor, reference.connected);
         if (a.body == b.body)
             throw std::invalid_argument("Scene joint must join different inxphygpu bodies");
         if (a.inverseMass + b.inverseMass == 0.0f)
@@ -147,7 +174,7 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
         const auto id = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
         const auto kind = static_cast<InxPhyGpuSceneJointKind>(joint.settings.index());
         const auto parameterOffset = static_cast<uint32_t>(parameters.size());
-        scene.jointBindings[index] = {id, kind, distance && distance->autoDistance, parameterOffset};
+        scene.jointBindings[index] = {id, kind, distance && distance->autoDistance, parameterOffset, reference};
         descriptors.push_back({id, a.body, b.body, static_cast<uint32_t>(support.size()) - first});
         const uint32_t equalityRows = (distance || six) ? 0u : (swing ? 3u : (hinge || slider ? 5u : 6u));
         descriptors.push_back({a.body, b.body, first, equalityRows});
@@ -169,7 +196,7 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
         } else if (slider) {
             parameters.push_back(InxPhyGpuJointLimits{slider->useLimits, slider->minimum, slider->maximum}.Pack());
         } else if (distance) {
-            const auto rest = glm::length(connectedPoint - point);
+            const auto rest = reference.distance;
             const auto minimum = distance->autoDistance ? rest : distance->minimum;
             const auto maximum = distance->autoDistance ? rest : distance->maximum;
             parameters.push_back(InxPhyGpuJointLimits{true, minimum, maximum}.Pack());
@@ -370,6 +397,7 @@ InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author)
     source.shape = std::move(author.shape);
     source.position = author.position;
     source.rotation = author.rotation;
+    source.scale = author.scale;
     if (const auto &body = author.body) {
         source.kinematic = body->kinematic;
         source.useGravity = body->useGravity;

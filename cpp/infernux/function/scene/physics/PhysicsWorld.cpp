@@ -3769,13 +3769,17 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
 }
 
 std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneSetup>
-PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world) const
+PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
+                                         const physics::inxphygpu::InxPhyGpuFixedPublication *previous) const
 {
     using namespace physics::inxphygpu;
     RequireOwnerThread();
     auto &domain = *world.physics;
-    if (world.simulation.fixedStepIndex != 0 || domain.stepPending)
-        throw std::logic_error("inxphygpu scene setup must be captured before fixed simulation");
+    const auto &clock = world.simulation;
+    const ContactStreamIdentity identity{world.id, clock.simulationEpoch, clock.publishedFixedStepIndex};
+    const auto accepted = previous ? previous->FindAcceptedWorld(identity) : std::nullopt;
+    if (domain.stepPending || ((previous || identity.fixedStepIndex != 0) && !accepted))
+        throw std::logic_error("inxphygpu topology refresh requires the world's last accepted fixed publication");
 
     FlushAuthoring(domain);
     const auto &store = PhysicsECSStore::Instance();
@@ -3816,18 +3820,28 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world) const
     }
 
     std::vector<InxPhyGpuSceneJoint> joints;
+    std::vector<uint64_t> jointIds;
     joints.reserve(activeJoints.size());
+    jointIds.reserve(activeJoints.size());
     for (const auto *joint : activeJoints) {
         const auto *transform = joint->GetGameObject()->GetTransform();
         const auto anchor =
             glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(joint->GetAnchor());
         const auto connected = joint->m_boundConnectedBodyId;
+        const auto connectedRow = rowById.find(connected);
+        if (connected != UINT32_MAX && connectedRow == rowById.end())
+            continue; // A suspended endpoint owns no solver row in this topology.
         auto &model =
             joints.emplace_back(InxPhyGpuSceneJoint{rowById.at(joint->m_boundBodyId),
-                                                    connected == UINT32_MAX ? NoModelIndex : rowById.at(connected),
+                                                    connected == UINT32_MAX ? NoModelIndex : connectedRow->second,
                                                     anchor,
                                                     joint->GetEnableCollision(),
                                                     {}});
+        const auto jointId = joint->GetPhysicsConstraintId();
+        jointIds.push_back(jointId);
+        model.ownerLocalAnchor = joint->GetAnchor();
+        if (accepted)
+            model.reference = previous->FindJointReference(*accepted, jointId);
         if (const auto *hinge = dynamic_cast<const HingeJoint *>(joint)) {
             model.settings =
                 InxPhyGpuSceneHinge{hinge->GetAxis(),
@@ -3852,7 +3866,8 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world) const
                                                     distance->GetMinimumDistance(),
                                                     distance->GetMaximumDistance(),
                                                     distance->GetStiffness(),
-                                                    distance->GetDamping()};
+                                                    distance->GetDamping(),
+                                                    distance->GetConnectedAnchor()};
         } else if (const auto *swing = dynamic_cast<const SwingTwistJoint *>(joint)) {
             model.settings = swing->m_settings;
         } else if (const auto *six = dynamic_cast<const SixDOFJoint *>(joint)) {
@@ -3863,9 +3878,9 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world) const
     }
 
     setup->model = BuildInxPhyGpuSceneModel(actors, joints, *CaptureColliderPairs(domain, true));
-    for (uint32_t index = 0; index < activeJoints.size(); ++index)
+    for (uint32_t index = 0; index < jointIds.size(); ++index)
         if (setup->model.jointBindings[index].row != NoModelIndex)
-            registration.joints.push_back({activeJoints[index]->GetPhysicsConstraintId(), index});
+            registration.joints.push_back({jointIds[index], index});
     return setup;
 }
 

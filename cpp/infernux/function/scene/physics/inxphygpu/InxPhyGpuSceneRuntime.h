@@ -83,6 +83,9 @@ struct InxPhyGpuFixedPublication
     uint32_t bodiesPerWorld = 0;
     uint32_t substeps = 1;
 
+    [[nodiscard]] std::optional<uint32_t> FindAcceptedWorld(ContactStreamIdentity identity) const;
+    [[nodiscard]] std::optional<InxPhyGpuSceneJointReference> FindJointReference(uint32_t world,
+                                                                                 uint64_t jointId) const;
     [[nodiscard]] PhysicsGpuPoseSource PoseSource(uint32_t world) const;
     [[nodiscard]] std::optional<PhysicsGpuBodyPoseBinding> FindPoseBody(uint32_t world, PhysicsActorHandle actor,
                                                                         uint32_t bodyId) const;
