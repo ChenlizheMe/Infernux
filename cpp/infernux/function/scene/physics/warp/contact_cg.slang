@@ -155,7 +155,7 @@ void addConstraintForce(uint index, float value)
     }
 }
 
-void syncCgProjection()
+void syncCgStorage()
 {
     __target_switch
     {
@@ -174,7 +174,7 @@ bool projectCgForce<let Publish : bool>(uint world, uint lane)
     const uint dofBase = world * nv;
     for (uint i = lane; i < nv; i += CgWidth)
         constraintForce[dofBase + i].store(0u);
-    syncCgProjection();
+    syncCgStorage();
 
     const uint4 limit = settings[0];
     const uint rowBase = world * limit.z;
@@ -210,7 +210,7 @@ void cg_project_gradient(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     const uint world = group.y;
     const bool projected = projectCgForce<false>(world, lane);
     // The one workgroup for this world owns both the projection and its gradient.
-    syncCgProjection();
+    syncCgStorage();
     const uint nv = settings[1].y;
     const uint dofBase = world * nv;
     for (uint i = lane; i < nv; i += CgWidth)
@@ -319,15 +319,8 @@ void cg_ray_constraint_product(uint3 id : SV_DispatchThreadID)
     rowRay[index] = value;
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void cg_ray_mass_and_gauss(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+float2 computeMassRay(uint world, uint lane)
 {
-    group = solverDispatchId(group);
-    const uint world = group.y;
-    CgWorld state = worlds[world];
-    if (broadcastCg(state.progress.y, lane) != Running)
-        return;
     const uint nv = settings[1].y;
     float2 gauss = float2(0.0);
     for (uint i = lane; i < nv; i += CgWidth)
@@ -338,7 +331,19 @@ void cg_ray_mass_and_gauss(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         massProducts[index] = float2(ma, mv);
         gauss += directionHistory[index].z * float2(ma - smoothForce[index], mv);
     }
-    gauss = reduceCg(float4(gauss, 0, 0), lane).xy;
+    return reduceCg(float4(gauss, 0, 0), lane).xy;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cg_ray_mass_and_gauss(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    group = solverDispatchId(group);
+    const uint world = group.y;
+    CgWorld state = worlds[world];
+    if (broadcastCg(state.progress.y, lane) != Running)
+        return;
+    const float2 gauss = computeMassRay(world, lane);
     if (lane == 0)
     {
         state.gauss = gauss;
@@ -544,16 +549,8 @@ float newtonAlpha(RayPoint point)
     return point.alpha - point.value.y / max(CgMinValue, point.value.z);
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void cg_line_search(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void searchContactRay(uint world, uint lane, CgWorld state)
 {
-    group = solverDispatchId(group);
-    const uint world = group.y;
-    CgWorld state = worlds[world];
-    if (broadcastCg(state.progress.y, lane) != Running)
-        return;
-
     // Equality is quadratic at every alpha, so its ray coefficients can be evaluated once.
     CgWorld ray = state;
     ray.gauss += equalityRayTerms(world, state.progress.z, lane);
@@ -621,6 +618,28 @@ void cg_line_search(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         state.search.xy = float2(best.alpha, -best.value.x);
         worlds[world] = state;
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cg_line_search(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    group = solverDispatchId(group);
+    const CgWorld state = worlds[group.y];
+    if (broadcastCg(state.progress.y, lane) == Running)
+        searchContactRay(group.y, lane, state);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cg_search_step(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const uint world = solverDispatchId(group).y;
+    CgWorld state = worlds[world];
+    if (broadcastCg(state.progress.y, lane) != Running)
+        return;
+    state.gauss = computeMassRay(world, lane);
+    searchContactRay(world, lane, state);
 }
 
 [shader("compute")]

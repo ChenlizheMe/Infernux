@@ -493,7 +493,7 @@ struct ContactDynamics
 ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const ContactSlots &stream,
                                    WarpCollisionCapacity capacity, const WarpContactSolver &solver, float timestep,
                                    const ContactDynamics &dyn, std::vector<ComputeWorkDispatch> precondition,
-                                   bool contactReports, uint32_t substeps)
+                                   bool contactReports, uint32_t substeps, uint32_t maxStorageBuffers)
 {
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
@@ -686,6 +686,49 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {17, products, W}});
     indirectLast(Dofs);
 
+    auto rayProduct = b.Dispatch(
+        "contact_cg", "cg_ray_constraint_product", rows,
+        {{0, settings, R}, {3, rowStore, R}, {4, columnStore, R}, {15, history, R}, {16, worldState, R}, {18, ray, W}});
+    rayProduct.indirectArguments = grid(Rows);
+    constexpr uint32_t FullSearchStorageBindings = 12;
+    std::optional<ComputeWorkDispatch> massSearch;
+    ComputeWorkDispatch search;
+    if (maxStorageBuffers >= FullSearchStorageBindings) {
+        search = b.Dispatch("contact_cg", "cg_search_step", 1,
+                            {{0, settings, R},
+                             {1, opt, R},
+                             {3, rowStore, R},
+                             {5, stream.records, R},
+                             {6, residual, R},
+                             {9, dyn.smoothForce, R},
+                             {10, dyn.mass, R},
+                             {11, massTopology, R},
+                             {15, history, R},
+                             {16, worldState, RW},
+                             {17, products, RW},
+                             {18, ray, R}});
+    } else {
+        massSearch = b.Dispatch("contact_cg", "cg_ray_mass_and_gauss", 1,
+                                {{0, settings, R},
+                                 {1, opt, R},
+                                 {9, dyn.smoothForce, R},
+                                 {10, dyn.mass, R},
+                                 {11, massTopology, R},
+                                 {15, history, R},
+                                 {16, worldState, RW},
+                                 {17, products, RW}});
+        massSearch->indirectArguments = grid(Worlds);
+        search = b.Dispatch("contact_cg", "cg_line_search", 1,
+                            {{0, settings, R},
+                             {1, opt, R},
+                             {3, rowStore, R},
+                             {5, stream.records, R},
+                             {6, residual, R},
+                             {16, worldState, RW},
+                             {18, ray, R}});
+    }
+    search.indirectArguments = grid(Worlds);
+
     // A fixed recipe records the upper bound. Each world's progress controls its device work.
     for (uint32_t iteration = 0; iteration <= solver.iterations; ++iteration) {
         b.Add("contact_cg", "cg_project_gradient", 1,
@@ -710,33 +753,10 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
         indirectLast(Worlds);
         if (iteration == solver.iterations)
             break;
-        b.Add("contact_cg", "cg_ray_mass_and_gauss", 1,
-              {{0, settings, R},
-               {1, opt, R},
-               {9, dyn.smoothForce, R},
-               {10, dyn.mass, R},
-               {11, massTopology, R},
-               {15, history, R},
-               {16, worldState, RW},
-               {17, products, RW}});
-        indirectLast(Worlds);
-        b.Add("contact_cg", "cg_ray_constraint_product", rows,
-              {{0, settings, R},
-               {3, rowStore, R},
-               {4, columnStore, R},
-               {15, history, R},
-               {16, worldState, R},
-               {18, ray, W}});
-        indirectLast(Rows);
-        b.Add("contact_cg", "cg_line_search", 1,
-              {{0, settings, R},
-               {1, opt, R},
-               {3, rowStore, R},
-               {5, stream.records, R},
-               {6, residual, R},
-               {16, worldState, RW},
-               {18, ray, R}});
-        indirectLast(Worlds);
+        b.dispatches.push_back(rayProduct);
+        if (massSearch)
+            b.dispatches.push_back(*massSearch);
+        b.dispatches.push_back(search);
         b.Add("contact_cg", "cg_apply_step", std::max(nv, rows),
               {{0, settings, R},
                {6, residual, RW},
@@ -1101,7 +1121,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                            controlSlots && nm != 0 ? controlSlots->prescribed : NoModelIndex,
                                            bodyVelocity};
             response = AddContactResponse(b, model, *contactSlots, capacity, *solver, substepDt, dynamics,
-                                          std::move(massSolves), contactReports, substeps);
+                                          std::move(massSolves), contactReports, substeps,
+                                          host.device.GetCapabilities().limits.maxStorageBuffersPerStage);
             reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
             const std::array singleWorld{positions,
                                          pose,
