@@ -125,7 +125,7 @@ PhysicsRayIndex BuildPhysicsRayIndex(const std::vector<spatial::Bounds> &finiteB
 }
 
 uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, const std::vector<glm::vec3> &vertices,
-                              const std::vector<std::array<uint32_t, 3>> &faces)
+                              const std::vector<std::array<uint32_t, 3>> &faces, uint32_t vertexBase)
 {
     std::vector<spatial::Bounds> bounds;
     bounds.reserve(faces.size());
@@ -153,7 +153,7 @@ uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, const std::vec
     }
     for (const auto index : tree.primitiveOrder) {
         const auto &face = faces[index];
-        records.push_back({face[0], face[1], face[2], index});
+        records.push_back({vertexBase + face[0], vertexBase + face[1], vertexBase + face[2], index});
     }
     return descriptor;
 }

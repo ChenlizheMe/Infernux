@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "WarpCollisionModel.h"
+#include "PhysicsRayIndex.h"
 
 #include <algorithm>
 #include <cmath>
@@ -40,6 +41,14 @@ struct PackedHull
     ModelVector center{};
     ModelVector halfExtent{};
     float radius = 0.0f;
+};
+
+struct PackedMesh
+{
+    uint32_t descriptor;
+    ModelVector center;
+    ModelVector halfExtent;
+    float radius;
 };
 
 struct ConvexData
@@ -141,11 +150,48 @@ struct ConvexData
         return row;
     }
 
+    const PackedMesh &AddTriangleMesh(const WarpTriangleMesh &mesh)
+    {
+        const auto cached = triangleMeshes.find(&mesh);
+        if (cached != triangleMeshes.end())
+            return cached->second;
+        if (mesh.faces.empty() || mesh.faces.size() != mesh.features.size())
+            throw std::invalid_argument("Warp triangle mesh requires face features");
+        const auto base = static_cast<uint32_t>(vertices.size());
+        float radius = 0.0f;
+        for (const auto &vertex : mesh.vertices) {
+            vertices.push_back(FloatWords({vertex.x, vertex.y, vertex.z, 0.0f}));
+            radius = std::max(radius, glm::length(vertex));
+        }
+        const auto descriptor = AppendPhysicsRayMesh(meshRecords, mesh.vertices, mesh.faces, base);
+        const auto root = meshRecords[descriptor][0];
+        const auto &lo = meshRecords[root];
+        const auto &hi = meshRecords[root + 1];
+        ModelVector lower, upper;
+        std::memcpy(lower.data(), lo.data(), sizeof(lower));
+        std::memcpy(upper.data(), hi.data(), sizeof(upper));
+        PackedMesh packed{descriptor, {}, {}, radius};
+        for (uint32_t axis = 0; axis < 3; ++axis) {
+            packed.center[axis] = 0.5f * (upper[axis] + lower[axis]);
+            packed.halfExtent[axis] = 0.5f * (upper[axis] - lower[axis]);
+        }
+        const auto metadata = meshRecords.size();
+        meshRecords[descriptor][3] = static_cast<uint32_t>(metadata);
+        meshRecords.resize(metadata + (mesh.features.size() + 1) / 2);
+        for (size_t i = 0; i < mesh.features.size(); ++i) {
+            auto &record = meshRecords[metadata + i / 2];
+            const auto [id, edges] = mesh.features[i];
+            record[2 * (i % 2)] = id;
+            record[2 * (i % 2) + 1] = edges;
+        }
+        return triangleMeshes.emplace(&mesh, packed).first->second;
+    }
+
     std::vector<ModelWords> Finish() const
     {
         // The reference collision loop uses a bounded GJK and EPA budget.
         constexpr uint32_t iterations = 50;
-        std::vector<ModelWords> result(4);
+        std::vector<ModelWords> result(5);
         result[0] = {0, iterations + 5, 6 + 12 * iterations, 128};
         result[1] = {FloatWords({1.0e-6f, 0, 0, 0})[0], iterations, iterations, polygonVertices};
         ModelWords offsets;
@@ -162,14 +208,17 @@ struct ConvexData
                      heightfields.empty() ? 0u : 50u, 0};
         result.insert(result.end(), heightfields.begin(), heightfields.end());
         AppendScalars(result, samples);
+        result[4][0] = static_cast<uint32_t>(result.size());
+        result.insert(result.end(), meshRecords.begin(), meshRecords.end());
         return result;
     }
 
     uint32_t polygonVertices = 4;
-    std::vector<ModelWords> vertices, topology, heightfields;
+    std::vector<ModelWords> vertices, topology, heightfields, meshRecords;
     std::vector<uint32_t> adjacency, links, samples;
     std::unordered_map<const WarpConvexHull *, PackedHull> hulls;
     std::unordered_map<const WarpHeightfield *, uint32_t> sampleOffsets;
+    std::unordered_map<const WarpTriangleMesh *, PackedMesh> triangleMeshes;
 };
 } // namespace
 
@@ -227,6 +276,15 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
             bounds.halfExtent = {x, y, (height + depth) * 0.5f, 0};
             bounds.radii[0] = std::hypot(x, y, std::max(height, depth));
             result.heightfields = true;
+        } else if (type == TriangleMesh) {
+            if (!source.mesh || model.bodies[weld].dofs[1] != 0)
+                throw std::invalid_argument("Warp triangle mesh requires cooked geometry on a non-dynamic body");
+            const auto &mesh = convex.AddTriangleMesh(*source.mesh);
+            shape.type = {TriangleMesh, mesh.descriptor, source.meshPath, source.meshPathBits};
+            bounds.center = mesh.center;
+            bounds.halfExtent = mesh.halfExtent;
+            bounds.radii[0] = mesh.radius;
+            result.triangleMeshes = true;
         }
         result.convexPairs |= type == Hull || type == Ellipsoid;
         boxCount += uint32_t(type == Box);
@@ -237,7 +295,7 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
         result.pairRules[geom] = {weld, weldParent, flags, 0};
     }
     result.convexPairs |= boxCount > 1 || cylinderCount > 1 || (cylinderCount != 0 && (boxCount != 0 || hasCapsule));
-    if (result.convexPairs || result.heightfields) {
+    if (result.convexPairs || result.heightfields || result.triangleMeshes) {
         if (cylinderCount != 0)
             convex.polygonVertices = std::max(convex.polygonVertices, 16u);
         result.convexData = convex.Finish();

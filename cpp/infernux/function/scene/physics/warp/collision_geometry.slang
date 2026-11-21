@@ -12,6 +12,8 @@ static const uint GeomEllipsoid = 4;
 static const uint GeomCylinder = 5;
 static const uint GeomBox = 6;
 static const uint GeomMesh = 7;
+static const uint GeomTriangleMesh = 8;
+static const uint GeomTriangle = 9; // A transient support shape, never a model row.
 static const float MinValue = 1.0e-15;
 
 struct CollisionShape
@@ -33,4 +35,18 @@ float3 rotatePoint(CartesianFrame frame, float3 point)
 float3 inverseRotatePoint(CartesianFrame frame, float3 point)
 {
     return float3(dot(frameAxis(frame, 0), point), dot(frameAxis(frame, 1), point), dot(frameAxis(frame, 2), point));
+}
+
+CartesianFrame relativeCollisionFrame(CartesianFrame origin, CartesianFrame geometry)
+{
+    const float3 x = inverseRotatePoint(origin, frameAxis(geometry, 0));
+    const float3 y = inverseRotatePoint(origin, frameAxis(geometry, 1));
+    const float3 z = inverseRotatePoint(origin, frameAxis(geometry, 2));
+    return {float4(inverseRotatePoint(origin, geometry.position.xyz - origin.position.xyz), 0.0),
+            float4(x.x, y.x, z.x, 0.0), float4(x.y, y.y, z.y, 0.0), float4(x.z, y.z, z.z, 0.0)};
+}
+
+float3 triangleVertex(CartesianFrame triangle, uint index)
+{
+    return index == 0 ? triangle.row0.xyz : (index == 1 ? triangle.row1.xyz : triangle.row2.xyz);
 }

@@ -5,6 +5,7 @@
 
 #include "WarpModel.h"
 
+#include <glm/vec3.hpp>
 #include <memory>
 #include <optional>
 
@@ -21,6 +22,7 @@ enum WarpGeometryType : uint32_t
     Cylinder = 5,
     Box = 6,
     Hull = 7,
+    TriangleMesh = 8,
 };
 
 struct WarpContactMaterial
@@ -52,6 +54,13 @@ struct WarpHeightfield
     std::vector<float> samples; // Row-major normalized elevations.
 };
 
+struct WarpTriangleMesh
+{
+    std::vector<glm::vec3> vertices;
+    std::vector<std::array<uint32_t, 3>> faces;
+    std::vector<std::array<uint32_t, 2>> features; // Native triangle ID and active edges, in face order.
+};
+
 struct WarpCollisionGeometry
 {
     ModelVector size{};
@@ -62,6 +71,9 @@ struct WarpCollisionGeometry
     std::shared_ptr<const WarpConvexHull> hull;
     std::shared_ptr<const WarpHeightfield> heightfield;
     bool trigger = false;
+    std::shared_ptr<const WarpTriangleMesh> mesh;
+    uint32_t meshPath = 0;
+    uint32_t meshPathBits = 0;
 };
 
 struct WarpCollisionPair
@@ -97,6 +109,7 @@ struct WarpCollisionModel
     bool filterConnectedBodies = true;
     bool convexPairs = false;
     bool heightfields = false;
+    bool triangleMeshes = false;
 };
 
 /// Build rows in the same geometry order as model.geometries. Pair overrides can arrive in any order.

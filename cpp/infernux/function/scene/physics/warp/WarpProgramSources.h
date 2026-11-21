@@ -47,6 +47,7 @@ inline constexpr WarpProgramSource WarpProgramSources[] = {
     {"tendon_constraints"},
     {"tendon_dynamics"},
     {"tendon"},
+    {"triangle_mesh_contacts"},
     {"wrench"},
     {"contact_cg", true},
     {"contact_constraints", true},

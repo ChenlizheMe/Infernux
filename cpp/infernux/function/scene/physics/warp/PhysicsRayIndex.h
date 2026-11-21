@@ -27,6 +27,6 @@ struct PhysicsRayIndex
 /// Append a mesh-local tree and return its descriptor index. Face indices address
 /// the same immutable vertex array as the convex and ray geometry programs.
 [[nodiscard]] uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, const std::vector<glm::vec3> &vertices,
-                                            const std::vector<std::array<uint32_t, 3>> &faces);
+                                            const std::vector<std::array<uint32_t, 3>> &faces, uint32_t vertexBase = 0);
 
 } // namespace infernux::physics::warp

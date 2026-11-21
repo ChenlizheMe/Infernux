@@ -15,8 +15,10 @@
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <cmath>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -60,10 +62,39 @@ std::shared_ptr<const WarpConvexHull> CookHull(const JPH::ConvexHullShape &shape
     return hull;
 }
 
-using Hulls = std::unordered_map<const JPH::Shape *, std::shared_ptr<const WarpConvexHull>>;
-
-WarpGeometryType CookGeometry(const JPH::Shape &shape, WarpCollisionGeometry &geometry, Hulls &hulls)
+std::shared_ptr<const WarpTriangleMesh> CookTriangleMesh(const JPH::MeshShape &shape)
 {
+    JPH::Array<JPH::MeshShape::TriangleData> triangles;
+    shape.GetTriangleData(triangles);
+    auto mesh = std::make_shared<WarpTriangleMesh>();
+    mesh->faces.reserve(triangles.size());
+    mesh->features.reserve(triangles.size());
+    std::map<std::array<float, 3>, uint32_t> vertexIndices;
+    for (const auto &triangle : triangles) {
+        auto &face = mesh->faces.emplace_back();
+        const std::array points{triangle.mV0, triangle.mV1, triangle.mV2};
+        for (size_t corner = 0; corner < points.size(); ++corner) {
+            const auto point = Vector(JPH::RVec3(points[corner]));
+            const auto [index, fresh] = vertexIndices.try_emplace(std::array{point.x, point.y, point.z},
+                                                                  static_cast<uint32_t>(mesh->vertices.size()));
+            if (fresh)
+                mesh->vertices.push_back(point);
+            face[corner] = index->second;
+        }
+        mesh->features.push_back({triangle.mSubShapeID.GetValue(), triangle.mActiveEdges});
+    }
+    return mesh;
+}
+
+struct GeometryCache
+{
+    std::unordered_map<const JPH::Shape *, std::shared_ptr<const WarpConvexHull>> hulls;
+    std::unordered_map<const JPH::Shape *, std::shared_ptr<const WarpTriangleMesh>> meshes;
+};
+
+WarpGeometryType CookGeometry(const JPH::TransformedShape &leaf, WarpCollisionGeometry &geometry, GeometryCache &cache)
+{
+    const auto &shape = *leaf.mShape;
     switch (shape.GetSubType()) {
     case JPH::EShapeSubType::Sphere: {
         const float radius = static_cast<const JPH::SphereShape &>(shape).GetRadius();
@@ -95,11 +126,24 @@ WarpGeometryType CookGeometry(const JPH::Shape &shape, WarpCollisionGeometry &ge
         return Cylinder;
     }
     case JPH::EShapeSubType::ConvexHull: {
-        auto &hull = hulls[&shape];
+        auto &hull = cache.hulls[&shape];
         if (!hull)
             hull = CookHull(static_cast<const JPH::ConvexHullShape &>(shape));
         geometry.hull = hull;
         return Hull;
+    }
+    case JPH::EShapeSubType::Mesh: {
+        const auto &mesh = static_cast<const JPH::MeshShape &>(shape);
+        const auto pathBits = leaf.mSubShapeIDCreator.GetNumBitsWritten();
+        if (mesh.GetSubShapeIDBitsRecursive() + pathBits > JPH::SubShapeID::MaxBits)
+            throw std::invalid_argument("Collider mesh subshape path exceeds the native ID size");
+        auto &cooked = cache.meshes[&shape];
+        if (!cooked)
+            cooked = CookTriangleMesh(mesh);
+        geometry.mesh = cooked;
+        geometry.meshPath = leaf.mSubShapeIDCreator.GetID().GetValue();
+        geometry.meshPathBits = pathBits;
+        return TriangleMesh;
     }
     default:
         throw std::invalid_argument("Collider shape is not supported by the native Warp scene model");
@@ -151,7 +195,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors)
     std::vector<ModelBodyDefinition> bodies;
     std::vector<ModelGeometryDefinition> geometries;
     std::vector<WarpCollisionGeometry> collision;
-    Hulls hulls;
+    GeometryCache cache;
     bodies.reserve(actors.size());
     for (uint32_t index = 0; index < actors.size(); ++index) {
         const auto &actor = actors[index];
@@ -175,7 +219,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors)
         for (const auto &[leaf, member] : leaves) {
             const auto &surface = actor.colliders[member];
             auto &shape = collision.emplace_back();
-            const auto kind = CookGeometry(*leaf.mShape, shape, hulls);
+            const auto kind = CookGeometry(leaf, shape, cache);
             shape.material.friction[0] = surface.friction;
             shape.trigger = surface.trigger;
             glm::quat rotation = Rotation(leaf.mShapeRotation);

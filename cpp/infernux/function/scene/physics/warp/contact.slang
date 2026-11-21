@@ -17,7 +17,7 @@ struct Contact
     float4 friction;
     float4 extra;
     uint4 geometry; // first geometry, second geometry, contact dimension, constraint/sensor flags
-    uint4 identity; // per-pair contact ordinal, sensor id
+    uint4 identity; // per-pair contact ordinal, sensor id, first subshape, second subshape
 };
 
 float contactFriction(Contact contact, uint axis)

@@ -29,12 +29,12 @@ struct ConvexDistance
 bool convexDiscreteGeometry(ConvexGeometry geometry)
 {
     return geometry.margin == 0.0 && (geometry.shape.type.x == GeomBox || geometry.shape.type.x == GeomMesh ||
-                                     geometry.shape.type.x == GeomHeightfield);
+                                     geometry.shape.type.x == GeomHeightfield || geometry.shape.type.x == GeomTriangle);
 }
 
 bool convexFaceGeometry(uint kind)
 {
-    return kind == GeomBox || kind == GeomMesh || kind == GeomCylinder;
+    return kind == GeomBox || kind == GeomMesh || kind == GeomCylinder || kind == GeomTriangle;
 }
 
 float3 tuneConvexDirection(float3 direction, float norm, float3 simplex[4], uint count, out float3 search)

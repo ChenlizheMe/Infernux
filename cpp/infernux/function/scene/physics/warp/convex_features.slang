@@ -69,6 +69,9 @@ ConvexFaceChoices convexFaceChoices(ConvexGeometry geometry, ConvexFeature featu
     ConvexFaceChoices choices = {uint3(0), 0, 0, false};
     switch (geometry.shape.type.x)
     {
+    case GeomTriangle:
+        choices.count = 1;
+        break;
     case GeomBox:
         uint mask = 7u;
         if (feature.dimension >= 2)
@@ -133,6 +136,9 @@ uint convexFaceId(ConvexFaceChoices choices, uint index, StructuredBuffer<uint4>
 
 float3 convexFaceNormal(ConvexGeometry geometry, uint face, uint2 mesh, StructuredBuffer<uint4> model)
 {
+    if (geometry.shape.type.x == GeomTriangle)
+        return normalize(cross(geometry.frame.row1.xyz - geometry.frame.row0.xyz,
+                               geometry.frame.row2.xyz - geometry.frame.row0.xyz));
     if (geometry.shape.type.x == GeomBox)
         return convexBoxNormal(geometry, face);
     if (geometry.shape.type.x == GeomCylinder)
@@ -144,6 +150,8 @@ uint convexEdgeCount(ConvexGeometry geometry, ConvexFeature feature, uint2 mesh,
 {
     if (geometry.shape.type.x == GeomBox)
         return feature.dimension == 1 ? 3 : 1;
+    if (geometry.shape.type.x == GeomTriangle)
+        return feature.dimension == 1 ? 2 : 1;
     if (geometry.shape.type.x == GeomMesh && feature.dimension == 1)
         return convexTopology(model, mesh.y + uint(feature.ids.x)).y;
     return 1;
@@ -162,6 +170,10 @@ ConvexEdge convexEdge(ConvexGeometry geometry, ConvexFeature feature, uint index
     const float halfLength = geometry.shape.size.y;
     switch (geometry.shape.type.x)
     {
+    case GeomTriangle:
+        const uint firstCorner = uint(feature.ids.x);
+        const uint secondCorner = feature.dimension == 1 ? (firstCorner + 1 + index) % 3 : uint(feature.ids.y);
+        return {triangleVertex(geometry.frame, firstCorner), triangleVertex(geometry.frame, secondCorner)};
     case GeomBox:
         const uint first = uint(feature.ids.x);
         const uint second = feature.dimension == 1 ? (first ^ (1u << index)) : uint(feature.ids.y);
@@ -212,6 +224,8 @@ float3 loadConvexClipPoint(RWStructuredBuffer<uint4> scratch, uint address)
 
 uint convexFaceVertexCount(ConvexGeometry geometry, uint face, uint2 mesh, StructuredBuffer<uint4> model)
 {
+    if (geometry.shape.type.x == GeomTriangle)
+        return 3;
     if (geometry.shape.type.x == GeomBox)
         return 4;
     if (geometry.shape.type.x == GeomCylinder)
@@ -222,7 +236,12 @@ uint convexFaceVertexCount(ConvexGeometry geometry, uint face, uint2 mesh, Struc
 void storeConvexFace(ConvexGeometry geometry, uint face, uint2 mesh, uint count, uint base,
                      StructuredBuffer<uint4> model, RWStructuredBuffer<uint4> scratch)
 {
-    if (geometry.shape.type.x == GeomBox)
+    if (geometry.shape.type.x == GeomTriangle)
+    {
+        for (uint i = 0; i < 3; ++i)
+            storeConvexClipPoint(scratch, base + i, triangleVertex(geometry.frame, i));
+    }
+    else if (geometry.shape.type.x == GeomBox)
     {
         const uint4 corners[6] = {uint4(7,3,1,5), uint4(2,6,4,0), uint4(2,3,7,6),
                                   uint4(4,5,1,0), uint4(6,7,5,4), uint4(3,2,0,1)};

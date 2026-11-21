@@ -15,15 +15,6 @@ static const float HeightfieldContactSpacing = 1.0e-3;
 [[vk::binding(10, 0)]] RWStructuredBuffer<uint> convexHorizon;
 [[vk::binding(11, 0)]] RWStructuredBuffer<Atomic<uint>> convexStatus;
 
-CartesianFrame heightfieldLocalFrame(CartesianFrame terrain, CartesianFrame geometry)
-{
-    const float3 x = inverseRotatePoint(terrain, frameAxis(geometry, 0));
-    const float3 y = inverseRotatePoint(terrain, frameAxis(geometry, 1));
-    const float3 z = inverseRotatePoint(terrain, frameAxis(geometry, 2));
-    return {float4(inverseRotatePoint(terrain, geometry.position.xyz - terrain.position.xyz), 0.0),
-            float4(x.x, y.x, z.x, 0.0), float4(x.y, y.y, z.y, 0.0), float4(x.z, y.z, z.z, 0.0)};
-}
-
 ConvexGeometry heightfieldPrism(float3 a, float3 b, float3 c, float baseDepth)
 {
     const float3 center = (float3(a.xy, -baseDepth) + float3(b.xy, -baseDepth) +
@@ -162,7 +153,7 @@ void collideHeightfieldPair(uint world, uint4 pair, CollisionShape terrain, Coll
 {
     const uint base = world * settings.x;
     const CartesianFrame terrainFrame = geometryFrames[base + pair.x];
-    const CartesianFrame local = heightfieldLocalFrame(terrainFrame, geometryFrames[base + pair.y]);
+    const CartesianFrame local = relativeCollisionFrame(terrainFrame, geometryFrames[base + pair.y]);
     ConvexGeometry shape = {local, other, 0.0, -1};
     const HeightfieldGrid grid = heightfieldGrid(convexModel, terrain.type.y);
     const float4 size = grid.size;

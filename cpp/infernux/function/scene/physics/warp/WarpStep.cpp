@@ -291,6 +291,8 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
             narrowphase("convex_contacts", "collide_convex");
         if (collision.heightfields)
             narrowphase("heightfield_contacts", "collide_heightfield");
+        if (collision.triangleMeshes)
+            narrowphase("triangle_mesh_contacts", "collide_triangle_mesh");
     }
     return {pairCount, counts, contacts, status};
 }
