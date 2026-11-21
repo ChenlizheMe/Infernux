@@ -35,7 +35,7 @@ void evaluate_site_transmission(uint3 id : SV_DispatchThreadID)
     const uint dofBase = id.y * model[0].state.y;
     const uint momentBase = id.y * actuatorDimensions[0].w;
     const Pose driven = actuatorSitePose(bodyBase + site.bodies.x, site.site);
-    const float3 drivenOffset = driven.position.xyz - transmissionTreeCom[bodyBase + site.bodies.y].xyz;
+    const float3 drivenOffset = driven.position.xyz - projectionTreeCom[bodyBase + site.bodies.y].xyz;
     float3 referenceOffset = float3(0.0);
     float4 wrenchFrame = driven.rotation;
     float coordinate = 0.0;
@@ -53,7 +53,7 @@ void evaluate_site_transmission(uint3 id : SV_DispatchThreadID)
             const float3 rotation = rotationVector(mulQuat(inverse, driven.rotation));
             coordinate += dot(rotation, actuator.gearLast.xyz);
         }
-        referenceOffset = reference.position.xyz - transmissionTreeCom[bodyBase + site.bodies.w].xyz;
+        referenceOffset = reference.position.xyz - projectionTreeCom[bodyBase + site.bodies.w].xyz;
         wrenchFrame = reference.rotation;
     }
 
@@ -65,7 +65,7 @@ void evaluate_site_transmission(uint3 id : SV_DispatchThreadID)
         const uint2 entry = siteMomentColumns[column];
         const bool reference = entry.y != 0;
         const uint dof = dofBase + entry.x;
-        const SpatialMotion motion = transmissionCenteredDof[dof];
+        const SpatialMotion motion = projectionCenteredDof[dof];
         const float3 offset = reference ? referenceOffset : drivenOffset;
         const float3 translation = motion.linear.xyz + cross(motion.angular.xyz, offset);
         const float moment = (reference ? -1.0 : 1.0) * (dot(translation, force) + dot(motion.angular.xyz, torque));
