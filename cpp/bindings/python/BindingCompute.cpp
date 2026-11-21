@@ -570,11 +570,11 @@ void infernux::RegisterComputeBindings(py::module_ &m)
         .def("buffer", [](const rhi::ComputeWorkInstance &work, size_t slot) { return work.GetBuffers().at(slot); })
         .def(
             "prepare_batch",
-            [](const rhi::ComputeWorkInstance &work, py::iterable updates) {
+            [](const rhi::ComputeWorkInstance &work, py::iterable updates, py::iterable reads) {
                 work.GetRecipe().GetHost().Queue().RecordNativeBoundary();
-                return work.PrepareBatch(DecodeComputeUpdates(updates));
+                return work.PrepareBatch(DecodeComputeUpdates(updates), DecodeComputeReads(reads));
             },
-            py::arg("updates") = py::tuple());
+            py::arg("updates") = py::tuple(), py::kw_only(), py::arg("reads") = py::tuple());
 
     py::class_<rhi::ComputeCompletion>(m, "_ComputeCompletion")
         .def_property_readonly(
