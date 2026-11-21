@@ -397,14 +397,19 @@ struct BodyControlSlots
     uint32_t spans, commands, force, saved, prescribed, fixedSteps, activity, pendingWrenches;
 };
 
+constexpr uint32_t SavedMotionWords = 44;
+constexpr uint32_t MaxBodyCommands = UINT32_MAX / SavedMotionWords;
+
 BodyControlSlots BindBodyControls(StepBuilder &b, const InxPhyGpuModel &model, uint32_t capacity, bool multiple)
 {
+    if (capacity > MaxBodyCommands)
+        throw std::length_error("inxphygpu body commands exceed the shader address space");
     const auto prescribedRows = uint64_t{model.dimensions.layout[1]} + model.initialStaticPoses.size();
     const ModelWords awake{0, NoModelIndex, 0, 0};
-    return {b.Seed("bodyCommandSpans", 4 * (uint64_t{capacity} + 1), nullptr),
-            b.Seed("bodyCommands", 12 * uint64_t{capacity}, nullptr),
+    return {b.Slot(4 * (uint64_t{capacity} + 1), BufferUsageFlags::TransferDestination),
+            b.Slot(12 * uint64_t{capacity}, BufferUsageFlags::TransferDestination),
             b.Zero("commandedForce", uint64_t{model.dimensions.state[1]} * b.worlds),
-            b.Zero("savedMotions", 44 * uint64_t{capacity}),
+            b.Slot(SavedMotionWords * uint64_t{capacity}),
             b.Zero("prescribedMotion", 12 * std::max(uint64_t{1}, prescribedRows) * b.worlds),
             b.Zero("acceptedFixedSteps", uint64_t{b.worlds} + uint32_t(multiple)),
             b.Seed("bodyActivity", awake.size(), awake.data(), b.worlds * model.dimensions.state[2]),
@@ -1122,7 +1127,6 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     BodyControls controls;
     std::optional<BodyControlSlots> controlSlots;
     if (bodyCommandCapacity != 0) {
-        controls.capacity = bodyCommandCapacity;
         controls.worlds = worlds;
         controls.motion.resize(nb, Uncontrolled);
         for (uint32_t index = 1; index < nb; ++index) {
@@ -1566,7 +1570,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         editCommands = b.Bind("body_controls", sceneDynamics ? "edit_scene_body_state" : "edit_body_state",
                               bodyCommandCapacity, commandBindings);
         commandBindings.back().access = R;
-        commandBindings.insert(commandBindings.end(), {{8, force, RW}, {11, saved, RW}, {22, fixedSizes, R}});
+        commandBindings.insert(commandBindings.end(), {{8, force, RW}, {11, saved, W}, {22, fixedSizes, R}});
         applyCommands = b.Bind("body_controls", sceneDynamics ? "apply_scene_body_commands" : "apply_body_commands",
                                bodyCommandCapacity, commandBindings);
         if (multiple)
@@ -1739,8 +1743,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         }
     }
     if (controlSlots) {
-        controls.commands = buffers[controlSlots->commands];
-        controls.spans = buffers[controlSlots->spans];
+        controls.streams = {buffers[controlSlots->commands], buffers[controlSlots->spans], buffers[controlSlots->saved],
+                            bodyCommandCapacity};
         controls.states = buffers[states];
         controls.activity = buffers[controlSlots->activity];
         controls.pendingWrenches = buffers[controlSlots->pendingWrenches];
@@ -1815,7 +1819,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuStep::Prepare(bool publish,
 {
     auto dispatches = m_substeps.begin;
     std::vector<rhi::ComputeReplayRange> replays;
-    AppendFixedWork(dispatches, replays, 0, false);
+    AppendFixedWork(dispatches, replays, 0, false, m_controls.streams);
     std::vector<rhi::ComputeBufferRead> reads;
     if (publish) {
         dispatches.push_back(m_snapshot);
@@ -1829,12 +1833,13 @@ std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuStep::Prepare(bool publish,
 }
 
 void InxPhyGpuStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispatches,
-                                    std::vector<rhi::ComputeReplayRange> &replays, uint32_t spans,
-                                    bool captureContacts) const
+                                    std::vector<rhi::ComputeReplayRange> &replays, uint32_t spans, bool captureContacts,
+                                    const BodyCommandStreams &streams) const
 {
     auto drive = m_substeps.drive;
     const bool driving = spans != 0 && drive.kernel;
     if (driving) {
+        BindBodyCommandStreams(drive, streams, 0, spans);
         drive.groupCountX = (spans - 1) / 64 + 1;
         LinearGrid(drive);
     }
@@ -2040,10 +2045,12 @@ InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, Inx
         return Prepare(false, std::move(updates));
     auto dispatches = m_substeps.begin;
     std::vector<rhi::ComputeReplayRange> replays;
-    const auto spanCount = AppendBodyCommands(std::move(commands), true, updates, dispatches);
-    AppendFixedWork(dispatches, replays, spanCount, captureContacts);
+    const auto &streams = BodyCommandStorage(commands.size());
+    const auto spanCount = AppendBodyCommands(std::move(commands), true, streams, updates, dispatches);
+    AppendFixedWork(dispatches, replays, spanCount, captureContacts, streams);
     if (spanCount != 0) {
         auto finish = m_controls.finish;
+        BindBodyCommandStreams(finish, streams, 0, spanCount);
         finish.groupCountX = (spanCount - 1) / 64 + 1;
         LinearGrid(finish);
         dispatches.push_back(std::move(finish));
@@ -2067,22 +2074,71 @@ InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, Inx
 
 std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuStep::PrepareEdits(std::vector<InxPhyGpuBodyCommand> commands) const
 {
+    if (!m_controls.states)
+        throw std::logic_error("inxphygpu step has no rigid body control layout");
     std::vector<rhi::ComputeBufferUpdate> updates;
     std::vector<rhi::ComputeDispatchDesc> dispatches;
-    AppendBodyCommands(std::move(commands), false, updates, dispatches);
+    const auto &streams = BodyCommandStorage(commands.size());
+    AppendBodyCommands(std::move(commands), false, streams, updates, dispatches);
     AppendBodyPublication(dispatches, false);
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches));
 }
 
+const InxPhyGpuStep::BodyCommandStreams &InxPhyGpuStep::BodyCommandStorage(size_t count) const
+{
+    const auto &initial = m_controls.streams;
+    const auto &current = m_expandedBodyCommands.capacity ? m_expandedBodyCommands : initial;
+    if (count <= current.capacity)
+        return current;
+    if (count > MaxBodyCommands)
+        throw std::length_error("inxphygpu body commands exceed the shader address space");
+    const auto capacity = static_cast<uint32_t>(
+        std::max(uint64_t{count}, std::min(uint64_t{MaxBodyCommands}, uint64_t{2} * current.capacity)));
+    auto host = m_work->GetRecipe().GetHost();
+    const auto allocate = [&](const auto &prototype, uint64_t words) {
+        auto desc = prototype->GetDesc();
+        desc.elementCount = words;
+        auto buffer = rhi::ComputeBuffer::TryCreatePrivate(host, desc);
+        if (!buffer)
+            throw std::runtime_error("inxphygpu command stream could not reserve device storage");
+        return buffer;
+    };
+    m_expandedBodyCommands = {
+        allocate(initial.commands, uint64_t{capacity} * sizeof(InxPhyGpuBodyCommand) / sizeof(uint32_t)),
+        allocate(initial.spans, (uint64_t{capacity} + 1) * 4),
+        allocate(initial.saved, uint64_t{capacity} * SavedMotionWords), capacity};
+    return m_expandedBodyCommands;
+}
+
+void InxPhyGpuStep::BindBodyCommandStreams(rhi::ComputeDispatchDesc &dispatch, const BodyCommandStreams &streams,
+                                           uint32_t commands, uint32_t spans) const
+{
+    const auto &initial = m_controls.streams;
+    const auto bind = [&](const auto &prototype, const auto &storage, uint64_t bytes, bool written = false) {
+        const auto found = std::find(dispatch.buffers.begin(), dispatch.buffers.end(), prototype);
+        if (found == dispatch.buffers.end())
+            return;
+        const auto binding = static_cast<uint32_t>(found - dispatch.buffers.begin());
+        *found = storage;
+        for (auto &range : dispatch.proof->reads)
+            if (range.binding == binding)
+                range.byteSize = bytes;
+        if (written && dispatch.bufferAccesses[binding] == W)
+            dispatch.proof->writes.push_back({binding, 0, bytes});
+    };
+    bind(initial.commands, streams.commands, uint64_t{commands} * sizeof(InxPhyGpuBodyCommand));
+    bind(initial.spans, streams.spans, (uint64_t{spans} + 1) * sizeof(ModelWords));
+    bind(initial.saved, streams.saved, uint64_t{spans} * SavedMotionWords * sizeof(uint32_t), true);
+}
+
 uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> commands, bool integrate,
+                                           const BodyCommandStreams &streams,
                                            std::vector<rhi::ComputeBufferUpdate> &updates,
                                            std::vector<rhi::ComputeDispatchDesc> &dispatches) const
 {
     if (commands.empty())
         return 0;
-    if (commands.size() > m_controls.capacity)
-        throw std::length_error("inxphygpu body command capacity exceeded");
     const auto key = [](const auto &command) { return std::tie(command.world, command.body); };
     std::stable_sort(commands.begin(), commands.end(), [&](const auto &a, const auto &b) { return key(a) < key(b); });
     std::vector<ModelWords> spans(1);
@@ -2115,13 +2171,14 @@ uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> com
     const auto spanCount = static_cast<uint32_t>(spans.size() - 1);
     spans[0] = {spanCount, 0, m_substeps.count, 0};
     auto &spansUpload = updates.emplace_back(
-        rhi::ComputeBufferUpdate{m_controls.spans, 0, std::vector<uint8_t>(spans.size() * sizeof(ModelWords))});
+        rhi::ComputeBufferUpdate{streams.spans, 0, std::vector<uint8_t>(spans.size() * sizeof(ModelWords))});
     std::memcpy(spansUpload.data.data(), spans.data(), spansUpload.data.size());
     auto &commandsUpload = updates.emplace_back(rhi::ComputeBufferUpdate{
-        m_controls.commands, 0, std::vector<uint8_t>(commands.size() * sizeof(InxPhyGpuBodyCommand))});
+        streams.commands, 0, std::vector<uint8_t>(commands.size() * sizeof(InxPhyGpuBodyCommand))});
     std::memcpy(commandsUpload.data.data(), commands.data(), commandsUpload.data.size());
 
     auto apply = integrate ? m_controls.apply : m_controls.edit;
+    BindBodyCommandStreams(apply, streams, static_cast<uint32_t>(commands.size()), spanCount);
     apply.groupCountX = (spanCount - 1) / 64 + 1;
     LinearGrid(apply);
     dispatches.push_back(std::move(apply));

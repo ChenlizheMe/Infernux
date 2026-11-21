@@ -333,12 +333,17 @@ class InxPhyGpuStep
     }
 
   private:
+    struct BodyCommandStreams
+    {
+        std::shared_ptr<rhi::ComputeBuffer> commands, spans, saved;
+        uint32_t capacity = 0;
+    };
     struct BodyControls
     {
-        std::shared_ptr<rhi::ComputeBuffer> commands, spans, states, activity, pendingWrenches;
+        BodyCommandStreams streams;
+        std::shared_ptr<rhi::ComputeBuffer> states, activity, pendingWrenches;
         rhi::ComputeDispatchDesc apply, edit, finish, pose, publish, publishWithStatus;
         std::vector<uint8_t> motion;
-        uint32_t capacity = 0;
         uint32_t worlds = 0;
     };
     struct ContactReports
@@ -373,9 +378,12 @@ class InxPhyGpuStep
     };
 
     void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, std::vector<rhi::ComputeReplayRange> &,
-                         uint32_t spans, bool captureContacts) const;
+                         uint32_t spans, bool captureContacts, const BodyCommandStreams &streams) const;
+    [[nodiscard]] const BodyCommandStreams &BodyCommandStorage(size_t count) const;
+    void BindBodyCommandStreams(rhi::ComputeDispatchDesc &dispatch, const BodyCommandStreams &streams,
+                                uint32_t commands, uint32_t spans) const;
     uint32_t AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> commands, bool integrate,
-                                std::vector<rhi::ComputeBufferUpdate> &updates,
+                                const BodyCommandStreams &streams, std::vector<rhi::ComputeBufferUpdate> &updates,
                                 std::vector<rhi::ComputeDispatchDesc> &dispatches) const;
     void AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &dispatches, bool includeStatus) const;
 
@@ -394,6 +402,7 @@ class InxPhyGpuStep
     InxPhyGpuRayBuffers m_rays;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     BodyControls m_controls;
+    mutable BodyCommandStreams m_expandedBodyCommands;
     ContactReports m_reports;
     FixedSubsteps m_substeps;
     std::shared_ptr<rhi::ComputeReplayCache> m_fixedReplay = rhi::MakeComputeReplayCache();
