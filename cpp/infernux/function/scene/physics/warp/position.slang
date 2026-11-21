@@ -16,6 +16,8 @@
 [[vk::binding(8, 0)]] RWStructuredBuffer<CartesianFrame> inertialFrame;
 [[vk::binding(9, 0)]] StructuredBuffer<GeomModel> geoms;
 [[vk::binding(10, 0)]] RWStructuredBuffer<CartesianFrame> geomFrame;
+[[vk::binding(11, 0)]] StructuredBuffer<float4> publishedBodies;
+[[vk::binding(12, 0)]] StructuredBuffer<uint4> publishedRaySettings;
 
 float4 loadQuat(uint first)
 {
@@ -134,4 +136,19 @@ void geom_local_to_global(uint3 id : SV_DispatchThreadID)
     const Pose pose = bodyPose[id.y * size.state.z + geom.indices.x];
     geomFrame[id.y * size.layout.x + id.x] = cartesianFrame(
         pose.position.xyz + rotateVector(geom.position.xyz, pose.rotation), mulQuat(pose.rotation, geom.rotation));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void published_geom_local_to_global(uint3 id : SV_DispatchThreadID)
+{
+    const uint4 settings = publishedRaySettings[0]; // Geometry count, rays, input worlds, first body row.
+    if (id.x >= settings.x)
+        return;
+    const GeomModel geom = geoms[id.x];
+    const uint base = 5 * (settings.w + geom.indices.x); // Published position, rotation, COM and two velocities.
+    const float4 position = publishedBodies[base];
+    const float4 rotation = publishedBodies[base + 1];
+    geomFrame[id.x] = cartesianFrame(position.xyz + rotateVector(geom.position.xyz, rotation),
+                                     mulQuat(rotation, geom.rotation));
 }

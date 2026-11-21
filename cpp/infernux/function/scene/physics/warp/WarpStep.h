@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../PhysicsGpuPoseSource.h"
 #include "WarpModel.h"
 
 #include <function/renderer/rhi/RhiComputeKernel.h>
@@ -82,6 +83,13 @@ struct WarpRayBuffers
 {
     std::shared_ptr<rhi::ComputeBuffer> inputs;
     std::shared_ptr<rhi::ComputeBuffer> hits;
+};
+
+struct WarpPreparedRayBatch
+{
+    std::shared_ptr<rhi::PreparedComputeBatch> packet;
+    std::shared_ptr<rhi::ComputeBuffer> hits;
+    uint32_t count = 0;
 };
 
 enum class WarpBodyCommandKind : uint32_t
@@ -184,6 +192,12 @@ class WarpStep
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareRays(bool publish, std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
 
+    /// Query a frozen scene publication. Only the selected world is refit
+    /// and only the requested ray prefix is dispatched or read back.
+    [[nodiscard]] WarpPreparedRayBatch PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
+                                                            bool publish,
+                                                            std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
+
     [[nodiscard]] const WarpRayBuffers &Rays() const noexcept
     {
         return m_rays;
@@ -222,6 +236,13 @@ class WarpStep
 
         void Append(std::vector<rhi::ComputeBufferUpdate> &updates, std::vector<WarpHingeDriveUpdate> values) const;
     };
+    struct PublishedRays
+    {
+        std::shared_ptr<rhi::ComputeBuffer> settings;
+        rhi::ComputeDispatchDesc geometry;
+        mutable std::shared_ptr<rhi::ComputeBuffer> output;
+        uint32_t geometryCount = 0, bodyCount = 0, capacity = 0;
+    };
     struct FixedSubsteps
     {
         uint32_t count = 1;
@@ -234,7 +255,7 @@ class WarpStep
     WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
              uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,
              std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls, ContactReports reports,
-             FixedSubsteps substeps, HingeDrives hinges);
+             FixedSubsteps substeps, HingeDrives hinges, PublishedRays publishedRays);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -248,6 +269,7 @@ class WarpStep
     ContactReports m_reports;
     FixedSubsteps m_substeps;
     HingeDrives m_hinges;
+    PublishedRays m_publishedRays;
 };
 
 } // namespace infernux::physics::warp

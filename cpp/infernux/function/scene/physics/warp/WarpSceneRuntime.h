@@ -79,6 +79,12 @@ struct WarpHostBody
     glm::vec3 centerOfMass, linearVelocity, angularVelocity;
 };
 
+struct WarpSceneRayBatch
+{
+    ContactStreamIdentity identity;
+    WarpPreparedRayBatch query;
+};
+
 /// Fixed-step source for one compiled layout and its enrolled scene worlds.
 /// Admission and receipt collection use the engine's FrameWorkOwner.
 class WarpSceneRuntime final
@@ -87,7 +93,7 @@ class WarpSceneRuntime final
     WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target, const WarpSceneModel &scene,
                      std::vector<WarpRegisteredWorld> worlds, float timestep, const ModelVector &gravity,
                      WarpCollisionCapacity collisionCapacity, const WarpContactSolver &solver, uint32_t commandCapacity,
-                     bool contactReports = false, uint32_t substeps = 1);
+                     bool contactReports = false, uint32_t substeps = 1, WarpRayBatchLayout rayLayout = {});
     ~WarpSceneRuntime();
     WarpSceneRuntime(const WarpSceneRuntime &) = delete;
     WarpSceneRuntime &operator=(const WarpSceneRuntime &) = delete;
@@ -114,6 +120,10 @@ class WarpSceneRuntime final
     [[nodiscard]] std::optional<WarpFixedPublication> TakeFixed();
     [[nodiscard]] std::optional<WarpHostBody> ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
                                                            uint32_t engineBody) const;
+    /// Prepare against the chosen completed world. The result retains device
+    /// rows and can optionally carry an exact host hit readback.
+    [[nodiscard]] WarpSceneRayBatch PrepareRaycast(const WarpFixedPublication &publication, uint32_t world,
+                                                   const std::vector<WarpRay> &rays, bool readback) const;
     [[nodiscard]] FrameWorkWaitResult WaitForProgress(uint64_t nanoseconds);
     void Retire() noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;

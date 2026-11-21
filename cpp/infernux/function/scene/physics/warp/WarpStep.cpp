@@ -341,7 +341,7 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
 
 struct RaySlots
 {
-    uint32_t inputs, hits;
+    uint32_t inputs, hits, settings;
 };
 
 struct BodyControlSlots
@@ -360,20 +360,23 @@ BodyControlSlots BindBodyControls(StepBuilder &b, const WarpModel &model, uint32
 }
 
 RaySlots AddRayWork(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
-                    const GeometrySlots &geometry, WarpRayBatchLayout layout, std::vector<ComputeWorkDispatch> &work)
+                    const GeometrySlots &geometry, WarpRayBatchLayout layout, std::vector<ComputeWorkDispatch> &work,
+                    bool published)
 {
-    const auto inputRows = layout.sharedRays ? 1u : b.worlds;
-    const auto rayTotal = uint64_t{layout.raysPerWorld} * b.worlds;
+    const auto worlds = published ? 1u : b.worlds;
+    const auto inputRows = layout.sharedRays ? 1u : worlds;
+    const auto rayTotal = uint64_t{layout.raysPerWorld} * worlds;
     if (rayTotal > UINT32_MAX)
         throw std::length_error("Warp ray batch exceeds the shader address space");
     const auto inputs = b.Seed("rays", 12 * uint64_t{layout.raysPerWorld} * inputRows, nullptr);
-    const auto hits = b.Slot(8 * rayTotal, BufferUsageFlags::TransferSource);
+    // Scene queries attach the actual result allocation when they are prepared.
+    const auto hits = b.Slot(8 * (published ? 1u : rayTotal), BufferUsageFlags::TransferSource);
     const auto geometryCount = model.dimensions.layout[0];
     const ModelWords settings{geometryCount, layout.raysPerWorld, inputRows, 0};
     const auto query = b.Seed("raySettings", 4, &settings);
     const auto index = BuildWarpRayIndex(model, collision);
     const auto nodes = b.Shared("rayIndex", index.records);
-    const auto bounds = b.Zero("rayBounds", 8 * uint64_t{std::max(1u, index.nodeCount)} * b.worlds);
+    const auto bounds = b.Zero("rayBounds", 8 * uint64_t{std::max(1u, index.nodeCount)} * worlds);
     const auto metadata = b.Shared("rayGeometry", collision.rayGeometry);
     const auto refit = [&](uint32_t first, uint32_t count, bool complete) {
         const ModelWords options{geometryCount, first, 0, 0};
@@ -398,7 +401,7 @@ RaySlots AddRayWork(StepBuilder &b, const WarpModel &model, const WarpCollisionM
                                {7, hits, W, true},
                                {8, nodes, R},
                                {9, bounds, R}}));
-    return {inputs, hits};
+    return {inputs, hits, query};
 }
 
 struct ContactResponse
@@ -822,6 +825,9 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     const auto velocities =
         b.Seed("qvel", nv, model.initialVelocities.empty() ? nullptr : model.initialVelocities.data(), worlds);
     const auto applied = b.Seed("appliedForce", nv, nullptr, worlds);
+    const auto states = bodyCommandCapacity != 0
+                            ? b.Slot(worldWords(20 * uint64_t{nb} + 4), BufferUsageFlags::TransferSource)
+                            : NoModelIndex;
     BodyControls controls;
     std::optional<BodyControlSlots> controlSlots;
     if (bodyCommandCapacity != 0) {
@@ -847,6 +853,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     if (traceRays && model.dimensions.layout[0] != 0 && !collision)
         throw std::invalid_argument("Warp rays require the compiled collision geometry");
     std::vector<ComputeWorkDispatch> rayDispatches;
+    const bool publishedRaysEnabled = traceRays && controlSlots;
+    ComputeWorkDispatch publishedGeometry;
     std::optional<RaySlots> raySlots;
     std::optional<ContactSlots> contactSlots;
     std::optional<ContactResponse> response;
@@ -884,10 +892,19 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             b.Add("position", "geom_local_to_global", model.dimensions.layout[0],
                   {{0, dimensions, R}, {6, pose, R}, {9, geometry.geometries, R}, {10, geometry.frames, W, true}});
             if (traceRays) {
-                if (branches != 0)
-                    rayDispatches.push_back(b.dispatches[kinematicsPass]);
-                rayDispatches.push_back(b.dispatches.back());
-                raySlots = AddRayWork(b, model, *collision, geometry, rayLayout, rayDispatches);
+                if (!publishedRaysEnabled) {
+                    if (branches != 0)
+                        rayDispatches.push_back(b.dispatches[kinematicsPass]);
+                    rayDispatches.push_back(b.dispatches.back());
+                }
+                raySlots = AddRayWork(b, model, *collision, geometry, rayLayout, rayDispatches, publishedRaysEnabled);
+                if (publishedRaysEnabled)
+                    publishedGeometry =
+                        b.Dispatch("position", "published_geom_local_to_global", model.dimensions.layout[0],
+                                   {{9, geometry.geometries, R},
+                                    {10, geometry.frames, W, true},
+                                    {11, states, R},
+                                    {12, raySlots->settings, R}});
             }
             contactSlots = AddCollision(b, model, *collision, dimensions, geometry, capacity,
                                         solver ? solver->minimumRestitutionSpeed : 0.0f);
@@ -896,7 +913,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     if (traceRays && !detectContacts) {
         const WarpCollisionModel empty;
         const auto geometry = BindGeometry(b, model, empty, true);
-        raySlots = AddRayWork(b, model, empty, geometry, rayLayout, rayDispatches);
+        raySlots = AddRayWork(b, model, empty, geometry, rayLayout, rayDispatches, publishedRaysEnabled);
     }
     if (nv != 0) {
         const auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
@@ -1164,7 +1181,6 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
 
     std::vector<ComputeWorkDispatch> bodyPublication;
     ComputeWorkDispatch applyCommands, finishCommands;
-    uint32_t states = NoModelIndex;
     if (controlSlots) {
         const auto &[spans, commands, force, saved, prescribed, fixedSteps] = *controlSlots;
         const auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
@@ -1208,7 +1224,6 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                    {12, prescribed, RW}})
                      : b.Dispatch("body_controls", "finish_body_commands", bodyCommandCapacity,
                                   {{0, dimensions, R}, {1, bodies, R}, {2, joints, R}, {3, spans, R}, {8, force, RW}});
-        states = b.Slot(worldWords(20 * uint64_t{nb} + 4), BufferUsageFlags::TransferSource);
         if (branches != 0)
             bodyPublication.push_back(b.dispatches[kinematicsPass]);
         bodyPublication.push_back(response ? b.Dispatch("body_controls", "publish_contact_body_states", nb,
@@ -1290,11 +1305,20 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                     buffers[contactSlots->narrowphaseStatus]};
     WarpRayBuffers rays;
     std::vector<rhi::ComputeDispatchDesc> rayWork;
+    PublishedRays publishedRays;
     if (raySlots) {
-        rays = {buffers[raySlots->inputs], buffers[raySlots->hits]};
+        rays = {buffers[raySlots->inputs], publishedRaysEnabled ? nullptr : buffers[raySlots->hits]};
         rayWork.reserve(rayDispatches.size());
         for (auto &dispatch : rayDispatches)
             rayWork.push_back(BindDispatch(std::move(dispatch), buffers));
+        if (publishedRaysEnabled) {
+            publishedRays.settings = buffers[raySlots->settings];
+            publishedRays.geometryCount = model.dimensions.layout[0];
+            publishedRays.bodyCount = nb;
+            publishedRays.capacity = rayLayout.raysPerWorld;
+            if (publishedGeometry.kernel)
+                publishedRays.geometry = BindDispatch(std::move(publishedGeometry), buffers);
+        }
     }
     if (controlSlots) {
         controls.commands = buffers[controlSlots->commands];
@@ -1329,21 +1353,21 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             schedule.restore = BindDispatch(std::move(restore), buffers);
         schedule.clock = BindDispatch(std::move(clock), buffers);
     }
-    auto step = std::unique_ptr<WarpStep>(new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions,
-                                                       velocities, applied, std::move(contacts), std::move(rays),
-                                                       std::move(rayWork), std::move(controls), std::move(reports),
-                                                       std::move(schedule), std::move(hinges)));
+    auto step = std::unique_ptr<WarpStep>(
+        new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions, velocities, applied,
+                     std::move(contacts), std::move(rays), std::move(rayWork), std::move(controls), std::move(reports),
+                     std::move(schedule), std::move(hinges), std::move(publishedRays)));
     return {std::move(step), std::move(initialize)};
 }
 
 WarpStep::WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot,
                    uint32_t positions, uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts,
                    WarpRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
-                   ContactReports reports, FixedSubsteps substeps, HingeDrives hinges)
+                   ContactReports reports, FixedSubsteps substeps, HingeDrives hinges, PublishedRays publishedRays)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
       m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
       m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports)),
-      m_substeps(std::move(substeps)), m_hinges(std::move(hinges))
+      m_substeps(std::move(substeps)), m_hinges(std::move(hinges)), m_publishedRays(std::move(publishedRays))
 {
 }
 
@@ -1401,6 +1425,56 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareRays(bool publish,
         reads.push_back({m_rays.hits, 0, m_rays.hits->GetByteSize()});
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), m_rayWork, std::move(reads));
+}
+
+WarpPreparedRayBatch WarpStep::PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount, bool publish,
+                                                    std::vector<rhi::ComputeBufferUpdate> updates) const
+{
+    const auto &plan = m_publishedRays;
+    if (!plan.settings || rayCount == 0 || rayCount > plan.capacity)
+        throw std::invalid_argument("Warp published ray batch exceeds the scene query layout");
+    constexpr uint64_t maxRows = UINT32_MAX / 5u;
+    if (!source.states || source.layout != PhysicsGpuPoseSource::Layout::OriginWXYZ ||
+        source.bodyCount != plan.bodyCount || source.firstRow > maxRows ||
+        source.bodyCount > maxRows - source.firstRow ||
+        (source.firstRow + source.bodyCount) * sizeof(WarpBodyState) > source.states->GetByteSize())
+        throw std::invalid_argument("Warp ray query requires a complete published body slot range");
+
+    const ModelWords settings{plan.geometryCount, rayCount, 1, static_cast<uint32_t>(source.firstRow)};
+    auto &params =
+        updates.emplace_back(rhi::ComputeBufferUpdate{plan.settings, 0, std::vector<uint8_t>(sizeof(settings))});
+    std::memcpy(params.data.data(), settings.data(), params.data.size());
+
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    dispatches.reserve(m_rayWork.size() + size_t(bool(plan.geometry.kernel)));
+    if (plan.geometry.kernel) {
+        auto &geometry = dispatches.emplace_back(plan.geometry);
+        geometry.groupCountY = 1;
+        geometry.buffers[2] = source.states;
+        geometry.proof->reads[1] = {2, source.firstRow * sizeof(WarpBodyState),
+                                    uint64_t{source.bodyCount} * sizeof(WarpBodyState)};
+        geometry.proof->writes.front().byteSize = 4 * sizeof(ModelVector) * plan.geometryCount;
+    }
+    dispatches.insert(dispatches.end(), m_rayWork.begin(), m_rayWork.end());
+    for (auto &dispatch : dispatches)
+        dispatch.groupCountY = 1;
+
+    const auto bytes = uint64_t{rayCount} * sizeof(WarpRayHit);
+    auto host = m_work->GetRecipe().GetHost();
+    if (!plan.output || plan.output.use_count() != 1 || plan.output->GetByteSize() < bytes)
+        plan.output = std::make_shared<rhi::ComputeBuffer>(
+            host, rhi::ComputeBufferDesc{bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1,
+                                         rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource});
+    auto &trace = dispatches.back();
+    trace.groupCountX = (rayCount - 1) / 64 + 1;
+    trace.buffers[6] = plan.output;
+    trace.proof->reads[1].byteSize = uint64_t{rayCount} * sizeof(WarpRay);
+    trace.proof->writes.front().byteSize = bytes;
+    std::vector<rhi::ComputeBufferRead> reads;
+    if (publish)
+        reads.push_back({plan.output, 0, bytes});
+    return {rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads)), plan.output,
+            rayCount};
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vector<WarpBodyCommand> commands,

@@ -54,7 +54,7 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
                                    const WarpSceneModel &scene, std::vector<WarpRegisteredWorld> worlds, float timestep,
                                    const ModelVector &gravity, WarpCollisionCapacity collisionCapacity,
                                    const WarpContactSolver &solver, uint32_t commandCapacity, bool contactReports,
-                                   uint32_t substeps)
+                                   uint32_t substeps, WarpRayBatchLayout rayLayout)
     : m_work(work), m_host(host), m_bodyCount(scene.model.dimensions.state[2]),
       m_contactReportsConfigured(contactReports)
 {
@@ -84,9 +84,9 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
         layout->worlds.push_back(std::move(world));
     }
     m_layout = std::move(layout);
-    auto prepared =
-        WarpStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_layout->worlds.size()), timestep, gravity,
-                        &scene.collision, collisionCapacity, &solver, {}, commandCapacity, contactReports, substeps);
+    auto prepared = WarpStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_layout->worlds.size()),
+                                    timestep, gravity, &scene.collision, collisionCapacity, &solver, rayLayout,
+                                    commandCapacity, contactReports, substeps);
     if (!prepared.step)
         throw std::runtime_error("Could not allocate the Warp scene world layout");
     m_step = std::move(prepared.step);
@@ -153,6 +153,20 @@ std::optional<WarpHostBody> WarpSceneRuntime::ReadHostBody(const WarpFixedPublic
                         vector(raw.centerOfMass),
                         vector(raw.linearVelocity),
                         vector(raw.angularVelocity)};
+}
+
+WarpSceneRayBatch WarpSceneRuntime::PrepareRaycast(const WarpFixedPublication &publication, uint32_t world,
+                                                   const std::vector<WarpRay> &rays, bool readback) const
+{
+    if (publication.m_layout != m_layout || rays.size() > UINT32_MAX)
+        throw std::invalid_argument("Warp ray batch does not match its scene publication");
+    const auto source = publication.PoseSource(world);
+    std::vector<uint8_t> inputs(rays.size() * sizeof(WarpRay));
+    if (!inputs.empty())
+        std::memcpy(inputs.data(), rays.data(), inputs.size());
+    return {publication.worlds[world].identity,
+            m_step->PreparePublishedRays(source, static_cast<uint32_t>(rays.size()), readback,
+                                         {{m_step->Rays().inputs, 0, std::move(inputs)}})};
 }
 
 FrameWorkFacts WarpSceneRuntime::Describe() const
