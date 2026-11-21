@@ -222,10 +222,17 @@ struct PreparedInxPhyGpuStep
 
 struct InxPhyGpuStateHandoff
 {
+    struct PoseTarget
+    {
+        uint32_t world, offset;
+        ModelWords orientation;
+    };
+
     std::shared_ptr<rhi::ComputeBuffer> states;
     // World-major, one source uint4 address per destination body. Body zero
     // maps the fixed-step header. NoModelIndex keeps the authored seed.
     std::vector<uint32_t> addresses;
+    std::vector<PoseTarget> poseTargets{};
 };
 
 struct InxPhyGpuJointMotion

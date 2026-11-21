@@ -20,6 +20,7 @@ namespace infernux::physics::inxphygpu
 {
 
 struct InxPhyGpuSceneLayout;
+struct InxPhyGpuScenePoseTargets;
 
 struct InxPhyGpuRegisteredBody
 {
@@ -50,12 +51,18 @@ struct InxPhyGpuSceneSetup
     InxPhyGpuRegisteredWorld world;
 };
 
+struct InxPhyGpuJointPoseTarget
+{
+    // Child rotation relative to the connected body. Empty restores the authored motor target.
+    std::optional<glm::quat> relative;
+};
+
 struct InxPhyGpuSceneJointUpdate
 {
     uint64_t worldId;
     uint64_t jointId;
     std::variant<InxPhyGpuJointLimits, InxPhyGpuHingeDrive, InxPhyGpuDistanceSpring, InxPhyGpuSwingTwistParameters,
-                 InxPhyGpuSwingTwistTargets, ModelSixDOFControls>
+                 InxPhyGpuSwingTwistTargets, ModelSixDOFControls, InxPhyGpuJointPoseTarget>
         value;
 };
 
@@ -96,6 +103,7 @@ struct InxPhyGpuFixedPublication
   private:
     friend class InxPhyGpuSceneRuntime;
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
+    std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
     bool m_integrated = false;
 };
 
@@ -240,6 +248,7 @@ class InxPhyGpuSceneRuntime final
         PublicationConsumer consumer;
         bool integrate;
         std::vector<PhysicsFixedInputs> fixedInputs;
+        std::shared_ptr<const InxPhyGpuScenePoseTargets> poseTargets{};
     };
     struct Receipt
     {
@@ -268,6 +277,7 @@ class InxPhyGpuSceneRuntime final
     FrameWorkOwner::SourceId m_source = 0;
     std::unique_ptr<InxPhyGpuStep> m_step;
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
+    std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
     uint32_t m_bodyCount;
     bool m_contactReportsConfigured;
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;

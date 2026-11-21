@@ -165,6 +165,7 @@ struct InxPhyGpuSceneJointBinding
     uint32_t parameterOffset = 0; // In ModelWords records within one world.
     InxPhyGpuSceneJointReference reference;
     std::array<uint32_t, 2> dynamicEndpoints{NoModelIndex, NoModelIndex};
+    uint32_t poseTargetOffset = NoModelIndex;
 };
 
 struct InxPhyGpuSceneModel

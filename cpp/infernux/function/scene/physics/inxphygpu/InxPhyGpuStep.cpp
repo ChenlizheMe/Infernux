@@ -616,7 +616,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
                                    float timestep, const ContactDynamics &dyn,
                                    std::vector<ComputeWorkDispatch> precondition, bool contactReports,
                                    uint32_t substeps, uint32_t maxStorageBuffers, const SceneWakeWork &wake,
-                                   uint32_t sceneJoints)
+                                   uint32_t sceneJoints,
+                                   const std::vector<InxPhyGpuStateHandoff::PoseTarget> &poseTargets)
 {
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
@@ -729,6 +730,13 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
         const auto parameterWords = sizeof(ModelWords) / sizeof(uint32_t);
         jointParameters =
             b.Seed("sceneJointParameters", parameterWords * parameters.size(), parameters.data(), b.worlds);
+        auto &initial = b.initial.back().data;
+        for (const auto &target : poseTargets) {
+            if (target.world >= b.worlds || target.offset >= parameters.size())
+                throw std::invalid_argument("inxphygpu pose target handoff exceeds its scene joint layout");
+            const auto offset = (target.world * parameters.size() + target.offset) * sizeof(ModelWords);
+            std::memcpy(initial.data() + offset, target.orientation.data(), sizeof(ModelWords));
+        }
         if (dyn.prescribedMotion != NoModelIndex)
             b.Add("spatial_constraints", "write_scene_prescribed_velocities", nb,
                   {{4, dyn.subtreeCom, R},
@@ -1357,9 +1365,10 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         const auto groups = controlSlots ? b.Zero("sceneWakeGroups", worldWords(4 * uint64_t{nb})) : NoModelIndex;
         const SceneWakeWork wake{controlSlots ? &*controlSlots : nullptr, groups, applied};
         if (contactSlots && solver) {
-            response = AddContactResponse(
-                b, model, *contactSlots, capacity, *solver, substepDt, dynamics, std::move(massSolves), contactReports,
-                substeps, host.device.GetCapabilities().limits.maxStorageBuffersPerStage, wake, sceneJointDescriptors);
+            response = AddContactResponse(b, model, *contactSlots, capacity, *solver, substepDt, dynamics,
+                                          std::move(massSolves), contactReports, substeps,
+                                          host.device.GetCapabilities().limits.maxStorageBuffersPerStage, wake,
+                                          sceneJointDescriptors, handoff.poseTargets);
             reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
             const std::array singleWorld{positions,
                                          pose,

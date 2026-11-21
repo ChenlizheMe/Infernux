@@ -345,7 +345,14 @@ SwingTwistDifferential swingTwistDifferential(float4 rotation, float3 velocity, 
 
 // Match the authored angular frame and cone/pyramid conventions with a device-side
 // Jacobian of the swing-twist coordinates. Limits and motors share the sparse solver.
-AngularRows swingTwistRows(uint record, float4 relative, float3 relativeVelocity, float weight, float timestep)
+float4 angularDriveTarget(uint poseTarget, uint authoredTarget)
+{
+    const float4 target = asfloat(sceneParameters[poseTarget]);
+    return any(target != 0.0) ? target : asfloat(sceneParameters[authoredTarget]);
+}
+
+AngularRows swingTwistRows(uint record, uint poseTarget, float4 relative, float3 relativeVelocity, float weight,
+                          float timestep)
 {
     AngularRows result;
     result.count = 0u;
@@ -413,7 +420,7 @@ AngularRows swingTwistRows(uint record, float4 relative, float3 relativeVelocity
     float4 offset = float4(0.0);
     if (modes.y >= 2 || modes.z >= 2)
     {
-        const float4 target = limitSwingTwistTarget(asfloat(sceneParameters[record + 4]), angles, elliptic);
+        const float4 target = limitSwingTwistTarget(angularDriveTarget(poseTarget, record + 4), angles, elliptic);
         offset = mulQuat(conjugateQuaternion(relative), dot(relative, target) < 0.0 ? -target : target);
     }
     const float3 velocity = asfloat(sceneParameters[record + 5].xyz);
@@ -466,7 +473,7 @@ void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
     const uint4 config = settings[1];
     const uint bodyBase = id.y * config.x;
     const uint dofBase = id.y * config.y;
-    const uint2 joint = SceneJoint ? spatialModel[record + 9].xy : uint2(0u);
+    const uint3 joint = SceneJoint ? spatialModel[record + 9].xyz : uint3(0u);
     const uint jointType = joint.x;
     const bool hinge = jointType == SceneHinge;
     const bool slider = jointType == SceneSlider;
@@ -496,19 +503,27 @@ void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
                        (slider ? slideVelocity.z : dot(radial, pointVelocity));
     const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
     const float timestep = asfloat(settings[2 + id.y].x);
-    const uint parameterIndex = id.y * model.y + joint.y;
+    const uint parameterBase = id.y * model.y;
+    const uint parameterIndex = parameterBase + joint.y;
     AxialRows axial;
     axial.count = 0;
     AngularRows swing;
     swing.count = 0;
     if (swingTwist)
-        swing = swingTwistRows(parameterIndex, relative, relativeVelocity, asfloat(reference.w), timestep);
+        swing = swingTwistRows(parameterIndex, parameterBase + joint.z, relative, relativeVelocity,
+                               asfloat(reference.w), timestep);
     else if (hinge)
     {
         const uint4 controls = sceneParameters[parameterIndex];
         const float theta = hingeCoordinate(relative);
-        const HingeDrive drive = {asfloat(sceneParameters[parameterIndex + 1]),
-                                  asfloat(sceneParameters[parameterIndex + 2])};
+        HingeDrive drive = {asfloat(sceneParameters[parameterIndex + 1]),
+                            asfloat(sceneParameters[parameterIndex + 2])};
+        if (drive.motor.w > 0.0)
+        {
+            const float4 target = asfloat(sceneParameters[parameterBase + joint.z]);
+            if (any(target != 0.0))
+                drive.motor.x = hingeCoordinate(target);
+        }
         axial = hingeRows(controls, drive, theta, speed, asfloat(reference.w), timestep, config.w, parameters);
     }
     else if (slider || distance)
@@ -763,7 +778,8 @@ float4 twistAboutAxis(float4 q, uint axis)
     return dot(twist, twist) > 0.0 ? normalize(twist) : float4(1.0, 0.0, 0.0, 0.0);
 }
 
-AngularRows sixAngularRows(uint record, uint2 modes, float4 rotation, float3 velocity, float weight, float timestep)
+AngularRows sixAngularRows(uint record, uint poseTarget, uint2 modes, float4 rotation, float3 velocity, float weight,
+                          float timestep)
 {
     AngularRows result;
     result.count = 0;
@@ -793,7 +809,7 @@ AngularRows sixAngularRows(uint record, uint2 modes, float4 rotation, float3 vel
     float3 positionError = float3(0.0);
     if (positionMask != 0)
     {
-        const float4 target = limitSixOrientation(asfloat(sceneParameters[record + 15]), controls[0].xy,
+        const float4 target = limitSixOrientation(angularDriveTarget(poseTarget, record + 15), controls[0].xy,
                                                   controls[1].xy, controls[2].xy);
         float4 delta = mulQuat(conjugateQuaternion(rotation), dot(rotation, target) < 0.0 ? -target : target);
         if (positionMask == 1u || positionMask == 2u || positionMask == 4u)
@@ -845,12 +861,15 @@ void emitSceneSixDofRows<let Controlled : bool>(uint3 id)
     const float3 linearVelocity = rotateVector(deltaVelocity - cross(b.omega, delta), inverse);
     const float3 angularVelocity = rotateVector(deltaOmega, inverse);
     const float timestep = asfloat(settings[2 + id.y].x);
-    const uint parameters = id.y * model.y + spatialModel[record + 9].y;
+    const uint parameterBase = id.y * model.y;
+    const uint2 offsets = spatialModel[record + 9].yz;
+    const uint parameters = parameterBase + offsets.x;
     const uint2 modes = sceneParameters[parameters].xy;
     const AngularRows linear = sixLinearRows(parameters, modes, rotateVector(delta, inverse), linearVelocity,
                                             asfloat(reference.z), timestep);
-    const AngularRows angular = sixAngularRows(parameters, modes, mulQuat(inverse, a.orientation), angularVelocity,
-                                               asfloat(reference.w), timestep);
+    const AngularRows angular = sixAngularRows(parameters, parameterBase + offsets.y, modes,
+                                              mulQuat(inverse, a.orientation), angularVelocity,
+                                              asfloat(reference.w), timestep);
     if (linear.count + angular.count == 0)
         return;
     const uint2 block = reserveConstraintBlock(id.y, linear.count + angular.count, source.w);

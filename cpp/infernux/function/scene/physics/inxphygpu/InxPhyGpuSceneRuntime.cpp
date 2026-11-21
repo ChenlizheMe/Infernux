@@ -8,6 +8,7 @@
 #include <cmath>
 #include <core/config/EngineConfig.h>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -45,8 +46,25 @@ struct InxPhyGpuSceneLayout
     }
 };
 
+struct InxPhyGpuScenePoseTargets
+{
+    using World = std::unordered_map<uint64_t, glm::quat>;
+    std::vector<std::shared_ptr<const World>> worlds;
+};
+
 namespace
 {
+ModelWords PackPoseTarget(const InxPhyGpuSceneJointBinding &joint, const glm::quat &relative)
+{
+    const auto &frame = joint.reference;
+    const auto target =
+        glm::normalize(glm::conjugate(frame.connected.orientation) * relative * frame.owner.orientation);
+    const ModelVector values{target.w, target.x, target.y, target.z};
+    ModelWords words;
+    std::memcpy(words.data(), values.data(), sizeof(words));
+    return words;
+}
+
 InxPhyGpuHostBody DecodeHostBody(const InxPhyGpuBodyState &raw, uint32_t bodyId, uint64_t shapeRevision)
 {
     const auto vector = [](const ModelVector &v) { return glm::vec3(v[0], v[1], v[2]); };
@@ -226,6 +244,9 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     }
     InxPhyGpuStateHandoff handoff;
     if (previous) {
+        InxPhyGpuScenePoseTargets retained;
+        if (previous->m_poseTargets)
+            retained.worlds.resize(worlds.size());
         const uint64_t header = 5 * uint64_t{previous->bodiesPerWorld} * previous->worlds.size();
         for (size_t next = 0; next < worlds.size(); ++next) {
             auto &accepted = m_acceptedWorlds[next];
@@ -251,7 +272,24 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                 if (oldRow && actor.IsValid() && actor == oldWorld.bodies[*oldRow].actor)
                     handoff.addresses[first + row] = 5 * (old->second * previous->bodiesPerWorld + *oldRow);
             }
+            if (previous->m_poseTargets && previous->m_poseTargets->worlds[old->second]) {
+                const auto &joints = layout->worlds[next].joints;
+                auto targets = std::make_shared<InxPhyGpuScenePoseTargets::World>();
+                for (const auto &[id, relative] : *previous->m_poseTargets->worlds[old->second]) {
+                    const auto found = joints.find(id);
+                    if (found == joints.end() || found->second.poseTargetOffset == NoModelIndex)
+                        continue;
+                    const auto &joint = found->second;
+                    handoff.poseTargets.push_back(
+                        {static_cast<uint32_t>(next), joint.poseTargetOffset, PackPoseTarget(joint, relative)});
+                    targets->emplace(id, relative);
+                }
+                if (!targets->empty())
+                    retained.worlds[next] = std::move(targets);
+            }
         }
+        if (!handoff.poseTargets.empty())
+            m_poseTargets = std::make_shared<InxPhyGpuScenePoseTargets>(std::move(retained));
     }
     m_layout = std::move(layout);
     m_activeFixedInputs.assign(m_layout->worlds.size(), {timestep, {gravity[0], gravity[1], gravity[2]}});
@@ -312,6 +350,7 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
         EncodeBodyCommand(m_layout->WorldRow(entry.worldId), entry.command, actions);
     std::vector<InxPhyGpuJointParameterUpdate> updates;
     updates.reserve(jointUpdates.size());
+    std::map<std::pair<uint32_t, uint64_t>, std::optional<glm::quat>> poseChanges;
     for (const auto &update : jointUpdates) {
         const auto world = m_layout->WorldRow(update.worldId);
         const auto &joints = worlds[world].joints;
@@ -348,6 +387,17 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
             if (joint.kind != InxPhyGpuSceneJointKind::SixDOF)
                 throw std::invalid_argument("inxphygpu six-axis parameters require an enrolled SixDOF joint");
             append(joint.parameterOffset, *six);
+        } else if (const auto *pose = std::get_if<InxPhyGpuJointPoseTarget>(&update.value)) {
+            if (joint.poseTargetOffset == NoModelIndex)
+                throw std::invalid_argument("inxphygpu pose drive requires a hinge, swing-twist or SixDOF joint");
+            auto relative = pose->relative;
+            if (relative) {
+                const auto squared = glm::dot(*relative, *relative);
+                if (!std::isfinite(squared) || squared <= 0.0f)
+                    throw std::invalid_argument("inxphygpu pose target requires a finite nonzero rotation");
+                *relative = *relative / std::sqrt(squared);
+            }
+            poseChanges[{world, update.jointId}] = relative;
         } else {
             if (joint.kind != InxPhyGpuSceneJointKind::SwingTwist)
                 throw std::invalid_argument("inxphygpu swing-twist parameters require an enrolled swing-twist joint");
@@ -360,8 +410,39 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
             }
         }
     }
+    // Fold repeated animation writes before touching the resident parameters or waking a body.
+    std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
+    std::shared_ptr<InxPhyGpuScenePoseTargets::World> changedWorld;
+    uint32_t changedRow = NoModelIndex;
+    for (const auto &[key, relative] : poseChanges) {
+        const auto &[world, id] = key;
+        const auto prior = m_poseTargets ? m_poseTargets->worlds[world].get() : nullptr;
+        const auto old = prior ? prior->find(id) : InxPhyGpuScenePoseTargets::World::const_iterator{};
+        const bool wasDriven = prior && old != prior->end();
+        if (relative ? wasDriven && (*relative == old->second || *relative == -old->second) : !wasDriven)
+            continue;
+        if (!poses) {
+            poses = std::make_shared<InxPhyGpuScenePoseTargets>();
+            poses->worlds = m_poseTargets
+                                ? m_poseTargets->worlds
+                                : std::vector<std::shared_ptr<const InxPhyGpuScenePoseTargets::World>>(worlds.size());
+        }
+        if (changedRow != world) {
+            changedRow = world;
+            changedWorld = prior ? std::make_shared<InxPhyGpuScenePoseTargets::World>(*prior)
+                                 : std::make_shared<InxPhyGpuScenePoseTargets::World>();
+            poses->worlds[world] = changedWorld;
+        }
+        const auto &joint = worlds[world].joints.at(id);
+        if (relative)
+            changedWorld->insert_or_assign(id, *relative);
+        else
+            changedWorld->erase(id);
+        updates.push_back({world, joint.poseTargetOffset, relative ? PackPoseTarget(joint, *relative) : ModelWords{},
+                           joint.dynamicEndpoints});
+    }
     BeginOperation({std::move(identities), std::move(actions), std::move(updates), host, captureContacts,
-                    std::move(consumer), true, std::move(fixedInputs)});
+                    std::move(consumer), true, std::move(fixedInputs), std::move(poses)});
 }
 
 void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
@@ -679,6 +760,7 @@ InxPhyGpuFixedPublication InxPhyGpuSceneRuntime::CapturePublication(const rhi::P
 {
     InxPhyGpuFixedPublication result;
     result.m_layout = m_layout;
+    result.m_poseTargets = m_operation && m_operation->poseTargets ? m_operation->poseTargets : m_poseTargets;
     result.submission = packet.GetSubmission();
     result.bodyStates = m_step->BodyStates()->Freeze();
     result.bodiesPerWorld = m_bodyCount;
@@ -770,6 +852,7 @@ void InxPhyGpuSceneRuntime::PublishCompleted(InxPhyGpuFixedPublication publicati
                 m_acceptedWorlds[i] = publication.worlds[i];
     if (!m_operation->fixedInputs.empty())
         m_activeFixedInputs = std::move(m_operation->fixedInputs);
+    m_poseTargets = publication.m_poseTargets;
     m_operation.reset();
     m_publication.emplace(std::move(publication));
 }

@@ -217,6 +217,12 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
             parameters.insert(parameters.end(), packed.begin(), packed.end());
             ++sixCount;
         }
+        if (hinge || swing || six) {
+            const auto poseTargetOffset = static_cast<uint32_t>(parameters.size());
+            scene.jointBindings[index].poseTargetOffset = poseTargetOffset;
+            descriptors.back()[2] = poseTargetOffset;
+            parameters.emplace_back();
+        }
     }
     const auto count = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
     if (count == 0)
