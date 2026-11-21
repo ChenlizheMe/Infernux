@@ -196,6 +196,8 @@ After integration, measure weighted velocity and external activity. Reduce the m
 
 ## Fixed-step state publication
 
+`WarpStep` binds the cooked programs to a native `ComputeWorkRecipe`. It uploads the shared model and seeds the world rows together, then reuses the same work storage for each fixed step. The native recipe currently executes the smooth dynamics through Euler integration. Collision, constraints, and scene ownership still need to join this recipe before it can advance ordinary GPU scenes.
+
 For a host consumer, run `snapshot_generalized_state` after the last step writes. Dispatch X over the larger of the position and velocity widths, with at least one group, and Y over the worlds. Bind the complete clock span for the exact batch. The snapshot stores `worlds × nq` position scalars, then `worlds × nv` velocity scalars, then one clock per world. Each section preserves world order.
 
 Reuse the snapshot allocation with the recipe and declare it a complete write. Request one tail read of the snapshot when preparing the same submission. Its completion ticket identifies the fixed step whose bytes the host receives. Subsequent steps can reuse the device allocation after the copy is ordered, while the accepted read retains its staging contents until consumption. A GPU-only consumer reads the individual resident state buffers.

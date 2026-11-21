@@ -1972,7 +1972,9 @@ ComputeWorkRecipe::Bind(std::vector<ComputeWorkInput> inputs,
     for (size_t index = 0; index < buffers.size(); ++index) {
         if (buffers[index])
             continue;
-        buffers[index] = ComputeBuffer::TryCreateGraphBuffer(host, m_slots[index].allocation);
+        const auto &slot = m_slots[index];
+        buffers[index] = slot.graphWritable ? ComputeBuffer::TryCreateGraphBuffer(host, slot.allocation)
+                                            : ComputeBuffer::TryCreatePrivate(host, slot.allocation);
         if (!buffers[index])
             return {};
     }

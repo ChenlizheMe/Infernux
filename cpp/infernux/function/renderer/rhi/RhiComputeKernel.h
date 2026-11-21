@@ -390,6 +390,9 @@ struct ComputeWorkSlot
     ComputeBufferDesc allocation;
     /// Absent for per-instance storage; external storage is always read-only.
     std::shared_ptr<ComputeBuffer> external;
+    /// Compute-only slots advance on the ordered compute queue. A graph consumer
+    /// must capture a separate publication before it can use their contents.
+    bool graphWritable = true;
     [[nodiscard]] bool Accepts(const ComputeBufferDesc &storage) const noexcept
     {
         return allocation.elementCount == storage.elementCount && allocation.scalarType == storage.scalarType &&
