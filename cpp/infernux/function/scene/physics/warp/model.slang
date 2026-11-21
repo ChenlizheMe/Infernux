@@ -8,6 +8,7 @@ static const uint JointBall = 1;
 static const uint JointSlide = 2;
 static const uint JointHinge = 3;
 static const uint NoIndex = 0xffffffffu;
+static const float PhysicsPi = 3.141592653589793;
 
 struct ModelDimensions
 {
@@ -100,6 +101,17 @@ float4 axisAngleQuat(float3 axis, float angle)
     float sine, cosine;
     sincos(angle * 0.5, sine, cosine);
     return float4(cosine, axis * sine);
+}
+
+float3 rotationVector(float4 rotation)
+{
+    const float sine = length(rotation.yzw);
+    if (sine == 0.0)
+        return float3(0.0);
+    float angle = 2.0 * atan2(sine, rotation.x);
+    if (angle > PhysicsPi)
+        angle -= 2.0 * PhysicsPi;
+    return rotation.yzw * (angle / sine);
 }
 
 float4 integrateQuat(float4 rotation, float3 velocity, float dt)

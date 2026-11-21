@@ -7,8 +7,6 @@
 
 static const uint NewtonTile = 8;
 static const uint NewtonTileArea = NewtonTile * NewtonTile;
-static const uint QuadraticContactState = 1;
-static const uint EllipticMiddleState = 4;
 
 struct ContactMetric
 {
@@ -138,7 +136,7 @@ void seed_newton_contact_pattern(uint3 id : SV_DispatchThreadID)
     const uint count = tileCount();
     const uint words = patternWords(count);
     const uint pattern = patternBase(id.y, 0, count, words);
-    // All rows emitted for a contact share their descending DOF support.
+    // All rows emitted for a constraint block share their DOF support.
     uint previous = 0xffffffffu;
     for (uint i = 0; i < row.layout.y; ++i)
     {
@@ -314,10 +312,10 @@ void build_newton_contact_metric(uint3 id : SV_DispatchThreadID)
     const ConstraintRow row = rows[index];
     const uint status = evaluation[index].state;
     ContactMetric metric;
-    metric.low = float4(status == QuadraticContactState ? row.weight.x : 0.0, 0.0, 0.0, 0.0);
+    metric.low = float4(status == QuadraticConstraint ? row.diagonal : 0.0, 0.0, 0.0, 0.0);
     metric.high = float2(0.0);
     metric.firstRow = index;
-    metric.count = status == QuadraticContactState ? 1u : 0u;
+    metric.count = status == QuadraticConstraint ? 1u : 0u;
     if (status == EllipticMiddleState)
     {
         const Contact contact = contacts[id.y * limits.y + row.layout.z];
@@ -326,7 +324,7 @@ void build_newton_contact_metric(uint3 id : SV_DispatchThreadID)
         const uint dimension = contact.geometry.z;
         const float mu = contact.friction.x * asfloat(settings[2 + id.y].y);
         const float mu2 = mu * mu;
-        const float dm = rows[first].weight.x / max(CgMinValue, mu2 * (1.0 + mu2));
+        const float dm = rows[first].diagonal / max(CgMinValue, mu2 * (1.0 + mu2));
         float norm = 0.0;
         for (uint i = 1; i < dimension; ++i)
         {

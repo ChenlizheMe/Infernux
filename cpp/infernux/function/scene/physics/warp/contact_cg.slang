@@ -251,15 +251,55 @@ uint coneRegion(float normal, float tangent, float mu)
     return mu * normal + tangent <= 0.0 || tangent == 0.0 ? ConeQuadratic : ConeMiddle;
 }
 
+float frictionRayCostChange(float start, float delta, float friction, float radius, float diagonal)
+{
+    const float end = start + delta;
+    const bool previousQuadratic = -radius < start && start < radius;
+    const bool nextQuadratic = -radius < end && end < radius;
+    if (previousQuadratic && nextQuadratic)
+        return 0.5 * diagonal * delta * (start + end);
+    if (start <= -radius && end <= -radius)
+        return -friction * delta;
+    if (start >= radius && end >= radius)
+        return friction * delta;
+    if (previousQuadratic)
+    {
+        const float side = end >= radius ? 1.0 : -1.0;
+        const float gap = radius - side * start;
+        return side * friction * delta - 0.5 * diagonal * gap * gap;
+    }
+    if (nextQuadratic)
+    {
+        const float magnitude = abs(end);
+        const float gap = radius - magnitude;
+        if (start * end >= 0.0)
+            return (start >= radius ? friction : -friction) * delta + 0.5 * diagonal * gap * gap;
+        return -(friction * (abs(start) - radius) + 0.5 * diagonal * gap * (radius + magnitude));
+    }
+    return (end >= radius ? friction : -friction) * (end + start);
+}
+
 float4 cgRowRay(uint index, uint contactBase, bool elliptic, float inverseFrictionRatio, float alpha)
 {
     const ConstraintRow row = rows[index];
+    const uint kind = row.kind;
+    if (kind == EqualityRow)
+        return float4(0.0);
     const float start = residuals[index];
     const float direction = rowRay[index];
-    const float diagonal = row.weight.x;
+    const float diagonal = row.diagonal;
     const float delta = alpha * direction;
     const float end = start + delta;
-    if (elliptic)
+    if (kind == FrictionRow)
+    {
+        const float friction = row.frictionLoss;
+        const float radius = friction / diagonal;
+        const ConstraintEvaluation before = evaluateFriction(start, diagonal, friction);
+        const ConstraintEvaluation after = evaluateFriction(end, diagonal, friction);
+        return float4(frictionRayCostChange(start, delta, friction, radius, diagonal), -after.force * direction,
+                      after.state == QuadraticConstraint ? diagonal * direction * direction : 0.0, before.cost);
+    }
+    if (elliptic && kind == ContactRow)
     {
         const Contact contact = contacts[contactBase + row.layout.z];
         if (contact.geometry.z > 1)
@@ -275,7 +315,7 @@ float4 cgRowRay(uint index, uint contactBase, bool elliptic, float inverseFricti
                 const float u = residuals[index + j];
                 const float v = rowRay[index + j];
                 const float t = u + alpha * v;
-                const float d = rows[index + j].weight.x;
+                const float d = rows[index + j].diagonal;
                 const float muj = contactFriction(contact, j - 1);
                 quadratic += d * float3(0.5 * u * u, u * v, v * v);
                 const float tv = muj * t;
@@ -338,6 +378,23 @@ float4 cgRowRay(uint index, uint contactBase, bool elliptic, float inverseFricti
                              end < 0.0 ? direction * direction : 0.0, 0.5 * before * before);
 }
 
+float2 equalityRayTerms(uint world, uint rowCount, uint lane)
+{
+    const uint base = world * settings[0].z;
+    float2 sum = float2(0.0);
+    for (uint i = lane; i < rowCount; i += CgWidth)
+    {
+        const uint index = base + i;
+        const ConstraintRow row = rows[index];
+        if (row.kind == EqualityRow)
+        {
+            const float direction = rowRay[index];
+            sum += (row.diagonal * direction) * float2(residuals[index], direction);
+        }
+    }
+    return reduceCg(float4(sum, 0.0, 0.0), lane).xy;
+}
+
 float4 evaluateCgRay(CgWorld state, uint world, uint lane, float alpha)
 {
     const uint4 limit = settings[0];
@@ -390,9 +447,12 @@ void cg_line_search(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     if (broadcastCg(state.progress.y, lane) != Running)
         return;
 
-    const float4 initial = evaluateCgRay(state, world, lane, 0.0);
-    const float noise = AlphaNoise * (sqrt(2.0 * max(0.0, initial.w) * max(0.0, initial.z - state.gauss.y)) +
-                                     abs(state.gauss.x));
+    // Equality is quadratic at every alpha, so its ray coefficients can be evaluated once.
+    CgWorld ray = state;
+    ray.gauss += equalityRayTerms(world, state.progress.z, lane);
+    const float4 initial = evaluateCgRay(ray, world, lane, 0.0);
+    const float noise = AlphaNoise * (sqrt(2.0 * max(0.0, initial.w) * max(0.0, initial.z - ray.gauss.y)) +
+                                     abs(ray.gauss.x));
     const float2 tolerances = asfloat(settings[2 + world].zw);
     const float tolerance = max(noise, tolerances.x * tolerances.y * sqrt(state.search.z) / state.search.w);
     RayPoint best = {0.0, float3(0.0)};
@@ -401,7 +461,7 @@ void cg_line_search(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     {
         const RayPoint origin = {0.0, initial.xyz};
         const float alpha = newtonAlpha(origin);
-        const RayPoint trial = {alpha, evaluateCgRay(state, world, lane, alpha).xyz};
+        const RayPoint trial = {alpha, evaluateCgRay(ray, world, lane, alpha).xyz};
         finished = acceptRay(best, trial, tolerance);
         if (trial.value.x < best.value.x)
             best = trial;
@@ -415,9 +475,9 @@ void cg_line_search(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
             const float left = newtonAlpha(lo);
             const float right = newtonAlpha(hi);
             const float mid = 0.5 * (lo.alpha + hi.alpha);
-            const RayPoint leftPoint = {left, evaluateCgRay(state, world, lane, left).xyz};
-            const RayPoint rightPoint = {right, evaluateCgRay(state, world, lane, right).xyz};
-            const RayPoint midPoint = {mid, evaluateCgRay(state, world, lane, mid).xyz};
+            const RayPoint leftPoint = {left, evaluateCgRay(ray, world, lane, left).xyz};
+            const RayPoint rightPoint = {right, evaluateCgRay(ray, world, lane, right).xyz};
+            const RayPoint midPoint = {mid, evaluateCgRay(ray, world, lane, mid).xyz};
             RayPoint accepted = {0.0, float3(0.0)};
             const bool acceptLeft = acceptRay(accepted, leftPoint, tolerance);
             const bool acceptRight = acceptRay(accepted, rightPoint, tolerance);

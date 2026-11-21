@@ -17,7 +17,6 @@ static const uint LimitControl = 2;
 static const uint LimitActivation = 4;
 static const uint LimitForce = 8;
 static const uint EarlyActivation = 16;
-static const float Pi = 3.141592653589793;
 
 struct JointActuatorModel
 {
@@ -58,17 +57,6 @@ struct JointActuatorDof
 [[vk::binding(11, 0)]] StructuredBuffer<uint2> actuatorAdjacency; // actuator id, joint-relative dof
 [[vk::binding(12, 0)]] RWStructuredBuffer<float> qfrcActuator;
 
-float3 rotationVector(float4 rotation)
-{
-    const float sine = length(rotation.yzw);
-    if (sine == 0.0)
-        return float3(0.0);
-    float angle = 2.0 * atan2(sine, rotation.x);
-    if (angle > Pi)
-        angle -= 2.0 * Pi;
-    return rotation.yzw * (angle / sine);
-}
-
 float4 jointRotation(uint address)
 {
     return normalize(float4(qpos[address], qpos[address + 1], qpos[address + 2], qpos[address + 3]));
@@ -83,7 +71,7 @@ float servoPeriod(JointActuatorModel actuator)
 {
     if (joints[actuator.indices.x].indices.x == JointBall && actuator.modes.y == FixedGain &&
         actuator.modes.z == AffineBias && actuator.gain.x == -actuator.bias.y)
-        return 2.0 * Pi * length(actuator.gearFirst.xyz);
+        return 2.0 * PhysicsPi * length(actuator.gearFirst.xyz);
     return 0.0;
 }
 

@@ -6,21 +6,16 @@
 #include "model.slang"
 #include "contact.slang"
 #include "constraint_data.slang"
+#include "constraint_parameters.slang"
+#include "constraint_stream.slang"
 
 static const uint NegativeJacobian = 0x80000000u;
-static const float MinValue = 1.0e-15;
-static const float MinImpedance = 0.0001;
-static const float MaxImpedance = 0.9999;
 
-[[vk::binding(0, 0)]] StructuredBuffer<uint4> settings;
 [[vk::binding(1, 0)]] StructuredBuffer<Contact> contacts;
 [[vk::binding(2, 0)]] RWStructuredBuffer<Atomic<uint>> contactCount;
 [[vk::binding(3, 0)]] StructuredBuffer<uint4> topology;
 [[vk::binding(4, 0)]] StructuredBuffer<DofModel> dofs;
-[[vk::binding(5, 0)]] RWStructuredBuffer<Atomic<uint>> rowCounts;
 [[vk::binding(6, 0)]] RWStructuredBuffer<uint4> reservations; // first row, rows, first column, columns per row
-[[vk::binding(7, 0)]] RWStructuredBuffer<ConstraintRow> rows;
-[[vk::binding(8, 0)]] RWStructuredBuffer<ConstraintColumn> columns;
 [[vk::binding(9, 0)]] StructuredBuffer<SpatialMotion> centeredDof;
 [[vk::binding(10, 0)]] StructuredBuffer<float4> subtreeCom;
 [[vk::binding(11, 0)]] StructuredBuffer<float> qvel;
@@ -87,15 +82,14 @@ void reserve_contact_rows(uint3 id : SV_DispatchThreadID)
 
         const uint dimension = contact.geometry.z;
         const uint height = dimension == 1 || (config.w & EllipticCone) != 0 ? dimension : 2 * (dimension - 1);
-        const uint firstRow = rowCounts[2 * id.y].add(height);
-        const uint firstColumn = rowCounts[2 * id.y + 1].add(height * width);
-        if (firstRow + height > limits.z || firstColumn + height * width > limits.w)
+        const uint2 block = reserveConstraintBlock(id.y, height, width);
+        if (block.x == NoIndex)
             continue;
-        reservations[index] = uint4(firstRow, height, firstColumn, width);
+        reservations[index] = uint4(block.x, height, block.y, width);
 
         a = firstDof;
         b = secondDof;
-        const uint columnBase = id.y * limits.w + firstColumn;
+        const uint columnBase = id.y * limits.w + block.y;
         for (uint j = 0; j < width; ++j)
         {
             const uint next = nextContactDof(a, b);
@@ -174,33 +168,6 @@ void project_contact_rows(uint3 id : SV_DispatchThreadID)
     }
 }
 
-float3 impedanceParameters(float2 reference, float4 impedance, float power, float position, float timestep,
-                           bool unclampedReference)
-{
-    const float time = unclampedReference ? reference.x : max(reference.x, 2.0 * timestep);
-    const float lower = clamp(impedance.x, MinImpedance, MaxImpedance);
-    const float upper = clamp(impedance.y, MinImpedance, MaxImpedance);
-    const float mid = clamp(impedance.w, MinImpedance, MaxImpedance);
-    const float x = saturate(abs(position) / max(impedance.z, MinValue));
-    const float denominator = upper * upper;
-    const float k = reference.x <= 0.0 ? -reference.x / max(MinValue, denominator) :
-                1.0 / max(MinValue, denominator * time * time * reference.y * reference.y);
-    const float b = reference.y <= 0.0 ? -reference.y / max(MinValue, upper) :
-                2.0 / max(MinValue, upper * time);
-    const float exponent = max(1.0, power);
-    float interpolation = 0.5;
-    if (lower != upper && impedance.z > MinValue)
-    {
-        if (exponent == 1.0)
-            interpolation = x;
-        else if (x <= mid)
-            interpolation = mid * pow(x / mid, exponent);
-        else
-            interpolation = 1.0 - (1.0 - mid) * pow((1.0 - x) / (1.0 - mid), exponent);
-    }
-    return float3(k, b, lerp(lower, upper, interpolation));
-}
-
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void finish_contact_rows(uint3 id : SV_DispatchThreadID)
@@ -227,7 +194,7 @@ void finish_contact_rows(uint3 id : SV_DispatchThreadID)
         const float position = contact.positionDistance.w - contact.normalMargin.w;
         const float3 kbi = impedanceParameters(contact.reference.xy, contact.impedance, contact.extra.x, position,
                                                world.x, unclamped);
-        const float diagonal = 1.0 / max(weight * (1.0 - kbi.z) / kbi.z, MinValue);
+        const float diagonal = constraintDiagonal(weight, kbi.z);
         const float2 frictionReference = any(contact.reference.zw != float2(0.0)) ?
                                             contact.reference.zw : contact.reference.xy;
         const float tangentialDamping = impedanceParameters(frictionReference, contact.impedance, contact.extra.x,
@@ -259,7 +226,9 @@ void finish_contact_rows(uint3 id : SV_DispatchThreadID)
             result.layout = uint4(span.z + row * span.w, span.w, i, row);
             result.state = float4(elliptic && row > 0 ? contact.normalMargin.w : contact.positionDistance.w,
                                   contact.normalMargin.w, velocity, acceleration);
-            result.weight = float4(d, 0.0, 0.0, 0.0);
+            result.diagonal = d;
+            result.frictionLoss = 0.0;
+            result.kind = ContactRow;
             rows[id.y * limits.z + span.x + row] = result;
         }
     }
@@ -309,12 +278,6 @@ void contact_residual(uint3 id : SV_DispatchThreadID)
     residuals[index] = residual;
 }
 
-ConstraintEvaluation quadraticConstraint(float residual, float diagonal)
-{
-    const uint quadratic = 1;
-    return {-diagonal * residual, 0.5 * diagonal * residual * residual, quadratic};
-}
-
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void evaluate_contact_objective(uint3 id : SV_DispatchThreadID)
@@ -325,13 +288,30 @@ void evaluate_contact_objective(uint3 id : SV_DispatchThreadID)
         return;
     const uint index = id.y * limits.z + id.x;
     const ConstraintRow row = rows[index];
-    const Contact contact = contacts[id.y * limits.y + row.layout.z];
     const float residual = residuals[index];
-    const float diagonal = row.weight.x;
-    const ConstraintEvaluation satisfied = {0.0, 0.0, 0u};
-    if ((settings[1].w & EllipticCone) == 0 || contact.geometry.z == 1)
+    const float diagonal = row.diagonal;
+    const uint kind = row.kind;
+    if (kind == EqualityRow)
     {
-        evaluation[index] = residual >= 0.0 ? satisfied : quadraticConstraint(residual, diagonal);
+        evaluation[index] = evaluateQuadratic(residual, diagonal);
+        return;
+    }
+    if (kind == FrictionRow)
+    {
+        evaluation[index] = evaluateFriction(residual, diagonal, row.frictionLoss);
+        return;
+    }
+    const ConstraintEvaluation satisfied = {0.0, 0.0, SatisfiedConstraint};
+    const bool elliptic = (settings[1].w & EllipticCone) != 0;
+    if (kind == LimitRow || !elliptic)
+    {
+        evaluation[index] = residual >= 0.0 ? satisfied : evaluateQuadratic(residual, diagonal);
+        return;
+    }
+    const Contact contact = contacts[id.y * limits.y + row.layout.z];
+    if (contact.geometry.z == 1)
+    {
+        evaluation[index] = residual >= 0.0 ? satisfied : evaluateQuadratic(residual, diagonal);
         return;
     }
 
@@ -349,19 +329,19 @@ void evaluate_contact_objective(uint3 id : SV_DispatchThreadID)
     if (normal >= mu * tangent)
         evaluation[index] = satisfied;
     else if (mu * normal + tangent <= 0.0 || tangent == 0.0)
-        evaluation[index] = quadraticConstraint(residual, diagonal);
+        evaluation[index] = evaluateQuadratic(residual, diagonal);
     else
     {
-        const uint cone = 4;
-        const float dm = rows[first].weight.x / max(MinValue, mu * mu * (1.0 + mu * mu));
+        const float dm = rows[first].diagonal / max(ConstraintMinValue, mu * mu * (1.0 + mu * mu));
         const float gap = normal - mu * tangent;
         const float force = -dm * gap * mu;
         if (ordinal == 0)
-            evaluation[index] = {force, 0.5 * dm * gap * gap, cone};
+            evaluation[index] = {force, 0.5 * dm * gap * gap, EllipticMiddleState};
         else
         {
             const float friction = contactFriction(contact, ordinal - 1);
-            evaluation[index] = {-force * residual * friction * friction / max(MinValue, tangent), 0.0, cone};
+            evaluation[index] = {-force * residual * friction * friction / max(ConstraintMinValue, tangent),
+                                 0.0, EllipticMiddleState};
         }
     }
 }
