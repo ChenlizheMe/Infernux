@@ -16,7 +16,7 @@ on:
       - "scripts/setup/**"
       - "tests/fixtures/multiplatform_player/**"
   push:
-    branches: [master, main, '050/recreate_rendering_physical']
+    branches: [master, main]
     paths:
       - ".github/workflows/platform-player.yml"
       - "CMakeLists.txt"

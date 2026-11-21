@@ -3,7 +3,7 @@ name: Desktop Release And Tests
 on:
   pull_request:
   push:
-    branches: [master, main, '041-post/**', '050/recreate_rendering_physical']
+    branches: [master, main, '041-post/**']
   workflow_call:
     inputs:
       hub_only:
