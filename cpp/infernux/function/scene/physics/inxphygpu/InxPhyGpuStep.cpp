@@ -394,7 +394,7 @@ struct RaySlots
 
 struct BodyControlSlots
 {
-    uint32_t spans, commands, force, saved, prescribed, fixedSteps, activity;
+    uint32_t spans, commands, force, saved, prescribed, fixedSteps, activity, pendingWrenches;
 };
 
 BodyControlSlots BindBodyControls(StepBuilder &b, const InxPhyGpuModel &model, uint32_t capacity, bool multiple)
@@ -407,7 +407,8 @@ BodyControlSlots BindBodyControls(StepBuilder &b, const InxPhyGpuModel &model, u
             b.Zero("savedMotions", 44 * uint64_t{capacity}),
             b.Zero("prescribedMotion", 12 * std::max(uint64_t{1}, prescribedRows) * b.worlds),
             b.Zero("acceptedFixedSteps", uint64_t{b.worlds} + uint32_t(multiple)),
-            b.Seed("bodyActivity", awake.size(), awake.data(), b.worlds * model.dimensions.state[2])};
+            b.Seed("bodyActivity", awake.size(), awake.data(), b.worlds * model.dimensions.state[2]),
+            b.Zero("pendingWrenches", 6 * uint64_t{b.worlds} * model.dimensions.state[2])};
 }
 
 RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
@@ -1553,7 +1554,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         publishBodiesWithStatus;
     const auto firstBodyPublication = b.initialize.size();
     if (controlSlots) {
-        const auto &[spans, commands, force, saved, prescribed, fixedSteps, activity] = *controlSlots;
+        const auto &[spans, commands, force, saved, prescribed, fixedSteps, activity, pending] = *controlSlots;
         const auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
         std::vector<Use> commandBindings{{0, dimensions, R},  {1, bodies, R},        {2, joints, R},
                                          {3, spans, R},       {4, commands, R},      {5, positions, RW},
@@ -1561,8 +1562,10 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                          {15, fixedSteps, R}, {16, staticPoses, RW}, {23, activity, RW}};
         if (sceneDynamics)
             commandBindings.push_back({21, sceneMotion, R});
+        commandBindings.push_back({24, pending, RW});
         editCommands = b.Bind("body_controls", sceneDynamics ? "edit_scene_body_state" : "edit_body_state",
                               bodyCommandCapacity, commandBindings);
+        commandBindings.back().access = R;
         commandBindings.insert(commandBindings.end(), {{8, force, RW}, {11, saved, RW}, {22, fixedSizes, R}});
         applyCommands = b.Bind("body_controls", sceneDynamics ? "apply_scene_body_commands" : "apply_body_commands",
                                bodyCommandCapacity, commandBindings);
@@ -1580,22 +1583,27 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                 {15, fixedSteps, R},
                                 {16, staticPoses, RW},
                                 {22, fixedSizes, R}});
-        finishCommands =
-            response ? b.Dispatch("body_controls", "finish_contact_body_commands", bodyCommandCapacity,
-                                  {{0, dimensions, R},
-                                   {1, bodies, R},
-                                   {2, joints, R},
-                                   {3, spans, R},
-                                   {5, positions, RW},
-                                   {6, velocities, RW},
-                                   {7, mocap, RW},
-                                   {8, force, RW},
-                                   {10, response->status, R},
-                                   {11, saved, R},
-                                   {12, prescribed, RW},
-                                   {16, staticPoses, W}})
-                     : b.Dispatch("body_controls", "finish_body_commands", bodyCommandCapacity,
-                                  {{0, dimensions, R}, {1, bodies, R}, {2, joints, R}, {3, spans, R}, {8, force, RW}});
+        finishCommands = response ? b.Dispatch("body_controls", "finish_contact_body_commands", bodyCommandCapacity,
+                                               {{0, dimensions, R},
+                                                {1, bodies, R},
+                                                {2, joints, R},
+                                                {3, spans, R},
+                                                {5, positions, RW},
+                                                {6, velocities, RW},
+                                                {7, mocap, RW},
+                                                {8, force, RW},
+                                                {10, response->status, R},
+                                                {11, saved, R},
+                                                {12, prescribed, RW},
+                                                {16, staticPoses, W},
+                                                {24, pending, W}})
+                                  : b.Dispatch("body_controls", "finish_body_commands", bodyCommandCapacity,
+                                               {{0, dimensions, R},
+                                                {1, bodies, R},
+                                                {2, joints, R},
+                                                {3, spans, R},
+                                                {8, force, RW},
+                                                {24, pending, W}});
         if (branches != 0) {
             publishPose = b.dispatches[kinematicsPass];
             b.initialize.push_back(publishPose);
@@ -1649,6 +1657,14 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                         {20, addresses, R},
                                         {23, controlSlots->activity, RW},
                                         {17, positions, R}}));
+        if (handoff.pendingWrenches)
+            b.initialize.insert(b.initialize.begin() + firstBodyPublication + 1,
+                                b.Dispatch("body_controls", "import_pending_wrenches", nb,
+                                           {{0, dimensions, R},
+                                            {1, kinematics.bodies, R},
+                                            {20, addresses, R},
+                                            {24, controlSlots->pendingWrenches, W},
+                                            {25, positions, R}}));
     }
     if (reference)
         InitializeWeights(b, model, *reference);
@@ -1683,6 +1699,11 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         auto &importState = initialDispatches[firstBodyPublication];
         importState.buffers.back() = handoff.states;
         importState.proof->reads.back().byteSize = handoff.states->GetByteSize();
+        if (handoff.pendingWrenches) {
+            auto &importWrenches = initialDispatches[firstBodyPublication + 1];
+            importWrenches.buffers.back() = handoff.pendingWrenches;
+            importWrenches.proof->reads.back().byteSize = handoff.pendingWrenches->GetByteSize();
+        }
     }
     auto initialize = rhi::PrepareComputeBatch(host, std::move(initial), std::move(initialDispatches));
     InxPhyGpuContactStream contacts;
@@ -1722,6 +1743,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         controls.spans = buffers[controlSlots->spans];
         controls.states = buffers[states];
         controls.activity = buffers[controlSlots->activity];
+        controls.pendingWrenches = buffers[controlSlots->pendingWrenches];
         controls.apply = BindDispatch(std::move(applyCommands), buffers);
         controls.edit = BindDispatch(std::move(editCommands), buffers);
         controls.finish = BindDispatch(std::move(finishCommands), buffers);
@@ -2070,18 +2092,18 @@ uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> com
         const auto motion = m_controls.motion.at(command.body);
         const bool move =
             kind == InxPhyGpuBodyCommandKind::MovePosition || kind == InxPhyGpuBodyCommandKind::MoveRotation;
-        const bool force = kind >= InxPhyGpuBodyCommandKind::Force && kind <= InxPhyGpuBodyCommandKind::ForceAtPosition;
         const bool dynamic = (kind >= InxPhyGpuBodyCommandKind::SetLinearVelocity &&
                               kind <= InxPhyGpuBodyCommandKind::ForceAtPosition) ||
-                             kind == InxPhyGpuBodyCommandKind::Sleep || kind == InxPhyGpuBodyCommandKind::Wake;
+                             kind == InxPhyGpuBodyCommandKind::Sleep || kind == InxPhyGpuBodyCommandKind::Wake ||
+                             kind == InxPhyGpuBodyCommandKind::ApplyPendingWrench;
         const auto drive =
             move && command.poseFlags == InxPhyGpuPoseCommandFlags::TemporaryStatic ? StaticControl : KinematicControl;
         if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != drive) ||
             (dynamic && motion != DynamicControl) ||
             (motion == StaticControl && !move && kind > InxPhyGpuBodyCommandKind::SetRotation))
             throw std::invalid_argument("inxphygpu body command does not match its world or motion type");
-        if (!integrate && (move || (force && static_cast<uint32_t>(command.mode) < 2)))
-            throw std::invalid_argument("Continuous forces and kinematic targets require a fixed step");
+        if (!integrate && (move || kind == InxPhyGpuBodyCommandKind::ApplyPendingWrench))
+            throw std::invalid_argument("Kinematic targets and wrench consumption require a fixed step");
         if (move && (!std::isfinite(command.point[0]) || command.point[0] <= 0.0f || !std::isfinite(command.point[1]) ||
                      command.point[1] < 0.0f))
             throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");

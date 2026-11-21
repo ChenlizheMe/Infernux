@@ -18,6 +18,7 @@ static const uint MoveRotation = 8;
 static const uint ResetMotion = 9;
 static const uint Sleep = 10;
 static const uint Wake = 11;
+static const uint ApplyPendingWrench = 12;
 static const uint PreserveDrive = 1;
 
 struct BodyCommand
@@ -65,6 +66,8 @@ struct SavedMotion
 [[vk::binding(21, 0)]] StructuredBuffer<SceneRigidMotion> sceneMotion;
 [[vk::binding(22, 0)]] StructuredBuffer<float> fixedTimeSteps;
 [[vk::binding(23, 0)]] RWStructuredBuffer<SceneBodyActivity> bodyActivity;
+[[vk::binding(24, 0)]] RWStructuredBuffer<float> pendingWrenches;
+[[vk::binding(25, 0)]] StructuredBuffer<float> previousWrenches;
 
 float4 conjugate(float4 rotation)
 {
@@ -151,6 +154,24 @@ void import_body_states(uint3 id : SV_DispatchThreadID)
     }
 }
 
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void import_pending_wrenches(uint3 id : SV_DispatchThreadID)
+{
+    const uint width = model[0].state.z;
+    if (id.x == 0 || id.x >= width || bodies[id.x].dofs.y == 0)
+        return;
+    const uint row = id.y * width + id.x;
+    const uint address = previousAddresses[row];
+    if (address == NoIndex)
+        return;
+    const uint source = (address / 5) * 6;
+    store3(pendingWrenches, row * 6, float3(previousWrenches[source], previousWrenches[source + 1],
+                                             previousWrenches[source + 2]));
+    store3(pendingWrenches, row * 6 + 3, float3(previousWrenches[source + 3], previousWrenches[source + 4],
+                                                 previousWrenches[source + 5]));
+}
+
 void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint4 span, ModelDimensions size,
                                                                BodyModel body)
 {
@@ -162,9 +183,10 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
     float3 shift = centerOffset(body, pose);
     float3 spin = rotateVector(localSpin, pose.rotation);
     float3 speed = originSpeed + cross(spin, shift);
-    float3 force = float3(0.0);
-    float3 torque = float3(0.0);
     const uint activityRow = span.x * size.state.z + span.y;
+    const uint wrenchRow = activityRow * 6;
+    float3 force = load3(pendingWrenches, wrenchRow);
+    float3 torque = load3(pendingWrenches, wrenchRow + 3);
     SceneBodyActivity activity = bodyActivity[activityRow];
     uint sleep = activity.group;
     for (uint i = span.z; i < span.z + span.w; ++i)
@@ -215,7 +237,7 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
             sleep = NoIndex;
             activity.marker = 0;
         }
-        else
+        else if (operation != ApplyPendingWrench)
         {
             const uint mode = command.fields.w;
             const bool massIndependent = (mode & 1u) != 0;
@@ -270,7 +292,11 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
     store3(qvel, offset.y, speed - cross(spin, shift));
     store3(qvel, offset.y + 3, rotateVector(spin, inverse));
     if (!Integrate)
+    {
+        store3(pendingWrenches, wrenchRow, force);
+        store3(pendingWrenches, wrenchRow + 3, torque);
         return;
+    }
     saved[index] = {undo, float4(originSpeed, 0.0), float4(localSpin, 0.0), float3(0.0), 0u,
                     undo, float4(0.0), float4(0.0),
                     float4(force, 0.0), float4(torque, 0.0)};
@@ -499,6 +525,12 @@ void finishCommands<let HasStatus : bool>(uint index)
             storeOrigin(address.x, undo.pose);
             store3(qvel, address.y, undo.linear.xyz);
             store3(qvel, address.y + 3, undo.angular.xyz);
+        }
+        else
+        {
+            const uint wrenchRow = (span.x * size.state.z + span.y) * 6;
+            store3(pendingWrenches, wrenchRow, float3(0.0));
+            store3(pendingWrenches, wrenchRow + 3, float3(0.0));
         }
     }
     else if (rejected)

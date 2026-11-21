@@ -107,6 +107,8 @@ struct InxPhyGpuFixedPublication
     friend class InxPhyGpuSceneRuntime;
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
+    std::vector<std::pair<uint32_t, uint32_t>> m_pendingWrenchRows;
+    std::shared_ptr<rhi::ComputeBuffer> m_pendingWrenches;
     bool m_integrated = false;
 };
 
@@ -196,8 +198,8 @@ class InxPhyGpuSceneRuntime final
                     const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host, bool captureContacts = false,
                     const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {},
                     std::vector<PhysicsFixedInputs> fixedInputs = {});
-    /// Apply immediate body edits at the last accepted simulation time.
-    /// Reuses the same completion and optional consumer as a fixed step.
+    /// Apply body edits at the last accepted simulation time. Force and
+    /// acceleration accumulate device wrenches for the next accepted fixed step.
     void BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
                     PublicationConsumer consumer = {});
     [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakePublication();
@@ -245,6 +247,7 @@ class InxPhyGpuSceneRuntime final
         bool integrate;
         std::vector<PhysicsFixedInputs> fixedInputs;
         std::shared_ptr<const InxPhyGpuScenePoseTargets> poseTargets{};
+        std::vector<std::pair<uint32_t, uint32_t>> pendingWrenchRows{};
     };
     struct Receipt
     {
@@ -263,6 +266,7 @@ class InxPhyGpuSceneRuntime final
     bool Submit();
     void Finish();
     [[nodiscard]] InxPhyGpuFixedPublication CapturePublication(const rhi::PreparedComputeBatch &packet) const;
+    void RetainWrenches(InxPhyGpuFixedPublication &publication, std::vector<std::pair<uint32_t, uint32_t>> rows) const;
     void FinishFixed(const rhi::PreparedComputeBatch &packet);
     void FinishReports(const rhi::PreparedComputeBatch &packet);
     void PrepareConsumer(InxPhyGpuFixedPublication publication);
@@ -274,6 +278,7 @@ class InxPhyGpuSceneRuntime final
     std::unique_ptr<InxPhyGpuStep> m_step;
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
+    std::vector<std::pair<uint32_t, uint32_t>> m_pendingWrenchRows;
     uint32_t m_bodyCount;
     bool m_contactReportsConfigured;
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;

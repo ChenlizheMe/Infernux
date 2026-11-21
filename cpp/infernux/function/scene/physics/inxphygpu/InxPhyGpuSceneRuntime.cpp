@@ -9,6 +9,7 @@
 #include <core/config/EngineConfig.h>
 #include <cstring>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -336,8 +337,15 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
             for (const auto &[id, row] : layout->worlds[next].rows) {
                 const auto actor = layout->worlds[next].bodies[row].actor;
                 const auto oldRow = oldWorld.BodyRow(id);
-                if (oldRow && actor.IsValid() && actor == oldWorld.bodies[*oldRow].actor)
-                    handoff.addresses[first + row] = 5 * (old->second * previous->bodiesPerWorld + *oldRow);
+                if (!oldRow || !actor.IsValid() || actor != oldWorld.bodies[*oldRow].actor)
+                    continue;
+                handoff.addresses[first + row] = 5 * (old->second * previous->bodiesPerWorld + *oldRow);
+                if (layout->motion[row].inverseMass != 0.0f &&
+                    std::binary_search(previous->m_pendingWrenchRows.begin(), previous->m_pendingWrenchRows.end(),
+                                       std::pair{old->second, *oldRow})) {
+                    m_pendingWrenchRows.emplace_back(static_cast<uint32_t>(next), row);
+                    handoff.pendingWrenches = previous->m_pendingWrenches;
+                }
             }
             if (previous->m_poseTargets && previous->m_poseTargets->worlds[old->second]) {
                 const auto &joints = layout->worlds[next].joints;
@@ -357,6 +365,7 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
         }
         if (!handoff.poseTargets.empty())
             m_poseTargets = std::make_shared<InxPhyGpuScenePoseTargets>(std::move(retained));
+        std::sort(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
     }
     m_layout = std::move(layout);
     m_activeFixedInputs.assign(m_layout->worlds.size(), {timestep, {gravity[0], gravity[1], gravity[2]}});
@@ -415,6 +424,13 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
     actions.reserve(commands.size());
     for (const auto &entry : commands)
         EncodeBodyCommand(m_layout->WorldRow(entry.worldId), entry.command, actions);
+    if (!m_pendingWrenchRows.empty()) {
+        auto uncovered = std::set(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
+        for (const auto &action : actions)
+            uncovered.erase({action.world, action.body});
+        for (const auto &[world, body] : uncovered)
+            actions.push_back({world, body, InxPhyGpuBodyCommandKind::ApplyPendingWrench});
+    }
     std::vector<InxPhyGpuJointParameterUpdate> updates;
     updates.reserve(jointUpdates.size());
     std::map<std::pair<uint32_t, uint64_t>, std::optional<glm::quat>> poseChanges;
@@ -522,7 +538,16 @@ void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<Physi
         EncodeBodyCommand(world, command, edits);
     if (edits.empty())
         throw std::invalid_argument("inxphygpu scene edit requires at least one body command");
-    BeginOperation({{}, std::move(edits), {}, false, false, std::move(consumer), false, {}});
+    using Kind = InxPhyGpuBodyCommandKind;
+    std::set pending(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
+    for (const auto &edit : edits) {
+        if (edit.kind == Kind::ResetMotion || edit.kind == Kind::Sleep)
+            pending.erase({edit.world, edit.body});
+        else if (edit.kind >= Kind::Force && edit.kind <= Kind::ForceAtPosition && static_cast<uint32_t>(edit.mode) < 2)
+            pending.emplace(edit.world, edit.body);
+    }
+    BeginOperation(
+        {{}, std::move(edits), {}, false, false, std::move(consumer), false, {}, {}, {pending.begin(), pending.end()}});
 }
 
 void InxPhyGpuSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
@@ -780,6 +805,7 @@ void InxPhyGpuSceneRuntime::Finish()
         if (!m_operation) {
             auto result = CapturePublication(*packet);
             result.worlds = m_acceptedWorlds;
+            RetainWrenches(result, m_pendingWrenchRows);
             m_initialPublication.emplace(std::move(result));
         }
     } else if (kind == Packet::Fixed) {
@@ -809,6 +835,15 @@ InxPhyGpuFixedPublication InxPhyGpuSceneRuntime::CapturePublication(const rhi::P
     result.substeps = m_step->Substeps();
     result.worlds.reserve(m_layout->worlds.size());
     return result;
+}
+
+void InxPhyGpuSceneRuntime::RetainWrenches(InxPhyGpuFixedPublication &publication,
+                                           std::vector<std::pair<uint32_t, uint32_t>> rows) const
+{
+    if (rows.empty())
+        return;
+    publication.m_pendingWrenchRows = std::move(rows);
+    publication.m_pendingWrenches = m_step->PendingWrenches()->Freeze();
 }
 
 void InxPhyGpuSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
@@ -873,6 +908,15 @@ void InxPhyGpuSceneRuntime::FinishReports(const rhi::PreparedComputeBatch &packe
 
 void InxPhyGpuSceneRuntime::PrepareConsumer(InxPhyGpuFixedPublication publication)
 {
+    if (m_operation->integrate) {
+        std::vector<std::pair<uint32_t, uint32_t>> rejected;
+        for (const auto &row : m_pendingWrenchRows)
+            if (publication.worlds[row.first].status != 0)
+                rejected.push_back(row);
+        RetainWrenches(publication, std::move(rejected));
+    } else {
+        RetainWrenches(publication, std::move(m_operation->pendingWrenchRows));
+    }
     auto work = m_operation->consumer ? m_operation->consumer(publication) : PublicationWork{};
     if (work.packet) {
         m_packet = std::move(work.packet);
@@ -895,6 +939,7 @@ void InxPhyGpuSceneRuntime::PublishCompleted(InxPhyGpuFixedPublication publicati
     if (!m_operation->fixedInputs.empty())
         m_activeFixedInputs = std::move(m_operation->fixedInputs);
     m_poseTargets = publication.m_poseTargets;
+    m_pendingWrenchRows = publication.m_pendingWrenchRows;
     m_operation.reset();
     m_publication.emplace(std::move(publication));
 }

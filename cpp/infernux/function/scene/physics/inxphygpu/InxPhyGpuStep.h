@@ -166,6 +166,7 @@ enum class InxPhyGpuBodyCommandKind : uint32_t
     ResetMotion,
     Sleep,
     Wake,
+    ApplyPendingWrench,
 };
 
 enum class InxPhyGpuPoseCommandFlags : uint32_t
@@ -233,6 +234,7 @@ struct InxPhyGpuStateHandoff
     // maps the fixed-step header. NoModelIndex keeps the authored seed.
     std::vector<uint32_t> addresses;
     std::vector<PoseTarget> poseTargets{};
+    std::shared_ptr<rhi::ComputeBuffer> pendingWrenches;
 };
 
 struct InxPhyGpuJointMotion
@@ -296,6 +298,10 @@ class InxPhyGpuStep
     /// World-major body rows (including the world row), followed by one
     /// ModelWords record per world with the clock bits, solver status and accepted step ordinal.
     [[nodiscard]] std::shared_ptr<rhi::ComputeBuffer> BodyStates() const noexcept;
+    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &PendingWrenches() const noexcept
+    {
+        return m_controls.pendingWrenches;
+    }
 
     [[nodiscard]] InxPhyGpuPreparedJointMotion
     PrepareJointMotion(const PhysicsGpuPoseSource &source, const std::vector<uint32_t> &rows, bool readback) const;
@@ -329,7 +335,7 @@ class InxPhyGpuStep
   private:
     struct BodyControls
     {
-        std::shared_ptr<rhi::ComputeBuffer> commands, spans, states, activity;
+        std::shared_ptr<rhi::ComputeBuffer> commands, spans, states, activity, pendingWrenches;
         rhi::ComputeDispatchDesc apply, edit, finish, pose, publish, publishWithStatus;
         std::vector<uint8_t> motion;
         uint32_t capacity = 0;
