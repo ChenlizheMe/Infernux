@@ -54,6 +54,14 @@ static_assert(std::is_standard_layout_v<PhysicsParticipantIndices> &&
               std::is_trivially_copyable_v<PhysicsParticipantIndices>);
 static_assert(sizeof(PhysicsParticipantStep) == 8 && sizeof(PhysicsParticipantIndices) == 24);
 
+/// Timing and indices supplied by the fixed-step scheduler to a project recipe.
+/// Rigid exchange addresses the solver separately from these public inputs.
+struct PhysicsParticipantStageInputs
+{
+    PhysicsParticipantStep timing;
+    uint32_t substep, substeps, iteration, iterations;
+};
+
 /// Author values only. The allocation is per participant, never the prototype.
 struct PhysicsParticipantControl
 {
@@ -148,9 +156,8 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     /// Lower one GPU-only stage without changing its bound state or private
     /// scratch identities. A runtime slot supplies immutable per-round ports;
     /// writable/aliased runtime ports decline before preparing any GPU work.
-    [[nodiscard]] std::optional<PreparedStage> PrepareGpuStage(JoltGpuParticipantStage, const JPH::GPU::StepParams &,
-                                                               float fixedDeltaTime, uint32_t substep,
-                                                               uint32_t iteration, const Prefix &,
+    [[nodiscard]] std::optional<PreparedStage> PrepareGpuStage(JoltGpuParticipantStage,
+                                                               const PhysicsParticipantStageInputs &, const Prefix &,
                                                                std::optional<uint32_t> runtimeSlot = std::nullopt);
 
     [[nodiscard]] std::optional<JoltGpuControlWork>
@@ -168,8 +175,8 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     void ReleasePeerExchange();
     void ValidateRigidPorts();
     [[nodiscard]] JoltGpuControlWork PrepareRecipeStage(JoltGpuParticipantStage stage,
-                                                        const JPH::GPU::StepParams &params, float fixedDeltaTime,
-                                                        uint32_t substep, uint32_t iteration, const Prefix &prefix,
+                                                        const PhysicsParticipantStageInputs &inputs,
+                                                        const Prefix &prefix,
                                                         std::vector<rhi::ComputeBufferUpdate> updates = {},
                                                         std::vector<rhi::ComputeBufferRead> reads = {});
     [[nodiscard]] JoltGpuControlWork PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture,
