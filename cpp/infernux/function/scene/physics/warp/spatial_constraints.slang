@@ -9,7 +9,13 @@
 #include "prescribed_motion.slang"
 
 static const uint SpatialEqualityWords = 9;
-static const uint SceneJointWords = 12;
+static const uint SceneJointWords = 10;
+
+struct HingeDrive
+{
+    float4 motor;
+    float4 passive;
+};
 
 [[vk::binding(1, 0)]] StructuredBuffer<uint4> spatialModel;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> equalityActive;
@@ -24,6 +30,7 @@ static const uint SceneJointWords = 12;
 [[vk::binding(14, 0)]] StructuredBuffer<uint> sceneFixedSteps;
 [[vk::binding(15, 0)]] RWStructuredBuffer<SpatialMotion> sceneBodyVelocity;
 [[vk::binding(16, 0)]] StructuredBuffer<ModelDimensions> sceneDimensions;
+[[vk::binding(17, 0)]] StructuredBuffer<HingeDrive> sceneDrives;
 
 struct SpatialEndpoint
 {
@@ -83,16 +90,16 @@ void appendHingeResponse(inout HingeRows result, float reference, float diagonal
     result.rows[result.count++] = {float4(0.0, reference, diagonal, cap), 1.0, kind};
 }
 
-HingeRows hingeRows(uint record, float angle, float speed, float weight, float timestep, uint flags,
+HingeRows hingeRows(uint4 controls, HingeDrive drive, float angle, float speed, float weight, float timestep, uint flags,
                     ConstraintParameters parameters)
 {
     HingeRows result;
     result.count = 0;
-    const uint4 controls = spatialModel[record + 9u];
-    const float3 limit = asfloat(controls.yzw);
-    const float4 motor = asfloat(spatialModel[record + 10u]);
-    const float2 passive = asfloat(spatialModel[record + 11u].xy);
-    if ((controls.x & 1u) != 0)
+    const float2 limit = asfloat(controls.yz);
+    const float4 motor = drive.motor;
+    const float3 passive = drive.passive.xyz;
+    const bool limited = controls.w != 0;
+    if (limited)
     {
         const float predicted = angle + timestep * speed;
         const bool locked = limit.x == limit.y;
@@ -111,10 +118,11 @@ HingeRows hingeRows(uint record, float angle, float speed, float weight, float t
         }
     }
     const float motorDiagonal = timestep * (motor.z + motor.y * timestep);
-    if ((controls.x & 2u) != 0 && motorDiagonal > 0.0 && motor.w > 0.0)
+    if (motorDiagonal > 0.0 && motor.w > 0.0)
     {
         // Implicit spring and damper use the end-of-substep pose and speed.
-        const float error = wrapHingeAngle(motor.x - angle);
+        const float target = limited ? clamp(motor.x, limit.x, limit.y) : motor.x;
+        const float error = wrapHingeAngle(target - angle);
         const float torque = motor.y * (error - timestep * speed) - motor.z * speed;
         appendHingeResponse(result, torque / motorDiagonal, motorDiagonal, FrictionRow, motor.w);
     }
@@ -122,19 +130,19 @@ HingeRows hingeRows(uint record, float angle, float speed, float weight, float t
         appendHingeResponse(result, -speed / timestep, passive.x * timestep, EqualityRow, 0.0);
     if (passive.y > 0.0)
         appendHingeResponse(result, -speed / timestep, 1.0 / (weight * timestep), FrictionRow, passive.y);
-    if (limit.z > 0.0)
-        appendHingeResponse(result, 0.0, limit.z, EqualityRow, 0.0);
+    if (passive.z > 0.0)
+        appendHingeResponse(result, 0.0, passive.z, EqualityRow, 0.0);
     return result;
 }
 
 void emitSpatialRows<let SceneJoint : bool>(uint3 id)
 {
-    const uint4 model = spatialModel[0]; // descriptor count, equality count
+    const uint4 model = spatialModel[0]; // descriptor count, equality or scene drive stride
     if (id.x >= model.x)
         return;
     const uint record = 1 + (SceneJoint ? SceneJointWords : SpatialEqualityWords) * id.x;
     const uint4 source = spatialModel[record]; // equality id, first body, second body, Jacobian width
-    if (equalityActive[id.y * model.y + source.x] == 0)
+    if (!SceneJoint && equalityActive[id.y * model.y + source.x] == 0)
         return;
     const uint4 span = spatialModel[record + 1]; // first welded body, second welded body, support offset, height
     const uint4 limits = settings[0];
@@ -161,7 +169,9 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     if (hinge)
     {
         const float theta = wrapHingeAngle(2.0 * atan2(relative.w, relative.x));
-        axial = hingeRows(record, theta, speed, asfloat(reference.w), timestep, config.w, parameters);
+        const uint4 controls = spatialModel[record + 9u];
+        const HingeDrive drive = sceneDrives[id.y * model.y + controls.x];
+        axial = hingeRows(controls, drive, theta, speed, asfloat(reference.w), timestep, config.w, parameters);
     }
     const uint2 block = reserveConstraintBlock(id.y, span.w + axial.count, source.w);
     if (block.x == NoIndex)

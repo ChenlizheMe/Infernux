@@ -84,12 +84,15 @@ SceneJointEndpoint BindSceneJointEndpoint(const WarpModel &model, const std::vec
     return endpoint;
 }
 
-void BindSceneJoints(WarpModel &model, const std::vector<WarpSceneActor> &actors,
+void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &actors,
                      const std::vector<WarpSceneJoint> &joints)
 {
-    constexpr size_t descriptorWords = 12;
+    constexpr size_t descriptorWords = 10;
+    auto &model = scene.model;
+    scene.hingeRows.resize(joints.size(), NoModelIndex);
     std::vector<ModelWords> descriptors(1), support;
-    for (const auto &joint : joints) {
+    for (size_t index = 0; index < joints.size(); ++index) {
+        const auto &joint = joints[index];
         const auto &owner = actors.at(joint.ownerActor);
         const auto point = owner.position + owner.rotation * joint.ownerAnchor;
         glm::quat rotation = owner.rotation;
@@ -128,18 +131,22 @@ void BindSceneJoints(WarpModel &model, const std::vector<WarpSceneActor> &actors
         weights[0] = model.bodies[a.body].subtree[0];
         weights[1] = model.bodies[b.body].subtree[0];
         descriptors.push_back(weights);
-        const auto hinge = joint.hinge.value_or(WarpSceneHinge{});
-        auto controls = Bits({0.0f, hinge.minimum, hinge.maximum, hinge.armature});
-        controls[0] = (hinge.useLimits ? 1u : 0u) | (hinge.motorEnabled ? 2u : 0u);
+        ModelWords controls{NoModelIndex, 0, 0, 0};
+        if (joint.hinge) {
+            const auto &hinge = *joint.hinge;
+            const auto row = static_cast<uint32_t>(model.initialHingeDrives.size());
+            controls = Bits({0.0f, hinge.minimum, hinge.maximum, 0.0f});
+            controls[0] = row;
+            controls[3] = hinge.useLimits;
+            scene.hingeRows[index] = row;
+            model.initialHingeDrives.push_back(hinge.drive.Pack());
+        }
         descriptors.push_back(controls);
-        const auto target = hinge.useLimits ? std::clamp(hinge.target, hinge.minimum, hinge.maximum) : hinge.target;
-        descriptors.push_back(Bits({target, hinge.stiffness, hinge.damping, hinge.maxTorque}));
-        descriptors.push_back(Bits({hinge.jointDamping, hinge.frictionTorque, 0.0f, 0.0f}));
     }
     const auto count = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
     if (count == 0)
         return;
-    descriptors[0] = {count, count, 0, 0};
+    descriptors[0] = {count, static_cast<uint32_t>(model.initialHingeDrives.size()), 0, 0};
     for (size_t row = 2; row < descriptors.size(); row += descriptorWords)
         descriptors[row][2] += static_cast<uint32_t>(descriptors.size());
     descriptors.insert(descriptors.end(), support.begin(), support.end());
@@ -340,7 +347,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
     }
     firstGeometry.push_back(static_cast<uint32_t>(geometries.size()));
     result.model = BuildWarpModel(bodies, geometries);
-    BindSceneJoints(result.model, actors, joints);
+    BindSceneJoints(result, actors, joints);
     std::set<std::pair<uint32_t, uint32_t>> ignored;
     for (const auto &joint : joints)
         if (!joint.enableCollision && joint.connectedActor != NoModelIndex)

@@ -15,6 +15,21 @@ inline constexpr uint32_t NoModelIndex = UINT32_MAX;
 using ModelWords = std::array<uint32_t, 4>;
 using ModelVector = std::array<float, 4>;
 
+using ModelHingeDrive = std::array<ModelVector, 2>;
+
+struct WarpHingeDrive
+{
+    bool enabled = false;
+    float target = 0.0f, stiffness = 0.0f, damping = 0.0f, maxTorque = 0.0f;
+    float jointDamping = 0.0f, frictionTorque = 0.0f, armature = 0.0f;
+
+    [[nodiscard]] ModelHingeDrive Pack() const noexcept
+    {
+        return {
+            {{target, stiffness, damping, enabled ? maxTorque : 0.0f}, {jointDamping, frictionTorque, armature, 0.0f}}};
+    }
+};
+
 struct ModelPose
 {
     ModelVector position{};
@@ -124,6 +139,7 @@ struct WarpModel
     std::vector<float> initialVelocities; // Empty initializes all velocity coordinates to zero.
     std::vector<ModelPose> initialKinematicPoses;
     std::vector<ModelWords> sceneJoints;
+    std::vector<ModelHingeDrive> initialHingeDrives;
 };
 
 /// Compile shared topology and initial coordinates. The source can name parents in any order.

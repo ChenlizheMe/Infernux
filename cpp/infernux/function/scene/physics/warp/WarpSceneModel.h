@@ -61,9 +61,7 @@ struct WarpSceneHinge
     glm::vec3 axis{0.0f, 1.0f, 0.0f};
     bool useLimits = false;
     float minimum = 0.0f, maximum = 0.0f;
-    bool motorEnabled = false;
-    float target = 0.0f, stiffness = 0.0f, damping = 0.0f, maxTorque = 0.0f;
-    float jointDamping = 0.0f, frictionTorque = 0.0f, armature = 0.0f;
+    WarpHingeDrive drive;
 };
 
 struct WarpSceneJoint
@@ -81,6 +79,7 @@ struct WarpSceneModel
     WarpCollisionModel collision;
     std::vector<WarpSceneBodyBinding> bodies;         // Author actor order.
     std::vector<WarpSceneGeometryBinding> geometries; // Device geometry order.
+    std::vector<uint32_t> hingeRows; // Author joint order, NoModelIndex for nonmoving hinges or other joints.
 };
 
 /// Capture on the owner thread. A pending shape cook leaves publication untouched.

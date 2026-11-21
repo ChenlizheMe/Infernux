@@ -25,6 +25,7 @@ constexpr auto RW = Access::ReadWrite;
 static_assert(sizeof(WarpRay) == 48);
 static_assert(sizeof(WarpRayHit) == 32);
 static_assert(sizeof(WarpBodyCommand) == 48);
+static_assert(sizeof(ModelHingeDrive) == 32);
 static_assert(sizeof(WarpBodyState) == 80);
 static_assert(sizeof(WarpContactReport) == 96);
 static_assert(static_cast<uint32_t>(ForceMode::Force) == 0 && static_cast<uint32_t>(ForceMode::Acceleration) == 1 &&
@@ -398,6 +399,7 @@ struct ContactResponse
     uint32_t topology;
     uint32_t reportRecords = NoModelIndex;
     std::optional<ComputeWorkDispatch> capture;
+    uint32_t hingeDrives = NoModelIndex;
 };
 
 struct ReferenceWeights
@@ -557,11 +559,14 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                {17, dyn.motionModel, R},
                {18, dyn.prescribedMotion, R},
                {19, dyn.fixedSteps, R}});
+    uint32_t hingeDrives = NoModelIndex;
     if (!model.sceneJoints.empty()) {
         const auto jointCount = model.sceneJoints[0][0];
         const auto modelRows = b.Shared("sceneJoints", model.sceneJoints);
-        const std::vector<uint32_t> active(jointCount, 1);
-        const auto activate = b.Seed("enabledSceneJoints", jointCount, active.data(), b.worlds);
+        const auto &drives = model.initialHingeDrives;
+        const auto driveWords = sizeof(ModelHingeDrive) / sizeof(uint32_t);
+        hingeDrives = drives.empty() ? b.Seed("sceneHingeDrives", driveWords, nullptr)
+                                     : b.Seed("sceneHingeDrives", driveWords * drives.size(), drives.data(), b.worlds);
         if (dyn.prescribedMotion != NoModelIndex)
             b.Add("spatial_constraints", "write_scene_kinematic_velocities", nb,
                   {{4, dyn.subtreeCom, R},
@@ -573,7 +578,6 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
         b.Add("spatial_constraints", "emit_scene_joint_rows", jointCount,
               {{0, settings, R},
                {1, modelRows, R},
-               {2, activate, R},
                {3, dyn.bodyPose, R},
                {4, dyn.subtreeCom, R},
                {5, counters, RW},
@@ -582,7 +586,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                {8, columnStore, W},
                {9, dyn.centeredDofDerivative, R},
                {10, dyn.bodyVelocity, R},
-               {11, dyn.velocities, R}});
+               {11, dyn.velocities, R},
+               {17, hingeDrives, R}});
     }
     b.Add("contact_constraints", "seed_contact_acceleration", nv,
           {{0, settings, R},
@@ -739,7 +744,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {26, stream.counts, R},
            {27, status, multiple ? RW : W, !multiple},
            {30, stream.narrowphaseStatus, R}});
-    ContactResponse response{acceleration, status, contactTopology, NoModelIndex, {}};
+    ContactResponse response{acceleration, status, contactTopology, NoModelIndex, {}, hingeDrives};
     if (contactReports) {
         const auto output =
             b.Zero("contactReports", across(24 * uint64_t{contacts} * substeps), BufferUsageFlags::TransferSource);
@@ -1305,6 +1310,9 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                    multiple ? worlds * sizeof(uint32_t) : 0,
                    worldWords(substeps) * sizeof(uint32_t),
                    capacity.contactsPerWorld};
+    HingeDrives hinges;
+    if (response && response->hingeDrives != NoModelIndex)
+        hinges = {buffers[response->hingeDrives], static_cast<uint32_t>(model.initialHingeDrives.size())};
     FixedSubsteps schedule;
     schedule.count = substeps;
     if (multiple) {
@@ -1318,20 +1326,21 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             schedule.restore = BindDispatch(std::move(restore), buffers);
         schedule.clock = BindDispatch(std::move(clock), buffers);
     }
-    auto step = std::unique_ptr<WarpStep>(new WarpStep(
-        work, BindDispatch(std::move(snapshot), buffers), positions, velocities, applied, std::move(contacts),
-        std::move(rays), std::move(rayWork), std::move(controls), std::move(reports), std::move(schedule)));
+    auto step = std::unique_ptr<WarpStep>(new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions,
+                                                       velocities, applied, std::move(contacts), std::move(rays),
+                                                       std::move(rayWork), std::move(controls), std::move(reports),
+                                                       std::move(schedule), std::move(hinges)));
     return {std::move(step), std::move(initialize)};
 }
 
 WarpStep::WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot,
                    uint32_t positions, uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts,
                    WarpRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
-                   ContactReports reports, FixedSubsteps substeps)
+                   ContactReports reports, FixedSubsteps substeps, HingeDrives hinges)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
       m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
       m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports)),
-      m_substeps(std::move(substeps))
+      m_substeps(std::move(substeps)), m_hinges(std::move(hinges))
 {
 }
 
@@ -1394,10 +1403,12 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareRays(bool publish,
 std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vector<WarpBodyCommand> commands,
                                                                        WarpBodyPublication publication,
                                                                        std::vector<rhi::ComputeBufferUpdate> updates,
-                                                                       bool captureContacts) const
+                                                                       bool captureContacts,
+                                                                       std::vector<WarpHingeDriveUpdate> drives) const
 {
     if (!m_controls.states)
         throw std::logic_error("Warp step has no rigid body control layout");
+    m_hinges.Append(updates, std::move(drives));
     if (commands.empty() && publication == WarpBodyPublication::None && !captureContacts)
         return Prepare(false, std::move(updates));
     if (commands.size() > m_controls.capacity)
@@ -1457,6 +1468,25 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareControlled(std::vect
         reads.push_back({m_reports.counts, m_reports.countsOffset, m_reports.countsBytes});
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+}
+
+void WarpStep::HingeDrives::Append(std::vector<rhi::ComputeBufferUpdate> &updates,
+                                   std::vector<WarpHingeDriveUpdate> values) const
+{
+    const auto key = [](const auto &value) { return std::tie(value.world, value.row); };
+    std::stable_sort(values.begin(), values.end(), [&](const auto &a, const auto &b) { return key(a) < key(b); });
+    rhi::ComputeBufferUpdate *range = nullptr;
+    constexpr auto bytes = sizeof(ModelHingeDrive);
+    for (const auto &value : values) {
+        if (value.row >= stride || value.world >= buffer->GetByteSize() / (bytes * uint64_t{stride}))
+            throw std::invalid_argument("Warp drive update does not match its world or hinge");
+        const auto offset = (uint64_t{value.world} * stride + value.row) * bytes;
+        if (!range || offset > range->offset + range->data.size())
+            range = &updates.emplace_back(rhi::ComputeBufferUpdate{buffer, offset, {}});
+        const auto local = static_cast<size_t>(offset - range->offset);
+        range->data.resize(local + bytes);
+        std::memcpy(range->data.data() + local, &value.drive, bytes);
+    }
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareContactReports(const std::vector<uint32_t> &counts) const

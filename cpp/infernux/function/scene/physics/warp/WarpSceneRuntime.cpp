@@ -34,7 +34,7 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
     for (const auto &source : worlds) {
         if (source.bodies.size() != scene.bodies.size() || !ids.insert(source.worldId).second)
             throw std::invalid_argument("Warp scene world does not match its shared model");
-        World world{source.worldId, std::vector<WarpRegisteredBody>(m_bodyCount), {}};
+        World world{source.worldId, std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
         world.rows.reserve(source.bodies.size());
         for (size_t index = 0; index < source.bodies.size(); ++index) {
             const auto &binding = source.bodies[index];
@@ -42,6 +42,12 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
             if (binding.bodyId == UINT32_MAX || !world.rows.emplace(binding.bodyId, row).second)
                 throw std::invalid_argument("Duplicate or invalid Warp scene body identity");
             world.bodies[row] = binding;
+        }
+        world.hinges.reserve(source.hinges.size());
+        for (const auto &binding : source.hinges) {
+            const auto row = scene.hingeRows.at(binding.authorRow);
+            if (row == NoModelIndex || !world.hinges.emplace(binding.jointId, row).second)
+                throw std::invalid_argument("Duplicate or invalid Warp scene hinge identity");
         }
         m_worlds.push_back(std::move(world));
     }
@@ -71,7 +77,7 @@ std::optional<uint32_t> WarpSceneRuntime::BodyRow(uint32_t world, uint32_t engin
 }
 
 void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands,
-                                  bool host, bool captureContacts)
+                                  bool host, bool captureContacts, std::vector<WarpSceneDriveUpdate> drives)
 {
     if (m_retiring || m_fixed || m_publication)
         throw std::logic_error("Warp scene still owns a fixed step");
@@ -82,7 +88,11 @@ void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
     for (size_t world = 0; world < identities.size(); ++world)
         if (identities[world].worldId != m_worlds[world].id)
             throw std::invalid_argument("Warp fixed step identities must follow the enrolled world order");
-    m_fixed.emplace(Fixed{std::move(identities), std::move(commands), host, captureContacts});
+    std::vector<WarpHingeDriveUpdate> updates;
+    updates.reserve(drives.size());
+    for (const auto &update : drives)
+        updates.push_back({update.world, m_worlds.at(update.world).hinges.at(update.jointId), update.drive.Pack()});
+    m_fixed.emplace(Fixed{std::move(identities), std::move(commands), std::move(updates), host, captureContacts});
     ++m_generation;
     m_work.Wake(m_source);
 }
@@ -143,8 +153,9 @@ bool WarpSceneRuntime::Advance(bool gpu, uint64_t token)
         m_preservation = std::move(prepared.copy);
     } else {
         const auto output = m_fixed->host ? WarpBodyPublication::Cpu : WarpBodyPublication::Status;
-        m_packet = m_step->PrepareControlled(m_fixed->commands, output, {}, m_fixed->captureContacts);
+        m_packet = m_step->PrepareControlled(m_fixed->commands, output, {}, m_fixed->captureContacts, m_fixed->drives);
         m_fixed->commands.clear();
+        m_fixed->drives.clear();
     }
     ++m_generation;
     return true;

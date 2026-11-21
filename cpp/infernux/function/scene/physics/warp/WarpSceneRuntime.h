@@ -22,10 +22,24 @@ struct WarpRegisteredBody
     uint64_t shapeRevision;
 };
 
+struct WarpRegisteredHinge
+{
+    uint64_t jointId;
+    uint32_t authorRow;
+};
+
 struct WarpRegisteredWorld
 {
     uint64_t worldId;
     std::vector<WarpRegisteredBody> bodies; // Scene model author order.
+    std::vector<WarpRegisteredHinge> hinges{};
+};
+
+struct WarpSceneDriveUpdate
+{
+    uint32_t world;
+    uint64_t jointId;
+    WarpHingeDrive drive;
 };
 
 struct WarpFixedWorld
@@ -77,8 +91,10 @@ class WarpSceneRuntime final
 
     /// Own the fixed identity until its publication is consumed. The device
     /// profile reports status only, while the host profile includes motion.
+    /// Drive edits change authored settings at this boundary and remain in
+    /// effect until changed again. They do not rewind with simulated motion.
     void BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands, bool host,
-                    bool captureContacts = false);
+                    bool captureContacts = false, std::vector<WarpSceneDriveUpdate> drives = {});
     [[nodiscard]] std::optional<WarpFixedPublication> TakeFixed();
     [[nodiscard]] std::optional<WarpHostBody> ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
                                                            uint32_t engineBody) const;
@@ -99,11 +115,13 @@ class WarpSceneRuntime final
         uint64_t id;
         std::vector<WarpRegisteredBody> bodies; // Device row, including world row zero.
         std::unordered_map<uint32_t, uint32_t> rows;
+        std::unordered_map<uint64_t, uint32_t> hinges;
     };
     struct Fixed
     {
         std::vector<ContactStreamIdentity> identities;
         std::vector<WarpBodyCommand> commands;
+        std::vector<WarpHingeDriveUpdate> drives;
         bool host;
         bool captureContacts;
     };

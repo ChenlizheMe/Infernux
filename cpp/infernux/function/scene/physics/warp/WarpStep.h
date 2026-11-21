@@ -107,6 +107,13 @@ struct WarpBodyCommand
     ModelVector point{}; // World point for ForceAtPosition.
 };
 
+struct WarpHingeDriveUpdate
+{
+    uint32_t world;
+    uint32_t row;
+    ModelHingeDrive drive;
+};
+
 enum class WarpBodyPublication
 {
     None,
@@ -151,7 +158,8 @@ class WarpStep
     /// restores its previous motions along with its fixed clock.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPublication publication,
-                      std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false) const;
+                      std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false,
+                      std::vector<WarpHingeDriveUpdate> drives = {}) const;
 
     /// A reporting step appends the world counts to its readbacks. Read only
     /// accepted worlds' populated ranges before issuing another step.
@@ -206,6 +214,13 @@ class WarpStep
         uint64_t countsOffset = 0, countsBytes = 0;
         uint32_t capacity = 0;
     };
+    struct HingeDrives
+    {
+        std::shared_ptr<rhi::ComputeBuffer> buffer;
+        uint32_t stride = 0;
+
+        void Append(std::vector<rhi::ComputeBufferUpdate> &updates, std::vector<WarpHingeDriveUpdate> values) const;
+    };
     struct FixedSubsteps
     {
         uint32_t count = 1;
@@ -218,7 +233,7 @@ class WarpStep
     WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
              uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,
              std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls, ContactReports reports,
-             FixedSubsteps substeps);
+             FixedSubsteps substeps, HingeDrives hinges);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -231,6 +246,7 @@ class WarpStep
     BodyControls m_controls;
     ContactReports m_reports;
     FixedSubsteps m_substeps;
+    HingeDrives m_hinges;
 };
 
 } // namespace infernux::physics::warp
