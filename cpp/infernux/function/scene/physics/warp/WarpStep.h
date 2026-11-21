@@ -7,6 +7,7 @@
 #include "WarpModel.h"
 
 #include <function/renderer/rhi/RhiComputeKernel.h>
+#include <variant>
 
 namespace infernux
 {
@@ -125,11 +126,11 @@ struct WarpBodyCommand
     ModelVector point{}; // World point for ForceAtPosition.
 };
 
-struct WarpHingeDriveUpdate
+struct WarpJointParameterUpdate
 {
     uint32_t world;
     uint32_t row;
-    ModelHingeDrive drive;
+    std::variant<ModelWords, ModelHingeDrive, WarpDistanceSpring> value;
 };
 
 enum class WarpBodyPublication
@@ -177,7 +178,7 @@ class WarpStep
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPublication publication,
                       std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false,
-                      std::vector<WarpHingeDriveUpdate> drives = {}) const;
+                      std::vector<WarpJointParameterUpdate> jointUpdates = {}) const;
 
     /// Absolute edits and impulses publish new poses at the current fixed time.
     /// Time-dependent force and movement commands are admitted by the fixed step.
@@ -241,12 +242,12 @@ class WarpStep
         uint64_t countsOffset = 0, countsBytes = 0;
         uint32_t capacity = 0;
     };
-    struct HingeDrives
+    struct SceneJointParameters
     {
         std::shared_ptr<rhi::ComputeBuffer> buffer;
         uint32_t stride = 0;
 
-        void Append(std::vector<rhi::ComputeBufferUpdate> &updates, std::vector<WarpHingeDriveUpdate> values) const;
+        void Append(std::vector<rhi::ComputeBufferUpdate> &updates, std::vector<WarpJointParameterUpdate> values) const;
     };
     struct PublishedRays
     {
@@ -271,7 +272,7 @@ class WarpStep
     WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
              uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,
              std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls, ContactReports reports,
-             FixedSubsteps substeps, HingeDrives hinges, PublishedRays publishedRays);
+             FixedSubsteps substeps, SceneJointParameters jointParameters, PublishedRays publishedRays);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -284,7 +285,7 @@ class WarpStep
     BodyControls m_controls;
     ContactReports m_reports;
     FixedSubsteps m_substeps;
-    HingeDrives m_hinges;
+    SceneJointParameters m_jointParameters;
     PublishedRays m_publishedRays;
 };
 

@@ -5,6 +5,7 @@
 #include "WarpContactPublication.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
@@ -18,7 +19,7 @@ struct WarpSceneLayout
     {
         std::vector<WarpRegisteredBody> bodies; // Device row, including world row zero.
         std::unordered_map<uint32_t, uint32_t> rows;
-        std::unordered_map<uint64_t, uint32_t> hinges;
+        std::unordered_map<uint64_t, WarpSceneJointBinding> joints;
 
         [[nodiscard]] std::optional<uint32_t> BodyRow(uint32_t bodyId) const
         {
@@ -187,11 +188,11 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
                 throw std::invalid_argument("Warp scene collider identities must match the shared model");
             world.bodies[row] = std::move(binding);
         }
-        world.hinges.reserve(source.hinges.size());
-        for (const auto &binding : source.hinges) {
-            const auto row = scene.hingeRows.at(binding.authorRow);
-            if (row == NoModelIndex || !world.hinges.emplace(binding.jointId, row).second)
-                throw std::invalid_argument("Duplicate or invalid Warp scene hinge identity");
+        world.joints.reserve(source.joints.size());
+        for (const auto &binding : source.joints) {
+            const auto &joint = scene.jointBindings.at(binding.authorRow);
+            if (joint.row == NoModelIndex || !world.joints.emplace(binding.jointId, joint).second)
+                throw std::invalid_argument("Duplicate or invalid Warp scene joint identity");
         }
         m_acceptedWorlds.push_back({{source.worldId, source.simulationEpoch, 0}, 0.0f, 0, 0});
         layout->worlds.push_back(std::move(world));
@@ -227,7 +228,7 @@ std::optional<WarpFixedPublication> WarpSceneRuntime::TakeInitial()
 
 void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
                                   const std::vector<WarpSceneBodyCommand> &commands, bool host, bool captureContacts,
-                                  const std::vector<WarpSceneDriveUpdate> &drives, PublicationConsumer consumer)
+                                  const std::vector<WarpSceneJointUpdate> &jointUpdates, PublicationConsumer consumer)
 {
     if (captureContacts && !m_contactReportsConfigured)
         throw std::logic_error("Warp scene was prepared without contact report storage");
@@ -245,11 +246,37 @@ void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
     actions.reserve(commands.size());
     for (const auto &entry : commands)
         EncodeBodyCommand(m_layout->WorldRow(entry.worldId), entry.command, actions);
-    std::vector<WarpHingeDriveUpdate> updates;
-    updates.reserve(drives.size());
-    for (const auto &update : drives) {
+    std::vector<WarpJointParameterUpdate> updates;
+    updates.reserve(jointUpdates.size());
+    for (const auto &update : jointUpdates) {
         const auto world = m_layout->WorldRow(update.worldId);
-        updates.push_back({world, worlds[world].hinges.at(update.jointId), update.drive.Pack()});
+        const auto &joints = worlds[world].joints;
+        const auto binding = joints.find(update.jointId);
+        if (binding == joints.end())
+            throw std::invalid_argument("Warp joint update requires an enrolled joint in the selected world");
+        const auto &joint = binding->second;
+        if (const auto *limits = std::get_if<WarpJointLimits>(&update.value)) {
+            const auto minimum = limits->minimum, maximum = limits->maximum;
+            if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum ||
+                joint.kind == WarpSceneJointKind::Fixed ||
+                (joint.kind == WarpSceneJointKind::Slider && (minimum > 0.0f || maximum < 0.0f)) ||
+                (joint.kind == WarpSceneJointKind::Distance &&
+                 (joint.autoDistance || !limits->enabled || minimum < 0.0f)))
+                throw std::invalid_argument(
+                    "Warp joint limits must match the enrolled constraint and its authored mode");
+            updates.push_back({world, joint.row, limits->Pack()});
+        } else if (const auto *drive = std::get_if<WarpHingeDrive>(&update.value)) {
+            if (joint.kind != WarpSceneJointKind::Hinge)
+                throw std::invalid_argument("Warp hinge drive requires an enrolled hinge");
+            updates.push_back({world, joint.row, drive->Pack()});
+        } else {
+            const auto &spring = std::get<WarpDistanceSpring>(update.value);
+            if (joint.kind != WarpSceneJointKind::Distance || !std::isfinite(spring.stiffness) ||
+                !std::isfinite(spring.damping) || spring.stiffness < 0.0f || spring.damping < 0.0f)
+                throw std::invalid_argument(
+                    "Warp distance spring requires finite nonnegative coefficients on a distance joint");
+            updates.push_back({world, joint.row, spring});
+        }
     }
     BeginOperation({std::move(identities), std::move(actions), std::move(updates), host, captureContacts,
                     std::move(consumer), true});
@@ -436,10 +463,10 @@ bool WarpSceneRuntime::Advance(bool gpu, uint64_t token)
     } else if (m_operation->integrate) {
         const auto output = m_operation->host ? WarpBodyPublication::Cpu : WarpBodyPublication::Status;
         m_packet = m_step->PrepareControlled(m_operation->commands, output, {}, m_operation->captureContacts,
-                                             m_operation->drives);
+                                             m_operation->jointUpdates);
         m_packetKind = Packet::Fixed;
         m_operation->commands.clear();
-        m_operation->drives.clear();
+        m_operation->jointUpdates.clear();
     } else {
         m_packet = m_step->PrepareEdits(m_operation->commands);
         m_packetKind = Packet::Edit;

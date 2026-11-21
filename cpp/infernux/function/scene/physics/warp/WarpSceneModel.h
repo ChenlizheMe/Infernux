@@ -106,13 +106,28 @@ struct WarpSceneJoint
     std::variant<std::monostate, WarpSceneHinge, WarpSceneSlider, WarpSceneDistance> settings;
 };
 
+enum class WarpSceneJointKind : uint32_t
+{
+    Fixed,
+    Hinge,
+    Slider,
+    Distance,
+};
+
+struct WarpSceneJointBinding
+{
+    uint32_t row = NoModelIndex;
+    WarpSceneJointKind kind = WarpSceneJointKind::Fixed;
+    bool autoDistance = false;
+};
+
 struct WarpSceneModel
 {
     WarpModel model;
     WarpCollisionModel collision;
     std::vector<WarpSceneBodyBinding> bodies;         // Author actor order.
     std::vector<WarpSceneGeometryBinding> geometries; // Device geometry order.
-    std::vector<uint32_t> hingeRows; // Author joint order, NoModelIndex for nonmoving hinges or other joints.
+    std::vector<WarpSceneJointBinding> jointBindings; // Author joint order.
 };
 
 [[nodiscard]] WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author);

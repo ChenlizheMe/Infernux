@@ -4,10 +4,19 @@
 #include "WarpModel.h"
 
 #include <algorithm>
+#include <cstring>
 #include <stdexcept>
 
 namespace infernux::physics::warp
 {
+ModelWords WarpJointLimits::Pack() const noexcept
+{
+    ModelWords words{static_cast<uint32_t>(enabled), 0u, 0u, 0u};
+    std::memcpy(&words[1], &minimum, sizeof(minimum));
+    std::memcpy(&words[2], &maximum, sizeof(maximum));
+    return words;
+}
+
 namespace
 {
 static_assert(sizeof(ModelDimensions) == 32);

@@ -30,6 +30,25 @@ struct WarpHingeDrive
     }
 };
 
+struct WarpJointLimits
+{
+    bool enabled = false;
+    float minimum = 0.0f, maximum = 0.0f;
+
+    [[nodiscard]] ModelWords Pack() const noexcept;
+};
+
+struct WarpDistanceSpring
+{
+    float stiffness = 0.0f, damping = 0.0f;
+};
+
+struct ModelSceneJointParameters
+{
+    ModelWords limits{};
+    ModelHingeDrive response{}; // Hinge motor and passive response, or distance spring.
+};
+
 struct ModelPose
 {
     ModelVector position{};
@@ -141,7 +160,7 @@ struct WarpModel
     std::vector<ModelPose> initialKinematicPoses;
     std::vector<ModelPose> initialStaticPoses;
     std::vector<ModelWords> sceneJoints;
-    std::vector<ModelHingeDrive> initialHingeDrives;
+    std::vector<ModelSceneJointParameters> initialSceneJointParameters;
 };
 
 /// Compile shared topology and initial coordinates. The source can name parents in any order.

@@ -14,6 +14,7 @@
 
 #include <core/threading/FrameWorkOwner.h>
 #include <functional>
+#include <variant>
 
 namespace infernux::physics::warp
 {
@@ -29,7 +30,7 @@ struct WarpRegisteredBody
     PhysicsTargetReference bodyTarget{};
 };
 
-struct WarpRegisteredHinge
+struct WarpRegisteredJoint
 {
     uint64_t jointId;
     uint32_t authorRow;
@@ -39,7 +40,7 @@ struct WarpRegisteredWorld
 {
     uint64_t worldId;
     std::vector<WarpRegisteredBody> bodies; // Scene model author order.
-    std::vector<WarpRegisteredHinge> hinges{};
+    std::vector<WarpRegisteredJoint> joints{};
     uint64_t simulationEpoch = 0;
 };
 
@@ -49,11 +50,11 @@ struct WarpSceneSetup
     WarpRegisteredWorld world;
 };
 
-struct WarpSceneDriveUpdate
+struct WarpSceneJointUpdate
 {
     uint64_t worldId;
     uint64_t jointId;
-    WarpHingeDrive drive;
+    std::variant<WarpJointLimits, WarpHingeDrive, WarpDistanceSpring> value;
 };
 
 struct WarpSceneBodyCommand
@@ -172,14 +173,14 @@ class WarpSceneRuntime final
 
     /// Own the fixed identity until its publication is consumed. The device
     /// profile reports status only, while the host profile includes motion.
-    /// Drive edits change authored settings at this boundary and remain in
+    /// Joint edits change authored settings at this boundary and remain in
     /// effect until changed again. They do not rewind with simulated motion.
     /// A required consumer prepares device work after the numerical receipt.
     /// The whole fixed publication becomes available once that work completes.
     /// This source performs admission and submission, then seals the consumer's
     /// outputs after its receipt and before releasing the fixed publication.
     void BeginFixed(std::vector<ContactStreamIdentity> identities, const std::vector<WarpSceneBodyCommand> &commands,
-                    bool host, bool captureContacts = false, const std::vector<WarpSceneDriveUpdate> &drives = {},
+                    bool host, bool captureContacts = false, const std::vector<WarpSceneJointUpdate> &jointUpdates = {},
                     PublicationConsumer consumer = {});
     /// Apply immediate body edits at the last accepted simulation time.
     /// Reuses the same completion and optional consumer as a fixed step.
@@ -214,7 +215,7 @@ class WarpSceneRuntime final
     {
         std::vector<ContactStreamIdentity> identities;
         std::vector<WarpBodyCommand> commands;
-        std::vector<WarpHingeDriveUpdate> drives;
+        std::vector<WarpJointParameterUpdate> jointUpdates;
         bool host;
         bool captureContacts;
         PublicationConsumer consumer;

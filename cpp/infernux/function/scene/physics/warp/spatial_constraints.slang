@@ -9,7 +9,7 @@
 #include "prescribed_motion.slang"
 
 static const uint SpatialEqualityWords = 9;
-static const uint SceneJointWords = 11;
+static const uint SceneJointWords = 10;
 static const uint SceneHinge = 1;
 static const uint SceneSlider = 2;
 static const uint SceneDistance = 3;
@@ -18,6 +18,12 @@ struct HingeDrive
 {
     float4 motor;
     float4 passive;
+};
+
+struct SceneJointParameters
+{
+    uint4 limits; // Enabled, minimum and maximum as float bits.
+    HingeDrive response; // Distance uses the first two response values for stiffness and damping.
 };
 
 [[vk::binding(1, 0)]] StructuredBuffer<uint4> spatialModel;
@@ -33,7 +39,7 @@ struct HingeDrive
 [[vk::binding(14, 0)]] StructuredBuffer<uint> sceneFixedSteps;
 [[vk::binding(15, 0)]] RWStructuredBuffer<SpatialMotion> sceneBodyVelocity;
 [[vk::binding(16, 0)]] StructuredBuffer<ModelDimensions> sceneDimensions;
-[[vk::binding(17, 0)]] StructuredBuffer<HingeDrive> sceneDrives;
+[[vk::binding(17, 0)]] StructuredBuffer<SceneJointParameters> sceneParameters;
 
 struct SpatialEndpoint
 {
@@ -144,7 +150,7 @@ AxialRows hingeRows(uint4 controls, HingeDrive drive, float angle, float speed, 
     const float2 limit = asfloat(controls.yz);
     const float4 motor = drive.motor;
     const float3 passive = drive.passive.xyz;
-    const bool limited = controls.w != 0;
+    const bool limited = controls.x != 0;
     if (limited)
         appendAxisLimit<false>(result, limit, angle, speed, weight, timestep, flags, parameters, float2(0.0), true);
     const float motorDiagonal = timestep * (motor.z + motor.y * timestep);
@@ -167,7 +173,7 @@ AxialRows hingeRows(uint4 controls, HingeDrive drive, float angle, float speed, 
 
 void emitSpatialRows<let SceneJoint : bool>(uint3 id)
 {
-    const uint4 model = spatialModel[0]; // descriptor count, equality or scene drive stride
+    const uint4 model = spatialModel[0]; // Descriptor count and equality activation stride.
     if (id.x >= model.x)
         return;
     const uint record = 1 + (SceneJoint ? SceneJointWords : SpatialEqualityWords) * id.x;
@@ -179,10 +185,10 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     const uint4 config = settings[1];
     const uint bodyBase = id.y * config.x;
     const uint dofBase = id.y * config.y;
-    const uint4 jointType = SceneJoint ? spatialModel[record + 10] : uint4(0u);
-    const bool hinge = jointType.x == SceneHinge;
-    const bool slider = jointType.x == SceneSlider;
-    const bool distance = jointType.x == SceneDistance;
+    const uint jointType = SceneJoint ? spatialModel[record + 9].x : 0u;
+    const bool hinge = jointType == SceneHinge;
+    const bool slider = jointType == SceneSlider;
+    const bool distance = jointType == SceneDistance;
     const uint linearRows = distance ? 0u : (slider ? 2u : 3u);
     const uint angularRows = span.w - linearRows;
     const uint4 reference = spatialModel[record + 8]; // roots, inverse weights as float bits
@@ -207,21 +213,23 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
                        (slider ? slideVelocity.z : dot(radial, pointVelocity));
     const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
     const float timestep = asfloat(settings[2 + id.y].x);
-    const uint4 controls = SceneJoint ? spatialModel[record + 9u] : uint4(0u);
+    const uint parameterIndex = id.y * model.x + id.x;
+    const uint4 controls = SceneJoint ? sceneParameters[parameterIndex].limits : uint4(0u);
     AxialRows axial;
     axial.count = 0;
     if (hinge)
     {
         const float theta = wrapHingeAngle(2.0 * atan2(relative.w, relative.x));
-        const HingeDrive drive = sceneDrives[id.y * model.y + controls.x];
+        const HingeDrive drive = sceneParameters[parameterIndex].response;
         axial = hingeRows(controls, drive, theta, speed, asfloat(reference.w), timestep, config.w, parameters);
     }
-    else if (controls.w != 0)
+    else if (controls.x != 0)
     {
         const float2 limit = asfloat(controls.yz);
+        const float2 spring = distance ? sceneParameters[parameterIndex].response.motor.xy : float2(0.0);
         // A range starting at zero permits its attachment points to cross.
         appendAxisLimit<true>(axial, limit, slider ? slide.z : separationLength, speed, asfloat(reference.z),
-                              timestep, config.w, parameters, asfloat(jointType.yz), !distance || limit.x > 0.0);
+                              timestep, config.w, parameters, spring, !distance || limit.x > 0.0);
     }
     const uint totalRows = span.w + axial.count;
     if (totalRows == 0)

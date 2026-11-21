@@ -81,9 +81,9 @@ SceneJointEndpoint BindSceneJointEndpoint(const WarpModel &model, const std::vec
 void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &actors,
                      const std::vector<WarpSceneJoint> &joints)
 {
-    constexpr size_t descriptorWords = 11;
+    constexpr size_t descriptorWords = 10;
     auto &model = scene.model;
-    scene.hingeRows.resize(joints.size(), NoModelIndex);
+    scene.jointBindings.resize(joints.size());
     std::vector<ModelWords> descriptors(1), support;
     for (size_t index = 0; index < joints.size(); ++index) {
         const auto &joint = joints[index];
@@ -126,6 +126,8 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
                 support.push_back({dofs[0] + local, side, local >= 3 ? bodyRow : NoModelIndex, 0});
         }
         const auto id = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
+        const auto kind = static_cast<WarpSceneJointKind>(joint.settings.index());
+        scene.jointBindings[index] = {id, kind, distance && distance->autoDistance};
         descriptors.push_back({id, a.body, b.body, static_cast<uint32_t>(support.size()) - first});
         const uint32_t equalityRows = distance ? 0u : (hinge || slider ? 5u : 6u);
         descriptors.push_back({a.body, b.body, first, equalityRows});
@@ -139,35 +141,26 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         weights[0] = model.bodies[a.body].subtree[0];
         weights[1] = model.bodies[b.body].subtree[0];
         descriptors.push_back(weights);
-        ModelWords controls{NoModelIndex, 0, 0, 0};
-        ModelWords jointType{static_cast<uint32_t>(joint.settings.index()), 0, 0, 0};
+        descriptors.push_back({static_cast<uint32_t>(kind), 0, 0, 0});
+        ModelSceneJointParameters parameters;
         if (hinge) {
-            const auto row = static_cast<uint32_t>(model.initialHingeDrives.size());
-            controls = Bits({0.0f, hinge->minimum, hinge->maximum, 0.0f});
-            controls[0] = row;
-            controls[3] = hinge->useLimits;
-            scene.hingeRows[index] = row;
-            model.initialHingeDrives.push_back(hinge->drive.Pack());
+            parameters.limits = WarpJointLimits{hinge->useLimits, hinge->minimum, hinge->maximum}.Pack();
+            parameters.response = hinge->drive.Pack();
         } else if (slider) {
-            controls = Bits({0.0f, slider->minimum, slider->maximum, 0.0f});
-            controls[3] = slider->useLimits;
+            parameters.limits = WarpJointLimits{slider->useLimits, slider->minimum, slider->maximum}.Pack();
         } else if (distance) {
             const auto rest = glm::length(connectedPoint - point);
             const auto minimum = distance->autoDistance ? rest : distance->minimum;
             const auto maximum = distance->autoDistance ? rest : distance->maximum;
-            controls = Bits({0.0f, minimum, maximum, 0.0f});
-            controls[3] = 1;
-            const auto spring = Bits({0.0f, distance->stiffness, distance->damping, 0.0f});
-            jointType[1] = spring[1];
-            jointType[2] = spring[2];
+            parameters.limits = WarpJointLimits{true, minimum, maximum}.Pack();
+            parameters.response[0] = {distance->stiffness, distance->damping, 0.0f, 0.0f};
         }
-        descriptors.push_back(controls);
-        descriptors.push_back(jointType);
+        model.initialSceneJointParameters.push_back(parameters);
     }
     const auto count = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
     if (count == 0)
         return;
-    descriptors[0] = {count, static_cast<uint32_t>(model.initialHingeDrives.size()), 0, 0};
+    descriptors[0] = {count, 0, 0, 0};
     for (size_t row = 2; row < descriptors.size(); row += descriptorWords)
         descriptors[row][2] += static_cast<uint32_t>(descriptors.size());
     descriptors.insert(descriptors.end(), support.begin(), support.end());

@@ -3854,8 +3854,8 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
 
     setup->model = BuildWarpSceneModel(actors, joints, *CaptureColliderPairs(domain, true));
     for (uint32_t index = 0; index < activeJoints.size(); ++index)
-        if (setup->model.hingeRows[index] != NoModelIndex)
-            registration.hinges.push_back({activeJoints[index]->GetPhysicsConstraintId(), index});
+        if (setup->model.jointBindings[index].row != NoModelIndex)
+            registration.joints.push_back({activeJoints[index]->GetPhysicsConstraintId(), index});
     return setup;
 }
 
