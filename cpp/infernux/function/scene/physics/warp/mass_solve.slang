@@ -4,6 +4,7 @@
 // Slang adaptation of MuJoCo Warp _src/smooth.py factor_m and solve_m.
 
 #include "model.slang"
+#include "solver_worlds.slang"
 
 static const uint CompactMassBlock = 0xfffffffeu;
 static const uint TileWidth = 64;
@@ -51,6 +52,7 @@ struct SparseMassRow
 [numthreads(64, 1, 1)]
 void multiply_packed_mass(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const ModelDimensions dimensions = model[0];
     const uint dofCount = dimensions.state.y;
     if (id.x >= dofCount)
@@ -129,6 +131,7 @@ uint2 sparseContribution(uint index)
 [numthreads(64, 1, 1)]
 void factor_small_mass(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint4 layout = factorLayout[0];
     if (id.x >= layout.z)
         return;
@@ -169,6 +172,7 @@ void factor_small_mass(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void factor_tiled_mass(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const DenseMassBlock block = tileBlocks[group.x];
     const uint n = massUniformCount(lane, block.dofCount);
     const uint matrix = group.y * model[0].layout.w;
@@ -201,6 +205,7 @@ void factor_tiled_mass(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void factor_sparse_mass(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const SparseMassBlock block = sparseBlock(group.x);
     const uint4 layout = factorLayout[0];
     const uint matrix = group.y * model[0].layout.w;
@@ -270,6 +275,7 @@ void solveDenseMass(DenseMassBlock block, uint world)
 [numthreads(64, 1, 1)]
 void solve_small_mass(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     if (id.x < factorLayout[0].z)
         solveDenseMass(smallBlocks[id.x], id.y);
 }
@@ -278,6 +284,7 @@ void solve_small_mass(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void solve_tiled_mass(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const DenseMassBlock block = tileBlocks[group.x];
     const uint n = massUniformCount(lane, block.dofCount);
     const uint row = group.y * model[0].state.y + block.firstDof;
@@ -312,6 +319,7 @@ void solve_tiled_mass(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void solve_sparse_mass(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const SparseMassBlock block = sparseBlock(group.x);
     const uint4 layout = factorLayout[0];
     const uint factor = group.y * layout.x + layout.y;

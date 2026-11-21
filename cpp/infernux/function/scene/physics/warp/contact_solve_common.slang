@@ -5,6 +5,7 @@
 
 #include "contact.slang"
 #include "constraint_data.slang"
+#include "solver_worlds.slang"
 
 static const uint CgWidth = 64;
 static const float CgMinValue = 1.0e-15;

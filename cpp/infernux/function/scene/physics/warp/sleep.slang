@@ -38,13 +38,15 @@ struct TreeActivity
 [[vk::binding(15, 0)]] RWStructuredBuffer<ConstraintColumn> columns;
 [[vk::binding(16, 0)]] StructuredBuffer<uint2> treeDependencies;
 [[vk::binding(17, 0)]] StructuredBuffer<uint> dependencyActive;
-[[vk::binding(18, 0)]] RWStructuredBuffer<Atomic<uint>> awakeCounts; // total DOFs and joints across the batch
+[[vk::binding(18, 0)]] RWStructuredBuffer<Atomic<uint>> awakeCounts; // total DOFs, joints and worlds
 [[vk::binding(19, 0)]] RWStructuredBuffer<uint2> awakeDofs;
 [[vk::binding(20, 0)]] RWStructuredBuffer<uint2> awakeJoints;
 [[vk::binding(21, 0)]] RWStructuredBuffer<uint4> awakeDispatches;
 [[vk::binding(22, 0)]] RWStructuredBuffer<float> qaccWarmstart;
 [[vk::binding(23, 0)]] StructuredBuffer<uint4> solverDispatchLayout;
 [[vk::binding(24, 0)]] RWStructuredBuffer<uint4> solverDispatches;
+[[vk::binding(25, 0)]] RWStructuredBuffer<Atomic<uint>> awakeWorldFlags;
+[[vk::binding(26, 0)]] RWStructuredBuffer<uint> awakeWorlds;
 
 uint4 treeRange(uint tree)
 {
@@ -136,6 +138,8 @@ void begin_tree_activity(uint3 id : SV_DispatchThreadID)
     if (id.x >= count)
         return;
     const uint index = id.y * count + id.x;
+    if (id.x == 0)
+        awakeWorldFlags[id.y].store(0u);
     activity[index].wakeParent.store(id.x);
     activity[index].islandParent.store(id.x);
     activity[index].wakeAge.store(NoIndex);
@@ -248,6 +252,7 @@ void clear_awake_work(uint3 id : SV_DispatchThreadID)
 {
     awakeCounts[0].store(0u);
     awakeCounts[1].store(0u);
+    awakeCounts[2].store(0u);
 }
 
 [shader("compute")]
@@ -259,9 +264,15 @@ void publish_awake_work(uint3 id : SV_DispatchThreadID)
         return;
     const uint base = id.y * counts.x;
     const uint index = base + id.x;
-    const uint age = activity[base + rootOf<true>(base, id.x)].wakeAge.load();
+    const uint root = rootOf<true>(base, id.x);
+    const uint age = activity[base + root].wakeAge.load();
     if (age == NoIndex)
         return;
+    if (root == id.x && awakeWorldFlags[id.y].load() == 0u)
+    {
+        if (awakeWorldFlags[id.y].exchange(1u) == 0u)
+            awakeWorlds[awakeCounts[2].add(1u)] = id.y;
+    }
     if (treeSleep[index].y != NoIndex)
         treeSleep[index] = uint2(age, NoIndex);
     const uint4 range = treeRange(id.x);
@@ -291,8 +302,7 @@ void emit_awake_solver_dispatches(uint3 id : SV_DispatchThreadID)
     if (id.x >= count)
         return;
     uint4 dispatch = solverDispatchLayout[id.x];
-    if (awakeCounts[0].load() == 0)
-        dispatch.x = 0;
+    dispatch.y = awakeCounts[2].load();
     solverDispatches[id.x] = dispatch;
 }
 

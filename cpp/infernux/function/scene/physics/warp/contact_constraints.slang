@@ -8,6 +8,7 @@
 #include "constraint_data.slang"
 #include "constraint_parameters.slang"
 #include "constraint_stream.slang"
+#include "solver_worlds.slang"
 
 static const uint NegativeJacobian = 0x80000000u;
 
@@ -246,6 +247,7 @@ uint activeConstraintRows(uint world, uint4 limits)
 [numthreads(64, 1, 1)]
 void seed_contact_acceleration(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint4 config = settings[1];
     if (id.x >= config.y)
         return;
@@ -261,6 +263,7 @@ void seed_contact_acceleration(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void contact_residual(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint4 limits = settings[0];
     const uint count = activeConstraintRows(id.y, limits);
     if (count == NoIndex || id.x >= count)
@@ -282,6 +285,7 @@ void contact_residual(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void evaluate_contact_objective(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint4 limits = settings[0];
     const uint count = activeConstraintRows(id.y, limits);
     if (count == NoIndex || id.x >= count)

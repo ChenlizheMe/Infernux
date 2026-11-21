@@ -95,6 +95,7 @@ uint valueAddress(uint world, uint first, uint second, uint count, uint words)
 [numthreads(64, 1, 1)]
 void clear_newton_pattern(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint count = tileCount();
     const uint entries = count * patternWords(count);
     if (id.x < entries && worlds[id.y].progress.y == Running)
@@ -105,6 +106,7 @@ void clear_newton_pattern(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void seed_newton_mass_pattern(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint nv = settings[1].y;
     if (id.x >= nv || worlds[id.y].progress.y != Running)
         return;
@@ -124,6 +126,7 @@ void seed_newton_mass_pattern(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void seed_newton_contact_pattern(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint4 progress = worlds[id.y].progress;
     if (id.x >= progress.z || progress.y != Running)
         return;
@@ -205,6 +208,7 @@ void packNewtonComponents(uint world, uint count, uint words)
 [numthreads(64, 1, 1)]
 void seal_newton_pattern(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)
@@ -260,6 +264,7 @@ void seal_newton_pattern(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void clear_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     if (worlds[world].progress.y != Running)
         return;
@@ -277,6 +282,7 @@ void clear_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void add_newton_mass(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint count = tileCount();
     if (id.x >= count * NewtonTile || worlds[id.y].progress.y != Running)
         return;
@@ -304,6 +310,7 @@ void add_newton_mass(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void build_newton_contact_metric(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint4 progress = worlds[id.y].progress;
     if (id.x >= progress.z || progress.y != Running)
         return;
@@ -417,6 +424,7 @@ void addNewtonContact(uint world, uint rowIndex, uint lane)
 [numthreads(64, 1, 1)]
 void add_newton_contacts(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint4 progress = worlds[group.y].progress;
     if (progress.y != Running)
         return;
@@ -444,6 +452,7 @@ void storeHessian(uint address, float value)
 [numthreads(64, 1, 1)]
 void factor_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     const CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)
@@ -553,6 +562,7 @@ float directionValue(uint base, uint dof, uint nv)
 [numthreads(64, 1, 1)]
 void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     const CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)
@@ -661,6 +671,7 @@ void solve_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void finalize_newton_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)

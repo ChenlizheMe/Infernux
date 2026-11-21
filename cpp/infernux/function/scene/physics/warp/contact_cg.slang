@@ -5,10 +5,29 @@
 
 #include "contact_solve_common.slang"
 
+[[vk::binding(24, 0)]] StructuredBuffer<uint> awakeWorldFlags;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void clear_sleeping_solver_outputs(uint3 id : SV_DispatchThreadID)
+{
+    if (awakeWorldFlags[id.y] != 0)
+        return;
+    const uint nv = settings[1].y;
+    if (id.x < nv)
+        constraintForce[id.y * nv + id.x].store(0u);
+    if (id.x == 0)
+    {
+        const CgWorld result = {uint4(0, Converged, 0, 0), float4(0.0), float2(0.0)};
+        worlds[id.y] = result;
+    }
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void begin_contact_cg(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     const uint nv = settings[1].y;
     const uint4 limit = settings[0];
@@ -52,6 +71,7 @@ float multiplyMass<let Ray : bool>(uint world, uint dof)
 [numthreads(64, 1, 1)]
 void cg_initial_mass_product(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint nv = settings[1].y;
     if (id.x < nv && worlds[id.y].progress.y == Running)
     {
@@ -117,6 +137,7 @@ void projectCgForce<let Publish : bool>(uint world, uint lane)
 [numthreads(64, 1, 1)]
 void cg_project_iteration(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     projectCgForce<false>(group.y, lane);
 }
 
@@ -124,6 +145,7 @@ void cg_project_iteration(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void cg_publish_force(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     projectCgForce<true>(group.y, lane);
 }
 
@@ -131,6 +153,7 @@ void cg_publish_force(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void cg_gradient(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint nv = settings[1].y;
     if (id.x >= nv)
         return;
@@ -143,6 +166,7 @@ void cg_gradient(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void cg_search_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)
@@ -197,6 +221,7 @@ void cg_search_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void cg_ray_constraint_product(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const uint4 progress = worlds[id.y].progress;
     if (progress.y != Running || id.x >= progress.z)
         return;
@@ -218,6 +243,7 @@ void cg_ray_constraint_product(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void cg_ray_mass_and_gauss(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)
@@ -442,6 +468,7 @@ float newtonAlpha(RayPoint point)
 [numthreads(64, 1, 1)]
 void cg_line_search(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    group = solverDispatchId(group);
     const uint world = group.y;
     CgWorld state = worlds[world];
     if (broadcastCg(state.progress.y, lane) != Running)
@@ -520,6 +547,7 @@ void cg_line_search(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 [numthreads(64, 1, 1)]
 void cg_apply_step(uint3 id : SV_DispatchThreadID)
 {
+    id = solverDispatchId(id);
     const CgWorld state = worlds[id.y];
     if (state.progress.y != Running)
         return;
