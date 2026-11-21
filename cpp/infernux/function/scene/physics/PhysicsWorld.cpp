@@ -25,6 +25,7 @@
 #include "JoltGpuQueries.h"
 #include "JoltGpuRenderBindings.h"
 #include "JoltGpuRenderPoses.h"
+#include "PhysicsBodyCommand.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsDomain.h"
 #include "PhysicsLayers.h"
@@ -2431,11 +2432,11 @@ bool PhysicsWorld::RebindBody(PhysicsActorData &actor)
             m_gpuScene->StageActor(id, std::move(*gpu), resetMotion);
             if (resetMotion) {
                 const auto *transform = actor.owner->GetTransform();
-                BodyCommand pose{};
-                pose.meta.y = CommandSetPose;
-                pose.value = Vector(transform->GetPosition());
-                pose.auxiliary = Rotation(transform->GetWorldRotation());
-                m_gpuScene->QueueCommand(id, pose);
+                const auto position = Vector(transform->GetPosition());
+                const auto rotation = Rotation(transform->GetWorldRotation());
+                m_gpuScene->QueueBodyCommand(
+                    {id, PhysicsBodyCommand::Pose{Vector(position),
+                                                  glm::quat(rotation.w, rotation.x, rotation.y, rotation.z)}});
             }
             if (!resident)
                 m_gpuScene->SetResident(id, false);
@@ -2562,55 +2563,34 @@ void PhysicsWorld::UpdateBodyShape(PhysicsActorData &actor, const Collider *excl
 void PhysicsWorld::SetBodyPosition(uint32_t id, const glm::vec3 &position, const glm::quat &rotation,
                                    bool cancelKinematicMove)
 {
-    RequireOwnerThread();
-    auto &domain = DomainForBody(id);
-    const auto &entry = m_bodyActors.at(id);
-    BodyCommand c{};
-    c.meta.y = CommandSetPose;
-    c.meta.z = cancelKinematicMove ? 0 : CommandPreserveKinematicMove;
-    c.value = Vector(position);
-    c.auxiliary = Rotation(rotation);
-    RecordStaticPose(domain, id, &position, &rotation, cancelKinematicMove);
-    if (entry.HasCpuBody())
-        domain.cpuControl->Queue(
-            id, JoltCpuControl::Pose{CpuPosition(c.value), CpuRotation(c.auxiliary), cancelKinematicMove});
-    if (entry.HasGpuBody()) {
-        RequireGpu(domain);
-        m_gpuScene->QueueCommand(id, c);
-        domain.MarkGpuPoseDiscontinuity(id);
-    }
+    QueueBodyPose(id, &position, &rotation, cancelKinematicMove);
 }
 void PhysicsWorld::SetBodyPositionOnly(uint32_t id, const glm::vec3 &position)
 {
-    RequireOwnerThread();
-    auto &domain = DomainForBody(id);
-    const auto &entry = m_bodyActors.at(id);
-    BodyCommand c{};
-    c.meta.y = CommandSetPosition;
-    c.value = Vector(position);
-    RecordStaticPose(domain, id, &position, nullptr, true);
-    if (entry.HasCpuBody())
-        domain.cpuControl->Queue(id, JoltCpuControl::Pose{CpuPosition(c.value), std::nullopt});
-    if (entry.HasGpuBody()) {
-        RequireGpu(domain);
-        m_gpuScene->QueueCommand(id, c);
-        domain.MarkGpuPoseDiscontinuity(id);
-    }
+    QueueBodyPose(id, &position, nullptr, true);
 }
 void PhysicsWorld::SetBodyRotationOnly(uint32_t id, const glm::quat &rotation)
+{
+    QueueBodyPose(id, nullptr, &rotation, true);
+}
+void PhysicsWorld::QueueBodyPose(uint32_t id, const glm::vec3 *position, const glm::quat *rotation, bool cancelMove)
 {
     RequireOwnerThread();
     auto &domain = DomainForBody(id);
     const auto &entry = m_bodyActors.at(id);
-    BodyCommand c{};
-    c.meta.y = CommandSetRotation;
-    c.auxiliary = Rotation(rotation);
-    RecordStaticPose(domain, id, nullptr, &rotation, true);
+    const auto p = position ? Vector(*position) : Float4{};
+    const auto q = rotation ? Rotation(*rotation) : Float4{};
+    RecordStaticPose(domain, id, position, rotation, cancelMove);
     if (entry.HasCpuBody())
-        domain.cpuControl->Queue(id, JoltCpuControl::Pose{std::nullopt, CpuRotation(c.auxiliary)});
+        domain.cpuControl->Queue(id, JoltCpuControl::Pose{position ? std::make_optional(CpuPosition(p)) : std::nullopt,
+                                                          rotation ? std::make_optional(CpuRotation(q)) : std::nullopt,
+                                                          cancelMove});
     if (entry.HasGpuBody()) {
         RequireGpu(domain);
-        m_gpuScene->QueueCommand(id, c);
+        m_gpuScene->QueueBodyCommand(
+            {id, PhysicsBodyCommand::Pose{position ? std::make_optional(*position) : std::nullopt,
+                                          rotation ? std::make_optional(glm::quat(q.w, q.x, q.y, q.z)) : std::nullopt,
+                                          cancelMove}});
         domain.MarkGpuPoseDiscontinuity(id);
     }
 }
@@ -2805,37 +2785,30 @@ void PhysicsWorld::ValidateBodyMassProperties(const Rigidbody &body, float mass,
 }
 void PhysicsWorld::SetBodyLinearVelocity(uint32_t id, const glm::vec3 &v)
 {
-    RequireOwnerThread();
-    auto &domain = DomainForBody(id);
-    const auto backend = m_bodyActors.at(id).backend;
-    if (backend == Backend::StaticBoundary)
-        throw std::invalid_argument("Physics motion command requires a Rigidbody");
-    BodyCommand c{};
-    c.meta.y = CommandSetLinearVelocity;
-    c.value = Vector(v);
-    if (backend == Backend::Cpu) {
-        domain.cpuControl->Queue(id, JoltCpuControl::Velocity{CpuVector(c.value), std::nullopt});
-        return;
-    }
-    RequireGpu(domain);
-    m_gpuScene->QueueCommand(id, c);
+    QueueBodyVelocity(id, v, false);
 }
 void PhysicsWorld::SetBodyAngularVelocity(uint32_t id, const glm::vec3 &v)
+{
+    QueueBodyVelocity(id, v, true);
+}
+void PhysicsWorld::QueueBodyVelocity(uint32_t id, const glm::vec3 &v, bool angular)
 {
     RequireOwnerThread();
     auto &domain = DomainForBody(id);
     const auto backend = m_bodyActors.at(id).backend;
     if (backend == Backend::StaticBoundary)
         throw std::invalid_argument("Physics motion command requires a Rigidbody");
-    BodyCommand c{};
-    c.meta.y = CommandSetAngularVelocity;
-    c.value = Vector(v);
+    const auto value = Vector(v);
     if (backend == Backend::Cpu) {
-        domain.cpuControl->Queue(id, JoltCpuControl::Velocity{std::nullopt, CpuVector(c.value)});
+        const auto velocity = std::make_optional(CpuVector(value));
+        domain.cpuControl->Queue(
+            id, JoltCpuControl::Velocity{angular ? std::nullopt : velocity, angular ? velocity : std::nullopt});
         return;
     }
     RequireGpu(domain);
-    m_gpuScene->QueueCommand(id, c);
+    const auto velocity = std::make_optional(v);
+    m_gpuScene->QueueBodyCommand(
+        {id, PhysicsBodyCommand::Velocity{angular ? std::nullopt : velocity, angular ? velocity : std::nullopt}});
 }
 void PhysicsWorld::QueueBodyForce(uint32_t id, int kind, int mode, const glm::vec3 &value, const glm::vec3 &point)
 {
@@ -2846,20 +2819,17 @@ void PhysicsWorld::QueueBodyForce(uint32_t id, int kind, int mode, const glm::ve
         throw std::invalid_argument("Physics motion command requires a Rigidbody");
     if (kind < 0 || kind > 2 || mode < 0 || mode > 3)
         throw std::invalid_argument("Invalid physics force kind or mode");
-    BodyCommand c{};
-    c.meta.y = kind == 0 ? CommandAddForce : kind == 1 ? CommandAddTorque : CommandAddForceAtPosition;
-    c.meta.z = static_cast<uint32_t>(mode);
-    c.value = Vector(value);
-    if (kind == 2)
-        c.auxiliary = Vector(point);
+    const auto force = Vector(value);
+    const auto origin = kind == 2 ? Vector(point) : Float4{};
     if (backend == Backend::Cpu) {
         domain.cpuControl->Queue(id, JoltCpuControl::Force{static_cast<JoltCpuScene::ForceKind>(kind),
-                                                           static_cast<ForceMode>(mode), CpuVector(c.value),
-                                                           CpuPosition(c.auxiliary)});
+                                                           static_cast<ForceMode>(mode), CpuVector(force),
+                                                           CpuPosition(origin)});
         return;
     }
     RequireGpu(domain);
-    m_gpuScene->QueueCommand(id, c);
+    m_gpuScene->QueueBodyCommand({id, PhysicsBodyCommand::Force{static_cast<PhysicsForceKind>(kind),
+                                                                static_cast<ForceMode>(mode), value, Vector(origin)}});
 }
 void PhysicsWorld::AddBodyForce(uint32_t id, const glm::vec3 &v)
 {
@@ -2917,12 +2887,11 @@ void PhysicsWorld::ResetBodyMotionStates(const std::vector<PhysicsBodyMotionStat
                                       CpuVector(Vector(s.linearVelocity)), CpuVector(Vector(s.angularVelocity))});
             continue;
         }
-        BodyCommand c{};
-        c.meta.y = CommandResetMotion;
-        m_gpuScene->QueueCommand(s.bodyId, c);
-        SetBodyPosition(s.bodyId, s.position, s.rotation);
-        SetBodyLinearVelocity(s.bodyId, s.linearVelocity);
-        SetBodyAngularVelocity(s.bodyId, s.angularVelocity);
+        const auto q = Rotation(s.rotation);
+        m_gpuScene->QueueBodyCommand(
+            {s.bodyId, PhysicsBodyCommand::ResetMotion{s.position, glm::quat(q.w, q.x, q.y, q.z), s.linearVelocity,
+                                                       s.angularVelocity}});
+        DomainForBody(s.bodyId).MarkGpuPoseDiscontinuity(s.bodyId);
     }
 }
 

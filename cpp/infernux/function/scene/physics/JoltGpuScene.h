@@ -16,6 +16,7 @@
 
 namespace infernux
 {
+struct PhysicsBodyCommand;
 class JoltGpuJoints;
 class JoltGpuGeometryStore;
 struct JoltGpuGeometryHandle;
@@ -207,6 +208,7 @@ class JoltGpuScene final
     void SetResident(uint32_t bodyId, bool resident, bool preserveVelocity = false);
     PhysicsTargetSource QueueCommand(uint32_t bodyId, JPH::GPU::BodyCommand command,
                                      const PhysicsTargetAuthor *author = nullptr);
+    void QueueBodyCommand(const PhysicsBodyCommand &command);
     void StageRetire(uint32_t bodyId);
     uint64_t CreateJoint(PhysicsConstraintOwner &owner, uint32_t ownerBody, uint32_t connectedBody,
                          JPH::GPU::JointAuthor author);

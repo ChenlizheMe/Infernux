@@ -917,6 +917,8 @@ class PhysicsWorld
     void StageActorModel(PhysicsActorData &actor, const PhysicsActorData &author,
                          const std::function<void(PreparedCpuActor &)> &editCpu = {},
                          const std::function<void(PreparedGpuActor &)> &editGpu = {});
+    void QueueBodyPose(uint32_t bodyId, const glm::vec3 *position, const glm::quat *rotation, bool cancelMove);
+    void QueueBodyVelocity(uint32_t bodyId, const glm::vec3 &velocity, bool angular);
     PhysicsTargetSource QueueKinematicBodyCommand(uint32_t bodyId, const JPH::GPU::BodyCommand &,
                                                   const PhysicsTargetAuthor * = nullptr);
     void RefreshGpuActor(PhysicsDomain &domain, uint32_t bodyId,

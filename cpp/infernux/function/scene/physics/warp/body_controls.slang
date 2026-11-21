@@ -15,10 +15,11 @@ static const uint AddForceAtPosition = 6;
 static const uint MovePosition = 7;
 static const uint MoveRotation = 8;
 static const uint ResetMotion = 9;
+static const uint PreserveDrive = 1;
 
 struct BodyCommand
 {
-    uint4 fields; // world, body, operation, ForceMode
+    uint4 fields; // world, body, operation, force mode or pose flags
     float4 value;
     float4 point;
 };
@@ -183,6 +184,7 @@ void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimension
     Pose origin = mocap[row];
     Pose target = origin;
     const Pose undo = origin;
+    bool cancelDrive = false;
     for (uint i = span.z; i < span.z + span.w; ++i)
     {
         const BodyCommand command = commands[i];
@@ -197,20 +199,27 @@ void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimension
         case SetPosition:
             origin.position.xyz = command.value.xyz;
             target = origin;
+            cancelDrive = cancelDrive || (command.fields.w & PreserveDrive) == 0;
             break;
         case SetRotation:
             origin.rotation = normalize(command.value);
             target = origin;
+            cancelDrive = cancelDrive || (command.fields.w & PreserveDrive) == 0;
             break;
         case ResetMotion:
             target = origin;
+            cancelDrive = true;
             break;
         }
     }
     if (!Integrate)
     {
         mocap[row] = origin;
-        prescribed[row] = {float4(0.0), float4(0.0), origin.position.xyz + centerOffset(body, origin), 0u};
+        PrescribedMotion motion = prescribed[row];
+        if (cancelDrive)
+            motion = {float4(0.0), float4(0.0), float3(0.0), 0u};
+        motion.center = origin.position.xyz + centerOffset(body, origin);
+        prescribed[row] = motion;
         return;
     }
     const PrescribedMotion previous = prescribed[row];

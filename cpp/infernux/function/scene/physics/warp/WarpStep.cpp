@@ -1206,7 +1206,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                    {5, positions, RW},
                                    {6, velocities, RW},
                                    {7, mocap, RW},
-                                   {12, prescribed, W}});
+                                   {12, prescribed, RW}});
         if (multiple)
             drive = b.Dispatch("body_controls", "advance_commanded_substep", bodyCommandCapacity,
                                {{0, dimensions, R},

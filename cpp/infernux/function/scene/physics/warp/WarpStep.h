@@ -106,12 +106,21 @@ enum class WarpBodyCommandKind : uint32_t
     ResetMotion,
 };
 
+enum class WarpPoseCommandFlags : uint32_t
+{
+    None,
+    PreserveDrive,
+};
+
 struct WarpBodyCommand
 {
     uint32_t world;
     uint32_t body;
     WarpBodyCommandKind kind;
-    ForceMode mode{};
+    union {
+        ForceMode mode{};
+        WarpPoseCommandFlags poseFlags;
+    };
     ModelVector value{}; // World xyz, or wxyz for rotations.
     ModelVector point{}; // World point for ForceAtPosition.
 };

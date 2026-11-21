@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../PhysicsBodyCommand.h"
 #include "../PhysicsBodyState.h"
 #include "../PhysicsContactTypes.h"
 #include "../PhysicsECSStore.h"
@@ -160,7 +161,8 @@ class WarpSceneRuntime final
                     PublicationConsumer consumer = {});
     /// Apply immediate body edits at the last accepted simulation time.
     /// Reuses the same completion and optional consumer as a fixed step.
-    void BeginEdits(std::vector<WarpBodyCommand> commands, PublicationConsumer consumer = {});
+    void BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
+                    PublicationConsumer consumer = {});
     [[nodiscard]] std::optional<WarpFixedPublication> TakePublication();
     [[nodiscard]] std::optional<WarpHostBody> ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
                                                            uint32_t engineBody) const;

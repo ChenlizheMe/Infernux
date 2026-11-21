@@ -204,11 +204,53 @@ void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
                     std::move(consumer), true});
 }
 
-void WarpSceneRuntime::BeginEdits(std::vector<WarpBodyCommand> commands, PublicationConsumer consumer)
+void WarpSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
+                                  PublicationConsumer consumer)
 {
-    if (commands.empty())
+    const auto &worlds = m_layout->worlds;
+    const auto world = std::find_if(worlds.begin(), worlds.end(), [worldId](const auto &w) { return w.id == worldId; });
+    if (world == worlds.end())
+        throw std::invalid_argument("Warp scene edit requires an enrolled world");
+    const auto worldRow = static_cast<uint32_t>(world - worlds.begin());
+    std::vector<WarpBodyCommand> edits;
+    edits.reserve(commands.size());
+    const auto vector = [](const glm::vec3 &v) -> ModelVector { return {v.x, v.y, v.z, 0.0f}; };
+    const auto rotation = [](const glm::quat &q) -> ModelVector { return {q.w, q.x, q.y, q.z}; };
+    using Kind = WarpBodyCommandKind;
+    for (const auto &command : commands) {
+        const auto row = world->BodyRow(command.bodyId);
+        if (!row)
+            throw std::invalid_argument("Warp scene edit requires an accepted body in the selected world");
+        const auto append = [&](Kind kind, ModelVector value = {}, ForceMode mode = {},
+                                ModelVector point = {}) -> WarpBodyCommand & {
+            return edits.emplace_back(WarpBodyCommand{worldRow, *row, kind, mode, value, point});
+        };
+        if (const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation)) {
+            const auto flags = pose->cancelDrive ? WarpPoseCommandFlags::None : WarpPoseCommandFlags::PreserveDrive;
+            if (pose->position)
+                append(Kind::SetPosition, vector(*pose->position)).poseFlags = flags;
+            if (pose->rotation)
+                append(Kind::SetRotation, rotation(*pose->rotation)).poseFlags = flags;
+        } else if (const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation)) {
+            if (velocity->linear)
+                append(Kind::SetLinearVelocity, vector(*velocity->linear));
+            if (velocity->angular)
+                append(Kind::SetAngularVelocity, vector(*velocity->angular));
+        } else if (const auto *force = std::get_if<PhysicsBodyCommand::Force>(&command.operation)) {
+            constexpr std::array<Kind, 3> kinds{Kind::Force, Kind::Torque, Kind::ForceAtPosition};
+            append(kinds[static_cast<size_t>(force->kind)], vector(force->value), force->mode, vector(force->point));
+        } else {
+            const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
+            append(Kind::ResetMotion);
+            append(Kind::SetPosition, vector(reset.position));
+            append(Kind::SetRotation, rotation(reset.rotation));
+            append(Kind::SetLinearVelocity, vector(reset.linear));
+            append(Kind::SetAngularVelocity, vector(reset.angular));
+        }
+    }
+    if (edits.empty())
         throw std::invalid_argument("Warp scene edit requires at least one body command");
-    BeginOperation({{}, std::move(commands), {}, false, false, std::move(consumer), false});
+    BeginOperation({{}, std::move(edits), {}, false, false, std::move(consumer), false});
 }
 
 void WarpSceneRuntime::BeginOperation(Operation operation)

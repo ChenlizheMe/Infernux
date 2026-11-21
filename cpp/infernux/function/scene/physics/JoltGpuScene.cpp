@@ -1,6 +1,7 @@
 #include "JoltGpuScene.h"
 #include "JoltGpuArticulations.h"
 #include "JoltGpuSleep.h"
+#include "PhysicsBodyCommand.h"
 #include "PhysicsDomain.h"
 
 #include "JoltGpuBodyMutations.h"
@@ -2194,6 +2195,44 @@ void JoltGpuScene::SetResident(uint32_t id, bool value, bool preserve)
 PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand value, const PhysicsTargetAuthor *author)
 {
     return m_impl->QueueCommand(id, value, author);
+}
+
+void JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command)
+{
+    const auto vector = [](const glm::vec3 &v) -> Float4 { return {v.x, v.y, v.z, 0}; };
+    const auto rotation = [](const glm::quat &q) -> Float4 { return {q.x, q.y, q.z, q.w}; };
+    const auto queue = [&](uint32_t kind, uint32_t flags, Float4 value = {}, Float4 auxiliary = {}) {
+        BodyCommand packet{};
+        packet.meta.y = kind;
+        packet.meta.z = flags;
+        packet.value = value;
+        packet.auxiliary = auxiliary;
+        QueueCommand(command.bodyId, packet);
+    };
+    if (const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation)) {
+        const auto flags = pose->cancelDrive ? 0u : CommandPreserveKinematicMove;
+        if (pose->position && pose->rotation)
+            queue(CommandSetPose, flags, vector(*pose->position), rotation(*pose->rotation));
+        else if (pose->position)
+            queue(CommandSetPosition, flags, vector(*pose->position));
+        else if (pose->rotation)
+            queue(CommandSetRotation, flags, {}, rotation(*pose->rotation));
+    } else if (const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation)) {
+        if (velocity->linear)
+            queue(CommandSetLinearVelocity, 0, vector(*velocity->linear));
+        if (velocity->angular)
+            queue(CommandSetAngularVelocity, 0, vector(*velocity->angular));
+    } else if (const auto *force = std::get_if<PhysicsBodyCommand::Force>(&command.operation)) {
+        constexpr std::array<uint32_t, 3> commands{CommandAddForce, CommandAddTorque, CommandAddForceAtPosition};
+        queue(commands[static_cast<size_t>(force->kind)], static_cast<uint32_t>(force->mode), vector(force->value),
+              vector(force->point));
+    } else {
+        const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
+        queue(CommandResetMotion, 0);
+        queue(CommandSetPose, 0, vector(reset.position), rotation(reset.rotation));
+        queue(CommandSetLinearVelocity, 0, vector(reset.linear));
+        queue(CommandSetAngularVelocity, 0, vector(reset.angular));
+    }
 }
 
 void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents)
