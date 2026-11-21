@@ -30,6 +30,7 @@ struct RneDerivative
 [[vk::binding(13, 0)]] RWStructuredBuffer<float> effectiveMatrix;
 [[vk::binding(14, 0)]] StructuredBuffer<float> rhs;
 [[vk::binding(15, 0)]] RWStructuredBuffer<float> acceleration;
+[[vk::binding(16, 0)]] StructuredBuffer<uint4> discreteMetricLayout;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -124,6 +125,20 @@ void assemble_implicit_matrix(uint3 id : SV_DispatchThreadID)
             value += dt * spatialDot(axis, rneDerivatives[derivativeBase + entry.w].force);
         effectiveMatrix[matrixBase + i] = value;
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void scatter_discrete_metric(uint3 id : SV_DispatchThreadID)
+{
+    const uint4 layout = implicitTopology[0];
+    if (id.x >= layout.x)
+        return;
+    const uint source = implicitTopology[layout.w + id.x].z;
+    float value = 0.0;
+    if (source != NoIndex)
+        value = packedEffectiveMass[id.y * discreteMetricLayout[0].y + source];
+    effectiveMatrix[id.y * layout.x + id.x] = value;
 }
 
 [shader("compute")]

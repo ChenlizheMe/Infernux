@@ -95,10 +95,14 @@ struct TendonActuatorGroup
 [[vk::binding(30, 0)]] StructuredBuffer<uint4> rkActuatorStage;
 [[vk::binding(31, 0)]] RWStructuredBuffer<float2> rkActivation;
 [[vk::binding(32, 0)]] RWStructuredBuffer<float2> rkActuatorMotion;
-[[vk::binding(33, 0)]] StructuredBuffer<uint> implicitMassOffsets;
-[[vk::binding(34, 0)]] StructuredBuffer<uint4> implicitMassContributions;
-[[vk::binding(35, 0)]] RWStructuredBuffer<float> implicitMass;
+[[vk::binding(33, 0)]] StructuredBuffer<uint> actuatorMassOffsets;
+[[vk::binding(34, 0)]] StructuredBuffer<uint4> actuatorMassContributions;
+[[vk::binding(35, 0)]] RWStructuredBuffer<float> effectiveMass;
 [[vk::binding(36, 0)]] RWStructuredBuffer<float> implicitActuatorDerivative;
+[[vk::binding(37, 0)]] RWStructuredBuffer<float2> discreteActuatorTerms; // Length derivatives until finalized.
+[[vk::binding(38, 0)]] StructuredBuffer<uint4> discreteMetricLayout;
+[[vk::binding(39, 0)]] RWStructuredBuffer<Atomic<uint>> coupledDofs;
+[[vk::binding(40, 0)]] RWStructuredBuffer<float> discreteForce;
 
 #include "site_transmission.slang"
 #include "body_transmission.slang"
@@ -179,7 +183,7 @@ float2 jointActuatorMotion(ActuatorModel actuator, uint world, inout float3 firs
     return firstMoment.x * float2(qpos[q], qvel[v]);
 }
 
-void evaluateActuators<let Implicit : bool>(uint3 id)
+void evaluateActuators<let Derivatives : bool, let Discrete : bool>(uint3 id)
 {
     const uint4 sizes = actuatorDimensions[0];
     if (id.x >= sizes.x)
@@ -239,22 +243,35 @@ void evaluateActuators<let Implicit : bool>(uint3 id)
     else if (actuator.modes.y == AffineGain)
         gain = dot(actuator.gain.xyz, terms);
     else if (actuator.modes.y == MuscleGain)
-        gain = muscleActiveForce<false>(actuator, actuatorDynamics[actuator.dynamicsIndex], motion);
+        gain = muscleActiveForce<false, false>(actuator, actuatorDynamics[actuator.dynamicsIndex], motion);
     float bias = actuator.modes.z == AffineBias ? dot(actuator.bias.xyz, terms) : 0.0;
     if (actuator.modes.z == MuscleBias)
-        bias = musclePassiveForce(actuator, actuatorDynamics[actuator.dynamicsIndex], coordinate);
+        bias = musclePassiveForce<false>(actuator, actuatorDynamics[actuator.dynamicsIndex], coordinate);
 
     float2 velocityDerivative = float2(0.0);
-    if (Implicit)
+    float2 lengthDerivative = float2(0.0);
+    if (Derivatives)
     {
-        const float activationGain = actuator.indices.z != NoIndex ? forceCommand : rawCommand;
+        const float activationGain = actuator.indices.z != NoIndex ? forceCommand : (Discrete ? command : rawCommand);
         if (actuator.modes.z == AffineBias)
             velocityDerivative.x = actuator.bias.z;
         if (actuator.modes.y == AffineGain)
             velocityDerivative.x += actuator.gain.z * activationGain;
         else if (actuator.modes.y == MuscleGain)
-            velocityDerivative.x += muscleActiveForce<true>(actuator, actuatorDynamics[actuator.dynamicsIndex], motion) *
-                                    activationGain;
+            velocityDerivative.x +=
+                muscleActiveForce<true, false>(actuator, actuatorDynamics[actuator.dynamicsIndex], motion) * activationGain;
+        if (Discrete)
+        {
+            if (actuator.modes.z == AffineBias)
+                lengthDerivative.x = actuator.bias.y;
+            else if (actuator.modes.z == MuscleBias)
+                lengthDerivative.x = musclePassiveForce<true>(actuator, actuatorDynamics[actuator.dynamicsIndex], coordinate);
+            if (actuator.modes.y == AffineGain)
+                lengthDerivative.x += actuator.gain.y * activationGain;
+            else if (actuator.modes.y == MuscleGain)
+                lengthDerivative.x +=
+                    muscleActiveForce<false, true>(actuator, actuatorDynamics[actuator.dynamicsIndex], motion) * activationGain;
+        }
     }
 
     float mechanicalForce = 0.0;
@@ -277,9 +294,13 @@ void evaluateActuators<let Implicit : bool>(uint3 id)
         if (actuator.modes.z == DcMotorBias && dynamics.parametersFirst.x <= 0.0)
             bias -= gain * actuator.gain.y * velocity;
         mechanicalForce = motor.mechanicalForce;
-        if (Implicit)
-            velocityDerivative += dcMotorVelocityDerivative(actuator, dynamics, motor, activationBase, velocity,
-                                                            timestep[id.y]);
+        if (Derivatives)
+        {
+            const float4 derivative = dcMotorDerivatives<Discrete>(actuator, dynamics, motor, activationBase, motion,
+                                                                   timestep[id.y]);
+            velocityDerivative += derivative.xy;
+            lengthDerivative += derivative.zw;
+        }
     }
 
     float force = gain * nearestSetpoint(forceCommand, coordinate, period) + bias;
@@ -294,20 +315,29 @@ void evaluateActuators<let Implicit : bool>(uint3 id)
     const ActuatorStep result = {float4(firstMoment, velocityDerivative.x), float4(lastMoment, velocityDerivative.y),
                                  float4(coordinate, velocity, force, mechanicalForce)};
     actuatorStep[index] = result;
+    if (Discrete)
+        discreteActuatorTerms[index] = lengthDerivative;
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void evaluate_actuators(uint3 id : SV_DispatchThreadID)
 {
-    evaluateActuators<false>(id);
+    evaluateActuators<false, false>(id);
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void evaluate_implicit_actuators(uint3 id : SV_DispatchThreadID)
 {
-    evaluateActuators<true>(id);
+    evaluateActuators<true, false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void evaluate_discrete_actuators(uint3 id : SV_DispatchThreadID)
+{
+    evaluateActuators<true, true>(id);
 }
 
 [shader("compute")]
@@ -376,9 +406,7 @@ void project_actuator_force(uint3 id : SV_DispatchThreadID)
     qfrcActuator[index] = force;
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void finish_implicit_actuator_derivatives(uint3 id : SV_DispatchThreadID)
+void finishActuatorDerivatives<let Discrete : bool>(uint3 id)
 {
     const uint count = actuatorDimensions[0].x;
     if (id.x >= count)
@@ -388,13 +416,14 @@ void finish_implicit_actuator_derivatives(uint3 id : SV_DispatchThreadID)
     const ActuatorModel actuator = actuators[id.x];
     const uint transmission = actuator.modes.w;
     const float4 values = actuatorStep[index].values;
-    float slope = actuatorStep[index].firstMoment.w;
+    const float2 lengthDerivative = Discrete ? discreteActuatorTerms[index] : float2(0.0);
+    float2 slope = float2(actuatorStep[index].firstMoment.w, lengthDerivative.x);
     const bool motor = actuator.modes.y == DcMotorGain || actuator.modes.z == DcMotorBias;
     if (!motor && (actuator.indices.w & LimitForce) != 0 &&
         (values.z <= actuator.forceRange.x || values.z >= actuator.forceRange.y))
-        slope = 0.0;
+        slope = float2(0.0);
 
-    if (transmission == TendonTransmission && slope != 0.0)
+    if (transmission == TendonTransmission && any(slope != float2(0.0)))
     {
         const TendonActuatorGroup group = tendonActuatorGroups[actuator.indices.x];
         if (group.entries.z != 0)
@@ -407,35 +436,80 @@ void finish_implicit_actuator_derivatives(uint3 id : SV_DispatchThreadID)
             }
             const float2 range = group.forceRange.xy + float2(1.0, -1.0) * 1.0e-5 * abs(group.forceRange.xy);
             if (force <= range.x || force >= range.y)
-                slope = 0.0;
+                slope = float2(0.0);
         }
     }
-    slope += actuatorStep[index].lastMoment.w;
-    if (transmission == JointTransmission && slope != 0.0)
+    slope += float2(actuatorStep[index].lastMoment.w, lengthDerivative.y);
+    if (transmission == JointTransmission && any(slope != float2(0.0)))
     {
         const uint dof = joints[actuator.indices.x].indices.z;
         const ActuatorDof settings = actuatorDofs[dof];
         const float force = qfrcActuator[id.y * model[0].state.y + dof];
         if (settings.entries.z != 0 && (force <= settings.forceRange.x || force >= settings.forceRange.y))
-            slope = 0.0;
+            slope = float2(0.0);
     }
-    implicitActuatorDerivative[index] = slope;
+    if (Discrete)
+    {
+        const float h = timestep[id.y];
+        const float2 response = max(float2(0.0), -slope);
+        const float position = h * response.y;
+        discreteActuatorTerms[index] = float2(h * (response.x + position), -position * values.y);
+    }
+    else
+        implicitActuatorDerivative[index] = slope.x;
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void add_implicit_actuator_mass(uint3 id : SV_DispatchThreadID)
+void finish_implicit_actuator_derivatives(uint3 id : SV_DispatchThreadID)
 {
-    const uint entries = model[0].layout.w;
+    finishActuatorDerivatives<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void finish_discrete_actuator_terms(uint3 id : SV_DispatchThreadID)
+{
+    finishActuatorDerivatives<true>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void add_discrete_actuator_shift(uint3 id : SV_DispatchThreadID)
+{
+    const uint dofCount = model[0].state.y;
+    if (id.x >= dofCount)
+        return;
+    const uint base = id.y * actuatorDimensions[0].x;
+    const uint2 span = actuatorDofs[id.x].entries.xy;
+    float shift = 0.0;
+    bool coupled = false;
+    for (uint i = span.x; i < span.x + span.y; ++i)
+    {
+        const uint2 edge = actuatorAdjacency[i];
+        const float2 terms = discreteActuatorTerms[base + edge.x];
+        const uint transmission = actuators[edge.x].modes.w;
+        shift += terms.y * actuatorMoment(id.y, transmission, actuatorStep[base + edge.x], edge.y);
+        coupled = coupled || terms.x != 0.0;
+    }
+    const uint index = id.y * dofCount + id.x;
+    discreteForce[index] += shift;
+    if (coupled)
+        coupledDofs[index].store(1u);
+}
+
+void addActuatorMetric<let Discrete : bool>(uint3 id)
+{
+    const uint entries = Discrete ? discreteMetricLayout[0].y : model[0].layout.w;
     if (id.x >= entries)
         return;
     const uint actuatorBase = id.y * actuatorDimensions[0].x;
     float derivative = 0.0;
-    for (uint i = implicitMassOffsets[id.x]; i < implicitMassOffsets[id.x + 1]; ++i)
+    for (uint i = actuatorMassOffsets[id.x]; i < actuatorMassOffsets[id.x + 1]; ++i)
     {
-        const uint4 link = implicitMassContributions[i]; // actuator and its two moment source indices
+        const uint4 link = actuatorMassContributions[i]; // actuator and its two moment source indices
         const uint index = actuatorBase + link.x;
-        const float slope = implicitActuatorDerivative[index];
+        const float slope = Discrete ? discreteActuatorTerms[index].x : implicitActuatorDerivative[index];
         if (slope == 0.0)
             continue;
         const ActuatorStep step = actuatorStep[index];
@@ -444,7 +518,21 @@ void add_implicit_actuator_mass(uint3 id : SV_DispatchThreadID)
         const float right = actuatorMoment(id.y, transmission, step, link.z);
         derivative += slope * left * right;
     }
-    implicitMass[id.y * entries + id.x] -= timestep[id.y] * derivative;
+    effectiveMass[id.y * entries + id.x] += Discrete ? derivative : -timestep[id.y] * derivative;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void add_implicit_actuator_mass(uint3 id : SV_DispatchThreadID)
+{
+    addActuatorMetric<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void add_discrete_actuator_metric(uint3 id : SV_DispatchThreadID)
+{
+    addActuatorMetric<true>(id);
 }
 
 [shader("compute")]

@@ -15,6 +15,7 @@
 [[vk::binding(4, 0)]] StructuredBuffer<float> metric;
 [[vk::binding(6, 0)]] RWStructuredBuffer<Atomic<uint>> coupledDofs;
 [[vk::binding(9, 0)]] StructuredBuffer<ModelDimensions> model;
+[[vk::binding(10, 0)]] StructuredBuffer<uint4> discreteMetricLayout;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -53,6 +54,7 @@ void regularize_discrete_constraints(uint3 id : SV_DispatchThreadID)
     const uint dofBase = id.y * config.y;
     const uint columnBase = id.y * limits.w;
     const uint massBase = id.y * model[0].layout.w;
+    const uint metricBase = id.y * discreteMetricLayout[0].y;
     float2 weights = float2(0.0);
     for (uint i = 0; i < row.layout.y; ++i)
     {
@@ -61,9 +63,9 @@ void regularize_discrete_constraints(uint3 id : SV_DispatchThreadID)
             continue;
         coupledDofs[dofBase + column.dof].store(1u);
         const uint2 massRow = dofs[column.dof].indices.zw;
-        const uint diagonal = massBase + massRow.x + massRow.y - 1;
+        const uint diagonal = massRow.x + massRow.y - 1;
         weights += column.value * column.value / max(float2(ConstraintMinValue),
-                                                      float2(metric[diagonal], massMatrix[diagonal]));
+            float2(metric[metricBase + diagonal], massMatrix[massBase + diagonal]));
     }
     // Use the normal row's scale for the full contact block.
     const float scale = weights.x / max(weights.y, ConstraintMinValue);
