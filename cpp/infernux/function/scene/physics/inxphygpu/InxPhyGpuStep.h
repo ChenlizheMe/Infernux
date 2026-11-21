@@ -187,6 +187,7 @@ enum class InxPhyGpuBodyCommandKind : uint32_t
     Sleep,
     Wake,
     ApplyPendingWrench,
+    AdvanceKinematicVelocity,
 };
 
 enum class InxPhyGpuPoseCommandFlags : uint32_t
@@ -230,7 +231,7 @@ struct InxPhyGpuBodyState
 {
     ModelPose pose;
     ModelVector centerOfMass;    // xyz center of mass, w is 1.0 for a sleeping body.
-    ModelVector linearVelocity;  // w carries quiet seconds for a dynamic body.
+    ModelVector linearVelocity;  // w carries dynamic quiet time or the kinematic velocity mode.
     ModelVector angularVelocity; // w carries the support count as raw bits.
 };
 

@@ -170,6 +170,8 @@ struct InxPhyGpuModel
     std::vector<float> initialPositions;
     std::vector<float> initialVelocities; // Empty initializes all velocity coordinates to zero.
     std::vector<ModelPose> initialKinematicPoses;
+    // Rows mirror PrescribedMotion: linear/mode, angular, and COM/accepted step.
+    std::vector<std::array<ModelVector, 3>> initialKinematicMotion;
     std::vector<ModelPose> initialStaticPoses;
     std::vector<ModelRigidMotion> sceneBodyMotion; // Shared by independent scene bodies in device row order.
     std::vector<ModelWords> sceneJoints;

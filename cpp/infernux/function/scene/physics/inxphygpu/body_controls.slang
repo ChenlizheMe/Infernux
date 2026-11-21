@@ -20,6 +20,9 @@ static const uint Sleep = 10;
 static const uint Wake = 11;
 static const uint ApplyPendingWrench = 12;
 static const uint PreserveDrive = 1;
+// Shares the snapshot lane used by dynamic sleep time. Negative zero is a
+// finite marker distinct from the dynamic timer's nonnegative bit patterns.
+static const uint PersistentKinematicVelocity = 0x80000000u;
 
 struct BodyCommand
 {
@@ -146,7 +149,9 @@ void import_body_states(uint3 id : SV_DispatchThreadID)
         mocap[row] = pose;
         const uint accepted = previousStates[previousAddresses[first]].z;
         const uint motionRow = id.y * prescribedStride(size, bodies[0]) + body.hierarchy.w;
-        prescribed[motionRow] = {float4(linear, 0.0), float4(spin, 0.0), pose.position.xyz + shift, accepted};
+        const float mode = float(previousStates[address + 3].w == PersistentKinematicVelocity);
+        prescribed[motionRow] = {float4(linear, mode), float4(spin, 0.0),
+                                 pose.position.xyz + shift, accepted};
     }
     else if (body.dofs.z != 0)
     {
@@ -328,7 +333,7 @@ uint prescribedAddress(uint world, BodyModel body, ModelDimensions size)
 }
 
 void writePrescribedStep(uint world, BodyModel body, ModelDimensions size, Pose start, float3 travel, float3 path,
-                         float fraction, float timestep)
+                         float fraction, float timestep, float velocityMode)
 {
     const float3 center = start.position.xyz + centerOffset(body, start) + travel * fraction;
     const float4 rotation = integrateQuat(start.rotation, path, fraction);
@@ -337,18 +342,23 @@ void writePrescribedStep(uint world, BodyModel body, ModelDimensions size, Pose 
     const float3 spin = rotateVector(path, start.rotation) / timestep;
     storePrescribedPose(world, body, size, pose);
     prescribed[prescribedAddress(world, body, size)] = {
-        float4(travel / timestep, 0.0), float4(spin, 0.0), center, fixedSteps[world] + 1u};
+        float4(travel / timestep, velocityMode), float4(spin, 0.0), center, fixedSteps[world] + 1u};
 }
 
-void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensions size, BodyModel body)
+void applyPrescribed<let Integrate : bool, let SceneLimits : bool>(uint index, uint4 span, ModelDimensions size,
+                                                                   BodyModel body)
 {
     const uint row = prescribedAddress(span.x, body, size);
     Pose origin = loadPrescribedPose(span.x, body, size);
     Pose target = origin;
     const Pose undo = origin;
-    bool cancelDrive = false;
     bool moving = false;
     float2 timing = float2(0.0);
+    const PrescribedMotion previous = prescribed[row];
+    bool velocityMode = previous.linear.w != 0.0;
+    const bool hasMotion = velocityMode || previous.step == fixedSteps[span.x];
+    float3 linear = hasMotion ? previous.linear.xyz : float3(0.0);
+    float3 angular = hasMotion ? previous.angular.xyz : float3(0.0);
     for (uint i = span.z; i < span.z + span.w; ++i)
     {
         const BodyCommand command = commands[i];
@@ -372,20 +382,38 @@ void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensio
             origin.position.xyz = command.value.xyz;
             if ((command.fields.w & PreserveDrive) == 0)
             {
-                cancelDrive = true;
                 moving = false;
+                if (!velocityMode)
+                    linear = angular = float3(0.0);
             }
             break;
         case SetRotation:
             origin.rotation = normalize(command.value);
             if ((command.fields.w & PreserveDrive) == 0)
             {
-                cancelDrive = true;
                 moving = false;
+                if (!velocityMode)
+                    linear = angular = float3(0.0);
             }
             break;
+        case SetLinearVelocity:
+            linear = projectSceneAxes(command.value.xyz, body.subtree.w);
+            if (SceneLimits)
+                linear = clampSceneSpeed(linear, sceneMotion[span.y].velocityLimit.x);
+            velocityMode = true;
+            moving = false;
+            break;
+        case SetAngularVelocity:
+            angular = projectSceneAxes(command.value.xyz, body.subtree.w >> 3u);
+            if (SceneLimits)
+                angular = clampSceneSpeed(angular, sceneMotion[span.y].velocityLimit.y);
+            velocityMode = true;
+            moving = false;
+            break;
+        case Sleep:
         case ResetMotion:
-            cancelDrive = true;
+            linear = angular = float3(0.0);
+            velocityMode = false;
             moving = false;
             break;
         }
@@ -396,11 +424,8 @@ void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensio
     if (!Integrate)
     {
         storePrescribedPose(span.x, body, size, origin);
-        PrescribedMotion motion = prescribed[row];
-        if (cancelDrive)
-            motion = {float4(0.0), float4(0.0), float3(0.0), 0u};
-        motion.center = origin.position.xyz + centerOffset(body, origin);
-        prescribed[row] = motion;
+        prescribed[row] = {float4(linear, float(velocityMode)), float4(angular, 0.0),
+                           origin.position.xyz + centerOffset(body, origin), fixedSteps[span.x]};
         return;
     }
     const float timestep = fixedTimeSteps[span.x];
@@ -408,6 +433,7 @@ void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensio
     float3 path = float3(0.0);
     if (moving)
     {
+        velocityMode = false;
         const float3 delta = target.position.xyz - origin.position.xyz;
         const float distance = length(delta);
         const float limit = timing.x * timing.y;
@@ -423,16 +449,20 @@ void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensio
         path = projectSceneSpin(rotationVector(mulQuat(conjugate(origin.rotation), target.rotation)), origin.rotation,
                                 body.subtree.w >> 3u) * fraction;
     }
-    const PrescribedMotion previous = prescribed[row];
+    else if (velocityMode)
+    {
+        travel = linear * timestep;
+        path = rotateVector(angular, conjugate(origin.rotation)) * timestep;
+    }
     saved[index] = {undo, previous.linear, previous.angular, previous.center, previous.step, origin,
-                    float4(travel, 0.0), float4(path, 0.0),
+                    float4(travel, float(velocityMode)), float4(path, 0.0),
                     float4(0.0), float4(0.0)};
     if (spans[0].z > 1u)
     {
         storePrescribedPose(span.x, body, size, origin);
         return;
     }
-    writePrescribedStep(span.x, body, size, origin, travel, path, 1.0, timestep);
+    writePrescribedStep(span.x, body, size, origin, travel, path, 1.0, timestep, float(velocityMode));
 }
 
 [shader("compute")]
@@ -463,7 +493,7 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
     const float alpha = float(next) / float(control.z);
     const float dt = fixedTimeSteps[span.x];
     writePrescribedStep(span.x, body, model[0], motion.start, motion.centerTravel.xyz, motion.angularTravel.xyz,
-                        alpha, dt);
+                        alpha, dt, motion.centerTravel.w);
 }
 
 void applyBodyCommands<let Integrate : bool, let SceneLimits : bool>(uint index)
@@ -475,7 +505,7 @@ void applyBodyCommands<let Integrate : bool, let SceneLimits : bool>(uint index)
     if (body.dofs.z == 0 && body.hierarchy.w == NoIndex)
         applyDynamic<Integrate, SceneLimits>(index, span, model[0], body);
     else
-        applyPrescribed<Integrate>(index, span, model[0], body);
+        applyPrescribed<Integrate, SceneLimits>(index, span, model[0], body);
 }
 
 [shader("compute")]
@@ -567,6 +597,7 @@ void publishBodies<let HasStatus : bool>(uint3 id)
     const float3 offset = centerOffset(body, pose);
     float3 speed = float3(0.0);
     float3 spin = float3(0.0);
+    float velocityMode = 0.0;
     const float time = clocks[id.y];
     if (body.dofs.y != 0)
     {
@@ -582,6 +613,7 @@ void publishBodies<let HasStatus : bool>(uint3 id)
             speed = motion.linear.xyz;
             spin = motion.angular.xyz;
         }
+        velocityMode = motion.linear.w;
     }
     const uint base = 5 * row;
     bodyStates[base] = asuint(pose.position);
@@ -590,7 +622,7 @@ void publishBodies<let HasStatus : bool>(uint3 id)
     const bool dynamic = body.dofs.y != 0;
     const bool sleeping = dynamic && activity.group != NoIndex;
     bodyStates[base + 2] = asuint(float4(pose.position.xyz + offset, sleeping ? 1.0 : 0.0));
-    bodyStates[base + 3] = asuint(float4(speed, 0.0));
+    bodyStates[base + 3] = uint4(asuint(speed), velocityMode != 0.0 ? PersistentKinematicVelocity : 0u);
     bodyStates[base + 4] = asuint(float4(spin, 0.0));
     if (dynamic)
     {

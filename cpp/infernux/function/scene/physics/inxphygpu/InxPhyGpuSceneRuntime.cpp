@@ -41,6 +41,7 @@ struct InxPhyGpuSceneLayout
         Static,
     };
     std::vector<World> worlds;
+    bool hasKinematicBodies = false;
     std::vector<std::vector<std::pair<uint32_t, uint32_t>>> colliderGeometry; // Body row, collider order.
     std::unordered_map<uint64_t, uint32_t> worldRows;
     std::vector<Geometry> geometries;
@@ -262,6 +263,7 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     if (worlds.empty() || commandCapacity == 0)
         throw std::invalid_argument("inxphygpu scene requires worlds and a body command capacity");
     auto layout = std::make_shared<InxPhyGpuSceneLayout>();
+    layout->hasKinematicBodies = !scene.model.initialKinematicPoses.empty();
     layout->worlds.reserve(worlds.size());
     layout->worldRows.reserve(worlds.size());
     m_acceptedWorlds.reserve(worlds.size());
@@ -311,9 +313,10 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                                        geometry.surface,
                                        geometry.collider.trigger});
     }
+    std::set<std::pair<uint32_t, uint32_t>> kinematicVelocities;
     for (auto &source : worlds) {
-        if (source.bodies.size() != scene.bodies.size() ||
-            !layout->worldRows.emplace(source.worldId, static_cast<uint32_t>(layout->worlds.size())).second)
+        const auto worldRow = static_cast<uint32_t>(layout->worlds.size());
+        if (source.bodies.size() != scene.bodies.size() || !layout->worldRows.emplace(source.worldId, worldRow).second)
             throw std::invalid_argument("inxphygpu scene world does not match its shared model");
         InxPhyGpuSceneLayout::World world{std::vector<InxPhyGpuRegisteredBody>(m_bodyCount), {}, {}};
         world.rows.reserve(source.bodies.size());
@@ -326,6 +329,9 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
             if (!binding.surfaces.empty() && binding.surfaces.size() != authored.surfaceCount)
                 throw std::invalid_argument("inxphygpu scene collider identities must match the shared model");
             world.bodies[row] = std::move(binding);
+            if (!scene.model.initialKinematicMotion.empty() && layout->CanDrive(row, false) &&
+                scene.model.initialKinematicMotion[scene.model.bodies[row].hierarchy[3]][0][3] != 0.0f)
+                kinematicVelocities.emplace(worldRow, row);
         }
         world.joints.reserve(source.joints.size());
         for (const auto &binding : source.joints) {
@@ -367,6 +373,14 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                 if (!oldRow || !actor.IsValid() || actor != oldWorld.bodies[*oldRow].actor)
                     continue;
                 handoff.addresses[first + row] = 5 * (old->second * previous->bodiesPerWorld + *oldRow);
+                const auto key = std::pair{static_cast<uint32_t>(next), row};
+                if (layout->CanDrive(row, false)) {
+                    if (std::binary_search(previous->m_kinematicVelocityRows.begin(),
+                                           previous->m_kinematicVelocityRows.end(), std::pair{old->second, *oldRow}))
+                        kinematicVelocities.insert(key);
+                    else
+                        kinematicVelocities.erase(key);
+                }
                 if (layout->motion[row].inverseMass != 0.0f &&
                     std::binary_search(previous->m_pendingWrenchRows.begin(), previous->m_pendingWrenchRows.end(),
                                        std::pair{old->second, *oldRow})) {
@@ -403,6 +417,7 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
             m_kinematicTargets = std::make_shared<InxPhyGpuSceneKinematicTargets>(std::move(retainedKinematic));
         std::sort(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
     }
+    m_kinematicVelocityRows.assign(kinematicVelocities.begin(), kinematicVelocities.end());
     m_layout = std::move(layout);
     m_activeFixedInputs.assign(m_layout->worlds.size(), {timestep, {gravity[0], gravity[1], gravity[2]}});
     const auto &config = EngineConfig::Get();
@@ -465,6 +480,15 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
         }
     for (const auto &entry : commands)
         EncodeBodyCommand(m_layout->WorldRow(entry.worldId), entry.command, actions);
+    auto velocities = KinematicVelocityRows(actions);
+    if (!m_kinematicVelocityRows.empty()) {
+        // Only continuing kinematic bodies without commands need their own spans.
+        auto uncovered = std::set(m_kinematicVelocityRows.begin(), m_kinematicVelocityRows.end());
+        for (const auto &action : actions)
+            uncovered.erase({action.world, action.body});
+        for (const auto &[world, body] : uncovered)
+            actions.push_back({world, body, InxPhyGpuBodyCommandKind::AdvanceKinematicVelocity});
+    }
     if (!m_pendingWrenchRows.empty()) {
         auto uncovered = std::set(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
         for (const auto &action : actions)
@@ -565,8 +589,18 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
         updates.push_back({world, joint.poseTargetOffset, relative ? PackPoseTarget(joint, *relative) : ModelWords{},
                            joint.dynamicEndpoints});
     }
-    BeginOperation({std::move(identities), std::move(actions), std::move(updates), host, captureContacts,
-                    std::move(consumer), true, std::move(fixedInputs), std::move(poses)});
+    BeginOperation({std::move(identities),
+                    std::move(actions),
+                    std::move(updates),
+                    host,
+                    captureContacts,
+                    std::move(consumer),
+                    true,
+                    std::move(fixedInputs),
+                    std::move(poses),
+                    {},
+                    {},
+                    std::move(velocities)});
 }
 
 void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
@@ -605,8 +639,12 @@ void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<Physi
             continue;
         }
         const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation);
+        const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation);
+        const auto *activity = std::get_if<PhysicsBodyCommand::Activity>(&command.operation);
         if ((pose && pose->cancelDrive && (pose->position || pose->rotation)) ||
-            std::holds_alternative<PhysicsBodyCommand::ResetMotion>(command.operation)) {
+            std::holds_alternative<PhysicsBodyCommand::ResetMotion>(command.operation) ||
+            (velocity && (velocity->linear || velocity->angular) && m_layout->CanDrive(*body, false)) ||
+            (activity && !activity->awake)) {
             const auto *prior = nextTargets ? nextTargets.get() : m_kinematicTargets.get();
             if (prior && prior->rows.count(key))
                 editTargets().rows.erase(key);
@@ -626,6 +664,7 @@ void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<Physi
     std::shared_ptr<const InxPhyGpuSceneKinematicTargets> targets = m_kinematicTargets;
     if (nextTargets)
         targets = nextTargets->rows.empty() ? nullptr : std::move(nextTargets);
+    auto velocities = KinematicVelocityRows(edits);
     BeginOperation({{},
                     std::move(edits),
                     {},
@@ -636,7 +675,38 @@ void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<Physi
                     {},
                     {},
                     {pending.begin(), pending.end()},
-                    std::move(targets)});
+                    std::move(targets),
+                    std::move(velocities)});
+}
+
+std::vector<std::pair<uint32_t, uint32_t>>
+InxPhyGpuSceneRuntime::KinematicVelocityRows(const std::vector<InxPhyGpuBodyCommand> &commands) const
+{
+    if (commands.empty() || !m_layout->hasKinematicBodies)
+        return m_kinematicVelocityRows;
+    auto rows = std::set(m_kinematicVelocityRows.begin(), m_kinematicVelocityRows.end());
+    decltype(rows) targets;
+    using Kind = InxPhyGpuBodyCommandKind;
+    for (const auto &command : commands) {
+        if (!m_layout->CanDrive(command.body, false))
+            continue;
+        const auto key = std::pair{command.world, command.body};
+        if (command.kind == Kind::SetLinearVelocity || command.kind == Kind::SetAngularVelocity) {
+            rows.insert(key);
+            targets.erase(key);
+        } else if (command.kind == Kind::MovePosition || command.kind == Kind::MoveRotation) {
+            targets.insert(key);
+        } else if (command.kind == Kind::Sleep || command.kind == Kind::ResetMotion) {
+            rows.erase(key);
+            targets.erase(key);
+        } else if ((command.kind == Kind::SetPosition || command.kind == Kind::SetRotation) &&
+                   command.poseFlags != InxPhyGpuPoseCommandFlags::PreserveDrive) {
+            targets.erase(key);
+        }
+    }
+    for (const auto &target : targets)
+        rows.erase(target);
+    return {rows.begin(), rows.end()};
 }
 
 void InxPhyGpuSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
@@ -947,6 +1017,7 @@ void InxPhyGpuSceneRuntime::Finish()
             auto result = CapturePublication(packet->GetSubmission());
             result.worlds = m_acceptedWorlds;
             result.m_kinematicTargets = m_kinematicTargets;
+            result.m_kinematicVelocityRows = m_kinematicVelocityRows;
             RetainWrenches(result, m_pendingWrenchRows);
             m_initialPublication.emplace(std::move(result));
         }
@@ -1054,7 +1125,14 @@ void InxPhyGpuSceneRuntime::FinishReports(const rhi::PreparedComputeBatch &packe
 
 void InxPhyGpuSceneRuntime::PrepareConsumer(InxPhyGpuFixedPublication publication)
 {
+    auto velocities = std::move(m_operation->kinematicVelocityRows);
     if (m_operation->integrate) {
+        const auto rejectedWorld = [&](const auto &row) { return publication.worlds[row.first].status != 0; };
+        velocities.erase(std::remove_if(velocities.begin(), velocities.end(), rejectedWorld), velocities.end());
+        for (const auto &row : m_kinematicVelocityRows)
+            if (rejectedWorld(row))
+                velocities.push_back(row);
+        std::sort(velocities.begin(), velocities.end());
         std::vector<std::pair<uint32_t, uint32_t>> rejected;
         for (const auto &row : m_pendingWrenchRows)
             if (publication.worlds[row.first].status != 0)
@@ -1074,6 +1152,7 @@ void InxPhyGpuSceneRuntime::PrepareConsumer(InxPhyGpuFixedPublication publicatio
         RetainWrenches(publication, std::move(m_operation->pendingWrenchRows));
         publication.m_kinematicTargets = std::move(m_operation->kinematicTargets);
     }
+    publication.m_kinematicVelocityRows = std::move(velocities);
     PublicationWork work;
     if (m_operation->consumer &&
         (!m_operation->integrate || std::any_of(publication.worlds.begin(), publication.worlds.end(),
@@ -1101,6 +1180,7 @@ void InxPhyGpuSceneRuntime::PublishCompleted(InxPhyGpuFixedPublication publicati
         m_activeFixedInputs = std::move(m_operation->fixedInputs);
     m_poseTargets = publication.m_poseTargets;
     m_kinematicTargets = publication.m_kinematicTargets;
+    m_kinematicVelocityRows = publication.m_kinematicVelocityRows;
     m_pendingWrenchRows = publication.m_pendingWrenchRows;
     m_operation.reset();
     m_publication.emplace(std::move(publication));

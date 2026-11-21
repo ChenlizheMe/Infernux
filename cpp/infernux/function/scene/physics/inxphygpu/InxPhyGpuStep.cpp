@@ -412,7 +412,8 @@ BodyControlSlots BindBodyControls(StepBuilder &b, const InxPhyGpuModel &model, u
             b.Slot(12 * uint64_t{capacity}, BufferUsageFlags::TransferDestination),
             b.Zero("commandedForce", uint64_t{model.dimensions.state[1]} * b.worlds),
             b.Slot(SavedMotionWords * uint64_t{capacity}),
-            b.Zero("prescribedMotion", 12 * std::max(uint64_t{1}, prescribedRows) * b.worlds),
+            b.Seed("prescribedMotion", 12 * std::max(uint64_t{1}, prescribedRows),
+                   model.initialKinematicMotion.empty() ? nullptr : model.initialKinematicMotion.data(), b.worlds),
             b.Zero("acceptedFixedSteps", uint64_t{b.worlds} + uint32_t(multiple)),
             b.Seed("bodyActivity", awake.size(), awake.data(), b.worlds * model.dimensions.state[2]),
             b.Zero("pendingWrenches", 6 * uint64_t{b.worlds} * model.dimensions.state[2])};
@@ -2319,17 +2320,17 @@ uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> com
         const auto motion = m_controls.motion.at(command.body);
         const bool move =
             kind == InxPhyGpuBodyCommandKind::MovePosition || kind == InxPhyGpuBodyCommandKind::MoveRotation;
-        const bool dynamic = (kind >= InxPhyGpuBodyCommandKind::SetLinearVelocity &&
-                              kind <= InxPhyGpuBodyCommandKind::ForceAtPosition) ||
-                             kind == InxPhyGpuBodyCommandKind::Sleep || kind == InxPhyGpuBodyCommandKind::Wake ||
-                             kind == InxPhyGpuBodyCommandKind::ApplyPendingWrench;
+        const bool dynamic =
+            (kind >= InxPhyGpuBodyCommandKind::Force && kind <= InxPhyGpuBodyCommandKind::ForceAtPosition) ||
+            kind == InxPhyGpuBodyCommandKind::ApplyPendingWrench;
+        const bool advance = kind == InxPhyGpuBodyCommandKind::AdvanceKinematicVelocity;
         const auto drive =
             move && command.poseFlags == InxPhyGpuPoseCommandFlags::TemporaryStatic ? StaticControl : KinematicControl;
         if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != drive) ||
-            (dynamic && motion != DynamicControl) ||
+            (dynamic && motion != DynamicControl) || (advance && motion != KinematicControl) ||
             (motion == StaticControl && !move && kind > InxPhyGpuBodyCommandKind::SetRotation))
             throw std::invalid_argument("inxphygpu body command does not match its world or motion type");
-        if (!integrate && (move || kind == InxPhyGpuBodyCommandKind::ApplyPendingWrench))
+        if (!integrate && (move || advance || kind == InxPhyGpuBodyCommandKind::ApplyPendingWrench))
             throw std::invalid_argument("Kinematic targets and wrench consumption require a fixed step");
         if (move && (!std::isfinite(command.point[0]) || command.point[0] <= 0.0f || !std::isfinite(command.point[1]) ||
                      command.point[1] < 0.0f))

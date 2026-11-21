@@ -416,12 +416,11 @@ InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author)
         source.kinematic = body->kinematic;
         source.useGravity = body->useGravity;
         source.frozenAxes = (static_cast<uint32_t>(body->constraints) >> 1) & 63u;
-        if (!source.kinematic) {
+        source.motion = {body->drag, body->angularDrag, body->maxLinearVelocity, body->maxAngularVelocity};
+        if (!source.kinematic)
             source.mass = body->mass;
-            source.motion = {body->drag, body->angularDrag, body->maxLinearVelocity, body->maxAngularVelocity};
-            source.linearVelocity = result.publication.linearVelocity.value_or(glm::vec3(0.0f));
-            source.angularVelocity = result.publication.angularVelocity.value_or(glm::vec3(0.0f));
-        }
+        source.linearVelocity = result.publication.linearVelocity.value_or(glm::vec3(0.0f));
+        source.angularVelocity = result.publication.angularVelocity.value_or(glm::vec3(0.0f));
     }
     source.colliders.reserve(author.surfaces.size());
     result.surfaces.reserve(author.surfaces.size());
@@ -526,8 +525,9 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
     auto &initial = result.model.initialVelocities;
     initial.resize(result.model.dofs.size());
     auto &motion = result.model.sceneBodyMotion;
-    if (std::any_of(actors.begin(), actors.end(),
-                    [](const auto &actor) { return actor.mass && (actor.motion.HasSettings() || actor.frozenAxes); }))
+    if (std::any_of(actors.begin(), actors.end(), [](const auto &actor) {
+            return (actor.mass || actor.kinematic) && (actor.motion.HasSettings() || actor.frozenAxes);
+        }))
         motion.resize(result.model.bodies.size());
     const auto clampSpeed = [](glm::vec3 speed, float cap) {
         const auto squared = glm::dot(speed, speed);
@@ -546,10 +546,11 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
         const uint32_t qpos = firstJoint == NoModelIndex ? NoModelIndex : result.model.joints[firstJoint].indices[1];
         const uint32_t qvel = body.dofs[0];
         result.bodies.push_back({actor.objectId, row, qpos, qvel, static_cast<uint32_t>(actor.colliders.size())});
-        if (qvel == NoModelIndex)
-            continue;
         if (!motion.empty())
             motion[row] = actor.motion;
+        if (qvel == NoModelIndex &&
+            (!actor.kinematic || (actor.linearVelocity == glm::vec3(0.0f) && actor.angularVelocity == glm::vec3(0.0f))))
+            continue;
         const auto center = actor.rotation * Vector(JPH::RVec3(actor.shape->GetCenterOfMass()));
         auto spin = actor.angularVelocity;
         auto speed = actor.linearVelocity;
@@ -560,7 +561,16 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
                 spin[axis] = 0.0f;
         }
         spin = clampSpeed(spin, actor.motion.maxAngularVelocity);
-        const auto linear = clampSpeed(speed, actor.motion.maxLinearVelocity) - glm::cross(spin, center);
+        speed = clampSpeed(speed, actor.motion.maxLinearVelocity);
+        if (actor.kinematic) {
+            auto &prescribed = result.model.initialKinematicMotion;
+            if (prescribed.empty())
+                prescribed.resize(result.model.initialKinematicPoses.size() + result.model.initialStaticPoses.size());
+            prescribed[body.hierarchy[3]] = {ModelVector{speed.x, speed.y, speed.z, 1.0f}, Point(spin),
+                                             Point(actor.position + center)};
+            continue;
+        }
+        const auto linear = speed - glm::cross(spin, center);
         const auto angular = glm::inverse(actor.rotation) * spin;
         for (uint32_t axis = 0; axis < 3; ++axis) {
             initial[qvel + axis] = linear[axis];

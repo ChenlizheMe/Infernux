@@ -111,6 +111,7 @@ struct InxPhyGpuFixedPublication
     std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
     std::shared_ptr<const InxPhyGpuSceneKinematicTargets> m_kinematicTargets;
     std::vector<std::pair<uint32_t, uint32_t>> m_pendingWrenchRows;
+    std::vector<std::pair<uint32_t, uint32_t>> m_kinematicVelocityRows;
     std::shared_ptr<rhi::ComputeBuffer> m_pendingWrenches;
     bool m_integrated = false;
 };
@@ -275,6 +276,7 @@ class InxPhyGpuSceneRuntime final
         std::shared_ptr<const InxPhyGpuScenePoseTargets> poseTargets{};
         std::vector<std::pair<uint32_t, uint32_t>> pendingWrenchRows{};
         std::shared_ptr<const InxPhyGpuSceneKinematicTargets> kinematicTargets{};
+        std::vector<std::pair<uint32_t, uint32_t>> kinematicVelocityRows{};
     };
     struct Receipt
     {
@@ -287,6 +289,8 @@ class InxPhyGpuSceneRuntime final
     [[nodiscard]] FrameWorkFacts Describe() const;
     void EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
                            std::vector<InxPhyGpuBodyCommand> &out) const;
+    [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>>
+    KinematicVelocityRows(const std::vector<InxPhyGpuBodyCommand> &commands) const;
     void BeginOperation(Operation operation);
     bool Advance(bool gpu, uint64_t token);
     void Observe();
@@ -307,6 +311,7 @@ class InxPhyGpuSceneRuntime final
     std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
     std::shared_ptr<const InxPhyGpuSceneKinematicTargets> m_kinematicTargets;
     std::vector<std::pair<uint32_t, uint32_t>> m_pendingWrenchRows;
+    std::vector<std::pair<uint32_t, uint32_t>> m_kinematicVelocityRows;
     uint32_t m_bodyCount;
     bool m_contactReportsConfigured;
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;
