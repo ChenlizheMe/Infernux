@@ -4,7 +4,6 @@
 #include "PhysicsRayIndex.h"
 
 #include <algorithm>
-#include <bit>
 #include <utility>
 
 namespace infernux::physics::warp
@@ -21,7 +20,7 @@ struct NodeInfo
 
 using RefitLevels = std::vector<std::vector<uint32_t>>;
 
-uint32_t AppendIndices(std::vector<RayIndexWord> &records, std::span<const uint32_t> indices)
+uint32_t AppendIndices(std::vector<RayIndexWord> &records, const std::vector<uint32_t> &indices)
 {
     const auto offset = static_cast<uint32_t>(records.size());
     records.resize(records.size() + (indices.size() + 3) / 4);
@@ -64,7 +63,7 @@ void ScheduleSubtrees(const std::vector<spatial::BvhNode> &nodes, const std::vec
 } // namespace
 
 PhysicsRayIndex BuildPhysicsRayIndex(const std::vector<spatial::Bounds> &finiteBounds,
-                                     std::span<const uint32_t> geometryIds, std::span<const uint32_t> planeIds)
+                                     const std::vector<uint32_t> &geometryIds, const std::vector<uint32_t> &planeIds)
 {
     const spatial::Bvh tree = spatial::BuildBvh(finiteBounds);
     PhysicsRayIndex result;
@@ -112,7 +111,8 @@ PhysicsRayIndex BuildPhysicsRayIndex(const std::vector<spatial::Bounds> &finiteB
     records.resize(records.size() + batches.size());
     for (size_t batch = 0; batch < batches.size(); ++batch) {
         auto &levels = batches[batch];
-        std::erase_if(levels, [](const auto &level) { return level.empty(); });
+        levels.erase(std::remove_if(levels.begin(), levels.end(), [](const auto &level) { return level.empty(); }),
+                     levels.end());
         const auto levelStart = static_cast<uint32_t>(records.size());
         records.resize(records.size() + levels.size());
         records[batchStart + batch] = {levelStart, static_cast<uint32_t>(levels.size()), 0, 0};
@@ -124,8 +124,8 @@ PhysicsRayIndex BuildPhysicsRayIndex(const std::vector<spatial::Bounds> &finiteB
     return result;
 }
 
-uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, std::span<const glm::vec3> vertices,
-                              std::span<const std::array<uint32_t, 3>> faces)
+uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, const std::vector<glm::vec3> &vertices,
+                              const std::vector<std::array<uint32_t, 3>> &faces)
 {
     std::vector<spatial::Bounds> bounds;
     bounds.reserve(faces.size());
@@ -146,10 +146,9 @@ uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, std::span<cons
         const auto &node = tree.nodes[index];
         const auto &lo = node.minimum;
         const auto &hi = node.maximum;
-        records.push_back({std::bit_cast<uint32_t>(lo[0]), std::bit_cast<uint32_t>(lo[1]),
-                           std::bit_cast<uint32_t>(lo[2]), node.first});
-        records.push_back({std::bit_cast<uint32_t>(hi[0]), std::bit_cast<uint32_t>(hi[1]),
-                           std::bit_cast<uint32_t>(hi[2]),
+        records.push_back(
+            {glm::floatBitsToUint(lo[0]), glm::floatBitsToUint(lo[1]), glm::floatBitsToUint(lo[2]), node.first});
+        records.push_back({glm::floatBitsToUint(hi[0]), glm::floatBitsToUint(hi[1]), glm::floatBitsToUint(hi[2]),
                            (node.second & spatial::kBvhLeafBit) ? node.second : escape[index]});
     }
     for (const auto index : tree.primitiveOrder) {

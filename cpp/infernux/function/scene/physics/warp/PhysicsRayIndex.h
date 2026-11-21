@@ -5,8 +5,6 @@
 
 #include "../../../../core/math/Bvh.h"
 
-#include <span>
-
 namespace infernux::physics::warp
 {
 
@@ -23,12 +21,12 @@ struct PhysicsRayIndex
 /// Scene cooking passes finite geometry bounds and their corresponding scene IDs.
 /// Planes are tested separately because their collision bounds can be infinite.
 [[nodiscard]] PhysicsRayIndex BuildPhysicsRayIndex(const std::vector<spatial::Bounds> &finiteBounds,
-                                                   std::span<const uint32_t> geometryIds,
-                                                   std::span<const uint32_t> planeIds);
+                                                   const std::vector<uint32_t> &geometryIds,
+                                                   const std::vector<uint32_t> &planeIds);
 
 /// Append a mesh-local tree and return its descriptor index. Face indices address
 /// the same immutable vertex array as the convex and ray geometry programs.
-[[nodiscard]] uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, std::span<const glm::vec3> vertices,
-                                            std::span<const std::array<uint32_t, 3>> faces);
+[[nodiscard]] uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, const std::vector<glm::vec3> &vertices,
+                                            const std::vector<std::array<uint32_t, 3>> &faces);
 
 } // namespace infernux::physics::warp
