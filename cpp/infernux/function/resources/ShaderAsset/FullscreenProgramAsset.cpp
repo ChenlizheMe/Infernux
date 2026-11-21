@@ -27,8 +27,11 @@ std::shared_ptr<const FullscreenProgram> LoadFullscreenProgram(const std::string
     if (!asset_formats::FindShaderSourceKind(path))
         return {};
     const auto asset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-    if (!asset || !asset->program)
+    if (!asset || !asset->program) {
+        if (const auto error = database->GetImportError(guid); !error.empty())
+            throw ShaderProgramSelectionError("Fullscreen shader failed to load: " + path + "\n" + error);
         throw ShaderProgramSelectionError("Fullscreen author program is unavailable: " + path);
+    }
     const auto target = std::find_if(asset->program->targets.begin(), asset->program->targets.end(),
                                      [targetKind](const auto &code) { return code.target == targetKind; });
     if (target == asset->program->targets.end())

@@ -161,6 +161,72 @@ class WorkerFailure(shader.fullscreen):
         database.delete_asset(str(source))
 
 
+def test_fullscreen_graph_reports_cold_shader_compile_failure(assets, engine, scene, tmp_path):
+    from infernux.lib import ConsolePanel, RenderPipelineCallback, SceneManager
+    from infernux.rendergraph import RenderGraph
+
+    database, registry = assets
+    source = tmp_path / "BrokenFullscreen.frag.py"
+    valid = '''import infernux.shader as shader
+
+class BrokenFullscreen(shader.fullscreen):
+    shader_id = "test/cold_fullscreen_diagnostic"
+
+    def main(self) -> shader.vec4:
+        return shader.vec4(0.0, 0.0, 0.0, 1.0)
+'''
+    source.write_text(valid.replace("1.0)", "1.0, 0.0)"), encoding="utf-8")
+    imported = database.import_asset(str(source))
+    assert imported, imported.error
+    assert not registry.is_loaded(imported.guid)
+
+    graph = RenderGraph("Cold fullscreen compile")
+    color = graph.create_texture("color", camera_target=True)
+    graph.add_pass("Present").write_color(color).fullscreen_quad(imported.guid)
+    graph.set_output(color)
+    description = graph.build()
+
+    class Host(RenderPipelineCallback):
+        accepted = None
+
+        def render(self, context, view):
+            self.accepted = context.render_with_graph(description)
+
+    host = Host()
+    panel = ConsolePanel()
+    world = SceneManager.instance()._authoring_runtime_world_id
+    scene.main_camera = scene.create_game_object("Cold fullscreen camera").add_component("Camera")
+    engine.resize_game_render_target(64, 64)
+    engine.set_game_camera_enabled(True)
+    engine.set_render_pipeline(host)
+
+    def tick_until(complete):
+        deadline = time.monotonic() + 5
+        while not complete():
+            assert time.monotonic() < deadline
+            engine.request_full_speed_frame()
+            engine.tick(1 / 60)
+
+    try:
+        tick_until(lambda: host.accepted is not None)
+        assert host.accepted is False
+        cause = database.get_import_error(imported.guid)
+        assert f"{source.name}:7:" in cause and "no overload" in cause
+        diagnostic, = (entry["message"] for entry in panel._get_visible_log_snapshot(100)
+                       if "Render graph 'Cold fullscreen compile'" in entry["message"])
+        assert cause in diagnostic
+
+        sequence = engine._game_screen_status(world)["completed_sequence"]
+        source.write_text(valid, encoding="utf-8")
+        assert database.reimport_asset(str(source))
+        tick_until(lambda: host.accepted and engine._game_screen_status(world)["completed_sequence"] > sequence)
+        assert not database.get_import_error(imported.guid)
+    finally:
+        engine.set_render_pipeline(None)
+        engine.set_game_camera_enabled(False)
+        database.delete_asset(str(source))
+
+
 @pytest.mark.parametrize("location,admission", [("project", "cold"), ("project", "worker"),
                                                ("external", "cold"), ("external", "worker")])
 @pytest.mark.parametrize("suffix,resource_type,loader,valid", [
