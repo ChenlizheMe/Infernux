@@ -21,7 +21,7 @@ struct ContactReport
 [[vk::binding(2, 0)]] StructuredBuffer<uint> counts;
 [[vk::binding(3, 0)]] StructuredBuffer<uint4> topology;
 [[vk::binding(4, 0)]] StructuredBuffer<uint4> reservations;
-[[vk::binding(5, 0)]] StructuredBuffer<ConstraintEvaluation> evaluation;
+[[vk::binding(5, 0)]] StructuredBuffer<ConstraintSolveState> constraintState;
 [[vk::binding(6, 0)]] StructuredBuffer<SpatialMotion> bodyVelocity;
 [[vk::binding(7, 0)]] StructuredBuffer<float4> treeCom;
 [[vk::binding(8, 0)]] RWStructuredBuffer<uint> stepStatus;
@@ -73,12 +73,12 @@ void reportContacts<let HasPrescribed : bool, let Multiple : bool>(uint3 id)
     if (span.y != 0u)
     {
         const uint base = id.y * limits.z + span.x;
-        force = evaluation[base].force * source.normalMargin.xyz;
+        force = constraintState[base].force * source.normalMargin.xyz;
         // The native scene solver uses an elliptic cone. Components 3..5
         // are angular torques; the public linear contact impulse excludes them.
         if (span.y >= 3u)
-            force += evaluation[base + 1u].force * source.tangentAdhesion.xyz +
-                     evaluation[base + 2u].force * source.bitangent.xyz;
+            force += constraintState[base + 1u].force * source.tangentAdhesion.xyz +
+                     constraintState[base + 2u].force * source.bitangent.xyz;
     }
     const float3 point = source.positionDistance.xyz;
     const float3 relative = pointSpeed<HasPrescribed, Multiple>(source.geometry.y, id.y, point) -

@@ -544,8 +544,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
     const auto columnStore = b.Zero("constraintColumns", across(2 * uint64_t{columns}));
     const auto transposeAddress = b.Zero("constraintTransposeAddress", across(2 * uint64_t{nv} + 1));
     const auto transposeEntries = b.Zero("constraintTransposeEntries", across(2 * uint64_t{columns}));
-    const auto residual = b.Zero("constraintResidual", across(rows));
-    const auto evaluation = b.Zero("constraintEvaluation", across(3 * uint64_t{rows}));
+    const auto constraintState = b.Zero("constraintSolveState", across(4 * uint64_t{rows}));
     const auto acceleration = b.Zero("contactAcceleration", across(nv));
 
     constexpr uint32_t ContactTileSize = 256;
@@ -647,14 +646,6 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {13, dyn.warmstart, R},
            {14, acceleration, W},
            {23, transposeAddress, W}});
-    auto objective = b.Dispatch("contact_constraints", "evaluate_contact_objective", rows,
-                                {{0, settings, R},
-                                 {1, stream.records, R},
-                                 {5, counters, R},
-                                 {7, rowStore, R},
-                                 {15, residual, R},
-                                 {16, evaluation, W}});
-
     std::array<ModelWords, 3> options{{{solver.iterations, solver.lineIterations, model.dimensions.layout[3], 0},
                                        {capacity.candidates, substeps, 0, 0},
                                        {}}};
@@ -671,14 +662,12 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
         return ComputeWorkRange{indirectSlot, uint64_t{item} * sizeof(ModelWords), ComputeIndirectArguments::ByteSize};
     };
     const auto indirectLast = [&](DispatchExtent extent) { b.dispatches.back().indirectArguments = grid(extent); };
-    objective.indirectArguments = grid(Rows);
     const auto massTopology = b.Shared("massAdjacency", model.massAdjacency);
     const auto worldState = b.Slot(across(12));
     const auto gradient = b.Zero("contactGradient", across(nv));
     const auto preconditioned = b.Zero("preconditionedContactGradient", across(nv));
     const auto history = b.Zero("contactSearchHistory", across(4 * uint64_t{nv}));
     const auto products = b.Zero("contactMassProducts", across(2 * uint64_t{nv}));
-    const auto ray = b.Zero("contactSearchRay", across(rows));
     const bool multiple = substeps > 1;
     const auto status = multiple ? b.Zero("fixedStepStatus", across(uint64_t{1} + (contactReports ? substeps : 0)),
                                           contactReports ? BufferUsageFlags::TransferSource : BufferUsageFlags::None)
@@ -714,15 +703,15 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {23, transposeAddress, RW},
            {24, transposeEntries, W}});
     indirectLast(Rows);
-    b.Add("contact_constraints", "contact_residual", rows,
+    b.Add("contact_cg", "cg_initialize_constraint_residuals", rows,
           {{0, settings, R},
-           {5, counters, R},
-           {7, rowStore, R},
-           {8, columnStore, R},
-           {14, acceleration, R},
-           {15, residual, W}});
+           {3, rowStore, R},
+           {4, columnStore, R},
+           {5, stream.records, R},
+           {6, constraintState, W},
+           {8, acceleration, R},
+           {16, worldState, R}});
     indirectLast(Rows);
-    b.dispatches.push_back(objective);
     b.Add("contact_cg", "cg_initial_mass_product", nv,
           {{0, settings, R},
            {1, opt, R},
@@ -733,11 +722,15 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {17, products, W}});
     indirectLast(Dofs);
 
-    auto rayProduct = b.Dispatch(
-        "contact_cg", "cg_ray_constraint_product", rows,
-        {{0, settings, R}, {3, rowStore, R}, {4, columnStore, R}, {15, history, R}, {16, worldState, R}, {18, ray, W}});
+    auto rayProduct = b.Dispatch("contact_cg", "cg_ray_constraint_product", rows,
+                                 {{0, settings, R},
+                                  {3, rowStore, R},
+                                  {4, columnStore, R},
+                                  {6, constraintState, RW},
+                                  {15, history, R},
+                                  {16, worldState, R}});
     rayProduct.indirectArguments = grid(Rows);
-    constexpr uint32_t FullSearchStorageBindings = 12;
+    constexpr uint32_t FullSearchStorageBindings = 11;
     std::optional<ComputeWorkDispatch> massSearch;
     ComputeWorkDispatch search;
     if (maxStorageBuffers >= FullSearchStorageBindings) {
@@ -746,14 +739,13 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                              {1, opt, R},
                              {3, rowStore, R},
                              {5, stream.records, R},
-                             {6, residual, R},
+                             {6, constraintState, R},
                              {9, dyn.smoothForce, R},
                              {10, dyn.mass, R},
                              {11, massTopology, R},
                              {15, history, R},
                              {16, worldState, RW},
-                             {17, products, RW},
-                             {18, ray, R}});
+                             {17, products, RW}});
     } else {
         massSearch = b.Dispatch("contact_cg", "cg_ray_mass_and_gauss", 1,
                                 {{0, settings, R},
@@ -770,9 +762,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                              {1, opt, R},
                              {3, rowStore, R},
                              {5, stream.records, R},
-                             {6, residual, R},
-                             {16, worldState, RW},
-                             {18, ray, R}});
+                             {6, constraintState, R},
+                             {16, worldState, RW}});
     }
     search.indirectArguments = grid(Worlds);
 
@@ -781,7 +772,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
         const bool first = iteration == 0;
         b.Add("contact_cg", first ? "cg_project_first_gradient" : "cg_project_gradient", nv,
               {{0, settings, R},
-               {7, evaluation, R},
+               {6, constraintState, R},
                {9, dyn.smoothForce, R},
                {12, gradient, W},
                {16, worldState, R},
@@ -806,14 +797,14 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
         b.dispatches.push_back(search);
         b.Add("contact_cg", "cg_apply_step", std::max(nv, rows),
               {{0, settings, R},
-               {6, residual, RW},
+               {3, rowStore, R},
+               {5, stream.records, R},
+               {6, constraintState, RW},
                {8, acceleration, RW},
                {15, history, R},
                {16, worldState, R},
-               {17, products, RW},
-               {18, ray, R}});
+               {17, products, RW}});
         indirectLast(RowsOrDofs);
-        b.dispatches.push_back(objective);
     }
     b.Add("contact_cg", "finish_contact_step", 1,
           {{0, settings, R},
@@ -834,7 +825,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                               {2, stream.counts, R},
                               {3, contactTopology, R},
                               {4, reservations, R},
-                              {5, evaluation, R},
+                              {5, constraintState, R},
                               {6, dyn.bodyVelocity, R},
                               {7, dyn.subtreeCom, R},
                               {8, status, multiple ? RW : R},

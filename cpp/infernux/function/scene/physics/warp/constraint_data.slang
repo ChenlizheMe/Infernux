@@ -47,6 +47,14 @@ struct ConstraintEvaluation
     uint state;
 };
 
+struct ConstraintSolveState
+{
+    float residual;
+    float ray;
+    float force;
+    uint state;
+};
+
 ConstraintEvaluation evaluateQuadratic(float residual, float diagonal)
 {
     return {-diagonal * residual, 0.5 * diagonal * residual * residual, QuadraticConstraint};

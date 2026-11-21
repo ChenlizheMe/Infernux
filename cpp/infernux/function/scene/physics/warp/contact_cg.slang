@@ -257,7 +257,7 @@ void projectCgGradient<let First : bool>(uint3 id)
         for (uint i = start; i < end; ++i)
         {
             const TransposedConstraint entry = transposeEntries[i];
-            force += entry.value * evaluation[rowBase + entry.row].force;
+            force += entry.value * constraintState[rowBase + entry.row].force;
         }
         result = massProducts[index].x - smoothForce[index] - force;
     }
@@ -352,7 +352,7 @@ void cg_ray_constraint_product(uint3 id : SV_DispatchThreadID)
         const ConstraintColumn column = columns[base + i];
         value += column.value * directionHistory[dofBase + column.dof].z;
     }
-    rowRay[index] = value;
+    constraintState[index].ray = value;
 }
 
 float2 computeMassRay(uint world, uint lane)
@@ -432,8 +432,8 @@ float4 cgRowRay(uint index, uint contactBase, bool elliptic, float inverseFricti
     const uint kind = row.kind;
     if (kind == EqualityRow)
         return float4(0.0);
-    const float start = residuals[index];
-    const float direction = rowRay[index];
+    const float start = constraintState[index].residual;
+    const float direction = constraintState[index].ray;
     const float diagonal = row.diagonal;
     const float delta = alpha * direction;
     const float end = start + delta;
@@ -459,8 +459,8 @@ float4 cgRowRay(uint index, uint contactBase, bool elliptic, float inverseFricti
             float2 tangentStart = float2(0.0);
             for (uint j = 1; j < contact.geometry.z; ++j)
             {
-                const float u = residuals[index + j];
-                const float v = rowRay[index + j];
+                const float u = constraintState[index + j].residual;
+                const float v = constraintState[index + j].ray;
                 const float t = u + alpha * v;
                 const float d = rows[index + j].diagonal;
                 const float muj = contactFriction(contact, j - 1);
@@ -535,8 +535,8 @@ float2 equalityRayTerms(uint world, uint rowCount, uint lane)
         const ConstraintRow row = rows[index];
         if (row.kind == EqualityRow)
         {
-            const float direction = rowRay[index];
-            sum += (row.diagonal * direction) * float2(residuals[index], direction);
+            const float direction = constraintState[index].ray;
+            sum += (row.diagonal * direction) * float2(constraintState[index].residual, direction);
         }
     }
     return reduceCg(float4(sum, 0.0, 0.0), lane).xy;
@@ -678,6 +678,115 @@ void cg_search_step(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
     searchContactRay(world, lane, state);
 }
 
+static const ConstraintEvaluation SatisfiedRow = {0.0, 0.0, SatisfiedConstraint};
+
+ConstraintEvaluation evaluateScalarRow(ConstraintRow row, float residual)
+{
+    if (row.kind == EqualityRow)
+        return evaluateQuadratic(residual, row.diagonal);
+    if (isFrictionConstraint(row.kind))
+        return evaluateFriction(residual, row.diagonal, row.frictionLoss);
+    return residual >= 0.0 ? SatisfiedRow : evaluateQuadratic(residual, row.diagonal);
+}
+
+float rowResidual<let Initial : bool>(uint world, uint index, ConstraintRow row, float alpha)
+{
+    if (!Initial)
+    {
+        const ConstraintSolveState old = constraintState[index];
+        return old.residual + alpha * old.ray;
+    }
+    const uint base = world * settings[0].w + row.layout.x;
+    const uint dofBase = world * settings[1].y;
+    float residual = -row.state.w;
+    for (uint col = 0; col < row.layout.y; ++col)
+    {
+        const ConstraintColumn entry = columns[base + col];
+        residual += entry.value * acceleration[dofBase + entry.dof];
+    }
+    return residual;
+}
+
+void writeEvaluatedRow<let Initial : bool>(uint index, float residual, ConstraintEvaluation value)
+{
+    const float ray = Initial ? 0.0 : constraintState[index].ray;
+    constraintState[index] = {residual, ray, value.force, value.state};
+}
+
+void updateConstraintRows<let Initial : bool>(uint world, uint index, float alpha)
+{
+    const ConstraintRow row = rows[index];
+    if (row.kind != ContactRow || (settings[1].w & EllipticCone) == 0)
+    {
+        const float residual = rowResidual<Initial>(world, index, row, alpha);
+        writeEvaluatedRow<Initial>(index, residual, evaluateScalarRow(row, residual));
+        return;
+    }
+    // One invocation owns all components of an elliptic cone. This avoids
+    // reading a neighbour's residual while it is advancing the same search ray.
+    if (row.layout.w != 0u)
+        return;
+    const Contact contact = contacts[world * settings[0].y + row.layout.z];
+    const uint count = contact.geometry.z;
+    const float first = rowResidual<Initial>(world, index, row, alpha);
+    if (count == 1u)
+    {
+        writeEvaluatedRow<Initial>(index, first, evaluateScalarRow(row, first));
+        return;
+    }
+
+    float residuals[6];
+    residuals[0] = first;
+    float tangentSquared = 0.0;
+    for (uint ordinal = 1; ordinal < count; ++ordinal)
+    {
+        const uint component = index + ordinal;
+        const float residual = rowResidual<Initial>(world, component, rows[component], alpha);
+        residuals[ordinal] = residual;
+        const float value = residual * contactFriction(contact, ordinal - 1u);
+        tangentSquared += value * value;
+    }
+    const float mu = contact.friction.x * asfloat(settings[2 + world].y);
+    const float normal = first * mu;
+    const float tangent = sqrt(tangentSquared);
+    if (normal >= mu * tangent)
+    {
+        for (uint ordinal = 0; ordinal < count; ++ordinal)
+            writeEvaluatedRow<Initial>(index + ordinal, residuals[ordinal], SatisfiedRow);
+    }
+    else if (mu * normal + tangent <= 0.0 || tangent == 0.0)
+    {
+        for (uint ordinal = 0; ordinal < count; ++ordinal)
+            writeEvaluatedRow<Initial>(index + ordinal, residuals[ordinal],
+                                       evaluateQuadratic(residuals[ordinal], rows[index + ordinal].diagonal));
+    }
+    else
+    {
+        const float dm = row.diagonal / max(CgMinValue, mu * mu * (1.0 + mu * mu));
+        const float gap = normal - mu * tangent;
+        const float force = -dm * gap * mu;
+        writeEvaluatedRow<Initial>(index, first, {force, 0.5 * dm * gap * gap, EllipticMiddleState});
+        for (uint ordinal = 1; ordinal < count; ++ordinal)
+        {
+            const float friction = contactFriction(contact, ordinal - 1u);
+            const float componentForce =
+                -force * residuals[ordinal] * friction * friction / max(CgMinValue, tangent);
+            writeEvaluatedRow<Initial>(index + ordinal, residuals[ordinal],
+                                       {componentForce, 0.0, EllipticMiddleState});
+        }
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cg_initialize_constraint_residuals(uint3 id : SV_DispatchThreadID)
+{
+    id = solverDispatchId(id);
+    const uint4 progress = worlds[id.y].progress;
+    if (progress.y == Running && id.x < progress.z)
+        updateConstraintRows<true>(id.y, id.y * settings[0].z + id.x, 0.0);
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void cg_apply_step(uint3 id : SV_DispatchThreadID)
@@ -696,8 +805,5 @@ void cg_apply_step(uint3 id : SV_DispatchThreadID)
         massProducts[dof] = float2(m.x + alpha * m.y, m.y);
     }
     if (id.x < state.progress.z)
-    {
-        const uint row = id.y * settings[0].z + id.x;
-        residuals[row] += alpha * rowRay[row];
-    }
+        updateConstraintRows<false>(id.y, id.y * settings[0].z + id.x, alpha);
 }

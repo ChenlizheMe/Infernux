@@ -27,8 +27,6 @@ static const uint ContactRowGroupSize = 64;
 [[vk::binding(12, 0)]] StructuredBuffer<float> smoothAcceleration;
 [[vk::binding(13, 0)]] StructuredBuffer<float> warmstartAcceleration;
 [[vk::binding(14, 0)]] RWStructuredBuffer<float> acceleration;
-[[vk::binding(15, 0)]] RWStructuredBuffer<float> residuals;
-[[vk::binding(16, 0)]] RWStructuredBuffer<ConstraintEvaluation> evaluation;
 [[vk::binding(17, 0)]] StructuredBuffer<ModelDimensions> motionModel;
 [[vk::binding(18, 0)]] StructuredBuffer<PrescribedMotion> prescribedMotion;
 [[vk::binding(19, 0)]] StructuredBuffer<uint> fixedSteps;
@@ -451,95 +449,4 @@ void seed_contact_acceleration(uint3 id : SV_DispatchThreadID)
     const uint index = id.y * config.y + id.x;
     const bool warmstart = (config.w & DisableWarmstart) == 0 && count != 0u;
     acceleration[index] = warmstart ? warmstartAcceleration[index] : smoothAcceleration[index];
-}
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void contact_residual(uint3 id : SV_DispatchThreadID)
-{
-    id = solverDispatchId(id);
-    const uint4 limits = settings[0];
-    const uint count = activeConstraintRows(id.y, limits);
-    if (count == NoIndex || id.x >= count)
-        return;
-    const uint index = id.y * limits.z + id.x;
-    const ConstraintRow row = rows[index];
-    const uint columnBase = id.y * limits.w + row.layout.x;
-    const uint dofBase = id.y * settings[1].y;
-    float residual = -row.state.w;
-    for (uint j = 0; j < row.layout.y; ++j)
-    {
-        const ConstraintColumn entry = columns[columnBase + j];
-        residual += entry.value * acceleration[dofBase + entry.dof];
-    }
-    residuals[index] = residual;
-}
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void evaluate_contact_objective(uint3 id : SV_DispatchThreadID)
-{
-    id = solverDispatchId(id);
-    const uint4 limits = settings[0];
-    const uint count = activeConstraintRows(id.y, limits);
-    if (count == NoIndex || id.x >= count)
-        return;
-    const uint index = id.y * limits.z + id.x;
-    const ConstraintRow row = rows[index];
-    const float residual = residuals[index];
-    const float diagonal = row.diagonal;
-    const uint kind = row.kind;
-    if (kind == EqualityRow)
-    {
-        evaluation[index] = evaluateQuadratic(residual, diagonal);
-        return;
-    }
-    if (isFrictionConstraint(kind))
-    {
-        evaluation[index] = evaluateFriction(residual, diagonal, row.frictionLoss);
-        return;
-    }
-    const ConstraintEvaluation satisfied = {0.0, 0.0, SatisfiedConstraint};
-    const bool elliptic = (settings[1].w & EllipticCone) != 0;
-    if (kind != ContactRow || !elliptic)
-    {
-        evaluation[index] = residual >= 0.0 ? satisfied : evaluateQuadratic(residual, diagonal);
-        return;
-    }
-    const Contact contact = contacts[id.y * limits.y + row.layout.z];
-    if (contact.geometry.z == 1)
-    {
-        evaluation[index] = residual >= 0.0 ? satisfied : evaluateQuadratic(residual, diagonal);
-        return;
-    }
-
-    const uint ordinal = row.layout.w;
-    const uint first = index - ordinal;
-    const float mu = contact.friction.x * asfloat(settings[2 + id.y].y);
-    const float normal = residuals[first] * mu;
-    float tangentSquared = 0.0;
-    for (uint j = 1; j < contact.geometry.z; ++j)
-    {
-        const float value = residuals[first + j] * contactFriction(contact, j - 1);
-        tangentSquared += value * value;
-    }
-    const float tangent = sqrt(tangentSquared);
-    if (normal >= mu * tangent)
-        evaluation[index] = satisfied;
-    else if (mu * normal + tangent <= 0.0 || tangent == 0.0)
-        evaluation[index] = evaluateQuadratic(residual, diagonal);
-    else
-    {
-        const float dm = rows[first].diagonal / max(ConstraintMinValue, mu * mu * (1.0 + mu * mu));
-        const float gap = normal - mu * tangent;
-        const float force = -dm * gap * mu;
-        if (ordinal == 0)
-            evaluation[index] = {force, 0.5 * dm * gap * gap, EllipticMiddleState};
-        else
-        {
-            const float friction = contactFriction(contact, ordinal - 1);
-            evaluation[index] = {-force * residual * friction * friction / max(ConstraintMinValue, tangent),
-                                 0.0, EllipticMiddleState};
-        }
-    }
 }

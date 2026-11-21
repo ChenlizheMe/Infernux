@@ -30,8 +30,7 @@ struct CgWorld
 [[vk::binding(3, 0)]] StructuredBuffer<ConstraintRow> rows;
 [[vk::binding(4, 0)]] StructuredBuffer<ConstraintColumn> columns;
 [[vk::binding(5, 0)]] StructuredBuffer<Contact> contacts;
-[[vk::binding(6, 0)]] RWStructuredBuffer<float> residuals;
-[[vk::binding(7, 0)]] StructuredBuffer<ConstraintEvaluation> evaluation;
+[[vk::binding(6, 0)]] RWStructuredBuffer<ConstraintSolveState> constraintState;
 [[vk::binding(8, 0)]] RWStructuredBuffer<float> acceleration;
 [[vk::binding(9, 0)]] StructuredBuffer<float> smoothForce;
 [[vk::binding(10, 0)]] StructuredBuffer<float> massMatrix;
@@ -42,7 +41,6 @@ struct CgWorld
 [[vk::binding(15, 0)]] RWStructuredBuffer<float4> directionHistory; // previous gradient, preconditioned, direction
 [[vk::binding(16, 0)]] RWStructuredBuffer<CgWorld> worlds;
 [[vk::binding(17, 0)]] RWStructuredBuffer<float2> massProducts; // M * acceleration, M * direction
-[[vk::binding(18, 0)]] RWStructuredBuffer<float> rowRay;
 
 groupshared float4 cgReduction[CgWidth];
 groupshared uint uniformStatus;

@@ -307,7 +307,7 @@ void initialize_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupInde
 
 ContactMetric evaluateNewtonContactMetric(uint world, uint index, ConstraintRow row)
 {
-    const uint status = evaluation[index].state;
+    const uint status = constraintState[index].state;
     ContactMetric metric;
     metric.low = float4(status == QuadraticConstraint ? row.diagonal : 0.0, 0.0, 0.0, 0.0);
     metric.high = float2(0.0);
@@ -325,20 +325,20 @@ ContactMetric evaluateNewtonContactMetric(uint world, uint index, ConstraintRow 
         float norm = 0.0;
         for (uint i = 1; i < dimension; ++i)
         {
-            const float value = contactFriction(contact, i - 1) * residuals[first + i];
+            const float value = contactFriction(contact, i - 1) * constraintState[first + i].residual;
             norm += value * value;
         }
         const float inverseLength = 1.0 / max(CgMinValue, sqrt(norm));
-        const float scaledNormal = mu2 * residuals[first] * inverseLength;
+        const float scaledNormal = mu2 * constraintState[first].residual * inverseLength;
         const float firstScale = ordinal == 0 ? mu : contactFriction(contact, ordinal - 1);
         const float projectedFirst = ordinal == 0 ? 0.0 :
-                                     firstScale * firstScale * residuals[index] * inverseLength;
+                                     firstScale * firstScale * constraintState[index].residual * inverseLength;
         const float normalFirst = ordinal == 0 ? firstScale : 0.0;
         for (uint i = 0; i < dimension; ++i)
         {
             const float secondScale = i == 0 ? mu : contactFriction(contact, i - 1);
             const float projectedSecond = i == 0 ? 0.0 :
-                                          secondScale * secondScale * residuals[first + i] * inverseLength;
+                                          secondScale * secondScale * constraintState[first + i].residual * inverseLength;
             const float normalSecond = i == 0 ? secondScale : 0.0;
             const float diagonal = i == ordinal && i != 0 ? firstScale * firstScale : 0.0;
             const float value = dm * (normalFirst * normalSecond -
