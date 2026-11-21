@@ -17,18 +17,37 @@ class GTAOTemporal(shader.fullscreen):
         if not self.history.valid:
             return shader.vec4(center)
 
+        size = shader.ivec2(shader.dimensions(self.visibility, 0))
+        mask = shader.uint(15)
         if self.use_reprojection:
             reprojection = shader.load(self.reprojection, pixel, 0)
-            if reprojection.y == 0:
+            mask = reprojection.y & shader.uint(15)
+            if mask == 0:
                 return shader.vec4(center)
-            uv_delta = diffuse_previous_uv_delta(reprojection.x)
+            # Match the previous raster footprint used to generate the coverage bits.
+            previous_uv = (shader.vec2(pixel) + 0.5) / shader.vec2(size)
+            previous_uv = previous_uv + diffuse_previous_uv_delta(reprojection.x) - shader._view_jitter_delta_uv()
         else:
-            uv_delta = -shader.load(self.motion, pixel, 0).xy
-        previous_uv = ctx.uv + uv_delta
+            previous_uv = ctx.uv - shader.load(self.motion, pixel, 0).xy
         if shader.any(previous_uv < shader.vec2(0.0)) or shader.any(previous_uv >= shader.vec2(1.0)):
             return shader.vec4(center)
-        previous = shader.sample_level(self.history, previous_uv, 0.0).x
-        size = shader.ivec2(shader.dimensions(self.visibility, 0))
+        if mask == 15:
+            previous = shader.sample_level(self.history, previous_uv, 0.0).x
+        else:
+            position = previous_uv * shader.vec2(size) - 0.5
+            origin = shader.ivec2(shader.floor(position))
+            fraction = shader.frac(position)
+            weighted = 0.0
+            coverage = 0.0
+            for i in range(4):
+                if (mask & (shader.uint(1) << i)) == 0:
+                    continue
+                offset = shader.ivec2(i & 1, i >> 1)
+                weights = 1.0 - shader.abs(fraction - shader.vec2(offset))
+                area = weights.x * weights.y
+                weighted += shader.load(self.history, origin + offset, 0).x * area
+                coverage += area
+            previous = weighted / coverage if coverage > 0.0 else center
         total = 0.0
         mean = 0.0
         square = 0.0
