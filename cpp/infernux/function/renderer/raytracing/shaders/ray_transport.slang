@@ -855,7 +855,8 @@ InxScreenDiffuseTrace inx_march_diffuse_screen(TraceRay ray, float4x4 vp, InxUIn
     float4 probe = clip + 0.5 * travel;
     float w = probe.w >= 0.0 ? max(probe.w, 1.0e-10) : min(probe.w, -1.0e-10);
     float3 near_end = probe.xyz / w;
-    near_end = start + (near_end - start) * (near_end.z < 0.0 ? -1.0 : 1.0);
+    // Crossing the eye reverses the projected direction. Crossing a finite far plane only changes depth.
+    near_end = start + (near_end - start) * (w < 0.0 ? -1.0 : 1.0);
     near_end = inx_clip_diffuse_end(start, near_end, 1.0);
     float jitter = frac(frac(52.982918 * frac(dot(float2(pixel), float2(0.06711056, 0.00583715)))) +
                         float(frame & 3u) * 0.25);
