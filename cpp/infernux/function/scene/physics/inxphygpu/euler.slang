@@ -28,7 +28,7 @@
 [[vk::binding(16, 0)]] RWStructuredBuffer<uint> fixedSteps;
 [[vk::binding(17, 0)]] StructuredBuffer<BodyModel> sceneBodies;
 [[vk::binding(18, 0)]] StructuredBuffer<SceneRigidMotion> sceneMotion;
-[[vk::binding(19, 0)]] StructuredBuffer<uint2> bodyActivity;
+[[vk::binding(19, 0)]] StructuredBuffer<SceneBodyActivity> bodyActivity;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -194,7 +194,7 @@ void advance_contact_position(uint3 id : SV_DispatchThreadID)
 
 bool sceneBodySleeps(uint world, uint body)
 {
-    return bodyActivity[world * model[0].state.z + body].y != NoIndex;
+    return bodyActivity[world * model[0].state.z + body].group != NoIndex;
 }
 
 void advanceControlledVelocity<let Contact : bool>(uint3 id)

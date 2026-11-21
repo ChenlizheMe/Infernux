@@ -174,7 +174,13 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
         const auto id = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
         const auto kind = static_cast<InxPhyGpuSceneJointKind>(joint.settings.index());
         const auto parameterOffset = static_cast<uint32_t>(parameters.size());
-        scene.jointBindings[index] = {id, kind, distance && distance->autoDistance, parameterOffset, reference};
+        scene.jointBindings[index] = {
+            id,
+            kind,
+            distance && distance->autoDistance,
+            parameterOffset,
+            reference,
+            {a.inverseMass > 0.0f ? a.body : NoModelIndex, b.inverseMass > 0.0f ? b.body : NoModelIndex}};
         descriptors.push_back({id, a.body, b.body, static_cast<uint32_t>(support.size()) - first});
         const uint32_t equalityRows = (distance || six) ? 0u : (swing ? 3u : (hinge || slider ? 5u : 6u));
         descriptors.push_back({a.body, b.body, first, equalityRows});
@@ -521,7 +527,11 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
     for (size_t index = 0; index < actors.size(); ++index) {
         const auto &actor = actors[index];
         const auto row = result.model.bodyRows[index];
-        const auto &body = result.model.bodies[row];
+        auto &body = result.model.bodies[row];
+        if (actor.mass) {
+            const auto bounds = actor.shape->GetLocalBounds();
+            body.subtreeMass[2] = (bounds.GetCenter().Abs() + bounds.GetExtent()).Length();
+        }
         const uint32_t firstJoint = body.hierarchy[1];
         const uint32_t qpos = firstJoint == NoModelIndex ? NoModelIndex : result.model.joints[firstJoint].indices[1];
         const uint32_t qvel = body.dofs[0];

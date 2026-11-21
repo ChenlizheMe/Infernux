@@ -7,6 +7,14 @@ struct SceneRigidMotion
     float2 velocityLimit; // COM metres/s and radians/s.
 };
 
+struct SceneBodyActivity
+{
+    uint marker; // Quiet seconds for dynamic bodies, next fixed index for edited supports.
+    uint group;  // Sleeping island root, or NoIndex when awake.
+    uint supports;
+    uint jointEdited;
+};
+
 float3 clampSceneSpeed(float3 velocity, float limit)
 {
     const float squared = dot(velocity, velocity);

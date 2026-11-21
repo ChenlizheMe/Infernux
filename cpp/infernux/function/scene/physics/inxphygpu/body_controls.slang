@@ -64,7 +64,7 @@ struct SavedMotion
 [[vk::binding(20, 0)]] StructuredBuffer<uint> previousAddresses;
 [[vk::binding(21, 0)]] StructuredBuffer<SceneRigidMotion> sceneMotion;
 [[vk::binding(22, 0)]] StructuredBuffer<float> fixedTimeSteps;
-[[vk::binding(23, 0)]] RWStructuredBuffer<uint2> bodyActivity; // Last support edit's step, sleeping group or NoIndex.
+[[vk::binding(23, 0)]] RWStructuredBuffer<SceneBodyActivity> bodyActivity;
 
 float4 conjugate(float4 rotation)
 {
@@ -134,7 +134,8 @@ void import_body_states(uint3 id : SV_DispatchThreadID)
         storeOrigin(offset.x, pose);
         store3(qvel, offset.y, linear - cross(spin, shift));
         store3(qvel, offset.y + 3, rotateVector(spin, conjugate(pose.rotation)));
-        bodyActivity[first + id.x].y = asfloat(previousStates[address + 2].w) != 0.0 ? id.x : NoIndex;
+        bodyActivity[first + id.x] = {previousStates[address + 3].w,
+            asfloat(previousStates[address + 2].w) != 0.0 ? id.x : NoIndex, previousStates[address + 4].w, 0u};
     }
     else if (body.hierarchy.w != NoIndex)
     {
@@ -164,7 +165,8 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
     float3 force = float3(0.0);
     float3 torque = float3(0.0);
     const uint activityRow = span.x * size.state.z + span.y;
-    uint sleep = bodyActivity[activityRow].y;
+    SceneBodyActivity activity = bodyActivity[activityRow];
+    uint sleep = activity.group;
     for (uint i = span.z; i < span.z + span.w; ++i)
     {
         const BodyCommand command = commands[i];
@@ -177,18 +179,25 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
         else if (operation == Wake)
         {
             sleep = NoIndex;
+            activity.marker = 0;
         }
         else if (operation == SetPosition)
         {
             if (any(pose.position.xyz != command.value.xyz))
+            {
                 sleep = NoIndex;
+                activity.marker = 0;
+            }
             pose.position.xyz = command.value.xyz;
         }
         else if (operation == SetRotation)
         {
             const float4 target = normalize(command.value);
             if (!all(pose.rotation == target) && !all(pose.rotation == -target))
+            {
                 sleep = NoIndex;
+                activity.marker = 0;
+            }
             pose.rotation = target;
             shift = centerOffset(body, pose);
         }
@@ -204,6 +213,7 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
         {
             spin = speed = force = torque = float3(0.0);
             sleep = NoIndex;
+            activity.marker = 0;
         }
         else
         {
@@ -246,7 +256,11 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
         if (any(speed != 0.0) || any(spin != 0.0) || any(force != 0.0) || any(torque != 0.0))
             sleep = NoIndex;
     }
-    bodyActivity[activityRow].y = sleep;
+    if (activity.group != sleep || any(speed != 0.0) || any(spin != 0.0) ||
+        any(force != 0.0) || any(torque != 0.0))
+        activity.marker = 0;
+    activity.group = sleep;
+    bodyActivity[activityRow] = activity;
     const float4 inverse = conjugate(pose.rotation);
     storeOrigin(offset.x, pose);
     store3(qvel, offset.y, speed - cross(spin, shift));
@@ -348,7 +362,7 @@ void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensio
     }
     if (any(origin.position.xyz != undo.position.xyz) ||
         (!all(origin.rotation == undo.rotation) && !all(origin.rotation == -undo.rotation)))
-        bodyActivity[span.x * size.state.z + span.y].x = fixedSteps[span.x] + 1u;
+        bodyActivity[span.x * size.state.z + span.y].marker = fixedSteps[span.x] + 1u;
     if (!Integrate)
     {
         storePrescribedPose(span.x, body, size, origin);
@@ -535,10 +549,17 @@ void publishBodies<let HasStatus : bool>(uint3 id)
     const uint base = 5 * row;
     bodyStates[base] = asuint(pose.position);
     bodyStates[base + 1] = asuint(pose.rotation);
-    const bool sleeping = body.dofs.y != 0 && bodyActivity[row].y != NoIndex;
+    const SceneBodyActivity activity = bodyActivity[row];
+    const bool dynamic = body.dofs.y != 0;
+    const bool sleeping = dynamic && activity.group != NoIndex;
     bodyStates[base + 2] = asuint(float4(pose.position.xyz + offset, sleeping ? 1.0 : 0.0));
     bodyStates[base + 3] = asuint(float4(speed, 0.0));
     bodyStates[base + 4] = asuint(float4(spin, 0.0));
+    if (dynamic)
+    {
+        bodyStates[base + 3].w = activity.marker;
+        bodyStates[base + 4].w = activity.supports;
+    }
     if (id.x == 0)
     {
         uint count, stride;

@@ -39,6 +39,12 @@ struct InxPhyGpuContactSolver
     float minimumRestitutionSpeed = 2.0f;
 };
 
+struct InxPhyGpuSleepSettings
+{
+    float quietTime = 0.5f;       // Seconds of continuous quiet required.
+    float pointVelocity = 0.005f; // Maximum speed in m/s at a shape point.
+};
+
 struct InxPhyGpuContactStream
 {
     // Counts retain the requested sizes even when a stream runs out of capacity.
@@ -188,6 +194,7 @@ struct InxPhyGpuJointParameterUpdate
     uint32_t offset; // In ModelWords records within one world.
     std::variant<ModelWords, ModelJointVectors, InxPhyGpuDistanceSpring, ModelSwingTwistControls, ModelSixDOFControls>
         value;
+    std::array<uint32_t, 2> dynamicEndpoints{NoModelIndex, NoModelIndex};
 };
 
 enum class InxPhyGpuBodyPublication
@@ -201,9 +208,9 @@ enum class InxPhyGpuBodyPublication
 struct InxPhyGpuBodyState
 {
     ModelPose pose;
-    ModelVector centerOfMass; // xyz center of mass, w is 1.0 for a sleeping body.
-    ModelVector linearVelocity;
-    ModelVector angularVelocity;
+    ModelVector centerOfMass;    // xyz center of mass, w is 1.0 for a sleeping body.
+    ModelVector linearVelocity;  // w carries quiet seconds for a dynamic body.
+    ModelVector angularVelocity; // w carries the support count as raw bits.
 };
 
 struct PreparedInxPhyGpuStep
@@ -231,7 +238,7 @@ class InxPhyGpuStep
           const ModelVector &gravity, const InxPhyGpuCollisionModel *collision = nullptr,
           InxPhyGpuCollisionCapacity capacity = {}, const InxPhyGpuContactSolver *solver = nullptr,
           InxPhyGpuRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0, bool contactReports = false,
-          uint32_t substeps = 1, const InxPhyGpuStateHandoff &handoff = {});
+          uint32_t substeps = 1, const InxPhyGpuStateHandoff &handoff = {}, InxPhyGpuSleepSettings sleep = {});
 
     /// The ordered snapshot holds qpos, qvel, clocks and, with contact response, a uint32 status per world.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
@@ -297,7 +304,7 @@ class InxPhyGpuStep
   private:
     struct BodyControls
     {
-        std::shared_ptr<rhi::ComputeBuffer> commands, spans, states;
+        std::shared_ptr<rhi::ComputeBuffer> commands, spans, states, activity;
         rhi::ComputeDispatchDesc apply, edit, finish, pose, publish, publishWithStatus;
         std::vector<uint8_t> motion;
         uint32_t capacity = 0;

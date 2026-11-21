@@ -27,7 +27,7 @@ struct BodyModel
     float4 inertialPosition;
     float4 inertialRotation;
     float4 inertiaMass; // principal inertia xyz, mass
-    float4 subtreeMass; // subtree mass, gravity compensation scale, unused
+    float4 subtreeMass; // Subtree mass, gravity compensation, maximum COM-to-surface radius, unused.
     uint4 dofs; // first dof, dof count, 1-based static pose row, static poses per world (world row only)
 };
 

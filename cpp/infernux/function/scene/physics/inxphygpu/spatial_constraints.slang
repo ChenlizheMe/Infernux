@@ -7,6 +7,7 @@
 #include "constraint_parameters.slang"
 #include "constraint_stream.slang"
 #include "prescribed_motion.slang"
+#include "scene_motion.slang"
 
 static const uint SpatialEqualityWords = 9;
 static const uint SceneHinge = 1;
@@ -34,6 +35,7 @@ struct HingeDrive
 [[vk::binding(15, 0)]] RWStructuredBuffer<SpatialMotion> sceneBodyVelocity;
 [[vk::binding(16, 0)]] StructuredBuffer<ModelDimensions> sceneDimensions;
 [[vk::binding(17, 0)]] StructuredBuffer<uint4> sceneParameters;
+[[vk::binding(18, 0)]] StructuredBuffer<SceneBodyActivity> sceneActivity;
 
 struct SpatialEndpoint
 {
@@ -380,13 +382,22 @@ AngularRows swingTwistRows(uint record, float4 relative, float3 relativeVelocity
     return result;
 }
 
-void emitSpatialRows<let SceneJoint : bool>(uint3 id)
+bool jointHasAwakeEndpoint(uint world, uint2 endpoints)
+{
+    const uint base = world * settings[1].x;
+    return (sceneBodies[endpoints.x].dofs.y != 0 && sceneActivity[base + endpoints.x].group == NoIndex) ||
+           (sceneBodies[endpoints.y].dofs.y != 0 && sceneActivity[base + endpoints.y].group == NoIndex);
+}
+
+void emitSpatialRows<let SceneJoint : bool, let Controlled : bool>(uint3 id)
 {
     const uint4 model = spatialModel[0]; // Descriptor count, then parameter or equality activation stride.
     if (id.x >= model.x)
         return;
     const uint record = 1 + (SceneJoint ? SceneJointWords : SpatialEqualityWords) * id.x;
     const uint4 source = spatialModel[record]; // equality id, first body, second body, Jacobian width
+    if (Controlled && !jointHasAwakeEndpoint(id.y, source.yz))
+        return;
     if (!SceneJoint && equalityActive[id.y * model.y + source.x] == 0)
         return;
     const uint4 span = spatialModel[record + 1]; // first welded body, second welded body, support offset, height
@@ -600,7 +611,7 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
 [numthreads(64, 1, 1)]
 void emit_spatial_equality_rows(uint3 id : SV_DispatchThreadID)
 {
-    emitSpatialRows<false>(id);
+    emitSpatialRows<false, false>(id);
 }
 
 [shader("compute")]
@@ -610,7 +621,16 @@ void emit_scene_joint_rows(uint3 id : SV_DispatchThreadID)
     const uint4 model = spatialModel[0];
     if (id.x >= model.x - model.z)
         return;
-    emitSpatialRows<true>(id);
+    emitSpatialRows<true, false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void emit_controlled_scene_joint_rows(uint3 id : SV_DispatchThreadID)
+{
+    const uint4 model = spatialModel[0];
+    if (id.x < model.x - model.z)
+        emitSpatialRows<true, true>(id);
 }
 
 void appendSixAxisMotor(inout AngularRows result, float3 direction, float speed, float error, float targetSpeed,
@@ -737,15 +757,15 @@ AngularRows sixAngularRows(uint record, uint2 modes, float4 rotation, float3 vel
     return result;
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void emit_scene_six_dof_rows(uint3 id : SV_DispatchThreadID)
+void emitSceneSixDofRows<let Controlled : bool>(uint3 id)
 {
     const uint4 model = spatialModel[0];
     if (id.x >= model.z)
         return;
     const uint record = 1 + SceneJointWords * (model.x - model.z + id.x);
     const uint4 source = spatialModel[record];
+    if (Controlled && !jointHasAwakeEndpoint(id.y, source.yz))
+        return;
     const uint4 span = spatialModel[record + 1];
     const uint4 reference = spatialModel[record + 8];
     const uint4 limits = settings[0];
@@ -816,6 +836,20 @@ void emit_scene_six_dof_rows(uint3 id : SV_DispatchThreadID)
             float4(row.response.x, 0.0, speed, row.response.y - bias),
             row.response.z, row.response.w, row.kind};
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void emit_scene_six_dof_rows(uint3 id : SV_DispatchThreadID)
+{
+    emitSceneSixDofRows<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void emit_controlled_scene_six_dof_rows(uint3 id : SV_DispatchThreadID)
+{
+    emitSceneSixDofRows<true>(id);
 }
 
 [shader("compute")]

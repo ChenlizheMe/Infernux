@@ -11,6 +11,7 @@
 #include "constraint_transpose.slang"
 #include "solver_worlds.slang"
 #include "prescribed_motion.slang"
+#include "scene_motion.slang"
 
 static const uint NegativeJacobian = 0x80000000u;
 static const uint ContactTileSize = 256;
@@ -32,6 +33,7 @@ static const uint ContactRowGroupSize = 64;
 [[vk::binding(20, 0)]] StructuredBuffer<uint> contactOrder;
 [[vk::binding(21, 0)]] RWStructuredBuffer<uint> sortedContacts;
 [[vk::binding(22, 0)]] StructuredBuffer<uint> contactMergeWidth;
+[[vk::binding(25, 0)]] StructuredBuffer<SceneBodyActivity> sceneActivity;
 
 struct ContactOrderKey
 {
@@ -188,9 +190,7 @@ void writeContactColumns(uint first, uint second, uint base, uint width)
     }
 }
 
-[shader("compute")]
-[numthreads(ContactRowGroupSize, 1, 1)]
-void reserve_contact_rows(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void reserveContactRows<let Controlled : bool>(uint3 group, uint lane)
 {
     const uint4 limits = settings[0];
     const bool elliptic = (settings[1].w & EllipticCone) != 0;
@@ -214,7 +214,18 @@ void reserve_contact_rows(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
                 height = contactConstraintRows(contact, elliptic);
                 firstDof = contactBody(contact.geometry.x).x;
                 secondDof = contactBody(contact.geometry.y).x;
-                width = contactColumnCount(firstDof, secondDof);
+                if (Controlled)
+                {
+                    const uint bodyBase = world * settings[1].x;
+                    const bool awakeA = firstDof != NoIndex &&
+                        sceneActivity[bodyBase + topology[contact.geometry.x].x].group == NoIndex;
+                    const bool awakeB = secondDof != NoIndex &&
+                        sceneActivity[bodyBase + topology[contact.geometry.y].x].group == NoIndex;
+                    if (!awakeA && !awakeB)
+                        height = 0;
+                }
+                if (height != 0)
+                    width = contactColumnCount(firstDof, secondDof);
             }
         }
         const uint2 size = uint2(height, height * width);
@@ -245,6 +256,20 @@ void reserve_contact_rows(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         rowCounts[2 * world].store(totals.x);
         rowCounts[2 * world + 1].store(totals.y);
     }
+}
+
+[shader("compute")]
+[numthreads(ContactRowGroupSize, 1, 1)]
+void reserve_contact_rows(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    reserveContactRows<false>(group, lane);
+}
+
+[shader("compute")]
+[numthreads(ContactRowGroupSize, 1, 1)]
+void reserve_scene_contact_rows(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    reserveContactRows<true>(group, lane);
 }
 
 float3 contactDirection(Contact contact, uint axis)

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <core/config/EngineConfig.h>
 #include <cstring>
 #include <stdexcept>
 #include <unordered_map>
@@ -254,9 +255,11 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     }
     m_layout = std::move(layout);
     m_activeFixedInputs.assign(m_layout->worlds.size(), {timestep, {gravity[0], gravity[1], gravity[2]}});
+    const auto &config = EngineConfig::Get();
     auto prepared = InxPhyGpuStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_layout->worlds.size()),
                                          timestep, gravity, &scene.collision, collisionCapacity, &solver, rayLayout,
-                                         commandCapacity, contactReports, substeps, handoff);
+                                         commandCapacity, contactReports, substeps, handoff,
+                                         {config.physicsTimeBeforeSleep, config.physicsPointVelocitySleepThreshold});
     if (!prepared.step)
         throw std::runtime_error("Could not allocate the inxphygpu scene world layout");
     m_step = std::move(prepared.step);
@@ -316,6 +319,9 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
         if (binding == joints.end())
             throw std::invalid_argument("inxphygpu joint update requires an enrolled joint in the selected world");
         const auto &joint = binding->second;
+        const auto append = [&](uint32_t offset, const auto &value) {
+            updates.push_back({world, offset, value, joint.dynamicEndpoints});
+        };
         if (const auto *limits = std::get_if<InxPhyGpuJointLimits>(&update.value)) {
             const auto minimum = limits->minimum, maximum = limits->maximum;
             const bool axial = joint.kind == InxPhyGpuSceneJointKind::Hinge ||
@@ -327,31 +333,30 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
                  (joint.autoDistance || !limits->enabled || minimum < 0.0f)))
                 throw std::invalid_argument(
                     "inxphygpu joint limits must match the enrolled constraint and its authored mode");
-            updates.push_back({world, joint.parameterOffset, limits->Pack()});
+            append(joint.parameterOffset, limits->Pack());
         } else if (const auto *drive = std::get_if<InxPhyGpuHingeDrive>(&update.value)) {
             if (joint.kind != InxPhyGpuSceneJointKind::Hinge)
                 throw std::invalid_argument("inxphygpu hinge drive requires an enrolled hinge");
-            updates.push_back({world, joint.parameterOffset + 1, drive->Pack()});
+            append(joint.parameterOffset + 1, drive->Pack());
         } else if (const auto *spring = std::get_if<InxPhyGpuDistanceSpring>(&update.value)) {
             if (joint.kind != InxPhyGpuSceneJointKind::Distance || !std::isfinite(spring->stiffness) ||
                 !std::isfinite(spring->damping) || spring->stiffness < 0.0f || spring->damping < 0.0f)
                 throw std::invalid_argument(
                     "inxphygpu distance spring requires finite nonnegative coefficients on a distance joint");
-            updates.push_back({world, joint.parameterOffset + 1, *spring});
+            append(joint.parameterOffset + 1, *spring);
         } else if (const auto *six = std::get_if<ModelSixDOFControls>(&update.value)) {
             if (joint.kind != InxPhyGpuSceneJointKind::SixDOF)
                 throw std::invalid_argument("inxphygpu six-axis parameters require an enrolled SixDOF joint");
-            updates.push_back({world, joint.parameterOffset, *six});
+            append(joint.parameterOffset, *six);
         } else {
             if (joint.kind != InxPhyGpuSceneJointKind::SwingTwist)
                 throw std::invalid_argument("inxphygpu swing-twist parameters require an enrolled swing-twist joint");
             constexpr uint32_t targetOffset = sizeof(ModelSwingTwistControls) / sizeof(ModelWords);
             if (const auto *parameters = std::get_if<InxPhyGpuSwingTwistParameters>(&update.value)) {
-                updates.push_back({world, joint.parameterOffset, parameters->controls});
-                updates.push_back({world, joint.parameterOffset + targetOffset, parameters->targets.Pack()});
+                append(joint.parameterOffset, parameters->controls);
+                append(joint.parameterOffset + targetOffset, parameters->targets.Pack());
             } else {
-                updates.push_back({world, joint.parameterOffset + targetOffset,
-                                   std::get<InxPhyGpuSwingTwistTargets>(update.value).Pack()});
+                append(joint.parameterOffset + targetOffset, std::get<InxPhyGpuSwingTwistTargets>(update.value).Pack());
             }
         }
     }

@@ -8,6 +8,7 @@
 #include "constraint_data.slang"
 #include "linear_dispatch.slang"
 #include "prescribed_motion.slang"
+#include "scene_motion.slang"
 
 struct TreeActivity
 {
@@ -53,8 +54,14 @@ struct TreeActivity
 [[vk::binding(29, 0)]] StructuredBuffer<uint> sceneFixedSteps;
 [[vk::binding(30, 0)]] StructuredBuffer<PrescribedMotion> scenePrescribed;
 [[vk::binding(31, 0)]] StructuredBuffer<uint4> sceneJointModels;
-[[vk::binding(32, 0)]] RWStructuredBuffer<uint2> activityCheckpoint;
+[[vk::binding(32, 0)]] RWStructuredBuffer<SceneBodyActivity> activityCheckpoint;
 [[vk::binding(33, 0)]] StructuredBuffer<uint> sceneStepStatus;
+[[vk::binding(34, 0)]] RWStructuredBuffer<SceneBodyActivity> sceneActivity;
+[[vk::binding(35, 0)]] StructuredBuffer<float2> sceneSleepSettings;
+[[vk::binding(36, 0)]] StructuredBuffer<float> sceneCommandedForce;
+[[vk::binding(37, 0)]] StructuredBuffer<float> sceneTimestep;
+[[vk::binding(38, 0)]] StructuredBuffer<float> scenePositions;
+[[vk::binding(40, 0)]] RWStructuredBuffer<float> sceneSmoothForce;
 
 uint4 treeRange(uint tree)
 {
@@ -372,17 +379,26 @@ void begin_scene_wakes(uint3 id : SV_DispatchThreadID)
         return;
     const uint index = id.y * size.state.z + id.x;
     const uint2 dofs = sceneBodies[id.x].dofs.xy;
-    bool awake = dofs.y != 0 && treeSleep[index].y == NoIndex;
+    SceneBodyActivity state = sceneActivity[index];
+    bool awake = dofs.y != 0 && (state.group == NoIndex || state.jointEdited != 0u);
+    if (state.jointEdited != 0u)
+    {
+        state.marker = 0u;
+        state.jointEdited = 0u;
+        sceneActivity[index] = state;
+    }
     for (uint dof = 0; dof < dofs.y && !awake; ++dof)
         awake = appliedForce[id.y * size.state.y + dofs.x + dof] != 0.0;
-    activity[index].wakeParent.store(id.x);
+    activity[index].wakeParent.store(min(id.x, state.group));
+    activity[index].islandParent.store(id.x);
     activity[index].wakeAge.store(awake ? 0u : NoIndex);
+    activity[index].quietAge.store(0u); // Counts supports until wake resolution.
 }
 
 bool sceneSupportMoves(uint world, uint body, ModelDimensions size)
 {
     const uint step = sceneFixedSteps[world] + 1u;
-    if (treeSleep[world * size.state.z + body].x == step)
+    if (sceneActivity[world * size.state.z + body].marker == step)
         return true;
     const uint row = prescribedRow(sceneBodies[body], size.layout.y);
     if (row == NoIndex)
@@ -391,24 +407,34 @@ bool sceneSupportMoves(uint world, uint body, ModelDimensions size)
     return motion.step == step && (any(motion.linear.xyz != 0.0) || any(motion.angular.xyz != 0.0));
 }
 
-void linkScenePair(uint world, uint2 bodies)
+void linkScenePair<let CountContacts : bool>(uint world, uint2 bodies)
 {
     const ModelDimensions size = sceneDimensions[0];
     const uint base = world * size.state.z;
     const bool a = sceneBodies[bodies.x].dofs.y != 0;
     const bool b = sceneBodies[bodies.y].dofs.y != 0;
-    const bool sleepingA = a && treeSleep[base + bodies.x].y != NoIndex;
-    const bool sleepingB = b && treeSleep[base + bodies.y].y != NoIndex;
-    // The awake endpoints already seed their own components. Only edges that
-    // touch a sleeping body can change which bodies resume this substep.
-    if (!sleepingA && !sleepingB)
-        return;
+    if (CountContacts)
+    {
+        if (a)
+            activity[base + bodies.x].quietAge.add(1u);
+        if (b)
+            activity[base + bodies.y].quietAge.add(1u);
+    }
+    const bool sleepingA = a && sceneActivity[base + bodies.x].group != NoIndex;
+    const bool sleepingB = b && sceneActivity[base + bodies.y].group != NoIndex;
     if (a && b)
-        linkTrees<true>(base, bodies.x, bodies.y);
-    else if (a && sceneSupportMoves(world, bodies.y, size))
-        activity[base + bodies.x].wakeAge.store(0u);
-    else if (b && sceneSupportMoves(world, bodies.x, size))
-        activity[base + bodies.y].wakeAge.store(0u);
+    {
+        linkTrees<false>(base, bodies.x, bodies.y);
+        if (sleepingA || sleepingB)
+            linkTrees<true>(base, bodies.x, bodies.y);
+    }
+    else if (a || b)
+    {
+        const uint movable = a ? bodies.x : bodies.y;
+        const uint support = a ? bodies.y : bodies.x;
+        if ((sleepingA || sleepingB) && sceneSupportMoves(world, support, size))
+            activity[base + movable].wakeAge.store(0u);
+    }
 }
 
 [shader("compute")]
@@ -420,7 +446,7 @@ void link_scene_contact_wakes(uint3 id : SV_DispatchThreadID)
         return;
     const Contact contact = contacts[id.y * capacity + id.x];
     if ((contact.geometry.w & ContactConstraint) != 0)
-        linkScenePair(id.y, uint2(colliderTopology[contact.geometry.x].x, colliderTopology[contact.geometry.y].x));
+        linkScenePair<true>(id.y, uint2(colliderTopology[contact.geometry.x].x, colliderTopology[contact.geometry.y].x));
 }
 
 [shader("compute")]
@@ -428,7 +454,7 @@ void link_scene_contact_wakes(uint3 id : SV_DispatchThreadID)
 void link_scene_joint_wakes(uint3 id : SV_DispatchThreadID)
 {
     if (id.x < sceneJointModels[0].x)
-        linkScenePair(id.y, sceneJointModels[1 + SceneJointWords * id.x].yz);
+        linkScenePair<false>(id.y, sceneJointModels[1 + SceneJointWords * id.x].yz);
 }
 
 [shader("compute")]
@@ -438,10 +464,13 @@ void collect_scene_wakes(uint3 id : SV_DispatchThreadID)
     if (id.x >= sceneDimensions[0].state.z)
         return;
     const uint base = id.y * sceneDimensions[0].state.z;
-    if (activity[base + id.x].wakeAge.load() == 0u)
+    const uint index = base + id.x;
+    const SceneBodyActivity state = sceneActivity[index];
+    const bool lostSupport = state.group != NoIndex && activity[index].quietAge.load() < state.supports;
+    if (lostSupport || activity[index].wakeAge.load() == 0u)
     {
         const uint root = rootOf<true>(base, id.x);
-        if (root != id.x)
+        if (lostSupport || root != id.x)
             activity[base + root].wakeAge.store(0u);
     }
 }
@@ -453,8 +482,94 @@ void resolve_scene_wakes(uint3 id : SV_DispatchThreadID)
     if (id.x >= sceneDimensions[0].state.z)
         return;
     const uint base = id.y * sceneDimensions[0].state.z;
-    if (treeSleep[base + id.x].y != NoIndex && activity[base + rootOf<true>(base, id.x)].wakeAge.load() == 0u)
-        treeSleep[base + id.x].y = NoIndex;
+    const uint index = base + id.x;
+    SceneBodyActivity state = sceneActivity[index];
+    state.supports = activity[index].quietAge.exchange(NoIndex);
+    if (state.group != NoIndex && activity[base + rootOf<true>(base, id.x)].wakeAge.load() == 0u)
+    {
+        state.group = NoIndex;
+        state.marker = 0;
+    }
+    sceneActivity[index] = state;
+    if (state.group != NoIndex)
+    {
+        const uint2 dofs = sceneBodies[id.x].dofs.xy;
+        const uint first = id.y * sceneDimensions[0].state.y + dofs.x;
+        for (uint dof = 0; dof < dofs.y; ++dof)
+        {
+            qacc[first + dof] = 0.0;
+            qaccWarmstart[first + dof] = 0.0;
+            sceneSmoothForce[first + dof] = 0.0;
+        }
+    }
+}
+
+[[vk::binding(39, 0)]] StructuredBuffer<JointModel> sceneFreeJoints;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void measure_scene_quiet(uint3 id : SV_DispatchThreadID)
+{
+    const ModelDimensions size = sceneDimensions[0];
+    if (id.x >= size.state.z)
+        return;
+    const BodyModel body = sceneBodies[id.x];
+    const uint base = id.y * size.state.z;
+    const uint index = base + id.x;
+    const SceneBodyActivity state = sceneActivity[index];
+    if (body.dofs.y == 0 || state.group != NoIndex)
+        return;
+    const JointModel joint = sceneFreeJoints[body.hierarchy.y];
+    const uint v = id.y * size.state.y + joint.indices.z;
+    const uint q = id.y * size.state.x + joint.indices.y + 3u;
+    const float4 rotation = float4(scenePositions[q], scenePositions[q + 1], scenePositions[q + 2], scenePositions[q + 3]);
+    const float3 spin = rotateVector(float3(qvel[v + 3], qvel[v + 4], qvel[v + 5]), rotation);
+    const float3 offset = rotateVector(body.inertialPosition.xyz, rotation);
+    const float3 speed = float3(qvel[v], qvel[v + 1], qvel[v + 2]) + cross(spin, offset);
+    const float bound = length(speed) + body.subtreeMass.z * length(spin);
+    const float2 options = sceneSleepSettings[id.y];
+    bool quiet = bound <= options.y;
+    for (uint dof = 0; dof < 6 && quiet; ++dof)
+        quiet = appliedForce[v + dof] == 0.0 && sceneCommandedForce[v + dof] == 0.0;
+    const uint duration = quiet ? asuint(min(options.x, asfloat(state.marker) + sceneTimestep[id.y])) : 0u;
+    sceneActivity[index].marker = duration;
+    activity[base + rootOf<false>(base, id.x)].quietAge.min(duration);
+}
+
+void finishSceneSleep<let HasStatus : bool>(uint3 id)
+{
+    const ModelDimensions size = sceneDimensions[0];
+    if (id.x >= size.state.z || (HasStatus && sceneStepStatus[id.y] != 0))
+        return;
+    const BodyModel body = sceneBodies[id.x];
+    const uint base = id.y * size.state.z;
+    const uint index = base + id.x;
+    if (body.dofs.y == 0 || sceneActivity[index].group != NoIndex)
+        return;
+    const uint root = rootOf<false>(base, id.x);
+    if (asfloat(activity[base + root].quietAge.load()) < sceneSleepSettings[id.y].x)
+        return;
+    sceneActivity[index].group = root;
+    const uint v = id.y * size.state.y + body.dofs.x;
+    for (uint dof = 0; dof < 6; ++dof)
+    {
+        qvel[v + dof] = 0.0;
+        qaccWarmstart[v + dof] = 0.0;
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void finish_scene_sleep(uint3 id : SV_DispatchThreadID)
+{
+    finishSceneSleep<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void finish_scene_contact_sleep(uint3 id : SV_DispatchThreadID)
+{
+    finishSceneSleep<true>(id);
 }
 
 [shader("compute")]
@@ -465,7 +580,7 @@ void checkpoint_scene_activity(uint3 id : SV_DispatchThreadID)
     if (id.x < count)
     {
         const uint row = id.y * count + id.x;
-        activityCheckpoint[row] = treeSleep[row];
+        activityCheckpoint[row] = sceneActivity[row];
     }
 }
 
@@ -477,6 +592,6 @@ void restore_scene_activity(uint3 id : SV_DispatchThreadID)
     if (id.x < count && sceneStepStatus[id.y] != 0)
     {
         const uint row = id.y * count + id.x;
-        treeSleep[row] = activityCheckpoint[row];
+        sceneActivity[row] = activityCheckpoint[row];
     }
 }
