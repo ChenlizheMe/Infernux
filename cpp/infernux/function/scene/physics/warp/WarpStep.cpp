@@ -228,7 +228,11 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
     const auto rules = b.Shared("collisionPairRules", collision.pairRules);
     const auto projected = b.Slot(28 * geometryWords);
     const uint32_t sorts[] = {b.Slot(2 * geometryWords), b.Slot(2 * geometryWords)};
-    const uint32_t scans[] = {b.Slot(geometryWords), b.Slot(geometryWords)};
+    constexpr uint32_t sweepTile = 64;
+    const auto tiles = (ng - 1) / sweepTile + 1;
+    const auto tileWords = uint64_t{tiles} * b.worlds;
+    const auto ranges = b.Slot(geometryWords);
+    const uint32_t prefixes[] = {b.Slot(tileWords), b.Slot(tileWords)};
     const auto pairCount = b.Slot(1, BufferUsageFlags::TransferSource);
     const auto pairs = b.Zero("collisionCandidates", 5 * uint64_t{capacity.candidates});
     const auto workers = ng;
@@ -237,13 +241,13 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
     const auto filters = boundsFilters | (collision.filterConnectedBodies ? parentFilter : 0);
     const ModelWords options{0, capacity.candidates, filters, workers};
     const auto emitSettings = b.Seed("sweepEmission", 4, &options);
-    b.Add("broadphase", "sap_project", ng,
+    b.Add("broadphase", "sap_project_tiles", ng,
           {{0, dimensions, R}, {2, bounds, R}, {3, frames, R}, {4, projected, W, true}, {6, sorts[0], W, true}});
     std::vector<uint32_t> strides;
     uint32_t currentSort = 0;
-    for (uint64_t width = 1; width < ng; width *= 2) {
+    for (uint64_t width = sweepTile; width < ng; width *= 2) {
         const auto stride = static_cast<uint32_t>(width);
-        const ModelWords values{stride, 0, 0, 0};
+        const ModelWords values{stride, stride / sweepTile, 0, 0};
         const auto settings = b.Seed("sweepStride" + std::to_string(stride), 4, &values);
         strides.push_back(settings);
         b.Add("broadphase", "sap_merge", ng,
@@ -254,12 +258,16 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
           {{0, dimensions, R},
            {4, projected, R},
            {5, sorts[currentSort], R},
-           {8, scans[0], W, true},
-           {10, pairCount, W, true}});
+           {8, ranges, W, true},
+           {10, pairCount, W, true},
+           {13, prefixes[0], W, true}});
     uint32_t currentScan = 0;
     for (const auto settings : strides) {
-        b.Add("broadphase", "sap_scan_ranges", ng,
-              {{0, dimensions, R}, {1, settings, R}, {7, scans[currentScan], R}, {8, scans[1 - currentScan], W, true}});
+        b.Add("broadphase", "sap_scan_tiles", tiles,
+              {{0, dimensions, R},
+               {1, settings, R},
+               {7, prefixes[currentScan], R},
+               {8, prefixes[1 - currentScan], W, true}});
         currentScan = 1 - currentScan;
     }
     b.Add("broadphase", "sap_emit_pairs", workers,
@@ -267,10 +275,11 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
            {1, emitSettings, R},
            {4, projected, R},
            {5, sorts[currentSort], R},
-           {7, scans[currentScan], R},
+           {7, ranges, R},
            {9, rules, R},
            {10, pairCount, RW},
-           {11, pairs, W}});
+           {11, pairs, W},
+           {12, prefixes[currentScan], R}});
 
     constexpr uint64_t workerLimit = 1024;
     const auto pairUpperBound = std::min(workerLimit, uint64_t{ng} * (ng - 1) / 2) * b.worlds;
