@@ -9,7 +9,6 @@
 #include "prescribed_motion.slang"
 
 static const uint SpatialEqualityWords = 9;
-static const uint SceneJointWords = 10;
 static const uint SceneHinge = 1;
 static const uint SceneSlider = 2;
 static const uint SceneDistance = 3;

@@ -10,6 +10,7 @@ static const uint JointHinge = 3;
 static const uint NoIndex = 0xffffffffu;
 static const float PhysicsPi = 3.141592653589793;
 static const uint GravityCompensatedByActuator = 1;
+static const uint SceneJointWords = 10;
 
 struct ModelDimensions
 {

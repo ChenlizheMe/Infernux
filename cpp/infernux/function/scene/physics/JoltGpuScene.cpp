@@ -2238,6 +2238,8 @@ PhysicsTargetSource JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &com
         packet.value.w = move->duration;
         packet.rootCOM.w = move->maxSpeed;
         return QueueCommand(command.bodyId, packet, author);
+    } else if (const auto *activity = std::get_if<PhysicsBodyCommand::Activity>(&command.operation)) {
+        queue(activity->awake ? CommandWake : CommandSleep, 0);
     } else {
         const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
         queue(CommandResetMotion, 0);

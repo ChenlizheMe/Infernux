@@ -43,6 +43,10 @@ struct PhysicsBodyCommand
         glm::quat rotation;
         glm::vec3 linear, angular;
     };
+    struct Activity
+    {
+        bool awake;
+    };
     struct KinematicMove
     {
         std::optional<glm::vec3> position;
@@ -53,6 +57,6 @@ struct PhysicsBodyCommand
     };
 
     uint32_t bodyId;
-    std::variant<Pose, Velocity, Force, ResetMotion, KinematicMove> operation;
+    std::variant<Pose, Velocity, Force, ResetMotion, KinematicMove, Activity> operation;
 };
 } // namespace infernux

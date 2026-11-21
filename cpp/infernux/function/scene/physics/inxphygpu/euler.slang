@@ -28,6 +28,7 @@
 [[vk::binding(16, 0)]] RWStructuredBuffer<uint> fixedSteps;
 [[vk::binding(17, 0)]] StructuredBuffer<BodyModel> sceneBodies;
 [[vk::binding(18, 0)]] StructuredBuffer<SceneRigidMotion> sceneMotion;
+[[vk::binding(19, 0)]] StructuredBuffer<uint2> bodyActivity;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -189,6 +190,82 @@ void advance_contact_position(uint3 id : SV_DispatchThreadID)
 {
     if (id.x < model[0].state.w && contactStepStatus[id.y] == 0)
         advancePosition(id.x, id.y);
+}
+
+bool sceneBodySleeps(uint world, uint body)
+{
+    return bodyActivity[world * model[0].state.z + body].y != NoIndex;
+}
+
+void advanceControlledVelocity<let Contact : bool>(uint3 id)
+{
+    if (id.x >= model[0].state.y || (Contact && contactStepStatus[id.y] != 0))
+        return;
+    if (sceneBodySleeps(id.y, dofs[id.x].indices.x))
+        qaccWarmstart[id.y * model[0].state.y + id.x] = 0.0;
+    else
+        advanceVelocity(id.x, id.y);
+}
+
+void advanceControlledPosition<let Scene : bool, let Contact : bool>(uint3 id)
+{
+    const ModelDimensions size = model[0];
+    if (id.x >= size.state.w || (Contact && contactStepStatus[id.y] != 0))
+        return;
+    const JointModel joint = joints[id.x];
+    if (sceneBodySleeps(id.y, joint.indices.w))
+    {
+        if (Scene)
+            for (uint dof = 0; dof < 6; ++dof)
+                qaccWarmstart[id.y * size.state.y + joint.indices.z + dof] = 0.0;
+        return;
+    }
+    if (Scene)
+        advanceSceneBody(id.x, id.y);
+    else
+        advancePosition(id.x, id.y);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_controlled_velocity(uint3 id : SV_DispatchThreadID)
+{
+    advanceControlledVelocity<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_controlled_contact_velocity(uint3 id : SV_DispatchThreadID)
+{
+    advanceControlledVelocity<true>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_controlled_position(uint3 id : SV_DispatchThreadID)
+{
+    advanceControlledPosition<false, false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_controlled_contact_position(uint3 id : SV_DispatchThreadID)
+{
+    advanceControlledPosition<false, true>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_controlled_scene_position(uint3 id : SV_DispatchThreadID)
+{
+    advanceControlledPosition<true, false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void advance_controlled_scene_contact_position(uint3 id : SV_DispatchThreadID)
+{
+    advanceControlledPosition<true, true>(id);
 }
 
 [shader("compute")]

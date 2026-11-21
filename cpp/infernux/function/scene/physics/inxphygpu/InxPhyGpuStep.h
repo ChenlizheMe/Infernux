@@ -158,6 +158,8 @@ enum class InxPhyGpuBodyCommandKind : uint32_t
     MovePosition,
     MoveRotation,
     ResetMotion,
+    Sleep,
+    Wake,
 };
 
 enum class InxPhyGpuPoseCommandFlags : uint32_t
@@ -199,7 +201,7 @@ enum class InxPhyGpuBodyPublication
 struct InxPhyGpuBodyState
 {
     ModelPose pose;
-    ModelVector centerOfMass;
+    ModelVector centerOfMass; // xyz center of mass, w is 1.0 for a sleeping body.
     ModelVector linearVelocity;
     ModelVector angularVelocity;
 };
@@ -320,7 +322,7 @@ class InxPhyGpuStep
     {
         uint32_t count = 1;
         std::vector<rhi::ComputeDispatchDesc> begin;
-        rhi::ComputeDispatchDesc drive, advance, restore, clock;
+        rhi::ComputeDispatchDesc drive, advance, restore, restoreActivity, clock;
     };
     struct FixedInputs
     {

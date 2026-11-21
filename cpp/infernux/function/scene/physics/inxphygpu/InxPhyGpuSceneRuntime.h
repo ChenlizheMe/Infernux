@@ -104,6 +104,7 @@ struct InxPhyGpuHostBody
     PhysicsBodyPoseUpdate pose;
     uint64_t shapeRevision;
     glm::vec3 centerOfMass, linearVelocity, angularVelocity;
+    bool sleeping;
 };
 
 struct InxPhyGpuSceneBodyRead

@@ -54,7 +54,8 @@ InxPhyGpuHostBody DecodeHostBody(const InxPhyGpuBodyState &raw, uint32_t bodyId,
             shapeRevision,
             vector(raw.centerOfMass),
             vector(raw.linearVelocity),
-            vector(raw.angularVelocity)};
+            vector(raw.angularVelocity),
+            raw.centerOfMass[3] != 0.0f};
 }
 } // namespace
 
@@ -407,6 +408,8 @@ void InxPhyGpuSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyC
             append(Kind::MovePosition, vector(*move->position), {}, timing).poseFlags = flags;
         if (move->rotation)
             append(Kind::MoveRotation, rotation(*move->rotation), {}, timing).poseFlags = flags;
+    } else if (const auto *activity = std::get_if<PhysicsBodyCommand::Activity>(&command.operation)) {
+        append(activity->awake ? Kind::Wake : Kind::Sleep);
     } else {
         const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
         append(Kind::ResetMotion);

@@ -4409,9 +4409,7 @@ void PhysicsWorld::ActivateBody(uint32_t id)
         return;
     }
     RequireGpu(domain);
-    BodyCommand command{};
-    command.meta.y = CommandWake;
-    m_gpuScene->QueueCommand(id, command);
+    m_gpuScene->QueueBodyCommand({id, PhysicsBodyCommand::Activity{true}});
 }
 void PhysicsWorld::DeactivateBody(uint32_t id)
 {
@@ -4425,9 +4423,7 @@ void PhysicsWorld::DeactivateBody(uint32_t id)
         return;
     }
     RequireGpu(domain);
-    BodyCommand command{};
-    command.meta.y = CommandSleep;
-    m_gpuScene->QueueCommand(id, command);
+    m_gpuScene->QueueBodyCommand({id, PhysicsBodyCommand::Activity{false}});
 }
 std::optional<PhysicsPenetrationResult> PhysicsWorld::ComputePenetration(const Collider &a, const glm::vec3 &positionA,
                                                                          const glm::quat &rotationA, const Collider &b,

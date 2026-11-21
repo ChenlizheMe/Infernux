@@ -364,18 +364,20 @@ struct RaySlots
 
 struct BodyControlSlots
 {
-    uint32_t spans, commands, force, saved, prescribed, fixedSteps;
+    uint32_t spans, commands, force, saved, prescribed, fixedSteps, activity;
 };
 
 BodyControlSlots BindBodyControls(StepBuilder &b, const InxPhyGpuModel &model, uint32_t capacity, bool multiple)
 {
     const auto prescribedRows = uint64_t{model.dimensions.layout[1]} + model.initialStaticPoses.size();
+    const uint32_t awake[2]{0, NoModelIndex};
     return {b.Seed("bodyCommandSpans", 4 * (uint64_t{capacity} + 1), nullptr),
             b.Seed("bodyCommands", 12 * uint64_t{capacity}, nullptr),
             b.Zero("commandedForce", uint64_t{model.dimensions.state[1]} * b.worlds),
             b.Zero("savedMotions", 44 * uint64_t{capacity}),
             b.Zero("prescribedMotion", 12 * std::max(uint64_t{1}, prescribedRows) * b.worlds),
-            b.Zero("acceptedFixedSteps", uint64_t{b.worlds} + uint32_t(multiple))};
+            b.Zero("acceptedFixedSteps", uint64_t{b.worlds} + uint32_t(multiple)),
+            b.Seed("bodyActivity", 2, awake, b.worlds * model.dimensions.state[2])};
 }
 
 RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
@@ -469,6 +471,7 @@ struct ContactResponse
     uint32_t jointParameters = NoModelIndex;
     uint32_t settings;
     ModelWords worldDefaults;
+    uint32_t sceneJoints = NoModelIndex;
 };
 
 struct ReferenceWeights
@@ -645,11 +648,12 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
                {11, dyn.velocities, R},
                {18, dyn.prescribedMotion, R},
                {19, dyn.fixedSteps, R}});
-    uint32_t jointParameters = NoModelIndex;
+    uint32_t jointParameters = NoModelIndex, sceneJoints = NoModelIndex;
     if (!model.sceneJoints.empty()) {
         const auto jointCount = model.sceneJoints[0][0];
         const auto sixCount = model.sceneJoints[0][2];
         const auto modelRows = b.Shared("sceneJoints", model.sceneJoints);
+        sceneJoints = modelRows;
         const auto &parameters = model.initialSceneJointParameters;
         const auto parameterWords = sizeof(ModelWords) / sizeof(uint32_t);
         jointParameters =
@@ -865,8 +869,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
            {26, stream.counts, R},
            {27, status, multiple ? RW : W, !multiple},
            {30, stream.narrowphaseStatus, R}});
-    ContactResponse response{acceleration, status,          contactTopology, NoModelIndex,
-                             {},           jointParameters, settings,        worldDefaults};
+    ContactResponse response{acceleration,    status,   contactTopology, NoModelIndex, {},
+                             jointParameters, settings, worldDefaults,   sceneJoints};
     if (contactReports) {
         const auto output =
             b.Zero("contactReports", across(24 * uint64_t{contacts} * substeps), BufferUsageFlags::TransferSource);
@@ -1315,14 +1319,44 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                 initializeFrom(pass);
         }
         const auto acceleration = response ? response->acceleration : solved;
+        if (controlSlots) {
+            const auto &control = *controlSlots;
+            const auto wake = b.Zero("sceneWakeGroups", worldWords(4 * uint64_t{nb}));
+            b.Add("sleep", "begin_scene_wakes", nb,
+                  {{1, control.activity, R}, {2, wake, RW}, {5, applied, R}, {27, dimensions, R}, {28, bodies, R}});
+            if (response) {
+                std::vector<Use> edges{{1, control.activity, R},    {2, wake, RW},
+                                       {27, dimensions, R},         {28, bodies, R},
+                                       {29, control.fixedSteps, R}, {30, control.prescribed, R}};
+                auto contactEdges = edges;
+                contactEdges.insert(contactEdges.end(), {{9, contactSlots->records, R},
+                                                         {10, contactSlots->counts, R},
+                                                         {11, response->settings, R},
+                                                         {12, response->topology, R}});
+                b.dispatches.push_back(
+                    b.Bind("sleep", "link_scene_contact_wakes", capacity.contactsPerWorld, contactEdges));
+                if (response->sceneJoints != NoModelIndex) {
+                    edges.push_back({31, response->sceneJoints, R});
+                    b.dispatches.push_back(b.Bind("sleep", "link_scene_joint_wakes", model.sceneJoints[0][0], edges));
+                }
+                b.Add("sleep", "collect_scene_wakes", nb, {{2, wake, RW}, {27, dimensions, R}});
+            }
+            b.Add("sleep", "resolve_scene_wakes", nb, {{1, control.activity, RW}, {2, wake, RW}, {27, dimensions, R}});
+        }
         if (!sceneDynamics) {
             std::vector<Use> integrateVelocity{{0, dimensions, R},           {2, stepSizes, R},
                                                {3, acceleration, R},         {4, velocities, RW},
                                                {6, warmstart, W, !response}, {8, acceleration, R}};
             if (response)
                 integrateVelocity.push_back({15, response->status, R});
-            b.dispatches.push_back(
-                b.Bind("euler", response ? "advance_contact_velocity" : "advance_velocity", nv, integrateVelocity));
+            if (controlSlots) {
+                integrateVelocity.push_back({9, dofs, R});
+                integrateVelocity.push_back({19, controlSlots->activity, R});
+            }
+            const auto *entry = controlSlots
+                                    ? (response ? "advance_controlled_contact_velocity" : "advance_controlled_velocity")
+                                    : (response ? "advance_contact_velocity" : "advance_velocity");
+            b.dispatches.push_back(b.Bind("euler", entry, nv, integrateVelocity));
         }
         std::vector<Use> integratePosition{{0, dimensions, R},
                                            {1, joints, R},
@@ -1337,8 +1371,16 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             integratePosition.push_back({17, bodies, R});
             integratePosition.push_back({18, sceneMotion, R});
         }
-        const auto *entry = sceneDynamics ? (response ? "advance_scene_contact_position" : "advance_scene_position")
-                                          : (response ? "advance_contact_position" : "advance_position");
+        using Entries = std::array<const char *, 2>;
+        const std::array<Entries, 4> positionEntries{{
+            {"advance_position", "advance_contact_position"},
+            {"advance_scene_position", "advance_scene_contact_position"},
+            {"advance_controlled_position", "advance_controlled_contact_position"},
+            {"advance_controlled_scene_position", "advance_controlled_scene_contact_position"},
+        }};
+        if (controlSlots)
+            integratePosition.push_back({19, controlSlots->activity, R});
+        const auto *entry = positionEntries[2 * controlSlots.has_value() + sceneDynamics][response.has_value()];
         if (nj != 0)
             b.dispatches.push_back(b.Bind("euler", entry, nj, integratePosition));
     }
@@ -1354,7 +1396,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         b.dispatches.push_back(std::move(clock));
 
     std::vector<ComputeWorkDispatch> begin;
-    ComputeWorkDispatch advance, restore, drive;
+    ComputeWorkDispatch advance, restore, restoreActivity, drive;
     if (multiple) {
         const auto place = controlSlots->fixedSteps;
         begin.push_back(b.Dispatch("fixed_substeps", "begin_substeps", 1, {{5, place, RW}}));
@@ -1384,21 +1426,30 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                               {6, response->status, R}});
     }
 
+    if (response && controlSlots) {
+        const auto backup = b.Slot(worldWords(2 * uint64_t{nb}));
+        const auto activity = controlSlots->activity;
+        begin.push_back(b.Dispatch("sleep", "checkpoint_scene_activity", nb,
+                                   {{1, activity, R}, {27, dimensions, R}, {32, backup, W, true}}));
+        restoreActivity =
+            b.Dispatch("sleep", "restore_scene_activity", nb,
+                       {{1, activity, RW}, {27, dimensions, R}, {32, backup, R}, {33, response->status, R}});
+    }
     ComputeWorkDispatch applyCommands, editCommands, finishCommands, publishPose, publishBodies,
         publishBodiesWithStatus;
     const auto firstBodyPublication = b.initialize.size();
     if (controlSlots) {
-        const auto &[spans, commands, force, saved, prescribed, fixedSteps] = *controlSlots;
+        const auto &[spans, commands, force, saved, prescribed, fixedSteps, activity] = *controlSlots;
         const auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
-        std::vector<Use> commandBindings{
-            {0, dimensions, R}, {1, bodies, R},      {2, joints, R}, {3, spans, R},        {4, commands, R},
-            {5, positions, RW}, {6, velocities, RW}, {7, mocap, RW}, {12, prescribed, RW}, {16, staticPoses, RW}};
+        std::vector<Use> commandBindings{{0, dimensions, R},  {1, bodies, R},        {2, joints, R},
+                                         {3, spans, R},       {4, commands, R},      {5, positions, RW},
+                                         {6, velocities, RW}, {7, mocap, RW},        {12, prescribed, RW},
+                                         {15, fixedSteps, R}, {16, staticPoses, RW}, {23, activity, RW}};
         if (sceneDynamics)
             commandBindings.push_back({21, sceneMotion, R});
         editCommands = b.Bind("body_controls", sceneDynamics ? "edit_scene_body_state" : "edit_body_state",
                               bodyCommandCapacity, commandBindings);
-        commandBindings.insert(commandBindings.end(),
-                               {{8, force, RW}, {11, saved, RW}, {15, fixedSteps, R}, {22, fixedSizes, R}});
+        commandBindings.insert(commandBindings.end(), {{8, force, RW}, {11, saved, RW}, {22, fixedSizes, R}});
         applyCommands = b.Bind("body_controls", sceneDynamics ? "apply_scene_body_commands" : "apply_body_commands",
                                bodyCommandCapacity, commandBindings);
         if (multiple)
@@ -1435,8 +1486,9 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             publishPose = b.dispatches[kinematicsPass];
             b.initialize.push_back(publishPose);
         }
-        std::vector<Use> stateBindings{{0, dimensions, R},  {1, bodies, R}, {6, velocities, R},    {9, clocks, R},
-                                       {12, prescribed, R}, {13, pose, R},  {14, states, W, true}, {15, fixedSteps, R}};
+        std::vector<Use> stateBindings{{0, dimensions, R},    {1, bodies, R},      {6, velocities, R},
+                                       {9, clocks, R},        {12, prescribed, R}, {13, pose, R},
+                                       {14, states, W, true}, {15, fixedSteps, R}, {23, activity, R}};
         publishBodies = b.Bind("body_controls", "publish_body_states", nb, stateBindings);
         b.initialize.push_back(publishBodies);
         if (response) {
@@ -1481,6 +1533,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                         {18, clocks, RW},
                                         {19, controlSlots->fixedSteps, RW},
                                         {20, addresses, R},
+                                        {23, controlSlots->activity, RW},
                                         {17, positions, R}}));
     }
     if (reference)
@@ -1577,9 +1630,11 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                            static_cast<uint32_t>(model.initialSceneJointParameters.size())};
     FixedSubsteps schedule;
     schedule.count = substeps;
+    for (auto &dispatch : begin)
+        schedule.begin.push_back(BindDispatch(std::move(dispatch), buffers));
+    if (restoreActivity.kernel)
+        schedule.restoreActivity = BindDispatch(std::move(restoreActivity), buffers);
     if (multiple) {
-        for (auto &dispatch : begin)
-            schedule.begin.push_back(BindDispatch(std::move(dispatch), buffers));
         if (drive.kernel)
             schedule.drive = BindDispatch(std::move(drive), buffers);
         if (advance.kernel)
@@ -1657,6 +1712,8 @@ void InxPhyGpuStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispa
     }
     if (m_substeps.restore.kernel)
         dispatches.push_back(m_substeps.restore);
+    if (m_substeps.restoreActivity.kernel)
+        dispatches.push_back(m_substeps.restoreActivity);
     if (m_substeps.clock.kernel)
         dispatches.push_back(m_substeps.clock);
 }
@@ -1875,8 +1932,9 @@ uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> com
         const bool move =
             kind == InxPhyGpuBodyCommandKind::MovePosition || kind == InxPhyGpuBodyCommandKind::MoveRotation;
         const bool force = kind >= InxPhyGpuBodyCommandKind::Force && kind <= InxPhyGpuBodyCommandKind::ForceAtPosition;
-        const bool dynamic =
-            kind >= InxPhyGpuBodyCommandKind::SetLinearVelocity && kind <= InxPhyGpuBodyCommandKind::ForceAtPosition;
+        const bool dynamic = (kind >= InxPhyGpuBodyCommandKind::SetLinearVelocity &&
+                              kind <= InxPhyGpuBodyCommandKind::ForceAtPosition) ||
+                             kind == InxPhyGpuBodyCommandKind::Sleep || kind == InxPhyGpuBodyCommandKind::Wake;
         const auto drive =
             move && command.poseFlags == InxPhyGpuPoseCommandFlags::TemporaryStatic ? StaticControl : KinematicControl;
         if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != drive) ||

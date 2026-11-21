@@ -7,6 +7,7 @@
 #include "contact.slang"
 #include "constraint_data.slang"
 #include "linear_dispatch.slang"
+#include "prescribed_motion.slang"
 
 struct TreeActivity
 {
@@ -47,6 +48,13 @@ struct TreeActivity
 [[vk::binding(24, 0)]] RWStructuredBuffer<uint4> solverDispatches;
 [[vk::binding(25, 0)]] RWStructuredBuffer<Atomic<uint>> awakeWorldFlags;
 [[vk::binding(26, 0)]] RWStructuredBuffer<uint> awakeWorlds;
+[[vk::binding(27, 0)]] StructuredBuffer<ModelDimensions> sceneDimensions;
+[[vk::binding(28, 0)]] StructuredBuffer<BodyModel> sceneBodies;
+[[vk::binding(29, 0)]] StructuredBuffer<uint> sceneFixedSteps;
+[[vk::binding(30, 0)]] StructuredBuffer<PrescribedMotion> scenePrescribed;
+[[vk::binding(31, 0)]] StructuredBuffer<uint4> sceneJointModels;
+[[vk::binding(32, 0)]] RWStructuredBuffer<uint2> activityCheckpoint;
+[[vk::binding(33, 0)]] StructuredBuffer<uint> sceneStepStatus;
 
 uint4 treeRange(uint tree)
 {
@@ -350,5 +358,125 @@ void finish_tree_sleep(uint3 id : SV_DispatchThreadID)
             qaccWarmstart[dofBase + i] = 0.0;
         else
             qvel[dofBase + i] = 0.0;
+    }
+}
+
+// Scene bodies are independent free trees. Their active contact and joint
+// edges use the same device union/find as articulated tree wakes.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void begin_scene_wakes(uint3 id : SV_DispatchThreadID)
+{
+    const ModelDimensions size = sceneDimensions[0];
+    if (id.x >= size.state.z)
+        return;
+    const uint index = id.y * size.state.z + id.x;
+    const uint2 dofs = sceneBodies[id.x].dofs.xy;
+    bool awake = dofs.y != 0 && treeSleep[index].y == NoIndex;
+    for (uint dof = 0; dof < dofs.y && !awake; ++dof)
+        awake = appliedForce[id.y * size.state.y + dofs.x + dof] != 0.0;
+    activity[index].wakeParent.store(id.x);
+    activity[index].wakeAge.store(awake ? 0u : NoIndex);
+}
+
+bool sceneSupportMoves(uint world, uint body, ModelDimensions size)
+{
+    const uint step = sceneFixedSteps[world] + 1u;
+    if (treeSleep[world * size.state.z + body].x == step)
+        return true;
+    const uint row = prescribedRow(sceneBodies[body], size.layout.y);
+    if (row == NoIndex)
+        return false;
+    const PrescribedMotion motion = scenePrescribed[world * prescribedStride(size, sceneBodies[0]) + row];
+    return motion.step == step && (any(motion.linear.xyz != 0.0) || any(motion.angular.xyz != 0.0));
+}
+
+void linkScenePair(uint world, uint2 bodies)
+{
+    const ModelDimensions size = sceneDimensions[0];
+    const uint base = world * size.state.z;
+    const bool a = sceneBodies[bodies.x].dofs.y != 0;
+    const bool b = sceneBodies[bodies.y].dofs.y != 0;
+    const bool sleepingA = a && treeSleep[base + bodies.x].y != NoIndex;
+    const bool sleepingB = b && treeSleep[base + bodies.y].y != NoIndex;
+    // The awake endpoints already seed their own components. Only edges that
+    // touch a sleeping body can change which bodies resume this substep.
+    if (!sleepingA && !sleepingB)
+        return;
+    if (a && b)
+        linkTrees<true>(base, bodies.x, bodies.y);
+    else if (a && sceneSupportMoves(world, bodies.y, size))
+        activity[base + bodies.x].wakeAge.store(0u);
+    else if (b && sceneSupportMoves(world, bodies.x, size))
+        activity[base + bodies.y].wakeAge.store(0u);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void link_scene_contact_wakes(uint3 id : SV_DispatchThreadID)
+{
+    const uint capacity = constraintSettings[0].y;
+    if (id.x >= min(contactCounts[id.y].load(), capacity))
+        return;
+    const Contact contact = contacts[id.y * capacity + id.x];
+    if ((contact.geometry.w & ContactConstraint) != 0)
+        linkScenePair(id.y, uint2(colliderTopology[contact.geometry.x].x, colliderTopology[contact.geometry.y].x));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void link_scene_joint_wakes(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < sceneJointModels[0].x)
+        linkScenePair(id.y, sceneJointModels[1 + SceneJointWords * id.x].yz);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void collect_scene_wakes(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= sceneDimensions[0].state.z)
+        return;
+    const uint base = id.y * sceneDimensions[0].state.z;
+    if (activity[base + id.x].wakeAge.load() == 0u)
+    {
+        const uint root = rootOf<true>(base, id.x);
+        if (root != id.x)
+            activity[base + root].wakeAge.store(0u);
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void resolve_scene_wakes(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= sceneDimensions[0].state.z)
+        return;
+    const uint base = id.y * sceneDimensions[0].state.z;
+    if (treeSleep[base + id.x].y != NoIndex && activity[base + rootOf<true>(base, id.x)].wakeAge.load() == 0u)
+        treeSleep[base + id.x].y = NoIndex;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void checkpoint_scene_activity(uint3 id : SV_DispatchThreadID)
+{
+    const uint count = sceneDimensions[0].state.z;
+    if (id.x < count)
+    {
+        const uint row = id.y * count + id.x;
+        activityCheckpoint[row] = treeSleep[row];
+    }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void restore_scene_activity(uint3 id : SV_DispatchThreadID)
+{
+    const uint count = sceneDimensions[0].state.z;
+    if (id.x < count && sceneStepStatus[id.y] != 0)
+    {
+        const uint row = id.y * count + id.x;
+        treeSleep[row] = activityCheckpoint[row];
     }
 }

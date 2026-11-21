@@ -16,6 +16,8 @@ static const uint AddForceAtPosition = 6;
 static const uint MovePosition = 7;
 static const uint MoveRotation = 8;
 static const uint ResetMotion = 9;
+static const uint Sleep = 10;
+static const uint Wake = 11;
 static const uint PreserveDrive = 1;
 
 struct BodyCommand
@@ -62,6 +64,7 @@ struct SavedMotion
 [[vk::binding(20, 0)]] StructuredBuffer<uint> previousAddresses;
 [[vk::binding(21, 0)]] StructuredBuffer<SceneRigidMotion> sceneMotion;
 [[vk::binding(22, 0)]] StructuredBuffer<float> fixedTimeSteps;
+[[vk::binding(23, 0)]] RWStructuredBuffer<uint2> bodyActivity; // Last support edit's step, sleeping group or NoIndex.
 
 float4 conjugate(float4 rotation)
 {
@@ -131,13 +134,15 @@ void import_body_states(uint3 id : SV_DispatchThreadID)
         storeOrigin(offset.x, pose);
         store3(qvel, offset.y, linear - cross(spin, shift));
         store3(qvel, offset.y + 3, rotateVector(spin, conjugate(pose.rotation)));
+        bodyActivity[first + id.x].y = asfloat(previousStates[address + 2].w) != 0.0 ? id.x : NoIndex;
     }
     else if (body.hierarchy.w != NoIndex)
     {
         const uint row = id.y * size.layout.y + body.hierarchy.w;
         mocap[row] = pose;
         const uint accepted = previousStates[previousAddresses[first]].z;
-        prescribed[row] = {float4(linear, 0.0), float4(spin, 0.0), pose.position.xyz + shift, accepted};
+        const uint motionRow = id.y * prescribedStride(size, bodies[0]) + body.hierarchy.w;
+        prescribed[motionRow] = {float4(linear, 0.0), float4(spin, 0.0), pose.position.xyz + shift, accepted};
     }
     else if (body.dofs.z != 0)
     {
@@ -158,17 +163,33 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
     float3 speed = originSpeed + cross(spin, shift);
     float3 force = float3(0.0);
     float3 torque = float3(0.0);
+    const uint activityRow = span.x * size.state.z + span.y;
+    uint sleep = bodyActivity[activityRow].y;
     for (uint i = span.z; i < span.z + span.w; ++i)
     {
         const BodyCommand command = commands[i];
         const uint operation = command.fields.z;
-        if (operation == SetPosition)
+        if (operation == Sleep)
         {
+            speed = spin = force = torque = float3(0.0);
+            sleep = span.y;
+        }
+        else if (operation == Wake)
+        {
+            sleep = NoIndex;
+        }
+        else if (operation == SetPosition)
+        {
+            if (any(pose.position.xyz != command.value.xyz))
+                sleep = NoIndex;
             pose.position.xyz = command.value.xyz;
         }
         else if (operation == SetRotation)
         {
-            pose.rotation = normalize(command.value);
+            const float4 target = normalize(command.value);
+            if (!all(pose.rotation == target) && !all(pose.rotation == -target))
+                sleep = NoIndex;
+            pose.rotation = target;
             shift = centerOffset(body, pose);
         }
         else if (operation == SetLinearVelocity)
@@ -182,6 +203,7 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
         else if (operation == ResetMotion)
         {
             spin = speed = force = torque = float3(0.0);
+            sleep = NoIndex;
         }
         else
         {
@@ -221,7 +243,10 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
             speed = clampSceneSpeed(speed, limits.x);
             spin = clampSceneSpeed(spin, limits.y);
         }
+        if (any(speed != 0.0) || any(spin != 0.0) || any(force != 0.0) || any(torque != 0.0))
+            sleep = NoIndex;
     }
+    bodyActivity[activityRow].y = sleep;
     const float4 inverse = conjugate(pose.rotation);
     storeOrigin(offset.x, pose);
     store3(qvel, offset.y, speed - cross(spin, shift));
@@ -321,6 +346,9 @@ void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensio
             break;
         }
     }
+    if (any(origin.position.xyz != undo.position.xyz) ||
+        (!all(origin.rotation == undo.rotation) && !all(origin.rotation == -undo.rotation)))
+        bodyActivity[span.x * size.state.z + span.y].x = fixedSteps[span.x] + 1u;
     if (!Integrate)
     {
         storePrescribedPose(span.x, body, size, origin);
@@ -507,7 +535,8 @@ void publishBodies<let HasStatus : bool>(uint3 id)
     const uint base = 5 * row;
     bodyStates[base] = asuint(pose.position);
     bodyStates[base + 1] = asuint(pose.rotation);
-    bodyStates[base + 2] = asuint(float4(pose.position.xyz + offset, 0.0));
+    const bool sleeping = body.dofs.y != 0 && bodyActivity[row].y != NoIndex;
+    bodyStates[base + 2] = asuint(float4(pose.position.xyz + offset, sleeping ? 1.0 : 0.0));
     bodyStates[base + 3] = asuint(float4(speed, 0.0));
     bodyStates[base + 4] = asuint(float4(spin, 0.0));
     if (id.x == 0)
