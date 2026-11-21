@@ -129,4 +129,7 @@ struct WarpModel
 [[nodiscard]] WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
                                        const std::vector<ModelGeometryDefinition> &geometries);
 
+/// Reference-pose factorization in the packed ancestor layout, including small islands.
+[[nodiscard]] ModelMassFactors BuildWarpReferenceMassFactors(const WarpModel &model);
+
 } // namespace infernux::physics::warp

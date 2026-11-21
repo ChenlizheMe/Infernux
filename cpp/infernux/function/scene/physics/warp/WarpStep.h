@@ -21,8 +21,6 @@ struct WarpCollisionCapacity
 
 struct WarpContactSolver
 {
-    // In compiled body order. Compute these at the reference pose when cooking the model.
-    std::vector<float> bodyInverseWeights;
     uint32_t rowsPerWorld = 0;
     uint32_t columnsPerWorld = 0;
     uint32_t iterations = 12;
@@ -38,6 +36,7 @@ struct WarpContactStream
     std::shared_ptr<rhi::ComputeBuffer> contactCounts;
     std::shared_ptr<rhi::ComputeBuffer> records;
     std::shared_ptr<rhi::ComputeBuffer> stepStatus;
+    std::shared_ptr<rhi::ComputeBuffer> topology;
 };
 
 struct PreparedWarpStep

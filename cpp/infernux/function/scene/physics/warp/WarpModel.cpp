@@ -119,9 +119,9 @@ void BuildMassAdjacency(WarpModel &model)
     }
 }
 
-void BuildMassFactors(WarpModel &model, uint32_t massSize)
+ModelMassFactors BuildMassFactors(const WarpModel &model, uint32_t massSize, bool referencePose)
 {
-    auto &factors = model.massFactors;
+    ModelMassFactors factors;
     const auto &adjacency = model.massAdjacency;
     const uint32_t entries = Count(model.dofs) + 1;
     const auto entry = [&](uint32_t index) {
@@ -137,16 +137,16 @@ void BuildMassFactors(WarpModel &model, uint32_t massSize)
         while (end < Count(model.dofs) && model.dofs[end].indices[1] != NoModelIndex)
             ++end;
         const uint32_t width = end - first;
-        if (width == 1) {
+        if (!referencePose && width == 1) {
             auto &blocks = factors.smallBlocks;
             if (!blocks.empty() && blocks.back()[2] == CompactMassBlock && blocks.back()[0] + blocks.back()[1] == first)
                 ++blocks.back()[1];
             else
                 blocks.push_back({first, 1, CompactMassBlock, 0});
-        } else if (width <= SmallMassWidth && model.dofs[end - 1].indices[3] == width) {
+        } else if (!referencePose && width <= SmallMassWidth && model.dofs[end - 1].indices[3] == width) {
             factors.smallBlocks.push_back({first, width, dense, 0});
             dense += width * width;
-        } else if (width <= TiledMassWidth) {
+        } else if (!referencePose && width <= TiledMassWidth) {
             const uint32_t gather = Count(factors.tileElements);
             factors.tiledBlocks.push_back({first, width, dense, gather});
             factors.tileElements.resize(gather + width * width, NoModelIndex);
@@ -183,7 +183,7 @@ void BuildMassFactors(WarpModel &model, uint32_t massSize)
     factors.sparseBlockCount = Count(sparseBlocks);
     factors.layout = {dense + (sparseBlocks.empty() ? 0 : massSize), dense, Count(factors.smallBlocks), 0};
     if (sparseBlocks.empty())
-        return;
+        return factors;
     const uint32_t levelOffset = 4 + 4 * Count(sparseBlocks);
     const uint32_t rowOffset = levelOffset + 2 * Count(levels);
     const uint32_t contributionOffset = rowOffset + 3 * Count(sparseRows);
@@ -198,6 +198,7 @@ void BuildMassFactors(WarpModel &model, uint32_t massSize)
     append(levels);
     append(sparseRows);
     append(contributions);
+    return factors;
 }
 } // namespace
 
@@ -274,10 +275,15 @@ WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
     }
     BuildBranches(model, leaves);
     BuildMassAdjacency(model);
-    BuildMassFactors(model, massSize);
+    model.massFactors = BuildMassFactors(model, massSize, false);
     model.dimensions.state = {Count(model.initialPositions), Count(model.dofs), Count(model.bodies),
                               Count(model.joints)};
     model.dimensions.layout = {Count(model.geometries), Count(model.initialKinematicPoses), Count(leaves), massSize};
     return model;
+}
+
+ModelMassFactors BuildWarpReferenceMassFactors(const WarpModel &model)
+{
+    return BuildMassFactors(model, model.dimensions.layout[3], true);
 }
 } // namespace infernux::physics::warp

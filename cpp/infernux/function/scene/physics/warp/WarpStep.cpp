@@ -256,7 +256,53 @@ struct ContactResponse
 {
     uint32_t acceleration;
     uint32_t status;
+    uint32_t topology;
 };
+
+struct ReferenceWeights
+{
+    uint32_t dimensions, dofs, mass, centeredDof, inertiaFrames, subtreeCom, topology;
+};
+
+void InitializeWeights(StepBuilder &b, const WarpModel &model, const ReferenceWeights &ref)
+{
+    const auto factorization = BuildWarpReferenceMassFactors(model);
+    const auto layout = b.Seed("referenceFactorLayout", 4, &factorization.layout);
+    const auto sparse = b.Shared("referenceSparseMassTopology", factorization.sparseTopology);
+    const auto packed = model.dimensions.layout[3];
+    const auto factors = b.Slot(packed);
+    const auto inverseDiagonal = b.Slot(model.dimensions.state[1]);
+    const auto inverse = b.Slot(packed);
+    const auto add = [&](ComputeWorkDispatch dispatch) {
+        dispatch.groupCountY = 1;
+        b.initialize.push_back(std::move(dispatch));
+    };
+    auto factor = b.Dispatch("mass_solve", "factor_sparse_mass", factorization.sparseBlockCount,
+                             {{0, ref.dimensions, R},
+                              {1, layout, R},
+                              {5, sparse, R},
+                              {9, ref.dofs, R},
+                              {10, ref.mass, R},
+                              {11, factors, W, true},
+                              {12, inverseDiagonal, W, true}},
+                             true);
+    factor.bindings[4].range.byteSize /= b.worlds;
+    add(std::move(factor));
+    add(b.Dispatch(
+        "mass_solve", "reference_mass_inverse", factorization.sparseBlockCount,
+        {{5, sparse, R}, {9, ref.dofs, R}, {11, factors, R}, {12, inverseDiagonal, R}, {18, inverse, W, true}}, true));
+    auto weight = b.Dispatch("mass_solve", "reference_contact_weights", model.dimensions.state[2],
+                             {{0, ref.dimensions, R},
+                              {9, ref.dofs, R},
+                              {18, inverse, R},
+                              {19, ref.topology, RW},
+                              {20, ref.centeredDof, R},
+                              {21, ref.inertiaFrames, R},
+                              {22, ref.subtreeCom, R}});
+    for (const uint32_t binding : {4u, 5u, 6u})
+        weight.bindings[binding].range.byteSize /= b.worlds;
+    add(std::move(weight));
+}
 
 struct ContactDynamics
 {
@@ -284,9 +330,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
     const auto ng = model.dimensions.layout[0];
-    if (solver.bodyInverseWeights.size() != nb || solver.rowsPerWorld == 0 || solver.columnsPerWorld == 0 ||
-        solver.iterations == 0 || solver.lineIterations == 0)
-        throw std::invalid_argument("Warp contact response requires reference body weights and nonzero solver limits");
+    if (solver.rowsPerWorld == 0 || solver.columnsPerWorld == 0 || solver.iterations == 0 || solver.lineIterations == 0)
+        throw std::invalid_argument("Warp contact response requires nonzero solver limits");
 
     const auto rows = solver.rowsPerWorld;
     const auto columns = solver.columnsPerWorld;
@@ -301,13 +346,12 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
     std::vector<ModelWords> topology(uint64_t{ng} + nb);
     for (uint32_t geom = 0; geom < ng; ++geom)
         topology[geom][0] = model.geometries[geom].indices[0];
-    topology[ng] = {NoModelIndex, 0, FloatWord(solver.bodyInverseWeights[0]), nb};
+    topology[ng] = {NoModelIndex, 0, 0, nb};
     for (uint32_t body = 1; body < nb; ++body) {
         const auto &record = model.bodies[body];
         const auto lastDof =
             record.dofs[1] != 0 ? record.dofs[0] + record.dofs[1] - 1 : topology[ng + record.hierarchy[0]][0];
-        topology[ng + body] = {lastDof, record.subtree[0], FloatWord(solver.bodyInverseWeights[body]),
-                               record.subtree[1]};
+        topology[ng + body] = {lastDof, record.subtree[0], 0, record.subtree[1]};
     }
     const auto contactTopology = b.Shared("contactTopology", topology);
     const auto across = [count = b.worlds](uint64_t words) { return words * count; };
@@ -498,7 +542,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {25, stream.candidateCount, R},
            {26, stream.counts, R},
            {27, status, W, true}});
-    return {acceleration, status};
+    return {acceleration, status, contactTopology};
 }
 
 ComputeDispatchDesc BindDispatch(ComputeWorkDispatch command,
@@ -511,7 +555,7 @@ ComputeDispatchDesc BindDispatch(ComputeWorkDispatch command,
     snapshot.proof.emplace();
     snapshot.proof->writes = std::move(command.completeWrites);
     for (const auto &binding : command.bindings) {
-        if (binding.access == R)
+        if (binding.access != W)
             snapshot.proof->reads.push_back(
                 {static_cast<uint32_t>(snapshot.buffers.size()), 0, binding.range.byteSize});
         snapshot.buffers.push_back(buffers[binding.range.slot]);
@@ -544,18 +588,19 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     const bool detectContacts = collision && model.dimensions.layout[0] != 0;
     std::optional<ContactSlots> contactSlots;
     std::optional<ContactResponse> response;
+    std::optional<ReferenceWeights> reference;
+    const auto kinematicsPass = b.dispatches.size();
     struct
     {
-        uint32_t bodies, joints, leaves, pose, jointPose;
+        uint32_t bodies, joints, leaves, pose, jointPose, mocap;
     } kinematics{};
     if (nv != 0 || detectContacts) {
-        auto &[bodies, joints, leaves, pose, jointPose] = kinematics;
+        auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
         bodies = b.Shared("bodies", model.bodies);
         joints = b.Shared("joints", model.joints);
         leaves = b.Shared("branches", model.branches);
-        const auto mocap = nm == 0
-                               ? b.Seed("kinematicPoses", 8, nullptr)
-                               : b.Seed("kinematicPoses", uint64_t{8} * nm, model.initialKinematicPoses.data(), worlds);
+        mocap = nm == 0 ? b.Seed("kinematicPoses", 8, nullptr)
+                        : b.Seed("kinematicPoses", uint64_t{8} * nm, model.initialKinematicPoses.data(), worlds);
         std::vector<ModelPose> initialBodies(nb);
         pose = b.Seed("bodyPose", uint64_t{8} * nb, initialBodies.data(), worlds);
         jointPose = b.Slot(worldWords(uint64_t{8} * nj));
@@ -576,7 +621,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         }
     }
     if (nv != 0) {
-        const auto &[bodies, joints, leaves, pose, jointPose] = kinematics;
+        const auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
         const auto dofs = b.Shared("dofs", model.dofs);
         const auto gravities = b.Seed("gravity", 4, &gravity, worlds);
         const auto zeroForce = b.Seed("zeroForce", nv, nullptr, worlds);
@@ -597,6 +642,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         const auto warmstart =
             contactSlots && solver ? b.Zero("warmstartAcceleration", worldWords(nv)) : b.Slot(worldWords(nv));
 
+        const auto beginInertia = b.dispatches.size();
         b.Add("position", "body_inertial_frames", nb,
               {{0, dimensions, R}, {1, bodies, R}, {6, pose, R}, {8, inertialFrame, W, true}});
         b.Add("inertia", "subtree_com", nb,
@@ -617,6 +663,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
               {{0, dimensions, R}, {1, bodies, R}, {4, inertia, R}, {9, composite, W, true}});
         b.Add("inertia", "assemble_mass", nv,
               {{0, dimensions, R}, {8, centeredDof, R}, {9, composite, R}, {10, dofs, R}, {11, mass, W, true}});
+        const auto endInertia = b.dispatches.size();
         b.Add("bias", "comvel_branch", branches,
               {{0, dimensions, R},
                {1, bodies, R},
@@ -720,6 +767,27 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             const ContactDynamics dynamics{dofs, centeredDof, subtreeCom, velocities, mass, force, solved, warmstart};
             response = AddContactResponse(b, model, *contactSlots, capacity, *solver, timestep, dynamics,
                                           std::move(massSolves));
+            reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
+            const std::array singleWorld{
+                positions, pose,        jointPose, inertialFrame, subtreeCom,
+                inertia,   centeredDof, composite, mass,          nm == 0 ? NoModelIndex : mocap};
+            const auto initializeFrom = [&](size_t pass) {
+                auto dispatch = b.dispatches[pass];
+                dispatch.groupCountY = 1;
+                const auto divide = [&](const auto &binding) {
+                    return std::find(singleWorld.begin(), singleWorld.end(), binding.range.slot) != singleWorld.end();
+                };
+                for (auto &write : dispatch.completeWrites)
+                    if (divide(dispatch.bindings[write.binding]))
+                        write.byteSize /= worlds;
+                for (auto &binding : dispatch.bindings)
+                    if (divide(binding))
+                        binding.range.byteSize /= worlds;
+                b.initialize.push_back(std::move(dispatch));
+            };
+            initializeFrom(kinematicsPass);
+            for (size_t pass = beginInertia; pass < endInertia; ++pass)
+                initializeFrom(pass);
             b.Add("euler", "advance_contact_velocity", nv,
                   {{0, dimensions, R},
                    {2, stepSizes, R},
@@ -768,6 +836,15 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                            {2, velocities, R},
                                            {3, clocks, R},
                                            {4, snapshotSlot, W, true}});
+    const auto residentSlots = b.slots.size();
+    const auto residentPorts = b.ports.size();
+    if (reference)
+        InitializeWeights(b, model, *reference);
+    std::vector<rhi::ComputeBufferDesc> initializationStorage;
+    for (size_t slot = residentSlots; slot < b.slots.size(); ++slot)
+        initializationStorage.push_back(b.slots[slot].allocation);
+    b.slots.resize(residentSlots);
+    b.ports.resize(residentPorts);
     auto recipe =
         std::make_shared<rhi::ComputeWorkRecipe>(host, std::move(b.slots), std::move(b.ports), std::move(b.dispatches));
     auto work = recipe->Instantiate();
@@ -777,17 +854,25 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     std::vector<rhi::ComputeBufferUpdate> initial;
     initial.reserve(b.initial.size());
     const auto &buffers = work->GetBuffers();
+    auto initializationBuffers = buffers;
+    for (const auto &allocation : initializationStorage) {
+        auto buffer = rhi::ComputeBuffer::TryCreatePrivate(host, allocation);
+        if (!buffer)
+            return {};
+        initializationBuffers.push_back(std::move(buffer));
+    }
     for (auto &upload : b.initial)
-        initial.push_back({buffers[upload.slot], 0, std::move(upload.data)});
+        initial.push_back({initializationBuffers[upload.slot], 0, std::move(upload.data)});
     std::vector<rhi::ComputeDispatchDesc> initialDispatches;
     initialDispatches.reserve(b.initialize.size());
     for (auto &clear : b.initialize)
-        initialDispatches.push_back(BindDispatch(std::move(clear), buffers));
+        initialDispatches.push_back(BindDispatch(std::move(clear), initializationBuffers));
     auto initialize = rhi::PrepareComputeBatch(host, std::move(initial), std::move(initialDispatches));
     WarpContactStream contacts;
     if (contactSlots)
         contacts = {buffers[contactSlots->candidateCount], buffers[contactSlots->counts],
-                    buffers[contactSlots->records], response ? buffers[response->status] : nullptr};
+                    buffers[contactSlots->records], response ? buffers[response->status] : nullptr,
+                    response ? buffers[response->topology] : nullptr};
     auto step = std::unique_ptr<WarpStep>(new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions,
                                                        velocities, applied, std::move(contacts)));
     return {std::move(step), std::move(initialize)};

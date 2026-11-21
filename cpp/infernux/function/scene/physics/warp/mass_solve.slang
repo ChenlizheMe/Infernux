@@ -47,6 +47,11 @@ struct SparseMassRow
 [[vk::binding(15, 0)]] StructuredBuffer<uint> symmetricAdjacency;
 [[vk::binding(16, 0)]] StructuredBuffer<float> massVectorInput;
 [[vk::binding(17, 0)]] RWStructuredBuffer<float> massVectorOutput;
+[[vk::binding(18, 0)]] RWStructuredBuffer<float> selectedInverse;
+[[vk::binding(19, 0)]] RWStructuredBuffer<uint4> referenceContactTopology;
+[[vk::binding(20, 0)]] StructuredBuffer<SpatialMotion> referenceDofs;
+[[vk::binding(21, 0)]] StructuredBuffer<CartesianFrame> referenceInertiaFrames;
+[[vk::binding(22, 0)]] StructuredBuffer<float4> referenceSubtreeCom;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -359,4 +364,68 @@ void solve_sparse_mass(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         }
         syncMassStorage();
     }
+}
+
+uint ancestorEntry(uint a, uint b)
+{
+    return dofs[max(a, b)].indices.z + dofs[min(a, b)].indices.w - 1;
+}
+
+// M = L^T D L for the reverse sparse factorization. Conditioned on the
+// ancestors, a coordinate has variance 1/D; the off-diagonal covariance
+// depends only on these same ancestors. Fill no entries between siblings.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void reference_mass_inverse(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const SparseMassBlock block = sparseBlock(group.x);
+    const uint levels = massUniformCount(lane, block.levelCount);
+    for (uint level = 0; level < levels; ++level)
+    {
+        const uint2 range = sparseLevel(block.firstLevel + level);
+        for (uint i = lane; i < range.y; i += TileWidth)
+        {
+            const uint rowIndex = sparseRow(range.x + i).dof;
+            const uint4 row = dofs[rowIndex].indices;
+            float diagonal = inverseDiagonal[rowIndex];
+            for (uint j = row.y; j != NoIndex; j = dofs[j].indices.y)
+            {
+                float value = 0.0;
+                for (uint k = row.y; k != NoIndex; k = dofs[k].indices.y)
+                    value -= factors[ancestorEntry(rowIndex, k)] * selectedInverse[ancestorEntry(k, j)];
+                selectedInverse[ancestorEntry(rowIndex, j)] = value;
+                diagonal -= factors[ancestorEntry(rowIndex, j)] * value;
+            }
+            selectedInverse[row.z + row.w - 1] = diagonal;
+        }
+        syncMassStorage();
+    }
+}
+
+float3 referenceTranslation(uint dof, float3 offset)
+{
+    const SpatialMotion motion = referenceDofs[dof];
+    return motion.linear.xyz + cross(motion.angular.xyz, offset);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void reference_contact_weights(uint3 id : SV_DispatchThreadID)
+{
+    const ModelDimensions size = model[0];
+    if (id.x >= size.state.z)
+        return;
+    const uint slot = size.layout.x + id.x;
+    uint4 body = referenceContactTopology[slot];
+    const float3 offset = referenceInertiaFrames[id.x].position.xyz - referenceSubtreeCom[body.y].xyz;
+    float trace = 0.0;
+    for (uint a = body.x; a != NoIndex; a = dofs[a].indices.y)
+    {
+        const float3 jacobian = referenceTranslation(a, offset);
+        trace += selectedInverse[ancestorEntry(a, a)] * dot(jacobian, jacobian);
+        for (uint b = dofs[a].indices.y; b != NoIndex; b = dofs[b].indices.y)
+            trace += 2.0 * selectedInverse[ancestorEntry(a, b)] * dot(jacobian, referenceTranslation(b, offset));
+    }
+    body.z = asuint(max(trace, 0.0) / 3.0);
+    referenceContactTopology[slot] = body;
 }
