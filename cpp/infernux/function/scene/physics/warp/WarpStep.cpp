@@ -557,11 +557,11 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                {17, dyn.motionModel, R},
                {18, dyn.prescribedMotion, R},
                {19, dyn.fixedSteps, R}});
-    if (!model.spatialEqualities.empty()) {
-        const auto equalityCount = model.spatialEqualities[0][0];
-        const auto modelRows = b.Shared("spatialEqualities", model.spatialEqualities);
-        const std::vector<uint32_t> active(equalityCount, 1);
-        const auto activate = b.Seed("enabledSpatialEqualities", equalityCount, active.data(), b.worlds);
+    if (!model.sceneJoints.empty()) {
+        const auto jointCount = model.sceneJoints[0][0];
+        const auto modelRows = b.Shared("sceneJoints", model.sceneJoints);
+        const std::vector<uint32_t> active(jointCount, 1);
+        const auto activate = b.Seed("enabledSceneJoints", jointCount, active.data(), b.worlds);
         if (dyn.prescribedMotion != NoModelIndex)
             b.Add("spatial_constraints", "write_scene_kinematic_velocities", nb,
                   {{4, dyn.subtreeCom, R},
@@ -570,7 +570,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                    {14, dyn.fixedSteps, R},
                    {15, dyn.bodyVelocity, W},
                    {16, dyn.motionModel, R}});
-        b.Add("spatial_constraints", "emit_scene_fixed_joint_rows", equalityCount,
+        b.Add("spatial_constraints", "emit_scene_joint_rows", jointCount,
               {{0, settings, R},
                {1, modelRows, R},
                {2, activate, R},

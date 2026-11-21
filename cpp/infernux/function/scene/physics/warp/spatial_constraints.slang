@@ -9,6 +9,7 @@
 #include "prescribed_motion.slang"
 
 static const uint SpatialEqualityWords = 9;
+static const uint SceneJointWords = 12;
 
 [[vk::binding(1, 0)]] StructuredBuffer<uint4> spatialModel;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> equalityActive;
@@ -58,26 +59,90 @@ float3 pointJacobianDerivative(SpatialMotion motion, SpatialMotion derivative, S
     return pointJacobian(derivative, endpoint) + cross(motion.angular.xyz, endpoint.pointVelocity);
 }
 
+struct HingeRow
+{
+    float4 response; // Distance, reference acceleration, inverse regularization, force cap.
+    float direction;
+    uint kind;
+};
+
+struct HingeRows
+{
+    HingeRow rows[5];
+    uint count;
+};
+
+float wrapHingeAngle(float angle)
+{
+    const float turn = 2.0 * PhysicsPi;
+    return angle - turn * floor((angle + PhysicsPi) / turn);
+}
+
+void appendHingeResponse(inout HingeRows result, float reference, float diagonal, uint kind, float cap)
+{
+    result.rows[result.count++] = {float4(0.0, reference, diagonal, cap), 1.0, kind};
+}
+
+HingeRows hingeRows(uint record, float angle, float speed, float weight, float timestep, uint flags,
+                    ConstraintParameters parameters)
+{
+    HingeRows result;
+    result.count = 0;
+    const uint4 controls = spatialModel[record + 9u];
+    const float3 limit = asfloat(controls.yzw);
+    const float4 motor = asfloat(spatialModel[record + 10u]);
+    const float2 passive = asfloat(spatialModel[record + 11u].xy);
+    if ((controls.x & 1u) != 0)
+    {
+        const float predicted = angle + timestep * speed;
+        const bool locked = limit.x == limit.y;
+        const bool upper = !locked && (angle > limit.y || (angle >= limit.x && predicted > limit.y));
+        const bool lower = angle < limit.x || predicted < limit.x;
+        if (locked || upper || lower)
+        {
+            const float direction = upper ? -1.0 : 1.0;
+            const float error = direction * (angle - (upper ? limit.y : limit.x));
+            const float3 kbi = impedanceParameters(parameters, error, timestep, false);
+            ConstraintRow row = makeConstraintRow(uint4(0u), locked ? EqualityRow : LimitRow, kbi, error, 0.0,
+                direction * speed, weight, 0.0, 0.0, timestep, flags, parameters.reference.x);
+            if (!locked && direction * speed < 0.0)
+                row.state.w = max(row.state.w, -(error + timestep * direction * speed) / (timestep * timestep));
+            result.rows[result.count++] = {float4(row.state.x, row.state.w, row.diagonal, 0.0), direction, row.kind};
+        }
+    }
+    const float motorDiagonal = timestep * (motor.z + motor.y * timestep);
+    if ((controls.x & 2u) != 0 && motorDiagonal > 0.0 && motor.w > 0.0)
+    {
+        // Implicit spring and damper use the end-of-substep pose and speed.
+        const float error = wrapHingeAngle(motor.x - angle);
+        const float torque = motor.y * (error - timestep * speed) - motor.z * speed;
+        appendHingeResponse(result, torque / motorDiagonal, motorDiagonal, FrictionRow, motor.w);
+    }
+    if (passive.x > 0.0)
+        appendHingeResponse(result, -speed / timestep, passive.x * timestep, EqualityRow, 0.0);
+    if (passive.y > 0.0)
+        appendHingeResponse(result, -speed / timestep, 1.0 / (weight * timestep), FrictionRow, passive.y);
+    if (limit.z > 0.0)
+        appendHingeResponse(result, 0.0, limit.z, EqualityRow, 0.0);
+    return result;
+}
+
 void emitSpatialRows<let SceneJoint : bool>(uint3 id)
 {
     const uint4 model = spatialModel[0]; // descriptor count, equality count
     if (id.x >= model.x)
         return;
-    const uint record = 1 + SpatialEqualityWords * id.x;
+    const uint record = 1 + (SceneJoint ? SceneJointWords : SpatialEqualityWords) * id.x;
     const uint4 source = spatialModel[record]; // equality id, first body, second body, Jacobian width
     if (equalityActive[id.y * model.y + source.x] == 0)
         return;
     const uint4 span = spatialModel[record + 1]; // first welded body, second welded body, support offset, height
-    const uint2 block = reserveConstraintBlock(id.y, span.w, source.w);
-    if (block.x == NoIndex)
-        return;
-
     const uint4 limits = settings[0];
     const uint4 config = settings[1];
     const uint bodyBase = id.y * config.x;
     const uint dofBase = id.y * config.y;
-    const uint columnBase = id.y * limits.w + block.y;
-    const bool weld = span.w == 6;
+    const bool hinge = SceneJoint && span.w == 5u;
+    const uint angularRows = span.w - 3u;
     const uint4 reference = spatialModel[record + 8]; // roots, inverse weights as float bits
     const float4 anchorA = asfloat(spatialModel[record + 4]);
     const float3 anchorB = asfloat(spatialModel[record + 5].xyz);
@@ -86,6 +151,22 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     const SpatialEndpoint b = equalityEndpoint(bodyBase, source.z, span.y, reference.y, anchorB,
                                                asfloat(spatialModel[record + 7]));
     const float4 orientationBInverse = conjugateQuaternion(b.orientation);
+    const float4 relative = mulQuat(orientationBInverse, a.orientation);
+    const float3 hingeAxis = rotateVector(float3(0.0, 0.0, 1.0), b.orientation);
+    const float speed = dot(hingeAxis, a.omega - b.omega);
+    const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
+    const float timestep = asfloat(settings[2 + id.y].x);
+    HingeRows axial;
+    axial.count = 0;
+    if (hinge)
+    {
+        const float theta = wrapHingeAngle(2.0 * atan2(relative.w, relative.x));
+        axial = hingeRows(record, theta, speed, asfloat(reference.w), timestep, config.w, parameters);
+    }
+    const uint2 block = reserveConstraintBlock(id.y, span.w + axial.count, source.w);
+    if (block.x == NoIndex)
+        return;
+    const uint columnBase = id.y * limits.w + block.y;
     const float torqueScale = anchorA.w;
     float3 linearVelocity = float3(0.0);
     float3 angularVelocity = float3(0.0);
@@ -111,14 +192,20 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
         linearVelocity += linear * speed;
         linearShift += linearDot * speed;
 
-        if (weld)
+        if (angularRows != 0u)
         {
             const float direction = float(inA) - float(inB);
             const float4 relativeAxis = mulQuat(mulQuat(orientationBInverse,
                 float4(0.0, direction * motion.angular.xyz)), a.orientation);
             const float3 angular = (0.5 * torqueScale) * relativeAxis.yzw;
-            for (uint axis = 0; axis < 3; ++axis)
+            for (uint axis = 0; axis < angularRows; ++axis)
                 columns[columnBase + (axis + 3) * source.w + j] = {support.x, angular[axis]};
+            if (hinge)
+            {
+                const float value = direction * dot(hingeAxis, motion.angular.xyz);
+                for (uint extra = 0; extra < axial.count; ++extra)
+                    columns[columnBase + (span.w + extra) * source.w + j] = {support.x, axial.rows[extra].direction * value};
+            }
             angularVelocity += angular * speed;
             angularShift += direction * derivative.angular.xyz * speed;
         }
@@ -126,9 +213,12 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
 
     const float3 linearError = a.point - b.point;
     float3 angularError = float3(0.0);
-    if (weld)
+    const float axialShift = dot(hingeAxis, angularShift) + dot(cross(b.omega, hingeAxis), a.omega - b.omega);
+    if (angularRows != 0u)
     {
-        angularError = torqueScale * mulQuat(orientationBInverse, a.orientation).yzw;
+        angularError = torqueScale * relative.yzw;
+        if (hinge)
+            angularError.z = 0.0;
         const float4 delta = float4(0.0, a.omega - b.omega);
         const float4 aDot = 0.5 * mulQuat(float4(0.0, a.omega), a.orientation);
         const float4 bDotInv = conjugateQuaternion(0.5 * mulQuat(float4(0.0, b.omega), b.orientation));
@@ -147,9 +237,7 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
             mulQuat(orientationBInverse, float4(0.0, a.omega - b.omega)), a.orientation).yzw;
     }
 
-    const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
     const float impedancePosition = sqrt(dot(linearError, linearError) + dot(angularError, angularError));
-    const float timestep = asfloat(settings[2 + id.y].x);
     const bool unclamped = (config.w & (UnclampedReference | DiscreteConstraints)) != 0;
     const float3 kbi = impedanceParameters(parameters, impedancePosition, timestep, unclamped);
     const uint rowBase = id.y * limits.z + block.x;
@@ -158,13 +246,21 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
         rows[rowBase + axis] = makeConstraintRow(uint4(block.y + axis * source.w, source.w, source.x, axis),
             EqualityRow, kbi, linearError[axis], 0.0, linearVelocity[axis], asfloat(reference.z), 0.0, linearShift[axis],
             timestep, config.w, parameters.reference.x);
-        if (weld)
+        if (axis < angularRows)
         {
             const uint ordinal = axis + 3;
             rows[rowBase + ordinal] = makeConstraintRow(uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
                 EqualityRow, kbi, angularError[axis], 0.0, angularVelocity[axis], asfloat(reference.w), 0.0,
                 angularShift[axis], timestep, config.w, parameters.reference.x);
         }
+    }
+    for (uint extra = 0; extra < axial.count; ++extra)
+    {
+        const uint ordinal = span.w + extra;
+        const HingeRow row = axial.rows[extra];
+        rows[rowBase + ordinal] = {uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
+            float4(row.response.x, 0.0, row.direction * speed, row.response.y - row.direction * axialShift),
+            row.response.z, row.response.w, row.kind};
     }
 }
 
@@ -177,7 +273,7 @@ void emit_spatial_equality_rows(uint3 id : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void emit_scene_fixed_joint_rows(uint3 id : SV_DispatchThreadID)
+void emit_scene_joint_rows(uint3 id : SV_DispatchThreadID)
 {
     emitSpatialRows<true>(id);
 }
