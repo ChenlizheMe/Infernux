@@ -607,12 +607,6 @@ JPH_GPU_CONSTANT(QueryOutputHit, 0);
 JPH_GPU_CONSTANT(QueryOutputShape, 1);
 JPH_GPU_CONSTANT(QueryShapeSensor, 1);
 JPH_GPU_CONSTANT(QueryShapeMoving, 2);
-JPH_GPU_CONSTANT(QueryExportShapeBodyIndex, 7);
-JPH_GPU_CONSTANT(QueryExportShapeCenter, 8);
-JPH_GPU_CONSTANT(QueryExportShapeHalfExtents, 9);
-JPH_GPU_CONSTANT(QueryExportShapeRotation, 10);
-JPH_GPU_CONSTANT(QueryExportShapeFriction, 11);
-JPH_GPU_CONSTANT(QueryExportShapeBounciness, 12);
 JPH_GPU_CONSTANT(QueryClosest, 0);
 JPH_GPU_CONSTANT(QueryAll, 1);
 JPH_GPU_CONSTANT(QueryUniqueCollider, 2);
@@ -723,14 +717,6 @@ struct JPH_GPU_ALIGN QueryShapeState
     JPH_GPU_FLOAT4 linearVelocity;
     JPH_GPU_FLOAT4 angularVelocity;
     JPH_GPU_FLOAT4 material;
-};
-
-struct JPH_GPU_ALIGN QueryExportParams
-{
-    JPH_GPU_UINT4 output; // format, field, record count, scalar offset.
-    JPH_GPU_UINT4 sizes;  // request count, record words, scalars per output row, zero.
-    // Source first record; original aggregate body index; override index flag; zero.
-    JPH_GPU_UINT4 selection;
 };
 
 struct JPH_GPU_ALIGN QuerySpan
@@ -905,9 +891,6 @@ JPH_GPU_CHECK_TYPE(QueryBodyIdentity, 16);
 JPH_GPU_CHECK_TYPE(QueryHit, 64);
 JPH_GPU_CHECK_TYPE(QueryRecordWord, 16);
 JPH_GPU_CHECK_TYPE(QueryShapeState, 144);
-JPH_GPU_CHECK_TYPE(QueryExportParams, 48);
-static_assert(offsetof(QueryExportParams, selection) == 32);
-static_assert(offsetof(QueryRecordWord, value) == 0 && offsetof(QueryExportParams, sizes) == 16);
 static_assert(offsetof(QueryShapeState, surface) == 16 && offsetof(QueryShapeState, geometry) == 32 &&
               offsetof(QueryShapeState, center) == 48 && offsetof(QueryShapeState, rotation) == 64 &&
               offsetof(QueryShapeState, bodyCenterOfMass) == 80 && offsetof(QueryShapeState, linearVelocity) == 96 &&

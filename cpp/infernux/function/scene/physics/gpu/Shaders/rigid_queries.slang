@@ -18,8 +18,6 @@ RWStructuredBuffer<uint4> query_control;
 StructuredBuffer<uint4> query_geometry;
 RWStructuredBuffer<QuerySummary> query_summary;
 RWStructuredBuffer<QueryRecordWord> query_hits;
-ConstantBuffer<QueryExportParams> query_export_params;
-RWStructuredBuffer<uint> query_export_values;
 ConstantBuffer<QueryCastParams> query_cast_params;
 
 // One immutable request stream: Input144 records precede Primitive80 suffix. Identity records likewise share one resource.
@@ -1138,35 +1136,3 @@ void query_compact(uint3 tid : SV_DispatchThreadID)
 
 // Projection only: scalar storage preserves contiguous float3 and row-major
 // 3x3 output layouts without any CPU numerical materialization/reupload.
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void query_export(uint3 tid : SV_DispatchThreadID)
-{
-    uint row = tid.x;
-    if (row >= query_export_params.output.z || query_summary[0].counts.y != QuerySuccess)
-        return;
-    uint field = query_export_params.output.y;
-    uint source_row = query_export_params.selection.x + row;
-    uint base = source_row * query_export_params.sizes.y;
-    uint destination = query_export_params.output.w + row * query_export_params.sizes.z;
-    uint4 value = uint4(0u);
-    if (field == QueryExportShapeBodyIndex)
-    {
-        uint low = 0u, high = query_export_params.sizes.x;
-        while (low < high)
-        {
-            uint middle = low + (high - low) / 2u;
-            QuerySpan span = query_load_span(middle);
-            if (span.range.x + span.range.y <= source_row) low = middle + 1u;
-            else high = middle;
-        }
-        value.x = query_export_params.selection.z != 0u ? query_export_params.selection.y : low;
-    }
-    else if (field == QueryExportShapeCenter) value = query_hits[base + 3u].value;
-    else if (field == QueryExportShapeHalfExtents) value = query_hits[base + 2u].value;
-    else if (field == QueryExportShapeRotation) value = query_hits[base + 4u].value;
-    else if (field == QueryExportShapeFriction) value.x = query_hits[base + 8u].value.x;
-    else if (field == QueryExportShapeBounciness) value.x = query_hits[base + 8u].value.y;
-    for (uint scalar = 0u; scalar < query_export_params.sizes.z; ++scalar)
-        query_export_values[destination + scalar] = value[scalar];
-}

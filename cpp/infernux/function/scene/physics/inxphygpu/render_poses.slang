@@ -277,3 +277,49 @@ void export_body_motion(uint3 id : SV_DispatchThreadID)
     for (uint lane = 0; lane < 3u; ++lane)
         motion_values[start + lane] = value[lane];
 }
+
+RWStructuredBuffer<uint> box_values;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void export_body_boxes(uint3 id : SV_DispatchThreadID)
+{
+    const uint index = id.x;
+    if (index >= motion_params.target.y)
+        return;
+    const uint row = (motion_params.target.x + index) * motion_params.source.w;
+    const uint outputRow = motion_params.output.y != 0u ? motion_rows[row + 1] : index;
+    const uint start = motion_params.target.z + outputRow * motion_params.output.x;
+    const uint field = motion_params.target.w;
+    if (field == 7u || field >= 11u)
+    {
+        const uint scalar = field == 7u ? 2u : (field == 11u ? 7u : 15u);
+        box_values[start] = motion_rows[row + scalar];
+        return;
+    }
+    if (field == 9u)
+    {
+        for (uint axis = 0; axis < 3u; ++axis)
+            box_values[start + axis] = motion_rows[row + 12u + axis];
+        return;
+    }
+    const uint body = (motion_params.source.x + motion_rows[row]) * motion_params.source.y;
+    const bool origin = motion_params.source.z != 0u;
+    const float4 stored = body_states[body + 1u];
+    const float4 rotation = normalize(origin ? stored.yzwx : stored);
+    if (field == 8u)
+    {
+        const float3 local = asfloat(uint3(motion_rows[row + 4], motion_rows[row + 5], motion_rows[row + 6]));
+        const float3 center = body_states[body + (origin ? 2u : 0u)].xyz + pose_rotate(rotation, local);
+        for (uint axis = 0; axis < 3u; ++axis)
+            box_values[start + axis] = asuint(center[axis]);
+    }
+    else
+    {
+        const float4 local = asfloat(uint4(motion_rows[row + 8], motion_rows[row + 9],
+                                          motion_rows[row + 10], motion_rows[row + 11]));
+        const float4 world = normalize(pose_mul_quat(rotation, local));
+        for (uint axis = 0; axis < 4u; ++axis)
+            box_values[start + axis] = asuint(world[axis]);
+    }
+}

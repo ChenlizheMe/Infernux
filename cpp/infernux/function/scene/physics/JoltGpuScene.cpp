@@ -1176,6 +1176,18 @@ class JoltGpuScene::Impl
             publishedLeaf.shape = leaf.shape;
             publishedLeaf.geometry = geometry->Intern(leaf.geometryRecord);
             publishedLeaf.sensor = (leaf.model.meta.w & ShapeSensor) != 0;
+            if (leaf.model.meta.x == ShapeBox) {
+                const auto &centerOffset = leaf.model.localPositionCOM;
+                const auto &rotation = leaf.model.localRotation;
+                const auto &extent = leaf.model.geometry;
+                identity->boxes.push_back({{centerOffset.x, centerOffset.y, centerOffset.z},
+                                           {rotation.w, rotation.x, rotation.y, rotation.z},
+                                           {extent.x, extent.y, extent.z},
+                                           leaf.model.material.x,
+                                           leaf.model.material.y,
+                                           leaf.memberIndex,
+                                           publishedLeaf.sensor});
+            }
             identity->leaves.push_back(std::move(publishedLeaf));
         }
         auto change = std::make_shared<ActorChange>();

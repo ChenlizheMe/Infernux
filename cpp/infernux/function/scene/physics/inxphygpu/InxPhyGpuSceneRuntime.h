@@ -96,6 +96,8 @@ struct InxPhyGpuFixedPublication
     [[nodiscard]] PhysicsGpuPoseSource PoseSource(uint32_t world) const;
     [[nodiscard]] std::optional<PhysicsGpuBodyPoseBinding> FindPoseBody(uint32_t world, PhysicsActorHandle actor,
                                                                         uint32_t bodyId) const;
+    [[nodiscard]] PhysicsGpuBoxExport GatherBoxes(uint32_t world, const std::vector<uint32_t> &bodies,
+                                                  bool includeTriggers) const;
     /// Consume the accepted world's reports in solver substep order.
     void PublishContacts(uint32_t world, PhysicsContactPublication &destination,
                          const PhysicsContactPublication::Policy &policy);

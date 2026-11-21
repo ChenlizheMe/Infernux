@@ -959,16 +959,15 @@ class PhysicsWorld
                       const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
                       bool queryTriggers, const std::vector<PhysicsDeviceQueryOutput> &exports,
                       PhysicsRigidbodyStateBatch &batch, PhysicsGpuMotionRead &hostMotion,
-                      PhysicsGpuMotionExport &motion, std::shared_ptr<JoltGpuQueryResult> &shapes,
-                      std::exception_ptr &requestError, bool deferExport = false) const;
+                      PhysicsGpuMotionExport &motion, PhysicsGpuBoxExport &boxes, std::exception_ptr &requestError,
+                      bool deferExport = false) const;
     [[nodiscard]] std::shared_ptr<const PhysicsShapeGeometry>
     ResolveShapeGeometry(PhysicsDomain &domain, const JoltGpuScene::PublishedLeaf &leaf,
                          const JPH::GPU::QueryShapeState &record) const;
     [[nodiscard]] std::shared_ptr<JoltGpuQueryResult> GatherBodyShapes(PhysicsDomain &domain, uint32_t bodyId,
                                                                        bool queryTriggers) const;
     void MaterializeStateBatch(PhysicsDomain &domain, PhysicsRigidbodyStateBatch &batch,
-                               const PhysicsGpuMotionRead &hostMotion,
-                               const std::shared_ptr<JoltGpuQueryResult> &shapes, bool numerical,
+                               const PhysicsGpuMotionRead &hostMotion, const PhysicsGpuBoxExport &boxes, bool numerical,
                                PhysicsStateFields cachedFields = static_cast<PhysicsStateFields>(0x1ff)) const;
 
     bool m_initialized = false;

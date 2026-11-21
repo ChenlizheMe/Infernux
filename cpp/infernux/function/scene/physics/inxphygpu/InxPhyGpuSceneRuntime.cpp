@@ -36,6 +36,7 @@ struct InxPhyGpuSceneLayout
     std::vector<World> worlds;
     std::unordered_map<uint64_t, uint32_t> worldRows;
     std::vector<Geometry> geometries;
+    std::vector<std::vector<PhysicsGpuBoxAuthor>> boxes;
 
     [[nodiscard]] uint32_t WorldRow(uint64_t id) const
     {
@@ -118,6 +119,22 @@ InxPhyGpuFixedPublication::FindPoseBody(uint32_t world, PhysicsActorHandle actor
     if (!row || layout.bodies[*row].actor != actor)
         return std::nullopt;
     return PhysicsGpuBodyPoseBinding{bodyId, *row};
+}
+
+PhysicsGpuBoxExport InxPhyGpuFixedPublication::GatherBoxes(uint32_t world, const std::vector<uint32_t> &bodies,
+                                                           bool includeTriggers) const
+{
+    PhysicsGpuBoxExport result{PoseSource(world), {}};
+    const auto &layout = m_layout->worlds[world];
+    for (size_t index = 0; index < bodies.size(); ++index) {
+        const auto row = layout.BodyRow(bodies[index]);
+        if (!row)
+            throw std::invalid_argument("inxphygpu box selection requires an accepted body in the selected world");
+        for (const auto &box : m_layout->boxes[*row])
+            if (includeTriggers || !box.trigger)
+                result.boxes.push_back({*row, static_cast<uint32_t>(index), box});
+    }
+    return result;
 }
 
 void InxPhyGpuFixedPublication::PublishContacts(uint32_t world, PhysicsContactPublication &destination,
@@ -213,9 +230,25 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     layout->worldRows.reserve(worlds.size());
     m_acceptedWorlds.reserve(worlds.size());
     layout->geometries.reserve(scene.geometries.size());
+    layout->boxes.resize(m_bodyCount);
     for (size_t row = 0; row < scene.geometries.size(); ++row) {
         const auto &geometry = scene.geometries[row];
-        layout->geometries.push_back({scene.model.geometries[row].indices[0], geometry.surface, geometry.subShape});
+        const auto &shape = scene.model.geometries[row];
+        const auto body = shape.indices[0];
+        layout->geometries.push_back({body, geometry.surface, geometry.subShape});
+        if (shape.indices[1] != Box)
+            continue;
+        const auto &origin = shape.pose.position;
+        const auto &center = scene.model.bodies[body].inertiaPose.position;
+        const auto &rotation = shape.pose.rotation;
+        const auto &size = scene.collision.shapes[row].size;
+        layout->boxes[body].push_back({{origin[0] - center[0], origin[1] - center[1], origin[2] - center[2]},
+                                       {rotation[0], rotation[1], rotation[2], rotation[3]},
+                                       {size[0], size[1], size[2]},
+                                       geometry.collider.friction,
+                                       geometry.collider.bounciness,
+                                       geometry.surface,
+                                       geometry.collider.trigger});
     }
     for (auto &source : worlds) {
         if (source.bodies.size() != scene.bodies.size() ||

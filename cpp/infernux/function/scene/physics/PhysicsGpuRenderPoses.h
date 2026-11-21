@@ -40,6 +40,9 @@ class PhysicsGpuRenderPoses final
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareMotion(const PhysicsGpuMotionExport &source, const std::vector<PhysicsDeviceQueryOutput> &outputs,
                   const std::vector<size_t> &scatter = {}) const;
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareBoxes(const PhysicsGpuBoxExport &source, const std::vector<PhysicsDeviceQueryOutput> &outputs,
+                 const std::vector<size_t> &scatter = {}) const;
 
   private:
     struct Entry
@@ -47,13 +50,16 @@ class PhysicsGpuRenderPoses final
         std::shared_ptr<rhi::ComputeKernel> kernel;
         std::vector<uint8_t> ports;
     };
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareFields(const Entry &entry, const PhysicsGpuPoseSource &source, std::vector<uint32_t> packed, uint32_t stride,
+                  const std::vector<PhysicsDeviceQueryOutput> &outputs, const std::vector<size_t> &scatter) const;
     struct InputCache
     {
         std::vector<uint8_t> bytes;
         std::shared_ptr<rhi::ComputeBuffer> buffer;
     };
     rhi::ComputeHost m_host;
-    Entry m_nodes, m_meshes, m_motion;
+    Entry m_nodes, m_meshes, m_motion, m_box;
     mutable InputCache m_parameters, m_nodeInputs, m_bindingInputs;
     mutable std::vector<InputCache> m_levelParameters;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_nodeModels, m_models, m_bounds;

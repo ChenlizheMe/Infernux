@@ -20,7 +20,7 @@ namespace
 using namespace JPH::GPU;
 bool IsDeviceResult(JoltGpuQueryReadback destination)
 {
-    return destination == JoltGpuQueryReadback::Device || destination == JoltGpuQueryReadback::DeviceWithSpans;
+    return destination == JoltGpuQueryReadback::Device;
 }
 enum Port : uint8_t
 {
@@ -34,8 +34,6 @@ enum Port : uint8_t
     Control,
     Summary,
     Hits,
-    ExportParameters,
-    ExportValues,
     ParticleParameters,
     ParticleRows,
     ParticlePrevious,
@@ -53,7 +51,6 @@ enum Stage : uint8_t
     Evaluate,
     Scan,
     Compact,
-    Export,
     ParticleProject,
     ParticleCount,
     ParticleScatter,
@@ -91,8 +88,6 @@ constexpr PortLayout Ports[] = {
     {"query_control", sizeof(UInt4), {}, 0},
     {"query_summary", sizeof(QuerySummary), {"counts"}, 1},
     {"query_hits", sizeof(QueryRecordWord), {"value"}, 1},
-    {"query_export_params", sizeof(QueryExportParams), {"output", "sizes", "selection"}, 7},
-    {"query_export_values", sizeof(uint32_t), {}, 0},
     {"particle_export_params", sizeof(ParticleExportParameters), {"counts", "revision"}, 3},
     {"particle_export_rows",
      sizeof(JoltGpuParticleExportRow),
@@ -110,7 +105,6 @@ constexpr PortLayout Ports[] = {
 constexpr std::array<std::string_view, StageCount> Entries{"query_evaluate",
                                                            "query_scan",
                                                            "query_compact",
-                                                           "query_export",
                                                            "particle_collision_project",
                                                            "particle_collision_count",
                                                            "particle_collision_scatter",
@@ -127,7 +121,6 @@ constexpr std::array<uint32_t, StageCount> StagePorts{
         Bit(Control) | Bit(CastParameters) | Bit(Geometry),
     Bit(Parameters) | Bit(Control) | Bit(Summary),
     Bit(Parameters) | Bit(Candidates) | Bit(Control) | Bit(Summary) | Bit(Hits),
-    Bit(ExportParameters) | Bit(Hits) | Bit(Control) | Bit(Summary) | Bit(ExportValues),
     Bit(ParticleParameters) | Bit(ParticleRows) | Bit(ParticlePrevious) | Bit(Shapes) | Bit(Hits) |
         Bit(ParticleRecords) | Bit(ParticleStatus),
     Bit(ParticleParameters) | Bit(ParticleRecords) | Bit(ParticleHeader) | Bit(ParticleOffsets) | Bit(ParticleStatus),
@@ -158,8 +151,7 @@ template <class T> std::vector<uint8_t> Bytes(const T *records, size_t count)
 void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
 {
     const auto &expected = Ports[port];
-    const bool uniform =
-        port == Parameters || port == ExportParameters || port == ParticleParameters || port == CastParameters;
+    const bool uniform = port == Parameters || port == ParticleParameters || port == CastParameters;
     if (port == Control || port == Geometry) {
         if (resource.binding.type != rhi::BindingType::StorageBuffer ||
             resource.binding.readOnlyStorage != (port == Geometry) || resource.elementStride != sizeof(UInt4) ||
@@ -168,7 +160,7 @@ void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
             throw std::invalid_argument("Jolt GPU query uint4 stream differs from its shared layout");
         return;
     }
-    if (port == ExportValues || port == ParticleOffsets || port == ParticleIndices || port == ParticleStatus) {
+    if (port == ParticleOffsets || port == ParticleIndices || port == ParticleStatus) {
         if (resource.binding.type != rhi::BindingType::StorageBuffer || resource.binding.readOnlyStorage ||
             resource.elementStride != sizeof(uint32_t) || resource.value.kind != ShaderValueKind::Scalar ||
             resource.value.scalar != ShaderScalarKind::UInt32 || resource.value.byteSize != sizeof(uint32_t))
@@ -350,8 +342,7 @@ rhi::ComputeBufferAccess Access(uint8_t stage, uint8_t port)
         return rhi::ComputeBufferAccess::ReadWrite;
     if (stage == Scan && port == Control)
         return rhi::ComputeBufferAccess::ReadWrite;
-    if ((stage == Scan && port == Summary) || (stage == Compact && port == Hits) ||
-        (stage == Export && port == ExportValues))
+    if ((stage == Scan && port == Summary) || (stage == Compact && port == Hits))
         return rhi::ComputeBufferAccess::Write;
     return rhi::ComputeBufferAccess::Read;
 }
@@ -755,9 +746,6 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     result->outputFormat = format;
     result->recordBytes = recordBytes;
     result->readback = readback;
-    result->shapeBoxesOnly =
-        format == QueryOutputShape &&
-        std::all_of(queries.begin(), queries.end(), [](const auto &query) { return query.meta.z == ShapeBox; });
     if (!queryCount) {
         result->headerComplete = result->materialized = result->recordsMaterialized = true;
         return {result, {}};
@@ -955,121 +943,6 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     return {result, ready()};
 }
 
-JoltGpuControlWork JoltGpuQueries::PrepareShapeExport(const std::shared_ptr<JoltGpuQueryResult> &source,
-                                                      const std::vector<PhysicsDeviceQueryOutput> &bindings) const
-{
-    m_host.RequireAlive();
-    if (!source || bindings.empty())
-        return {};
-    if (source->queryCount && (!source->hits || !m_host.SharesServicesWith(source->hits->GetHost())))
-        throw JoltGpuQueryRequestError("Jolt GPU export records belong to another compute owner");
-    if (source->GetSummary().counts.y != QuerySuccess)
-        return {}; // The completed result consumer reports the read-only failure.
-    source->Materialize();
-    if (!source->queryCount)
-        return {};
-    if (source->outputFormat != QueryOutputShape)
-        throw JoltGpuQueryRequestError("Jolt GPU shape export requires shape records");
-
-    constexpr std::array<uint32_t, 6> Widths{1, 3, 3, 4, 1, 1};
-    constexpr std::array<uint32_t, Widths.size()> ShaderFields{
-        QueryExportShapeBodyIndex, QueryExportShapeCenter,   QueryExportShapeHalfExtents,
-        QueryExportShapeRotation,  QueryExportShapeFriction, QueryExportShapeBounciness,
-    };
-    struct Target
-    {
-        std::shared_ptr<rhi::ComputeBuffer> buffer;
-        uint64_t offset, bytes;
-        uint32_t field, count, first, bodyIndex;
-    };
-    std::vector<Target> targets;
-    for (const auto &binding : bindings) {
-        const auto field =
-            static_cast<uint32_t>(binding.field) - static_cast<uint32_t>(PhysicsDeviceQueryField::ShapeBodyIndex);
-        if (field >= Widths.size() || !binding.buffer || binding.buffer->IsFrozen() ||
-            !m_host.SharesServicesWith(binding.buffer->GetHost()) || binding.byteOffset % sizeof(uint32_t))
-            throw JoltGpuQueryRequestError("Jolt GPU export field or destination differs from its compute owner");
-        if (binding.field == PhysicsDeviceQueryField::ShapeHalfExtents && !source->shapeBoxesOnly)
-            throw JoltGpuQueryRequestError("Jolt GPU box export requires an exclusively Box selection");
-        const uint32_t total = source->summaryValue.counts.x;
-        const uint32_t first = binding.recordFirst;
-        const uint32_t count = binding.recordCount == UINT32_MAX ? total - std::min(first, total) : binding.recordCount;
-        if (first > total || count > total - first)
-            throw JoltGpuQueryRequestError("GPU export selection exceeds its completed typed source");
-        const auto &desc = binding.buffer->GetDesc();
-        const auto scalar = binding.field == PhysicsDeviceQueryField::ShapeBodyIndex ? rhi::ComputeScalarType::Int32
-                                                                                     : rhi::ComputeScalarType::Float32;
-        const auto bytes = CheckedBytes(uint64_t(count) * Widths[field], sizeof(uint32_t));
-        const auto end = std::min(binding.byteEnd, binding.buffer->GetByteSize());
-        if (desc.scalarType != scalar || desc.lanes != Widths[field] || binding.byteOffset > end ||
-            bytes > end - binding.byteOffset ||
-            binding.byteOffset / sizeof(uint32_t) > std::numeric_limits<uint32_t>::max() ||
-            uint64_t(count) * Widths[field] >
-                std::numeric_limits<uint32_t>::max() - binding.byteOffset / sizeof(uint32_t))
-            throw JoltGpuQueryRequestError(
-                "Jolt GPU export destination has an invalid type, prefix capacity or index range");
-        for (const auto &buffer : {source->hits, source->spans, source->summary})
-            if (binding.buffer->GetAllocation() == buffer->GetAllocation())
-                throw JoltGpuQueryRequestError("Jolt GPU export destination must not alias query input records");
-        for (const auto &previous : targets)
-            if ((binding.buffer->GetWriterStateIdentity() == previous.buffer->GetWriterStateIdentity() ||
-                 binding.buffer->GetAllocation() == previous.buffer->GetAllocation()) &&
-                bytes && previous.bytes && binding.byteOffset < previous.offset + previous.bytes &&
-                previous.offset < binding.byteOffset + bytes)
-                throw JoltGpuQueryRequestError("Jolt GPU export output prefixes must not overlap");
-        const uint32_t groups = count / 64 + static_cast<uint32_t>(count % 64 != 0);
-        if (groups > m_host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
-            throw JoltGpuQueryRequestError("Jolt GPU export count exceeds the device dispatch range");
-        targets.push_back({binding.buffer, binding.byteOffset, bytes, field, count, first, binding.bodyIndex});
-    }
-    rhi::ComputeHost host = m_host;
-    std::vector<rhi::ComputeBufferUpdate> updates;
-    std::vector<rhi::ComputeDispatchDesc> dispatches;
-    const auto &program = m_programs[Export];
-    for (const auto &target : targets) {
-        if (!target.count)
-            continue;
-        const QueryExportParams parameters{
-            {source->outputFormat, ShaderFields[target.field], target.count,
-             static_cast<uint32_t>(target.offset / sizeof(uint32_t))},
-            {source->queryCount, source->recordBytes / 16, Widths[target.field], 0},
-            {target.first, target.bodyIndex, target.bodyIndex != UINT32_MAX ? 1u : 0u, 0u}};
-        auto uniform = rhi::ComputeBuffer::TryCreatePrivate(
-            host, {sizeof(parameters) / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
-        if (!uniform)
-            throw JoltGpuQueryRequestError("Jolt GPU export preparation exceeds available managed device capacity");
-        updates.push_back({uniform, 0, Bytes(&parameters, 1)});
-        std::array<std::shared_ptr<rhi::ComputeBuffer>, PortCount> buffers;
-        buffers[ExportParameters] = uniform;
-        buffers[Hits] = source->hits;
-        buffers[Control] = source->spans;
-        buffers[Summary] = source->summary;
-        buffers[ExportValues] = target.buffer;
-        rhi::ComputeDispatchDesc dispatch;
-        dispatch.kernel = program.kernel;
-        dispatch.groupCountX = target.count / 64 + static_cast<uint32_t>(target.count % 64 != 0);
-        rhi::ComputeDispatchProof proof;
-        for (const auto port : program.ports) {
-            const auto local = static_cast<uint32_t>(dispatch.buffers.size());
-            dispatch.buffers.push_back(buffers[port]);
-            dispatch.bufferAccesses.push_back(Access(Export, port));
-            if (port == ExportValues)
-                proof.writes.push_back({local, target.offset, target.bytes});
-            else
-                proof.reads.push_back({local, 0,
-                                       port == Control ? CheckedBytes(source->queryCount, sizeof(QuerySpan))
-                                                       : buffers[port]->GetByteSize()});
-        }
-        dispatch.proof = std::move(proof);
-        dispatches.push_back(std::move(dispatch));
-    }
-    if (dispatches.empty())
-        return {};
-    JoltGpuControlWork work{rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches))};
-    work.geometry = source->geometry;
-    return work;
-}
-
 JoltGpuPreparedParticleExport JoltGpuQueries::PrepareParticleExport(const std::shared_ptr<JoltGpuQueryResult> &shapes,
                                                                     const std::vector<JoltGpuParticleExportRow> &rows,
                                                                     std::shared_ptr<rhi::ComputeBuffer> previousRecords,
@@ -1259,9 +1132,7 @@ void JoltGpuQueryResult::ReadSummary()
 
 bool JoltGpuQueryResult::NeedsHostSpans() const
 {
-    if (IsDeviceResult(readback))
-        return readback == JoltGpuQueryReadback::DeviceWithSpans && !knownCount;
-    return true;
+    return !IsDeviceResult(readback);
 }
 
 void JoltGpuQueryResult::Materialize()

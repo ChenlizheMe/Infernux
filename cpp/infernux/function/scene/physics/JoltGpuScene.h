@@ -6,6 +6,7 @@
 #include "JoltGpuTick.h"
 #include "PhysicsConstraintOwner.h"
 #include "PhysicsECSStore.h"
+#include "PhysicsGpuPoseSource.h"
 #include "PhysicsTargetReference.h"
 
 #include <functional>
@@ -93,6 +94,7 @@ class JoltGpuScene final
         JPH::GPU::BodyModel physicalModel{};
         uint64_t shapeRevision = 0;
         JPH::RefConst<JPH::Shape> authoredShape;
+        std::vector<PhysicsGpuBoxAuthor> boxes;
     };
 
     struct PublishedJoint

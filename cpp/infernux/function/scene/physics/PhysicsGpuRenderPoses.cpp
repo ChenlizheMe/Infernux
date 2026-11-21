@@ -27,6 +27,7 @@ enum Port : uint8_t
     MotionParameters,
     MotionRows,
     MotionValues,
+    BoxValues,
     PortCount
 };
 
@@ -62,11 +63,12 @@ constexpr PortLayout Ports[] = {
     {"motion_params", 48, {"source", "target", "output"}, 7, false},
     {"motion_rows", sizeof(uint32_t), {}, 0, false},
     {"motion_values", sizeof(float), {}, 0, false},
+    {"box_values", sizeof(uint32_t), {}, 0, false},
 };
 
 bool Writer(uint8_t port)
 {
-    return port == NodeModels || port == Models || port == Bounds || port == MotionValues;
+    return port == NodeModels || port == Models || port == Bounds || port == MotionValues || port == BoxValues;
 }
 
 void ValidateVector(const ShaderValueLayout &value, ShaderScalarKind scalar)
@@ -84,8 +86,8 @@ void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
         (uniform ? resource.value.byteSize : resource.elementStride) != expected.stride ||
         (!uniform && resource.binding.readOnlyStorage == Writer(port)))
         throw std::invalid_argument("GPU render-pose target differs from its shared port layout");
-    if (port == MotionRows || port == MotionValues) {
-        const auto scalar = port == MotionRows ? ShaderScalarKind::UInt32 : ShaderScalarKind::Float32;
+    if (port == MotionRows || port == MotionValues || port == BoxValues) {
+        const auto scalar = port == MotionValues ? ShaderScalarKind::Float32 : ShaderScalarKind::UInt32;
         if (resource.value.kind != ShaderValueKind::Scalar || resource.value.scalar != scalar)
             throw std::invalid_argument("GPU body motion export differs from its scalar buffer layout");
         return;
@@ -151,6 +153,8 @@ PhysicsGpuRenderPoses::PhysicsGpuRenderPoses(rhi::ComputeHost &host, const Shade
                      (1u << Parameters) | (1u << Bindings) | (1u << NodeModelsRead) | (1u << Models) | (1u << Bounds));
     m_motion = build("export_body_motion",
                      (1u << MotionParameters) | (1u << States) | (1u << MotionRows) | (1u << MotionValues));
+    m_box =
+        build("export_body_boxes", (1u << MotionParameters) | (1u << MotionRows) | (1u << States) | (1u << BoxValues));
 }
 
 PhysicsGpuRenderPoseBatch PhysicsGpuRenderPoses::Prepare(const PhysicsGpuPoseSource &output,
@@ -336,23 +340,16 @@ PhysicsGpuRenderPoses::PrepareMotion(const PhysicsGpuMotionExport &input,
 {
     if (outputs.empty() || input.bodies.empty())
         return {};
-    const auto &source = input.poses;
-    const auto &states = source.states;
-    const bool origin = source.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
+    const bool origin = input.poses.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
     const bool mapped = !scatter.empty();
-    constexpr uint32_t lanes[] = {3, 4, 3, 3, 3, 3, 9};
     const bool needsAuthor = std::any_of(outputs.begin(), outputs.end(), [origin](const auto &output) {
         return (!origin && output.field == PhysicsDeviceQueryField::MotionPosition) ||
                output.field == PhysicsDeviceQueryField::MotionInverseMass ||
                output.field == PhysicsDeviceQueryField::MotionInverseInertia;
     });
     const uint32_t requestStride = needsAuthor ? 16 : (mapped ? 2 : 1);
-    if (!states || !states->IsFrozen() || !m_host.SharesServicesWith(states->GetHost()) ||
-        source.rowBytes < (origin ? 5 : 4) * sizeof(Float4) || source.rowBytes % sizeof(Float4) != 0 ||
-        (source.firstRow + source.bodyCount) > UINT32_MAX / (source.rowBytes / sizeof(Float4)) ||
-        (source.firstRow + source.bodyCount) > states->GetByteSize() / source.rowBytes ||
-        input.bodies.size() > UINT32_MAX / requestStride || (mapped && scatter.size() != input.bodies.size()))
-        throw std::invalid_argument("GPU motion export requires frozen body rows from its compute owner");
+    if (input.bodies.size() > UINT32_MAX / requestStride)
+        throw std::length_error("GPU motion export exceeds its device index range");
 
     std::vector<uint32_t> packed(input.bodies.size() * requestStride);
     const auto word = [](float value) {
@@ -362,13 +359,8 @@ PhysicsGpuRenderPoses::PrepareMotion(const PhysicsGpuMotionExport &input,
     };
     for (size_t index = 0; index < input.bodies.size(); ++index) {
         const auto &entry = input.bodies[index];
-        if (entry.pose.row >= source.bodyCount ||
-            (mapped && (scatter[index] > UINT32_MAX || (index != 0 && scatter[index] <= scatter[index - 1]))))
-            throw std::invalid_argument("GPU motion export has an invalid source or scatter row");
         auto *row = packed.data() + index * requestStride;
         row[0] = entry.pose.row;
-        if (mapped)
-            row[1] = static_cast<uint32_t>(scatter[index]);
         if (needsAuthor) {
             row[2] = entry.frozenTranslation;
             for (size_t axis = 0; axis < 3; ++axis) {
@@ -384,41 +376,97 @@ PhysicsGpuRenderPoses::PrepareMotion(const PhysicsGpuMotionExport &input,
         }
     }
 
+    return PrepareFields(m_motion, input.poses, std::move(packed), requestStride, outputs, scatter);
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch>
+PhysicsGpuRenderPoses::PrepareBoxes(const PhysicsGpuBoxExport &input,
+                                    const std::vector<PhysicsDeviceQueryOutput> &outputs,
+                                    const std::vector<size_t> &scatter) const
+{
+    if (outputs.empty())
+        return {};
+    constexpr uint32_t stride = 16;
+    if (input.boxes.size() > UINT32_MAX / stride)
+        throw std::length_error("GPU box export exceeds its device index range");
+    std::vector<uint32_t> packed(input.boxes.size() * stride);
+    for (size_t index = 0; index < input.boxes.size(); ++index) {
+        const auto &entry = input.boxes[index];
+        const auto &box = entry.author;
+        auto *row = packed.data() + index * stride;
+        row[0] = entry.bodyRow;
+        row[2] = entry.bodyIndex;
+        const float values[]{
+            box.centerOfMassOffset.x, box.centerOfMassOffset.y, box.centerOfMassOffset.z, box.friction,
+            box.localRotation.x,      box.localRotation.y,      box.localRotation.z,      box.localRotation.w,
+            box.halfExtents.x,        box.halfExtents.y,        box.halfExtents.z,        box.bounciness};
+        std::memcpy(row + 4, values, sizeof(values));
+    }
+    return PrepareFields(m_box, input.poses, std::move(packed), stride, outputs, scatter);
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> PhysicsGpuRenderPoses::PrepareFields(
+    const Entry &entry, const PhysicsGpuPoseSource &source, std::vector<uint32_t> packed, uint32_t requestStride,
+    const std::vector<PhysicsDeviceQueryOutput> &outputs, const std::vector<size_t> &scatter) const
+{
+    const auto &states = source.states;
+    const bool origin = source.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
+    const bool mapped = !scatter.empty();
+    const auto total = static_cast<uint32_t>(packed.size() / requestStride);
+    if (!states || !states->IsFrozen() || !m_host.SharesServicesWith(states->GetHost()) ||
+        source.rowBytes < (origin ? 5 : 4) * sizeof(Float4) || source.rowBytes % sizeof(Float4) != 0 ||
+        (source.firstRow + source.bodyCount) > UINT32_MAX / (source.rowBytes / sizeof(Float4)) ||
+        (source.firstRow + source.bodyCount) > states->GetByteSize() / source.rowBytes ||
+        (mapped && scatter.size() != total))
+        throw std::invalid_argument("GPU state export requires frozen body rows from its compute owner");
+    for (uint32_t index = 0; index < total; ++index) {
+        auto *row = packed.data() + index * requestStride;
+        if (row[0] >= source.bodyCount ||
+            (mapped && (scatter[index] > UINT32_MAX || (index != 0 && scatter[index] <= scatter[index - 1]))))
+            throw std::invalid_argument("GPU state export has an invalid source or scatter row");
+        if (mapped)
+            row[1] = static_cast<uint32_t>(scatter[index]);
+    }
+
+    const bool boxes = &entry == &m_box;
     auto host = m_host;
     std::vector<rhi::ComputeBufferUpdate> updates;
     const auto upload = [&](const auto &values) {
         const auto count = values.size();
         auto buffer = rhi::ComputeBuffer::TryCreatePrivate(host, {count, rhi::ComputeScalarType::UInt32, 1});
         if (!buffer)
-            throw std::runtime_error("GPU motion export exceeded its managed device budget");
+            throw std::runtime_error("GPU state export exceeded its managed device budget");
         std::vector<uint8_t> bytes(count * sizeof(uint32_t));
         std::memcpy(bytes.data(), values.data(), bytes.size());
         updates.push_back({buffer, 0, std::move(bytes)});
         return buffer;
     };
-    const auto rows = upload(packed);
+    std::shared_ptr<rhi::ComputeBuffer> rows;
     std::vector<rhi::ComputeDispatchDesc> dispatches;
     for (const auto &output : outputs) {
         const auto field = static_cast<uint32_t>(output.field);
         const auto &buffer = output.buffer;
         const auto first = output.recordFirst;
-        const auto total = static_cast<uint32_t>(input.bodies.size());
         const auto count = output.recordCount == UINT32_MAX ? total - std::min(first, total) : output.recordCount;
-        if (field >= std::size(lanes) || !buffer || buffer->IsFrozen() || !host.SharesServicesWith(buffer->GetHost()) ||
-            buffer->GetAllocation() == states->GetAllocation() || first > total || count > total - first ||
-            output.byteOffset % sizeof(float) != 0)
-            throw std::invalid_argument("GPU motion export has an invalid field, selection or destination");
-        const auto width = lanes[field];
+        if (field >= PhysicsDeviceQueryWidths.size() ||
+            boxes != (output.field >= PhysicsDeviceQueryField::ShapeBodyIndex) || !buffer || buffer->IsFrozen() ||
+            !host.SharesServicesWith(buffer->GetHost()) || buffer->GetAllocation() == states->GetAllocation() ||
+            first > total || count > total - first || output.byteOffset % sizeof(float) != 0)
+            throw std::invalid_argument("GPU state export has an invalid field, selection or destination");
+        const auto width = PhysicsDeviceQueryWidths[field];
         const auto end = std::min(output.byteEnd, buffer->GetByteSize());
         const auto byteOffset = output.byteOffset;
         const uint64_t slots = mapped && count != 0 ? scatter[first + count - 1] + 1 : count;
-        if (buffer->GetDesc().scalarType != rhi::ComputeScalarType::Float32 ||
-            buffer->GetDesc().lanes != (width == 9 ? 1u : width) || byteOffset > end ||
-            slots * width * sizeof(float) > end - byteOffset || byteOffset / sizeof(float) > UINT32_MAX ||
-            slots * width > UINT32_MAX - byteOffset / sizeof(float))
-            throw std::invalid_argument("GPU motion export destination type or prefix capacity is invalid");
+        const auto scalar = output.field == PhysicsDeviceQueryField::ShapeBodyIndex ? rhi::ComputeScalarType::Int32
+                                                                                    : rhi::ComputeScalarType::Float32;
+        if (buffer->GetDesc().scalarType != scalar || buffer->GetDesc().lanes != (width == 9 ? 1u : width) ||
+            byteOffset > end || slots * width * sizeof(float) > end - byteOffset ||
+            byteOffset / sizeof(float) > UINT32_MAX || slots * width > UINT32_MAX - byteOffset / sizeof(float))
+            throw std::invalid_argument("GPU state export destination type or prefix capacity is invalid");
         if (count == 0)
             continue;
+        if (!rows)
+            rows = upload(packed);
         const std::array<uint32_t, 12> parameters{static_cast<uint32_t>(source.firstRow),
                                                   static_cast<uint32_t>(source.rowBytes / sizeof(Float4)),
                                                   static_cast<uint32_t>(origin),
@@ -434,18 +482,19 @@ PhysicsGpuRenderPoses::PrepareMotion(const PhysicsGpuMotionExport &input,
         const auto uniform = upload(parameters);
         const std::array<std::shared_ptr<rhi::ComputeBuffer>, 4> inputs{uniform, rows, states, buffer};
         rhi::ComputeDispatchDesc dispatch;
-        dispatch.kernel = m_motion.kernel;
+        dispatch.kernel = entry.kernel;
         dispatch.groupCountX = (count - 1) / 64 + 1;
         if (dispatch.groupCountX > host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0])
-            throw std::length_error("GPU motion export exceeds the device dispatch range");
+            throw std::length_error("GPU state export exceeds the device dispatch range");
         auto &proof = dispatch.proof.emplace();
-        for (auto port : m_motion.ports) {
+        for (auto port : entry.ports) {
             const auto slot = static_cast<uint32_t>(dispatch.buffers.size());
             const auto inputIndex = port == MotionParameters ? 0 : port == MotionRows ? 1 : port == States ? 2 : 3;
             dispatch.buffers.push_back(inputs[inputIndex]);
-            dispatch.bufferAccesses.push_back(port == MotionValues ? rhi::ComputeBufferAccess::Write
-                                                                   : rhi::ComputeBufferAccess::Read);
-            if (port == MotionValues) {
+            const bool writing = port == MotionValues || port == BoxValues;
+            dispatch.bufferAccesses.push_back(writing ? rhi::ComputeBufferAccess::Write
+                                                      : rhi::ComputeBufferAccess::Read);
+            if (writing) {
                 const auto stride = width * sizeof(float);
                 for (uint32_t row = 0; row < count; ++row) {
                     const auto offset = byteOffset + (mapped ? scatter[first + row] : row) * stride;

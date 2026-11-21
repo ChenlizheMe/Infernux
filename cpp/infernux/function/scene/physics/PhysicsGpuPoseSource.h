@@ -5,7 +5,10 @@
 
 #include <array>
 #include <cstdint>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <memory>
+#include <vector>
 
 namespace infernux::rhi
 {
@@ -37,6 +40,28 @@ struct PhysicsGpuPoseSource
     uint32_t bodyCount = 0;
     uint32_t rowBytes = 0;
     Layout layout = Layout::CenterOfMassXYZW;
+};
+
+struct PhysicsGpuBoxAuthor
+{
+    glm::vec3 centerOfMassOffset;
+    glm::quat localRotation;
+    glm::vec3 halfExtents;
+    float friction, bounciness;
+    uint32_t memberIndex;
+    bool trigger;
+};
+
+struct PhysicsGpuBoxBinding
+{
+    uint32_t bodyRow, bodyIndex;
+    PhysicsGpuBoxAuthor author;
+};
+
+struct PhysicsGpuBoxExport
+{
+    PhysicsGpuPoseSource poses;
+    std::vector<PhysicsGpuBoxBinding> boxes;
 };
 
 } // namespace infernux

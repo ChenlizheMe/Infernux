@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 
@@ -27,6 +28,8 @@ enum class PhysicsDeviceQueryField : uint32_t
     ShapeBounciness,
 };
 
+inline constexpr std::array<uint32_t, 13> PhysicsDeviceQueryWidths{3, 4, 3, 3, 3, 3, 9, 1, 3, 3, 4, 1, 1};
+
 struct PhysicsDeviceQueryOutput
 {
     PhysicsDeviceQueryField field;
@@ -34,7 +37,6 @@ struct PhysicsDeviceQueryOutput
     uint64_t byteOffset = 0;
     uint32_t recordFirst = 0;
     uint32_t recordCount = UINT32_MAX;
-    uint32_t bodyIndex = UINT32_MAX; // Aggregate input row for shape body-index projection.
-    uint64_t byteEnd = UINT64_MAX;   // Exclusive end of the caller's writable view.
+    uint64_t byteEnd = UINT64_MAX; // Exclusive end of the caller's writable view.
 };
 } // namespace infernux

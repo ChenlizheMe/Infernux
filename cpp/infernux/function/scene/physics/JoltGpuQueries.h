@@ -2,7 +2,6 @@
 
 #include "JoltGpuGeometryStore.h"
 #include "JoltGpuScene.h"
-#include "PhysicsDeviceQueryOutput.h"
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -24,7 +23,6 @@ enum class JoltGpuQueryReadback
 {
     Host,
     Device,
-    DeviceWithSpans, // A host consumer needs the per-input offsets of a variable-size device result.
 };
 /// Native explicit operands use the same immutable geometry arena as the publication.
 /// CPU shapes/handles carry author intent until the existing writer accepts capture.
@@ -77,7 +75,6 @@ struct JoltGpuQueryResult
     bool headerComplete = false;
     bool materialized = false;
     bool recordsMaterialized = false;
-    bool shapeBoxesOnly = false;
     std::vector<JPH::GPU::QueryHit> hostHits;
     std::vector<JPH::GPU::QueryShapeState> hostShapes;
     std::vector<JPH::GPU::QuerySpan> hostSpans;
@@ -133,11 +130,6 @@ class JoltGpuQueries final
             const std::vector<JPH::GPU::QueryInput> &queries, const std::vector<JPH::GPU::QueryPrimitive> &primitives,
             uint64_t numericalGeneration, JoltGpuQueryReadback readback = JoltGpuQueryReadback::Host,
             uint32_t castIterationQuantum = 32, JoltGpuQueryGeometry geometry = {}) const;
-
-    /// Prepare after the gather metadata receipt, inside the same source's
-    /// continuation. Writes only the validated prefix; no CPU numerical upload.
-    [[nodiscard]] JoltGpuControlWork PrepareShapeExport(const std::shared_ptr<JoltGpuQueryResult> &source,
-                                                        const std::vector<PhysicsDeviceQueryOutput> &bindings) const;
 
     [[nodiscard]] JoltGpuPreparedParticleExport
     PrepareParticleExport(const std::shared_ptr<JoltGpuQueryResult> &shapes,
