@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -86,7 +87,13 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
     scene.jointBindings.resize(joints.size());
     auto &parameters = model.initialSceneJointParameters;
     std::vector<ModelWords> descriptors(1), support;
-    for (size_t index = 0; index < joints.size(); ++index) {
+    std::vector<size_t> ordered(joints.size());
+    std::iota(ordered.begin(), ordered.end(), size_t{0});
+    std::stable_partition(ordered.begin(), ordered.end(), [&](size_t index) {
+        return !std::holds_alternative<SixDOFJointSettings>(joints[index].settings);
+    });
+    uint32_t sixCount = 0;
+    for (const auto index : ordered) {
         const auto &joint = joints[index];
         const auto &owner = actors.at(joint.ownerActor);
         const auto point = owner.position + owner.rotation * joint.ownerAnchor;
@@ -94,6 +101,7 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
         const auto *slider = std::get_if<InxPhyGpuSceneSlider>(&joint.settings);
         const auto *distance = std::get_if<InxPhyGpuSceneDistance>(&joint.settings);
         const auto *swing = std::get_if<SwingTwistJointSettings>(&joint.settings);
+        const auto *six = std::get_if<SixDOFJointSettings>(&joint.settings);
         glm::quat rotation = owner.rotation;
         if (hinge || slider) {
             const auto axis = hinge ? hinge->axis : slider->axis;
@@ -109,6 +117,10 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
             const auto x = glm::normalize(swing->twistAxis);
             const auto y = glm::normalize(glm::cross(swing->planeAxis, x));
             rotation *= glm::normalize(glm::quat_cast(glm::mat3(x, y, glm::cross(x, y))));
+        } else if (six) {
+            const auto x = glm::normalize(six->axis);
+            const auto z = glm::normalize(glm::cross(x, six->secondaryAxis));
+            rotation *= glm::normalize(glm::quat_cast(glm::mat3(x, glm::cross(z, x), z)));
         }
         auto connectedPoint = point;
         if (distance) {
@@ -136,7 +148,7 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
         const auto parameterOffset = static_cast<uint32_t>(parameters.size());
         scene.jointBindings[index] = {id, kind, distance && distance->autoDistance, parameterOffset};
         descriptors.push_back({id, a.body, b.body, static_cast<uint32_t>(support.size()) - first});
-        const uint32_t equalityRows = distance ? 0u : (swing ? 3u : (hinge || slider ? 5u : 6u));
+        const uint32_t equalityRows = (distance || six) ? 0u : (swing ? 3u : (hinge || slider ? 5u : 6u));
         descriptors.push_back({a.body, b.body, first, equalityRows});
         descriptors.push_back(Bits({0.95f, 0.99f, 0.001f, 0.5f}));
         descriptors.push_back(Bits({0.02f, 1.0f, 2.0f, 0.0f}));
@@ -166,6 +178,10 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
             parameters.insert(parameters.end(), packed.controls.begin(), packed.controls.end());
             for (const auto &word : packed.targets.Pack())
                 parameters.push_back(Bits(word));
+        } else if (six) {
+            const auto packed = PackSixDOFControls(*six);
+            parameters.insert(parameters.end(), packed.begin(), packed.end());
+            ++sixCount;
         }
     }
     const auto count = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
@@ -174,7 +190,7 @@ void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuScen
     // The shared scene kernel has a parameter binding even for an all-fixed model.
     if (parameters.empty())
         parameters.emplace_back();
-    descriptors[0] = {count, static_cast<uint32_t>(parameters.size()), 0, 0};
+    descriptors[0] = {count, static_cast<uint32_t>(parameters.size()), sixCount, 0};
     for (size_t row = 2; row < descriptors.size(); row += descriptorWords)
         descriptors[row][2] += static_cast<uint32_t>(descriptors.size());
     descriptors.insert(descriptors.end(), support.begin(), support.end());
@@ -287,6 +303,44 @@ InxPhyGpuGeometryType CookGeometry(const JPH::TransformedShape &leaf, InxPhyGpuC
     }
 }
 } // namespace
+
+ModelSixDOFControls PackSixDOFControls(const SixDOFJointSettings &s)
+{
+    const JointMotion motion[]{s.xMotion, s.yMotion, s.zMotion, s.angularXMotion, s.angularYMotion, s.angularZMotion};
+    const JointMotorMode motor[]{s.xMotorMode,        s.yMotorMode,        s.zMotorMode,
+                                 s.angularXMotorMode, s.angularYMotorMode, s.angularZMotorMode};
+    const auto angularMinimum = glm::radians(s.angularLimitMinimum);
+    const auto angularMaximum = glm::radians(s.angularLimitMaximum);
+    constexpr float pi = 3.14159265358979323846f;
+    ModelSixDOFControls controls{};
+    for (int axis = 0; axis < 6; ++axis) {
+        const auto bit = 2 * axis;
+        const auto mode = motion[axis];
+        controls[0][0] |= static_cast<uint32_t>(mode) << bit;
+        controls[0][1] |= static_cast<uint32_t>(motor[axis]) << bit;
+        if (axis < 3) {
+            const auto minimum = mode == JointMotion::Locked ? 0.0f : s.linearLimitMinimum[axis];
+            const auto maximum = mode == JointMotion::Locked ? 0.0f : s.linearLimitMaximum[axis];
+            controls[1 + axis] = Bits({minimum, maximum, s.linearFrictionForce[axis], s.linearMotorMaxForce[axis]});
+            controls[7 + axis] = Bits({s.linearMotorStiffness[axis], s.linearMotorDamping[axis],
+                                       s.linearLimitStiffness[axis], s.linearLimitDamping[axis]});
+        } else {
+            const auto i = axis - 3;
+            const auto minimum =
+                mode == JointMotion::Locked ? 0.0f : (mode == JointMotion::Free ? -pi : angularMinimum[i]);
+            const auto maximum =
+                mode == JointMotion::Locked ? 0.0f : (mode == JointMotion::Free ? pi : angularMaximum[i]);
+            controls[1 + axis] = Bits({minimum, maximum, s.angularFrictionTorque[i], s.angularMotorMaxTorque[i]});
+            controls[7 + axis] = Bits({s.angularMotorStiffness[i], s.angularMotorDamping[i], 0.0f, 0.0f});
+        }
+    }
+    controls[13] = Bits(Point(s.targetPosition));
+    controls[14] = Bits(Point(s.targetVelocity));
+    const auto q = glm::normalize(s.targetOrientation);
+    controls[15] = Bits({q.w, q.x, q.y, q.z});
+    controls[16] = Bits(Point(glm::radians(s.targetAngularVelocity)));
+    return controls;
+}
 
 ModelJointVectors InxPhyGpuSwingTwistTargets::Pack() const
 {

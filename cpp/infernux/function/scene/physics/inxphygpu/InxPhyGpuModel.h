@@ -17,6 +17,7 @@ using ModelVector = std::array<float, 4>;
 
 using ModelJointVectors = std::array<ModelVector, 2>;
 using ModelSwingTwistControls = std::array<ModelWords, 4>;
+using ModelSixDOFControls = std::array<ModelWords, 17>;
 
 struct InxPhyGpuHingeDrive
 {

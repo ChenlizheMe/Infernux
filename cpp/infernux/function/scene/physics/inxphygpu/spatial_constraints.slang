@@ -168,7 +168,7 @@ AxialRows hingeRows(uint4 controls, HingeDrive drive, float angle, float speed, 
 
 struct AngularRow
 {
-    float3 axis; // Unit Jacobian direction in the connected endpoint frame.
+    float3 axis; // Jacobian direction in the connected endpoint frame.
     float4 response;
     uint kind;
 };
@@ -230,7 +230,8 @@ float4 limitSwingTwistTarget(float4 q, float4 limits, bool elliptic)
 }
 
 void appendAngularLimit(inout AngularRows result, float value, float2 bounds, float3 gradient,
-                        float3 relativeVelocity, float weight, float timestep, bool hasLower = true)
+                        float3 relativeVelocity, float weight, float timestep, bool hasLower = true,
+                        float2 spring = float2(0.0))
 {
     const float width = length(gradient);
     if (width < 1e-7)
@@ -246,10 +247,38 @@ void appendAngularLimit(inout AngularRows result, float value, float2 bounds, fl
     const float direction = upper ? -1.0 : 1.0;
     const float distance = direction * (value - (upper ? bounds.y : bounds.x)) / width;
     const float gap = locked || distance < 0.0 ? 0.2 * distance : distance;
-    const float reference = -(gap + timestep * direction * speed) / (timestep * timestep);
-    const float diagonal = constraintDiagonal(weight, MaxImpedance);
+    const float damping = spring.y + timestep * spring.x;
+    const float diagonal = spring.x > 0.0 ? timestep * damping : constraintDiagonal(weight, MaxImpedance);
+    const float reference = spring.x > 0.0 ? -(spring.x * distance + damping * direction * speed) / diagonal :
+        -(gap + timestep * direction * speed) / (timestep * timestep);
     result.rows[result.count++] = {direction * axis, float4(distance, reference, diagonal, 0.0),
                                    locked ? EqualityRow : LimitRow};
+}
+
+struct SwingTwistDifferential
+{
+    float3 swing;
+    float3 h, y, z, twist;
+};
+
+SwingTwistDifferential swingTwistDifferential(float4 rotation, float3 velocity, float timestep)
+{
+    // Evaluate the boundary normal midway along the free angular displacement.
+    const float speed = length(velocity);
+    const float4 midpoint = speed > 0.0 ?
+        mulQuat(axisAngleQuat(velocity / speed, 0.5 * timestep * speed), rotation) : rotation;
+    const float3 swing = swingTwistCoordinates(midpoint).swing;
+    const float h = swing.x;
+    const float3 dw = -0.5 * midpoint.yzw;
+    const float3 dx = 0.5 * float3(midpoint.x, midpoint.w, -midpoint.z);
+    const float3 dy = 0.5 * float3(-midpoint.w, midpoint.x, midpoint.y);
+    const float3 dz = 0.5 * float3(midpoint.z, -midpoint.y, midpoint.x);
+    const float inverseH = 1.0 / max(h, 1e-7);
+    const float3 dh = (midpoint.x * dw + midpoint.y * dx) * inverseH;
+    const float3 y = (midpoint.x * dy + midpoint.z * dw - midpoint.y * dz - midpoint.w * dx - swing.y * dh) * inverseH;
+    const float3 z = (midpoint.x * dz + midpoint.w * dw + midpoint.y * dy + midpoint.z * dx - swing.z * dh) * inverseH;
+    const float3 twist = h > 1e-7 ? 2.0 * (midpoint.x * dx - midpoint.y * dw) * inverseH * inverseH : float3(1, 0, 0);
+    return {swing, dh, y, z, twist};
 }
 
 // Match the authored angular frame and cone/pyramid conventions with a device-side
@@ -266,20 +295,13 @@ AngularRows swingTwistRows(uint record, float4 relative, float3 relativeVelocity
     // Evaluate the boundary normal halfway through the free angular displacement.
     // A normal frozen at the start of the step does spurious work while sliding
     // around a curved cone and systematically gains energy.
-    const float angularSpeed = length(relativeVelocity);
-    const float4 midpoint = angularSpeed > 0.0 ?
-        mulQuat(axisAngleQuat(relativeVelocity / angularSpeed, 0.5 * timestep * angularSpeed), relative) : relative;
-    const float3 midSwing = swingTwistCoordinates(midpoint).swing;
+    const SwingTwistDifferential differential = swingTwistDifferential(relative, relativeVelocity, timestep);
+    const float3 midSwing = differential.swing;
     const float h = midSwing.x;
-    const float3 dw = -0.5 * midpoint.yzw;
-    const float3 dx = 0.5 * float3(midpoint.x, midpoint.w, -midpoint.z);
-    const float3 dy = 0.5 * float3(-midpoint.w, midpoint.x, midpoint.y);
-    const float3 dz = 0.5 * float3(midpoint.z, -midpoint.y, midpoint.x);
-    const float inverseH = 1.0 / max(h, 1e-7);
-    const float3 dh = (midpoint.x * dw + midpoint.y * dx) * inverseH;
-    const float3 swingY = (midpoint.x * dy + midpoint.z * dw - midpoint.y * dz - midpoint.w * dx - midSwing.y * dh) * inverseH;
-    const float3 swingZ = (midpoint.x * dz + midpoint.w * dw + midpoint.y * dy + midpoint.z * dx - midSwing.z * dh) * inverseH;
-    const float3 twist = h > 1e-7 ? 2.0 * (midpoint.x * dx - midpoint.y * dw) * inverseH * inverseH : float3(1, 0, 0);
+    const float3 dh = differential.h;
+    const float3 swingY = differential.y;
+    const float3 swingZ = differential.z;
+    const float3 twist = differential.twist;
     if (angles.x > -PhysicsPi || angles.y < PhysicsPi)
     {
         const float angle = wrapTwistToRange(coordinates.twist, angles.xy);
@@ -586,7 +608,215 @@ void emit_spatial_equality_rows(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void emit_scene_joint_rows(uint3 id : SV_DispatchThreadID)
 {
+    const uint4 model = spatialModel[0];
+    if (id.x >= model.x - model.z)
+        return;
     emitSpatialRows<true>(id);
+}
+
+void appendSixAxisMotor(inout AngularRows result, float3 direction, float speed, float error, float targetSpeed,
+                        uint mode, float4 controls, float2 spring, float weight, float timestep)
+{
+    const float cap = mode == 0 ? controls.z : controls.w;
+    if (cap <= 0.0 || (mode == 2 && spring.x == 0.0) || (mode == 3 && all(spring == 0.0)))
+        return;
+    const float errorVelocity = ((mode & 1u) != 0 ? targetSpeed : 0.0) - speed;
+    float diagonal = 1.0 / (weight * timestep);
+    float reference = errorVelocity / timestep;
+    if (mode >= 2)
+    {
+        diagonal = timestep * (spring.y + timestep * spring.x);
+        reference = (spring.x * (error + timestep * errorVelocity) + spring.y * errorVelocity) / diagonal;
+    }
+    result.rows[result.count++] = {direction, float4(0.0, reference, diagonal, cap), FrictionRow};
+}
+
+AngularRows sixLinearRows(uint record, uint2 modes, float3 position, float3 velocity, float weight, float timestep)
+{
+    AngularRows result;
+    result.count = 0;
+    const float3 target = asfloat(sceneParameters[record + 13].xyz);
+    const float3 targetVelocity = asfloat(sceneParameters[record + 14].xyz);
+    for (uint axis = 0; axis < 3; ++axis)
+    {
+        float3 direction = float3(0.0);
+        direction[axis] = 1.0;
+        const uint motion = (modes.x >> (2 * axis)) & 3u;
+        const uint motor = (modes.y >> (2 * axis)) & 3u;
+        const float4 controls = asfloat(sceneParameters[record + 1 + axis]);
+        const float4 springs = asfloat(sceneParameters[record + 7 + axis]);
+        if (motion != 2u)
+            appendAngularLimit(result, position[axis], controls.xy, direction,
+                               velocity, weight, timestep, true, springs.zw);
+        if (motion != 0u)
+            appendSixAxisMotor(result, direction, velocity[axis], target[axis] - position[axis], targetVelocity[axis],
+                              motor, controls, springs.xy, weight, timestep);
+    }
+    return result;
+}
+
+float swingCoordinate(float h, float part)
+{
+    return (h == 0.0 && part == 0.0) ? 0.0 : 2.0 * atan2(part, h);
+}
+
+float4 limitSixOrientation(float4 q, float2 twist, float2 swayY, float2 swayZ)
+{
+    const SwingTwistCoordinates coordinates = swingTwistCoordinates(q);
+    const float2 angles = float2(swingCoordinate(coordinates.swing.x, coordinates.swing.y),
+                                 swingCoordinate(coordinates.swing.x, coordinates.swing.z));
+    const float2 limited = clamp(angles, float2(swayY.x, swayZ.x), float2(swayY.y, swayZ.y));
+    float3 swing = coordinates.swing;
+    if (any(angles != limited))
+    {
+        const float2 cs = cos(0.5 * limited);
+        const float2 sn = sin(0.5 * limited);
+        swing = normalize(float3(cs.x * cs.y, sn.x * cs.y, cs.x * sn.y));
+    }
+    const float angle = 0.5 * clamp(wrapTwistToRange(coordinates.twist, twist), twist.x, twist.y);
+    return mulQuat(float4(swing.x, 0.0, swing.yz), float4(cos(angle), sin(angle), 0.0, 0.0));
+}
+
+float4 twistAboutAxis(float4 q, uint axis)
+{
+    float4 twist = float4(q.x, 0.0, 0.0, 0.0);
+    twist[axis + 1] = q[axis + 1];
+    return dot(twist, twist) > 0.0 ? normalize(twist) : float4(1.0, 0.0, 0.0, 0.0);
+}
+
+AngularRows sixAngularRows(uint record, uint2 modes, float4 rotation, float3 velocity, float weight, float timestep)
+{
+    AngularRows result;
+    result.count = 0;
+    const float4 controls[3] = {asfloat(sceneParameters[record + 4]), asfloat(sceneParameters[record + 5]),
+                                asfloat(sceneParameters[record + 6])};
+    const uint motion = modes.x >> 6u;
+    const uint motors = modes.y >> 6u;
+    const SwingTwistDifferential d = swingTwistDifferential(rotation, velocity, timestep);
+    const SwingTwistCoordinates coordinates = swingTwistCoordinates(rotation);
+    if ((motion & 3u) != 2u)
+        appendAngularLimit(result, wrapTwistToRange(coordinates.twist, controls[0].xy), controls[0].xy,
+                           d.twist, velocity, weight, timestep);
+    const float3 derivatives[2] = {d.y, d.z};
+    for (uint axis = 1; axis < 3; ++axis)
+    {
+        const float h = d.swing.x;
+        const float part = d.swing[axis];
+        const float norm = h * h + part * part;
+        if (((motion >> (2 * axis)) & 3u) != 2u && norm > 1e-14)
+            appendAngularLimit(result, swingCoordinate(coordinates.swing.x, coordinates.swing[axis]), controls[axis].xy,
+                               (2.0 / norm) * (h * derivatives[axis - 1] - part * d.h), velocity, weight, timestep);
+    }
+    uint positionMask = 0u;
+    for (uint axis = 0; axis < 3; ++axis)
+        if (((motors >> (2 * axis)) & 3u) >= 2u && ((motion >> (2 * axis)) & 3u) != 0u)
+            positionMask |= 1u << axis;
+    float3 positionError = float3(0.0);
+    if (positionMask != 0)
+    {
+        const float4 target = limitSixOrientation(asfloat(sceneParameters[record + 15]), controls[0].xy,
+                                                  controls[1].xy, controls[2].xy);
+        float4 delta = mulQuat(conjugateQuaternion(rotation), dot(rotation, target) < 0.0 ? -target : target);
+        if (positionMask == 1u || positionMask == 2u || positionMask == 4u)
+            delta = twistAboutAxis(delta, firstbitlow(positionMask));
+        else if (positionMask != 7u)
+            delta = mulQuat(delta, conjugateQuaternion(twistAboutAxis(delta, firstbitlow(7u ^ positionMask))));
+        positionError = 2.0 * delta.yzw;
+    }
+    const float3 targetVelocity = asfloat(sceneParameters[record + 16].xyz);
+    for (uint axis = 0; axis < 3; ++axis)
+    {
+        if (((motion >> (2 * axis)) & 3u) == 0u)
+            continue;
+        float3 basis = float3(0.0);
+        basis[axis] = 1.0;
+        const float3 direction = rotateVector(basis, rotation);
+        appendSixAxisMotor(result, direction, dot(direction, velocity), positionError[axis], targetVelocity[axis],
+                           (motors >> (2 * axis)) & 3u, controls[axis],
+                           asfloat(sceneParameters[record + 10 + axis].xy), weight, timestep);
+    }
+    return result;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void emit_scene_six_dof_rows(uint3 id : SV_DispatchThreadID)
+{
+    const uint4 model = spatialModel[0];
+    if (id.x >= model.z)
+        return;
+    const uint record = 1 + SceneJointWords * (model.x - model.z + id.x);
+    const uint4 source = spatialModel[record];
+    const uint4 span = spatialModel[record + 1];
+    const uint4 reference = spatialModel[record + 8];
+    const uint4 limits = settings[0];
+    const uint4 config = settings[1];
+    const uint bodyBase = id.y * config.x;
+    const uint dofBase = id.y * config.y;
+    const SpatialEndpoint a = equalityEndpoint(bodyBase, source.y, span.x, reference.x,
+                                                asfloat(spatialModel[record + 4].xyz),
+                                                asfloat(spatialModel[record + 6]));
+    const SpatialEndpoint b = equalityEndpoint(bodyBase, source.z, span.y, reference.y,
+                                                asfloat(spatialModel[record + 5].xyz),
+                                                asfloat(spatialModel[record + 7]));
+    const float3 delta = a.point - b.point;
+    const float3 deltaVelocity = a.pointVelocity - b.pointVelocity;
+    const float3 deltaOmega = a.omega - b.omega;
+    const float4 inverse = conjugateQuaternion(b.orientation);
+    const float3 linearVelocity = rotateVector(deltaVelocity - cross(b.omega, delta), inverse);
+    const float3 angularVelocity = rotateVector(deltaOmega, inverse);
+    const float timestep = asfloat(settings[2 + id.y].x);
+    const uint parameters = id.y * model.y + spatialModel[record + 9].y;
+    const uint2 modes = sceneParameters[parameters].xy;
+    const AngularRows linear = sixLinearRows(parameters, modes, rotateVector(delta, inverse), linearVelocity,
+                                            asfloat(reference.z), timestep);
+    const AngularRows angular = sixAngularRows(parameters, modes, mulQuat(inverse, a.orientation), angularVelocity,
+                                               asfloat(reference.w), timestep);
+    if (linear.count + angular.count == 0)
+        return;
+    const uint2 block = reserveConstraintBlock(id.y, linear.count + angular.count, source.w);
+    if (block.x == NoIndex)
+        return;
+    const uint columnBase = id.y * limits.w + block.y;
+    float3 linearShift = float3(0.0);
+    float3 angularShift = float3(0.0);
+    for (uint column = 0; column < source.w; ++column)
+    {
+        const uint4 support = spatialModel[span.z + column];
+        const bool inA = (support.y & 1u) != 0;
+        const bool inB = (support.y & 2u) != 0;
+        const float direction = float(inA) - float(inB);
+        const uint index = dofBase + support.x;
+        const SpatialMotion motion = centeredDof[index];
+        const SpatialMotion derivative = support.z == NoIndex ? centeredDofDerivative[index] :
+            motionCross(bodyVelocity[bodyBase + support.z], motion);
+        const float3 linearColumn = rotateVector((inA ? pointJacobian(motion, a) : float3(0.0)) -
+            (inB ? pointJacobian(motion, b) + cross(motion.angular.xyz, delta) : float3(0.0)), inverse);
+        const float3 angularColumn = rotateVector(direction * motion.angular.xyz, inverse);
+        for (uint row = 0; row < linear.count; ++row)
+            columns[columnBase + row * source.w + column] = {support.x, dot(linear.rows[row].axis, linearColumn)};
+        for (uint row = 0; row < angular.count; ++row)
+            columns[columnBase + (linear.count + row) * source.w + column] =
+                {support.x, dot(angular.rows[row].axis, angularColumn)};
+        linearShift += ((inA ? pointJacobianDerivative(motion, derivative, a) : float3(0.0)) -
+            (inB ? pointJacobianDerivative(motion, derivative, b) + cross(derivative.angular.xyz, delta) :
+                   float3(0.0))) * qvel[index];
+        angularShift += direction * derivative.angular.xyz * qvel[index];
+    }
+    const float3 linearBias = rotateVector(linearShift -
+        cross(b.omega, 2.0 * deltaVelocity - cross(b.omega, delta)), inverse);
+    const float3 angularBias = rotateVector(angularShift - cross(b.omega, deltaOmega), inverse);
+    const uint rowBase = id.y * limits.z + block.x;
+    for (uint ordinal = 0; ordinal < linear.count + angular.count; ++ordinal)
+    {
+        const bool isLinear = ordinal < linear.count;
+        const AngularRow row = isLinear ? linear.rows[ordinal] : angular.rows[ordinal - linear.count];
+        const float speed = dot(row.axis, isLinear ? linearVelocity : angularVelocity);
+        const float bias = dot(row.axis, isLinear ? linearBias : angularBias);
+        rows[rowBase + ordinal] = {uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
+            float4(row.response.x, 0.0, speed, row.response.y - bias),
+            row.response.z, row.response.w, row.kind};
+    }
 }
 
 [shader("compute")]

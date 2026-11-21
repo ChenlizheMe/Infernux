@@ -55,7 +55,7 @@ struct InxPhyGpuSceneJointUpdate
     uint64_t worldId;
     uint64_t jointId;
     std::variant<InxPhyGpuJointLimits, InxPhyGpuHingeDrive, InxPhyGpuDistanceSpring, InxPhyGpuSwingTwistParameters,
-                 InxPhyGpuSwingTwistTargets>
+                 InxPhyGpuSwingTwistTargets, ModelSixDOFControls>
         value;
 };
 

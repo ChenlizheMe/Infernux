@@ -130,7 +130,8 @@ struct InxPhyGpuJointParameterUpdate
 {
     uint32_t world;
     uint32_t offset; // In ModelWords records within one world.
-    std::variant<ModelWords, ModelJointVectors, InxPhyGpuDistanceSpring, ModelSwingTwistControls> value;
+    std::variant<ModelWords, ModelJointVectors, InxPhyGpuDistanceSpring, ModelSwingTwistControls, ModelSixDOFControls>
+        value;
 };
 
 enum class InxPhyGpuBodyPublication

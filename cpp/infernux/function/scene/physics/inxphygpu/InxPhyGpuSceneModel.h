@@ -113,6 +113,8 @@ struct InxPhyGpuSwingTwistParameters
     explicit InxPhyGpuSwingTwistParameters(const SwingTwistJointSettings &settings);
 };
 
+[[nodiscard]] ModelSixDOFControls PackSixDOFControls(const SixDOFJointSettings &settings);
+
 struct InxPhyGpuSceneJoint
 {
     uint32_t ownerActor;
@@ -121,7 +123,7 @@ struct InxPhyGpuSceneJoint
     bool enableCollision = false;
     // This order matches the scene joint kinds in spatial_constraints.slang.
     std::variant<std::monostate, InxPhyGpuSceneHinge, InxPhyGpuSceneSlider, InxPhyGpuSceneDistance,
-                 SwingTwistJointSettings>
+                 SwingTwistJointSettings, SixDOFJointSettings>
         settings;
 };
 
@@ -132,6 +134,7 @@ enum class InxPhyGpuSceneJointKind : uint32_t
     Slider,
     Distance,
     SwingTwist,
+    SixDOF,
 };
 
 struct InxPhyGpuSceneJointBinding

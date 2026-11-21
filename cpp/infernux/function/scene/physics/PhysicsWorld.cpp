@@ -16,6 +16,7 @@
 #include "../RuntimeWorld.h"
 #include "../Scene.h"
 #include "../SceneManager.h"
+#include "../SixDOFJoint.h"
 #include "../SliderJoint.h"
 #include "../SwingTwistJoint.h"
 #include "../TagLayerManager.h"
@@ -3852,6 +3853,8 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world) const
                                                     distance->GetDamping()};
         } else if (const auto *swing = dynamic_cast<const SwingTwistJoint *>(joint)) {
             model.settings = swing->m_settings;
+        } else if (const auto *six = dynamic_cast<const SixDOFJoint *>(joint)) {
+            model.settings = six->m_settings;
         } else if (!dynamic_cast<const FixedJoint *>(joint)) {
             throw std::invalid_argument(std::string("inxphygpu scene setup does not support ") + joint->GetTypeName());
         }

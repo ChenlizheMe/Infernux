@@ -614,6 +614,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
     uint32_t jointParameters = NoModelIndex;
     if (!model.sceneJoints.empty()) {
         const auto jointCount = model.sceneJoints[0][0];
+        const auto sixCount = model.sceneJoints[0][2];
         const auto modelRows = b.Shared("sceneJoints", model.sceneJoints);
         const auto &parameters = model.initialSceneJointParameters;
         const auto parameterWords = sizeof(ModelWords) / sizeof(uint32_t);
@@ -627,19 +628,24 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
                    {14, dyn.fixedSteps, R},
                    {15, dyn.bodyVelocity, W},
                    {16, dyn.motionModel, R}});
-        b.Add("spatial_constraints", "emit_scene_joint_rows", jointCount,
-              {{0, settings, R},
-               {1, modelRows, R},
-               {3, dyn.bodyPose, R},
-               {4, dyn.subtreeCom, R},
-               {5, counters, RW},
-               {6, dyn.centeredDof, R},
-               {7, rowStore, W},
-               {8, columnStore, W},
-               {9, dyn.centeredDofDerivative, R},
-               {10, dyn.bodyVelocity, R},
-               {11, dyn.velocities, R},
-               {17, jointParameters, R}});
+        const auto addJoints = [&](std::string_view entry, uint32_t count) {
+            if (count != 0)
+                b.Add("spatial_constraints", entry, count,
+                      {{0, settings, R},
+                       {1, modelRows, R},
+                       {3, dyn.bodyPose, R},
+                       {4, dyn.subtreeCom, R},
+                       {5, counters, RW},
+                       {6, dyn.centeredDof, R},
+                       {7, rowStore, W},
+                       {8, columnStore, W},
+                       {9, dyn.centeredDofDerivative, R},
+                       {10, dyn.bodyVelocity, R},
+                       {11, dyn.velocities, R},
+                       {17, jointParameters, R}});
+        };
+        addJoints("emit_scene_joint_rows", jointCount - sixCount);
+        addJoints("emit_scene_six_dof_rows", sixCount);
     }
     b.Add("contact_constraints", "seed_contact_acceleration", nv,
           {{0, settings, R},

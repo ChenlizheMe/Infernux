@@ -279,6 +279,10 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
                 throw std::invalid_argument(
                     "inxphygpu distance spring requires finite nonnegative coefficients on a distance joint");
             updates.push_back({world, joint.parameterOffset + 1, *spring});
+        } else if (const auto *six = std::get_if<ModelSixDOFControls>(&update.value)) {
+            if (joint.kind != InxPhyGpuSceneJointKind::SixDOF)
+                throw std::invalid_argument("inxphygpu six-axis parameters require an enrolled SixDOF joint");
+            updates.push_back({world, joint.parameterOffset, *six});
         } else {
             if (joint.kind != InxPhyGpuSceneJointKind::SwingTwist)
                 throw std::invalid_argument("inxphygpu swing-twist parameters require an enrolled swing-twist joint");
