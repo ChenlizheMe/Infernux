@@ -32,6 +32,7 @@ struct WarpContactSolver
     uint32_t lineIterations = 10;
     float tolerance = 1.0e-6f;
     float lineTolerance = 0.01f;
+    float minimumRestitutionSpeed = 2.0f;
 };
 
 struct WarpContactStream

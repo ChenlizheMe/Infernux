@@ -31,6 +31,13 @@ static_assert(sizeof(WarpContactReport) == 96);
 static_assert(static_cast<uint32_t>(ForceMode::Force) == 0 && static_cast<uint32_t>(ForceMode::Acceleration) == 1 &&
               static_cast<uint32_t>(ForceMode::Impulse) == 2 && static_cast<uint32_t>(ForceMode::VelocityChange) == 3);
 
+uint32_t FloatWord(float value)
+{
+    uint32_t word;
+    std::memcpy(&word, &value, sizeof(word));
+    return word;
+}
+
 enum ControlMotion : uint8_t
 {
     Uncontrolled,
@@ -211,7 +218,8 @@ GeometrySlots BindGeometry(StepBuilder &b, const WarpModel &model, const WarpCol
 }
 
 ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
-                          uint32_t dimensions, const GeometrySlots &geometry, WarpCollisionCapacity capacity)
+                          uint32_t dimensions, const GeometrySlots &geometry, WarpCollisionCapacity capacity,
+                          float minimumRestitutionSpeed)
 {
     const auto ng = model.dimensions.layout[0];
     const auto geometryWords = uint64_t{ng} * b.worlds;
@@ -269,8 +277,9 @@ ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpColl
     const auto convexWorkers =
         advanced ? static_cast<uint32_t>(std::min({uint64_t{capacity.candidates}, workerLimit, pairUpperBound})) : 0u;
     constexpr uint32_t convexManifolds = 3;
-    const std::array<ModelWords, 2> narrowOptions{{{ng, capacity.candidates, capacity.contactsPerWorld, convexWorkers},
-                                                   {collision.convexPairs ? convexManifolds : 0u, 0, 0, 0}}};
+    const std::array<ModelWords, 2> narrowOptions{
+        {{ng, capacity.candidates, capacity.contactsPerWorld, convexWorkers},
+         {collision.convexPairs ? convexManifolds : 0u, FloatWord(minimumRestitutionSpeed), 0, 0}}};
     const auto settings = b.Seed("contactSettings", 8, &narrowOptions);
     const auto materials = b.Shared("collisionMaterials", collision.materials);
     const auto counts = b.Slot(b.worlds, BufferUsageFlags::TransferSource);
@@ -465,13 +474,6 @@ struct ContactDynamics
     uint32_t prescribedMotion;
     uint32_t bodyVelocity;
 };
-
-uint32_t FloatWord(float value)
-{
-    uint32_t word;
-    std::memcpy(&word, &value, sizeof(word));
-    return word;
-}
 
 ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const ContactSlots &stream,
                                    WarpCollisionCapacity capacity, const WarpContactSolver &solver, float timestep,
@@ -887,7 +889,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                 rayDispatches.push_back(b.dispatches.back());
                 raySlots = AddRayWork(b, model, *collision, geometry, rayLayout, rayDispatches);
             }
-            contactSlots = AddCollision(b, model, *collision, dimensions, geometry, capacity);
+            contactSlots = AddCollision(b, model, *collision, dimensions, geometry, capacity,
+                                        solver ? solver->minimumRestitutionSpeed : 0.0f);
         }
     }
     if (traceRays && !detectContacts) {

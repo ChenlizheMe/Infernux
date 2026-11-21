@@ -248,6 +248,13 @@ void finishContactRows<let Prescribed : bool>(uint3 id)
                 d /= scale;
                 acceleration = -tangentialDamping * velocity / tangentialFactor;
             }
+            else if (elliptic && contact.extra.z > 0.0 && velocity < -contact.extra.w)
+            {
+                // Restitution targets a separating velocity. The incoming speed
+                // is sampled before applying this step's accelerations.
+                d = constraintDiagonal(weight, MaxImpedance);
+                acceleration = -(1.0 + contact.extra.z) * velocity / world.x;
+            }
             else if (contact.tangentAdhesion.w != 0.0)
                 acceleration += contact.tangentAdhesion.w / (d * (elliptic ? 1 : span.y));
 

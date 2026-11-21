@@ -31,7 +31,8 @@ struct WarpContactMaterial
     ModelVector reference{0.02f, 1.0f, 0.0f, 0.0f};
     ModelVector impedance{0.9f, 0.95f, 0.001f, 0.5f};
     ModelVector friction{1.0f, 0.005f, 0.0001f, 0.0f};
-    ModelVector extra{2.0f, 0.0001f, 0.0f, 0.0f};
+    ModelVector extra{2.0f, 0.0001f, 0.0f, 0.0f}; // Impedance power, friction 5, restitution, unused.
+    // Contact dimension, reference priority, scene friction and bounce combines (enum + 1).
     std::array<int32_t, 4> dimensions{3, 0, 0, 0};
 };
 

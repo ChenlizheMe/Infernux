@@ -8,6 +8,7 @@
 #include "WarpCollisionModel.h"
 
 #include <Jolt/Physics/Collision/Shape/Shape.h>
+#include <function/resources/PhysicMaterial/PhysicMaterial.h>
 
 namespace infernux::physics::warp
 {
@@ -20,6 +21,9 @@ struct WarpSceneCollider
     uint32_t collisionMask;
     float friction;
     bool trigger;
+    float bounciness = 0.0f;
+    PhysicsMaterialCombine frictionCombine = PhysicsMaterialCombine::Average;
+    PhysicsMaterialCombine bounceCombine = PhysicsMaterialCombine::Average;
 };
 
 struct WarpSceneActor

@@ -292,7 +292,8 @@ std::optional<WarpSceneCapture> CaptureWarpSceneActor(const PhysicsActorData &ac
         const int layer = collider->GetGameObject()->GetLayer();
         source.colliders.push_back(
             {collider->GetComponentID(), collider->GetLifetimeGeneration(), static_cast<uint32_t>(layer),
-             TagLayerManager::Instance().GetLayerCollisionMask(layer), collider->GetFriction(), collider->IsTrigger()});
+             TagLayerManager::Instance().GetLayerCollisionMask(layer), collider->GetFriction(), collider->IsTrigger(),
+             collider->GetBounciness(), collider->GetFrictionCombine(), collider->GetBounceCombine()});
     }
     return result;
 }
@@ -332,6 +333,9 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
             auto &shape = collision.emplace_back();
             const auto kind = CookGeometry(leaf, shape, cache);
             shape.material.friction[0] = surface.friction;
+            shape.material.extra[2] = surface.bounciness;
+            shape.material.dimensions[2] = 1 + static_cast<int32_t>(surface.frictionCombine);
+            shape.material.dimensions[3] = 1 + static_cast<int32_t>(surface.bounceCombine);
             shape.trigger = surface.trigger;
             shape.subShape = leaf.mSubShapeIDCreator.GetID().GetValue();
             glm::quat rotation = Rotation(leaf.mShapeRotation);

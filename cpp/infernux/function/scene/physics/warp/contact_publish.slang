@@ -16,8 +16,8 @@ struct ContactMaterial
     float4 reference; // solref, solreffriction
     float4 impedance;
     float4 friction;
-    float4 extra; // fifth solimp, fifth friction
-    int4 dimensions; // condim, geom priority
+    float4 extra; // fifth solimp, fifth friction, restitution
+    int4 dimensions; // contact dimension, priority, scene friction and restitution combines (enum + 1)
 };
 
 struct ContactBasis
@@ -28,7 +28,7 @@ struct ContactBasis
 };
 
 // First record: geom count, batch candidate capacity, contact capacity per world, batch convex worker capacity.
-// Second record: flags.
+// Second record: flags, minimum restitution speed as float bits.
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> contactSettings;
 [[vk::binding(1, 0)]] StructuredBuffer<CartesianFrame> geometryFrames;
 [[vk::binding(2, 0)]] StructuredBuffer<CollisionShape> shapes;
@@ -54,6 +54,17 @@ ContactBasis makeBasis(float3 normal)
     const float3 reference = basisReference(normal);
     const float3 tangent = normalize(reference - normal * dot(normal, reference));
     return {normal, tangent, cross(normal, tangent)};
+}
+
+float combineSceneSurface(float a, float b, int mode)
+{
+    switch (mode)
+    {
+    case 2: return min(a, b);
+    case 3: return a * b;
+    case 4: return max(a, b);
+    default: return 0.5 * (a + b);
+    }
 }
 
 ContactMaterial resolveMaterial(uint4 pair, uint geomCount)
@@ -82,6 +93,14 @@ ContactMaterial resolveMaterial(uint4 pair, uint geomCount)
     }
 
     ContactMaterial result;
+    float restitution = 0.0;
+    if (a.dimensions.z != 0)
+    {
+        friction.x = combineSceneSurface(a.friction.x, b.friction.x, max(a.dimensions.z, b.dimensions.z));
+        restitution = combineSceneSurface(a.extra.z, b.extra.z, max(a.dimensions.w, b.dimensions.w));
+        if (friction.x == 0.0)
+            dim = 1;
+    }
     result.dimensions = int4(dim, 0, 0, 0);
     result.parameters = float4(a.parameters.xy + b.parameters.xy, 0.0, adhesion);
     const float2 reference = a.reference.x > 0.0 && b.reference.x > 0.0 ?
@@ -89,7 +108,7 @@ ContactMaterial resolveMaterial(uint4 pair, uint geomCount)
     result.reference = float4(reference, 0.0, 0.0);
     result.impedance = lerp(b.impedance, a.impedance, weight);
     result.friction = float4(friction.x, friction.x, friction.y, friction.z);
-    result.extra = float4(lerp(b.extra.x, a.extra.x, weight), friction.z, 0.0, 0.0);
+    result.extra = float4(lerp(b.extra.x, a.extra.x, weight), friction.z, restitution, 0.0);
     return result;
 }
 
@@ -115,7 +134,8 @@ void writeContact(uint world, uint4 pair, uint ordinal, float distance, float3 p
     contact.reference = material.reference;
     contact.impedance = material.impedance;
     contact.friction = max(material.friction, float4(MinFriction));
-    contact.extra = float4(material.extra.x, max(material.extra.y, MinFriction), 0.0, 0.0);
+    const float minimumRestitutionSpeed = material.extra.z > 0.0 ? asfloat(contactSettings[1].y) : 0.0;
+    contact.extra = float4(material.extra.x, max(material.extra.y, MinFriction), material.extra.z, minimumRestitutionSpeed);
     contact.geometry = uint4(pair.xy, dim, (constraint ? ContactConstraint : 0u) | (sensor ? ContactSensor : 0u));
     contact.identity = uint4(ordinal, pair.w, NoIndex, secondSubShape);
     contacts[world * capacity + slot] = contact;
