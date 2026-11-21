@@ -82,6 +82,26 @@ struct WarpHostBody
     glm::vec3 centerOfMass, linearVelocity, angularVelocity;
 };
 
+struct WarpSceneBodyRead
+{
+    ContactStreamIdentity identity;
+    std::shared_ptr<rhi::PreparedComputeBatch> packet;
+
+    /// Consume completed motion rows in the caller's requested body order.
+    [[nodiscard]] std::vector<WarpHostBody> ReadHostBodies() const;
+
+  private:
+    friend class WarpSceneRuntime;
+    struct Body
+    {
+        uint32_t id, packedRow;
+        uint64_t shapeRevision;
+    };
+    std::vector<Body> m_bodies;
+    std::vector<uint32_t> m_rangeRows;
+    uint32_t m_uniqueRows = 0;
+};
+
 struct WarpSceneRayBatch
 {
     ContactStreamIdentity identity;
@@ -141,6 +161,10 @@ class WarpSceneRuntime final
     [[nodiscard]] std::optional<WarpFixedPublication> TakeFixed();
     [[nodiscard]] std::optional<WarpHostBody> ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
                                                            uint32_t engineBody) const;
+    /// Read only requested bodies from a frozen device publication. One packet
+    /// copies adjacent rows together and reads each selected row at most once.
+    [[nodiscard]] WarpSceneBodyRead PrepareBodyRead(const WarpFixedPublication &publication, uint32_t world,
+                                                    const std::vector<uint32_t> &engineBodies) const;
     /// Prepare against the chosen completed world. The result retains device
     /// rows and can optionally carry an exact host hit readback.
     [[nodiscard]] WarpSceneRayBatch PrepareRaycast(const WarpFixedPublication &publication, uint32_t world,

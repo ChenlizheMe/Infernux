@@ -31,6 +31,20 @@ struct WarpSceneLayout
     std::vector<uint32_t> geometrySurfaces; // Shared topology, indexed by device geometry row.
 };
 
+namespace
+{
+WarpHostBody DecodeHostBody(const WarpBodyState &raw, uint32_t bodyId, uint64_t shapeRevision)
+{
+    const auto vector = [](const ModelVector &v) { return glm::vec3(v[0], v[1], v[2]); };
+    const auto &q = raw.pose.rotation;
+    return {{bodyId, vector(raw.pose.position), glm::quat(q[0], q[1], q[2], q[3])},
+            shapeRevision,
+            vector(raw.centerOfMass),
+            vector(raw.linearVelocity),
+            vector(raw.angularVelocity)};
+}
+} // namespace
+
 PhysicsGpuPoseSource WarpFixedPublication::PoseSource(uint32_t world) const
 {
     if (worlds.at(world).status != 0)
@@ -48,6 +62,22 @@ std::optional<PhysicsGpuBodyPoseBinding> WarpFixedPublication::FindPoseBody(uint
     if (!row || layout.bodies[*row].actor != actor)
         return std::nullopt;
     return PhysicsGpuBodyPoseBinding{bodyId, *row};
+}
+
+std::vector<WarpHostBody> WarpSceneBodyRead::ReadHostBodies() const
+{
+    std::vector<WarpBodyState> records(m_uniqueRows);
+    size_t offset = 0;
+    for (size_t index = 0; index < m_rangeRows.size(); ++index) {
+        const auto count = m_rangeRows[index];
+        packet->Readback(index)->ReadInto(records.data() + offset, uint64_t{count} * sizeof(WarpBodyState));
+        offset += count;
+    }
+    std::vector<WarpHostBody> bodies;
+    bodies.reserve(m_bodies.size());
+    for (const auto &body : m_bodies)
+        bodies.push_back(DecodeHostBody(records[body.packedRow], body.id, body.shapeRevision));
+    return bodies;
 }
 
 std::vector<RaycastHit> WarpSceneRayBatch::ReadHostHits() const
@@ -193,13 +223,51 @@ std::optional<WarpHostBody> WarpSceneRuntime::ReadHostBody(const WarpFixedPublic
     if (!row)
         return std::nullopt;
     const auto &raw = publication.hostBodies.at(uint64_t{world} * m_bodyCount + *row);
-    const auto vector = [](const ModelVector &v) { return glm::vec3(v[0], v[1], v[2]); };
-    const auto &q = raw.pose.rotation;
-    return WarpHostBody{{engineBody, vector(raw.pose.position), glm::quat(q[0], q[1], q[2], q[3])},
-                        layout.bodies[*row].shapeRevision,
-                        vector(raw.centerOfMass),
-                        vector(raw.linearVelocity),
-                        vector(raw.angularVelocity)};
+    return DecodeHostBody(raw, engineBody, layout.bodies[*row].shapeRevision);
+}
+
+WarpSceneBodyRead WarpSceneRuntime::PrepareBodyRead(const WarpFixedPublication &publication, uint32_t world,
+                                                    const std::vector<uint32_t> &engineBodies) const
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("Warp body read does not match its scene publication");
+    const auto source = publication.PoseSource(world);
+    const auto &layout = m_layout->worlds[world];
+    WarpSceneBodyRead result;
+    result.identity = publication.worlds[world].identity;
+    result.m_bodies.resize(engineBodies.size());
+    std::vector<std::pair<uint32_t, size_t>> rows;
+    rows.reserve(engineBodies.size());
+    for (size_t index = 0; index < engineBodies.size(); ++index) {
+        const auto row = layout.BodyRow(engineBodies[index]);
+        if (!row)
+            throw std::invalid_argument("Warp body read requires an accepted body in the selected world");
+        rows.emplace_back(*row, index);
+    }
+    std::sort(rows.begin(), rows.end());
+
+    constexpr auto bytes = sizeof(WarpBodyState);
+    uint32_t previous = NoModelIndex;
+    std::vector<rhi::ComputeBufferRead> reads;
+    for (const auto &[row, index] : rows) {
+        if (row != previous) {
+            if (reads.empty() || row != previous + 1) {
+                reads.push_back({source.states, (source.firstRow + row) * bytes, 0});
+                result.m_rangeRows.push_back(0);
+            }
+            reads.back().byteSize += bytes;
+            ++result.m_rangeRows.back();
+            ++result.m_uniqueRows;
+            previous = row;
+        }
+        const auto &body = layout.bodies[row];
+        result.m_bodies[index] = {body.bodyId, result.m_uniqueRows - 1, body.shapeRevision};
+    }
+    if (!reads.empty()) {
+        auto host = m_host;
+        result.packet = rhi::PrepareComputeBatch(host, {}, {}, std::move(reads));
+    }
+    return result;
 }
 
 WarpSceneRayBatch WarpSceneRuntime::PrepareRaycast(const WarpFixedPublication &publication, uint32_t world,
