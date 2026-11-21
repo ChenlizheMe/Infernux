@@ -6,21 +6,74 @@
 #include <algorithm>
 #include <chrono>
 #include <exception>
+#include <mutex>
 #include <stdexcept>
 
 namespace infernux::vk
 {
+
+class VulkanComputeReplayPool
+{
+  public:
+    VulkanComputeReplayPool(VkDevice device, uint32_t family) : device(device)
+    {
+        VkCommandPoolCreateInfo info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+        info.queueFamilyIndex = family;
+        if (vkCreateCommandPool(device, &info, nullptr, &pool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create Vulkan compute replay command pool");
+    }
+
+    ~VulkanComputeReplayPool()
+    {
+        Close();
+    }
+
+    void Close() noexcept
+    {
+        std::lock_guard lock(mutex);
+        if (pool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(device, pool, nullptr);
+            pool = VK_NULL_HANDLE;
+        }
+    }
+
+    VkDevice device;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    std::mutex mutex;
+};
+
 namespace
 {
+class VulkanRecordedCompute final : public rhi::RecordedComputeCommands
+{
+  public:
+    explicit VulkanRecordedCompute(const std::shared_ptr<VulkanComputeReplayPool> &owner) : owner(owner)
+    {
+    }
+
+    ~VulkanRecordedCompute() override
+    {
+        if (auto pool = owner.lock(); pool && commands != VK_NULL_HANDLE) {
+            std::lock_guard lock(pool->mutex);
+            if (pool->pool != VK_NULL_HANDLE)
+                vkFreeCommandBuffers(pool->device, pool->pool, 1, &commands);
+        }
+    }
+
+    std::weak_ptr<VulkanComputeReplayPool> owner;
+    VkCommandBuffer commands = VK_NULL_HANDLE;
+};
+
 class RecordingContext final : public rhi::ComputeRecordingContext
 {
   public:
-    RecordingContext(VulkanRhiDevice &device, VkCommandBuffer commands, VulkanQueueManager &queues,
-                     VulkanSubmissionExecutor::ExternalSync &sync)
-        : m_commands(commands), m_queues(queues), m_sync(sync)
+    RecordingContext(VkDeviceContext &device, VkCommandBuffer commands, VulkanQueueManager &queues,
+                     VulkanSubmissionExecutor::ExternalSync &sync, std::shared_ptr<VulkanComputeReplayPool> &replay)
+        : m_device(device), m_commands(commands), m_queues(queues), m_sync(sync), m_replay(replay)
     {
-        m_compute = device.MakeComputeCommandEncoder(m_computeContext, commands);
-        m_transfer = device.MakeTransferCommandEncoder(m_transferContext, commands);
+        auto &rhi = device.GetRhiDevice();
+        m_compute = rhi.MakeComputeCommandEncoder(m_computeContext, commands);
+        m_transfer = rhi.MakeTransferCommandEncoder(m_transferContext, commands);
     }
     rhi::ComputeCommandEncoder Compute() override
     {
@@ -54,11 +107,53 @@ class RecordingContext final : public rhi::ComputeRecordingContext
                              rhi::ToVkPipelineStages(destination, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT), 0, 1, &barrier,
                              0, nullptr, 0, nullptr);
     }
+    bool SupportsComputeReplay() const noexcept override
+    {
+        return true;
+    }
+    bool ExecuteComputeCommands(std::shared_ptr<rhi::RecordedComputeCommands> &commands,
+                                const Recorder &record) override
+    {
+        if (!m_replay)
+            m_replay = std::make_shared<VulkanComputeReplayPool>(m_device.GetDevice(),
+                                                                 m_queues.GetSnapshot(rhi::QueueRole::Compute).family);
+        auto cached = std::dynamic_pointer_cast<VulkanRecordedCompute>(commands);
+        if (!cached || cached->owner.lock() != m_replay) {
+            auto next = std::make_shared<VulkanRecordedCompute>(m_replay);
+            // Command pools are externally synchronized, including recording
+            // and release by fence-owned resources.
+            std::lock_guard lock(m_replay->mutex);
+            VkCommandBufferAllocateInfo allocation{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+            allocation.commandPool = m_replay->pool;
+            allocation.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+            allocation.commandBufferCount = 1;
+            if (vkAllocateCommandBuffers(m_replay->device, &allocation, &next->commands) != VK_SUCCESS)
+                throw std::runtime_error("Failed to allocate Vulkan compute replay commands");
+            VkCommandBufferInheritanceInfo inheritance{VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+            VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+            begin.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+            begin.pInheritanceInfo = &inheritance;
+            if (vkBeginCommandBuffer(next->commands, &begin) != VK_SUCCESS)
+                throw std::runtime_error("Failed to begin Vulkan compute replay recording");
+            RecordingContext secondary(m_device, next->commands, m_queues, m_sync, m_replay);
+            if (!record(secondary))
+                return false;
+            if (vkEndCommandBuffer(next->commands) != VK_SUCCESS)
+                throw std::runtime_error("Failed to finish Vulkan compute replay recording");
+            cached = std::move(next);
+        }
+        commands = cached;
+        vkCmdExecuteCommands(m_commands, 1, &cached->commands);
+        m_computeContext.ResetBindingState();
+        return true;
+    }
 
   private:
+    VkDeviceContext &m_device;
     VkCommandBuffer m_commands;
     VulkanQueueManager &m_queues;
     VulkanSubmissionExecutor::ExternalSync &m_sync;
+    std::shared_ptr<VulkanComputeReplayPool> &m_replay;
     VulkanComputeCommandContext m_computeContext;
     VulkanTransferCommandContext m_transferContext;
     rhi::ComputeCommandEncoder m_compute;
@@ -121,6 +216,9 @@ void VulkanComputeQueue::Destroy() noexcept
     }
     m_timestamps.reset();
     m_executor.Destroy();
+    if (m_replayPool)
+        m_replayPool->Close();
+    m_replayPool.reset();
     m_slots.clear();
     m_plan.Clear();
     m_context = nullptr;
@@ -334,7 +432,7 @@ std::optional<rhi::SubmissionTicket> VulkanComputeQueue::SubmitToSlot(uint32_t i
             m_timestamps->BeginFrame(commands, index);
             region = m_timestamps->BeginRegion(commands, "compute_submission", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
         }
-        RecordingContext context(m_context->GetRhiDevice(), commands, *m_queues, sync);
+        RecordingContext context(*m_context, commands, *m_queues, sync, m_replayPool);
         bool recorded = false;
         try {
             recorded = record(context);

@@ -12,6 +12,20 @@
 namespace infernux::rhi
 {
 
+struct ComputeReplayCache
+{
+    std::vector<std::shared_ptr<ComputeBufferAllocation>> allocations;
+    std::vector<std::shared_ptr<ComputeKernel>> kernels;
+    std::shared_ptr<RecordedComputeCommands> commands;
+    std::vector<uint64_t> signature;
+    std::vector<uint64_t> nextSignature;
+};
+
+std::shared_ptr<ComputeReplayCache> MakeComputeReplayCache()
+{
+    return std::make_shared<ComputeReplayCache>();
+}
+
 struct ComputeKernel::GraphBindingGroup
 {
     ComputeHost host;
@@ -727,7 +741,7 @@ void ComputeKernel::PrepareValues(const PreparedBatch &batch, std::vector<Buffer
     }
 }
 
-bool ComputeKernel::RecordBatch(ComputeRecordingContext &context, const PreparedBatch &batch,
+bool ComputeKernel::RecordBatch(ComputeRecordingContext &context, PreparedBatch &batch,
                                 const std::vector<std::shared_ptr<ComputeReadback>> &reads)
 {
     const auto &updates = batch.updates;
@@ -760,15 +774,82 @@ bool ComputeKernel::RecordBatch(ComputeRecordingContext &context, const Prepared
         if (!updates.empty())
             context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite, destinationStage, computeAccess);
         context.PipelineBarrier(PipelineStage::AllCommands, Access::MemoryWrite, destinationStage, computeAccess);
-        const auto encoder = context.Compute();
-        for (size_t index = 0; index < prepared.size(); ++index) {
-            const auto &dispatch = prepared[index];
-            if (dispatch.barrierBefore)
-                context.PipelineBarrier(PipelineStage::ComputeShader, Access::ShaderWrite, destinationStage,
-                                        computeAccess);
-            if (!dispatch.work.RecordOne(encoder))
-                return false;
+        const auto barrier = [&](ComputeRecordingContext &recorder) {
+            recorder.PipelineBarrier(PipelineStage::ComputeShader, Access::ShaderWrite, destinationStage,
+                                     computeAccess);
+        };
+        const auto recordDispatches = [&](ComputeRecordingContext &recorder, size_t first, size_t end,
+                                          bool enteredRange) {
+            const auto encoder = recorder.Compute();
+            for (size_t index = first; index < end; ++index) {
+                const auto &dispatch = prepared[index];
+                if (dispatch.barrierBefore && (!enteredRange || index != first))
+                    barrier(recorder);
+                if (!dispatch.work.RecordOne(encoder))
+                    return false;
+            }
+            return true;
+        };
+        size_t first = 0;
+        batch.replayOwners.clear();
+        if (context.SupportsComputeReplay()) {
+            const auto identity = [](auto handle) { return uint64_t{handle.generation} << 32 | handle.index; };
+            for (const auto &range : batch.replayRanges) {
+                if (!recordDispatches(context, first, range.first, false))
+                    return false;
+                if (prepared[range.first].barrierBefore)
+                    barrier(context);
+                const auto end = range.first + range.count;
+                auto &cache = *range.cache;
+                auto &signature = cache.nextSignature;
+                signature.clear();
+                signature.push_back(batch.hasIndirect);
+                signature.push_back(range.count);
+                for (size_t i = range.first; i < end; ++i) {
+                    const auto &dispatch = prepared[i];
+                    const auto &work = dispatch.work;
+                    signature.insert(signature.end(),
+                                     {identity(work.pipeline), identity(work.group), work.groupCountX, work.groupCountY,
+                                      work.groupCountZ, i != range.first && dispatch.barrierBefore, work.IsIndirect(),
+                                      work.indirectOffset.value_or(0), work.pushConstants.size()});
+                    if (work.IsIndirect())
+                        signature.push_back(identity(work.allocations.back()->GetBuffer()));
+                    if (!work.pushConstants.empty()) {
+                        const auto offset = signature.size();
+                        signature.resize(offset +
+                                         (work.pushConstants.size() + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+                        std::memcpy(signature.data() + offset, work.pushConstants.data(), work.pushConstants.size());
+                    }
+                }
+                auto commands = signature == cache.signature ? cache.commands : nullptr;
+                if (!context.ExecuteComputeCommands(commands, [&](ComputeRecordingContext &recorder) {
+                        return recordDispatches(recorder, range.first, end, true);
+                    }))
+                    return false;
+                if (cache.commands != commands) {
+                    std::unordered_set<ComputeBufferAllocation *> allocations;
+                    std::unordered_set<ComputeKernel *> kernels;
+                    std::vector<std::shared_ptr<ComputeBufferAllocation>> retainedAllocations;
+                    std::vector<std::shared_ptr<ComputeKernel>> retainedKernels;
+                    for (size_t i = range.first; i < end; ++i) {
+                        const auto &work = prepared[i].work;
+                        if (kernels.insert(work.kernel.get()).second)
+                            retainedKernels.push_back(work.kernel);
+                        for (const auto &allocation : work.allocations)
+                            if (allocations.insert(allocation.get()).second)
+                                retainedAllocations.push_back(allocation);
+                    }
+                    cache.commands = commands;
+                    cache.signature.swap(signature);
+                    cache.allocations = std::move(retainedAllocations);
+                    cache.kernels = std::move(retainedKernels);
+                }
+                batch.replayOwners.push_back(std::move(commands));
+                first = end;
+            }
         }
+        if (!recordDispatches(context, first, prepared.size(), false))
+            return false;
         if (!hasReads)
             context.PipelineBarrier(PipelineStage::ComputeShader, Access::ShaderWrite, PipelineStage::AllCommands,
                                     Access::MemoryRead | Access::MemoryWrite);
@@ -878,6 +959,21 @@ PreparedComputeBatch::PreparedComputeBatch(ComputeHost &host, std::vector<Comput
 PreparedComputeBatch::~PreparedComputeBatch()
 {
     Cancel();
+}
+
+void PreparedComputeBatch::SetDispatchReplay(std::vector<ComputeReplayRange> ranges)
+{
+    if (!m_batch || m_ticket.IsValid())
+        throw std::logic_error("Compute replay ranges require an unsubmitted batch");
+    size_t end = 0;
+    const auto size = m_batch->dispatches.size();
+    for (const auto &range : ranges) {
+        if (!range.cache || !range.count || range.first < end || range.first > size || range.count > size - range.first)
+            throw std::invalid_argument("Compute replay ranges must be ordered and contained in the dispatch list");
+        end = range.first + range.count;
+    }
+    m_batch->replayRanges = std::move(ranges);
+    m_batch->replayOwners.reserve(m_batch->replayRanges.size());
 }
 
 std::shared_ptr<PreparedComputeBatch> PrepareComputeBatch(ComputeHost &host, std::vector<ComputeBufferUpdate> updates,

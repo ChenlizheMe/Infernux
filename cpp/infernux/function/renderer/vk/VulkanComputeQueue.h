@@ -10,6 +10,8 @@
 namespace infernux::vk
 {
 
+class VulkanComputeReplayPool;
+
 /// A bounded command/fence pool within the existing engine device and queue
 /// manager. No VkQueue, allocator, device, or independent scheduler is created.
 class VulkanComputeQueue final : public rhi::ComputeQueue
@@ -75,6 +77,7 @@ class VulkanComputeQueue final : public rhi::ComputeQueue
     rhi::SubmissionSerial m_completed = 0;
     VulkanSubmissionExecutor::ExecuteResult m_lastSubmission;
     std::unique_ptr<GpuTimestampQueries> m_timestamps;
+    std::shared_ptr<VulkanComputeReplayPool> m_replayPool;
 };
 
 } // namespace infernux::vk

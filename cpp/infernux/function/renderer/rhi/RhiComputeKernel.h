@@ -25,6 +25,17 @@ class ComputeKernel;
 class PreparedComputeBatch;
 class ComputeWorkRecipe;
 class ComputeWorkInstance;
+class RecordedComputeCommands;
+struct ComputeReplayCache;
+
+struct ComputeReplayRange
+{
+    size_t first;
+    size_t count;
+    std::shared_ptr<ComputeReplayCache> cache;
+};
+
+[[nodiscard]] INFERNUX_RENDER_CORE_API std::shared_ptr<ComputeReplayCache> MakeComputeReplayCache();
 
 struct ComputeBufferBinding
 {
@@ -297,6 +308,8 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
         std::vector<std::shared_ptr<ComputeKernel>> kernels;
         std::vector<std::shared_ptr<ComputeReadback::Storage>> readOwners;
         std::vector<std::shared_ptr<ComputeBufferState>> contentReadOwners;
+        std::vector<ComputeReplayRange> replayRanges;
+        std::vector<std::shared_ptr<RecordedComputeCommands>> replayOwners;
         bool hasIndirect = false;
     };
 
@@ -336,7 +349,7 @@ class ComputeKernel final : public std::enable_shared_from_this<ComputeKernel>
     [[nodiscard]] static PreparedBatch PrepareBatch(ComputeHost &host, std::vector<ComputeBufferUpdate> updates,
                                                     std::vector<ComputeDispatchDesc> dispatches,
                                                     std::vector<ComputeBufferCopy> copies = {});
-    [[nodiscard]] static bool RecordBatch(ComputeRecordingContext &context, const PreparedBatch &batch,
+    [[nodiscard]] static bool RecordBatch(ComputeRecordingContext &context, PreparedBatch &batch,
                                           const std::vector<std::shared_ptr<ComputeReadback>> &reads);
     static void PrepareValues(const PreparedBatch &batch, std::vector<BufferValueState> &values);
     void Attach(SubmissionTicket ticket);
@@ -591,6 +604,9 @@ class PreparedComputeBatch final
 
     [[nodiscard]] INFERNUX_RENDER_CORE_API SubmissionTicket Submit();
     [[nodiscard]] INFERNUX_RENDER_CORE_API std::optional<SubmissionTicket> TrySubmit();
+    /// Reuse the recording of disjoint, ordered dispatch ranges. Storage
+    /// transitions still resolve before the native recording is selected.
+    INFERNUX_RENDER_CORE_API void SetDispatchReplay(std::vector<ComputeReplayRange> ranges);
     /// A device-only packet with resolved endpoints can share a queue submission.
     [[nodiscard]] INFERNUX_RENDER_CORE_API bool CanShareSubmission() const;
     /// Record the packets in order, with one accepted ticket and completion for all.

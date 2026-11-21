@@ -46,12 +46,21 @@ struct ComputeSubmissionResources
     uint64_t uploadStagingBytes = 0;
 };
 
+/// Backend-owned encoding of immutable compute commands. A submission retains
+/// the encoding together with the allocations used to record it.
+class RecordedComputeCommands
+{
+  public:
+    virtual ~RecordedComputeCommands() = default;
+};
+
 /// Borrowed encoders, valid only during the synchronous recording callback.
 /// Resources must remain alive until completion, either through the caller or
 /// the optional submission-owned resource bundle.
 class ComputeRecordingContext
 {
   public:
+    using Recorder = std::function<bool(ComputeRecordingContext &)>;
     virtual ~ComputeRecordingContext() = default;
     [[nodiscard]] virtual ComputeCommandEncoder Compute() = 0;
     [[nodiscard]] virtual TransferCommandEncoder Transfer() = 0;
@@ -60,6 +69,17 @@ class ComputeRecordingContext
     virtual void Require(SubmissionTicket producer) = 0;
     virtual void PipelineBarrier(PipelineStage sourceStage, Access sourceAccess, PipelineStage destinationStage,
                                  Access destinationAccess) = 0;
+    [[nodiscard]] virtual bool SupportsComputeReplay() const noexcept
+    {
+        return false;
+    }
+    /// Only compute dispatches and their internal barriers may be cached here.
+    /// Submission waits, transfers, and cross-block barriers remain outside.
+    [[nodiscard]] virtual bool ExecuteComputeCommands(std::shared_ptr<RecordedComputeCommands> &,
+                                                      const Recorder &record)
+    {
+        return record(*this);
+    }
 };
 
 /// Host-owned background compute lane. Submission/collection are serialized
