@@ -43,6 +43,7 @@ enum ControlMotion : uint8_t
     Uncontrolled,
     DynamicControl,
     KinematicControl,
+    StaticControl,
 };
 
 struct Use
@@ -378,6 +379,15 @@ RaySlots AddRayWork(StepBuilder &b, const WarpModel &model, const WarpCollisionM
     const auto nodes = b.Shared("rayIndex", index.records);
     const auto bounds = b.Zero("rayBounds", 8 * uint64_t{std::max(1u, index.nodeCount)} * worlds);
     const auto metadata = b.Shared("rayGeometry", collision.rayGeometry);
+    const auto describeFrames = [&](ComputeWorkDispatch &dispatch) {
+        if (!published || geometryCount == 0)
+            return;
+        // Frozen queries project and refit just one selected world into the prefix.
+        // The rest of the numerical scratch may be uninitialized before its first step.
+        for (auto &binding : dispatch.bindings)
+            if (binding.range.slot == geometry.frames)
+                binding.range.byteSize = uint64_t{geometryCount} * 4 * sizeof(ModelVector);
+    };
     const auto refit = [&](uint32_t first, uint32_t count, bool complete) {
         const ModelWords options{geometryCount, first, 0, 0};
         const auto slot = b.Seed(first == 0 ? "rayRefitSubtrees" : "rayRefitRoot", 4, &options);
@@ -385,6 +395,7 @@ RaySlots AddRayWork(StepBuilder &b, const WarpModel &model, const WarpCollisionM
             "ray_bvh_refit", "refit_ray_bvh", count,
             {{0, slot, R}, {1, geometry.bounds, R}, {2, nodes, R}, {3, bounds, RW, complete}, {4, geometry.frames, R}},
             true));
+        describeFrames(work.back());
     };
     if (index.refitSubtrees != 0) {
         refit(0, index.refitSubtrees, !index.refitRoot);
@@ -401,6 +412,7 @@ RaySlots AddRayWork(StepBuilder &b, const WarpModel &model, const WarpCollisionM
                                {7, hits, W, true},
                                {8, nodes, R},
                                {9, bounds, R}}));
+    describeFrames(work.back());
     return {inputs, hits, query};
 }
 
@@ -811,6 +823,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     if (!model.initialVelocities.empty() && model.initialVelocities.size() != nv)
         throw std::invalid_argument("Warp initial velocities must match the model degrees of freedom");
     const auto nm = model.dimensions.layout[1];
+    const auto ns = model.initialStaticPoses.size();
     const auto branches = model.dimensions.layout[2];
     const auto packedMass = model.dimensions.layout[3];
     const auto worldWords = [worlds](uint64_t words) { return words * worlds; };
@@ -843,8 +856,10 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                 throw std::invalid_argument("Warp body commands require independent rigid body rows");
             if (body.dofs[1] != 0)
                 controls.motion[index] = DynamicControl;
-            if (body.hierarchy[3] != NoModelIndex)
+            else if (body.hierarchy[3] != NoModelIndex)
                 controls.motion[index] = KinematicControl;
+            else if (body.dofs[2] != 0)
+                controls.motion[index] = StaticControl;
         }
         controlSlots = BindBodyControls(b, model, bodyCommandCapacity, multiple);
     }
@@ -863,15 +878,17 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     const auto kinematicsPass = b.dispatches.size();
     struct
     {
-        uint32_t bodies, joints, leaves, pose, jointPose, mocap;
+        uint32_t bodies, joints, leaves, pose, jointPose, mocap, staticPoses;
     } kinematics{};
     if (nv != 0 || detectContacts || controlSlots) {
-        auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
+        auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
         bodies = b.Shared("bodies", model.bodies);
         joints = b.Shared("joints", model.joints);
         leaves = b.Shared("branches", model.branches);
         mocap = nm == 0 ? b.Seed("kinematicPoses", 8, nullptr)
                         : b.Seed("kinematicPoses", uint64_t{8} * nm, model.initialKinematicPoses.data(), worlds);
+        staticPoses = ns == 0 ? b.Seed("staticPoses", 8, nullptr)
+                              : b.Seed("staticPoses", uint64_t{8} * ns, model.initialStaticPoses.data(), worlds);
         std::vector<ModelPose> initialBodies(nb);
         pose = b.Seed("bodyPose", uint64_t{8} * nb, initialBodies.data(), worlds);
         jointPose = b.Slot(worldWords(uint64_t{8} * nj));
@@ -883,7 +900,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                {4, leaves, R},
                {5, mocap, R},
                {6, pose, RW},
-               {7, jointPose, W, nj != 0}});
+               {7, jointPose, W, nj != 0},
+               {13, staticPoses, R}});
         if (detectContacts) {
             if (collision->bounds.size() != model.dimensions.layout[0] || capacity.candidates == 0 ||
                 capacity.contactsPerWorld == 0)
@@ -916,7 +934,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         raySlots = AddRayWork(b, model, empty, geometry, rayLayout, rayDispatches, publishedRaysEnabled);
     }
     if (nv != 0) {
-        const auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
+        const auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
         const auto dofs = b.Shared("dofs", model.dofs);
         const auto gravities = b.Seed("gravity", 4, &gravity, worlds);
         const auto zeroForce = b.Seed("zeroForce", nv, nullptr, worlds);
@@ -1090,9 +1108,17 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             response = AddContactResponse(b, model, *contactSlots, capacity, *solver, substepDt, dynamics,
                                           std::move(massSolves), contactReports, substeps);
             reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
-            const std::array singleWorld{
-                positions, pose,        jointPose, inertialFrame, subtreeCom,
-                inertia,   centeredDof, composite, mass,          nm == 0 ? NoModelIndex : mocap};
+            const std::array singleWorld{positions,
+                                         pose,
+                                         jointPose,
+                                         inertialFrame,
+                                         subtreeCom,
+                                         inertia,
+                                         centeredDof,
+                                         composite,
+                                         mass,
+                                         nm == 0 ? NoModelIndex : mocap,
+                                         ns == 0 ? NoModelIndex : staticPoses};
             const auto initializeFrom = [&](size_t pass) {
                 auto dispatch = b.dispatches[pass];
                 dispatch.groupCountY = 1;
@@ -1183,7 +1209,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         publishBodiesWithStatus;
     if (controlSlots) {
         const auto &[spans, commands, force, saved, prescribed, fixedSteps] = *controlSlots;
-        const auto &[bodies, joints, leaves, pose, jointPose, mocap] = kinematics;
+        const auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
         applyCommands = b.Dispatch("body_controls", "apply_body_commands", bodyCommandCapacity,
                                    {{0, dimensions, R},
                                     {1, bodies, R},
@@ -1196,7 +1222,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                     {8, force, RW},
                                     {11, saved, RW},
                                     {12, prescribed, RW},
-                                    {15, fixedSteps, R}});
+                                    {15, fixedSteps, R},
+                                    {16, staticPoses, RW}});
         editCommands = b.Dispatch("body_controls", "edit_body_state", bodyCommandCapacity,
                                   {{0, dimensions, R},
                                    {1, bodies, R},
@@ -1206,7 +1233,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                    {5, positions, RW},
                                    {6, velocities, RW},
                                    {7, mocap, RW},
-                                   {12, prescribed, RW}});
+                                   {12, prescribed, RW},
+                                   {16, staticPoses, RW}});
         if (multiple)
             drive = b.Dispatch("body_controls", "advance_commanded_substep", bodyCommandCapacity,
                                {{0, dimensions, R},
@@ -1231,7 +1259,8 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                    {8, force, RW},
                                    {10, response->status, R},
                                    {11, saved, R},
-                                   {12, prescribed, RW}})
+                                   {12, prescribed, RW},
+                                   {16, staticPoses, W}})
                      : b.Dispatch("body_controls", "finish_body_commands", bodyCommandCapacity,
                                   {{0, dimensions, R}, {1, bodies, R}, {2, joints, R}, {3, spans, R}, {8, force, RW}});
         if (branches != 0) {
@@ -1547,7 +1576,8 @@ uint32_t WarpStep::AppendBodyCommands(std::vector<WarpBodyCommand> commands, boo
         const bool dynamic =
             kind >= WarpBodyCommandKind::SetLinearVelocity && kind <= WarpBodyCommandKind::ForceAtPosition;
         if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != KinematicControl) ||
-            (dynamic && motion != DynamicControl))
+            (dynamic && motion != DynamicControl) ||
+            (motion == StaticControl && kind > WarpBodyCommandKind::SetRotation))
             throw std::invalid_argument("Warp body command does not match its world or motion type");
         if (!integrate && (move || (force && static_cast<uint32_t>(command.mode) < 2)))
             throw std::invalid_argument("Continuous forces and kinematic targets require a fixed step");

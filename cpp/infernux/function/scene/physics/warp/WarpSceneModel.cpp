@@ -300,6 +300,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
         body.pose = Pose(actor.position, actor.rotation);
         body.inertiaPose.position = Point(center);
         body.kinematic = actor.kinematic;
+        body.editableStatic = !actor.mass && !actor.kinematic;
         if (actor.mass) {
             const auto &mass = *actor.mass;
             body.inertiaPose = Pose(center, Rotation(mass.axes));

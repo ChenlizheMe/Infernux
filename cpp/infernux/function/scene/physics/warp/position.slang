@@ -18,6 +18,7 @@
 [[vk::binding(10, 0)]] RWStructuredBuffer<CartesianFrame> geomFrame;
 [[vk::binding(11, 0)]] StructuredBuffer<float4> publishedBodies;
 [[vk::binding(12, 0)]] StructuredBuffer<uint4> publishedRaySettings;
+[[vk::binding(13, 0)]] StructuredBuffer<Pose> staticPoses;
 
 float4 loadQuat(uint first)
 {
@@ -72,6 +73,8 @@ void kinematics_branch(uint3 id : SV_DispatchThreadID)
         pose.rotation = body.rotation;
         if (body.hierarchy.w != NoIndex)
             pose = mocap[id.y * size.layout.y + body.hierarchy.w];
+        else if (body.dofs.z != 0)
+            pose = staticPoses[id.y * bodies[0].dofs.w + body.dofs.z - 1];
         if (parent != NoIndex)
         {
             pose.position.xyz = parentPose.position.xyz + rotateVector(pose.position.xyz, parentPose.rotation);

@@ -235,6 +235,9 @@ WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
         const uint32_t parent = authored.parent == NoModelIndex ? 0 : model.bodyRows[authored.parent];
         if (authored.kinematic && (parent != 0 || !authored.joints.empty()))
             throw std::invalid_argument("Warp model kinematic body must be a jointless root");
+        if (authored.editableStatic &&
+            (parent != 0 || authored.kinematic || !authored.joints.empty() || authored.mass != 0.0f))
+            throw std::invalid_argument("Warp model editable static body must be a massless, jointless root");
         ModelBody &body = model.bodies.emplace_back();
         body.hierarchy = {parent, authored.joints.empty() ? NoModelIndex : Count(model.joints), Count(authored.joints),
                           authored.kinematic ? Count(model.initialKinematicPoses) : NoModelIndex};
@@ -252,6 +255,10 @@ WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
         }
         const uint32_t dofCount = Count(model.dofs) - firstDof;
         body.dofs = {dofCount == 0 ? NoModelIndex : firstDof, dofCount, 0, 0};
+        if (authored.editableStatic) {
+            model.initialStaticPoses.push_back(authored.pose);
+            body.dofs[2] = Count(model.initialStaticPoses); // Zero denotes no editable static pose.
+        }
         ancestorDof.push_back(lastDof);
         if (authored.kinematic)
             model.initialKinematicPoses.push_back(authored.pose);
@@ -261,6 +268,7 @@ WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
     }
     if (model.bodies.size() != bodies.size() + 1)
         throw std::invalid_argument("Warp model body hierarchy contains a cycle");
+    model.bodies[0].dofs[3] = Count(model.initialStaticPoses);
     for (uint32_t row = Count(model.bodies) - 1; row != 0; --row) {
         const auto &body = model.bodies[row];
         auto &parent = model.bodies[body.hierarchy[0]];

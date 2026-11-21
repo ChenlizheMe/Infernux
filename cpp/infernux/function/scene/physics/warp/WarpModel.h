@@ -64,6 +64,7 @@ struct ModelBodyDefinition
     float gravityCompensation = 0.0f;
     bool kinematic = false;
     std::vector<ModelJointDefinition> joints;
+    bool editableStatic = false;
 };
 
 struct ModelGeometryDefinition
@@ -138,6 +139,7 @@ struct WarpModel
     std::vector<float> initialPositions;
     std::vector<float> initialVelocities; // Empty initializes all velocity coordinates to zero.
     std::vector<ModelPose> initialKinematicPoses;
+    std::vector<ModelPose> initialStaticPoses;
     std::vector<ModelWords> sceneJoints;
     std::vector<ModelHingeDrive> initialHingeDrives;
 };

@@ -53,6 +53,7 @@ struct SavedMotion
 [[vk::binding(13, 0)]] StructuredBuffer<Pose> bodyPoses;
 [[vk::binding(14, 0)]] RWStructuredBuffer<uint4> bodyStates;
 [[vk::binding(15, 0)]] StructuredBuffer<uint> fixedSteps;
+[[vk::binding(16, 0)]] RWStructuredBuffer<Pose> staticPoses;
 
 float4 conjugate(float4 rotation)
 {
@@ -248,6 +249,8 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
         return;
     const uint4 span = spans[index + 1];
     const BodyModel body = bodies[span.y];
+    if (body.dofs.z != 0)
+        return;
     const SavedMotion motion = saved[index];
     if (body.hierarchy.w == NoIndex)
     {
@@ -289,7 +292,23 @@ void applyBodyCommands<let Integrate : bool>(uint index)
         return;
     const uint4 span = spans[index + 1];
     const BodyModel body = bodies[span.y];
-    if (body.hierarchy.w == NoIndex)
+    if (body.dofs.z != 0)
+    {
+        const uint row = span.x * bodies[0].dofs.w + body.dofs.z - 1;
+        Pose pose = staticPoses[row];
+        if (Integrate)
+            saved[index].pose = pose;
+        for (uint i = span.z; i < span.z + span.w; ++i)
+        {
+            const BodyCommand command = commands[i];
+            if (command.fields.z == SetPosition)
+                pose.position.xyz = command.value.xyz;
+            else
+                pose.rotation = normalize(command.value);
+        }
+        staticPoses[row] = pose;
+    }
+    else if (body.hierarchy.w == NoIndex)
         applyDynamic<Integrate>(index, span, model[0], body);
     else
         applyKinematic<Integrate>(index, span, model[0], body);
@@ -317,6 +336,15 @@ void finishCommands<let HasStatus : bool>(uint index)
     const ModelDimensions size = model[0];
     const BodyModel body = bodies[span.y];
     const bool rejected = HasStatus && status[span.x] != 0;
+    if (body.dofs.z != 0)
+    {
+        if (rejected)
+        {
+            const uint row = span.x * bodies[0].dofs.w + body.dofs.z - 1;
+            staticPoses[row] = saved[index].pose;
+        }
+        return;
+    }
     if (body.hierarchy.w == NoIndex)
     {
         const uint2 address = freeAddresses(size, body, span.x);
