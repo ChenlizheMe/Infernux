@@ -57,15 +57,10 @@ void prepare_main(uint3 tid : SV_DispatchThreadID)
             uint4 key = cache_write.Load4(base), identity = cache_write.Load4(base + 16);
             bool valid = identity.z == c.z && (identity.w & 1u) != 0;
             bool reserved = identity.z == c.z && (identity.w & 2u) != 0;
-            bool claimed = false;
-            for (uint prior = 0; prior < i; ++prior) {
-                uint flags = cache_requests.Load(64 + prior * 64 + 28);
-                claimed |= (flags & 1u) != 0 && (flags >> 2) == slot;
-            }
             bool sameKey = all(key.xyz == asuint(cell)) && key.w == 0 && identity.x == r2.w &&
                            identity.y == r3.w && identity.z == c.z && cache_write.Load(base + 60) == direction;
             if (sameKey && (valid || reserved)) {
-                if (claimed || reserved) duplicateKey = true;
+                if (reserved) duplicateKey = true;
                 else {
                     selected = slot;
                     uint2 exact = cache_write.Load2(base + 112);
@@ -77,7 +72,7 @@ void prepare_main(uint3 tid : SV_DispatchThreadID)
                 }
                 break;
             }
-            if (claimed || reserved) continue;
+            if (reserved) continue;
             if (!valid && empty == 0xffffffffu) empty = slot;
             uint age = c.w - cache_write.Load(base + 124);
             if (valid && (oldest == 0xffffffffu || age > oldestAge)) {
@@ -97,6 +92,8 @@ void prepare_main(uint3 tid : SV_DispatchThreadID)
             r1 = uint4(anchor.xyz, 1u | (selected << 2));
             r2 = uint4(outgoing.xyz, identity.x);
             r3 = uint4(normal.xyz, identity.y);
+            // Reserve reused entries in the private write generation as well.
+            cache_write.Store(base + 28, 3);
         } else {
             cache_write.Store4(base, uint4(asuint(cell), 0));
             cache_write.Store4(base + 16, uint4(r2.w, r3.w, c.z, 2));
@@ -130,7 +127,7 @@ void merge_main(uint3 tid : SV_DispatchThreadID)
     uint width, height; tail_samples.GetDimensions(width, height);
     float4 value = tail_samples.Load(int3(tid.x % width, tid.x / width, 0));
     if (value.w < 0.0) {
-        if ((requestFlags & 2u) != 0) cache_write.Store(base + 28, 0);
+        cache_write.Store(base + 28, (requestFlags & 2u) != 0 ? 0 : 1);
         return;
     }
     uint n = cache_write.Load(base + 44);
