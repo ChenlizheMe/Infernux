@@ -123,6 +123,7 @@ struct WarpModel
     std::vector<float> initialPositions;
     std::vector<float> initialVelocities; // Empty initializes all velocity coordinates to zero.
     std::vector<ModelPose> initialKinematicPoses;
+    std::vector<ModelWords> spatialEqualities;
 };
 
 /// Compile shared topology and initial coordinates. The source can name parents in any order.

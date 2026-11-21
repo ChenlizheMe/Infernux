@@ -6,6 +6,7 @@
 #include "constraint_data.slang"
 #include "constraint_parameters.slang"
 #include "constraint_stream.slang"
+#include "prescribed_motion.slang"
 
 static const uint SpatialEqualityWords = 9;
 
@@ -17,6 +18,11 @@ static const uint SpatialEqualityWords = 9;
 [[vk::binding(9, 0)]] StructuredBuffer<SpatialMotion> centeredDofDerivative;
 [[vk::binding(10, 0)]] StructuredBuffer<SpatialMotion> bodyVelocity;
 [[vk::binding(11, 0)]] StructuredBuffer<float> qvel;
+[[vk::binding(12, 0)]] StructuredBuffer<BodyModel> sceneBodies;
+[[vk::binding(13, 0)]] StructuredBuffer<PrescribedMotion> scenePrescribed;
+[[vk::binding(14, 0)]] StructuredBuffer<uint> sceneFixedSteps;
+[[vk::binding(15, 0)]] RWStructuredBuffer<SpatialMotion> sceneBodyVelocity;
+[[vk::binding(16, 0)]] StructuredBuffer<ModelDimensions> sceneDimensions;
 
 struct SpatialEndpoint
 {
@@ -52,9 +58,7 @@ float3 pointJacobianDerivative(SpatialMotion motion, SpatialMotion derivative, S
     return pointJacobian(derivative, endpoint) + cross(motion.angular.xyz, endpoint.pointVelocity);
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void emit_spatial_equality_rows(uint3 id : SV_DispatchThreadID)
+void emitSpatialRows<let SceneJoint : bool>(uint3 id)
 {
     const uint4 model = spatialModel[0]; // descriptor count, equality count
     if (id.x >= model.x)
@@ -134,6 +138,15 @@ void emit_spatial_equality_rows(uint3 id : SV_DispatchThreadID)
         angularShift = (0.5 * torqueScale) * shift.yzw;
     }
 
+    if (SceneJoint)
+    {
+        // Independent scene bodies may be driven kinematically without a DOF.
+        // Their endpoint motion still enters the error derivative.
+        linearVelocity = a.pointVelocity - b.pointVelocity;
+        angularVelocity = (0.5 * torqueScale) * mulQuat(
+            mulQuat(orientationBInverse, float4(0.0, a.omega - b.omega)), a.orientation).yzw;
+    }
+
     const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
     const float impedancePosition = sqrt(dot(linearError, linearError) + dot(angularError, angularError));
     const float timestep = asfloat(settings[2 + id.y].x);
@@ -153,4 +166,38 @@ void emit_spatial_equality_rows(uint3 id : SV_DispatchThreadID)
                 angularShift[axis], timestep, config.w, parameters.reference.x);
         }
     }
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void emit_spatial_equality_rows(uint3 id : SV_DispatchThreadID)
+{
+    emitSpatialRows<false>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void emit_scene_fixed_joint_rows(uint3 id : SV_DispatchThreadID)
+{
+    emitSpatialRows<true>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void write_scene_kinematic_velocities(uint3 id : SV_DispatchThreadID)
+{
+    const ModelDimensions size = sceneDimensions[0];
+    if (id.x >= size.state.z)
+        return;
+    const BodyModel body = sceneBodies[id.x];
+    const uint mocap = body.hierarchy.w;
+    if (mocap == NoIndex)
+        return;
+    const PrescribedMotion motion = scenePrescribed[id.y * size.layout.y + mocap];
+    if (motion.step != sceneFixedSteps[id.y] + 1u)
+        return;
+    const uint base = id.y * size.state.z;
+    const float3 offset = subtreeCom[base + body.subtree.x].xyz - motion.center;
+    sceneBodyVelocity[base + id.x] = spatial(motion.angular.xyz,
+        motion.linear.xyz + cross(motion.angular.xyz, offset));
 }

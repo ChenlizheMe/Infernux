@@ -18,7 +18,9 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <cmath>
+#include <cstring>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -44,6 +46,86 @@ ModelVector Point(const glm::vec3 &v)
 ModelPose Pose(const glm::vec3 &v, const glm::quat &q)
 {
     return {Point(v), {q.w, q.x, q.y, q.z}};
+}
+
+ModelWords Bits(ModelVector values)
+{
+    ModelWords words;
+    std::memcpy(words.data(), values.data(), sizeof(words));
+    return words;
+}
+
+struct FixedEndpoint
+{
+    uint32_t body = 0;
+    glm::vec3 anchor{0.0f};
+    glm::quat orientation{1.0f, 0.0f, 0.0f, 0.0f};
+    float inverseMass = 0.0f;
+    float inverseInertia = 0.0f;
+};
+
+FixedEndpoint BindFixedEndpoint(const WarpModel &model, const std::vector<WarpSceneActor> &actors, uint32_t actorIndex,
+                                const glm::vec3 &worldAnchor, const glm::quat &worldRotation)
+{
+    if (actorIndex == NoModelIndex)
+        return {0, worldAnchor, worldRotation};
+    const auto &actor = actors.at(actorIndex);
+    const auto inverse = glm::conjugate(actor.rotation);
+    FixedEndpoint endpoint{model.bodyRows[actorIndex], inverse * (worldAnchor - actor.position),
+                           inverse * worldRotation};
+    if (actor.mass) {
+        const auto axes = actor.mass->inverse;
+        endpoint.inverseInertia = (axes.GetX() + axes.GetY() + axes.GetZ()) / 3.0f;
+        const auto offset = endpoint.anchor - Vector(JPH::RVec3(actor.shape->GetCenterOfMass()));
+        endpoint.inverseMass =
+            1.0f / actor.mass->mass + (2.0f / 3.0f) * glm::dot(offset, offset) * endpoint.inverseInertia;
+    }
+    return endpoint;
+}
+
+void BindFixedJoints(WarpModel &model, const std::vector<WarpSceneActor> &actors,
+                     const std::vector<WarpSceneFixedJoint> &joints)
+{
+    constexpr size_t descriptorWords = 9;
+    std::vector<ModelWords> descriptors(1), support;
+    for (const auto &joint : joints) {
+        const auto &owner = actors.at(joint.ownerActor);
+        const auto point = owner.position + owner.rotation * joint.ownerAnchor;
+        const auto a = BindFixedEndpoint(model, actors, joint.ownerActor, point, owner.rotation);
+        const auto b = BindFixedEndpoint(model, actors, joint.connectedActor, point, owner.rotation);
+        if (a.body == b.body)
+            throw std::invalid_argument("Fixed joint must join different Warp bodies");
+        if (a.inverseMass + b.inverseMass == 0.0f)
+            continue;
+
+        const auto first = static_cast<uint32_t>(support.size());
+        for (const auto &[bodyRow, side] : {std::pair{a.body, 1u}, std::pair{b.body, 2u}}) {
+            const auto &dofs = model.bodies[bodyRow].dofs;
+            for (uint32_t local = dofs[1]; local-- > 0;)
+                support.push_back({dofs[0] + local, side, local >= 3 ? bodyRow : NoModelIndex, 0});
+        }
+        const auto id = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
+        descriptors.push_back({id, a.body, b.body, static_cast<uint32_t>(support.size()) - first});
+        descriptors.push_back({a.body, b.body, first, 6});
+        descriptors.push_back(Bits({0.95f, 0.99f, 0.001f, 0.5f}));
+        descriptors.push_back(Bits({0.02f, 1.0f, 2.0f, 0.0f}));
+        descriptors.push_back(Bits({a.anchor.x, a.anchor.y, a.anchor.z, 1.0f}));
+        descriptors.push_back(Bits(Point(b.anchor)));
+        descriptors.push_back(Bits(Pose({}, a.orientation).rotation));
+        descriptors.push_back(Bits(Pose({}, b.orientation).rotation));
+        auto weights = Bits({0.0f, 0.0f, a.inverseMass + b.inverseMass, a.inverseInertia + b.inverseInertia});
+        weights[0] = model.bodies[a.body].subtree[0];
+        weights[1] = model.bodies[b.body].subtree[0];
+        descriptors.push_back(weights);
+    }
+    const auto count = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
+    if (count == 0)
+        return;
+    descriptors[0] = {count, count, 0, 0};
+    for (size_t row = 2; row < descriptors.size(); row += descriptorWords)
+        descriptors[row][2] += static_cast<uint32_t>(descriptors.size());
+    descriptors.insert(descriptors.end(), support.begin(), support.end());
+    model.spatialEqualities = std::move(descriptors);
 }
 
 std::shared_ptr<const WarpConvexHull> CookHull(const JPH::ConvexHullShape &shape)
@@ -190,15 +272,19 @@ std::optional<WarpSceneCapture> CaptureWarpSceneActor(const PhysicsActorData &ac
     return result;
 }
 
-WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors)
+WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors,
+                                   const std::vector<WarpSceneFixedJoint> &fixedJoints)
 {
     WarpSceneModel result;
     std::vector<ModelBodyDefinition> bodies;
     std::vector<ModelGeometryDefinition> geometries;
     std::vector<WarpCollisionGeometry> collision;
     GeometryCache cache;
+    std::vector<uint32_t> firstGeometry;
+    firstGeometry.reserve(actors.size() + 1);
     bodies.reserve(actors.size());
     for (uint32_t index = 0; index < actors.size(); ++index) {
+        firstGeometry.push_back(static_cast<uint32_t>(geometries.size()));
         const auto &actor = actors[index];
         const auto center = Vector(JPH::RVec3(actor.shape->GetCenterOfMass()));
         ModelBodyDefinition body{};
@@ -235,8 +321,19 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors)
             result.geometries.push_back({surface, shape.subShape});
         }
     }
+    firstGeometry.push_back(static_cast<uint32_t>(geometries.size()));
     result.model = BuildWarpModel(bodies, geometries);
-    result.collision = BuildWarpCollisionModel(result.model, collision, {});
+    BindFixedJoints(result.model, actors, fixedJoints);
+    std::set<std::pair<uint32_t, uint32_t>> ignored;
+    for (const auto &joint : fixedJoints)
+        if (!joint.enableCollision && joint.connectedActor != NoModelIndex)
+            ignored.emplace(std::minmax(joint.ownerActor, joint.connectedActor));
+    std::vector<WarpCollisionPair> pairs;
+    for (const auto &[a, b] : ignored)
+        for (uint32_t first = firstGeometry[a]; first < firstGeometry[a + 1]; ++first)
+            for (uint32_t second = firstGeometry[b]; second < firstGeometry[b + 1]; ++second)
+                pairs.push_back({first, second, {}, -1, true});
+    result.collision = BuildWarpCollisionModel(result.model, collision, std::move(pairs));
     result.bodies.reserve(actors.size());
     auto &initial = result.model.initialVelocities;
     initial.resize(result.model.dofs.size());

@@ -56,6 +56,14 @@ struct WarpSceneGeometryBinding
     uint32_t subShape;
 };
 
+struct WarpSceneFixedJoint
+{
+    uint32_t ownerActor;
+    uint32_t connectedActor = NoModelIndex;
+    glm::vec3 ownerAnchor{0.0f}; // Baked offset from the owner transform origin, in body axes.
+    bool enableCollision = false;
+};
+
 struct WarpSceneModel
 {
     WarpModel model;
@@ -68,6 +76,7 @@ struct WarpSceneModel
 [[nodiscard]] std::optional<WarpSceneCapture> CaptureWarpSceneActor(const PhysicsActorData &actor);
 
 /// Translate one authored topology. The result owns no scene objects or Jolt shapes.
-[[nodiscard]] WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors);
+[[nodiscard]] WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors,
+                                                 const std::vector<WarpSceneFixedJoint> &fixedJoints = {});
 
 } // namespace infernux::physics::warp
