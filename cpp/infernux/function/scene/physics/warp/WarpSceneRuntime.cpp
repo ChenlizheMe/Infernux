@@ -16,7 +16,7 @@ struct WarpSceneLayout
 {
     struct World
     {
-        uint64_t id;
+        ContactStreamIdentity initial;
         std::vector<WarpRegisteredBody> bodies; // Device row, including world row zero.
         std::unordered_map<uint32_t, uint32_t> rows;
         std::unordered_map<uint64_t, uint32_t> hinges;
@@ -103,7 +103,8 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
     for (auto &source : worlds) {
         if (source.bodies.size() != scene.bodies.size() || !ids.insert(source.worldId).second)
             throw std::invalid_argument("Warp scene world does not match its shared model");
-        WarpSceneLayout::World world{source.worldId, std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
+        WarpSceneLayout::World world{
+            {source.worldId, source.simulationEpoch, 0}, std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
         world.rows.reserve(source.bodies.size());
         for (size_t index = 0; index < source.bodies.size(); ++index) {
             auto &binding = source.bodies[index];
@@ -147,6 +148,11 @@ std::optional<uint32_t> WarpSceneRuntime::BodyRow(uint32_t world, uint32_t engin
     return m_layout->worlds.at(world).BodyRow(engineBody);
 }
 
+std::optional<WarpFixedPublication> WarpSceneRuntime::TakeInitial()
+{
+    return std::exchange(m_initialPublication, std::nullopt);
+}
+
 void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands,
                                   bool host, bool captureContacts, std::vector<WarpSceneDriveUpdate> drives,
                                   FixedConsumer consumer)
@@ -159,12 +165,13 @@ void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
     if (identities.size() != worlds.size())
         throw std::invalid_argument("Warp fixed step requires an identity per world");
     for (size_t world = 0; world < identities.size(); ++world)
-        if (identities[world].worldId != worlds[world].id)
+        if (identities[world].worldId != worlds[world].initial.worldId)
             throw std::invalid_argument("Warp fixed step identities must follow the enrolled world order");
     std::vector<WarpHingeDriveUpdate> updates;
     updates.reserve(drives.size());
     for (const auto &update : drives)
         updates.push_back({update.world, worlds.at(update.world).hinges.at(update.jointId), update.drive.Pack()});
+    m_initialPublication.reset();
     m_fixed.emplace(Fixed{std::move(identities), std::move(commands), std::move(updates), host, captureContacts,
                           std::move(consumer)});
     ++m_generation;
@@ -309,9 +316,16 @@ void WarpSceneRuntime::Finish()
         return;
     }
     const auto packet = std::exchange(m_packet, {});
-    if (m_retiring || kind == Packet::Initialize)
+    if (m_retiring)
         return;
-    if (kind == Packet::Fixed)
+    if (kind == Packet::Initialize) {
+        if (!m_fixed) {
+            auto result = CapturePublication(*packet);
+            for (const auto &world : m_layout->worlds)
+                result.worlds.push_back({world.initial, 0.0f, 0, 0});
+            m_initialPublication.emplace(std::move(result));
+        }
+    } else if (kind == Packet::Fixed)
         FinishFixed(*packet);
     else if (kind == Packet::Reports)
         FinishReports(*packet);
@@ -321,17 +335,24 @@ void WarpSceneRuntime::Finish()
     }
 }
 
-void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
+WarpFixedPublication WarpSceneRuntime::CapturePublication(const rhi::PreparedComputeBatch &packet) const
 {
-    auto readback = packet.Readback(0);
-    (void)readback->IsComplete(); // The enclosing packet receipt is already complete.
-    const auto data = readback->GetData();
     WarpFixedPublication result;
     result.m_layout = m_layout;
     result.submission = packet.GetSubmission();
     result.bodyStates = m_step->BodyStates()->Freeze();
     result.bodiesPerWorld = m_bodyCount;
     result.substeps = m_step->Substeps();
+    result.worlds.reserve(m_layout->worlds.size());
+    return result;
+}
+
+void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
+{
+    auto readback = packet.Readback(0);
+    (void)readback->IsComplete(); // The enclosing packet receipt is already complete.
+    const auto data = readback->GetData();
+    auto result = CapturePublication(packet);
     const auto worldCount = m_layout->worlds.size();
     size_t offset = 0;
     if (m_fixed->host) {
@@ -339,7 +360,6 @@ void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
         offset = result.hostBodies.size() * sizeof(WarpBodyState);
         std::memcpy(result.hostBodies.data(), data.data(), offset);
     }
-    result.worlds.reserve(worldCount);
     for (const auto &identity : m_fixed->identities) {
         ModelWords header;
         std::memcpy(header.data(), data.data() + offset, sizeof(header));
@@ -427,6 +447,7 @@ void WarpSceneRuntime::Retire() noexcept
 {
     m_retiring = true;
     m_fixed.reset();
+    m_initialPublication.reset();
     m_publication.reset();
     m_pendingPublication.reset();
     if (m_packet && !m_packet->GetSubmission().IsValid()) {

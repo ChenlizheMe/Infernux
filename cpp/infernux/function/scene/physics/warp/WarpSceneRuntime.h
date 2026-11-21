@@ -38,6 +38,7 @@ struct WarpRegisteredWorld
     uint64_t worldId;
     std::vector<WarpRegisteredBody> bodies; // Scene model author order.
     std::vector<WarpRegisteredHinge> hinges{};
+    uint64_t simulationEpoch = 0;
 };
 
 struct WarpSceneDriveUpdate
@@ -120,6 +121,10 @@ class WarpSceneRuntime final
     }
     [[nodiscard]] std::optional<uint32_t> BodyRow(uint32_t world, uint32_t engineBody) const;
 
+    /// Take the initialized poses before admitting the first fixed step.
+    /// The startup receipt has fixed index zero and requires no readback.
+    [[nodiscard]] std::optional<WarpFixedPublication> TakeInitial();
+
     using FixedConsumer =
         std::function<std::shared_ptr<rhi::PreparedComputeBatch>(const WarpFixedPublication &completed)>;
 
@@ -175,6 +180,7 @@ class WarpSceneRuntime final
     void Observe();
     bool Submit();
     void Finish();
+    [[nodiscard]] WarpFixedPublication CapturePublication(const rhi::PreparedComputeBatch &packet) const;
     void FinishFixed(const rhi::PreparedComputeBatch &packet);
     void FinishReports(const rhi::PreparedComputeBatch &packet);
     void PrepareConsumer(WarpFixedPublication publication);
@@ -190,6 +196,7 @@ class WarpSceneRuntime final
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;
     std::optional<Receipt> m_receipt;
     std::optional<Fixed> m_fixed;
+    std::optional<WarpFixedPublication> m_initialPublication;
     std::optional<WarpFixedPublication> m_pendingPublication;
     std::optional<WarpFixedPublication> m_publication;
     uint64_t m_generation = 1;

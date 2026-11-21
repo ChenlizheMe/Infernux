@@ -1224,27 +1224,20 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                                    {12, prescribed, RW}})
                      : b.Dispatch("body_controls", "finish_body_commands", bodyCommandCapacity,
                                   {{0, dimensions, R}, {1, bodies, R}, {2, joints, R}, {3, spans, R}, {8, force, RW}});
-        if (branches != 0)
+        if (branches != 0) {
             bodyPublication.push_back(b.dispatches[kinematicsPass]);
-        bodyPublication.push_back(response ? b.Dispatch("body_controls", "publish_contact_body_states", nb,
-                                                        {{0, dimensions, R},
-                                                         {1, bodies, R},
-                                                         {6, velocities, R},
-                                                         {9, clocks, R},
-                                                         {10, response->status, R},
-                                                         {12, prescribed, R},
-                                                         {13, pose, R},
-                                                         {14, states, W, true},
-                                                         {15, fixedSteps, R}})
-                                           : b.Dispatch("body_controls", "publish_body_states", nb,
-                                                        {{0, dimensions, R},
-                                                         {1, bodies, R},
-                                                         {6, velocities, R},
-                                                         {9, clocks, R},
-                                                         {12, prescribed, R},
-                                                         {13, pose, R},
-                                                         {14, states, W, true},
-                                                         {15, fixedSteps, R}}));
+            b.initialize.push_back(bodyPublication.back());
+        }
+        std::vector<Use> stateBindings{{0, dimensions, R},  {1, bodies, R}, {6, velocities, R},    {9, clocks, R},
+                                       {12, prescribed, R}, {13, pose, R},  {14, states, W, true}, {15, fixedSteps, R}};
+        auto initialState = b.Bind("body_controls", "publish_body_states", nb, stateBindings);
+        b.initialize.push_back(initialState);
+        if (response) {
+            stateBindings.insert(stateBindings.begin() + 4, {10, response->status, R});
+            bodyPublication.push_back(b.Bind("body_controls", "publish_contact_body_states", nb, stateBindings));
+        } else {
+            bodyPublication.push_back(std::move(initialState));
+        }
     }
 
     const auto snapshotSlot =
