@@ -75,10 +75,11 @@ struct InxPhyGpuSceneBodyCommand
 
 struct InxPhyGpuFixedWorld
 {
-    ContactStreamIdentity identity;
+    ContactStreamIdentity identity; // Identity of the state in bodyStates, even when the attempted step was rejected.
     float time;
     uint32_t status;
     uint32_t acceptedStep;
+    uint64_t attemptedFixedStepIndex = 0; // The request that produced status.
 };
 
 struct InxPhyGpuFixedPublication
@@ -205,6 +206,8 @@ class InxPhyGpuSceneRuntime final
     /// Joint edits change authored settings at this boundary and remain in
     /// effect until changed again. They do not rewind with simulated motion.
     /// A required consumer prepares device work after the numerical receipt.
+    /// In a mixed result it prepares work for the accepted worlds (status zero).
+    /// A fully rejected batch remains available through TakePublication.
     /// The whole fixed publication becomes available once that work completes.
     /// This source performs admission and submission, then seals the consumer's
     /// outputs after its receipt and before releasing the fixed publication.

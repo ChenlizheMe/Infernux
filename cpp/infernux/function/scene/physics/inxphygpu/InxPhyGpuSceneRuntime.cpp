@@ -107,7 +107,7 @@ std::optional<uint32_t> InxPhyGpuFixedPublication::FindAcceptedWorld(ContactStre
     if (found == m_layout->worldRows.end())
         return std::nullopt;
     const auto &world = worlds[found->second];
-    if (world.status != 0 || world.identity.simulationEpoch != identity.simulationEpoch ||
+    if (world.identity.simulationEpoch != identity.simulationEpoch ||
         world.identity.fixedStepIndex != identity.fixedStepIndex)
         return std::nullopt;
     return found->second;
@@ -123,8 +123,7 @@ std::optional<InxPhyGpuSceneJointReference> InxPhyGpuFixedPublication::FindJoint
 
 PhysicsGpuPoseSource InxPhyGpuFixedPublication::PoseSource(uint32_t world) const
 {
-    if (worlds.at(world).status != 0)
-        throw std::logic_error("Cannot publish the pose of a rejected inxphygpu fixed step");
+    (void)worlds.at(world);
     return {bodyStates, uint64_t{world} * bodiesPerWorld, bodiesPerWorld, sizeof(InxPhyGpuBodyState),
             PhysicsGpuPoseSource::Layout::OriginWXYZ};
 }
@@ -132,9 +131,7 @@ PhysicsGpuPoseSource InxPhyGpuFixedPublication::PoseSource(uint32_t world) const
 std::optional<PhysicsGpuBodyPoseBinding>
 InxPhyGpuFixedPublication::FindPoseBody(uint32_t world, PhysicsActorHandle actor, uint32_t bodyId) const
 {
-    if (worlds.at(world).status != 0)
-        return std::nullopt;
-    const auto &layout = m_layout->worlds[world];
+    const auto &layout = m_layout->worlds.at(world);
     const auto row = layout.BodyRow(bodyId);
     if (!row || layout.bodies[*row].actor != actor)
         return std::nullopt;
@@ -354,13 +351,13 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
             const auto &prior = previous->worlds[old->second];
             if (prior.identity.simulationEpoch != accepted.identity.simulationEpoch)
                 continue;
-            if (prior.status != 0)
-                throw std::invalid_argument("inxphygpu topology handoff requires an accepted fixed publication");
             if (!handoff.states) {
                 handoff.states = previous->bodyStates;
                 handoff.addresses.resize(uint64_t{m_bodyCount} * worlds.size(), NoModelIndex);
             }
             accepted = prior;
+            accepted.status = 0;
+            accepted.attemptedFixedStepIndex = 0;
             const uint64_t first = next * uint64_t{m_bodyCount};
             handoff.addresses[first] = static_cast<uint32_t>(header + old->second);
             const auto &oldWorld = previous->m_layout->worlds[old->second];
@@ -1005,13 +1002,17 @@ void InxPhyGpuSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
         offset = result.hostBodies.size() * sizeof(InxPhyGpuBodyState);
         std::memcpy(result.hostBodies.data(), data.data(), offset);
     }
-    for (const auto &identity : m_operation->identities) {
+    for (size_t world = 0; world < worldCount; ++world) {
+        const auto &identity = m_operation->identities[world];
         ModelWords header;
         std::memcpy(header.data(), data.data() + offset, sizeof(header));
         offset += sizeof(header);
         float time;
         std::memcpy(&time, header.data(), sizeof(time));
-        result.worlds.push_back({identity, time, header[1], header[2]});
+        // Rejected rows carry the state restored by the device rollback. Give that
+        // state its accepted identity and keep the attempted index for diagnostics.
+        const auto &accepted = header[1] == 0 ? identity : m_acceptedWorlds[world].identity;
+        result.worlds.push_back({accepted, time, header[1], header[2], identity.fixedStepIndex});
     }
     if (m_operation->captureContacts) {
         result.contacts.resize(worldCount * result.substeps);
@@ -1073,7 +1074,11 @@ void InxPhyGpuSceneRuntime::PrepareConsumer(InxPhyGpuFixedPublication publicatio
         RetainWrenches(publication, std::move(m_operation->pendingWrenchRows));
         publication.m_kinematicTargets = std::move(m_operation->kinematicTargets);
     }
-    auto work = m_operation->consumer ? m_operation->consumer(publication) : PublicationWork{};
+    PublicationWork work;
+    if (m_operation->consumer &&
+        (!m_operation->integrate || std::any_of(publication.worlds.begin(), publication.worlds.end(),
+                                                [](const auto &world) { return world.status == 0; })))
+        work = m_operation->consumer(publication);
     if (work.packet) {
         m_packet = std::move(work.packet);
         m_sealConsumer = std::move(work.seal);
