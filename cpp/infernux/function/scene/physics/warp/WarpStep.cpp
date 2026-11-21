@@ -1275,6 +1275,10 @@ WarpStep::PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPubli
     std::vector<rhi::ComputeBufferRead> reads;
     if (publication == WarpBodyPublication::Cpu)
         reads.push_back({m_controls.states, 0, m_controls.states->GetByteSize()});
+    if (publication == WarpBodyPublication::Status) {
+        const auto headers = sizeof(ModelWords) * uint64_t{m_controls.worlds};
+        reads.push_back({m_controls.states, m_controls.states->GetByteSize() - headers, headers});
+    }
     auto host = m_work->GetRecipe().GetHost();
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
 }

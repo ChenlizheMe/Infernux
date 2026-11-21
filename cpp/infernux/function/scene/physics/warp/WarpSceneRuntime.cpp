@@ -1,0 +1,261 @@
+// SPDX-FileCopyrightText: 2026 Infernux contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#include "WarpSceneRuntime.h"
+#include "WarpSceneModel.h"
+
+#include <algorithm>
+#include <cstring>
+#include <stdexcept>
+#include <unordered_set>
+
+namespace infernux::physics::warp
+{
+
+WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target,
+                                   const WarpSceneModel &scene, std::vector<WarpRegisteredWorld> worlds, float timestep,
+                                   const ModelVector &gravity, WarpCollisionCapacity collisionCapacity,
+                                   const WarpContactSolver &solver, uint32_t commandCapacity)
+    : m_work(work), m_host(host), m_bodyCount(scene.model.dimensions.state[2])
+{
+    if (worlds.empty() || commandCapacity == 0)
+        throw std::invalid_argument("Warp scene requires worlds and a body command capacity");
+    m_worlds.reserve(worlds.size());
+    std::unordered_set<uint64_t> ids;
+    for (const auto &source : worlds) {
+        if (source.bodies.size() != scene.bodies.size() || !ids.insert(source.worldId).second)
+            throw std::invalid_argument("Warp scene world does not match its shared model");
+        World world{source.worldId, std::vector<WarpRegisteredBody>(m_bodyCount), {}};
+        world.rows.reserve(source.bodies.size());
+        for (size_t index = 0; index < source.bodies.size(); ++index) {
+            const auto &binding = source.bodies[index];
+            const auto row = scene.bodies[index].bodyRow;
+            if (binding.bodyId == UINT32_MAX || !world.rows.emplace(binding.bodyId, row).second)
+                throw std::invalid_argument("Duplicate or invalid Warp scene body identity");
+            world.bodies[row] = binding;
+        }
+        m_worlds.push_back(std::move(world));
+    }
+    auto prepared = WarpStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_worlds.size()), timestep,
+                                    gravity, &scene.collision, collisionCapacity, &solver, {}, commandCapacity);
+    if (!prepared.step)
+        throw std::runtime_error("Could not allocate the Warp scene world layout");
+    m_step = std::move(prepared.step);
+    m_packet = std::move(prepared.initialize);
+    const auto observe = [this] { Observe(); };
+    m_source = m_work.AddSource({observe, observe, [this] { return Describe(); },
+                                 [this](bool gpu, uint64_t token) { return Advance(gpu, token); }});
+}
+
+WarpSceneRuntime::~WarpSceneRuntime()
+{
+    Retire();
+    m_work.RemoveSource(m_source);
+}
+
+std::optional<uint32_t> WarpSceneRuntime::BodyRow(uint32_t world, uint32_t engineBody) const
+{
+    const auto &rows = m_worlds.at(world).rows;
+    const auto found = rows.find(engineBody);
+    return found == rows.end() ? std::nullopt : std::make_optional(found->second);
+}
+
+void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities, std::vector<WarpBodyCommand> commands,
+                                  bool host)
+{
+    if (m_retiring || m_fixed || m_publication)
+        throw std::logic_error("Warp scene still owns a fixed step");
+    if (identities.size() != m_worlds.size())
+        throw std::invalid_argument("Warp fixed step requires an identity per world");
+    for (size_t world = 0; world < identities.size(); ++world)
+        if (identities[world].worldId != m_worlds[world].id)
+            throw std::invalid_argument("Warp fixed step identities must follow the enrolled world order");
+    m_fixed.emplace(Fixed{std::move(identities), std::move(commands), host});
+    ++m_generation;
+    m_work.Wake(m_source);
+}
+
+std::optional<WarpFixedPublication> WarpSceneRuntime::TakeFixed()
+{
+    return std::exchange(m_publication, std::nullopt);
+}
+
+std::optional<WarpHostBody> WarpSceneRuntime::ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
+                                                           uint32_t engineBody) const
+{
+    const auto row = BodyRow(world, engineBody);
+    const auto &identity = publication.worlds.at(world).identity;
+    if (!row || publication.hostBodies.empty() || identity.worldId != m_worlds[world].id)
+        return std::nullopt;
+    const auto &raw = publication.hostBodies.at(uint64_t{world} * m_bodyCount + *row);
+    const auto vector = [](const ModelVector &v) { return glm::vec3(v[0], v[1], v[2]); };
+    const auto &q = raw.pose.rotation;
+    return WarpHostBody{{engineBody, vector(raw.pose.position), glm::quat(q[0], q[1], q[2], q[3])},
+                        m_worlds[world].bodies[*row].shapeRevision,
+                        vector(raw.centerOfMass),
+                        vector(raw.linearVelocity),
+                        vector(raw.angularVelocity)};
+}
+
+FrameWorkFacts WarpSceneRuntime::Describe() const
+{
+    FrameWorkFacts facts;
+    facts.pending = m_fixed || m_packet || m_receipt;
+    facts.observe = m_receipt.has_value();
+    if (m_receipt) {
+        facts.gpuBusy = !m_receipt->ready;
+        facts.host = {m_generation, 0, m_receipt->ready, false};
+    } else if (m_packet && (m_preservation || !(m_packet->RequiresPreparation() || m_packet->HasPreservationWork()))) {
+        facts.gpu = {m_generation, 0, true, static_cast<bool>(m_fixed)};
+    } else if (facts.pending) {
+        facts.host = {m_generation, 0, true, false};
+    }
+    return facts;
+}
+
+bool WarpSceneRuntime::Advance(bool gpu, uint64_t token)
+{
+    if (token != m_generation)
+        return false;
+    if (gpu)
+        return Submit();
+    if (m_receipt) {
+        if (!m_receipt->ready)
+            return false;
+        Finish();
+    } else if (m_packet) {
+        const auto bytes = std::max(uint64_t{4}, m_work.ResourceRemaining(FrameWorkResource::Transfer));
+        auto prepared = m_packet->PreparePreservation(bytes, true);
+        if (!prepared.ready)
+            return false;
+        m_preservation = std::move(prepared.copy);
+    } else {
+        const auto output = m_fixed->host ? WarpBodyPublication::Cpu : WarpBodyPublication::Status;
+        m_packet = m_step->PrepareControlled(m_fixed->commands, output);
+        m_fixed->commands.clear();
+    }
+    ++m_generation;
+    return true;
+}
+
+bool WarpSceneRuntime::Submit()
+{
+    const auto &packet = m_preservation ? m_preservation : m_packet;
+    const auto kind = m_preservation ? Packet::Preserve : (m_initialized ? Packet::Fixed : Packet::Initialize);
+    const auto bytes = packet->GetTransferBytes();
+    const auto dispatches = packet->GetExecutionSignature().front();
+    const auto prediction = kind == Packet::Fixed && m_fixedGpuNanoseconds != 0
+                                ? m_fixedGpuNanoseconds
+                                : 4'000 * std::max(uint64_t{1}, dispatches);
+    if (!m_work.CanAdmitResource(FrameWorkResource::Gpu, prediction, true) ||
+        (bytes != 0 && !m_work.CanAdmitResource(FrameWorkResource::Transfer, bytes, true)) || !packet->TrySubmit())
+        return false;
+    m_receipt.emplace(Receipt{packet->GetCompletion(), kind, m_work.Opportunity(),
+                              m_work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
+                              bytes == 0 ? 0 : m_work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes),
+                              bytes});
+    ++m_generation;
+    return true;
+}
+
+void WarpSceneRuntime::Observe()
+{
+    if (m_receipt && !m_receipt->ready && m_receipt->completion.IsComplete()) {
+        m_receipt->ready = true;
+        ++m_generation;
+        m_work.ReportProgress();
+    }
+}
+
+void WarpSceneRuntime::Finish()
+{
+    const auto kind = m_receipt->kind;
+    if (const auto measured = m_receipt->completion.GetDeviceElapsedNanoseconds()) {
+        const auto nanos = static_cast<uint64_t>(*measured);
+        m_work.ObserveResource(FrameWorkResource::Gpu, nanos, m_receipt->opportunity, m_receipt->gpuGrant);
+        if (kind == Packet::Fixed)
+            m_fixedGpuNanoseconds = nanos;
+    }
+    if (m_receipt->transferBytes != 0)
+        m_work.ObserveResource(FrameWorkResource::Transfer, m_receipt->transferBytes, m_receipt->opportunity,
+                               m_receipt->transferGrant);
+    m_receipt.reset();
+    if (kind == Packet::Preserve) {
+        m_preservation.reset();
+        return;
+    }
+    if (kind == Packet::Initialize)
+        m_initialized = true;
+    else if (!m_retiring)
+        PublishFixed();
+    m_packet.reset();
+}
+
+void WarpSceneRuntime::PublishFixed()
+{
+    auto readback = m_packet->Readback(0);
+    (void)readback->IsComplete(); // The enclosing packet receipt is already complete.
+    const auto data = readback->GetData();
+    WarpFixedPublication result;
+    result.submission = m_packet->GetSubmission();
+    result.bodyStates = m_step->BodyStates()->Freeze();
+    size_t offset = 0;
+    if (m_fixed->host) {
+        result.hostBodies.resize(uint64_t{m_bodyCount} * m_worlds.size());
+        offset = result.hostBodies.size() * sizeof(WarpBodyState);
+        std::memcpy(result.hostBodies.data(), data.data(), offset);
+    }
+    result.worlds.reserve(m_worlds.size());
+    for (const auto &identity : m_fixed->identities) {
+        ModelWords header;
+        std::memcpy(header.data(), data.data() + offset, sizeof(header));
+        offset += sizeof(header);
+        float time;
+        std::memcpy(&time, header.data(), sizeof(time));
+        result.worlds.push_back({identity, time, header[1], header[2]});
+    }
+    m_fixed.reset();
+    m_publication.emplace(std::move(result));
+}
+
+FrameWorkWaitResult WarpSceneRuntime::WaitForProgress(uint64_t nanoseconds)
+{
+    if (m_receipt) {
+        if (m_receipt->ready)
+            return FrameWorkWaitResult::Progress;
+        return m_host.Queue().WaitFor(m_receipt->completion.GetSubmission(), nanoseconds)
+                   ? FrameWorkWaitResult::Progress
+                   : FrameWorkWaitResult::Waiting;
+    }
+    if (m_packet && m_packet->RequiresPreparation())
+        if (const auto moved = m_packet->WaitForPreparation(nanoseconds))
+            return *moved ? FrameWorkWaitResult::Progress : FrameWorkWaitResult::Waiting;
+    const auto ticket = m_host.Queue().GetCapacityPredecessor();
+    if (ticket.IsValid())
+        return m_host.Queue().WaitFor(ticket, nanoseconds) ? FrameWorkWaitResult::Progress
+                                                           : FrameWorkWaitResult::Waiting;
+    return FrameWorkWaitResult::Blocked;
+}
+
+void WarpSceneRuntime::Retire() noexcept
+{
+    m_retiring = true;
+    m_fixed.reset();
+    m_publication.reset();
+    if (m_packet && !m_packet->GetSubmission().IsValid()) {
+        m_packet->Cancel();
+        m_packet.reset();
+    }
+    if (m_preservation && !m_preservation->GetSubmission().IsValid()) {
+        m_preservation->Cancel();
+        m_preservation.reset();
+    }
+    ++m_generation;
+}
+
+bool WarpSceneRuntime::CanRetire() const noexcept
+{
+    return !m_packet && !m_preservation && !m_receipt;
+}
+
+} // namespace infernux::physics::warp

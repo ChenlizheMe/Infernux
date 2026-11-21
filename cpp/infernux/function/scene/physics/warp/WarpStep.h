@@ -106,6 +106,7 @@ enum class WarpBodyPublication
     None,
     Device,
     Cpu,
+    Status, // Keep body rows device-resident and read only the per-world headers.
 };
 
 struct WarpBodyState
