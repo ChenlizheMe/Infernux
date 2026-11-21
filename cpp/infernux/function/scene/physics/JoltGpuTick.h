@@ -1,6 +1,7 @@
 #pragma once
 
 #include "JoltGpuBodyCommands.h"
+#include "PhysicsBodyCommand.h"
 #include <core/threading/FrameWorkOwner.h>
 
 #include <functional>
@@ -82,6 +83,12 @@ inline JoltGpuControlWork ContinueJoltGpuControlWork(JoltGpuControlWork work, st
 /// null result; it must not throw, allocate, perform IO or submit GPU work.
 struct JoltGpuControlGroup
 {
+    struct ModelTransition
+    {
+        uint32_t bodyId, kind, flags;
+    };
+    // Retain scene identity and units until the accepted author layout is known.
+    using Command = std::variant<PhysicsBodyCommand, ModelTransition>;
     std::function<std::unique_ptr<JoltGpuModelUpdate>()> prepareModel;
     // Explicit null-capacity result, distinct from a metadata-only acceptance.
     std::function<bool()> modelDeferred;
@@ -90,8 +97,8 @@ struct JoltGpuControlGroup
     // This cold layout's private joint copies must observe converted histories.
     std::function<void()> retireJointRuntime;
     std::function<void()> modelAccepted;
-    std::vector<JPH::GPU::BodyCommand> commands;
-    std::function<std::unique_ptr<JoltGpuCommandCursor>(std::vector<JPH::GPU::BodyCommand>)> prepareCommands;
+    std::vector<Command> commands;
+    std::function<std::unique_ptr<JoltGpuCommandCursor>(std::vector<Command>)> prepareCommands;
     /// Prepare once, after this group's model and commands are accepted. Its
     /// packet and completion-dependent successors share this source's admission
     /// and receipts. The group advances only after the chain's final acceptance.
@@ -196,7 +203,6 @@ struct JoltGpuTickControl
     JoltGpuTickControl &operator=(const JoltGpuTickControl &) = delete;
     std::shared_ptr<rhi::PreparedComputeBatch> initialization;
     // Required when any group has commands; must outlive control acceptance.
-    JoltGpuBodyCommands *commandProgram = nullptr;
     std::vector<JoltGpuControlGroup> groups;
     std::shared_ptr<JoltGpuColliderPairCapture> colliderPairs;
     std::shared_ptr<JoltGpuArticulationCapture> articulations;

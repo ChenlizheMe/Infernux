@@ -103,9 +103,9 @@ class JoltGpuTick::Impl
             throw std::logic_error("GPU tick Begin requires an idle or fully completed owner");
         if (settings && (!std::isfinite(deltaTime) || deltaTime <= 0))
             throw std::invalid_argument("GPU fixed delta time must be finite and positive");
-        if (!pendingControl.commandProgram && std::any_of(pendingControl.groups.begin(), pendingControl.groups.end(),
-                                                          [](const auto &group) { return !group.commands.empty(); }))
-            throw std::invalid_argument("GPU tick commands require their command program");
+        if (std::any_of(pendingControl.groups.begin(), pendingControl.groups.end(),
+                        [](const auto &group) { return !group.commands.empty() && !group.prepareCommands; }))
+            throw std::invalid_argument("GPU tick commands require an accepted-layout encoder");
         ValidateControlPacket(pendingControl.initialization);
         if (!settings && this == lane->members[0])
             lane->bodyBatchInputs = {};
@@ -1529,7 +1529,6 @@ class JoltGpuTick::Impl
         }
         if (!control.initialization && groupCursor == control.groups.size()) {
             control.groups.clear();
-            control.commandProgram = nullptr;
             CaptureControlInputs();
         }
     }
@@ -2011,9 +2010,7 @@ class JoltGpuTick::Impl
                     return true;
                 }
                 if (!commandCursor && !group.commands.empty()) {
-                    commandCursor = group.prepareCommands
-                                        ? group.prepareCommands(std::move(group.commands))
-                                        : control.commandProgram->Prepare(storage, std::move(group.commands));
+                    commandCursor = group.prepareCommands(std::move(group.commands));
                     group.prepareCommands = {};
                     group.commands.clear();
                 }
@@ -2615,7 +2612,7 @@ bool JoltGpuTick::Impl::Lane::PrepareShared()
     };
     constexpr uint32_t tileWidth = 64;
     const uint32_t maxTiles = JPH::GPU::WorkItemLimit(JPH::GPU::Domain::Bodies) / tileWidth;
-    const auto tilesFor = [](uint32_t count) { return count / tileWidth + uint32_t(count % tileWidth != 0); };
+    const auto tilesFor = [width = tileWidth](uint32_t count) { return count / width + uint32_t(count % width != 0); };
     std::vector<std::pair<Impl *, uint32_t>> readyUnits;
     uint32_t totalTiles = 0;
     for (size_t offset = 0; offset < members.size() && readyUnits.size() < maxTiles; ++offset) {

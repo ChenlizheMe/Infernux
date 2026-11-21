@@ -55,6 +55,53 @@ bool FiniteVector(const Float4 &value)
     return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z) && value.w == 0;
 }
 
+void AppendDeviceCommands(const PhysicsBodyCommand &command, std::vector<BodyCommand> &out)
+{
+    const auto vector = [](const glm::vec3 &v) -> Float4 { return {v.x, v.y, v.z, 0}; };
+    const auto rotation = [](const glm::quat &q) -> Float4 { return {q.x, q.y, q.z, q.w}; };
+    const auto append = [&](uint32_t kind, uint32_t flags, Float4 value = {}, Float4 auxiliary = {}) -> BodyCommand & {
+        auto &packet = out.emplace_back();
+        packet.meta = {command.bodyId, kind, flags, 0};
+        packet.value = value;
+        packet.auxiliary = auxiliary;
+        return packet;
+    };
+    if (const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation)) {
+        const auto flags = pose->cancelDrive ? 0u : CommandPreserveKinematicMove;
+        if (pose->position && pose->rotation)
+            append(CommandSetPose, flags, vector(*pose->position), rotation(*pose->rotation));
+        else if (pose->position)
+            append(CommandSetPosition, flags, vector(*pose->position));
+        else if (pose->rotation)
+            append(CommandSetRotation, flags, {}, rotation(*pose->rotation));
+    } else if (const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation)) {
+        if (velocity->linear)
+            append(CommandSetLinearVelocity, 0, vector(*velocity->linear));
+        if (velocity->angular)
+            append(CommandSetAngularVelocity, 0, vector(*velocity->angular));
+    } else if (const auto *force = std::get_if<PhysicsBodyCommand::Force>(&command.operation)) {
+        constexpr std::array<uint32_t, 3> kinds{CommandAddForce, CommandAddTorque, CommandAddForceAtPosition};
+        append(kinds[static_cast<size_t>(force->kind)], static_cast<uint32_t>(force->mode), vector(force->value),
+               vector(force->point));
+    } else if (const auto *move = std::get_if<PhysicsBodyCommand::KinematicMove>(&command.operation)) {
+        const auto kind =
+            move->position ? (move->rotation ? CommandMovePose : CommandMovePosition) : CommandMoveRotation;
+        const auto flags = move->temporaryStatic ? CommandTemporaryStatic : 0u;
+        auto &packet = append(kind, flags, move->position ? vector(*move->position) : Float4{},
+                              move->rotation ? rotation(*move->rotation) : Float4{});
+        packet.value.w = move->duration;
+        packet.rootCOM.w = move->maxSpeed;
+    } else if (const auto *activity = std::get_if<PhysicsBodyCommand::Activity>(&command.operation)) {
+        append(activity->awake ? CommandWake : CommandSleep, 0);
+    } else {
+        const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
+        append(CommandResetMotion, 0);
+        append(CommandSetPose, 0, vector(reset.position), rotation(reset.rotation));
+        append(CommandSetLinearVelocity, 0, vector(reset.linear));
+        append(CommandSetAngularVelocity, 0, vector(reset.angular));
+    }
+}
+
 } // namespace
 
 class JoltGpuScene::Impl
@@ -248,6 +295,47 @@ class JoltGpuScene::Impl
     }
     std::vector<JoltGpuControlGroup> TakeControlGroups(Partition &domain)
     {
+        for (auto &group : domain.pending) {
+            if (group.commands.empty())
+                continue;
+            const bool poses = std::any_of(group.commands.begin(), group.commands.end(), [](const auto &command) {
+                const auto *body = std::get_if<PhysicsBodyCommand>(&command);
+                return body && (std::holds_alternative<PhysicsBodyCommand::Pose>(body->operation) ||
+                                std::holds_alternative<PhysicsBodyCommand::ResetMotion>(body->operation));
+            });
+            group.prepareCommands = [this, &domain, validation = poses ? PendingBoundsValidation(domain) : nullptr](
+                                        std::vector<JoltGpuControlGroup::Command> commandsToEncode) {
+                std::vector<BodyCommand> values;
+                values.reserve(commandsToEncode.size());
+                for (const auto &command : commandsToEncode) {
+                    if (const auto *authored = std::get_if<PhysicsBodyCommand>(&command))
+                        AppendDeviceCommands(*authored, values);
+                    else {
+                        const auto &transition = std::get<JoltGpuControlGroup::ModelTransition>(command);
+                        values.emplace_back().meta = {transition.bodyId, transition.kind, transition.flags, 0};
+                    }
+                }
+                for (auto &command : values) {
+                    const auto found = byId.find(command.meta.x);
+                    if (found == byId.end() || slots[found->second].partition != &domain)
+                        throw std::logic_error("GPU command identity is not owned by the accepted partition");
+                    const auto record = found->second;
+                    command.meta.x = Packed(record);
+                    const auto kind = command.meta.y;
+                    const bool move = kind >= CommandMovePosition && kind <= CommandMovePose;
+                    if ((kind <= CommandSetPose || move) && slots[record].accepted) {
+                        const auto speed = command.rootCOM.w;
+                        command.rootCOM = slots[record].accepted->rootCenterOfMass;
+                        if (move)
+                            command.rootCOM.w = speed;
+                    }
+                }
+                auto poseWake = validation
+                                    ? programs.GetSleep().PreparePoseWake(storage, SleepSelection(domain), *validation)
+                                    : JoltGpuPoseWake{};
+                return commands.Prepare(storage, std::move(values), std::move(poseWake));
+            };
+        }
         if (auto validation = std::exchange(domain.pendingBoundsValidation, {})) {
             // Bounds edits retain their command order and report device errors before publishing the batch.
             JoltGpuControlGroup check;
@@ -287,11 +375,8 @@ class JoltGpuScene::Impl
     void AddJointWake(JoltGpuControlGroup &group, const PublishedJoint &joint)
     {
         for (auto id : {joint.bodyIdA, joint.bodyIdB})
-            if (id != InvalidBodyId) {
-                BodyCommand wake{};
-                wake.meta = {id, CommandWake, 0u, 0u};
-                group.commands.push_back(wake);
-            }
+            if (id != InvalidBodyId)
+                group.commands.emplace_back(PhysicsBodyCommand{id, PhysicsBodyCommand::Activity{true}});
     }
 
     static uint8_t PositionChannel() noexcept
@@ -1128,43 +1213,29 @@ class JoltGpuScene::Impl
         pendingCompletions.reserve(pendingCompletions.size() + 2);
 
         JoltGpuControlGroup group;
-        if (resetMotion && !firstOwnership) {
-            BodyCommand reset{};
-            reset.meta = {id, CommandResetMotion, 0, 0};
-            group.commands.push_back(reset);
-        }
-        if (motionChanged) {
-            BodyCommand boundary{};
-            boundary.meta = {id, CommandMotionBoundary, MotionBoundaryTypeChange | CarryFlags(slot.queuedTarget), 0};
-            group.commands.push_back(boundary);
-        }
-        if (!firstOwnership) {
-            BodyCommand project{};
-            project.meta = {id, CommandMotionBoundary, MotionBoundaryProjectMobility, 0};
-            group.commands.push_back(project);
-        }
+        using Transition = JoltGpuControlGroup::ModelTransition;
+        if (resetMotion && !firstOwnership)
+            group.commands.emplace_back(Transition{id, CommandResetMotion, 0});
+        if (motionChanged)
+            group.commands.emplace_back(
+                Transition{id, CommandMotionBoundary, MotionBoundaryTypeChange | CarryFlags(slot.queuedTarget)});
+        if (!firstOwnership)
+            group.commands.emplace_back(Transition{id, CommandMotionBoundary, MotionBoundaryProjectMobility});
         if (motion != MotionStatic) {
             // A new slot clamps its initial values. A new Rigidbody attached
             // to an existing actor applies only that component's captured
             // pending inputs, preserving the resident numerical pose/state.
-            if (firstOwnership || (change->initializesRigidbody && change->publication.linearVelocity)) {
-                BodyCommand linear{};
-                linear.meta = {id, CommandSetLinearVelocity, 0, 0};
-                linear.value = change->initialState.linearVelocity;
-                group.commands.push_back(linear);
-            }
-            if (firstOwnership || (change->initializesRigidbody && change->publication.angularVelocity)) {
-                BodyCommand angular{};
-                angular.meta = {id, CommandSetAngularVelocity, 0, 0};
-                angular.value = change->initialState.angularVelocity;
-                group.commands.push_back(angular);
-            }
+            const auto vector = [](const Float4 &v) { return glm::vec3(v.x, v.y, v.z); };
+            PhysicsBodyCommand::Velocity velocity;
+            if (firstOwnership || (change->initializesRigidbody && change->publication.linearVelocity))
+                velocity.linear = vector(change->initialState.linearVelocity);
+            if (firstOwnership || (change->initializesRigidbody && change->publication.angularVelocity))
+                velocity.angular = vector(change->initialState.angularVelocity);
+            if (velocity.linear || velocity.angular)
+                group.commands.emplace_back(PhysicsBodyCommand{id, velocity});
         }
-        if (motion != MotionStatic && !firstOwnership) {
-            BodyCommand wake{};
-            wake.meta = {id, CommandWake, 0u, 0u};
-            group.commands.push_back(wake);
-        }
+        if (motion != MotionStatic && !firstOwnership)
+            group.commands.emplace_back(PhysicsBodyCommand{id, PhysicsBodyCommand::Activity{true}});
         if (firstOwnership) {
             QueueActorCreation(domain, change, std::move(group));
         } else {
@@ -1203,17 +1274,13 @@ class JoltGpuScene::Impl
             return storage.PrepareModelUpdate({{packed, model}}, {});
         };
         group.modelAccepted = [this]() noexcept { publicationDirectory.reset(); };
-        if (resident && !preserveVelocity) {
-            BodyCommand wake{};
-            wake.meta = {id, CommandWake, 0u, 0u};
-            group.commands.push_back(wake);
-        }
+        if (resident && !preserveVelocity)
+            group.commands.emplace_back(PhysicsBodyCommand{id, PhysicsBodyCommand::Activity{true}});
         if (!resident) {
             pendingCompletions.reserve(pendingCompletions.size() + 2);
-            BodyCommand boundary{};
-            boundary.meta = {id, CommandMotionBoundary,
-                             preserveVelocity ? MotionBoundarySuspendPreserve : MotionBoundarySuspendReset, 0};
-            group.commands.push_back(boundary);
+            group.commands.emplace_back(JoltGpuControlGroup::ModelTransition{
+                id, CommandMotionBoundary,
+                preserveVelocity ? MotionBoundarySuspendPreserve : MotionBoundarySuspendReset});
         }
         auto oldBounds = QueueOldBounds(domain, index, id);
         pending.push_back(std::move(group));
@@ -1223,8 +1290,13 @@ class JoltGpuScene::Impl
         slot.desiredResident = resident;
     }
 
-    PhysicsTargetSource QueueCommand(uint32_t id, BodyCommand command, const PhysicsTargetAuthor *author)
+    PhysicsTargetSource QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetAuthor *author)
     {
+        const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation);
+        const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation);
+        if ((pose && !pose->position && !pose->rotation) || (velocity && !velocity->linear && !velocity->angular))
+            return {};
+        const auto id = command.bodyId;
         auto &domain = BodyDomain(id);
         auto &pending = domain.pending;
         auto &pendingCompletions = domain.pendingCompletions;
@@ -1232,27 +1304,17 @@ class JoltGpuScene::Impl
         auto &slot = slots[index];
         if (!slot.authored)
             throw std::logic_error("Jolt GPU actor must be staged before authoring a body command");
-        command.meta.x = id;
-        const auto kind = command.meta.y;
-        const bool move = kind >= CommandMovePosition && kind <= CommandMovePose;
-        const uint8_t channels = (kind == CommandMovePosition   ? PositionChannel()
-                                  : kind == CommandMoveRotation ? RotationChannel()
-                                  : kind == CommandMovePose     ? PositionChannel() | RotationChannel()
-                                                                : 0);
+        const auto *move = std::get_if<PhysicsBodyCommand::KinematicMove>(&command.operation);
+        const uint8_t channels =
+            move ? (move->position ? PositionChannel() : 0u) | (move->rotation ? RotationChannel() : 0u) : 0u;
         const auto motion = slot.authored->acceptedMotionType;
-        const bool acceptsMove = move && (motion == MotionKinematic ||
-                                          (motion == MotionStatic && (command.meta.z & CommandTemporaryStatic)));
+        const bool acceptsMove =
+            move && (motion == MotionKinematic || (motion == MotionStatic && move->temporaryStatic));
         if (author && (!acceptsMove || author->bodyId != id || author->channels != channels ||
                        !actors.IsValid(slot.authored->rigidbody) ||
                        author->rigidbody.GetComponent() != actors.GetRigidbody(slot.authored->rigidbody).owner ||
                        author->ownerTransform.GetComponent() != slot.owner.target.GetComponent()))
             throw std::invalid_argument("Jolt GPU author target does not match its body or command channels");
-        if (kind <= CommandSetPose || move) {
-            const float speed = command.rootCOM.w;
-            command.rootCOM = slot.authored->rootCenterOfMass;
-            if (move)
-                command.rootCOM.w = speed;
-        }
         pendingCompletions.reserve(pendingCompletions.size() + 2);
         const auto source = author ? AppendSource(domain, *author) : PhysicsTargetSource{};
         if (!pending.empty() && !pending.back().prepareModel && !pending.back().modelAccepted &&
@@ -1280,11 +1342,12 @@ class JoltGpuScene::Impl
             }
             target.pending = true;
             target.temporaryStatic = motion == MotionStatic;
-        } else if ((kind <= CommandSetPose && !(command.meta.z & CommandPreserveKinematicMove)) ||
-                   kind == CommandResetMotion || kind == CommandSleep || kind == CommandMotionBoundary ||
-                   ((kind == CommandSetLinearVelocity || kind == CommandSetAngularVelocity) &&
-                    motion != MotionStatic)) {
-            CancelTarget(target, pendingCompletions);
+        } else {
+            const auto *activity = std::get_if<PhysicsBodyCommand::Activity>(&command.operation);
+            if ((pose && pose->cancelDrive) ||
+                std::holds_alternative<PhysicsBodyCommand::ResetMotion>(command.operation) ||
+                (activity && !activity->awake) || (velocity && motion != MotionStatic))
+                CancelTarget(target, pendingCompletions);
         }
         return source;
     }
@@ -1481,34 +1544,6 @@ class JoltGpuScene::Impl
             capture.prepareWork = {};
         }
         domain.pending.push_back(std::move(capture));
-        for (auto &group : domain.pending) {
-            if (group.commands.empty())
-                continue;
-            const bool poses = std::any_of(group.commands.begin(), group.commands.end(),
-                                           [](const BodyCommand &command) { return command.meta.y <= CommandSetPose; });
-            group.prepareCommands = [this, &domain, validation = poses ? PendingBoundsValidation(domain) : nullptr](
-                                        std::vector<BodyCommand> values) {
-                for (auto &command : values) {
-                    const auto found = byId.find(command.meta.x);
-                    if (found == byId.end() || slots[found->second].partition != &domain)
-                        throw std::logic_error("GPU command identity is not owned by the accepted partition");
-                    const auto record = found->second;
-                    command.meta.x = Packed(record);
-                    const auto kind = command.meta.y;
-                    const bool move = kind >= CommandMovePosition && kind <= CommandMovePose;
-                    if ((kind <= CommandSetPose || move) && slots[record].accepted) {
-                        const auto speed = command.rootCOM.w;
-                        command.rootCOM = slots[record].accepted->rootCenterOfMass;
-                        if (move)
-                            command.rootCOM.w = speed;
-                    }
-                }
-                auto poseWake = validation
-                                    ? programs.GetSleep().PreparePoseWake(storage, SleepSelection(domain), *validation)
-                                    : JoltGpuPoseWake{};
-                return commands.Prepare(storage, std::move(values), std::move(poseWake));
-            };
-        }
         JoltGpuTickControl control;
         control.snapshotSleepStatus = true;
         std::vector<std::pair<uint32_t, uint32_t>> prescribedSources;
@@ -1533,7 +1568,6 @@ class JoltGpuScene::Impl
         };
         control.colliderPairs = pairCapture;
         control.articulations = articulationCapture;
-        control.commandProgram = &commands;
         if (cleanMember) {
             control.acceptedGeometry = publication->geometry;
             control.acceptedGenericGeometry = publication->hasGenericGeometry;
@@ -1978,7 +2012,6 @@ class JoltGpuScene::Impl
             JoltGpuTickControl control;
             control.needsSnapshot = false;
             control.partitionCleanup = true;
-            control.commandProgram = &commands;
             control.groups = TakeControlGroups(*domain);
             writer = domain;
             domain->cursor = &tick;
@@ -2193,61 +2226,9 @@ void JoltGpuScene::SetResident(uint32_t id, bool value, bool preserve)
 {
     m_impl->SetResident(id, value, preserve);
 }
-PhysicsTargetSource JoltGpuScene::QueueCommand(uint32_t id, BodyCommand value, const PhysicsTargetAuthor *author)
-{
-    return m_impl->QueueCommand(id, value, author);
-}
-
 PhysicsTargetSource JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &command, const PhysicsTargetAuthor *author)
 {
-    const auto vector = [](const glm::vec3 &v) -> Float4 { return {v.x, v.y, v.z, 0}; };
-    const auto rotation = [](const glm::quat &q) -> Float4 { return {q.x, q.y, q.z, q.w}; };
-    const auto queue = [&](uint32_t kind, uint32_t flags, Float4 value = {}, Float4 auxiliary = {}) {
-        BodyCommand packet{};
-        packet.meta.y = kind;
-        packet.meta.z = flags;
-        packet.value = value;
-        packet.auxiliary = auxiliary;
-        QueueCommand(command.bodyId, packet);
-    };
-    if (const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation)) {
-        const auto flags = pose->cancelDrive ? 0u : CommandPreserveKinematicMove;
-        if (pose->position && pose->rotation)
-            queue(CommandSetPose, flags, vector(*pose->position), rotation(*pose->rotation));
-        else if (pose->position)
-            queue(CommandSetPosition, flags, vector(*pose->position));
-        else if (pose->rotation)
-            queue(CommandSetRotation, flags, {}, rotation(*pose->rotation));
-    } else if (const auto *velocity = std::get_if<PhysicsBodyCommand::Velocity>(&command.operation)) {
-        if (velocity->linear)
-            queue(CommandSetLinearVelocity, 0, vector(*velocity->linear));
-        if (velocity->angular)
-            queue(CommandSetAngularVelocity, 0, vector(*velocity->angular));
-    } else if (const auto *force = std::get_if<PhysicsBodyCommand::Force>(&command.operation)) {
-        constexpr std::array<uint32_t, 3> commands{CommandAddForce, CommandAddTorque, CommandAddForceAtPosition};
-        queue(commands[static_cast<size_t>(force->kind)], static_cast<uint32_t>(force->mode), vector(force->value),
-              vector(force->point));
-    } else if (const auto *move = std::get_if<PhysicsBodyCommand::KinematicMove>(&command.operation)) {
-        BodyCommand packet{};
-        packet.meta.y = move->position ? (move->rotation ? CommandMovePose : CommandMovePosition) : CommandMoveRotation;
-        packet.meta.z = move->temporaryStatic ? CommandTemporaryStatic : 0u;
-        if (move->position)
-            packet.value = vector(*move->position);
-        if (move->rotation)
-            packet.auxiliary = rotation(*move->rotation);
-        packet.value.w = move->duration;
-        packet.rootCOM.w = move->maxSpeed;
-        return QueueCommand(command.bodyId, packet, author);
-    } else if (const auto *activity = std::get_if<PhysicsBodyCommand::Activity>(&command.operation)) {
-        queue(activity->awake ? CommandWake : CommandSleep, 0);
-    } else {
-        const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
-        queue(CommandResetMotion, 0);
-        queue(CommandSetPose, 0, vector(reset.position), rotation(reset.rotation));
-        queue(CommandSetLinearVelocity, 0, vector(reset.linear));
-        queue(CommandSetAngularVelocity, 0, vector(reset.angular));
-    }
-    return {};
+    return m_impl->QueueBodyCommand(command, author);
 }
 
 void JoltGpuScene::QueuePoseDrive(RuntimeWorld &world, std::vector<PoseDriveIntent> intents)
