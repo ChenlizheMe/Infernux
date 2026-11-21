@@ -114,7 +114,7 @@ constexpr uint32_t Bit(Port port)
 }
 constexpr std::array<uint32_t, StageCount> StagePorts{
     Bit(Parameters) | Bit(Inputs) | Bit(BodyIdentities) | Bit(Models) | Bit(Shapes) | Bit(States) | Bit(Candidates) |
-        Bit(Control) | Bit(CastParameters) | Bit(Geometry),
+        Bit(Control) | Bit(CastParameters),
     Bit(Parameters) | Bit(Control) | Bit(Summary),
     Bit(Parameters) | Bit(Candidates) | Bit(Control) | Bit(Summary) | Bit(Hits),
     Bit(ParticleParameters) | Bit(ParticleRows) | Bit(ParticlePrevious) | Bit(Shapes) | Bit(States) |
@@ -280,9 +280,6 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
                 throw JoltGpuQueryRequestError("Jolt GPU non-sweep query maximum must be zero");
             if (query.meta.x == QueryOverlap)
                 ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
-            if (query.meta.x == QueryBodyBounds &&
-                (query.direction.x < 0 || query.direction.y < 0 || query.direction.z < 0))
-                throw JoltGpuQueryRequestError("Jolt GPU bounds query requires nonnegative half extents");
         }
     }
 }
@@ -747,9 +744,7 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     identities.front().ids.x = InvalidQueryBodySlot;
     for (uint32_t local = 0; local < bodyCount; ++local) {
         const auto &actor = result->publication->directory->actors[bodyBase + local];
-        const uint64_t rigidbodyId = actor ? actor->rigidbodyComponentId : 0;
-        identities[local].ids = {actor ? actor->bodyId : InvalidQueryBodySlot, rigidbodyId ? 1u : 0u,
-                                 static_cast<uint32_t>(rigidbodyId), static_cast<uint32_t>(rigidbodyId >> 32)};
+        identities[local].ids = {actor ? actor->bodyId : InvalidQueryBodySlot, 0, 0, 0};
     }
     if (hasSweep) {
         for (uint32_t local = 0; local < leafCount; ++local) {

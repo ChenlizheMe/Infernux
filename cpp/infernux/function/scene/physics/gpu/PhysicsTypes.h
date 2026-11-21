@@ -598,14 +598,12 @@ struct JPH_GPU_ALIGN BodyCommandParams
 JPH_GPU_CONSTANT(InvalidQueryBodySlot, 0xFFFFFFFFu);
 JPH_GPU_CONSTANT(QueryOverlap, 1);
 JPH_GPU_CONSTANT(QueryClosestPoint, 2);
-JPH_GPU_CONSTANT(QueryBodyBounds, 3);
-JPH_GPU_CONSTANT(QueryPenetration, 4);
-JPH_GPU_CONSTANT(QueryShapeCast, 7);
+JPH_GPU_CONSTANT(QueryPenetration, 3);
+JPH_GPU_CONSTANT(QueryShapeCast, 4);
 JPH_GPU_CONSTANT(QueryClosest, 0);
 JPH_GPU_CONSTANT(QueryAll, 1);
 JPH_GPU_CONSTANT(QueryUniqueCollider, 2);
-JPH_GPU_CONSTANT(QueryUniqueBody, 3);
-JPH_GPU_CONSTANT(QueryAny, 4);
+JPH_GPU_CONSTANT(QueryAny, 3);
 JPH_GPU_CONSTANT(QueryTargetCollider, 1);
 JPH_GPU_CONSTANT(QueryExcludeBody, 2);
 JPH_GPU_CONSTANT(QuerySweepPolicy, 4);
@@ -681,7 +679,7 @@ struct JPH_GPU_ALIGN QueryPrimitive
 
 struct JPH_GPU_ALIGN QueryBodyIdentity
 {
-    // Body prefix: public body ID, has Rigidbody, Rigidbody component ID low/high.
+    // Body prefix: public body ID followed by zeroes.
     // Leaf suffix: owning GameObject ID low/high, then zero. Cast controls.y is its base.
     JPH_GPU_UINT4 ids;
 };

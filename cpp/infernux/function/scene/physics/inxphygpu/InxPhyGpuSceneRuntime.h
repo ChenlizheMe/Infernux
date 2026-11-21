@@ -155,6 +155,19 @@ struct InxPhyGpuSceneRayBatch
     uint32_t m_world = 0;
 };
 
+struct InxPhyGpuSceneBodyBoundsRead
+{
+    ContactStreamIdentity identity;
+    InxPhyGpuPreparedBodyBounds query;
+
+    [[nodiscard]] std::vector<uint32_t> ReadHostBodyIds() const;
+
+  private:
+    friend class InxPhyGpuSceneRuntime;
+    std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
+    uint32_t m_world = 0;
+};
+
 /// Fixed-step source for one compiled layout and its enrolled scene worlds.
 /// Admission and receipt collection use the engine's FrameWorkOwner.
 class InxPhyGpuSceneRuntime final
@@ -225,6 +238,10 @@ class InxPhyGpuSceneRuntime final
     [[nodiscard]] InxPhyGpuSceneRayBatch PrepareDeviceRaycast(const InxPhyGpuFixedPublication &publication,
                                                               uint32_t world, const InxPhyGpuDeviceRays &rays,
                                                               const PhysicsDeviceRayOutputs *outputs = nullptr) const;
+    [[nodiscard]] InxPhyGpuSceneBodyBoundsRead PrepareBodyBounds(const InxPhyGpuFixedPublication &publication,
+                                                                 uint32_t world, const ModelVector &minimum,
+                                                                 const ModelVector &maximum, uint32_t layers,
+                                                                 bool triggers) const;
     [[nodiscard]] FrameWorkWaitResult WaitForProgress(uint64_t nanoseconds);
     void Retire() noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;

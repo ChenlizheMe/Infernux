@@ -297,8 +297,10 @@ InxPhyGpuGeometryType CookGeometry(const JPH::TransformedShape &leaf, InxPhyGpuC
         return Sphere;
     }
     case JPH::EShapeSubType::Box: {
-        const auto half = Vector(JPH::RVec3(static_cast<const JPH::BoxShape &>(shape).GetHalfExtent()));
+        const auto &box = static_cast<const JPH::BoxShape &>(shape);
+        const auto half = Vector(JPH::RVec3(box.GetHalfExtent()));
         geometry.size = geometry.halfExtent = Point(half);
+        geometry.size[3] = box.GetConvexRadius();
         geometry.radius = glm::length(half);
         return Box;
     }

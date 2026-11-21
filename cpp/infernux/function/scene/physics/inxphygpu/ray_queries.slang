@@ -4,6 +4,7 @@
 // Adapted from MuJoCo Warp _src/ray.py.
 
 #include "collision_geometry.slang"
+#include "collision_bounds.slang"
 #include "convex_model.slang"
 #include "heightfield_geometry.slang"
 #include "ray_bvh_layout.slang"
@@ -61,6 +62,64 @@ struct RayHitStream
 [[vk::binding(17, 0)]] RWStructuredBuffer<float> projectedRayNormals;
 [[vk::binding(18, 0)]] RWStructuredBuffer<float> projectedRayDistances;
 [[vk::binding(19, 0)]] RWStructuredBuffer<uint> projectedRayValidity;
+[[vk::binding(20, 0)]] StructuredBuffer<LocalBound> bodyBoundsGeometry;
+[[vk::binding(21, 0)]] StructuredBuffer<uint2> bodyGeometryRanges;
+[[vk::binding(22, 0)]] StructuredBuffer<uint4> bodyBoundsRequest;
+[[vk::binding(23, 0)]] RWStructuredBuffer<uint> bodyBoundsMask;
+
+groupshared uint bodyBoundsMatch[RayGroupSize];
+
+float3 bodyBoundExtent(CartesianFrame frame, CollisionShape shape, float3 halfExtent)
+{
+    const uint type = shape.type.x;
+    if (type == GeomSphere)
+        return float3(shape.size.x);
+    const float3 z = frameAxis(frame, 2);
+    if (type == GeomCapsule)
+        return abs(z) * shape.size.y + shape.size.x;
+    if (type == GeomCylinder)
+        return abs(z) * shape.size.y + shape.size.x * sqrt(max(float3(0), 1.0 - z * z));
+    const float radius = type == GeomBox ? shape.size.w : 0.0;
+    const float3 core = max(float3(0.0), halfExtent - radius);
+    return abs(frameAxis(frame, 0)) * core.x + abs(frameAxis(frame, 1)) * core.y + abs(z) * core.z + radius;
+}
+
+[shader("compute")]
+[numthreads(RayGroupSize, 1, 1)]
+void select_body_bounds(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    const uint4 filter = bodyBoundsRequest[2]; // Body count, layer mask, include triggers, unused.
+    uint match = 0u;
+    if (id.x < filter.x)
+    {
+        const uint2 range = bodyGeometryRanges[id.x];
+        float3 low = float3(3.402823e38);
+        float3 high = -low;
+        bool accepted = false;
+        for (uint row = range.x; row < range.y; ++row)
+        {
+            const uint4 meta = rayGeometry[row];
+            const CartesianFrame frame = rayFrames[row];
+            const LocalBound bound = bodyBoundsGeometry[row];
+            const float3 center = frame.position.xyz + rotatePoint(frame, bound.center.xyz);
+            const float3 extent = bodyBoundExtent(frame, rayShapes[row], bound.halfExtent.xyz);
+            low = min(low, center - extent);
+            high = max(high, center + extent);
+            accepted = accepted || ((meta.y & filter.y) != 0u && (filter.z != 0u || (meta.z & 2u) == 0u));
+        }
+        match = accepted && all(low <= asfloat(bodyBoundsRequest[1].xyz)) &&
+                            all(high >= asfloat(bodyBoundsRequest[0].xyz)) ? 1u : 0u;
+    }
+    bodyBoundsMatch[lane] = match;
+    GroupMemoryBarrierWithGroupSync();
+    if ((lane & 31u) == 0u && id.x < filter.x)
+    {
+        uint bits = 0u;
+        for (uint i = 0; i < 32u; ++i)
+            bits |= bodyBoundsMatch[lane + i] << i;
+        bodyBoundsMask[id.x / 32u] = bits;
+    }
+}
 
 [shader("compute")]
 [numthreads(RayGroupSize, 1, 1)]

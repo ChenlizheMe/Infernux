@@ -102,6 +102,14 @@ struct InxPhyGpuPreparedRayBatch
     uint32_t count = 0;
 };
 
+struct InxPhyGpuPreparedBodyBounds
+{
+    std::shared_ptr<rhi::PreparedComputeBatch> packet;
+    std::shared_ptr<const std::vector<uint32_t>> rows;
+
+    [[nodiscard]] std::vector<uint32_t> ReadMatchingRows() const;
+};
+
 struct InxPhyGpuDeviceRays
 {
     PhysicsDeviceBufferRange origins, directions;
@@ -116,16 +124,20 @@ struct PreparedInxPhyGpuRayQuery;
 class InxPhyGpuPublishedRayQuery
 {
   public:
-    [[nodiscard]] static PreparedInxPhyGpuRayQuery Build(rhi::ComputeHost &host, ShaderCodeTarget target,
-                                                         const InxPhyGpuModel &model,
-                                                         const InxPhyGpuCollisionModel &collision, uint32_t capacity,
-                                                         uint32_t sourceBodyCount,
-                                                         const std::vector<uint32_t> &centerOfMassRows);
+    [[nodiscard]] static PreparedInxPhyGpuRayQuery
+    Build(rhi::ComputeHost &host, ShaderCodeTarget target, const InxPhyGpuModel &model,
+          const InxPhyGpuCollisionModel &collision, uint32_t capacity, uint32_t sourceBodyCount,
+          const std::vector<uint32_t> &centerOfMassRows, const std::vector<uint32_t> &bodyBoundsRows);
 
     [[nodiscard]] InxPhyGpuPreparedRayBatch
     Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, uint32_t rayCount, bool readback,
             std::vector<rhi::ComputeBufferUpdate> updates, const InxPhyGpuDeviceRays *deviceRays = nullptr,
             const PhysicsDeviceRayOutputs *outputs = nullptr, uint32_t allHitCapacity = 0) const;
+    [[nodiscard]] InxPhyGpuPreparedBodyBounds PrepareBodyBounds(rhi::ComputeHost &host,
+                                                                const PhysicsGpuPoseSource &source,
+                                                                const ModelVector &minimum, const ModelVector &maximum,
+                                                                uint32_t layers, bool triggers,
+                                                                std::vector<rhi::ComputeBufferUpdate> updates) const;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Inputs() const noexcept
     {
         return m_inputs;
@@ -137,12 +149,16 @@ class InxPhyGpuPublishedRayQuery
 
   private:
     friend class InxPhyGpuStep;
+    void AppendGeometry(std::vector<rhi::ComputeDispatchDesc> &dispatches, const PhysicsGpuPoseSource &source) const;
     std::shared_ptr<rhi::ComputeBuffer> m_inputs, m_settings, m_inputSettings, m_outputSettings;
+    std::shared_ptr<rhi::ComputeBuffer> m_boundsRequest, m_boundsMask;
     rhi::ComputeDispatchDesc m_geometry, m_pack, m_project, m_traceAll;
+    rhi::ComputeDispatchDesc m_selectBounds;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_output;
     uint32_t m_geometryCount = 0, m_bodyCount = 0, m_capacity = 0;
+    std::shared_ptr<const std::vector<uint32_t>> m_bodyBoundsRows;
     PhysicsGpuPoseSource::Layout m_layout = PhysicsGpuPoseSource::Layout::OriginWXYZ;
 };
 
@@ -318,6 +334,10 @@ class InxPhyGpuStep
                          std::vector<rhi::ComputeBufferUpdate> updates = {},
                          const InxPhyGpuDeviceRays *deviceRays = nullptr,
                          const PhysicsDeviceRayOutputs *outputs = nullptr) const;
+    [[nodiscard]] InxPhyGpuPreparedBodyBounds PreparePublishedBodyBounds(const PhysicsGpuPoseSource &source,
+                                                                         const ModelVector &minimum,
+                                                                         const ModelVector &maximum, uint32_t layers,
+                                                                         bool triggers) const;
 
     [[nodiscard]] const InxPhyGpuRayBuffers &Rays() const noexcept
     {

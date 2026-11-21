@@ -96,7 +96,7 @@ void cvx_query_collect_begin(uint b,QueryHit hit)
     query_control[b+60u]=hit.meta; cvx_put(query_control,b,61,hit.positionDistance);
     cvx_put(query_control,b,62,hit.normalFraction); cvx_put(query_control,b,63,hit.pointADepth);
     query_control[b+49u]=uint4(0,state.cursor.z,0,0);
-    query_control[b+48u].y=(request.meta.y==QueryUniqueCollider || request.meta.y==QueryUniqueBody)?7u:8u;
+    query_control[b+48u].y=request.meta.y==QueryUniqueCollider?7u:8u;
 }
 void cvx_query_collect_unit(uint b)
 {

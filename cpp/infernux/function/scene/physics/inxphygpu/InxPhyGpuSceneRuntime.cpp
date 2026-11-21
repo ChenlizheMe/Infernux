@@ -789,6 +789,30 @@ InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareRaycast(const InxPhyGpuFixe
     return result;
 }
 
+InxPhyGpuSceneBodyBoundsRead InxPhyGpuSceneRuntime::PrepareBodyBounds(const InxPhyGpuFixedPublication &publication,
+                                                                      uint32_t world, const ModelVector &minimum,
+                                                                      const ModelVector &maximum, uint32_t layers,
+                                                                      bool triggers) const
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu body bounds do not match the scene publication");
+    InxPhyGpuSceneBodyBoundsRead result;
+    result.identity = publication.worlds.at(world).identity;
+    result.query =
+        m_step->PreparePublishedBodyBounds(publication.PoseSource(world), minimum, maximum, layers, triggers);
+    result.m_layout = m_layout;
+    result.m_world = world;
+    return result;
+}
+
+std::vector<uint32_t> InxPhyGpuSceneBodyBoundsRead::ReadHostBodyIds() const
+{
+    std::vector<uint32_t> ids;
+    for (const auto row : query.ReadMatchingRows())
+        ids.push_back(m_layout->worlds[m_world].bodies[row].bodyId);
+    return ids;
+}
+
 FrameWorkFacts InxPhyGpuSceneRuntime::Describe() const
 {
     FrameWorkFacts facts;

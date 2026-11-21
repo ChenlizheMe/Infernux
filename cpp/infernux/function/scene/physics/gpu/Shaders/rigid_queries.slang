@@ -398,39 +398,6 @@ void query_leaf_pose(ShapeModel shape, BodyState state, out float3 center, out f
     rotation = jph_quat_mul(state.rotation, shape.localRotation);
 }
 
-void query_leaf_bounds(ShapeModel shape, BodyState state, out float3 low, out float3 high)
-{
-    float3 center;
-    float4 rotation;
-    query_leaf_pose(shape, state, center, rotation);
-    float3 extent = float3(shape.geometry.w);
-    if (shape.meta.x == ShapeBox)
-    {
-        float3 core = max(shape.geometry.xyz - shape.geometry.w, float3(0.0f));
-        extent += abs(jph_rotate(rotation, float3(1.0f, 0.0f, 0.0f))) * core.x +
-                  abs(jph_rotate(rotation, float3(0.0f, 1.0f, 0.0f))) * core.y +
-                  abs(jph_rotate(rotation, float3(0.0f, 0.0f, 1.0f))) * core.z;
-    }
-    else if (shape.meta.x == ShapeCapsule)
-        extent += abs(jph_rotate(rotation, float3(0.0f, 1.0f, 0.0f))) * shape.geometry.y;
-    else if (shape.meta.x == ShapeCylinder)
-    {
-        float3 axis = jph_rotate(rotation, float3(0, 1, 0));
-        extent = abs(axis) * shape.geometry.y + shape.geometry.x * sqrt(max(float3(0), 1.0f - axis * axis));
-    }
-    else if (shape.meta.x == ShapeConvexHull)
-    {
-        uint4 ref = shape.geometryReference;
-        float3 a = asfloat(query_geometry[ref.x + 3u]).xyz, b = asfloat(query_geometry[ref.x + 4u]).xyz;
-        center += jph_rotate(rotation, 0.5f * (a + b));
-        float3 h = 0.5f * (b - a);
-        extent = abs(jph_rotate(rotation, float3(h.x, 0, 0))) +
-                 abs(jph_rotate(rotation, float3(0, h.y, 0))) + abs(jph_rotate(rotation, float3(0, 0, h.z)));
-    }
-    low = center - extent;
-    high = center + extent;
-}
-
 uint query_metric_status(JphPairMetric metric)
 {
     return metric.status == 1u ? QuerySuccess :
@@ -476,14 +443,7 @@ bool query_less(QueryInput request, QueryHit a, QueryHit b)
         uint2 cb = shape_models[b.meta.z].source.xy;
         return ca.y != cb.y ? ca.y < cb.y : ca.x < cb.x;
     }
-    if (request.meta.y == QueryUniqueBody)
-    {
-        uint2 a_id = query_body_ids[a.meta.x - query_params.selection.y].ids.zw;
-        uint2 b_id = query_body_ids[b.meta.x - query_params.selection.y].ids.zw;
-        if (a_id.y != b_id.y || a_id.x != b_id.x)
-            return a_id.y != b_id.y ? a_id.y < b_id.y : a_id.x < b_id.x;
-    }
-    if (request.meta.y != QueryUniqueBody && a.positionDistance.w != b.positionDistance.w)
+    if (a.positionDistance.w != b.positionDistance.w)
         return a.positionDistance.w < b.positionDistance.w;
     uint bodyA = query_body_ids[a.meta.x - query_params.selection.y].ids.x;
     uint bodyB = query_body_ids[b.meta.x - query_params.selection.y].ids.x;
@@ -511,10 +471,6 @@ void query_collect(QueryInput request, QueryHit hit, uint begin, inout uint coun
     if (request.meta.y == QueryUniqueCollider)
         for (uint old = 0u; old < count; ++old)
             if (all(shape_models[query_load_hit(begin + old).meta.z].source.xy == shape_models[hit.meta.z].source.xy))
-                return;
-    if (request.meta.y == QueryUniqueBody)
-        for (uint old = 0u; old < count; ++old)
-            if (query_load_hit(begin + old).meta.x == hit.meta.x)
                 return;
     uint position = count;
     while (position > 0u && query_less(request, hit, query_load_hit(begin + position - 1u)))
@@ -903,36 +859,16 @@ void query_evaluate(uint3 tid : SV_DispatchThreadID)
             BodyModel model = body_models[slot];
             if (!jph_resident(model) || model.meta.y == 0u)
                 continue;
-            if (request.meta.x == QueryBodyBounds && query_body_ids[slot - query_params.selection.y].ids.y == 0u)
-                continue;
             BodyState state = body_states[slot - query_params.selection.y];
-            bool accepted = false;
-            float3 low = float3(3.402823466e+38f);
-            float3 high = -low;
-            uint first = model.meta.x;
             for (uint ordinal = 0u; ordinal < model.meta.y; ++ordinal)
             {
                 uint leaf = model.meta.x + ordinal;
-            if (leaf < query_params.selection.z || leaf - query_params.selection.z >= query_params.selectedCounts.y)
-            {
-                status = QueryNumericalFailure;
-                break;
-            }
-                ShapeModel shape = shape_models[leaf];
-                if (request.meta.x == QueryBodyBounds)
+                if (leaf < query_params.selection.z || leaf - query_params.selection.z >= query_params.selectedCounts.y)
                 {
-                    float3 a, b;
-                    query_leaf_bounds(shape, state, a, b);
-                    if (!all(isfinite(a)) || !all(isfinite(b)))
-                    {
-                        status = QueryNumericalFailure;
-                        break;
-                    }
-                    low = min(low, a);
-                    high = max(high, b);
-                    accepted = accepted || query_accepts(request, shape, slot);
-                    continue;
+                    status = QueryNumericalFailure;
+                    break;
                 }
+                ShapeModel shape = shape_models[leaf];
                 if (!query_accepts(request, shape, slot))
                     continue;
                 uint leaf_status;
@@ -945,14 +881,6 @@ void query_evaluate(uint3 tid : SV_DispatchThreadID)
                 query_collect(request, hit, begin, count);
                 if (request.meta.y == QueryAny && count != 0u)
                     break;
-            }
-            if (request.meta.x == QueryBodyBounds && accepted &&
-                all(low <= request.positionMaximum.xyz + request.direction.xyz) &&
-                all(high >= request.positionMaximum.xyz - request.direction.xyz))
-            {
-                QueryHit hit = query_miss();
-                hit.meta = uint4(slot, 1u, first, 0u);
-                query_collect(request, hit, begin, count);
             }
             if (request.meta.y == QueryAny && count != 0u)
                 break;

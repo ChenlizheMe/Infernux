@@ -388,6 +388,7 @@ ContactSlots AddCollision(StepBuilder &b, const InxPhyGpuModel &model, const Inx
 struct RaySlots
 {
     uint32_t inputs, hits, settings;
+    uint32_t metadata;
     uint32_t inputSettings = NoModelIndex, outputSettings = NoModelIndex;
     ComputeWorkDispatch pack, project, traceAll;
 };
@@ -477,6 +478,7 @@ RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpu
     result.inputs = inputs;
     result.hits = hits;
     result.settings = query;
+    result.metadata = metadata;
     if (published) {
         result.traceAll = trace("raycast_world_all", 1);
         result.inputSettings = b.Seed("packedSceneRaySettings", 8, nullptr);
@@ -1025,13 +1027,56 @@ ComputeDispatchDesc BindDispatch(ComputeWorkDispatch command,
     }
     return snapshot;
 }
+
+struct BodyBoundsSlots
+{
+    uint32_t request = NoModelIndex, mask = NoModelIndex;
+    std::vector<uint32_t> rows;
+    ComputeWorkDispatch select;
+};
+
+BodyBoundsSlots AddPublishedBodyBounds(StepBuilder &b, const GeometrySlots &geometry, uint32_t metadata,
+                                       uint32_t bodyCount, const std::vector<ModelGeometry> &geometries,
+                                       std::vector<uint32_t> bodyRows)
+{
+    const auto count = static_cast<uint32_t>(bodyRows.size());
+    if (count == 0)
+        return {};
+    std::vector<uint32_t> indices(bodyCount, NoModelIndex);
+    for (uint32_t index = 0; index < count; ++index)
+        indices[bodyRows[index]] = index;
+    std::vector<std::array<uint32_t, 2>> ranges(count, {NoModelIndex, 0});
+    // The scene cooker emits every body's leaves contiguously in author order.
+    for (uint32_t row = 0; row < geometries.size(); ++row) {
+        const auto index = indices[geometries[row].indices[0]];
+        if (index != NoModelIndex) {
+            auto &range = ranges[index];
+            range[0] = std::min(range[0], row);
+            range[1] = row + 1;
+        }
+    }
+    const auto rangeStorage = b.Shared("queryBodyGeometryRanges", ranges);
+    const auto request = b.Slot(12, BufferUsageFlags::TransferDestination);
+    const auto mask = b.Slot((uint64_t{count} + 31) / 32, BufferUsageFlags::TransferSource);
+    auto select = b.Dispatch("ray_queries", "select_body_bounds", count,
+                             {{2, geometry.frames, R},
+                              {3, geometry.shapes, R},
+                              {4, metadata, R},
+                              {20, geometry.bounds, R},
+                              {21, rangeStorage, R},
+                              {22, request, R},
+                              {23, mask, W, true}});
+    select.bindings.front().range.byteSize = geometries.size() * 4 * sizeof(ModelVector);
+    return {request, mask, std::move(bodyRows), std::move(select)};
+}
 } // namespace
 
 PreparedInxPhyGpuRayQuery InxPhyGpuPublishedRayQuery::Build(rhi::ComputeHost &host, ShaderCodeTarget target,
                                                             const InxPhyGpuModel &model,
                                                             const InxPhyGpuCollisionModel &collision, uint32_t capacity,
                                                             uint32_t sourceBodyCount,
-                                                            const std::vector<uint32_t> &centerOfMassRows)
+                                                            const std::vector<uint32_t> &centerOfMassRows,
+                                                            const std::vector<uint32_t> &bodyBoundsRows)
 {
     StepBuilder b(host, target, 1);
     auto poseGeometry = model.geometries;
@@ -1050,6 +1095,7 @@ PreparedInxPhyGpuRayQuery InxPhyGpuPublishedRayQuery::Build(rhi::ComputeHost &ho
         worldPoses = b.Dispatch(
             "position", "published_com_geom_to_global", model.dimensions.layout[0],
             {{9, geometry.geometries, R}, {10, geometry.frames, W, true}, {11, ray.hits, R}, {12, ray.settings, R}});
+    auto bounds = AddPublishedBodyBounds(b, geometry, ray.metadata, sourceBodyCount, poseGeometry, bodyBoundsRows);
     std::vector<std::shared_ptr<rhi::ComputeBuffer>> buffers;
     buffers.reserve(b.slots.size());
     for (const auto &slot : b.slots) {
@@ -1075,6 +1121,12 @@ PreparedInxPhyGpuRayQuery InxPhyGpuPublishedRayQuery::Build(rhi::ComputeHost &ho
     query.m_pack = BindDispatch(std::move(ray.pack), buffers);
     query.m_project = BindDispatch(std::move(ray.project), buffers);
     query.m_traceAll = BindDispatch(std::move(ray.traceAll), buffers);
+    if (bounds.select.kernel) {
+        query.m_selectBounds = BindDispatch(std::move(bounds.select), buffers);
+        query.m_boundsRequest = buffers[bounds.request];
+        query.m_boundsMask = buffers[bounds.mask];
+        query.m_bodyBoundsRows = std::make_shared<const std::vector<uint32_t>>(std::move(bounds.rows));
+    }
     if (worldPoses.kernel)
         query.m_geometry = BindDispatch(std::move(worldPoses), buffers);
     for (auto &dispatch : b.initialize)
@@ -1151,6 +1203,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     std::vector<ComputeWorkDispatch> rayDispatches;
     const bool publishedRaysEnabled = traceRays && controlSlots;
     ComputeWorkDispatch publishedGeometry;
+    BodyBoundsSlots publishedBodyBounds;
     std::optional<RaySlots> raySlots;
     std::optional<ContactSlots> contactSlots;
     std::optional<ContactResponse> response;
@@ -1197,13 +1250,20 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                     rayDispatches.push_back(b.dispatches.back());
                 }
                 raySlots = AddRayWork(b, model, *collision, geometry, rayLayout, rayDispatches, publishedRaysEnabled);
-                if (publishedRaysEnabled)
+                if (publishedRaysEnabled) {
                     publishedGeometry =
                         b.Dispatch("position", "published_geom_local_to_global", model.dimensions.layout[0],
                                    {{9, geometry.geometries, R},
                                     {10, geometry.frames, W, true},
                                     {11, states, R},
                                     {12, raySlots->settings, R}});
+                    std::vector<uint32_t> rows;
+                    for (uint32_t row = 1; row < nb; ++row)
+                        if (controls.motion[row] == DynamicControl || controls.motion[row] == KinematicControl)
+                            rows.push_back(row);
+                    publishedBodyBounds =
+                        AddPublishedBodyBounds(b, geometry, raySlots->metadata, nb, model.geometries, std::move(rows));
+                }
             }
             contactSlots = AddCollision(b, model, *collision, dimensions, geometry, capacity,
                                         solver ? solver->minimumRestitutionSpeed : 0.0f);
@@ -1740,6 +1800,13 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             publishedRays.m_rayWork = std::move(rayWork);
             if (publishedGeometry.kernel)
                 publishedRays.m_geometry = BindDispatch(std::move(publishedGeometry), buffers);
+            if (publishedBodyBounds.select.kernel) {
+                auto &bounds = publishedBodyBounds;
+                publishedRays.m_selectBounds = BindDispatch(std::move(bounds.select), buffers);
+                publishedRays.m_boundsRequest = buffers[bounds.request];
+                publishedRays.m_boundsMask = buffers[bounds.mask];
+                publishedRays.m_bodyBoundsRows = std::make_shared<const std::vector<uint32_t>>(std::move(bounds.rows));
+            }
         }
     }
     if (controlSlots) {
@@ -1888,6 +1955,75 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
     return m_publishedRays.Prepare(host, source, rayCount, publish, std::move(updates), deviceRays, outputs);
 }
 
+void InxPhyGpuPublishedRayQuery::AppendGeometry(std::vector<rhi::ComputeDispatchDesc> &dispatches,
+                                                const PhysicsGpuPoseSource &source) const
+{
+    if (!m_geometry.kernel)
+        return;
+    const uint32_t wordsPerRow = m_layout == PhysicsGpuPoseSource::Layout::OriginWXYZ ? 5u : 4u;
+    const uint64_t maxRows = UINT32_MAX / wordsPerRow;
+    const uint64_t rowBytes = wordsPerRow * sizeof(ModelVector);
+    if (!source.states || source.layout != m_layout || source.rowBytes != rowBytes || source.bodyCount != m_bodyCount ||
+        source.firstRow > maxRows || source.bodyCount > maxRows - source.firstRow ||
+        (source.firstRow + source.bodyCount) * rowBytes > source.states->GetByteSize())
+        throw std::invalid_argument("inxphygpu query requires a complete published body slot range");
+    auto &geometry = dispatches.emplace_back(m_geometry);
+    geometry.groupCountY = 1;
+    geometry.buffers[2] = source.states;
+    geometry.proof->reads[1] = {2, source.firstRow * rowBytes, source.bodyCount * rowBytes};
+    geometry.proof->writes.front().byteSize = 4 * sizeof(ModelVector) * m_geometryCount;
+}
+
+InxPhyGpuPreparedBodyBounds InxPhyGpuStep::PreparePublishedBodyBounds(const PhysicsGpuPoseSource &source,
+                                                                      const ModelVector &minimum,
+                                                                      const ModelVector &maximum, uint32_t layers,
+                                                                      bool triggers) const
+{
+    auto host = m_work->GetRecipe().GetHost();
+    return m_publishedRays.PrepareBodyBounds(host, source, minimum, maximum, layers, triggers, {});
+}
+
+InxPhyGpuPreparedBodyBounds
+InxPhyGpuPublishedRayQuery::PrepareBodyBounds(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
+                                              const ModelVector &minimum, const ModelVector &maximum, uint32_t layers,
+                                              bool triggers, std::vector<rhi::ComputeBufferUpdate> updates) const
+{
+    if (!m_selectBounds.kernel)
+        return {};
+    const ModelWords settings{m_geometryCount, 0, 0, static_cast<uint32_t>(source.firstRow)};
+    auto &frame = updates.emplace_back(rhi::ComputeBufferUpdate{m_settings, 0, std::vector<uint8_t>(sizeof(settings))});
+    std::memcpy(frame.data.data(), settings.data(), sizeof(settings));
+    const ModelWords filter{static_cast<uint32_t>(m_bodyBoundsRows->size()), layers, static_cast<uint32_t>(triggers),
+                            0};
+    auto &request = updates.emplace_back(
+        rhi::ComputeBufferUpdate{m_boundsRequest, 0, std::vector<uint8_t>(2 * sizeof(ModelVector) + sizeof(filter))});
+    std::memcpy(request.data.data(), minimum.data(), sizeof(ModelVector));
+    std::memcpy(request.data.data() + sizeof(ModelVector), maximum.data(), sizeof(ModelVector));
+    std::memcpy(request.data.data() + 2 * sizeof(ModelVector), filter.data(), sizeof(filter));
+    auto dispatches = std::exchange(m_initialize, {});
+    AppendGeometry(dispatches, source);
+    dispatches.push_back(m_selectBounds);
+    return {rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches),
+                                     {{m_boundsMask, 0, m_boundsMask->GetByteSize()}}),
+            m_bodyBoundsRows};
+}
+
+std::vector<uint32_t> InxPhyGpuPreparedBodyBounds::ReadMatchingRows() const
+{
+    if (!packet)
+        return {};
+    std::vector<uint32_t> mask((rows->size() + 31) / 32);
+    packet->Readback(0)->ReadInto(mask.data(), mask.size() * sizeof(uint32_t));
+    std::vector<uint32_t> matches;
+    for (size_t word = 0; word < mask.size(); ++word) {
+        auto row = word * 32;
+        for (auto bits = mask[word]; bits != 0; bits >>= 1, ++row)
+            if (bits & 1u)
+                matches.push_back((*rows)[row]);
+    }
+    return matches;
+}
+
 InxPhyGpuPreparedRayBatch
 InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, uint32_t rayCount,
                                     bool publish, std::vector<rhi::ComputeBufferUpdate> updates,
@@ -1896,15 +2032,6 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
 {
     if (!m_settings || rayCount == 0 || rayCount > m_capacity)
         throw std::invalid_argument("inxphygpu published ray batch exceeds the scene query layout");
-    const uint32_t wordsPerRow = m_layout == PhysicsGpuPoseSource::Layout::OriginWXYZ ? 5u : 4u;
-    const uint64_t maxRows = UINT32_MAX / wordsPerRow;
-    const uint64_t rowBytes = wordsPerRow * sizeof(ModelVector);
-    if (m_geometry.kernel &&
-        (!source.states || source.layout != m_layout || source.rowBytes != rowBytes ||
-         source.bodyCount != m_bodyCount || source.firstRow > maxRows || source.bodyCount > maxRows - source.firstRow ||
-         (source.firstRow + source.bodyCount) * rowBytes > source.states->GetByteSize()))
-        throw std::invalid_argument("inxphygpu ray query requires a complete published body slot range");
-
     const ModelWords settings{m_geometryCount, rayCount, allHitCapacity ? allHitCapacity : 1u,
                               static_cast<uint32_t>(source.firstRow)};
     auto &params =
@@ -1945,13 +2072,7 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
         pack.proof->reads[2] = {2, rays.directions.byteOffset, vectorBytes};
         pack.proof->writes.front().byteSize = inputBytes;
     }
-    if (m_geometry.kernel) {
-        auto &geometry = dispatches.emplace_back(m_geometry);
-        geometry.groupCountY = 1;
-        geometry.buffers[2] = source.states;
-        geometry.proof->reads[1] = {2, source.firstRow * rowBytes, source.bodyCount * rowBytes};
-        geometry.proof->writes.front().byteSize = 4 * sizeof(ModelVector) * m_geometryCount;
-    }
+    AppendGeometry(dispatches, source);
     dispatches.insert(dispatches.end(), m_rayWork.begin(), m_rayWork.end());
     for (auto &dispatch : dispatches)
         dispatch.groupCountY = 1;
