@@ -539,6 +539,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
     const auto reservations = b.Zero("contactReservations", across(4 * uint64_t{contacts}));
     const auto rowStore = b.Zero("constraintRows", across(12 * uint64_t{rows}));
     const auto columnStore = b.Zero("constraintColumns", across(2 * uint64_t{columns}));
+    const auto transposeAddress = b.Zero("constraintTransposeAddress", across(2 * uint64_t{nv} + 1));
+    const auto transposeEntries = b.Zero("constraintTransposeEntries", across(2 * uint64_t{columns}));
     const auto residual = b.Zero("constraintResidual", across(rows));
     const auto evaluation = b.Zero("constraintEvaluation", across(3 * uint64_t{rows}));
     const auto acceleration = b.Zero("contactAcceleration", across(nv));
@@ -640,7 +642,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {5, counters, R},
            {12, dyn.smoothAcceleration, R},
            {13, dyn.warmstart, R},
-           {14, acceleration, W}});
+           {14, acceleration, W},
+           {23, transposeAddress, W}});
     auto objective = b.Dispatch("contact_constraints", "evaluate_contact_objective", rows,
                                 {{0, settings, R},
                                  {1, stream.records, R},
@@ -670,7 +673,6 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
     const auto worldState = b.Slot(across(12));
     const auto gradient = b.Zero("contactGradient", across(nv));
     const auto preconditioned = b.Zero("preconditionedContactGradient", across(nv));
-    const auto force = b.Zero("contactForce", across(nv));
     const auto history = b.Zero("contactSearchHistory", across(4 * uint64_t{nv}));
     const auto products = b.Zero("contactMassProducts", across(2 * uint64_t{nv}));
     const auto ray = b.Zero("contactSearchRay", across(rows));
@@ -696,6 +698,19 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
     b.Add("contact_cg", "prepare_contact_solve_dispatches", 1,
           {{0, settings, R}, {1, opt, R}, {16, worldState, R}, {28, indirectSlot, W, true}});
     b.dispatches.back().groupCountY = 1;
+    b.Add("contact_cg", "count_cg_transpose", rows,
+          {{0, settings, R}, {3, rowStore, R}, {4, columnStore, R}, {16, worldState, R}, {23, transposeAddress, RW}});
+    indirectLast(Rows);
+    b.Add("contact_cg", "prefix_cg_transpose", 1, {{0, settings, R}, {16, worldState, R}, {23, transposeAddress, RW}});
+    indirectLast(Worlds);
+    b.Add("contact_cg", "scatter_cg_transpose", rows,
+          {{0, settings, R},
+           {3, rowStore, R},
+           {4, columnStore, R},
+           {16, worldState, R},
+           {23, transposeAddress, RW},
+           {24, transposeEntries, W}});
+    indirectLast(Rows);
     b.Add("contact_constraints", "contact_residual", rows,
           {{0, settings, R},
            {5, counters, R},
@@ -760,17 +775,17 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
 
     // A fixed recipe records the upper bound. Each world's progress controls its device work.
     for (uint32_t iteration = 0; iteration <= solver.iterations; ++iteration) {
-        b.Add("contact_cg", "cg_project_gradient", 1,
+        const bool first = iteration == 0;
+        b.Add("contact_cg", first ? "cg_project_first_gradient" : "cg_project_gradient", nv,
               {{0, settings, R},
-               {3, rowStore, R},
-               {4, columnStore, R},
                {7, evaluation, R},
                {9, dyn.smoothForce, R},
                {12, gradient, W},
-               {14, force, RW},
                {16, worldState, R},
-               {17, products, R}});
-        indirectLast(Worlds);
+               {17, products, R},
+               {23, transposeAddress, R},
+               {24, transposeEntries, first ? RW : R}});
+        indirectLast(Dofs);
         b.dispatches.insert(b.dispatches.end(), precondition.begin(), precondition.end());
         b.Add("contact_cg", "cg_search_direction", 1,
               {{0, settings, R},

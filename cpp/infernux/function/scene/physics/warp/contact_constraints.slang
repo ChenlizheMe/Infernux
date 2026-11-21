@@ -8,6 +8,7 @@
 #include "constraint_data.slang"
 #include "constraint_parameters.slang"
 #include "constraint_stream.slang"
+#include "constraint_transpose.slang"
 #include "solver_worlds.slang"
 #include "prescribed_motion.slang"
 
@@ -442,6 +443,8 @@ void seed_contact_acceleration(uint3 id : SV_DispatchThreadID)
     const uint4 config = settings[1];
     if (id.x >= config.y)
         return;
+    const uint nv = config.y;
+    transposeAddress[transposeCursorBase(id.y, nv) + id.x].store(0u);
     const uint count = activeConstraintRows(id.y, settings[0]);
     if (count == NoIndex)
         return;

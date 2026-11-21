@@ -4,9 +4,9 @@
 // Slang adaptation of MuJoCo Warp _src/solver.py preconditioned CG.
 
 #include "contact_solve_common.slang"
+#include "constraint_transpose.slang"
 #include "convex_status.slang"
 
-[[vk::binding(24, 0)]] StructuredBuffer<uint> awakeWorldFlags;
 [[vk::binding(25, 0)]] StructuredBuffer<uint> candidateCount;
 [[vk::binding(26, 0)]] StructuredBuffer<uint> contactCounts;
 [[vk::binding(27, 0)]] RWStructuredBuffer<uint> contactStepStatus;
@@ -14,6 +14,7 @@
 [[vk::binding(30, 0)]] StructuredBuffer<uint> narrowphaseStatus;
 
 groupshared uint activeRowMaximum[CgWidth];
+groupshared uint transposePrefix[2][CgWidth];
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -65,22 +66,6 @@ void finish_contact_step(uint3 id : SV_DispatchThreadID)
     // A bounded solve may integrate its best accepted iterate. Capacity failure cannot.
     const uint earlier = cgOptions[1].y > 1u ? contactStepStatus[id.y] : 0u;
     contactStepStatus[id.y] = earlier | candidates | contactsOverflow | constraintsOverflow | invalid | workspaceOverflow;
-}
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void clear_sleeping_solver_outputs(uint3 id : SV_DispatchThreadID)
-{
-    if (awakeWorldFlags[id.y] != 0)
-        return;
-    const uint nv = settings[1].y;
-    if (id.x < nv)
-        constraintForce[id.y * nv + id.x].store(0u);
-    if (id.x == 0)
-    {
-        const CgWorld result = {uint4(0, Converged, 0, 0), float4(0.0), float2(0.0)};
-        worlds[id.y] = result;
-    }
 }
 
 [shader("compute")]
@@ -140,106 +125,157 @@ void cg_initial_mass_product(uint3 id : SV_DispatchThreadID)
     }
 }
 
-void addConstraintForce(uint index, float value)
+void distributeTransposeEntries<let Scatter : bool>(uint3 id)
 {
-    if (value == 0.0)
+    id = solverDispatchId(id);
+    const uint4 progress = worlds[id.y].progress;
+    if (progress.y != Running || id.x >= progress.z)
         return;
-    uint previous = constraintForce[index].load();
-    for (;;)
-    {
-        const uint requested = asuint(asfloat(previous) + value);
-        const uint observed = constraintForce[index].compareExchange(previous, requested);
-        if (observed == previous)
-            return;
-        previous = observed;
-    }
-}
 
-void syncCgStorage()
-{
-    __target_switch
+    const uint4 limits = settings[0];
+    const uint cursorBase = transposeCursorBase(id.y, settings[1].y);
+    const uint entryBase = id.y * limits.w;
+    const ConstraintRow row = rows[id.y * limits.z + id.x];
+    const uint columnBase = entryBase + row.layout.x;
+    for (uint i = 0; i < row.layout.y; ++i)
     {
-    case wgsl: __intrinsic_asm "storageBarrier()";
-    default: DeviceMemoryBarrierWithGroupSync();
-    }
-}
-
-bool projectCgForce<let Publish : bool>(uint world, uint lane)
-{
-    const uint4 progress = worlds[world].progress;
-    const uint status = broadcastCg(progress.y, lane);
-    if (status >= CapacityExceeded || (!Publish && status != Running))
-        return false;
-    const uint nv = settings[1].y;
-    const uint dofBase = world * nv;
-    for (uint i = lane; i < nv; i += CgWidth)
-        constraintForce[dofBase + i].store(0u);
-    syncCgStorage();
-
-    const uint4 limit = settings[0];
-    const uint rowBase = world * limit.z;
-    const uint columnBase = world * limit.w;
-    for (uint i = lane; i < progress.z; i += CgWidth)
-    {
-        const uint index = rowBase + i;
-        const ConstraintRow row = rows[index];
-        const uint base = columnBase + row.layout.x;
-        const float force = evaluation[index].force;
-        for (uint j = 0; j < row.layout.y; ++j)
+        const ConstraintColumn column = columns[columnBase + i];
+        if (column.value != 0.0)
         {
-            const ConstraintColumn column = columns[base + j];
-            addConstraintForce(dofBase + column.dof, column.value * force);
+            const uint index = transposeAddress[cursorBase + column.dof].add(1u);
+            if (Scatter)
+                transposeEntries[entryBase + index] = {id.x, column.value};
         }
     }
-    return true;
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void cg_project_iteration(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void count_cg_transpose(uint3 id : SV_DispatchThreadID)
 {
-    group = solverDispatchId(group);
-    projectCgForce<false>(group.y, lane);
+    distributeTransposeEntries<false>(id);
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void cg_project_gradient(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void prefix_cg_transpose(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     group = solverDispatchId(group);
     const uint world = group.y;
-    const bool projected = projectCgForce<false>(world, lane);
-    // The one workgroup for this world owns both the projection and its gradient.
-    syncCgStorage();
+    if (broadcastCg(worlds[world].progress.y, lane) != Running)
+        return;
+
     const uint nv = settings[1].y;
-    const uint dofBase = world * nv;
-    for (uint i = lane; i < nv; i += CgWidth)
+    const uint offsetBase = transposeOffsetBase(world, nv);
+    const uint cursorBase = transposeCursorBase(world, nv);
+    uint total = 0;
+    for (uint first = 0; first < nv; first += CgWidth)
     {
-        const uint index = dofBase + i;
-        gradient[index] = projected ?
-            massProducts[index].x - smoothForce[index] - asfloat(constraintForce[index].load()) : 0.0;
+        const uint dof = first + lane;
+        const uint count = dof < nv ? transposeAddress[cursorBase + dof].load() : 0u;
+        transposePrefix[0][lane] = count;
+        GroupMemoryBarrierWithGroupSync();
+        uint read = 0;
+        for (uint stride = 1; stride < CgWidth; stride *= 2)
+        {
+            const uint earlier = lane < stride ? 0u : transposePrefix[read][lane - stride];
+            transposePrefix[1 - read][lane] = transposePrefix[read][lane] + earlier;
+            GroupMemoryBarrierWithGroupSync();
+            read = 1 - read;
+        }
+        const uint start = total + transposePrefix[read][lane] - count;
+        total += transposePrefix[read][CgWidth - 1];
+        GroupMemoryBarrierWithGroupSync();
+        if (dof < nv)
+        {
+            transposeAddress[offsetBase + dof].store(start);
+            transposeAddress[cursorBase + dof].store(start);
+        }
+    }
+    if (lane == 0)
+        transposeAddress[offsetBase + nv].store(total);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void scatter_cg_transpose(uint3 id : SV_DispatchThreadID)
+{
+    distributeTransposeEntries<true>(id);
+}
+
+bool precedesTransposeEntry(TransposedConstraint a, TransposedConstraint b)
+{
+    return a.row < b.row || (a.row == b.row && asuint(a.value) < asuint(b.value));
+}
+
+void sortTransposeEntries(uint start, uint end)
+{
+    const uint count = end - start;
+    uint gap = 1;
+    while (gap < count / 3)
+        gap = 3 * gap + 1;
+    for (; gap != 0; gap /= 3)
+    {
+        for (uint i = start + gap; i < end; ++i)
+        {
+            const TransposedConstraint value = transposeEntries[i];
+            uint at = i;
+            while (at - start >= gap)
+            {
+                const TransposedConstraint earlier = transposeEntries[at - gap];
+                if (!precedesTransposeEntry(value, earlier))
+                    break;
+                transposeEntries[at] = earlier;
+                at -= gap;
+            }
+            transposeEntries[at] = value;
+        }
     }
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void cg_publish_force(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
-{
-    group = solverDispatchId(group);
-    projectCgForce<true>(group.y, lane);
-}
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void cg_gradient(uint3 id : SV_DispatchThreadID)
+void projectCgGradient<let First : bool>(uint3 id)
 {
     id = solverDispatchId(id);
     const uint nv = settings[1].y;
     if (id.x >= nv)
         return;
     const uint index = id.y * nv + id.x;
-    gradient[index] = worlds[id.y].progress.y == Running ?
-                      massProducts[index].x - smoothForce[index] - asfloat(constraintForce[index].load()) : 0.0;
+    float result = 0.0;
+    if (worlds[id.y].progress.y == Running)
+    {
+        const uint4 limits = settings[0];
+        const uint entryBase = id.y * limits.w;
+        const uint offset = transposeOffsetBase(id.y, nv) + id.x;
+        const uint start = entryBase + transposeAddress[offset].load();
+        const uint end = entryBase + transposeAddress[offset + 1].load();
+        // Canonicalize the integer scatter once per substep. Each lane owns its entire column.
+        if (First)
+            sortTransposeEntries(start, end);
+
+        const uint rowBase = id.y * limits.z;
+        precise float force = 0.0;
+        for (uint i = start; i < end; ++i)
+        {
+            const TransposedConstraint entry = transposeEntries[i];
+            force += entry.value * evaluation[rowBase + entry.row].force;
+        }
+        result = massProducts[index].x - smoothForce[index] - force;
+    }
+    gradient[index] = result;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cg_project_first_gradient(uint3 id : SV_DispatchThreadID)
+{
+    projectCgGradient<true>(id);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cg_project_gradient(uint3 id : SV_DispatchThreadID)
+{
+    projectCgGradient<false>(id);
 }
 
 [shader("compute")]

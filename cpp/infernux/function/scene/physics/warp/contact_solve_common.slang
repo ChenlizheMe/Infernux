@@ -39,7 +39,6 @@ struct CgWorld
 [[vk::binding(11, 0)]] StructuredBuffer<uint> massTopology;
 [[vk::binding(12, 0)]] RWStructuredBuffer<float> gradient;
 [[vk::binding(13, 0)]] StructuredBuffer<float> preconditionedGradient;
-[[vk::binding(14, 0)]] RWStructuredBuffer<Atomic<uint>> constraintForce;
 [[vk::binding(15, 0)]] RWStructuredBuffer<float4> directionHistory; // previous gradient, preconditioned, direction
 [[vk::binding(16, 0)]] RWStructuredBuffer<CgWorld> worlds;
 [[vk::binding(17, 0)]] RWStructuredBuffer<float2> massProducts; // M * acceleration, M * direction
