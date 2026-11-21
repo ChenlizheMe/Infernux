@@ -324,7 +324,7 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
     assert resolve._parameters["divisor"] == filter_divisor
     noise = graph.get_texture(gather._input_bindings["blue_noise"])
     assert noise.size == (256, 256) and noise.asset_guid
-    assert resolve._input_bindings["blue_noise"] == noise.name
+    assert "blue_noise" not in resolve._input_bindings
     assert len(gather._write_colors) == 3
     assert history._input_bindings["reprojection"] == surface_reprojection._write_colors[0]
     for slot, channel in enumerate(("red", "green", "blue")):

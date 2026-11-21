@@ -59,12 +59,3 @@ def sh_blue_noise(texture: shader.Color2D, pixel: shader.ivec2, index: shader.ui
     offset = shader.frac(0.5 + shader.float(index) * shader.vec2(0.7548776865, 0.5698403120))
     texel = (pixel + shader.ivec2(offset * 256.0)) & shader.ivec2(255)
     return shader.load(texture, texel, 0).xy * (255.0 / 256.0) + (0.5 / 256.0)
-
-
-def sh_resolve_offset(pattern: shader.uint, tap: int) -> shader.ivec2:
-    if tap == 0:
-        return shader.ivec2(0)
-    # Five offsets in six-bit fields. Each signed coordinate spans [-2, 2].
-    offsets = shader.uvec4(612369161, 403289690, 471905354, 25773075)
-    bits = offsets[pattern] >> (6 * (tap - 1))
-    return shader.ivec2(bits & shader.uint(7), (bits >> 3) & shader.uint(7)) - shader.ivec2(2)

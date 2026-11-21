@@ -1,7 +1,7 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
 from infernux.shader.lib.ray_moments import sh_diffuse_irradiance
-from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_blue_noise, sh_guide_pixel, sh_resolve_offset
+from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_pixel
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -12,7 +12,6 @@ class RayDiffuseResolve(shader.fullscreen):
     green_sh = shader.input("green_sh", shader.Color2D)
     blue_sh = shader.input("blue_sh", shader.Color2D)
     primary = shader.input("primary", shader.UInt2D)
-    blue_noise = shader.input("blue_noise", shader.Color2D)
     frame = shader.input("frame", shader.Color2D)
     divisor = shader.parameter.int(default=2)
 
@@ -34,15 +33,14 @@ class RayDiffuseResolve(shader.fullscreen):
         tolerance = 0.001 + 0.002 * linear_eye_depth(depth, camera)
         orthographic = shader.abs(camera.projection_matrix[3][3]) > 0.5
         size_to_clip = shader.vec2(2.0, -2.0) / shader.vec2(full)
-        pattern = shader.uint(3.0 * sh_blue_noise(self.blue_noise, pixel, index).x + 0.5)
+        subpixel = (shader.vec2(pixel - cell * self.divisor) + 0.5) / shader.float(self.divisor)
         red = shader.vec4(0.0)
         green = shader.vec4(0.0)
         blue = shader.vec4(0.0)
         total = 0.0
-        for tap in range(6):
-            if tap == 3 and total >= 0.001:
-                break
-            at = cell + sh_resolve_offset(pattern, tap)
+        for tap in range(9):
+            offset = shader.ivec2(tap % 3 - 1, int(tap / 3) - 1)
+            at = cell + offset
             if shader.any(at < shader.ivec2(0)) or shader.any(at >= extent):
                 continue
             # Read the raster sample that supplied this coefficient cell's guide.
@@ -57,6 +55,10 @@ class RayDiffuseResolve(shader.fullscreen):
             inverse_w = 1.0 if orthographic else camera.depth_params.z * other_depth + camera.depth_params.w
             plane_weight = shader.saturate(1.3333333 - plane_error / (3.0 * tolerance * inverse_w))
             weight = sh_bilateral(depth, other_depth, 1.0, 0.0, 0.0) * plane_weight
+            # Filter around the coefficient cell centers. The raster phase can
+            # validate a donor, but does not move the reconstruction footprint.
+            radius = shader.vec2(offset) + 0.5 - subpixel
+            weight *= shader.exp2(-shader.dot(radius, radius))
             red += weight * shader.load(self.red_sh, at, 0)
             green += weight * shader.load(self.green_sh, at, 0)
             blue += weight * shader.load(self.blue_sh, at, 0)
