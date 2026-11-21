@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../JointSettings.h"
 #include "../PhysicsContactTypes.h"
 #include "../PhysicsMass.h"
 #include "../PhysicsShapeAuthoring.h"
@@ -103,7 +104,7 @@ struct WarpSceneJoint
     glm::vec3 ownerAnchor{0.0f}; // Baked offset from the owner transform origin, in body axes.
     bool enableCollision = false;
     // This order matches the scene joint kinds in spatial_constraints.slang.
-    std::variant<std::monostate, WarpSceneHinge, WarpSceneSlider, WarpSceneDistance> settings;
+    std::variant<std::monostate, WarpSceneHinge, WarpSceneSlider, WarpSceneDistance, SwingTwistJointSettings> settings;
 };
 
 enum class WarpSceneJointKind : uint32_t
@@ -112,6 +113,7 @@ enum class WarpSceneJointKind : uint32_t
     Hinge,
     Slider,
     Distance,
+    SwingTwist,
 };
 
 struct WarpSceneJointBinding

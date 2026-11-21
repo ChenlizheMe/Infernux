@@ -257,8 +257,9 @@ void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
         const auto &joint = binding->second;
         if (const auto *limits = std::get_if<WarpJointLimits>(&update.value)) {
             const auto minimum = limits->minimum, maximum = limits->maximum;
-            if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum ||
-                joint.kind == WarpSceneJointKind::Fixed ||
+            const bool axial = joint.kind == WarpSceneJointKind::Hinge || joint.kind == WarpSceneJointKind::Slider ||
+                               joint.kind == WarpSceneJointKind::Distance;
+            if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum || !axial ||
                 (joint.kind == WarpSceneJointKind::Slider && (minimum > 0.0f || maximum < 0.0f)) ||
                 (joint.kind == WarpSceneJointKind::Distance &&
                  (joint.autoDistance || !limits->enabled || minimum < 0.0f)))

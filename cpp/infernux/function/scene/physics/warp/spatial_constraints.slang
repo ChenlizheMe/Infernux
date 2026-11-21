@@ -13,6 +13,7 @@ static const uint SceneJointWords = 10;
 static const uint SceneHinge = 1;
 static const uint SceneSlider = 2;
 static const uint SceneDistance = 3;
+static const uint SceneSwingTwist = 4;
 
 struct HingeDrive
 {
@@ -171,9 +172,202 @@ AxialRows hingeRows(uint4 controls, HingeDrive drive, float angle, float speed, 
     return result;
 }
 
+struct AngularRow
+{
+    float3 axis; // Unit Jacobian direction in the connected endpoint frame.
+    float4 response;
+    uint kind;
+};
+
+struct AngularRows
+{
+    AngularRow rows[6];
+    uint count;
+};
+
+struct SwingTwistCoordinates
+{
+    float3 swing; // W, Y, Z. The twist component rotates around X.
+    float twist;
+};
+
+SwingTwistCoordinates swingTwistCoordinates(float4 q)
+{
+    const float h = length(q.xy);
+    if (h < 1e-7)
+        return {float3(0.0, q.zw), 0.0};
+    const float2 swingPlane = (q.x * q.zw + q.y * float2(-q.w, q.z)) / h;
+    return {float3(h, swingPlane), wrapHingeAngle(2.0 * atan2(q.y, q.x))};
+}
+
+float wrapTwistToRange(float value, float2 bounds)
+{
+    const float center = 0.5 * (bounds.x + bounds.y);
+    return center + wrapHingeAngle(value - center);
+}
+
+float4 limitSwingTwistTarget(float4 q, float4 limits, bool elliptic)
+{
+    const SwingTwistCoordinates coordinates = swingTwistCoordinates(q);
+    float3 swing = coordinates.swing;
+    if (elliptic)
+    {
+        const float ellipse = length(swing.yz / sin(0.5 * limits.wz));
+        if (ellipse > 1.0)
+        {
+            swing.yz /= ellipse;
+            swing.x = sqrt(max(0.0, 1.0 - dot(swing.yz, swing.yz)));
+        }
+    }
+    else
+    {
+        const float2 denominator = swing.x == 0.0 ? float2(swing.y == 0.0, swing.z == 0.0) : float2(swing.x);
+        const float2 angle = atan2(swing.yz, denominator);
+        const float2 bounded = clamp(angle, -0.5 * limits.wz, 0.5 * limits.wz);
+        if (any(angle != bounded))
+        {
+            const float2 cs = cos(bounded);
+            const float2 sn = sin(bounded);
+            swing = normalize(float3(cs.x * cs.y, sn.x * cs.y, cs.x * sn.y));
+        }
+    }
+    const float angle = 0.5 * clamp(wrapTwistToRange(coordinates.twist, limits.xy), limits.x, limits.y);
+    return mulQuat(float4(swing.x, 0.0, swing.yz), float4(cos(angle), sin(angle), 0.0, 0.0));
+}
+
+void appendAngularLimit(inout AngularRows result, float value, float2 bounds, float3 gradient,
+                        float3 relativeVelocity, float weight, float timestep, bool hasLower = true)
+{
+    const float width = length(gradient);
+    if (width < 1e-7)
+        return;
+    const float3 axis = gradient / width;
+    const float speed = dot(axis, relativeVelocity);
+    const float predicted = value + timestep * speed * width;
+    const bool locked = bounds.x == bounds.y;
+    const bool upper = !locked && (value > bounds.y || (value >= bounds.x && predicted > bounds.y));
+    const bool lower = hasLower && (value < bounds.x || predicted < bounds.x);
+    if (!locked && !upper && !lower)
+        return;
+    const float direction = upper ? -1.0 : 1.0;
+    const float distance = direction * (value - (upper ? bounds.y : bounds.x)) / width;
+    const float gap = locked || distance < 0.0 ? 0.2 * distance : distance;
+    const float reference = -(gap + timestep * direction * speed) / (timestep * timestep);
+    const float diagonal = constraintDiagonal(weight, MaxImpedance);
+    result.rows[result.count++] = {direction * axis, float4(distance, reference, diagonal, 0.0),
+                                   locked ? EqualityRow : LimitRow};
+}
+
+// Match the authored angular frame and cone/pyramid conventions with a device-side
+// Jacobian of the swing-twist coordinates. Limits and motors share the sparse solver.
+AngularRows swingTwistRows(uint record, float4 relative, float3 relativeVelocity, float weight, float timestep)
+{
+    AngularRows result;
+    result.count = 0u;
+    const float4 angles = asfloat(spatialModel[record]); // Twist min/max, plane (Z), normal (Y).
+    const uint3 modes = spatialModel[record + 1].xyz;
+    const SwingTwistCoordinates coordinates = swingTwistCoordinates(relative);
+    const float3 swing = coordinates.swing;
+    const float2 swingLimits = angles.wz;
+    // Evaluate the boundary normal halfway through the free angular displacement.
+    // A normal frozen at the start of the step does spurious work while sliding
+    // around a curved cone and systematically gains energy.
+    const float angularSpeed = length(relativeVelocity);
+    const float4 midpoint = angularSpeed > 0.0 ?
+        mulQuat(axisAngleQuat(relativeVelocity / angularSpeed, 0.5 * timestep * angularSpeed), relative) : relative;
+    const float3 midSwing = swingTwistCoordinates(midpoint).swing;
+    const float h = midSwing.x;
+    const float3 dw = -0.5 * midpoint.yzw;
+    const float3 dx = 0.5 * float3(midpoint.x, midpoint.w, -midpoint.z);
+    const float3 dy = 0.5 * float3(-midpoint.w, midpoint.x, midpoint.y);
+    const float3 dz = 0.5 * float3(midpoint.z, -midpoint.y, midpoint.x);
+    const float inverseH = 1.0 / max(h, 1e-7);
+    const float3 dh = (midpoint.x * dw + midpoint.y * dx) * inverseH;
+    const float3 swingY = (midpoint.x * dy + midpoint.z * dw - midpoint.y * dz - midpoint.w * dx - midSwing.y * dh) * inverseH;
+    const float3 swingZ = (midpoint.x * dz + midpoint.w * dw + midpoint.y * dy + midpoint.z * dx - midSwing.z * dh) * inverseH;
+    const float3 twist = h > 1e-7 ? 2.0 * (midpoint.x * dx - midpoint.y * dw) * inverseH * inverseH : float3(1, 0, 0);
+    if (angles.x > -PhysicsPi || angles.y < PhysicsPi)
+    {
+        const float angle = wrapTwistToRange(coordinates.twist, angles.xy);
+        appendAngularLimit(result, angle, angles.xy, twist, relativeVelocity, weight, timestep);
+    }
+
+    const bool elliptic = modes.x == 0 && all(swingLimits > 0.0) && any(swingLimits < PhysicsPi);
+    if (elliptic)
+    {
+        const float2 radius = sin(0.5 * swingLimits);
+        const float2 ellipse = swing.yz / radius;
+        if (h > 1e-4)
+        {
+            const float2 gradient = 2.0 * midSwing.yz / (radius * radius);
+            appendAngularLimit(result, dot(ellipse, ellipse), float2(0.0, 1.0),
+                               gradient.x * swingY + gradient.y * swingZ, relativeVelocity, weight, timestep, false);
+        }
+        else
+        {
+            // At a half turn, the ellipse's squared coordinate has zero radial slope.
+            const float2 direction = normalize(midSwing.yz);
+            const float bound = 2.0 * asin(min(1.0, 1.0 / length(direction / radius)));
+            appendAngularLimit(result, 2.0 * atan2(length(swing.yz), swing.x), float2(0.0, bound),
+                               float3(0.0, direction), relativeVelocity, weight, timestep, false);
+        }
+    }
+    else
+    {
+        const float3 derivatives[2] = {swingY, swingZ};
+        for (uint axis = 0; axis < 2; ++axis)
+        {
+            const float part = midSwing[axis + 1];
+            const float norm = h * h + part * part;
+            if (swingLimits[axis] < PhysicsPi && norm > 1e-14)
+            {
+                const float currentPart = swing[axis + 1];
+                const float angle = swing.x == 0.0 && currentPart == 0.0 ? 0.0 : 2.0 * atan2(currentPart, swing.x);
+                const float3 gradient = (2.0 / norm) * (h * derivatives[axis] - part * dh);
+                appendAngularLimit(result, angle, float2(-swingLimits[axis], swingLimits[axis]), gradient,
+                                   relativeVelocity, weight, timestep);
+            }
+        }
+    }
+
+    const float4 springs = asfloat(spatialModel[record + 2]);
+    const float3 caps = asfloat(spatialModel[record + 3].xyz);
+    float4 offset = float4(0.0);
+    if (modes.y >= 2 || modes.z >= 2)
+    {
+        const float4 target = limitSwingTwistTarget(asfloat(spatialModel[record + 4]), angles, elliptic);
+        offset = mulQuat(conjugateQuaternion(relative), dot(relative, target) < 0.0 ? -target : target);
+    }
+    const float3 velocity = asfloat(spatialModel[record + 5].xyz);
+    for (uint axis = 0; axis < 3; ++axis)
+    {
+        const bool isTwist = axis == 0;
+        const uint mode = isTwist ? modes.z : modes.y;
+        const float cap = mode == 0 ? caps.z : (isTwist ? caps.y : caps.x);
+        const float2 spring = isTwist ? springs.zw : springs.xy;
+        if (cap <= 0.0 || (mode == 2 && spring.x == 0.0) || (mode == 3 && all(spring == 0.0)))
+            continue;
+        float3 basis = float3(0.0);
+        basis[axis] = 1.0;
+        const float3 direction = rotateVector(basis, relative);
+        const float speed = dot(direction, relativeVelocity);
+        const float errorVelocity = ((mode & 1u) != 0 ? velocity[axis] : 0.0) - speed;
+        float diagonal = 1.0 / (timestep * weight);
+        float reference = errorVelocity / timestep;
+        if (mode >= 2)
+        {
+            diagonal = timestep * (spring.y + timestep * spring.x);
+            reference = (spring.x * (2.0 * offset[axis + 1] + timestep * errorVelocity) +
+                spring.y * errorVelocity) / diagonal;
+        }
+        result.rows[result.count++] = {direction, float4(0.0, reference, diagonal, cap), FrictionRow};
+    }
+    return result;
+}
+
 void emitSpatialRows<let SceneJoint : bool>(uint3 id)
 {
-    const uint4 model = spatialModel[0]; // Descriptor count and equality activation stride.
+    const uint4 model = spatialModel[0]; // Descriptor count, then angular data offset or equality activation stride.
     if (id.x >= model.x)
         return;
     const uint record = 1 + (SceneJoint ? SceneJointWords : SpatialEqualityWords) * id.x;
@@ -185,10 +379,12 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     const uint4 config = settings[1];
     const uint bodyBase = id.y * config.x;
     const uint dofBase = id.y * config.y;
-    const uint jointType = SceneJoint ? spatialModel[record + 9].x : 0u;
+    const uint2 joint = SceneJoint ? spatialModel[record + 9].xy : uint2(0u);
+    const uint jointType = joint.x;
     const bool hinge = jointType == SceneHinge;
     const bool slider = jointType == SceneSlider;
     const bool distance = jointType == SceneDistance;
+    const bool swingTwist = jointType == SceneSwingTwist;
     const uint linearRows = distance ? 0u : (slider ? 2u : 3u);
     const uint angularRows = span.w - linearRows;
     const uint4 reference = spatialModel[record + 8]; // roots, inverse weights as float bits
@@ -201,6 +397,7 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     const float4 orientationAInverse = conjugateQuaternion(a.orientation);
     const float4 orientationBInverse = conjugateQuaternion(b.orientation);
     const float4 relative = mulQuat(orientationBInverse, a.orientation);
+    const float3 relativeVelocity = rotateVector(a.omega - b.omega, orientationBInverse);
     const float3 hingeAxis = rotateVector(float3(0.0, 0.0, 1.0), b.orientation);
     const float3 separation = a.point - b.point;
     const float3 pointVelocity = a.pointVelocity - b.pointVelocity;
@@ -217,6 +414,8 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     const uint4 controls = SceneJoint ? sceneParameters[parameterIndex].limits : uint4(0u);
     AxialRows axial;
     axial.count = 0;
+    AngularRows swing;
+    swing.count = 0;
     if (hinge)
     {
         const float theta = wrapHingeAngle(2.0 * atan2(relative.w, relative.x));
@@ -231,7 +430,9 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
         appendAxisLimit<true>(axial, limit, slider ? slide.z : separationLength, speed, asfloat(reference.z),
                               timestep, config.w, parameters, spring, !distance || limit.x > 0.0);
     }
-    const uint totalRows = span.w + axial.count;
+    else if (swingTwist)
+        swing = swingTwistRows(model.y + joint.y, relative, relativeVelocity, asfloat(reference.w), timestep);
+    const uint totalRows = span.w + axial.count + swing.count;
     if (totalRows == 0)
         return;
     const uint2 block = reserveConstraintBlock(id.y, totalRows, source.w);
@@ -267,6 +468,8 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
         linearShift += linearDot * speed;
 
         const float direction = float(inA) - float(inB);
+        if (angularRows != 0u || swing.count != 0u)
+            angularShift += direction * derivative.angular.xyz * speed;
         if (angularRows != 0u)
         {
             const float4 relativeAxis = mulQuat(mulQuat(orientationBInverse,
@@ -275,7 +478,6 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
             for (uint axis = 0; axis < angularRows; ++axis)
                 columns[columnBase + (axis + linearRows) * source.w + j] = {support.x, angular[axis]};
             angularVelocity += angular * speed;
-            angularShift += direction * derivative.angular.xyz * speed;
         }
         if (slider && inA)
             sliderAngularShift += derivative.angular.xyz * speed;
@@ -285,6 +487,12 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
                                 (slider ? linearJacobian.z : dot(radial, linear));
             for (uint extra = 0; extra < axial.count; ++extra)
                 columns[columnBase + (span.w + extra) * source.w + j] = {support.x, axial.rows[extra].direction * value};
+        }
+        if (swing.count != 0)
+        {
+            const float3 value = rotateVector(direction * motion.angular.xyz, orientationBInverse);
+            for (uint extra = 0; extra < swing.count; ++extra)
+                columns[columnBase + (span.w + extra) * source.w + j] = {support.x, dot(swing.rows[extra].axis, value)};
         }
     }
 
@@ -353,6 +561,18 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
         rows[rowBase + ordinal] = {uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
             float4(row.response.x, 0.0, row.direction * speed, row.response.y - row.direction * axialShift),
             row.response.z, row.response.w, row.kind};
+    }
+    if (swing.count != 0)
+    {
+        const float3 bias = rotateVector(angularShift - cross(b.omega, a.omega - b.omega), orientationBInverse);
+        for (uint extra = 0; extra < swing.count; ++extra)
+        {
+            const uint ordinal = span.w + extra;
+            const AngularRow row = swing.rows[extra];
+            rows[rowBase + ordinal] = {uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
+                float4(row.response.x, 0.0, dot(row.axis, relativeVelocity), row.response.y - dot(row.axis, bias)),
+                row.response.z, row.response.w, row.kind};
+        }
     }
 }
 

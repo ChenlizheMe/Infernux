@@ -17,6 +17,7 @@
 #include "../Scene.h"
 #include "../SceneManager.h"
 #include "../SliderJoint.h"
+#include "../SwingTwistJoint.h"
 #include "../TagLayerManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
@@ -3847,6 +3848,8 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
                                                distance->GetMaximumDistance(),
                                                distance->GetStiffness(),
                                                distance->GetDamping()};
+        } else if (const auto *swing = dynamic_cast<const SwingTwistJoint *>(joint)) {
+            model.settings = swing->m_settings;
         } else if (!dynamic_cast<const FixedJoint *>(joint)) {
             throw std::invalid_argument(std::string("Warp scene setup does not support ") + joint->GetTypeName());
         }
