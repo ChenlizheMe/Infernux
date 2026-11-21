@@ -21,6 +21,7 @@ These Slang entries follow MuJoCo Warp's shared model and world-indexed data. Th
 | `primitive_contacts.slang`, `box_contacts.slang`, `capsule_box.slang` | Plane against sphere, capsule, ellipsoid, cylinder or box, sphere against sphere, capsule, cylinder or box, capsule against capsule or box, and oriented box against box | `clear_contact_count`, `collide_primitives` |
 | `convex_contacts.slang` | Native GJK and EPA convex pairs, face and edge manifolds, and plane against mesh hull | `clear_convex_status`, `collide_convex` |
 | `heightfield_contacts.slang` | Heightfield versus convex shapes, local prism traversal and contact reduction | `collide_heightfield` |
+| `ray_queries.slang` | Batched closest ray hits against primitives, heightfields and triangle meshes | `raycast_worlds` |
 | `contact_constraints.slang` | Sparse contact Jacobian, constraint row parameters and pyramidal or elliptic contact objective | `clear_constraint_counts`, `reserve_contact_rows`, `project_contact_rows`, `finish_contact_rows`, `seed_contact_acceleration`, `contact_residual`, `evaluate_contact_objective` |
 | `joint_constraints.slang` | Hinge, slide and ball limits, scalar equality and DOF friction loss | `emit_joint_constraint_rows` |
 | `spatial_constraints.slang` | Connect and weld equality for body or site endpoints | `emit_spatial_equality_rows` |
@@ -100,9 +101,17 @@ The heightfield pass scans the convex shape's support subgrid in field-local spa
 
 Windows Vulkan single-step comparisons cover sphere, capsule, ellipsoid, cylinder, box and mesh hull against a rotated heightfield at one and eight worlds. Sphere and capsule contacts at prism boundaries still differ in wider batches. Verify contact selection and multi-step trajectories before routing production heightfields to this pass.
 
+The prism trace isolates one mismatch to the order of the Frank–Wolfe and cutoff exits. A rounded shape can reach an existing support with a gap on either side of zero. On the same tilted fixture, moving sphere and capsule positions by one representable FP32 interval changed contact identities in up to 14 of 128 worlds in Warp itself. Track active rows and resulting motion alongside raw contact identities in the cross-backend comparison.
+
 The convex model binds a single `uint4` array for each batch. Record 0 holds the worker count per world and the EPA vertex, face and horizon capacities. Record 1 holds the distance tolerance as float bits, the GJK and EPA iteration limits, and the maximum polygon vertex count. Record 2 holds the four section offsets measured in `uint4` records. The sections are the float-bit vertex and normal records, packed scalar adjacency, topology records, and packed scalar polygon and incidence links. The topology section starts with one descriptor per geometry. A mesh descriptor points at its face records and vertex-incidence records within that section. Face records hold the vertex link offset, vertex count and normal index. Vertex-incidence records hold the face link offset and incidence count. Scalar offsets within adjacency and link sections are measured in 32-bit words.
 
 Clear convex status once per step. Schedule `collide_convex` after primitive contact production and before row assembly. Dispatch X covers the configured workers in groups of 32 and dispatch Y covers worlds. Each worker reuses its scratch ranges across pairs and initializes each entry before loading it. Allocate `2 × vertex capacity + face capacity + 5 × maximum polygon vertex count` `uint4` records and `horizon capacity` `uint` records per worker. The compute submission declares those ranges as scratch writes and the shared contact stream and status as read-write outputs. The packaged convex stage uses 12 storage bindings, including the common narrowphase inputs and outputs.
+
+## Resident ray queries
+
+`raycast_worlds` uses one 64-lane group for each `(ray, world)` and reduces to the closest hit. Dispatch X is the ray count and dispatch Y is the world count. Ray inputs are shared when the settings select one input row or supplied per world. Each ray specifies its origin, maximum distance, unit direction, layer mask, optionally excluded body and whether to include static shapes. Equal distances select the lower geometry index. A miss writes distance `-1` and invalid geometry and body indices.
+
+Pass the geometry frames from position kinematics and the same immutable shapes, vertices and heightfields used by collision. The mesh descriptor indexes a triangle start and count in the query triangle buffer. Those triangles reference the original mesh vertices, including faces outside the collision hull topology. The current traversal follows Warp's tiled geometry scan. The heightfield query clips to the top and base bounds, scans the intersected subgrid and checks the exposed sides. Results stay in a device buffer with normal, distance and geometry and body IDs for queries or sensors.
 
 ## Contact constraints
 

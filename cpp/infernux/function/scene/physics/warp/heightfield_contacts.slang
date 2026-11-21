@@ -5,6 +5,7 @@
 
 #include "convex_penetration.slang"
 #include "contact_publish.slang"
+#include "heightfield_geometry.slang"
 
 static const uint HeightfieldCapacityExceeded = 6;
 static const float HeightfieldContactSpacing = 1.0e-3;
@@ -97,13 +98,6 @@ ConvexPenetration heightfieldPrismContact(ConvexGeometry prism, ConvexGeometry s
     return result;
 }
 
-float3 heightfieldSample(uint r, uint c, uint4 grid, float4 size, float2 step, float margin)
-{
-    const uint sample = grid.z + r * grid.y + c;
-    const float height = asfloat(convexModel[convexModel[3].y + sample / 4u][sample % 4u]);
-    return float3(float2(c, r) * step - size.xy, height * size.z + margin);
-}
-
 float4 loadHeightfieldPoint(uint base, uint index)
 {
     return asfloat(convexScratch[base + 2u * index]);
@@ -170,9 +164,8 @@ void collideHeightfieldPair(uint world, uint4 pair, CollisionShape terrain, Coll
     const CartesianFrame terrainFrame = geometryFrames[base + pair.x];
     const CartesianFrame local = heightfieldLocalFrame(terrainFrame, geometryFrames[base + pair.y]);
     ConvexGeometry shape = {local, other, 0.0, -1};
-    const uint fieldOffset = convexModel[3].x + 2u * terrain.type.y;
-    const uint4 grid = convexModel[fieldOffset];
-    const float4 size = asfloat(convexModel[fieldOffset + 1u]);
+    const HeightfieldGrid grid = heightfieldGrid(convexModel, terrain.type.y);
+    const float4 size = grid.size;
 
     const float3 x = float3(1.0, 0.0, 0.0), y = float3(0.0, 1.0, 0.0), z = float3(0.0, 0.0, 1.0);
     const float3 upper = float3(convexSupport(shape, x, convexModel).point.x,
@@ -185,7 +178,7 @@ void collideHeightfieldPair(uint world, uint4 pair, CollisionShape terrain, Coll
     if (any(lower - filterMargin > size.xyz) || any(upper + filterMargin < -float3(size.xy, size.w)))
         return;
 
-    const float2 intervals = float2(grid.y - 1u, grid.x - 1u);
+    const float2 intervals = float2(grid.layout.yx - 1u);
     const float2 gridScale = 0.5 * intervals / size.xy;
     const int2 begin = max(int2(0), int2(floor((lower.xy + size.xy) * gridScale)));
     const int2 end = min(int2(intervals), int2(ceil((upper.xy + size.xy) * gridScale)));
@@ -200,13 +193,13 @@ void collideHeightfieldPair(uint world, uint4 pair, CollisionShape terrain, Coll
     uint count = 0;
     for (int row = begin.y; row < end.y && count < candidateCapacity; ++row)
     {
-        float3 a = heightfieldSample(uint(row + 1), uint(begin.x), grid, size, step, margin);
-        float3 b = heightfieldSample(uint(row), uint(begin.x), grid, size, step, margin);
+        float3 a = heightfieldVertex(convexModel, grid, uint2(begin.x, row + 1), step, margin);
+        float3 b = heightfieldVertex(convexModel, grid, uint2(begin.x, row), step, margin);
         for (int col = begin.x + 1; col <= end.x && count < candidateCapacity; ++col)
         {
             for (uint corner = 0; corner < 2 && count < candidateCapacity; ++corner)
             {
-                const float3 c = heightfieldSample(uint(row + 1 - int(corner)), uint(col), grid, size, step, margin);
+                const float3 c = heightfieldVertex(convexModel, grid, uint2(col, row + 1 - int(corner)), step, margin);
                 const ConvexGeometry prism = heightfieldPrism(a, b, c, size.w);
                 const float height = max(a.z, max(b.z, c.z));
                 a = b;
