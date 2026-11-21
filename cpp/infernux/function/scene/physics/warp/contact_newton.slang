@@ -263,45 +263,43 @@ void seal_newton_pattern(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void clear_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+void initialize_newton_matrix(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    group = solverDispatchId(group);
-    const uint world = group.y;
-    if (worlds[world].progress.y != Running)
+    const uint world = solverDispatchId(group).y;
+    if (broadcastCg(worlds[world].progress.y, lane) != Running)
         return;
-    const uint count = tileCount();
-    const uint words = patternWords(count);
-    const uint used = hessianPattern[patternBase(world, count, count, words) + count].load();
-    const uint base = world * cgOptions[0].w * NewtonTileArea;
-    if (lane == 0)
-        hessianPattern[factorErrorAddress(world, count, words)].store(0);
-    for (uint i = lane; i < used * NewtonTileArea; i += CgWidth)
-        hessianValues[base + i].store(0);
-}
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void add_newton_mass(uint3 id : SV_DispatchThreadID)
-{
-    id = solverDispatchId(id);
+    // The symbolic prefix assigns each tile column a disjoint run of numeric tiles.
     const uint count = tileCount();
-    if (id.x >= count * NewtonTile || worlds[id.y].progress.y != Running)
-        return;
-    const uint nv = settings[1].y;
     const uint words = patternWords(count);
-    if (id.x >= nv)
+    const uint offsets = patternBase(world, count, count, words);
+    const uint begin = hessianPattern[offsets + group.x].load();
+    const uint end = hessianPattern[offsets + group.x + 1].load();
+    const uint base = world * cgOptions[0].w * NewtonTileArea;
+    if (group.x == 0 && lane == 0)
+        hessianPattern[factorErrorAddress(world, count, words)].store(0);
+    for (uint i = begin * NewtonTileArea + lane; i < end * NewtonTileArea; i += CgWidth)
+        hessianValues[base + i].store(0);
+    syncNewtonStorage();
+
+    // The mass topology is symmetric, so its column DOF lists the rows to seed.
+    if (lane >= NewtonTile)
+        return;
+    const uint col = group.x * NewtonTile + lane;
+    const uint nv = settings[1].y;
+    if (col >= nv)
     {
-        hessianValues[valueAddress(id.y, id.x, id.x, count, words)].store(asuint(1.0));
+        hessianValues[valueAddress(world, col, col, count, words)].store(asuint(1.0));
         return;
     }
-    const uint massBase = id.y * cgOptions[0].z;
-    for (uint i = massTopology[id.x]; i < massTopology[id.x + 1]; ++i)
+    const uint massBase = world * cgOptions[0].z;
+    for (uint i = massTopology[col]; i < massTopology[col + 1]; ++i)
     {
         const uint index = nv + 1 + 2 * i;
-        const uint col = massTopology[index];
-        if (col >= id.x)
+        const uint row = massTopology[index];
+        if (row <= col)
         {
-            const uint address = valueAddress(id.y, id.x, col, count, words);
+            const uint address = valueAddress(world, row, col, count, words);
             hessianValues[address].store(asuint(massMatrix[massBase + massTopology[index + 1]]));
         }
     }
