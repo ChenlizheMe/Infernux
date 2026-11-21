@@ -401,10 +401,12 @@ void InxPhyGpuSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyC
         append(kinds[static_cast<size_t>(force->kind)], vector(force->value), force->mode, vector(force->point));
     } else if (const auto *move = std::get_if<PhysicsBodyCommand::KinematicMove>(&command.operation)) {
         const ModelVector timing{move->duration, move->maxSpeed};
+        const auto flags =
+            move->temporaryStatic ? InxPhyGpuPoseCommandFlags::TemporaryStatic : InxPhyGpuPoseCommandFlags::None;
         if (move->position)
-            append(Kind::MovePosition, vector(*move->position), {}, timing);
+            append(Kind::MovePosition, vector(*move->position), {}, timing).poseFlags = flags;
         if (move->rotation)
-            append(Kind::MoveRotation, rotation(*move->rotation), {}, timing);
+            append(Kind::MoveRotation, rotation(*move->rotation), {}, timing).poseFlags = flags;
     } else {
         const auto &reset = std::get<PhysicsBodyCommand::ResetMotion>(command.operation);
         append(Kind::ResetMotion);

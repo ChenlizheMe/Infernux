@@ -49,6 +49,7 @@ struct PhysicsBodyCommand
         std::optional<glm::quat> rotation;
         float duration;
         float maxSpeed = 0.0f;
+        bool temporaryStatic = false;
     };
 
     uint32_t bodyId;

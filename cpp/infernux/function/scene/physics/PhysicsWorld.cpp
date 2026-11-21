@@ -523,21 +523,6 @@ Rigidbody &KinematicBody(const PhysicsActorData &actor)
         throw std::logic_error("Kinematic movement requires an enabled kinematic Rigidbody");
     return *body;
 }
-BodyCommand MoveCommand(uint32_t kind, const glm::vec3 &position, const glm::quat &rotation, float dt,
-                        float maxSpeed = 0.0f)
-{
-    if (!std::isfinite(dt) || dt <= 0 || !std::isfinite(maxSpeed) || maxSpeed < 0)
-        throw std::invalid_argument("Physics movement requires a positive duration and nonnegative speed limit");
-    BodyCommand command{};
-    command.meta.y = kind;
-    if (kind != CommandMoveRotation)
-        command.value = Vector(position);
-    command.value.w = dt;
-    if (kind != CommandMovePosition)
-        command.auxiliary = Rotation(rotation);
-    command.rootCOM.w = maxSpeed;
-    return command;
-}
 JoltGpuStepParameters StepParameters(const PhysicsFixedInputs &inputs)
 {
     const auto &c = EngineConfig::Get();
@@ -4313,10 +4298,9 @@ void PhysicsWorld::QueueStaticFixedMoves(PhysicsDomain &domain)
                                                         CpuRotation(Rotation(move.rotation)), domain.admittedDeltaTime,
                                                         kMaxTransformDriveSpeed);
         } else {
-            auto command = MoveCommand(CommandMovePose, move.position, move.rotation, domain.admittedDeltaTime,
-                                       kMaxTransformDriveSpeed);
-            command.meta.z = CommandTemporaryStatic;
-            m_gpuScene->QueueCommand(id, command);
+            m_gpuScene->QueueBodyCommand(
+                {id, PhysicsBodyCommand::KinematicMove{move.position, move.rotation, domain.admittedDeltaTime,
+                                                       kMaxTransformDriveSpeed, true}});
         }
         move.queued = true;
     }
@@ -4369,21 +4353,24 @@ void PhysicsWorld::MoveStaticBodyWithVelocity(uint32_t id, const glm::vec3 &posi
     const auto &actor = ActorForBody(id);
     if (actor.rigidbody && actor.rigidbody->IsEnabled() && !NeedsBodyBindingChange(actor))
         throw std::logic_error("Static movement requires a collider-only physics actor");
-    auto command = MoveCommand(CommandMovePose, position, rotation, dt, kMaxTransformDriveSpeed);
+    if (!std::isfinite(dt) || dt <= 0)
+        throw std::invalid_argument("Physics movement requires a positive duration");
+    const auto p = Vector(position);
+    const auto q = Rotation(rotation);
+    const glm::quat targetRotation{q.w, q.x, q.y, q.z};
     const auto &entry = m_bodyActors.at(id);
     if (entry.staticModel) {
-        domain.pendingStaticMoves.insert_or_assign(id,
-                                                   PhysicsDomain::StaticMove{position, rotation, entry.staticModel});
+        domain.pendingStaticMoves.insert_or_assign(
+            id, PhysicsDomain::StaticMove{position, targetRotation, entry.staticModel});
         return;
     }
     if (entry.HasCpuBody())
-        domain.cpuControl->QueueTemporaryStaticMove(id, CpuPosition(command.value), CpuRotation(command.auxiliary),
-                                                    command.value.w, command.rootCOM.w);
+        domain.cpuControl->QueueTemporaryStaticMove(id, CpuPosition(p), CpuRotation(q), dt, kMaxTransformDriveSpeed);
     if (!entry.HasGpuBody())
         return;
     RequireGpu(domain);
-    command.meta.z = CommandTemporaryStatic;
-    m_gpuScene->QueueCommand(id, command);
+    m_gpuScene->QueueBodyCommand(
+        {id, PhysicsBodyCommand::KinematicMove{position, targetRotation, dt, kMaxTransformDriveSpeed, true}});
 }
 bool PhysicsWorld::IsBodySleeping(uint32_t id) const
 {

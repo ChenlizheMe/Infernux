@@ -27,7 +27,6 @@ static const uint ContactRowGroupSize = 64;
 [[vk::binding(12, 0)]] StructuredBuffer<float> smoothAcceleration;
 [[vk::binding(13, 0)]] StructuredBuffer<float> warmstartAcceleration;
 [[vk::binding(14, 0)]] RWStructuredBuffer<float> acceleration;
-[[vk::binding(17, 0)]] StructuredBuffer<ModelDimensions> motionModel;
 [[vk::binding(18, 0)]] StructuredBuffer<PrescribedMotion> prescribedMotion;
 [[vk::binding(19, 0)]] StructuredBuffer<uint> fixedSteps;
 [[vk::binding(20, 0)]] StructuredBuffer<uint> contactOrder;
@@ -283,7 +282,10 @@ SpatialMotion contactPrescribedMotion(uint geometry, uint world, uint step, floa
     const uint row = topology[geometry].y;
     if (row != NoIndex)
     {
-        const PrescribedMotion motion = prescribedMotion[world * motionModel[0].layout.y + row];
+        uint rows, stride, worlds;
+        prescribedMotion.GetDimensions(rows, stride);
+        contactCount.GetDimensions(worlds, stride);
+        const PrescribedMotion motion = prescribedMotion[world * (rows / worlds) + row];
         if (motion.step == step)
             return spatial(motion.angular.xyz, motion.linear.xyz + cross(motion.angular.xyz, point - motion.center));
     }

@@ -369,11 +369,12 @@ struct BodyControlSlots
 
 BodyControlSlots BindBodyControls(StepBuilder &b, const InxPhyGpuModel &model, uint32_t capacity, bool multiple)
 {
+    const auto prescribedRows = uint64_t{model.dimensions.layout[1]} + model.initialStaticPoses.size();
     return {b.Seed("bodyCommandSpans", 4 * (uint64_t{capacity} + 1), nullptr),
             b.Seed("bodyCommands", 12 * uint64_t{capacity}, nullptr),
             b.Zero("commandedForce", uint64_t{model.dimensions.state[1]} * b.worlds),
             b.Zero("savedMotions", 44 * uint64_t{capacity}),
-            b.Zero("prescribedMotion", 12 * uint64_t{std::max(1u, model.dimensions.layout[1])} * b.worlds),
+            b.Zero("prescribedMotion", 12 * std::max(uint64_t{1}, prescribedRows) * b.worlds),
             b.Zero("acceptedFixedSteps", uint64_t{b.worlds} + uint32_t(multiple))};
 }
 
@@ -561,7 +562,9 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
     for (uint32_t geom = 0; geom < ng; ++geom) {
         const auto body = model.geometries[geom].indices[0];
         topology[geom][0] = body;
-        topology[geom][1] = model.bodies[model.bodies[body].subtree[0]].hierarchy[3];
+        const auto &row = model.bodies[body];
+        topology[geom][1] =
+            row.dofs[2] != 0 ? model.dimensions.layout[1] + row.dofs[2] - 1 : model.bodies[row.subtree[0]].hierarchy[3];
     }
     topology[ng] = {NoModelIndex, 0, 0, nb};
     for (uint32_t body = 1; body < nb; ++body) {
@@ -640,7 +643,6 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
                {7, rowStore, W},
                {8, columnStore, R},
                {11, dyn.velocities, R},
-               {17, dyn.motionModel, R},
                {18, dyn.prescribedMotion, R},
                {19, dyn.fixedSteps, R}});
     uint32_t jointParameters = NoModelIndex;
@@ -653,7 +655,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
         jointParameters =
             b.Seed("sceneJointParameters", parameterWords * parameters.size(), parameters.data(), b.worlds);
         if (dyn.prescribedMotion != NoModelIndex)
-            b.Add("spatial_constraints", "write_scene_kinematic_velocities", nb,
+            b.Add("spatial_constraints", "write_scene_prescribed_velocities", nb,
                   {{4, dyn.subtreeCom, R},
                    {12, dyn.bodyModel, R},
                    {13, dyn.prescribedMotion, R},
@@ -1276,7 +1278,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                            warmstart,
                                            dimensions,
                                            controlSlots ? controlSlots->fixedSteps : NoModelIndex,
-                                           controlSlots && nm != 0 ? controlSlots->prescribed : NoModelIndex,
+                                           controlSlots && (nm != 0 || ns != 0) ? controlSlots->prescribed
+                                                                                : NoModelIndex,
                                            bodyVelocity};
             response = AddContactResponse(b, model, *contactSlots, capacity, *solver, substepDt, dynamics,
                                           std::move(massSolves), contactReports, substeps,
@@ -1410,6 +1413,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                 {11, saved, R},
                                 {12, prescribed, W},
                                 {15, fixedSteps, R},
+                                {16, staticPoses, RW},
                                 {22, fixedSizes, R}});
         finishCommands =
             response ? b.Dispatch("body_controls", "finish_contact_body_commands", bodyCommandCapacity,
@@ -1873,9 +1877,11 @@ uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> com
         const bool force = kind >= InxPhyGpuBodyCommandKind::Force && kind <= InxPhyGpuBodyCommandKind::ForceAtPosition;
         const bool dynamic =
             kind >= InxPhyGpuBodyCommandKind::SetLinearVelocity && kind <= InxPhyGpuBodyCommandKind::ForceAtPosition;
-        if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != KinematicControl) ||
+        const auto drive =
+            move && command.poseFlags == InxPhyGpuPoseCommandFlags::TemporaryStatic ? StaticControl : KinematicControl;
+        if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != drive) ||
             (dynamic && motion != DynamicControl) ||
-            (motion == StaticControl && kind > InxPhyGpuBodyCommandKind::SetRotation))
+            (motion == StaticControl && !move && kind > InxPhyGpuBodyCommandKind::SetRotation))
             throw std::invalid_argument("inxphygpu body command does not match its world or motion type");
         if (!integrate && (move || (force && static_cast<uint32_t>(command.mode) < 2)))
             throw std::invalid_argument("Continuous forces and kinematic targets require a fixed step");

@@ -164,6 +164,7 @@ enum class InxPhyGpuPoseCommandFlags : uint32_t
 {
     None,
     PreserveDrive,
+    TemporaryStatic,
 };
 
 struct InxPhyGpuBodyCommand

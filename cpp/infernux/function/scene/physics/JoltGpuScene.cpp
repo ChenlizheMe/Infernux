@@ -2230,6 +2230,7 @@ PhysicsTargetSource JoltGpuScene::QueueBodyCommand(const PhysicsBodyCommand &com
     } else if (const auto *move = std::get_if<PhysicsBodyCommand::KinematicMove>(&command.operation)) {
         BodyCommand packet{};
         packet.meta.y = move->position ? (move->rotation ? CommandMovePose : CommandMovePosition) : CommandMoveRotation;
+        packet.meta.z = move->temporaryStatic ? CommandTemporaryStatic : 0u;
         if (move->position)
             packet.value = vector(*move->position);
         if (move->rotation)

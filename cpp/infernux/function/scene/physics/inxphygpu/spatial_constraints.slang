@@ -821,16 +821,16 @@ void emit_scene_six_dof_rows(uint3 id : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void write_scene_kinematic_velocities(uint3 id : SV_DispatchThreadID)
+void write_scene_prescribed_velocities(uint3 id : SV_DispatchThreadID)
 {
     const ModelDimensions size = sceneDimensions[0];
     if (id.x >= size.state.z)
         return;
     const BodyModel body = sceneBodies[id.x];
-    const uint mocap = body.hierarchy.w;
-    if (mocap == NoIndex)
+    const uint row = prescribedRow(body, size.layout.y);
+    if (row == NoIndex)
         return;
-    const PrescribedMotion motion = scenePrescribed[id.y * size.layout.y + mocap];
+    const PrescribedMotion motion = scenePrescribed[id.y * prescribedStride(size, sceneBodies[0]) + row];
     if (motion.step != sceneFixedSteps[id.y] + 1u)
         return;
     const uint base = id.y * size.state.z;

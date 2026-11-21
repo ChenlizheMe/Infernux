@@ -238,22 +238,43 @@ void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint
     }
 }
 
-void writeKinematicStep(uint row, uint world, BodyModel body, Pose start, float3 travel, float3 path, float fraction,
-                        float timestep)
+Pose loadPrescribedPose(uint world, BodyModel body, ModelDimensions size)
+{
+    if (body.dofs.z != 0)
+        return staticPoses[world * bodies[0].dofs.w + body.dofs.z - 1];
+    return mocap[world * size.layout.y + body.hierarchy.w];
+}
+
+void storePrescribedPose(uint world, BodyModel body, ModelDimensions size, Pose pose)
+{
+    if (body.dofs.z != 0)
+        staticPoses[world * bodies[0].dofs.w + body.dofs.z - 1] = pose;
+    else
+        mocap[world * size.layout.y + body.hierarchy.w] = pose;
+}
+
+uint prescribedAddress(uint world, BodyModel body, ModelDimensions size)
+{
+    return world * prescribedStride(size, bodies[0]) + prescribedRow(body, size.layout.y);
+}
+
+void writePrescribedStep(uint world, BodyModel body, ModelDimensions size, Pose start, float3 travel, float3 path,
+                         float fraction, float timestep)
 {
     const float3 center = start.position.xyz + centerOffset(body, start) + travel * fraction;
     const float4 rotation = integrateQuat(start.rotation, path, fraction);
     Pose pose = {float4(0.0), rotation};
     pose.position.xyz = center - centerOffset(body, pose);
     const float3 spin = rotateVector(path, start.rotation) / timestep;
-    mocap[row] = pose;
-    prescribed[row] = {float4(travel / timestep, 0.0), float4(spin, 0.0), center, fixedSteps[world] + 1u};
+    storePrescribedPose(world, body, size, pose);
+    prescribed[prescribedAddress(world, body, size)] = {
+        float4(travel / timestep, 0.0), float4(spin, 0.0), center, fixedSteps[world] + 1u};
 }
 
-void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimensions size, BodyModel body)
+void applyPrescribed<let Integrate : bool>(uint index, uint4 span, ModelDimensions size, BodyModel body)
 {
-    const uint row = span.x * size.layout.y + body.hierarchy.w;
-    Pose origin = mocap[row];
+    const uint row = prescribedAddress(span.x, body, size);
+    Pose origin = loadPrescribedPose(span.x, body, size);
     Pose target = origin;
     const Pose undo = origin;
     bool cancelDrive = false;
@@ -302,7 +323,7 @@ void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimension
     }
     if (!Integrate)
     {
-        mocap[row] = origin;
+        storePrescribedPose(span.x, body, size, origin);
         PrescribedMotion motion = prescribed[row];
         if (cancelDrive)
             motion = {float4(0.0), float4(0.0), float3(0.0), 0u};
@@ -335,10 +356,10 @@ void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimension
                     float4(0.0), float4(0.0)};
     if (spans[0].z > 1u)
     {
-        mocap[row] = origin;
+        storePrescribedPose(span.x, body, size, origin);
         return;
     }
-    writeKinematicStep(row, span.x, body, origin, travel, path, 1.0, timestep);
+    writePrescribedStep(span.x, body, size, origin, travel, path, 1.0, timestep);
 }
 
 [shader("compute")]
@@ -350,10 +371,8 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
         return;
     const uint4 span = spans[index + 1];
     const BodyModel body = bodies[span.y];
-    if (body.dofs.z != 0)
-        return;
     const SavedMotion motion = saved[index];
-    if (body.hierarchy.w == NoIndex)
+    if (body.dofs.z == 0 && body.hierarchy.w == NoIndex)
     {
         const uint2 address = freeAddresses(model[0], body, span.x);
         const Pose pose = loadOrigin(address.x);
@@ -370,8 +389,8 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
     const uint4 control = spans[0];
     const float alpha = float(next) / float(control.z);
     const float dt = fixedTimeSteps[span.x];
-    const uint row = span.x * model[0].layout.y + body.hierarchy.w;
-    writeKinematicStep(row, span.x, body, motion.start, motion.centerTravel.xyz, motion.angularTravel.xyz, alpha, dt);
+    writePrescribedStep(span.x, body, model[0], motion.start, motion.centerTravel.xyz, motion.angularTravel.xyz,
+                        alpha, dt);
 }
 
 void applyBodyCommands<let Integrate : bool, let SceneLimits : bool>(uint index)
@@ -380,26 +399,10 @@ void applyBodyCommands<let Integrate : bool, let SceneLimits : bool>(uint index)
         return;
     const uint4 span = spans[index + 1];
     const BodyModel body = bodies[span.y];
-    if (body.dofs.z != 0)
-    {
-        const uint row = span.x * bodies[0].dofs.w + body.dofs.z - 1;
-        Pose pose = staticPoses[row];
-        if (Integrate)
-            saved[index].pose = pose;
-        for (uint i = span.z; i < span.z + span.w; ++i)
-        {
-            const BodyCommand command = commands[i];
-            if (command.fields.z == SetPosition)
-                pose.position.xyz = command.value.xyz;
-            else
-                pose.rotation = normalize(command.value);
-        }
-        staticPoses[row] = pose;
-    }
-    else if (body.hierarchy.w == NoIndex)
+    if (body.dofs.z == 0 && body.hierarchy.w == NoIndex)
         applyDynamic<Integrate, SceneLimits>(index, span, model[0], body);
     else
-        applyKinematic<Integrate>(index, span, model[0], body);
+        applyPrescribed<Integrate>(index, span, model[0], body);
 }
 
 [shader("compute")]
@@ -438,16 +441,7 @@ void finishCommands<let HasStatus : bool>(uint index)
     const ModelDimensions size = model[0];
     const BodyModel body = bodies[span.y];
     const bool rejected = HasStatus && status[span.x] != 0;
-    if (body.dofs.z != 0)
-    {
-        if (rejected)
-        {
-            const uint row = span.x * bodies[0].dofs.w + body.dofs.z - 1;
-            staticPoses[row] = saved[index].pose;
-        }
-        return;
-    }
-    if (body.hierarchy.w == NoIndex)
+    if (body.dofs.z == 0 && body.hierarchy.w == NoIndex)
     {
         const uint2 address = freeAddresses(size, body, span.x);
         store3(commandedForce, address.y, float3(0.0));
@@ -463,8 +457,8 @@ void finishCommands<let HasStatus : bool>(uint index)
     else if (rejected)
     {
         const SavedMotion undo = saved[index];
-        const uint address = span.x * size.layout.y + body.hierarchy.w;
-        mocap[address] = undo.pose;
+        const uint address = prescribedAddress(span.x, body, size);
+        storePrescribedPose(span.x, body, size, undo.pose);
         prescribed[address] = {undo.linear, undo.angular, undo.center, undo.step};
     }
 }
@@ -501,9 +495,9 @@ void publishBodies<let HasStatus : bool>(uint3 id)
         spin = rotateVector(load3(qvel, address + 3), pose.rotation);
         speed = load3(qvel, address) + cross(spin, offset);
     }
-    else if (body.hierarchy.w != NoIndex)
+    else if (body.dofs.z != 0 || body.hierarchy.w != NoIndex)
     {
-        const PrescribedMotion motion = prescribed[id.y * size.layout.y + body.hierarchy.w];
+        const PrescribedMotion motion = prescribed[prescribedAddress(id.y, body, size)];
         if (motion.step == fixedSteps[id.y])
         {
             speed = motion.linear.xyz;

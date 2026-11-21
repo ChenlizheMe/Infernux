@@ -8,3 +8,13 @@ struct PrescribedMotion
     float3 center;
     uint step; // Accepted fixed-step ordinal at which the motion takes effect.
 };
+
+uint prescribedRow(BodyModel body, uint kinematicRows)
+{
+    return body.dofs.z == 0 ? body.hierarchy.w : kinematicRows + body.dofs.z - 1;
+}
+
+uint prescribedStride(ModelDimensions dimensions, BodyModel root)
+{
+    return dimensions.layout.y + root.dofs.w;
+}
