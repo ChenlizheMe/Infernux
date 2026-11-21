@@ -2,7 +2,7 @@
 
 #include "JoltGpuGeometryStore.h"
 #include "JoltGpuScene.h"
-#include "PhysicsDeviceVectorInput.h"
+#include "PhysicsDeviceBufferRange.h"
 #include <array>
 #include <cstdint>
 #include <exception>
@@ -61,7 +61,7 @@ struct JoltGpuQueryExportBinding
 
 struct JoltGpuQueryRayInputs
 {
-    PhysicsDeviceVectorInput origins, directions;
+    PhysicsDeviceBufferRange origins, directions;
     uint32_t count = 0;
 };
 

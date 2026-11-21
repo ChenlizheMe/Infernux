@@ -48,6 +48,12 @@ static const uint RayGroupSize = 64;
 [[vk::binding(11, 0)]] StructuredBuffer<float> packedRayOrigins;
 [[vk::binding(12, 0)]] StructuredBuffer<float> packedRayDirections;
 [[vk::binding(13, 0)]] RWStructuredBuffer<PhysicsRay> packedRays;
+[[vk::binding(14, 0)]] StructuredBuffer<uint4> projectedRaySettings; // Count, point, normal, distance; hit offset.
+[[vk::binding(15, 0)]] StructuredBuffer<PhysicsRayHit> projectedRayHits;
+[[vk::binding(16, 0)]] RWStructuredBuffer<float> projectedRayPoints;
+[[vk::binding(17, 0)]] RWStructuredBuffer<float> projectedRayNormals;
+[[vk::binding(18, 0)]] RWStructuredBuffer<float> projectedRayDistances;
+[[vk::binding(19, 0)]] RWStructuredBuffer<uint> projectedRayValidity;
 
 [shader("compute")]
 [numthreads(RayGroupSize, 1, 1)]
@@ -69,6 +75,29 @@ void pack_scene_rays(uint3 id : SV_DispatchThreadID)
         ray.direction.xyz = normalize(direction / scale);
     }
     packedRays[id.x] = ray;
+}
+
+[shader("compute")]
+[numthreads(RayGroupSize, 1, 1)]
+void project_scene_hits(uint3 id : SV_DispatchThreadID)
+{
+    const uint4 settings = projectedRaySettings[0];
+    if (id.x >= settings.x)
+        return;
+    const PhysicsRayHit hit = projectedRayHits[id.x];
+    const bool valid = hit.geometry.x != NoIndex;
+    const PhysicsRay ray = rays[id.x];
+    const float3 point = valid ? ray.originLimit.xyz + ray.direction.xyz * hit.normalDistance.w : float3(0.0);
+    const float3 normal = valid ? hit.normalDistance.xyz : float3(0.0);
+    const uint first = 3u * id.x;
+    [ForceUnroll]
+    for (uint axis = 0; axis < 3; ++axis)
+    {
+        projectedRayPoints[settings.y + first + axis] = point[axis];
+        projectedRayNormals[settings.z + first + axis] = normal[axis];
+    }
+    projectedRayDistances[settings.w + id.x] = valid ? hit.normalDistance.w : asfloat(0x7f800000u);
+    projectedRayValidity[projectedRaySettings[1].x + id.x] = valid ? 1u : 0u;
 }
 
 float rayDot(float3 a, float3 b)

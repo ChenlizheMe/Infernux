@@ -10,8 +10,8 @@ namespace rhi
 class ComputeBuffer;
 }
 
-/// A packed float3 range. The start only needs scalar alignment.
-struct PhysicsDeviceVectorInput
+/// A scalar-aligned range in a caller-owned device buffer.
+struct PhysicsDeviceBufferRange
 {
     std::shared_ptr<rhi::ComputeBuffer> buffer;
     uint64_t byteOffset = 0;

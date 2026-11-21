@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "../PhysicsDeviceVectorInput.h"
+#include "../PhysicsDeviceBufferRange.h"
 #include "../PhysicsGpuPoseSource.h"
 #include "InxPhyGpuModel.h"
 
@@ -96,10 +96,15 @@ struct InxPhyGpuPreparedRayBatch
 
 struct InxPhyGpuDeviceRays
 {
-    PhysicsDeviceVectorInput origins, directions;
+    PhysicsDeviceBufferRange origins, directions;
     uint32_t count;
     float maxDistance;
     ModelWords filter{UINT32_MAX, NoModelIndex, InxPhyGpuRayIncludeStatic | InxPhyGpuRayIncludeTriggers, 0};
+};
+
+struct InxPhyGpuRayOutputs
+{
+    PhysicsDeviceBufferRange point, normal, distance, hit;
 };
 
 enum class InxPhyGpuBodyCommandKind : uint32_t
@@ -229,7 +234,8 @@ class InxPhyGpuStep
     [[nodiscard]] InxPhyGpuPreparedRayBatch PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
                                                                  bool publish,
                                                                  std::vector<rhi::ComputeBufferUpdate> updates = {},
-                                                                 const InxPhyGpuDeviceRays *deviceRays = nullptr) const;
+                                                                 const InxPhyGpuDeviceRays *deviceRays = nullptr,
+                                                                 const InxPhyGpuRayOutputs *outputs = nullptr) const;
 
     [[nodiscard]] const InxPhyGpuRayBuffers &Rays() const noexcept
     {
@@ -271,8 +277,8 @@ class InxPhyGpuStep
     };
     struct PublishedRays
     {
-        std::shared_ptr<rhi::ComputeBuffer> settings, inputSettings;
-        rhi::ComputeDispatchDesc geometry, pack;
+        std::shared_ptr<rhi::ComputeBuffer> settings, inputSettings, outputSettings;
+        rhi::ComputeDispatchDesc geometry, pack, project;
         mutable std::shared_ptr<rhi::ComputeBuffer> output;
         uint32_t geometryCount = 0, bodyCount = 0, capacity = 0;
     };

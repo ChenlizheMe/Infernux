@@ -357,8 +357,8 @@ ContactSlots AddCollision(StepBuilder &b, const InxPhyGpuModel &model, const Inx
 struct RaySlots
 {
     uint32_t inputs, hits, settings;
-    uint32_t inputSettings = NoModelIndex;
-    ComputeWorkDispatch pack;
+    uint32_t inputSettings = NoModelIndex, outputSettings = NoModelIndex;
+    ComputeWorkDispatch pack, project;
 };
 
 struct BodyControlSlots
@@ -429,13 +429,25 @@ RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpu
                                {8, nodes, R},
                                {9, bounds, R}}));
     describeFrames(work.back());
-    RaySlots result{inputs, hits, query, NoModelIndex, {}};
+    RaySlots result{};
+    result.inputs = inputs;
+    result.hits = hits;
+    result.settings = query;
     if (published) {
         result.inputSettings = b.Seed("packedSceneRaySettings", 8, nullptr);
         // Only the selected external views are bound in the prepared packet.
         result.pack =
             b.Dispatch("ray_queries", "pack_scene_rays", layout.raysPerWorld,
                        {{10, result.inputSettings, R}, {11, inputs, R}, {12, inputs, R}, {13, inputs, W, true}});
+        result.outputSettings = b.Seed("projectedSceneRaySettings", 8, nullptr);
+        result.project = b.Dispatch("ray_queries", "project_scene_hits", layout.raysPerWorld,
+                                    {{14, result.outputSettings, R},
+                                     {1, inputs, R},
+                                     {15, hits, R},
+                                     {16, hits, W, true},
+                                     {17, hits, W, true},
+                                     {18, hits, W, true},
+                                     {19, hits, W, true}});
     }
     return result;
 }
@@ -1452,7 +1464,9 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         if (publishedRaysEnabled) {
             publishedRays.settings = buffers[raySlots->settings];
             publishedRays.inputSettings = buffers[raySlots->inputSettings];
+            publishedRays.outputSettings = buffers[raySlots->outputSettings];
             publishedRays.pack = BindDispatch(std::move(raySlots->pack), buffers);
+            publishedRays.project = BindDispatch(std::move(raySlots->project), buffers);
             publishedRays.geometryCount = model.dimensions.layout[0];
             publishedRays.bodyCount = nb;
             publishedRays.capacity = rayLayout.raysPerWorld;
@@ -1583,7 +1597,8 @@ InxPhyGpuStep::PrepareRays(bool publish, std::vector<rhi::ComputeBufferUpdate> u
 InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
                                                               bool publish,
                                                               std::vector<rhi::ComputeBufferUpdate> updates,
-                                                              const InxPhyGpuDeviceRays *deviceRays) const
+                                                              const InxPhyGpuDeviceRays *deviceRays,
+                                                              const InxPhyGpuRayOutputs *outputs) const
 {
     const auto &plan = m_publishedRays;
     if (!plan.settings || rayCount == 0 || rayCount > plan.capacity)
@@ -1601,23 +1616,26 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
     std::memcpy(params.data.data(), settings.data(), params.data.size());
 
     std::vector<rhi::ComputeDispatchDesc> dispatches;
-    dispatches.reserve(m_rayWork.size() + size_t(bool(plan.geometry.kernel)) + size_t(deviceRays != nullptr));
+    dispatches.reserve(m_rayWork.size() + size_t(bool(plan.geometry.kernel)) + size_t(deviceRays != nullptr) +
+                       size_t(outputs != nullptr));
     const auto inputBytes = uint64_t{rayCount} * sizeof(InxPhyGpuRay);
+    const auto scalarOffset = [](const PhysicsDeviceBufferRange &view, uint64_t bytes, ComputeScalarType scalar) {
+        const auto end = view.buffer ? std::min(view.byteEnd, view.buffer->GetByteSize()) : 0u;
+        if (!view.buffer || view.buffer->GetDesc().scalarType != scalar || view.byteOffset % sizeof(uint32_t) != 0 ||
+            view.byteOffset > end || bytes > end - view.byteOffset ||
+            (view.byteOffset + bytes) / sizeof(uint32_t) > UINT32_MAX)
+            throw std::invalid_argument("Device raycast requires a complete scalar-aligned buffer range");
+        return static_cast<uint32_t>(view.byteOffset / sizeof(uint32_t));
+    };
     if (deviceRays) {
         const auto &rays = *deviceRays;
         if (!std::isfinite(rays.maxDistance) || rays.maxDistance <= 0)
             throw std::invalid_argument("Device raycast requires a positive finite maximum distance");
         const auto vectorBytes = uint64_t{rayCount} * 3 * sizeof(float);
-        const auto checkView = [&](const PhysicsDeviceVectorInput &view) {
-            const auto end = view.buffer ? std::min(view.byteEnd, view.buffer->GetByteSize()) : 0u;
-            if (!view.buffer || view.buffer->GetDesc().scalarType != ComputeScalarType::Float32 ||
-                view.byteOffset % sizeof(float) != 0 || view.byteOffset > end || vectorBytes > end - view.byteOffset ||
-                (view.byteOffset + vectorBytes) / sizeof(float) > UINT32_MAX)
-                throw std::invalid_argument("Device raycast requires a complete packed float3 input view");
-            return static_cast<uint32_t>(view.byteOffset / sizeof(float));
-        };
         std::array<ModelWords, 2> inputSettings{
-            ModelWords{rayCount, checkView(rays.origins), checkView(rays.directions), 0}, rays.filter};
+            ModelWords{rayCount, scalarOffset(rays.origins, vectorBytes, ComputeScalarType::Float32),
+                       scalarOffset(rays.directions, vectorBytes, ComputeScalarType::Float32), 0},
+            rays.filter};
         std::memcpy(&inputSettings[0][3], &rays.maxDistance, sizeof(float));
         auto &upload = updates.emplace_back(
             rhi::ComputeBufferUpdate{plan.inputSettings, 0, std::vector<uint8_t>(sizeof(inputSettings))});
@@ -1653,6 +1671,37 @@ InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPo
     trace.buffers[6] = plan.output;
     trace.proof->reads[1].byteSize = inputBytes;
     trace.proof->writes.front().byteSize = bytes;
+    if (outputs) {
+        const std::array<const PhysicsDeviceBufferRange *, 4> views{&outputs->point, &outputs->normal,
+                                                                    &outputs->distance, &outputs->hit};
+        constexpr std::array<uint32_t, 4> lanes{3, 3, 1, 1};
+        std::array<uint32_t, 4> offsets{};
+        auto &project = dispatches.emplace_back(plan.project);
+        project.groupCountX = (rayCount - 1) / 64 + 1;
+        project.groupCountY = 1;
+        project.buffers[2] = plan.output;
+        project.proof->reads[1].byteSize = inputBytes;
+        project.proof->reads[2].byteSize = bytes;
+        for (uint32_t field = 0; field < views.size(); ++field) {
+            const auto &view = *views[field];
+            const auto size = uint64_t{rayCount} * lanes[field] * sizeof(uint32_t);
+            const auto scalar = field == 3 ? ComputeScalarType::UInt32 : ComputeScalarType::Float32;
+            offsets[field] = scalarOffset(view, size, scalar);
+            if (view.buffer->IsFrozen())
+                throw std::invalid_argument("Device raycast destinations must be writable");
+            for (uint32_t prior = 0; prior < field; ++prior)
+                if (view.buffer == views[prior]->buffer && offsets[field] < offsets[prior] + rayCount * lanes[prior] &&
+                    offsets[prior] < offsets[field] + rayCount * lanes[field])
+                    throw std::invalid_argument("Device raycast destinations must not overlap");
+            project.buffers[field + 3] = view.buffer;
+            project.proof->writes[field] = {field + 3, view.byteOffset, size};
+        }
+        const std::array<ModelWords, 2> outputSettings{ModelWords{rayCount, offsets[0], offsets[1], offsets[2]},
+                                                       ModelWords{offsets[3], 0, 0, 0}};
+        auto &upload = updates.emplace_back(
+            rhi::ComputeBufferUpdate{plan.outputSettings, 0, std::vector<uint8_t>(sizeof(outputSettings))});
+        std::memcpy(upload.data.data(), outputSettings.data(), upload.data.size());
+    }
     std::vector<rhi::ComputeBufferRead> reads;
     if (publish)
         reads.push_back({plan.output, 0, bytes});

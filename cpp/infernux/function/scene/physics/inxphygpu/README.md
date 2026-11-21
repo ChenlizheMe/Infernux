@@ -168,6 +168,8 @@ Clear convex status once per step. Schedule `collide_convex` after primitive con
 
 `raycast_worlds` traces one ray per invocation, using groups of 64 on X and worlds on Y. Ray inputs are shared when the settings select one input row or supplied per world. Each ray specifies its origin, maximum distance, unit direction, layer mask, optionally excluded body and whether to include static shapes. Equal distances select the lower geometry index. `AppendPhysicsRayMesh` cooks each mesh's original triangles into a shared local tree and returns its offset for the geometry metadata. Heightfields share collision samples and use their clipped subgrid and exposed sides. Results stay in the device buffer with distance, normal, geometry and body IDs. A miss writes distance `-1` and invalid IDs.
 
+The device scene query packs caller-owned origin and direction ranges on the GPU. It can write point, normal, distance and hit flag ranges in the same submission. Input ranges can share storage with the outputs because the pack finishes before projection. A projected miss writes a zero point and normal, positive infinite distance and a zero hit flag.
+
 ## Contact constraints
 
 The contact row entries reserve contiguous CSR rows for each contact. They walk the two DOF chains, omitting shared ancestors, then project the contact frame onto the point and angular Jacobians. The continuous-time row update computes the reference acceleration and regularization from the projected velocity, material and world timestep. The setup entries select the initial acceleration, evaluate the constraint residual, and compute the force, cost and state for the chosen friction cone.
