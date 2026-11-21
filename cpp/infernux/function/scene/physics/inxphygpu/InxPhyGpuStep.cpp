@@ -466,6 +466,8 @@ struct ContactResponse
     uint32_t reportRecords = NoModelIndex;
     std::optional<ComputeWorkDispatch> capture;
     uint32_t jointParameters = NoModelIndex;
+    uint32_t settings;
+    ModelWords worldDefaults;
 };
 
 struct ReferenceWeights
@@ -548,8 +550,9 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
     const auto columns = solver.columnsPerWorld;
     const auto contacts = capacity.contactsPerWorld;
     constexpr uint32_t ellipticCone = 1;
-    std::vector<ModelWords> config(b.worlds + 2, {FloatWord(timestep), FloatWord(1.0f), FloatWord(solver.tolerance),
-                                                  FloatWord(solver.lineTolerance)});
+    const ModelWords worldDefaults{FloatWord(timestep), FloatWord(1.0f), FloatWord(solver.tolerance),
+                                   FloatWord(solver.lineTolerance)};
+    std::vector<ModelWords> config(b.worlds + 2, worldDefaults);
     config[0] = {ng, contacts, rows, columns};
     config[1] = {nb, nv, contacts, ellipticCone};
     const auto settings = b.Shared("constraintSettings", config);
@@ -860,7 +863,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
            {26, stream.counts, R},
            {27, status, multiple ? RW : W, !multiple},
            {30, stream.narrowphaseStatus, R}});
-    ContactResponse response{acceleration, status, contactTopology, NoModelIndex, {}, jointParameters};
+    ContactResponse response{acceleration, status,          contactTopology, NoModelIndex,
+                             {},           jointParameters, settings,        worldDefaults};
     if (contactReports) {
         const auto output =
             b.Zero("contactReports", across(24 * uint64_t{contacts} * substeps), BufferUsageFlags::TransferSource);
@@ -990,6 +994,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     const float substepDt = timestep / static_cast<float>(substeps);
     const auto stepSizes = b.Seed("timestep", 1, &substepDt, worlds);
     const auto fixedSizes = multiple ? b.Seed("fixedTimestep", 1, &timestep, worlds) : stepSizes;
+    uint32_t gravitySlot = NoModelIndex;
     const auto clocks = b.Seed("time", 1, nullptr, worlds);
     const auto positions = b.Seed("qpos", nq, model.initialPositions.data(), worlds);
     const auto velocities =
@@ -1005,7 +1010,6 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     if (bodyCommandCapacity != 0) {
         controls.capacity = bodyCommandCapacity;
         controls.worlds = worlds;
-        controls.timestep = FloatWord(timestep);
         controls.motion.resize(nb, Uncontrolled);
         for (uint32_t index = 1; index < nb; ++index) {
             const auto &body = model.bodies[index];
@@ -1095,7 +1099,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     if (nv != 0) {
         const auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
         const auto dofs = b.Shared("dofs", model.dofs);
-        const auto gravities = b.Seed("gravity", 4, &gravity, worlds);
+        const auto gravities = gravitySlot = b.Seed("gravity", 4, &gravity, worlds);
         const auto zeroForce = b.Seed("zeroForce", nv, nullptr, worlds);
         const auto inertialFrame = b.Slot(worldWords(uint64_t{16} * nb));
         const auto subtreeCom = b.Seed("subtreeCom", uint64_t{4} * nb, nullptr, worlds);
@@ -1390,7 +1394,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             commandBindings.push_back({21, sceneMotion, R});
         editCommands = b.Bind("body_controls", sceneDynamics ? "edit_scene_body_state" : "edit_body_state",
                               bodyCommandCapacity, commandBindings);
-        commandBindings.insert(commandBindings.end(), {{8, force, RW}, {11, saved, RW}, {15, fixedSteps, R}});
+        commandBindings.insert(commandBindings.end(),
+                               {{8, force, RW}, {11, saved, RW}, {15, fixedSteps, R}, {22, fixedSizes, R}});
         applyCommands = b.Bind("body_controls", sceneDynamics ? "apply_scene_body_commands" : "apply_body_commands",
                                bodyCommandCapacity, commandBindings);
         if (multiple)
@@ -1404,7 +1409,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                 {8, force, W},
                                 {11, saved, R},
                                 {12, prescribed, W},
-                                {15, fixedSteps, R}});
+                                {15, fixedSteps, R},
+                                {22, fixedSizes, R}});
         finishCommands =
             response ? b.Dispatch("body_controls", "finish_contact_body_commands", bodyCommandCapacity,
                                   {{0, dimensions, R},
@@ -1578,10 +1584,13 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             schedule.restore = BindDispatch(std::move(restore), buffers);
         schedule.clock = BindDispatch(std::move(clock), buffers);
     }
+    FixedInputs fixedInputs{
+        buffers[fixedSizes], buffers[stepSizes], gravitySlot != NoModelIndex ? buffers[gravitySlot] : nullptr,
+        response ? buffers[response->settings] : nullptr, response ? response->worldDefaults : ModelWords{}};
     auto step = std::unique_ptr<InxPhyGpuStep>(new InxPhyGpuStep(
         work, BindDispatch(std::move(snapshot), buffers), positions, velocities, applied, std::move(contacts),
         std::move(rays), std::move(rayWork), std::move(controls), std::move(reports), std::move(schedule),
-        std::move(jointParameters), std::move(publishedRays)));
+        std::move(jointParameters), std::move(publishedRays), std::move(fixedInputs)));
     return {std::move(step), std::move(initialize)};
 }
 
@@ -1590,12 +1599,12 @@ InxPhyGpuStep::InxPhyGpuStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi
                              InxPhyGpuContactStream contacts, InxPhyGpuRayBuffers rays,
                              std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
                              ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
-                             InxPhyGpuPublishedRayQuery publishedRays)
+                             InxPhyGpuPublishedRayQuery publishedRays, FixedInputs fixedInputs)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
       m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
       m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports)),
       m_substeps(std::move(substeps)), m_jointParameters(std::move(jointParameters)),
-      m_publishedRays(std::move(publishedRays))
+      m_publishedRays(std::move(publishedRays)), m_fixedInputs(std::move(fixedInputs))
 {
 }
 
@@ -1794,10 +1803,16 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
 std::shared_ptr<rhi::PreparedComputeBatch>
 InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, InxPhyGpuBodyPublication publication,
                                  std::vector<rhi::ComputeBufferUpdate> updates, bool captureContacts,
-                                 std::vector<InxPhyGpuJointParameterUpdate> jointUpdates) const
+                                 std::vector<InxPhyGpuJointParameterUpdate> jointUpdates,
+                                 const std::vector<PhysicsFixedInputs> &fixedInputs) const
 {
     if (!m_controls.states)
         throw std::logic_error("inxphygpu step has no rigid body control layout");
+    if (!fixedInputs.empty()) {
+        if (fixedInputs.size() != m_controls.worlds)
+            throw std::invalid_argument("inxphygpu fixed inputs require one row per enrolled world");
+        m_fixedInputs.Append(updates, fixedInputs, m_substeps.count);
+    }
     m_jointParameters.Append(updates, std::move(jointUpdates));
     if (commands.empty() && publication == InxPhyGpuBodyPublication::None && !captureContacts)
         return Prepare(false, std::move(updates));
@@ -1873,7 +1888,7 @@ uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> com
     }
 
     const auto spanCount = static_cast<uint32_t>(spans.size() - 1);
-    spans[0] = {spanCount, m_controls.timestep, m_substeps.count, 0};
+    spans[0] = {spanCount, 0, m_substeps.count, 0};
     auto &spansUpload = updates.emplace_back(
         rhi::ComputeBufferUpdate{m_controls.spans, 0, std::vector<uint8_t>(spans.size() * sizeof(ModelWords))});
     std::memcpy(spansUpload.data.data(), spans.data(), spansUpload.data.size());
@@ -1923,6 +1938,42 @@ void InxPhyGpuStep::SceneJointParameters::Append(std::vector<rhi::ComputeBufferU
             },
             value.value);
     }
+}
+
+void InxPhyGpuStep::FixedInputs::Append(std::vector<rhi::ComputeBufferUpdate> &updates,
+                                        const std::vector<PhysicsFixedInputs> &values, uint32_t substeps) const
+{
+    const float divisions = static_cast<float>(substeps);
+    for (const auto &input : values)
+        if (!std::isfinite(input.duration) || input.duration / divisions <= 0.0f || !std::isfinite(input.gravity.x) ||
+            !std::isfinite(input.gravity.y) || !std::isfinite(input.gravity.z))
+            throw std::invalid_argument("inxphygpu fixed inputs require a positive duration and finite gravity");
+
+    // These buffers already belong to the resident step recipe. Write only their
+    // per-world settings, leaving shader bindings, clocks, and motion in place.
+    const auto upload = [&](const auto &buffer, uint64_t offset, const auto &pack) {
+        using Row = decltype(pack(values.front()));
+        auto &data = updates
+                         .emplace_back(rhi::ComputeBufferUpdate{buffer, offset,
+                                                                std::vector<uint8_t>(values.size() * sizeof(Row))})
+                         .data;
+        for (size_t world = 0; world < values.size(); ++world) {
+            const auto row = pack(values[world]);
+            std::memcpy(data.data() + world * sizeof(row), &row, sizeof(row));
+        }
+    };
+    upload(timestep, 0, [](const auto &input) { return input.duration; });
+    if (substep != timestep)
+        upload(substep, 0, [&](const auto &input) { return input.duration / divisions; });
+    if (gravity)
+        upload(gravity, 0,
+               [](const auto &input) { return ModelVector{input.gravity.x, input.gravity.y, input.gravity.z, 0.0f}; });
+    if (constraints)
+        upload(constraints, 2 * sizeof(ModelWords), [&](const auto &input) {
+            auto row = constraintDefaults;
+            row[0] = FloatWord(input.duration / divisions);
+            return row;
+        });
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch>

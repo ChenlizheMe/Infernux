@@ -7,6 +7,7 @@
 #include "JoltCpuContactPublication.h"
 #include "JoltGpuContactPublication.h"
 #include "PhysicsContactPublication.h"
+#include "PhysicsFixedInputs.h"
 #include "PhysicsGpuRenderBindings.h"
 #include "PhysicsGpuRenderPoses.h"
 #include "PhysicsParticipant.h"
@@ -95,7 +96,11 @@ struct PhysicsDomain final
     uint32_t admittedSubsteps = 1;
     std::optional<JoltGpuStepParameters> admittedParameters;
     JPH::PhysicsSettings admittedCpuSettings;
-    JPH::Vec3 admittedCpuGravity = JPH::Vec3::sZero();
+    JPH::Vec3 admittedGravity = JPH::Vec3::sZero();
+    [[nodiscard]] PhysicsFixedInputs AdmittedFixedInputs() const
+    {
+        return {admittedDeltaTime, {admittedGravity.GetX(), admittedGravity.GetY(), admittedGravity.GetZ()}};
+    }
     PhysicsContactPublication::Policy admittedContactPolicy;
     uint64_t stepEpoch = 0, stepIndex = 0;
     bool flushingAuthoring = false, synchronousRead = false;

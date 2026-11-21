@@ -4,6 +4,7 @@
 #pragma once
 
 #include "../PhysicsDeviceBufferRange.h"
+#include "../PhysicsFixedInputs.h"
 #include "../PhysicsGpuPoseSource.h"
 #include "InxPhyGpuModel.h"
 
@@ -235,10 +236,12 @@ class InxPhyGpuStep
 
     /// Commands for one body retain their submitted order. A rejected world
     /// restores its previous motions along with its fixed clock.
+    /// A supplied input row per world applies to this step and remains until replaced.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, InxPhyGpuBodyPublication publication,
                       std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false,
-                      std::vector<InxPhyGpuJointParameterUpdate> jointUpdates = {}) const;
+                      std::vector<InxPhyGpuJointParameterUpdate> jointUpdates = {},
+                      const std::vector<PhysicsFixedInputs> &fixedInputs = {}) const;
 
     /// Absolute edits and impulses publish new poses at the current fixed time.
     /// Time-dependent force and movement commands are admitted by the fixed step.
@@ -296,7 +299,6 @@ class InxPhyGpuStep
         std::vector<uint8_t> motion;
         uint32_t capacity = 0;
         uint32_t worlds = 0;
-        uint32_t timestep = 0;
     };
     struct ContactReports
     {
@@ -319,6 +321,14 @@ class InxPhyGpuStep
         std::vector<rhi::ComputeDispatchDesc> begin;
         rhi::ComputeDispatchDesc drive, advance, restore, clock;
     };
+    struct FixedInputs
+    {
+        std::shared_ptr<rhi::ComputeBuffer> timestep, substep, gravity, constraints;
+        ModelWords constraintDefaults{};
+
+        void Append(std::vector<rhi::ComputeBufferUpdate> &updates, const std::vector<PhysicsFixedInputs> &values,
+                    uint32_t substeps) const;
+    };
 
     void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, std::vector<rhi::ComputeReplayRange> &,
                          uint32_t spans, bool captureContacts) const;
@@ -331,7 +341,7 @@ class InxPhyGpuStep
                   uint32_t velocities, uint32_t appliedForces, InxPhyGpuContactStream contacts,
                   InxPhyGpuRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
                   ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
-                  InxPhyGpuPublishedRayQuery publishedRays);
+                  InxPhyGpuPublishedRayQuery publishedRays, FixedInputs fixedInputs);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
@@ -347,6 +357,7 @@ class InxPhyGpuStep
     std::shared_ptr<rhi::ComputeReplayCache> m_fixedReplay = rhi::MakeComputeReplayCache();
     SceneJointParameters m_jointParameters;
     InxPhyGpuPublishedRayQuery m_publishedRays;
+    FixedInputs m_fixedInputs;
 };
 
 } // namespace infernux::physics::inxphygpu

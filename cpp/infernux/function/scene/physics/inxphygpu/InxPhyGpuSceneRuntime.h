@@ -186,9 +186,11 @@ class InxPhyGpuSceneRuntime final
     /// The whole fixed publication becomes available once that work completes.
     /// This source performs admission and submission, then seals the consumer's
     /// outputs after its receipt and before releasing the fixed publication.
+    /// Fixed input rows follow the enrolled world order and are captured at admission.
     void BeginFixed(std::vector<ContactStreamIdentity> identities,
                     const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host, bool captureContacts = false,
-                    const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {});
+                    const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {},
+                    std::vector<PhysicsFixedInputs> fixedInputs = {});
     /// Apply immediate body edits at the last accepted simulation time.
     /// Reuses the same completion and optional consumer as a fixed step.
     void BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
@@ -231,6 +233,7 @@ class InxPhyGpuSceneRuntime final
         bool captureContacts;
         PublicationConsumer consumer;
         bool integrate;
+        std::vector<PhysicsFixedInputs> fixedInputs;
     };
     struct Receipt
     {
@@ -273,6 +276,7 @@ class InxPhyGpuSceneRuntime final
     uint64_t m_fixedGpuNanoseconds = 0;
     Packet m_packetKind = Packet::Initialize;
     bool m_retiring = false;
+    std::vector<PhysicsFixedInputs> m_activeFixedInputs;
 };
 
 } // namespace infernux::physics::inxphygpu

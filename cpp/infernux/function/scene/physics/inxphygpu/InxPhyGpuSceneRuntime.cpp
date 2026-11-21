@@ -252,6 +252,7 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
         }
     }
     m_layout = std::move(layout);
+    m_activeFixedInputs.assign(m_layout->worlds.size(), {timestep, {gravity[0], gravity[1], gravity[2]}});
     auto prepared = InxPhyGpuStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_layout->worlds.size()),
                                          timestep, gravity, &scene.collision, collisionCapacity, &solver, rayLayout,
                                          commandCapacity, contactReports, substeps, handoff);
@@ -283,13 +284,17 @@ std::optional<InxPhyGpuFixedPublication> InxPhyGpuSceneRuntime::TakeInitial()
 void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
                                        const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host,
                                        bool captureContacts, const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
-                                       PublicationConsumer consumer)
+                                       PublicationConsumer consumer, std::vector<PhysicsFixedInputs> fixedInputs)
 {
     if (captureContacts && !m_contactReportsConfigured)
         throw std::logic_error("inxphygpu scene was prepared without contact report storage");
     const auto &worlds = m_layout->worlds;
     if (identities.size() != worlds.size())
         throw std::invalid_argument("inxphygpu fixed step requires an identity per world");
+    if (!fixedInputs.empty() && fixedInputs.size() != worlds.size())
+        throw std::invalid_argument("inxphygpu fixed inputs require one row per enrolled world");
+    if (fixedInputs == m_activeFixedInputs)
+        fixedInputs.clear();
     for (size_t world = 0; world < identities.size(); ++world) {
         const auto &next = identities[world];
         const auto &previous = m_acceptedWorlds[world].identity;
@@ -350,7 +355,7 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
         }
     }
     BeginOperation({std::move(identities), std::move(actions), std::move(updates), host, captureContacts,
-                    std::move(consumer), true});
+                    std::move(consumer), true, std::move(fixedInputs)});
 }
 
 void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
@@ -363,7 +368,7 @@ void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<Physi
         EncodeBodyCommand(world, command, edits);
     if (edits.empty())
         throw std::invalid_argument("inxphygpu scene edit requires at least one body command");
-    BeginOperation({{}, std::move(edits), {}, false, false, std::move(consumer), false});
+    BeginOperation({{}, std::move(edits), {}, false, false, std::move(consumer), false, {}});
 }
 
 void InxPhyGpuSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
@@ -556,7 +561,7 @@ bool InxPhyGpuSceneRuntime::Advance(bool gpu, uint64_t token)
     } else if (m_operation->integrate) {
         const auto output = m_operation->host ? InxPhyGpuBodyPublication::Cpu : InxPhyGpuBodyPublication::Status;
         m_packet = m_step->PrepareControlled(m_operation->commands, output, {}, m_operation->captureContacts,
-                                             m_operation->jointUpdates);
+                                             m_operation->jointUpdates, m_operation->fixedInputs);
         m_packetKind = Packet::Fixed;
         m_operation->commands.clear();
         m_operation->jointUpdates.clear();
@@ -733,6 +738,8 @@ void InxPhyGpuSceneRuntime::PublishCompleted(InxPhyGpuFixedPublication publicati
         for (size_t i = 0; i < publication.worlds.size(); ++i)
             if (publication.worlds[i].status == 0)
                 m_acceptedWorlds[i] = publication.worlds[i];
+    if (!m_operation->fixedInputs.empty())
+        m_activeFixedInputs = std::move(m_operation->fixedInputs);
     m_operation.reset();
     m_publication.emplace(std::move(publication));
 }

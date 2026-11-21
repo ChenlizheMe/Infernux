@@ -42,7 +42,7 @@ struct SavedMotion
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
 [[vk::binding(1, 0)]] StructuredBuffer<BodyModel> bodies;
 [[vk::binding(2, 0)]] StructuredBuffer<JointModel> joints;
-[[vk::binding(3, 0)]] StructuredBuffer<uint4> spans; // count/fixed dt/substeps, then world/body/start/count
+[[vk::binding(3, 0)]] StructuredBuffer<uint4> spans; // count/unused/substeps, then world/body/start/count
 [[vk::binding(4, 0)]] StructuredBuffer<BodyCommand> commands;
 [[vk::binding(5, 0)]] RWStructuredBuffer<float> qpos;
 [[vk::binding(6, 0)]] RWStructuredBuffer<float> qvel;
@@ -61,6 +61,7 @@ struct SavedMotion
 [[vk::binding(19, 0)]] RWStructuredBuffer<uint> importedSteps;
 [[vk::binding(20, 0)]] StructuredBuffer<uint> previousAddresses;
 [[vk::binding(21, 0)]] StructuredBuffer<SceneRigidMotion> sceneMotion;
+[[vk::binding(22, 0)]] StructuredBuffer<float> fixedTimeSteps;
 
 float4 conjugate(float4 rotation)
 {
@@ -309,7 +310,7 @@ void applyKinematic<let Integrate : bool>(uint index, uint4 span, ModelDimension
         prescribed[row] = motion;
         return;
     }
-    const float timestep = asfloat(spans[0].y);
+    const float timestep = fixedTimeSteps[span.x];
     float3 travel = float3(0.0);
     float3 path = float3(0.0);
     if (moving)
@@ -368,7 +369,7 @@ void advance_commanded_substep(uint3 id : SV_DispatchThreadID)
     const uint next = fixedSteps[count - 1u] + 1u;
     const uint4 control = spans[0];
     const float alpha = float(next) / float(control.z);
-    const float dt = asfloat(control.y);
+    const float dt = fixedTimeSteps[span.x];
     const uint row = span.x * model[0].layout.y + body.hierarchy.w;
     writeKinematicStep(row, span.x, body, motion.start, motion.centerTravel.xyz, motion.angularTravel.xyz, alpha, dt);
 }

@@ -538,14 +538,14 @@ BodyCommand MoveCommand(uint32_t kind, const glm::vec3 &position, const glm::qua
     command.rootCOM.w = maxSpeed;
     return command;
 }
-JoltGpuStepParameters StepParameters(float dt, const glm::vec3 &gravity)
+JoltGpuStepParameters StepParameters(const PhysicsFixedInputs &inputs)
 {
     const auto &c = EngineConfig::Get();
     StepParams p{};
     p.counts.w = static_cast<uint32_t>(c.physicsVelocitySteps);
     p.solve.x = static_cast<uint32_t>(c.physicsPositionSteps);
     p.solve.y = static_cast<uint32_t>(c.physicsCollisionSteps);
-    p.gravityDt = {gravity.x, gravity.y, gravity.z, dt};
+    p.gravityDt = {inputs.gravity.x, inputs.gravity.y, inputs.gravity.z, inputs.duration};
     p.contact = {c.physicsSpeculativeContactDistance, c.physicsPenetrationSlop, c.physicsMaxPenetrationDistance,
                  c.physicsBaumgarte};
     p.restitution.x = c.physicsMinVelocityForRestitution;
@@ -961,7 +961,7 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
         domain.cpuControl->SealFixed();
         domain.cpuControl->ApplyFixed([this](uint32_t, const auto &ids) { RetireCpuJointRoutes(ids); });
         auto &system = domain.cpuScene->System();
-        system.SetGravity(domain.admittedCpuGravity);
+        system.SetGravity(domain.admittedGravity);
         system.SetPhysicsSettings(domain.admittedCpuSettings);
         domain.cpuScene->SetIgnoredPairs(CaptureColliderPairs(domain));
         const ContactStreamIdentity identity{domain.owner.id, domain.stepEpoch, domain.stepIndex};
@@ -1513,13 +1513,13 @@ bool PhysicsWorld::Step(float dt, PhysicsStepProfile *profile)
             domain.stepEpoch = epoch;
             domain.stepIndex = index;
             domain.admittedDeltaTime = dt;
+            domain.admittedGravity = JPH::Vec3(domain.gravity.x, domain.gravity.y, domain.gravity.z);
             const auto &config = EngineConfig::Get();
             if (config.physicsVelocitySteps < 0 || config.physicsPositionSteps < 0 || config.physicsCollisionSteps <= 0)
                 throw std::invalid_argument("Physics iterations and substeps are invalid");
             if (domain.UsesGpu()) {
-                domain.admittedParameters = StepParameters(dt, domain.gravity);
+                domain.admittedParameters = StepParameters(domain.AdmittedFixedInputs());
             } else {
-                domain.admittedCpuGravity = JPH::Vec3(domain.gravity.x, domain.gravity.y, domain.gravity.z);
                 domain.admittedCpuSettings = JoltCpuScene::CaptureSettings(config);
             }
             domain.admittedSubsteps = static_cast<uint32_t>(config.physicsCollisionSteps);
