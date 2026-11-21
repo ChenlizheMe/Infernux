@@ -68,10 +68,10 @@ ConvexPenetration epaWitness(ConvexPolytope polytope, uint face, uint status, RW
 
 ConvexPenetration expandConvexPenetration(ConvexDistance seed, ConvexGeometry first, ConvexGeometry second,
                                            float tolerance, uint iterations, ConvexPolytope polytope,
-                                           StructuredBuffer<float4> vertices, StructuredBuffer<int> adjacency,
+                                           StructuredBuffer<uint4> model,
                                            RWStructuredBuffer<uint4> scratch, RWStructuredBuffer<uint> horizon)
 {
-    const uint initial = seedEpaPolytope(polytope, seed, first, second, vertices, adjacency, scratch);
+    const uint initial = seedEpaPolytope(polytope, seed, first, second, model, scratch);
     if (initial == EpaBoundary)
         return {seed.first, seed.second, seed.distance, NoIndex, EpaBoundary};
     if (initial == EpaCapacity)
@@ -120,7 +120,7 @@ ConvexPenetration expandConvexPenetration(ConvexDistance seed, ConvexGeometry fi
         const float lower = sqrt(lower2);
         int2 cached;
         const float3 point = sampleEpaVertex(polytope, newVertex, first, second, projection / lower,
-                                            vertices, adjacency, scratch, cached);
+                                            model, scratch, cached);
         first.cachedVertex = cached.x;
         second.cachedVertex = cached.y;
         ++polytope.vertexCount;

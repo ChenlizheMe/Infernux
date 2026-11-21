@@ -54,11 +54,11 @@ float3 epaPoint(ConvexPolytope polytope, uint index, RWStructuredBuffer<uint4> s
 }
 
 float3 sampleEpaVertex(ConvexPolytope polytope, uint index, ConvexGeometry first, ConvexGeometry second,
-                       float3 direction, StructuredBuffer<float4> hullVertices, StructuredBuffer<int> adjacency,
+                       float3 direction, StructuredBuffer<uint4> model,
                        RWStructuredBuffer<uint4> scratch, out int2 cached)
 {
-    const ConvexSupportPoint a = convexSupport(first, direction, hullVertices, adjacency);
-    const ConvexSupportPoint b = convexSupport(second, -direction, hullVertices, adjacency);
+    const ConvexSupportPoint a = convexSupport(first, direction, model);
+    const ConvexSupportPoint b = convexSupport(second, -direction, model);
     cached = int2(a.cachedVertex, b.cachedVertex);
     const ConvexSimplexVertex vertex = {a.point, b.point, int2(a.vertex, b.vertex)};
     storeEpaVertex(polytope, index, vertex, scratch);
@@ -113,7 +113,7 @@ void epaSelectTriangle(inout ConvexPolytope polytope, uint3 face, RWStructuredBu
 }
 
 uint seedEpaTriangle(inout ConvexPolytope polytope, float distance, ConvexGeometry first, ConvexGeometry second,
-                     StructuredBuffer<float4> vertices, StructuredBuffer<int> adjacency, RWStructuredBuffer<uint4> scratch)
+                     StructuredBuffer<uint4> model, RWStructuredBuffer<uint4> scratch)
 {
     const float3 a = epaPoint(polytope, 0, scratch);
     const float3 b = epaPoint(polytope, 1, scratch);
@@ -125,8 +125,8 @@ uint seedEpaTriangle(inout ConvexPolytope polytope, float distance, ConvexGeomet
         return EpaBoundary;
     const float3 direction = normal / norm;
     int2 cached;
-    const float3 d = sampleEpaVertex(polytope, 3, first, second, -direction, vertices, adjacency, scratch, cached);
-    const float3 e = sampleEpaVertex(polytope, 4, first, second, direction, vertices, adjacency, scratch, cached);
+    const float3 d = sampleEpaVertex(polytope, 3, first, second, -direction, model, scratch, cached);
+    const float3 e = sampleEpaVertex(polytope, 4, first, second, direction, model, scratch, cached);
     if (epaOnTriangle(a,b,c,d) || epaOnTriangle(a,b,c,e))
         return EpaBoundary;
     if (distance > 1.0e-5 && !epaTetrahedronContainsOrigin(a,b,c,d) && !epaTetrahedronContainsOrigin(a,b,c,e))
@@ -142,7 +142,7 @@ uint seedEpaTriangle(inout ConvexPolytope polytope, float distance, ConvexGeomet
 }
 
 uint seedEpaSegment(inout ConvexPolytope polytope, float distance, ConvexGeometry first, ConvexGeometry second,
-                    StructuredBuffer<float4> vertices, StructuredBuffer<int> adjacency, RWStructuredBuffer<uint4> scratch)
+                    StructuredBuffer<uint4> model, RWStructuredBuffer<uint4> scratch)
 {
     const float3 a = epaPoint(polytope, 0, scratch);
     const float3 b = epaPoint(polytope, 1, scratch);
@@ -160,18 +160,18 @@ uint seedEpaSegment(inout ConvexPolytope polytope, float distance, ConvexGeometr
     const float3 direction = normalize(cross(basis, edge));
     const float3 tangent = cross(axis, direction) * 0.86602540378;
     int2 cached;
-    const float3 c = sampleEpaVertex(polytope, 2, first, second, direction, vertices, adjacency, scratch, cached);
+    const float3 c = sampleEpaVertex(polytope, 2, first, second, direction, model, scratch, cached);
     const float3 d = sampleEpaVertex(polytope, 3, first, second, tangent - 0.5 * direction,
-                                    vertices, adjacency, scratch, cached);
+                                    model, scratch, cached);
     const float3 e = sampleEpaVertex(polytope, 4, first, second, -tangent - 0.5 * direction,
-                                    vertices, adjacency, scratch, cached);
+                                    model, scratch, cached);
     const uint3 faces[6] = {uint3(0,2,3), uint3(0,4,2), uint3(0,3,4), uint3(1,3,2), uint3(1,2,4), uint3(1,4,3)};
     for (uint i = 0; i < 6; ++i)
     {
         if (attachEpaFace(polytope, faces[i], scratch) < 1.0e-10)
         {
             epaSelectTriangle(polytope, faces[i], scratch);
-            return seedEpaTriangle(polytope, distance, first, second, vertices, adjacency, scratch);
+            return seedEpaTriangle(polytope, distance, first, second, model, scratch);
         }
     }
     const float3 signs = float3(dot(c-a, cross(d-a, edge)), dot(d-a, cross(e-a, edge)), dot(e-a, cross(c-a, edge)));
@@ -182,7 +182,7 @@ uint seedEpaSegment(inout ConvexPolytope polytope, float distance, ConvexGeometr
 }
 
 uint seedEpaPolytope(inout ConvexPolytope polytope, ConvexDistance seed, ConvexGeometry first, ConvexGeometry second,
-                     StructuredBuffer<float4> vertices, StructuredBuffer<int> adjacency, RWStructuredBuffer<uint4> scratch)
+                     StructuredBuffer<uint4> model, RWStructuredBuffer<uint4> scratch)
 {
     polytope.vertexCount = seed.count;
     polytope.faceCount = 0;
@@ -191,9 +191,9 @@ uint seedEpaPolytope(inout ConvexPolytope polytope, ConvexDistance seed, ConvexG
     for (uint i = 0; i < seed.count; ++i)
         storeEpaVertex(polytope, i, seed.simplex[i], scratch);
     if (seed.count == 2)
-        return seedEpaSegment(polytope, seed.distance, first, second, vertices, adjacency, scratch);
+        return seedEpaSegment(polytope, seed.distance, first, second, model, scratch);
     if (seed.count == 3)
-        return seedEpaTriangle(polytope, seed.distance, first, second, vertices, adjacency, scratch);
+        return seedEpaTriangle(polytope, seed.distance, first, second, model, scratch);
 
     const float3 a = epaPoint(polytope, 0, scratch);
     const float3 b = epaPoint(polytope, 1, scratch);
@@ -209,7 +209,7 @@ uint seedEpaPolytope(inout ConvexPolytope polytope, ConvexDistance seed, ConvexG
         if (distance < 1.0e-17)
         {
             epaSelectTriangle(polytope, faces[i], scratch);
-            return seedEpaTriangle(polytope, seed.distance, first, second, vertices, adjacency, scratch);
+            return seedEpaTriangle(polytope, seed.distance, first, second, model, scratch);
         }
         if (distance < nearest || (i == 1 && distance == nearest))
         {
@@ -222,5 +222,5 @@ uint seedEpaPolytope(inout ConvexPolytope polytope, ConvexDistance seed, ConvexG
     if (nearest > MinValue)
         return EpaBoundary;
     epaSelectTriangle(polytope, faces[closest], scratch);
-    return seedEpaTriangle(polytope, seed.distance, first, second, vertices, adjacency, scratch);
+    return seedEpaTriangle(polytope, seed.distance, first, second, model, scratch);
 }

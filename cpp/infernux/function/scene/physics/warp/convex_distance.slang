@@ -70,8 +70,7 @@ float3 tuneConvexDirection(float3 direction, float norm, float3 simplex[4], uint
 }
 
 ConvexDistance gjkDistance(inout ConvexGeometry first, inout ConvexGeometry second, float tolerance,
-                           float cutoff, uint iterations, StructuredBuffer<float4> vertices,
-                           StructuredBuffer<int> adjacency)
+                           float cutoff, uint iterations, StructuredBuffer<uint4> model)
 {
     const bool discrete = convexDiscreteGeometry(first) && convexDiscreteGeometry(second);
     const float gapTolerance = discrete ? 0.0 : 0.5 * tolerance * tolerance;
@@ -91,8 +90,8 @@ ConvexDistance gjkDistance(inout ConvexGeometry first, inout ConvexGeometry seco
         float3 supportDirection = direction / norm;
         if (discrete && norm < 1.0e-4)
             supportDirection = tuneConvexDirection(direction, norm, simplex, result.count, search);
-        const ConvexSupportPoint a = convexSupport(first, -supportDirection, vertices, adjacency);
-        const ConvexSupportPoint b = convexSupport(second, supportDirection, vertices, adjacency);
+        const ConvexSupportPoint a = convexSupport(first, -supportDirection, model);
+        const ConvexSupportPoint b = convexSupport(second, supportDirection, model);
         first.cachedVertex = a.cachedVertex;
         second.cachedVertex = b.cachedVertex;
         const uint next = result.count;
@@ -146,8 +145,8 @@ ConvexDistance gjkDistance(inout ConvexGeometry first, inout ConvexGeometry seco
     if (norm > 0.0)
     {
         const float3 unitDirection = direction / norm;
-        const ConvexSupportPoint a = convexSupport(first, -unitDirection, vertices, adjacency);
-        const ConvexSupportPoint b = convexSupport(second, unitDirection, vertices, adjacency);
+        const ConvexSupportPoint a = convexSupport(first, -unitDirection, model);
+        const ConvexSupportPoint b = convexSupport(second, unitDirection, model);
         result.separated = dot(direction, a.point - b.point) > 0.0;
     }
     result.distance = result.count == 4 && !result.separated ? 0.0 : norm;
@@ -175,8 +174,7 @@ float shrinkConvexGeometry(inout ConvexGeometry geometry, bool polygonalPair)
 
 // Use frames rebased to the first shape's origin, including for the EPA consumer.
 ConvexDistance convexDistancePhase(inout ConvexGeometry first, inout ConvexGeometry second, float tolerance,
-                                   float cutoff, uint iterations, StructuredBuffer<float4> vertices,
-                                   StructuredBuffer<int> adjacency, out bool needsPenetration)
+                                   float cutoff, uint iterations, StructuredBuffer<uint4> model, out bool needsPenetration)
 {
     needsPenetration = false;
     if (first.margin > 0.0 || second.margin > 0.0 || first.shape.type.x <= GeomCapsule ||
@@ -194,7 +192,7 @@ ConvexDistance convexDistancePhase(inout ConvexGeometry first, inout ConvexGeome
         if (thickness > 0.0)
         {
             ConvexDistance result = gjkDistance(reducedA, reducedB, tolerance, cutoff + thickness, iterations,
-                                               vertices, adjacency);
+                                               model);
             first.cachedVertex = reducedA.cachedVertex;
             second.cachedVertex = reducedB.cachedVertex;
             if (result.distance > tolerance)
@@ -212,7 +210,7 @@ ConvexDistance convexDistancePhase(inout ConvexGeometry first, inout ConvexGeome
             }
         }
     }
-    const ConvexDistance result = gjkDistance(first, second, tolerance, cutoff, iterations, vertices, adjacency);
+    const ConvexDistance result = gjkDistance(first, second, tolerance, cutoff, iterations, model);
     needsPenetration = result.distance <= tolerance && result.count >= 2 && !result.separated;
     return result;
 }

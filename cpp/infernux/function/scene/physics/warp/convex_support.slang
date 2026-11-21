@@ -4,6 +4,7 @@
 // Adapted from MuJoCo Warp _src/collision_gjk.py, support.
 
 #include "collision_geometry.slang"
+#include "convex_model.slang"
 
 struct ConvexGeometry
 {
@@ -27,7 +28,7 @@ float convexSign(float value)
 }
 
 ConvexSupportPoint hullSupport(uint4 shape, int cachedVertex, float3 direction,
-                               StructuredBuffer<float4> vertices, StructuredBuffer<int> adjacency)
+                               StructuredBuffer<uint4> model)
 {
     const int first = int(shape.y);
     const int count = int(shape.z);
@@ -35,35 +36,35 @@ ConvexSupportPoint hullSupport(uint4 shape, int cachedVertex, float3 direction,
     if (shape.w == NoIndex || count < 10)
     {
         vertex = max(cachedVertex - first, 0);
-        float best = dot(vertices[first + vertex].xyz, direction);
+        float best = dot(convexVertex(model, uint(first + vertex)), direction);
         for (int i = 0; i < count; ++i)
         {
-            const float projection = dot(vertices[first + i].xyz, direction);
+            const float projection = dot(convexVertex(model, uint(first + i)), direction);
             if (projection > best)
             {
                 best = projection;
                 vertex = i;
             }
         }
-        return {vertices[first + vertex].xyz, first + vertex, vertex};
+        return {convexVertex(model, uint(first + vertex)), first + vertex, vertex};
     }
 
     const int graph = int(shape.w);
-    const int hullCount = adjacency[graph];
+    const int hullCount = convexAdjacency(model, uint(graph));
     const int neighborOffsets = graph + 2;
     const int hullVertices = neighborOffsets + hullCount;
     const int neighbors = hullVertices + hullCount;
     int current = max(cachedVertex, 0);
-    float best = dot(direction, vertices[first + adjacency[hullVertices + current]].xyz);
+    float best = dot(direction, convexVertex(model, uint(first + convexAdjacency(model, uint(hullVertices + current)))));
     int previous = -1;
     while (previous != current)
     {
         previous = current;
-        int edge = neighbors + adjacency[neighborOffsets + current];
-        for (int neighbor = adjacency[edge]; neighbor >= 0; neighbor = adjacency[++edge])
+        int edge = neighbors + convexAdjacency(model, uint(neighborOffsets + current));
+        for (int neighbor = convexAdjacency(model, uint(edge)); neighbor >= 0; neighbor = convexAdjacency(model, uint(++edge)))
         {
-            const int candidate = adjacency[hullVertices + neighbor];
-            const float projection = dot(direction, vertices[first + candidate].xyz);
+            const int candidate = convexAdjacency(model, uint(hullVertices + neighbor));
+            const float projection = dot(direction, convexVertex(model, uint(first + candidate)));
             if (projection > best)
             {
                 current = neighbor;
@@ -71,12 +72,11 @@ ConvexSupportPoint hullSupport(uint4 shape, int cachedVertex, float3 direction,
             }
         }
     }
-    vertex = adjacency[hullVertices + current];
-    return {vertices[first + vertex].xyz, current, vertex};
+    vertex = convexAdjacency(model, uint(hullVertices + current));
+    return {convexVertex(model, uint(first + vertex)), current, vertex};
 }
 
-ConvexSupportPoint convexSupport(ConvexGeometry geometry, float3 direction, StructuredBuffer<float4> vertices,
-                                 StructuredBuffer<int> adjacency)
+ConvexSupportPoint convexSupport(ConvexGeometry geometry, float3 direction, StructuredBuffer<uint4> model)
 {
     const uint kind = geometry.shape.type.x;
     const float3 size = geometry.shape.size.xyz;
@@ -109,7 +109,7 @@ ConvexSupportPoint convexSupport(ConvexGeometry geometry, float3 direction, Stru
         result.vertex = local.z >= 0.0 ? 0 : 1;
         break;
     case GeomMesh:
-        result = hullSupport(geometry.shape.type, geometry.cachedVertex, local, vertices, adjacency);
+        result = hullSupport(geometry.shape.type, geometry.cachedVertex, local, model);
         break;
     }
     result.point = rotatePoint(geometry.frame, result.point) + center;
