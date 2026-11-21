@@ -21,7 +21,7 @@ These Slang entries follow MuJoCo Warp's shared model and world-indexed data. Th
 | `primitive_contacts.slang`, `box_contacts.slang`, `capsule_box.slang` | Plane against sphere, capsule, ellipsoid, cylinder or box, sphere against sphere, capsule, cylinder or box, capsule against capsule or box, and oriented box against box | `clear_contact_count`, `collide_primitives` |
 | `convex_contacts.slang` | Native GJK and EPA convex pairs, face and edge manifolds, and plane against mesh hull | `clear_convex_status`, `collide_convex` |
 | `heightfield_contacts.slang` | Heightfield versus convex shapes, local prism traversal and contact reduction | `collide_heightfield` |
-| `ray_queries.slang` | Batched closest ray hits against primitives, heightfields and triangle meshes | `raycast_worlds` |
+| `ray_bvh_refit.slang`, `ray_queries.slang` | GPU scene-bound refit and batched closest ray hits against primitives, heightfields and triangle meshes | `refit_ray_bvh`, `raycast_worlds` |
 | `contact_constraints.slang` | Sparse contact Jacobian, constraint row parameters and pyramidal or elliptic contact objective | `clear_constraint_counts`, `reserve_contact_rows`, `project_contact_rows`, `finish_contact_rows`, `seed_contact_acceleration`, `contact_residual`, `evaluate_contact_objective` |
 | `joint_constraints.slang` | Hinge, slide and ball limits, scalar equality and DOF friction loss | `emit_joint_constraint_rows` |
 | `spatial_constraints.slang` | Connect and weld equality for body or site endpoints | `emit_spatial_equality_rows` |
@@ -109,9 +109,11 @@ Clear convex status once per step. Schedule `collide_convex` after primitive con
 
 ## Resident ray queries
 
-`raycast_worlds` uses one 64-lane group for each `(ray, world)` and reduces to the closest hit. Dispatch X is the ray count and dispatch Y is the world count. Ray inputs are shared when the settings select one input row or supplied per world. Each ray specifies its origin, maximum distance, unit direction, layer mask, optionally excluded body and whether to include static shapes. Equal distances select the lower geometry index. A miss writes distance `-1` and invalid geometry and body indices.
+`BuildPhysicsRayIndex` cooks one shared scene topology with the engine's SAH builder. Pass the finite AABBs and their scene geometry IDs, and list planes separately. Record 0 indexes the node links, packed primitive and plane lists and plane count. Record 1 holds the scene node count, refit batch offset, number of subtree batches and whether a root batch follows. Internal links identify both children and the next node after the subtree. Leaves identify their range in the packed geometry IDs. The node count terminates traversal.
 
-Pass the geometry frames from position kinematics and the same immutable shapes, vertices and heightfields used by collision. The mesh descriptor indexes a triangle start and count in the query triangle buffer. Those triangles reference the original mesh vertices, including faces outside the collision hull topology. The current traversal follows Warp's tiled geometry scan. The heightfield query clips to the top and base bounds, scans the intersected subgrid and checks the exposed sides. Results stay in a device buffer with normal, distance and geometry and body IDs for queries or sensors.
+`refit_ray_bvh` consumes `sap_project` bounds from the same world snapshot as the ray geometry frames. Allocate two `float4` bounds per node per world, and share the immutable index. Run one group per subtree on X and world on Y, then a group per world for the root batch if present. Each group processes its nodes from leaves toward the root. Declare the bounds as read-write during refit and read-only for queries. Reuse the completed bounds for all rays on that snapshot.
+
+`raycast_worlds` traces one ray per invocation, using groups of 64 on X and worlds on Y. Ray inputs are shared when the settings select one input row or supplied per world. Each ray specifies its origin, maximum distance, unit direction, layer mask, optionally excluded body and whether to include static shapes. Equal distances select the lower geometry index. `AppendPhysicsRayMesh` cooks each mesh's original triangles into a shared local tree and returns its offset for the geometry metadata. Heightfields share collision samples and use their clipped subgrid and exposed sides. Results stay in the device buffer with distance, normal, geometry and body IDs. A miss writes distance `-1` and invalid IDs.
 
 ## Contact constraints
 

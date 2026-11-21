@@ -4,31 +4,13 @@
 // Slang adaptation of MuJoCo Warp _src/collision_driver.py and _src/collision_core.py sweep and prune.
 
 #include "model.slang"
+#include "collision_bounds.slang"
 
 static const float UnboundedRadius = 1.0e10;
 static const uint FilterPlane = 1;
 static const uint FilterSphere = 2;
 static const uint FilterAabb = 4;
 static const uint FilterObb = 8;
-
-struct LocalBound
-{
-    float4 center;
-    float4 halfExtent;
-    float4 radii; // bounding radius, margin + gap, maximum explicit pair margin + gap
-    uint4 geometry; // MuJoCo geometry type
-};
-
-struct ProjectedBound
-{
-    float4 originRadius;
-    float4 centerUpper;
-    float4 axisX;
-    float4 axisY;
-    float4 axisZ;
-    float4 aabbHalfMargin;
-    uint4 geometry;
-};
 
 struct SortKey
 {
