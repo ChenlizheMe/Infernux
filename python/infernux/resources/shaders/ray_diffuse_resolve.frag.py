@@ -1,7 +1,7 @@
 import infernux.shader as shader
 from infernux.shader.lib.camera import linear_eye_depth, world_position
 from infernux.shader.lib.ray_moments import sh_diffuse_irradiance
-from infernux.shader.lib.ray_sh_filter import sh_bilateral, sh_guide_pixel
+from infernux.shader.lib.ray_sh_filter import sh_depth_falloff, sh_guide_phase
 from infernux.shader.lib.surface import decode_octahedral_normal
 
 
@@ -25,7 +25,8 @@ class RayDiffuseResolve(shader.fullscreen):
         depth = shader.as_float(receiver.y)
         shading = decode_octahedral_normal(shader.load(self.frame, pixel, 0).xy)
         cell = shader.min(shader.ivec2(shader.uvec2(pixel) // shader.uint(self.divisor)), extent - 1)
-        index = shader._view_sample_index()
+        phase = sh_guide_phase(shader._view_sample_index())
+        inverse_depth = 1.0 / shader.max(depth, 1.0e-8)
         camera = shader.camera()
         normal = decode_octahedral_normal(shader.unpack_half_2x16(receiver.z))
         position = world_position(ctx.uv, depth, camera)
@@ -43,8 +44,9 @@ class RayDiffuseResolve(shader.fullscreen):
             at = cell + offset
             if shader.any(at < shader.ivec2(0)) or shader.any(at >= extent):
                 continue
-            # Read the raster sample that supplied this coefficient cell's guide.
-            site = sh_guide_pixel(at, extent, full, index)
+            # The 2× and 4× coefficient grids map to the even raster positions
+            # before adding the phase, including at odd viewport sizes.
+            site = shader.min(at * self.divisor + phase, full - 1)
             donor = shader.load(self.primary, site, 0)
             if donor.x == 0:
                 continue
@@ -54,11 +56,11 @@ class RayDiffuseResolve(shader.fullscreen):
             # The projected plane residual is the world-space distance divided by clip W.
             inverse_w = 1.0 if orthographic else camera.depth_params.z * other_depth + camera.depth_params.w
             plane_weight = shader.saturate(1.3333333 - plane_error / (3.0 * tolerance * inverse_w))
-            weight = sh_bilateral(depth, other_depth, 1.0, 0.0, 0.0) * plane_weight
             # Filter around the coefficient cell centers. The raster phase can
             # validate a donor, but does not move the reconstruction footprint.
             radius = shader.vec2(offset) + 0.5 - subpixel
-            weight *= shader.exp2(-shader.dot(radius, radius))
+            relative_depth = shader.abs(1.0 - other_depth * inverse_depth)
+            weight = plane_weight * shader.exp2(-sh_depth_falloff(relative_depth, 1.0) - shader.dot(radius, radius))
             red += weight * shader.load(self.red_sh, at, 0)
             green += weight * shader.load(self.green_sh, at, 0)
             blue += weight * shader.load(self.blue_sh, at, 0)

@@ -9,9 +9,13 @@ def sh_facing(view_normal: shader.vec3) -> float:
     return shader.max(0.3, toward_eye * view_normal.z)
 
 
+def sh_depth_falloff(relative_depth: float, facing: float) -> float:
+    return shader.min(30.0, 80.0 * facing * relative_depth)
+
+
 def sh_bilateral(depth: float, other_depth: float, facing: float, visibility: float, other_visibility: float) -> float:
     relative_depth = shader.abs(1.0 - other_depth / shader.max(depth, 1.0e-8))
-    return shader.exp2(-shader.min(30.0, 80.0 * facing * relative_depth) -
+    return shader.exp2(-sh_depth_falloff(relative_depth, facing) -
                        20.0 * shader.abs(visibility - other_visibility))
 
 
