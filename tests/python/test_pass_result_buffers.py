@@ -267,16 +267,21 @@ def test_deferred_gi_controls_reflection_passes(diffuse, specular, quality, trac
         assert "Thin Surface Capture" not in passes
         return
 
-    assert lighting._shader_name == "infernux/internal/deferred_linear_lighting"
-    assert lighting._parameters == {"diffuse_mode": 1, "specular_mode": 2 if specular else 0,
-                                    "diffuse_intensity": 1.0, "diffuse_saturation": 1.0,
-                                    "ssao_strength": 0.5, "ssao_contrast": 1.0}
+    shader_name = "deferred_ray_lighting" if specular else "deferred_linear_lighting"
+    assert lighting._shader_name == f"infernux/internal/{shader_name}"
+    parameters = {"diffuse_intensity": 1.0, "diffuse_saturation": 1.0, "ssao_strength": 0.5, "ssao_contrast": 1.0}
+    if specular:
+        parameters.update(diffuse_mode=1, specular_mode=2)
+    assert lighting._parameters == parameters
     visibility = graph.get_pass_result("gbuffer").sample("ambient_visibility")
     primary = graph.get_pass_result("gbuffer").sample("ray_primary_surface")
     assert visibility.size_divisor == primary.size_divisor == 0
     assert visibility.format == Format.R8_UNORM
     assert lighting._input_bindings["ambient_visibility"] == visibility.name
-    assert lighting._input_bindings["primary_tex"] == primary.name
+    if specular:
+        assert lighting._input_bindings["primary_tex"] == primary.name
+    else:
+        assert {"primary_tex", "ray_diffuse", "ray_specular", "specular_radiance"}.isdisjoint(lighting._input_bindings)
 
     observation = passes["Ray Diffuse Irradiance"]
     assert "tail_cache" not in observation._input_bindings
@@ -474,7 +479,7 @@ def test_tracer_replacement_controls_the_entire_graph_and_one_lobe_independently
     graph.build()
     passes = {p.name: p for p in graph._passes}
     assert "Ray Diffuse Reconstruction" in passes and "Ray Specular Reconstruction" not in passes
-    assert passes["DeferredLightingPass"]._shader_name == "infernux/internal/deferred_linear_lighting"
+    assert passes["DeferredLightingPass"]._shader_name == "infernux/internal/deferred_ray_lighting"
     assert passes["DeferredLightingPass"]._parameters == {"diffuse_mode": 1, "specular_mode": 1,
                                                           "diffuse_intensity": 1.0, "diffuse_saturation": 1.0,
                                                           "ssao_strength": 0.5, "ssao_contrast": 2.0}

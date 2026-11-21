@@ -173,24 +173,23 @@ class RayTracingContext:
                 draw_deferred_lighting(p, surface)
                 return
             bind_deferred_surface(p, surface)
-            # Unused sampler slots alias material inputs already bound to this
-            # pass. No dummy images, standalone resolves or copies are created.
-            primary = result._primary or surface["surface"]
-            p.set_texture("primary_tex", primary)
             p.set_texture("ambient_visibility", visibility or surface["surface_frame"])
             p.set_param("diffuse_intensity", self.gi_intensity)
             p.set_param("diffuse_saturation", self.gi_saturation)
             p.set_param("ssao_strength", self.ssao_strength if visibility is not None else 0.0)
             p.set_param("ssao_contrast", max(0.25, self.ssao_contrast))
+            if not self.specular and not packed:
+                p.set_texture("diffuse_irradiance", linear["diffuse_irradiance"])
+                p.fullscreen_quad("infernux/internal/deferred_linear_lighting")
+                return
+
+            primary = result._primary or surface["surface"]
+            p.set_texture("primary_tex", primary)
             for key, port in (("diffuse_irradiance", "diffuse"), ("specular_radiance", "specular")):
                 p.set_texture(f"ray_{port}", packed.get(key, primary))
-                if linear:
-                    p.set_texture(key, linear.get(key, surface["surface_frame"]))
-                    p.set_param(f"{port}_mode", 2 if key in packed else int(key in linear))
-                else:
-                    p.set_param(f"{port}_enabled", key in packed)
-            shader = "deferred_linear_lighting" if linear else "deferred_ray_lighting"
-            p.fullscreen_quad(f"infernux/internal/{shader}")
+                p.set_texture(key, linear.get(key, surface["surface_frame"]))
+                p.set_param(f"{port}_mode", 2 if key in packed else int(key in linear))
+            p.fullscreen_quad("infernux/internal/deferred_ray_lighting")
 
     def publish(
         self, *, raw: Mapping[str, TextureHandle | RayTracingSignal | Callable[[], TextureHandle]] | None = None,

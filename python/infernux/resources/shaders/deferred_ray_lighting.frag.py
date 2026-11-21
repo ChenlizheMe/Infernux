@@ -16,13 +16,16 @@ class DeferredRayLighting(shader.fullscreen):
     primary_tex = shader.input("ray_primary_surface", shader.UInt2D)
     ray_diffuse = shader.input("ray_diffuse", shader.UInt2D)
     ray_specular = shader.input("ray_specular", shader.UInt2D)
+    diffuse_irradiance = shader.input("diffuse_irradiance", shader.Color2D)
+    specular_radiance = shader.input("specular_radiance", shader.Color2D)
     ambient_visibility = shader.input("ambient_visibility", shader.Color2D)
     diffuse_intensity = shader.parameter.float(default=1.0)
     diffuse_saturation = shader.parameter.float(default=1.0)
     ssao_strength = shader.parameter.float(default=0.0)
     ssao_contrast = shader.parameter.float(default=1.0)
-    diffuse_enabled = shader.parameter.bool(default=False)
-    specular_enabled = shader.parameter.bool(default=False)
+    # Each lobe can be disabled (0), linear HDR (1), or a packed ray signal (2).
+    diffuse_mode = shader.parameter.int(default=0)
+    specular_mode = shader.parameter.int(default=0)
 
     def main(self, ctx: shader.fragment_input) -> shader.vec4:
         pixel = shader.ivec2(ctx.position.xy)
@@ -39,13 +42,17 @@ class DeferredRayLighting(shader.fullscreen):
         surface = decode_deferred_surface(base, frame, emission, packed.y)
         context = deferred_raster_context(ctx.uv, ctx.position.xy, depth, surface.normal_ws, metadata, self.depth_tex)
         diffuse = shader.vec4(0.0)
-        if self.diffuse_enabled:
+        if self.diffuse_mode == 2:
             diffuse = resolve_ray_diffuse(self.ray_diffuse, self.primary_tex, self.normal_tex, pixel, packed.x,
                                           depth, surface.normal_ws, frame.z)
+        elif self.diffuse_mode == 1:
+            diffuse = shader.load(self.diffuse_irradiance, pixel, 0)
         specular = shader.vec4(0.0)
-        if self.specular_enabled:
+        if self.specular_mode == 2:
             specular = resolve_ray_specular(self.ray_specular, self.primary_tex, self.normal_tex, pixel, packed.x,
                                             depth, surface.normal_ws, frame.z)
+        elif self.specular_mode == 1:
+            specular = shader.load(self.specular_radiance, pixel, 0)
         diffuse = adjust_diffuse_lighting(diffuse, self.diffuse_intensity, self.diffuse_saturation)
         surface.occlusion *= ambient_occlusion_factor(
             self.ambient_visibility, pixel, self.ssao_strength, self.ssao_contrast)
