@@ -290,7 +290,7 @@ float4 cgRowRay(uint index, uint contactBase, bool elliptic, float inverseFricti
     const float diagonal = row.diagonal;
     const float delta = alpha * direction;
     const float end = start + delta;
-    if (kind == FrictionRow)
+    if (isFrictionConstraint(kind))
     {
         const float friction = row.frictionLoss;
         const float radius = friction / diagonal;

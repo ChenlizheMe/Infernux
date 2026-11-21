@@ -39,6 +39,13 @@ float constraintDiagonal(float inverseWeight, float impedance)
     return 1.0 / max(ConstraintMinValue, inverseWeight * (1.0 - impedance) / impedance);
 }
 
+float2 constraintCoupling(float4 coefficients, float fourth, float x)
+{
+    const float value = coefficients.x + x * (coefficients.y + x * (coefficients.z + x * (coefficients.w + x * fourth)));
+    const float derivative = coefficients.y + x * (2.0 * coefficients.z + x * (3.0 * coefficients.w + x * 4.0 * fourth));
+    return float2(value, derivative);
+}
+
 struct ConstraintParameters
 {
     float4 impedance;
@@ -54,7 +61,7 @@ float3 impedanceParameters(ConstraintParameters parameters, float position, floa
 ConstraintRow makeConstraintRow(uint4 layout, uint kind, float3 kbi, float position, float margin,
                                 float velocity, float inverseWeight, float friction, float accelerationShift)
 {
-    const float stiffness = kind == FrictionRow ? 0.0 : kbi.x;
+    const float stiffness = isFrictionConstraint(kind) ? 0.0 : kbi.x;
     const float reference = -stiffness * kbi.z * position - kbi.y * velocity - accelerationShift;
     return {layout, float4(position + margin, margin, velocity, reference),
             constraintDiagonal(inverseWeight, kbi.z), friction, kind};

@@ -49,10 +49,9 @@ void emit_joint_constraint_rows(uint3 id : SV_DispatchThreadID)
         {
             const JointModel second = joints[source.z];
             const float x = qpos[positionBase + second.indices.y] - second.axis.w;
-            const float4 coefficients = constraint.data;
-            const float fourth = constraint.extra.x;
-            target += x * (coefficients.y + x * (coefficients.z + x * (coefficients.w + x * fourth)));
-            jacobian.y = -(coefficients.y + x * (2.0 * coefficients.z + x * (3.0 * coefficients.w + x * 4.0 * fourth)));
+            const float2 coupling = constraintCoupling(constraint.data, constraint.extra.x, x);
+            target = coupling.x;
+            jacobian.y = -coupling.y;
             dof.y = second.indices.z;
             width = 2;
         }

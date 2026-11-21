@@ -296,14 +296,14 @@ void evaluate_contact_objective(uint3 id : SV_DispatchThreadID)
         evaluation[index] = evaluateQuadratic(residual, diagonal);
         return;
     }
-    if (kind == FrictionRow)
+    if (isFrictionConstraint(kind))
     {
         evaluation[index] = evaluateFriction(residual, diagonal, row.frictionLoss);
         return;
     }
     const ConstraintEvaluation satisfied = {0.0, 0.0, SatisfiedConstraint};
     const bool elliptic = (settings[1].w & EllipticCone) != 0;
-    if (kind == LimitRow || !elliptic)
+    if (kind != ContactRow || !elliptic)
     {
         evaluation[index] = residual >= 0.0 ? satisfied : evaluateQuadratic(residual, diagonal);
         return;

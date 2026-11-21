@@ -10,6 +10,13 @@ static const uint ContactRow = 0;
 static const uint EqualityRow = 1;
 static const uint LimitRow = 2;
 static const uint FrictionRow = 3;
+static const uint TendonLimitRow = 4;
+static const uint TendonFrictionRow = 5;
+
+bool isFrictionConstraint(uint kind)
+{
+    return kind == FrictionRow || kind == TendonFrictionRow;
+}
 
 static const uint SatisfiedConstraint = 0;
 static const uint QuadraticConstraint = 1;
