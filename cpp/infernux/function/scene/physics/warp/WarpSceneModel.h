@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "../PhysicsContactTypes.h"
 #include "../PhysicsMass.h"
 #include "../PhysicsShapeAuthoring.h"
 #include "WarpCollisionModel.h"
@@ -100,6 +101,7 @@ struct WarpSceneModel
 
 /// Translate one authored topology. The result owns no scene objects or Jolt shapes.
 [[nodiscard]] WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors,
-                                                 const std::vector<WarpSceneJoint> &joints = {});
+                                                 const std::vector<WarpSceneJoint> &joints = {},
+                                                 const PhysicsColliderPairs &ignoredColliders = {});
 
 } // namespace infernux::physics::warp

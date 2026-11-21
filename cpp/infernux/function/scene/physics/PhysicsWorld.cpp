@@ -8,6 +8,7 @@
 #include "../Component.h"
 #include "../FixedJoint.h"
 #include "../GameObject.h"
+#include "../HingeJoint.h"
 #include "../Joint.h"
 #include "../Ragdoll.h"
 #include "../Rigidbody.h"
@@ -32,6 +33,7 @@
 #include "PhysicsMass.h"
 #include "PhysicsParticipantBodies.h"
 #include "PhysicsShapeAuthoring.h"
+#include "warp/WarpSceneRuntime.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -3771,6 +3773,83 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
     RequireOwnerThread();
     FlushAuthoring(domain);
 }
+
+std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSetup(RuntimeWorld &world) const
+{
+    using namespace physics::warp;
+    RequireOwnerThread();
+    auto &domain = *world.physics;
+    if (world.simulation.fixedStepIndex != 0 || domain.stepPending)
+        throw std::logic_error("Warp scene setup must be captured before fixed simulation");
+
+    FlushAuthoring(domain);
+    const auto &store = PhysicsECSStore::Instance();
+    if (store.HasPendingBodyCreations(world))
+        return nullptr;
+
+    auto setup = std::make_unique<WarpSceneSetup>();
+    auto &registration = setup->world;
+    registration.worldId = world.id;
+    registration.simulationEpoch = world.simulation.simulationEpoch;
+    std::vector<uint32_t> ids(domain.bodyIds.begin(), domain.bodyIds.end());
+    std::sort(ids.begin(), ids.end());
+
+    TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
+    std::vector<WarpSceneActor> actors;
+    std::vector<const Joint *> activeJoints;
+    std::unordered_map<uint32_t, uint32_t> rowById;
+    actors.reserve(ids.size());
+    registration.bodies.reserve(ids.size());
+    rowById.reserve(ids.size());
+    for (const auto id : ids) {
+        const auto &binding = m_bodyActors.at(id);
+        const auto &actor = store.GetActor(binding.actor);
+        if (!actor.bodyInBroadphase)
+            continue;
+        auto author = PhysicsActorAuthoring::Capture(actor);
+        if (!author)
+            return nullptr;
+        auto prepared = PrepareWarpSceneActor(std::move(*author));
+        rowById.emplace(id, static_cast<uint32_t>(actors.size()));
+        registration.bodies.push_back({id, binding.stagedShapeRevision, binding.actor, std::move(prepared.surfaces)});
+        actors.push_back(std::move(prepared.actor));
+        if (const auto *joint = actor.owner->GetComponent<Joint>(); joint && joint->GetPhysicsConstraintId() != 0)
+            activeJoints.push_back(joint);
+    }
+
+    std::vector<WarpSceneJoint> joints;
+    joints.reserve(activeJoints.size());
+    for (const auto *joint : activeJoints) {
+        const auto *transform = joint->GetGameObject()->GetTransform();
+        const auto anchor =
+            glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(joint->GetAnchor());
+        const auto connected = joint->m_boundConnectedBodyId;
+        auto &model = joints.emplace_back(WarpSceneJoint{rowById.at(joint->m_boundBodyId),
+                                                         connected == UINT32_MAX ? NoModelIndex : rowById.at(connected),
+                                                         anchor,
+                                                         joint->GetEnableCollision(),
+                                                         {}});
+        if (const auto *hinge = dynamic_cast<const HingeJoint *>(joint)) {
+            model.hinge =
+                WarpSceneHinge{hinge->GetAxis(),
+                               hinge->GetUseLimits(),
+                               glm::radians(hinge->GetMinimumAngle()),
+                               glm::radians(hinge->GetMaximumAngle()),
+                               {hinge->GetMotorEnabled(), hinge->GetClampedMotorTargetRadians(),
+                                hinge->GetMotorStiffness(), hinge->GetMotorDamping(), hinge->GetMotorMaxTorque(),
+                                hinge->GetJointDamping(), hinge->GetFrictionTorque(), hinge->GetArmature()}};
+        } else if (!dynamic_cast<const FixedJoint *>(joint)) {
+            throw std::invalid_argument(std::string("Warp scene setup does not support ") + joint->GetTypeName());
+        }
+    }
+
+    setup->model = BuildWarpSceneModel(actors, joints, *CaptureColliderPairs(domain, true));
+    for (uint32_t index = 0; index < activeJoints.size(); ++index)
+        if (setup->model.hingeRows[index] != NoModelIndex)
+            registration.hinges.push_back({activeJoints[index]->GetPhysicsConstraintId(), index});
+    return setup;
+}
+
 void PhysicsWorld::SetContactEventStreamEnabled(bool enabled, bool includeTriggers)
 {
     RequireOwnerThread();

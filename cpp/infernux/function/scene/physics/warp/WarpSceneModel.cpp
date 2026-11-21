@@ -282,7 +282,8 @@ WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author)
     return result;
 }
 
-WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, const std::vector<WarpSceneJoint> &joints)
+WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, const std::vector<WarpSceneJoint> &joints,
+                                   const PhysicsColliderPairs &ignoredColliders)
 {
     WarpSceneModel result;
     std::vector<ModelBodyDefinition> bodies;
@@ -338,14 +339,35 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
     result.model = BuildWarpModel(bodies, geometries);
     BindSceneJoints(result, actors, joints);
     std::set<std::pair<uint32_t, uint32_t>> ignored;
-    for (const auto &joint : joints)
-        if (!joint.enableCollision && joint.connectedActor != NoModelIndex)
-            ignored.emplace(std::minmax(joint.ownerActor, joint.connectedActor));
+    for (const auto &joint : joints) {
+        if (joint.enableCollision || joint.connectedActor == NoModelIndex)
+            continue;
+        for (uint32_t first = firstGeometry[joint.ownerActor]; first < firstGeometry[joint.ownerActor + 1]; ++first)
+            for (uint32_t second = firstGeometry[joint.connectedActor];
+                 second < firstGeometry[joint.connectedActor + 1]; ++second)
+                ignored.emplace(std::minmax(first, second));
+    }
+    if (!ignoredColliders.empty()) {
+        using ColliderKey = std::pair<uint64_t, uint64_t>;
+        std::map<ColliderKey, std::vector<uint32_t>> geometryByCollider;
+        for (uint32_t row = 0; row < result.geometries.size(); ++row) {
+            const auto &collider = result.geometries[row].collider;
+            geometryByCollider[{collider.componentId, collider.generation}].push_back(row);
+        }
+        for (const auto &[firstId, firstGeneration, secondId, secondGeneration] : ignoredColliders) {
+            const auto first = geometryByCollider.find({firstId, firstGeneration});
+            const auto second = geometryByCollider.find({secondId, secondGeneration});
+            if (first == geometryByCollider.end() || second == geometryByCollider.end())
+                continue;
+            for (const auto a : first->second)
+                for (const auto b : second->second)
+                    ignored.emplace(std::minmax(a, b));
+        }
+    }
     std::vector<WarpCollisionPair> pairs;
+    pairs.reserve(ignored.size());
     for (const auto &[a, b] : ignored)
-        for (uint32_t first = firstGeometry[a]; first < firstGeometry[a + 1]; ++first)
-            for (uint32_t second = firstGeometry[b]; second < firstGeometry[b + 1]; ++second)
-                pairs.push_back({first, second, {}, -1, true});
+        pairs.push_back({a, b, {}, -1, true});
     result.collision = BuildWarpCollisionModel(result.model, collision, std::move(pairs));
     result.bodies.reserve(actors.size());
     auto &initial = result.model.initialVelocities;

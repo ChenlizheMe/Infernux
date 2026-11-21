@@ -58,6 +58,10 @@ namespace rhi
 class ComputeHost;
 class PreparedComputeBatch;
 } // namespace rhi
+namespace physics::warp
+{
+struct WarpSceneSetup;
+}
 } // namespace infernux
 
 // Author geometry is shared; native bodies remain private to their backend.
@@ -266,6 +270,9 @@ class PhysicsWorld
     /// False retains the same epoch/step and its shared-source continuation.
     bool Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
     void ConfigureSceneBackend(RuntimeWorld &world, PhysicsBackend backend);
+    /// Compile registered scene topology before its first fixed step. A pending
+    /// actor cook produces no setup, so a partial world cannot reach the solver.
+    [[nodiscard]] std::unique_ptr<physics::warp::WarpSceneSetup> CaptureWarpSceneSetup(RuntimeWorld &world) const;
     std::shared_ptr<PhysicsParticipant> RegisterParticipant(const Component &component,
                                                             PhysicsParticipant::Recipes recipes,
                                                             PhysicsParticipant::Controls controls, uint32_t count,

@@ -42,6 +42,12 @@ struct WarpRegisteredWorld
     uint64_t simulationEpoch = 0;
 };
 
+struct WarpSceneSetup
+{
+    WarpSceneModel model;
+    WarpRegisteredWorld world;
+};
+
 struct WarpSceneDriveUpdate
 {
     uint32_t world;
