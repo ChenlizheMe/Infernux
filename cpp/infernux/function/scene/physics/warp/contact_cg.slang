@@ -164,12 +164,12 @@ void syncCgProjection()
     }
 }
 
-void projectCgForce<let Publish : bool>(uint world, uint lane)
+bool projectCgForce<let Publish : bool>(uint world, uint lane)
 {
     const uint4 progress = worlds[world].progress;
     const uint status = broadcastCg(progress.y, lane);
     if (status >= CapacityExceeded || (!Publish && status != Running))
-        return;
+        return false;
     const uint nv = settings[1].y;
     const uint dofBase = world * nv;
     for (uint i = lane; i < nv; i += CgWidth)
@@ -191,6 +191,7 @@ void projectCgForce<let Publish : bool>(uint world, uint lane)
             addConstraintForce(dofBase + column.dof, column.value * force);
         }
     }
+    return true;
 }
 
 [shader("compute")]
@@ -199,6 +200,25 @@ void cg_project_iteration(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     group = solverDispatchId(group);
     projectCgForce<false>(group.y, lane);
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cg_project_gradient(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    group = solverDispatchId(group);
+    const uint world = group.y;
+    const bool projected = projectCgForce<false>(world, lane);
+    // The one workgroup for this world owns both the projection and its gradient.
+    syncCgProjection();
+    const uint nv = settings[1].y;
+    const uint dofBase = world * nv;
+    for (uint i = lane; i < nv; i += CgWidth)
+    {
+        const uint index = dofBase + i;
+        gradient[index] = projected ?
+            massProducts[index].x - smoothForce[index] - asfloat(constraintForce[index].load()) : 0.0;
+    }
 }
 
 [shader("compute")]

@@ -688,22 +688,17 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
 
     // A fixed recipe records the upper bound. Each world's progress controls its device work.
     for (uint32_t iteration = 0; iteration <= solver.iterations; ++iteration) {
-        b.Add("contact_cg", "cg_project_iteration", 1,
+        b.Add("contact_cg", "cg_project_gradient", 1,
               {{0, settings, R},
                {3, rowStore, R},
                {4, columnStore, R},
                {7, evaluation, R},
-               {14, force, RW},
-               {16, worldState, R}});
-        indirectLast(Worlds);
-        b.Add("contact_cg", "cg_gradient", nv,
-              {{0, settings, R},
                {9, dyn.smoothForce, R},
                {12, gradient, W},
-               {14, force, R},
+               {14, force, RW},
                {16, worldState, R},
                {17, products, R}});
-        indirectLast(Dofs);
+        indirectLast(Worlds);
         b.dispatches.insert(b.dispatches.end(), precondition.begin(), precondition.end());
         b.Add("contact_cg", "cg_search_direction", 1,
               {{0, settings, R},
