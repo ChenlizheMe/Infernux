@@ -5,6 +5,7 @@
 #include "model.slang"
 
 static const uint GeomPlane = 0;
+static const uint GeomHeightfield = 1;
 static const uint GeomSphere = 2;
 static const uint GeomCapsule = 3;
 static const uint GeomEllipsoid = 4;
@@ -16,7 +17,7 @@ static const float MinValue = 1.0e-15;
 struct CollisionShape
 {
     float4 size;
-    uint4 type; // geometry type, first hull vertex, hull vertex count, adjacency offset or NoIndex
+    uint4 type; // geometry type, hull vertex start or heightfield id, hull vertex count, adjacency offset or NoIndex
 };
 
 float3 frameAxis(CartesianFrame frame, uint axis)

@@ -85,6 +85,27 @@ ConvexSupportPoint convexSupport(ConvexGeometry geometry, float3 direction, Stru
     if (kind == GeomSphere)
         return {center + (size.x + margin) * direction, -1, -1};
 
+    if (kind == GeomHeightfield)
+    {
+        // A heightfield prism uses the frame rows for its three top vertices.
+        float3 vertices[3] = {geometry.frame.row0.xyz, geometry.frame.row1.xyz, geometry.frame.row2.xyz};
+        float3 best = float3(vertices[0].xy, -geometry.shape.size.w);
+        float value = dot(best, direction);
+        for (uint i = 1; i < 6; ++i)
+        {
+            float3 candidate = vertices[i % 3u];
+            if (i < 3)
+                candidate.z = -geometry.shape.size.w;
+            const float projection = dot(candidate, direction);
+            if (projection > value)
+            {
+                best = candidate;
+                value = projection;
+            }
+        }
+        return {best, -1, direction.z < 0.0 ? -2 : -3};
+    }
+
     const float3 local = inverseRotatePoint(geometry.frame, direction);
     ConvexSupportPoint result = {float3(0.0), -1, -1};
     switch (kind)

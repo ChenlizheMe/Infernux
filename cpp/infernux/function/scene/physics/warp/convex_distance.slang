@@ -28,7 +28,8 @@ struct ConvexDistance
 
 bool convexDiscreteGeometry(ConvexGeometry geometry)
 {
-    return geometry.margin == 0.0 && (geometry.shape.type.x == GeomBox || geometry.shape.type.x == GeomMesh);
+    return geometry.margin == 0.0 && (geometry.shape.type.x == GeomBox || geometry.shape.type.x == GeomMesh ||
+                                     geometry.shape.type.x == GeomHeightfield);
 }
 
 bool convexFaceGeometry(uint kind)
