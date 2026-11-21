@@ -11,6 +11,7 @@
 #include "../GameObject.h"
 #include "../HingeJoint.h"
 #include "../Joint.h"
+#include "../MeshCollider.h"
 #include "../Ragdoll.h"
 #include "../Rigidbody.h"
 #include "../RuntimeWorld.h"
@@ -325,13 +326,6 @@ QueryInput Query(uint32_t operation, uint32_t collector, uint32_t layers = UINT3
     request.source.x = InvalidQueryBodySlot;
     request.rotation.w = 1;
     return request;
-}
-void TargetCollider(QueryInput &request, const Collider &collider)
-{
-    const auto id = collider.GetComponentID();
-    request.meta.w |= QueryTargetCollider;
-    request.filter.z = static_cast<uint32_t>(id);
-    request.filter.w = static_cast<uint32_t>(id >> 32);
 }
 void ValidateRayInput(const glm::vec3 &origin, const glm::vec3 &direction, float maximum)
 {
@@ -4525,13 +4519,11 @@ glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const g
     (void)Vector(point);
     if (!collider.IsEnabled() || !collider.GetGameObject() || !collider.GetGameObject()->IsActiveInHierarchy())
         return point;
-    RunCpuControl(domain);
+    SealSpatialQuery(domain);
     const auto id = ColliderBodyIdentity(collider);
     if (!FindBodyRegistration(id))
         throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
-    if (ReadBodyBackend(domain, id) == Backend::Cpu) {
-        if (!domain.cpuScene->HasBody(id))
-            RunCpuControl(domain);
+    if (domain.cpuScene) {
         const auto closest =
             JoltCpuQueries(*domain.cpuScene)
                 .ClosestPoint(id, {collider.GetComponentID(), collider.GetLifetimeGeneration()}, point);
@@ -4539,16 +4531,40 @@ glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const g
             throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
         return *closest;
     }
-    auto request = Query(QueryClosestPoint, QueryClosest);
-    request.positionMaximum = Vector(point);
-    TargetCollider(request, collider);
-    RunControl(domain, {}, true);
-    const auto result = RunQuery(domain, ReadGpuQueryPublication(domain), {request});
-    FrameWorkOwner::Scope materialize(*m_gpuWork);
-    const auto &record = result->ReadHits().front();
-    if (!record.meta.y)
+    const auto publication = ReadGpuSpatialQueryPublication(domain);
+    if (!publication)
         throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
-    return Vector(record.positionDistance);
+    const auto *mesh = dynamic_cast<const MeshCollider *>(&collider);
+    const auto key = std::make_pair(collider.GetComponentID(), collider.GetLifetimeGeneration());
+    std::unique_ptr<PhysicsSceneRayPlan> replacement;
+    auto *plan = domain.sceneRays.get();
+    std::shared_ptr<rhi::PreparedComputeBatch> result;
+    ObserveSpatialGpuQuery(domain, publication, [&](const auto &accepted) {
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        if (!plan || !plan->Matches(*accepted)) {
+            auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
+            replacement = std::move(prepared.first);
+            uploads = std::move(prepared.second);
+            plan = replacement.get();
+        }
+        const auto range = plan->colliderGeometry.find(key);
+        if (range == plan->colliderGeometry.end())
+            return JoltGpuControlWork{};
+        result = plan->query.PrepareClosestPoint(
+            *m_gpuHost, ScenePoseSource(*accepted), {point.x, point.y, point.z, 0.0f}, range->second.first,
+            range->second.second, mesh && mesh->IsPublishedMeshClosed(), std::move(uploads));
+        return JoltGpuControlWork{result};
+    });
+    if (!result)
+        throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
+    if (replacement)
+        domain.sceneRays = std::move(replacement);
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    physics::inxphygpu::ModelVector record;
+    result->Readback(0)->ReadInto(record.data(), sizeof(record));
+    if (record[3] < 0.0f)
+        throw std::runtime_error("Active Collider has no accepted geometry for a closest-point query");
+    return {record[0], record[1], record[2]};
 }
 
 std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maximum,

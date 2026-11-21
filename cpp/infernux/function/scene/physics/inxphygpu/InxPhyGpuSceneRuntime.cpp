@@ -41,6 +41,7 @@ struct InxPhyGpuSceneLayout
         Static,
     };
     std::vector<World> worlds;
+    std::vector<std::vector<std::pair<uint32_t, uint32_t>>> colliderGeometry; // Body row, collider order.
     std::unordered_map<uint64_t, uint32_t> worldRows;
     std::vector<Geometry> geometries;
     std::vector<std::vector<PhysicsGpuBoxAuthor>> boxes;
@@ -268,6 +269,9 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     layout->worldRows.reserve(worlds.size());
     m_acceptedWorlds.reserve(worlds.size());
     layout->geometries.reserve(scene.geometries.size());
+    layout->colliderGeometry.resize(m_bodyCount);
+    for (const auto &body : scene.bodies)
+        layout->colliderGeometry[body.bodyRow].resize(body.surfaceCount, {NoModelIndex, 0});
     layout->boxes.resize(m_bodyCount);
     layout->motion.reserve(m_bodyCount);
     layout->drive.resize(m_bodyCount);
@@ -288,11 +292,14 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
             motion.frozenRotation = (body.subtree[3] >> 3u) & 7u;
         }
     }
-    for (size_t row = 0; row < scene.geometries.size(); ++row) {
+    for (uint32_t row = 0; row < scene.geometries.size(); ++row) {
         const auto &geometry = scene.geometries[row];
         const auto &shape = scene.model.geometries[row];
         const auto body = shape.indices[0];
         layout->geometries.push_back({body, geometry.surface, geometry.subShape});
+        auto &range = layout->colliderGeometry[body][geometry.surface];
+        range.first = std::min(range.first, row);
+        range.second = row + 1;
         if (shape.indices[1] != Box)
             continue;
         const auto &origin = shape.pose.position;
@@ -803,6 +810,30 @@ InxPhyGpuSceneBodyBoundsRead InxPhyGpuSceneRuntime::PrepareBodyBounds(const InxP
     result.m_layout = m_layout;
     result.m_world = world;
     return result;
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuSceneRuntime::PrepareClosestPoint(const InxPhyGpuFixedPublication &publication, uint32_t world,
+                                           uint32_t bodyId, uint64_t colliderId, uint64_t generation,
+                                           const ModelVector &point, bool closedMesh) const
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu closest point does not match the scene publication");
+    const auto &layout = m_layout->worlds.at(world);
+    const auto row = layout.BodyRow(bodyId);
+    if (!row)
+        return {};
+    const auto &surfaces = layout.bodies[*row].surfaces;
+    const auto surface = std::find_if(surfaces.begin(), surfaces.end(), [&](const auto &identity) {
+        return identity.colliderId == colliderId && identity.generation == generation;
+    });
+    if (surface == surfaces.end())
+        return {};
+    const auto &range = m_layout->colliderGeometry[*row][surface - surfaces.begin()];
+    if (range.first == NoModelIndex)
+        return {};
+    return m_step->PreparePublishedClosestPoint(publication.PoseSource(world), point, range.first, range.second,
+                                                closedMesh);
 }
 
 std::vector<uint32_t> InxPhyGpuSceneBodyBoundsRead::ReadHostBodyIds() const

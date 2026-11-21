@@ -12,16 +12,12 @@ uint cvx_query_slots()
 }
 bool cvx_query_deferred(QueryInput request)
 {
-    return request.meta.x==QueryOverlap || request.meta.x==QueryClosestPoint ||
-           request.meta.x==QueryPenetration || request.meta.x==QueryShapeCast;
+    return request.meta.x==QueryOverlap || request.meta.x==QueryPenetration || request.meta.x==QueryShapeCast;
 }
 CvxOperand cvx_query_request(QueryInput request)
 {
     CvxOperand o; o.meta=uint4(request.meta.z,0,0,0); o.center=float4(request.positionMaximum.xyz,0);
     o.rotation=request.rotation; o.geometry=request.geometry; o.geometryReference=request.geometryReference;
-    if(request.meta.x==QueryClosestPoint) {
-        o.meta.x=ShapeSphere; o.rotation=float4(0,0,0,1); o.geometry=float4(0); o.geometryReference=uint4(0);
-    }
     return o;
 }
 CvxOperand cvx_query_target(QueryInput request,uint leaf,float3 origin=float3(0.0f))
@@ -42,7 +38,7 @@ CvxOperand cvx_query_target(QueryInput request,uint leaf,float3 origin=float3(0.
 // triangle backface is determined by its original direction, not the moving COM.
 bool cvx_query_backfacing(QueryInput request,CvxOperand target)
 {
-    if(!cvx_is_triangle(target) || request.meta.x==QueryClosestPoint) return false;
+    if(!cvx_is_triangle(target)) return false;
     if(request.meta.x==QueryShapeCast)
         return dot(cvx_triangle_normal(target),jph_capsule_unit(request.direction.xyz))>0;
     return (request.meta.x==QueryOverlap || request.meta.x==QueryPenetration)
@@ -124,7 +120,7 @@ void cvx_query_metric_begin(uint b,QueryInput request,CvxOperand target)
     CvxOperand a=cvx_query_request(request);
     float scale;
     if(!cvx_pair_scale(query_geometry,a,target,scale)) { cvx_query_failure(b,63u); return; }
-    cvx_begin(query_control,b,a,target,a.center.xyz,scale,CvxCastTolerance,request.meta.x==QueryClosestPoint);
+    cvx_begin(query_control,b,a,target,a.center.xyz,scale,CvxCastTolerance,false);
     query_control[b+48u].y=2u;
 }
 void cvx_query_metric_complete(uint b,QueryInput request)
@@ -150,10 +146,8 @@ void cvx_query_metric_complete(uint b,QueryInput request)
         hit.normalFraction=float4(-normal,request.positionMaximum.w>0?travel/request.positionMaximum.w:0);
     } else {
         if((request.meta.x==QueryOverlap && separation>0) || (request.meta.x==QueryPenetration && separation>=0)) { cvx_query_next_leaf(b); return; }
-        hit.positionDistance=float4(request.meta.x==QueryClosestPoint && separation<=0?request.positionMaximum.xyz:p,
-            request.meta.x==QueryPenetration?0:max(separation,0.0f));
-        // ClosestPoint stays two-sided and keeps its actual closest metric.
-        if(triangle && request.meta.x!=QueryClosestPoint)
+        hit.positionDistance=float4(p,request.meta.x==QueryPenetration?0:max(separation,0.0f));
+        if(triangle)
             normal=cvx_triangle_fix_normal(query_geometry,target,p,normal,float3(0));
         hit.normalFraction=float4(-normal,0);
     }

@@ -251,10 +251,9 @@ void ValidateInput(const QueryInput &query, size_t primitiveCount, uint32_t body
     const bool cast = query.meta.x == QueryShapeCast;
     const bool sweep = cast && (query.meta.w & QuerySweepPolicy);
     if ((!cast && (query.meta.x < QueryOverlap || query.meta.x > QueryPenetration)) || query.meta.y > QueryAny ||
-        (query.meta.w &
-         ~(QueryTargetCollider | QueryExcludeBody | (cast ? (QuerySweepPolicy | QuerySweepPairPolicy) : 0u))) ||
-        (sweep && (query.meta.w & QueryTargetCollider)) || ((query.meta.w & QuerySweepPairPolicy) && !sweep) ||
-        query.filter.y > 1 || (!sweep && (query.source.z || query.source.w || hasLifetime)) ||
+        (query.meta.w & ~(QueryExcludeBody | (cast ? (QuerySweepPolicy | QuerySweepPairPolicy) : 0u))) ||
+        ((query.meta.w & QuerySweepPairPolicy) && !sweep) || query.filter.y > 1 ||
+        (!sweep && (query.source.z || query.source.w || hasLifetime)) ||
         ((query.meta.w & QuerySweepPairPolicy) && !hasLifetime) || !Finite(query.positionMaximum) ||
         !Finite(query.direction) || !Finite(query.rotation) || !Finite(query.geometry) || query.direction.w != 0)
         throw JoltGpuQueryRequestError("Jolt GPU query contains an invalid operation, filter or finite input record");
@@ -616,8 +615,7 @@ JoltGpuPreparedQuery JoltGpuQueries::PrepareCaptured(std::shared_ptr<const JoltG
     for (const auto &query : queries)
         ValidateInput(query, primitives.size(), bodyBase, bodyCount, bool(publication), result->geometry);
     const bool geometric = std::any_of(queries.begin(), queries.end(), [](const auto &query) {
-        return query.meta.x == QueryOverlap || query.meta.x == QueryClosestPoint || query.meta.x == QueryPenetration ||
-               query.meta.x == QueryShapeCast;
+        return query.meta.x == QueryOverlap || query.meta.x == QueryPenetration || query.meta.x == QueryShapeCast;
     });
     bool generic = geometric && std::any_of(primitives.begin(), primitives.end(), [](const auto &primitive) {
                        return primitive.meta.x == ShapeCylinder || primitive.meta.x == ShapeConvexHull;

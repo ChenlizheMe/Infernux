@@ -3,9 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Adapted from MuJoCo Warp _src/ray.py.
 
-#include "collision_geometry.slang"
+#include "convex_distance.slang"
 #include "collision_bounds.slang"
-#include "convex_model.slang"
 #include "heightfield_geometry.slang"
 #include "ray_bvh_layout.slang"
 #include "triangle_mesh_geometry.slang"
@@ -66,6 +65,8 @@ struct RayHitStream
 [[vk::binding(21, 0)]] StructuredBuffer<uint2> bodyGeometryRanges;
 [[vk::binding(22, 0)]] StructuredBuffer<uint4> bodyBoundsRequest;
 [[vk::binding(23, 0)]] RWStructuredBuffer<uint> bodyBoundsMask;
+[[vk::binding(24, 0)]] StructuredBuffer<uint4> closestPointRequest;
+[[vk::binding(25, 0)]] RWStructuredBuffer<float4> closestPointResult;
 
 groupshared uint bodyBoundsMatch[RayGroupSize];
 
@@ -434,6 +435,175 @@ RaySurface rayMesh<let All : bool>(float3 origin, float3 direction, CollisionSha
         ++node;
     }
     return found ? best : RayMiss;
+}
+
+float3 closestRadial(float3 point, float3 center, float radius)
+{
+    const float3 delta = point - center;
+    const float distance = length(delta);
+    return distance > radius ? center + delta * (radius / distance) : point;
+}
+
+float3 closestEdge(float3 point, float3 a, float3 b)
+{
+    const float3 edge = b - a;
+    const float lengthSquared = dot(edge, edge);
+    return lengthSquared > 0 ? a + saturate(dot(point - a, edge) / lengthSquared) * edge : a;
+}
+
+float3 closestTriangle(float3 point, float3 a, float3 b, float3 c)
+{
+    float3 projection, weights;
+    if (projectConvexPlane(a - point, b - point, c - point, projection) &&
+        convexTriangleCoordinates(a - point, b - point, c - point, projection, weights) && all(weights >= 0.0))
+        return point + projection;
+
+    float3 best = closestEdge(point, c, a);
+    float distance = dot(best - point, best - point);
+    const float3 vertices[3] = {a, b, c};
+    for (uint edge = 0; edge < 2; ++edge)
+    {
+        const float3 candidate = closestEdge(point, vertices[edge], vertices[edge + 1]);
+        const float d = dot(candidate - point, candidate - point);
+        if (d < distance)
+        {
+            distance = d;
+            best = candidate;
+        }
+    }
+    return best;
+}
+
+bool containsCrossingEdge(float2 a, float2 b)
+{
+    const float2 edge = b - a;
+    const float side = edge.y * a.x - edge.x * a.y;
+    return side > 0.0 || (side == 0.0 && (edge.y > 0.0 || (edge.y == 0.0 && edge.x < 0.0)));
+}
+
+bool crossesAbove(float3 point, float3 a, float3 b, float3 c)
+{
+    const float3 normal = cross(b - a, c - a);
+    if (normal.y == 0.0 || dot(a - point, normal) / normal.y <= 0.0)
+        return false;
+    const float2 aa = (a - point).xz;
+    // In XZ projection, positive signed area corresponds to a negative Y normal.
+    const float2 bb = ((normal.y < 0.0 ? b : c) - point).xz;
+    const float2 cc = ((normal.y < 0.0 ? c : b) - point).xz;
+    return containsCrossingEdge(aa, bb) && containsCrossingEdge(bb, cc) && containsCrossingEdge(cc, aa);
+}
+
+float3 closestMesh(float3 point, CollisionShape shape, bool testInterior)
+{
+    const TriangleMeshTree tree = triangleMeshTree(rayModel, shape);
+    testInterior = testInterior &&
+        all(point >= asfloat(rayModel[tree.nodeBase].xyz)) &&
+        all(point <= asfloat(rayModel[tree.nodeBase + 1].xyz));
+    float3 best = point;
+    float distance = 3.402823e38;
+    bool inside = false;
+    uint node = 0;
+    while (node < tree.nodeCount)
+    {
+        const uint address = tree.nodeBase + 2 * node;
+        const uint4 low = rayModel[address];
+        const uint4 high = rayModel[address + 1];
+        const float3 minimum = asfloat(low.xyz);
+        const float3 maximum = asfloat(high.xyz);
+        const float3 delta = point - clamp(point, minimum, maximum);
+        const bool near = dot(delta, delta) <= distance;
+        const bool crossing = testInterior && all(point.xz >= minimum.xz) &&
+                              all(point.xz <= maximum.xz) && point.y < maximum.y;
+        if ((high.w & BvhLeaf) == 0)
+        {
+            node = near || crossing ? low.w : high.w;
+            continue;
+        }
+        if (near || crossing)
+        {
+            const uint end = low.w + (high.w & ~BvhLeaf);
+            for (uint i = low.w; i < end; ++i)
+            {
+                const uint4 triangle = rayModel[tree.faceBase + i];
+                const float3 a = convexVertex(rayModel, triangle.x);
+                const float3 b = convexVertex(rayModel, triangle.y);
+                const float3 c = convexVertex(rayModel, triangle.z);
+                if (crossing)
+                    inside = inside != crossesAbove(point, a, b, c);
+                if (near)
+                {
+                    const float3 candidate = closestTriangle(point, a, b, c);
+                    const float3 difference = candidate - point;
+                    const float d = dot(difference, difference);
+                    if (d < distance)
+                    {
+                        distance = d;
+                        best = candidate;
+                    }
+                }
+            }
+        }
+        ++node;
+    }
+    return inside ? point : best;
+}
+
+float3 closestShape(float3 point, CollisionShape shape, bool closedMesh, out bool found)
+{
+    found = true;
+    switch (shape.type.x)
+    {
+        case GeomSphere:
+            return closestRadial(point, float3(0.0), shape.size.x);
+        case GeomBox:
+            return clamp(point, -shape.size.xyz, shape.size.xyz);
+        case GeomCapsule:
+            return closestRadial(point, float3(0.0, 0.0, clamp(point.z, -shape.size.y, shape.size.y)), shape.size.x);
+        case GeomCylinder:
+            return float3(closestRadial(float3(point.xy, 0.0), float3(0.0), shape.size.x).xy,
+                          clamp(point.z, -shape.size.y, shape.size.y));
+        case GeomTriangleMesh:
+            return closestMesh(point, shape, closedMesh);
+        case GeomMesh:
+        {
+            const float4 identity = float4(1.0, 0.0, 0.0, 0.0);
+            const CollisionShape probe = {float4(0.0), uint4(GeomSphere, 0, 0, 0)};
+            ConvexGeometry hull = {cartesianFrame(float3(0.0), identity), shape, 0.0, -1};
+            ConvexGeometry target = {cartesianFrame(point, identity), probe, 0.0, -1};
+            const ConvexDistance result = gjkDistance(hull, target, 1e-6, ConvexFarDistance, 64, rayModel);
+            return result.separated && result.distance > 1e-6 ? result.first : point;
+        }
+        default:
+            found = false;
+            return point;
+    }
+}
+
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void closest_collider_point()
+{
+    const float3 point = asfloat(closestPointRequest[0].xyz);
+    const uint4 target = closestPointRequest[1];
+    float4 best = float4(0.0, 0.0, 0.0, -1.0);
+    for (uint row = target.x; row < target.y; ++row)
+    {
+        const CartesianFrame frame = rayFrames[row];
+        const float3 local = inverseRotatePoint(frame, point - frame.position.xyz);
+        bool found;
+        const float3 candidate = closestShape(local, rayShapes[row], target.z != 0, found);
+        if (!found)
+            continue;
+        const float distance = dot(candidate - local, candidate - local);
+        if (distance == 0.0)
+        {
+            best = float4(point, 0.0);
+            break;
+        }
+        if (best.w < 0.0 || distance < best.w)
+            best = float4(frame.position.xyz + rotatePoint(frame, candidate), distance);
+    }
+    closestPointResult[0] = best;
 }
 
 RaySurface rayHull(float3 origin, float3 direction, CollisionShape shape, uint geometry)

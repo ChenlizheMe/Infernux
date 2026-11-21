@@ -242,6 +242,9 @@ class InxPhyGpuSceneRuntime final
                                                                  uint32_t world, const ModelVector &minimum,
                                                                  const ModelVector &maximum, uint32_t layers,
                                                                  bool triggers) const;
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareClosestPoint(const InxPhyGpuFixedPublication &publication, uint32_t world, uint32_t bodyId,
+                        uint64_t colliderId, uint64_t generation, const ModelVector &point, bool closedMesh) const;
     [[nodiscard]] FrameWorkWaitResult WaitForProgress(uint64_t nanoseconds);
     void Retire() noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;

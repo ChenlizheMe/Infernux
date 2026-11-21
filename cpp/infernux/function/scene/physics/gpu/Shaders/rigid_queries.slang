@@ -386,8 +386,6 @@ bool query_accepts(QueryInput request, ShapeModel shape, uint slot)
 {
     if ((request.meta.w & QueryExcludeBody) != 0u && slot == request.source.x)
         return false;
-    if ((request.meta.w & QueryTargetCollider) != 0u)
-        return all(shape.source.xy == request.filter.zw);
     return (request.filter.x & (1u << shape.surface.x)) != 0u &&
            (request.filter.y != 0u || (shape.meta.w & ShapeSensor) == 0u);
 }
@@ -416,9 +414,7 @@ QueryHit query_leaf(QueryInput request, ShapeModel shape, BodyState state, uint 
         status = QueryNumericalFailure;
         return hit;
     }
-    uint query_type = request.meta.x == QueryClosestPoint ? ShapeSphere : request.meta.z;
-    float4 query_geometry = request.meta.x == QueryClosestPoint ? float4(0.0f) : request.geometry;
-    JphPairMetric metric = jph_pair_metric(query_type, request.positionMaximum.xyz, request.rotation, query_geometry,
+    JphPairMetric metric = jph_pair_metric(request.meta.z, request.positionMaximum.xyz, request.rotation, request.geometry,
                                           shape.meta.x, center, rotation, shape.geometry);
     status = query_metric_status(metric);
     if (status != QuerySuccess)
@@ -426,10 +422,7 @@ QueryHit query_leaf(QueryInput request, ShapeModel shape, BodyState state, uint 
     if (request.meta.x == QueryOverlap && metric.separation > 0.0f)
         return hit;
     hit.meta = uint4(shape.meta.y, 1u, leaf, metric.feature);
-    float3 point = metric.pointB;
-    if (request.meta.x == QueryClosestPoint && metric.separation <= 0.0f)
-        point = request.positionMaximum.xyz;
-    hit.positionDistance = float4(point, max(metric.separation, 0.0f));
+    hit.positionDistance = float4(metric.pointB, max(metric.separation, 0.0f));
     hit.normalFraction = float4(-metric.normal, 0.0f);
     hit.pointADepth = float4(metric.pointA, max(-metric.separation, 0.0f));
     return hit;

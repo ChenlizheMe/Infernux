@@ -138,6 +138,10 @@ class InxPhyGpuPublishedRayQuery
                                                                 const ModelVector &minimum, const ModelVector &maximum,
                                                                 uint32_t layers, bool triggers,
                                                                 std::vector<rhi::ComputeBufferUpdate> updates) const;
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareClosestPoint(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, const ModelVector &point,
+                        uint32_t first, uint32_t end, bool closedMesh,
+                        std::vector<rhi::ComputeBufferUpdate> updates) const;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Inputs() const noexcept
     {
         return m_inputs;
@@ -151,9 +155,9 @@ class InxPhyGpuPublishedRayQuery
     friend class InxPhyGpuStep;
     void AppendGeometry(std::vector<rhi::ComputeDispatchDesc> &dispatches, const PhysicsGpuPoseSource &source) const;
     std::shared_ptr<rhi::ComputeBuffer> m_inputs, m_settings, m_inputSettings, m_outputSettings;
-    std::shared_ptr<rhi::ComputeBuffer> m_boundsRequest, m_boundsMask;
+    std::shared_ptr<rhi::ComputeBuffer> m_boundsRequest, m_boundsMask, m_closestRequest, m_closestResult;
     rhi::ComputeDispatchDesc m_geometry, m_pack, m_project, m_traceAll;
-    rhi::ComputeDispatchDesc m_selectBounds;
+    rhi::ComputeDispatchDesc m_selectBounds, m_closest;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_output;
@@ -339,6 +343,9 @@ class InxPhyGpuStep
                                                                          const ModelVector &maximum, uint32_t layers,
                                                                          bool triggers) const;
 
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PreparePublishedClosestPoint(const PhysicsGpuPoseSource &source, const ModelVector &point, uint32_t first,
+                                 uint32_t end, bool closedMesh) const;
     [[nodiscard]] const InxPhyGpuRayBuffers &Rays() const noexcept
     {
         return m_rays;

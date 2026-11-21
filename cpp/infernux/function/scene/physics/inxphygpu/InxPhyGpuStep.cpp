@@ -390,7 +390,8 @@ struct RaySlots
     uint32_t inputs, hits, settings;
     uint32_t metadata;
     uint32_t inputSettings = NoModelIndex, outputSettings = NoModelIndex;
-    ComputeWorkDispatch pack, project, traceAll;
+    uint32_t closestSettings = NoModelIndex, closestResult = NoModelIndex;
+    ComputeWorkDispatch pack, project, traceAll, closest;
 };
 
 struct BodyControlSlots
@@ -495,6 +496,17 @@ RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpu
                                      {17, hits, W, true},
                                      {18, hits, W, true},
                                      {19, hits, W, true}});
+        if (geometryCount != 0) {
+            result.closestSettings = b.Slot(8, BufferUsageFlags::TransferDestination);
+            result.closestResult = b.Slot(4, BufferUsageFlags::TransferSource);
+            result.closest = b.Dispatch("ray_queries", "closest_collider_point", 1,
+                                        {{2, geometry.frames, R},
+                                         {3, geometry.shapes, R},
+                                         {5, geometry.data, R},
+                                         {24, result.closestSettings, R},
+                                         {25, result.closestResult, W, true}});
+            describeFrames(result.closest);
+        }
     }
     return result;
 }
@@ -1121,6 +1133,11 @@ PreparedInxPhyGpuRayQuery InxPhyGpuPublishedRayQuery::Build(rhi::ComputeHost &ho
     query.m_pack = BindDispatch(std::move(ray.pack), buffers);
     query.m_project = BindDispatch(std::move(ray.project), buffers);
     query.m_traceAll = BindDispatch(std::move(ray.traceAll), buffers);
+    if (ray.closest.kernel) {
+        query.m_closest = BindDispatch(std::move(ray.closest), buffers);
+        query.m_closestRequest = buffers[ray.closestSettings];
+        query.m_closestResult = buffers[ray.closestResult];
+    }
     if (bounds.select.kernel) {
         query.m_selectBounds = BindDispatch(std::move(bounds.select), buffers);
         query.m_boundsRequest = buffers[bounds.request];
@@ -1794,6 +1811,11 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             publishedRays.m_pack = BindDispatch(std::move(raySlots->pack), buffers);
             publishedRays.m_project = BindDispatch(std::move(raySlots->project), buffers);
             publishedRays.m_traceAll = BindDispatch(std::move(raySlots->traceAll), buffers);
+            if (raySlots->closest.kernel) {
+                publishedRays.m_closest = BindDispatch(std::move(raySlots->closest), buffers);
+                publishedRays.m_closestRequest = buffers[raySlots->closestSettings];
+                publishedRays.m_closestResult = buffers[raySlots->closestResult];
+            }
             publishedRays.m_geometryCount = model.dimensions.layout[0];
             publishedRays.m_bodyCount = nb;
             publishedRays.m_capacity = rayLayout.raysPerWorld;
@@ -2006,6 +2028,34 @@ InxPhyGpuPublishedRayQuery::PrepareBodyBounds(rhi::ComputeHost &host, const Phys
     return {rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches),
                                      {{m_boundsMask, 0, m_boundsMask->GetByteSize()}}),
             m_bodyBoundsRows};
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuStep::PreparePublishedClosestPoint(const PhysicsGpuPoseSource &source, const ModelVector &point,
+                                            uint32_t first, uint32_t end, bool closedMesh) const
+{
+    auto host = m_work->GetRecipe().GetHost();
+    return m_publishedRays.PrepareClosestPoint(host, source, point, first, end, closedMesh, {});
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuPublishedRayQuery::PrepareClosestPoint(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
+                                                const ModelVector &point, uint32_t first, uint32_t end, bool closedMesh,
+                                                std::vector<rhi::ComputeBufferUpdate> updates) const
+{
+    const ModelWords settings{m_geometryCount, 0, 0, static_cast<uint32_t>(source.firstRow)};
+    auto &frame = updates.emplace_back(rhi::ComputeBufferUpdate{m_settings, 0, std::vector<uint8_t>(sizeof(settings))});
+    std::memcpy(frame.data.data(), settings.data(), sizeof(settings));
+    const ModelWords target{first, end, static_cast<uint32_t>(closedMesh), 0};
+    auto &request = updates.emplace_back(
+        rhi::ComputeBufferUpdate{m_closestRequest, 0, std::vector<uint8_t>(sizeof(point) + sizeof(target))});
+    std::memcpy(request.data.data(), point.data(), sizeof(point));
+    std::memcpy(request.data.data() + sizeof(point), target.data(), sizeof(target));
+    auto dispatches = std::exchange(m_initialize, {});
+    AppendGeometry(dispatches, source);
+    dispatches.push_back(m_closest);
+    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches),
+                                    {{m_closestResult, 0, sizeof(ModelVector)}});
 }
 
 std::vector<uint32_t> InxPhyGpuPreparedBodyBounds::ReadMatchingRows() const
