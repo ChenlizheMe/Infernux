@@ -60,6 +60,7 @@ enum InxPhyGpuRayFlags : uint32_t
     InxPhyGpuRayIncludeStatic = 1,
     InxPhyGpuRayIncludeTriggers = 2,
     InxPhyGpuRayHitBackFaces = 4,
+    InxPhyGpuRayTargetGeometry = 8,
 };
 
 struct InxPhyGpuRay

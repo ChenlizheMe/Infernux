@@ -24,6 +24,11 @@ class PhysicsGpuRenderBindings final
     struct Snapshot;
     using SnapshotPtr = std::shared_ptr<const Snapshot>;
     using ResolveBody = std::function<std::optional<PhysicsGpuBodyPoseBinding>(PhysicsActorHandle, uint32_t bodyId)>;
+    struct Source
+    {
+        PhysicsGpuPoseSource poses;
+        ResolveBody resolve;
+    };
     struct Prepared
     {
         std::vector<physics::gpu_render::PoseNode> nodes;
@@ -70,8 +75,8 @@ class PhysicsGpuRenderBindings final
     [[nodiscard]] bool NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const;
     /// Resolves accepted actor identities and COMs against the captured author
     /// hierarchy. Never reads newer Transform values while preparing GPU work.
-    [[nodiscard]] Export PrepareExport(SnapshotPtr snapshot, const ResolveBody &resolve,
-                                       const PhysicsGpuPoseSource &poses, const PhysicsGpuRenderPoses &program) const;
+    [[nodiscard]] Export PrepareExport(SnapshotPtr snapshot, const Source &source,
+                                       const PhysicsGpuRenderPoses &program) const;
 
     /// Called only for the completed export packet, including an empty mapping.
     /// Each renderer keeps a count-one endpoint selecting the packed buffers.

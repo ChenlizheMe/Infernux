@@ -12,12 +12,13 @@
 static const uint RayIncludeStatic = 1;
 static const uint RayIncludeTriggers = 2;
 static const uint RayHitBackFaces = 4;
+static const uint RayTargetGeometry = 8;
 
 struct PhysicsRay
 {
     float4 originLimit;
     float4 direction;
-    uint4 filter; // Layer mask, excluded body, flags, unused.
+    uint4 filter; // Layer mask and excluded body, or the target geometry range, followed by flags.
 };
 
 struct PhysicsRayHit
@@ -487,8 +488,9 @@ void testRayGeometry(PhysicsRay ray, uint base, uint geometry, inout RaySurface 
 {
     const uint4 metadata = rayGeometry[geometry];
     const uint surfaceFlags = RayIncludeStatic | RayIncludeTriggers;
-    if ((metadata.y & ray.filter.x) == 0 || metadata.x == ray.filter.y ||
-        (metadata.z & surfaceFlags & ~ray.filter.z) != 0)
+    if ((ray.filter.z & RayTargetGeometry) == 0 &&
+        ((metadata.y & ray.filter.x) == 0 || metadata.x == ray.filter.y ||
+         (metadata.z & surfaceFlags & ~ray.filter.z) != 0))
         return;
     ray.originLimit.w = best.distance;
     uint subShape = metadata.w;
@@ -520,6 +522,13 @@ void raycast_worlds(uint3 id : SV_DispatchThreadID)
     RaySurface best = {float3(0.0), ray.originLimit.w};
     uint4 winner = uint4(NoIndex);
     const uint base = id.y * settings.x;
+    if ((ray.filter.z & RayTargetGeometry) != 0)
+    {
+        for (uint geometry = ray.filter.x; geometry < ray.filter.y; ++geometry)
+            testRayGeometry(ray, base, geometry, best, winner);
+        rayHits[output] = {float4(best.normal, winner.x == NoIndex ? -1.0 : best.distance), winner};
+        return;
+    }
     const uint4 index = rayIndex[0];
     for (uint plane = 0; plane < index.w; ++plane)
         testRayGeometry(ray, base, rayIndexAt(rayIndex, index.z, plane), best, winner);

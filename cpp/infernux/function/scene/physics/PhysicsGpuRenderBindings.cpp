@@ -444,14 +444,12 @@ PhysicsGpuRenderBindings::Prepared PhysicsGpuRenderBindings::Prepare(SnapshotPtr
     return prepared;
 }
 
-PhysicsGpuRenderBindings::Export PhysicsGpuRenderBindings::PrepareExport(SnapshotPtr snapshot,
-                                                                         const ResolveBody &resolve,
-                                                                         const PhysicsGpuPoseSource &poses,
+PhysicsGpuRenderBindings::Export PhysicsGpuRenderBindings::PrepareExport(SnapshotPtr snapshot, const Source &source,
                                                                          const PhysicsGpuRenderPoses &program) const
 {
     Export result;
-    result.bindings = Prepare(std::move(snapshot), resolve);
-    auto work = program.Prepare(poses, result.bindings.nodes, result.bindings.bindings);
+    result.bindings = Prepare(std::move(snapshot), source.resolve);
+    auto work = program.Prepare(source.poses, result.bindings.nodes, result.bindings.bindings);
     result.packet = std::move(work.batch);
     result.models = std::move(work.models);
     result.bounds = std::move(work.bounds);

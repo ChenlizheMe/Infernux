@@ -129,7 +129,9 @@ struct PhysicsDomain final
             Keys keys{};
             uint64_t numericalGeneration = 0;
             std::optional<PhysicsGpuRenderBindings::Export> output;
-            std::shared_ptr<const JoltGpuScene::Publication> publication;
+            // Compare the accepted receipt by identity, including control
+            // publications that share the same fixed index or device buffer.
+            std::shared_ptr<const void> receipt;
         };
         PhysicsGpuRenderBindings bindings;
         std::shared_ptr<Job> pending, ready;

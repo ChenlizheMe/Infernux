@@ -908,7 +908,8 @@ class PhysicsWorld
     [[nodiscard]] physics::inxphygpu::InxPhyGpuPreparedRayBatch
     RunClosestGpuRays(PhysicsDomain &, const std::shared_ptr<const JoltGpuScene::Publication> &,
                       const std::vector<physics::inxphygpu::InxPhyGpuRay> &,
-                      const physics::inxphygpu::InxPhyGpuDeviceRays *, const PhysicsDeviceRayOutputs *) const;
+                      const physics::inxphygpu::InxPhyGpuDeviceRays *, const PhysicsDeviceRayOutputs *,
+                      const Collider *target = nullptr) const;
     PhysicsRigidbodyBatchSource ExportRaycastBatch(const std::vector<physics::inxphygpu::InxPhyGpuRay> &,
                                                    const physics::inxphygpu::InxPhyGpuDeviceRays *,
                                                    const PhysicsDeviceRayOutputs &) const;

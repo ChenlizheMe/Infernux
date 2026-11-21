@@ -66,6 +66,7 @@ struct PhysicsSceneRayPlan
     uint32_t bodyBase = 0, bodyCount = 0;
     physics::inxphygpu::InxPhyGpuPublishedRayQuery query;
     std::vector<RaycastHit> surfaces; // Geometry rows, resolved only when a read completes.
+    std::map<std::pair<uint64_t, uint64_t>, std::pair<uint32_t, uint32_t>> colliderGeometry;
 };
 
 namespace
@@ -457,7 +458,13 @@ BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publi
     plan->surfaces.reserve(model.geometries.size());
     for (size_t row = 0; row < model.geometries.size(); ++row) {
         const auto body = model.model.geometries[row].indices[0];
-        plan->surfaces.push_back(surfaces[authorRows[body]][model.geometries[row].surface]);
+        const auto &geometry = model.geometries[row];
+        plan->surfaces.push_back(surfaces[authorRows[body]][geometry.surface]);
+        // CollectPhysicsShapeLeaves orders each body's leaves by collider member.
+        const auto key = std::pair{geometry.collider.componentId, geometry.collider.generation};
+        const auto first = static_cast<uint32_t>(row);
+        auto range = plan->colliderGeometry.try_emplace(key, first, first + 1).first;
+        range->second.second = first + 1;
     }
     auto prepared = InxPhyGpuPublishedRayQuery::Build(host, PhysicsShaderTarget(host), model.model, model.collision,
                                                       capacity, publication.bodyCount, poseRows);
@@ -488,6 +495,26 @@ std::vector<physics::inxphygpu::InxPhyGpuRay> PackSceneRays(const float *origins
         rays.push_back({{origin.x, origin.y, origin.z, maximum}, {unit.x, unit.y, unit.z, 0.0f}, filter});
     }
     return rays;
+}
+
+bool DecodeSceneRayHit(const PhysicsSceneRayPlan &plan, const physics::inxphygpu::InxPhyGpuRay &ray,
+                       const physics::inxphygpu::InxPhyGpuRayHit &record, RaycastHit &hit)
+{
+    const auto &[normalDistance, identity] = record;
+    if (identity[0] == physics::inxphygpu::NoModelIndex) {
+        hit = {};
+        return false;
+    }
+    hit = plan.surfaces.at(identity[0]);
+    hit.subShapeId = identity[2];
+    hit.triangleIndex = identity[3];
+    hit.distance = normalDistance[3];
+    hit.normal = {normalDistance[0], normalDistance[1], normalDistance[2]};
+    hit.point = glm::vec3(ray.originLimit[0], ray.originLimit[1], ray.originLimit[2]) +
+                glm::vec3(ray.direction[0], ray.direction[1], ray.direction[2]) * hit.distance;
+    hit.collider = hit.target.GetCollider();
+    hit.gameObject = hit.target.GetGameObject();
+    return true;
 }
 Rigidbody &KinematicBody(const PhysicsActorData &actor)
 {
@@ -1001,7 +1028,7 @@ void PhysicsWorld::ObserveGpuPublication(PhysicsDomain &domain, bool numericalCh
             FrameWorkOwner::Scope publication(*m_gpuWork);
             auto &rendering = domain.rendering;
             const auto &job = rendering.pending;
-            if (job && job->output && job->publication == p) {
+            if (job && job->output && job->receipt == p) {
                 job->numericalGeneration = domain.queryGeneration.load(std::memory_order_acquire);
                 rendering.ready = job;
             }
@@ -1206,8 +1233,8 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
     rendering.pending = job;
     return [this, &domain, job = std::move(job)](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         auto &state = domain.rendering;
-        job->output = state.bindings.PrepareExport(
-            job->snapshot,
+        const PhysicsGpuRenderBindings::Source source{
+            {publication->bodyStates, 0, publication->bodyCount, sizeof(JPH::GPU::BodyState)},
             [&](PhysicsActorHandle handle, uint32_t bodyId) -> std::optional<PhysicsGpuBodyPoseBinding> {
                 const auto slot = publication->directory->FindBodySlot(bodyId);
                 if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
@@ -1217,9 +1244,9 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
                     return std::nullopt;
                 const auto &center = actor->rootCenterOfMass;
                 return PhysicsGpuBodyPoseBinding{bodyId, slot - publication->bodyBase, {center.x, center.y, center.z}};
-            },
-            {publication->bodyStates, 0, publication->bodyCount, sizeof(JPH::GPU::BodyState)}, *m_gpuRenderProgram);
-        job->publication = publication;
+            }};
+        job->output = state.bindings.PrepareExport(job->snapshot, source, *m_gpuRenderProgram);
+        job->receipt = publication;
         return ContinueJoltGpuControlWork(job->output->Packet(), [job] {
             job->output->Seal();
             return JoltGpuControlWork{};
@@ -3687,7 +3714,7 @@ void PhysicsWorld::RaycastBatch(const float *origins, const float *directions, s
 physics::inxphygpu::InxPhyGpuPreparedRayBatch PhysicsWorld::RunClosestGpuRays(
     PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
     const std::vector<physics::inxphygpu::InxPhyGpuRay> &rays, const physics::inxphygpu::InxPhyGpuDeviceRays *device,
-    const PhysicsDeviceRayOutputs *outputs) const
+    const PhysicsDeviceRayOutputs *outputs, const Collider *target) const
 {
     using namespace physics::inxphygpu;
     const size_t count = device ? device->count : rays.size();
@@ -3707,14 +3734,24 @@ physics::inxphygpu::InxPhyGpuPreparedRayBatch PhysicsWorld::RunClosestGpuRays(
         if (!device) {
             auto &input = uploads.emplace_back(rhi::ComputeBufferUpdate{
                 plan->query.Inputs(), 0, std::vector<uint8_t>(rays.size() * sizeof(InxPhyGpuRay))});
-            std::memcpy(input.data.data(), rays.data(), input.data.size());
+            if (target) {
+                const auto range =
+                    plan->colliderGeometry.find({target->GetComponentID(), target->GetLifetimeGeneration()});
+                if (range == plan->colliderGeometry.end())
+                    return JoltGpuControlWork{};
+                auto ray = rays.front();
+                ray.filter = {range->second.first, range->second.second, InxPhyGpuRayTargetGeometry, 0};
+                std::memcpy(input.data.data(), &ray, sizeof(ray));
+            } else {
+                std::memcpy(input.data.data(), rays.data(), input.data.size());
+            }
         }
         batch =
             plan->query.Prepare(*m_gpuHost, {accepted->bodyStates, 0, accepted->bodyCount, sizeof(JPH::GPU::BodyState)},
                                 static_cast<uint32_t>(count), !outputs, std::move(uploads), device, outputs);
         return JoltGpuControlWork{batch.packet};
     });
-    if (replacement)
+    if (replacement && batch.packet)
         domain.sceneRays = std::move(replacement);
     return batch;
 }
@@ -3768,26 +3805,8 @@ void PhysicsWorld::RaycastBatchPublished(const float *origins, const float *dire
         std::vector<InxPhyGpuRayHit> records(count);
         batch.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(InxPhyGpuRayHit));
         for (size_t i = 0; i < count; ++i) {
-            const auto &[normalDistance, identity] = records[i];
-            const auto geometry = identity[0];
-            if (geometry == NoModelIndex) {
-                hits[i] = {};
-                mask[i] = 0;
-                continue;
-            }
-            auto &hit = hits[i];
-            hit = domain.sceneRays->surfaces.at(geometry);
-            hit.subShapeId = identity[2];
-            hit.triangleIndex = identity[3];
-            hit.distance = normalDistance[3];
-            hit.normal = {normalDistance[0], normalDistance[1], normalDistance[2]};
-            const auto &ray = rays[i];
-            hit.point = glm::vec3(ray.originLimit[0], ray.originLimit[1], ray.originLimit[2]) +
-                        glm::vec3(ray.direction[0], ray.direction[1], ray.direction[2]) * hit.distance;
-            hit.collider = hit.target.GetCollider();
-            hit.gameObject = hit.target.GetGameObject();
-            mask[i] = 1;
-            if (profile)
+            mask[i] = DecodeSceneRayHit(*domain.sceneRays, rays[i], records[i], hits[i]);
+            if (profile && mask[i])
                 ++profile->publishedHits;
         }
     } else {
@@ -4477,8 +4496,7 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
                                    float maximum, RaycastHit &hit) const
 {
     auto &domain = DomainForComponent(collider);
-    auto request = Query(QueryRay, QueryClosest);
-    QueryRayInput(request, origin, direction, maximum);
+    ValidateRayInput(origin, direction, maximum);
     RunCpuControl(domain);
     const auto id = ColliderBodyIdentity(collider);
     hit = {};
@@ -4491,12 +4509,19 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
         return JoltCpuQueries(*domain.cpuScene).Raycast(origin, direction, maximum, hit, {UINT32_MAX, true, target});
     }
     RunControl(domain, {}, true);
-    TargetCollider(request, collider);
-    const auto result = RunQuery(domain, ReadGpuQueryPublication(domain), {request});
+    const auto publication = ReadGpuSpatialQueryPublication(domain);
+    if (!publication)
+        return false;
+    const float coordinates[3] = {origin.x, origin.y, origin.z};
+    const float axes[3] = {direction.x, direction.y, direction.z};
+    const auto rays = PackSceneRays(coordinates, axes, 1, maximum, UINT32_MAX, true);
+    const auto batch = RunClosestGpuRays(domain, publication, rays, nullptr, nullptr, &collider);
+    if (!batch.packet)
+        return false;
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    const auto &record = result->ReadHits().front();
-    hit = DecodeQueryHit(*result, record);
-    return record.meta.y != 0;
+    physics::inxphygpu::InxPhyGpuRayHit record;
+    batch.packet->Readback(0)->ReadInto(&record, sizeof(record));
+    return DecodeSceneRayHit(*domain.sceneRays, rays.front(), record, hit);
 }
 
 glm::vec3 PhysicsWorld::ClosestPointOnCollider(const Collider &collider, const glm::vec3 &point) const
