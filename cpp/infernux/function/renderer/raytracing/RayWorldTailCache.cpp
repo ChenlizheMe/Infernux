@@ -28,6 +28,7 @@ using Clock = std::chrono::steady_clock;
 constexpr uint64_t CloneWindowBytes = 256 * 1024;
 constexpr uint64_t SampleNanoseconds = 2000;
 constexpr uint64_t CloneNanoseconds = 4;
+constexpr uint32_t TailWorkgroupSize = 64;
 struct alignas(16) Control
 {
     std::array<uint32_t, 16> words{};
@@ -224,7 +225,7 @@ uint32_t RayTailCacheBatch::RecordPrepare(const rhi::ComputeCommandEncoder &comm
     commands.BindPipeline(program.entries[0].pipeline);
     commands.BindGroup(program.entries[0].pipeline, 0, group);
     const auto count = m_state->control.words[6] == 0 ? m_state->control.words[5] : 1u;
-    const auto groups = (count + 63u) / 64u;
+    const auto groups = (count + TailWorkgroupSize - 1u) / TailWorkgroupSize;
     commands.Dispatch(groups);
     m_state->prepareRecorded = true;
     return groups;
@@ -236,7 +237,7 @@ uint32_t RayTailCacheBatch::RecordMerge(const rhi::ComputeCommandEncoder &comman
     m_state->groups.push_back(group);
     commands.BindPipeline(program.entries[1].pipeline);
     commands.BindGroup(program.entries[1].pipeline, 0, group);
-    const auto groups = (m_state->control.words[1] + 63u) / 64u;
+    const auto groups = (m_state->control.words[1] + TailWorkgroupSize - 1u) / TailWorkgroupSize;
     commands.Dispatch(groups);
     m_state->mergeRecorded = true;
     return groups;
@@ -278,8 +279,8 @@ RayWorldTailCache::RayWorldTailCache(FrameWorkOwner &owner, rhi::Device &device,
     : m_state(std::make_unique<State>(owner, device, config))
 {
     auto &s = *m_state;
-    if (!config.capacity || !config.batchSize || config.capacity > 0x3fffffffu || config.cellSize <= 0 ||
-        !config.directionGrid || config.maxRayDistance <= 0 ||
+    if (!config.capacity || !config.batchSize || config.batchSize > TailWorkgroupSize ||
+        config.capacity > 0x3fffffffu || config.cellSize <= 0 || !config.directionGrid || config.maxRayDistance <= 0 ||
         uint64_t(config.capacity) * 128 + 32 > config.residentBytes)
         throw std::invalid_argument("Directional ray cache has an invalid fixed resource configuration");
     s.empty = Allocate(device, 32 + uint64_t(config.capacity) * 128, true);

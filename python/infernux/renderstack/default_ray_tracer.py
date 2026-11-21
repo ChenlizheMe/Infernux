@@ -277,6 +277,7 @@ def _update_ray_tail(ctx, *, primary, thin):
         render_pass._ray_tail_batch = 1
         render_pass._side_effect = True
         render_pass.set_texture("tail_samples", samples)
+        render_pass.read_buffer(tail["ray_tail_read"])
         render_pass.read_buffer(tail["ray_tail_requests"])
         render_pass.read_buffer(tail["ray_tail_control"])
         render_pass.write_buffer(tail["ray_tail_write"])

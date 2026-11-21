@@ -8,19 +8,57 @@ Texture2D<uint4> request_0;
 Texture2D<uint4> request_1;
 Texture2D<float4> tail_samples;
 
+groupshared uint4 request_identity[64];
+groupshared uint4 request_anchor[64];
+groupshared uint4 request_outgoing[64];
+groupshared uint4 request_normal[64];
+groupshared uint4 request_key[64];
+groupshared uint request_hash[64];
+
+bool cache_read_matches(uint4 control)
+{
+    return cache_read.Load(0) == control.x && cache_read.Load(4) == control.z;
+}
+
+void copy_cache_entry(uint base, bool available)
+{
+    for (uint b = 0; b < 8; ++b)
+        cache_write.Store4(base + b * 16, available ? cache_read.Load4(base + b * 16) : uint4(0));
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void prepare_main(uint3 tid : SV_DispatchThreadID)
+void prepare_main(uint3 tid : SV_DispatchThreadID, uint3 lane : SV_GroupThreadID)
 {
     uint4 c = cache_control.Load4(0);
     uint4 work = cache_control.Load4(16);
+    // Allocation uses one group. Decode one candidate per lane before reserving slots in order.
+    if (work.z != 0 && tid.x < c.y) {
+        uint width, height;
+        request_0.GetDimensions(width, height);
+        uint4 anchor = uint4(0);
+        if (tid.x < width && height >= 2)
+            anchor = request_1.Load(int3(tid.x, 0, 0));
+        request_anchor[lane.x] = anchor;
+        if ((anchor.w & 1u) != 0) {
+            uint4 outgoing = request_0.Load(int3(tid.x, 1, 0));
+            uint4 normal = request_1.Load(int3(tid.x, 1, 0));
+            uint4 metric = cache_control.Load4(32);
+            int3 cell = ray_tail_cell(asfloat(anchor.xyz), asfloat(metric.x));
+            uint direction = ray_tail_direction(asfloat(outgoing.xyz), metric.y);
+            request_identity[lane.x] = request_0.Load(int3(tid.x, 0, 0));
+            request_outgoing[lane.x] = outgoing;
+            request_normal[lane.x] = normal;
+            request_key[lane.x] = uint4(asuint(cell), direction);
+            request_hash[lane.x] = ray_tail_hash(cell, 0, outgoing.w, normal.w, direction);
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
     if (work.z == 0) {
         uint index = work.x + tid.x;
         if (tid.x < work.y) {
             uint base = 32 + index * 128;
-            bool valid = cache_read.Load(0) == c.x && cache_read.Load(4) == c.z;
-            for (uint b = 0; b < 8; ++b)
-                cache_write.Store4(base + b * 16, valid ? cache_read.Load4(base + b * 16) : uint4(0));
+            copy_cache_entry(base, cache_read_matches(c));
         }
         if (tid.x == 0) {
             cache_write.Store4(0, uint4(c.x, c.z, c.w, 1));
@@ -34,20 +72,19 @@ void prepare_main(uint3 tid : SV_DispatchThreadID)
     for (uint block = 0; block < 4; ++block)
         cache_requests.Store4(block * 16, cache_control.Load4(block * 16));
     uint4 metric = cache_control.Load4(32);
-    uint width, height; request_0.GetDimensions(width, height);
     for (uint i = 0; i < c.y; ++i) {
         uint offset = 64 + i * 64;
         cache_requests.Store4(offset, uint4(0));
         cache_requests.Store4(offset + 16, uint4(0));
         cache_requests.Store4(offset + 32, uint4(0));
         cache_requests.Store4(offset + 48, uint4(0));
-        if (i >= width || height < 2) continue;
-        uint4 r0 = request_0.Load(int3(i, 0, 0)), r1 = request_1.Load(int3(i, 0, 0));
-        uint4 r2 = request_0.Load(int3(i, 1, 0)), r3 = request_1.Load(int3(i, 1, 0));
+        uint4 r1 = request_anchor[i];
         if ((r1.w & 1u) == 0) continue;
-        int3 cell = ray_tail_cell(asfloat(r1.xyz), asfloat(metric.x));
-        uint direction = ray_tail_direction(asfloat(r2.xyz), metric.y);
-        uint hash = ray_tail_hash(cell, 0, r2.w, r3.w, direction);
+        uint4 r0 = request_identity[i], r2 = request_outgoing[i], r3 = request_normal[i];
+        uint4 packet_key = request_key[i];
+        int3 cell = asint(packet_key.xyz);
+        uint direction = packet_key.w;
+        uint hash = request_hash[i];
         uint selected = 0xffffffffu, empty = 0xffffffffu, oldest = 0xffffffffu;
         uint oldestAge = 0;
         bool reuse = false, duplicateKey = false;
@@ -127,7 +164,12 @@ void merge_main(uint3 tid : SV_DispatchThreadID)
     uint width, height; tail_samples.GetDimensions(width, height);
     float4 value = tail_samples.Load(int3(tid.x % width, tid.x / width, 0));
     if (value.w < 0.0) {
-        cache_write.Store(base + 28, (requestFlags & 2u) != 0 ? 0 : 1);
+        // A failed replacement did not earn the slot. Restore the accepted entry for this epoch.
+        bool replacement = (requestFlags & 2u) != 0;
+        if (replacement && cache_read_matches(c))
+            copy_cache_entry(base, true);
+        else
+            cache_write.Store(base + 28, replacement ? 0u : 1u);
         return;
     }
     uint n = cache_write.Load(base + 44);
