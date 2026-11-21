@@ -10,6 +10,7 @@
 
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <variant>
 
 namespace infernux::physics::warp
 {
@@ -80,13 +81,29 @@ struct WarpSceneHinge
     WarpHingeDrive drive;
 };
 
+struct WarpSceneSlider
+{
+    glm::vec3 axis{0.0f, 1.0f, 0.0f};
+    bool useLimits = false;
+    float minimum = 0.0f, maximum = 0.0f;
+};
+
+struct WarpSceneDistance
+{
+    glm::vec3 connectedAnchor{0.0f}; // Baked local offset, or world position without a connected body.
+    bool autoDistance = true;
+    float minimum = 0.0f, maximum = 0.0f;
+    float stiffness = 0.0f, damping = 0.0f;
+};
+
 struct WarpSceneJoint
 {
     uint32_t ownerActor;
     uint32_t connectedActor = NoModelIndex;
     glm::vec3 ownerAnchor{0.0f}; // Baked offset from the owner transform origin, in body axes.
     bool enableCollision = false;
-    std::optional<WarpSceneHinge> hinge;
+    // This order matches the scene joint kinds in spatial_constraints.slang.
+    std::variant<std::monostate, WarpSceneHinge, WarpSceneSlider, WarpSceneDistance> settings;
 };
 
 struct WarpSceneModel

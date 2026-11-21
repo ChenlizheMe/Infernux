@@ -6,6 +6,7 @@
 #include "../BoxCollider.h"
 #include "../Collider.h"
 #include "../Component.h"
+#include "../DistanceJoint.h"
 #include "../FixedJoint.h"
 #include "../GameObject.h"
 #include "../HingeJoint.h"
@@ -15,6 +16,7 @@
 #include "../RuntimeWorld.h"
 #include "../Scene.h"
 #include "../SceneManager.h"
+#include "../SliderJoint.h"
 #include "../TagLayerManager.h"
 #include "../Transform.h"
 #include "../TransformECSStore.h"
@@ -3803,8 +3805,9 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
         registration.bodies.push_back(
             {id, binding.stagedShapeRevision, binding.actor, std::move(prepared.surfaces), bodyTarget});
         actors.push_back(std::move(prepared.actor));
-        if (const auto *joint = actor.owner->GetComponent<Joint>(); joint && joint->GetPhysicsConstraintId() != 0)
-            activeJoints.push_back(joint);
+        for (const auto *joint : actor.owner->GetComponents<Joint>())
+            if (joint->GetPhysicsConstraintId() != 0 && joint->m_boundBodyId == id)
+                activeJoints.push_back(joint);
     }
 
     std::vector<WarpSceneJoint> joints;
@@ -3820,7 +3823,7 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
                                                          joint->GetEnableCollision(),
                                                          {}});
         if (const auto *hinge = dynamic_cast<const HingeJoint *>(joint)) {
-            model.hinge =
+            model.settings =
                 WarpSceneHinge{hinge->GetAxis(),
                                hinge->GetUseLimits(),
                                glm::radians(hinge->GetMinimumAngle()),
@@ -3828,6 +3831,22 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
                                {hinge->GetMotorEnabled(), hinge->GetClampedMotorTargetRadians(),
                                 hinge->GetMotorStiffness(), hinge->GetMotorDamping(), hinge->GetMotorMaxTorque(),
                                 hinge->GetJointDamping(), hinge->GetFrictionTorque(), hinge->GetArmature()}};
+        } else if (const auto *slider = dynamic_cast<const SliderJoint *>(joint)) {
+            model.settings = WarpSceneSlider{slider->GetAxis(), slider->GetUseLimits(), slider->GetMinimumDistance(),
+                                             slider->GetMaximumDistance()};
+        } else if (const auto *distance = dynamic_cast<const DistanceJoint *>(joint)) {
+            auto connectedAnchor = distance->GetConnectedAnchor();
+            if (connected != UINT32_MAX) {
+                const auto *connectedTransform = store.GetActor(m_bodyActors.at(connected).actor).owner->GetTransform();
+                connectedAnchor = glm::conjugate(connectedTransform->GetWorldRotation()) *
+                                  connectedTransform->TransformVector(connectedAnchor);
+            }
+            model.settings = WarpSceneDistance{connectedAnchor,
+                                               distance->GetAutoDistance(),
+                                               distance->GetMinimumDistance(),
+                                               distance->GetMaximumDistance(),
+                                               distance->GetStiffness(),
+                                               distance->GetDamping()};
         } else if (!dynamic_cast<const FixedJoint *>(joint)) {
             throw std::invalid_argument(std::string("Warp scene setup does not support ") + joint->GetTypeName());
         }

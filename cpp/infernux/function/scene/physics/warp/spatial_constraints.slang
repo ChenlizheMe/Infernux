@@ -9,7 +9,10 @@
 #include "prescribed_motion.slang"
 
 static const uint SpatialEqualityWords = 9;
-static const uint SceneJointWords = 10;
+static const uint SceneJointWords = 11;
+static const uint SceneHinge = 1;
+static const uint SceneSlider = 2;
+static const uint SceneDistance = 3;
 
 struct HingeDrive
 {
@@ -66,16 +69,16 @@ float3 pointJacobianDerivative(SpatialMotion motion, SpatialMotion derivative, S
     return pointJacobian(derivative, endpoint) + cross(motion.angular.xyz, endpoint.pointVelocity);
 }
 
-struct HingeRow
+struct AxialRow
 {
     float4 response; // Distance, reference acceleration, inverse regularization, force cap.
     float direction;
     uint kind;
 };
 
-struct HingeRows
+struct AxialRows
 {
-    HingeRow rows[5];
+    AxialRow rows[5];
     uint count;
 };
 
@@ -85,38 +88,65 @@ float wrapHingeAngle(float angle)
     return angle - turn * floor((angle + PhysicsPi) / turn);
 }
 
-void appendHingeResponse(inout HingeRows result, float reference, float diagonal, uint kind, float cap)
+void appendAxisResponse(inout AxialRows result, float reference, float diagonal, uint kind, float cap)
 {
     result.rows[result.count++] = {float4(0.0, reference, diagonal, cap), 1.0, kind};
 }
 
-HingeRows hingeRows(uint4 controls, HingeDrive drive, float angle, float speed, float weight, float timestep, uint flags,
+void appendAxisLimit<let Linear : bool>(inout AxialRows result, float2 limit, float value, float speed, float weight,
+                                       float timestep, uint flags, ConstraintParameters parameters, float2 spring,
+                                       bool lowerCanBind)
+{
+    const float predicted = value + timestep * speed;
+    const bool locked = limit.x == limit.y;
+    const bool upper = !locked && (value > limit.y || (value >= limit.x && predicted > limit.y));
+    const bool lower = lowerCanBind && (value < limit.x || predicted < limit.x);
+    if (locked || upper || lower)
+    {
+        const float direction = upper ? -1.0 : 1.0;
+        const float error = direction * (value - (upper ? limit.y : limit.x));
+        const float velocity = direction * speed;
+        const uint kind = locked ? EqualityRow : LimitRow;
+        float reference, diagonal;
+        if (spring.x > 0.0)
+        {
+            const float damping = spring.y + timestep * spring.x;
+            diagonal = timestep * damping;
+            reference = -(spring.x * error + damping * velocity) / diagonal;
+        }
+        else if (Linear && !locked)
+        {
+            // Limit the end-of-substep velocity to the remaining travel. Correct any
+            // existing penetration gradually instead of injecting a restitution impulse.
+            const float gap = error < 0.0 ? 0.2 * error : error;
+            diagonal = constraintDiagonal(weight, MaxImpedance);
+            reference = -(gap + timestep * velocity) / (timestep * timestep);
+        }
+        else
+        {
+            const float3 kbi = impedanceParameters(parameters, error, timestep, false);
+            const ConstraintRow row = makeConstraintRow(uint4(0u), kind, kbi, error, 0.0, velocity, weight,
+                                                       0.0, 0.0, timestep, flags, parameters.reference.x);
+            reference = row.state.w;
+            diagonal = row.diagonal;
+            if (!locked && velocity < 0.0)
+                reference = max(reference, -(error + timestep * velocity) / (timestep * timestep));
+        }
+        result.rows[result.count++] = {float4(error, reference, diagonal, 0.0), direction, kind};
+    }
+}
+
+AxialRows hingeRows(uint4 controls, HingeDrive drive, float angle, float speed, float weight, float timestep, uint flags,
                     ConstraintParameters parameters)
 {
-    HingeRows result;
+    AxialRows result;
     result.count = 0;
     const float2 limit = asfloat(controls.yz);
     const float4 motor = drive.motor;
     const float3 passive = drive.passive.xyz;
     const bool limited = controls.w != 0;
     if (limited)
-    {
-        const float predicted = angle + timestep * speed;
-        const bool locked = limit.x == limit.y;
-        const bool upper = !locked && (angle > limit.y || (angle >= limit.x && predicted > limit.y));
-        const bool lower = angle < limit.x || predicted < limit.x;
-        if (locked || upper || lower)
-        {
-            const float direction = upper ? -1.0 : 1.0;
-            const float error = direction * (angle - (upper ? limit.y : limit.x));
-            const float3 kbi = impedanceParameters(parameters, error, timestep, false);
-            ConstraintRow row = makeConstraintRow(uint4(0u), locked ? EqualityRow : LimitRow, kbi, error, 0.0,
-                direction * speed, weight, 0.0, 0.0, timestep, flags, parameters.reference.x);
-            if (!locked && direction * speed < 0.0)
-                row.state.w = max(row.state.w, -(error + timestep * direction * speed) / (timestep * timestep));
-            result.rows[result.count++] = {float4(row.state.x, row.state.w, row.diagonal, 0.0), direction, row.kind};
-        }
-    }
+        appendAxisLimit<false>(result, limit, angle, speed, weight, timestep, flags, parameters, float2(0.0), true);
     const float motorDiagonal = timestep * (motor.z + motor.y * timestep);
     if (motorDiagonal > 0.0 && motor.w > 0.0)
     {
@@ -124,14 +154,14 @@ HingeRows hingeRows(uint4 controls, HingeDrive drive, float angle, float speed, 
         const float target = limited ? clamp(motor.x, limit.x, limit.y) : motor.x;
         const float error = wrapHingeAngle(target - angle);
         const float torque = motor.y * (error - timestep * speed) - motor.z * speed;
-        appendHingeResponse(result, torque / motorDiagonal, motorDiagonal, FrictionRow, motor.w);
+        appendAxisResponse(result, torque / motorDiagonal, motorDiagonal, FrictionRow, motor.w);
     }
     if (passive.x > 0.0)
-        appendHingeResponse(result, -speed / timestep, passive.x * timestep, EqualityRow, 0.0);
+        appendAxisResponse(result, -speed / timestep, passive.x * timestep, EqualityRow, 0.0);
     if (passive.y > 0.0)
-        appendHingeResponse(result, -speed / timestep, 1.0 / (weight * timestep), FrictionRow, passive.y);
+        appendAxisResponse(result, -speed / timestep, 1.0 / (weight * timestep), FrictionRow, passive.y);
     if (passive.z > 0.0)
-        appendHingeResponse(result, 0.0, passive.z, EqualityRow, 0.0);
+        appendAxisResponse(result, 0.0, passive.z, EqualityRow, 0.0);
     return result;
 }
 
@@ -149,8 +179,12 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     const uint4 config = settings[1];
     const uint bodyBase = id.y * config.x;
     const uint dofBase = id.y * config.y;
-    const bool hinge = SceneJoint && span.w == 5u;
-    const uint angularRows = span.w - 3u;
+    const uint4 jointType = SceneJoint ? spatialModel[record + 10] : uint4(0u);
+    const bool hinge = jointType.x == SceneHinge;
+    const bool slider = jointType.x == SceneSlider;
+    const bool distance = jointType.x == SceneDistance;
+    const uint linearRows = distance ? 0u : (slider ? 2u : 3u);
+    const uint angularRows = span.w - linearRows;
     const uint4 reference = spatialModel[record + 8]; // roots, inverse weights as float bits
     const float4 anchorA = asfloat(spatialModel[record + 4]);
     const float3 anchorB = asfloat(spatialModel[record + 5].xyz);
@@ -158,22 +192,41 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
                                                asfloat(spatialModel[record + 6]));
     const SpatialEndpoint b = equalityEndpoint(bodyBase, source.z, span.y, reference.y, anchorB,
                                                asfloat(spatialModel[record + 7]));
+    const float4 orientationAInverse = conjugateQuaternion(a.orientation);
     const float4 orientationBInverse = conjugateQuaternion(b.orientation);
     const float4 relative = mulQuat(orientationBInverse, a.orientation);
     const float3 hingeAxis = rotateVector(float3(0.0, 0.0, 1.0), b.orientation);
-    const float speed = dot(hingeAxis, a.omega - b.omega);
+    const float3 separation = a.point - b.point;
+    const float3 pointVelocity = a.pointVelocity - b.pointVelocity;
+    const float separationLength = distance ? length(separation) : 0.0;
+    const float3 radial = separationLength > 0.0 ? separation / separationLength : float3(0.0, 1.0, 0.0);
+    const float3 slide = slider ? rotateVector(-separation, orientationAInverse) : float3(0.0);
+    const float3 slideVelocity = slider ?
+        rotateVector(-pointVelocity + cross(a.omega, separation), orientationAInverse) : float3(0.0);
+    const float speed = hinge ? dot(hingeAxis, a.omega - b.omega) :
+                       (slider ? slideVelocity.z : dot(radial, pointVelocity));
     const ConstraintParameters parameters = {asfloat(spatialModel[record + 2]), asfloat(spatialModel[record + 3])};
     const float timestep = asfloat(settings[2 + id.y].x);
-    HingeRows axial;
+    const uint4 controls = SceneJoint ? spatialModel[record + 9u] : uint4(0u);
+    AxialRows axial;
     axial.count = 0;
     if (hinge)
     {
         const float theta = wrapHingeAngle(2.0 * atan2(relative.w, relative.x));
-        const uint4 controls = spatialModel[record + 9u];
         const HingeDrive drive = sceneDrives[id.y * model.y + controls.x];
         axial = hingeRows(controls, drive, theta, speed, asfloat(reference.w), timestep, config.w, parameters);
     }
-    const uint2 block = reserveConstraintBlock(id.y, span.w + axial.count, source.w);
+    else if (controls.w != 0)
+    {
+        const float2 limit = asfloat(controls.yz);
+        // A range starting at zero permits its attachment points to cross.
+        appendAxisLimit<true>(axial, limit, slider ? slide.z : separationLength, speed, asfloat(reference.z),
+                              timestep, config.w, parameters, asfloat(jointType.yz), !distance || limit.x > 0.0);
+    }
+    const uint totalRows = span.w + axial.count;
+    if (totalRows == 0)
+        return;
+    const uint2 block = reserveConstraintBlock(id.y, totalRows, source.w);
     if (block.x == NoIndex)
         return;
     const uint columnBase = id.y * limits.w + block.y;
@@ -182,6 +235,7 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     float3 angularVelocity = float3(0.0);
     float3 linearShift = float3(0.0);
     float3 angularShift = float3(0.0);
+    float3 sliderAngularShift = float3(0.0);
     for (uint j = 0; j < source.w; ++j)
     {
         // A DOF shared by the endpoints contributes to both point Jacobians.
@@ -197,33 +251,38 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
                               (inB ? pointJacobian(motion, b) : float3(0.0));
         const float3 linearDot = (inA ? pointJacobianDerivative(motion, derivative, a) : float3(0.0)) -
                                  (inB ? pointJacobianDerivative(motion, derivative, b) : float3(0.0));
-        for (uint axis = 0; axis < 3; ++axis)
-            columns[columnBase + axis * source.w + j] = {support.x, linear[axis]};
+        const float3 linearJacobian = slider ? rotateVector(
+            -linear + (inA ? cross(motion.angular.xyz, separation) : float3(0.0)), orientationAInverse) : linear;
+        for (uint axis = 0; axis < linearRows; ++axis)
+            columns[columnBase + axis * source.w + j] = {support.x, linearJacobian[axis]};
         linearVelocity += linear * speed;
         linearShift += linearDot * speed;
 
+        const float direction = float(inA) - float(inB);
         if (angularRows != 0u)
         {
-            const float direction = float(inA) - float(inB);
             const float4 relativeAxis = mulQuat(mulQuat(orientationBInverse,
                 float4(0.0, direction * motion.angular.xyz)), a.orientation);
             const float3 angular = (0.5 * torqueScale) * relativeAxis.yzw;
             for (uint axis = 0; axis < angularRows; ++axis)
-                columns[columnBase + (axis + 3) * source.w + j] = {support.x, angular[axis]};
-            if (hinge)
-            {
-                const float value = direction * dot(hingeAxis, motion.angular.xyz);
-                for (uint extra = 0; extra < axial.count; ++extra)
-                    columns[columnBase + (span.w + extra) * source.w + j] = {support.x, axial.rows[extra].direction * value};
-            }
+                columns[columnBase + (axis + linearRows) * source.w + j] = {support.x, angular[axis]};
             angularVelocity += angular * speed;
             angularShift += direction * derivative.angular.xyz * speed;
         }
+        if (slider && inA)
+            sliderAngularShift += derivative.angular.xyz * speed;
+        if (axial.count != 0)
+        {
+            const float value = hinge ? direction * dot(hingeAxis, motion.angular.xyz) :
+                                (slider ? linearJacobian.z : dot(radial, linear));
+            for (uint extra = 0; extra < axial.count; ++extra)
+                columns[columnBase + (span.w + extra) * source.w + j] = {support.x, axial.rows[extra].direction * value};
+        }
     }
 
-    const float3 linearError = a.point - b.point;
+    float3 linearError = separation;
     float3 angularError = float3(0.0);
-    const float axialShift = dot(hingeAxis, angularShift) + dot(cross(b.omega, hingeAxis), a.omega - b.omega);
+    float axialShift = dot(hingeAxis, angularShift) + dot(cross(b.omega, hingeAxis), a.omega - b.omega);
     if (angularRows != 0u)
     {
         angularError = torqueScale * relative.yzw;
@@ -242,32 +301,47 @@ void emitSpatialRows<let SceneJoint : bool>(uint3 id)
     {
         // Independent scene bodies may be driven kinematically without a DOF.
         // Their endpoint motion still enters the error derivative.
-        linearVelocity = a.pointVelocity - b.pointVelocity;
+        linearVelocity = pointVelocity;
         angularVelocity = (0.5 * torqueScale) * mulQuat(
             mulQuat(orientationBInverse, float4(0.0, a.omega - b.omega)), a.orientation).yzw;
+    }
+    if (slider)
+    {
+        // The prismatic frame follows the owner. Its rotating axes contribute to J-dot.
+        linearError = float3(slide.xy, 0.0);
+        linearVelocity = slideVelocity;
+        linearShift = rotateVector(-linearShift + cross(sliderAngularShift, separation) +
+            cross(a.omega, 2.0 * pointVelocity - cross(a.omega, separation)), orientationAInverse);
+        axialShift = linearShift.z;
+    }
+    else if (distance)
+    {
+        axialShift = dot(radial, linearShift);
+        if (separationLength > 0.0)
+            axialShift += (dot(pointVelocity, pointVelocity) - speed * speed) / separationLength;
     }
 
     const float impedancePosition = sqrt(dot(linearError, linearError) + dot(angularError, angularError));
     const bool unclamped = (config.w & (UnclampedReference | DiscreteConstraints)) != 0;
     const float3 kbi = impedanceParameters(parameters, impedancePosition, timestep, unclamped);
     const uint rowBase = id.y * limits.z + block.x;
-    for (uint axis = 0; axis < 3; ++axis)
+    for (uint axis = 0; axis < linearRows; ++axis)
     {
         rows[rowBase + axis] = makeConstraintRow(uint4(block.y + axis * source.w, source.w, source.x, axis),
             EqualityRow, kbi, linearError[axis], 0.0, linearVelocity[axis], asfloat(reference.z), 0.0, linearShift[axis],
             timestep, config.w, parameters.reference.x);
-        if (axis < angularRows)
-        {
-            const uint ordinal = axis + 3;
-            rows[rowBase + ordinal] = makeConstraintRow(uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
-                EqualityRow, kbi, angularError[axis], 0.0, angularVelocity[axis], asfloat(reference.w), 0.0,
-                angularShift[axis], timestep, config.w, parameters.reference.x);
-        }
+    }
+    for (uint axis = 0; axis < angularRows; ++axis)
+    {
+        const uint ordinal = axis + linearRows;
+        rows[rowBase + ordinal] = makeConstraintRow(uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
+            EqualityRow, kbi, angularError[axis], 0.0, angularVelocity[axis], asfloat(reference.w), 0.0,
+            angularShift[axis], timestep, config.w, parameters.reference.x);
     }
     for (uint extra = 0; extra < axial.count; ++extra)
     {
         const uint ordinal = span.w + extra;
-        const HingeRow row = axial.rows[extra];
+        const AxialRow row = axial.rows[extra];
         rows[rowBase + ordinal] = {uint4(block.y + ordinal * source.w, source.w, source.x, ordinal),
             float4(row.response.x, 0.0, row.direction * speed, row.response.y - row.direction * axialShift),
             row.response.z, row.response.w, row.kind};

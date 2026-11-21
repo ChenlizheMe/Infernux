@@ -81,7 +81,7 @@ SceneJointEndpoint BindSceneJointEndpoint(const WarpModel &model, const std::vec
 void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &actors,
                      const std::vector<WarpSceneJoint> &joints)
 {
-    constexpr size_t descriptorWords = 10;
+    constexpr size_t descriptorWords = 11;
     auto &model = scene.model;
     scene.hingeRows.resize(joints.size(), NoModelIndex);
     std::vector<ModelWords> descriptors(1), support;
@@ -89,18 +89,31 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         const auto &joint = joints[index];
         const auto &owner = actors.at(joint.ownerActor);
         const auto point = owner.position + owner.rotation * joint.ownerAnchor;
+        const auto *hinge = std::get_if<WarpSceneHinge>(&joint.settings);
+        const auto *slider = std::get_if<WarpSceneSlider>(&joint.settings);
+        const auto *distance = std::get_if<WarpSceneDistance>(&joint.settings);
         glm::quat rotation = owner.rotation;
-        if (joint.hinge) {
-            if (glm::dot(joint.hinge->axis, joint.hinge->axis) <= 1e-12f ||
-                (joint.hinge->useLimits && joint.hinge->minimum > joint.hinge->maximum))
-                throw std::invalid_argument("Warp hinge requires a nonzero axis and ordered limits");
-            const auto z = glm::normalize(joint.hinge->axis);
+        if (hinge || slider) {
+            const auto axis = hinge ? hinge->axis : slider->axis;
+            const auto minimum = hinge ? hinge->minimum : slider->minimum;
+            const auto maximum = hinge ? hinge->maximum : slider->maximum;
+            if (glm::dot(axis, axis) <= 1e-12f || minimum > maximum)
+                throw std::invalid_argument("Warp axial scene joint requires a nonzero axis and ordered limits");
+            const auto z = glm::normalize(axis);
             const auto up = std::abs(z.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
             const auto x = glm::normalize(glm::cross(up, z));
             rotation *= glm::quat_cast(glm::mat3(x, glm::cross(z, x), z));
         }
+        auto connectedPoint = point;
+        if (distance) {
+            connectedPoint = distance->connectedAnchor;
+            if (joint.connectedActor != NoModelIndex) {
+                const auto &connected = actors.at(joint.connectedActor);
+                connectedPoint = connected.position + connected.rotation * connectedPoint;
+            }
+        }
         const auto a = BindSceneJointEndpoint(model, actors, joint.ownerActor, point, rotation);
-        const auto b = BindSceneJointEndpoint(model, actors, joint.connectedActor, point, rotation);
+        const auto b = BindSceneJointEndpoint(model, actors, joint.connectedActor, connectedPoint, rotation);
         if (a.body == b.body)
             throw std::invalid_argument("Scene joint must join different Warp bodies");
         if (a.inverseMass + b.inverseMass == 0.0f)
@@ -114,7 +127,8 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         }
         const auto id = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
         descriptors.push_back({id, a.body, b.body, static_cast<uint32_t>(support.size()) - first});
-        descriptors.push_back({a.body, b.body, first, joint.hinge ? 5u : 6u});
+        const uint32_t equalityRows = distance ? 0u : (hinge || slider ? 5u : 6u);
+        descriptors.push_back({a.body, b.body, first, equalityRows});
         descriptors.push_back(Bits({0.95f, 0.99f, 0.001f, 0.5f}));
         descriptors.push_back(Bits({0.02f, 1.0f, 2.0f, 0.0f}));
         descriptors.push_back(Bits({a.anchor.x, a.anchor.y, a.anchor.z, 1.0f}));
@@ -126,16 +140,29 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         weights[1] = model.bodies[b.body].subtree[0];
         descriptors.push_back(weights);
         ModelWords controls{NoModelIndex, 0, 0, 0};
-        if (joint.hinge) {
-            const auto &hinge = *joint.hinge;
+        ModelWords jointType{static_cast<uint32_t>(joint.settings.index()), 0, 0, 0};
+        if (hinge) {
             const auto row = static_cast<uint32_t>(model.initialHingeDrives.size());
-            controls = Bits({0.0f, hinge.minimum, hinge.maximum, 0.0f});
+            controls = Bits({0.0f, hinge->minimum, hinge->maximum, 0.0f});
             controls[0] = row;
-            controls[3] = hinge.useLimits;
+            controls[3] = hinge->useLimits;
             scene.hingeRows[index] = row;
-            model.initialHingeDrives.push_back(hinge.drive.Pack());
+            model.initialHingeDrives.push_back(hinge->drive.Pack());
+        } else if (slider) {
+            controls = Bits({0.0f, slider->minimum, slider->maximum, 0.0f});
+            controls[3] = slider->useLimits;
+        } else if (distance) {
+            const auto rest = glm::length(connectedPoint - point);
+            const auto minimum = distance->autoDistance ? rest : distance->minimum;
+            const auto maximum = distance->autoDistance ? rest : distance->maximum;
+            controls = Bits({0.0f, minimum, maximum, 0.0f});
+            controls[3] = 1;
+            const auto spring = Bits({0.0f, distance->stiffness, distance->damping, 0.0f});
+            jointType[1] = spring[1];
+            jointType[2] = spring[2];
         }
         descriptors.push_back(controls);
+        descriptors.push_back(jointType);
     }
     const auto count = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
     if (count == 0)
