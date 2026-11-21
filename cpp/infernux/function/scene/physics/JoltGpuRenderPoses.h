@@ -1,6 +1,7 @@
 #pragma once
 
 #include "JoltGpuTick.h"
+#include "PhysicsGpuPoseSource.h"
 
 namespace JPH::GPU
 {
@@ -33,7 +34,7 @@ class JoltGpuRenderPoses final
     /// signed/zero scales are valid. This boundary checks snapshot ownership,
     /// sizes and bounded node/index domains, not dynamic GPU numerical state.
     /// Empty bindings return no packet or output allocation.
-    [[nodiscard]] JoltGpuRenderPoseBatch Prepare(const JoltGpuTickOutput &output,
+    [[nodiscard]] JoltGpuRenderPoseBatch Prepare(const PhysicsGpuPoseSource &output,
                                                  const std::vector<JPH::GPU::PoseNode> &nodes,
                                                  const std::vector<JPH::GPU::PoseBinding> &bindings) const;
 

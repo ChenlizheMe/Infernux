@@ -7,7 +7,7 @@
 ConstantBuffer<PoseParams> pose_params;
 StructuredBuffer<PoseNode> pose_nodes;
 StructuredBuffer<PoseBinding> pose_bindings;
-StructuredBuffer<BodyState> body_states;
+StructuredBuffer<float4> body_states;
 // Separate entry-point ports share one buffer in the prepared packet. The node
 // producer writes eight columns per node: world affine followed by its authored
 // inverse. Earlier topological levels are read by later levels in this buffer.
@@ -88,7 +88,19 @@ JphPoseAffine jph_pose_inverse_trs(float3 position, float4 rotation, float3 scal
 // The host validates immutable author data once: finite affine columns/scales/
 // COM, normalized xyzw parent rotations, in-range body/node indices, zero
 // padding and an acyclic graph ordered into consecutive topological levels.
-// BodyState is the frozen completed publication; no intermediate solve is read.
+// Read one frozen completed publication. Both layouts put translation and
+// rotation first and have the same alignment for each of those records.
+uint jph_pose_state_base(uint body)
+{
+    return pose_params.stateLayout.x + body * pose_params.stateLayout.y;
+}
+
+float4 jph_pose_state_rotation(uint base)
+{
+    float4 stored = body_states[base + 1u];
+    return pose_params.stateLayout.z != 0u ? stored.yzwx : stored;
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void export_body_pose_nodes(uint3 tid : SV_DispatchThreadID)
@@ -97,7 +109,8 @@ void export_body_pose_nodes(uint3 tid : SV_DispatchThreadID)
         return;
     uint index = pose_params.counts.z + tid.x;
     PoseNode node = pose_nodes[index];
-    BodyState state = body_states[node.bodyParent.x];
+    uint body = jph_pose_state_base(node.bodyParent.x);
+    float4 rotation = jph_pose_state_rotation(body);
     JphPoseAffine parent = jph_pose_affine(node.parentLocalToAncestor0, node.parentLocalToAncestor1,
                                            node.parentLocalToAncestor2, node.parentLocalToAncestor3);
     JphPoseAffine parent_inverse = jph_pose_affine(node.parentAncestorToLocal0, node.parentAncestorToLocal1,
@@ -112,13 +125,15 @@ void export_body_pose_nodes(uint3 tid : SV_DispatchThreadID)
                                                        pose_node_models[ancestor + 6u], pose_node_models[ancestor + 7u]);
         parent = jph_pose_compose(world, parent);
         parent_inverse = jph_pose_compose(parent_inverse, world_inverse);
-        float4 ancestor_rotation = body_states[pose_nodes[node.bodyParent.y].bodyParent.x].rotation;
+        float4 ancestor_rotation = jph_pose_state_rotation(jph_pose_state_base(pose_nodes[node.bodyParent.y].bodyParent.x));
         parent_rotation = jph_quat_mul(ancestor_rotation, parent_rotation);
     }
 
-    float3 desired_origin = state.positionCOM.xyz - jph_rotate(state.rotation, node.rootCOM.xyz);
+    float3 desired_origin = body_states[body].xyz;
+    if (pose_params.stateLayout.z == 0u)
+        desired_origin -= jph_rotate(rotation, node.rootCOM.xyz);
     float3 local_position = jph_pose_point(parent_inverse, desired_origin);
-    float4 local_rotation = jph_quat_mul(float4(-parent_rotation.xyz, parent_rotation.w), state.rotation);
+    float4 local_rotation = jph_quat_mul(float4(-parent_rotation.xyz, parent_rotation.w), rotation);
     JphPoseAffine world = jph_pose_compose(parent, jph_pose_trs(local_position, local_rotation, node.localScale.xyz));
     JphPoseAffine world_inverse = jph_pose_compose(
         jph_pose_inverse_trs(local_position, local_rotation, node.localScale.xyz), parent_inverse);

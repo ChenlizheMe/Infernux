@@ -306,7 +306,7 @@ void QueryCapsuleInput(QueryInput &request, const glm::vec3 &a, const glm::vec3 
     const double sine = std::sin(halfAngle);
     request.rotation =
         radial > 0    ? Float4{static_cast<float>(delta.z / radial * sine), 0,
-                               static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
+                            static_cast<float>(-delta.x / radial * sine), static_cast<float>(std::cos(halfAngle))}
         : delta.y > 0 ? Float4{0, 0, 0, 1}
                       : Float4{1, 0, 0, 0};
 }
@@ -525,11 +525,6 @@ float CpuPresentationAlpha(const PhysicsDomain &domain)
     return !simulation.isPaused && domain.admittedDeltaTime > 0.0f
                ? std::clamp(simulation.fixedTimeAccumulator / domain.admittedDeltaTime, 0.0f, 1.0f)
                : 1.0f;
-}
-JoltGpuTickOutput CompactOutput(const JoltGpuScene::Publication &p)
-{
-    return {p.worldRow,   p.bodyBase,    p.bodyCount,   p.leafBase,      p.leafCount, p.jointBase,         p.jointCount,
-            p.bodyStates, p.jointStream, p.jointLayout, p.geometryStore, p.geometry,  p.hasGenericGeometry};
 }
 } // namespace
 
@@ -1114,8 +1109,8 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
     return [this, &domain, job = std::move(job)](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
         auto &state = domain.rendering;
         job->bindings = state.bindings.Prepare(job->snapshot, *publication);
-        job->output =
-            m_gpuRenderProgram->Prepare(CompactOutput(*publication), job->bindings->nodes, job->bindings->bindings);
+        job->output = m_gpuRenderProgram->Prepare({publication->bodyStates, 0, publication->bodyCount},
+                                                  job->bindings->nodes, job->bindings->bindings);
         job->publication = publication;
         return ContinueJoltGpuControlWork(job->output.batch, [job] {
             if (job->output.models)

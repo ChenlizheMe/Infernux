@@ -376,22 +376,28 @@ bool JoltGpuRenderBindings::NeedsExport(const Snapshot &snapshot, uint64_t numer
 JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snapshot,
                                                                const JoltGpuScene::Publication &publication) const
 {
-    Prepared prepared;
-    prepared.snapshot = std::move(snapshot);
-    const auto &captured = *prepared.snapshot;
-    std::unordered_map<PhysicsActorHandle, std::shared_ptr<const JoltGpuScene::PublishedActor>, ActorHandleHash>
-        actorByHandle;
+    std::unordered_map<PhysicsActorHandle, BodyPoseBinding, ActorHandleHash> actorByHandle;
     actorByHandle.reserve(publication.bodyCount);
     for (uint32_t local = 0; local < publication.bodyCount; ++local) {
         const auto &actor = publication.directory->actors[publication.bodyBase + local];
         if (actor)
-            actorByHandle.emplace(actor->actor, actor);
+            actorByHandle.emplace(actor->actor, BodyPoseBinding{actor->bodyId, local, actor->rootCenterOfMass});
     }
-    std::vector<std::shared_ptr<const JoltGpuScene::PublishedActor>> actors(captured.transforms.size());
-    for (size_t i = 0; i < captured.transforms.size(); ++i) {
-        if (const auto found = actorByHandle.find(captured.transforms[i].actor); found != actorByHandle.end())
-            actors[i] = found->second;
-    }
+    return Prepare(std::move(snapshot), [&](PhysicsActorHandle handle) -> std::optional<BodyPoseBinding> {
+        const auto found = actorByHandle.find(handle);
+        return found == actorByHandle.end() ? std::nullopt : std::make_optional(found->second);
+    });
+}
+
+JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snapshot, const ResolveBody &resolve) const
+{
+    Prepared prepared;
+    prepared.snapshot = std::move(snapshot);
+    const auto &captured = *prepared.snapshot;
+    std::vector<std::optional<BodyPoseBinding>> actors;
+    actors.reserve(captured.transforms.size());
+    for (const auto &transform : captured.transforms)
+        actors.push_back(resolve(transform.actor));
     std::vector<uint32_t> nodeIndices(captured.transforms.size(), NoNode);
     for (size_t i = 0; i < actors.size(); ++i)
         if (actors[i]) {
@@ -416,8 +422,8 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
         auto &chain = chains[i];
         if (actors[i]) {
             auto &node = prepared.nodes[nodeIndices[i]];
-            node.bodyParent = {actors[i]->slot, parent.root == NoNode ? NoNode : nodeIndices[parent.root], 0, 0};
-            node.rootCOM = actors[i]->rootCenterOfMass;
+            node.bodyParent = {actors[i]->row, parent.root == NoNode ? NoNode : nodeIndices[parent.root], 0, 0};
+            node.rootCOM = actors[i]->centerOffset;
             node.localScale = Float4(glm::vec4(transform.scale, 0));
             node.parentRotation = {parent.rotation.x, parent.rotation.y, parent.rotation.z, parent.rotation.w};
             node.parentLocalToAncestor0 = Float4(parent.affine[0]);
@@ -452,7 +458,8 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
         binding.boundsCenter = Float4(glm::vec4((renderer.boundsMin + renderer.boundsMax) * 0.5f, 0));
         binding.boundsExtent = Float4(glm::vec4((renderer.boundsMax - renderer.boundsMin) * 0.5f, 0));
         prepared.bindings.push_back(binding);
-        prepared.targets.push_back({i, actors[root], Continuity(captured, actors[root]->bodyId)});
+        prepared.targets.push_back(
+            {i, captured.transforms[root].actor, actors[root]->id, Continuity(captured, actors[root]->id)});
     }
     return prepared;
 }
@@ -480,8 +487,7 @@ bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_
         auto *renderer = captured.identity;
         if (captured.reference.GetComponent() != renderer || !renderer->IsEnabled() ||
             !active.IsActive(renderer->GetGameObject()) || renderer->RequiresCpuPoseForGeometry() ||
-            !physics.IsValid(target.actor->actor) ||
-            physics.GetActor(target.actor->actor).bodyId != target.actor->bodyId) {
+            !physics.IsValid(target.actor) || physics.GetActor(target.actor).bodyId != target.bodyId) {
             continue;
         }
         auto found = m_impl->entries.find(renderer);
@@ -492,10 +498,10 @@ bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_
             continue;
         retained.insert(renderer);
         const auto pivot = renderer->GetSubmeshIndex() >= 0 ? renderer->GetMeshPivotOffset() : glm::vec3(0);
-        const auto currentContinuity = m_impl->continuity.find(target.actor->bodyId);
+        const auto currentContinuity = m_impl->continuity.find(target.bodyId);
         if (pivot != captured.pivot || renderer->GetLocalBoundsMin() != captured.boundsMin ||
             renderer->GetLocalBoundsMax() != captured.boundsMax || !currentHierarchy[captured.transform] ||
-            Continuity(snapshot, target.actor->bodyId) !=
+            Continuity(snapshot, target.bodyId) !=
                 (currentContinuity != m_impl->continuity.end() ? currentContinuity->second : 0)) {
             allPublished = false;
             continue;
@@ -528,7 +534,7 @@ bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_
         if (found == m_impl->entries.end())
             found = m_impl->entries.emplace(renderer, Impl::Entry{}).first;
         auto &entry = found->second;
-        bool rebind = !entry.source || entry.actor != target.actor->actor || entry.bodyId != target.actor->bodyId ||
+        bool rebind = !entry.source || entry.actor != target.actor || entry.bodyId != target.bodyId ||
                       entry.bodyContinuity != target.continuity || current != entry.source || !entry.snapshot;
         if (!rebind) {
             auto &comparison = hierarchyComparisons[entry.snapshot.get()];
@@ -542,8 +548,8 @@ bool JoltGpuRenderBindings::Publish(const Prepared &prepared, const std::shared_
         else
             entry.source->Publish(models, bounds, static_cast<uint32_t>(output), static_cast<uint32_t>(output));
         entry.reference = captured.reference;
-        entry.actor = target.actor->actor;
-        entry.bodyId = target.actor->bodyId;
+        entry.actor = target.actor;
+        entry.bodyId = target.bodyId;
         entry.bodyContinuity = target.continuity;
         entry.snapshot = prepared.snapshot;
         entry.transform = captured.transform;

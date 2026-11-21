@@ -1,5 +1,6 @@
 #include "JoltGpuRenderPoses.h"
 #include "JoltGpuProgramSources.h"
+#include "warp/WarpStep.h"
 
 #include <algorithm>
 #include <array>
@@ -37,7 +38,7 @@ struct PortLayout
 };
 
 constexpr PortLayout Ports[] = {
-    {"pose_params", sizeof(PoseParams), {"counts"}, 1, false},
+    {"pose_params", sizeof(PoseParams), {"counts", "stateLayout"}, 3, false},
     {"pose_nodes",
      sizeof(PoseNode),
      {"bodyParent", "rootCOM", "localScale", "parentRotation", "parentLocalToAncestor0", "parentLocalToAncestor1",
@@ -45,7 +46,7 @@ constexpr PortLayout Ports[] = {
       "parentAncestorToLocal2", "parentAncestorToLocal3"},
      1,
      false},
-    {"body_states", sizeof(BodyState), {"positionCOM", "rotation", "linearVelocity", "angularVelocity"}, 0, false},
+    {"body_states", sizeof(Float4), {}, 0, true},
     {"pose_node_models", sizeof(Float4), {}, 0, true},
     {"pose_node_models_read", sizeof(Float4), {}, 0, true},
     {"pose_bindings",
@@ -135,7 +136,8 @@ JoltGpuRenderPoses::JoltGpuRenderPoses(rhi::ComputeHost &host, const ShaderTarge
                      (1u << Parameters) | (1u << Bindings) | (1u << NodeModelsRead) | (1u << Models) | (1u << Bounds));
 }
 
-JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const JoltGpuTickOutput &output, const std::vector<PoseNode> &nodes,
+JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const PhysicsGpuPoseSource &output,
+                                                   const std::vector<PoseNode> &nodes,
                                                    const std::vector<PoseBinding> &bindings) const
 {
     const auto &frozenBodyStates = output.states;
@@ -145,11 +147,19 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const JoltGpuTickOutput &outp
         bindings.size() > std::numeric_limits<uint32_t>::max() / 4)
         throw std::invalid_argument("GPU render-pose inputs exceed their node or mesh device index range");
     if (!frozenBodyStates || !frozenBodyStates->IsFrozen() || !m_host.SharesServicesWith(frozenBodyStates->GetHost()) ||
-        frozenBodyStates->GetByteSize() % sizeof(BodyState))
+        frozenBodyStates->GetByteSize() % sizeof(Float4))
         throw std::invalid_argument("GPU render poses require a frozen final state from the same compute owner");
     const auto bodyCount = output.bodyCount;
-    if (frozenBodyStates->GetByteSize() != uint64_t(bodyCount) * sizeof(BodyState))
-        throw std::invalid_argument("GPU render poses require the exact compact body output extent");
+    const bool origin = output.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
+    const auto bodyStride = origin ? sizeof(physics::warp::WarpBodyState) : sizeof(BodyState);
+    const auto rows = frozenBodyStates->GetByteSize() / bodyStride;
+    if (output.firstRow > rows || bodyCount > rows - output.firstRow ||
+        output.firstRow + bodyCount > UINT32_MAX / (bodyStride / sizeof(Float4)))
+        throw std::invalid_argument("GPU render poses address outside the completed body state extent");
+    const uint64_t stateOffset = output.firstRow * bodyStride;
+    const uint64_t stateBytes = uint64_t{bodyCount} * bodyStride;
+    const UInt4 stateLayout{static_cast<uint32_t>(stateOffset / sizeof(Float4)),
+                            static_cast<uint32_t>(bodyStride / sizeof(Float4)), origin, 0};
     const auto &caps = m_host.device.GetCapabilities();
     const auto checkedBytes = [&](uint64_t count, uint64_t stride) {
         if (count > std::numeric_limits<size_t>::max() / stride ||
@@ -165,15 +175,14 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const JoltGpuTickOutput &outp
     (void)checkedBytes(nodes.size(), 8 * sizeof(Float4));
     (void)checkedBytes(bindings.size(), 4 * sizeof(Float4));
     (void)checkedBytes(bindings.size(), 2 * sizeof(Float4));
-    (void)checkedBytes(bodyCount, sizeof(BodyState));
+    (void)checkedBytes(frozenBodyStates->GetByteSize() / sizeof(Float4), sizeof(Float4));
 
     // Every node has at most one physical parent. Stable breadth-first Kahn
     // ordering visits each edge once and makes each level a contiguous range.
     std::vector<uint32_t> children(nodes.size(), PoseNoParent), next(nodes.size(), PoseNoParent), order;
     order.reserve(nodes.size());
     for (const auto &node : nodes)
-        if (node.bodyParent.x < output.bodyBase || node.bodyParent.x - output.bodyBase >= bodyCount ||
-            (node.bodyParent.y != PoseNoParent && node.bodyParent.y >= nodes.size()))
+        if (node.bodyParent.x >= bodyCount || (node.bodyParent.y != PoseNoParent && node.bodyParent.y >= nodes.size()))
             throw std::invalid_argument("GPU render-pose node addresses an absent body or parent");
     for (uint32_t index = 0; index < nodes.size(); ++index)
         if (nodes[index].bodyParent.y == PoseNoParent)
@@ -214,7 +223,6 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const JoltGpuTickOutput &outp
     orderedNodes.reserve(nodes.size());
     for (const auto old : order) {
         auto node = nodes[old];
-        node.bodyParent.x -= output.bodyBase;
         if (node.bodyParent.y != PoseNoParent)
             node.bodyParent.y = remap[node.bodyParent.y];
         orderedNodes.push_back(node);
@@ -272,6 +280,9 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const JoltGpuTickOutput &outp
                 if (prefix)
                     proof.reads.push_back({binding, 0, prefix});
                 proof.writes.push_back({binding, prefix, uint64_t(workCount) * 8 * sizeof(Float4)});
+            } else if (port == States) {
+                result.bufferAccesses.push_back(rhi::ComputeBufferAccess::Read);
+                proof.reads.push_back({binding, stateOffset, stateBytes});
             } else {
                 result.bufferAccesses.push_back(Writer(port) ? rhi::ComputeBufferAccess::Write
                                                              : rhi::ComputeBufferAccess::Read);
@@ -287,11 +298,11 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const JoltGpuTickOutput &outp
     m_levelParameters.resize(levels.size());
     for (size_t level = 0; level < levels.size(); ++level) {
         const auto [first, levelCount] = levels[level];
-        const PoseParams parameters{{nodeCount, count, first, levelCount}};
+        const PoseParams parameters{{nodeCount, count, first, levelCount}, stateLayout};
         input(Parameters, m_levelParameters[level], &parameters, sizeof(parameters));
         dispatches.push_back(dispatch(m_nodes, levelCount, first, true));
     }
-    const PoseParams parameters{{nodeCount, count, 0, 0}};
+    const PoseParams parameters{{nodeCount, count, 0, 0}, {}};
     input(Parameters, m_parameters, &parameters, sizeof(parameters));
     dispatches.push_back(dispatch(m_meshes, count, 0, false));
     auto batch = rhi::PrepareComputeBatch(host, std::move(uploads), std::move(dispatches));

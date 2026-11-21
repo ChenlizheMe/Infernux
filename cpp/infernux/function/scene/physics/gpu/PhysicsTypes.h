@@ -262,10 +262,7 @@ struct JPH_GPU_ALIGN JointFixedAuthor
     JPH_FIXED_AUTHOR_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
 };
 JPH_GPU_CONSTANT(JointFixedAuthorWords, 6);
-struct JPH_GPU_ALIGN JointFixedState
-{
-    JPH_FIXED_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
-};
+struct JPH_GPU_ALIGN JointFixedState{JPH_FIXED_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)};
 JPH_GPU_CONSTANT(JointFixedStateWords, 9);
 struct JPH_GPU_ALIGN JointHingeAuthor
 {
@@ -275,10 +272,7 @@ struct JPH_GPU_ALIGN JointHingeAuthor
     JPH_HINGE_AUTHOR_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
 };
 JPH_GPU_CONSTANT(JointHingeAuthorWords, 10);
-struct JPH_GPU_ALIGN JointHingeState
-{
-    JPH_HINGE_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
-};
+struct JPH_GPU_ALIGN JointHingeState{JPH_HINGE_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)};
 JPH_GPU_CONSTANT(JointHingeStateWords, 13);
 struct JPH_GPU_ALIGN JointSliderAuthor
 {
@@ -288,10 +282,7 @@ struct JPH_GPU_ALIGN JointSliderAuthor
     JPH_SLIDER_AUTHOR_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
 };
 JPH_GPU_CONSTANT(JointSliderAuthorWords, 8);
-struct JPH_GPU_ALIGN JointSliderState
-{
-    JPH_SLIDER_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
-};
+struct JPH_GPU_ALIGN JointSliderState{JPH_SLIDER_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)};
 JPH_GPU_CONSTANT(JointSliderStateWords, 11);
 struct JPH_GPU_ALIGN JointDistanceAuthor
 {
@@ -301,10 +292,7 @@ struct JPH_GPU_ALIGN JointDistanceAuthor
     JPH_DISTANCE_AUTHOR_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
 };
 JPH_GPU_CONSTANT(JointDistanceAuthorWords, 10);
-struct JPH_GPU_ALIGN JointDistanceState
-{
-    JPH_DISTANCE_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
-};
+struct JPH_GPU_ALIGN JointDistanceState{JPH_DISTANCE_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)};
 JPH_GPU_CONSTANT(JointDistanceStateWords, 8);
 struct JPH_GPU_ALIGN JointSwingAuthor
 {
@@ -314,10 +302,7 @@ struct JPH_GPU_ALIGN JointSwingAuthor
     JPH_SWING_AUTHOR_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
 };
 JPH_GPU_CONSTANT(JointSwingAuthorWords, 13);
-struct JPH_GPU_ALIGN JointSwingState
-{
-    JPH_SWING_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
-};
+struct JPH_GPU_ALIGN JointSwingState{JPH_SWING_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)};
 JPH_GPU_CONSTANT(JointSwingStateWords, 17);
 struct JPH_GPU_ALIGN JointSixAuthor
 {
@@ -327,10 +312,7 @@ struct JPH_GPU_ALIGN JointSixAuthor
     JPH_SIX_AUTHOR_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
 };
 JPH_GPU_CONSTANT(JointSixAuthorWords, 26);
-struct JPH_GPU_ALIGN JointSixState
-{
-    JPH_SIX_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)
-};
+struct JPH_GPU_ALIGN JointSixState{JPH_SIX_STATE_FIELDS(JPH_PAYLOAD_F, JPH_PAYLOAD_U)};
 JPH_GPU_CONSTANT(JointSixStateWords, 29);
 #undef JPH_PAYLOAD_F
 #undef JPH_PAYLOAD_U
@@ -617,6 +599,8 @@ struct JPH_GPU_ALIGN PoseParams
 {
     // Total node count, renderer binding count, current level first/count.
     JPH_GPU_UINT4 counts;
+    // First float4 of the world's body rows, float4 stride, origin/WXYZ flag, padding.
+    JPH_GPU_UINT4 stateLayout;
 };
 
 // Sparse body mutations at an owner-controlled boundary between logical ticks.
@@ -1026,7 +1010,7 @@ JPH_GPU_CHECK_TYPE(StepParams, 112);
 JPH_GPU_CHECK_TYPE(StageWork, 16);
 JPH_GPU_CHECK_TYPE(PoseNode, 192);
 JPH_GPU_CHECK_TYPE(PoseBinding, 128);
-JPH_GPU_CHECK_TYPE(PoseParams, 16);
+JPH_GPU_CHECK_TYPE(PoseParams, 32);
 JPH_GPU_CHECK_TYPE(BodyMutationParams, 16);
 JPH_GPU_CHECK_TYPE(BodyInitialization, 112);
 JPH_GPU_CHECK_TYPE(CenterOfMassUpdate, 32);
@@ -1116,7 +1100,7 @@ static_assert(offsetof(PoseBinding, nodeIndex) == 0 && offsetof(PoseBinding, obj
               offsetof(PoseBinding, objectLocal1) == 32 && offsetof(PoseBinding, objectLocal2) == 48 &&
               offsetof(PoseBinding, objectLocal3) == 64 && offsetof(PoseBinding, drawPivot) == 80 &&
               offsetof(PoseBinding, boundsCenter) == 96 && offsetof(PoseBinding, boundsExtent) == 112);
-static_assert(offsetof(PoseParams, counts) == 0);
+static_assert(offsetof(PoseParams, counts) == 0 && offsetof(PoseParams, stateLayout) == 16);
 #undef JPH_GPU_CHECK_TYPE
 }
 } // namespace JPH::GPU

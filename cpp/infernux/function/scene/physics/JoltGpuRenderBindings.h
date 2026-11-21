@@ -19,6 +19,13 @@ class JoltGpuRenderBindings final
   public:
     struct Snapshot;
     using SnapshotPtr = std::shared_ptr<const Snapshot>;
+    struct BodyPoseBinding
+    {
+        uint32_t id;
+        uint32_t row;
+        JPH::GPU::Float4 centerOffset{};
+    };
+    using ResolveBody = std::function<std::optional<BodyPoseBinding>(PhysicsActorHandle)>;
     struct Prepared
     {
         std::vector<JPH::GPU::PoseNode> nodes;
@@ -29,7 +36,8 @@ class JoltGpuRenderBindings final
         struct Target
         {
             size_t renderer = 0;
-            std::shared_ptr<const JoltGpuScene::PublishedActor> actor;
+            PhysicsActorHandle actor;
+            uint32_t bodyId = UINT32_MAX;
             uint64_t continuity = 0;
         };
         SnapshotPtr snapshot;
@@ -49,6 +57,7 @@ class JoltGpuRenderBindings final
     /// Resolves accepted actor identities and COMs against the captured author
     /// hierarchy. Never reads newer Transform values while preparing GPU work.
     [[nodiscard]] Prepared Prepare(SnapshotPtr snapshot, const JoltGpuScene::Publication &publication) const;
+    [[nodiscard]] Prepared Prepare(SnapshotPtr snapshot, const ResolveBody &resolve) const;
 
     /// Called only for the completed export packet, including an empty mapping.
     /// Each renderer keeps a count-one endpoint selecting the packed buffers.

@@ -5,6 +5,7 @@
 
 #include "../PhysicsBodyState.h"
 #include "../PhysicsContactTypes.h"
+#include "../PhysicsGpuPoseSource.h"
 #include "WarpStep.h"
 
 #include <core/threading/FrameWorkOwner.h>
@@ -41,6 +42,9 @@ struct WarpFixedPublication
     std::shared_ptr<rhi::ComputeBuffer> bodyStates;
     std::vector<WarpFixedWorld> worlds;
     std::vector<WarpBodyState> hostBodies;
+    uint32_t bodiesPerWorld = 0;
+
+    [[nodiscard]] PhysicsGpuPoseSource PoseSource(uint32_t world) const;
 };
 
 struct WarpHostBody

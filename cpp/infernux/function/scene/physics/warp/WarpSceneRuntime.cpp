@@ -12,6 +12,13 @@
 namespace infernux::physics::warp
 {
 
+PhysicsGpuPoseSource WarpFixedPublication::PoseSource(uint32_t world) const
+{
+    if (worlds.at(world).status != 0)
+        throw std::logic_error("Cannot publish the pose of a rejected Warp fixed step");
+    return {bodyStates, uint64_t{world} * bodiesPerWorld, bodiesPerWorld, PhysicsGpuPoseSource::Layout::OriginWXYZ};
+}
+
 WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target,
                                    const WarpSceneModel &scene, std::vector<WarpRegisteredWorld> worlds, float timestep,
                                    const ModelVector &gravity, WarpCollisionCapacity collisionCapacity,
@@ -199,6 +206,7 @@ void WarpSceneRuntime::PublishFixed()
     WarpFixedPublication result;
     result.submission = m_packet->GetSubmission();
     result.bodyStates = m_step->BodyStates()->Freeze();
+    result.bodiesPerWorld = m_bodyCount;
     size_t offset = 0;
     if (m_fixed->host) {
         result.hostBodies.resize(uint64_t{m_bodyCount} * m_worlds.size());
