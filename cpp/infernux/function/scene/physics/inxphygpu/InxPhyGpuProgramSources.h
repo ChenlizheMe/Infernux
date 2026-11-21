@@ -7,16 +7,16 @@
 
 #include <string_view>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
-struct WarpProgramSource
+struct InxPhyGpuProgramSource
 {
     std::string_view module;
     bool awakeWorlds = false;
 };
 
-inline constexpr WarpProgramSource WarpProgramSources[] = {
+inline constexpr InxPhyGpuProgramSource InxPhyGpuProgramSources[] = {
     {"acceleration"},
     {"actuation"},
     {"bias"},
@@ -58,7 +58,7 @@ inline constexpr WarpProgramSource WarpProgramSources[] = {
     {"mass_solve", true},
 };
 
-[[nodiscard]] ShaderTargetCode LoadWarpProgram(std::string_view module, ShaderCodeTarget target,
-                                               bool awakeWorlds = false);
+[[nodiscard]] ShaderTargetCode LoadInxPhyGpuProgram(std::string_view module, ShaderCodeTarget target,
+                                                    bool awakeWorlds = false);
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

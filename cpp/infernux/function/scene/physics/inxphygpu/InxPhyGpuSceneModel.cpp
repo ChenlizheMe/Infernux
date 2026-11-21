@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Infernux contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "WarpSceneModel.h"
+#include "InxPhyGpuSceneModel.h"
 
 #include "../PhysicsShapeLeaves.h"
 
@@ -18,7 +18,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 namespace
 {
@@ -58,7 +58,7 @@ struct SceneJointEndpoint
     float inverseInertia = 0.0f;
 };
 
-SceneJointEndpoint BindSceneJointEndpoint(const WarpModel &model, const std::vector<WarpSceneActor> &actors,
+SceneJointEndpoint BindSceneJointEndpoint(const InxPhyGpuModel &model, const std::vector<InxPhyGpuSceneActor> &actors,
                                           uint32_t actorIndex, const glm::vec3 &worldAnchor,
                                           const glm::quat &worldRotation)
 {
@@ -78,8 +78,8 @@ SceneJointEndpoint BindSceneJointEndpoint(const WarpModel &model, const std::vec
     return endpoint;
 }
 
-void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &actors,
-                     const std::vector<WarpSceneJoint> &joints)
+void BindSceneJoints(InxPhyGpuSceneModel &scene, const std::vector<InxPhyGpuSceneActor> &actors,
+                     const std::vector<InxPhyGpuSceneJoint> &joints)
 {
     constexpr size_t descriptorWords = 10;
     auto &model = scene.model;
@@ -90,9 +90,9 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         const auto &joint = joints[index];
         const auto &owner = actors.at(joint.ownerActor);
         const auto point = owner.position + owner.rotation * joint.ownerAnchor;
-        const auto *hinge = std::get_if<WarpSceneHinge>(&joint.settings);
-        const auto *slider = std::get_if<WarpSceneSlider>(&joint.settings);
-        const auto *distance = std::get_if<WarpSceneDistance>(&joint.settings);
+        const auto *hinge = std::get_if<InxPhyGpuSceneHinge>(&joint.settings);
+        const auto *slider = std::get_if<InxPhyGpuSceneSlider>(&joint.settings);
+        const auto *distance = std::get_if<InxPhyGpuSceneDistance>(&joint.settings);
         const auto *swing = std::get_if<SwingTwistJointSettings>(&joint.settings);
         glm::quat rotation = owner.rotation;
         if (hinge || slider) {
@@ -100,7 +100,7 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
             const auto minimum = hinge ? hinge->minimum : slider->minimum;
             const auto maximum = hinge ? hinge->maximum : slider->maximum;
             if (glm::dot(axis, axis) <= 1e-12f || minimum > maximum)
-                throw std::invalid_argument("Warp axial scene joint requires a nonzero axis and ordered limits");
+                throw std::invalid_argument("inxphygpu axial scene joint requires a nonzero axis and ordered limits");
             const auto z = glm::normalize(axis);
             const auto up = std::abs(z.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
             const auto x = glm::normalize(glm::cross(up, z));
@@ -121,7 +121,7 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         const auto a = BindSceneJointEndpoint(model, actors, joint.ownerActor, point, rotation);
         const auto b = BindSceneJointEndpoint(model, actors, joint.connectedActor, connectedPoint, rotation);
         if (a.body == b.body)
-            throw std::invalid_argument("Scene joint must join different Warp bodies");
+            throw std::invalid_argument("Scene joint must join different inxphygpu bodies");
         if (a.inverseMass + b.inverseMass == 0.0f)
             continue;
 
@@ -132,7 +132,7 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
                 support.push_back({dofs[0] + local, side, local >= 3 ? bodyRow : NoModelIndex, 0});
         }
         const auto id = static_cast<uint32_t>((descriptors.size() - 1) / descriptorWords);
-        const auto kind = static_cast<WarpSceneJointKind>(joint.settings.index());
+        const auto kind = static_cast<InxPhyGpuSceneJointKind>(joint.settings.index());
         const auto parameterOffset = static_cast<uint32_t>(parameters.size());
         scene.jointBindings[index] = {id, kind, distance && distance->autoDistance, parameterOffset};
         descriptors.push_back({id, a.body, b.body, static_cast<uint32_t>(support.size()) - first});
@@ -150,19 +150,19 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
         descriptors.push_back(weights);
         descriptors.push_back({static_cast<uint32_t>(kind), parameterOffset, 0, 0});
         if (hinge) {
-            parameters.push_back(WarpJointLimits{hinge->useLimits, hinge->minimum, hinge->maximum}.Pack());
+            parameters.push_back(InxPhyGpuJointLimits{hinge->useLimits, hinge->minimum, hinge->maximum}.Pack());
             for (const auto &word : hinge->drive.Pack())
                 parameters.push_back(Bits(word));
         } else if (slider) {
-            parameters.push_back(WarpJointLimits{slider->useLimits, slider->minimum, slider->maximum}.Pack());
+            parameters.push_back(InxPhyGpuJointLimits{slider->useLimits, slider->minimum, slider->maximum}.Pack());
         } else if (distance) {
             const auto rest = glm::length(connectedPoint - point);
             const auto minimum = distance->autoDistance ? rest : distance->minimum;
             const auto maximum = distance->autoDistance ? rest : distance->maximum;
-            parameters.push_back(WarpJointLimits{true, minimum, maximum}.Pack());
+            parameters.push_back(InxPhyGpuJointLimits{true, minimum, maximum}.Pack());
             parameters.push_back(Bits({distance->stiffness, distance->damping, 0.0f, 0.0f}));
         } else if (swing) {
-            const WarpSwingTwistParameters packed(*swing);
+            const InxPhyGpuSwingTwistParameters packed(*swing);
             parameters.insert(parameters.end(), packed.controls.begin(), packed.controls.end());
             for (const auto &word : packed.targets.Pack())
                 parameters.push_back(Bits(word));
@@ -181,9 +181,9 @@ void BindSceneJoints(WarpSceneModel &scene, const std::vector<WarpSceneActor> &a
     model.sceneJoints = std::move(descriptors);
 }
 
-std::shared_ptr<const WarpConvexHull> CookHull(const JPH::ConvexHullShape &shape)
+std::shared_ptr<const InxPhyGpuConvexHull> CookHull(const JPH::ConvexHullShape &shape)
 {
-    auto hull = std::make_shared<WarpConvexHull>();
+    auto hull = std::make_shared<InxPhyGpuConvexHull>();
     hull->vertices.reserve(shape.GetNumPoints());
     for (uint32_t vertex = 0; vertex < shape.GetNumPoints(); ++vertex)
         hull->vertices.push_back(Point(Vector(JPH::RVec3(shape.GetPoint(vertex)))));
@@ -197,11 +197,11 @@ std::shared_ptr<const WarpConvexHull> CookHull(const JPH::ConvexHullShape &shape
     return hull;
 }
 
-std::shared_ptr<const WarpTriangleMesh> CookTriangleMesh(const JPH::MeshShape &shape)
+std::shared_ptr<const InxPhyGpuTriangleMesh> CookTriangleMesh(const JPH::MeshShape &shape)
 {
     JPH::Array<JPH::MeshShape::TriangleData> triangles;
     shape.GetTriangleData(triangles);
-    auto mesh = std::make_shared<WarpTriangleMesh>();
+    auto mesh = std::make_shared<InxPhyGpuTriangleMesh>();
     mesh->faces.reserve(triangles.size());
     mesh->features.reserve(triangles.size());
     std::map<std::array<float, 3>, uint32_t> vertexIndices;
@@ -224,11 +224,12 @@ std::shared_ptr<const WarpTriangleMesh> CookTriangleMesh(const JPH::MeshShape &s
 
 struct GeometryCache
 {
-    std::unordered_map<const JPH::Shape *, std::shared_ptr<const WarpConvexHull>> hulls;
-    std::unordered_map<const JPH::Shape *, std::shared_ptr<const WarpTriangleMesh>> meshes;
+    std::unordered_map<const JPH::Shape *, std::shared_ptr<const InxPhyGpuConvexHull>> hulls;
+    std::unordered_map<const JPH::Shape *, std::shared_ptr<const InxPhyGpuTriangleMesh>> meshes;
 };
 
-WarpGeometryType CookGeometry(const JPH::TransformedShape &leaf, WarpCollisionGeometry &geometry, GeometryCache &cache)
+InxPhyGpuGeometryType CookGeometry(const JPH::TransformedShape &leaf, InxPhyGpuCollisionGeometry &geometry,
+                                   GeometryCache &cache)
 {
     const auto &shape = *leaf.mShape;
     switch (shape.GetSubType()) {
@@ -282,18 +283,18 @@ WarpGeometryType CookGeometry(const JPH::TransformedShape &leaf, WarpCollisionGe
         return TriangleMesh;
     }
     default:
-        throw std::invalid_argument("Collider shape is not supported by the native Warp scene model");
+        throw std::invalid_argument("Collider shape is not supported by the native inxphygpu scene model");
     }
 }
 } // namespace
 
-ModelJointVectors WarpSwingTwistTargets::Pack() const
+ModelJointVectors InxPhyGpuSwingTwistTargets::Pack() const
 {
     const auto target = glm::normalize(orientation);
     return {{{target.w, target.x, target.y, target.z}, Point(glm::radians(angularVelocity))}};
 }
 
-WarpSwingTwistParameters::WarpSwingTwistParameters(const SwingTwistJointSettings &settings)
+InxPhyGpuSwingTwistParameters::InxPhyGpuSwingTwistParameters(const SwingTwistJointSettings &settings)
     : controls{{Bits({glm::radians(settings.minimumTwistAngle), glm::radians(settings.maximumTwistAngle),
                       glm::radians(settings.planeHalfConeAngle), glm::radians(settings.normalHalfConeAngle)}),
                 {static_cast<uint32_t>(settings.swingType), static_cast<uint32_t>(settings.swingMotorMode),
@@ -305,9 +306,9 @@ WarpSwingTwistParameters::WarpSwingTwistParameters(const SwingTwistJointSettings
 {
 }
 
-WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author)
+InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author)
 {
-    WarpSceneCapture result{};
+    InxPhyGpuSceneCapture result{};
     result.publication = std::move(author.publication);
     auto &source = result.actor;
     source.objectId = author.objectId;
@@ -334,13 +335,14 @@ WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author)
     return result;
 }
 
-WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, const std::vector<WarpSceneJoint> &joints,
-                                   const PhysicsColliderPairs &ignoredColliders)
+InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneActor> &actors,
+                                             const std::vector<InxPhyGpuSceneJoint> &joints,
+                                             const PhysicsColliderPairs &ignoredColliders)
 {
-    WarpSceneModel result;
+    InxPhyGpuSceneModel result;
     std::vector<ModelBodyDefinition> bodies;
     std::vector<ModelGeometryDefinition> geometries;
-    std::vector<WarpCollisionGeometry> collision;
+    std::vector<InxPhyGpuCollisionGeometry> collision;
     GeometryCache cache;
     std::vector<uint32_t> firstGeometry;
     firstGeometry.reserve(actors.size() + 1);
@@ -378,7 +380,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
             shape.subShape = leaf.mSubShapeIDCreator.GetID().GetValue();
             glm::quat rotation = Rotation(leaf.mShapeRotation);
             if (kind == Capsule || kind == Cylinder) {
-                // Jolt axial primitives run along +Y. Warp primitives run along +Z.
+                // Jolt axial primitives run along +Y. inxphygpu primitives run along +Z.
                 constexpr float halfRoot = 0.7071067811865475f;
                 rotation *= glm::quat(halfRoot, -halfRoot, 0.0f, 0.0f);
             }
@@ -388,7 +390,7 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
         }
     }
     firstGeometry.push_back(static_cast<uint32_t>(geometries.size()));
-    result.model = BuildWarpModel(bodies, geometries);
+    result.model = BuildInxPhyGpuModel(bodies, geometries);
     BindSceneJoints(result, actors, joints);
     std::set<std::pair<uint32_t, uint32_t>> ignored;
     for (const auto &joint : joints) {
@@ -416,11 +418,11 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
                     ignored.emplace(std::minmax(a, b));
         }
     }
-    std::vector<WarpCollisionPair> pairs;
+    std::vector<InxPhyGpuCollisionPair> pairs;
     pairs.reserve(ignored.size());
     for (const auto &[a, b] : ignored)
         pairs.push_back({a, b, {}, -1, true});
-    result.collision = BuildWarpCollisionModel(result.model, collision, std::move(pairs));
+    result.collision = BuildInxPhyGpuCollisionModel(result.model, collision, std::move(pairs));
     result.bodies.reserve(actors.size());
     auto &initial = result.model.initialVelocities;
     initial.resize(result.model.dofs.size());
@@ -445,4 +447,4 @@ WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors, co
     return result;
 }
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

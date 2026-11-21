@@ -4,7 +4,7 @@
 #pragma once
 
 #include "../PhysicsGpuPoseSource.h"
-#include "WarpModel.h"
+#include "InxPhyGpuModel.h"
 
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <variant>
@@ -14,19 +14,19 @@ namespace infernux
 enum class ForceMode;
 }
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
-class WarpStep;
-struct WarpCollisionModel;
+class InxPhyGpuStep;
+struct InxPhyGpuCollisionModel;
 
-struct WarpCollisionCapacity
+struct InxPhyGpuCollisionCapacity
 {
     uint32_t candidates = 0; // Shared across the batch.
     uint32_t contactsPerWorld = 0;
 };
 
-struct WarpContactSolver
+struct InxPhyGpuContactSolver
 {
     uint32_t rowsPerWorld = 0;
     uint32_t columnsPerWorld = 0;
@@ -37,7 +37,7 @@ struct WarpContactSolver
     float minimumRestitutionSpeed = 2.0f;
 };
 
-struct WarpContactStream
+struct InxPhyGpuContactStream
 {
     // Counts retain the requested sizes even when a stream runs out of capacity.
     std::shared_ptr<rhi::ComputeBuffer> candidateCount;
@@ -48,52 +48,52 @@ struct WarpContactStream
     std::shared_ptr<rhi::ComputeBuffer> narrowphaseStatus;
 };
 
-struct WarpContactReport
+struct InxPhyGpuContactReport
 {
     ModelVector pointSeparation, normal, relativeVelocity, impulse;
     ModelWords endpoints, identity;
 };
 
-enum WarpRayFlags : uint32_t
+enum InxPhyGpuRayFlags : uint32_t
 {
-    WarpRayIncludeStatic = 1,
-    WarpRayIncludeTriggers = 2,
-    WarpRayHitBackFaces = 4,
+    InxPhyGpuRayIncludeStatic = 1,
+    InxPhyGpuRayIncludeTriggers = 2,
+    InxPhyGpuRayHitBackFaces = 4,
 };
 
-struct WarpRay
+struct InxPhyGpuRay
 {
     ModelVector originLimit{}; // xyz origin and maximum distance.
     ModelVector direction{};   // Unit direction in xyz.
-    ModelWords filter{UINT32_MAX, NoModelIndex, WarpRayIncludeStatic | WarpRayIncludeTriggers, 0};
+    ModelWords filter{UINT32_MAX, NoModelIndex, InxPhyGpuRayIncludeStatic | InxPhyGpuRayIncludeTriggers, 0};
 };
 
-struct WarpRayHit
+struct InxPhyGpuRayHit
 {
     ModelVector normalDistance; // World normal and distance (-1 for a miss).
     ModelWords identity;        // Geometry row, body row, subshape ID, asset face index.
 };
 
-struct WarpRayBatchLayout
+struct InxPhyGpuRayBatchLayout
 {
     uint32_t raysPerWorld = 0;
     bool sharedRays = false; // One input row broadcast to every world.
 };
 
-struct WarpRayBuffers
+struct InxPhyGpuRayBuffers
 {
     std::shared_ptr<rhi::ComputeBuffer> inputs;
     std::shared_ptr<rhi::ComputeBuffer> hits;
 };
 
-struct WarpPreparedRayBatch
+struct InxPhyGpuPreparedRayBatch
 {
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
     std::shared_ptr<rhi::ComputeBuffer> hits;
     uint32_t count = 0;
 };
 
-enum class WarpBodyCommandKind : uint32_t
+enum class InxPhyGpuBodyCommandKind : uint32_t
 {
     SetPosition,
     SetRotation,
@@ -107,33 +107,33 @@ enum class WarpBodyCommandKind : uint32_t
     ResetMotion,
 };
 
-enum class WarpPoseCommandFlags : uint32_t
+enum class InxPhyGpuPoseCommandFlags : uint32_t
 {
     None,
     PreserveDrive,
 };
 
-struct WarpBodyCommand
+struct InxPhyGpuBodyCommand
 {
     uint32_t world;
     uint32_t body;
-    WarpBodyCommandKind kind;
+    InxPhyGpuBodyCommandKind kind;
     union {
         ForceMode mode{};
-        WarpPoseCommandFlags poseFlags;
+        InxPhyGpuPoseCommandFlags poseFlags;
     };
     ModelVector value{}; // World xyz, or wxyz for rotations.
     ModelVector point{}; // World point for ForceAtPosition.
 };
 
-struct WarpJointParameterUpdate
+struct InxPhyGpuJointParameterUpdate
 {
     uint32_t world;
     uint32_t offset; // In ModelWords records within one world.
-    std::variant<ModelWords, ModelJointVectors, WarpDistanceSpring, ModelSwingTwistControls> value;
+    std::variant<ModelWords, ModelJointVectors, InxPhyGpuDistanceSpring, ModelSwingTwistControls> value;
 };
 
-enum class WarpBodyPublication
+enum class InxPhyGpuBodyPublication
 {
     None,
     Device,
@@ -141,7 +141,7 @@ enum class WarpBodyPublication
     Status, // Keep body rows device-resident and read only the per-world headers.
 };
 
-struct WarpBodyState
+struct InxPhyGpuBodyState
 {
     ModelPose pose;
     ModelVector centerOfMass;
@@ -149,25 +149,24 @@ struct WarpBodyState
     ModelVector angularVelocity;
 };
 
-struct PreparedWarpStep
+struct PreparedInxPhyGpuStep
 {
-    std::unique_ptr<WarpStep> step;
+    std::unique_ptr<InxPhyGpuStep> step;
     // Submit once before the first step. The queue orders the initial values with later steps.
     std::shared_ptr<rhi::PreparedComputeBatch> initialize;
 };
 
 /// Resident state and fixed-step work for worlds that share one compiled model.
-class WarpStep
+class InxPhyGpuStep
 {
   public:
     /// Resident rigid dynamics with optional collision detection and constraint response.
-    [[nodiscard]] static PreparedWarpStep Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model,
-                                                uint32_t worlds, float timestep, const ModelVector &gravity,
-                                                const WarpCollisionModel *collision = nullptr,
-                                                WarpCollisionCapacity capacity = {},
-                                                const WarpContactSolver *solver = nullptr,
-                                                WarpRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0,
-                                                bool contactReports = false, uint32_t substeps = 1);
+    [[nodiscard]] static PreparedInxPhyGpuStep
+    Build(rhi::ComputeHost &host, ShaderCodeTarget target, const InxPhyGpuModel &model, uint32_t worlds, float timestep,
+          const ModelVector &gravity, const InxPhyGpuCollisionModel *collision = nullptr,
+          InxPhyGpuCollisionCapacity capacity = {}, const InxPhyGpuContactSolver *solver = nullptr,
+          InxPhyGpuRayBatchLayout rayLayout = {}, uint32_t bodyCommandCapacity = 0, bool contactReports = false,
+          uint32_t substeps = 1);
 
     /// The ordered snapshot holds qpos, qvel, clocks and, with contact response, a uint32 status per world.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
@@ -176,13 +175,14 @@ class WarpStep
     /// Commands for one body retain their submitted order. A rejected world
     /// restores its previous motions along with its fixed clock.
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
-    PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPublication publication,
+    PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, InxPhyGpuBodyPublication publication,
                       std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false,
-                      std::vector<WarpJointParameterUpdate> jointUpdates = {}) const;
+                      std::vector<InxPhyGpuJointParameterUpdate> jointUpdates = {}) const;
 
     /// Absolute edits and impulses publish new poses at the current fixed time.
     /// Time-dependent force and movement commands are admitted by the fixed step.
-    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch> PrepareEdits(std::vector<WarpBodyCommand> commands) const;
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareEdits(std::vector<InxPhyGpuBodyCommand> commands) const;
 
     /// A reporting step appends the world counts to its readbacks. Read only
     /// accepted worlds' populated ranges before issuing another step.
@@ -208,11 +208,11 @@ class WarpStep
 
     /// Query a frozen scene publication. Only the selected world is refit
     /// and only the requested ray prefix is dispatched or read back.
-    [[nodiscard]] WarpPreparedRayBatch PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
-                                                            bool publish,
-                                                            std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
+    [[nodiscard]] InxPhyGpuPreparedRayBatch
+    PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount, bool publish,
+                         std::vector<rhi::ComputeBufferUpdate> updates = {}) const;
 
-    [[nodiscard]] const WarpRayBuffers &Rays() const noexcept
+    [[nodiscard]] const InxPhyGpuRayBuffers &Rays() const noexcept
     {
         return m_rays;
     }
@@ -220,7 +220,7 @@ class WarpStep
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Positions() const noexcept;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Velocities() const noexcept;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &AppliedForces() const noexcept;
-    [[nodiscard]] const WarpContactStream &Contacts() const noexcept
+    [[nodiscard]] const InxPhyGpuContactStream &Contacts() const noexcept
     {
         return m_contacts;
     }
@@ -247,7 +247,8 @@ class WarpStep
         std::shared_ptr<rhi::ComputeBuffer> buffer;
         uint32_t stride = 0;
 
-        void Append(std::vector<rhi::ComputeBufferUpdate> &updates, std::vector<WarpJointParameterUpdate> values) const;
+        void Append(std::vector<rhi::ComputeBufferUpdate> &updates,
+                    std::vector<InxPhyGpuJointParameterUpdate> values) const;
     };
     struct PublishedRays
     {
@@ -263,30 +264,33 @@ class WarpStep
         rhi::ComputeDispatchDesc drive, advance, restore, clock;
     };
 
-    void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, uint32_t spans, bool captureContacts) const;
-    uint32_t AppendBodyCommands(std::vector<WarpBodyCommand> commands, bool integrate,
+    void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, std::vector<rhi::ComputeReplayRange> &,
+                         uint32_t spans, bool captureContacts) const;
+    uint32_t AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> commands, bool integrate,
                                 std::vector<rhi::ComputeBufferUpdate> &updates,
                                 std::vector<rhi::ComputeDispatchDesc> &dispatches) const;
     void AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &dispatches, bool includeStatus) const;
 
-    WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
-             uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts, WarpRayBuffers rays,
-             std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls, ContactReports reports,
-             FixedSubsteps substeps, SceneJointParameters jointParameters, PublishedRays publishedRays);
+    InxPhyGpuStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot, uint32_t positions,
+                  uint32_t velocities, uint32_t appliedForces, InxPhyGpuContactStream contacts,
+                  InxPhyGpuRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
+                  ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
+                  PublishedRays publishedRays);
 
     std::shared_ptr<rhi::ComputeWorkInstance> m_work;
     rhi::ComputeDispatchDesc m_snapshot;
     uint32_t m_positions;
     uint32_t m_velocities;
     uint32_t m_appliedForces;
-    WarpContactStream m_contacts;
-    WarpRayBuffers m_rays;
+    InxPhyGpuContactStream m_contacts;
+    InxPhyGpuRayBuffers m_rays;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     BodyControls m_controls;
     ContactReports m_reports;
     FixedSubsteps m_substeps;
+    std::shared_ptr<rhi::ComputeReplayCache> m_fixedReplay = rhi::MakeComputeReplayCache();
     SceneJointParameters m_jointParameters;
     PublishedRays m_publishedRays;
 };
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PhysicsRayIndex.h"
-#include "WarpCollisionModel.h"
+#include "InxPhyGpuCollisionModel.h"
 
 #include <algorithm>
 #include <glm/gtc/quaternion.hpp>
 #include <utility>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 namespace
 {
@@ -126,7 +126,7 @@ PhysicsRayIndex BuildPhysicsRayIndex(const std::vector<spatial::Bounds> &finiteB
     return result;
 }
 
-PhysicsRayIndex BuildWarpRayIndex(const WarpModel &model, const WarpCollisionModel &collision)
+PhysicsRayIndex BuildInxPhyGpuRayIndex(const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision)
 {
     struct Frame
     {
@@ -203,4 +203,4 @@ uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, const std::vec
     return descriptor;
 }
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

@@ -7,16 +7,16 @@
 #include "../PhysicsContactTypes.h"
 #include "../PhysicsMass.h"
 #include "../PhysicsShapeAuthoring.h"
-#include "WarpCollisionModel.h"
+#include "InxPhyGpuCollisionModel.h"
 
 #include <Jolt/Physics/Collision/Shape/Shape.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 #include <variant>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
-struct WarpSceneCollider
+struct InxPhyGpuSceneCollider
 {
     uint64_t componentId;
     uint64_t generation;
@@ -29,7 +29,7 @@ struct WarpSceneCollider
     PhysicsMaterialCombine bounceCombine = PhysicsMaterialCombine::Average;
 };
 
-struct WarpSceneActor
+struct InxPhyGpuSceneActor
 {
     uint64_t objectId = 0;
     JPH::RefConst<JPH::Shape> shape;
@@ -40,10 +40,10 @@ struct WarpSceneActor
     std::optional<PreparedBodyMass> mass; // Authored or geometry-derived dynamic tensor.
     bool kinematic = false;
     bool useGravity = true;
-    std::vector<WarpSceneCollider> colliders;
+    std::vector<InxPhyGpuSceneCollider> colliders;
 };
 
-struct WarpSceneSurfaceIdentity
+struct InxPhyGpuSceneSurfaceIdentity
 {
     PhysicsTargetReference target;
     uint64_t gameObjectId;
@@ -51,14 +51,14 @@ struct WarpSceneSurfaceIdentity
     uint64_t generation = 0;
 };
 
-struct WarpSceneCapture
+struct InxPhyGpuSceneCapture
 {
-    WarpSceneActor actor;
+    InxPhyGpuSceneActor actor;
     PhysicsActorPublication publication;
-    std::vector<WarpSceneSurfaceIdentity> surfaces;
+    std::vector<InxPhyGpuSceneSurfaceIdentity> surfaces;
 };
 
-struct WarpSceneBodyBinding
+struct InxPhyGpuSceneBodyBinding
 {
     uint64_t objectId;
     uint32_t bodyRow;
@@ -67,29 +67,29 @@ struct WarpSceneBodyBinding
     uint32_t surfaceCount;
 };
 
-struct WarpSceneGeometryBinding
+struct InxPhyGpuSceneGeometryBinding
 {
-    WarpSceneCollider collider;
+    InxPhyGpuSceneCollider collider;
     uint32_t subShape;
     uint32_t surface;
 };
 
-struct WarpSceneHinge
+struct InxPhyGpuSceneHinge
 {
     glm::vec3 axis{0.0f, 1.0f, 0.0f};
     bool useLimits = false;
     float minimum = 0.0f, maximum = 0.0f;
-    WarpHingeDrive drive;
+    InxPhyGpuHingeDrive drive;
 };
 
-struct WarpSceneSlider
+struct InxPhyGpuSceneSlider
 {
     glm::vec3 axis{0.0f, 1.0f, 0.0f};
     bool useLimits = false;
     float minimum = 0.0f, maximum = 0.0f;
 };
 
-struct WarpSceneDistance
+struct InxPhyGpuSceneDistance
 {
     glm::vec3 connectedAnchor{0.0f}; // Baked local offset, or world position without a connected body.
     bool autoDistance = true;
@@ -97,7 +97,7 @@ struct WarpSceneDistance
     float stiffness = 0.0f, damping = 0.0f;
 };
 
-struct WarpSwingTwistTargets
+struct InxPhyGpuSwingTwistTargets
 {
     glm::vec4 orientation{0, 0, 0, 1}; // Authored XYZW, in constraint space.
     glm::vec3 angularVelocity{0.0f};   // Degrees/s, in owner constraint space.
@@ -105,25 +105,27 @@ struct WarpSwingTwistTargets
     [[nodiscard]] ModelJointVectors Pack() const;
 };
 
-struct WarpSwingTwistParameters
+struct InxPhyGpuSwingTwistParameters
 {
     ModelSwingTwistControls controls;
-    WarpSwingTwistTargets targets;
+    InxPhyGpuSwingTwistTargets targets;
 
-    explicit WarpSwingTwistParameters(const SwingTwistJointSettings &settings);
+    explicit InxPhyGpuSwingTwistParameters(const SwingTwistJointSettings &settings);
 };
 
-struct WarpSceneJoint
+struct InxPhyGpuSceneJoint
 {
     uint32_t ownerActor;
     uint32_t connectedActor = NoModelIndex;
     glm::vec3 ownerAnchor{0.0f}; // Baked offset from the owner transform origin, in body axes.
     bool enableCollision = false;
     // This order matches the scene joint kinds in spatial_constraints.slang.
-    std::variant<std::monostate, WarpSceneHinge, WarpSceneSlider, WarpSceneDistance, SwingTwistJointSettings> settings;
+    std::variant<std::monostate, InxPhyGpuSceneHinge, InxPhyGpuSceneSlider, InxPhyGpuSceneDistance,
+                 SwingTwistJointSettings>
+        settings;
 };
 
-enum class WarpSceneJointKind : uint32_t
+enum class InxPhyGpuSceneJointKind : uint32_t
 {
     Fixed,
     Hinge,
@@ -132,28 +134,28 @@ enum class WarpSceneJointKind : uint32_t
     SwingTwist,
 };
 
-struct WarpSceneJointBinding
+struct InxPhyGpuSceneJointBinding
 {
     uint32_t row = NoModelIndex;
-    WarpSceneJointKind kind = WarpSceneJointKind::Fixed;
+    InxPhyGpuSceneJointKind kind = InxPhyGpuSceneJointKind::Fixed;
     bool autoDistance = false;
     uint32_t parameterOffset = 0; // In ModelWords records within one world.
 };
 
-struct WarpSceneModel
+struct InxPhyGpuSceneModel
 {
-    WarpModel model;
-    WarpCollisionModel collision;
-    std::vector<WarpSceneBodyBinding> bodies;         // Author actor order.
-    std::vector<WarpSceneGeometryBinding> geometries; // Device geometry order.
-    std::vector<WarpSceneJointBinding> jointBindings; // Author joint order.
+    InxPhyGpuModel model;
+    InxPhyGpuCollisionModel collision;
+    std::vector<InxPhyGpuSceneBodyBinding> bodies;         // Author actor order.
+    std::vector<InxPhyGpuSceneGeometryBinding> geometries; // Device geometry order.
+    std::vector<InxPhyGpuSceneJointBinding> jointBindings; // Author joint order.
 };
 
-[[nodiscard]] WarpSceneCapture PrepareWarpSceneActor(PhysicsActorAuthoring author);
+[[nodiscard]] InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author);
 
 /// Translate one authored topology. The result owns no scene objects or Jolt shapes.
-[[nodiscard]] WarpSceneModel BuildWarpSceneModel(const std::vector<WarpSceneActor> &actors,
-                                                 const std::vector<WarpSceneJoint> &joints = {},
-                                                 const PhysicsColliderPairs &ignoredColliders = {});
+[[nodiscard]] InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneActor> &actors,
+                                                           const std::vector<InxPhyGpuSceneJoint> &joints = {},
+                                                           const PhysicsColliderPairs &ignoredColliders = {});
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

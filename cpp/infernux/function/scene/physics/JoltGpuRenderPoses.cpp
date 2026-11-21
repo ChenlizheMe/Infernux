@@ -1,6 +1,6 @@
 #include "JoltGpuRenderPoses.h"
 #include "JoltGpuProgramSources.h"
-#include "warp/WarpStep.h"
+#include "inxphygpu/InxPhyGpuStep.h"
 
 #include <algorithm>
 #include <array>
@@ -151,7 +151,7 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const PhysicsGpuPoseSource &o
         throw std::invalid_argument("GPU render poses require a frozen final state from the same compute owner");
     const auto bodyCount = output.bodyCount;
     const bool origin = output.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
-    const auto bodyStride = origin ? sizeof(physics::warp::WarpBodyState) : sizeof(BodyState);
+    const auto bodyStride = origin ? sizeof(physics::inxphygpu::InxPhyGpuBodyState) : sizeof(BodyState);
     const auto rows = frozenBodyStates->GetByteSize() / bodyStride;
     if (output.firstRow > rows || bodyCount > rows - output.firstRow ||
         output.firstRow + bodyCount > UINT32_MAX / (bodyStride / sizeof(Float4)))

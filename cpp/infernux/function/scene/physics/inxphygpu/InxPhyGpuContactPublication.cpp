@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Infernux contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "WarpContactPublication.h"
+#include "InxPhyGpuContactPublication.h"
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
 PhysicsContactPublication::Frame
-DecodeWarpContactFrame(std::vector<WarpContactReport> reports,
-                       const std::function<PhysicsContactPublication::Endpoint(uint32_t)> &resolveGeometry,
-                       const PhysicsContactPublication::Policy &policy)
+DecodeInxPhyGpuContactFrame(std::vector<InxPhyGpuContactReport> reports,
+                            const std::function<PhysicsContactPublication::Endpoint(uint32_t)> &resolveGeometry,
+                            const PhysicsContactPublication::Policy &policy)
 {
     // Narrowphase reserves contact slots on device. Use authored geometry and
     // per-pair feature order for callback selection, independent of slot order.
@@ -38,4 +38,4 @@ DecodeWarpContactFrame(std::vector<WarpContactReport> reports,
     return result;
 }
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

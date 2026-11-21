@@ -5,11 +5,11 @@
 
 #include "../../../../core/math/Bvh.h"
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
-struct WarpModel;
-struct WarpCollisionModel;
+struct InxPhyGpuModel;
+struct InxPhyGpuCollisionModel;
 
 using RayIndexWord = std::array<uint32_t, 4>;
 
@@ -29,11 +29,12 @@ struct PhysicsRayIndex
 
 /// Place leaves according to the authored reference pose. The device refits
 /// actual bounds at the selected query point.
-[[nodiscard]] PhysicsRayIndex BuildWarpRayIndex(const WarpModel &model, const WarpCollisionModel &collision);
+[[nodiscard]] PhysicsRayIndex BuildInxPhyGpuRayIndex(const InxPhyGpuModel &model,
+                                                     const InxPhyGpuCollisionModel &collision);
 
 /// Append a mesh-local tree and return its descriptor index. Face indices address
 /// the same immutable vertex array as the convex and ray geometry programs.
 [[nodiscard]] uint32_t AppendPhysicsRayMesh(std::vector<RayIndexWord> &records, const std::vector<glm::vec3> &vertices,
                                             const std::vector<std::array<uint32_t, 3>> &faces, uint32_t vertexBase = 0);
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

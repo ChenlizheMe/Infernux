@@ -3,16 +3,16 @@
 
 #pragma once
 
-#include "WarpModel.h"
+#include "InxPhyGpuModel.h"
 
 #include <glm/vec3.hpp>
 #include <memory>
 #include <optional>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
-enum WarpGeometryType : uint32_t
+enum InxPhyGpuGeometryType : uint32_t
 {
     Plane = 0,
     Heightfield = 1,
@@ -25,7 +25,7 @@ enum WarpGeometryType : uint32_t
     TriangleMesh = 8,
 };
 
-struct WarpContactMaterial
+struct InxPhyGpuContactMaterial
 {
     ModelVector parameters{0.0f, 0.0f, 1.0f, 0.0f}; // Margin, gap, solver mix, adhesion.
     ModelVector reference{0.02f, 1.0f, 0.0f, 0.0f};
@@ -36,58 +36,58 @@ struct WarpContactMaterial
     std::array<int32_t, 4> dimensions{3, 0, 0, 0};
 };
 
-struct WarpHullFace
+struct InxPhyGpuHullFace
 {
     std::vector<uint32_t> vertices; // Convex loop in outward winding order.
     ModelVector normal{};
 };
 
-struct WarpConvexHull
+struct InxPhyGpuConvexHull
 {
     std::vector<ModelVector> vertices;
-    std::vector<WarpHullFace> faces;
+    std::vector<InxPhyGpuHullFace> faces;
 };
 
-struct WarpHeightfield
+struct InxPhyGpuHeightfield
 {
     uint32_t rows = 0;
     uint32_t columns = 0;
     std::vector<float> samples; // Row-major normalized elevations.
 };
 
-struct WarpTriangleMesh
+struct InxPhyGpuTriangleMesh
 {
     std::vector<glm::vec3> vertices;
     std::vector<std::array<uint32_t, 3>> faces;
     std::vector<std::array<uint32_t, 3>> features; // Native triangle ID, active edges and asset face index.
 };
 
-struct WarpCollisionGeometry
+struct InxPhyGpuCollisionGeometry
 {
     ModelVector size{};
     ModelVector center{};
     ModelVector halfExtent{};
     float radius = 0.0f;
-    WarpContactMaterial material;
-    std::shared_ptr<const WarpConvexHull> hull;
-    std::shared_ptr<const WarpHeightfield> heightfield;
+    InxPhyGpuContactMaterial material;
+    std::shared_ptr<const InxPhyGpuConvexHull> hull;
+    std::shared_ptr<const InxPhyGpuHeightfield> heightfield;
     bool trigger = false;
     uint32_t subShape = 0;
-    std::shared_ptr<const WarpTriangleMesh> mesh;
+    std::shared_ptr<const InxPhyGpuTriangleMesh> mesh;
     uint32_t meshPath = 0;
     uint32_t meshPathBits = 0;
 };
 
-struct WarpCollisionPair
+struct InxPhyGpuCollisionPair
 {
     uint32_t firstGeometry;
     uint32_t secondGeometry;
-    std::optional<WarpContactMaterial> material; // An explicit physical pair overrides the default filter.
+    std::optional<InxPhyGpuContactMaterial> material; // An explicit physical pair overrides the default filter.
     int32_t sensor = -1;
     bool suppressContact = false;
 };
 
-struct WarpLocalBound
+struct InxPhyGpuLocalBound
 {
     ModelVector center;
     ModelVector halfExtent;
@@ -95,17 +95,17 @@ struct WarpLocalBound
     ModelWords geometry;
 };
 
-struct WarpCollisionShape
+struct InxPhyGpuCollisionShape
 {
     ModelVector size;
     ModelWords type;
 };
 
-struct WarpCollisionModel
+struct InxPhyGpuCollisionModel
 {
-    std::vector<WarpLocalBound> bounds;
-    std::vector<WarpCollisionShape> shapes;
-    std::vector<WarpContactMaterial> materials;
+    std::vector<InxPhyGpuLocalBound> bounds;
+    std::vector<InxPhyGpuCollisionShape> shapes;
+    std::vector<InxPhyGpuContactMaterial> materials;
     std::vector<ModelWords> pairRules;
     std::vector<ModelWords> rayGeometry; // Body row, layer mask, flags, subshape.
     std::vector<ModelWords> convexData;
@@ -116,9 +116,8 @@ struct WarpCollisionModel
 };
 
 /// Build rows in the same geometry order as model.geometries. Pair overrides can arrive in any order.
-[[nodiscard]] WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model,
-                                                         const std::vector<WarpCollisionGeometry> &geometries,
-                                                         std::vector<WarpCollisionPair> pairs,
-                                                         bool filterConnectedBodies = true);
+[[nodiscard]] InxPhyGpuCollisionModel
+BuildInxPhyGpuCollisionModel(const InxPhyGpuModel &model, const std::vector<InxPhyGpuCollisionGeometry> &geometries,
+                             std::vector<InxPhyGpuCollisionPair> pairs, bool filterConnectedBodies = true);
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

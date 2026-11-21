@@ -36,7 +36,7 @@
 #include "PhysicsMass.h"
 #include "PhysicsParticipantBodies.h"
 #include "PhysicsShapeAuthoring.h"
-#include "warp/WarpSceneRuntime.h"
+#include "inxphygpu/InxPhyGpuSceneRuntime.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -3765,20 +3765,21 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
     FlushAuthoring(domain);
 }
 
-std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSetup(RuntimeWorld &world) const
+std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneSetup>
+PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world) const
 {
-    using namespace physics::warp;
+    using namespace physics::inxphygpu;
     RequireOwnerThread();
     auto &domain = *world.physics;
     if (world.simulation.fixedStepIndex != 0 || domain.stepPending)
-        throw std::logic_error("Warp scene setup must be captured before fixed simulation");
+        throw std::logic_error("inxphygpu scene setup must be captured before fixed simulation");
 
     FlushAuthoring(domain);
     const auto &store = PhysicsECSStore::Instance();
     if (store.HasPendingBodyCreations(world))
         return nullptr;
 
-    auto setup = std::make_unique<WarpSceneSetup>();
+    auto setup = std::make_unique<InxPhyGpuSceneSetup>();
     auto &registration = setup->world;
     registration.worldId = world.id;
     registration.simulationEpoch = world.simulation.simulationEpoch;
@@ -3786,7 +3787,7 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
     std::sort(ids.begin(), ids.end());
 
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
-    std::vector<WarpSceneActor> actors;
+    std::vector<InxPhyGpuSceneActor> actors;
     std::vector<const Joint *> activeJoints;
     std::unordered_map<uint32_t, uint32_t> rowById;
     actors.reserve(ids.size());
@@ -3801,7 +3802,7 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
         if (!author)
             return nullptr;
         const auto bodyTarget = author->body ? author->body->target : PhysicsTargetReference{};
-        auto prepared = PrepareWarpSceneActor(std::move(*author));
+        auto prepared = PrepareInxPhyGpuSceneActor(std::move(*author));
         rowById.emplace(id, static_cast<uint32_t>(actors.size()));
         registration.bodies.push_back(
             {id, binding.stagedShapeRevision, binding.actor, std::move(prepared.surfaces), bodyTarget});
@@ -3811,30 +3812,31 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
                 activeJoints.push_back(joint);
     }
 
-    std::vector<WarpSceneJoint> joints;
+    std::vector<InxPhyGpuSceneJoint> joints;
     joints.reserve(activeJoints.size());
     for (const auto *joint : activeJoints) {
         const auto *transform = joint->GetGameObject()->GetTransform();
         const auto anchor =
             glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(joint->GetAnchor());
         const auto connected = joint->m_boundConnectedBodyId;
-        auto &model = joints.emplace_back(WarpSceneJoint{rowById.at(joint->m_boundBodyId),
-                                                         connected == UINT32_MAX ? NoModelIndex : rowById.at(connected),
-                                                         anchor,
-                                                         joint->GetEnableCollision(),
-                                                         {}});
+        auto &model =
+            joints.emplace_back(InxPhyGpuSceneJoint{rowById.at(joint->m_boundBodyId),
+                                                    connected == UINT32_MAX ? NoModelIndex : rowById.at(connected),
+                                                    anchor,
+                                                    joint->GetEnableCollision(),
+                                                    {}});
         if (const auto *hinge = dynamic_cast<const HingeJoint *>(joint)) {
             model.settings =
-                WarpSceneHinge{hinge->GetAxis(),
-                               hinge->GetUseLimits(),
-                               glm::radians(hinge->GetMinimumAngle()),
-                               glm::radians(hinge->GetMaximumAngle()),
-                               {hinge->GetMotorEnabled(), hinge->GetClampedMotorTargetRadians(),
-                                hinge->GetMotorStiffness(), hinge->GetMotorDamping(), hinge->GetMotorMaxTorque(),
-                                hinge->GetJointDamping(), hinge->GetFrictionTorque(), hinge->GetArmature()}};
+                InxPhyGpuSceneHinge{hinge->GetAxis(),
+                                    hinge->GetUseLimits(),
+                                    glm::radians(hinge->GetMinimumAngle()),
+                                    glm::radians(hinge->GetMaximumAngle()),
+                                    {hinge->GetMotorEnabled(), hinge->GetClampedMotorTargetRadians(),
+                                     hinge->GetMotorStiffness(), hinge->GetMotorDamping(), hinge->GetMotorMaxTorque(),
+                                     hinge->GetJointDamping(), hinge->GetFrictionTorque(), hinge->GetArmature()}};
         } else if (const auto *slider = dynamic_cast<const SliderJoint *>(joint)) {
-            model.settings = WarpSceneSlider{slider->GetAxis(), slider->GetUseLimits(), slider->GetMinimumDistance(),
-                                             slider->GetMaximumDistance()};
+            model.settings = InxPhyGpuSceneSlider{slider->GetAxis(), slider->GetUseLimits(),
+                                                  slider->GetMinimumDistance(), slider->GetMaximumDistance()};
         } else if (const auto *distance = dynamic_cast<const DistanceJoint *>(joint)) {
             auto connectedAnchor = distance->GetConnectedAnchor();
             if (connected != UINT32_MAX) {
@@ -3842,20 +3844,20 @@ std::unique_ptr<physics::warp::WarpSceneSetup> PhysicsWorld::CaptureWarpSceneSet
                 connectedAnchor = glm::conjugate(connectedTransform->GetWorldRotation()) *
                                   connectedTransform->TransformVector(connectedAnchor);
             }
-            model.settings = WarpSceneDistance{connectedAnchor,
-                                               distance->GetAutoDistance(),
-                                               distance->GetMinimumDistance(),
-                                               distance->GetMaximumDistance(),
-                                               distance->GetStiffness(),
-                                               distance->GetDamping()};
+            model.settings = InxPhyGpuSceneDistance{connectedAnchor,
+                                                    distance->GetAutoDistance(),
+                                                    distance->GetMinimumDistance(),
+                                                    distance->GetMaximumDistance(),
+                                                    distance->GetStiffness(),
+                                                    distance->GetDamping()};
         } else if (const auto *swing = dynamic_cast<const SwingTwistJoint *>(joint)) {
             model.settings = swing->m_settings;
         } else if (!dynamic_cast<const FixedJoint *>(joint)) {
-            throw std::invalid_argument(std::string("Warp scene setup does not support ") + joint->GetTypeName());
+            throw std::invalid_argument(std::string("inxphygpu scene setup does not support ") + joint->GetTypeName());
         }
     }
 
-    setup->model = BuildWarpSceneModel(actors, joints, *CaptureColliderPairs(domain, true));
+    setup->model = BuildInxPhyGpuSceneModel(actors, joints, *CaptureColliderPairs(domain, true));
     for (uint32_t index = 0; index < activeJoints.size(); ++index)
         if (setup->model.jointBindings[index].row != NoModelIndex)
             registration.joints.push_back({activeJoints[index]->GetPhysicsConstraintId(), index});

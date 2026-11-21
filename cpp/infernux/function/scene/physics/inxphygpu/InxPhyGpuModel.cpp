@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: 2026 Infernux contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "WarpModel.h"
+#include "InxPhyGpuModel.h"
 
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
-ModelWords WarpJointLimits::Pack() const noexcept
+ModelWords InxPhyGpuJointLimits::Pack() const noexcept
 {
     ModelWords words{static_cast<uint32_t>(enabled), 0u, 0u, 0u};
     std::memcpy(&words[1], &minimum, sizeof(minimum));
@@ -42,7 +42,7 @@ ModelVector WithW(const std::array<float, 3> &xyz, float w)
     return {xyz[0], xyz[1], xyz[2], w};
 }
 
-void AppendJoint(WarpModel &model, const ModelJointDefinition &joint, uint32_t body, uint32_t &parentDof,
+void AppendJoint(InxPhyGpuModel &model, const ModelJointDefinition &joint, uint32_t body, uint32_t &parentDof,
                  uint32_t &massSize)
 {
     const uint32_t position = Count(model.initialPositions);
@@ -79,7 +79,7 @@ void AppendJoint(WarpModel &model, const ModelJointDefinition &joint, uint32_t b
     }
 }
 
-void BuildBranches(WarpModel &model, const std::vector<uint32_t> &leaves)
+void BuildBranches(InxPhyGpuModel &model, const std::vector<uint32_t> &leaves)
 {
     model.branches.resize(leaves.size() + 1);
     const uint32_t payload = Count(model.branches);
@@ -97,7 +97,7 @@ void BuildBranches(WarpModel &model, const std::vector<uint32_t> &leaves)
     model.branches[leaves.size()] = Count(model.branches) - payload;
 }
 
-void BuildMassAdjacency(WarpModel &model)
+void BuildMassAdjacency(InxPhyGpuModel &model)
 {
     const uint32_t dofs = Count(model.dofs);
     auto &adjacency = model.massAdjacency;
@@ -128,7 +128,7 @@ void BuildMassAdjacency(WarpModel &model)
     }
 }
 
-ModelMassFactors BuildMassFactors(const WarpModel &model, uint32_t massSize, bool referencePose)
+ModelMassFactors BuildMassFactors(const InxPhyGpuModel &model, uint32_t massSize, bool referencePose)
 {
     ModelMassFactors factors;
     const auto &adjacency = model.massAdjacency;
@@ -211,19 +211,19 @@ ModelMassFactors BuildMassFactors(const WarpModel &model, uint32_t massSize, boo
 }
 } // namespace
 
-WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
-                         const std::vector<ModelGeometryDefinition> &geometries)
+InxPhyGpuModel BuildInxPhyGpuModel(const std::vector<ModelBodyDefinition> &bodies,
+                                   const std::vector<ModelGeometryDefinition> &geometries)
 {
     const uint32_t world = Count(bodies);
     std::vector<std::vector<uint32_t>> children(bodies.size() + 1);
     for (uint32_t body = 0; body < world; ++body) {
         const uint32_t parent = bodies[body].parent;
         if (parent != NoModelIndex && parent >= world)
-            throw std::invalid_argument("Warp model body parent is outside the model");
+            throw std::invalid_argument("inxphygpu model body parent is outside the model");
         children[parent == NoModelIndex ? world : parent].push_back(body);
     }
 
-    WarpModel model;
+    InxPhyGpuModel model;
     model.bodies.reserve(bodies.size() + 1);
     model.bodies.emplace_back();
     model.bodies[0].hierarchy = {NoModelIndex, NoModelIndex, 0, NoModelIndex};
@@ -243,10 +243,10 @@ WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
         model.bodyRows[source] = row;
         const uint32_t parent = authored.parent == NoModelIndex ? 0 : model.bodyRows[authored.parent];
         if (authored.kinematic && (parent != 0 || !authored.joints.empty()))
-            throw std::invalid_argument("Warp model kinematic body must be a jointless root");
+            throw std::invalid_argument("inxphygpu model kinematic body must be a jointless root");
         if (authored.editableStatic &&
             (parent != 0 || authored.kinematic || !authored.joints.empty() || authored.mass != 0.0f))
-            throw std::invalid_argument("Warp model editable static body must be a massless, jointless root");
+            throw std::invalid_argument("inxphygpu model editable static body must be a massless, jointless root");
         ModelBody &body = model.bodies.emplace_back();
         body.hierarchy = {parent, authored.joints.empty() ? NoModelIndex : Count(model.joints), Count(authored.joints),
                           authored.kinematic ? Count(model.initialKinematicPoses) : NoModelIndex};
@@ -259,7 +259,7 @@ WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
         uint32_t lastDof = ancestorDof[parent];
         for (const auto &joint : authored.joints) {
             if (joint.type == ModelJointType::Free && (parent != 0 || authored.joints.size() != 1))
-                throw std::invalid_argument("Warp model free joint must be the root body's only joint");
+                throw std::invalid_argument("inxphygpu model free joint must be the root body's only joint");
             AppendJoint(model, joint, row, lastDof, massSize);
         }
         const uint32_t dofCount = Count(model.dofs) - firstDof;
@@ -276,7 +276,7 @@ WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
         pending.insert(pending.end(), children[source].rbegin(), children[source].rend());
     }
     if (model.bodies.size() != bodies.size() + 1)
-        throw std::invalid_argument("Warp model body hierarchy contains a cycle");
+        throw std::invalid_argument("inxphygpu model body hierarchy contains a cycle");
     model.bodies[0].dofs[3] = Count(model.initialStaticPoses);
     for (uint32_t row = Count(model.bodies) - 1; row != 0; --row) {
         const auto &body = model.bodies[row];
@@ -299,8 +299,8 @@ WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
     return model;
 }
 
-ModelMassFactors BuildWarpReferenceMassFactors(const WarpModel &model)
+ModelMassFactors BuildInxPhyGpuReferenceMassFactors(const InxPhyGpuModel &model)
 {
     return BuildMassFactors(model, model.dimensions.layout[3], true);
 }
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

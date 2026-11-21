@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Infernux contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "WarpSceneRuntime.h"
-#include "WarpContactPublication.h"
+#include "InxPhyGpuSceneRuntime.h"
+#include "InxPhyGpuContactPublication.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,16 +10,16 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
-struct WarpSceneLayout
+struct InxPhyGpuSceneLayout
 {
     struct World
     {
-        std::vector<WarpRegisteredBody> bodies; // Device row, including world row zero.
+        std::vector<InxPhyGpuRegisteredBody> bodies; // Device row, including world row zero.
         std::unordered_map<uint32_t, uint32_t> rows;
-        std::unordered_map<uint64_t, WarpSceneJointBinding> joints;
+        std::unordered_map<uint64_t, InxPhyGpuSceneJointBinding> joints;
 
         [[nodiscard]] std::optional<uint32_t> BodyRow(uint32_t bodyId) const
         {
@@ -39,14 +39,14 @@ struct WarpSceneLayout
     {
         const auto found = worldRows.find(id);
         if (found == worldRows.end())
-            throw std::invalid_argument("Warp scene command requires an enrolled world");
+            throw std::invalid_argument("inxphygpu scene command requires an enrolled world");
         return found->second;
     }
 };
 
 namespace
 {
-WarpHostBody DecodeHostBody(const WarpBodyState &raw, uint32_t bodyId, uint64_t shapeRevision)
+InxPhyGpuHostBody DecodeHostBody(const InxPhyGpuBodyState &raw, uint32_t bodyId, uint64_t shapeRevision)
 {
     const auto vector = [](const ModelVector &v) { return glm::vec3(v[0], v[1], v[2]); };
     const auto &q = raw.pose.rotation;
@@ -58,15 +58,15 @@ WarpHostBody DecodeHostBody(const WarpBodyState &raw, uint32_t bodyId, uint64_t 
 }
 } // namespace
 
-PhysicsGpuPoseSource WarpFixedPublication::PoseSource(uint32_t world) const
+PhysicsGpuPoseSource InxPhyGpuFixedPublication::PoseSource(uint32_t world) const
 {
     if (worlds.at(world).status != 0)
-        throw std::logic_error("Cannot publish the pose of a rejected Warp fixed step");
+        throw std::logic_error("Cannot publish the pose of a rejected inxphygpu fixed step");
     return {bodyStates, uint64_t{world} * bodiesPerWorld, bodiesPerWorld, PhysicsGpuPoseSource::Layout::OriginWXYZ};
 }
 
-std::optional<PhysicsGpuBodyPoseBinding> WarpFixedPublication::FindPoseBody(uint32_t world, PhysicsActorHandle actor,
-                                                                            uint32_t bodyId) const
+std::optional<PhysicsGpuBodyPoseBinding>
+InxPhyGpuFixedPublication::FindPoseBody(uint32_t world, PhysicsActorHandle actor, uint32_t bodyId) const
 {
     if (worlds.at(world).status != 0)
         return std::nullopt;
@@ -77,18 +77,18 @@ std::optional<PhysicsGpuBodyPoseBinding> WarpFixedPublication::FindPoseBody(uint
     return PhysicsGpuBodyPoseBinding{bodyId, *row};
 }
 
-void WarpFixedPublication::PublishContacts(uint32_t world, PhysicsContactPublication &destination,
-                                           const PhysicsContactPublication::Policy &policy)
+void InxPhyGpuFixedPublication::PublishContacts(uint32_t world, PhysicsContactPublication &destination,
+                                                const PhysicsContactPublication::Policy &policy)
 {
     const auto &fixed = worlds.at(world);
     if (!m_integrated || fixed.status != 0)
-        throw std::logic_error("Contact publication requires an accepted Warp fixed step");
+        throw std::logic_error("Contact publication requires an accepted inxphygpu fixed step");
     if (!policy.Requested()) {
         destination.PublishEmpty(fixed.identity);
         return;
     }
     if (contacts.size() != size_t{substeps} * worlds.size())
-        throw std::logic_error("Accepted Warp step does not carry the requested contact reports");
+        throw std::logic_error("Accepted inxphygpu step does not carry the requested contact reports");
     const auto &layout = m_layout->worlds[world];
     const std::function<PhysicsContactPublication::Endpoint(uint32_t)> resolve = [&](uint32_t geometry) {
         const auto &shape = m_layout->geometries.at(geometry);
@@ -99,32 +99,32 @@ void WarpFixedPublication::PublishContacts(uint32_t world, PhysicsContactPublica
     };
     destination.Publish(fixed.identity, policy, substeps, [&](uint32_t substep) {
         auto &reports = contacts[size_t{substep} * worlds.size() + world];
-        return DecodeWarpContactFrame(std::move(reports), resolve, policy);
+        return DecodeInxPhyGpuContactFrame(std::move(reports), resolve, policy);
     });
 }
 
-std::vector<WarpHostBody> WarpSceneBodyRead::ReadHostBodies() const
+std::vector<InxPhyGpuHostBody> InxPhyGpuSceneBodyRead::ReadHostBodies() const
 {
-    std::vector<WarpBodyState> records(m_uniqueRows);
+    std::vector<InxPhyGpuBodyState> records(m_uniqueRows);
     size_t offset = 0;
     for (size_t index = 0; index < m_rangeRows.size(); ++index) {
         const auto count = m_rangeRows[index];
-        packet->Readback(index)->ReadInto(records.data() + offset, uint64_t{count} * sizeof(WarpBodyState));
+        packet->Readback(index)->ReadInto(records.data() + offset, uint64_t{count} * sizeof(InxPhyGpuBodyState));
         offset += count;
     }
-    std::vector<WarpHostBody> bodies;
+    std::vector<InxPhyGpuHostBody> bodies;
     bodies.reserve(m_bodies.size());
     for (const auto &body : m_bodies)
         bodies.push_back(DecodeHostBody(records[body.packedRow], body.id, body.shapeRevision));
     return bodies;
 }
 
-std::vector<RaycastHit> WarpSceneRayBatch::ReadHostHits() const
+std::vector<RaycastHit> InxPhyGpuSceneRayBatch::ReadHostHits() const
 {
     if (!m_layout)
-        throw std::logic_error("Warp scene ray batch has no host results");
-    std::vector<WarpRayHit> records(query.count);
-    query.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(WarpRayHit));
+        throw std::logic_error("inxphygpu scene ray batch has no host results");
+    std::vector<InxPhyGpuRayHit> records(query.count);
+    query.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(InxPhyGpuRayHit));
     const auto &world = m_layout->worlds[m_world];
     std::vector<RaycastHit> hits(records.size());
     for (size_t index = 0; index < records.size(); ++index) {
@@ -153,17 +153,18 @@ std::vector<RaycastHit> WarpSceneRayBatch::ReadHostHits() const
     return hits;
 }
 
-WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target,
-                                   const WarpSceneModel &scene, std::vector<WarpRegisteredWorld> worlds, float timestep,
-                                   const ModelVector &gravity, WarpCollisionCapacity collisionCapacity,
-                                   const WarpContactSolver &solver, uint32_t commandCapacity, bool contactReports,
-                                   uint32_t substeps, WarpRayBatchLayout rayLayout)
+InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target,
+                                             const InxPhyGpuSceneModel &scene,
+                                             std::vector<InxPhyGpuRegisteredWorld> worlds, float timestep,
+                                             const ModelVector &gravity, InxPhyGpuCollisionCapacity collisionCapacity,
+                                             const InxPhyGpuContactSolver &solver, uint32_t commandCapacity,
+                                             bool contactReports, uint32_t substeps, InxPhyGpuRayBatchLayout rayLayout)
     : m_work(work), m_host(host), m_bodyCount(scene.model.dimensions.state[2]),
       m_contactReportsConfigured(contactReports)
 {
     if (worlds.empty() || commandCapacity == 0)
-        throw std::invalid_argument("Warp scene requires worlds and a body command capacity");
-    auto layout = std::make_shared<WarpSceneLayout>();
+        throw std::invalid_argument("inxphygpu scene requires worlds and a body command capacity");
+    auto layout = std::make_shared<InxPhyGpuSceneLayout>();
     layout->worlds.reserve(worlds.size());
     layout->worldRows.reserve(worlds.size());
     m_acceptedWorlds.reserve(worlds.size());
@@ -175,34 +176,34 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
     for (auto &source : worlds) {
         if (source.bodies.size() != scene.bodies.size() ||
             !layout->worldRows.emplace(source.worldId, static_cast<uint32_t>(layout->worlds.size())).second)
-            throw std::invalid_argument("Warp scene world does not match its shared model");
-        WarpSceneLayout::World world{std::vector<WarpRegisteredBody>(m_bodyCount), {}, {}};
+            throw std::invalid_argument("inxphygpu scene world does not match its shared model");
+        InxPhyGpuSceneLayout::World world{std::vector<InxPhyGpuRegisteredBody>(m_bodyCount), {}, {}};
         world.rows.reserve(source.bodies.size());
         for (size_t index = 0; index < source.bodies.size(); ++index) {
             auto &binding = source.bodies[index];
             const auto &authored = scene.bodies[index];
             const auto row = authored.bodyRow;
             if (binding.bodyId == UINT32_MAX || !world.rows.emplace(binding.bodyId, row).second)
-                throw std::invalid_argument("Duplicate or invalid Warp scene body identity");
+                throw std::invalid_argument("Duplicate or invalid inxphygpu scene body identity");
             if (!binding.surfaces.empty() && binding.surfaces.size() != authored.surfaceCount)
-                throw std::invalid_argument("Warp scene collider identities must match the shared model");
+                throw std::invalid_argument("inxphygpu scene collider identities must match the shared model");
             world.bodies[row] = std::move(binding);
         }
         world.joints.reserve(source.joints.size());
         for (const auto &binding : source.joints) {
             const auto &joint = scene.jointBindings.at(binding.authorRow);
             if (joint.row == NoModelIndex || !world.joints.emplace(binding.jointId, joint).second)
-                throw std::invalid_argument("Duplicate or invalid Warp scene joint identity");
+                throw std::invalid_argument("Duplicate or invalid inxphygpu scene joint identity");
         }
         m_acceptedWorlds.push_back({{source.worldId, source.simulationEpoch, 0}, 0.0f, 0, 0});
         layout->worlds.push_back(std::move(world));
     }
     m_layout = std::move(layout);
-    auto prepared = WarpStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_layout->worlds.size()),
-                                    timestep, gravity, &scene.collision, collisionCapacity, &solver, rayLayout,
-                                    commandCapacity, contactReports, substeps);
+    auto prepared = InxPhyGpuStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_layout->worlds.size()),
+                                         timestep, gravity, &scene.collision, collisionCapacity, &solver, rayLayout,
+                                         commandCapacity, contactReports, substeps);
     if (!prepared.step)
-        throw std::runtime_error("Could not allocate the Warp scene world layout");
+        throw std::runtime_error("Could not allocate the inxphygpu scene world layout");
     m_step = std::move(prepared.step);
     m_packet = std::move(prepared.initialize);
     const auto observe = [this] { Observe(); };
@@ -210,82 +211,84 @@ WarpSceneRuntime::WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host,
                                  [this](bool gpu, uint64_t token) { return Advance(gpu, token); }});
 }
 
-WarpSceneRuntime::~WarpSceneRuntime()
+InxPhyGpuSceneRuntime::~InxPhyGpuSceneRuntime()
 {
     Retire();
     m_work.RemoveSource(m_source);
 }
 
-std::optional<uint32_t> WarpSceneRuntime::BodyRow(uint32_t world, uint32_t engineBody) const
+std::optional<uint32_t> InxPhyGpuSceneRuntime::BodyRow(uint32_t world, uint32_t engineBody) const
 {
     return m_layout->worlds.at(world).BodyRow(engineBody);
 }
 
-std::optional<WarpFixedPublication> WarpSceneRuntime::TakeInitial()
+std::optional<InxPhyGpuFixedPublication> InxPhyGpuSceneRuntime::TakeInitial()
 {
     return std::exchange(m_initialPublication, std::nullopt);
 }
 
-void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
-                                  const std::vector<WarpSceneBodyCommand> &commands, bool host, bool captureContacts,
-                                  const std::vector<WarpSceneJointUpdate> &jointUpdates, PublicationConsumer consumer)
+void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
+                                       const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host,
+                                       bool captureContacts, const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
+                                       PublicationConsumer consumer)
 {
     if (captureContacts && !m_contactReportsConfigured)
-        throw std::logic_error("Warp scene was prepared without contact report storage");
+        throw std::logic_error("inxphygpu scene was prepared without contact report storage");
     const auto &worlds = m_layout->worlds;
     if (identities.size() != worlds.size())
-        throw std::invalid_argument("Warp fixed step requires an identity per world");
+        throw std::invalid_argument("inxphygpu fixed step requires an identity per world");
     for (size_t world = 0; world < identities.size(); ++world) {
         const auto &next = identities[world];
         const auto &previous = m_acceptedWorlds[world].identity;
         if (next.worldId != previous.worldId || next.simulationEpoch != previous.simulationEpoch ||
             next.fixedStepIndex <= previous.fixedStepIndex)
-            throw std::invalid_argument("Warp fixed step must advance the enrolled world and epoch");
+            throw std::invalid_argument("inxphygpu fixed step must advance the enrolled world and epoch");
     }
-    std::vector<WarpBodyCommand> actions;
+    std::vector<InxPhyGpuBodyCommand> actions;
     actions.reserve(commands.size());
     for (const auto &entry : commands)
         EncodeBodyCommand(m_layout->WorldRow(entry.worldId), entry.command, actions);
-    std::vector<WarpJointParameterUpdate> updates;
+    std::vector<InxPhyGpuJointParameterUpdate> updates;
     updates.reserve(jointUpdates.size());
     for (const auto &update : jointUpdates) {
         const auto world = m_layout->WorldRow(update.worldId);
         const auto &joints = worlds[world].joints;
         const auto binding = joints.find(update.jointId);
         if (binding == joints.end())
-            throw std::invalid_argument("Warp joint update requires an enrolled joint in the selected world");
+            throw std::invalid_argument("inxphygpu joint update requires an enrolled joint in the selected world");
         const auto &joint = binding->second;
-        if (const auto *limits = std::get_if<WarpJointLimits>(&update.value)) {
+        if (const auto *limits = std::get_if<InxPhyGpuJointLimits>(&update.value)) {
             const auto minimum = limits->minimum, maximum = limits->maximum;
-            const bool axial = joint.kind == WarpSceneJointKind::Hinge || joint.kind == WarpSceneJointKind::Slider ||
-                               joint.kind == WarpSceneJointKind::Distance;
+            const bool axial = joint.kind == InxPhyGpuSceneJointKind::Hinge ||
+                               joint.kind == InxPhyGpuSceneJointKind::Slider ||
+                               joint.kind == InxPhyGpuSceneJointKind::Distance;
             if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum > maximum || !axial ||
-                (joint.kind == WarpSceneJointKind::Slider && (minimum > 0.0f || maximum < 0.0f)) ||
-                (joint.kind == WarpSceneJointKind::Distance &&
+                (joint.kind == InxPhyGpuSceneJointKind::Slider && (minimum > 0.0f || maximum < 0.0f)) ||
+                (joint.kind == InxPhyGpuSceneJointKind::Distance &&
                  (joint.autoDistance || !limits->enabled || minimum < 0.0f)))
                 throw std::invalid_argument(
-                    "Warp joint limits must match the enrolled constraint and its authored mode");
+                    "inxphygpu joint limits must match the enrolled constraint and its authored mode");
             updates.push_back({world, joint.parameterOffset, limits->Pack()});
-        } else if (const auto *drive = std::get_if<WarpHingeDrive>(&update.value)) {
-            if (joint.kind != WarpSceneJointKind::Hinge)
-                throw std::invalid_argument("Warp hinge drive requires an enrolled hinge");
+        } else if (const auto *drive = std::get_if<InxPhyGpuHingeDrive>(&update.value)) {
+            if (joint.kind != InxPhyGpuSceneJointKind::Hinge)
+                throw std::invalid_argument("inxphygpu hinge drive requires an enrolled hinge");
             updates.push_back({world, joint.parameterOffset + 1, drive->Pack()});
-        } else if (const auto *spring = std::get_if<WarpDistanceSpring>(&update.value)) {
-            if (joint.kind != WarpSceneJointKind::Distance || !std::isfinite(spring->stiffness) ||
+        } else if (const auto *spring = std::get_if<InxPhyGpuDistanceSpring>(&update.value)) {
+            if (joint.kind != InxPhyGpuSceneJointKind::Distance || !std::isfinite(spring->stiffness) ||
                 !std::isfinite(spring->damping) || spring->stiffness < 0.0f || spring->damping < 0.0f)
                 throw std::invalid_argument(
-                    "Warp distance spring requires finite nonnegative coefficients on a distance joint");
+                    "inxphygpu distance spring requires finite nonnegative coefficients on a distance joint");
             updates.push_back({world, joint.parameterOffset + 1, *spring});
         } else {
-            if (joint.kind != WarpSceneJointKind::SwingTwist)
-                throw std::invalid_argument("Warp swing-twist parameters require an enrolled swing-twist joint");
+            if (joint.kind != InxPhyGpuSceneJointKind::SwingTwist)
+                throw std::invalid_argument("inxphygpu swing-twist parameters require an enrolled swing-twist joint");
             constexpr uint32_t targetOffset = sizeof(ModelSwingTwistControls) / sizeof(ModelWords);
-            if (const auto *parameters = std::get_if<WarpSwingTwistParameters>(&update.value)) {
+            if (const auto *parameters = std::get_if<InxPhyGpuSwingTwistParameters>(&update.value)) {
                 updates.push_back({world, joint.parameterOffset, parameters->controls});
                 updates.push_back({world, joint.parameterOffset + targetOffset, parameters->targets.Pack()});
             } else {
                 updates.push_back({world, joint.parameterOffset + targetOffset,
-                                   std::get<WarpSwingTwistTargets>(update.value).Pack()});
+                                   std::get<InxPhyGpuSwingTwistTargets>(update.value).Pack()});
             }
         }
     }
@@ -293,34 +296,35 @@ void WarpSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
                     std::move(consumer), true});
 }
 
-void WarpSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
-                                  PublicationConsumer consumer)
+void InxPhyGpuSceneRuntime::BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
+                                       PublicationConsumer consumer)
 {
     const auto world = m_layout->WorldRow(worldId);
-    std::vector<WarpBodyCommand> edits;
+    std::vector<InxPhyGpuBodyCommand> edits;
     edits.reserve(commands.size());
     for (const auto &command : commands)
         EncodeBodyCommand(world, command, edits);
     if (edits.empty())
-        throw std::invalid_argument("Warp scene edit requires at least one body command");
+        throw std::invalid_argument("inxphygpu scene edit requires at least one body command");
     BeginOperation({{}, std::move(edits), {}, false, false, std::move(consumer), false});
 }
 
-void WarpSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
-                                         std::vector<WarpBodyCommand> &out) const
+void InxPhyGpuSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
+                                              std::vector<InxPhyGpuBodyCommand> &out) const
 {
     const auto row = m_layout->worlds[world].BodyRow(command.bodyId);
     if (!row)
-        throw std::invalid_argument("Warp scene command requires an accepted body in the selected world");
+        throw std::invalid_argument("inxphygpu scene command requires an accepted body in the selected world");
     const auto vector = [](const glm::vec3 &v) -> ModelVector { return {v.x, v.y, v.z, 0.0f}; };
     const auto rotation = [](const glm::quat &q) -> ModelVector { return {q.w, q.x, q.y, q.z}; };
-    using Kind = WarpBodyCommandKind;
+    using Kind = InxPhyGpuBodyCommandKind;
     const auto append = [&](Kind kind, ModelVector value = {}, ForceMode mode = {},
-                            ModelVector point = {}) -> WarpBodyCommand & {
-        return out.emplace_back(WarpBodyCommand{world, *row, kind, mode, value, point});
+                            ModelVector point = {}) -> InxPhyGpuBodyCommand & {
+        return out.emplace_back(InxPhyGpuBodyCommand{world, *row, kind, mode, value, point});
     };
     if (const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation)) {
-        const auto flags = pose->cancelDrive ? WarpPoseCommandFlags::None : WarpPoseCommandFlags::PreserveDrive;
+        const auto flags =
+            pose->cancelDrive ? InxPhyGpuPoseCommandFlags::None : InxPhyGpuPoseCommandFlags::PreserveDrive;
         if (pose->position)
             append(Kind::SetPosition, vector(*pose->position)).poseFlags = flags;
         if (pose->rotation)
@@ -343,23 +347,23 @@ void WarpSceneRuntime::EncodeBodyCommand(uint32_t world, const PhysicsBodyComman
     }
 }
 
-void WarpSceneRuntime::BeginOperation(Operation operation)
+void InxPhyGpuSceneRuntime::BeginOperation(Operation operation)
 {
     if (m_retiring || m_operation || m_publication)
-        throw std::logic_error("Warp scene still owns a physics operation");
+        throw std::logic_error("inxphygpu scene still owns a physics operation");
     m_initialPublication.reset();
     m_operation.emplace(std::move(operation));
     ++m_generation;
     m_work.Wake(m_source);
 }
 
-std::optional<WarpFixedPublication> WarpSceneRuntime::TakePublication()
+std::optional<InxPhyGpuFixedPublication> InxPhyGpuSceneRuntime::TakePublication()
 {
     return std::exchange(m_publication, std::nullopt);
 }
 
-std::optional<WarpHostBody> WarpSceneRuntime::ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
-                                                           uint32_t engineBody) const
+std::optional<InxPhyGpuHostBody> InxPhyGpuSceneRuntime::ReadHostBody(const InxPhyGpuFixedPublication &publication,
+                                                                     uint32_t world, uint32_t engineBody) const
 {
     if (publication.m_layout != m_layout || publication.hostBodies.empty())
         return std::nullopt;
@@ -371,14 +375,15 @@ std::optional<WarpHostBody> WarpSceneRuntime::ReadHostBody(const WarpFixedPublic
     return DecodeHostBody(raw, engineBody, layout.bodies[*row].shapeRevision);
 }
 
-WarpSceneBodyRead WarpSceneRuntime::PrepareBodyRead(const WarpFixedPublication &publication, uint32_t world,
-                                                    const std::vector<uint32_t> &engineBodies) const
+InxPhyGpuSceneBodyRead InxPhyGpuSceneRuntime::PrepareBodyRead(const InxPhyGpuFixedPublication &publication,
+                                                              uint32_t world,
+                                                              const std::vector<uint32_t> &engineBodies) const
 {
     if (publication.m_layout != m_layout)
-        throw std::invalid_argument("Warp body read does not match its scene publication");
+        throw std::invalid_argument("inxphygpu body read does not match its scene publication");
     const auto source = publication.PoseSource(world);
     const auto &layout = m_layout->worlds[world];
-    WarpSceneBodyRead result;
+    InxPhyGpuSceneBodyRead result;
     result.identity = publication.worlds[world].identity;
     result.m_bodies.resize(engineBodies.size());
     std::vector<std::pair<uint32_t, size_t>> rows;
@@ -386,12 +391,12 @@ WarpSceneBodyRead WarpSceneRuntime::PrepareBodyRead(const WarpFixedPublication &
     for (size_t index = 0; index < engineBodies.size(); ++index) {
         const auto row = layout.BodyRow(engineBodies[index]);
         if (!row)
-            throw std::invalid_argument("Warp body read requires an accepted body in the selected world");
+            throw std::invalid_argument("inxphygpu body read requires an accepted body in the selected world");
         rows.emplace_back(*row, index);
     }
     std::sort(rows.begin(), rows.end());
 
-    constexpr auto bytes = sizeof(WarpBodyState);
+    constexpr auto bytes = sizeof(InxPhyGpuBodyState);
     uint32_t previous = NoModelIndex;
     std::vector<rhi::ComputeBufferRead> reads;
     for (const auto &[row, index] : rows) {
@@ -415,16 +420,17 @@ WarpSceneBodyRead WarpSceneRuntime::PrepareBodyRead(const WarpFixedPublication &
     return result;
 }
 
-WarpSceneRayBatch WarpSceneRuntime::PrepareRaycast(const WarpFixedPublication &publication, uint32_t world,
-                                                   const std::vector<WarpRay> &rays, bool readback) const
+InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareRaycast(const InxPhyGpuFixedPublication &publication,
+                                                             uint32_t world, const std::vector<InxPhyGpuRay> &rays,
+                                                             bool readback) const
 {
     if (publication.m_layout != m_layout || rays.size() > UINT32_MAX)
-        throw std::invalid_argument("Warp ray batch does not match its scene publication");
+        throw std::invalid_argument("inxphygpu ray batch does not match its scene publication");
     const auto source = publication.PoseSource(world);
-    std::vector<uint8_t> inputs(rays.size() * sizeof(WarpRay));
+    std::vector<uint8_t> inputs(rays.size() * sizeof(InxPhyGpuRay));
     if (!inputs.empty())
         std::memcpy(inputs.data(), rays.data(), inputs.size());
-    WarpSceneRayBatch result;
+    InxPhyGpuSceneRayBatch result;
     result.identity = publication.worlds[world].identity;
     result.query = m_step->PreparePublishedRays(source, static_cast<uint32_t>(rays.size()), readback,
                                                 {{m_step->Rays().inputs, 0, std::move(inputs)}});
@@ -439,7 +445,7 @@ WarpSceneRayBatch WarpSceneRuntime::PrepareRaycast(const WarpFixedPublication &p
     return result;
 }
 
-FrameWorkFacts WarpSceneRuntime::Describe() const
+FrameWorkFacts InxPhyGpuSceneRuntime::Describe() const
 {
     FrameWorkFacts facts;
     facts.pending = m_operation || m_packet || m_receipt;
@@ -455,7 +461,7 @@ FrameWorkFacts WarpSceneRuntime::Describe() const
     return facts;
 }
 
-bool WarpSceneRuntime::Advance(bool gpu, uint64_t token)
+bool InxPhyGpuSceneRuntime::Advance(bool gpu, uint64_t token)
 {
     if (token != m_generation)
         return false;
@@ -472,7 +478,7 @@ bool WarpSceneRuntime::Advance(bool gpu, uint64_t token)
             return false;
         m_preservation = std::move(prepared.copy);
     } else if (m_operation->integrate) {
-        const auto output = m_operation->host ? WarpBodyPublication::Cpu : WarpBodyPublication::Status;
+        const auto output = m_operation->host ? InxPhyGpuBodyPublication::Cpu : InxPhyGpuBodyPublication::Status;
         m_packet = m_step->PrepareControlled(m_operation->commands, output, {}, m_operation->captureContacts,
                                              m_operation->jointUpdates);
         m_packetKind = Packet::Fixed;
@@ -487,7 +493,7 @@ bool WarpSceneRuntime::Advance(bool gpu, uint64_t token)
     return true;
 }
 
-bool WarpSceneRuntime::Submit()
+bool InxPhyGpuSceneRuntime::Submit()
 {
     const auto &packet = m_preservation ? m_preservation : m_packet;
     const auto kind = m_preservation ? Packet::Preserve : m_packetKind;
@@ -507,7 +513,7 @@ bool WarpSceneRuntime::Submit()
     return true;
 }
 
-void WarpSceneRuntime::Observe()
+void InxPhyGpuSceneRuntime::Observe()
 {
     if (m_receipt && !m_receipt->ready && m_receipt->completion.IsComplete()) {
         m_receipt->ready = true;
@@ -516,7 +522,7 @@ void WarpSceneRuntime::Observe()
     }
 }
 
-void WarpSceneRuntime::Finish()
+void InxPhyGpuSceneRuntime::Finish()
 {
     const auto kind = m_receipt->kind;
     if (const auto measured = m_receipt->completion.GetDeviceElapsedNanoseconds()) {
@@ -558,9 +564,9 @@ void WarpSceneRuntime::Finish()
     }
 }
 
-WarpFixedPublication WarpSceneRuntime::CapturePublication(const rhi::PreparedComputeBatch &packet) const
+InxPhyGpuFixedPublication InxPhyGpuSceneRuntime::CapturePublication(const rhi::PreparedComputeBatch &packet) const
 {
-    WarpFixedPublication result;
+    InxPhyGpuFixedPublication result;
     result.m_layout = m_layout;
     result.submission = packet.GetSubmission();
     result.bodyStates = m_step->BodyStates()->Freeze();
@@ -570,7 +576,7 @@ WarpFixedPublication WarpSceneRuntime::CapturePublication(const rhi::PreparedCom
     return result;
 }
 
-void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
+void InxPhyGpuSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
 {
     auto readback = packet.Readback(0);
     (void)readback->IsComplete(); // The enclosing packet receipt is already complete.
@@ -581,7 +587,7 @@ void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
     size_t offset = 0;
     if (m_operation->host) {
         result.hostBodies.resize(uint64_t{m_bodyCount} * worldCount);
-        offset = result.hostBodies.size() * sizeof(WarpBodyState);
+        offset = result.hostBodies.size() * sizeof(InxPhyGpuBodyState);
         std::memcpy(result.hostBodies.data(), data.data(), offset);
     }
     for (const auto &identity : m_operation->identities) {
@@ -615,7 +621,7 @@ void WarpSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
     PrepareConsumer(std::move(result));
 }
 
-void WarpSceneRuntime::FinishReports(const rhi::PreparedComputeBatch &packet)
+void InxPhyGpuSceneRuntime::FinishReports(const rhi::PreparedComputeBatch &packet)
 {
     auto result = std::exchange(m_pendingPublication, std::nullopt);
     size_t index = 0;
@@ -625,12 +631,12 @@ void WarpSceneRuntime::FinishReports(const rhi::PreparedComputeBatch &packet)
         auto readback = packet.Readback(index++);
         (void)readback->IsComplete();
         const auto bytes = readback->GetData();
-        std::memcpy(reports.data(), bytes.data(), reports.size() * sizeof(WarpContactReport));
+        std::memcpy(reports.data(), bytes.data(), reports.size() * sizeof(InxPhyGpuContactReport));
     }
     PrepareConsumer(std::move(*result));
 }
 
-void WarpSceneRuntime::PrepareConsumer(WarpFixedPublication publication)
+void InxPhyGpuSceneRuntime::PrepareConsumer(InxPhyGpuFixedPublication publication)
 {
     auto work = m_operation->consumer ? m_operation->consumer(publication) : PublicationWork{};
     if (work.packet) {
@@ -645,7 +651,7 @@ void WarpSceneRuntime::PrepareConsumer(WarpFixedPublication publication)
     }
 }
 
-void WarpSceneRuntime::PublishCompleted(WarpFixedPublication publication)
+void InxPhyGpuSceneRuntime::PublishCompleted(InxPhyGpuFixedPublication publication)
 {
     if (m_operation->integrate)
         for (size_t i = 0; i < publication.worlds.size(); ++i)
@@ -655,7 +661,7 @@ void WarpSceneRuntime::PublishCompleted(WarpFixedPublication publication)
     m_publication.emplace(std::move(publication));
 }
 
-FrameWorkWaitResult WarpSceneRuntime::WaitForProgress(uint64_t nanoseconds)
+FrameWorkWaitResult InxPhyGpuSceneRuntime::WaitForProgress(uint64_t nanoseconds)
 {
     if (m_receipt) {
         if (m_receipt->ready)
@@ -674,7 +680,7 @@ FrameWorkWaitResult WarpSceneRuntime::WaitForProgress(uint64_t nanoseconds)
     return FrameWorkWaitResult::Blocked;
 }
 
-void WarpSceneRuntime::Retire() noexcept
+void InxPhyGpuSceneRuntime::Retire() noexcept
 {
     m_retiring = true;
     m_operation.reset();
@@ -693,9 +699,9 @@ void WarpSceneRuntime::Retire() noexcept
     ++m_generation;
 }
 
-bool WarpSceneRuntime::CanRetire() const noexcept
+bool InxPhyGpuSceneRuntime::CanRetire() const noexcept
 {
     return !m_packet && !m_preservation && !m_receipt;
 }
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

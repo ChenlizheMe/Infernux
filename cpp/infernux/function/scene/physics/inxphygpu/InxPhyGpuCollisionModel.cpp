@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Infernux contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "WarpCollisionModel.h"
+#include "InxPhyGpuCollisionModel.h"
 #include "PhysicsRayIndex.h"
 
 #include <algorithm>
@@ -11,11 +11,11 @@
 #include <tuple>
 #include <unordered_map>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
-static_assert(sizeof(WarpLocalBound) == 64);
-static_assert(sizeof(WarpCollisionShape) == 32);
-static_assert(sizeof(WarpContactMaterial) == 96);
+static_assert(sizeof(InxPhyGpuLocalBound) == 64);
+static_assert(sizeof(InxPhyGpuCollisionShape) == 32);
+static_assert(sizeof(InxPhyGpuContactMaterial) == 96);
 
 namespace
 {
@@ -57,7 +57,7 @@ struct ConvexData
     {
     }
 
-    const PackedHull &AddHull(const WarpConvexHull &hull)
+    const PackedHull &AddHull(const InxPhyGpuConvexHull &hull)
     {
         const auto cached = hulls.find(&hull);
         if (cached != hulls.end())
@@ -65,7 +65,7 @@ struct ConvexData
         const auto count = static_cast<uint32_t>(hull.vertices.size());
         const auto faces = static_cast<uint32_t>(hull.faces.size());
         if (count < 4 || faces < 4)
-            throw std::invalid_argument("Warp convex hull has no closed surface");
+            throw std::invalid_argument("inxphygpu convex hull has no closed surface");
 
         PackedHull packed;
         packed.shape = {Hull, static_cast<uint32_t>(vertices.size()), count, NoModelIndex};
@@ -94,7 +94,7 @@ struct ConvexData
             if (size < 3 ||
                 std::any_of(
                     source.vertices.begin(), source.vertices.end(), [count](uint32_t index) { return index >= count; }))
-                throw std::invalid_argument("Invalid Warp convex hull face loop");
+                throw std::invalid_argument("Invalid inxphygpu convex hull face loop");
             polygonVertices = std::max(polygonVertices, size);
             topology.push_back({static_cast<uint32_t>(links.size()), size, static_cast<uint32_t>(vertices.size()), 0});
             vertices.push_back(FloatWords(source.normal));
@@ -131,11 +131,11 @@ struct ConvexData
         return hulls.emplace(&hull, std::move(packed)).first->second;
     }
 
-    uint32_t AddHeightfield(const WarpHeightfield &field, const ModelVector &size)
+    uint32_t AddHeightfield(const InxPhyGpuHeightfield &field, const ModelVector &size)
     {
         if (field.rows < 2 || field.columns < 2 || field.samples.size() != uint64_t{field.rows} * field.columns ||
             size[0] <= 0 || size[1] <= 0 || size[2] < 0 || size[3] < 0)
-            throw std::invalid_argument("Invalid Warp heightfield grid");
+            throw std::invalid_argument("Invalid inxphygpu heightfield grid");
         const auto [sample, inserted] = sampleOffsets.try_emplace(&field, static_cast<uint32_t>(samples.size()));
         if (inserted) {
             for (const float height : field.samples) {
@@ -150,13 +150,13 @@ struct ConvexData
         return row;
     }
 
-    const PackedMesh &AddTriangleMesh(const WarpTriangleMesh &mesh)
+    const PackedMesh &AddTriangleMesh(const InxPhyGpuTriangleMesh &mesh)
     {
         const auto cached = triangleMeshes.find(&mesh);
         if (cached != triangleMeshes.end())
             return cached->second;
         if (mesh.faces.empty() || mesh.faces.size() != mesh.features.size())
-            throw std::invalid_argument("Warp triangle mesh requires face features");
+            throw std::invalid_argument("inxphygpu triangle mesh requires face features");
         const auto base = static_cast<uint32_t>(vertices.size());
         float radius = 0.0f;
         for (const auto &vertex : mesh.vertices) {
@@ -213,18 +213,20 @@ struct ConvexData
     uint32_t polygonVertices = 4;
     std::vector<ModelWords> vertices, topology, heightfields, meshRecords;
     std::vector<uint32_t> adjacency, links, samples;
-    std::unordered_map<const WarpConvexHull *, PackedHull> hulls;
-    std::unordered_map<const WarpHeightfield *, uint32_t> sampleOffsets;
-    std::unordered_map<const WarpTriangleMesh *, PackedMesh> triangleMeshes;
+    std::unordered_map<const InxPhyGpuConvexHull *, PackedHull> hulls;
+    std::unordered_map<const InxPhyGpuHeightfield *, uint32_t> sampleOffsets;
+    std::unordered_map<const InxPhyGpuTriangleMesh *, PackedMesh> triangleMeshes;
 };
 } // namespace
 
-WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::vector<WarpCollisionGeometry> &geometries,
-                                           std::vector<WarpCollisionPair> pairs, bool filterConnectedBodies)
+InxPhyGpuCollisionModel BuildInxPhyGpuCollisionModel(const InxPhyGpuModel &model,
+                                                     const std::vector<InxPhyGpuCollisionGeometry> &geometries,
+                                                     std::vector<InxPhyGpuCollisionPair> pairs,
+                                                     bool filterConnectedBodies)
 {
     const auto count = model.dimensions.layout[0];
     if (geometries.size() != count)
-        throw std::invalid_argument("Warp collision geometry must follow the compiled model order");
+        throw std::invalid_argument("inxphygpu collision geometry must follow the compiled model order");
 
     std::vector<uint32_t> welded(model.bodies.size(), 0);
     for (uint32_t body = 1; body < model.bodies.size(); ++body) {
@@ -232,7 +234,7 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
         welded[body] = row.dofs[1] != 0 || row.hierarchy[3] != NoModelIndex ? body : welded[row.hierarchy[0]];
     }
 
-    WarpCollisionModel result;
+    InxPhyGpuCollisionModel result;
     result.filterConnectedBodies = filterConnectedBodies;
     result.bounds.reserve(count);
     result.shapes.reserve(count);
@@ -258,7 +260,7 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
         auto &shape = result.shapes.back();
         if (type == Hull) {
             if (!source.hull)
-                throw std::invalid_argument("Warp convex mesh requires its cooked hull");
+                throw std::invalid_argument("inxphygpu convex mesh requires its cooked hull");
             const auto &hull = convex.AddHull(*source.hull);
             shape.type = hull.shape;
             convex.topology[geom] = hull.topology;
@@ -267,7 +269,7 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
             bounds.radii[0] = hull.radius;
         } else if (type == Heightfield) {
             if (!source.heightfield)
-                throw std::invalid_argument("Warp heightfield requires its sample grid");
+                throw std::invalid_argument("inxphygpu heightfield requires its sample grid");
             shape.type[1] = convex.AddHeightfield(*source.heightfield, source.size);
             const auto [x, y, height, depth] = source.size;
             bounds.center = {0, 0, (height - depth) * 0.5f, 0};
@@ -276,7 +278,7 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
             result.heightfields = true;
         } else if (type == TriangleMesh) {
             if (!source.mesh || model.bodies[weld].dofs[1] != 0)
-                throw std::invalid_argument("Warp triangle mesh requires cooked geometry on a non-dynamic body");
+                throw std::invalid_argument("inxphygpu triangle mesh requires cooked geometry on a non-dynamic body");
             const auto &mesh = convex.AddTriangleMesh(*source.mesh);
             shape.type = {TriangleMesh, mesh.descriptor, source.meshPath, source.meshPathBits};
             bounds.center = mesh.center;
@@ -307,7 +309,7 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
             std::swap(pair.firstGeometry, pair.secondGeometry);
         if (pair.firstGeometry == pair.secondGeometry || pair.secondGeometry >= count ||
             (pair.suppressContact && pair.material))
-            throw std::invalid_argument("Invalid Warp collision pair override");
+            throw std::invalid_argument("Invalid inxphygpu collision pair override");
     }
     const auto key = [](const auto &pair) { return std::tie(pair.firstGeometry, pair.secondGeometry); };
     std::sort(pairs.begin(), pairs.end(), [&](const auto &a, const auto &b) { return key(a) < key(b); });
@@ -318,7 +320,7 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
         while (next != pairs.end() && next->firstGeometry == geom) {
             const auto &pair = *next++;
             if (next != pairs.end() && key(pair) == key(*next))
-                throw std::invalid_argument("Duplicate Warp collision pair override");
+                throw std::invalid_argument("Duplicate inxphygpu collision pair override");
             int32_t policy = pair.suppressContact ? -2 : -1;
             float margin = 0.0f;
             if (pair.material) {
@@ -338,4 +340,4 @@ WarpCollisionModel BuildWarpCollisionModel(const WarpModel &model, const std::ve
     return result;
 }
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

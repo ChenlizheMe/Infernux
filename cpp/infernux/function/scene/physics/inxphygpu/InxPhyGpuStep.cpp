@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Infernux contributors
 // SPDX-License-Identifier: Apache-2.0
 
-#include "WarpStep.h"
+#include "InxPhyGpuStep.h"
 #include "../../Rigidbody.h"
+#include "InxPhyGpuCollisionModel.h"
+#include "InxPhyGpuProgramSources.h"
 #include "PhysicsRayIndex.h"
-#include "WarpCollisionModel.h"
-#include "WarpProgramSources.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -14,7 +14,7 @@
 #include <tuple>
 #include <unordered_map>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 namespace
 {
@@ -23,14 +23,14 @@ using Access = ComputeBufferAccess;
 constexpr auto R = Access::Read;
 constexpr auto W = Access::Write;
 constexpr auto RW = Access::ReadWrite;
-static_assert(sizeof(WarpRay) == 48);
-static_assert(sizeof(WarpRayHit) == 32);
-static_assert(sizeof(WarpBodyCommand) == 48);
+static_assert(sizeof(InxPhyGpuRay) == 48);
+static_assert(sizeof(InxPhyGpuRayHit) == 32);
+static_assert(sizeof(InxPhyGpuBodyCommand) == 48);
 static_assert(sizeof(ModelJointVectors) == 32);
 static_assert(sizeof(ModelWords) == 16 && sizeof(ModelVector) == 16);
-static_assert(sizeof(WarpDistanceSpring) == 8);
-static_assert(sizeof(WarpBodyState) == 80);
-static_assert(sizeof(WarpContactReport) == 96);
+static_assert(sizeof(InxPhyGpuDistanceSpring) == 8);
+static_assert(sizeof(InxPhyGpuBodyState) == 80);
+static_assert(sizeof(InxPhyGpuContactReport) == 96);
 static_assert(static_cast<uint32_t>(ForceMode::Force) == 0 && static_cast<uint32_t>(ForceMode::Acceleration) == 1 &&
               static_cast<uint32_t>(ForceMode::Impulse) == 2 && static_cast<uint32_t>(ForceMode::VelocityChange) == 3);
 
@@ -125,12 +125,12 @@ class StepBuilder
     {
         auto foundProgram = programs.find(module);
         if (foundProgram == programs.end())
-            foundProgram = programs.emplace(module, LoadWarpProgram(module, target)).first;
+            foundProgram = programs.emplace(module, LoadInxPhyGpuProgram(module, target)).first;
         const auto &program = foundProgram->second;
         const auto entry = std::find_if(program.entries.begin(), program.entries.end(),
                                         [name](const auto &item) { return item.name == name; });
         if (entry == program.entries.end() || entry->bindings.size() != uses.size())
-            throw std::logic_error("Warp step resources do not match " + std::string(name));
+            throw std::logic_error("inxphygpu step resources do not match " + std::string(name));
 
         ComputeWorkDispatch result;
         const auto width = entry->workgroupSize[0];
@@ -146,7 +146,7 @@ class StepBuilder
             });
             if (resource == program.resources.end() ||
                 std::find(entry->bindings.begin(), entry->bindings.end(), key) == entry->bindings.end())
-                throw std::logic_error("Warp step resource is absent from " + std::string(name));
+                throw std::logic_error("inxphygpu step resource is absent from " + std::string(name));
             const auto range = Range(use.slot);
             if (use.complete)
                 result.completeWrites.push_back({static_cast<uint32_t>(result.bindings.size()), 0, range.byteSize});
@@ -175,7 +175,7 @@ class StepBuilder
     uint32_t Zero(std::string name, uint64_t words, BufferUsageFlags usage = BufferUsageFlags::None)
     {
         if (words > UINT32_MAX)
-            throw std::length_error("Warp scratch exceeds the shader address space");
+            throw std::length_error("inxphygpu scratch exceeds the shader address space");
         const auto slot = Slot(words, usage);
         ports.push_back({std::move(name), Range(slot), true});
         auto clear = Dispatch("state_snapshot", "initialize_step_scratch",
@@ -212,7 +212,8 @@ struct GeometrySlots
     uint32_t geometries, bounds, frames, shapes, data;
 };
 
-GeometrySlots BindGeometry(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision, bool rays)
+GeometrySlots BindGeometry(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
+                           bool rays)
 {
     const auto count = model.dimensions.layout[0];
     return {b.Shared("geometries", model.geometries), b.Shared("localBounds", collision.bounds),
@@ -221,8 +222,8 @@ GeometrySlots BindGeometry(StepBuilder &b, const WarpModel &model, const WarpCol
             rays || !collision.convexData.empty() ? b.Shared("convexModel", collision.convexData) : NoModelIndex};
 }
 
-ContactSlots AddCollision(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
-                          uint32_t dimensions, const GeometrySlots &geometry, WarpCollisionCapacity capacity,
+ContactSlots AddCollision(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
+                          uint32_t dimensions, const GeometrySlots &geometry, InxPhyGpuCollisionCapacity capacity,
                           float minimumRestitutionSpeed)
 {
     const auto ng = model.dimensions.layout[0];
@@ -362,7 +363,7 @@ struct BodyControlSlots
     uint32_t spans, commands, force, saved, prescribed, fixedSteps;
 };
 
-BodyControlSlots BindBodyControls(StepBuilder &b, const WarpModel &model, uint32_t capacity, bool multiple)
+BodyControlSlots BindBodyControls(StepBuilder &b, const InxPhyGpuModel &model, uint32_t capacity, bool multiple)
 {
     return {b.Seed("bodyCommandSpans", 4 * (uint64_t{capacity} + 1), nullptr),
             b.Seed("bodyCommands", 12 * uint64_t{capacity}, nullptr),
@@ -372,22 +373,22 @@ BodyControlSlots BindBodyControls(StepBuilder &b, const WarpModel &model, uint32
             b.Zero("acceptedFixedSteps", uint64_t{b.worlds} + uint32_t(multiple))};
 }
 
-RaySlots AddRayWork(StepBuilder &b, const WarpModel &model, const WarpCollisionModel &collision,
-                    const GeometrySlots &geometry, WarpRayBatchLayout layout, std::vector<ComputeWorkDispatch> &work,
-                    bool published)
+RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
+                    const GeometrySlots &geometry, InxPhyGpuRayBatchLayout layout,
+                    std::vector<ComputeWorkDispatch> &work, bool published)
 {
     const auto worlds = published ? 1u : b.worlds;
     const auto inputRows = layout.sharedRays ? 1u : worlds;
     const auto rayTotal = uint64_t{layout.raysPerWorld} * worlds;
     if (rayTotal > UINT32_MAX)
-        throw std::length_error("Warp ray batch exceeds the shader address space");
+        throw std::length_error("inxphygpu ray batch exceeds the shader address space");
     const auto inputs = b.Seed("rays", 12 * uint64_t{layout.raysPerWorld} * inputRows, nullptr);
     // Scene queries attach the actual result allocation when they are prepared.
     const auto hits = b.Slot(8 * (published ? 1u : rayTotal), BufferUsageFlags::TransferSource);
     const auto geometryCount = model.dimensions.layout[0];
     const ModelWords settings{geometryCount, layout.raysPerWorld, inputRows, 0};
     const auto query = b.Seed("raySettings", 4, &settings);
-    const auto index = BuildWarpRayIndex(model, collision);
+    const auto index = BuildInxPhyGpuRayIndex(model, collision);
     const auto nodes = b.Shared("rayIndex", index.records);
     const auto bounds = b.Zero("rayBounds", 8 * uint64_t{std::max(1u, index.nodeCount)} * worlds);
     const auto metadata = b.Shared("rayGeometry", collision.rayGeometry);
@@ -443,9 +444,9 @@ struct ReferenceWeights
     uint32_t dimensions, dofs, mass, centeredDof, inertiaFrames, subtreeCom, topology;
 };
 
-void InitializeWeights(StepBuilder &b, const WarpModel &model, const ReferenceWeights &ref)
+void InitializeWeights(StepBuilder &b, const InxPhyGpuModel &model, const ReferenceWeights &ref)
 {
-    const auto factorization = BuildWarpReferenceMassFactors(model);
+    const auto factorization = BuildInxPhyGpuReferenceMassFactors(model);
     const auto layout = b.Seed("referenceFactorLayout", 4, &factorization.layout);
     const auto sparse = b.Shared("referenceSparseMassTopology", factorization.sparseTopology);
     const auto packed = model.dimensions.layout[3];
@@ -502,16 +503,17 @@ struct ContactDynamics
     uint32_t bodyVelocity;
 };
 
-ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const ContactSlots &stream,
-                                   WarpCollisionCapacity capacity, const WarpContactSolver &solver, float timestep,
-                                   const ContactDynamics &dyn, std::vector<ComputeWorkDispatch> precondition,
-                                   bool contactReports, uint32_t substeps, uint32_t maxStorageBuffers)
+ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, const ContactSlots &stream,
+                                   InxPhyGpuCollisionCapacity capacity, const InxPhyGpuContactSolver &solver,
+                                   float timestep, const ContactDynamics &dyn,
+                                   std::vector<ComputeWorkDispatch> precondition, bool contactReports,
+                                   uint32_t substeps, uint32_t maxStorageBuffers)
 {
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
     const auto ng = model.dimensions.layout[0];
     if (solver.rowsPerWorld == 0 || solver.columnsPerWorld == 0 || solver.iterations == 0 || solver.lineIterations == 0)
-        throw std::invalid_argument("Warp contact response requires nonzero solver limits");
+        throw std::invalid_argument("inxphygpu contact response requires nonzero solver limits");
 
     const auto rows = solver.rowsPerWorld;
     const auto columns = solver.columnsPerWorld;
@@ -870,20 +872,21 @@ ComputeDispatchDesc BindDispatch(ComputeWorkDispatch command,
 }
 } // namespace
 
-PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target, const WarpModel &model,
-                                 uint32_t worlds, float timestep, const ModelVector &gravity,
-                                 const WarpCollisionModel *collision, WarpCollisionCapacity capacity,
-                                 const WarpContactSolver *solver, WarpRayBatchLayout rayLayout,
-                                 uint32_t bodyCommandCapacity, bool contactReports, uint32_t substeps)
+PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target, const InxPhyGpuModel &model,
+                                           uint32_t worlds, float timestep, const ModelVector &gravity,
+                                           const InxPhyGpuCollisionModel *collision,
+                                           InxPhyGpuCollisionCapacity capacity, const InxPhyGpuContactSolver *solver,
+                                           InxPhyGpuRayBatchLayout rayLayout, uint32_t bodyCommandCapacity,
+                                           bool contactReports, uint32_t substeps)
 {
     if (worlds == 0)
-        throw std::invalid_argument("Warp step requires a world");
+        throw std::invalid_argument("inxphygpu step requires a world");
     if (substeps == 0 || (substeps > 1 && bodyCommandCapacity == 0))
-        throw std::invalid_argument("Warp fixed substeps require a controlled step layout");
+        throw std::invalid_argument("inxphygpu fixed substeps require a controlled step layout");
 
     const auto [nq, nv, nb, nj] = model.dimensions.state;
     if (!model.initialVelocities.empty() && model.initialVelocities.size() != nv)
-        throw std::invalid_argument("Warp initial velocities must match the model degrees of freedom");
+        throw std::invalid_argument("inxphygpu initial velocities must match the model degrees of freedom");
     const auto nm = model.dimensions.layout[1];
     const auto ns = model.initialStaticPoses.size();
     const auto branches = model.dimensions.layout[2];
@@ -915,7 +918,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             if (body.hierarchy[0] != 0 ||
                 (body.dofs[1] != 0 && (body.hierarchy[2] != 1 || model.joints[body.hierarchy[1]].indices[0] !=
                                                                      static_cast<uint32_t>(ModelJointType::Free))))
-                throw std::invalid_argument("Warp body commands require independent rigid body rows");
+                throw std::invalid_argument("inxphygpu body commands require independent rigid body rows");
             if (body.dofs[1] != 0)
                 controls.motion[index] = DynamicControl;
             else if (body.hierarchy[3] != NoModelIndex)
@@ -928,7 +931,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     const bool detectContacts = collision && model.dimensions.layout[0] != 0;
     const bool traceRays = rayLayout.raysPerWorld != 0;
     if (traceRays && model.dimensions.layout[0] != 0 && !collision)
-        throw std::invalid_argument("Warp rays require the compiled collision geometry");
+        throw std::invalid_argument("inxphygpu rays require the compiled collision geometry");
     std::vector<ComputeWorkDispatch> rayDispatches;
     const bool publishedRaysEnabled = traceRays && controlSlots;
     ComputeWorkDispatch publishedGeometry;
@@ -967,7 +970,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         if (detectContacts) {
             if (collision->bounds.size() != model.dimensions.layout[0] || capacity.candidates == 0 ||
                 capacity.contactsPerWorld == 0)
-                throw std::invalid_argument("Warp collision requires geometry rows and nonzero stream capacities");
+                throw std::invalid_argument("inxphygpu collision requires geometry rows and nonzero stream capacities");
             const auto geometry = BindGeometry(b, model, *collision, traceRays);
             b.Add("position", "geom_local_to_global", model.dimensions.layout[0],
                   {{0, dimensions, R}, {6, pose, R}, {9, geometry.geometries, R}, {10, geometry.frames, W, true}});
@@ -991,7 +994,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
         }
     }
     if (traceRays && !detectContacts) {
-        const WarpCollisionModel empty;
+        const InxPhyGpuCollisionModel empty;
         const auto geometry = BindGeometry(b, model, empty, true);
         raySlots = AddRayWork(b, model, empty, geometry, rayLayout, rayDispatches, publishedRaysEnabled);
     }
@@ -1249,7 +1252,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     if (multiple && response) {
         const auto width = uint64_t{nq} + 2 * uint64_t{nv};
         if (worldWords(width) > UINT32_MAX)
-            throw std::length_error("Warp fixed step checkpoint exceeds the device address range");
+            throw std::length_error("inxphygpu fixed step checkpoint exceeds the device address range");
         const auto backup = b.Slot(worldWords(width));
         const auto rows = static_cast<uint32_t>(width);
         begin.push_back(b.Dispatch("fixed_substeps", "checkpoint_fixed_step", rows,
@@ -1388,7 +1391,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
     for (auto &clear : b.initialize)
         initialDispatches.push_back(BindDispatch(std::move(clear), initializationBuffers));
     auto initialize = rhi::PrepareComputeBatch(host, std::move(initial), std::move(initialDispatches));
-    WarpContactStream contacts;
+    InxPhyGpuContactStream contacts;
     if (contactSlots)
         contacts = {buffers[contactSlots->candidateCount],
                     buffers[contactSlots->counts],
@@ -1396,7 +1399,7 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
                     response ? buffers[response->status] : nullptr,
                     response ? buffers[response->topology] : nullptr,
                     buffers[contactSlots->narrowphaseStatus]};
-    WarpRayBuffers rays;
+    InxPhyGpuRayBuffers rays;
     std::vector<rhi::ComputeDispatchDesc> rayWork;
     PublishedRays publishedRays;
     if (raySlots) {
@@ -1451,18 +1454,19 @@ PreparedWarpStep WarpStep::Build(rhi::ComputeHost &host, ShaderCodeTarget target
             schedule.restore = BindDispatch(std::move(restore), buffers);
         schedule.clock = BindDispatch(std::move(clock), buffers);
     }
-    auto step = std::unique_ptr<WarpStep>(
-        new WarpStep(work, BindDispatch(std::move(snapshot), buffers), positions, velocities, applied,
-                     std::move(contacts), std::move(rays), std::move(rayWork), std::move(controls), std::move(reports),
-                     std::move(schedule), std::move(jointParameters), std::move(publishedRays)));
+    auto step = std::unique_ptr<InxPhyGpuStep>(new InxPhyGpuStep(
+        work, BindDispatch(std::move(snapshot), buffers), positions, velocities, applied, std::move(contacts),
+        std::move(rays), std::move(rayWork), std::move(controls), std::move(reports), std::move(schedule),
+        std::move(jointParameters), std::move(publishedRays)));
     return {std::move(step), std::move(initialize)};
 }
 
-WarpStep::WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot,
-                   uint32_t positions, uint32_t velocities, uint32_t appliedForces, WarpContactStream contacts,
-                   WarpRayBuffers rays, std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
-                   ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
-                   PublishedRays publishedRays)
+InxPhyGpuStep::InxPhyGpuStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeDispatchDesc snapshot,
+                             uint32_t positions, uint32_t velocities, uint32_t appliedForces,
+                             InxPhyGpuContactStream contacts, InxPhyGpuRayBuffers rays,
+                             std::vector<rhi::ComputeDispatchDesc> rayWork, BodyControls controls,
+                             ContactReports reports, FixedSubsteps substeps, SceneJointParameters jointParameters,
+                             PublishedRays publishedRays)
     : m_work(std::move(work)), m_snapshot(std::move(snapshot)), m_positions(positions), m_velocities(velocities),
       m_appliedForces(appliedForces), m_contacts(std::move(contacts)), m_rays(std::move(rays)),
       m_rayWork(std::move(rayWork)), m_controls(std::move(controls)), m_reports(std::move(reports)),
@@ -1471,13 +1475,12 @@ WarpStep::WarpStep(std::shared_ptr<rhi::ComputeWorkInstance> work, rhi::ComputeD
 {
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::Prepare(bool publish,
-                                                             std::vector<rhi::ComputeBufferUpdate> updates) const
+std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuStep::Prepare(bool publish,
+                                                                  std::vector<rhi::ComputeBufferUpdate> updates) const
 {
-    if (!publish && m_substeps.count == 1)
-        return m_work->PrepareBatch(std::move(updates));
     auto dispatches = m_substeps.begin;
-    AppendFixedWork(dispatches, 0, false);
+    std::vector<rhi::ComputeReplayRange> replays;
+    AppendFixedWork(dispatches, replays, 0, false);
     std::vector<rhi::ComputeBufferRead> reads;
     if (publish) {
         dispatches.push_back(m_snapshot);
@@ -1485,11 +1488,14 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::Prepare(bool publish,
         reads.push_back({snapshot, 0, snapshot->GetByteSize()});
     }
     auto host = m_work->GetRecipe().GetHost();
-    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+    auto packet = rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+    packet->SetDispatchReplay(std::move(replays));
+    return packet;
 }
 
-void WarpStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispatches, uint32_t spans,
-                               bool captureContacts) const
+void InxPhyGpuStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispatches,
+                                    std::vector<rhi::ComputeReplayRange> &replays, uint32_t spans,
+                                    bool captureContacts) const
 {
     auto drive = m_substeps.drive;
     const bool driving = spans != 0 && drive.kernel;
@@ -1498,11 +1504,14 @@ void WarpStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispatches
         LinearGrid(drive);
     }
     const bool reporting = captureContacts && m_reports.records;
-    const auto width = m_work->GetRecipe().GetDispatches().size() + driving + reporting + (driving || reporting);
+    const auto numericalDispatches = m_work->GetRecipe().GetDispatches().size();
+    const auto width = numericalDispatches + driving + reporting + (driving || reporting);
     dispatches.reserve(dispatches.size() + m_substeps.count * width + 2);
+    replays.reserve(m_substeps.count);
     for (uint32_t substep = 0; substep < m_substeps.count; ++substep) {
         if (driving)
             dispatches.push_back(drive);
+        replays.push_back({dispatches.size(), numericalDispatches, m_fixedReplay});
         m_work->AppendDispatches(dispatches);
         if (reporting)
             dispatches.push_back(m_reports.capture);
@@ -1515,11 +1524,11 @@ void WarpStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispatches
         dispatches.push_back(m_substeps.clock);
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareRays(bool publish,
-                                                                 std::vector<rhi::ComputeBufferUpdate> updates) const
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuStep::PrepareRays(bool publish, std::vector<rhi::ComputeBufferUpdate> updates) const
 {
     if (!m_rays.hits)
-        throw std::logic_error("Warp step has no ray query layout");
+        throw std::logic_error("inxphygpu step has no ray query layout");
     std::vector<rhi::ComputeBufferRead> reads;
     if (publish)
         reads.push_back({m_rays.hits, 0, m_rays.hits->GetByteSize()});
@@ -1527,18 +1536,19 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareRays(bool publish,
     return rhi::PrepareComputeBatch(host, std::move(updates), m_rayWork, std::move(reads));
 }
 
-WarpPreparedRayBatch WarpStep::PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount, bool publish,
-                                                    std::vector<rhi::ComputeBufferUpdate> updates) const
+InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
+                                                              bool publish,
+                                                              std::vector<rhi::ComputeBufferUpdate> updates) const
 {
     const auto &plan = m_publishedRays;
     if (!plan.settings || rayCount == 0 || rayCount > plan.capacity)
-        throw std::invalid_argument("Warp published ray batch exceeds the scene query layout");
+        throw std::invalid_argument("inxphygpu published ray batch exceeds the scene query layout");
     constexpr uint64_t maxRows = UINT32_MAX / 5u;
     if (!source.states || source.layout != PhysicsGpuPoseSource::Layout::OriginWXYZ ||
         source.bodyCount != plan.bodyCount || source.firstRow > maxRows ||
         source.bodyCount > maxRows - source.firstRow ||
-        (source.firstRow + source.bodyCount) * sizeof(WarpBodyState) > source.states->GetByteSize())
-        throw std::invalid_argument("Warp ray query requires a complete published body slot range");
+        (source.firstRow + source.bodyCount) * sizeof(InxPhyGpuBodyState) > source.states->GetByteSize())
+        throw std::invalid_argument("inxphygpu ray query requires a complete published body slot range");
 
     const ModelWords settings{plan.geometryCount, rayCount, 1, static_cast<uint32_t>(source.firstRow)};
     auto &params =
@@ -1551,15 +1561,15 @@ WarpPreparedRayBatch WarpStep::PreparePublishedRays(const PhysicsGpuPoseSource &
         auto &geometry = dispatches.emplace_back(plan.geometry);
         geometry.groupCountY = 1;
         geometry.buffers[2] = source.states;
-        geometry.proof->reads[1] = {2, source.firstRow * sizeof(WarpBodyState),
-                                    uint64_t{source.bodyCount} * sizeof(WarpBodyState)};
+        geometry.proof->reads[1] = {2, source.firstRow * sizeof(InxPhyGpuBodyState),
+                                    uint64_t{source.bodyCount} * sizeof(InxPhyGpuBodyState)};
         geometry.proof->writes.front().byteSize = 4 * sizeof(ModelVector) * plan.geometryCount;
     }
     dispatches.insert(dispatches.end(), m_rayWork.begin(), m_rayWork.end());
     for (auto &dispatch : dispatches)
         dispatch.groupCountY = 1;
 
-    const auto bytes = uint64_t{rayCount} * sizeof(WarpRayHit);
+    const auto bytes = uint64_t{rayCount} * sizeof(InxPhyGpuRayHit);
     auto host = m_work->GetRecipe().GetHost();
     if (!plan.output || plan.output.use_count() != 1 || plan.output->GetByteSize() < bytes)
         plan.output = std::make_shared<rhi::ComputeBuffer>(
@@ -1568,7 +1578,7 @@ WarpPreparedRayBatch WarpStep::PreparePublishedRays(const PhysicsGpuPoseSource &
     auto &trace = dispatches.back();
     trace.groupCountX = (rayCount - 1) / 64 + 1;
     trace.buffers[6] = plan.output;
-    trace.proof->reads[1].byteSize = uint64_t{rayCount} * sizeof(WarpRay);
+    trace.proof->reads[1].byteSize = uint64_t{rayCount} * sizeof(InxPhyGpuRay);
     trace.proof->writes.front().byteSize = bytes;
     std::vector<rhi::ComputeBufferRead> reads;
     if (publish)
@@ -1578,40 +1588,43 @@ WarpPreparedRayBatch WarpStep::PreparePublishedRays(const PhysicsGpuPoseSource &
 }
 
 std::shared_ptr<rhi::PreparedComputeBatch>
-WarpStep::PrepareControlled(std::vector<WarpBodyCommand> commands, WarpBodyPublication publication,
-                            std::vector<rhi::ComputeBufferUpdate> updates, bool captureContacts,
-                            std::vector<WarpJointParameterUpdate> jointUpdates) const
+InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, InxPhyGpuBodyPublication publication,
+                                 std::vector<rhi::ComputeBufferUpdate> updates, bool captureContacts,
+                                 std::vector<InxPhyGpuJointParameterUpdate> jointUpdates) const
 {
     if (!m_controls.states)
-        throw std::logic_error("Warp step has no rigid body control layout");
+        throw std::logic_error("inxphygpu step has no rigid body control layout");
     m_jointParameters.Append(updates, std::move(jointUpdates));
-    if (commands.empty() && publication == WarpBodyPublication::None && !captureContacts)
+    if (commands.empty() && publication == InxPhyGpuBodyPublication::None && !captureContacts)
         return Prepare(false, std::move(updates));
     auto dispatches = m_substeps.begin;
+    std::vector<rhi::ComputeReplayRange> replays;
     const auto spanCount = AppendBodyCommands(std::move(commands), true, updates, dispatches);
-    AppendFixedWork(dispatches, spanCount, captureContacts);
+    AppendFixedWork(dispatches, replays, spanCount, captureContacts);
     if (spanCount != 0) {
         auto finish = m_controls.finish;
         finish.groupCountX = (spanCount - 1) / 64 + 1;
         LinearGrid(finish);
         dispatches.push_back(std::move(finish));
     }
-    if (publication != WarpBodyPublication::None)
+    if (publication != InxPhyGpuBodyPublication::None)
         AppendBodyPublication(dispatches, true);
     std::vector<rhi::ComputeBufferRead> reads;
-    if (publication == WarpBodyPublication::Cpu)
+    if (publication == InxPhyGpuBodyPublication::Cpu)
         reads.push_back({m_controls.states, 0, m_controls.states->GetByteSize()});
-    if (publication == WarpBodyPublication::Status) {
+    if (publication == InxPhyGpuBodyPublication::Status) {
         const auto headers = sizeof(ModelWords) * uint64_t{m_controls.worlds};
         reads.push_back({m_controls.states, m_controls.states->GetByteSize() - headers, headers});
     }
     if (captureContacts && m_reports.records)
         reads.push_back({m_reports.counts, m_reports.countsOffset, m_reports.countsBytes});
     auto host = m_work->GetRecipe().GetHost();
-    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+    auto packet = rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), std::move(reads));
+    packet->SetDispatchReplay(std::move(replays));
+    return packet;
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareEdits(std::vector<WarpBodyCommand> commands) const
+std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuStep::PrepareEdits(std::vector<InxPhyGpuBodyCommand> commands) const
 {
     std::vector<rhi::ComputeBufferUpdate> updates;
     std::vector<rhi::ComputeDispatchDesc> dispatches;
@@ -1621,14 +1634,14 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareEdits(std::vector<Wa
     return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches));
 }
 
-uint32_t WarpStep::AppendBodyCommands(std::vector<WarpBodyCommand> commands, bool integrate,
-                                      std::vector<rhi::ComputeBufferUpdate> &updates,
-                                      std::vector<rhi::ComputeDispatchDesc> &dispatches) const
+uint32_t InxPhyGpuStep::AppendBodyCommands(std::vector<InxPhyGpuBodyCommand> commands, bool integrate,
+                                           std::vector<rhi::ComputeBufferUpdate> &updates,
+                                           std::vector<rhi::ComputeDispatchDesc> &dispatches) const
 {
     if (commands.empty())
         return 0;
     if (commands.size() > m_controls.capacity)
-        throw std::length_error("Warp body command capacity exceeded");
+        throw std::length_error("inxphygpu body command capacity exceeded");
     const auto key = [](const auto &command) { return std::tie(command.world, command.body); };
     std::stable_sort(commands.begin(), commands.end(), [&](const auto &a, const auto &b) { return key(a) < key(b); });
     std::vector<ModelWords> spans(1);
@@ -1636,14 +1649,15 @@ uint32_t WarpStep::AppendBodyCommands(std::vector<WarpBodyCommand> commands, boo
         const auto &command = commands[index];
         const auto kind = command.kind;
         const auto motion = m_controls.motion.at(command.body);
-        const bool move = kind == WarpBodyCommandKind::MovePosition || kind == WarpBodyCommandKind::MoveRotation;
-        const bool force = kind >= WarpBodyCommandKind::Force && kind <= WarpBodyCommandKind::ForceAtPosition;
+        const bool move =
+            kind == InxPhyGpuBodyCommandKind::MovePosition || kind == InxPhyGpuBodyCommandKind::MoveRotation;
+        const bool force = kind >= InxPhyGpuBodyCommandKind::Force && kind <= InxPhyGpuBodyCommandKind::ForceAtPosition;
         const bool dynamic =
-            kind >= WarpBodyCommandKind::SetLinearVelocity && kind <= WarpBodyCommandKind::ForceAtPosition;
+            kind >= InxPhyGpuBodyCommandKind::SetLinearVelocity && kind <= InxPhyGpuBodyCommandKind::ForceAtPosition;
         if (command.world >= m_controls.worlds || motion == Uncontrolled || (move && motion != KinematicControl) ||
             (dynamic && motion != DynamicControl) ||
-            (motion == StaticControl && kind > WarpBodyCommandKind::SetRotation))
-            throw std::invalid_argument("Warp body command does not match its world or motion type");
+            (motion == StaticControl && kind > InxPhyGpuBodyCommandKind::SetRotation))
+            throw std::invalid_argument("inxphygpu body command does not match its world or motion type");
         if (!integrate && (move || (force && static_cast<uint32_t>(command.mode) < 2)))
             throw std::invalid_argument("Continuous forces and kinematic targets require a fixed step");
         if (index == 0 || key(command) != key(commands[index - 1]))
@@ -1657,7 +1671,7 @@ uint32_t WarpStep::AppendBodyCommands(std::vector<WarpBodyCommand> commands, boo
         rhi::ComputeBufferUpdate{m_controls.spans, 0, std::vector<uint8_t>(spans.size() * sizeof(ModelWords))});
     std::memcpy(spansUpload.data.data(), spans.data(), spansUpload.data.size());
     auto &commandsUpload = updates.emplace_back(rhi::ComputeBufferUpdate{
-        m_controls.commands, 0, std::vector<uint8_t>(commands.size() * sizeof(WarpBodyCommand))});
+        m_controls.commands, 0, std::vector<uint8_t>(commands.size() * sizeof(InxPhyGpuBodyCommand))});
     std::memcpy(commandsUpload.data.data(), commands.data(), commandsUpload.data.size());
 
     auto apply = integrate ? m_controls.apply : m_controls.edit;
@@ -1667,7 +1681,7 @@ uint32_t WarpStep::AppendBodyCommands(std::vector<WarpBodyCommand> commands, boo
     return spanCount;
 }
 
-void WarpStep::AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &dispatches, bool includeStatus) const
+void InxPhyGpuStep::AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &dispatches, bool includeStatus) const
 {
     if (m_controls.pose.kernel)
         dispatches.push_back(m_controls.pose);
@@ -1675,8 +1689,8 @@ void WarpStep::AppendBodyPublication(std::vector<rhi::ComputeDispatchDesc> &disp
                                                                               : m_controls.publish);
 }
 
-void WarpStep::SceneJointParameters::Append(std::vector<rhi::ComputeBufferUpdate> &updates,
-                                            std::vector<WarpJointParameterUpdate> values) const
+void InxPhyGpuStep::SceneJointParameters::Append(std::vector<rhi::ComputeBufferUpdate> &updates,
+                                                 std::vector<InxPhyGpuJointParameterUpdate> values) const
 {
     const auto key = [](const auto &value) { return std::tie(value.world, value.offset); };
     // Keep the last edit for each field while combining adjacent transfer ranges.
@@ -1692,7 +1706,7 @@ void WarpStep::SceneJointParameters::Append(std::vector<rhi::ComputeBufferUpdate
             [&](const auto &data) {
                 if (value.offset >= stride || sizeof(data) > (uint64_t{stride} - value.offset) * recordBytes ||
                     !buffer || record >= buffer->GetByteSize() / recordBytes)
-                    throw std::invalid_argument("Warp joint update does not match its enrolled world or record");
+                    throw std::invalid_argument("inxphygpu joint update does not match its enrolled world or record");
                 const auto offset = record * recordBytes;
                 if (!range || offset > range->offset + range->data.size())
                     range = &updates.emplace_back(rhi::ComputeBufferUpdate{buffer, offset, {}});
@@ -1704,16 +1718,17 @@ void WarpStep::SceneJointParameters::Append(std::vector<rhi::ComputeBufferUpdate
     }
 }
 
-std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareContactReports(const std::vector<uint32_t> &counts) const
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuStep::PrepareContactReports(const std::vector<uint32_t> &counts) const
 {
     std::vector<rhi::ComputeBufferRead> reads;
     for (size_t world = 0; world < counts.size(); ++world) {
         const auto count = counts[world];
         if (count > m_reports.capacity)
-            throw std::logic_error("Accepted Warp contact report count exceeds its world capacity");
+            throw std::logic_error("Accepted inxphygpu contact report count exceeds its world capacity");
         if (count != 0) {
-            const auto base = world * m_reports.capacity * sizeof(WarpContactReport);
-            reads.push_back({m_reports.records, base, count * sizeof(WarpContactReport)});
+            const auto base = world * m_reports.capacity * sizeof(InxPhyGpuContactReport);
+            reads.push_back({m_reports.records, base, count * sizeof(InxPhyGpuContactReport)});
         }
     }
     if (reads.empty())
@@ -1722,24 +1737,24 @@ std::shared_ptr<rhi::PreparedComputeBatch> WarpStep::PrepareContactReports(const
     return rhi::PrepareComputeBatch(host, {}, {}, std::move(reads));
 }
 
-std::shared_ptr<rhi::ComputeBuffer> WarpStep::BodyStates() const noexcept
+std::shared_ptr<rhi::ComputeBuffer> InxPhyGpuStep::BodyStates() const noexcept
 {
     return m_controls.states;
 }
 
-const std::shared_ptr<rhi::ComputeBuffer> &WarpStep::Positions() const noexcept
+const std::shared_ptr<rhi::ComputeBuffer> &InxPhyGpuStep::Positions() const noexcept
 {
     return m_work->GetBuffers()[m_positions];
 }
 
-const std::shared_ptr<rhi::ComputeBuffer> &WarpStep::Velocities() const noexcept
+const std::shared_ptr<rhi::ComputeBuffer> &InxPhyGpuStep::Velocities() const noexcept
 {
     return m_work->GetBuffers()[m_velocities];
 }
 
-const std::shared_ptr<rhi::ComputeBuffer> &WarpStep::AppliedForces() const noexcept
+const std::shared_ptr<rhi::ComputeBuffer> &InxPhyGpuStep::AppliedForces() const noexcept
 {
     return m_work->GetBuffers()[m_appliedForces];
 }
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

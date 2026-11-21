@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
 inline constexpr uint32_t NoModelIndex = UINT32_MAX;
@@ -18,7 +18,7 @@ using ModelVector = std::array<float, 4>;
 using ModelJointVectors = std::array<ModelVector, 2>;
 using ModelSwingTwistControls = std::array<ModelWords, 4>;
 
-struct WarpHingeDrive
+struct InxPhyGpuHingeDrive
 {
     bool enabled = false;
     float target = 0.0f, stiffness = 0.0f, damping = 0.0f, maxTorque = 0.0f;
@@ -31,7 +31,7 @@ struct WarpHingeDrive
     }
 };
 
-struct WarpJointLimits
+struct InxPhyGpuJointLimits
 {
     bool enabled = false;
     float minimum = 0.0f, maximum = 0.0f;
@@ -39,7 +39,7 @@ struct WarpJointLimits
     [[nodiscard]] ModelWords Pack() const noexcept;
 };
 
-struct WarpDistanceSpring
+struct InxPhyGpuDistanceSpring
 {
     float stiffness = 0.0f, damping = 0.0f;
 };
@@ -139,7 +139,7 @@ struct ModelMassFactors
     std::vector<uint32_t> sparseTopology;
 };
 
-struct WarpModel
+struct InxPhyGpuModel
 {
     ModelDimensions dimensions;
     std::vector<ModelBody> bodies;
@@ -160,10 +160,10 @@ struct WarpModel
 
 /// Compile shared topology and initial coordinates. The source can name parents in any order.
 /// A free joint occupies a root alone. A kinematic body is a jointless root.
-[[nodiscard]] WarpModel BuildWarpModel(const std::vector<ModelBodyDefinition> &bodies,
-                                       const std::vector<ModelGeometryDefinition> &geometries);
+[[nodiscard]] InxPhyGpuModel BuildInxPhyGpuModel(const std::vector<ModelBodyDefinition> &bodies,
+                                                 const std::vector<ModelGeometryDefinition> &geometries);
 
 /// Reference-pose factorization in the packed ancestor layout, including small islands.
-[[nodiscard]] ModelMassFactors BuildWarpReferenceMassFactors(const WarpModel &model);
+[[nodiscard]] ModelMassFactors BuildInxPhyGpuReferenceMassFactors(const InxPhyGpuModel &model);
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu

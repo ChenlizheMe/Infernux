@@ -9,62 +9,63 @@
 #include "../PhysicsECSStore.h"
 #include "../PhysicsGpuPoseSource.h"
 #include "../PhysicsRaycastHit.h"
-#include "WarpSceneModel.h"
-#include "WarpStep.h"
+#include "InxPhyGpuSceneModel.h"
+#include "InxPhyGpuStep.h"
 
 #include <core/threading/FrameWorkOwner.h>
 #include <functional>
 #include <variant>
 
-namespace infernux::physics::warp
+namespace infernux::physics::inxphygpu
 {
 
-struct WarpSceneLayout;
+struct InxPhyGpuSceneLayout;
 
-struct WarpRegisteredBody
+struct InxPhyGpuRegisteredBody
 {
     uint32_t bodyId;
     uint64_t shapeRevision;
     PhysicsActorHandle actor{};
-    std::vector<WarpSceneSurfaceIdentity> surfaces{}; // Author collider order.
+    std::vector<InxPhyGpuSceneSurfaceIdentity> surfaces{}; // Author collider order.
     PhysicsTargetReference bodyTarget{};
 };
 
-struct WarpRegisteredJoint
+struct InxPhyGpuRegisteredJoint
 {
     uint64_t jointId;
     uint32_t authorRow;
 };
 
-struct WarpRegisteredWorld
+struct InxPhyGpuRegisteredWorld
 {
     uint64_t worldId;
-    std::vector<WarpRegisteredBody> bodies; // Scene model author order.
-    std::vector<WarpRegisteredJoint> joints{};
+    std::vector<InxPhyGpuRegisteredBody> bodies; // Scene model author order.
+    std::vector<InxPhyGpuRegisteredJoint> joints{};
     uint64_t simulationEpoch = 0;
 };
 
-struct WarpSceneSetup
+struct InxPhyGpuSceneSetup
 {
-    WarpSceneModel model;
-    WarpRegisteredWorld world;
+    InxPhyGpuSceneModel model;
+    InxPhyGpuRegisteredWorld world;
 };
 
-struct WarpSceneJointUpdate
+struct InxPhyGpuSceneJointUpdate
 {
     uint64_t worldId;
     uint64_t jointId;
-    std::variant<WarpJointLimits, WarpHingeDrive, WarpDistanceSpring, WarpSwingTwistParameters, WarpSwingTwistTargets>
+    std::variant<InxPhyGpuJointLimits, InxPhyGpuHingeDrive, InxPhyGpuDistanceSpring, InxPhyGpuSwingTwistParameters,
+                 InxPhyGpuSwingTwistTargets>
         value;
 };
 
-struct WarpSceneBodyCommand
+struct InxPhyGpuSceneBodyCommand
 {
     uint64_t worldId;
     PhysicsBodyCommand command;
 };
 
-struct WarpFixedWorld
+struct InxPhyGpuFixedWorld
 {
     ContactStreamIdentity identity;
     float time;
@@ -72,13 +73,13 @@ struct WarpFixedWorld
     uint32_t acceptedStep;
 };
 
-struct WarpFixedPublication
+struct InxPhyGpuFixedPublication
 {
     rhi::SubmissionTicket submission;
     std::shared_ptr<rhi::ComputeBuffer> bodyStates;
-    std::vector<WarpFixedWorld> worlds;
-    std::vector<WarpBodyState> hostBodies;
-    std::vector<std::vector<WarpContactReport>> contacts; // Substep-major, then enrolled world.
+    std::vector<InxPhyGpuFixedWorld> worlds;
+    std::vector<InxPhyGpuBodyState> hostBodies;
+    std::vector<std::vector<InxPhyGpuContactReport>> contacts; // Substep-major, then enrolled world.
     uint32_t bodiesPerWorld = 0;
     uint32_t substeps = 1;
 
@@ -90,28 +91,28 @@ struct WarpFixedPublication
                          const PhysicsContactPublication::Policy &policy);
 
   private:
-    friend class WarpSceneRuntime;
-    std::shared_ptr<const WarpSceneLayout> m_layout;
+    friend class InxPhyGpuSceneRuntime;
+    std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     bool m_integrated = false;
 };
 
-struct WarpHostBody
+struct InxPhyGpuHostBody
 {
     PhysicsBodyPoseUpdate pose;
     uint64_t shapeRevision;
     glm::vec3 centerOfMass, linearVelocity, angularVelocity;
 };
 
-struct WarpSceneBodyRead
+struct InxPhyGpuSceneBodyRead
 {
     ContactStreamIdentity identity;
     std::shared_ptr<rhi::PreparedComputeBatch> packet;
 
     /// Consume completed motion rows in the caller's requested body order.
-    [[nodiscard]] std::vector<WarpHostBody> ReadHostBodies() const;
+    [[nodiscard]] std::vector<InxPhyGpuHostBody> ReadHostBodies() const;
 
   private:
-    friend class WarpSceneRuntime;
+    friend class InxPhyGpuSceneRuntime;
     struct Body
     {
         uint32_t id, packedRow;
@@ -122,38 +123,39 @@ struct WarpSceneBodyRead
     uint32_t m_uniqueRows = 0;
 };
 
-struct WarpSceneRayBatch
+struct InxPhyGpuSceneRayBatch
 {
     ContactStreamIdentity identity;
-    WarpPreparedRayBatch query;
+    InxPhyGpuPreparedRayBatch query;
 
     /// Materialize the ordinary scene hits on the owner thread after submission.
     /// Consumes the host readback. The batch retains the queried world's layout.
     [[nodiscard]] std::vector<RaycastHit> ReadHostHits() const;
 
   private:
-    friend class WarpSceneRuntime;
+    friend class InxPhyGpuSceneRuntime;
     struct RayLine
     {
         glm::vec3 origin, direction;
     };
-    std::shared_ptr<const WarpSceneLayout> m_layout;
+    std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     std::vector<RayLine> m_lines;
     uint32_t m_world = 0;
 };
 
 /// Fixed-step source for one compiled layout and its enrolled scene worlds.
 /// Admission and receipt collection use the engine's FrameWorkOwner.
-class WarpSceneRuntime final
+class InxPhyGpuSceneRuntime final
 {
   public:
-    WarpSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target, const WarpSceneModel &scene,
-                     std::vector<WarpRegisteredWorld> worlds, float timestep, const ModelVector &gravity,
-                     WarpCollisionCapacity collisionCapacity, const WarpContactSolver &solver, uint32_t commandCapacity,
-                     bool contactReports = false, uint32_t substeps = 1, WarpRayBatchLayout rayLayout = {});
-    ~WarpSceneRuntime();
-    WarpSceneRuntime(const WarpSceneRuntime &) = delete;
-    WarpSceneRuntime &operator=(const WarpSceneRuntime &) = delete;
+    InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target,
+                          const InxPhyGpuSceneModel &scene, std::vector<InxPhyGpuRegisteredWorld> worlds,
+                          float timestep, const ModelVector &gravity, InxPhyGpuCollisionCapacity collisionCapacity,
+                          const InxPhyGpuContactSolver &solver, uint32_t commandCapacity, bool contactReports = false,
+                          uint32_t substeps = 1, InxPhyGpuRayBatchLayout rayLayout = {});
+    ~InxPhyGpuSceneRuntime();
+    InxPhyGpuSceneRuntime(const InxPhyGpuSceneRuntime &) = delete;
+    InxPhyGpuSceneRuntime &operator=(const InxPhyGpuSceneRuntime &) = delete;
 
     [[nodiscard]] FrameWorkOwner::SourceId SourceId() const noexcept
     {
@@ -163,14 +165,14 @@ class WarpSceneRuntime final
 
     /// Take the initialized poses before admitting the first fixed step.
     /// The startup receipt has fixed index zero and requires no readback.
-    [[nodiscard]] std::optional<WarpFixedPublication> TakeInitial();
+    [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakeInitial();
 
     struct PublicationWork
     {
         std::shared_ptr<rhi::PreparedComputeBatch> packet;
         std::function<void()> seal;
     };
-    using PublicationConsumer = std::function<PublicationWork(const WarpFixedPublication &completed)>;
+    using PublicationConsumer = std::function<PublicationWork(const InxPhyGpuFixedPublication &completed)>;
 
     /// Own the fixed identity until its publication is consumed. The device
     /// profile reports status only, while the host profile includes motion.
@@ -180,24 +182,24 @@ class WarpSceneRuntime final
     /// The whole fixed publication becomes available once that work completes.
     /// This source performs admission and submission, then seals the consumer's
     /// outputs after its receipt and before releasing the fixed publication.
-    void BeginFixed(std::vector<ContactStreamIdentity> identities, const std::vector<WarpSceneBodyCommand> &commands,
-                    bool host, bool captureContacts = false, const std::vector<WarpSceneJointUpdate> &jointUpdates = {},
-                    PublicationConsumer consumer = {});
+    void BeginFixed(std::vector<ContactStreamIdentity> identities,
+                    const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host, bool captureContacts = false,
+                    const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {});
     /// Apply immediate body edits at the last accepted simulation time.
     /// Reuses the same completion and optional consumer as a fixed step.
     void BeginEdits(uint64_t worldId, const std::vector<PhysicsBodyCommand> &commands,
                     PublicationConsumer consumer = {});
-    [[nodiscard]] std::optional<WarpFixedPublication> TakePublication();
-    [[nodiscard]] std::optional<WarpHostBody> ReadHostBody(const WarpFixedPublication &publication, uint32_t world,
-                                                           uint32_t engineBody) const;
+    [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakePublication();
+    [[nodiscard]] std::optional<InxPhyGpuHostBody> ReadHostBody(const InxPhyGpuFixedPublication &publication,
+                                                                uint32_t world, uint32_t engineBody) const;
     /// Read only requested bodies from a frozen device publication. One packet
     /// copies adjacent rows together and reads each selected row at most once.
-    [[nodiscard]] WarpSceneBodyRead PrepareBodyRead(const WarpFixedPublication &publication, uint32_t world,
-                                                    const std::vector<uint32_t> &engineBodies) const;
+    [[nodiscard]] InxPhyGpuSceneBodyRead PrepareBodyRead(const InxPhyGpuFixedPublication &publication, uint32_t world,
+                                                         const std::vector<uint32_t> &engineBodies) const;
     /// Prepare against the chosen completed world. The result retains device
     /// rows and can optionally carry an exact host hit readback.
-    [[nodiscard]] WarpSceneRayBatch PrepareRaycast(const WarpFixedPublication &publication, uint32_t world,
-                                                   const std::vector<WarpRay> &rays, bool readback) const;
+    [[nodiscard]] InxPhyGpuSceneRayBatch PrepareRaycast(const InxPhyGpuFixedPublication &publication, uint32_t world,
+                                                        const std::vector<InxPhyGpuRay> &rays, bool readback) const;
     [[nodiscard]] FrameWorkWaitResult WaitForProgress(uint64_t nanoseconds);
     void Retire() noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;
@@ -215,8 +217,8 @@ class WarpSceneRuntime final
     struct Operation
     {
         std::vector<ContactStreamIdentity> identities;
-        std::vector<WarpBodyCommand> commands;
-        std::vector<WarpJointParameterUpdate> jointUpdates;
+        std::vector<InxPhyGpuBodyCommand> commands;
+        std::vector<InxPhyGpuJointParameterUpdate> jointUpdates;
         bool host;
         bool captureContacts;
         PublicationConsumer consumer;
@@ -231,32 +233,33 @@ class WarpSceneRuntime final
     };
 
     [[nodiscard]] FrameWorkFacts Describe() const;
-    void EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command, std::vector<WarpBodyCommand> &out) const;
+    void EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
+                           std::vector<InxPhyGpuBodyCommand> &out) const;
     void BeginOperation(Operation operation);
     bool Advance(bool gpu, uint64_t token);
     void Observe();
     bool Submit();
     void Finish();
-    [[nodiscard]] WarpFixedPublication CapturePublication(const rhi::PreparedComputeBatch &packet) const;
+    [[nodiscard]] InxPhyGpuFixedPublication CapturePublication(const rhi::PreparedComputeBatch &packet) const;
     void FinishFixed(const rhi::PreparedComputeBatch &packet);
     void FinishReports(const rhi::PreparedComputeBatch &packet);
-    void PrepareConsumer(WarpFixedPublication publication);
-    void PublishCompleted(WarpFixedPublication publication);
+    void PrepareConsumer(InxPhyGpuFixedPublication publication);
+    void PublishCompleted(InxPhyGpuFixedPublication publication);
 
     FrameWorkOwner &m_work;
     rhi::ComputeHost m_host;
     FrameWorkOwner::SourceId m_source = 0;
-    std::unique_ptr<WarpStep> m_step;
-    std::shared_ptr<const WarpSceneLayout> m_layout;
+    std::unique_ptr<InxPhyGpuStep> m_step;
+    std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     uint32_t m_bodyCount;
     bool m_contactReportsConfigured;
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;
     std::optional<Receipt> m_receipt;
     std::optional<Operation> m_operation;
-    std::vector<WarpFixedWorld> m_acceptedWorlds;
-    std::optional<WarpFixedPublication> m_initialPublication;
-    std::optional<WarpFixedPublication> m_pendingPublication;
-    std::optional<WarpFixedPublication> m_publication;
+    std::vector<InxPhyGpuFixedWorld> m_acceptedWorlds;
+    std::optional<InxPhyGpuFixedPublication> m_initialPublication;
+    std::optional<InxPhyGpuFixedPublication> m_pendingPublication;
+    std::optional<InxPhyGpuFixedPublication> m_publication;
     std::function<void()> m_sealConsumer;
     uint64_t m_generation = 1;
     uint64_t m_fixedGpuNanoseconds = 0;
@@ -264,4 +267,4 @@ class WarpSceneRuntime final
     bool m_retiring = false;
 };
 
-} // namespace infernux::physics::warp
+} // namespace infernux::physics::inxphygpu
