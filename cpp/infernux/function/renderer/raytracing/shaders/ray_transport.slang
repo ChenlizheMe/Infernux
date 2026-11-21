@@ -739,7 +739,7 @@ struct InxDiffuseDepthTest
 };
 
 InxDiffuseDepthTest inx_diffuse_screen_depth(InxUInt2D depths, int2 extent, float4 sample_grid, float3 ndc,
-                                             bool linear_test)
+                                             bool orthographic, float eye_offset, bool linear_test)
 {
     float2 pixel = ndc.xy * sample_grid.xy + sample_grid.zw;
     float nearest;
@@ -750,10 +750,12 @@ InxDiffuseDepthTest inx_diffuse_screen_depth(InxUInt2D depths, int2 extent, floa
         float2 center = pixel - 0.5;
         int2 base = int2(floor(center));
         float2 f = frac(center);
-        float a = inx_load_screen_depth(depths, base, extent);
-        float b = inx_load_screen_depth(depths, base + int2(1, 0), extent);
-        float c = inx_load_screen_depth(depths, base + int2(0, 1), extent);
-        float d = inx_load_screen_depth(depths, base + int2(1, 1), extent);
+        int2 lo = clamp(base, int2(0), extent - 1);
+        int2 hi = clamp(base + 1, int2(0), extent - 1);
+        float a = asfloat(depths.texture.Load(int3(lo, 0)).x);
+        float b = asfloat(depths.texture.Load(int3(hi.x, lo.y, 0)).x);
+        float c = asfloat(depths.texture.Load(int3(lo.x, hi.y, 0)).x);
+        float d = asfloat(depths.texture.Load(int3(hi, 0)).x);
         nearest = f.y < 0.5 ? (f.x < 0.5 ? a : b) : (f.x < 0.5 ? c : d);
         linear = lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
     }
@@ -762,13 +764,10 @@ InxDiffuseDepthTest inx_diffuse_screen_depth(InxUInt2D depths, int2 extent, floa
         nearest = inx_load_screen_depth(depths, int2(floor(pixel)), extent);
         linear = nearest;
     }
-    float3 raw_depth = float3(nearest, linear, ndc.z);
-    bool orthographic = abs(inx_view.projection[3][3]) > 0.5;
-    // Scale eye depth to the same units as the march's thickness. A finite
-    // perspective far plane adds an offset to the reciprocal-depth mapping.
-    float eye_offset = inx_view.depth_params.w / inx_view.depth_params.z;
+    // The smaller reverse depth maps to the farther eye depth.
+    float3 raw_depth = float3(min(nearest, linear), max(nearest, linear), ndc.z);
     float3 depth = orthographic ? 1.0 - raw_depth : rcp(max(raw_depth + eye_offset, 1.0e-12));
-    return {max(depth.x, depth.y) * 1.000002 - depth.z, depth.z - min(depth.x, depth.y)};
+    return {depth.x * 1.000002 - depth.z, depth.z - depth.y};
 }
 
 float3 inx_clip_diffuse_end(float3 start, float3 end, float limit)
@@ -781,7 +780,8 @@ float3 inx_clip_diffuse_end(float3 start, float3 end, float limit)
 }
 
 bool inx_march_diffuse_segment(float3 start, float3 end, InxUInt2D depths, int2 extent, float4 sample_grid, float jitter,
-                               float thickness, bool near_segment, out float3 crossing)
+                               float thickness, bool orthographic, float eye_offset, bool near_segment,
+                               out float3 crossing)
 {
     float2 pixels = (end.xy - start.xy) * sample_grid.xy;
     int count = int(clamp(length(pixels), 2.0, 8.0));
@@ -794,7 +794,8 @@ bool inx_march_diffuse_segment(float3 start, float3 end, InxUInt2D depths, int2 
         if (!near_segment)
             after *= after;
         after = min(after, 0.99998474);
-        let behind = inx_diffuse_screen_depth(depths, extent, sample_grid, lerp(start, end, after), near_segment);
+        let behind = inx_diffuse_screen_depth(depths, extent, sample_grid, lerp(start, end, after),
+                                             orthographic, eye_offset, near_segment);
         if (behind.clearance >= 0.0)
         {
             before = after;
@@ -806,7 +807,8 @@ bool inx_march_diffuse_segment(float3 start, float3 end, InxUInt2D depths, int2 
         [unroll] for (int j = 0; j < 2; ++j)
         {
             float middle = 0.5 * (before + after);
-            let sample = inx_diffuse_screen_depth(depths, extent, sample_grid, lerp(start, end, middle), near_segment);
+            let sample = inx_diffuse_screen_depth(depths, extent, sample_grid, lerp(start, end, middle),
+                                                 orthographic, eye_offset, near_segment);
             if (sample.clearance < 0.0)
             {
                 after = middle;
@@ -821,7 +823,8 @@ bool inx_march_diffuse_segment(float3 start, float3 end, InxUInt2D depths, int2 
         }
         float fraction = clearance / (clearance - back_clearance);
         float candidate = lerp(before, after, fraction);
-        let sample = inx_diffuse_screen_depth(depths, extent, sample_grid, lerp(start, end, candidate), near_segment);
+        let sample = inx_diffuse_screen_depth(depths, extent, sample_grid, lerp(start, end, candidate),
+                                             orthographic, eye_offset, near_segment);
         if (abs(sample.clearance) < 0.9 * clearance)
         {
             after = candidate;
@@ -843,9 +846,11 @@ InxScreenDiffuseTrace inx_march_diffuse_screen(TraceRay ray, float4x4 vp, InxUIn
                                               float4 sample_grid, uint2 pixel, uint frame)
 {
     float4 clip = mul(vp, float4(ray.origin, 1.0));
-    if (clip.w <= 0.0 || !inx_inside_screen_ray(clip.xyz / clip.w))
+    if (clip.w <= 0.0)
         return (InxScreenDiffuseTrace)0;
     float3 start = clip.xyz / clip.w;
+    if (!inx_inside_screen_ray(start))
+        return (InxScreenDiffuseTrace)0;
     float4 travel = mul(vp, float4(ray.direction, 0.0));
     float4 probe = clip + 0.5 * travel;
     float w = probe.w >= 0.0 ? max(probe.w, 1.0e-10) : min(probe.w, -1.0e-10);
@@ -856,18 +861,23 @@ InxScreenDiffuseTrace inx_march_diffuse_screen(TraceRay ray, float4x4 vp, InxUIn
                         float(frame & 3u) * 0.25);
     // Orthographic device depth is linear over the clip range.
     float range = inx_view.projection_params.y - inx_view.projection_params.x;
-    float depth_units_per_meter = abs(inx_view.projection[3][3]) > 0.5 ? rcp(range) : abs(inx_view.depth_params.z);
+    bool orthographic = abs(inx_view.projection[3][3]) > 0.5;
+    float depth_units_per_meter = orthographic ? rcp(range) : abs(inx_view.depth_params.z);
+    // The finite perspective far plane offsets the reciprocal-depth mapping.
+    float eye_offset = inx_view.depth_params.w / inx_view.depth_params.z;
     float thickness = 0.5 * depth_units_per_meter;
     int2 extent = int2(inx_image_dimensions(depths, 0u));
     float3 crossing;
-    bool hit = inx_march_diffuse_segment(start, near_end, depths, extent, sample_grid, jitter, thickness, true, crossing);
+    bool hit = inx_march_diffuse_segment(start, near_end, depths, extent, sample_grid, jitter, thickness,
+                                        orthographic, eye_offset, true, crossing);
     if (!hit)
     {
         start = crossing;
         float4 projected = float4(start, 1.0) + travel;
         float denominator = projected.w >= 0.0 ? max(projected.w, 1.0e-10) : min(projected.w, -1.0e-10);
         float3 far_end = inx_clip_diffuse_end(start, projected.xyz / denominator, 1.0e20);
-        hit = inx_march_diffuse_segment(start, far_end, depths, extent, sample_grid, jitter, thickness, false, crossing);
+        hit = inx_march_diffuse_segment(start, far_end, depths, extent, sample_grid, jitter, thickness,
+                                        orthographic, eye_offset, false, crossing);
     }
     if (!hit)
         return (InxScreenDiffuseTrace)0;
