@@ -27,7 +27,7 @@ These Slang entries follow MuJoCo Warp's shared model and world-indexed data. Th
 | `convex_contacts.slang` | Native GJK and EPA convex pairs, face and edge manifolds, and plane against mesh hull | `clear_convex_status`, `collide_convex` |
 | `heightfield_contacts.slang` | Heightfield versus convex shapes, local prism traversal and contact reduction | `collide_heightfield` |
 | `ray_bvh_refit.slang`, `ray_queries.slang` | GPU scene-bound refit and batched closest ray hits against primitives, heightfields and triangle meshes | `refit_ray_bvh`, `raycast_worlds` |
-| `contact_constraints.slang` | Sparse contact Jacobian, constraint row parameters and pyramidal or elliptic contact objective | `clear_constraint_counts`, `reserve_contact_rows`, `project_contact_rows`, `finish_contact_rows`, `seed_contact_acceleration`, `contact_residual`, `evaluate_contact_objective` |
+| `contact_constraints.slang` | Stable contact order, sparse contact Jacobian, constraint row parameters and pyramidal or elliptic contact objective | `sort_contact_tiles`, `merge_contact_tiles`, `reserve_contact_rows`, `project_contact_rows`, `finish_contact_rows`, `seed_contact_acceleration`, `contact_residual`, `evaluate_contact_objective` |
 | `joint_constraints.slang` | Hinge, slide and ball limits, scalar equality and DOF friction loss | `emit_joint_constraint_rows` |
 | `spatial_constraints.slang` | Connect and weld equality for body or site endpoints | `emit_spatial_equality_rows` |
 | `tendon_constraints.slang` | Tendon equality, length limits and friction loss | `emit_tendon_constraint_rows` |

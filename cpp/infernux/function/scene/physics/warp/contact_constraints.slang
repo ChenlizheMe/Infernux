@@ -12,6 +12,8 @@
 #include "prescribed_motion.slang"
 
 static const uint NegativeJacobian = 0x80000000u;
+static const uint ContactTileSize = 256;
+static const uint ContactRowGroupSize = 64;
 
 [[vk::binding(1, 0)]] StructuredBuffer<Contact> contacts;
 [[vk::binding(2, 0)]] RWStructuredBuffer<Atomic<uint>> contactCount;
@@ -29,6 +31,20 @@ static const uint NegativeJacobian = 0x80000000u;
 [[vk::binding(17, 0)]] StructuredBuffer<ModelDimensions> motionModel;
 [[vk::binding(18, 0)]] StructuredBuffer<PrescribedMotion> prescribedMotion;
 [[vk::binding(19, 0)]] StructuredBuffer<uint> fixedSteps;
+[[vk::binding(20, 0)]] StructuredBuffer<uint> contactOrder;
+[[vk::binding(21, 0)]] RWStructuredBuffer<uint> sortedContacts;
+[[vk::binding(22, 0)]] StructuredBuffer<uint> contactMergeWidth;
+
+struct ContactOrderKey
+{
+    uint4 pairAndSubshapes;
+    uint feature;
+    uint source;
+};
+
+groupshared ContactOrderKey contactKeys[ContactTileSize];
+groupshared uint activeContacts;
+groupshared uint2 contactRowScan[2][ContactRowGroupSize];
 
 // settings[0] holds geometry count and per-world contact, row and column capacities.
 // settings[1] holds body count, DOF count, worker count and cone/reference flags.
@@ -45,65 +61,191 @@ uint nextContactDof(uint first, uint second)
     return first == NoIndex ? second : (second == NoIndex ? first : max(first, second));
 }
 
-[shader("compute")]
-[numthreads(1, 1, 1)]
-void clear_constraint_counts(uint3 id : SV_DispatchThreadID)
+ContactOrderKey readContactKey(uint base, uint source)
 {
-    rowCounts[2 * id.y].store(0u);
-    rowCounts[2 * id.y + 1].store(0u);
+    const Contact contact = contacts[base + source];
+    return {uint4(contact.geometry.xy, contact.identity.zw), contact.identity.x, source};
+}
+
+bool precedesContact(ContactOrderKey a, ContactOrderKey b)
+{
+    for (uint i = 0; i < 4; ++i)
+        if (a.pairAndSubshapes[i] != b.pairAndSubshapes[i])
+            return a.pairAndSubshapes[i] < b.pairAndSubshapes[i];
+    return a.feature < b.feature || (a.feature == b.feature && a.source < b.source);
+}
+
+uint groupContactCount(uint world, uint lane, uint capacity)
+{
+    __target_switch
+    {
+    case wgsl:
+        if (lane == 0)
+            activeContacts = min(contactCount[world].load(), capacity);
+        return workgroupUniformLoad(activeContacts);
+    default:
+        return min(contactCount[world].load(), capacity);
+    }
 }
 
 [shader("compute")]
-[numthreads(64, 1, 1)]
-void reserve_contact_rows(uint3 id : SV_DispatchThreadID)
+[numthreads(ContactRowGroupSize, 1, 1)]
+void sort_contact_tiles(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{
+    const uint capacity = settings[0].y;
+    const uint count = groupContactCount(group.y, lane, capacity);
+    const uint first = group.x * ContactTileSize;
+    if (first >= count)
+        return;
+    const uint size = min(count - first, ContactTileSize);
+    const uint base = group.y * capacity;
+    uint length = 1u;
+    while (length < size)
+        length *= 2;
+    const ContactOrderKey empty = {uint4(NoIndex), NoIndex, NoIndex};
+    for (uint i = lane; i < length; i += ContactRowGroupSize)
+        contactKeys[i] = i < size ? readContactKey(base, first + i) : empty;
+    GroupMemoryBarrierWithGroupSync();
+    for (uint span = 2; span <= length; span *= 2)
+    {
+        for (uint stride = span / 2; stride > 0; stride /= 2)
+        {
+            for (uint i = lane; i < length; i += ContactRowGroupSize)
+            {
+                if ((i & stride) == 0)
+                {
+                    const uint other = i | stride;
+                    const ContactOrderKey a = contactKeys[i], b = contactKeys[other];
+                    if (precedesContact(a, b) != ((i & span) == 0))
+                    {
+                        contactKeys[i] = b;
+                        contactKeys[other] = a;
+                    }
+                }
+            }
+            GroupMemoryBarrierWithGroupSync();
+        }
+    }
+    for (uint i = lane; i < size; i += ContactRowGroupSize)
+        sortedContacts[base + first + i] = contactKeys[i].source;
+}
+
+[shader("compute")]
+[numthreads(ContactRowGroupSize, 1, 1)]
+void merge_contact_tiles(uint3 id : SV_DispatchThreadID)
+{
+    const uint capacity = settings[0].y;
+    const uint count = min(contactCount[id.y].load(), capacity);
+    if (id.x >= count)
+        return;
+    const uint base = id.y * capacity;
+    const uint width = contactMergeWidth[0];
+    const uint start = id.x / (2 * width) * (2 * width);
+    const uint mid = min(start + width, count);
+    const uint end = min(mid + width, count);
+    const bool left = id.x < mid;
+    const uint other = left ? mid : start;
+    uint lo = other;
+    uint hi = left ? end : mid;
+    const uint source = contactOrder[base + id.x];
+    const ContactOrderKey key = readContactKey(base, source);
+    while (lo < hi)
+    {
+        const uint split = (lo + hi) / 2;
+        if (precedesContact(readContactKey(base, contactOrder[base + split]), key))
+            lo = split + 1;
+        else
+            hi = split;
+    }
+    const uint rank = id.x - (left ? start : mid) + lo - other;
+    sortedContacts[base + start + rank] = source;
+}
+
+uint contactColumnCount(uint a, uint b)
+{
+    uint width = 0;
+    while (a != b)
+    {
+        const uint next = nextContactDof(a, b);
+        if (next == a)
+            a = dofs[a].indices.y;
+        else
+            b = dofs[b].indices.y;
+        ++width;
+    }
+    return width;
+}
+
+void writeContactColumns(uint first, uint second, uint base, uint width)
+{
+    for (uint i = 0; i < width; ++i)
+    {
+        const uint next = nextContactDof(first, second);
+        const bool negative = next == first;
+        columns[base + i] = {next | (negative ? NegativeJacobian : 0u), 0.0};
+        if (negative)
+            first = dofs[first].indices.y;
+        else
+            second = dofs[second].indices.y;
+    }
+}
+
+[shader("compute")]
+[numthreads(ContactRowGroupSize, 1, 1)]
+void reserve_contact_rows(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     const uint4 limits = settings[0];
-    const uint4 config = settings[1];
-    const uint count = min(contactCount[id.y].load(), limits.y);
-    const uint base = id.y * limits.y;
-    for (uint i = id.x; id.x < config.z && i < count; i += config.z)
+    const bool elliptic = (settings[1].w & EllipticCone) != 0;
+    const uint world = group.y;
+    const uint count = groupContactCount(world, lane, limits.y);
+    const uint base = world * limits.y;
+    uint2 totals = uint2(0u);
+    for (uint first = 0; first < count; first += ContactRowGroupSize)
     {
-        const uint index = base + i;
-        const Contact contact = contacts[index];
-        const float penetration = contact.positionDistance.w - contact.normalMargin.w;
-        reservations[index] = uint4(0u);
-        if ((contact.geometry.w & ContactConstraint) == 0 || (penetration >= 0.0 && contact.tangentAdhesion.w == 0.0))
-            continue;
-
-        const uint firstDof = contactBody(contact.geometry.x).x;
-        const uint secondDof = contactBody(contact.geometry.y).x;
-        uint a = firstDof;
-        uint b = secondDof;
-        uint width = 0;
-        while (a != b)
+        const bool live = first + lane < count;
+        uint index = 0u;
+        uint firstDof = NoIndex, secondDof = NoIndex;
+        uint width = 0, height = 0;
+        if (live)
         {
-            const uint next = nextContactDof(a, b);
-            if (next == a)
-                a = dofs[a].indices.y;
-            else
-                b = dofs[b].indices.y;
-            ++width;
+            index = base + contactOrder[base + first + lane];
+            const Contact contact = contacts[index];
+            const bool separated = contact.positionDistance.w - contact.normalMargin.w >= 0.0;
+            if ((contact.geometry.w & ContactConstraint) != 0 && (!separated || contact.tangentAdhesion.w != 0.0))
+            {
+                height = contactConstraintRows(contact, elliptic);
+                firstDof = contactBody(contact.geometry.x).x;
+                secondDof = contactBody(contact.geometry.y).x;
+                width = contactColumnCount(firstDof, secondDof);
+            }
         }
-
-        const uint height = contactConstraintRows(contact, (config.w & EllipticCone) != 0);
-        const uint2 block = reserveConstraintBlock(id.y, height, width);
-        if (block.x == NoIndex)
-            continue;
-        reservations[index] = uint4(block.x, height, block.y, width);
-
-        a = firstDof;
-        b = secondDof;
-        const uint columnBase = id.y * limits.w + block.y;
-        for (uint j = 0; j < width; ++j)
+        const uint2 size = uint2(height, height * width);
+        contactRowScan[0][lane] = size;
+        GroupMemoryBarrierWithGroupSync();
+        uint read = 0;
+        for (uint stride = 1; stride < ContactRowGroupSize; stride *= 2)
         {
-            const uint next = nextContactDof(a, b);
-            const bool negative = next == a;
-            columns[columnBase + j] = {next | (negative ? NegativeJacobian : 0u), 0.0};
-            if (negative)
-                a = dofs[a].indices.y;
-            else
-                b = dofs[b].indices.y;
+            const uint2 earlier = lane < stride ? uint2(0u) : contactRowScan[read][lane - stride];
+            contactRowScan[1 - read][lane] = contactRowScan[read][lane] + earlier;
+            GroupMemoryBarrierWithGroupSync();
+            read = 1 - read;
         }
+        const uint2 finish = totals + contactRowScan[read][lane];
+        totals += contactRowScan[read][ContactRowGroupSize - 1];
+        GroupMemoryBarrierWithGroupSync();
+        if (live)
+        {
+            const bool accepted = height != 0 && all(finish <= limits.zw);
+            const uint2 block = finish - size;
+            reservations[index] = accepted ? uint4(block.x, height, block.y, width) : uint4(0u);
+            if (accepted)
+                writeContactColumns(firstDof, secondDof, world * limits.w + block.y, width);
+        }
+    }
+    if (lane == 0)
+    {
+        rowCounts[2 * world].store(totals.x);
+        rowCounts[2 * world + 1].store(totals.y);
     }
 }
 

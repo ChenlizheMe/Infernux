@@ -543,16 +543,36 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
     const auto evaluation = b.Zero("constraintEvaluation", across(3 * uint64_t{rows}));
     const auto acceleration = b.Zero("contactAcceleration", across(nv));
 
-    b.Add("contact_constraints", "clear_constraint_counts", 1, {{5, counters, W, true}});
-    b.Add("contact_constraints", "reserve_contact_rows", contacts,
+    constexpr uint32_t ContactTileSize = 256;
+    const auto orderWords = across(contacts);
+    auto order = b.Zero("contactOrder", orderWords);
+    b.Add("contact_constraints", "sort_contact_tiles", (contacts - 1) / ContactTileSize + 1,
+          {{0, settings, R}, {1, stream.records, R}, {2, stream.counts, R}, {21, order, W}}, true);
+    if (contacts > ContactTileSize) {
+        auto merged = b.Zero("mergedContactOrder", orderWords);
+        for (uint64_t width = ContactTileSize; width < contacts; width *= 2) {
+            const auto mergeWidth = static_cast<uint32_t>(width);
+            const auto merge = b.Seed("contactMerge" + std::to_string(width), 1, &mergeWidth);
+            b.Add("contact_constraints", "merge_contact_tiles", contacts,
+                  {{0, settings, R},
+                   {1, stream.records, R},
+                   {2, stream.counts, R},
+                   {20, order, R},
+                   {21, merged, W},
+                   {22, merge, R}});
+            std::swap(order, merged);
+        }
+    }
+    b.Add("contact_constraints", "reserve_contact_rows", 1,
           {{0, settings, R},
            {1, stream.records, R},
            {2, stream.counts, R},
            {3, contactTopology, R},
            {4, dyn.dofs, R},
-           {5, counters, RW},
+           {5, counters, W, true},
            {6, reservations, W},
-           {8, columnStore, W}});
+           {8, columnStore, W},
+           {20, order, R}});
     b.Add("contact_constraints", "project_contact_rows", contacts,
           {{0, settings, R},
            {1, stream.records, R},
