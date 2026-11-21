@@ -16,16 +16,8 @@ float3 inx_ray_unlit_radiance(RaySurfaceHit hit, InxSurfaceData surface)
     return inx_ray_unlit_response::shade<false>(surface, context);
 }
 
-bool inx_evaluate_ray_lit(InxMeshInput input, bool front_facing, InxSecondarySurfaceSampling footprint,
-                          out InxSurfaceData surface)
-{
-    InxRayLitSampling sampling = {footprint};
-    surface = inx_ray_author_surface(input, sampling);
-    surface = inx_prepare_surface(surface, input, front_facing);
-    return inx_surface_covered(surface, inx_ray_alpha_clip(input.surface_id));
-}
-
-bool inx_evaluate_ray_lit_hit(RaySurfaceHit attributes, uint surface_id, float lod, out InxSurfaceData surface)
+bool inx_evaluate_ray_lit_hit(RaySurfaceHit attributes, uint surface_id, uint4 header, float lod,
+                             out InxSurfaceData surface)
 {
     InxMeshInput input = (InxMeshInput)0;
     input.surface_id = surface_id;
@@ -38,7 +30,15 @@ bool inx_evaluate_ray_lit_hit(RaySurfaceHit attributes, uint surface_id, float l
     input.line_color = float4(1.0);
     InxSecondarySurfaceSampling footprint = {lod, attributes.edge_u_ws, attributes.edge_v_ws,
                                              attributes.edge_u_uv1, attributes.edge_v_uv1};
-    return inx_evaluate_ray_lit(input, attributes.front_face, footprint, surface);
+    InxRayLitSampling sampling = {footprint};
+    surface = inx_ray_author_surface(input, header, sampling);
+    surface = inx_prepare_surface(surface, input, attributes.front_face);
+    return inx_surface_covered(surface, asfloat(header.w));
+}
+
+bool inx_evaluate_ray_lit_hit(RaySurfaceHit attributes, uint surface_id, float lod, out InxSurfaceData surface)
+{
+    return inx_evaluate_ray_lit_hit(attributes, surface_id, inx_ray_material_header(surface_id), lod, surface);
 }
 
 struct InxRayLitHitPolicy : RayHitPolicy
@@ -47,13 +47,13 @@ struct InxRayLitHitPolicy : RayHitPolicy
 
     bool accepts(RayPage page, TraceRay ray, RayHit candidate)
     {
-        uint participation = inx_ray_participation(candidate.surface_id);
-        if (!inx_ray_has_surface(participation))
-            return participation != inx_ray_material_excluded;
-        if (!(inx_ray_alpha_clip(candidate.surface_id) > 0.0))
+        uint4 header = inx_ray_material_header(candidate.surface_id);
+        if (!inx_ray_has_surface(header.x))
+            return header.x != inx_ray_material_excluded;
+        if (!(asfloat(header.w) > 0.0))
             return true;
         InxSurfaceData surface;
-        return inx_evaluate_ray_lit_hit(ray_surface_at_hit(page, ray, candidate), candidate.surface_id, lod, surface);
+        return inx_evaluate_ray_lit_hit(ray_surface_at_hit(page, ray, candidate), candidate.surface_id, header, lod, surface);
     }
 };
 
@@ -82,7 +82,8 @@ public InxRaySurfaceHit inx_world_ray_closest(float3 origin_ws, float3 direction
     RayHit hit = inx_trace_lit_closest(page, ray, layer_mask, lod);
     if (hit.triangle_index != ray_invalid_index)
     {
-        if (!inx_ray_has_surface(inx_ray_participation(hit.surface_id)))
+        uint4 header = inx_ray_material_header(hit.surface_id);
+        if (!inx_ray_has_surface(header.x))
         {
             result.available = false;
             return result;
@@ -92,7 +93,7 @@ public InxRaySurfaceHit inx_world_ray_closest(float3 origin_ws, float3 direction
         RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
         result.position_ws = attributes.position_ws;
         result.surface_id = hit.surface_id;
-        inx_evaluate_ray_lit_hit(attributes, hit.surface_id, lod, result.surface);
+        inx_evaluate_ray_lit_hit(attributes, hit.surface_id, header, lod, result.surface);
     }
     return result;
 }
@@ -917,15 +918,15 @@ InxRaySignal inx_ray_diffuse_incident(RayPage page, TraceRay ray, InxUInt2D dept
     RayHit hit = inx_trace_lit_closest(page, world_ray, 0xffffffffu, 0.0);
     if (hit.triangle_index == ray_invalid_index)
         return inx_ray_signal_output(inx_environment_radiance(ray.direction), uint2(0u));
-    uint kind = inx_ray_participation(hit.surface_id);
-    if (!inx_ray_has_surface(kind))
+    uint4 header = inx_ray_material_header(hit.surface_id);
+    if (!inx_ray_has_surface(header.x))
         return (InxRaySignal)0;
 
     RaySurfaceHit attributes = ray_surface_at_hit(page, ray, hit);
     InxSurfaceData surface;
-    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, 0.0, surface);
+    inx_evaluate_ray_lit_hit(attributes, hit.surface_id, header, 0.0, surface);
     uint2 witness = uint2(hit.surface_id, asuint(hit.distance));
-    if (kind == inx_ray_material_unlit)
+    if (header.x == inx_ray_material_unlit)
         return inx_ray_signal_output(inx_ray_unlit_radiance(attributes, surface), witness);
 
     // The diffuse candidate resolves emission and direct lighting at this hit.

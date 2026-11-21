@@ -950,10 +950,10 @@ def _prepare_ray_lit(reader=None, *, _graph=None):
                 existing.add(name)
         graph.ordered.append(Module(adapter.module_name, adapter.source_path, adapter.generated_source, {},
                                     adapter.source_ranges))
-    dispatch = ["InxSurfaceData inx_ray_author_surface(InxMeshInput input, InxRayLitSampling sampling)", "{",
-                "    uint4 header = inx_ray_material_header(input.surface_id);", "    switch (header.z)", "    {",
-                "    case 0u: return inx_ray_author_lit(input, inx_ray_builtin_material(input.surface_id), sampling);",
-                "    case 1u: return inx_ray_author_unlit(input, inx_ray_builtin_material(input.surface_id), sampling);"]
+    dispatch = ["InxSurfaceData inx_ray_author_surface(InxMeshInput input, uint4 header, InxRayLitSampling sampling)",
+                "{", "    switch (header.z)", "    {",
+                "    case 0u: return inx_ray_author_lit(input, inx_ray_builtin_material(header.y), sampling);",
+                "    case 1u: return inx_ray_author_unlit(input, inx_ray_builtin_material(header.y), sampling);"]
     for index, adapter in enumerate(adapters, 2):
         dispatch.append("    case " + str(index) + "u: return " + adapter.manifest["entry"] +
                         "(input, " + adapter.module_name + "_load(ray_lit_materials, header.y));")
@@ -974,9 +974,8 @@ def _prepare_ray_lit(reader=None, *, _graph=None):
             "ByteAddressBuffer ray_lit_materials;",
             "uint4 inx_ray_material_header(uint id) { return ray_lit_materials.Load<uint4>(id * 16u); }",
             "uint inx_ray_participation(uint id) { return inx_ray_material_header(id).x; }",
-            "float inx_ray_alpha_clip(uint id) { return asfloat(inx_ray_material_header(id).w); }",
-            "InxRayLitMaterial inx_ray_builtin_material(uint id) {",
-            "    let payload = ray_lit_materials.Load<InxRayBuiltinPayload>(inx_ray_material_header(id).y);",
+            "InxRayLitMaterial inx_ray_builtin_material(uint byte_offset) {",
+            "    let payload = ray_lit_materials.Load<InxRayBuiltinPayload>(byte_offset);",
             "    InxRayLitMaterial result = (InxRayLitMaterial)0;",
             *("    result.values." + field.name + " = payload.values." + field.name + ".value;" for field in values),
             *("    result." + field.name + " = payload." + field.name + ";" for field in textures),
