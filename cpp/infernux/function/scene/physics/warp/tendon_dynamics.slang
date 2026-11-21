@@ -4,6 +4,7 @@
 // MuJoCo Warp tendon generalized force and armature projection.
 
 #include "tendon_data.slang"
+#include "damping.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> tendonDimensions;
 [[vk::binding(1, 0)]] StructuredBuffer<TendonModel> tendons;
@@ -16,6 +17,7 @@
 [[vk::binding(8, 0)]] RWStructuredBuffer<float> qfrcPassive;
 [[vk::binding(9, 0)]] RWStructuredBuffer<float> qfrcBias;
 [[vk::binding(10, 0)]] RWStructuredBuffer<float> massMatrix;
+[[vk::binding(11, 0)]] StructuredBuffer<float> timestep;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -54,4 +56,24 @@ void add_tendon_armature(uint3 id : SV_DispatchThreadID)
         sum += tendons[link.x].springArmature.z * tendonJacobian[base + link.y] * tendonJacobian[base + link.z];
     }
     massMatrix[id.y * nM + id.x] += sum;
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void add_implicit_tendon_damping(uint3 id : SV_DispatchThreadID)
+{
+    const uint nM = tendonDimensions[1].w;
+    if (id.x >= nM)
+        return;
+    const uint4 sizes = tendonDimensions[0];
+    const uint base = id.y * sizes.z;
+    float derivative = 0.0;
+    for (uint i = massOffsets[id.x]; i < massOffsets[id.x + 1]; ++i)
+    {
+        const uint4 link = massContributions[i];
+        const float velocity = tendonState[id.y * sizes.x + link.x].velocity;
+        const float damping = dampingDerivative(tendons[link.x].damping.xyz, velocity);
+        derivative += damping * tendonJacobian[base + link.y] * tendonJacobian[base + link.z];
+    }
+    massMatrix[id.y * nM + id.x] += timestep[id.y] * derivative;
 }

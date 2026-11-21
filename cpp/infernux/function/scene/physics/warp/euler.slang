@@ -4,6 +4,7 @@
 // Slang adaptation of MuJoCo Warp _src/forward.py semi-implicit advancement.
 
 #include "model.slang"
+#include "damping.slang"
 #include "integrate_position.slang"
 
 [[vk::binding(0, 0)]] StructuredBuffer<ModelDimensions> model;
@@ -32,9 +33,7 @@ void assemble_euler_mass(uint3 id : SV_DispatchThreadID)
     for (uint entry = 0; entry + 1 < row.w; ++entry)
         eulerMassMatrix[base + entry] = massMatrix[base + entry];
     const uint diagonal = base + row.w - 1;
-    const float speed = abs(qvel[id.y * size.state.y + id.x]);
-    const float3 coefficients = dofDamping[id.x].xyz;
-    const float derivative = coefficients.x + 2.0 * coefficients.y * speed + 3.0 * coefficients.z * speed * speed;
+    const float derivative = dampingDerivative(dofDamping[id.x].xyz, qvel[id.y * size.state.y + id.x]);
     eulerMassMatrix[diagonal] = massMatrix[diagonal] + timestep[id.y] * derivative;
 }
 

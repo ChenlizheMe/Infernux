@@ -65,12 +65,14 @@ float muscleOptimalLength(float2 lengthRange, float2 normalizedRange)
     return (lengthRange.y - lengthRange.x) / max(MinActuatorValue, normalizedRange.y - normalizedRange.x);
 }
 
-float muscleActiveForce(ActuatorModel actuator, ActuatorDynamicsModel dynamics, float2 motion)
+float muscleActiveForce<let VelocityDerivative : bool>(ActuatorModel actuator, ActuatorDynamicsModel dynamics,
+                                                       float2 motion)
 {
     const float2 lengthRange = dynamics.gainLast.zw;
     const float optimal = muscleOptimalLength(lengthRange, actuator.gain.xy);
     const float normalizedLength = actuator.gain.x + (motion.x - lengthRange.x) / max(MinActuatorValue, optimal);
-    const float normalizedVelocity = motion.y / max(MinActuatorValue, optimal * dynamics.gainSecond.z);
+    const float velocityScale = max(MinActuatorValue, optimal * dynamics.gainSecond.z);
+    const float normalizedVelocity = motion.y / velocityScale;
     const float lengthGain = muscleLengthGain(normalizedLength, dynamics.gainSecond.x, dynamics.gainSecond.y);
     const float maximum = dynamics.gainLast.x;
     const float shoulder = maximum - 1.0;
@@ -80,15 +82,16 @@ float muscleActiveForce(ActuatorModel actuator, ActuatorDynamicsModel dynamics, 
     else if (normalizedVelocity <= 0.0)
     {
         const float value = normalizedVelocity + 1.0;
-        velocityGain = value * value;
+        velocityGain = VelocityDerivative ? 2.0 * value / velocityScale : value * value;
     }
     else if (normalizedVelocity <= shoulder)
     {
         const float value = shoulder - normalizedVelocity;
-        velocityGain = maximum - value * value / max(MinActuatorValue, shoulder);
+        const float width = max(MinActuatorValue, shoulder);
+        velocityGain = VelocityDerivative ? 2.0 * value / (width * velocityScale) : maximum - value * value / width;
     }
     else
-        velocityGain = maximum;
+        velocityGain = VelocityDerivative ? 0.0 : maximum;
     const float force = actuator.gain.z < 0.0 ? actuator.gain.w / max(MinActuatorValue, dynamics.biasLast.z) : actuator.gain.z;
     return -force * lengthGain * velocityGain;
 }
@@ -133,8 +136,9 @@ float motorCurrentAtEnd(ActuatorDynamicsModel dynamics, ActivationState state, f
 }
 
 float motorVoltage(ActuatorModel actuator, ActuatorDynamicsModel dynamics, uint controlBase,
-                   float command, float2 motion, float integral)
+                   float command, float2 motion, float integral, out bool voltageLimited)
 {
+    voltageLimited = false;
     if (actuator.indices.y == NoIndex)
         return 0.0;
     const uint inputs = dynamics.layout.x;
@@ -155,7 +159,10 @@ float motorVoltage(ActuatorModel actuator, ActuatorDynamicsModel dynamics, uint 
                          controller.z * (setpoint.y - motion.y) + setpoint.z;
     float voltage = (actuator.gain.x / actuator.gain.y) * torque + actuator.gain.y * motion.y;
     if (controller.w > 0.0)
+    {
+        voltageLimited = abs(voltage) >= controller.w;
         voltage = clamp(voltage, -controller.w, controller.w);
+    }
     return voltage + setpoint.w;
 }
 
@@ -182,6 +189,7 @@ struct DcMotorResponse
     float voltage;
     float resistance;
     float mechanicalForce;
+    bool voltageLimited;
 };
 
 DcMotorResponse evaluateDcMotor(ActuatorModel actuator, ActuatorDynamicsModel dynamics, uint activationBase,
@@ -213,7 +221,8 @@ DcMotorResponse evaluateDcMotor(ActuatorModel actuator, ActuatorDynamicsModel dy
         activation[index].derivative = rate;
     }
 
-    const float voltage = motorVoltage(actuator, dynamics, controlBase, command, motion, integral);
+    bool voltageLimited;
+    const float voltage = motorVoltage(actuator, dynamics, controlBase, command, motion, integral, voltageLimited);
     const float motorConstant = actuator.gain.y;
     const float backEmf = motorConstant * motion.y;
     float resistance = actuator.gain.x;
@@ -265,7 +274,43 @@ DcMotorResponse evaluateDcMotor(ActuatorModel actuator, ActuatorDynamicsModel dy
         controlActivation = (actuator.indices.w & EarlyActivation) != 0 ?
             advanceMotorSlot(actuator, dynamics, last, state, motion.y, dt) : state.value;
     }
-    return {controlActivation, voltage, max(MinActuatorValue, resistance), mechanical};
+    return {controlActivation, voltage, max(MinActuatorValue, resistance), mechanical, voltageLimited};
+}
+
+float2 dcMotorVelocityDerivative(ActuatorModel actuator, ActuatorDynamicsModel dynamics, DcMotorResponse motor,
+                                 uint activationBase, float velocity, float dt)
+{
+    const float k = actuator.gain.y;
+    const float tau = dynamics.parametersFirst.x;
+    const float rateLimit = dynamics.parametersFirst.y;
+    const uint flags = actuator.indices.w;
+    const float voltageRate = (dynamics.layout.x & 7u) != 0 && !motor.voltageLimited ?
+        k - dynamics.gainSecond.z * max(MinActuatorValue, actuator.gain.x) / k : 0.0;
+    const bool motorGain = actuator.modes.y == DcMotorGain;
+    const bool motorBias = actuator.modes.z == DcMotorBias;
+    float force;
+    float slope = 0.0;
+    if (tau > 0.0)
+    {
+        const uint index = motorStateIndex(activationBase + actuator.indices.z, dynamics.layout.y, MotorCurrent);
+        const ActivationState state = activation[index];
+        const bool early = (flags & EarlyActivation) != 0;
+        float current = early ? motorCurrentAtEnd(dynamics, state, dt) : state.value;
+        if (early && (flags & LimitActivation) != 0)
+            current = clamp(current, actuator.controlActivationRange.z, actuator.controlActivationRange.w);
+        force = k * current;
+        const bool rateLimited = rateLimit > 0.0 && abs(state.derivative) >= rateLimit;
+        if (motorGain && early && !rateLimited)
+            slope = k * (voltageRate - k) * (1.0 - exp(-dt / tau)) / motor.resistance;
+    }
+    else
+    {
+        force = k * (motor.voltage - k * velocity) / motor.resistance;
+        slope = k * ((motorGain ? voltageRate : 0.0) - (motorBias ? k : 0.0)) / motor.resistance;
+    }
+    if ((flags & LimitForce) != 0 && (force <= actuator.forceRange.x || force >= actuator.forceRange.y))
+        slope = 0.0;
+    return float2(slope, motorGain ? -max(0.0, dynamics.parametersSecond.z) : 0.0);
 }
 
 void advanceDcMotor(ActuatorModel actuator, ActuatorDynamicsModel dynamics, uint base, float speed, float dt)

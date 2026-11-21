@@ -43,6 +43,30 @@ struct SparseMassRow
 [[vk::binding(12, 0)]] RWStructuredBuffer<float> inverseDiagonal;
 [[vk::binding(13, 0)]] StructuredBuffer<float> rhs;
 [[vk::binding(14, 0)]] RWStructuredBuffer<float> solution;
+[[vk::binding(15, 0)]] StructuredBuffer<uint> symmetricAdjacency;
+[[vk::binding(16, 0)]] StructuredBuffer<float> massVectorInput;
+[[vk::binding(17, 0)]] RWStructuredBuffer<float> massVectorOutput;
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void multiply_packed_mass(uint3 id : SV_DispatchThreadID)
+{
+    const ModelDimensions dimensions = model[0];
+    const uint dofCount = dimensions.state.y;
+    if (id.x >= dofCount)
+        return;
+    const uint vectorBase = id.y * dofCount;
+    const uint matrixBase = id.y * dimensions.layout.w;
+    float product = 0.0;
+    for (uint i = symmetricAdjacency[id.x]; i < symmetricAdjacency[id.x + 1]; ++i)
+    {
+        const uint offset = dofCount + 1 + 2 * i;
+        const uint column = symmetricAdjacency[offset];
+        const uint massIndex = symmetricAdjacency[offset + 1];
+        product += massMatrix[matrixBase + massIndex] * massVectorInput[vectorBase + column];
+    }
+    massVectorOutput[vectorBase + id.x] = product;
+}
 
 groupshared float massTile[TileWidth * (TileWidth + 1) / 2];
 groupshared float massVector[TileWidth];
