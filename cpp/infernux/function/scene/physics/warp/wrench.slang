@@ -26,7 +26,10 @@ struct WrenchAtTreeCenter
 [[vk::binding(6, 0)]] RWStructuredBuffer<WrenchAtTreeCenter> centeredWrench;
 [[vk::binding(7, 0)]] StructuredBuffer<DofModel> dofs;
 [[vk::binding(8, 0)]] StructuredBuffer<SpatialMotion> centeredDof;
-[[vk::binding(9, 0)]] RWStructuredBuffer<float> qfrcSmooth;
+[[vk::binding(9, 0)]] StructuredBuffer<float> qfrcApplied;
+[[vk::binding(10, 0)]] RWStructuredBuffer<float> qfrcAppliedWithWrenches;
+[[vk::binding(11, 0)]] RWStructuredBuffer<float> qfrcPassive;
+[[vk::binding(12, 0)]] RWStructuredBuffer<float> qfrcGravityCompensation;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -48,7 +51,7 @@ void center_body_wrenches(uint3 id : SV_DispatchThreadID)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void add_generalized_wrenches(uint3 id : SV_DispatchThreadID)
+void project_body_wrenches(uint3 id : SV_DispatchThreadID)
 {
     const ModelDimensions size = model[0];
     if (id.x >= size.state.y)
@@ -59,13 +62,19 @@ void add_generalized_wrenches(uint3 id : SV_DispatchThreadID)
     const uint bodyBase = id.y * size.state.z;
     const uint first = dof.indices.x;
     const uint end = first + bodies[first].subtree.y;
-    float3 force = float3(0.0);
-    float3 torque = float3(0.0);
+    SpatialMotion applied = spatial(float3(0.0), float3(0.0));
+    SpatialMotion compensation = spatial(float3(0.0), float3(0.0));
     for (uint body = first; body < end; ++body)
     {
         const WrenchAtTreeCenter wrench = centeredWrench[bodyBase + body];
-        force += wrench.applied.linear.xyz + wrench.gravityCompensation.linear.xyz;
-        torque += wrench.applied.angular.xyz + wrench.gravityCompensation.angular.xyz;
+        applied.linear += wrench.applied.linear;
+        applied.angular += wrench.applied.angular;
+        compensation.linear += wrench.gravityCompensation.linear;
+        compensation.angular += wrench.gravityCompensation.angular;
     }
-    qfrcSmooth[dofIndex] += dot(coordinate.linear.xyz, force) + dot(coordinate.angular.xyz, torque);
+    const float gravityCompensation = spatialDot(coordinate, compensation);
+    qfrcGravityCompensation[dofIndex] = gravityCompensation;
+    if ((dof.flags & GravityCompensatedByActuator) == 0)
+        qfrcPassive[dofIndex] += gravityCompensation;
+    qfrcAppliedWithWrenches[dofIndex] = qfrcApplied[dofIndex] + spatialDot(coordinate, applied);
 }

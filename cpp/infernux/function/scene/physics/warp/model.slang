@@ -9,6 +9,7 @@ static const uint JointSlide = 2;
 static const uint JointHinge = 3;
 static const uint NoIndex = 0xffffffffu;
 static const float PhysicsPi = 3.141592653589793;
+static const uint GravityCompensatedByActuator = 1;
 
 struct ModelDimensions
 {
@@ -46,7 +47,9 @@ struct GeomModel
 struct DofModel
 {
     uint4 indices; // body, parent dof, sparse row address, nonzero count
-    float4 armature;
+    float armature;
+    uint flags;
+    float2 reserved;
 };
 
 struct Pose

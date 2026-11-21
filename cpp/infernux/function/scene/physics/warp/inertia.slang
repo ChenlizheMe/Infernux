@@ -150,7 +150,7 @@ void assemble_mass(uint3 id : SV_DispatchThreadID)
     const SpatialMotion response = inertiaTimesMotion(compositeInertia[id.y * size.state.z + dof.indices.x],
                                                      coordinate);
     uint offset = dof.indices.w - 1;
-    massMatrix[row + offset] = dof.armature.x + spatialDot(coordinate, response);
+    massMatrix[row + offset] = dof.armature + spatialDot(coordinate, response);
     uint parent = dof.indices.y;
     while (offset != 0 && parent != NoIndex)
     {

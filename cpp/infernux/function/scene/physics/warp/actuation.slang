@@ -72,6 +72,8 @@ struct TendonActuatorGroup
 [[vk::binding(15, 0)]] StructuredBuffer<float> tendonJacobian;
 [[vk::binding(16, 0)]] StructuredBuffer<TendonActuatorGroup> tendonActuatorGroups;
 [[vk::binding(17, 0)]] StructuredBuffer<uint> tendonActuatorList;
+[[vk::binding(24, 0)]] StructuredBuffer<DofModel> actuationDofs;
+[[vk::binding(25, 0)]] StructuredBuffer<float> qfrcGravityCompensation;
 
 #include "site_transmission.slang"
 
@@ -247,6 +249,7 @@ void project_actuator_force(uint3 id : SV_DispatchThreadID)
         return;
     const ActuatorDof dof = actuatorDofs[id.x];
     const uint base = id.y * actuatorDimensions[0].x;
+    const uint index = id.y * nv + id.x;
     float force = 0.0;
     for (uint i = 0; i < dof.entries.y; ++i)
     {
@@ -262,9 +265,11 @@ void project_actuator_force(uint3 id : SV_DispatchThreadID)
             moment = edge.y < 3 ? step.firstMoment[edge.y] : step.lastMoment[edge.y - 3];
         force += moment * step.values.z;
     }
+    if ((actuationDofs[id.x].flags & GravityCompensatedByActuator) != 0)
+        force += qfrcGravityCompensation[index];
     if (dof.entries.z != 0)
         force = clamp(force, dof.forceRange.x, dof.forceRange.y);
-    qfrcActuator[id.y * nv + id.x] = force;
+    qfrcActuator[index] = force;
 }
 
 [shader("compute")]
