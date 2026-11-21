@@ -35,6 +35,7 @@ struct PhysicsGpuPoseSource
     std::shared_ptr<rhi::ComputeBuffer> states;
     uint64_t firstRow = 0;
     uint32_t bodyCount = 0;
+    uint32_t rowBytes = 0;
     Layout layout = Layout::CenterOfMassXYZW;
 };
 

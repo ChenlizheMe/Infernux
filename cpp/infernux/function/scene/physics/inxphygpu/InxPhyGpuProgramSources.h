@@ -43,6 +43,7 @@ inline constexpr InxPhyGpuProgramSource InxPhyGpuProgramSources[] = {
     {"primitive_contacts"},
     {"ray_bvh_refit"},
     {"ray_queries"},
+    {"render_poses"},
     {"rk4"},
     {"sleep"},
     {"spatial_constraints"},

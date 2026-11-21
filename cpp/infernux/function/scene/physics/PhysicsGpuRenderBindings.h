@@ -2,7 +2,7 @@
 
 #include "PhysicsECSStore.h"
 #include "PhysicsGpuPoseSource.h"
-#include "gpu/PhysicsTypes.h"
+#include "inxphygpu/render_pose_layout.slang"
 
 #include <functional>
 #include <memory>
@@ -12,13 +12,13 @@
 namespace infernux
 {
 class RuntimeWorld;
-class JoltGpuRenderPoses;
+class PhysicsGpuRenderPoses;
 namespace rhi
 {
 class PreparedComputeBatch;
 }
 
-class JoltGpuRenderBindings final
+class PhysicsGpuRenderBindings final
 {
   public:
     struct Snapshot;
@@ -26,11 +26,11 @@ class JoltGpuRenderBindings final
     using ResolveBody = std::function<std::optional<PhysicsGpuBodyPoseBinding>(PhysicsActorHandle, uint32_t bodyId)>;
     struct Prepared
     {
-        std::vector<JPH::GPU::PoseNode> nodes;
-        std::vector<JPH::GPU::PoseBinding> bindings;
+        std::vector<physics::gpu_render::PoseNode> nodes;
+        std::vector<physics::gpu_render::PoseBinding> bindings;
 
       private:
-        friend class JoltGpuRenderBindings;
+        friend class PhysicsGpuRenderBindings;
         struct Target
         {
             size_t renderer = 0;
@@ -52,16 +52,16 @@ class JoltGpuRenderBindings final
         void Seal();
 
       private:
-        friend class JoltGpuRenderBindings;
+        friend class PhysicsGpuRenderBindings;
         Prepared bindings;
         std::shared_ptr<rhi::PreparedComputeBatch> packet;
         std::shared_ptr<rhi::ComputeBuffer> models, bounds;
     };
 
-    JoltGpuRenderBindings();
-    ~JoltGpuRenderBindings();
-    JoltGpuRenderBindings(const JoltGpuRenderBindings &) = delete;
-    JoltGpuRenderBindings &operator=(const JoltGpuRenderBindings &) = delete;
+    PhysicsGpuRenderBindings();
+    ~PhysicsGpuRenderBindings();
+    PhysicsGpuRenderBindings(const PhysicsGpuRenderBindings &) = delete;
+    PhysicsGpuRenderBindings &operator=(const PhysicsGpuRenderBindings &) = delete;
 
     /// Capture at the logical job's author boundary. Ordinary local channels
     /// come directly from CPU storage; physics frame-cache world channels are
@@ -71,7 +71,7 @@ class JoltGpuRenderBindings final
     /// Resolves accepted actor identities and COMs against the captured author
     /// hierarchy. Never reads newer Transform values while preparing GPU work.
     [[nodiscard]] Export PrepareExport(SnapshotPtr snapshot, const ResolveBody &resolve,
-                                       const PhysicsGpuPoseSource &poses, const JoltGpuRenderPoses &program) const;
+                                       const PhysicsGpuPoseSource &poses, const PhysicsGpuRenderPoses &program) const;
 
     /// Called only for the completed export packet, including an empty mapping.
     /// Each renderer keeps a count-one endpoint selecting the packed buffers.

@@ -74,7 +74,6 @@ JPH_GPU_CONSTANT(MaxContactPointsPerPair, 4);
 // One sorted pair identity, a normal/count, friction and two words per point.
 JPH_GPU_CONSTANT(ContactHistoryWords, 3 + 2 * MaxContactPointsPerPair);
 // Sentinel for a render hierarchy node without a physical ancestor.
-JPH_GPU_CONSTANT(PoseNoParent, 0xffffffffu);
 // FIFO body commands. These values match Infernux ForceMode.
 JPH_GPU_CONSTANT(CommandSetPosition, 0);
 JPH_GPU_CONSTANT(CommandSetRotation, 1);
@@ -542,67 +541,6 @@ struct JPH_GPU_ALIGN StageWork
     JPH_GPU_UINT4 range; // Global item first/count, or local first/count and island table first/count.
 };
 
-// Immutable render hierarchy nodes address one frozen BodyState generation.
-// Parent chains are acyclic. The host schedules topological levels separately
-// from physical body capacity; a node consumes its completed parent's affine.
-// Ordinary parent chains retain both their affine and their authored TRS inverse:
-// a collapsed scale uses zero reciprocal, rather than a generic matrix inverse.
-struct JPH_GPU_ALIGN PoseNode
-{
-    // Body-state slot, parent PoseNode index or PoseNoParent, then zero padding.
-    JPH_GPU_UINT4 bodyParent;
-    // Accepted body-origin-to-COM vector in the body frame; w is zero padding.
-    JPH_GPU_FLOAT4 rootCOM;
-    // This Transform's authored signed local scale; w is zero padding.
-    JPH_GPU_FLOAT4 localScale;
-    // Quaternion xyzw of the ordinary chain from the parent body root to this
-    // Transform's direct parent. With PoseNoParent, the direct parent's world
-    // quaternion instead. Independent of the affine matrix; do not decompose it.
-    JPH_GPU_FLOAT4 parentRotation;
-    // Affine columns mapping this body's direct parent into its ancestor body
-    // root, or into world space for PoseNoParent. w = 0, 0, 0, 1 respectively.
-    JPH_GPU_FLOAT4 parentLocalToAncestor0;
-    JPH_GPU_FLOAT4 parentLocalToAncestor1;
-    JPH_GPU_FLOAT4 parentLocalToAncestor2;
-    JPH_GPU_FLOAT4 parentLocalToAncestor3;
-    // Reverse map composed from each ordinary Transform's authored inverse TRS,
-    // in reverse order. abs(localScale) < 1e-9 has zero reciprocal per axis.
-    // This is not the generic inverse or pseudoinverse of the forward matrix.
-    // Columns have w = 0, 0, 0, 1 respectively.
-    JPH_GPU_FLOAT4 parentAncestorToLocal0;
-    JPH_GPU_FLOAT4 parentAncestorToLocal1;
-    JPH_GPU_FLOAT4 parentAncestorToLocal2;
-    JPH_GPU_FLOAT4 parentAncestorToLocal3;
-};
-
-// One renderer's ordinary local chain from its nearest exported body root.
-// Mesh draw and existing local bounds deliberately use separate pivot paths.
-struct JPH_GPU_ALIGN PoseBinding
-{
-    // PoseNode index in x; yzw are zero padding.
-    JPH_GPU_UINT4 nodeIndex;
-    // Affine object-local-to-body-root columns; w = 0, 0, 0, 1 respectively.
-    // The chain contains no other exported body node.
-    JPH_GPU_FLOAT4 objectLocal0;
-    JPH_GPU_FLOAT4 objectLocal1;
-    JPH_GPU_FLOAT4 objectLocal2;
-    JPH_GPU_FLOAT4 objectLocal3;
-    // Selected-submesh draw pivot, or zero for an unshifted draw. w is zero.
-    JPH_GPU_FLOAT4 drawPivot;
-    // Existing object-local AABB center and nonnegative half extent. These
-    // bounds already contain any selected-submesh pivot. Both w are zero.
-    JPH_GPU_FLOAT4 boundsCenter;
-    JPH_GPU_FLOAT4 boundsExtent;
-};
-
-struct JPH_GPU_ALIGN PoseParams
-{
-    // Total node count, renderer binding count, current level first/count.
-    JPH_GPU_UINT4 counts;
-    // First float4 of the world's body rows, float4 stride, origin/WXYZ flag, padding.
-    JPH_GPU_UINT4 stateLayout;
-};
-
 // Sparse body mutations at an owner-controlled boundary between logical ticks.
 // Each list addresses unique slots. Neither operation advances simulation time.
 struct JPH_GPU_ALIGN BodyMutationParams
@@ -1008,9 +946,6 @@ JPH_GPU_CHECK_TYPE(ContactPatch, 16);
 JPH_GPU_CHECK_TYPE(Contact, 80);
 JPH_GPU_CHECK_TYPE(StepParams, 112);
 JPH_GPU_CHECK_TYPE(StageWork, 16);
-JPH_GPU_CHECK_TYPE(PoseNode, 192);
-JPH_GPU_CHECK_TYPE(PoseBinding, 128);
-JPH_GPU_CHECK_TYPE(PoseParams, 32);
 JPH_GPU_CHECK_TYPE(BodyMutationParams, 16);
 JPH_GPU_CHECK_TYPE(BodyInitialization, 112);
 JPH_GPU_CHECK_TYPE(CenterOfMassUpdate, 32);
@@ -1090,17 +1025,6 @@ static_assert(std::is_standard_layout<BodyBatchTile>::value && std::is_trivially
 static_assert(offsetof(BodyBatchTile, selectionIndex) == 0 && offsetof(BodyBatchTile, bodyFirst) == 4 &&
               offsetof(BodyBatchTile, bodyCount) == 8);
 static_assert(offsetof(StageWork, range) == 0);
-static_assert(offsetof(PoseNode, bodyParent) == 0 && offsetof(PoseNode, rootCOM) == 16 &&
-              offsetof(PoseNode, localScale) == 32 && offsetof(PoseNode, parentRotation) == 48 &&
-              offsetof(PoseNode, parentLocalToAncestor0) == 64 && offsetof(PoseNode, parentLocalToAncestor1) == 80 &&
-              offsetof(PoseNode, parentLocalToAncestor2) == 96 && offsetof(PoseNode, parentLocalToAncestor3) == 112 &&
-              offsetof(PoseNode, parentAncestorToLocal0) == 128 && offsetof(PoseNode, parentAncestorToLocal1) == 144 &&
-              offsetof(PoseNode, parentAncestorToLocal2) == 160 && offsetof(PoseNode, parentAncestorToLocal3) == 176);
-static_assert(offsetof(PoseBinding, nodeIndex) == 0 && offsetof(PoseBinding, objectLocal0) == 16 &&
-              offsetof(PoseBinding, objectLocal1) == 32 && offsetof(PoseBinding, objectLocal2) == 48 &&
-              offsetof(PoseBinding, objectLocal3) == 64 && offsetof(PoseBinding, drawPivot) == 80 &&
-              offsetof(PoseBinding, boundsCenter) == 96 && offsetof(PoseBinding, boundsExtent) == 112);
-static_assert(offsetof(PoseParams, counts) == 0 && offsetof(PoseParams, stateLayout) == 16);
 #undef JPH_GPU_CHECK_TYPE
 }
 } // namespace JPH::GPU

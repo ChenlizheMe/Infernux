@@ -60,8 +60,6 @@ ShaderSourceModule LoadProgramSource(const std::filesystem::path &physics, JoltG
         source.source += "\n#include \"../../infernux/renderer/particle/collision_export.slang\"\n";
         return source;
     }
-    case JoltGpuProgram::RenderPoses:
-        return LoadModule(physics, "jph_gpu_render_poses", "gpu/Shaders/render_poses.slang");
     case JoltGpuProgram::Joints:
         return LoadModule(physics, "jph_gpu_joints", "gpu/Shaders/joint_commands.slang");
     case JoltGpuProgram::Count:

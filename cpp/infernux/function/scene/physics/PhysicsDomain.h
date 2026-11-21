@@ -6,9 +6,9 @@
 #include "../Scene.h"
 #include "JoltCpuContactPublication.h"
 #include "JoltGpuContactPublication.h"
-#include "JoltGpuRenderBindings.h"
-#include "JoltGpuRenderPoses.h"
 #include "PhysicsContactPublication.h"
+#include "PhysicsGpuRenderBindings.h"
+#include "PhysicsGpuRenderPoses.h"
 #include "PhysicsParticipant.h"
 #include "PhysicsWorld.h"
 #include <map>
@@ -124,13 +124,13 @@ struct PhysicsDomain final
         using Keys = std::array<uint64_t, 3>;
         struct Job
         {
-            JoltGpuRenderBindings::SnapshotPtr snapshot;
+            PhysicsGpuRenderBindings::SnapshotPtr snapshot;
             Keys keys{};
             uint64_t numericalGeneration = 0;
-            std::optional<JoltGpuRenderBindings::Export> output;
+            std::optional<PhysicsGpuRenderBindings::Export> output;
             std::shared_ptr<const JoltGpuScene::Publication> publication;
         };
-        JoltGpuRenderBindings bindings;
+        PhysicsGpuRenderBindings bindings;
         std::shared_ptr<Job> pending, ready;
         std::optional<Keys> checkedKeys;
     };

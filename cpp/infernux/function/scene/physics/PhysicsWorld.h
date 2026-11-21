@@ -42,7 +42,7 @@ class FrameWorkOwner;
 class RuntimeWorld;
 enum class PhysicsBackend : uint8_t;
 struct PhysicsDomain;
-class JoltGpuRenderPoses;
+class PhysicsGpuRenderPoses;
 class JoltGpuContactReports;
 class Infernux;
 class JoltGpuScene;
@@ -715,7 +715,7 @@ class PhysicsWorld
     friend class PhysicsECSStore;
     friend class Rigidbody;
     friend class Transform;
-    friend class JoltGpuRenderBindings;
+    friend class PhysicsGpuRenderBindings;
     friend class HingeJoint;
     friend class SwingTwistJoint;
     friend class SixDOFJoint;
@@ -960,7 +960,7 @@ class PhysicsWorld
     std::unique_ptr<JoltGpuJoints> m_gpuJoints;
     std::unique_ptr<JoltGpuScene> m_gpuScene;
     std::unique_ptr<JoltGpuQueries> m_gpuQueries;
-    std::unique_ptr<JoltGpuRenderPoses> m_gpuRenderProgram;
+    std::unique_ptr<PhysicsGpuRenderPoses> m_gpuRenderProgram;
     std::unique_ptr<JoltGpuContactReports> m_gpuContactReports;
     // Live component ownership is independent of a backend's numerical slots
     // and immutable publications, which may outlive a retired component.

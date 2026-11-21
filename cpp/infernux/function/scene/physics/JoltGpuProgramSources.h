@@ -21,7 +21,6 @@ enum class JoltGpuProgram
     BodyCommands,
     Queries,
     Joints,
-    RenderPoses,
     Broadphase,
     Narrowphase,
     Constraints,

@@ -1,17 +1,14 @@
 #pragma once
 
-#include "JoltGpuTick.h"
 #include "PhysicsGpuPoseSource.h"
-
-namespace JPH::GPU
-{
-struct PoseNode;
-}
+#include "inxphygpu/render_pose_layout.slang"
+#include <function/renderer/rhi/RhiComputeKernel.h>
+#include <function/renderer/shader/ShaderProgramCode.h>
 
 namespace infernux
 {
 
-struct JoltGpuRenderPoseBatch
+struct PhysicsGpuRenderPoseBatch
 {
     std::shared_ptr<rhi::PreparedComputeBatch> batch;
     /// Float32 buffers: four model columns and two world AABB records per mesh.
@@ -24,19 +21,19 @@ struct JoltGpuRenderPoseBatch
 /// caller supplies generated author bindings and publishes RenderPoseBuffer
 /// only after its owning scene reaches the corresponding complete boundary.
 /// Compilation, submission, budgets and retirement remain shared engine work.
-class JoltGpuRenderPoses final
+class PhysicsGpuRenderPoses final
 {
   public:
-    JoltGpuRenderPoses(rhi::ComputeHost &host, const ShaderTargetCode &target);
+    PhysicsGpuRenderPoses(rhi::ComputeHost &host, const ShaderTargetCode &target);
 
     /// Prepare only: no submission, wait or state readback. Generated nodes
     /// contain finite author affine data and authored quaternion products;
     /// signed/zero scales are valid. This boundary checks snapshot ownership,
     /// sizes and bounded node/index domains, not dynamic GPU numerical state.
     /// Empty bindings return no packet or output allocation.
-    [[nodiscard]] JoltGpuRenderPoseBatch Prepare(const PhysicsGpuPoseSource &output,
-                                                 const std::vector<JPH::GPU::PoseNode> &nodes,
-                                                 const std::vector<JPH::GPU::PoseBinding> &bindings) const;
+    [[nodiscard]] PhysicsGpuRenderPoseBatch
+    Prepare(const PhysicsGpuPoseSource &output, const std::vector<physics::gpu_render::PoseNode> &nodes,
+            const std::vector<physics::gpu_render::PoseBinding> &bindings) const;
 
   private:
     struct Entry

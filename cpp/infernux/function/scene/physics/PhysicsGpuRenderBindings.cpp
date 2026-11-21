@@ -1,6 +1,6 @@
-#include "JoltGpuRenderBindings.h"
-#include "JoltGpuRenderPoses.h"
+#include "PhysicsGpuRenderBindings.h"
 #include "PhysicsECSStore.h"
+#include "PhysicsGpuRenderPoses.h"
 
 #include "../GameObject.h"
 #include "../MeshRenderer.h"
@@ -28,7 +28,7 @@ namespace
 {
 constexpr uint32_t NoNode = UINT32_MAX;
 
-JPH::GPU::Float4 Float4(const glm::vec4 &v)
+physics::gpu_render::Float4 Float4(const glm::vec4 &v)
 {
     return {v.x, v.y, v.z, v.w};
 }
@@ -66,7 +66,7 @@ struct ActiveHierarchy
 };
 } // namespace
 
-struct JoltGpuRenderBindings::Snapshot
+struct PhysicsGpuRenderBindings::Snapshot
 {
     struct TransformValue
     {
@@ -111,7 +111,7 @@ struct JoltGpuRenderBindings::Snapshot
 
 namespace
 {
-using Snapshot = JoltGpuRenderBindings::Snapshot;
+using Snapshot = PhysicsGpuRenderBindings::Snapshot;
 
 bool SameSnapshot(const Snapshot &a, const Snapshot &b)
 {
@@ -143,7 +143,7 @@ bool SameSnapshot(const Snapshot &a, const Snapshot &b)
 
 struct HierarchyComparison
 {
-    JoltGpuRenderBindings::SnapshotPtr previous;
+    PhysicsGpuRenderBindings::SnapshotPtr previous;
     std::unordered_map<uint64_t, bool> values;
     std::vector<uint64_t> path;
 
@@ -210,7 +210,7 @@ uint64_t Continuity(const Snapshot &snapshot, uint32_t bodyId)
 }
 } // namespace
 
-struct JoltGpuRenderBindings::Impl
+struct PhysicsGpuRenderBindings::Impl
 {
     struct Entry
     {
@@ -237,16 +237,16 @@ struct JoltGpuRenderBindings::Impl
     }
 };
 
-JoltGpuRenderBindings::JoltGpuRenderBindings() : m_impl(std::make_unique<Impl>())
+PhysicsGpuRenderBindings::PhysicsGpuRenderBindings() : m_impl(std::make_unique<Impl>())
 {
 }
 
-JoltGpuRenderBindings::~JoltGpuRenderBindings()
+PhysicsGpuRenderBindings::~PhysicsGpuRenderBindings()
 {
     Clear();
 }
 
-JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &world) const
+PhysicsGpuRenderBindings::SnapshotPtr PhysicsGpuRenderBindings::Capture(RuntimeWorld &world) const
 {
     const WorldExecutionScope ownerScope(&world);
     auto snapshot = std::make_shared<Snapshot>();
@@ -353,7 +353,7 @@ JoltGpuRenderBindings::SnapshotPtr JoltGpuRenderBindings::Capture(RuntimeWorld &
     return snapshot;
 }
 
-bool JoltGpuRenderBindings::NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const
+bool PhysicsGpuRenderBindings::NeedsExport(const Snapshot &snapshot, uint64_t numericalGeneration) const
 {
     if (!m_impl->published || m_impl->numericalGeneration != numericalGeneration ||
         !SameSnapshot(snapshot, *m_impl->published))
@@ -367,7 +367,8 @@ bool JoltGpuRenderBindings::NeedsExport(const Snapshot &snapshot, uint64_t numer
     return false;
 }
 
-JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snapshot, const ResolveBody &resolve) const
+PhysicsGpuRenderBindings::Prepared PhysicsGpuRenderBindings::Prepare(SnapshotPtr snapshot,
+                                                                     const ResolveBody &resolve) const
 {
     Prepared prepared;
     prepared.snapshot = std::move(snapshot);
@@ -427,7 +428,7 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
         const auto root = chain.root;
         if (root == NoNode)
             continue;
-        JPH::GPU::PoseBinding binding{};
+        physics::gpu_render::PoseBinding binding{};
         binding.nodeIndex = {nodeIndices[root], 0, 0, 0};
         binding.objectLocal0 = Float4(chain.affine[0]);
         binding.objectLocal1 = Float4(chain.affine[1]);
@@ -443,9 +444,10 @@ JoltGpuRenderBindings::Prepared JoltGpuRenderBindings::Prepare(SnapshotPtr snaps
     return prepared;
 }
 
-JoltGpuRenderBindings::Export JoltGpuRenderBindings::PrepareExport(SnapshotPtr snapshot, const ResolveBody &resolve,
-                                                                   const PhysicsGpuPoseSource &poses,
-                                                                   const JoltGpuRenderPoses &program) const
+PhysicsGpuRenderBindings::Export PhysicsGpuRenderBindings::PrepareExport(SnapshotPtr snapshot,
+                                                                         const ResolveBody &resolve,
+                                                                         const PhysicsGpuPoseSource &poses,
+                                                                         const PhysicsGpuRenderPoses &program) const
 {
     Export result;
     result.bindings = Prepare(std::move(snapshot), resolve);
@@ -456,7 +458,7 @@ JoltGpuRenderBindings::Export JoltGpuRenderBindings::PrepareExport(SnapshotPtr s
     return result;
 }
 
-void JoltGpuRenderBindings::Export::Seal()
+void PhysicsGpuRenderBindings::Export::Seal()
 {
     if (!packet)
         return;
@@ -465,7 +467,7 @@ void JoltGpuRenderBindings::Export::Seal()
     packet.reset();
 }
 
-bool JoltGpuRenderBindings::Publish(const Export &work, uint64_t numericalGeneration)
+bool PhysicsGpuRenderBindings::Publish(const Export &work, uint64_t numericalGeneration)
 {
     if (work.packet)
         throw std::logic_error("GPU pose export must be sealed before scene publication");
@@ -568,13 +570,13 @@ bool JoltGpuRenderBindings::Publish(const Export &work, uint64_t numericalGenera
     return true;
 }
 
-void JoltGpuRenderBindings::MarkDiscontinuity(uint32_t bodyId)
+void PhysicsGpuRenderBindings::MarkDiscontinuity(uint32_t bodyId)
 {
     if (bodyId != UINT32_MAX)
         ++m_impl->continuity[bodyId];
 }
 
-void JoltGpuRenderBindings::RetireBody(uint32_t bodyId) noexcept
+void PhysicsGpuRenderBindings::RetireBody(uint32_t bodyId) noexcept
 {
     for (auto it = m_impl->entries.begin(); it != m_impl->entries.end();) {
         if (it->second.bodyId == bodyId) {
@@ -587,7 +589,7 @@ void JoltGpuRenderBindings::RetireBody(uint32_t bodyId) noexcept
     m_impl->published.reset();
 }
 
-void JoltGpuRenderBindings::Clear() noexcept
+void PhysicsGpuRenderBindings::Clear() noexcept
 {
     ++m_impl->lifetime;
     for (const auto &[renderer, entry] : m_impl->entries)

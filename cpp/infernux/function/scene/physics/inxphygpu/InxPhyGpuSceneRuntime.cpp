@@ -62,7 +62,8 @@ PhysicsGpuPoseSource InxPhyGpuFixedPublication::PoseSource(uint32_t world) const
 {
     if (worlds.at(world).status != 0)
         throw std::logic_error("Cannot publish the pose of a rejected inxphygpu fixed step");
-    return {bodyStates, uint64_t{world} * bodiesPerWorld, bodiesPerWorld, PhysicsGpuPoseSource::Layout::OriginWXYZ};
+    return {bodyStates, uint64_t{world} * bodiesPerWorld, bodiesPerWorld, sizeof(InxPhyGpuBodyState),
+            PhysicsGpuPoseSource::Layout::OriginWXYZ};
 }
 
 std::optional<PhysicsGpuBodyPoseBinding>

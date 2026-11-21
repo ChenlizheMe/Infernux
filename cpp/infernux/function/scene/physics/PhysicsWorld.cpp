@@ -28,15 +28,16 @@
 #include "JoltGpuJoints.h"
 #include "JoltGpuProgramSources.h"
 #include "JoltGpuQueries.h"
-#include "JoltGpuRenderBindings.h"
-#include "JoltGpuRenderPoses.h"
 #include "PhysicsBodyCommand.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsDomain.h"
+#include "PhysicsGpuRenderBindings.h"
+#include "PhysicsGpuRenderPoses.h"
 #include "PhysicsLayers.h"
 #include "PhysicsMass.h"
 #include "PhysicsParticipantBodies.h"
 #include "PhysicsShapeAuthoring.h"
+#include "inxphygpu/InxPhyGpuProgramSources.h"
 #include "inxphygpu/InxPhyGpuSceneRuntime.h"
 #include <algorithm>
 #include <array>
@@ -642,7 +643,8 @@ JoltGpuScene &PhysicsWorld::EnsureSharedGpuScene()
         const auto load = [target](JoltGpuProgram program) { return LoadJoltGpuProgram(program, target); };
         auto queries = std::make_unique<JoltGpuQueries>(host, load(JoltGpuProgram::Queries));
         auto joints = std::make_unique<JoltGpuJoints>(host, load(JoltGpuProgram::Joints));
-        auto rendering = std::make_unique<JoltGpuRenderPoses>(host, load(JoltGpuProgram::RenderPoses));
+        auto rendering = std::make_unique<PhysicsGpuRenderPoses>(
+            host, physics::inxphygpu::LoadInxPhyGpuProgram("render_poses", target));
         auto reports = std::make_unique<JoltGpuContactReports>(host, load(JoltGpuProgram::ContactReports));
         const auto articulationCapture = load(JoltGpuProgram::ArticulationCapture);
         const auto articulationDynamics = load(JoltGpuProgram::ArticulationDynamics);
@@ -1119,7 +1121,7 @@ JoltGpuScene::Consumer PhysicsWorld::PrepareRenderConsumer(PhysicsDomain &domain
                 const auto &center = actor->rootCenterOfMass;
                 return PhysicsGpuBodyPoseBinding{bodyId, slot - publication->bodyBase, {center.x, center.y, center.z}};
             },
-            {publication->bodyStates, 0, publication->bodyCount}, *m_gpuRenderProgram);
+            {publication->bodyStates, 0, publication->bodyCount, sizeof(JPH::GPU::BodyState)}, *m_gpuRenderProgram);
         job->publication = publication;
         return ContinueJoltGpuControlWork(job->output->Packet(), [job] {
             job->output->Seal();

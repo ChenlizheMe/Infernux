@@ -1,6 +1,4 @@
-#include "JoltGpuRenderPoses.h"
-#include "JoltGpuProgramSources.h"
-#include "inxphygpu/InxPhyGpuStep.h"
+#include "PhysicsGpuRenderPoses.h"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +11,7 @@ namespace infernux
 {
 namespace
 {
-using namespace JPH::GPU;
+using namespace physics::gpu_render;
 
 enum Port : uint8_t
 {
@@ -68,7 +66,7 @@ void ValidateVector(const ShaderValueLayout &value, ShaderScalarKind scalar)
 {
     if (value.byteSize != 16 || value.kind != ShaderValueKind::Vector || value.scalar != scalar || value.rows != 1 ||
         value.columns != 4)
-        throw std::invalid_argument("Jolt GPU render-pose target differs from its shared vector record");
+        throw std::invalid_argument("GPU render-pose target differs from its shared vector record");
 }
 
 void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
@@ -78,18 +76,18 @@ void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
     if (resource.binding.type != (uniform ? rhi::BindingType::UniformBuffer : rhi::BindingType::StorageBuffer) ||
         (uniform ? resource.value.byteSize : resource.elementStride) != expected.stride ||
         (!uniform && resource.binding.readOnlyStorage == Writer(port)))
-        throw std::invalid_argument("Jolt GPU render-pose target differs from its shared port layout");
+        throw std::invalid_argument("GPU render-pose target differs from its shared port layout");
     if (expected.vector) {
         ValidateVector(resource.value, ShaderScalarKind::Float32);
         return;
     }
     if (resource.value.kind != ShaderValueKind::Struct ||
         resource.value.fields.size() != expected.stride / sizeof(Float4))
-        throw std::invalid_argument("Jolt GPU render-pose target differs from its shared structured record");
+        throw std::invalid_argument("GPU render-pose target differs from its shared structured record");
     for (size_t field = 0; field < resource.value.fields.size(); ++field) {
         const auto &value = resource.value.fields[field];
         if (value.name != expected.fields[field] || value.offset != field * sizeof(Float4))
-            throw std::invalid_argument("Jolt GPU render-pose target has a different field name or offset");
+            throw std::invalid_argument("GPU render-pose target has a different field name or offset");
         ValidateVector(value,
                        expected.integerFields & (1u << field) ? ShaderScalarKind::UInt32 : ShaderScalarKind::Float32);
     }
@@ -97,7 +95,7 @@ void ValidateLayout(uint8_t port, const ShaderResourceLayout &resource)
 
 } // namespace
 
-JoltGpuRenderPoses::JoltGpuRenderPoses(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
+PhysicsGpuRenderPoses::PhysicsGpuRenderPoses(rhi::ComputeHost &host, const ShaderTargetCode &target) : m_host(host)
 {
     const auto build = [&](const char *name, uint32_t required) {
         const auto code = std::find_if(target.entries.begin(), target.entries.end(),
@@ -106,7 +104,7 @@ JoltGpuRenderPoses::JoltGpuRenderPoses(rhi::ComputeHost &host, const ShaderTarge
             code->workgroupSize != std::array<uint32_t, 3>{64, 1, 1} ||
             std::count_if(target.entries.begin(), target.entries.end(),
                           [&](const auto &entry) { return entry.name == name; }) != 1)
-            throw std::invalid_argument("Jolt GPU render-pose target is missing its unique compute entry");
+            throw std::invalid_argument("GPU render-pose target is missing its unique compute entry");
         Entry entry;
         uint32_t actual = 0;
         std::vector<rhi::ComputeBufferBinding> bindings;
@@ -117,18 +115,22 @@ JoltGpuRenderPoses::JoltGpuRenderPoses(rhi::ComputeHost &host, const ShaderTarge
             const auto port = std::find_if(std::begin(Ports), std::end(Ports),
                                            [&](const auto &value) { return value.name == resource.name; });
             if (port == std::end(Ports) || resource.set != 0)
-                throw std::invalid_argument("Jolt GPU render-pose entry contains an unknown resource");
+                throw std::invalid_argument("GPU render-pose entry contains an unknown resource");
             const auto index = static_cast<uint8_t>(port - std::begin(Ports));
             if (actual & (1u << index))
-                throw std::invalid_argument("Jolt GPU render-pose entry repeats a resource");
+                throw std::invalid_argument("GPU render-pose entry repeats a resource");
             ValidateLayout(index, resource);
             bindings.push_back({resource.binding.binding, resource.binding.type, resource.binding.readOnlyStorage});
             entry.ports.push_back(index);
             actual |= 1u << index;
         }
         if (actual != required || code->bindings.size() != entry.ports.size())
-            throw std::invalid_argument("Jolt GPU render-pose entry has an unexpected resource set");
-        entry.kernel = PrepareJoltGpuKernel(m_host, target.target, *code, std::move(bindings));
+            throw std::invalid_argument("GPU render-pose entry has an unexpected resource set");
+        const rhi::ShaderModuleDesc module{target.target == ShaderCodeTarget::SpirV ? rhi::ShaderSourceLanguage::SpirV
+                                                                                    : rhi::ShaderSourceLanguage::Wgsl,
+                                           code->code.data(), code->code.size()};
+        entry.kernel = std::make_shared<rhi::ComputeKernel>(m_host, module, code->name, std::move(bindings), 0,
+                                                            rhi::ComputeKernel::PipelineCreation::FirstDispatch);
         return entry;
     };
     m_nodes = build("export_body_pose_nodes", (1u << Parameters) | (1u << Nodes) | (1u << States) | (1u << NodeModels));
@@ -136,9 +138,9 @@ JoltGpuRenderPoses::JoltGpuRenderPoses(rhi::ComputeHost &host, const ShaderTarge
                      (1u << Parameters) | (1u << Bindings) | (1u << NodeModelsRead) | (1u << Models) | (1u << Bounds));
 }
 
-JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const PhysicsGpuPoseSource &output,
-                                                   const std::vector<PoseNode> &nodes,
-                                                   const std::vector<PoseBinding> &bindings) const
+PhysicsGpuRenderPoseBatch PhysicsGpuRenderPoses::Prepare(const PhysicsGpuPoseSource &output,
+                                                         const std::vector<PoseNode> &nodes,
+                                                         const std::vector<PoseBinding> &bindings) const
 {
     const auto &frozenBodyStates = output.states;
     if (bindings.empty())
@@ -151,7 +153,9 @@ JoltGpuRenderPoseBatch JoltGpuRenderPoses::Prepare(const PhysicsGpuPoseSource &o
         throw std::invalid_argument("GPU render poses require a frozen final state from the same compute owner");
     const auto bodyCount = output.bodyCount;
     const bool origin = output.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
-    const auto bodyStride = origin ? sizeof(physics::inxphygpu::InxPhyGpuBodyState) : sizeof(BodyState);
+    const auto bodyStride = output.rowBytes;
+    if (bodyStride < 2 * sizeof(Float4) || bodyStride % sizeof(Float4) != 0)
+        throw std::invalid_argument("GPU render pose rows must contain aligned position and quaternion records");
     const auto rows = frozenBodyStates->GetByteSize() / bodyStride;
     if (output.firstRow > rows || bodyCount > rows - output.firstRow ||
         output.firstRow + bodyCount > UINT32_MAX / (bodyStride / sizeof(Float4)))
