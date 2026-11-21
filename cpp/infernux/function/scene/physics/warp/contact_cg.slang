@@ -10,11 +10,29 @@
 [[vk::binding(25, 0)]] StructuredBuffer<uint> candidateCount;
 [[vk::binding(26, 0)]] StructuredBuffer<uint> contactCounts;
 [[vk::binding(27, 0)]] RWStructuredBuffer<uint> contactStepStatus;
-[[vk::binding(28, 0)]] RWStructuredBuffer<uint4> contactSolveDispatches;
+struct ContactDispatchGrid
+{
+    uint groupsX;
+    uint groupsY;
+    uint groupsZ;
+    Atomic<uint> remainingWorlds; // The first grid uses its padding as the batch counter.
+};
+
+static const uint ContactGridCount = 7;
+[[vk::binding(28, 0)]] RWStructuredBuffer<ContactDispatchGrid> contactSolveDispatches;
+[[vk::binding(29, 0)]] RWStructuredBuffer<uint4> contactDirectionDispatch;
 [[vk::binding(30, 0)]] StructuredBuffer<uint> narrowphaseStatus;
 
-groupshared uint activeRowMaximum[CgWidth];
+groupshared uint2 activeWorldStats[CgWidth]; // Maximum row count and number of worlds still solving.
 groupshared uint transposePrefix[2][CgWidth];
+
+void setContactGrid(uint index, uint x, uint worlds, uint remaining)
+{
+    contactSolveDispatches[index].groupsX = x;
+    contactSolveDispatches[index].groupsY = worlds;
+    contactSolveDispatches[index].groupsZ = 1u;
+    contactSolveDispatches[index].remainingWorlds.store(remaining);
+}
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -22,34 +40,40 @@ void prepare_contact_solve_dispatches(uint lane : SV_GroupIndex)
 {
     uint worldCount, stride;
     worlds.GetDimensions(worldCount, stride);
-    uint activeRows = 0;
+    uint2 active = uint2(0u);
     for (uint world = lane; world < worldCount; world += CgWidth)
     {
         const uint4 progress = worlds[world].progress;
         if (progress.y == Running)
-            activeRows = max(activeRows, progress.z);
+            active = uint2(max(active.x, progress.z), active.y + 1u);
     }
-    activeRowMaximum[lane] = activeRows;
+    activeWorldStats[lane] = active;
     GroupMemoryBarrierWithGroupSync();
     for (uint width = CgWidth / 2; width > 0; width >>= 1)
     {
         if (lane < width)
-            activeRowMaximum[lane] = max(activeRowMaximum[lane], activeRowMaximum[lane + width]);
+        {
+            const uint2 first = activeWorldStats[lane];
+            const uint2 second = activeWorldStats[lane + width];
+            activeWorldStats[lane] = uint2(max(first.x, second.x), first.y + second.y);
+        }
         GroupMemoryBarrierWithGroupSync();
     }
     if (lane == 0)
     {
-        const uint rows = (activeRowMaximum[0] + CgWidth - 1) / CgWidth;
+        const uint2 totals = activeWorldStats[0];
+        const uint rows = (totals.x + CgWidth - 1) / CgWidth;
         const uint dofs = (settings[1].y + CgWidth - 1) / CgWidth;
-        const uint batch = rows > 0 ? worldCount : 0;
+        const uint batch = totals.y > 0u ? worldCount : 0u;
         const uint3 massGroups = cgOptions[2].xyz;
-        contactSolveDispatches[0] = uint4(1, batch, 1, 0);
-        contactSolveDispatches[1] = uint4(dofs, batch, 1, 0);
-        contactSolveDispatches[2] = uint4(rows, batch, 1, 0);
-        contactSolveDispatches[3] = uint4(max(rows, dofs), batch, 1, 0);
-        contactSolveDispatches[4] = uint4(massGroups.x, batch, 1, 0);
-        contactSolveDispatches[5] = uint4(massGroups.y, batch, 1, 0);
-        contactSolveDispatches[6] = uint4(massGroups.z, batch, 1, 0);
+        setContactGrid(0, 1, batch, totals.y);
+        setContactGrid(1, dofs, batch, 0);
+        setContactGrid(2, rows, batch, 0);
+        setContactGrid(3, max(rows, dofs), batch, 0);
+        setContactGrid(4, massGroups.x, batch, 0);
+        setContactGrid(5, massGroups.y, batch, 0);
+        setContactGrid(6, massGroups.z, batch, 0);
+        contactDirectionDispatch[0] = uint4(1, batch, 1, 0);
     }
 }
 
@@ -311,6 +335,13 @@ void cg_search_direction(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
         {
             state.progress.y = done ? Converged : IterationLimit;
             worlds[world] = state;
+            // Only a Running world can retire here. The final one disables
+            // the remaining variable-size grids for this substep.
+            if (contactSolveDispatches[0].remainingWorlds.add(0xffffffffu) == 1u)
+            {
+                for (uint grid = 0; grid < ContactGridCount; ++grid)
+                    contactSolveDispatches[grid].groupsY = 0u;
+            }
         }
         return;
     }

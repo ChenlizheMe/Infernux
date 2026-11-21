@@ -650,6 +650,7 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                                        {capacity.candidates, substeps, 0, 0},
                                        {}}};
     const auto indirectSlot = b.Slot(7 * 4, BufferUsageFlags::Indirect);
+    const auto directionIndirect = b.Slot(4, BufferUsageFlags::Indirect);
     enum DispatchExtent : uint32_t
     {
         Worlds,
@@ -688,7 +689,11 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
            {11, massTopology, R},
            {16, worldState, W, true}});
     b.Add("contact_cg", "prepare_contact_solve_dispatches", 1,
-          {{0, settings, R}, {1, opt, R}, {16, worldState, R}, {28, indirectSlot, W, true}});
+          {{0, settings, R},
+           {1, opt, R},
+           {16, worldState, R},
+           {28, indirectSlot, W, true},
+           {29, directionIndirect, W, true}});
     b.dispatches.back().groupCountY = 1;
     b.Add("contact_cg", "count_cg_transpose", rows,
           {{0, settings, R}, {3, rowStore, R}, {4, columnStore, R}, {16, worldState, R}, {23, transposeAddress, RW}});
@@ -787,8 +792,12 @@ ContactResponse AddContactResponse(StepBuilder &b, const WarpModel &model, const
                {12, gradient, R},
                {13, preconditioned, R},
                {15, history, RW},
-               {16, worldState, RW}});
-        indirectLast(Worlds);
+               {16, worldState, RW},
+               {28, indirectSlot, RW}});
+        // This dispatch updates the consumer grids, so its own arguments
+        // live in a separate allocation on both Vulkan and WebGPU.
+        b.dispatches.back().indirectArguments =
+            ComputeWorkRange{directionIndirect, 0, ComputeIndirectArguments::ByteSize};
         if (iteration == solver.iterations)
             break;
         b.dispatches.push_back(rayProduct);
