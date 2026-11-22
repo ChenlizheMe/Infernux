@@ -9,10 +9,12 @@ namespace infernux::physics::inxphygpu
 {
 inline constexpr uint32_t ContactReportUnknownSeparation = 1;
 inline constexpr uint32_t SceneCcdImpactCapacityExceeded = 32;
+inline constexpr uint32_t SceneCcdUnresolvedSweep = 64;
 }
 #else
 static const uint ContactReportUnknownSeparation = 1;
 static const uint SceneCcdImpactCapacityExceeded = 32;
+static const uint SceneCcdUnresolvedSweep = 64;
 
 struct ContactReport
 {

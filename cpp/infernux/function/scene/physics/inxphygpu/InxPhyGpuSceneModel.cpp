@@ -481,7 +481,7 @@ InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author)
 
 InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneActor> &actors,
                                              const std::vector<InxPhyGpuSceneJoint> &joints,
-                                             const PhysicsColliderPairs &ignoredColliders)
+                                             const PhysicsColliderPairs &ignoredColliders, float contactDistance)
 {
     InxPhyGpuSceneModel result;
     std::vector<ModelBodyDefinition> bodies;
@@ -516,6 +516,7 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
             const auto &surface = actor.colliders[member];
             auto &shape = collision.emplace_back();
             const auto kind = CookGeometry(leaf, shape, cache);
+            shape.material.parameters[1] = surface.trigger ? 0.0f : 0.5f * contactDistance;
             shape.material.friction[0] = surface.friction;
             shape.material.extra[2] = surface.bounciness;
             shape.material.dimensions[2] = 1 + static_cast<int32_t>(surface.frictionCombine);

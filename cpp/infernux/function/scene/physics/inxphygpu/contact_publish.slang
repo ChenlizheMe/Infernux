@@ -94,15 +94,18 @@ ContactMaterial resolveMaterial(uint4 pair, uint geomCount)
 
     ContactMaterial result;
     float restitution = 0.0;
-    if (a.dimensions.z != 0)
+    const bool sceneSurface = a.dimensions.z != 0;
+    if (sceneSurface)
     {
         friction.x = combineSceneSurface(a.friction.x, b.friction.x, max(a.dimensions.z, b.dimensions.z));
         restitution = combineSceneSurface(a.extra.z, b.extra.z, max(a.dimensions.w, b.dimensions.w));
         if (friction.x == 0.0)
             dim = 1;
     }
-    result.dimensions = int4(dim, 0, 0, 0);
+    result.dimensions = int4(dim, 0, int(sceneSurface), 0);
     result.parameters = float4(a.parameters.xy + b.parameters.xy, 0.0, adhesion);
+    if (sceneSurface && explicitPair == OverlapTrigger)
+        result.parameters.y = 0.0;
     const float2 reference = a.reference.x > 0.0 && b.reference.x > 0.0 ?
                                  lerp(b.reference.xy, a.reference.xy, weight) : min(a.reference.xy, b.reference.xy);
     result.reference = float4(reference, 0.0, 0.0);
@@ -117,9 +120,12 @@ void writeContact(uint world, uint4 pair, uint ordinal, float distance, float3 p
 {
     const float margin = material.parameters.x;
     const bool detected = distance < margin + material.parameters.y;
-    const bool constraint = asint(pair.z) >= -1 && detected;
+    const bool solid = asint(pair.z) >= -1;
+    // Scene gaps extend contact observation while keeping island and solver rows geometric.
+    const bool proximity = solid && detected && material.dimensions.z != 0 && distance >= margin;
+    const bool constraint = solid && detected && !proximity;
     const bool sensor = asint(pair.w) >= 0 && (asint(pair.z) != OverlapTrigger || detected);
-    if (!constraint && !sensor)
+    if (!constraint && !sensor && !proximity)
         return;
 
     const uint slot = contactCount[world].add(1u);
@@ -136,7 +142,9 @@ void writeContact(uint world, uint4 pair, uint ordinal, float distance, float3 p
     contact.friction = max(material.friction, float4(MinFriction));
     const float minimumRestitutionSpeed = material.extra.z > 0.0 ? asfloat(contactSettings[1].y) : 0.0;
     contact.extra = float4(material.extra.x, max(material.extra.y, MinFriction), material.extra.z, minimumRestitutionSpeed);
-    contact.geometry = uint4(pair.xy, dim, (constraint ? ContactConstraint : 0u) | (sensor ? ContactSensor : 0u));
+    const uint flags = (constraint ? ContactConstraint : 0u) | (sensor ? ContactSensor : 0u) |
+                       (proximity ? ContactProximity : 0u);
+    contact.geometry = uint4(pair.xy, dim, flags);
     contact.identity = uint4(ordinal, pair.w, NoIndex, secondSubShape);
     contacts[world * capacity + slot] = contact;
 }

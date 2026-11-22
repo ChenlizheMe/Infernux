@@ -85,6 +85,7 @@ void castConvexPair(ConvexGeometry moving, ConvexGeometry target, float3 directi
         const ConvexDistance seed = convexDistancePhase(moving, target, supportTolerance, ConvexFarDistance,
                                                         64, geometryWords, expand, true);
         ConvexPenetration metric = {seed.first, seed.second, seed.distance, NoIndex, 0};
+        float3 candidateOutward = outward;
         if (expand && step == 0)
         {
             metric = expandConvexPenetration(seed, moving, target, supportTolerance, CastVertices - 5,
@@ -97,16 +98,21 @@ void castConvexPair(ConvexGeometry moving, ConvexGeometry target, float3 directi
             const float3 delta = metric.second - metric.first;
             const float squared = dot(delta, delta);
             if (squared > supportTolerance * supportTolerance)
-                outward = delta * rsqrt(squared);
+                candidateOutward = delta * rsqrt(squared);
         }
         else if (any(seed.outward != 0.0))
-            outward = seed.outward;
+            candidateOutward = seed.outward;
         if (metric.distance <= CastContactTolerance)
         {
+            // A nearly coincident simplex can lose its separating direction.
+            // The preceding support plane supplied the advance to this hit.
+            if (step == 0)
+                outward = candidateOutward;
             witness = metric.second;
             reached = true;
             break;
         }
+        outward = candidateOutward;
 
         // This support plane bounds distance from below. Its projected travel
         // keeps the cast on the approach side even with an approximate simplex.

@@ -10,7 +10,7 @@
 #include "scene_motion.slang"
 
 static const uint CcdLanes = 8;
-static const float CcdSolved = 1.0, CcdSkipped = 2.0, CcdExhausted = 3.0;
+static const float CcdSolved = 1.0, CcdSkipped = 2.0, CcdExhausted = 3.0, CcdUnresolved = 4.0;
 
 struct SweepMotion
 {
@@ -202,6 +202,8 @@ ShapeCastHit earliestLaneImpact(uint world, uint lane, float duration, bool thre
                     castConvexPair(moving, stationary, direction, 1.0e-5, float3(0.0), 0u, identity, workspace,
                                    ccdGeometry, ccdScratch, ccdHorizon, hit);
             }
+            if (hit.point.w != 0.0)
+                return hit;
             if (hit.identity.x == NoIndex)
                 continue;
             const float travel = hit.normalDistance.w;
@@ -326,13 +328,23 @@ void solveSceneCcd<let Report : bool>(uint lane, uint world)
         if (lane == 0)
         {
             uint best = 0;
+            bool unresolved = ccdHits[0].point.w != 0.0;
             for (uint i = 1; i < CcdLanes; ++i)
+            {
+                unresolved = unresolved || ccdHits[i].point.w != 0.0;
                 if (castPrecedes(ccdHits[i], ccdHits[best]))
                     best = i;
-            ccdSelection = ccdHits[best].identity.x != NoIndex ? best + 1u : 0u;
+            }
+            ccdSelection = unresolved ? NoIndex : (ccdHits[best].identity.x != NoIndex ? best + 1u : 0u);
         }
         GroupMemoryBarrierWithGroupSync();
         const uint selection = workgroupUniformLoad(ccdSelection);
+        if (selection == NoIndex)
+        {
+            if (lane == 0)
+                ccdMotion[base].center.w = CcdUnresolved;
+            break;
+        }
         const bool found = selection != 0u;
         if (!found && impact == 0)
             break;
@@ -394,6 +406,8 @@ void publish_scene_ccd(uint3 id : SV_DispatchThreadID)
     const float phase = ccdMotion[id.y * size.state.z].center.w;
     if (id.x == 0 && phase == CcdExhausted)
         ccdContactStatus[id.y] = SceneCcdImpactCapacityExceeded;
+    if (id.x == 0 && phase == CcdUnresolved)
+        ccdContactStatus[id.y] = SceneCcdUnresolvedSweep;
     if (phase != CcdSolved)
         return;
     const uint4 row = ccdBodyRow(id.x);

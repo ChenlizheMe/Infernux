@@ -60,7 +60,7 @@ void reportContacts<let HasPrescribed : bool, let Multiple : bool>(uint3 id)
     const uint index = id.y * limits.y + id.x;
     const Contact source = contacts[index];
     const uint2 span = reservations[index].xy;
-    const bool trigger = (source.geometry.w & ContactConstraint) == 0u;
+    const bool trigger = (source.geometry.w & (ContactConstraint | ContactProximity)) == 0u;
     float3 force = float3(0.0);
     if (span.y != 0u)
     {

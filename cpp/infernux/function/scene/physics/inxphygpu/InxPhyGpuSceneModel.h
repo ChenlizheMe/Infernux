@@ -213,7 +213,8 @@ struct InxPhyGpuSceneModel
 
 /// Translate one authored topology. Retains immutable cooked leaves for host shape reads.
 [[nodiscard]] InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneActor> &actors,
-                                                           const std::vector<InxPhyGpuSceneJoint> &joints = {},
-                                                           const PhysicsColliderPairs &ignoredColliders = {});
+                                                           const std::vector<InxPhyGpuSceneJoint> &joints,
+                                                           const PhysicsColliderPairs &ignoredColliders,
+                                                           float contactDistance);
 
 } // namespace infernux::physics::inxphygpu

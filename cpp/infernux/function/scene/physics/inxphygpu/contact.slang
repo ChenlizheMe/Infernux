@@ -5,6 +5,7 @@
 
 static const uint ContactConstraint = 1;
 static const uint ContactSensor = 2;
+static const uint ContactProximity = 4;
 
 struct Contact
 {
@@ -16,7 +17,7 @@ struct Contact
     float4 impedance;
     float4 friction;
     float4 extra; // Impedance power, fifth friction, restitution, minimum restitution speed.
-    uint4 geometry; // first geometry, second geometry, contact dimension, constraint/sensor flags
+    uint4 geometry; // first geometry, second geometry, contact dimension, flags
     uint4 identity; // per-pair contact ordinal, sensor id, first subshape, second subshape
 };
 

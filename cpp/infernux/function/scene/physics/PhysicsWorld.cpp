@@ -1349,9 +1349,12 @@ bool PhysicsDomain::PublishInxPhyGpuFixed()
             return world.identity.worldId == id.worldId && world.identity.simulationEpoch == id.simulationEpoch &&
                    world.attemptedFixedStepIndex == id.fixedStepIndex;
         });
-        if (attempted != completed->worlds.end() &&
-            (attempted->status & physics::inxphygpu::SceneCcdImpactCapacityExceeded) != 0)
-            throw std::runtime_error("inxphygpu CCD exceeded the scene impact capacity");
+        if (attempted != completed->worlds.end()) {
+            if ((attempted->status & physics::inxphygpu::SceneCcdImpactCapacityExceeded) != 0)
+                throw std::runtime_error("inxphygpu CCD exceeded the scene impact capacity");
+            if ((attempted->status & physics::inxphygpu::SceneCcdUnresolvedSweep) != 0)
+                throw std::runtime_error("inxphygpu CCD sweep did not converge");
+        }
     }
     if (!row || completed->worlds[*row].status != 0)
         throw std::runtime_error("inxphygpu did not complete the admitted scene fixed step");
@@ -3436,7 +3439,8 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
         }
     }
 
-    setup->model = BuildInxPhyGpuSceneModel(actors, joints, *CaptureColliderPairs(domain, true));
+    setup->model = BuildInxPhyGpuSceneModel(actors, joints, *CaptureColliderPairs(domain, true),
+                                            EngineConfig::Get().physicsSpeculativeContactDistance);
     for (uint32_t index = 0; index < jointIds.size(); ++index) {
         const auto &joint = setup->model.jointBindings[index];
         if (joint.row == NoModelIndex)
