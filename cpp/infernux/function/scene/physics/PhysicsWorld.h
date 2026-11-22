@@ -8,7 +8,6 @@
  * and raycast queries. Stepped by SceneManager's fixed-time accumulator.
  */
 
-#include "JoltCpuQueries.h"
 #include "PhysicsBodyCommand.h"
 #include "PhysicsBodyState.h"
 #include "PhysicsConstraintOwner.h"
@@ -19,6 +18,7 @@
 #include "PhysicsECSStore.h"
 #include "PhysicsGpuWork.h"
 #include "PhysicsParticipant.h"
+#include "PhysicsQueryShape.h"
 #include "PhysicsRaycastHit.h"
 #include "PhysicsShapeState.h"
 #include "PhysicsTargetReference.h"
@@ -241,11 +241,6 @@ class PhysicsWorld
     /// False retains the same epoch/step and its shared-source continuation.
     bool Step(float deltaTime, PhysicsStepProfile *profile = nullptr);
     void ConfigureSceneBackend(RuntimeWorld &world, PhysicsBackend backend);
-    /// Compile registered topology for inxphyGPU before the solver starts. The caller
-    /// settles authoring first. A live refresh uses its last native publication.
-    [[nodiscard]] std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneSetup>
-    CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
-                               const physics::inxphygpu::InxPhyGpuFixedPublication *previous = nullptr) const;
     std::shared_ptr<PhysicsParticipant> RegisterParticipant(const Component &component,
                                                             PhysicsParticipant::Recipes recipes,
                                                             PhysicsParticipant::Controls controls, uint32_t count,
@@ -817,6 +812,9 @@ class PhysicsWorld
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
     bool TryBeginFixed(PhysicsDomain &domain, bool synchronous);
     bool PrepareInxPhyGpuTopology(PhysicsDomain &domain, PhysicsFixedInputs input, uint32_t substeps, bool synchronous);
+    /// Capture authored GPU topology at the pre-solver boundary.
+    [[nodiscard]] std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneSetup>
+    CaptureInxPhyGpuSceneSetup(PhysicsDomain &domain) const;
     bool AdvanceInxPhyGpuEdit(PhysicsDomain &domain, bool synchronous);
     bool ServiceInxPhyGpuEdits(PhysicsDomain &domain, bool synchronous);
     void AcceptInxPhyGpuPublication(PhysicsDomain &,
@@ -855,9 +853,9 @@ class PhysicsWorld
                                                    const PhysicsDeviceRayOutputs &) const;
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output,
                          physics::inxphygpu::InxPhyGpuSceneJointKind kind) const;
-    [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &, const JoltCpuQueries::Shape &,
-                                                         uint32_t layers, bool triggers) const;
-    [[nodiscard]] bool QueryClosestCast(PhysicsDomain &, const JoltCpuQueries::Shape &, const glm::vec3 &direction,
+    [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &, const PhysicsQueryShape &, uint32_t layers,
+                                                         bool triggers) const;
+    [[nodiscard]] bool QueryClosestCast(PhysicsDomain &, const PhysicsQueryShape &, const glm::vec3 &direction,
                                         float maximum, RaycastHit &, uint32_t layers, bool triggers) const;
     [[nodiscard]] bool RunGpuShapeCast(PhysicsDomain &, const physics::inxphygpu::InxPhyGpuQueryVolume &,
                                        const glm::vec3 &direction, float maximum, RaycastHit &,

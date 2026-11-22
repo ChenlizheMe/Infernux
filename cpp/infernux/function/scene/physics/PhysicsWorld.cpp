@@ -272,7 +272,7 @@ void ValidateRayInput(const glm::vec3 &origin, const glm::vec3 &direction, float
         throw std::invalid_argument("Physics ray requires finite inputs, positive distance and nonzero direction");
 }
 
-physics::inxphygpu::InxPhyGpuQueryVolume QueryVolume(const JoltCpuQueries::Shape &shape, uint32_t layers, bool triggers)
+physics::inxphygpu::InxPhyGpuQueryVolume QueryVolume(const PhysicsQueryShape &shape, uint32_t layers, bool triggers)
 {
     using namespace physics::inxphygpu;
     return std::visit(
@@ -280,7 +280,7 @@ physics::inxphygpu::InxPhyGpuQueryVolume QueryVolume(const JoltCpuQueries::Shape
             using Type = std::decay_t<decltype(primitive)>;
             InxPhyGpuQueryVolume native{{{0, 0, 0, 0}, {1, 0, 0, 0}}, {}, Sphere, layers, triggers};
             glm::vec3 center;
-            if constexpr (std::is_same_v<Type, JoltCpuQueries::Box>) {
+            if constexpr (std::is_same_v<Type, PhysicsQueryBox>) {
                 center = primitive.center;
                 const auto half = Vector(primitive.halfExtents);
                 if (half.x <= 0 || half.y <= 0 || half.z <= 0)
@@ -293,7 +293,7 @@ physics::inxphygpu::InxPhyGpuQueryVolume QueryVolume(const JoltCpuQueries::Shape
                 if (!std::isfinite(primitive.radius) || primitive.radius <= 0)
                     throw std::invalid_argument("Physics query requires a positive finite radius");
                 native.size[0] = primitive.radius;
-                if constexpr (std::is_same_v<Type, JoltCpuQueries::Sphere>) {
+                if constexpr (std::is_same_v<Type, PhysicsQuerySphere>) {
                     center = primitive.center;
                 } else {
                     (void)Vector(primitive.point0);
@@ -347,7 +347,7 @@ CookBoxSweep(const BoxCollider &collider, const glm::vec3 &position, const glm::
     const auto center = position + world * glm::vec3(offset.GetX(), offset.GetY(), offset.GetZ());
     const auto half = box.GetHalfExtent();
     auto result =
-        QueryVolume(JoltCpuQueries::Box{center, {half.GetX(), half.GetY(), half.GetZ()}, world * local}, layers, false);
+        QueryVolume(PhysicsQueryBox{center, {half.GetX(), half.GetY(), half.GetZ()}, world * local}, layers, false);
     result.size[3] = box.GetConvexRadius();
     return result;
 }
@@ -980,10 +980,10 @@ bool PhysicsWorld::PrepareInxPhyGpuTopology(PhysicsDomain &domain, PhysicsFixedI
         if (domain.nativeRuntime && !domain.nativeBodyLayoutDirty && !domain.gpuJointLayoutDirty &&
             domain.nativeRuntime->Substeps() == substeps)
             return true;
-        auto setup = CaptureInxPhyGpuSceneSetup(domain.owner, domain.nativeFixedPublication.get());
+        auto setup = CaptureInxPhyGpuSceneSetup(domain);
         if (!setup) {
             RetryCapacityBodyCreations(domain);
-            setup = CaptureInxPhyGpuSceneSetup(domain.owner, domain.nativeFixedPublication.get());
+            setup = CaptureInxPhyGpuSceneSetup(domain);
         }
         if (!setup)
             return false;
@@ -1922,7 +1922,7 @@ PhysicsWorld::ReadInxPhyGpuQueryPublication(PhysicsDomain &domain) const
     return publication;
 }
 
-std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, const JoltCpuQueries::Shape &shape,
+std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, const PhysicsQueryShape &shape,
                                                      uint32_t layers, bool triggers) const
 {
     const auto request = QueryVolume(shape, layers, triggers);
@@ -1947,9 +1947,8 @@ std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, cons
     return colliders;
 }
 
-bool PhysicsWorld::QueryClosestCast(PhysicsDomain &domain, const JoltCpuQueries::Shape &shape,
-                                    const glm::vec3 &direction, float maximum, RaycastHit &hit, uint32_t layers,
-                                    bool triggers) const
+bool PhysicsWorld::QueryClosestCast(PhysicsDomain &domain, const PhysicsQueryShape &shape, const glm::vec3 &direction,
+                                    float maximum, RaycastHit &hit, uint32_t layers, bool triggers) const
 {
     const auto volume = QueryVolume(shape, layers, triggers);
     ValidateRayInput({volume.pose.position[0], volume.pose.position[1], volume.pose.position[2]}, direction, maximum);
@@ -3310,17 +3309,16 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
 }
 
 std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneSetup>
-PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
-                                         const physics::inxphygpu::InxPhyGpuFixedPublication *previous) const
+PhysicsWorld::CaptureInxPhyGpuSceneSetup(PhysicsDomain &domain) const
 {
     using namespace physics::inxphygpu;
     RequireOwnerThread();
-    auto &domain = *world.physics;
     RequireHealthyStep(domain);
+    auto &world = domain.owner;
     const auto &clock = world.simulation;
-    const auto lastPhysicalStep = previous && previous == domain.nativeFixedPublication.get()
-                                      ? previous->worlds.front().identity.fixedStepIndex
-                                      : clock.publishedFixedStepIndex;
+    const auto *previous = domain.nativeFixedPublication.get();
+    const auto lastPhysicalStep =
+        previous ? previous->worlds.front().identity.fixedStepIndex : clock.publishedFixedStepIndex;
     const ContactStreamIdentity identity{world.id, clock.simulationEpoch, lastPhysicalStep};
     const auto accepted = previous ? previous->FindAcceptedWorld(identity) : std::nullopt;
     if ((domain.stepPending &&
@@ -3374,11 +3372,13 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
         const auto *transform = store.GetActor(m_bodyActors.at(body).actor).owner->GetTransform();
         return glm::conjugate(transform->GetWorldRotation()) * transform->TransformVector(anchor);
     };
-    const auto append = [&](uint64_t id, const PhysicsSceneJointAuthor &joint) {
+    joints.reserve(domain.gpuJointAuthors.size());
+    jointIds.reserve(domain.gpuJointAuthors.size());
+    for (const auto &[id, joint] : domain.gpuJointAuthors) {
         const auto ownerRow = rowById.find(joint.ownerBody);
         const auto connectedRow = rowById.find(joint.connectedBody);
         if (ownerRow == rowById.end() || (joint.connectedBody != UINT32_MAX && connectedRow == rowById.end()))
-            return;
+            continue;
         auto &model = joints.emplace_back(InxPhyGpuSceneJoint{
             ownerRow->second, joint.connectedBody == UINT32_MAX ? NoModelIndex : connectedRow->second,
             bakeAnchor(joint.ownerBody, joint.ownerLocalAnchor), joint.enableCollision, joint.settings});
@@ -3389,54 +3389,6 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
             distance && joint.connectedBody != UINT32_MAX)
             distance->connectedAnchor = bakeAnchor(joint.connectedBody, distance->localAnchor);
         jointIds.push_back(id);
-    };
-    if (domain.UsesGpu()) {
-        joints.reserve(domain.gpuJointAuthors.size());
-        jointIds.reserve(domain.gpuJointAuthors.size());
-        for (const auto &[id, joint] : domain.gpuJointAuthors)
-            append(id, joint);
-    } else if (domain.cpuControl) {
-        std::vector<uint64_t> ordered;
-        for (const auto &[id, owner] : m_jointDomains)
-            if (owner == &domain)
-                ordered.push_back(id);
-        std::sort(ordered.begin(), ordered.end());
-        joints.reserve(ordered.size());
-        jointIds.reserve(ordered.size());
-        using Cpu = JoltCpuConstraints;
-        for (const auto id : ordered) {
-            const auto &joint = *domain.cpuControl->FindJoint(id);
-            const auto &binding = joint.binding;
-            auto settings = std::visit(
-                [&](const auto &value) -> InxPhyGpuSceneJointSettings {
-                    using Setting = std::decay_t<decltype(value)>;
-                    if constexpr (std::is_same_v<Setting, Cpu::Hinge>)
-                        return InxPhyGpuSceneHinge{value.axis,
-                                                   value.useLimits,
-                                                   value.minimum,
-                                                   value.maximum,
-                                                   {value.motorEnabled, value.targetAngle, value.stiffness,
-                                                    value.damping, value.maxTorque, value.jointDamping,
-                                                    value.frictionTorque, value.armature}};
-                    else if constexpr (std::is_same_v<Setting, Cpu::Slider>)
-                        return InxPhyGpuSceneSlider{value.axis, value.useLimits, value.minimum, value.maximum};
-                    else if constexpr (std::is_same_v<Setting, Cpu::Distance>)
-                        return InxPhyGpuSceneDistance{binding.connectedAnchor,
-                                                      value.autoDistance,
-                                                      value.minimum,
-                                                      value.maximum,
-                                                      value.stiffness,
-                                                      value.damping,
-                                                      binding.connectedLocalAnchor};
-                    else if constexpr (std::is_same_v<Setting, Cpu::Fixed>)
-                        return std::monostate{};
-                    else
-                        return value;
-                },
-                joint.settings);
-            append(id, {binding.ownerBody, binding.connectedBody, binding.ownerLocalAnchor, joint.enableCollision,
-                        std::move(settings)});
-        }
     }
 
     setup->model = BuildInxPhyGpuSceneModel(actors, joints, *CaptureColliderPairs(domain, true),
@@ -3447,7 +3399,7 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
             continue;
         const auto id = jointIds[index];
         auto &registered = registration.joints.emplace_back(InxPhyGpuRegisteredJoint{id, index});
-        if (domain.UsesGpu() && joint.poseTargetOffset != NoModelIndex)
+        if (joint.poseTargetOffset != NoModelIndex)
             registered.authoredPose.emplace(InxPhyGpuJointPoseTarget{domain.gpuJointAuthors.at(id).poseTarget});
     }
     return setup;
@@ -4028,19 +3980,19 @@ std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, flo
                                                     bool triggers) const
 {
     auto &domain = CurrentDomain();
-    return QueryColliders(domain, JoltCpuQueries::Sphere{center, radius}, layers, triggers);
+    return QueryColliders(domain, PhysicsQuerySphere{center, radius}, layers, triggers);
 }
 std::vector<Collider *> PhysicsWorld::OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
                                                  const glm::quat &rotation, uint32_t layers, bool triggers) const
 {
     auto &domain = CurrentDomain();
-    return QueryColliders(domain, JoltCpuQueries::Box{center, halfExtents, rotation}, layers, triggers);
+    return QueryColliders(domain, PhysicsQueryBox{center, halfExtents, rotation}, layers, triggers);
 }
 std::vector<Collider *> PhysicsWorld::OverlapCapsule(const glm::vec3 &a, const glm::vec3 &b, float radius,
                                                      uint32_t layers, bool triggers) const
 {
     auto &domain = CurrentDomain();
-    return QueryColliders(domain, JoltCpuQueries::Capsule{a, b, radius}, layers, triggers);
+    return QueryColliders(domain, PhysicsQueryCapsule{a, b, radius}, layers, triggers);
 }
 
 std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum,
@@ -4079,15 +4031,15 @@ std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodiesInBounds(const glm::vec3 
 bool PhysicsWorld::SphereCast(const glm::vec3 &center, float radius, const glm::vec3 &direction, float maximum,
                               RaycastHit &hit, uint32_t layers, bool triggers) const
 {
-    return QueryClosestCast(CurrentDomain(), JoltCpuQueries::Sphere{center, radius}, direction, maximum, hit, layers,
+    return QueryClosestCast(CurrentDomain(), PhysicsQuerySphere{center, radius}, direction, maximum, hit, layers,
                             triggers);
 }
 bool PhysicsWorld::BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
                            const glm::quat &rotation, float maximum, RaycastHit &hit, uint32_t layers,
                            bool triggers) const
 {
-    return QueryClosestCast(CurrentDomain(), JoltCpuQueries::Box{center, halfExtents, rotation}, direction, maximum,
-                            hit, layers, triggers);
+    return QueryClosestCast(CurrentDomain(), PhysicsQueryBox{center, halfExtents, rotation}, direction, maximum, hit,
+                            layers, triggers);
 }
 bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, const glm::quat &rotation,
                             const glm::vec3 &displacement, RaycastHit &hit) const
@@ -4116,7 +4068,7 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
 bool PhysicsWorld::CapsuleCast(const glm::vec3 &a, const glm::vec3 &b, float radius, const glm::vec3 &direction,
                                float maximum, RaycastHit &hit, uint32_t layers, bool triggers) const
 {
-    return QueryClosestCast(CurrentDomain(), JoltCpuQueries::Capsule{a, b, radius}, direction, maximum, hit, layers,
+    return QueryClosestCast(CurrentDomain(), PhysicsQueryCapsule{a, b, radius}, direction, maximum, hit, layers,
                             triggers);
 }
 

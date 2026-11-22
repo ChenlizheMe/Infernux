@@ -97,14 +97,14 @@ void RequireRadius(float radius)
         throw std::invalid_argument("Physics query radius must be positive and finite");
 }
 
-template <typename Operation> auto WithShape(const JoltCpuQueries::Sphere &sphere, Operation &run)
+template <typename Operation> auto WithShape(const PhysicsQuerySphere &sphere, Operation &run)
 {
     const auto center = Position(sphere.center);
     RequireRadius(sphere.radius);
     return run(JPH::SphereShape(sphere.radius), JPH::RMat44::sTranslation(center));
 }
 
-template <typename Operation> auto WithShape(const JoltCpuQueries::Box &box, Operation &run)
+template <typename Operation> auto WithShape(const PhysicsQueryBox &box, Operation &run)
 {
     const auto center = Position(box.center);
     const auto &half = box.halfExtents;
@@ -115,7 +115,7 @@ template <typename Operation> auto WithShape(const JoltCpuQueries::Box &box, Ope
     return run(shape, JPH::RMat44::sRotationTranslation(Rotation(box.rotation), center));
 }
 
-template <typename Operation> auto WithShape(const JoltCpuQueries::Capsule &capsule, Operation &run)
+template <typename Operation> auto WithShape(const PhysicsQueryCapsule &capsule, Operation &run)
 {
     const auto a = Position(capsule.point0);
     const auto b = Position(capsule.point1);
@@ -142,7 +142,7 @@ template <typename Operation> auto WithShape(const JoltCpuQueries::Capsule &caps
     return run(shape, JPH::RMat44::sRotationTranslation(rotation, center));
 }
 
-template <typename Operation> auto WithShape(const JoltCpuQueries::Shape &shape, Operation run)
+template <typename Operation> auto WithShape(const PhysicsQueryShape &shape, Operation run)
 {
     return std::visit([&](const auto &primitive) { return WithShape(primitive, run); }, shape);
 }
@@ -525,7 +525,7 @@ CastCollector<JPH::CastShapeCollector> CastShape(const JoltCpuScene &scene, cons
     return collector;
 }
 
-CastCollector<JPH::CastShapeCollector> CastShape(const JoltCpuScene &scene, const JoltCpuQueries::Shape &shape,
+CastCollector<JPH::CastShapeCollector> CastShape(const JoltCpuScene &scene, const PhysicsQueryShape &shape,
                                                  const glm::vec3 &direction, float maximum,
                                                  const JoltCpuQueries::Filter &filter, bool all)
 {
@@ -615,7 +615,7 @@ std::vector<RaycastHit> JoltCpuQueries::RaycastAll(const glm::vec3 &origin, cons
     return CastRay(m_scene, ray, maximum, filter, true).TakeHits();
 }
 
-std::vector<Collider *> JoltCpuQueries::Overlap(const Shape &shape, const Filter &filter) const
+std::vector<Collider *> JoltCpuQueries::Overlap(const PhysicsQueryShape &shape, const Filter &filter) const
 {
     return WithShape(shape, [&](const JPH::Shape &native, JPH::RMat44Arg pose) {
         OverlapCollector collector(m_scene, filter);
@@ -629,14 +629,14 @@ std::vector<Collider *> JoltCpuQueries::Overlap(const Shape &shape, const Filter
     });
 }
 
-bool JoltCpuQueries::Cast(const Shape &shape, const glm::vec3 &direction, float maximum, RaycastHit &hit,
+bool JoltCpuQueries::Cast(const PhysicsQueryShape &shape, const glm::vec3 &direction, float maximum, RaycastHit &hit,
                           const Filter &filter) const
 {
     return CastShape(m_scene, shape, direction, maximum, filter, false).ClosestHit(hit);
 }
 
-std::vector<RaycastHit> JoltCpuQueries::CastAll(const Shape &shape, const glm::vec3 &direction, float maximum,
-                                                const Filter &filter) const
+std::vector<RaycastHit> JoltCpuQueries::CastAll(const PhysicsQueryShape &shape, const glm::vec3 &direction,
+                                                float maximum, const Filter &filter) const
 {
     return CastShape(m_scene, shape, direction, maximum, filter, true).TakeHits();
 }

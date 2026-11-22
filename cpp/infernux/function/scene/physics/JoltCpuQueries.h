@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PhysicsQueryShape.h"
+
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -8,7 +10,6 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <variant>
 #include <vector>
 
 namespace JPH
@@ -53,28 +54,6 @@ class JoltCpuQueries final
         BodyExclusion excludeBody;
     };
 
-    struct Sphere
-    {
-        glm::vec3 center;
-        float radius;
-    };
-
-    struct Box
-    {
-        glm::vec3 center;
-        glm::vec3 halfExtents;
-        glm::quat rotation;
-    };
-
-    struct Capsule
-    {
-        glm::vec3 point0;
-        glm::vec3 point1;
-        float radius;
-    };
-
-    using Shape = std::variant<Sphere, Box, Capsule>;
-
     struct BodyRequest
     {
         uint32_t bodyId;
@@ -97,11 +76,11 @@ class JoltCpuQueries final
 
     [[nodiscard]] std::vector<RaycastHit> RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maximum,
                                                      const Filter &filter) const;
-    [[nodiscard]] std::vector<Collider *> Overlap(const Shape &shape, const Filter &filter) const;
-    [[nodiscard]] bool Cast(const Shape &shape, const glm::vec3 &direction, float maximum, RaycastHit &hit,
+    [[nodiscard]] std::vector<Collider *> Overlap(const PhysicsQueryShape &shape, const Filter &filter) const;
+    [[nodiscard]] bool Cast(const PhysicsQueryShape &shape, const glm::vec3 &direction, float maximum, RaycastHit &hit,
                             const Filter &filter) const;
-    [[nodiscard]] std::vector<RaycastHit> CastAll(const Shape &shape, const glm::vec3 &direction, float maximum,
-                                                  const Filter &filter) const;
+    [[nodiscard]] std::vector<RaycastHit> CastAll(const PhysicsQueryShape &shape, const glm::vec3 &direction,
+                                                  float maximum, const Filter &filter) const;
 
     /// Restrict nearest point to one accepted Collider lifetime on this body.
     [[nodiscard]] std::optional<glm::vec3> ClosestPoint(uint32_t bodyId, ColliderIdentity target,
