@@ -9,6 +9,7 @@
 #include "../PhysicsECSStore.h"
 #include "../PhysicsGpuRenderBindings.h"
 #include "../PhysicsRaycastHit.h"
+#include "InxPhyGpuParticleExport.h"
 #include "InxPhyGpuSceneModel.h"
 #include "InxPhyGpuStep.h"
 
@@ -199,8 +200,10 @@ class InxPhyGpuSceneRuntime final
     {
         std::shared_ptr<rhi::PreparedComputeBatch> packet;
         std::function<void()> seal;
+        std::function<PublicationWork(const InxPhyGpuFixedPublication &)> continueAfterReceipt{};
     };
     using PublicationConsumer = std::function<PublicationWork(const InxPhyGpuFixedPublication &completed)>;
+    using ParticleConsumer = std::function<void(std::shared_ptr<particle::GpuParticleCollisionDevicePayload>)>;
 
     /// Own the fixed identity until its publication is consumed. The device
     /// profile reports status only, while the host profile includes motion.
@@ -249,6 +252,10 @@ class InxPhyGpuSceneRuntime final
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareClosestPoint(const InxPhyGpuFixedPublication &publication, uint32_t world, uint32_t bodyId,
                         uint64_t colliderId, uint64_t generation, const ModelVector &point, bool closedMesh) const;
+    [[nodiscard]] PublicationWork
+    PrepareParticleCollision(const InxPhyGpuFixedPublication &publication, uint32_t world, const Scene *scene,
+                             const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,
+                             uint64_t revision, ParticleConsumer publish);
     [[nodiscard]] FrameWorkWaitResult WaitForProgress(uint64_t nanoseconds);
     void Retire() noexcept;
     [[nodiscard]] bool CanRetire() const noexcept;
@@ -301,12 +308,15 @@ class InxPhyGpuSceneRuntime final
     void FinishFixed(const rhi::PreparedComputeBatch &packet);
     void FinishReports(const rhi::PreparedComputeBatch &packet);
     void PrepareConsumer(InxPhyGpuFixedPublication publication);
+    void ContinueConsumer(PublicationWork work);
     void PublishCompleted(InxPhyGpuFixedPublication publication);
 
     FrameWorkOwner &m_work;
     rhi::ComputeHost m_host;
+    ShaderCodeTarget m_target;
     FrameWorkOwner::SourceId m_source = 0;
     std::unique_ptr<InxPhyGpuStep> m_step;
+    std::unique_ptr<InxPhyGpuParticleExport> m_particles;
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
     std::shared_ptr<const InxPhyGpuSceneKinematicTargets> m_kinematicTargets;
@@ -322,6 +332,7 @@ class InxPhyGpuSceneRuntime final
     std::optional<InxPhyGpuFixedPublication> m_pendingPublication;
     std::optional<InxPhyGpuFixedPublication> m_publication;
     std::function<void()> m_sealConsumer;
+    std::function<PublicationWork(const InxPhyGpuFixedPublication &)> m_continueConsumer;
     uint64_t m_generation = 1;
     uint64_t m_fixedGpuNanoseconds = 0;
     Packet m_packetKind = Packet::Initialize;

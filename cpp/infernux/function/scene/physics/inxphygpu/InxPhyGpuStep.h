@@ -364,6 +364,7 @@ class InxPhyGpuStep
     /// World-major body rows (including the world row), followed by one
     /// ModelWords record per world with the clock bits, solver status and accepted step ordinal.
     [[nodiscard]] std::shared_ptr<rhi::ComputeBuffer> BodyStates() const noexcept;
+    [[nodiscard]] InxPhyGpuParticleGeometry PublishedParticleGeometry() const;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &PendingWrenches() const noexcept
     {
         return m_controls.pendingWrenches;

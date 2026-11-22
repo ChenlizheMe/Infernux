@@ -3,11 +3,17 @@
 
 #pragma once
 
+#include "../PhysicsContactTypes.h"
 #include "../PhysicsGpuPoseSource.h"
 #include "InxPhyGpuModel.h"
 #include <function/renderer/particle/ParticleGpuCollisionScene.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/shader/ShaderProgramCode.h>
+
+namespace infernux
+{
+class Scene;
+}
 
 namespace infernux::physics::inxphygpu
 {
@@ -23,9 +29,25 @@ struct InxPhyGpuParticleRow
     ModelVector halfBounds, boundsCenter, material;
 };
 
+struct InxPhyGpuParticleSurface
+{
+    particle::GpuParticleCollisionRowKey identity;
+    InxPhyGpuParticleRow row;
+    PhysicsTargetReference target;
+    bool isStatic;
+};
+
 class InxPhyGpuParticleExport
 {
   public:
+    struct Source
+    {
+        InxPhyGpuParticleGeometry geometry;
+        PhysicsGpuPoseSource poses;
+        const std::vector<InxPhyGpuParticleSurface> &surfaces;
+        ContactStreamIdentity identity;
+        std::shared_ptr<const void> retained;
+    };
     struct Work
     {
         std::shared_ptr<rhi::PreparedComputeBatch> packet;
@@ -40,12 +62,10 @@ class InxPhyGpuParticleExport
     };
 
     InxPhyGpuParticleExport(rhi::ComputeHost &host, ShaderCodeTarget target);
-    [[nodiscard]] Work Prepare(rhi::ComputeHost &host, const InxPhyGpuParticleGeometry &geometry,
-                               const PhysicsGpuPoseSource &poses, const std::vector<InxPhyGpuParticleRow> &rows,
-                               const std::shared_ptr<rhi::ComputeBuffer> &previous,
-                               std::shared_ptr<particle::GpuParticleCollisionDevicePayload> payload,
-                               std::vector<rhi::ComputeBufferUpdate> updates,
-                               std::vector<rhi::ComputeDispatchDesc> initialize) const;
+    [[nodiscard]] Work Prepare(rhi::ComputeHost &host, const Source &source, const Scene *scene,
+                               const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,
+                               uint64_t revision, std::vector<rhi::ComputeBufferUpdate> updates = {},
+                               std::vector<rhi::ComputeDispatchDesc> initialize = {}) const;
 
   private:
     std::shared_ptr<rhi::ComputeKernel> m_project, m_count, m_scatter;

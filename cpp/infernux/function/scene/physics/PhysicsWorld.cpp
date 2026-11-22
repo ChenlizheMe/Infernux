@@ -66,18 +66,12 @@ namespace infernux
 {
 struct PhysicsSceneRayPlan
 {
-    struct ParticleSurface
-    {
-        particle::GpuParticleCollisionRowKey identity;
-        physics::inxphygpu::InxPhyGpuParticleRow row;
-        bool isStatic;
-    };
     std::shared_ptr<const JoltGpuScene::PublicationDirectory> directory;
     uint32_t bodyBase = 0, bodyCount = 0;
     physics::inxphygpu::InxPhyGpuPublishedRayQuery query;
     std::vector<RaycastHit> surfaces; // Geometry rows, resolved only when a read completes.
     std::map<std::pair<uint64_t, uint64_t>, std::pair<uint32_t, uint32_t>> colliderGeometry;
-    std::optional<std::vector<ParticleSurface>> particleSurfaces;
+    std::optional<std::vector<physics::inxphygpu::InxPhyGpuParticleSurface>> particleSurfaces;
 
     [[nodiscard]] bool Matches(const JoltGpuScene::Publication &publication) const
     {
@@ -545,6 +539,7 @@ BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publi
                   bound.center,
                   {material.friction, material.bounciness, static_cast<float>(material.frictionCombine),
                    static_cast<float>(material.bounceCombine)}},
+                 surface.target,
                  actor.acceptedMotionType == MotionStatic});
         }
         // CollectPhysicsShapeLeaves orders each body's leaves by collider member.
@@ -4851,7 +4846,6 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
         throw std::invalid_argument("GPU particle collision export requires a live consumer");
     domain.particleCollisionConsumer = consumer;
     using namespace physics::inxphygpu;
-    using RowKey = particle::GpuParticleCollisionRowKey;
     auto *plan = domain.sceneRays.get();
     std::unique_ptr<PhysicsSceneRayPlan> replacement;
     std::shared_ptr<InxPhyGpuParticleExport::Work> work;
@@ -4863,50 +4857,17 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
             uploads = std::move(prepared.second);
             plan = replacement.get();
         }
-        auto payload = std::make_shared<particle::GpuParticleCollisionDevicePayload>();
-        payload->worldId = publication->worldId;
-        payload->simulationEpoch = publication->simulationEpoch;
-        payload->revision = revision;
-        payload->retained = publication->directory;
-        const bool hasHistory =
-            previous && previous->worldId == payload->worldId && previous->simulationEpoch == payload->simulationEpoch;
-        std::map<RowKey, uint32_t> history;
-        if (hasHistory)
-            for (uint32_t row = 0; row < previous->rows.size(); ++row)
-                history.emplace(previous->rows[row], row);
-
-        const auto &surfaces = *plan->particleSurfaces;
-        std::array<std::vector<uint32_t>, 2> ordered;
-        for (uint32_t row = 0; row < surfaces.size(); ++row) {
-            const auto *owner = plan->surfaces[row].target.GetGameObject();
-            if (owner && owner->GetScene() == &scene)
-                ordered[surfaces[row].isStatic ? 0 : 1].push_back(row);
-        }
-        payload->staticCount = static_cast<uint32_t>(ordered[0].size());
-        const auto size = ordered[0].size() + ordered[1].size();
-        std::vector<InxPhyGpuParticleRow> rows;
-        rows.reserve(size);
-        payload->rows.reserve(size);
-        for (const auto &range : ordered)
-            for (const auto row : range) {
-                const auto &surface = surfaces[row];
-                payload->rows.push_back(surface.identity);
-                auto &record = rows.emplace_back(surface.row);
-                if (const auto prior = history.find(surface.identity); prior != history.end())
-                    record.selection[1] = prior->second;
-            }
-        payload->topologyRevision =
-            hasHistory
-                ? previous->topologyRevision + static_cast<uint64_t>(previous->rows != payload->rows ||
-                                                                     previous->staticCount != payload->staticCount)
-                : 1u;
         if (!m_gpuParticleExport)
             m_gpuParticleExport =
                 std::make_unique<InxPhyGpuParticleExport>(*m_gpuHost, PhysicsShaderTarget(*m_gpuHost));
-        work = std::make_shared<InxPhyGpuParticleExport::Work>(
-            m_gpuParticleExport->Prepare(*m_gpuHost, plan->query.ParticleGeometry(), ScenePoseSource(*publication),
-                                         rows, hasHistory ? previous->records : nullptr, std::move(payload),
-                                         std::move(uploads), plan->query.TakeInitialization()));
+        const InxPhyGpuParticleExport::Source source{
+            plan->query.ParticleGeometry(),
+            ScenePoseSource(*publication),
+            *plan->particleSurfaces,
+            {publication->worldId, publication->simulationEpoch, publication->fixedStepIndex},
+            publication->directory};
+        work = std::make_shared<InxPhyGpuParticleExport::Work>(m_gpuParticleExport->Prepare(
+            *m_gpuHost, source, &scene, previous, revision, std::move(uploads), plan->query.TakeInitialization()));
         return JoltGpuControlWork{work->packet,
                                   [this, work] { return JoltGpuControlWork{work->PrepareGrid(*m_gpuHost)}; }};
     };

@@ -33,6 +33,8 @@ struct InxPhyGpuSceneLayout
     struct Geometry
     {
         uint32_t body, surface, subshape;
+        uint32_t layers, flags;
+        ModelVector halfBounds, boundsCenter, material;
     };
     enum class Drive : uint8_t
     {
@@ -257,7 +259,7 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                                              const InxPhyGpuContactSolver &solver, uint32_t commandCapacity,
                                              bool contactReports, uint32_t substeps, InxPhyGpuRayBatchLayout rayLayout,
                                              const InxPhyGpuFixedPublication *previous)
-    : m_work(work), m_host(host), m_bodyCount(scene.model.dimensions.state[2]),
+    : m_work(work), m_host(host), m_target(target), m_bodyCount(scene.model.dimensions.state[2]),
       m_contactReportsConfigured(contactReports)
 {
     if (worlds.empty() || commandCapacity == 0)
@@ -295,7 +297,19 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
         const auto &geometry = scene.geometries[row];
         const auto &shape = scene.model.geometries[row];
         const auto body = shape.indices[0];
-        layout->geometries.push_back({body, geometry.surface, geometry.subShape});
+        const auto &bounds = scene.collision.bounds[row];
+        const auto &ray = scene.collision.rayGeometry[row];
+        const auto &material = geometry.collider;
+        layout->geometries.push_back(
+            {body,
+             geometry.surface,
+             geometry.subShape,
+             ray[1],
+             ray[2],
+             bounds.halfExtent,
+             bounds.center,
+             {material.friction, material.bounciness, static_cast<float>(material.frictionCombine),
+              static_cast<float>(material.bounceCombine)}});
         auto &range = layout->colliderGeometry[body][geometry.surface];
         range.first = std::min(range.first, row);
         range.second = row + 1;
@@ -431,7 +445,14 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     m_packet = std::move(prepared.initialize);
     const auto observe = [this] { Observe(); };
     m_source = m_work.AddSource({observe, observe, [this] { return Describe(); },
-                                 [this](bool gpu, uint64_t token) { return Advance(gpu, token); }});
+                                 [this](bool gpu, uint64_t token) {
+                                     try {
+                                         return Advance(gpu, token);
+                                     } catch (...) {
+                                         Retire();
+                                         throw;
+                                     }
+                                 }});
 }
 
 InxPhyGpuSceneRuntime::~InxPhyGpuSceneRuntime()
@@ -911,6 +932,48 @@ std::vector<uint32_t> InxPhyGpuSceneBodyBoundsRead::ReadHostBodyIds() const
     return ids;
 }
 
+InxPhyGpuSceneRuntime::PublicationWork InxPhyGpuSceneRuntime::PrepareParticleCollision(
+    const InxPhyGpuFixedPublication &publication, uint32_t world, const Scene *scene,
+    const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous, uint64_t revision,
+    ParticleConsumer publish)
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu particle source does not match the scene publication");
+    const auto &bodies = m_layout->worlds.at(world).bodies;
+    std::vector<InxPhyGpuParticleSurface> surfaces;
+    surfaces.reserve(m_layout->geometries.size());
+    for (uint32_t row = 0; row < m_layout->geometries.size(); ++row) {
+        const auto &geometry = m_layout->geometries[row];
+        const auto &body = bodies[geometry.body];
+        if (geometry.surface >= body.surfaces.size())
+            continue;
+        const auto &surface = body.surfaces[geometry.surface];
+        surfaces.push_back(
+            {{surface.colliderId, surface.generation, geometry.subshape, 0,
+              static_cast<uintptr_t>(body.shapeRevision + 1)},
+             {{row, NoModelIndex, static_cast<uint32_t>(surface.generation),
+               static_cast<uint32_t>(surface.generation >> 32u)},
+              {static_cast<uint32_t>(surface.colliderId), static_cast<uint32_t>(surface.colliderId >> 32u),
+               static_cast<uint32_t>(surface.gameObjectId), static_cast<uint32_t>(surface.gameObjectId >> 32u)},
+              {geometry.layers, (geometry.flags >> 1u) & 1u, 0u, 0u},
+              geometry.halfBounds,
+              geometry.boundsCenter,
+              geometry.material},
+             surface.target,
+             (geometry.flags & 1u) != 0u});
+    }
+    if (!m_particles)
+        m_particles = std::make_unique<InxPhyGpuParticleExport>(m_host, m_target);
+    const InxPhyGpuParticleExport::Source source{m_step->PublishedParticleGeometry(), publication.PoseSource(world),
+                                                 surfaces, publication.worlds.at(world).identity, m_layout};
+    auto work = std::make_shared<InxPhyGpuParticleExport::Work>(
+        m_particles->Prepare(m_host, source, scene, previous, revision));
+    return {work->packet, {}, [this, work, publish = std::move(publish)](const auto &) mutable -> PublicationWork {
+                auto packet = work->PrepareGrid(m_host);
+                return {std::move(packet), [work, publish = std::move(publish)] { publish(work->Finish()); }};
+            }};
+}
+
 FrameWorkFacts InxPhyGpuSceneRuntime::Describe() const
 {
     FrameWorkFacts facts;
@@ -1032,8 +1095,8 @@ void InxPhyGpuSceneRuntime::Finish()
     } else {
         if (auto seal = std::exchange(m_sealConsumer, {}))
             seal();
-        auto publication = std::exchange(m_pendingPublication, std::nullopt);
-        PublishCompleted(std::move(*publication));
+        auto next = std::exchange(m_continueConsumer, {});
+        ContinueConsumer(next ? next(*m_pendingPublication) : PublicationWork{});
     }
 }
 
@@ -1158,15 +1221,27 @@ void InxPhyGpuSceneRuntime::PrepareConsumer(InxPhyGpuFixedPublication publicatio
         (!m_operation->integrate || std::any_of(publication.worlds.begin(), publication.worlds.end(),
                                                 [](const auto &world) { return world.status == 0; })))
         work = m_operation->consumer(publication);
+    m_pendingPublication.emplace(std::move(publication));
+    ContinueConsumer(std::move(work));
+}
+
+void InxPhyGpuSceneRuntime::ContinueConsumer(PublicationWork work)
+{
+    while (!work.packet && work.continueAfterReceipt) {
+        if (work.seal)
+            work.seal();
+        work = work.continueAfterReceipt(*m_pendingPublication);
+    }
     if (work.packet) {
         m_packet = std::move(work.packet);
         m_sealConsumer = std::move(work.seal);
-        m_pendingPublication.emplace(std::move(publication));
+        m_continueConsumer = std::move(work.continueAfterReceipt);
         m_packetKind = Packet::Consumer;
     } else {
         if (work.seal)
             work.seal();
-        PublishCompleted(std::move(publication));
+        auto publication = std::exchange(m_pendingPublication, std::nullopt);
+        PublishCompleted(std::move(*publication));
     }
 }
 
@@ -1213,6 +1288,7 @@ void InxPhyGpuSceneRuntime::Retire() noexcept
     m_publication.reset();
     m_pendingPublication.reset();
     m_sealConsumer = {};
+    m_continueConsumer = {};
     if (m_packet && !m_packet->GetSubmission().IsValid()) {
         m_packet->Cancel();
         m_packet.reset();

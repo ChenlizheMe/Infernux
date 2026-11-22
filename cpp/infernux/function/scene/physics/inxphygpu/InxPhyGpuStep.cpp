@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "InxPhyGpuStep.h"
+#include "../../GameObject.h"
 #include "../../Rigidbody.h"
 #include "InxPhyGpuCollisionModel.h"
 #include "InxPhyGpuParticleExport.h"
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -1151,12 +1153,49 @@ InxPhyGpuParticleExport::InxPhyGpuParticleExport(rhi::ComputeHost &host, ShaderC
     m_scatter = builder.Kernel("particle_collision", "particle_collision_scatter", {0, 6, 7, 8, 9, 10});
 }
 
-InxPhyGpuParticleExport::Work InxPhyGpuParticleExport::Prepare(
-    rhi::ComputeHost &host, const InxPhyGpuParticleGeometry &geometry, const PhysicsGpuPoseSource &poses,
-    const std::vector<InxPhyGpuParticleRow> &rows, const std::shared_ptr<rhi::ComputeBuffer> &previous,
-    std::shared_ptr<particle::GpuParticleCollisionDevicePayload> payload, std::vector<rhi::ComputeBufferUpdate> updates,
-    std::vector<rhi::ComputeDispatchDesc> initialize) const
+InxPhyGpuParticleExport::Work
+InxPhyGpuParticleExport::Prepare(rhi::ComputeHost &host, const Source &source, const Scene *scene,
+                                 const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,
+                                 uint64_t revision, std::vector<rhi::ComputeBufferUpdate> updates,
+                                 std::vector<rhi::ComputeDispatchDesc> initialize) const
 {
+    auto payload = std::make_shared<particle::GpuParticleCollisionDevicePayload>();
+    payload->worldId = source.identity.worldId;
+    payload->simulationEpoch = source.identity.simulationEpoch;
+    payload->revision = revision;
+    payload->retained = source.retained;
+    const bool hasHistory =
+        previous && previous->worldId == payload->worldId && previous->simulationEpoch == payload->simulationEpoch;
+    std::map<particle::GpuParticleCollisionRowKey, uint32_t> history;
+    if (hasHistory)
+        for (uint32_t row = 0; row < previous->rows.size(); ++row)
+            history.emplace(previous->rows[row], row);
+
+    std::array<std::vector<const InxPhyGpuParticleSurface *>, 2> ordered;
+    for (const auto &surface : source.surfaces) {
+        const auto *owner = scene ? surface.target.GetGameObject() : nullptr;
+        if (!scene || (owner && owner->GetScene() == scene))
+            ordered[surface.isStatic ? 0 : 1].push_back(&surface);
+    }
+    payload->staticCount = static_cast<uint32_t>(ordered[0].size());
+    const auto size = ordered[0].size() + ordered[1].size();
+    std::vector<InxPhyGpuParticleRow> rows;
+    rows.reserve(size);
+    payload->rows.reserve(size);
+    for (const auto &range : ordered)
+        for (const auto *surface : range) {
+            payload->rows.push_back(surface->identity);
+            auto &record = rows.emplace_back(surface->row);
+            if (const auto prior = history.find(surface->identity); prior != history.end())
+                record.selection[1] = prior->second;
+        }
+    payload->topologyRevision =
+        hasHistory ? previous->topologyRevision + static_cast<uint64_t>(previous->rows != payload->rows ||
+                                                                        previous->staticCount != payload->staticCount)
+                   : 1u;
+
+    const auto &poses = source.poses;
+    const auto &geometry = source.geometry;
     static_assert(sizeof(InxPhyGpuParticleRow) == 96);
     const auto width = poses.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ ? 5u : 4u;
     const auto count = static_cast<uint32_t>(rows.size());
@@ -1185,11 +1224,11 @@ InxPhyGpuParticleExport::Work InxPhyGpuParticleExport::Prepare(
     payload->gridOffsets = AllocateParticleWords(host, 513u * sizeof(uint32_t));
     if (count) {
         const auto inputs = upload(ParticleBytes(rows.data(), rows.size()));
-        const auto history = previous ? previous : upload(std::vector<uint8_t>(sizeof(Record)));
+        const auto previousRecords = hasHistory ? previous->records : upload(std::vector<uint8_t>(sizeof(Record)));
         auto project = ParticleDispatch(m_project, groups,
                                         {{settings, R},
                                          {inputs, R},
-                                         {history, R},
+                                         {previousRecords, R},
                                          {geometry.localPoses, R},
                                          {geometry.shapes, R},
                                          {poses.states, R},
@@ -1265,6 +1304,11 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> InxPhyGpuParticleEx
 InxPhyGpuParticleGeometry InxPhyGpuPublishedRayQuery::ParticleGeometry() const
 {
     return {m_particlePoses, m_particleShapes, m_particleCold};
+}
+
+InxPhyGpuParticleGeometry InxPhyGpuStep::PublishedParticleGeometry() const
+{
+    return m_publishedRays.ParticleGeometry();
 }
 
 std::vector<rhi::ComputeDispatchDesc> InxPhyGpuPublishedRayQuery::TakeInitialization() const
@@ -1458,6 +1502,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         throw std::invalid_argument("inxphygpu rays require the compiled collision geometry");
     std::vector<ComputeWorkDispatch> rayDispatches;
     const bool publishedRaysEnabled = traceRays && controlSlots;
+    std::optional<GeometrySlots> particleGeometry;
     ComputeWorkDispatch publishedGeometry;
     BodyBoundsSlots publishedBodyBounds;
     std::optional<RaySlots> raySlots;
@@ -1496,7 +1541,9 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             if (collision->bounds.size() != model.dimensions.layout[0] || capacity.candidates == 0 ||
                 capacity.contactsPerWorld == 0)
                 throw std::invalid_argument("inxphygpu collision requires geometry rows and nonzero stream capacities");
-            const auto geometry = BindGeometry(b, model, *collision, traceRays);
+            const auto geometry = BindGeometry(b, model, *collision, traceRays || controlSlots);
+            if (controlSlots)
+                particleGeometry = geometry;
             b.Add("position", "geom_local_to_global", model.dimensions.layout[0],
                   {{0, dimensions, R}, {6, pose, R}, {9, geometry.geometries, R}, {10, geometry.frames, W, true}});
             if (traceRays) {
@@ -1525,10 +1572,13 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                         solver ? solver->minimumRestitutionSpeed : 0.0f);
         }
     }
-    if (traceRays && !detectContacts) {
+    if ((traceRays || controlSlots) && !detectContacts) {
         const InxPhyGpuCollisionModel empty;
         const auto geometry = BindGeometry(b, model, empty, true);
-        raySlots = AddRayWork(b, model, empty, geometry, rayLayout, rayDispatches, publishedRaysEnabled);
+        if (traceRays)
+            raySlots = AddRayWork(b, model, empty, geometry, rayLayout, rayDispatches, publishedRaysEnabled);
+        if (controlSlots)
+            particleGeometry = geometry;
     }
     if (nv != 0) {
         const auto &[bodies, joints, leaves, pose, jointPose, mocap, staticPoses] = kinematics;
@@ -2037,6 +2087,11 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     InxPhyGpuRayBuffers rays;
     std::vector<rhi::ComputeDispatchDesc> rayWork;
     InxPhyGpuPublishedRayQuery publishedRays;
+    if (particleGeometry) {
+        publishedRays.m_particlePoses = buffers[particleGeometry->geometries];
+        publishedRays.m_particleShapes = buffers[particleGeometry->shapes];
+        publishedRays.m_particleCold = buffers[particleGeometry->data];
+    }
     if (raySlots) {
         rays = {buffers[raySlots->inputs], publishedRaysEnabled ? nullptr : buffers[raySlots->hits]};
         rayWork.reserve(rayDispatches.size());
@@ -2047,9 +2102,6 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             publishedRays.m_settings = buffers[raySlots->settings];
             publishedRays.m_inputSettings = buffers[raySlots->inputSettings];
             publishedRays.m_outputSettings = buffers[raySlots->outputSettings];
-            publishedRays.m_particlePoses = buffers[raySlots->particlePoses];
-            publishedRays.m_particleShapes = buffers[raySlots->particleShapes];
-            publishedRays.m_particleCold = buffers[raySlots->particleCold];
             publishedRays.m_pack = BindDispatch(std::move(raySlots->pack), buffers);
             publishedRays.m_project = BindDispatch(std::move(raySlots->project), buffers);
             publishedRays.m_traceAll = BindDispatch(std::move(raySlots->traceAll), buffers);
