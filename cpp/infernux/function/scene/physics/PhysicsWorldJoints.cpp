@@ -1,5 +1,6 @@
 #include "../HingeJoint.h"
 #include "../Rigidbody.h"
+#include "../RuntimeWorld.h"
 #include "JointSettings.h"
 #include "JoltCpuControl.h"
 #include "JoltGpuJoints.h"
@@ -19,9 +20,7 @@ namespace infernux
 namespace
 {
 using JPH::GPU::JointAuthor;
-using physics::inxphygpu::InxPhyGpuSceneDistance;
-using physics::inxphygpu::InxPhyGpuSceneHinge;
-using physics::inxphygpu::InxPhyGpuSceneSlider;
+using namespace physics::inxphygpu;
 
 using Cpu = JoltCpuConstraints;
 using CpuControl = JoltCpuControl;
@@ -265,14 +264,94 @@ uint64_t PhysicsWorld::StageGpuJoint(PhysicsDomain &domain, PhysicsConstraintOwn
         domain.gpuJointAuthors.erase(id);
         throw;
     }
+    domain.gpuJointLayoutDirty = true;
     return id;
 }
 
 void PhysicsDomain::RetireGpuJoint(uint64_t id) noexcept
 {
     auto retired = gpuJointAuthors.extract(id);
-    if (retired)
+    if (retired) {
+        gpuJointLayoutDirty = true;
         retired.mapped().owner->OnPhysicsConstraintDestroyed();
+    }
+}
+
+void PhysicsDomain::MarkGpuJointEdit(uint64_t id, PhysicsSceneJointEdit edit)
+{
+    auto &mask = gpuJointAuthors.at(id).pendingEdits;
+    if (!mask)
+        gpuJointEdits.push_back(id);
+    mask |= static_cast<uint8_t>(edit);
+}
+
+void PhysicsDomain::SetGpuJointPose(uint64_t id, std::optional<glm::quat> relative)
+{
+    auto &previous = gpuJointAuthors.at(id).poseTarget;
+    if (previous == relative || (previous && relative && *previous == -*relative))
+        return;
+    MarkGpuJointEdit(id, PhysicsSceneJointEdit::Pose);
+    previous = std::move(relative);
+}
+
+void PhysicsDomain::SetGpuJointCollision(PhysicsSceneJointAuthor &joint, bool enabled) noexcept
+{
+    gpuJointLayoutDirty |= joint.enableCollision != enabled;
+    joint.enableCollision = enabled;
+}
+
+std::vector<InxPhyGpuSceneJointUpdate> PhysicsDomain::CaptureGpuJointEdits() const
+{
+    std::vector<InxPhyGpuSceneJointUpdate> edits;
+    edits.reserve(gpuJointEdits.size());
+    for (const auto id : gpuJointEdits) {
+        const auto found = gpuJointAuthors.find(id);
+        if (found == gpuJointAuthors.end())
+            continue; // A destroyed identity drops any unsubmitted parameter writes.
+        const auto &joint = found->second;
+        const auto mask = joint.pendingEdits;
+        const auto has = [mask](PhysicsSceneJointEdit edit) { return (mask & static_cast<uint8_t>(edit)) != 0; };
+        const auto append = [&](const auto &value) { edits.push_back({owner.id, id, value}); };
+        std::visit(
+            [&](const auto &value) {
+                using Setting = std::decay_t<decltype(value)>;
+                const auto limits = has(PhysicsSceneJointEdit::Limits);
+                const auto drive = has(PhysicsSceneJointEdit::Drive);
+                if constexpr (std::is_same_v<Setting, InxPhyGpuSceneHinge>) {
+                    if (limits)
+                        append(InxPhyGpuJointLimits{value.useLimits, value.minimum, value.maximum});
+                    if (drive)
+                        append(value.drive);
+                } else if constexpr (std::is_same_v<Setting, InxPhyGpuSceneSlider>) {
+                    if (limits)
+                        append(InxPhyGpuJointLimits{value.useLimits, value.minimum, value.maximum});
+                } else if constexpr (std::is_same_v<Setting, InxPhyGpuSceneDistance>) {
+                    if (limits && !value.autoDistance)
+                        append(InxPhyGpuJointLimits{true, value.minimum, value.maximum});
+                    if (drive)
+                        append(InxPhyGpuDistanceSpring{value.stiffness, value.damping});
+                } else if constexpr (std::is_same_v<Setting, SwingTwistJointSettings>) {
+                    if (drive)
+                        append(InxPhyGpuSwingTwistParameters(value));
+                } else if constexpr (std::is_same_v<Setting, SixDOFJointSettings>) {
+                    if (drive)
+                        append(PackSixDOFControls(value));
+                }
+            },
+            joint.settings);
+        if (has(PhysicsSceneJointEdit::Pose))
+            append(InxPhyGpuJointPoseTarget{joint.poseTarget});
+    }
+    return edits;
+}
+
+void PhysicsDomain::AcceptGpuJointEdits() noexcept
+{
+    for (const auto id : gpuJointEdits)
+        if (const auto found = gpuJointAuthors.find(id); found != gpuJointAuthors.end())
+            found->second.pendingEdits = 0;
+    gpuJointEdits.clear();
+    gpuJointLayoutDirty = false;
 }
 
 uint64_t PhysicsWorld::CreateHingeConstraint(HingeJoint &owner, uint32_t bodyIdA, uint32_t bodyIdB,
@@ -378,7 +457,7 @@ void PhysicsWorld::SetConstraintCollisionEnabled(uint64_t constraintId, bool ena
     RequireGpu(domain);
     m_gpuScene->UpdateJoint(
         constraintId, [=](JointAuthor &author) { SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enabled); });
-    domain.gpuJointAuthors.at(constraintId).enableCollision = enabled;
+    domain.SetGpuJointCollision(domain.gpuJointAuthors.at(constraintId), enabled);
 }
 
 uint64_t PhysicsWorld::CreateDistanceConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
@@ -449,11 +528,13 @@ void PhysicsWorld::UpdateDistanceConstraintSettings(uint64_t constraintId, bool 
     });
     auto &binding = domain.gpuJointAuthors.at(constraintId);
     auto &settings = std::get<InxPhyGpuSceneDistance>(binding.settings);
-    binding.enableCollision = enableCollision;
+    domain.SetGpuJointCollision(binding, enableCollision);
     settings.minimum = minimum;
     settings.maximum = maximum;
     settings.stiffness = stiffness;
     settings.damping = damping;
+    domain.MarkGpuJointEdit(constraintId, PhysicsSceneJointEdit::Limits);
+    domain.MarkGpuJointEdit(constraintId, PhysicsSceneJointEdit::Drive);
 }
 
 float PhysicsWorld::GetDistanceConstraintLength(uint64_t constraintId) const
@@ -493,10 +574,11 @@ void PhysicsWorld::UpdateHingeConstraintSettings(uint64_t constraintId, bool use
     });
     auto &binding = domain.gpuJointAuthors.at(constraintId);
     auto &settings = std::get<InxPhyGpuSceneHinge>(binding.settings);
-    binding.enableCollision = enableCollision;
+    domain.SetGpuJointCollision(binding, enableCollision);
     settings.useLimits = useLimits;
     settings.minimum = minimum;
     settings.maximum = maximum;
+    domain.MarkGpuJointEdit(constraintId, PhysicsSceneJointEdit::Limits);
 }
 
 void PhysicsWorld::UpdateHingeConstraintMotor(uint64_t constraintId, bool enabled, float targetAngle, float stiffness,
@@ -534,6 +616,7 @@ void PhysicsWorld::UpdateHingeConstraintMotor(uint64_t constraintId, bool enable
     });
     std::get<InxPhyGpuSceneHinge>(domain.gpuJointAuthors.at(constraintId).settings).drive = {
         enabled, target, stiffness, damping, maxTorque, jointDamping, frictionTorque, armature};
+    domain.MarkGpuJointEdit(constraintId, PhysicsSceneJointEdit::Drive);
 }
 
 void PhysicsWorld::UpdateHingeConstraintTarget(uint64_t constraintId, float targetAngle)
@@ -551,9 +634,12 @@ void PhysicsWorld::UpdateHingeConstraintTarget(uint64_t constraintId, float targ
     const auto &joint = RequireGpuJoint(m_gpuScene.get(), constraintId);
     RequireHinge(joint);
     const auto target = ClampHingeTarget(joint.author, targetAngle);
-    m_gpuScene->UpdateJoint(
-        constraintId, [=](JointAuthor &author) { author.motor().x = target; }, RagdollTargetReset(joint.bodyIdA));
+    const auto reset = RagdollTargetReset(joint.bodyIdA);
+    m_gpuScene->UpdateJoint(constraintId, [=](JointAuthor &author) { author.motor().x = target; }, reset);
     std::get<InxPhyGpuSceneHinge>(domain.gpuJointAuthors.at(constraintId).settings).drive.target = target;
+    domain.MarkGpuJointEdit(constraintId, PhysicsSceneJointEdit::Drive);
+    if (reset)
+        domain.SetGpuJointPose(constraintId, std::nullopt);
 }
 
 void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints, const float *targets)
@@ -565,7 +651,8 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
     {
         HingeJoint *joint;
         float degrees, radians;
-        InxPhyGpuSceneHinge *gpuAuthor;
+        PhysicsDomain *gpuDomain;
+        bool resetPose;
     };
     struct Group
     {
@@ -594,7 +681,7 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
         const auto *cpu = FindCpuJointDomain(id);
         const auto target =
             glm::radians(joint.m_useLimits ? std::clamp(degrees, joint.m_minimumAngle, joint.m_maximumAngle) : degrees);
-        InxPhyGpuSceneHinge *gpuAuthor = nullptr;
+        uint32_t reset = 0;
         if (cpu) {
             if (cpu != &domain)
                 throw std::logic_error("CPU hinge no longer belongs to its author RuntimeWorld");
@@ -610,10 +697,10 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
             RequireGpu(domain);
             auto author = authored.author;
             author.motor().x = target;
-            group.gpu.push_back({id, author, RagdollTargetReset(authored.bodyIdA)});
-            gpuAuthor = &std::get<InxPhyGpuSceneHinge>(domain.gpuJointAuthors.at(id).settings);
+            reset = RagdollTargetReset(authored.bodyIdA);
+            group.gpu.push_back({id, author, reset});
         }
-        prepared.push_back({&joint, degrees, target, gpuAuthor});
+        prepared.push_back({&joint, degrees, target, cpu ? nullptr : &domain, reset != 0});
     }
     for (auto &group : groups) {
         if (!group.cpu.empty())
@@ -622,8 +709,14 @@ void PhysicsWorld::SetHingeMotorTargets(const std::vector<HingeJoint *> &joints,
             m_gpuScene->UpdateJoints(std::move(group.gpu));
     }
     for (const auto &target : prepared) {
-        if (target.gpuAuthor)
-            target.gpuAuthor->drive.target = target.radians;
+        if (auto *domain = target.gpuDomain) {
+            const auto id = target.joint->GetPhysicsConstraintId();
+            auto &binding = domain->gpuJointAuthors.at(id);
+            std::get<InxPhyGpuSceneHinge>(binding.settings).drive.target = target.radians;
+            domain->MarkGpuJointEdit(id, PhysicsSceneJointEdit::Drive);
+            if (target.resetPose)
+                domain->SetGpuJointPose(id, std::nullopt);
+        }
         target.joint->m_motorTargetAngle = target.degrees;
         ClaimRagdollTarget(*target.joint);
     }
@@ -769,10 +862,11 @@ void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool us
     });
     auto &binding = domain.gpuJointAuthors.at(constraintId);
     auto &settings = std::get<InxPhyGpuSceneSlider>(binding.settings);
-    binding.enableCollision = enableCollision;
+    domain.SetGpuJointCollision(binding, enableCollision);
     settings.useLimits = useLimits;
     settings.minimum = minimum;
     settings.maximum = maximum;
+    domain.MarkGpuJointEdit(constraintId, PhysicsSceneJointEdit::Limits);
 }
 
 void PhysicsWorld::DestroyConstraintsForBody(uint32_t bodyId)
@@ -881,6 +975,7 @@ void PhysicsWorld::UpdateSwingTwistConstraint(uint64_t constraintId, const Swing
     if (before.x != after.x || before.y != after.y || before.z != after.z || before.w != after.w)
         throw std::logic_error("SwingTwist frame changes require rebuilding the constraint");
     SetJointFlag(updated, JPH::GPU::JointCollisionEnabled, enableCollision);
+    const auto reset = claimTarget ? RagdollTargetReset(joint.bodyIdA) : 0u;
     m_gpuScene->UpdateJoint(
         constraintId,
         [=](JointAuthor &author) {
@@ -892,10 +987,13 @@ void PhysicsWorld::UpdateSwingTwistConstraint(uint64_t constraintId, const Swing
             author.angularVelocity() = updated.angularVelocity();
             SetJointFlag(author, JPH::GPU::JointCollisionEnabled, enableCollision);
         },
-        claimTarget ? RagdollTargetReset(joint.bodyIdA) : 0u);
+        reset);
     auto &binding = domain.gpuJointAuthors.at(constraintId);
-    binding.enableCollision = enableCollision;
+    domain.SetGpuJointCollision(binding, enableCollision);
     binding.settings = settings;
+    domain.MarkGpuJointEdit(constraintId, PhysicsSceneJointEdit::Drive);
+    if (reset)
+        domain.SetGpuJointPose(constraintId, std::nullopt);
 }
 
 glm::quat PhysicsWorld::GetAngularConstraintOrientation(uint64_t id) const
@@ -959,12 +1057,14 @@ void PhysicsWorld::UpdateSixDOFConstraint(uint64_t id, const SixDOFJointSettings
     SetJointFlag(updated, JPH::GPU::JointCollisionEnabled, collision);
     auto &domain = DomainForBody(joint.bodyIdA);
     RequireGpu(domain);
-    m_gpuScene->UpdateJoint(
-        id, [updated = std::move(updated)](JointAuthor &author) { author = updated; },
-        claimTarget ? RagdollTargetReset(joint.bodyIdA) : 0u);
+    const auto reset = claimTarget ? RagdollTargetReset(joint.bodyIdA) : 0u;
+    m_gpuScene->UpdateJoint(id, [updated = std::move(updated)](JointAuthor &author) { author = updated; }, reset);
     auto &binding = domain.gpuJointAuthors.at(id);
-    binding.enableCollision = collision;
+    domain.SetGpuJointCollision(binding, collision);
     binding.settings = settings;
+    domain.MarkGpuJointEdit(id, PhysicsSceneJointEdit::Drive);
+    if (reset)
+        domain.SetGpuJointPose(id, std::nullopt);
 }
 glm::vec3 PhysicsWorld::GetSixDOFConstraintPosition(uint64_t id) const
 {

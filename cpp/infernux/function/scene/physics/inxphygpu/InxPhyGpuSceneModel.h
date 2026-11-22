@@ -151,6 +151,21 @@ struct InxPhyGpuSceneJointReference
 using InxPhyGpuSceneJointSettings = std::variant<std::monostate, InxPhyGpuSceneHinge, InxPhyGpuSceneSlider,
                                                  InxPhyGpuSceneDistance, SwingTwistJointSettings, SixDOFJointSettings>;
 
+struct InxPhyGpuJointPoseTarget
+{
+    // Child rotation relative to the connected body. Empty restores the authored motor target.
+    std::optional<glm::quat> relative;
+};
+
+struct InxPhyGpuSceneJointUpdate
+{
+    uint64_t worldId;
+    uint64_t jointId;
+    std::variant<InxPhyGpuJointLimits, InxPhyGpuHingeDrive, InxPhyGpuDistanceSpring, InxPhyGpuSwingTwistParameters,
+                 InxPhyGpuSwingTwistTargets, ModelSixDOFControls, InxPhyGpuJointPoseTarget>
+        value;
+};
+
 struct InxPhyGpuSceneJoint
 {
     uint32_t ownerActor;

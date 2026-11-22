@@ -1148,6 +1148,7 @@ void PhysicsWorld::RetireGpuPartition(PhysicsDomain &domain)
     if (!std::exchange(domain.gpuRegistered, false))
         return;
     m_gpuScene->RetirePartition(domain.owner);
+    domain.AcceptGpuJointEdits();
     domain.gpuTargetAuthors.reset();
     domain.lastPublication.reset();
     domain.sceneRays.reset();
@@ -1276,6 +1277,7 @@ bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
                 },
                 [&domain] { return domain.admittedParticipants; }))
             return false;
+        domain.AcceptGpuJointEdits();
         domain.gpuTargetAuthors.reset();
     }
     domain.admittedContactPolicy = std::move(policy);
@@ -1999,6 +2001,7 @@ bool PhysicsWorld::BeginGpuControl(PhysicsDomain &domain, bool numericalChange, 
         return true;
     if (!m_gpuScene->TryBeginControl(domain.owner, domain.owner.simulation.simulationEpoch, std::move(rendering)))
         return false;
+    domain.AcceptGpuJointEdits();
     domain.gpuTargetAuthors.reset();
     domain.controlNumericalChange = numericalChange;
     domain.controlPending = true;
@@ -4207,9 +4210,15 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
     }
 
     setup->model = BuildInxPhyGpuSceneModel(actors, joints, *CaptureColliderPairs(domain, true));
-    for (uint32_t index = 0; index < jointIds.size(); ++index)
-        if (setup->model.jointBindings[index].row != NoModelIndex)
-            registration.joints.push_back({jointIds[index], index});
+    for (uint32_t index = 0; index < jointIds.size(); ++index) {
+        const auto &joint = setup->model.jointBindings[index];
+        if (joint.row == NoModelIndex)
+            continue;
+        const auto id = jointIds[index];
+        auto &registered = registration.joints.emplace_back(InxPhyGpuRegisteredJoint{id, index});
+        if (domain.UsesGpu() && joint.poseTargetOffset != NoModelIndex)
+            registered.authoredPose.emplace(InxPhyGpuJointPoseTarget{domain.gpuJointAuthors.at(id).poseTarget});
+    }
     return setup;
 }
 

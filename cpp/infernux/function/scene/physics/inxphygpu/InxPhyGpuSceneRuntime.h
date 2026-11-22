@@ -45,6 +45,7 @@ struct InxPhyGpuRegisteredJoint
 {
     uint64_t jointId;
     uint32_t authorRow;
+    std::optional<InxPhyGpuJointPoseTarget> authoredPose{};
 };
 
 struct InxPhyGpuRegisteredWorld
@@ -59,21 +60,6 @@ struct InxPhyGpuSceneSetup
 {
     InxPhyGpuSceneModel model;
     InxPhyGpuRegisteredWorld world;
-};
-
-struct InxPhyGpuJointPoseTarget
-{
-    // Child rotation relative to the connected body. Empty restores the authored motor target.
-    std::optional<glm::quat> relative;
-};
-
-struct InxPhyGpuSceneJointUpdate
-{
-    uint64_t worldId;
-    uint64_t jointId;
-    std::variant<InxPhyGpuJointLimits, InxPhyGpuHingeDrive, InxPhyGpuDistanceSpring, InxPhyGpuSwingTwistParameters,
-                 InxPhyGpuSwingTwistTargets, ModelSixDOFControls, InxPhyGpuJointPoseTarget>
-        value;
 };
 
 struct InxPhyGpuSceneImpulseBatch

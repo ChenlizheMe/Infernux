@@ -520,8 +520,11 @@ void PhysicsWorld::QueueRagdollPoseDrives(PhysicsDomain &domain, const std::vect
     }
     if (!cpu.empty())
         domain.cpuControl->QueueJointPoseDrives(std::move(cpu));
-    if (!gpu.empty())
+    if (!gpu.empty()) {
         m_gpuScene->QueuePoseDrive(domain.owner, std::move(gpu));
+        for (const auto &drive : drives)
+            domain.SetGpuJointPose(drive.jointId, drive.relative);
+    }
 }
 
 void PhysicsWorld::ClearRagdollDrive(uint64_t id)

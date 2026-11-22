@@ -35,6 +35,15 @@ struct PhysicsSceneJointAuthor
     bool enableCollision;
     physics::inxphygpu::InxPhyGpuSceneJointSettings settings;
     PhysicsConstraintOwner *owner = nullptr;
+    std::optional<glm::quat> poseTarget{};
+    uint8_t pendingEdits = 0;
+};
+
+enum class PhysicsSceneJointEdit : uint8_t
+{
+    Limits = 1,
+    Drive = 2,
+    Pose = 4,
 };
 
 /// RuntimeWorld owns its logical cursor and isolated CPU numerical state.
@@ -46,6 +55,11 @@ struct PhysicsDomain final
     ~PhysicsDomain();
     void MarkGpuPoseDiscontinuity(uint32_t bodyId);
     void RetireGpuJoint(uint64_t id) noexcept;
+    void MarkGpuJointEdit(uint64_t id, PhysicsSceneJointEdit edit);
+    void SetGpuJointPose(uint64_t id, std::optional<glm::quat> relative);
+    void SetGpuJointCollision(PhysicsSceneJointAuthor &joint, bool enabled) noexcept;
+    [[nodiscard]] std::vector<physics::inxphygpu::InxPhyGpuSceneJointUpdate> CaptureGpuJointEdits() const;
+    void AcceptGpuJointEdits() noexcept;
     RuntimeWorld &owner;
     PhysicsBackend backend = PhysicsBackend::CPU;
     [[nodiscard]] bool UsesGpu() const noexcept;
@@ -66,6 +80,8 @@ struct PhysicsDomain final
     bool cpuFixedAdmitted = false;
     std::vector<PhysicsSceneBodyCommand> gpuBodyCommands;
     std::map<uint64_t, PhysicsSceneJointAuthor> gpuJointAuthors;
+    std::vector<uint64_t> gpuJointEdits;
+    bool gpuJointLayoutDirty = false;
     // Shared by the queued authored moves and their retained component guards.
     std::shared_ptr<PhysicsTargetBatch> gpuTargetAuthors;
     bool gpuRegistered = false;

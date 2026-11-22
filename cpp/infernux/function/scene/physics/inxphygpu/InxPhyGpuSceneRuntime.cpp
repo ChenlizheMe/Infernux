@@ -423,10 +423,7 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     }
     InxPhyGpuStateHandoff handoff;
     if (previous) {
-        InxPhyGpuScenePoseTargets retained;
         InxPhyGpuSceneKinematicTargets retainedKinematic;
-        if (previous->m_poseTargets)
-            retained.worlds.resize(worlds.size());
         const uint64_t header = 5 * uint64_t{previous->bodiesPerWorld} * previous->worlds.size();
         for (size_t next = 0; next < worlds.size(); ++next) {
             auto &accepted = m_acceptedWorlds[next];
@@ -485,28 +482,49 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                         m_reboundTargets.push_back(it->second.targets);
                 }
             }
-            if (previous->m_poseTargets && previous->m_poseTargets->worlds[old->second]) {
-                const auto &joints = layout->worlds[next].joints;
-                auto targets = std::make_shared<InxPhyGpuScenePoseTargets::World>();
-                for (const auto &[id, relative] : *previous->m_poseTargets->worlds[old->second]) {
-                    const auto found = joints.find(id);
-                    if (found == joints.end() || found->second.poseTargetOffset == NoModelIndex)
-                        continue;
-                    const auto &joint = found->second;
-                    handoff.poseTargets.push_back(
-                        {static_cast<uint32_t>(next), joint.poseTargetOffset, PackPoseTarget(joint, relative)});
-                    targets->emplace(id, relative);
-                }
-                if (!targets->empty())
-                    retained.worlds[next] = std::move(targets);
-            }
         }
-        if (!handoff.poseTargets.empty())
-            m_poseTargets = std::make_shared<InxPhyGpuScenePoseTargets>(std::move(retained));
         if (!retainedKinematic.rows.empty())
             m_kinematicTargets = std::make_shared<InxPhyGpuSceneKinematicTargets>(std::move(retainedKinematic));
         std::sort(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
     }
+    InxPhyGpuScenePoseTargets poseTargets;
+    for (uint32_t world = 0; world < worlds.size(); ++world) {
+        const auto &source = worlds[world];
+        const InxPhyGpuScenePoseTargets::World *priorTargets = nullptr;
+        if (previous && previous->m_poseTargets) {
+            const auto old = previous->m_layout->worldRows.find(source.worldId);
+            if (old != previous->m_layout->worldRows.end() &&
+                previous->worlds[old->second].identity.simulationEpoch == source.simulationEpoch)
+                priorTargets = previous->m_poseTargets->worlds[old->second].get();
+        }
+        std::shared_ptr<InxPhyGpuScenePoseTargets::World> retained;
+        for (const auto &registration : source.joints) {
+            const auto &joint = layout->worlds[world].joints.at(registration.jointId);
+            if (joint.poseTargetOffset == NoModelIndex)
+                continue;
+            std::optional<glm::quat> relative;
+            if (registration.authoredPose) {
+                relative = registration.authoredPose->relative;
+            } else if (priorTargets) {
+                const auto found = priorTargets->find(registration.jointId);
+                if (found != priorTargets->end())
+                    relative = found->second;
+            }
+            if (!relative)
+                continue;
+            if (!retained)
+                retained = std::make_shared<InxPhyGpuScenePoseTargets::World>();
+            retained->emplace(registration.jointId, *relative);
+            handoff.poseTargets.push_back({world, joint.poseTargetOffset, PackPoseTarget(joint, *relative)});
+        }
+        if (retained) {
+            if (poseTargets.worlds.empty())
+                poseTargets.worlds.resize(worlds.size());
+            poseTargets.worlds[world] = std::move(retained);
+        }
+    }
+    if (!poseTargets.worlds.empty())
+        m_poseTargets = std::make_shared<InxPhyGpuScenePoseTargets>(std::move(poseTargets));
     m_kinematicVelocityRows.assign(kinematicVelocities.begin(), kinematicVelocities.end());
     m_layout = std::move(layout);
     m_activeFixedInputs.assign(m_layout->worlds.size(), {timestep, {gravity[0], gravity[1], gravity[2]}});
