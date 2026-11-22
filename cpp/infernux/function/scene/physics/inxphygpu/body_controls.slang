@@ -75,6 +75,7 @@ struct SavedMotion
 [[vk::binding(28, 0)]] RWStructuredBuffer<uint4> motionSeedOutput;
 [[vk::binding(29, 0)]] StructuredBuffer<uint4> impulseRows;
 [[vk::binding(30, 0)]] StructuredBuffer<float> deviceImpulses;
+[[vk::binding(31, 0)]] RWStructuredBuffer<float> deviceMotion;
 
 float4 conjugate(float4 rotation)
 {
@@ -211,6 +212,35 @@ void import_pending_wrenches(uint3 id : SV_DispatchThreadID)
                                              previousWrenches[source + 2]));
     store3(pendingWrenches, row * 6 + 3, float3(previousWrenches[source + 3], previousWrenches[source + 4],
                                                  previousWrenches[source + 5]));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void gather_device_body_motion(uint3 id : SV_DispatchThreadID)
+{
+    const uint index = linearWorkIndex<64>(id);
+    uint count, stride;
+    impulseRows.GetDimensions(count, stride);
+    if (index >= count)
+        return;
+
+    const uint4 row = impulseRows[index];
+    const ModelDimensions size = model[0];
+    const BodyModel body = bodies[row.y];
+    const uint2 offset = freeAddresses(size, body, row.x);
+    const Pose pose = loadOrigin(offset.x);
+    const float3 center = centerOffset(body, pose);
+    const float3 angular = rotateVector(load3(qvel, offset.y + 3), pose.rotation);
+    const float3 linear = load3(qvel, offset.y) + cross(angular, center);
+    const uint first = row.w;
+    store3(deviceMotion, first, pose.position.xyz + center);
+    deviceMotion[first + 3] = 0.0;
+    store3(deviceMotion, first + 4, pose.rotation.yzw);
+    deviceMotion[first + 7] = pose.rotation.x;
+    store3(deviceMotion, first + 8, linear);
+    deviceMotion[first + 11] = 0.0;
+    store3(deviceMotion, first + 12, angular);
+    deviceMotion[first + 15] = 0.0;
 }
 
 [shader("compute")]

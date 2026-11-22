@@ -771,8 +771,6 @@ PhysicsParticipant::PrepareGpuStage(JoltGpuParticipantStage stage, const Physics
     auto step = m_step, indices = m_indices;
     BatchRuntime runtime;
     if (runtimeSlot && bound) {
-        if (*runtimeSlot >= m_batchRuntime.size())
-            return std::nullopt;
         const auto &recipe = bound->work->GetRecipe();
         for (const auto &port : recipe.GetPorts()) {
             if (!port.input || (port.name != "step" && port.name != "indices"))
@@ -790,7 +788,8 @@ PhysicsParticipant::PrepareGpuStage(JoltGpuParticipantStage stage, const Physics
         }
         // New snapshots remain local until acceptance. A declined/contracted
         // optional packet must not retain newly allocated residency debt.
-        runtime = m_batchRuntime[*runtimeSlot];
+        if (*runtimeSlot < m_batchRuntime.size())
+            runtime = m_batchRuntime[*runtimeSlot];
         for (const auto usesIndices : {false, true}) {
             if (!(usesIndices ? bound->usesIndices : bound->usesStep))
                 continue;
@@ -821,13 +820,30 @@ PhysicsParticipant::PrepareGpuStage(JoltGpuParticipantStage stage, const Physics
         const auto resident = runtimeSlot || bound->writesStep ? std::nullopt : std::optional(timing);
         const bool changeStep = bound->usesStep && (runtimeSlot || uploadStep || bound->writesStep);
         result.accepted = [self = shared_from_this(), resident, changeStep, runtimeSlot, runtime] {
-            if (runtimeSlot)
+            if (runtimeSlot) {
+                if (*runtimeSlot >= self->m_batchRuntime.size())
+                    self->m_batchRuntime.resize(size_t{*runtimeSlot} + 1);
                 self->m_batchRuntime[*runtimeSlot] = runtime;
+            }
             if (changeStep)
                 self->m_uploadedStep = resident;
         };
     }
     return result;
+}
+
+std::optional<PhysicsParticipant::DeviceRigidExchange>
+PhysicsParticipant::PrepareDeviceRigidExchange(const PhysicsParticipantStageInputs &inputs, const Prefix &prefix,
+                                               uint32_t runtimeSlot)
+{
+    constexpr auto stage = JoltGpuParticipantStage::Exchange;
+    if (prefix.rigidBodyIds.empty() || !(prefix.stages & JoltGpuParticipantStages::Bit(stage)))
+        return std::nullopt;
+    auto work = PrepareGpuStage(stage, inputs, prefix, runtimeSlot);
+    if (!work)
+        return std::nullopt;
+    return DeviceRigidExchange{std::move(*work), m_rigidMotion,
+                               m_instances.at("exchange").work->GetBuffers().at(m_rigidImpulseSlot)};
 }
 
 std::optional<JoltGpuControlWork> PhysicsParticipant::PrepareClosedRounds(const JPH::GPU::StepParams &params,

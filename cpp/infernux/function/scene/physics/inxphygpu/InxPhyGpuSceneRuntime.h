@@ -91,6 +91,7 @@ struct InxPhyGpuSceneImpulseBatch
     uint32_t substep;
     std::vector<uint32_t> bodyIds;
     PhysicsDeviceBufferRange input;
+    std::optional<InxPhyGpuDeviceExchange> exchange{};
 };
 
 struct InxPhyGpuFixedWorld

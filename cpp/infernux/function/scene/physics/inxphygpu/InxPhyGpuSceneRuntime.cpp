@@ -559,9 +559,9 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
             continue;
         const auto world = m_layout->WorldRow(batch.worldId);
         auto input = batch.input;
-        if (input.buffer)
+        if (input.buffer && !batch.exchange)
             input.buffer = input.buffer->Freeze();
-        InxPhyGpuDeviceImpulseBatch rows{world, batch.substep, {}, std::move(input)};
+        InxPhyGpuDeviceImpulseBatch rows{world, batch.substep, {}, std::move(input), batch.exchange};
         rows.bodies.reserve(batch.bodyIds.size());
         for (const auto id : batch.bodyIds) {
             const auto row = worlds[world].BodyRow(id);
@@ -1081,7 +1081,6 @@ bool InxPhyGpuSceneRuntime::Advance(bool gpu, uint64_t token)
         m_packetKind = Packet::Fixed;
         m_operation->commands.clear();
         m_operation->jointUpdates.clear();
-        m_operation->deviceImpulses.clear();
     } else if (m_operation->commands.empty() && m_operation->jointUpdates.empty()) {
         auto result = CapturePublication(m_step->BodyStates()->GetLastWriteSubmission());
         result.worlds = m_acceptedWorlds;
@@ -1110,6 +1109,12 @@ bool InxPhyGpuSceneRuntime::Submit()
                               m_work.RecordAcceptedResource(FrameWorkResource::Gpu, prediction),
                               bytes == 0 ? 0 : m_work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes),
                               bytes});
+    if (kind == Packet::Fixed) {
+        for (const auto &batch : m_operation->deviceImpulses)
+            if (batch.exchange && batch.exchange->accepted)
+                batch.exchange->accepted();
+        m_operation->deviceImpulses.clear();
+    }
     ++m_generation;
     return true;
 }

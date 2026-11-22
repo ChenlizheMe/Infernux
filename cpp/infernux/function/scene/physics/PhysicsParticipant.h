@@ -160,6 +160,14 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
                                                                const PhysicsParticipantStageInputs &, const Prefix &,
                                                                std::optional<uint32_t> runtimeSlot = std::nullopt);
 
+    struct DeviceRigidExchange
+    {
+        PreparedStage work;
+        std::shared_ptr<rhi::ComputeBuffer> motion, impulses;
+    };
+    [[nodiscard]] std::optional<DeviceRigidExchange> PrepareDeviceRigidExchange(const PhysicsParticipantStageInputs &,
+                                                                                const Prefix &, uint32_t runtimeSlot);
+
     [[nodiscard]] std::optional<JoltGpuControlWork>
     PrepareClosedRounds(const JPH::GPU::StepParams &, float fixedDeltaTime, uint32_t substep, uint32_t iteration,
                         uint32_t rounds, const Prefix &, std::function<void(uint32_t)> done);

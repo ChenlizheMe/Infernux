@@ -264,12 +264,22 @@ struct InxPhyGpuJointParameterUpdate
     std::array<uint32_t, 2> dynamicEndpoints{NoModelIndex, NoModelIndex};
 };
 
+// Ordered project dispatches read motion and produce the impulse port in the fixed packet.
+struct InxPhyGpuDeviceExchange
+{
+    PhysicsDeviceBufferRange motion;
+    std::vector<rhi::ComputeBufferUpdate> updates;
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    std::function<void()> accepted{};
+};
+
 // Six float32 values per body: a world-space impulse and angular impulse.
 struct InxPhyGpuDeviceImpulseBatch
 {
     uint32_t world, substep;
     std::vector<uint32_t> bodies;
     PhysicsDeviceBufferRange input;
+    std::optional<InxPhyGpuDeviceExchange> exchange{};
 };
 
 enum class InxPhyGpuBodyPublication
@@ -434,7 +444,7 @@ class InxPhyGpuStep
     {
         BodyCommandStreams streams;
         std::shared_ptr<rhi::ComputeBuffer> states, activity, pendingWrenches;
-        rhi::ComputeDispatchDesc apply, edit, finish, pose, publish, publishWithStatus, deviceImpulse;
+        rhi::ComputeDispatchDesc apply, edit, finish, pose, publish, publishWithStatus, deviceMotion, deviceImpulse;
         std::vector<uint8_t> motion;
         uint32_t worlds = 0;
     };
@@ -472,7 +482,7 @@ class InxPhyGpuStep
     struct SubstepImpulseWork
     {
         uint32_t substep;
-        rhi::ComputeDispatchDesc dispatch;
+        std::vector<rhi::ComputeDispatchDesc> dispatches;
     };
     void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, std::vector<rhi::ComputeReplayRange> &,
                          uint32_t spans, bool captureContacts, const BodyCommandStreams &streams,
