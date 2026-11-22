@@ -46,6 +46,7 @@ class RuntimeWorld;
 enum class PhysicsBackend : uint8_t;
 struct PhysicsDomain;
 struct PhysicsFixedInputs;
+struct PhysicsActorAuthoring;
 struct PhysicsSceneJointAuthor;
 struct PhysicsGpuRenderJob;
 class PhysicsGpuRenderPoses;
@@ -776,6 +777,7 @@ class PhysicsWorld
         bool staticResident = false;
         uint64_t stagedShapeRevision = 0;
         std::shared_ptr<PhysicsStaticBoundaryModel> staticModel;
+        std::shared_ptr<const PhysicsActorAuthoring> nativeAuthor;
         mutable size_t cpuPoseIndex = SIZE_MAX;
         [[nodiscard]] bool HasCpuBody() const noexcept
         {
@@ -912,8 +914,7 @@ class PhysicsWorld
     [[nodiscard]] uint32_t StageNewBody(const PhysicsActorData &, PhysicsActorHandle, Backend, bool resident);
     void RetireStagedBody(PhysicsDomain &, uint32_t bodyId, const BodyRegistration &);
     void StageActorModel(PhysicsActorData &actor, const PhysicsActorData &author,
-                         const std::function<void(PreparedCpuActor &)> &editCpu = {},
-                         const std::function<void(PreparedGpuActor &)> &editGpu = {});
+                         const std::function<void(PhysicsActorAuthoring &)> &edit = {});
     void QueueBodyPose(uint32_t bodyId, const glm::vec3 *position, const glm::quat *rotation, bool cancelMove);
     void QueueBodyVelocity(uint32_t bodyId, const glm::vec3 &velocity, bool angular);
     void RequireGpuCommandOwner(PhysicsDomain &domain) const;
@@ -921,8 +922,6 @@ class PhysicsWorld
                                             const PhysicsTargetAuthor *author = nullptr);
     PhysicsTargetSource QueueKinematicBodyCommand(uint32_t bodyId, const PhysicsBodyCommand::KinematicMove &,
                                                   const PhysicsTargetAuthor * = nullptr);
-    void RefreshGpuActor(PhysicsDomain &domain, uint32_t bodyId,
-                         const std::function<void(PreparedGpuActor &)> &edit = {});
     [[nodiscard]] std::vector<std::pair<Transform *, Rigidbody *>>
     CollectCpuPoseReads(const std::vector<Transform *> &transforms, bool worldSpace) const;
     [[nodiscard]] PhysicsBodyMotionState ReadMotionState(PhysicsDomain &domain, uint32_t bodyId,

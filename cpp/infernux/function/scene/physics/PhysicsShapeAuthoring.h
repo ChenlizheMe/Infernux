@@ -65,7 +65,8 @@ struct PhysicsRigidbodyAuthoring
     std::optional<PreparedBodyMass> mass;
     int constraints, collisionDetectionMode;
     float drag, angularDrag, maxLinearVelocity, maxAngularVelocity;
-    bool kinematic, useGravity;
+    bool kinematic;
+    float gravityFactor;
 };
 
 /// Backend-independent component and shape input belonging to one author pose.

@@ -267,13 +267,15 @@ void PhysicsWorld::RetireCpuJointRoutes(PhysicsDomain &domain) noexcept
 uint64_t PhysicsWorld::StageGpuJoint(PhysicsDomain &domain, PhysicsConstraintOwner &owner,
                                      PhysicsSceneJointAuthor author, JointAuthor packed)
 {
-    RequireGpu(domain);
+    if (!domain.nativeRuntime)
+        RequireGpu(domain);
     const auto id = PhysicsECSStore::Instance().AllocateJointIdentity();
     author.owner = &owner;
     m_jointDomains.emplace(id, &domain);
     try {
         const auto &binding = domain.gpuJointAuthors.emplace(id, std::move(author)).first->second;
-        m_gpuScene->CreateJoint(id, binding.ownerBody, binding.connectedBody, std::move(packed));
+        if (!domain.nativeRuntime)
+            m_gpuScene->CreateJoint(id, binding.ownerBody, binding.connectedBody, std::move(packed));
     } catch (...) {
         m_jointDomains.erase(id);
         domain.gpuJointAuthors.erase(id);
@@ -913,6 +915,15 @@ void PhysicsWorld::DestroyConstraintsForBody(uint32_t bodyId)
         auto &domain = DomainForBody(bodyId);
         if (domain.cpuControl)
             RetireCpuJointRoutes(domain.cpuControl->DestroyJointsForBody(bodyId));
+        if (domain.nativeRuntime) {
+            for (auto it = domain.gpuJointAuthors.begin(); it != domain.gpuJointAuthors.end();) {
+                const auto current = it++;
+                if (current->second.ownerBody == bodyId || current->second.connectedBody == bodyId)
+                    domain.RetireGpuJoint(current->first);
+            }
+            if (!domain.gpuRegistered)
+                return;
+        }
     }
     if (m_gpuScene && m_gpuScene->FindBody(bodyId).bodyId != UINT32_MAX)
         m_gpuScene->DestroyJointsForBody(bodyId);
@@ -927,6 +938,13 @@ void PhysicsWorld::DestroyConstraint(uint64_t constraintId)
         cpu->cpuControl->DestroyJoint(constraintId);
         m_jointDomains.erase(constraintId);
         return;
+    }
+    if (const auto route = m_jointDomains.find(constraintId);
+        route != m_jointDomains.end() && route->second->nativeRuntime) {
+        auto &domain = *route->second;
+        domain.RetireGpuJoint(constraintId);
+        if (!domain.gpuRegistered)
+            return;
     }
     if (m_gpuScene)
         m_gpuScene->DestroyJoint(constraintId);

@@ -459,7 +459,7 @@ InxPhyGpuSceneCapture PrepareInxPhyGpuSceneActor(PhysicsActorAuthoring author)
     source.scale = author.scale;
     if (const auto &body = author.body) {
         source.kinematic = body->kinematic;
-        source.useGravity = body->useGravity;
+        source.gravityFactor = body->gravityFactor;
         source.frozenAxes = (static_cast<uint32_t>(body->constraints) >> 1) & 63u;
         source.motion = {body->drag, body->angularDrag, body->maxLinearVelocity, body->maxAngularVelocity};
         if (!source.kinematic)
@@ -505,7 +505,7 @@ InxPhyGpuSceneModel BuildInxPhyGpuSceneModel(const std::vector<InxPhyGpuSceneAct
             body.principalInertia = {1.0f / mass.inverse.GetX(), 1.0f / mass.inverse.GetY(),
                                      1.0f / mass.inverse.GetZ()};
             body.mass = mass.mass;
-            body.gravityCompensation = actor.useGravity ? 0.0f : 1.0f;
+            body.gravityCompensation = 1.0f - actor.gravityFactor;
             body.joints.push_back({ModelJointType::Free});
         }
         bodies.push_back(std::move(body));

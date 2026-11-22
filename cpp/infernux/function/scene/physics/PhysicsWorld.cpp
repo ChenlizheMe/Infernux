@@ -1178,6 +1178,8 @@ void PhysicsWorld::Shutdown()
         domain->nativeRuntime.reset();
         if (domain->gpuRegistered)
             m_gpuScene->Cancel(domain->owner);
+        while (!domain->gpuJointAuthors.empty())
+            domain->RetireGpuJoint(domain->gpuJointAuthors.begin()->first);
         domain->rendering.bindings.Clear();
         domain->rendering.pending.reset();
         domain->rendering.ready.reset();
@@ -1276,6 +1278,15 @@ bool PhysicsWorld::PrepareInxPhyGpuTopology(PhysicsDomain &domain, PhysicsFixedI
             if (!ready)
                 return false;
             domain.nativeRuntime = std::move(domain.nativeTopology);
+            for (const auto &[id, revision] : domain.nativeTopologyActors) {
+                const auto *entry = FindBodyRegistration(id);
+                if (entry && entry->nativeAuthor && entry->stagedShapeRevision == revision) {
+                    const auto &accepted = entry->nativeAuthor->publication;
+                    accepted.AcceptGeometry(entry->actor, id, revision);
+                    accepted.ConsumeInitialVelocities(entry->actor, id);
+                }
+            }
+            domain.nativeTopologyActors.clear();
             AcceptInxPhyGpuPublication(domain, std::make_shared<InxPhyGpuFixedPublication>(std::move(*ready)), true,
                                        {});
         }
@@ -1296,6 +1307,9 @@ bool PhysicsWorld::PrepareInxPhyGpuTopology(PhysicsDomain &domain, PhysicsFixedI
         }
         if (!setup)
             return false;
+        domain.nativeTopologyActors.reserve(setup->world.bodies.size());
+        for (const auto &body : setup->world.bodies)
+            domain.nativeTopologyActors.emplace_back(body.bodyId, body.shapeRevision);
         domain.nativeTopology =
             domain.nativeRuntime->Rebuild(std::move(*setup), *domain.nativeFixedPublication, input, substeps);
         domain.nativeBodyLayoutDirty = false;
@@ -1735,6 +1749,7 @@ void PhysicsDomain::RetireInxPhyGpuFixed() noexcept
     nativeFixedAdmission.reset();
     nativeEdit.reset();
     nativeFixedPublication.reset();
+    nativeTopologyActors.clear();
 }
 
 void PhysicsDomain::RequestInxPhyGpuAuthorPresentation() const
@@ -2459,6 +2474,8 @@ void PhysicsWorld::CancelPendingStep() noexcept
     GpuPublicationReader::Cancel(domain.participantInitialization);
     GpuPublicationReader::Cancel(domain.participantOutput);
     RetireGpuPartition(domain);
+    while (!domain.gpuJointAuthors.empty())
+        domain.RetireGpuJoint(domain.gpuJointAuthors.begin()->first);
     domain.cpuContacts.Close();
     SuspendRagdolls(domain);
     domain.contacts.Close();
@@ -2942,6 +2959,12 @@ bool PhysicsWorld::EnsureStaticBoundary(PhysicsDomain &domain, uint32_t id)
         domain.pendingStatic.erase(id);
         return true;
     }
+    if (domain.nativeRuntime) {
+        entry.stagedOn = Backend::Gpu;
+        domain.pendingStatic.erase(id);
+        domain.MarkInxPhyGpuTopology();
+        return true;
+    }
     auto &boundary = *entry.staticModel;
     if (domain.UsesGpu()) {
         if (!EnsureGpuReady(domain) || !CanStageNewGpuBody(domain))
@@ -2982,7 +3005,9 @@ uint32_t PhysicsWorld::StageNewBody(const PhysicsActorData &actor, PhysicsActorH
         return UINT32_MAX;
     std::optional<PreparedGpuActor> gpu;
     std::optional<PreparedCpuActor> cpu;
-    if (domain.UsesGpu()) {
+    if (domain.nativeRuntime) {
+        RegisterDomain(domain);
+    } else if (domain.UsesGpu()) {
         gpu = PrepareJoltGpuActor(std::move(*authoring), 0, 0);
         if (!boundary && (!EnsureGpuReady(domain) || !CanStageNewGpuBody(domain))) {
             store.QueueBodyCreation(handle);
@@ -2993,7 +3018,7 @@ uint32_t PhysicsWorld::StageNewBody(const PhysicsActorData &actor, PhysicsActorH
         if (!boundary)
             EnsureCpuReady(domain);
     }
-    if (boundary)
+    if (boundary && !domain.nativeRuntime)
         RegisterDomain(domain);
 
     const auto id = store.AllocateBodyIdentity();
@@ -3006,7 +3031,7 @@ uint32_t PhysicsWorld::StageNewBody(const PhysicsActorData &actor, PhysicsActorH
             if (gpu) {
                 gpu->publication.sharedGeometryRevision = entry.stagedShapeRevision;
                 entry.staticModel->Hold(std::move(*gpu));
-            } else {
+            } else if (cpu) {
                 cpu->publication.sharedGeometryRevision = entry.stagedShapeRevision;
                 entry.staticModel->Hold(std::move(*cpu));
             }
@@ -3015,10 +3040,15 @@ uint32_t PhysicsWorld::StageNewBody(const PhysicsActorData &actor, PhysicsActorH
             if (gpu) {
                 StageNewGpuBody(domain, id, handle, actor, resident, std::move(*gpu));
                 entry.stagedOn = Backend::Gpu;
-            } else {
+            } else if (cpu) {
                 domain.cpuControl->StageActor(id, handle, std::move(*cpu));
                 entry.stagedOn = Backend::Cpu;
             }
+        }
+        if (domain.nativeRuntime) {
+            entry.nativeAuthor = std::make_shared<PhysicsActorAuthoring>(std::move(*authoring));
+            entry.stagedOn = Backend::Gpu;
+            domain.pendingStatic.erase(id);
         }
     } catch (...) {
         UnregisterBodyIdentity(domain, id);
@@ -3044,7 +3074,7 @@ void PhysicsWorld::RetireStagedBody(PhysicsDomain &domain, uint32_t id, const Bo
         domain.cpuControl->RetireActor(id);
     else if (registration.HasGpuBody()) {
         // Closed partitions retire their numerical records as a batch.
-        if (m_gpuScene && m_gpuScene->FindBody(id).bodyId != UINT32_MAX)
+        if (domain.gpuRegistered && m_gpuScene->FindBody(id).bodyId != UINT32_MAX)
             m_gpuScene->StageRetire(id);
         if (m_gpuRenderProgram)
             domain.rendering.bindings.RetireBody(id);
@@ -3080,7 +3110,7 @@ bool PhysicsWorld::RebindBody(PhysicsActorData &actor)
     }
     const auto backend = SelectBodyBackend(actor, &entry);
     const bool boundary = backend == Backend::StaticBoundary;
-    const bool stage = !boundary || entry.stagedOn.has_value();
+    const bool stage = domain.nativeRuntime || !boundary || entry.stagedOn.has_value();
     const bool resident = actor.owner->IsActiveInHierarchy() && !actor.sceneSuspended &&
                           ((actor.rigidbody && actor.rigidbody->IsEnabled()) || actor.primaryCollider);
     const auto rigidbody = boundary ? PhysicsECSStore::RigidbodyHandle{} : actor.rigidbody->GetECSHandle();
@@ -3088,7 +3118,8 @@ bool PhysicsWorld::RebindBody(PhysicsActorData &actor)
     TransformECSStore::PhysicsPoseReadScope authored(TransformECSStore::Instance());
     const auto revision = entry.stagedShapeRevision + 1;
     const bool gpuWorld = domain.UsesGpu();
-    if (gpuWorld && stage && (!EnsureGpuReady(domain) || (!entry.stagedOn && !CanStageNewGpuBody(domain)))) {
+    if (gpuWorld && !domain.nativeRuntime && stage &&
+        (!EnsureGpuReady(domain) || (!entry.stagedOn && !CanStageNewGpuBody(domain)))) {
         store.QueueBodyCreation(entry.actor);
         return false;
     }
@@ -3097,7 +3128,10 @@ bool PhysicsWorld::RebindBody(PhysicsActorData &actor)
         return false;
     std::optional<PreparedCpuActor> cpu;
     std::optional<PreparedGpuActor> gpu;
-    if (gpuWorld) {
+    std::shared_ptr<const PhysicsActorAuthoring> native;
+    if (domain.nativeRuntime) {
+        native = std::make_shared<PhysicsActorAuthoring>(std::move(*authoring));
+    } else if (gpuWorld) {
         const auto slot = entry.stagedOn ? m_gpuScene->FindBody(id).slot : 0;
         gpu = PrepareJoltGpuActor(std::move(*authoring), slot, 0);
         gpu->publication.sharedGeometryRevision = revision;
@@ -3112,7 +3146,10 @@ bool PhysicsWorld::RebindBody(PhysicsActorData &actor)
     // Joint endpoint ownership belongs to the old component generation even
     // though the body's public ID remains the same.
     DestroyConstraintsForBody(id);
-    if (!stage) {
+    if (native) {
+        entry.nativeAuthor = std::move(native);
+        entry.stagedOn = Backend::Gpu;
+    } else if (!stage) {
         if (gpu)
             staticModel->Hold(std::move(*gpu));
         else
@@ -3175,15 +3212,12 @@ bool PhysicsWorld::CanQueueRigidbodyCommand(uint32_t id, const Rigidbody &body) 
     if (!registration || registration->rigidbody != body.GetECSHandle())
         return false;
     const auto &domain = DomainForBody(id);
+    if (domain.nativeRuntime)
+        return registration->backend == Backend::Gpu;
     if (registration->backend == Backend::Cpu)
         return domain.cpuControl && domain.cpuControl->HasStagedRigidbody(id, body.GetECSHandle());
     return registration->backend == Backend::Gpu && m_gpuScene &&
            m_gpuScene->HasStagedRigidbody(id, body.GetECSHandle());
-}
-void PhysicsWorld::RefreshGpuActor(PhysicsDomain &, uint32_t id, const std::function<void(PreparedGpuActor &)> &edit)
-{
-    auto &actor = ActorForBody(id);
-    StageActorModel(actor, actor, {}, edit);
 }
 void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
 {
@@ -3195,8 +3229,7 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
         UpdateBodyShape(store.GetActor(handle), exclude);
 }
 void PhysicsWorld::StageActorModel(PhysicsActorData &actor, const PhysicsActorData &author,
-                                   const std::function<void(PreparedCpuActor &)> &editCpu,
-                                   const std::function<void(PreparedGpuActor &)> &editGpu)
+                                   const std::function<void(PhysicsActorAuthoring &)> &edit)
 {
     RequireOwnerThread();
     if (NeedsBodyBindingChange(actor)) {
@@ -3210,11 +3243,13 @@ void PhysicsWorld::StageActorModel(PhysicsActorData &actor, const PhysicsActorDa
     auto authoring = PhysicsActorAuthoring::Capture(author);
     if (!authoring)
         return;
-    if (domain.UsesGpu()) {
+    if (edit)
+        edit(*authoring);
+    if (domain.nativeRuntime) {
+        entry.nativeAuthor = std::make_shared<PhysicsActorAuthoring>(std::move(*authoring));
+    } else if (domain.UsesGpu()) {
         const auto slot = entry.HasGpuBody() ? m_gpuScene->FindBody(actor.bodyId).slot : 0;
         auto prepared = PrepareJoltGpuActor(std::move(*authoring), slot, 0);
-        if (editGpu)
-            editGpu(prepared);
         prepared.publication.sharedGeometryRevision = revision;
         if (entry.staticModel)
             entry.staticModel->ApplyPose(prepared);
@@ -3226,8 +3261,6 @@ void PhysicsWorld::StageActorModel(PhysicsActorData &actor, const PhysicsActorDa
         }
     } else {
         auto prepared = PrepareJoltCpuActor(std::move(*authoring));
-        if (editCpu)
-            editCpu(prepared);
         prepared.publication.sharedGeometryRevision = revision;
         if (entry.staticModel)
             entry.staticModel->ApplyPose(prepared);
@@ -3305,7 +3338,7 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<uint32_t> &bodies)
     for (const auto id : bodies) {
         auto &domain = DomainForBody(id);
         const auto &entry = m_bodyActors.at(id);
-        if (entry.HasGpuBody())
+        if (entry.HasGpuBody() && !domain.nativeRuntime)
             RequireGpu(domain);
         if (entry.HasCpuBody())
             cpuBodies[&domain].push_back(id);
@@ -3318,7 +3351,7 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<uint32_t> &bodies)
         domain.MarkInxPhyGpuTopology();
         if (entry.backend == Backend::StaticBoundary)
             entry.staticResident = true;
-        if (entry.HasGpuBody())
+        if (entry.HasGpuBody() && !domain.nativeRuntime)
             m_gpuScene->SetResident(id, true);
     }
     for (const auto id : bodies)
@@ -3335,7 +3368,7 @@ void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t id, bool preserveVelocity)
     domain.MarkInxPhyGpuTopology();
     if (entry->HasCpuBody() && domain.cpuControl)
         domain.cpuControl->Queue(id, JoltCpuControl::Remove{preserveVelocity});
-    if (entry->HasGpuBody() && m_gpuScene && m_gpuScene->FindBody(id).bodyId != UINT32_MAX)
+    if (!domain.nativeRuntime && entry->HasGpuBody() && m_gpuScene && m_gpuScene->FindBody(id).bodyId != UINT32_MAX)
         m_gpuScene->SetResident(id, false, preserveVelocity);
     if (entry->backend == Backend::StaticBoundary) {
         m_bodyActors.at(id).staticResident = false;
@@ -3349,6 +3382,10 @@ bool PhysicsWorld::IsBodyInBroadphase(uint32_t id) const
         return false;
     auto &domain = DomainForBody(id);
     const auto &entry = m_bodyActors.at(id);
+    if (domain.nativeRuntime) {
+        (void)ReadInxPhyGpuQueryPublication(domain);
+        return domain.nativeRuntime->BodyRow(0, id).has_value();
+    }
     if (entry.HasCpuBody()) {
         RunCpuControl(domain);
         return domain.cpuScene->IsBodyInBroadphase(id);
@@ -3380,69 +3417,54 @@ void PhysicsWorld::SetBodyDamping(uint32_t id, float linear, float angular)
     if (!std::isfinite(linear) || !std::isfinite(angular) || linear < 0 || angular < 0)
         throw std::invalid_argument("Damping must be finite and nonnegative");
     auto &actor = ActorForBody(id);
-    StageActorModel(
-        actor, actor,
-        [=](PreparedCpuActor &a) {
-            a.settings.mLinearDamping = linear;
-            a.settings.mAngularDamping = angular;
-        },
-        [=](PreparedGpuActor &a) {
-            a.body.damping.x = linear;
-            a.body.damping.y = angular;
-        });
+    StageActorModel(actor, actor, [=](PhysicsActorAuthoring &a) {
+        if (a.body) {
+            a.body->drag = linear;
+            a.body->angularDrag = angular;
+        }
+    });
 }
 void PhysicsWorld::SetBodyGravityFactor(uint32_t id, float factor)
 {
     if (!std::isfinite(factor))
         throw std::invalid_argument("Gravity factor must be finite");
     auto &actor = ActorForBody(id);
-    StageActorModel(
-        actor, actor, [=](PreparedCpuActor &a) { a.settings.mGravityFactor = factor; },
-        [=](PreparedGpuActor &a) { a.body.mass.w = factor; });
+    StageActorModel(actor, actor, [=](PhysicsActorAuthoring &a) {
+        if (a.body)
+            a.body->gravityFactor = factor;
+    });
 }
 void PhysicsWorld::SetBodyFriction(uint32_t id, float value)
 {
     auto &actor = ActorForBody(id);
-    StageActorModel(
-        actor, actor,
-        [=](PreparedCpuActor &a) {
-            a.settings.mFriction = value;
-            for (auto &surface : a.surfaces)
-                surface.friction = value;
-        },
-        [=](PreparedGpuActor &a) {
-            for (auto &leaf : a.geometry.leaves)
-                leaf.model.material.x = value;
-        });
+    StageActorModel(actor, actor, [=](PhysicsActorAuthoring &a) {
+        for (auto &surface : a.surfaces)
+            surface.friction = value;
+    });
 }
 void PhysicsWorld::SetBodyRestitution(uint32_t id, float value)
 {
     auto &actor = ActorForBody(id);
-    StageActorModel(
-        actor, actor,
-        [=](PreparedCpuActor &a) {
-            a.settings.mRestitution = value;
-            for (auto &surface : a.surfaces)
-                surface.restitution = value;
-        },
-        [=](PreparedGpuActor &a) {
-            for (auto &leaf : a.geometry.leaves)
-                leaf.model.material.y = value;
-        });
+    StageActorModel(actor, actor, [=](PhysicsActorAuthoring &a) {
+        for (auto &surface : a.surfaces)
+            surface.restitution = value;
+    });
 }
 void PhysicsWorld::SetBodyMaxAngularVelocity(uint32_t id, float value)
 {
     auto &actor = ActorForBody(id);
-    StageActorModel(
-        actor, actor, [=](PreparedCpuActor &a) { a.settings.mMaxAngularVelocity = value; },
-        [=](PreparedGpuActor &a) { a.body.damping.w = value; });
+    StageActorModel(actor, actor, [=](PhysicsActorAuthoring &a) {
+        if (a.body)
+            a.body->maxAngularVelocity = value;
+    });
 }
 void PhysicsWorld::SetBodyMaxLinearVelocity(uint32_t id, float value)
 {
     auto &actor = ActorForBody(id);
-    StageActorModel(
-        actor, actor, [=](PreparedCpuActor &a) { a.settings.mMaxLinearVelocity = value; },
-        [=](PreparedGpuActor &a) { a.body.damping.z = value; });
+    StageActorModel(actor, actor, [=](PhysicsActorAuthoring &a) {
+        if (a.body)
+            a.body->maxLinearVelocity = value;
+    });
 }
 void PhysicsWorld::SetBodyAllowedDOFs(uint32_t id, int allowed, float mass)
 {
@@ -3451,12 +3473,10 @@ void PhysicsWorld::SetBodyAllowedDOFs(uint32_t id, int allowed, float mass)
     if (!std::isfinite(mass) || mass <= 0)
         throw std::invalid_argument("Body mass must be positive and finite");
     auto &actor = ActorForBody(id);
-    StageActorModel(
-        actor, actor, [=](PreparedCpuActor &a) { a.settings.mAllowedDOFs = static_cast<JPH::EAllowedDOFs>(allowed); },
-        [=](PreparedGpuActor &a) {
-            a.body.mass.y = float((~allowed) & 7);
-            a.body.mass.z = float(((~allowed) >> 3) & 7);
-        });
+    StageActorModel(actor, actor, [=](PhysicsActorAuthoring &a) {
+        if (a.body)
+            a.body->constraints = (~allowed & 0x3f) << 1;
+    });
 }
 void PhysicsWorld::ValidateBodyMassProperties(const Rigidbody &body, float mass,
                                               const RigidbodyMassProperties *properties) const
@@ -4186,6 +4206,13 @@ glm::vec3 PhysicsWorld::GetBodyPrincipalInertia(uint32_t id) const
 {
     RequireOwnerThread();
     auto &domain = DomainForBody(id);
+    if (domain.nativeRuntime) {
+        const auto &state = ReadInxPhyGpuQueryPublication(domain);
+        const auto d = state.GatherMotion(0, {id}).bodies.front().inverseInertia;
+        if (glm::any(glm::lessThanEqual(d, glm::vec3(0))))
+            throw std::logic_error("Rigidbody has no accepted positive principal inertia");
+        return glm::vec3(1.0f) / d;
+    }
     if (ReadBodyBackend(domain, id) == Backend::Cpu) {
         RunCpuControl(domain);
         const auto d = domain.cpuScene->GetAcceptedMass(id).inverse.Reciprocal();
@@ -4202,6 +4229,8 @@ glm::quat PhysicsWorld::GetBodyPrincipalInertiaRotation(uint32_t id) const
 {
     RequireOwnerThread();
     auto &domain = DomainForBody(id);
+    if (domain.nativeRuntime)
+        return ReadInxPhyGpuQueryPublication(domain).GatherMotion(0, {id}).bodies.front().inertiaFrame;
     if (ReadBodyBackend(domain, id) == Backend::Cpu) {
         RunCpuControl(domain);
         const auto q = domain.cpuScene->GetAcceptedMass(id).axes;
@@ -4495,9 +4524,14 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
         const auto &actor = store.GetActor(binding.actor);
         if (!actor.bodyInBroadphase)
             continue;
-        auto author = PhysicsActorAuthoring::Capture(actor);
+        auto author = binding.nativeAuthor ? std::optional<PhysicsActorAuthoring>(*binding.nativeAuthor)
+                                           : PhysicsActorAuthoring::Capture(actor);
         if (!author)
             return nullptr;
+        if (binding.staticModel) {
+            author->position = binding.staticModel->position;
+            author->rotation = binding.staticModel->rotation;
+        }
         const auto bodyTarget = author->body ? author->body->target : PhysicsTargetReference{};
         auto prepared = PrepareInxPhyGpuSceneActor(std::move(*author));
         rowById.emplace(id, static_cast<uint32_t>(actors.size()));
@@ -5620,6 +5654,8 @@ PhysicsWorld::Backend PhysicsWorld::ReadBodyBackend(PhysicsDomain &domain, uint3
     if (!registration)
         throw std::invalid_argument("Physics body identity is invalid or retired");
 
+    if (domain.nativeRuntime)
+        return Backend::Gpu;
     if (domain.stepPending && !domain.stepCompleted)
         const_cast<PhysicsWorld *>(this)->CompleteDomainStep(domain);
     if (IsFixedPublicationHeld(domain)) {

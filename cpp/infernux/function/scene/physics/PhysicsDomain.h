@@ -182,6 +182,7 @@ struct PhysicsDomain final
     std::shared_ptr<const physics::inxphygpu::InxPhyGpuFixedPublication> nativeFixedPublication;
     std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeRuntime;
     std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeTopology;
+    std::vector<std::pair<uint32_t, uint64_t>> nativeTopologyActors;
     bool nativeBodyLayoutDirty = false;
     struct InxPhyGpuEdit
     {

@@ -216,7 +216,7 @@ std::optional<PhysicsActorAuthoring> PhysicsActorAuthoring::Capture(const Physic
                                                 body->GetMaxLinearVelocity(),
                                                 body->GetMaxAngularVelocity(),
                                                 body->IsKinematic(),
-                                                body->GetUseGravity()};
+                                                body->GetUseGravity() ? 1.0f : 0.0f};
         const auto &properties = body->GetAuthoredMassProperties();
         // A prescribed non-convex boundary needs no dynamic inertia.
         if (!result.body->kinematic || properties || !result.shape->MustBeStatic())

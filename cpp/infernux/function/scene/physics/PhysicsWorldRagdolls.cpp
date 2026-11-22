@@ -147,7 +147,8 @@ bool PhysicsWorld::HasRagdollAssembly(uint64_t id) const
             body->GetParticipatingBodyId() != member.bodyId)
             return false;
         const auto *registration = FindBodyRegistration(member.bodyId);
-        if (!registration || (registration->backend == Backend::Gpu && !view.domain->gpuRegistered))
+        if (!registration ||
+            (registration->backend == Backend::Gpu && !view.domain->nativeRuntime && !view.domain->gpuRegistered))
             return false;
         if (member.jointId) {
             auto *joint = dynamic_cast<Joint *>(member.joint.GetComponent());

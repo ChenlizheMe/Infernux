@@ -39,7 +39,7 @@ struct InxPhyGpuSceneActor
     glm::vec3 angularVelocity{0.0f};      // World axes.
     std::optional<PreparedBodyMass> mass; // Authored or geometry-derived dynamic tensor.
     bool kinematic = false;
-    bool useGravity = true;
+    float gravityFactor = 1.0f;
     std::vector<InxPhyGpuSceneCollider> colliders;
     ModelRigidMotion motion;
     glm::vec3 scale{1.0f};

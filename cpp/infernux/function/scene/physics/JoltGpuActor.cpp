@@ -79,7 +79,7 @@ PreparedGpuActor PrepareJoltGpuActor(PhysicsActorAuthoring actor, uint32_t bodyS
         }
         prepared.body.mass.y = float((body->constraints >> 1) & 7);
         prepared.body.mass.z = float((body->constraints >> 4) & 7);
-        prepared.body.mass.w = body->useGravity ? 1.0f : 0.0f;
+        prepared.body.mass.w = body->gravityFactor;
         prepared.body.damping = {body->drag, body->angularDrag, body->maxLinearVelocity, body->maxAngularVelocity};
         const auto detection = static_cast<CollisionDetectionMode>(body->collisionDetectionMode);
         if (motion == JPH::GPU::MotionDynamic && detection != CollisionDetectionMode::Discrete) {

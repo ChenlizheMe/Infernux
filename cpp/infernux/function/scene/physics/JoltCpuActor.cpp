@@ -138,7 +138,7 @@ PreparedCpuActor PrepareJoltCpuActor(PhysicsActorAuthoring actor)
         settings.mAngularDamping = body->angularDrag;
         settings.mMaxLinearVelocity = body->maxLinearVelocity;
         settings.mMaxAngularVelocity = body->maxAngularVelocity;
-        settings.mGravityFactor = body->useGravity ? 1.0f : 0.0f;
+        settings.mGravityFactor = body->gravityFactor;
 
         if (const auto &linear = prepared.publication.linearVelocity; !frozen && linear)
             settings.mLinearVelocity = JPH::Vec3(linear->x, linear->y, linear->z);
