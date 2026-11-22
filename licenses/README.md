@@ -20,7 +20,6 @@ SignPath 的服务署名、适用范围和签名流程见 [英文政策](signing
 | SDL | [LICENSE](../external/sdl_for_infernux/LICENSE.txt) |
 | Assimp | [LICENSE](../external/assimp/LICENSE) |
 | Jolt Physics | [LICENSE](../external/joltphysics_for_infernux/LICENSE) |
-| 引擎 GPU 物理中的 Jolt fork 源码 | [迁出位置](../cpp/infernux/function/scene/physics/gpu) · [Jolt fork 源码基线](https://github.com/InfernuxEngine/joltphysics_for_infernux/tree/2a8536648c1aa4b740ca2abca54ca84f68890686/Jolt/GPU) · [MIT](../external/joltphysics_for_infernux/LICENSE) |
 | Dear ImGui | [LICENSE](../external/imgui_for_infernux/LICENSE.txt) |
 | GLM | [copying.txt](../external/glm/copying.txt) |
 | Slang | [LICENSE](../external/slang_for_infernux/LICENSE)、[原始授权文本](../external/slang_for_infernux/LICENSES)；编译器与配套标准模块按固定源码一起分发 |

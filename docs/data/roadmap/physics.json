@@ -6,7 +6,7 @@
       "en": "RIGID BODIES",
       "zh": "刚体",
       "leaves": [
-        ["Jolt GPU rigid-body integration","Jolt GPU 刚体集成","live"],
+        ["inxphyGPU rigid-body integration","inxphyGPU 刚体集成","live"],
         ["Full GPU collider coverage","完整 GPU 碰撞体支持","planned"],
         ["Rigidbody axis constraints","刚体轴向约束","planned"],
         ["Vehicles","载具","future"],
