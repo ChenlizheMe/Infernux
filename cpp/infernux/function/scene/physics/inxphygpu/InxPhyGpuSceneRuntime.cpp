@@ -505,7 +505,8 @@ std::optional<InxPhyGpuFixedPublication> InxPhyGpuSceneRuntime::TakeInitial()
 void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,
                                        const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host,
                                        bool captureContacts, const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
-                                       PublicationConsumer consumer, std::vector<PhysicsFixedInputs> fixedInputs)
+                                       PublicationConsumer consumer, std::vector<PhysicsFixedInputs> fixedInputs,
+                                       const std::vector<InxPhyGpuSceneImpulseBatch> &deviceImpulses)
 {
     if (captureContacts && !m_contactReportsConfigured)
         throw std::logic_error("inxphygpu scene was prepared without contact report storage");
@@ -551,6 +552,25 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
     std::vector<InxPhyGpuJointParameterUpdate> updates;
     std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
     EncodeJointUpdates(jointUpdates, updates, poses);
+    std::vector<InxPhyGpuDeviceImpulseBatch> impulses;
+    impulses.reserve(deviceImpulses.size());
+    for (const auto &batch : deviceImpulses) {
+        if (batch.bodyIds.empty())
+            continue;
+        const auto world = m_layout->WorldRow(batch.worldId);
+        auto input = batch.input;
+        if (input.buffer)
+            input.buffer = input.buffer->Freeze();
+        InxPhyGpuDeviceImpulseBatch rows{world, batch.substep, {}, std::move(input)};
+        rows.bodies.reserve(batch.bodyIds.size());
+        for (const auto id : batch.bodyIds) {
+            const auto row = worlds[world].BodyRow(id);
+            if (!row)
+                throw std::invalid_argument("inxphygpu impulse batch requires enrolled body identities");
+            rows.bodies.push_back(*row);
+        }
+        impulses.push_back(std::move(rows));
+    }
     BeginOperation({std::move(identities),
                     std::move(actions),
                     std::move(updates),
@@ -562,7 +582,8 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
                     std::move(poses),
                     {},
                     {},
-                    std::move(velocities)});
+                    std::move(velocities),
+                    std::move(impulses)});
 }
 
 void InxPhyGpuSceneRuntime::EncodeJointUpdates(const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
@@ -1054,11 +1075,13 @@ bool InxPhyGpuSceneRuntime::Advance(bool gpu, uint64_t token)
         m_preservation = std::move(prepared.copy);
     } else if (m_operation->integrate) {
         const auto output = m_operation->host ? InxPhyGpuBodyPublication::Cpu : InxPhyGpuBodyPublication::Status;
-        m_packet = m_step->PrepareControlled(m_operation->commands, output, {}, m_operation->captureContacts,
-                                             m_operation->jointUpdates, m_operation->fixedInputs);
+        m_packet =
+            m_step->PrepareControlled(m_operation->commands, output, {}, m_operation->captureContacts,
+                                      m_operation->jointUpdates, m_operation->fixedInputs, m_operation->deviceImpulses);
         m_packetKind = Packet::Fixed;
         m_operation->commands.clear();
         m_operation->jointUpdates.clear();
+        m_operation->deviceImpulses.clear();
     } else if (m_operation->commands.empty() && m_operation->jointUpdates.empty()) {
         auto result = CapturePublication(m_step->BodyStates()->GetLastWriteSubmission());
         result.worlds = m_acceptedWorlds;

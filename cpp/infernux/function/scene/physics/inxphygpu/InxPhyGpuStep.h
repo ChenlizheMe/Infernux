@@ -264,6 +264,14 @@ struct InxPhyGpuJointParameterUpdate
     std::array<uint32_t, 2> dynamicEndpoints{NoModelIndex, NoModelIndex};
 };
 
+// Six float32 values per body: a world-space impulse and angular impulse.
+struct InxPhyGpuDeviceImpulseBatch
+{
+    uint32_t world, substep;
+    std::vector<uint32_t> bodies;
+    PhysicsDeviceBufferRange input;
+};
+
 enum class InxPhyGpuBodyPublication
 {
     None,
@@ -349,7 +357,8 @@ class InxPhyGpuStep
     PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, InxPhyGpuBodyPublication publication,
                       std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false,
                       std::vector<InxPhyGpuJointParameterUpdate> jointUpdates = {},
-                      const std::vector<PhysicsFixedInputs> &fixedInputs = {}) const;
+                      const std::vector<PhysicsFixedInputs> &fixedInputs = {},
+                      const std::vector<InxPhyGpuDeviceImpulseBatch> &deviceImpulses = {}) const;
 
     /// Absolute edits and impulses publish new poses at the current fixed time.
     /// Time-dependent force and movement commands are admitted by the fixed step.
@@ -425,7 +434,7 @@ class InxPhyGpuStep
     {
         BodyCommandStreams streams;
         std::shared_ptr<rhi::ComputeBuffer> states, activity, pendingWrenches;
-        rhi::ComputeDispatchDesc apply, edit, finish, pose, publish, publishWithStatus;
+        rhi::ComputeDispatchDesc apply, edit, finish, pose, publish, publishWithStatus, deviceImpulse;
         std::vector<uint8_t> motion;
         uint32_t worlds = 0;
     };
@@ -460,8 +469,17 @@ class InxPhyGpuStep
                     uint32_t substeps) const;
     };
 
+    struct SubstepImpulseWork
+    {
+        uint32_t substep;
+        rhi::ComputeDispatchDesc dispatch;
+    };
     void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, std::vector<rhi::ComputeReplayRange> &,
-                         uint32_t spans, bool captureContacts, const BodyCommandStreams &streams) const;
+                         uint32_t spans, bool captureContacts, const BodyCommandStreams &streams,
+                         std::vector<SubstepImpulseWork> impulses = {}) const;
+    [[nodiscard]] std::vector<SubstepImpulseWork>
+    PrepareDeviceImpulses(const std::vector<InxPhyGpuDeviceImpulseBatch> &, std::vector<InxPhyGpuBodyCommand> &,
+                          std::vector<rhi::ComputeBufferUpdate> &) const;
     [[nodiscard]] const BodyCommandStreams &BodyCommandStorage(size_t count) const;
     void BindBodyCommandStreams(rhi::ComputeDispatchDesc &dispatch, const BodyCommandStreams &streams,
                                 uint32_t commands, uint32_t spans) const;

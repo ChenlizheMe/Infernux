@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstring>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
@@ -1920,7 +1921,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             b.Dispatch("sleep", "restore_scene_activity", nb,
                        {{34, activity, RW}, {27, dimensions, R}, {32, backup, R}, {33, response->status, R}});
     }
-    ComputeWorkDispatch applyCommands, editCommands, finishCommands, publishPose, publishBodies,
+    ComputeWorkDispatch applyCommands, editCommands, finishCommands, deviceImpulse, publishPose, publishBodies,
         publishBodiesWithStatus;
     const auto firstBodyPublication = b.initialize.size();
     if (controlSlots) {
@@ -1939,6 +1940,15 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         commandBindings.insert(commandBindings.end(), {{8, force, RW}, {11, saved, W}, {22, fixedSizes, R}});
         applyCommands = b.Bind("body_controls", sceneDynamics ? "apply_scene_body_commands" : "apply_body_commands",
                                bodyCommandCapacity, commandBindings);
+        deviceImpulse = b.Dispatch("body_controls", "apply_device_body_impulses", 1,
+                                   {{0, dimensions, R},
+                                    {1, bodies, R},
+                                    {2, joints, R},
+                                    {5, positions, R},
+                                    {6, velocities, RW},
+                                    {23, activity, RW},
+                                    {29, spans, R},
+                                    {30, commands, R}});
         if (multiple)
             drive = b.Dispatch("body_controls", "advance_commanded_substep", bodyCommandCapacity,
                                {{0, dimensions, R},
@@ -2158,6 +2168,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         controls.apply = BindDispatch(std::move(applyCommands), buffers);
         controls.edit = BindDispatch(std::move(editCommands), buffers);
         controls.finish = BindDispatch(std::move(finishCommands), buffers);
+        controls.deviceImpulse = BindDispatch(std::move(deviceImpulse), buffers);
         if (publishPose.kernel)
             controls.pose = BindDispatch(std::move(publishPose), buffers);
         controls.publish = BindDispatch(std::move(publishBodies), buffers);
@@ -2241,7 +2252,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuStep::Prepare(bool publish,
 
 void InxPhyGpuStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispatches,
                                     std::vector<rhi::ComputeReplayRange> &replays, uint32_t spans, bool captureContacts,
-                                    const BodyCommandStreams &streams) const
+                                    const BodyCommandStreams &streams, std::vector<SubstepImpulseWork> impulses) const
 {
     auto drive = m_substeps.drive;
     const bool driving = spans != 0 && drive.kernel;
@@ -2253,11 +2264,16 @@ void InxPhyGpuStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispa
     const bool reporting = captureContacts && m_reports.records;
     const auto numericalDispatches = m_work->GetRecipe().GetDispatches().size();
     const auto width = numericalDispatches + driving + reporting + (driving || reporting);
-    dispatches.reserve(dispatches.size() + m_substeps.count * width + 2);
+    dispatches.reserve(dispatches.size() + m_substeps.count * width + impulses.size() + 2);
     replays.reserve(m_substeps.count);
+    auto impulse = impulses.begin();
     for (uint32_t substep = 0; substep < m_substeps.count; ++substep) {
         if (driving)
             dispatches.push_back(drive);
+        while (impulse != impulses.end() && impulse->substep == substep) {
+            dispatches.push_back(std::move(impulse->dispatch));
+            ++impulse;
+        }
         replays.push_back({dispatches.size(), numericalDispatches, m_fixedReplay});
         m_work->AppendDispatches(dispatches);
         if (reporting)
@@ -2603,11 +2619,75 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
             rayCount};
 }
 
+std::vector<InxPhyGpuStep::SubstepImpulseWork>
+InxPhyGpuStep::PrepareDeviceImpulses(const std::vector<InxPhyGpuDeviceImpulseBatch> &batches,
+                                     std::vector<InxPhyGpuBodyCommand> &commands,
+                                     std::vector<rhi::ComputeBufferUpdate> &uploads) const
+{
+    if (batches.empty())
+        return {};
+
+    std::set<std::pair<uint32_t, uint32_t>> savedBodies;
+    for (const auto &command : commands)
+        savedBodies.emplace(command.world, command.body);
+    auto host = m_work->GetRecipe().GetHost();
+    std::vector<SubstepImpulseWork> work;
+    work.reserve(batches.size());
+    for (const auto &batch : batches) {
+        if (batch.bodies.empty())
+            continue;
+        const auto &input = batch.input;
+        const auto bytes = batch.bodies.size() * 6 * uint64_t{sizeof(float)};
+        const auto end = input.buffer ? std::min(input.byteEnd, input.buffer->GetByteSize()) : 0u;
+        if (!input.buffer || !host.SharesServicesWith(input.buffer->GetHost()) ||
+            input.buffer->GetDesc().scalarType != ComputeScalarType::Float32 || input.buffer->GetDesc().lanes != 1 ||
+            input.byteOffset % sizeof(float) != 0 || input.byteOffset > end || bytes > end - input.byteOffset ||
+            (input.byteOffset + bytes) / sizeof(float) > UINT32_MAX)
+            throw std::invalid_argument("inxphygpu device impulses require six consecutive floats per body");
+        if (batch.world >= m_controls.worlds || batch.substep >= m_substeps.count)
+            throw std::invalid_argument("inxphygpu device impulses require an enrolled world and fixed substep");
+
+        uint32_t first = static_cast<uint32_t>(input.byteOffset / sizeof(float));
+        std::set<uint32_t> addressed;
+        std::vector<ModelWords> rows;
+        rows.reserve(batch.bodies.size());
+        for (const auto body : batch.bodies) {
+            if (body >= m_controls.motion.size() || m_controls.motion[body] != DynamicControl ||
+                !addressed.insert(body).second)
+                throw std::invalid_argument("inxphygpu device impulse batch requires distinct dynamic bodies");
+            rows.push_back({batch.world, body, first, 0});
+            first += 6;
+            // Record the original motion so a rejected step also rolls back impulse-only bodies.
+            if (savedBodies.emplace(batch.world, body).second)
+                commands.push_back({batch.world, body, InxPhyGpuBodyCommandKind::ApplyPendingWrench});
+        }
+        using Usage = rhi::BufferUsageFlags;
+        auto indices = std::make_shared<rhi::ComputeBuffer>(
+            host, rhi::ComputeBufferDesc{rows.size() * 4, ComputeScalarType::UInt32, 1,
+                                         Usage::Storage | Usage::TransferDestination});
+        rhi::ComputeBufferUpdate upload{indices, 0, std::vector<uint8_t>(indices->GetByteSize())};
+        std::memcpy(upload.data.data(), rows.data(), upload.data.size());
+        uploads.push_back(std::move(upload));
+        auto dispatch = m_controls.deviceImpulse;
+        dispatch.buffers[6] = std::move(indices);
+        dispatch.buffers[7] = input.buffer;
+        dispatch.proof->reads[6] = {6, 0, dispatch.buffers[6]->GetByteSize()};
+        dispatch.proof->reads[7] = {7, input.byteOffset, bytes};
+        dispatch.groupCountX = (static_cast<uint32_t>(rows.size()) - 1) / 64 + 1;
+        LinearGrid(dispatch);
+        work.push_back({batch.substep, std::move(dispatch)});
+    }
+    std::stable_sort(work.begin(), work.end(),
+                     [](const auto &left, const auto &right) { return left.substep < right.substep; });
+    return work;
+}
+
 std::shared_ptr<rhi::PreparedComputeBatch>
 InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, InxPhyGpuBodyPublication publication,
                                  std::vector<rhi::ComputeBufferUpdate> updates, bool captureContacts,
                                  std::vector<InxPhyGpuJointParameterUpdate> jointUpdates,
-                                 const std::vector<PhysicsFixedInputs> &fixedInputs) const
+                                 const std::vector<PhysicsFixedInputs> &fixedInputs,
+                                 const std::vector<InxPhyGpuDeviceImpulseBatch> &deviceImpulses) const
 {
     if (!m_controls.states)
         throw std::logic_error("inxphygpu step has no rigid body control layout");
@@ -2617,13 +2697,14 @@ InxPhyGpuStep::PrepareControlled(std::vector<InxPhyGpuBodyCommand> commands, Inx
         m_fixedInputs.Append(updates, fixedInputs, m_substeps.count);
     }
     AppendJointEdits(updates, std::move(jointUpdates));
+    auto impulseWork = PrepareDeviceImpulses(deviceImpulses, commands, updates);
     if (commands.empty() && publication == InxPhyGpuBodyPublication::None && !captureContacts)
         return Prepare(false, std::move(updates));
     auto dispatches = m_substeps.begin;
     std::vector<rhi::ComputeReplayRange> replays;
     const auto &streams = BodyCommandStorage(commands.size());
     const auto spanCount = AppendBodyCommands(std::move(commands), true, streams, updates, dispatches);
-    AppendFixedWork(dispatches, replays, spanCount, captureContacts, streams);
+    AppendFixedWork(dispatches, replays, spanCount, captureContacts, streams, std::move(impulseWork));
     if (spanCount != 0) {
         auto finish = m_controls.finish;
         BindBodyCommandStreams(finish, streams, 0, spanCount);

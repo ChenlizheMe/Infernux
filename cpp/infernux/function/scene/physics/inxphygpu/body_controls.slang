@@ -73,6 +73,8 @@ struct SavedMotion
 [[vk::binding(25, 0)]] StructuredBuffer<float> previousWrenches;
 [[vk::binding(26, 0)]] StructuredBuffer<uint4> motionSeedRows;
 [[vk::binding(28, 0)]] RWStructuredBuffer<uint4> motionSeedOutput;
+[[vk::binding(29, 0)]] StructuredBuffer<uint4> impulseRows;
+[[vk::binding(30, 0)]] StructuredBuffer<float> deviceImpulses;
 
 float4 conjugate(float4 rotation)
 {
@@ -209,6 +211,40 @@ void import_pending_wrenches(uint3 id : SV_DispatchThreadID)
                                              previousWrenches[source + 2]));
     store3(pendingWrenches, row * 6 + 3, float3(previousWrenches[source + 3], previousWrenches[source + 4],
                                                  previousWrenches[source + 5]));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void apply_device_body_impulses(uint3 id : SV_DispatchThreadID)
+{
+    const uint index = linearWorkIndex<64>(id);
+    uint count, stride;
+    impulseRows.GetDimensions(count, stride);
+    if (index >= count)
+        return;
+
+    const uint4 row = impulseRows[index];
+    const ModelDimensions size = model[0];
+    const BodyModel body = bodies[row.y];
+    const uint2 offset = freeAddresses(size, body, row.x);
+    const Pose pose = loadOrigin(offset.x);
+    const float4 axes = mulQuat(pose.rotation, body.inertialRotation);
+    const float3 impulse = float3(deviceImpulses[row.z], deviceImpulses[row.z + 1], deviceImpulses[row.z + 2]);
+    const float3 spinImpulse = float3(deviceImpulses[row.z + 3], deviceImpulses[row.z + 4], deviceImpulses[row.z + 5]);
+    const float3 linear = projectSceneAxes(impulse, body.subtree.w) / body.inertiaMass.w;
+    const float3 angular =
+        projectSceneAxes(rotateVector(rotateVector(spinImpulse, conjugate(axes)) / body.inertiaMass.xyz, axes),
+                         body.subtree.w >> 3u);
+    if (all(linear == 0.0) && all(angular == 0.0))
+        return;
+
+    store3(qvel, offset.y, load3(qvel, offset.y) + linear - cross(angular, centerOffset(body, pose)));
+    store3(qvel, offset.y + 3, load3(qvel, offset.y + 3) + rotateVector(angular, conjugate(pose.rotation)));
+    const uint activityRow = row.x * size.state.z + row.y;
+    SceneBodyActivity activity = bodyActivity[activityRow];
+    activity.group = NoIndex;
+    activity.marker = 0;
+    bodyActivity[activityRow] = activity;
 }
 
 void applyDynamic<let Integrate : bool, let SceneLimits : bool>(uint index, uint4 span, ModelDimensions size,

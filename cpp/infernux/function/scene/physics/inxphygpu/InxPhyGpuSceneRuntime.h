@@ -85,6 +85,14 @@ struct InxPhyGpuSceneBodyCommand
     PhysicsBodyCommand command;
 };
 
+struct InxPhyGpuSceneImpulseBatch
+{
+    uint64_t worldId;
+    uint32_t substep;
+    std::vector<uint32_t> bodyIds;
+    PhysicsDeviceBufferRange input;
+};
+
 struct InxPhyGpuFixedWorld
 {
     ContactStreamIdentity identity; // Identity of the state in bodyStates, even when the attempted step was rejected.
@@ -231,7 +239,8 @@ class InxPhyGpuSceneRuntime final
     void BeginFixed(std::vector<ContactStreamIdentity> identities,
                     const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host, bool captureContacts = false,
                     const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {},
-                    std::vector<PhysicsFixedInputs> fixedInputs = {});
+                    std::vector<PhysicsFixedInputs> fixedInputs = {},
+                    const std::vector<InxPhyGpuSceneImpulseBatch> &deviceImpulses = {});
     /// Apply world-scoped body and joint edits at each world's accepted simulation time.
     /// Forces and kinematic targets wait for the next accepted fixed step, while
     /// pose edits publish immediately. Joint changes wake their endpoints on integration.
@@ -296,6 +305,7 @@ class InxPhyGpuSceneRuntime final
         std::vector<std::pair<uint32_t, uint32_t>> pendingWrenchRows{};
         std::shared_ptr<const InxPhyGpuSceneKinematicTargets> kinematicTargets{};
         std::vector<std::pair<uint32_t, uint32_t>> kinematicVelocityRows{};
+        std::vector<InxPhyGpuDeviceImpulseBatch> deviceImpulses{};
     };
     struct Receipt
     {
