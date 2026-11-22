@@ -121,7 +121,7 @@ struct ContactEvent
     glm::vec3 relativeVelocity{0.0f};
     // Signed normal separation of this representative captured point, in
     // metres: negative overlap, positive speculative gap. NaN on Exit or when
-    // the native capture did not provide geometric witnesses (CPU CCD).
+    // the solver reports an impact without a separation sample.
     float contactSeparation = std::numeric_limits<float>::quiet_NaN();
 };
 

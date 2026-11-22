@@ -68,7 +68,7 @@ inline RigidbodyConstraints operator~(RigidbodyConstraints a)
     return static_cast<RigidbodyConstraints>(~static_cast<int>(a));
 }
 
-/// Collision algorithms actually supported by the Jolt backend.
+/// Collision detection modes for scene rigidbodies.
 enum class CollisionDetectionMode : int
 {
     Discrete = 0,

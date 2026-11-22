@@ -3,18 +3,9 @@
 
 #include "model.slang"
 #include "contact.slang"
+#include "contact_report_layout.slang"
 #include "constraint_data.slang"
 #include "prescribed_motion.slang"
-
-struct ContactReport
-{
-    float4 pointSeparation;
-    float4 normal;
-    float4 relativeVelocity;
-    float4 impulse;
-    uint4 endpoints; // Geometry A/B and their respective subshapes.
-    uint4 identity; // Feature, trigger, solved impulse, padding.
-};
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint4> settings;
 [[vk::binding(1, 0)]] StructuredBuffer<Contact> contacts;
@@ -28,6 +19,7 @@ struct ContactReport
 [[vk::binding(9, 0)]] RWStructuredBuffer<ContactReport> reports;
 [[vk::binding(11, 0)]] StructuredBuffer<PrescribedMotion> prescribed;
 [[vk::binding(12, 0)]] StructuredBuffer<uint> fixedSteps;
+[[vk::binding(13, 0)]] StructuredBuffer<ContactReport> sweptReports;
 
 float3 pointSpeed<let HasPrescribed : bool, let Multiple : bool>(uint geometry, uint world, float3 point)
 {
@@ -52,16 +44,16 @@ float3 pointSpeed<let HasPrescribed : bool, let Multiple : bool>(uint geometry, 
 void reportContacts<let HasPrescribed : bool, let Multiple : bool>(uint3 id)
 {
     const uint4 limits = settings[0];
-    const uint count = stepStatus[id.y] == 0u ? min(counts[id.y], limits.y) : 0u;
+    const bool accepted = stepStatus[id.y] == 0u;
+    const uint count = accepted ? min(counts[id.y], limits.y) : 0u;
+    uint worlds, bufferStride;
+    counts.GetDimensions(worlds, bufferStride);
     uint output = id.y;
     if (Multiple)
-    {
-        uint worlds, stride;
-        counts.GetDimensions(worlds, stride);
         output += fixedSteps[worlds] * worlds;
-        if (id.x == 0)
-            stepStatus[worlds + output] = count;
-    }
+    const uint stride = limits.y + ((settings[1].w & SceneCcdReportFlag) != 0u ? SceneCcdMaxImpacts : 0u);
+    if (id.x == 0)
+        stepStatus[worlds + output] = count;
     if (id.x >= count)
         return;
 
@@ -84,7 +76,7 @@ void reportContacts<let HasPrescribed : bool, let Multiple : bool>(uint3 id)
     const float3 relative = pointSpeed<HasPrescribed, Multiple>(source.geometry.y, id.y, point) -
                             pointSpeed<HasPrescribed, Multiple>(source.geometry.x, id.y, point);
     const float dt = asfloat(settings[2 + id.y].x);
-    reports[output * limits.y + id.x] = {source.positionDistance, float4(source.normalMargin.xyz, 0.0), float4(relative, 0.0),
+    reports[output * stride + id.x] = {source.positionDistance, float4(source.normalMargin.xyz, 0.0), float4(relative, 0.0),
                       float4(dt * force, 0.0), uint4(source.geometry.xy, source.identity.zw),
                       uint4(source.identity.x, uint(trigger), uint(span.y != 0u), 0u)};
 }
@@ -115,4 +107,35 @@ void capture_contact_substep(uint3 id : SV_DispatchThreadID)
 void capture_controlled_contact_substep(uint3 id : SV_DispatchThreadID)
 {
     reportContacts<true, true>(id);
+}
+
+void appendSweptReports<let Multiple : bool>(uint3 id)
+{
+    if (stepStatus[id.y] != 0u)
+        return;
+    uint worlds, bufferStride;
+    counts.GetDimensions(worlds, bufferStride);
+    const uint output = id.y + (Multiple ? fixedSteps[worlds] * worlds : 0u);
+    const uint capacity = settings[0].y;
+    const uint count = min(counts[id.y], capacity);
+    const uint sweptBase = id.y * (SceneCcdMaxImpacts + 1u);
+    const uint sweptCount = sweptReports[sweptBase].identity.x;
+    if (id.x == 0)
+        stepStatus[worlds + output] = count + sweptCount;
+    if (id.x < sweptCount)
+        reports[output * (capacity + SceneCcdMaxImpacts) + count + id.x] = sweptReports[sweptBase + 1u + id.x];
+}
+
+[shader("compute")]
+[numthreads(SceneCcdMaxImpacts, 1, 1)]
+void append_swept_contact_reports(uint3 id : SV_DispatchThreadID)
+{
+    appendSweptReports<false>(id);
+}
+
+[shader("compute")]
+[numthreads(SceneCcdMaxImpacts, 1, 1)]
+void append_swept_contact_substep(uint3 id : SV_DispatchThreadID)
+{
+    appendSweptReports<true>(id);
 }

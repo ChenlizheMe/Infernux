@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "InxPhyGpuContactPublication.h"
+#include "contact_report_layout.slang"
+
+#include <limits>
 
 namespace infernux::physics::inxphygpu
 {
@@ -31,9 +34,11 @@ DecodeInxPhyGpuContactFrame(std::vector<InxPhyGpuContactReport> reports,
         if (!policy.Observes(a.SurfaceKey(), b.SurfaceKey(), trigger))
             continue;
         result.manifolds.push_back({std::move(a), std::move(b), trigger, result.points.size(), 1});
+        const float separation = (report.identity[3] & ContactReportUnknownSeparation) != 0
+                                     ? std::numeric_limits<float>::quiet_NaN()
+                                     : report.pointSeparation[3];
         result.points.push_back({xyz(report.pointSeparation), xyz(report.normal), xyz(report.relativeVelocity),
-                                 xyz(report.impulse), report.identity[0], report.identity[2] != 0,
-                                 report.pointSeparation[3]});
+                                 xyz(report.impulse), report.identity[0], report.identity[2] != 0, separation});
     }
     return result;
 }

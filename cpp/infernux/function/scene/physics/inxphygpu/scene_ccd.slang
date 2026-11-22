@@ -5,11 +5,11 @@
 #include "box_contacts.slang"
 #include "collision_pair_rules.slang"
 #include "contact_publish.slang"
+#include "contact_report_layout.slang"
 #include "prescribed_motion.slang"
 #include "scene_motion.slang"
 
 static const uint CcdLanes = 8;
-static const uint MaxImpacts = 32;
 
 struct SweepMotion
 {
@@ -21,12 +21,14 @@ struct SweepMotion
 
 [[vk::binding(8, 0)]] StructuredBuffer<ModelDimensions> ccdModel;
 [[vk::binding(9, 0)]] StructuredBuffer<BodyModel> ccdBodies;
-[[vk::binding(10, 0)]] StructuredBuffer<uint4> ccdRows; // qpos, qvel, mode, inner radius.
+// First row holds dt, threshold, minimum rebound speed, filter parents.
+// Body rows hold qpos, qvel, mode and inner radius.
+[[vk::binding(10, 0)]] StructuredBuffer<uint4> ccdTable;
 [[vk::binding(11, 0)]] RWStructuredBuffer<float> ccdPositions;
 [[vk::binding(12, 0)]] RWStructuredBuffer<float> ccdVelocities;
 [[vk::binding(13, 0)]] StructuredBuffer<Pose> ccdStart;
 [[vk::binding(14, 0)]] RWStructuredBuffer<SweepMotion> ccdMotion;
-[[vk::binding(15, 0)]] StructuredBuffer<uint4> ccdSettings; // dt, threshold, minimum rebound speed, filter parents.
+[[vk::binding(15, 0)]] RWStructuredBuffer<ContactReport> ccdReports;
 [[vk::binding(16, 0)]] StructuredBuffer<uint> ccdContactStatus;
 [[vk::binding(17, 0)]] StructuredBuffer<GeomModel> ccdGeoms;
 [[vk::binding(18, 0)]] StructuredBuffer<PrescribedMotion> ccdPrescribed;
@@ -54,6 +56,11 @@ float4 inverseRotation(float4 rotation)
     return float4(rotation.x, -rotation.yzw);
 }
 
+uint4 ccdBodyRow(uint index)
+{
+    return ccdTable[index + 1u];
+}
+
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void prepare_scene_ccd(uint3 id : SV_DispatchThreadID)
@@ -64,10 +71,10 @@ void prepare_scene_ccd(uint3 id : SV_DispatchThreadID)
     const uint index = id.y * size.state.z + id.x;
     const BodyModel body = ccdBodies[id.x];
     const Pose old = ccdStart[index];
-    const float dt = asfloat(ccdSettings[0].x);
+    const float dt = asfloat(ccdTable[0].x);
     SweepMotion motion = {float4(old.position.xyz + rotateVector(body.inertialPosition.xyz, old.rotation), 0.0),
                           old.rotation, float4(0.0), float4(0.0)};
-    const uint4 row = ccdRows[id.x];
+    const uint4 row = ccdBodyRow(id.x);
     if (row.x != NoIndex)
     {
         const uint p = id.y * size.state.x + row.x;
@@ -112,14 +119,14 @@ ShapeCastHit earliestLaneImpact(uint world, uint lane, float duration, bool thre
 {
     const ModelDimensions size = ccdModel[0];
     const uint base = world * size.state.z;
-    const uint4 settings = ccdSettings[0];
+    const uint4 settings = ccdTable[0];
     ShapeCastHit result = {float4(0, 0, 0, duration), uint4(NoIndex), float4(0.0)};
     const ConvexPolytope workspace = castWorkspace(world * CcdLanes + lane);
     for (uint first = lane; first < size.layout.x; first += CcdLanes)
     {
         const uint4 firstGeometry = ccdGeoms[first].indices;
         const uint a = firstGeometry.x;
-        const uint4 source = ccdRows[a];
+        const uint4 source = ccdBodyRow(a);
         if (source.z == 0 || (ccdRules[first].z & 2u) != 0)
             continue;
         const SweepMotion motion = ccdMotion[base + a];
@@ -135,7 +142,7 @@ ShapeCastHit earliestLaneImpact(uint world, uint lane, float duration, bool thre
             const uint b = secondGeometry.x;
             if (a == b || (ccdRules[second].z & 2u) != 0)
                 continue;
-            const uint4 target = ccdRows[b];
+            const uint4 target = ccdBodyRow(b);
             if (target.x != NoIndex && max(source.z, target.z) < 2u)
                 continue;
             const CollisionPairRule rule = collisionRule(
@@ -151,7 +158,7 @@ ShapeCastHit earliestLaneImpact(uint world, uint lane, float duration, bool thre
             const CollisionShape shape = shapes[second];
             CartesianFrame frame = sweepFrame(second, other);
             frame.position.xyz -= movingFrame.position.xyz;
-            const uint4 identity = uint4(first, second, 0u, NoIndex);
+            const uint4 identity = uint4(first, second, NoIndex, NoIndex);
             ShapeCastHit hit = {float4(0, 0, 0, result.normalDistance.w * speed), uint4(NoIndex), float4(0.0)};
             if (shape.type.x == GeomTriangleMesh)
                 castMesh(moving, frame, shape, extent, direction, 1.0e-5, identity, workspace,
@@ -168,7 +175,6 @@ ShapeCastHit earliestLaneImpact(uint world, uint lane, float duration, bool thre
             }
             if (hit.identity.x == NoIndex)
                 continue;
-            hit.identity.w = asuint(rule.pair);
             hit.normalDistance.w /= speed;
             hit.point.xyz += movingFrame.position.xyz + other.linear.xyz * hit.normalDistance.w;
             if (castPrecedes(hit, result))
@@ -188,7 +194,7 @@ float3 inverseSpin(BodyModel body, float4 rotation, float3 torque)
 
 SpatialMotion impulseResponse(uint row, SweepMotion motion, float3 arm, float3 axis)
 {
-    if (ccdRows[row].x == NoIndex)
+    if (ccdBodyRow(row).x == NoIndex)
         return spatial(float3(0.0), float3(0.0));
     const BodyModel body = ccdBodies[row];
     return spatial(inverseSpin(body, motion.rotation, cross(arm, axis)),
@@ -231,45 +237,60 @@ float3 impactPoint(ShapeCastHit hit, SweepMotion first, SweepMotion second)
     return point / float(manifold.count);
 }
 
-void solveImpact(uint world, ShapeCastHit hit)
+ContactReport solveImpact(uint world, ShapeCastHit hit)
 {
     const ModelDimensions size = ccdModel[0];
     const uint base = world * size.state.z;
-    const uint a = ccdGeoms[hit.identity.x].indices.x, b = ccdGeoms[hit.identity.y].indices.x;
+    const uint4 geomA = ccdGeoms[hit.identity.x].indices, geomB = ccdGeoms[hit.identity.y].indices;
+    const uint a = geomA.x, b = geomB.x;
     SweepMotion first = ccdMotion[base + a], second = ccdMotion[base + b];
     const float3 point = impactPoint(hit, first, second);
     const float3 r1 = point - first.center.xyz, r2 = point - second.center.xyz;
     const float3 normal = hit.normalDistance.xyz;
-    const float speed = dot(pointVelocity(first, r1) - pointVelocity(second, r2), normal);
-    const ContactMaterial material = resolveMaterial(uint4(hit.identity.xy, hit.identity.w, NoIndex), size.layout.x);
-    const float rebound = speed < -asfloat(ccdSettings[0].z) ? -speed * material.extra.z : 0.0;
+    const float3 incoming = pointVelocity(second, r2) - pointVelocity(first, r1);
+    const float speed = -dot(incoming, normal);
+    const uint4 settings = ccdTable[0];
+    const CollisionPairRule rule = collisionRule(hit.identity.x, hit.identity.y, geomA, geomB,
+                                                  settings.w != 0u, ccdRules);
+    const ContactMaterial material = resolveMaterial(uint4(hit.identity.xy, asuint(rule.pair), NoIndex), size.layout.x);
+    const float rebound = speed < -asfloat(settings.z) ? -speed * material.extra.z : 0.0;
     const uint2 pair = uint2(a, b);
     const float impulse = axisImpulse(pair, r1, r2, normal, rebound, 1.0e30, first, second);
+    float3 delivered = impulse * normal;
     const float3 relative = pointVelocity(first, r1) - pointVelocity(second, r2);
     const float3 tangent = relative - normal * dot(relative, normal);
     const float slip = length(tangent);
     if (slip > 1.0e-5 && material.friction.x > 0.0)
-        axisImpulse(pair, r1, r2, -tangent / slip, 0.0, impulse * material.friction.x, first, second);
+    {
+        const float3 axis = -tangent / slip;
+        delivered += axis * axisImpulse(pair, r1, r2, axis, 0.0, impulse * material.friction.x, first, second);
+    }
     first.center.w = 1.0;
     second.center.w = 1.0;
     ccdMotion[base + a] = first;
     ccdMotion[base + b] = second;
+    // Like the CPU swept callback, the hit supplies a point and impulse without a separation sample.
+    return {float4(point, 0.0), float4(-normal, 0.0), float4(incoming, 0.0),
+            float4(-delivered, 0.0), uint4(hit.identity.xy, NoIndex, hit.identity.z),
+            uint4(hit.identity.w == NoIndex ? 0u : hit.identity.w, 0u, 1u, ContactReportUnknownSeparation)};
 }
 
-[shader("compute")]
-[numthreads(CcdLanes, 1, 1)]
-void solve_scene_ccd(uint lane : SV_GroupIndex, uint3 group : SV_GroupID)
+void solveSceneCcd<let Report : bool>(uint lane, uint world)
 {
-    const uint world = group.y;
     const uint bodies = ccdModel[0].state.z;
     const uint base = world * bodies;
+    const uint reportBase = world * (SceneCcdMaxImpacts + 1u);
     if (lane == 0)
+    {
         ccdSelection = ccdMotion[base].center.w != 0.0 ? 1u : 0u;
+        if (Report)
+            ccdReports[reportBase].identity.x = 0u;
+    }
     GroupMemoryBarrierWithGroupSync();
     if (workgroupUniformLoad(ccdSelection) != 0u)
         return;
-    float duration = asfloat(ccdSettings[0].x);
-    for (uint impact = 0; impact < MaxImpacts; ++impact)
+    float duration = asfloat(ccdTable[0].x);
+    for (uint impact = 0; impact < SceneCcdMaxImpacts; ++impact)
     {
         ccdHits[lane] = earliestLaneImpact(world, lane, duration, impact == 0);
         GroupMemoryBarrierWithGroupSync();
@@ -298,9 +319,14 @@ void solve_scene_ccd(uint lane : SV_GroupIndex, uint3 group : SV_GroupID)
         if (!found)
             break;
         syncSweepMotion();
-        if (lane == 0 && found)
+        if (lane == 0)
         {
-            solveImpact(world, earliest);
+            const ContactReport report = solveImpact(world, earliest);
+            if (Report)
+            {
+                ccdReports[reportBase + 1u + impact] = report;
+                ccdReports[reportBase].identity.x = impact + 1u;
+            }
             ccdMotion[base].center.w = 1.0;
         }
         syncSweepMotion();
@@ -310,13 +336,27 @@ void solve_scene_ccd(uint lane : SV_GroupIndex, uint3 group : SV_GroupID)
 }
 
 [shader("compute")]
+[numthreads(CcdLanes, 1, 1)]
+void solve_scene_ccd(uint lane : SV_GroupIndex, uint3 group : SV_GroupID)
+{
+    solveSceneCcd<false>(lane, group.y);
+}
+
+[shader("compute")]
+[numthreads(CcdLanes, 1, 1)]
+void solve_scene_ccd_with_reports(uint lane : SV_GroupIndex, uint3 group : SV_GroupID)
+{
+    solveSceneCcd<true>(lane, group.y);
+}
+
+[shader("compute")]
 [numthreads(64, 1, 1)]
 void publish_scene_ccd(uint3 id : SV_DispatchThreadID)
 {
     const ModelDimensions size = ccdModel[0];
     if (id.x >= size.state.z || ccdMotion[id.y * size.state.z].center.w != 1.0)
         return;
-    const uint4 row = ccdRows[id.x];
+    const uint4 row = ccdBodyRow(id.x);
     if (row.x == NoIndex)
         return;
     const uint index = id.y * size.state.z + id.x;

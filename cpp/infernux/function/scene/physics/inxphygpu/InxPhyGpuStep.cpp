@@ -8,6 +8,7 @@
 #include "InxPhyGpuParticleExport.h"
 #include "InxPhyGpuProgramSources.h"
 #include "PhysicsRayIndex.h"
+#include "contact_report_layout.slang"
 
 #include <algorithm>
 #include <cmath>
@@ -400,12 +401,13 @@ void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, co
                                  const GeometrySlots &geometry, const ContactSlots &contacts,
                                  const InxPhyGpuContactSolver &solver, float dt, uint32_t dimensions, uint32_t bodies,
                                  uint32_t start, uint32_t positions, uint32_t velocities, uint32_t status,
-                                 const BodyControlSlots &controls)
+                                 const BodyControlSlots &controls, uint32_t reportSlot)
 {
     const ModelWords settings{FloatWord(dt), FloatWord(solver.linearCastThreshold),
                               FloatWord(solver.minimumRestitutionSpeed), collision.filterConnectedBodies};
-    const auto options = b.Seed("sceneCcdSettings", 4, &settings);
-    const auto rows = b.Shared("sceneCcdBodies", model.sceneContinuousCollision);
+    std::vector<ModelWords> table{settings};
+    table.insert(table.end(), model.sceneContinuousCollision.begin(), model.sceneContinuousCollision.end());
+    const auto rows = b.Shared("sceneCcdTable", table);
     const auto nb = model.dimensions.state[2];
     const auto motion = b.Slot(16 * uint64_t{nb} * b.worlds);
     constexpr uint64_t workers = 8, records = 1360, edges = 512;
@@ -419,24 +421,25 @@ void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, co
            {12, velocities, R},
            {13, start, R},
            {14, motion, W, true},
-           {15, options, R},
            {16, status, R},
            {18, controls.prescribed, R},
            {24, controls.fixedSteps, R}});
-    b.Add("scene_ccd", "solve_scene_ccd", 1,
-          {{2, geometry.shapes, R},
-           {5, contacts.materials, R},
-           {8, dimensions, R},
-           {9, bodies, R},
-           {10, rows, R},
-           {14, motion, RW},
-           {15, options, R},
-           {17, geometry.geometries, R},
-           {19, contacts.pairRules, R},
-           {20, geometry.data, R},
-           {21, scratch, W},
-           {22, horizon, W}},
-          true);
+    std::vector<Use> sweep{{2, geometry.shapes, R},
+                           {5, contacts.materials, R},
+                           {8, dimensions, R},
+                           {9, bodies, R},
+                           {10, rows, R},
+                           {14, motion, RW},
+                           {17, geometry.geometries, R},
+                           {19, contacts.pairRules, R},
+                           {20, geometry.data, R},
+                           {21, scratch, W},
+                           {22, horizon, W}};
+    const bool reporting = reportSlot != NoModelIndex;
+    if (reporting)
+        sweep.push_back({15, reportSlot, W});
+    b.dispatches.push_back(
+        b.Bind("scene_ccd", reporting ? "solve_scene_ccd_with_reports" : "solve_scene_ccd", 1, sweep, true));
     b.Add("scene_ccd", "publish_scene_ccd", nb,
           {{8, dimensions, R},
            {9, bodies, R},
@@ -597,6 +600,8 @@ struct ContactResponse
     uint32_t jointParameters = NoModelIndex;
     uint32_t settings;
     ModelWords worldDefaults;
+    std::optional<ComputeWorkDispatch> appendSweptReports;
+    uint32_t reportCapacity = 0;
 };
 
 struct ReferenceWeights
@@ -707,13 +712,12 @@ void AddSceneWakeWork(StepBuilder &b, const InxPhyGpuModel &model, const Contact
            {40, dyn.smoothForce, RW}});
 }
 
-ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, const ContactSlots &stream,
-                                   InxPhyGpuCollisionCapacity capacity, const InxPhyGpuContactSolver &solver,
-                                   float timestep, const ContactDynamics &dyn,
-                                   std::vector<ComputeWorkDispatch> precondition, bool contactReports,
-                                   uint32_t substeps, uint32_t maxStorageBuffers, const SceneWakeWork &wake,
-                                   uint32_t sceneJoints,
-                                   const std::vector<InxPhyGpuStateHandoff::PoseTarget> &poseTargets)
+ContactResponse
+AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, const ContactSlots &stream,
+                   InxPhyGpuCollisionCapacity capacity, const InxPhyGpuContactSolver &solver, float timestep,
+                   const ContactDynamics &dyn, std::vector<ComputeWorkDispatch> precondition, bool contactReports,
+                   uint32_t substeps, uint32_t maxStorageBuffers, const SceneWakeWork &wake, uint32_t sceneJoints,
+                   const std::vector<InxPhyGpuStateHandoff::PoseTarget> &poseTargets, uint32_t sweptReports)
 {
     const auto nv = model.dimensions.state[1];
     const auto nb = model.dimensions.state[2];
@@ -747,7 +751,8 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
                                    FloatWord(solver.lineTolerance)};
     std::vector<ModelWords> config(b.worlds + 2, worldDefaults);
     config[0] = {ng, contacts, rows, columns};
-    config[1] = {nb, nv, contacts, ellipticCone};
+    const bool reportSwept = sweptReports != NoModelIndex;
+    config[1] = {nb, nv, contacts, ellipticCone | (reportSwept ? SceneCcdReportFlag : 0u)};
     const auto settings = b.Shared("constraintSettings", config);
 
     std::vector<ModelWords> topology(uint64_t{ng} + nb);
@@ -916,9 +921,10 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
     const auto history = b.Zero("contactSearchHistory", across(4 * uint64_t{nv}));
     const auto products = b.Zero("contactMassProducts", across(2 * uint64_t{nv}));
     const bool multiple = substeps > 1;
-    const auto status = multiple ? b.Zero("fixedStepStatus", across(uint64_t{1} + (contactReports ? substeps : 0)),
-                                          contactReports ? BufferUsageFlags::TransferSource : BufferUsageFlags::None)
-                                 : b.Slot(b.worlds);
+    const auto status = multiple || contactReports
+                            ? b.Zero("fixedStepStatus", across(uint64_t{1} + (contactReports ? substeps : 0)),
+                                     contactReports ? BufferUsageFlags::TransferSource : BufferUsageFlags::None)
+                            : b.Slot(b.worlds);
     for (uint32_t index = 0; index < precondition.size(); ++index) {
         auto &solve = precondition[index];
         options[2][index] = solve.groupCountX;
@@ -1067,25 +1073,21 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
            {16, worldState, R},
            {25, stream.candidateCount, R},
            {26, stream.counts, R},
-           {27, status, multiple ? RW : W, !multiple},
+           {27, status, multiple ? RW : W, !multiple && !contactReports},
            {30, stream.narrowphaseStatus, R}});
-    ContactResponse response{acceleration, status,          contactTopology, NoModelIndex,
-                             {},           jointParameters, settings,        worldDefaults};
+    ContactResponse response{acceleration,    status,   contactTopology, NoModelIndex, {},
+                             jointParameters, settings, worldDefaults,   {},           0};
     if (contactReports) {
+        const auto reportCapacity = uint64_t{contacts} + (reportSwept ? SceneCcdMaxImpacts : 0);
         const auto output =
-            b.Zero("contactReports", across(24 * uint64_t{contacts} * substeps), BufferUsageFlags::TransferSource);
+            b.Zero("contactReports", across(24 * reportCapacity * substeps), BufferUsageFlags::TransferSource);
         response.reportRecords = output;
+        response.reportCapacity = static_cast<uint32_t>(reportCapacity);
         const bool prescribed = dyn.prescribedMotion != NoModelIndex;
-        std::vector<Use> uses{{0, settings, R},
-                              {1, stream.records, R},
-                              {2, stream.counts, R},
-                              {3, contactTopology, R},
-                              {4, reservations, R},
-                              {5, constraintState, R},
-                              {6, dyn.bodyVelocity, R},
-                              {7, dyn.subtreeCom, R},
-                              {8, status, multiple ? RW : R},
-                              {9, output, W}};
+        std::vector<Use> uses{
+            {0, settings, R},     {1, stream.records, R},  {2, stream.counts, R},    {3, contactTopology, R},
+            {4, reservations, R}, {5, constraintState, R}, {6, dyn.bodyVelocity, R}, {7, dyn.subtreeCom, R},
+            {8, status, RW},      {9, output, W}};
         if (prescribed)
             uses.push_back({11, dyn.prescribedMotion, R});
         if (prescribed || multiple)
@@ -1093,6 +1095,15 @@ ContactResponse AddContactResponse(StepBuilder &b, const InxPhyGpuModel &model, 
         const auto *entry = multiple ? (prescribed ? "capture_controlled_contact_substep" : "capture_contact_substep")
                                      : (prescribed ? "capture_controlled_contact_reports" : "capture_contact_reports");
         response.capture = b.Bind("contact_reports", entry, contacts, uses);
+        if (reportSwept) {
+            std::vector<Use> append{
+                {0, settings, R}, {2, stream.counts, R}, {8, status, RW}, {9, output, W}, {13, sweptReports, R}};
+            if (multiple)
+                append.push_back({12, dyn.fixedSteps, R});
+            response.appendSweptReports =
+                b.Bind("contact_reports", multiple ? "append_swept_contact_substep" : "append_swept_contact_reports",
+                       SceneCcdMaxImpacts, append);
+        }
     }
     return response;
 }
@@ -1737,11 +1748,15 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                                        bodyVelocity};
         const auto groups = controlSlots ? b.Zero("sceneWakeGroups", worldWords(4 * uint64_t{nb})) : NoModelIndex;
         const SceneWakeWork wake{controlSlots ? &*controlSlots : nullptr, groups, applied};
+        const bool sweep = controlSlots && !model.sceneContinuousCollision.empty();
+        uint32_t sweptReports = NoModelIndex;
         if (contactSlots && solver) {
+            if (sweep && contactReports)
+                sweptReports = b.Zero("sweptContactReports", worldWords(24 * (uint64_t{SceneCcdMaxImpacts} + 1)));
             response = AddContactResponse(b, model, *contactSlots, capacity, *solver, substepDt, dynamics,
                                           std::move(massSolves), contactReports, substeps,
                                           host.device.GetCapabilities().limits.maxStorageBuffersPerStage, wake,
-                                          sceneJointDescriptors, handoff.poseTargets);
+                                          sceneJointDescriptors, handoff.poseTargets, sweptReports);
             reference = {dimensions, dofs, mass, centeredDof, inertialFrame, subtreeCom, response->topology};
             const std::array singleWorld{positions,
                                          pose,
@@ -1815,10 +1830,10 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         const auto *entry = positionEntries[2 * controlSlots.has_value() + sceneDynamics][response.has_value()];
         if (nj != 0)
             b.dispatches.push_back(b.Bind("euler", entry, nj, integratePosition));
-        if (response && controlSlots && !model.sceneContinuousCollision.empty())
+        if (response && sweep)
             AddSceneContinuousCollision(b, model, *collision, *particleGeometry, *contactSlots, *solver, substepDt,
                                         dimensions, bodies, pose, positions, velocities, response->status,
-                                        *controlSlots);
+                                        *controlSlots, sweptReports);
         if (controlSlots) {
             if (!std::isfinite(sleep.quietTime) || sleep.quietTime <= 0.0f || !std::isfinite(sleep.pointVelocity) ||
                 sleep.pointVelocity < 0.0f)
@@ -2141,13 +2156,17 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             controls.publishWithStatus = BindDispatch(std::move(publishBodiesWithStatus), buffers);
     }
     ContactReports reports;
-    if (response && response->capture)
+    if (response && response->capture) {
         reports = {buffers[response->reportRecords],
-                   buffers[multiple ? response->status : contactSlots->counts],
+                   buffers[response->status],
                    BindDispatch(std::move(*response->capture), buffers),
-                   multiple ? worlds * sizeof(uint32_t) : 0,
+                   {},
+                   worlds * sizeof(uint32_t),
                    worldWords(substeps) * sizeof(uint32_t),
-                   capacity.contactsPerWorld};
+                   response->reportCapacity};
+        if (response->appendSweptReports)
+            reports.appendSwept = BindDispatch(std::move(*response->appendSweptReports), buffers);
+    }
     SceneJoints sceneJoints;
     if (sceneJointDescriptors != NoModelIndex) {
         sceneJoints.descriptors = buffers[sceneJointDescriptors];
@@ -2230,7 +2249,8 @@ void InxPhyGpuStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispa
     }
     const bool reporting = captureContacts && m_reports.records;
     const auto numericalDispatches = m_work->GetRecipe().GetDispatches().size();
-    const auto width = numericalDispatches + driving + reporting + (driving || reporting);
+    const bool sweptReporting = reporting && m_reports.appendSwept.kernel;
+    const auto width = numericalDispatches + driving + reporting + sweptReporting + (driving || reporting);
     auto stepWidth = dispatches.size() + m_substeps.count * width + 2;
     for (const auto &substep : stages)
         for (const auto &phase : substep)
@@ -2266,6 +2286,8 @@ void InxPhyGpuStep::AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &dispa
         }
         if (reporting)
             dispatches.push_back(m_reports.capture);
+        if (sweptReporting)
+            dispatches.push_back(m_reports.appendSwept);
         if (!stages.empty())
             append(substep, Stage::Accept);
         if ((driving || reporting) && substep + 1 < m_substeps.count)
