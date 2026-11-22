@@ -391,11 +391,16 @@ ContactSlots AddCollision(StepBuilder &b, const InxPhyGpuModel &model, const Inx
     return {pairCount, counts, contacts, status, rules, materials};
 }
 
+struct BodyControlSlots
+{
+    uint32_t spans, commands, force, saved, prescribed, fixedSteps, activity, pendingWrenches;
+};
+
 void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpuCollisionModel &collision,
                                  const GeometrySlots &geometry, const ContactSlots &contacts,
                                  const InxPhyGpuContactSolver &solver, float dt, uint32_t dimensions, uint32_t bodies,
                                  uint32_t start, uint32_t positions, uint32_t velocities, uint32_t status,
-                                 uint32_t activity)
+                                 const BodyControlSlots &controls)
 {
     const ModelWords settings{FloatWord(dt), FloatWord(solver.linearCastThreshold),
                               FloatWord(solver.minimumRestitutionSpeed), collision.filterConnectedBodies};
@@ -415,7 +420,9 @@ void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, co
            {13, start, R},
            {14, motion, W, true},
            {15, options, R},
-           {16, status, R}});
+           {16, status, R},
+           {18, controls.prescribed, R},
+           {24, controls.fixedSteps, R}});
     b.Add("scene_ccd", "solve_scene_ccd", 1,
           {{2, geometry.shapes, R},
            {5, contacts.materials, R},
@@ -437,7 +444,7 @@ void AddSceneContinuousCollision(StepBuilder &b, const InxPhyGpuModel &model, co
            {11, positions, RW},
            {12, velocities, RW},
            {14, motion, R},
-           {23, activity, RW}});
+           {23, controls.activity, RW}});
 }
 
 struct RaySlots
@@ -449,11 +456,6 @@ struct RaySlots
     uint32_t overlapRequest = NoModelIndex, overlapMask = NoModelIndex;
     uint32_t particlePoses, particleShapes, particleCold;
     ComputeWorkDispatch pack, project, traceAll, closest, overlap;
-};
-
-struct BodyControlSlots
-{
-    uint32_t spans, commands, force, saved, prescribed, fixedSteps, activity, pendingWrenches;
 };
 
 constexpr uint32_t SavedMotionWords = 44;
@@ -1816,7 +1818,7 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         if (response && controlSlots && !model.sceneContinuousCollision.empty())
             AddSceneContinuousCollision(b, model, *collision, *particleGeometry, *contactSlots, *solver, substepDt,
                                         dimensions, bodies, pose, positions, velocities, response->status,
-                                        controlSlots->activity);
+                                        *controlSlots);
         if (controlSlots) {
             if (!std::isfinite(sleep.quietTime) || sleep.quietTime <= 0.0f || !std::isfinite(sleep.pointVelocity) ||
                 sleep.pointVelocity < 0.0f)

@@ -5,6 +5,7 @@
 #include "box_contacts.slang"
 #include "collision_pair_rules.slang"
 #include "contact_publish.slang"
+#include "prescribed_motion.slang"
 #include "scene_motion.slang"
 
 static const uint CcdLanes = 8;
@@ -28,11 +29,13 @@ struct SweepMotion
 [[vk::binding(15, 0)]] StructuredBuffer<uint4> ccdSettings; // dt, threshold, minimum rebound speed, filter parents.
 [[vk::binding(16, 0)]] StructuredBuffer<uint> ccdContactStatus;
 [[vk::binding(17, 0)]] StructuredBuffer<GeomModel> ccdGeoms;
+[[vk::binding(18, 0)]] StructuredBuffer<PrescribedMotion> ccdPrescribed;
 [[vk::binding(19, 0)]] StructuredBuffer<uint4> ccdRules;
 [[vk::binding(20, 0)]] StructuredBuffer<uint4> ccdGeometry;
 [[vk::binding(21, 0)]] RWStructuredBuffer<uint4> ccdScratch;
 [[vk::binding(22, 0)]] RWStructuredBuffer<uint> ccdHorizon;
 [[vk::binding(23, 0)]] RWStructuredBuffer<SceneBodyActivity> ccdActivity;
+[[vk::binding(24, 0)]] StructuredBuffer<uint> ccdFixedSteps;
 
 groupshared ShapeCastHit ccdHits[CcdLanes];
 groupshared uint ccdSelection;
@@ -61,6 +64,7 @@ void prepare_scene_ccd(uint3 id : SV_DispatchThreadID)
     const uint index = id.y * size.state.z + id.x;
     const BodyModel body = ccdBodies[id.x];
     const Pose old = ccdStart[index];
+    const float dt = asfloat(ccdSettings[0].x);
     SweepMotion motion = {float4(old.position.xyz + rotateVector(body.inertialPosition.xyz, old.rotation), 0.0),
                           old.rotation, float4(0.0), float4(0.0)};
     const uint4 row = ccdRows[id.x];
@@ -73,7 +77,23 @@ void prepare_scene_ccd(uint3 id : SV_DispatchThreadID)
             rotateVector(float3(ccdVelocities[v + 3], ccdVelocities[v + 4], ccdVelocities[v + 5]), motion.rotation);
         const float3 end = float3(ccdPositions[p], ccdPositions[p + 1], ccdPositions[p + 2]) +
                            rotateVector(body.inertialPosition.xyz, motion.rotation);
-        motion.linear.xyz = (end - motion.center.xyz) / asfloat(ccdSettings[0].x);
+        motion.linear.xyz = (end - motion.center.xyz) / dt;
+    }
+    else
+    {
+        const uint support = prescribedRow(body, size.layout.y);
+        if (support != NoIndex)
+        {
+            const PrescribedMotion drive = ccdPrescribed[id.y * prescribedStride(size, ccdBodies[0]) + support];
+            if (drive.step == ccdFixedSteps[id.y] + 1u)
+            {
+                // The command phase already placed this body at the substep end.
+                // Sweep over its commanded translation with the new orientation.
+                motion.center.xyz = drive.center - dt * drive.linear.xyz;
+                motion.linear = drive.linear;
+                motion.angular = drive.angular;
+            }
+        }
     }
     if (id.x == 0)
         motion.center.w = ccdContactStatus[id.y] != 0u ? 2.0 : 0.0;
