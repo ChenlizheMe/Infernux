@@ -9,10 +9,12 @@
 #include "../PhysicsECSStore.h"
 #include "../PhysicsGpuRenderBindings.h"
 #include "../PhysicsRaycastHit.h"
+#include "../PhysicsTargetReference.h"
 #include "InxPhyGpuParticleExport.h"
 #include "InxPhyGpuSceneModel.h"
 #include "InxPhyGpuStep.h"
 
+#include <array>
 #include <core/threading/FrameWorkOwner.h>
 #include <functional>
 #include <variant>
@@ -88,6 +90,7 @@ struct InxPhyGpuSceneBodyCommand
 {
     uint64_t worldId;
     PhysicsBodyCommand command;
+    PhysicsTargetSource target{};
 };
 
 struct InxPhyGpuSceneImpulseBatch
@@ -321,6 +324,13 @@ class InxPhyGpuSceneRuntime final
         std::vector<InxPhyGpuFixedStageWork> projectStages{};
         std::vector<std::function<void()>> acceptProjectStages{};
         std::vector<uint32_t> projectWorlds{};
+        struct TargetCompletion
+        {
+            uint32_t world;
+            PhysicsTargetSource target;
+            uint8_t channel;
+        };
+        std::vector<TargetCompletion> targetCompletions{};
     };
     struct Receipt
     {
@@ -333,6 +343,7 @@ class InxPhyGpuSceneRuntime final
     [[nodiscard]] FrameWorkFacts Describe() const;
     void EncodeBodyCommand(uint32_t world, const PhysicsBodyCommand &command,
                            std::vector<InxPhyGpuBodyCommand> &out) const;
+    void EncodeSceneBodyCommands(const std::vector<InxPhyGpuSceneBodyCommand> &commands, Operation &operation) const;
     void EncodeJointUpdates(const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
                             std::vector<InxPhyGpuJointParameterUpdate> &updates,
                             std::shared_ptr<InxPhyGpuScenePoseTargets> &poses) const;
@@ -361,6 +372,7 @@ class InxPhyGpuSceneRuntime final
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     std::shared_ptr<const InxPhyGpuScenePoseTargets> m_poseTargets;
     std::shared_ptr<const InxPhyGpuSceneKinematicTargets> m_kinematicTargets;
+    std::vector<std::array<PhysicsTargetSource, 2>> m_reboundTargets;
     std::vector<std::pair<uint32_t, uint32_t>> m_pendingWrenchRows;
     std::vector<std::pair<uint32_t, uint32_t>> m_kinematicVelocityRows;
     uint32_t m_bodyCount;

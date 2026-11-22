@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "InxPhyGpuSceneRuntime.h"
+#include "../../GameObject.h"
+#include "../../Rigidbody.h"
 #include "../PhysicsParticipant.h"
 #include "InxPhyGpuContactPublication.h"
 
@@ -87,11 +89,23 @@ struct InxPhyGpuScenePoseTargets
 
 struct InxPhyGpuSceneKinematicTargets
 {
-    std::map<std::pair<uint32_t, uint32_t>, PhysicsBodyCommand::KinematicMove> rows;
+    struct Entry
+    {
+        PhysicsBodyCommand::KinematicMove move{};
+        std::array<PhysicsTargetSource, 2> targets;
+    };
+    std::map<std::pair<uint32_t, uint32_t>, Entry> rows;
 };
 
 namespace
 {
+void CompleteAuthoredTarget(const PhysicsTargetSource &source, uint8_t channel)
+{
+    const auto *author = source.Get();
+    if (auto *body = author ? dynamic_cast<Rigidbody *>(author->rigidbody.GetComponent()) : nullptr)
+        body->CompletePhysicsTarget(source, channel);
+}
+
 ModelWords PackPoseTarget(const InxPhyGpuSceneJointBinding &joint, const glm::quat &relative)
 {
     const auto &frame = joint.reference;
@@ -416,6 +430,8 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
             const auto &prior = previous->worlds[old->second];
             if (prior.identity.simulationEpoch != accepted.identity.simulationEpoch)
                 continue;
+            if (prior.projectStateInvalidated)
+                throw std::logic_error("inxphygpu cannot rebuild a scene after a rejected project step in its epoch");
             if (!handoff.states) {
                 handoff.states = previous->bodyStates;
                 handoff.addresses.resize(uint64_t{m_bodyCount} * worlds.size(), NoModelIndex);
@@ -449,9 +465,18 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                 if (const auto &priorTargets = previous->m_kinematicTargets) {
                     const auto pendingTarget = priorTargets->rows.find({old->second, *oldRow});
                     if (pendingTarget != priorTargets->rows.end() &&
-                        layout->CanDrive(row, pendingTarget->second.temporaryStatic))
+                        layout->CanDrive(row, pendingTarget->second.move.temporaryStatic))
                         retainedKinematic.rows.emplace(std::pair{static_cast<uint32_t>(next), row},
                                                        pendingTarget->second);
+                }
+            }
+            if (const auto &priorTargets = previous->m_kinematicTargets) {
+                for (auto it = priorTargets->rows.lower_bound({old->second, 0});
+                     it != priorTargets->rows.end() && it->first.first == old->second; ++it) {
+                    const auto id = oldWorld.bodies[it->first.second].bodyId;
+                    const auto row = layout->worlds[next].BodyRow(id);
+                    if (!row || !retainedKinematic.rows.count({static_cast<uint32_t>(next), *row}))
+                        m_reboundTargets.push_back(it->second.targets);
                 }
             }
             if (previous->m_poseTargets && previous->m_poseTargets->worlds[old->second]) {
@@ -541,16 +566,16 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
             next.fixedStepIndex <= previous.fixedStepIndex)
             throw std::invalid_argument("inxphygpu fixed step must advance the enrolled world and epoch");
     }
-    std::vector<InxPhyGpuBodyCommand> actions;
-    actions.reserve(commands.size());
+    Operation operation{std::move(identities), {}, {}, host, captureContacts, std::move(consumer), true,
+                        std::move(fixedInputs)};
+    auto &actions = operation.commands;
     if (m_kinematicTargets)
         for (const auto &[key, target] : m_kinematicTargets->rows) {
             const auto [world, body] = key;
-            EncodeBodyCommand(world, {worlds[world].bodies[body].bodyId, target}, actions);
+            EncodeBodyCommand(world, {worlds[world].bodies[body].bodyId, target.move}, actions);
         }
-    for (const auto &entry : commands)
-        EncodeBodyCommand(m_layout->WorldRow(entry.worldId), entry.command, actions);
-    auto velocities = KinematicVelocityRows(actions);
+    EncodeSceneBodyCommands(commands, operation);
+    operation.kinematicVelocityRows = KinematicVelocityRows(actions);
     if (!m_kinematicVelocityRows.empty()) {
         // Only continuing kinematic bodies without commands need their own spans.
         auto uncovered = std::set(m_kinematicVelocityRows.begin(), m_kinematicVelocityRows.end());
@@ -566,14 +591,9 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
         for (const auto &[world, body] : uncovered)
             actions.push_back({world, body, InxPhyGpuBodyCommandKind::ApplyPendingWrench});
     }
-    std::vector<InxPhyGpuJointParameterUpdate> updates;
     std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
-    EncodeJointUpdates(jointUpdates, updates, poses);
-    Operation operation{
-        std::move(identities), std::move(actions), std::move(updates), host, captureContacts, std::move(consumer), true,
-        std::move(fixedInputs)};
+    EncodeJointUpdates(jointUpdates, operation.jointUpdates, poses);
     operation.poseTargets = std::move(poses);
-    operation.kinematicVelocityRows = std::move(velocities);
     operation.projectStages.reserve(deviceImpulses.size());
     for (const auto &batch : deviceImpulses) {
         if (batch.bodyIds.empty())
@@ -756,8 +776,27 @@ void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<InxPhyGpuSceneBodyComma
 {
     if (commands.empty() && jointUpdates.empty())
         throw std::invalid_argument("inxphygpu scene edit requires body or joint commands");
-    std::vector<InxPhyGpuBodyCommand> edits;
-    edits.reserve(commands.size());
+    Operation operation{{}, {}, {}, false, false, std::move(consumer), false, {}};
+    EncodeSceneBodyCommands(commands, operation);
+    using Kind = InxPhyGpuBodyCommandKind;
+    std::set pending(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
+    for (const auto &edit : operation.commands) {
+        if (edit.kind == Kind::ResetMotion || edit.kind == Kind::Sleep)
+            pending.erase({edit.world, edit.body});
+        else if (edit.kind >= Kind::Force && edit.kind <= Kind::ForceAtPosition && static_cast<uint32_t>(edit.mode) < 2)
+            pending.emplace(edit.world, edit.body);
+    }
+    operation.pendingWrenchRows.assign(pending.begin(), pending.end());
+    operation.kinematicVelocityRows = KinematicVelocityRows(operation.commands);
+    std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
+    EncodeJointUpdates(jointUpdates, operation.jointUpdates, poses);
+    operation.poseTargets = std::move(poses);
+    BeginOperation(std::move(operation));
+}
+
+void InxPhyGpuSceneRuntime::EncodeSceneBodyCommands(const std::vector<InxPhyGpuSceneBodyCommand> &commands,
+                                                    Operation &operation) const
+{
     std::shared_ptr<InxPhyGpuSceneKinematicTargets> nextTargets;
     const auto editTargets = [&]() -> InxPhyGpuSceneKinematicTargets & {
         if (!nextTargets)
@@ -765,10 +804,17 @@ void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<InxPhyGpuSceneBodyComma
                                              : std::make_shared<InxPhyGpuSceneKinematicTargets>();
         return *nextTargets;
     };
+    const auto release = [&](uint32_t world, const PhysicsTargetSource &source, size_t channel) {
+        if (source)
+            operation.targetCompletions.push_back({world, source, static_cast<uint8_t>(1u << channel)});
+    };
+    auto &edits = operation.commands;
+    edits.reserve(edits.size() + commands.size());
     for (const auto &entry : commands) {
         const auto world = m_layout->WorldRow(entry.worldId);
         const auto &command = entry.command;
-        const auto body = m_layout->worlds[world].BodyRow(command.bodyId);
+        const auto &layout = m_layout->worlds[world];
+        const auto body = layout.BodyRow(command.bodyId);
         if (!body)
             throw std::invalid_argument("inxphygpu scene edit requires an accepted body in the selected world");
         const std::pair key{world, *body};
@@ -780,13 +826,29 @@ void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<InxPhyGpuSceneBodyComma
                 throw std::invalid_argument(
                     "Physics movement requires a matching body, positive duration and speed limit");
             auto &held = editTargets().rows[key];
+            const uint8_t channels = (target->position ? 1u : 0u) | (target->rotation ? 2u : 0u);
+            if (const auto *author = entry.target.Get()) {
+                const auto *component = layout.bodies[*body].bodyTarget.GetComponent();
+                const auto *object = component ? component->GetGameObject() : nullptr;
+                if (author->bodyId != command.bodyId || author->channels != channels || !object ||
+                    author->rigidbody.GetComponent() != component ||
+                    author->ownerTransform.GetComponent() != object->GetTransform())
+                    throw std::invalid_argument("inxphygpu author target does not match the enrolled body channels");
+            }
+            for (size_t channel = 0; channel < held.targets.size(); ++channel)
+                if ((channels & (1u << channel)) && held.targets[channel] != entry.target) {
+                    release(world, held.targets[channel], channel);
+                    held.targets[channel] = entry.target;
+                }
             if (target->position)
-                held.position = target->position;
+                held.move.position = target->position;
             if (target->rotation)
-                held.rotation = target->rotation;
-            held.duration = target->duration;
-            held.maxSpeed = target->maxSpeed;
-            held.temporaryStatic = target->temporaryStatic;
+                held.move.rotation = target->rotation;
+            held.move.duration = target->duration;
+            held.move.maxSpeed = target->maxSpeed;
+            held.move.temporaryStatic = target->temporaryStatic;
+            if (operation.integrate)
+                EncodeBodyCommand(world, command, edits);
             continue;
         }
         const auto *pose = std::get_if<PhysicsBodyCommand::Pose>(&command.operation);
@@ -797,38 +859,19 @@ void InxPhyGpuSceneRuntime::BeginEdits(const std::vector<InxPhyGpuSceneBodyComma
             (velocity && (velocity->linear || velocity->angular) && m_layout->CanDrive(*body, false)) ||
             (activity && !activity->awake)) {
             const auto *prior = nextTargets ? nextTargets.get() : m_kinematicTargets.get();
-            if (prior && prior->rows.count(key))
-                editTargets().rows.erase(key);
+            if (prior) {
+                const auto found = prior->rows.find(key);
+                if (found != prior->rows.end()) {
+                    for (size_t channel = 0; channel < found->second.targets.size(); ++channel)
+                        release(world, found->second.targets[channel], channel);
+                    editTargets().rows.erase(key);
+                }
+            }
         }
         EncodeBodyCommand(world, command, edits);
     }
-    using Kind = InxPhyGpuBodyCommandKind;
-    std::set pending(m_pendingWrenchRows.begin(), m_pendingWrenchRows.end());
-    for (const auto &edit : edits) {
-        if (edit.kind == Kind::ResetMotion || edit.kind == Kind::Sleep)
-            pending.erase({edit.world, edit.body});
-        else if (edit.kind >= Kind::Force && edit.kind <= Kind::ForceAtPosition && static_cast<uint32_t>(edit.mode) < 2)
-            pending.emplace(edit.world, edit.body);
-    }
-    std::shared_ptr<const InxPhyGpuSceneKinematicTargets> targets = m_kinematicTargets;
-    if (nextTargets)
-        targets = nextTargets->rows.empty() ? nullptr : std::move(nextTargets);
-    auto velocities = KinematicVelocityRows(edits);
-    std::vector<InxPhyGpuJointParameterUpdate> updates;
-    std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
-    EncodeJointUpdates(jointUpdates, updates, poses);
-    BeginOperation({{},
-                    std::move(edits),
-                    std::move(updates),
-                    false,
-                    false,
-                    std::move(consumer),
-                    false,
-                    {},
-                    std::move(poses),
-                    {pending.begin(), pending.end()},
-                    std::move(targets),
-                    std::move(velocities)});
+    operation.kinematicTargets =
+        nextTargets ? (nextTargets->rows.empty() ? nullptr : std::move(nextTargets)) : m_kinematicTargets;
 }
 
 std::vector<std::pair<uint32_t, uint32_t>>
@@ -1210,6 +1253,10 @@ void InxPhyGpuSceneRuntime::Finish()
     if (m_retiring)
         return;
     if (kind == Packet::Initialize) {
+        for (const auto &targets : m_reboundTargets)
+            for (size_t channel = 0; channel < targets.size(); ++channel)
+                CompleteAuthoredTarget(targets[channel], static_cast<uint8_t>(1u << channel));
+        m_reboundTargets.clear();
         if (!m_operation) {
             auto result = CapturePublication(packet->GetSubmission());
             result.worlds = m_acceptedWorlds;
@@ -1388,6 +1435,14 @@ void InxPhyGpuSceneRuntime::ContinueConsumer(PublicationWork work)
 
 void InxPhyGpuSceneRuntime::PublishCompleted(InxPhyGpuFixedPublication publication)
 {
+    for (const auto &completion : m_operation->targetCompletions)
+        if (!m_operation->integrate || publication.worlds[completion.world].status == 0)
+            CompleteAuthoredTarget(completion.target, completion.channel);
+    if (m_operation->integrate && m_operation->kinematicTargets)
+        for (const auto &[key, target] : m_operation->kinematicTargets->rows)
+            if (publication.worlds[key.first].status == 0)
+                for (size_t channel = 0; channel < target.targets.size(); ++channel)
+                    CompleteAuthoredTarget(target.targets[channel], static_cast<uint8_t>(1u << channel));
     if (m_operation->integrate)
         for (size_t i = 0; i < publication.worlds.size(); ++i)
             if (publication.worlds[i].status == 0)

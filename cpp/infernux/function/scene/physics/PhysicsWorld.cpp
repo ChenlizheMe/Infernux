@@ -3958,9 +3958,8 @@ PhysicsWorld::RunGpuRays(PhysicsDomain &domain, const std::shared_ptr<const Jolt
                 std::memcpy(input.data.data(), rays.data(), input.data.size());
             }
         }
-        batch = plan->query.Prepare(
-            *m_gpuHost, {accepted->bodyStates, 0, accepted->bodyCount, sizeof(JPH::GPU::BodyState)},
-            static_cast<uint32_t>(count), !outputs, std::move(uploads), device, outputs, allHitCapacity);
+        batch = plan->query.Prepare(*m_gpuHost, ScenePoseSource(*accepted), static_cast<uint32_t>(count), !outputs,
+                                    std::move(uploads), device, outputs, allHitCapacity);
         return JoltGpuControlWork{batch.packet};
     });
     if (replacement && batch.packet)
