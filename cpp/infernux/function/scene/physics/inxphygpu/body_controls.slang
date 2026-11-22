@@ -227,6 +227,14 @@ void gather_device_body_motion(uint3 id : SV_DispatchThreadID)
     const uint4 row = impulseRows[index];
     const ModelDimensions size = model[0];
     const BodyModel body = bodies[row.y];
+    const uint activityRow = row.x * size.state.z + row.y;
+    SceneBodyActivity activity = bodyActivity[activityRow];
+    if (activity.group != NoIndex)
+    {
+        activity.group = NoIndex;
+        activity.marker = 0;
+        bodyActivity[activityRow] = activity;
+    }
     const uint2 offset = freeAddresses(size, body, row.x);
     const Pose pose = loadOrigin(offset.x);
     const float3 center = centerOffset(body, pose);

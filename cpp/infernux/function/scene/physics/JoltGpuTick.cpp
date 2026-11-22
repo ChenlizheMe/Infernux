@@ -933,7 +933,7 @@ class JoltGpuTick::Impl
     {
         const auto &plan = bindings.GetConstraints();
         const bool localRows = plan && (!plan->jointDispatches.empty() || !plan->patchDispatches.empty());
-        const bool exchange = control.participants.Has(JoltGpuParticipantStage::Exchange, next.substep);
+        const bool exchange = control.participants.Has(PhysicsParticipantStage::Exchange, next.substep);
         const bool velocity = tickParameters.counts.w && (localRows || exchange);
         const bool position = tickParameters.solve.x && localRows;
         const auto drift = storage.HasSweepBodies(selectedRow) ? Phase::PrepareSweep : Phase::Integrate;
@@ -1093,17 +1093,17 @@ class JoltGpuTick::Impl
         }
     }
 
-    static std::optional<JoltGpuParticipantStage> ParticipantStage(Phase phase)
+    static std::optional<PhysicsParticipantStage> ParticipantStage(Phase phase)
     {
         switch (phase) {
         case Phase::ParticipantPredict:
-            return JoltGpuParticipantStage::Predict;
+            return PhysicsParticipantStage::Predict;
         case Phase::ParticipantPrepare:
-            return JoltGpuParticipantStage::Prepare;
+            return PhysicsParticipantStage::Prepare;
         case Phase::ParticipantExchange:
-            return JoltGpuParticipantStage::Exchange;
+            return PhysicsParticipantStage::Exchange;
         case Phase::ParticipantAccept:
-            return JoltGpuParticipantStage::Accept;
+            return PhysicsParticipantStage::Accept;
         default:
             return {};
         }
@@ -2032,7 +2032,7 @@ class JoltGpuTick::Impl
                     return false;
             }
             if (const auto stage = ParticipantStage(stageCursor.phase)) {
-                if (*stage == JoltGpuParticipantStage::Exchange && !HasRigidWork() &&
+                if (*stage == PhysicsParticipantStage::Exchange && !HasRigidWork() &&
                     control.participants.prepareClosedRounds && tickParameters.counts.w - stageCursor.iteration > 1) {
                     // Same finite round cap as the coupled producer. Owners
                     // decline if a round needs an intermediate native consumer.

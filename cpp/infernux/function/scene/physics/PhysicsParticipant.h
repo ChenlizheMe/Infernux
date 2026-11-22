@@ -142,7 +142,7 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     void AcceptControls(const ControlPayloads &values);
     [[nodiscard]] Prefix CapturePrefix();
     [[nodiscard]] JoltGpuControlWork PrepareInitialize();
-    [[nodiscard]] JoltGpuControlWork PrepareStage(JoltGpuParticipantStage stage, const JPH::GPU::StepParams &params,
+    [[nodiscard]] JoltGpuControlWork PrepareStage(PhysicsParticipantStage stage, const JPH::GPU::StepParams &params,
                                                   float fixedDeltaTime, uint32_t substep, uint32_t iteration,
                                                   const Prefix &prefix);
 
@@ -156,7 +156,7 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     /// Lower one GPU-only stage without changing its bound state or private
     /// scratch identities. A runtime slot supplies immutable per-round ports;
     /// writable/aliased runtime ports decline before preparing any GPU work.
-    [[nodiscard]] std::optional<PreparedStage> PrepareGpuStage(JoltGpuParticipantStage,
+    [[nodiscard]] std::optional<PreparedStage> PrepareGpuStage(PhysicsParticipantStage,
                                                                const PhysicsParticipantStageInputs &, const Prefix &,
                                                                std::optional<uint32_t> runtimeSlot = std::nullopt);
 
@@ -182,7 +182,7 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     void DeclareExchangeStates(const ExchangeStates &states);
     void ReleasePeerExchange();
     void ValidateRigidPorts();
-    [[nodiscard]] JoltGpuControlWork PrepareRecipeStage(JoltGpuParticipantStage stage,
+    [[nodiscard]] JoltGpuControlWork PrepareRecipeStage(PhysicsParticipantStage stage,
                                                         const PhysicsParticipantStageInputs &inputs,
                                                         const Prefix &prefix,
                                                         std::vector<rhi::ComputeBufferUpdate> updates = {},

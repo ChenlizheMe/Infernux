@@ -17,6 +17,11 @@
 #include <functional>
 #include <variant>
 
+namespace infernux
+{
+class PhysicsParticipant;
+}
+
 namespace infernux::physics::inxphygpu
 {
 
@@ -91,7 +96,12 @@ struct InxPhyGpuSceneImpulseBatch
     uint32_t substep;
     std::vector<uint32_t> bodyIds;
     PhysicsDeviceBufferRange input;
-    std::optional<InxPhyGpuDeviceExchange> exchange{};
+};
+
+struct InxPhyGpuSceneParticipants
+{
+    uint64_t worldId;
+    std::vector<std::weak_ptr<PhysicsParticipant>> owners;
 };
 
 struct InxPhyGpuFixedWorld
@@ -101,6 +111,7 @@ struct InxPhyGpuFixedWorld
     uint32_t status;
     uint32_t acceptedStep;
     uint64_t attemptedFixedStepIndex = 0; // The request that produced status.
+    bool projectStateInvalidated = false;
 };
 
 struct InxPhyGpuFixedPublication
@@ -241,7 +252,8 @@ class InxPhyGpuSceneRuntime final
                     const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host, bool captureContacts = false,
                     const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates = {}, PublicationConsumer consumer = {},
                     std::vector<PhysicsFixedInputs> fixedInputs = {},
-                    const std::vector<InxPhyGpuSceneImpulseBatch> &deviceImpulses = {});
+                    const std::vector<InxPhyGpuSceneImpulseBatch> &deviceImpulses = {},
+                    const std::vector<InxPhyGpuSceneParticipants> &participants = {});
     /// Apply world-scoped body and joint edits at each world's accepted simulation time.
     /// Forces and kinematic targets wait for the next accepted fixed step, while
     /// pose edits publish immediately. Joint changes wake their endpoints on integration.
@@ -306,7 +318,9 @@ class InxPhyGpuSceneRuntime final
         std::vector<std::pair<uint32_t, uint32_t>> pendingWrenchRows{};
         std::shared_ptr<const InxPhyGpuSceneKinematicTargets> kinematicTargets{};
         std::vector<std::pair<uint32_t, uint32_t>> kinematicVelocityRows{};
-        std::vector<InxPhyGpuDeviceImpulseBatch> deviceImpulses{};
+        std::vector<InxPhyGpuFixedStageWork> projectStages{};
+        std::vector<std::function<void()>> acceptProjectStages{};
+        std::vector<uint32_t> projectWorlds{};
     };
     struct Receipt
     {
@@ -322,6 +336,7 @@ class InxPhyGpuSceneRuntime final
     void EncodeJointUpdates(const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
                             std::vector<InxPhyGpuJointParameterUpdate> &updates,
                             std::shared_ptr<InxPhyGpuScenePoseTargets> &poses) const;
+    void EncodeFixedParticipants(Operation &operation, const std::vector<InxPhyGpuSceneParticipants> &groups) const;
     [[nodiscard]] std::vector<std::pair<uint32_t, uint32_t>>
     KinematicVelocityRows(const std::vector<InxPhyGpuBodyCommand> &commands) const;
     void BeginOperation(Operation operation);
@@ -363,6 +378,7 @@ class InxPhyGpuSceneRuntime final
     uint64_t m_fixedGpuNanoseconds = 0;
     Packet m_packetKind = Packet::Initialize;
     bool m_retiring = false;
+    bool m_projectStepFailed = false;
     std::vector<PhysicsFixedInputs> m_activeFixedInputs;
 };
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "InxPhyGpuSceneRuntime.h"
+#include "../PhysicsParticipant.h"
 #include "InxPhyGpuContactPublication.h"
 
 #include <algorithm>
@@ -28,6 +29,19 @@ struct InxPhyGpuSceneLayout
         {
             const auto found = rows.find(bodyId);
             return found == rows.end() ? std::nullopt : std::make_optional(found->second);
+        }
+
+        [[nodiscard]] std::vector<uint32_t> ResolveExchangeBodies(const std::vector<uint32_t> &ids) const
+        {
+            std::vector<uint32_t> result;
+            result.reserve(ids.size());
+            for (const auto id : ids) {
+                const auto row = BodyRow(id);
+                if (!row)
+                    throw std::invalid_argument("inxphygpu rigid exchange requires enrolled body identities");
+                result.push_back(*row);
+            }
+            return result;
         }
     };
     struct Geometry
@@ -506,8 +520,11 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
                                        const std::vector<InxPhyGpuSceneBodyCommand> &commands, bool host,
                                        bool captureContacts, const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
                                        PublicationConsumer consumer, std::vector<PhysicsFixedInputs> fixedInputs,
-                                       const std::vector<InxPhyGpuSceneImpulseBatch> &deviceImpulses)
+                                       const std::vector<InxPhyGpuSceneImpulseBatch> &deviceImpulses,
+                                       const std::vector<InxPhyGpuSceneParticipants> &participants)
 {
+    if (m_projectStepFailed)
+        throw std::logic_error("inxphygpu must restart the scene after a rejected project physics step");
     if (captureContacts && !m_contactReportsConfigured)
         throw std::logic_error("inxphygpu scene was prepared without contact report storage");
     const auto &worlds = m_layout->worlds;
@@ -552,38 +569,85 @@ void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identi
     std::vector<InxPhyGpuJointParameterUpdate> updates;
     std::shared_ptr<InxPhyGpuScenePoseTargets> poses;
     EncodeJointUpdates(jointUpdates, updates, poses);
-    std::vector<InxPhyGpuDeviceImpulseBatch> impulses;
-    impulses.reserve(deviceImpulses.size());
+    Operation operation{
+        std::move(identities), std::move(actions), std::move(updates), host, captureContacts, std::move(consumer), true,
+        std::move(fixedInputs)};
+    operation.poseTargets = std::move(poses);
+    operation.kinematicVelocityRows = std::move(velocities);
+    operation.projectStages.reserve(deviceImpulses.size());
     for (const auto &batch : deviceImpulses) {
         if (batch.bodyIds.empty())
             continue;
         const auto world = m_layout->WorldRow(batch.worldId);
         auto input = batch.input;
-        if (input.buffer && !batch.exchange)
+        if (input.buffer)
             input.buffer = input.buffer->Freeze();
-        InxPhyGpuDeviceImpulseBatch rows{world, batch.substep, {}, std::move(input), batch.exchange};
-        rows.bodies.reserve(batch.bodyIds.size());
-        for (const auto id : batch.bodyIds) {
-            const auto row = worlds[world].BodyRow(id);
-            if (!row)
-                throw std::invalid_argument("inxphygpu impulse batch requires enrolled body identities");
-            rows.bodies.push_back(*row);
-        }
-        impulses.push_back(std::move(rows));
+        InxPhyGpuDeviceBodyExchange rows{
+            world, worlds[world].ResolveExchangeBodies(batch.bodyIds), {}, std::move(input)};
+        operation.projectStages.push_back({batch.substep, PhysicsParticipantStage::Exchange, {}, {}, std::move(rows)});
     }
-    BeginOperation({std::move(identities),
-                    std::move(actions),
-                    std::move(updates),
-                    host,
-                    captureContacts,
-                    std::move(consumer),
-                    true,
-                    std::move(fixedInputs),
-                    std::move(poses),
-                    {},
-                    {},
-                    std::move(velocities),
-                    std::move(impulses)});
+    EncodeFixedParticipants(operation, participants);
+    BeginOperation(std::move(operation));
+}
+
+void InxPhyGpuSceneRuntime::EncodeFixedParticipants(Operation &operation,
+                                                    const std::vector<InxPhyGpuSceneParticipants> &groups) const
+{
+    using Stage = PhysicsParticipantStage;
+    constexpr std::array phases{Stage::Predict, Stage::Prepare, Stage::Exchange, Stage::Accept};
+    const auto substeps = m_step->Substeps();
+    const auto &inputs = operation.fixedInputs.empty() ? m_activeFixedInputs : operation.fixedInputs;
+    for (const auto &group : groups) {
+        const auto world = m_layout->WorldRow(group.worldId);
+        const auto before = operation.projectStages.size();
+        const auto fixed = inputs[world].duration;
+        for (const auto &entry : group.owners) {
+            const auto owner = entry.lock();
+            if (!owner)
+                continue;
+            const auto prefix = owner->CapturePrefix();
+            if (!prefix.stages && prefix.controls.empty())
+                continue;
+            const auto bodies = m_layout->worlds[world].ResolveExchangeBodies(prefix.rigidBodyIds);
+            for (uint32_t substep = 0; substep < substeps; ++substep) {
+                // Project exchange is the outer coupling pass; the native contact solver owns its iterations.
+                const PhysicsParticipantStageInputs timing{
+                    {fixed / static_cast<float>(substeps), fixed}, substep, substeps, 0, 1};
+                for (const auto phase : phases) {
+                    const bool controls = phase == Stage::Predict && substep == 0 && !prefix.controls.empty();
+                    if (!(prefix.stages & PhysicsParticipantStageBit(phase)) && !controls)
+                        continue;
+                    const auto slot = substep * static_cast<uint32_t>(phases.size()) + static_cast<uint32_t>(phase);
+                    InxPhyGpuFixedStageWork stage{substep, phase};
+                    std::optional<PhysicsParticipant::PreparedStage> prepared;
+                    if (phase == Stage::Exchange && !bodies.empty()) {
+                        auto exchange = owner->PrepareDeviceRigidExchange(timing, prefix, slot);
+                        if (exchange) {
+                            stage.bodies =
+                                InxPhyGpuDeviceBodyExchange{world, bodies, {exchange->motion}, {exchange->impulses}};
+                            prepared = std::move(exchange->work);
+                        }
+                    } else {
+                        prepared = owner->PrepareGpuStage(phase, timing, prefix, slot);
+                    }
+                    if (!prepared || !m_host.SharesServicesWith(*prepared->host))
+                        throw std::runtime_error("inxphygpu could not prepare a project physics stage on its device");
+                    stage.updates = std::move(prepared->updates);
+                    stage.dispatches = std::move(prepared->dispatches);
+                    if (stage.updates.empty() && stage.dispatches.empty())
+                        continue;
+                    operation.projectStages.push_back(std::move(stage));
+                    if (prepared->accepted)
+                        operation.acceptProjectStages.push_back(std::move(prepared->accepted));
+                    if (controls)
+                        operation.acceptProjectStages.push_back(
+                            [owner, pending = prefix.controls] { owner->AcceptControls(pending); });
+                }
+            }
+        }
+        if (operation.projectStages.size() != before)
+            operation.projectWorlds.push_back(world);
+    }
 }
 
 void InxPhyGpuSceneRuntime::EncodeJointUpdates(const std::vector<InxPhyGpuSceneJointUpdate> &jointUpdates,
@@ -1075,12 +1139,10 @@ bool InxPhyGpuSceneRuntime::Advance(bool gpu, uint64_t token)
         m_preservation = std::move(prepared.copy);
     } else if (m_operation->integrate) {
         const auto output = m_operation->host ? InxPhyGpuBodyPublication::Cpu : InxPhyGpuBodyPublication::Status;
-        m_packet =
-            m_step->PrepareControlled(m_operation->commands, output, {}, m_operation->captureContacts,
-                                      m_operation->jointUpdates, m_operation->fixedInputs, m_operation->deviceImpulses);
+        m_packet = m_step->PrepareControlled(std::move(m_operation->commands), output, {}, m_operation->captureContacts,
+                                             std::move(m_operation->jointUpdates), m_operation->fixedInputs,
+                                             std::move(m_operation->projectStages));
         m_packetKind = Packet::Fixed;
-        m_operation->commands.clear();
-        m_operation->jointUpdates.clear();
     } else if (m_operation->commands.empty() && m_operation->jointUpdates.empty()) {
         auto result = CapturePublication(m_step->BodyStates()->GetLastWriteSubmission());
         result.worlds = m_acceptedWorlds;
@@ -1110,10 +1172,9 @@ bool InxPhyGpuSceneRuntime::Submit()
                               bytes == 0 ? 0 : m_work.RecordAcceptedResource(FrameWorkResource::Transfer, bytes),
                               bytes});
     if (kind == Packet::Fixed) {
-        for (const auto &batch : m_operation->deviceImpulses)
-            if (batch.exchange && batch.exchange->accepted)
-                batch.exchange->accepted();
-        m_operation->deviceImpulses.clear();
+        for (const auto &accept : m_operation->acceptProjectStages)
+            accept();
+        m_operation->acceptProjectStages.clear();
     }
     ++m_generation;
     return true;
@@ -1220,6 +1281,13 @@ void InxPhyGpuSceneRuntime::FinishFixed(const rhi::PreparedComputeBatch &packet)
         // state its accepted identity and keep the attempted index for diagnostics.
         const auto &accepted = header[1] == 0 ? identity : m_acceptedWorlds[world].identity;
         result.worlds.push_back({accepted, time, header[1], header[2], identity.fixedStepIndex});
+    }
+    for (const auto world : m_operation->projectWorlds) {
+        auto &resultWorld = result.worlds[world];
+        if (resultWorld.status != 0) {
+            resultWorld.projectStateInvalidated = true;
+            m_projectStepFailed = true;
+        }
     }
     if (m_operation->captureContacts) {
         result.contacts.resize(worldCount * result.substeps);

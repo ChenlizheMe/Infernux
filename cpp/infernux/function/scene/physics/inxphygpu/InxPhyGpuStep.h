@@ -6,6 +6,7 @@
 #include "../PhysicsDeviceBufferRange.h"
 #include "../PhysicsFixedInputs.h"
 #include "../PhysicsGpuPoseSource.h"
+#include "../PhysicsParticipantStage.h"
 #include "InxPhyGpuModel.h"
 
 #include <function/renderer/rhi/RhiComputeKernel.h>
@@ -264,22 +265,23 @@ struct InxPhyGpuJointParameterUpdate
     std::array<uint32_t, 2> dynamicEndpoints{NoModelIndex, NoModelIndex};
 };
 
-// Ordered project dispatches read motion and produce the impulse port in the fixed packet.
-struct InxPhyGpuDeviceExchange
+struct InxPhyGpuDeviceBodyExchange
 {
+    uint32_t world;
+    std::vector<uint32_t> bodies;
+    // World COM, xyzw rotation and world linear/angular velocity in four float4 blocks.
     PhysicsDeviceBufferRange motion;
-    std::vector<rhi::ComputeBufferUpdate> updates;
-    std::vector<rhi::ComputeDispatchDesc> dispatches;
-    std::function<void()> accepted{};
+    // Linear and angular impulse about the COM, six float32 values per target body.
+    PhysicsDeviceBufferRange impulses;
 };
 
-// Six float32 values per body: a world-space impulse and angular impulse.
-struct InxPhyGpuDeviceImpulseBatch
+struct InxPhyGpuFixedStageWork
 {
-    uint32_t world, substep;
-    std::vector<uint32_t> bodies;
-    PhysicsDeviceBufferRange input;
-    std::optional<InxPhyGpuDeviceExchange> exchange{};
+    uint32_t substep;
+    PhysicsParticipantStage stage;
+    std::vector<rhi::ComputeBufferUpdate> updates{};
+    std::vector<rhi::ComputeDispatchDesc> dispatches{};
+    std::optional<InxPhyGpuDeviceBodyExchange> bodies{};
 };
 
 enum class InxPhyGpuBodyPublication
@@ -368,7 +370,7 @@ class InxPhyGpuStep
                       std::vector<rhi::ComputeBufferUpdate> updates = {}, bool captureContacts = false,
                       std::vector<InxPhyGpuJointParameterUpdate> jointUpdates = {},
                       const std::vector<PhysicsFixedInputs> &fixedInputs = {},
-                      const std::vector<InxPhyGpuDeviceImpulseBatch> &deviceImpulses = {}) const;
+                      std::vector<InxPhyGpuFixedStageWork> projectStages = {}) const;
 
     /// Absolute edits and impulses publish new poses at the current fixed time.
     /// Time-dependent force and movement commands are admitted by the fixed step.
@@ -467,6 +469,7 @@ class InxPhyGpuStep
     struct FixedSubsteps
     {
         uint32_t count = 1;
+        size_t collisionPasses = 0;
         std::vector<rhi::ComputeDispatchDesc> begin;
         rhi::ComputeDispatchDesc drive, advance, restore, restoreActivity, clock;
     };
@@ -479,17 +482,13 @@ class InxPhyGpuStep
                     uint32_t substeps) const;
     };
 
-    struct SubstepImpulseWork
-    {
-        uint32_t substep;
-        std::vector<rhi::ComputeDispatchDesc> dispatches;
-    };
+    using SubstepStages = std::array<std::vector<rhi::ComputeDispatchDesc>, 4>;
     void AppendFixedWork(std::vector<rhi::ComputeDispatchDesc> &, std::vector<rhi::ComputeReplayRange> &,
                          uint32_t spans, bool captureContacts, const BodyCommandStreams &streams,
-                         std::vector<SubstepImpulseWork> impulses = {}) const;
-    [[nodiscard]] std::vector<SubstepImpulseWork>
-    PrepareDeviceImpulses(const std::vector<InxPhyGpuDeviceImpulseBatch> &, std::vector<InxPhyGpuBodyCommand> &,
-                          std::vector<rhi::ComputeBufferUpdate> &) const;
+                         std::vector<SubstepStages> stages = {}) const;
+    [[nodiscard]] std::vector<SubstepStages> PrepareFixedStages(std::vector<InxPhyGpuFixedStageWork>,
+                                                                std::vector<InxPhyGpuBodyCommand> &,
+                                                                std::vector<rhi::ComputeBufferUpdate> &) const;
     [[nodiscard]] const BodyCommandStreams &BodyCommandStorage(size_t count) const;
     void BindBodyCommandStreams(rhi::ComputeDispatchDesc &dispatch, const BodyCommandStreams &streams,
                                 uint32_t commands, uint32_t spans) const;
@@ -519,6 +518,8 @@ class InxPhyGpuStep
     ContactReports m_reports;
     FixedSubsteps m_substeps;
     std::shared_ptr<rhi::ComputeReplayCache> m_fixedReplay = rhi::MakeComputeReplayCache();
+    std::shared_ptr<rhi::ComputeReplayCache> m_collisionReplay = rhi::MakeComputeReplayCache();
+    std::shared_ptr<rhi::ComputeReplayCache> m_dynamicsReplay = rhi::MakeComputeReplayCache();
     SceneJoints m_sceneJoints;
     InxPhyGpuPublishedRayQuery m_publishedRays;
     FixedInputs m_fixedInputs;

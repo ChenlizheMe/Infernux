@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PhysicsParticipantStage.h"
+
 #include "JoltGpuBodyCommands.h"
 #include "PhysicsBodyCommand.h"
 #include <core/threading/FrameWorkOwner.h>
@@ -128,15 +130,6 @@ enum class JoltGpuContactReportStage
     Sweep
 };
 
-enum class JoltGpuParticipantStage : uint32_t
-{
-    Predict,
-    Prepare,
-    Exchange,
-    Accept,
-    Initialize
-};
-
 enum class JoltGpuParticipantRigidPort
 {
     Prepare,
@@ -146,10 +139,10 @@ enum class JoltGpuParticipantRigidPort
 
 struct JoltGpuParticipantStages
 {
-    using Stage = JoltGpuParticipantStage;
+    using Stage = PhysicsParticipantStage;
     static constexpr uint32_t Bit(Stage stage) noexcept
     {
-        return 1u << static_cast<uint32_t>(stage);
+        return PhysicsParticipantStageBit(stage);
     }
     [[nodiscard]] bool Has(Stage stage, uint32_t substep) const noexcept
     {
