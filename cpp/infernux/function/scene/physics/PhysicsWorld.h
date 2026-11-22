@@ -847,6 +847,7 @@ class PhysicsWorld
     PhysicsDomain &DomainForActor(const PhysicsActorData &actor) const;
     PhysicsDomain &DomainForComponent(const Component &component) const;
     [[nodiscard]] bool HasCpuControl(const PhysicsDomain &domain) const noexcept;
+    [[nodiscard]] bool HasRunningGpuFixed(const PhysicsDomain &domain) const noexcept;
     bool HasDomainControl(PhysicsDomain &domain) const;
     void CompleteDomainStep(PhysicsDomain &domain);
     void RunPreparedWork(PhysicsDomain &domain, JoltGpuControlWork work) const;

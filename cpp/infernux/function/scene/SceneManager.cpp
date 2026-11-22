@@ -1179,9 +1179,7 @@ FrameWorkFacts SceneManager::DescribeRuntimeFrames()
         facts.pending = true;
         if (failed || !early)
             return true;
-        const auto &physics = PhysicsWorld::Instance();
-        return frame && world->physics->solverStarted && physics.m_gpuScene &&
-               physics.m_gpuScene->HasRunningFixedTick(*world);
+        return (frame || step) && PhysicsWorld::Instance().HasRunningGpuFixed(*world->physics);
     };
     const auto end = m_runtimeWorlds.end();
     const auto cursor = m_runtimeWorlds.begin() + PublishedWorldSlot(m_nextRuntimeWorldId);
@@ -1192,8 +1190,8 @@ FrameWorkFacts SceneManager::DescribeRuntimeFrames()
         if (selected == first)
             return facts;
     }
-    // A solver already started on an earlier host can consume its receipt before
-    // drawing. New simulation frames and user callbacks keep their late boundary.
+    // A solver already started on an earlier host can continue before drawing.
+    // This includes a paused single step. New frames and callbacks stay late.
     facts.host = {(*selected)->id, 0, true, early};
     return facts;
 }
@@ -1865,9 +1863,9 @@ void SceneManager::FinalizeRuntimeTransforms(bool completed)
 bool SceneManager::IsRuntimeFrameWaitingForPhysics(const RuntimeWorld &world) const
 {
     const auto &physics = *world.physics;
-    if (!world.simulation.isPlaying || world.simulation.isPaused || world.pausedAuthor.Pending() ||
-        world.lifecycle.runtimeLifecycleFrameOpen || TransformECSStore::Instance().IsFrameCacheActive() ||
-        world.frame.phase != RuntimeWorld::FramePhase::Fixed ||
+    if (!world.simulation.isPlaying || (world.simulation.isPaused && !world.simulation.pausedStepPending) ||
+        world.pausedAuthor.Pending() || world.lifecycle.runtimeLifecycleFrameOpen ||
+        TransformECSStore::Instance().IsFrameCacheActive() || world.frame.phase != RuntimeWorld::FramePhase::Fixed ||
         world.simulation.fixedPhase != RuntimeWorld::FixedPhase::Integration || !physics.stepPending ||
         physics.stepCompleted || !physics.solverStarted ||
         physics.fixedGpuPhase != PhysicsDomain::FixedGpuPhase::Solver ||
@@ -1883,7 +1881,7 @@ bool SceneManager::IsRuntimeFrameWaitingForPhysics(const RuntimeWorld &world) co
                     [&](const auto &scene) { return maintenance(scene.get()); }))
         return false;
     const auto &owner = PhysicsWorld::Instance();
-    return owner.m_gpuScene && !owner.HasDomainControl(*world.physics) && owner.m_gpuScene->HasRunningFixedTick(world);
+    return owner.HasRunningGpuFixed(physics) && !owner.HasDomainControl(*world.physics);
 }
 
 bool SceneManager::AdvanceRunningPhysics(RuntimeWorld &world)

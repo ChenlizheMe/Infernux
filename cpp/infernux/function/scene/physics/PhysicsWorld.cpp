@@ -1687,6 +1687,11 @@ bool PhysicsWorld::HasCpuControl(const PhysicsDomain &domain) const noexcept
            (domain.cpuControl->HasPending() || !domain.cpuScene->UsesIgnoredPairs(domain.colliderPairSnapshot));
 }
 
+bool PhysicsWorld::HasRunningGpuFixed(const PhysicsDomain &domain) const noexcept
+{
+    return domain.solverStarted && domain.gpuRegistered && m_gpuScene->HasRunningFixedTick(domain.owner);
+}
+
 bool PhysicsWorld::HasDomainControl(PhysicsDomain &domain) const
 {
     const auto &world = domain.owner;
