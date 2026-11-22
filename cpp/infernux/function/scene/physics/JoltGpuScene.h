@@ -9,6 +9,7 @@
 #include "PhysicsGpuPoseSource.h"
 #include "PhysicsTargetReference.h"
 
+#include <exception>
 #include <functional>
 #include <memory>
 #include <stdexcept>
@@ -29,6 +30,10 @@ class JoltGpuQueryRequestError : public std::invalid_argument
   public:
     using std::invalid_argument::invalid_argument;
 };
+
+// Keep a rejected read local to its publication request.
+[[nodiscard]] JoltGpuControlWork PrepareJoltGpuQueryWork(std::function<JoltGpuControlWork()> prepare,
+                                                         std::exception_ptr &error);
 
 /// One shared packed numerical backend containing real RuntimeWorld partitions.
 /// Component/public identity ownership remains in PhysicsECSStore. There is

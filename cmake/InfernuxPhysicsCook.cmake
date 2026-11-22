@@ -86,8 +86,7 @@ function(infernux_cook_jolt_gpu_programs target format)
     set(_physics_gpu "${_root}/cpp/infernux/function/scene/physics/gpu")
     file(GLOB_RECURSE _shader_sources CONFIGURE_DEPENDS
         "${_physics_gpu}/*.slang" "${_physics_gpu}/*.h" "${_physics_gpu}/*.inl")
-    infernux_cook_program_archive(${target} ${format} physics JoltGpuArchive.c ${_shader_sources}
-        "${_root}/cpp/infernux/function/renderer/particle/shaders/collision_export.slang")
+    infernux_cook_program_archive(${target} ${format} physics JoltGpuArchive.c ${_shader_sources})
 endfunction()
 
 function(infernux_cook_inxphygpu_programs target format)

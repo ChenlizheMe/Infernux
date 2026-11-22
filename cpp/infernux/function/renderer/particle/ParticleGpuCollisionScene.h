@@ -32,6 +32,7 @@ enum class GpuParticleColliderType : uint32_t
     Terrain = 4,
     Cylinder = 5,
     NativeHull = 6,
+    DeviceMesh = 7,
 };
 
 enum GpuParticleColliderFlags : uint32_t

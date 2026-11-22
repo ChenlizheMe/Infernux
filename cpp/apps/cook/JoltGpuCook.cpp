@@ -55,11 +55,6 @@ ShaderSourceModule LoadProgramSource(const std::filesystem::path &physics, JoltG
         return LoadModule(physics, "jph_gpu_body_mutations", "gpu/Shaders/rigid_body_mutations.slang");
     case JoltGpuProgram::BodyCommands:
         return LoadModule(physics, "jph_gpu_body_commands", "gpu/Shaders/body_commands.slang");
-    case JoltGpuProgram::Queries: {
-        auto source = LoadModule(physics, "jph_gpu_particle_export", "gpu/Shaders/rigid_particle_export.slang");
-        source.source += "\n#include \"../../infernux/renderer/particle/collision_export.slang\"\n";
-        return source;
-    }
     case JoltGpuProgram::Joints:
         return LoadModule(physics, "jph_gpu_joints", "gpu/Shaders/joint_commands.slang");
     case JoltGpuProgram::Count:
@@ -68,8 +63,7 @@ ShaderSourceModule LoadProgramSource(const std::filesystem::path &physics, JoltG
     throw std::logic_error("Missing GPU physics program source");
 }
 
-std::vector<ShaderSourceModule> LoadProgramLibraries(const std::filesystem::path &root,
-                                                     const std::filesystem::path &physics)
+std::vector<ShaderSourceModule> LoadProgramLibraries(const std::filesystem::path &physics)
 {
     const auto load = [&](const char *name, const char *path) { return LoadModule(physics, name, path); };
     return {load("jph_gpu_rigid_math", "gpu/Shaders/rigid_math.slang"),
@@ -102,9 +96,7 @@ std::vector<ShaderSourceModule> LoadProgramLibraries(const std::filesystem::path
             load("jph_gpu_rigid_psd", "gpu/Shaders/rigid_psd.slang"),
             load("jph_gpu_rigid_joints", "gpu/Shaders/rigid_joints.slang"),
             load("jph_gpu_swing_twist", "gpu/Shaders/rigid_swing_twist.slang"),
-            load("jph_gpu_six_dof", "gpu/Shaders/rigid_six_dof.slang"),
-            {"inx_particle_collision_export", "infernux/renderer/particle/collision_export.slang",
-             ReadSource(root / "cpp/infernux/function/renderer/particle/shaders/collision_export.slang")}};
+            load("jph_gpu_six_dof", "gpu/Shaders/rigid_six_dof.slang")};
 }
 
 // C arrays store exactly the payload bytes. Bound each literal for the
@@ -163,7 +155,7 @@ void WritePrograms(const std::filesystem::path &output, const char *accessor, un
 void CookPhysics(const std::filesystem::path &root, ShaderCodeTarget target, const std::filesystem::path &output)
 {
     const auto physics = root / "cpp/infernux/function/scene/physics";
-    const auto libraries = LoadProgramLibraries(root, physics);
+    const auto libraries = LoadProgramLibraries(physics);
     WritePrograms(output, "InfernuxJoltGpuArchive", static_cast<unsigned>(JoltGpuProgram::Count), [&](unsigned index) {
         const auto source = LoadProgramSource(physics, static_cast<JoltGpuProgram>(index));
         return SlangCompiler::Get().Compile(source, libraries, {target}, true);

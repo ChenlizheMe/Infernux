@@ -4,6 +4,7 @@
 #include "InxPhyGpuStep.h"
 #include "../../Rigidbody.h"
 #include "InxPhyGpuCollisionModel.h"
+#include "InxPhyGpuParticleExport.h"
 #include "InxPhyGpuProgramSources.h"
 #include "PhysicsRayIndex.h"
 
@@ -393,6 +394,7 @@ struct RaySlots
     uint32_t inputSettings = NoModelIndex, outputSettings = NoModelIndex;
     uint32_t closestSettings = NoModelIndex, closestResult = NoModelIndex;
     uint32_t overlapRequest = NoModelIndex, overlapMask = NoModelIndex;
+    uint32_t particlePoses, particleShapes, particleCold;
     ComputeWorkDispatch pack, project, traceAll, closest, overlap;
 };
 
@@ -479,6 +481,9 @@ RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpu
     };
     work.push_back(trace("raycast_worlds", layout.raysPerWorld));
     RaySlots result{};
+    result.particlePoses = geometry.geometries;
+    result.particleShapes = geometry.shapes;
+    result.particleCold = geometry.data;
     result.inputs = inputs;
     result.hits = hits;
     result.settings = query;
@@ -1099,6 +1104,174 @@ BodyBoundsSlots AddPublishedBodyBounds(StepBuilder &b, const GeometrySlots &geom
 }
 } // namespace
 
+namespace
+{
+std::shared_ptr<rhi::ComputeBuffer> AllocateParticleWords(rhi::ComputeHost &host, uint64_t bytes)
+{
+    auto buffer =
+        rhi::ComputeBuffer::TryCreatePrivate(host, {bytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1});
+    if (!buffer)
+        throw std::runtime_error("inxphygpu could not allocate particle collision storage");
+    return buffer;
+}
+
+template <class T> std::vector<uint8_t> ParticleBytes(const T *value, size_t count = 1)
+{
+    std::vector<uint8_t> result(count * sizeof(T));
+    std::memcpy(result.data(), value, result.size());
+    return result;
+}
+
+rhi::ComputeDispatchDesc
+ParticleDispatch(std::shared_ptr<rhi::ComputeKernel> kernel, uint32_t groups,
+                 std::initializer_list<std::pair<std::shared_ptr<rhi::ComputeBuffer>, Access>> buffers)
+{
+    rhi::ComputeDispatchDesc result;
+    result.kernel = std::move(kernel);
+    result.groupCountX = groups;
+    result.proof.emplace();
+    for (const auto &[buffer, access] : buffers) {
+        const auto bind = static_cast<uint32_t>(result.buffers.size());
+        result.buffers.push_back(buffer);
+        result.bufferAccesses.push_back(access);
+        if (access != W)
+            result.proof->reads.push_back({bind, 0, buffer->GetByteSize()});
+        if (access != R)
+            result.proof->writes.push_back({bind, 0, buffer->GetByteSize()});
+    }
+    return result;
+}
+} // namespace
+
+InxPhyGpuParticleExport::InxPhyGpuParticleExport(rhi::ComputeHost &host, ShaderCodeTarget target)
+{
+    StepBuilder builder(host, target, 1);
+    m_project = builder.Kernel("particle_collision", "particle_collision_project", {0, 1, 2, 3, 4, 5, 6, 10});
+    m_count = builder.Kernel("particle_collision", "particle_collision_count", {0, 6, 7, 8, 10});
+    m_scatter = builder.Kernel("particle_collision", "particle_collision_scatter", {0, 6, 7, 8, 9, 10});
+}
+
+InxPhyGpuParticleExport::Work InxPhyGpuParticleExport::Prepare(
+    rhi::ComputeHost &host, const InxPhyGpuParticleGeometry &geometry, const PhysicsGpuPoseSource &poses,
+    const std::vector<InxPhyGpuParticleRow> &rows, const std::shared_ptr<rhi::ComputeBuffer> &previous,
+    std::shared_ptr<particle::GpuParticleCollisionDevicePayload> payload, std::vector<rhi::ComputeBufferUpdate> updates,
+    std::vector<rhi::ComputeDispatchDesc> initialize) const
+{
+    static_assert(sizeof(InxPhyGpuParticleRow) == 96);
+    const auto width = poses.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ ? 5u : 4u;
+    const auto count = static_cast<uint32_t>(rows.size());
+    const uint32_t groups = (count + 63u) / 64u;
+    if (rows.size() > UINT32_MAX / 512u || groups > host.device.GetCapabilities().limits.maxComputeWorkgroupCount[0] ||
+        (count && (!poses.states || poses.rowBytes != width * sizeof(ModelVector) ||
+                   poses.firstRow + poses.bodyCount > UINT32_MAX / width)))
+        throw std::invalid_argument("inxphygpu particle export source exceeds its indexed ranges");
+    const std::array<ModelWords, 2> parameters{
+        {{count, payload->staticCount, static_cast<uint32_t>(poses.firstRow), width},
+         {static_cast<uint32_t>(payload->revision), static_cast<uint32_t>(payload->revision >> 32u),
+          static_cast<uint32_t>(payload->topologyRevision), static_cast<uint32_t>(payload->topologyRevision >> 32u)}}};
+    const auto upload = [&](std::vector<uint8_t> data) {
+        auto buffer = AllocateParticleWords(host, data.size());
+        updates.push_back({buffer, 0, std::move(data)});
+        return buffer;
+    };
+    const auto settings = upload(ParticleBytes(&parameters));
+    const ModelWords initialStatus{0u, 0u, count, 1u};
+    const auto status = upload(ParticleBytes(&initialStatus));
+    payload->geometry = geometry.cold;
+    payload->rowCount = count;
+    using Record = particle::GpuParticleColliderRecord;
+    payload->records = AllocateParticleWords(host, sizeof(Record) * uint64_t{std::max(count, 1u)});
+    payload->header = AllocateParticleWords(host, sizeof(particle::GpuParticleCollisionSceneHeader));
+    payload->gridOffsets = AllocateParticleWords(host, 513u * sizeof(uint32_t));
+    if (count) {
+        const auto inputs = upload(ParticleBytes(rows.data(), rows.size()));
+        const auto history = previous ? previous : upload(std::vector<uint8_t>(sizeof(Record)));
+        auto project = ParticleDispatch(m_project, groups,
+                                        {{settings, R},
+                                         {inputs, R},
+                                         {history, R},
+                                         {geometry.localPoses, R},
+                                         {geometry.shapes, R},
+                                         {poses.states, R},
+                                         {payload->records, W},
+                                         {status, RW}});
+        project.proof->reads[5] = {5, poses.firstRow * poses.rowBytes, uint64_t{poses.bodyCount} * poses.rowBytes};
+        project.proof->writes.back() = {7, sizeof(uint32_t), sizeof(uint32_t)};
+        initialize.push_back(std::move(project));
+    } else {
+        updates.push_back({payload->records, 0, std::vector<uint8_t>(sizeof(Record))});
+    }
+    auto countGrid = ParticleDispatch(
+        m_count, 1,
+        {{settings, R}, {payload->records, R}, {payload->header, W}, {payload->gridOffsets, W}, {status, RW}});
+    countGrid.proof->reads.back() = {4, sizeof(uint32_t), sizeof(uint32_t)};
+    initialize.push_back(std::move(countGrid));
+    Work result;
+    result.payload = std::move(payload);
+    result.status = status;
+    result.packet =
+        rhi::PrepareComputeBatch(host, std::move(updates), std::move(initialize), {{status, 0, sizeof(ModelWords)}});
+    result.scatter.kernel = m_scatter;
+    result.scatter.buffers = {settings, result.payload->records, result.payload->header, result.payload->gridOffsets};
+    return result;
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuParticleExport::Work::PrepareGrid(rhi::ComputeHost &host)
+{
+    ModelWords info{};
+    packet->Readback(0)->ReadInto(info.data(), sizeof(info));
+    const auto [references, error, count, cells] = info;
+    if (error)
+        return {};
+    if (count != payload->rowCount || cells == 0 || cells > 512 || references > uint64_t{count} * 512u)
+        throw std::runtime_error("inxphygpu returned invalid particle collision grid metadata");
+    payload->gridRefCount = references;
+    payload->gridRefs = AllocateParticleWords(host, uint64_t{std::max(1u, references)} * sizeof(uint32_t));
+    std::vector<rhi::ComputeBufferUpdate> updates;
+    std::vector<rhi::ComputeDispatchDesc> dispatches;
+    if (references) {
+        auto &b = scatter.buffers;
+        auto dispatch =
+            ParticleDispatch(scatter.kernel, (cells + 63u) / 64u,
+                             {{b[0], R}, {b[1], R}, {b[2], R}, {b[3], R}, {payload->gridRefs, W}, {status, RW}});
+        dispatch.proof->reads.back() = {5, sizeof(uint32_t), sizeof(uint32_t)};
+        dispatch.proof->writes.back() = {5, sizeof(uint32_t), sizeof(uint32_t)};
+        dispatches.push_back(std::move(dispatch));
+    } else {
+        const uint32_t invalid = NoModelIndex;
+        updates.push_back({payload->gridRefs, 0, ParticleBytes(&invalid)});
+    }
+    packet =
+        rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches), {{status, 0, sizeof(ModelWords)}});
+    return packet;
+}
+
+std::shared_ptr<particle::GpuParticleCollisionDevicePayload> InxPhyGpuParticleExport::Work::Finish()
+{
+    ModelWords info{};
+    packet->Readback(0)->ReadInto(info.data(), sizeof(info));
+    if (info[1] || info[0] != payload->gridRefCount)
+        throw std::runtime_error("inxphygpu particle collision data could not be published");
+    for (auto *buffer :
+         {&payload->records, &payload->header, &payload->gridOffsets, &payload->gridRefs, &payload->geometry}) {
+        *buffer = (*buffer)->Freeze();
+        (*buffer)->PublishStorage();
+    }
+    payload->geometryLease = payload->geometry;
+    payload->geometryWordRanges = {{0u, payload->geometry->GetByteSize() / sizeof(ModelWords)}};
+    return std::move(payload);
+}
+
+InxPhyGpuParticleGeometry InxPhyGpuPublishedRayQuery::ParticleGeometry() const
+{
+    return {m_particlePoses, m_particleShapes, m_particleCold};
+}
+
+std::vector<rhi::ComputeDispatchDesc> InxPhyGpuPublishedRayQuery::TakeInitialization() const
+{
+    return std::exchange(m_initialize, {});
+}
+
 InxPhyGpuPairQuery::InxPhyGpuPairQuery(rhi::ComputeHost &host, ShaderCodeTarget target)
 {
     StepBuilder builder(host, target, 1);
@@ -1190,6 +1363,9 @@ PreparedInxPhyGpuRayQuery InxPhyGpuPublishedRayQuery::Build(rhi::ComputeHost &ho
     query.m_settings = buffers[ray.settings];
     query.m_inputSettings = buffers[ray.inputSettings];
     query.m_outputSettings = buffers[ray.outputSettings];
+    query.m_particlePoses = buffers[ray.particlePoses];
+    query.m_particleShapes = buffers[ray.particleShapes];
+    query.m_particleCold = buffers[ray.particleCold];
     query.m_pack = BindDispatch(std::move(ray.pack), buffers);
     query.m_project = BindDispatch(std::move(ray.project), buffers);
     query.m_traceAll = BindDispatch(std::move(ray.traceAll), buffers);
@@ -1871,6 +2047,9 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
             publishedRays.m_settings = buffers[raySlots->settings];
             publishedRays.m_inputSettings = buffers[raySlots->inputSettings];
             publishedRays.m_outputSettings = buffers[raySlots->outputSettings];
+            publishedRays.m_particlePoses = buffers[raySlots->particlePoses];
+            publishedRays.m_particleShapes = buffers[raySlots->particleShapes];
+            publishedRays.m_particleCold = buffers[raySlots->particleCold];
             publishedRays.m_pack = BindDispatch(std::move(raySlots->pack), buffers);
             publishedRays.m_project = BindDispatch(std::move(raySlots->project), buffers);
             publishedRays.m_traceAll = BindDispatch(std::move(raySlots->traceAll), buffers);

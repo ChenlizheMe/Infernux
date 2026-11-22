@@ -29,7 +29,6 @@
 #include "JoltGpuContactReports.h"
 #include "JoltGpuJoints.h"
 #include "JoltGpuProgramSources.h"
-#include "JoltGpuQueries.h"
 #include "PhysicsBodyCommand.h"
 #include "PhysicsContactTypes.h"
 #include "PhysicsDomain.h"
@@ -40,6 +39,7 @@
 #include "PhysicsParticipantBodies.h"
 #include "PhysicsShapeAuthoring.h"
 #include "PhysicsShapeLeaves.h"
+#include "inxphygpu/InxPhyGpuParticleExport.h"
 #include "inxphygpu/InxPhyGpuProgramSources.h"
 #include "inxphygpu/InxPhyGpuSceneRuntime.h"
 #include <algorithm>
@@ -66,11 +66,18 @@ namespace infernux
 {
 struct PhysicsSceneRayPlan
 {
+    struct ParticleSurface
+    {
+        particle::GpuParticleCollisionRowKey identity;
+        physics::inxphygpu::InxPhyGpuParticleRow row;
+        bool isStatic;
+    };
     std::shared_ptr<const JoltGpuScene::PublicationDirectory> directory;
     uint32_t bodyBase = 0, bodyCount = 0;
     physics::inxphygpu::InxPhyGpuPublishedRayQuery query;
     std::vector<RaycastHit> surfaces; // Geometry rows, resolved only when a read completes.
     std::map<std::pair<uint64_t, uint64_t>, std::pair<uint32_t, uint32_t>> colliderGeometry;
+    std::optional<std::vector<ParticleSurface>> particleSurfaces;
 
     [[nodiscard]] bool Matches(const JoltGpuScene::Publication &publication) const
     {
@@ -452,7 +459,8 @@ ShaderCodeTarget PhysicsShaderTarget(const rhi::ComputeHost &host)
 }
 
 std::pair<std::unique_ptr<PhysicsSceneRayPlan>, std::vector<rhi::ComputeBufferUpdate>>
-BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publication, uint32_t capacity)
+BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publication, uint32_t capacity,
+                  bool particles = false)
 {
     using namespace physics::inxphygpu;
     auto plan = std::make_unique<PhysicsSceneRayPlan>();
@@ -485,8 +493,16 @@ BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publi
                 members.resize(index + 1);
                 source.colliders.resize(index + 1);
             }
-            source.colliders[index] = {leaf.colliderId, leaf.colliderGeneration, leaf.layer, UINT32_MAX, 0.0f,
-                                       leaf.sensor};
+            source.colliders[index] = {leaf.colliderId,
+                                       leaf.colliderGeneration,
+                                       leaf.layer,
+                                       UINT32_MAX,
+                                       0.0f,
+                                       leaf.sensor,
+                                       leaf.bounciness,
+                                       static_cast<PhysicsMaterialCombine>(leaf.frictionCombine),
+                                       static_cast<PhysicsMaterialCombine>(leaf.bounceCombine)};
+            source.colliders[index].friction = leaf.friction;
             auto &surface = members[index];
             surface.target = leaf.surfaceTarget;
             surface.bodyId = actor.bodyId;
@@ -506,10 +522,31 @@ BuildSceneRayPlan(rhi::ComputeHost &host, const JoltGpuScene::Publication &publi
         authorRows[row] = static_cast<uint32_t>(i);
     }
     plan->surfaces.reserve(model.geometries.size());
+    if (particles)
+        plan->particleSurfaces.emplace().reserve(model.geometries.size());
     for (size_t row = 0; row < model.geometries.size(); ++row) {
         const auto body = model.model.geometries[row].indices[0];
         const auto &geometry = model.geometries[row];
         plan->surfaces.push_back(surfaces[authorRows[body]][geometry.surface]);
+        if (particles) {
+            const auto &surface = plan->surfaces.back();
+            const auto &actor = *directory.actors[publication.bodyBase + poseRows[body]];
+            const auto &material = geometry.collider;
+            const auto &bound = model.collision.bounds[row];
+            plan->particleSurfaces->push_back(
+                {{material.componentId, material.generation, geometry.subShape, 0,
+                  reinterpret_cast<uintptr_t>(actor.authoredShape.GetPtr())},
+                 {{static_cast<uint32_t>(row), NoModelIndex, static_cast<uint32_t>(material.generation),
+                   static_cast<uint32_t>(material.generation >> 32u)},
+                  {static_cast<uint32_t>(material.componentId), static_cast<uint32_t>(material.componentId >> 32u),
+                   static_cast<uint32_t>(surface.gameObjectId), static_cast<uint32_t>(surface.gameObjectId >> 32u)},
+                  {1u << material.layer, static_cast<uint32_t>(material.trigger), 0u, 0u},
+                  bound.halfExtent,
+                  bound.center,
+                  {material.friction, material.bounciness, static_cast<float>(material.frictionCombine),
+                   static_cast<float>(material.bounceCombine)}},
+                 actor.acceptedMotionType == MotionStatic});
+        }
         // CollectPhysicsShapeLeaves orders each body's leaves by collider member.
         const auto key = std::pair{geometry.collider.componentId, geometry.collider.generation};
         const auto first = static_cast<uint32_t>(row);
@@ -798,7 +835,6 @@ JoltGpuScene &PhysicsWorld::EnsureSharedGpuScene()
         auto &host = *m_gpuHost;
         const auto target = PhysicsShaderTarget(host);
         const auto load = [target](JoltGpuProgram program) { return LoadJoltGpuProgram(program, target); };
-        auto queries = std::make_unique<JoltGpuQueries>(host, load(JoltGpuProgram::Queries));
         auto joints = std::make_unique<JoltGpuJoints>(host, load(JoltGpuProgram::Joints));
         auto rendering = std::make_unique<PhysicsGpuRenderPoses>(
             host, physics::inxphygpu::LoadInxPhyGpuProgram("render_poses", target));
@@ -819,7 +855,6 @@ JoltGpuScene &PhysicsWorld::EnsureSharedGpuScene()
             },
             &articulationCapture, &articulationDynamics);
         m_gpuJoints = std::move(joints);
-        m_gpuQueries = std::move(queries);
         m_gpuRenderProgram = std::move(rendering);
         m_gpuContactReports = std::move(reports);
         m_gpuScene = std::move(scene);
@@ -925,7 +960,7 @@ void PhysicsWorld::Shutdown()
     m_gpuContactReports.reset();
     m_gpuRenderProgram.reset();
     m_gpuPairQuery.reset();
-    m_gpuQueries.reset();
+    m_gpuParticleExport.reset();
     m_gpuJoints.reset();
     m_cpuServices.reset();
     m_domains.clear();
@@ -4815,84 +4850,72 @@ std::shared_ptr<particle::GpuParticleCollisionDevicePayload> PhysicsWorld::Prepa
     if (!consumer)
         throw std::invalid_argument("GPU particle collision export requires a live consumer");
     domain.particleCollisionConsumer = consumer;
+    using namespace physics::inxphygpu;
     using RowKey = particle::GpuParticleCollisionRowKey;
-    struct Row
-    {
-        RowKey key;
-        JoltGpuParticleExportRow mapping;
-    };
-    std::shared_ptr<JoltGpuParticleExportResult> exported;
-    std::vector<RowKey> keys;
-    std::exception_ptr error;
+    auto *plan = domain.sceneRays.get();
+    std::unique_ptr<PhysicsSceneRayPlan> replacement;
+    std::shared_ptr<InxPhyGpuParticleExport::Work> work;
     const auto prepareCollisionExport = [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        return PrepareJoltGpuQueryWork(
-            [&]() -> JoltGpuControlWork {
-                std::array<std::vector<Row>, 2> rows;
-                for (uint32_t local = 0; local < publication->leafCount; ++local) {
-                    const uint32_t index = publication->leafBase + local;
-                    const auto &address = publication->directory->leaves[index];
-                    if (address.bodySlot == UINT32_MAX || !publication->directory->residentBodies[address.bodySlot])
-                        continue;
-                    const auto &actor = publication->directory->actors[address.bodySlot];
-                    const auto *owner = actor->owner.target.GetGameObject();
-                    if (!owner || owner->GetScene() != &scene)
-                        continue;
-                    const auto &leaf = actor->leaves[address.actorLeaf];
-                    Row row;
-                    row.key = {leaf.colliderId, leaf.colliderGeneration, leaf.subShapeId, leaf.subShapeBits,
-                               reinterpret_cast<uintptr_t>(leaf.shape.GetPtr())};
-                    row.mapping.selection = {index, InvalidQueryBodySlot,
-                                             static_cast<uint32_t>(leaf.colliderGeneration),
-                                             static_cast<uint32_t>(leaf.colliderGeneration >> 32)};
-                    const auto bounds = leaf.shape->GetLocalBounds();
-                    row.mapping.localBoundsMin = {bounds.mMin.GetX(), bounds.mMin.GetY(), bounds.mMin.GetZ(), 0};
-                    row.mapping.localBoundsMax = {bounds.mMax.GetX(), bounds.mMax.GetY(), bounds.mMax.GetZ(), 0};
-                    row.mapping.identity = {static_cast<uint32_t>(leaf.colliderId),
-                                            static_cast<uint32_t>(leaf.colliderId >> 32),
-                                            static_cast<uint32_t>(leaf.surfaceGameObjectId),
-                                            static_cast<uint32_t>(leaf.surfaceGameObjectId >> 32)};
-                    rows[actor->acceptedMotionType == MotionStatic ? 0 : 1].push_back(std::move(row));
-                }
-                // Preserve accepted leaf order within the two particle table ranges.
-                // This is identity mapping only; all numerical projection stays GPU-side.
-                const auto staticCount = static_cast<uint32_t>(rows[0].size());
-                const bool hasHistory = previous && previous->worldId == publication->worldId &&
-                                        previous->simulationEpoch == publication->simulationEpoch;
-                std::map<RowKey, uint32_t> history;
-                if (hasHistory)
-                    for (uint32_t index = 0; index < previous->rows.size(); ++index)
-                        history.emplace(previous->rows[index], index);
-                std::vector<JoltGpuParticleExportRow> mappings;
-                const auto rowCount = rows[0].size() + rows[1].size();
-                mappings.reserve(rowCount);
-                keys.reserve(rowCount);
-                for (auto &range : rows)
-                    for (auto &row : range) {
-                        if (const auto old = history.find(row.key); old != history.end())
-                            row.mapping.selection.y = old->second;
-                        mappings.push_back(row.mapping);
-                        keys.push_back(row.key);
-                    }
-                const uint64_t topology = !hasHistory ? 1
-                                                      : previous->topologyRevision +
-                                                            static_cast<uint64_t>(previous->rows != keys ||
-                                                                                  previous->staticCount != staticCount);
-                auto prepared = m_gpuQueries->PrepareParticleExport(
-                    publication, mappings, hasHistory ? previous->records : nullptr, staticCount, revision, topology);
-                exported = std::move(prepared.result);
-                return std::move(prepared.work);
-            },
-            error);
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        if (!plan || !plan->Matches(*publication) || !plan->particleSurfaces) {
+            auto prepared = BuildSceneRayPlan(*m_gpuHost, *publication, plan ? plan->query.Capacity() : 64, true);
+            replacement = std::move(prepared.first);
+            uploads = std::move(prepared.second);
+            plan = replacement.get();
+        }
+        auto payload = std::make_shared<particle::GpuParticleCollisionDevicePayload>();
+        payload->worldId = publication->worldId;
+        payload->simulationEpoch = publication->simulationEpoch;
+        payload->revision = revision;
+        payload->retained = publication->directory;
+        const bool hasHistory =
+            previous && previous->worldId == payload->worldId && previous->simulationEpoch == payload->simulationEpoch;
+        std::map<RowKey, uint32_t> history;
+        if (hasHistory)
+            for (uint32_t row = 0; row < previous->rows.size(); ++row)
+                history.emplace(previous->rows[row], row);
+
+        const auto &surfaces = *plan->particleSurfaces;
+        std::array<std::vector<uint32_t>, 2> ordered;
+        for (uint32_t row = 0; row < surfaces.size(); ++row) {
+            const auto *owner = plan->surfaces[row].target.GetGameObject();
+            if (owner && owner->GetScene() == &scene)
+                ordered[surfaces[row].isStatic ? 0 : 1].push_back(row);
+        }
+        payload->staticCount = static_cast<uint32_t>(ordered[0].size());
+        const auto size = ordered[0].size() + ordered[1].size();
+        std::vector<InxPhyGpuParticleRow> rows;
+        rows.reserve(size);
+        payload->rows.reserve(size);
+        for (const auto &range : ordered)
+            for (const auto row : range) {
+                const auto &surface = surfaces[row];
+                payload->rows.push_back(surface.identity);
+                auto &record = rows.emplace_back(surface.row);
+                if (const auto prior = history.find(surface.identity); prior != history.end())
+                    record.selection[1] = prior->second;
+            }
+        payload->topologyRevision =
+            hasHistory
+                ? previous->topologyRevision + static_cast<uint64_t>(previous->rows != payload->rows ||
+                                                                     previous->staticCount != payload->staticCount)
+                : 1u;
+        if (!m_gpuParticleExport)
+            m_gpuParticleExport =
+                std::make_unique<InxPhyGpuParticleExport>(*m_gpuHost, PhysicsShaderTarget(*m_gpuHost));
+        work = std::make_shared<InxPhyGpuParticleExport::Work>(
+            m_gpuParticleExport->Prepare(*m_gpuHost, plan->query.ParticleGeometry(), ScenePoseSource(*publication),
+                                         rows, hasHistory ? previous->records : nullptr, std::move(payload),
+                                         std::move(uploads), plan->query.TakeInitialization()));
+        return JoltGpuControlWork{work->packet,
+                                  [this, work] { return JoltGpuControlWork{work->PrepareGrid(*m_gpuHost)}; }};
     };
     RunControl(domain, prepareCollisionExport, true, true);
-    if (error)
-        std::rethrow_exception(error);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    // A recognized read-only numerical failure is reported outside the world's
-    // source, so a failed export does not poison subsequent simulation steps.
-    exported->Validate();
-    exported->payload->rows = std::move(keys);
-    return std::move(exported->payload);
+    auto result = work->Finish();
+    if (replacement)
+        domain.sceneRays = std::move(replacement);
+    return result;
 }
 
 std::vector<glm::vec3> PhysicsShapeGeometry::GetTriangles() const

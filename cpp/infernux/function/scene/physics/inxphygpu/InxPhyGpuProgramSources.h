@@ -39,6 +39,7 @@ inline constexpr InxPhyGpuProgramSource InxPhyGpuProgramSources[] = {
     {"joint_constraints"},
     {"mass_solve"},
     {"pair_query"},
+    {"particle_collision"},
     {"passive"},
     {"position"},
     {"primitive_contacts"},

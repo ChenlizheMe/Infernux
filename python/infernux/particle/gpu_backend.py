@@ -5468,73 +5468,122 @@ bool inx_collision_mesh(InxParticleCollider collider, float3 previous_world_posi
     return true;
 }}
 
-// The publication binds its immutable GeometryLease at the existing cold
-// vertex port. Hull geometry is a true record reference, not a copied atlas.
-uint inx_hull_index(uint base,uint loops,uint element)
+// Device collision records share the solver's immutable vertex, face and BVH ranges.
+float3 inx_device_collision_vertex(uint base, uint index)
 {{
-    return particle_collision_mesh_vertices[base+loops+element/4u][element%4u];
+    return asfloat(particle_collision_mesh_vertices[base + index]).xyz;
 }}
-float3 inx_hull_vertex(uint base,uint vertices,uint loops,uint element)
+
+uint inx_device_face_vertex(uint links, uint element)
 {{
-    return asfloat(particle_collision_mesh_vertices[base+vertices+inx_hull_index(base,loops,element)]).xyz;
+    return particle_collision_mesh_vertices[links + element / 4u][element % 4u];
 }}
-bool inx_collision_convex(InxParticleCollider collider,float3 previousWorld,float3 world,float worldRadius,
-                          out float3 correctedWorld,out float3 worldNormal)
+
+struct InxDeviceMeshContact
 {{
-    correctedWorld=float3(0); worldNormal=float3(0);
-    uint base=collider.geometry.x;
-    uint4 header=particle_collision_mesh_vertices[base],layout=particle_collision_mesh_vertices[base+1u];
-    uint loops=particle_collision_mesh_vertices[base+2u].x;
-    float3 p=inx_particle_affine_point(collider.world_to_collider,world);
-    float3 previous=inx_particle_affine_point(collider.previous_world_to_collider,previousWorld);
-    float particleRadius=inx_collision_local_radius(collider.world_to_collider,worldRadius);
-    bool startInside=true,endInside=true;float nearest=-3.402823466e38;
-    float3 nearestNormal=float3(0);
-    for(uint face=0;face<header.w;++face) {{
-        float4 plane=asfloat(particle_collision_mesh_vertices[base+layout.z+face]);
-        float inverseLength=rsqrt(dot(plane.xyz,plane.xyz));
-        float from=(dot(plane.xyz,previous)+plane.w)*inverseLength;
-        float distance=(dot(plane.xyz,p)+plane.w)*inverseLength;
-        startInside=startInside && from<=0;endInside=endInside && distance<=0;
-        if(distance>nearest) {{ nearest=distance;nearestNormal=plane.xyz*inverseLength; }}
+    float time;
+    float distanceSquared;
+    float3 sweepNormal;
+    float3 closest;
+    float3 overlapNormal;
+}};
+
+void inx_device_triangle_contact(float3 previous, float3 end, float radius, float3 a, float3 b, float3 c,
+                                  inout InxDeviceMeshContact contact)
+{{
+    const float3 face = cross(b - a, c - a);
+    if (all(face == float3(0.0))) return;
+    float time;
+    float3 normal;
+    if (inx_sweep_triangle(previous, end, radius, a, b, c, time, normal) && time < contact.time) {{
+        contact.time = time;
+        contact.sweepNormal = normal;
     }}
-    if(startInside) {{
-        if(!endInside) return false; // Same solid-convex escape policy as Mesh.
-        p+=(particleRadius-nearest)*nearestNormal;
-        correctedWorld=inx_particle_affine_point(collider.collider_to_world,p);
-        worldNormal=inx_collision_world_normal(collider,nearestNormal);return true;
+    const float3 surface = inx_closest_point_triangle(end, a, b, c);
+    const float3 delta = end - surface;
+    const float distanceSquared = dot(delta, delta);
+    if (distanceSquared < contact.distanceSquared) {{
+        contact.distanceSquared = distanceSquared;
+        contact.closest = surface;
+        contact.overlapNormal = distanceSquared > 0.0 ? delta / sqrt(distanceSquared) : inx_safe_normalize(face);
     }}
-    bool foundSweep=false,foundOverlap=false;float earliest=2.0;
-    float3 earliestNormal=float3(0),closestNormal=float3(0),closestSurface=float3(0);
-    float closestDistanceSquared=particleRadius*particleRadius;
-    // Full native face loops, no supporting-face decimation or triangle cap.
-    // Native convex topology is immutable CPU cook; every distance/sweep below
-    // is the existing actual GPU triangle operation in this particle dispatch.
-    for(uint face=0;face<header.w;++face) {{
-        uint4 directory=particle_collision_mesh_vertices[base+layout.w+face];
-        float3 a=inx_hull_vertex(base,layout.x,loops,directory.x);
-        for(uint corner=1u;corner+1u<directory.y;++corner) {{
-            float3 b=inx_hull_vertex(base,layout.x,loops,directory.x+corner);
-            float3 c=inx_hull_vertex(base,layout.x,loops,directory.x+corner+1u);
-            if(all(cross(b-a,c-a)==float3(0))) continue; // Zero-area fan pieces add no surface.
-            float time;float3 normal;
-            if(inx_sweep_triangle(previous,p,particleRadius,a,b,c,time,normal) && time<earliest) {{
-                earliest=time;earliestNormal=normal;foundSweep=true;
-            }}
-            float3 surface=inx_closest_point_triangle(p,a,b,c),delta=p-surface;
-            float distanceSquared=dot(delta,delta);
-            if(distanceSquared<closestDistanceSquared) {{
-                closestDistanceSquared=distanceSquared;closestSurface=surface;
-                closestNormal=distanceSquared>0?delta/sqrt(distanceSquared):inx_safe_normalize(cross(b-a,c-a));foundOverlap=true;
+}}
+
+bool inx_collision_device_mesh(InxParticleCollider collider, float3 previousWorld, float3 world, float worldRadius,
+                                out float3 correctedWorld, out float3 worldNormal)
+{{
+    correctedWorld = float3(0.0);
+    worldNormal = float3(0.0);
+    const float3 p = inx_particle_affine_point(collider.world_to_collider, world);
+    const float3 previous = inx_particle_affine_point(collider.previous_world_to_collider, previousWorld);
+    const float radius = inx_collision_local_radius(collider.world_to_collider, worldRadius);
+    const uint4 ranges = particle_collision_mesh_vertices[2];
+    InxDeviceMeshContact contact = {{2.0, radius * radius, float3(0.0), float3(0.0), float3(0.0)}};
+    if (collider.metadata.x == 6u) {{
+        const uint4 hull = particle_collision_mesh_vertices[ranges.z + collider.geometry.x];
+        const uint vertices = ranges.x + collider.geometry.y;
+        bool startInside = true, endInside = true;
+        float nearest = -3.402823466e38;
+        float3 nearestNormal = float3(0.0);
+        for (uint face = hull.x; face < hull.y; ++face) {{
+            const uint4 entry = particle_collision_mesh_vertices[ranges.z + face];
+            const float3 outward = inx_device_collision_vertex(ranges.x, entry.z);
+            const uint point = inx_device_face_vertex(ranges.w, entry.x);
+            const float3 vertex = inx_device_collision_vertex(vertices, point);
+            const float distance = dot(outward, p - vertex);
+            startInside = startInside && dot(outward, previous - vertex) <= 0.0;
+            endInside = endInside && distance <= 0.0;
+            if (distance > nearest) {{ nearest = distance; nearestNormal = outward; }}
+        }}
+        if (startInside) {{
+            if (!endInside) return false;
+            correctedWorld = inx_particle_affine_point(collider.collider_to_world,
+                                                        p + (radius - nearest) * nearestNormal);
+            worldNormal = inx_collision_world_normal(collider, nearestNormal);
+            return true;
+        }}
+        for (uint face = hull.x; face < hull.y; ++face) {{
+            const uint4 entry = particle_collision_mesh_vertices[ranges.z + face];
+            const float3 a = inx_device_collision_vertex(vertices, inx_device_face_vertex(ranges.w, entry.x));
+            for (uint corner = 1u; corner + 1u < entry.y; ++corner) {{
+                const float3 b = inx_device_collision_vertex(vertices, inx_device_face_vertex(ranges.w, entry.x + corner));
+                const float3 c = inx_device_collision_vertex(vertices, inx_device_face_vertex(ranges.w, entry.x + corner + 1u));
+                inx_device_triangle_contact(previous, p, radius, a, b, c, contact);
             }}
         }}
+    }} else {{
+        const uint base = particle_collision_mesh_vertices[4].x;
+        const uint4 tree = particle_collision_mesh_vertices[base + collider.geometry.x];
+        const float3 low = min(p, previous) - radius, high = max(p, previous) + radius;
+        for (uint node = 0u; node < tree.z;) {{
+            const uint address = base + tree.x + 2u * node;
+            const uint4 lower = particle_collision_mesh_vertices[address];
+            const uint4 upper = particle_collision_mesh_vertices[address + 1u];
+            const bool near = all(low <= asfloat(upper.xyz)) && all(high >= asfloat(lower.xyz));
+            if ((upper.w & 0x80000000u) == 0u) {{
+                node = near ? lower.w : upper.w;
+                continue;
+            }}
+            if (near) {{
+                const uint last = lower.w + (upper.w & 0x7fffffffu);
+                for (uint row = lower.w; row < last; ++row) {{
+                    const uint3 indices = particle_collision_mesh_vertices[base + tree.y + row].xyz;
+                    inx_device_triangle_contact(previous, p, radius,
+                        inx_device_collision_vertex(ranges.x, indices.x),
+                        inx_device_collision_vertex(ranges.x, indices.y),
+                        inx_device_collision_vertex(ranges.x, indices.z), contact);
+                }}
+            }}
+            ++node;
+        }}
     }}
-    float3 normal;
-    if(foundSweep) {{ p=lerp(previous,p,earliest);normal=earliestNormal; }}
-    else if(foundOverlap) {{ p=closestSurface+particleRadius*closestNormal;normal=closestNormal; }}
-    else return false;
-    correctedWorld=inx_particle_affine_point(collider.collider_to_world,p);
-    worldNormal=inx_collision_world_normal(collider,normal);return true;
+    if (contact.time > 1.0 && contact.distanceSquared >= radius * radius) return false;
+    const bool swept = contact.time <= 1.0;
+    const float3 normal = swept ? contact.sweepNormal : contact.overlapNormal;
+    const float3 local = swept ? lerp(previous, p, contact.time) : contact.closest + radius * normal;
+    correctedWorld = inx_particle_affine_point(collider.collider_to_world, local);
+    worldNormal = inx_collision_world_normal(collider, normal);
+    return true;
 }}
 
 // Exact signed distance to disk(R) x interval[-H,H]. The convex radius is
@@ -5982,8 +6031,8 @@ bool inx_collide_scene(uint particle_index, inout float3 simulation_position, in
                                    ? inx_collision_cylinder(collider, previous_world_position,
                                                             world_position, world_radius,
                                                             corrected_world_position, world_normal)
-                               : collider.metadata.x == 6u
-                                   ? inx_collision_convex(collider, previous_world_position,
+                               : (collider.metadata.x == 6u || collider.metadata.x == 7u)
+                                   ? inx_collision_device_mesh(collider, previous_world_position,
                                                           world_position, world_radius,
                                                           corrected_world_position, world_normal)
                                    : false;

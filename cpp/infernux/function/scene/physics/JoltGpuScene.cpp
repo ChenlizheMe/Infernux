@@ -31,6 +31,25 @@
 
 namespace infernux
 {
+JoltGpuControlWork PrepareJoltGpuQueryWork(std::function<JoltGpuControlWork()> prepare, std::exception_ptr &error)
+{
+    try {
+        auto work = prepare();
+        const auto observe = [&error](std::function<JoltGpuControlWork()> &resume) {
+            if (resume)
+                resume = [next = std::move(resume), &error]() mutable {
+                    return PrepareJoltGpuQueryWork(std::move(next), error);
+                };
+        };
+        observe(work.continueWork);
+        observe(work.prepareMinimum);
+        return work;
+    } catch (const JoltGpuQueryRequestError &) {
+        error = std::current_exception();
+        return {};
+    }
+}
+
 namespace
 {
 using namespace JPH::GPU;

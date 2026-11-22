@@ -139,6 +139,7 @@ struct InxPhyGpuDeviceRays
 };
 
 struct PreparedInxPhyGpuRayQuery;
+struct InxPhyGpuParticleGeometry;
 
 class InxPhyGpuPairQuery final
 {
@@ -189,6 +190,8 @@ class InxPhyGpuPublishedRayQuery
     {
         return m_capacity;
     }
+    [[nodiscard]] InxPhyGpuParticleGeometry ParticleGeometry() const;
+    [[nodiscard]] std::vector<rhi::ComputeDispatchDesc> TakeInitialization() const;
 
   private:
     friend class InxPhyGpuStep;
@@ -196,6 +199,7 @@ class InxPhyGpuPublishedRayQuery
     std::shared_ptr<rhi::ComputeBuffer> m_inputs, m_settings, m_inputSettings, m_outputSettings;
     std::shared_ptr<rhi::ComputeBuffer> m_boundsRequest, m_boundsMask, m_closestRequest, m_closestResult;
     std::shared_ptr<rhi::ComputeBuffer> m_overlapRequest, m_overlapMask;
+    std::shared_ptr<rhi::ComputeBuffer> m_particlePoses, m_particleShapes, m_particleCold;
     rhi::ComputeDispatchDesc m_geometry, m_pack, m_project, m_traceAll;
     rhi::ComputeDispatchDesc m_selectBounds, m_closest, m_overlap;
     mutable rhi::ComputeDispatchDesc m_shapeCast;

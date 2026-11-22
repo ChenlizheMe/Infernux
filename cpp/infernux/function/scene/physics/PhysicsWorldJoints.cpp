@@ -3,7 +3,6 @@
 #include "JointSettings.h"
 #include "JoltCpuControl.h"
 #include "JoltGpuJoints.h"
-#include "JoltGpuQueries.h"
 #include "PhysicsDomain.h"
 #include "PhysicsWorld.h"
 

@@ -19,7 +19,6 @@ enum class JoltGpuProgram
     Step,
     BodyMutations,
     BodyCommands,
-    Queries,
     Joints,
     Broadphase,
     Narrowphase,

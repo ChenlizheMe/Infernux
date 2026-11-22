@@ -48,7 +48,6 @@ class PhysicsGpuRenderPoses;
 class JoltGpuContactReports;
 class Infernux;
 class JoltGpuScene;
-class JoltGpuQueries;
 class JoltCpuQueries;
 class JoltGpuJoints;
 struct PhysicsGpuMotionRead;
@@ -74,6 +73,7 @@ struct InxPhyGpuRay;
 struct InxPhyGpuDeviceRays;
 struct InxPhyGpuPreparedRayBatch;
 class InxPhyGpuPairQuery;
+class InxPhyGpuParticleExport;
 } // namespace physics::inxphygpu
 } // namespace infernux
 
@@ -968,7 +968,6 @@ class PhysicsWorld
     FrameWorkOwner *m_gpuWork = nullptr;
     std::unique_ptr<JoltGpuJoints> m_gpuJoints;
     std::unique_ptr<JoltGpuScene> m_gpuScene;
-    std::unique_ptr<JoltGpuQueries> m_gpuQueries;
     std::unique_ptr<PhysicsGpuRenderPoses> m_gpuRenderProgram;
     std::unique_ptr<JoltGpuContactReports> m_gpuContactReports;
     // Live component ownership is independent of a backend's numerical slots
@@ -977,6 +976,7 @@ class PhysicsWorld
     std::unordered_map<uint64_t, PhysicsDomain *> m_cpuJointDomains;
     std::unordered_set<PhysicsDomain *> m_domains;
     mutable std::unique_ptr<physics::inxphygpu::InxPhyGpuPairQuery> m_gpuPairQuery;
+    mutable std::unique_ptr<physics::inxphygpu::InxPhyGpuParticleExport> m_gpuParticleExport;
 };
 
 } // namespace infernux
