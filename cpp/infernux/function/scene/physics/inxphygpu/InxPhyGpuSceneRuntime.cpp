@@ -70,6 +70,30 @@ struct InxPhyGpuSceneLayout
     std::vector<PhysicsGpuMotionBinding> motion;
     std::vector<Drive> drive;
 
+    [[nodiscard]] RaycastHit ResolveHit(uint32_t world, const InxPhyGpuRayHit &record) const
+    {
+        RaycastHit hit;
+        const auto geometry = record.identity[0];
+        if (geometry == NoModelIndex)
+            return hit;
+        const auto &leaf = geometries[geometry];
+        const auto &binding = worlds[world].bodies[leaf.body];
+        hit.distance = record.normalDistance[3];
+        hit.normal = {record.normalDistance[0], record.normalDistance[1], record.normalDistance[2]};
+        hit.bodyId = binding.bodyId;
+        hit.subShapeId = record.identity[2];
+        hit.triangleIndex = record.identity[3];
+        if (!binding.surfaces.empty()) {
+            const auto &surface = binding.surfaces[leaf.surface];
+            hit.target = surface.target;
+            hit.gameObjectId = surface.gameObjectId;
+            hit.colliderId = surface.colliderId;
+            hit.gameObject = hit.target.GetGameObject();
+            hit.collider = hit.target.GetCollider();
+        }
+        return hit;
+    }
+
     [[nodiscard]] std::optional<std::pair<uint32_t, uint32_t>> ColliderRange(uint32_t world, uint32_t body, uint64_t id,
                                                                              uint64_t generation) const
     {
@@ -303,35 +327,49 @@ std::vector<RaycastHit> InxPhyGpuSceneRayBatch::ReadHostHits(uint32_t *total) co
         throw std::logic_error("inxphygpu scene ray batch has no host results");
     std::vector<InxPhyGpuRayHit> records(m_allHitCapacity ? size_t{m_allHitCapacity} + 1 : query.count);
     query.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(InxPhyGpuRayHit));
-    const auto &world = m_layout->worlds[m_world];
     const auto count = m_allHitCapacity ? records.front().identity[0] : query.count;
     if (total)
         *total = count;
     std::vector<RaycastHit> hits(m_allHitCapacity ? std::min(count, m_allHitCapacity) : count);
     for (size_t index = 0; index < hits.size(); ++index) {
-        const auto &record = records[index + (m_allHitCapacity != 0)];
-        const auto &[geometry, body, subShape, triangle] = record.identity;
-        if (geometry == NoModelIndex)
-            continue;
-        const auto &binding = world.bodies[body];
-        const auto &line = m_lines[m_allHitCapacity ? 0 : index];
         auto &hit = hits[index];
-        hit.distance = record.normalDistance[3];
-        hit.point = line.origin + line.direction * hit.distance;
-        hit.normal = {record.normalDistance[0], record.normalDistance[1], record.normalDistance[2]};
-        hit.bodyId = binding.bodyId;
-        hit.subShapeId = subShape;
-        hit.triangleIndex = triangle;
-        if (!binding.surfaces.empty()) {
-            const auto &surface = binding.surfaces[m_layout->geometries[geometry].surface];
-            hit.target = surface.target;
-            hit.gameObjectId = surface.gameObjectId;
-            hit.colliderId = surface.colliderId;
-            hit.gameObject = hit.target.GetGameObject();
-            hit.collider = hit.target.GetCollider();
-        }
+        hit = m_layout->ResolveHit(m_world, records[index + (m_allHitCapacity != 0)]);
+        const auto &line = m_lines[m_allHitCapacity ? 0 : index];
+        if (hit.bodyId != UINT32_MAX)
+            hit.point = line.origin + line.direction * hit.distance;
     }
     return hits;
+}
+
+std::vector<Collider *> InxPhyGpuSceneVolumeRead::ReadOverlaps() const
+{
+    std::vector<Collider *> colliders;
+    if (!packet)
+        return colliders;
+    const auto &world = m_layout->worlds[m_world];
+    const auto count = static_cast<uint32_t>(m_layout->geometries.size());
+    for (const auto row : ReadInxPhyGpuSelection(*packet, count)) {
+        const auto &leaf = m_layout->geometries[row];
+        const auto &surfaces = world.bodies[leaf.body].surfaces;
+        if (!surfaces.empty())
+            if (auto *collider = surfaces[leaf.surface].target.GetCollider())
+                colliders.push_back(collider);
+    }
+    return colliders;
+}
+
+RaycastHit InxPhyGpuSceneVolumeRead::ReadCast() const
+{
+    if (!packet)
+        return {};
+    InxPhyGpuShapeCastHit record;
+    packet->Readback(0)->ReadInto(&record, sizeof(record));
+    if (record.point[3] != 0.0f)
+        throw std::runtime_error("inxphygpu shape cast did not converge");
+    auto hit = m_layout->ResolveHit(m_world, record.surface);
+    if (hit.bodyId != UINT32_MAX)
+        hit.point = {record.point[0], record.point[1], record.point[2]};
+    return hit;
 }
 
 InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeHost &host, ShaderCodeTarget target,
@@ -1175,6 +1213,58 @@ InxPhyGpuSceneRuntime::PrepareClosestPoint(const InxPhyGpuFixedPublication &publ
         return {};
     return m_step->PreparePublishedClosestPoint(publication.PoseSource(world), point, range->first, range->second,
                                                 closedMesh);
+}
+
+InxPhyGpuSceneVolumeRead InxPhyGpuSceneRuntime::PrepareOverlap(const InxPhyGpuFixedPublication &publication,
+                                                               uint32_t world, const InxPhyGpuQueryVolume &volume) const
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu overlap does not match its scene publication");
+    InxPhyGpuSceneVolumeRead result;
+    result.packet = m_step->PreparePublishedOverlap(publication.PoseSource(world), volume);
+    result.m_layout = m_layout;
+    result.m_world = world;
+    return result;
+}
+
+InxPhyGpuSceneVolumeRead InxPhyGpuSceneRuntime::PrepareShapeCast(const InxPhyGpuFixedPublication &publication,
+                                                                 uint32_t world, const InxPhyGpuQueryVolume &volume,
+                                                                 const ModelVector &motion, float maximum,
+                                                                 const InxPhyGpuSceneSweepSource *swept,
+                                                                 const PhysicsColliderPairs &ignored) const
+{
+    if (publication.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu shape cast does not match its scene publication");
+    const auto &selected = m_layout->worlds.at(world);
+    const auto &geometries = m_layout->geometries;
+    std::vector<ModelWords> exclusions;
+    if (swept) {
+        const auto self = std::pair{swept->colliderId, swept->generation};
+        const auto ownsBody = m_layout->ColliderRange(world, swept->bodyId, self.first, self.second).has_value();
+        exclusions.resize((geometries.size() + 127) / 128);
+        for (uint32_t row = 0; row < geometries.size(); ++row) {
+            const auto &leaf = geometries[row];
+            const auto &body = selected.bodies[leaf.body];
+            bool exclude = ownsBody && body.bodyId == swept->bodyId;
+            if (!exclude && !body.surfaces.empty()) {
+                const auto &surface = body.surfaces[leaf.surface];
+                const auto other = std::pair{surface.colliderId, surface.generation};
+                const auto [first, second] = std::minmax(self, other);
+                const PhysicsColliderPair pair{first.first, first.second, second.first, second.second};
+                exclude = swept->gameObjectId == surface.gameObjectId ||
+                          std::binary_search(ignored.begin(), ignored.end(), pair);
+            }
+            if (exclude)
+                exclusions[row / 128][(row / 32) % 4] |= uint32_t{1} << (row % 32);
+        }
+    }
+    InxPhyGpuSceneVolumeRead result;
+    result.packet =
+        m_step->PreparePublishedShapeCast(m_target, publication.PoseSource(world), volume, motion, maximum, exclusions,
+                                          [&](uint32_t row) { return selected.bodies[geometries[row].body].bodyId; });
+    result.m_layout = m_layout;
+    result.m_world = world;
+    return result;
 }
 
 std::vector<uint32_t> InxPhyGpuSceneBodyBoundsRead::ReadHostBodyIds() const

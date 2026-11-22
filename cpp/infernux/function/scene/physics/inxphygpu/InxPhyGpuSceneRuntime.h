@@ -189,6 +189,25 @@ struct InxPhyGpuSceneBodyBoundsRead
     uint32_t m_world = 0;
 };
 
+struct InxPhyGpuSceneVolumeRead
+{
+    std::shared_ptr<rhi::PreparedComputeBatch> packet;
+
+    [[nodiscard]] std::vector<Collider *> ReadOverlaps() const;
+    [[nodiscard]] RaycastHit ReadCast() const;
+
+  private:
+    friend class InxPhyGpuSceneRuntime;
+    std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
+    uint32_t m_world = 0;
+};
+
+struct InxPhyGpuSceneSweepSource
+{
+    uint32_t bodyId;
+    uint64_t colliderId, generation, gameObjectId;
+};
+
 /// Fixed-step source for one compiled layout and its enrolled scene worlds.
 /// Admission and receipt collection use the engine's FrameWorkOwner.
 class InxPhyGpuSceneRuntime final
@@ -284,6 +303,13 @@ class InxPhyGpuSceneRuntime final
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PrepareClosestPoint(const InxPhyGpuFixedPublication &publication, uint32_t world, uint32_t bodyId,
                         uint64_t colliderId, uint64_t generation, const ModelVector &point, bool closedMesh) const;
+    [[nodiscard]] InxPhyGpuSceneVolumeRead PrepareOverlap(const InxPhyGpuFixedPublication &publication, uint32_t world,
+                                                          const InxPhyGpuQueryVolume &volume) const;
+    [[nodiscard]] InxPhyGpuSceneVolumeRead PrepareShapeCast(const InxPhyGpuFixedPublication &publication,
+                                                            uint32_t world, const InxPhyGpuQueryVolume &volume,
+                                                            const ModelVector &motion, float maximum,
+                                                            const InxPhyGpuSceneSweepSource *swept,
+                                                            const PhysicsColliderPairs &ignored) const;
     [[nodiscard]] PublicationWork
     PrepareParticleCollision(const InxPhyGpuFixedPublication &publication, uint32_t world, const Scene *scene,
                              const std::shared_ptr<const particle::GpuParticleCollisionDevicePayload> &previous,

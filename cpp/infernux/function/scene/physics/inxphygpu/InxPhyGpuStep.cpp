@@ -2413,6 +2413,8 @@ InxPhyGpuPublishedRayQuery::PrepareOverlap(rhi::ComputeHost &host, const Physics
                                            const InxPhyGpuQueryVolume &query,
                                            std::vector<rhi::ComputeBufferUpdate> updates) const
 {
+    if (!m_overlap.kernel || !query.layers)
+        return {};
     const ModelWords settings{m_geometryCount, 0, 0, static_cast<uint32_t>(source.firstRow)};
     auto &frame = updates.emplace_back(rhi::ComputeBufferUpdate{m_settings, 0, std::vector<uint8_t>(sizeof(settings))});
     std::memcpy(frame.data.data(), settings.data(), sizeof(settings));
@@ -2429,6 +2431,23 @@ InxPhyGpuPublishedRayQuery::PrepareOverlap(rhi::ComputeHost &host, const Physics
                                     {{m_overlapMask, 0, m_overlapMask->GetByteSize()}});
 }
 
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuStep::PreparePublishedOverlap(const PhysicsGpuPoseSource &source, const InxPhyGpuQueryVolume &volume) const
+{
+    auto host = m_work->GetRecipe().GetHost();
+    return m_publishedRays.PrepareOverlap(host, source, volume, {});
+}
+
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuStep::PreparePublishedShapeCast(ShaderCodeTarget target, const PhysicsGpuPoseSource &source,
+                                         const InxPhyGpuQueryVolume &volume, const ModelVector &direction,
+                                         float maximum, const std::vector<ModelWords> &exclusions,
+                                         const std::function<uint32_t(uint32_t)> &bodyId) const
+{
+    auto host = m_work->GetRecipe().GetHost();
+    return m_publishedRays.PrepareShapeCast(host, target, source, volume, direction, maximum, exclusions, bodyId, {});
+}
+
 std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuPublishedRayQuery::PrepareShapeCast(
     rhi::ComputeHost &host, ShaderCodeTarget target, const PhysicsGpuPoseSource &source,
     const InxPhyGpuQueryVolume &volume, const ModelVector &direction, float maximum,
@@ -2441,31 +2460,31 @@ std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuPublishedRayQuery::PrepareSh
         ModelVector size, direction;
         ModelWords filter;
     };
+    if (!m_overlap.kernel || !volume.layers)
+        return {};
     Parameters request{volume.pose,
                        volume.size,
                        direction,
                        {m_geometryCount, volume.layers,
                         static_cast<uint32_t>(volume.triggers) | (exclusions.empty() ? 0u : 2u), volume.type}};
     request.originLimit.position[3] = maximum;
+    const auto allocate = [&](uint64_t words, BufferUsageFlags usage = BufferUsageFlags::None) {
+        auto buffer = ComputeBuffer::TryCreatePrivate(host, {words, ComputeScalarType::UInt32, 1, usage});
+        if (!buffer)
+            throw std::runtime_error("Could not allocate inxphygpu shape cast storage");
+        return buffer;
+    };
+    // Stable body IDs follow the request and the optional per-row exclusion bits.
+    const uint64_t identityOffset = sizeof(Parameters) + sizeof(ModelWords) * ((uint64_t{m_geometryCount} + 127) / 128);
+    const uint64_t identityBytes = sizeof(ModelWords) * ((uint64_t{m_geometryCount} + 3) / 4);
     if (!m_shapeCast.kernel) {
         constexpr uint32_t workers = 16, records = 2 * 101 + 1158, horizon = 512;
-        const auto allocate = [&](uint64_t words, BufferUsageFlags usage = BufferUsageFlags::None) {
-            auto buffer = ComputeBuffer::TryCreatePrivate(host, {words, ComputeScalarType::UInt32, 1, usage});
-            if (!buffer)
-                throw std::runtime_error("Could not allocate inxphygpu shape cast storage");
-            return buffer;
-        };
-        // Stable body IDs follow the request and the optional per-row exclusion bits.
-        const uint64_t identityOffset =
-            sizeof(Parameters) + sizeof(ModelWords) * ((uint64_t{m_geometryCount} + 127) / 128);
-        const uint64_t identityBytes = sizeof(ModelWords) * ((uint64_t{m_geometryCount} + 3) / 4);
-        const auto requestWords = (identityOffset + identityBytes) / sizeof(uint32_t);
         const auto result =
             allocate(sizeof(InxPhyGpuShapeCastHit) / sizeof(uint32_t), BufferUsageFlags::TransferSource);
         ComputeDispatchDesc dispatch;
         // The accepted geometry prefix is shared by overlaps and casts.
         dispatch.buffers.assign(m_overlap.buffers.begin(), m_overlap.buffers.begin() + 4);
-        dispatch.buffers.push_back(allocate(requestWords, BufferUsageFlags::TransferDestination));
+        dispatch.buffers.emplace_back();
         dispatch.buffers.push_back(result);
         dispatch.buffers.push_back(allocate(workers * records * 4));
         dispatch.buffers.push_back(allocate(workers * horizon));
@@ -2477,15 +2496,23 @@ std::shared_ptr<rhi::PreparedComputeBatch> InxPhyGpuPublishedRayQuery::PrepareSh
         dispatch.proof->writes.push_back({5, 0, result->GetByteSize()});
         StepBuilder builder(host, target, 1);
         dispatch.kernel = builder.Kernel("shape_cast", "cast_scene_shapes", {0, 1, 2, 3, 4, 5, 6, 7});
+        m_shapeCast = std::move(dispatch);
+    }
+    // Clone worlds share numerical buffers, but each owns different public IDs.
+    auto &requestBuffer = m_shapeCastRequests[source.firstRow];
+    if (!requestBuffer)
+        requestBuffer =
+            allocate((identityOffset + identityBytes) / sizeof(uint32_t), BufferUsageFlags::TransferDestination);
+    if (!requestBuffer->GetLastWriteSubmission().IsValid()) {
         auto &identity = updates.emplace_back(
-            ComputeBufferUpdate{dispatch.buffers[4], identityOffset, std::vector<uint8_t>(identityBytes)});
+            ComputeBufferUpdate{requestBuffer, identityOffset, std::vector<uint8_t>(identityBytes)});
         for (uint32_t row = 0; row < m_geometryCount; ++row) {
             const uint32_t id = bodyId(row);
             std::memcpy(identity.data.data() + row * sizeof(id), &id, sizeof(id));
         }
-        m_shapeCast = std::move(dispatch);
     }
     auto cast = m_shapeCast;
+    cast.buffers[4] = requestBuffer;
     const size_t requestBytes = sizeof(request) + exclusions.size() * sizeof(ModelWords);
     cast.proof->reads.back().byteSize = requestBytes;
     auto &parameters =

@@ -2598,34 +2598,44 @@ std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, cons
                                                      uint32_t layers, bool triggers) const
 {
     const auto request = QueryVolume(shape, layers, triggers);
-    SealSpatialQuery(domain);
-    if (domain.cpuScene)
-        return JoltCpuQueries(*domain.cpuScene).Overlap(shape, {layers, triggers});
-    const auto gpu = ReadGpuSpatialQueryPublication(domain);
     std::vector<Collider *> colliders;
-    if (!gpu || !layers)
-        return colliders;
-    std::unique_ptr<PhysicsSceneRayPlan> replacement;
-    auto *plan = domain.sceneRays.get();
-    std::shared_ptr<rhi::PreparedComputeBatch> result;
-    ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
-        std::vector<rhi::ComputeBufferUpdate> uploads;
-        if (!plan || !plan->Matches(*accepted)) {
-            auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
-            replacement = std::move(prepared.first);
-            uploads = std::move(prepared.second);
-            plan = replacement.get();
-        }
-        result = plan->query.PrepareOverlap(*m_gpuHost, ScenePoseSource(*accepted), request, std::move(uploads));
-        return JoltGpuControlWork{result};
-    });
-    if (replacement)
-        domain.sceneRays = std::move(replacement);
-    FrameWorkOwner::Scope materialize(*m_gpuWork);
-    for (const auto row :
-         physics::inxphygpu::ReadInxPhyGpuSelection(*result, static_cast<uint32_t>(plan->surfaces.size())))
-        if (auto *collider = plan->surfaces[row].target.GetCollider())
-            colliders.push_back(collider);
+    if (domain.nativeRuntime) {
+        const auto &publication = ReadInxPhyGpuQueryPublication(domain);
+        const auto query = domain.nativeRuntime->PrepareOverlap(publication, 0, request);
+        if (!query.packet)
+            return {};
+        RunPreparedWork(domain, query.packet);
+        FrameWorkOwner::Scope materialize(*m_gpuWork);
+        colliders = query.ReadOverlaps();
+    } else {
+        SealSpatialQuery(domain);
+        if (domain.cpuScene)
+            return JoltCpuQueries(*domain.cpuScene).Overlap(shape, {layers, triggers});
+        const auto gpu = ReadGpuSpatialQueryPublication(domain);
+        if (!gpu || !layers)
+            return {};
+        std::unique_ptr<PhysicsSceneRayPlan> replacement;
+        auto *plan = domain.sceneRays.get();
+        std::shared_ptr<rhi::PreparedComputeBatch> result;
+        ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
+            std::vector<rhi::ComputeBufferUpdate> uploads;
+            if (!plan || !plan->Matches(*accepted)) {
+                auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
+                replacement = std::move(prepared.first);
+                uploads = std::move(prepared.second);
+                plan = replacement.get();
+            }
+            result = plan->query.PrepareOverlap(*m_gpuHost, ScenePoseSource(*accepted), request, std::move(uploads));
+            return JoltGpuControlWork{result};
+        });
+        if (replacement)
+            domain.sceneRays = std::move(replacement);
+        FrameWorkOwner::Scope materialize(*m_gpuWork);
+        for (const auto row :
+             physics::inxphygpu::ReadInxPhyGpuSelection(*result, static_cast<uint32_t>(plan->surfaces.size())))
+            if (auto *collider = plan->surfaces[row].target.GetCollider())
+                colliders.push_back(collider);
+    }
     std::sort(colliders.begin(), colliders.end(),
               [](const auto *a, const auto *b) { return a->GetComponentID() < b->GetComponentID(); });
     colliders.erase(std::unique(colliders.begin(), colliders.end()), colliders.end());
@@ -2638,9 +2648,11 @@ bool PhysicsWorld::QueryClosestCast(PhysicsDomain &domain, const JoltCpuQueries:
 {
     const auto volume = QueryVolume(shape, layers, triggers);
     ValidateRayInput({volume.pose.position[0], volume.pose.position[1], volume.pose.position[2]}, direction, maximum);
-    SealSpatialQuery(domain);
-    if (domain.cpuScene)
-        return JoltCpuQueries(*domain.cpuScene).Cast(shape, direction, maximum, hit, {layers, triggers});
+    if (!domain.nativeRuntime) {
+        SealSpatialQuery(domain);
+        if (domain.cpuScene)
+            return JoltCpuQueries(*domain.cpuScene).Cast(shape, direction, maximum, hit, {layers, triggers});
+    }
     return RunGpuShapeCast(domain, volume, direction, maximum, hit);
 }
 
@@ -2650,12 +2662,32 @@ bool PhysicsWorld::RunGpuShapeCast(PhysicsDomain &domain, const physics::inxphyg
 {
     using namespace physics::inxphygpu;
     hit = {};
-    const auto gpu = ReadGpuSpatialQueryPublication(domain);
-    if (!gpu || !volume.layers)
+    if (!volume.layers)
         return false;
     const glm::dvec3 delta(direction);
     const auto unit = glm::vec3(delta / std::hypot(delta.x, delta.y, delta.z));
     const ModelVector motion{unit.x, unit.y, unit.z, swept ? 1.0e-3f : 0.0f};
+    if (domain.nativeRuntime) {
+        const auto &publication = ReadInxPhyGpuQueryPublication(domain);
+        InxPhyGpuSceneVolumeRead query;
+        if (swept) {
+            const InxPhyGpuSceneSweepSource source{ColliderBodyIdentity(*swept), swept->GetComponentID(),
+                                                   swept->GetLifetimeGeneration(), swept->GetGameObject()->GetID()};
+            query = domain.nativeRuntime->PrepareShapeCast(publication, 0, volume, motion, maximum, &source,
+                                                           *CaptureColliderPairs(domain));
+        } else {
+            query = domain.nativeRuntime->PrepareShapeCast(publication, 0, volume, motion, maximum, nullptr, {});
+        }
+        if (!query.packet)
+            return false;
+        RunPreparedWork(domain, query.packet);
+        FrameWorkOwner::Scope materialize(*m_gpuWork);
+        hit = query.ReadCast();
+        return hit.bodyId != UINT32_MAX;
+    }
+    const auto gpu = ReadGpuSpatialQueryPublication(domain);
+    if (!gpu)
+        return false;
     std::unique_ptr<PhysicsSceneRayPlan> replacement;
     auto *plan = domain.sceneRays.get();
     std::shared_ptr<rhi::PreparedComputeBatch> result;
@@ -5188,9 +5220,11 @@ bool PhysicsWorld::SweepBox(const BoxCollider &box, const glm::vec3 &position, c
         return false;
     if (distance > std::numeric_limits<float>::max())
         throw std::invalid_argument("BoxCollider sweep displacement exceeds device coordinates");
-    SealSpatialQuery(domain);
-    if (domain.cpuScene)
-        return JoltCpuQueries(*domain.cpuScene).SweepBox(box, position, rotation, displacement, hit);
+    if (!domain.nativeRuntime) {
+        SealSpatialQuery(domain);
+        if (domain.cpuScene)
+            return JoltCpuQueries(*domain.cpuScene).SweepBox(box, position, rotation, displacement, hit);
+    }
     const auto layers = TagLayerManager::Instance().GetLayerCollisionMask(object->GetLayer());
     const auto volume = CookBoxSweep(box, position, rotation, layers);
     return volume && RunGpuShapeCast(domain, *volume, displacement, static_cast<float>(distance), hit, &box);

@@ -12,6 +12,7 @@
 
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <functional>
+#include <unordered_map>
 #include <variant>
 
 namespace infernux
@@ -206,6 +207,7 @@ class InxPhyGpuPublishedRayQuery
     rhi::ComputeDispatchDesc m_geometry, m_pack, m_project, m_traceAll;
     rhi::ComputeDispatchDesc m_selectBounds, m_closest, m_overlap;
     mutable rhi::ComputeDispatchDesc m_shapeCast;
+    mutable std::unordered_map<uint64_t, std::shared_ptr<rhi::ComputeBuffer>> m_shapeCastRequests;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_inputScratch, m_output;
@@ -403,6 +405,13 @@ class InxPhyGpuStep
     [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
     PreparePublishedClosestPoint(const PhysicsGpuPoseSource &source, const ModelVector &point, uint32_t first,
                                  uint32_t end, bool closedMesh) const;
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PreparePublishedOverlap(const PhysicsGpuPoseSource &source, const InxPhyGpuQueryVolume &volume) const;
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PreparePublishedShapeCast(ShaderCodeTarget target, const PhysicsGpuPoseSource &source,
+                              const InxPhyGpuQueryVolume &volume, const ModelVector &direction, float maximum,
+                              const std::vector<ModelWords> &exclusions,
+                              const std::function<uint32_t(uint32_t)> &bodyId) const;
     [[nodiscard]] const InxPhyGpuRayBuffers &Rays() const noexcept
     {
         return m_rays;
