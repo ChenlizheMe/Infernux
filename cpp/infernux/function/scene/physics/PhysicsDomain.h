@@ -201,6 +201,7 @@ struct PhysicsDomain final
     struct PresentationPoseReads
     {
         std::shared_ptr<const JoltGpuScene::Publication> publication;
+        std::shared_ptr<const physics::inxphygpu::InxPhyGpuFixedPublication> nativePublication;
         uint64_t generation = 0;
         PhysicsGpuMotionRead read;
         std::shared_ptr<PhysicsGpuPublicationRequest> request;
