@@ -428,8 +428,8 @@ class InxPhyGpuStep
     struct ContactReports
     {
         std::shared_ptr<rhi::ComputeBuffer> records, counts;
-        rhi::ComputeDispatchDesc capture;
-        rhi::ComputeDispatchDesc appendSwept;
+        std::vector<rhi::ComputeDispatchDesc> capture;
+        std::vector<rhi::ComputeDispatchDesc> appendSwept;
         uint64_t countsOffset = 0, countsBytes = 0;
         uint32_t capacity = 0;
     };
