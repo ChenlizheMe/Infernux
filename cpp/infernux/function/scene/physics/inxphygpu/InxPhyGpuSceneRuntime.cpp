@@ -380,7 +380,9 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
                                              bool contactReports, uint32_t substeps, InxPhyGpuRayBatchLayout rayLayout,
                                              const InxPhyGpuFixedPublication *previous)
     : m_work(work), m_host(host), m_target(target), m_bodyCount(scene.model.dimensions.state[2]),
-      m_contactReportsConfigured(contactReports)
+      m_contactReportsConfigured(contactReports), m_collisionCapacity(collisionCapacity), m_solver(solver),
+      m_commandCapacity(commandCapacity), m_rayLayout(rayLayout), m_capacityBodyRows(m_bodyCount),
+      m_capacityGeometryRows(scene.model.geometries.size())
 {
     if (worlds.empty() || commandCapacity == 0)
         throw std::invalid_argument("inxphygpu scene requires worlds and a body command capacity");
@@ -504,9 +506,11 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
             handoff.addresses[first] = static_cast<uint32_t>(header + old->second);
             const auto &oldWorld = previous->m_layout->worlds[old->second];
             for (const auto &[id, row] : layout->worlds[next].rows) {
-                const auto actor = layout->worlds[next].bodies[row].actor;
+                const auto &body = layout->worlds[next].bodies[row];
                 const auto oldRow = oldWorld.BodyRow(id);
-                if (!oldRow || !actor.IsValid() || actor != oldWorld.bodies[*oldRow].actor)
+                if (!oldRow || !body.actor.IsValid() || body.actor != oldWorld.bodies[*oldRow].actor ||
+                    body.bodyTarget.GetComponent() != oldWorld.bodies[*oldRow].bodyTarget.GetComponent() ||
+                    layout->drive[row] != previous->m_layout->drive[*oldRow])
                     continue;
                 handoff.addresses[first + row] = 5 * (old->second * previous->bodiesPerWorld + *oldRow);
                 const auto key = std::pair{static_cast<uint32_t>(next), row};
@@ -623,6 +627,39 @@ std::optional<uint32_t> InxPhyGpuSceneRuntime::BodyRow(uint32_t world, uint32_t 
 std::optional<InxPhyGpuFixedPublication> InxPhyGpuSceneRuntime::TakeInitial()
 {
     return std::exchange(m_initialPublication, std::nullopt);
+}
+
+std::unique_ptr<InxPhyGpuSceneRuntime> InxPhyGpuSceneRuntime::Rebuild(InxPhyGpuSceneSetup setup,
+                                                                      const InxPhyGpuFixedPublication &previous,
+                                                                      PhysicsFixedInputs input, uint32_t substeps) const
+{
+    if (previous.m_layout != m_layout)
+        throw std::invalid_argument("inxphygpu topology replacement requires its accepted publication");
+    const auto grow = [](uint32_t capacity, uint64_t current, uint64_t count) {
+        current = std::max(uint64_t{1}, current);
+        const auto scaled = uint64_t{capacity} * std::max(current, count);
+        const auto next = scaled / current + (scaled % current != 0);
+        if (next > UINT32_MAX)
+            throw std::length_error("inxphygpu scene capacity exceeds its device index range");
+        return static_cast<uint32_t>(next);
+    };
+    const auto geometries = setup.model.geometries.size();
+    const auto bodies = uint64_t{setup.model.model.dimensions.state[2]};
+    const auto scale = [&](uint32_t capacity) { return grow(capacity, m_capacityGeometryRows, geometries); };
+    InxPhyGpuCollisionCapacity collision{scale(m_collisionCapacity.candidates),
+                                         scale(m_collisionCapacity.contactsPerWorld)};
+    auto solver = m_solver;
+    solver.rowsPerWorld = scale(solver.rowsPerWorld);
+    solver.columnsPerWorld = scale(solver.columnsPerWorld);
+    const auto commandCapacity = grow(m_commandCapacity, m_capacityBodyRows, bodies);
+    auto host = m_host;
+    auto replacement = std::make_unique<InxPhyGpuSceneRuntime>(
+        m_work, host, m_target, setup.model, std::vector<InxPhyGpuRegisteredWorld>{std::move(setup.world)},
+        input.duration, ModelVector{input.gravity.x, input.gravity.y, input.gravity.z}, collision, solver,
+        commandCapacity, m_contactReportsConfigured, substeps, m_rayLayout, &previous);
+    replacement->m_capacityGeometryRows = std::max(m_capacityGeometryRows, uint64_t{geometries});
+    replacement->m_capacityBodyRows = std::max(m_capacityBodyRows, bodies);
+    return replacement;
 }
 
 void InxPhyGpuSceneRuntime::BeginFixed(std::vector<ContactStreamIdentity> identities,

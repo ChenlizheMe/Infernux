@@ -825,7 +825,9 @@ class PhysicsWorld
     void FailStep(PhysicsDomain &domain) noexcept;
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
     JoltGpuParticipantStages CaptureParticipants(PhysicsDomain &domain);
-    bool TryBeginFixed(PhysicsDomain &domain);
+    bool TryBeginFixed(PhysicsDomain &domain, bool synchronous);
+    bool PrepareInxPhyGpuTopology(PhysicsDomain &domain, bool synchronous);
+    void AdvanceInxPhyGpuSource(physics::inxphygpu::InxPhyGpuSceneRuntime &runtime, bool synchronous) const;
     void FinishFixed(PhysicsDomain &domain);
     [[nodiscard]] PhysicsContactPublication::Policy CaptureContactPolicy(const PhysicsDomain &domain) const;
     [[nodiscard]] std::shared_ptr<PhysicsGpuRenderJob> CaptureGpuRenderJob(PhysicsDomain &, bool numericalChange) const;

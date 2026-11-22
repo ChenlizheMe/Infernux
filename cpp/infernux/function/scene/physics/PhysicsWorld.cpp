@@ -1131,8 +1131,8 @@ void PhysicsWorld::RequireGpu(PhysicsDomain &domain) const
 }
 void PhysicsWorld::RetireIdleGpuPartition(PhysicsDomain &domain)
 {
-    if (!domain.gpuRegistered || !domain.bodyIds.empty() || domain.controlPending || domain.waitingForSlot ||
-        domain.participantOutput)
+    if (domain.nativeRuntime || !domain.gpuRegistered || !domain.bodyIds.empty() || domain.controlPending ||
+        domain.waitingForSlot || domain.participantOutput)
         return;
     if (!domain.particleCollisionConsumer.expired())
         return;
@@ -1174,6 +1174,7 @@ void PhysicsWorld::Shutdown()
 {
     for (auto *domain : m_domains) {
         domain->RetireInxPhyGpuFixed();
+        domain->nativeTopology.reset();
         domain->nativeRuntime.reset();
         if (domain->gpuRegistered)
             m_gpuScene->Cancel(domain->owner);
@@ -1257,16 +1258,63 @@ PhysicsContactPublication::Policy PhysicsWorld::CaptureContactPolicy(const Physi
     return policy;
 }
 
-bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain)
+bool PhysicsWorld::PrepareInxPhyGpuTopology(PhysicsDomain &domain, bool synchronous)
+{
+    using namespace physics::inxphygpu;
+    const auto observe = [&](InxPhyGpuSceneRuntime &runtime) {
+        auto initial = runtime.TakeInitial();
+        if (!initial) {
+            AdvanceInxPhyGpuSource(runtime, synchronous);
+            initial = runtime.TakeInitial();
+        }
+        return initial;
+    };
+    for (;;) {
+        if (domain.nativeTopology) {
+            auto ready = observe(*domain.nativeTopology);
+            if (!ready)
+                return false;
+            domain.nativeRuntime = std::move(domain.nativeTopology);
+            domain.nativeFixedPublication = std::make_shared<InxPhyGpuFixedPublication>(std::move(*ready));
+            domain.queryGeneration.fetch_add(1, std::memory_order_release);
+            domain.requestedMotion.clear();
+        }
+        if (!domain.nativeBodyLayoutDirty && !domain.gpuJointLayoutDirty &&
+            domain.nativeRuntime->Substeps() == domain.admittedSubsteps)
+            return true;
+        if (!domain.nativeFixedPublication) {
+            auto ready = observe(*domain.nativeRuntime);
+            if (!ready)
+                return false;
+            domain.nativeFixedPublication = std::make_shared<InxPhyGpuFixedPublication>(std::move(*ready));
+        }
+        auto setup = CaptureInxPhyGpuSceneSetup(domain.owner, domain.nativeFixedPublication.get());
+        if (!setup) {
+            RetryCapacityBodyCreations(domain);
+            setup = CaptureInxPhyGpuSceneSetup(domain.owner, domain.nativeFixedPublication.get());
+        }
+        if (!setup)
+            return false;
+        domain.nativeTopology = domain.nativeRuntime->Rebuild(std::move(*setup), *domain.nativeFixedPublication,
+                                                              domain.AdmittedFixedInputs(), domain.admittedSubsteps);
+        domain.nativeBodyLayoutDirty = false;
+        domain.AcceptGpuJointEdits();
+    }
+}
+
+bool PhysicsWorld::TryBeginFixed(PhysicsDomain &domain, bool synchronous)
 {
     if (!EnsureStaticBoundaries(domain))
         return false;
-    QueueStaticFixedMoves(domain);
     if (domain.nativeRuntime) {
+        if (!PrepareInxPhyGpuTopology(domain, synchronous))
+            return false;
+        QueueStaticFixedMoves(domain);
         domain.BeginInxPhyGpuFixed({domain.owner.id, domain.stepEpoch, domain.stepIndex}, domain.AdmittedFixedInputs());
         SealStaticFixedMoves(domain);
         return true;
     }
+    QueueStaticFixedMoves(domain);
     auto policy = CaptureContactPolicy(domain);
     if (domain.gpuRegistered) {
         QueueColliderPairs(domain);
@@ -1656,6 +1704,8 @@ bool PhysicsDomain::PublishInxPhyGpuFixed()
 
 void PhysicsDomain::RetireInxPhyGpuFixed() noexcept
 {
+    if (nativeTopology)
+        nativeTopology->Retire();
     if (nativeRuntime)
         nativeRuntime->Retire();
     nativeFixedAdmission.reset();
@@ -1976,12 +2026,12 @@ bool PhysicsWorld::AdvanceFixedStep(PhysicsDomain &domain, bool synchronous)
             }
             if (!domain.solverStarted) {
                 RetireIdleGpuPartition(domain);
-                if (!(domain.solverStarted = TryBeginFixed(domain))) {
+                if (!(domain.solverStarted = TryBeginFixed(domain, synchronous))) {
                     if (domain.waitingForSlot) {
                         domain.fixedGpuPhase = Phase::RetireControl;
                         continue;
                     }
-                    if (synchronous && domain.gpuRegistered) {
+                    if (synchronous && !domain.nativeRuntime && domain.gpuRegistered) {
                         DrainGpuSource(domain);
                         continue;
                     }
@@ -2070,21 +2120,23 @@ void PhysicsWorld::DrainGpuSource(PhysicsDomain &domain) const
                                                        : FrameWorkWaitResult::Blocked;
         });
 }
+void PhysicsWorld::AdvanceInxPhyGpuSource(physics::inxphygpu::InxPhyGpuSceneRuntime &runtime, bool synchronous) const
+{
+    const auto availability = [this] { return Availability(*m_gpuHost); };
+    if (synchronous) {
+        m_gpuWork->DrainRequired(runtime.SourceId(), availability,
+                                 [&](auto, auto timeout) { return runtime.WaitForProgress(timeout); });
+    } else if (m_gpuWork->IsActive()) {
+        (void)m_gpuWork->AdvanceDependency(runtime.SourceId(), availability);
+    }
+}
+
 bool PhysicsWorld::AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const
 {
     if (domain.nativeRuntime) {
         auto &runtime = *domain.nativeRuntime;
-        if (!runtime.HasPublication()) {
-            const auto availability = [this] { return Availability(*m_gpuHost); };
-            if (synchronous) {
-                m_gpuWork->DrainRequired(runtime.SourceId(), availability, [&](auto source, auto timeout) {
-                    return source == runtime.SourceId() ? runtime.WaitForProgress(timeout)
-                                                        : FrameWorkWaitResult::Blocked;
-                });
-            } else if (m_gpuWork->IsActive()) {
-                (void)m_gpuWork->AdvanceDependency(runtime.SourceId(), availability);
-            }
-        }
+        if (!runtime.HasPublication())
+            AdvanceInxPhyGpuSource(runtime, synchronous);
         return runtime.HasPublication();
     }
     // A published World has already released its writer. Its consumer must not
@@ -2544,9 +2596,7 @@ PhysicsWorld::ReadInxPhyGpuQueryPublication(PhysicsDomain &domain) const
         auto &runtime = *domain.nativeRuntime;
         auto initial = runtime.TakeInitial();
         if (!initial) {
-            m_gpuWork->DrainRequired(
-                runtime.SourceId(), [this] { return Availability(*m_gpuHost); },
-                [&runtime](auto, auto timeout) { return runtime.WaitForProgress(timeout); });
+            AdvanceInxPhyGpuSource(runtime, true);
             initial = runtime.TakeInitial();
         }
         if (!initial)
@@ -3026,6 +3076,7 @@ bool PhysicsWorld::RebindBody(PhysicsActorData &actor)
     entry.staticModel = std::move(staticModel);
     entry.staticResident = resident;
     entry.stagedShapeRevision = revision;
+    domain.nativeBodyLayoutDirty |= bool(domain.nativeRuntime);
     domain.pendingStaticMoves.erase(id);
     actor.bodyInBroadphase = resident;
     if (resident)
@@ -3101,6 +3152,7 @@ void PhysicsWorld::StageActorModel(PhysicsActorData &actor, const PhysicsActorDa
             entry.staticModel->Hold(std::move(prepared));
     }
     entry.stagedShapeRevision = revision;
+    domain.nativeBodyLayoutDirty |= bool(domain.nativeRuntime);
     if (!entry.staticModel && actor.rigidbody)
         actor.rigidbody->FlushPendingBodyCommands();
 }
@@ -3177,6 +3229,8 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<uint32_t> &bodies)
         domain->cpuControl->AddBodies(std::move(ids));
     for (const auto id : bodies) {
         auto &entry = m_bodyActors.at(id);
+        auto &domain = DomainForBody(id);
+        domain.nativeBodyLayoutDirty |= bool(domain.nativeRuntime);
         if (entry.backend == Backend::StaticBoundary)
             entry.staticResident = true;
         if (entry.HasGpuBody())
@@ -3193,6 +3247,7 @@ void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t id, bool preserveVelocity)
     if (!entry)
         return;
     auto &domain = DomainForBody(id);
+    domain.nativeBodyLayoutDirty |= bool(domain.nativeRuntime);
     if (entry->HasCpuBody() && domain.cpuControl)
         domain.cpuControl->Queue(id, JoltCpuControl::Remove{preserveVelocity});
     if (entry->HasGpuBody() && m_gpuScene && m_gpuScene->FindBody(id).bodyId != UINT32_MAX)
@@ -4518,6 +4573,7 @@ void PhysicsWorld::QueueColliderPairs(PhysicsDomain &domain) const
 void PhysicsWorld::InvalidateColliderPairSnapshot(PhysicsDomain &domain) const
 {
     domain.colliderPairSnapshot.reset();
+    domain.nativeBodyLayoutDirty |= bool(domain.nativeRuntime);
     if (domain.cpuControl) {
         const WorldExecutionScope ownerScope(&domain.owner);
         SceneManager::Instance().RequestPausedAuthorPresentation();
@@ -5435,6 +5491,7 @@ void PhysicsWorld::RegisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId, 
         throw;
     }
     domain.gpuBodyOwners += backend == Backend::Gpu;
+    domain.nativeBodyLayoutDirty |= bool(domain.nativeRuntime);
 }
 void PhysicsWorld::UnregisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId) noexcept
 {
@@ -5443,6 +5500,13 @@ void PhysicsWorld::UnregisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId
     domain.bodyIds.erase(bodyId);
     domain.pendingStatic.erase(bodyId);
     domain.pendingStaticMoves.erase(bodyId);
+    if (domain.nativeRuntime) {
+        auto &commands = domain.gpuBodyCommands;
+        commands.erase(std::remove_if(commands.begin(), commands.end(),
+                                      [bodyId](const auto &entry) { return entry.command.bodyId == bodyId; }),
+                       commands.end());
+        domain.nativeBodyLayoutDirty = true;
+    }
 }
 void PhysicsWorld::ChangeBodyBackend(PhysicsDomain &domain, BodyRegistration &entry, Backend backend) noexcept
 {
@@ -5553,7 +5617,9 @@ void PhysicsWorld::BeginRetireDomain(RuntimeWorld &world) noexcept
 bool PhysicsWorld::CanRetireDomain(const RuntimeWorld &world) const noexcept
 {
     const auto &native = world.physics->nativeRuntime;
-    return (!native || native->CanRetire()) && (!m_gpuScene || m_gpuScene->CanRetire(world));
+    const auto &topology = world.physics->nativeTopology;
+    return (!native || native->CanRetire()) && (!topology || topology->CanRetire()) &&
+           (!m_gpuScene || m_gpuScene->CanRetire(world));
 }
 void PhysicsWorld::RetireDomain(PhysicsDomain &domain) noexcept
 {

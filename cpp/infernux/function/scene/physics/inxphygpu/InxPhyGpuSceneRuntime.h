@@ -228,10 +228,17 @@ class InxPhyGpuSceneRuntime final
         return m_source;
     }
     [[nodiscard]] std::optional<uint32_t> BodyRow(uint32_t world, uint32_t engineBody) const;
+    [[nodiscard]] uint32_t Substeps() const noexcept
+    {
+        return m_step->Substeps();
+    }
 
     /// Take initialized poses before stepping. A refreshed scene begins at
     /// its previous accepted fixed index. Initialization requires no readback.
     [[nodiscard]] std::optional<InxPhyGpuFixedPublication> TakeInitial();
+    [[nodiscard]] std::unique_ptr<InxPhyGpuSceneRuntime> Rebuild(InxPhyGpuSceneSetup setup,
+                                                                 const InxPhyGpuFixedPublication &previous,
+                                                                 PhysicsFixedInputs input, uint32_t substeps) const;
 
     struct PublicationWork
     {
@@ -399,6 +406,11 @@ class InxPhyGpuSceneRuntime final
     std::vector<std::pair<uint32_t, uint32_t>> m_kinematicVelocityRows;
     uint32_t m_bodyCount;
     bool m_contactReportsConfigured;
+    InxPhyGpuCollisionCapacity m_collisionCapacity;
+    InxPhyGpuContactSolver m_solver;
+    uint32_t m_commandCapacity;
+    InxPhyGpuRayBatchLayout m_rayLayout;
+    uint64_t m_capacityBodyRows, m_capacityGeometryRows;
     std::shared_ptr<rhi::PreparedComputeBatch> m_packet, m_preservation;
     std::optional<Receipt> m_receipt;
     std::optional<Operation> m_operation;

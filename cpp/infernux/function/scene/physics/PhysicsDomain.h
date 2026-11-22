@@ -179,6 +179,8 @@ struct PhysicsDomain final
     std::optional<InxPhyGpuFixedAdmission> nativeFixedAdmission;
     std::shared_ptr<const physics::inxphygpu::InxPhyGpuFixedPublication> nativeFixedPublication;
     std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeRuntime;
+    std::unique_ptr<physics::inxphygpu::InxPhyGpuSceneRuntime> nativeTopology;
+    bool nativeBodyLayoutDirty = false;
     struct RenderState
     {
         using Keys = std::array<uint64_t, 3>;
