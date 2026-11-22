@@ -596,12 +596,8 @@ struct JPH_GPU_ALIGN BodyCommandParams
 };
 
 JPH_GPU_CONSTANT(InvalidQueryBodySlot, 0xFFFFFFFFu);
-JPH_GPU_CONSTANT(QueryOverlap, 1);
 JPH_GPU_CONSTANT(QueryShapeCast, 4);
 JPH_GPU_CONSTANT(QueryClosest, 0);
-JPH_GPU_CONSTANT(QueryAll, 1);
-JPH_GPU_CONSTANT(QueryUniqueCollider, 2);
-JPH_GPU_CONSTANT(QueryAny, 3);
 JPH_GPU_CONSTANT(QueryExcludeBody, 2);
 JPH_GPU_CONSTANT(QuerySweepPolicy, 4);
 // Internal: the native Sweep source lifetime matches this retained policy.

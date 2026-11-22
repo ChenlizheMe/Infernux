@@ -67,6 +67,8 @@ struct RayHitStream
 [[vk::binding(23, 0)]] RWStructuredBuffer<uint> bodyBoundsMask;
 [[vk::binding(24, 0)]] StructuredBuffer<uint4> closestPointRequest;
 [[vk::binding(25, 0)]] RWStructuredBuffer<float4> closestPointResult;
+[[vk::binding(26, 0)]] StructuredBuffer<uint4> overlapRequest; // Position, orientation, shape size, then count/layers/triggers/type.
+[[vk::binding(27, 0)]] RWStructuredBuffer<uint> overlapMask;
 
 groupshared uint bodyBoundsMatch[RayGroupSize];
 
@@ -119,6 +121,116 @@ void select_body_bounds(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupInde
         for (uint i = 0; i < 32u; ++i)
             bits |= bodyBoundsMatch[lane + i] << i;
         bodyBoundsMask[id.x / 32u] = bits;
+    }
+}
+
+ConvexGeometry overlapGeometry(CartesianFrame frame, CollisionShape shape)
+{
+    const float radius = shape.type.x == GeomBox ? shape.size.w : 0.0;
+    shape.size.xyz = max(float3(0.0), shape.size.xyz - radius);
+    return {frame, shape, 2.0 * radius, -1};
+}
+
+bool overlapConvex(ConvexGeometry first, ConvexGeometry second, float tolerance)
+{
+    if (first.shape.type.x == GeomSphere && second.shape.type.x == GeomSphere)
+    {
+        const float3 delta = second.frame.position.xyz - first.frame.position.xyz;
+        const float radius = first.shape.size.x + second.shape.size.x;
+        return dot(delta, delta) <= radius * radius;
+    }
+    // An overlap only needs the distance phase, including a simplex enclosing zero.
+    bool containsOrigin;
+    const ConvexDistance result = convexDistancePhase(first, second, tolerance, tolerance, 64, rayModel,
+                                                     containsOrigin, true);
+    return result.distance <= tolerance || containsOrigin;
+}
+
+bool overlapTriangleMesh(ConvexGeometry probe, CartesianFrame frame, CollisionShape mesh, float3 probeExtent)
+{
+    const TriangleMeshTree tree = triangleMeshTree(rayModel, mesh);
+    const float3 localCenter = inverseRotatePoint(frame, -frame.position.xyz);
+    const float3 localExtent =
+        abs(inverseRotatePoint(frame, float3(probeExtent.x, 0.0, 0.0))) +
+        abs(inverseRotatePoint(frame, float3(0.0, probeExtent.y, 0.0))) +
+        abs(inverseRotatePoint(frame, float3(0.0, 0.0, probeExtent.z)));
+    const float3 minimum = localCenter - localExtent;
+    const float3 maximum = localCenter + localExtent;
+    uint node = 0;
+    while (node < tree.nodeCount)
+    {
+        const uint4 lo = rayModel[tree.nodeBase + 2 * node];
+        const uint4 hi = rayModel[tree.nodeBase + 2 * node + 1];
+        const bool near = all(minimum <= asfloat(hi.xyz)) && all(maximum >= asfloat(lo.xyz));
+        if ((hi.w & BvhLeaf) == 0u)
+        {
+            node = near ? lo.w : hi.w;
+            continue;
+        }
+        if (near)
+        {
+            const uint end = lo.w + (hi.w & ~BvhLeaf);
+            for (uint i = lo.w; i < end; ++i)
+            {
+                const uint3 indices = rayModel[tree.faceBase + i].xyz;
+                const float3 a = frame.position.xyz + rotatePoint(frame, convexVertex(rayModel, indices.x));
+                const float3 b = frame.position.xyz + rotatePoint(frame, convexVertex(rayModel, indices.y));
+                const float3 c = frame.position.xyz + rotatePoint(frame, convexVertex(rayModel, indices.z));
+                if (dot(-a, cross(b - a, c - a)) < 0.0)
+                    continue; // A MeshCollider is one-sided.
+                const CartesianFrame triangleFrame = {
+                    float4((a + b + c) / 3.0, 0.0), float4(a, 0.0), float4(b, 0.0), float4(c, 0.0)};
+                const CollisionShape triangle = {float4(0.0), uint4(GeomTriangle, 0, 0, 0)};
+                const float tolerance = 4.7683716e-7 * max(length(probeExtent), length(triangleFrame.position.xyz));
+                if (overlapConvex(probe, overlapGeometry(triangleFrame, triangle), tolerance))
+                    return true;
+            }
+        }
+        ++node;
+    }
+    return false;
+}
+
+bool overlapLeaf(uint row, uint4 filter)
+{
+    const uint4 meta = rayGeometry[row];
+    if ((meta.y & filter.y) == 0u || (filter.z == 0u && (meta.z & 2u) != 0u))
+        return false;
+    const CollisionShape probe = {asfloat(overlapRequest[2]), uint4(filter.w, 0, 0, 0)};
+    const CartesianFrame probeFrame = cartesianFrame(float3(0.0), asfloat(overlapRequest[1]));
+    const float3 probeExtent = bodyBoundExtent(probeFrame, probe, probe.size.xyz);
+    const CollisionShape target = rayShapes[row];
+    CartesianFrame targetFrame = rayFrames[row];
+    targetFrame.position.xyz -= asfloat(overlapRequest[0].xyz);
+    const LocalBound bound = bodyBoundsGeometry[row];
+    const float3 offset = targetFrame.position.xyz + rotatePoint(targetFrame, bound.center.xyz);
+    const float3 targetExtent = bodyBoundExtent(targetFrame, target, bound.halfExtent.xyz);
+    if (any(abs(offset) > probeExtent + targetExtent))
+        return false;
+    const ConvexGeometry geometry = overlapGeometry(probeFrame, probe);
+    if (target.type.x == GeomTriangleMesh)
+        return overlapTriangleMesh(geometry, targetFrame, target, probeExtent);
+    // Use four float ULPs at the scale of the support points after rebasing.
+    const float tolerance = 4.7683716e-7 * max(length(probeExtent), length(abs(offset) + targetExtent));
+    return overlapConvex(geometry, overlapGeometry(targetFrame, target), tolerance);
+}
+
+[shader("compute")]
+[numthreads(RayGroupSize, 1, 1)]
+void overlap_scene_shapes(uint3 id : SV_DispatchThreadID, uint lane : SV_GroupIndex)
+{
+    const uint4 filter = overlapRequest[3];
+    uint match = 0u;
+    if (id.x < filter.x)
+        match = overlapLeaf(id.x, filter) ? 1u : 0u;
+    bodyBoundsMatch[lane] = match;
+    GroupMemoryBarrierWithGroupSync();
+    if ((lane & 31u) == 0u && id.x < filter.x)
+    {
+        uint bits = 0u;
+        for (uint i = 0; i < 32u; ++i)
+            bits |= bodyBoundsMatch[lane + i] << i;
+        overlapMask[id.x / 32u] = bits;
     }
 }
 

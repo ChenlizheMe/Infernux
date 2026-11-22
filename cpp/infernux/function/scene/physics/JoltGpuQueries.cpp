@@ -227,10 +227,9 @@ void ValidateInput(const QueryInput &query, uint32_t bodyBase, uint32_t bodyCoun
     const bool hasLifetime = query.lifetime.x || query.lifetime.y;
     if (query.lifetime.z || query.lifetime.w)
         throw JoltGpuQueryRequestError("GPU query source lifetime reserved words must be zero");
-    const bool cast = query.meta.x == QueryShapeCast;
-    const bool sweep = cast && (query.meta.w & QuerySweepPolicy);
-    if ((!cast && query.meta.x != QueryOverlap) || query.meta.y > QueryAny || query.source.y ||
-        (query.meta.w & ~(QueryExcludeBody | (cast ? (QuerySweepPolicy | QuerySweepPairPolicy) : 0u))) ||
+    const bool sweep = (query.meta.w & QuerySweepPolicy) != 0;
+    if (query.meta.x != QueryShapeCast || query.meta.y != QueryClosest || query.source.y ||
+        (query.meta.w & ~(QueryExcludeBody | QuerySweepPolicy | QuerySweepPairPolicy)) ||
         ((query.meta.w & QuerySweepPairPolicy) && !sweep) || query.filter.y > 1 ||
         (!sweep && (query.source.z || query.source.w || hasLifetime)) ||
         ((query.meta.w & QuerySweepPairPolicy) && !hasLifetime) || !Finite(query.positionMaximum) ||
@@ -239,11 +238,8 @@ void ValidateInput(const QueryInput &query, uint32_t bodyBase, uint32_t bodyCoun
     if ((query.meta.w & QueryExcludeBody) ? (query.source.x < bodyBase || query.source.x - bodyBase >= bodyCount)
                                           : query.source.x != InvalidQueryBodySlot)
         throw JoltGpuQueryRequestError("Jolt GPU query excluded body differs from its retained publication");
-    if (cast &&
-        (query.positionMaximum.w <= 0 || (query.direction.x == 0 && query.direction.y == 0 && query.direction.z == 0)))
+    if (query.positionMaximum.w <= 0 || (query.direction.x == 0 && query.direction.y == 0 && query.direction.z == 0))
         throw JoltGpuQueryRequestError("Jolt GPU shape cast requires nonzero direction and positive maximum distance");
-    if (!cast && query.positionMaximum.w != 0)
-        throw JoltGpuQueryRequestError("Jolt GPU non-sweep query maximum must be zero");
     ValidateGeometry(query.meta.z, query.geometry, query.rotation, query.geometryReference, lease);
 }
 
@@ -539,9 +535,8 @@ JoltGpuPreparedQuery JoltGpuQueries::Prepare(std::shared_ptr<const JoltGpuScene:
         std::any_of(queries.begin(), queries.end(), [](const auto &query) { return query.meta.x == QueryShapeCast; });
     if (!castIterationQuantum)
         throw JoltGpuQueryRequestError("Jolt GPU cast iteration quantum must be positive");
-    const bool knownCount =
-        std::all_of(queries.begin(), queries.end(), [](const auto &query) { return query.meta.y == QueryClosest; });
-    const auto stride = knownCount ? 1u : std::max({1u, bodyCount, leafCount});
+    constexpr bool knownCount = true;
+    constexpr uint32_t stride = 1;
     const uint64_t records = queryCount * stride;
     if (records > std::numeric_limits<uint32_t>::max())
         throw JoltGpuQueryRequestError("Jolt GPU query scratch capacity exceeds device indexing");

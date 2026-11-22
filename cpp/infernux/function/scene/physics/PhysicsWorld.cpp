@@ -2246,25 +2246,89 @@ PhysicsWorld::RunQuery(PhysicsDomain &domain, const std::shared_ptr<const JoltGp
     return std::move(prepared.result);
 }
 
-std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, const QueryInput &request,
-                                                     const JoltCpuQueries::Shape &shape) const
+std::vector<Collider *> PhysicsWorld::QueryColliders(PhysicsDomain &domain, const JoltCpuQueries::Shape &shape,
+                                                     uint32_t layers, bool triggers) const
 {
+    using namespace physics::inxphygpu;
+    const auto request = std::visit(
+        [&](const auto &primitive) {
+            using Type = std::decay_t<decltype(primitive)>;
+            InxPhyGpuOverlap native{{{0, 0, 0, 0}, {1, 0, 0, 0}}, {}, Sphere, layers, triggers};
+            glm::vec3 center;
+            if constexpr (std::is_same_v<Type, JoltCpuQueries::Box>) {
+                center = primitive.center;
+                const auto half = Vector(primitive.halfExtents);
+                if (half.x <= 0 || half.y <= 0 || half.z <= 0)
+                    throw std::invalid_argument("Physics query box requires positive finite half extents");
+                const auto rotation = Rotation(primitive.rotation);
+                native.pose.rotation = {rotation.w, rotation.x, rotation.y, rotation.z};
+                native.size = {half.x, half.y, half.z, std::min({0.05f, half.x, half.y, half.z})};
+                native.type = Box;
+            } else {
+                if (!std::isfinite(primitive.radius) || primitive.radius <= 0)
+                    throw std::invalid_argument("Physics query requires a positive finite radius");
+                native.size[0] = primitive.radius;
+                if constexpr (std::is_same_v<Type, JoltCpuQueries::Sphere>) {
+                    center = primitive.center;
+                } else {
+                    (void)Vector(primitive.point0);
+                    (void)Vector(primitive.point1);
+                    const auto a = glm::dvec3(primitive.point0), b = glm::dvec3(primitive.point1);
+                    center = glm::vec3((a + b) * 0.5);
+                    const auto delta = b - a;
+                    const double radial = std::hypot(delta.x, delta.y);
+                    const double halfLength = std::hypot(radial, delta.z) * 0.5;
+                    if (halfLength > std::numeric_limits<float>::max())
+                        throw std::invalid_argument("Physics query capsule length exceeds device coordinates");
+                    if (halfLength > 0.0) {
+                        const double angle = 0.5 * std::atan2(radial, delta.z);
+                        const double scale = radial > 0.0 ? std::sin(angle) / radial : 0.0;
+                        // The native capsule runs along +Z.
+                        native.pose.rotation =
+                            radial == 0.0 && delta.z < 0.0
+                                ? ModelVector{0, 1, 0, 0}
+                                : ModelVector{static_cast<float>(std::cos(angle)), static_cast<float>(-delta.y * scale),
+                                              static_cast<float>(delta.x * scale), 0};
+                        native.size[1] = static_cast<float>(halfLength);
+                        native.type = Capsule;
+                    }
+                }
+            }
+            (void)Vector(center);
+            native.pose.position = {center.x, center.y, center.z, 0};
+            return native;
+        },
+        shape);
     SealSpatialQuery(domain);
     if (domain.cpuScene)
-        return JoltCpuQueries(*domain.cpuScene).Overlap(shape, {request.filter.x, request.filter.y != 0});
+        return JoltCpuQueries(*domain.cpuScene).Overlap(shape, {layers, triggers});
     const auto gpu = ReadGpuSpatialQueryPublication(domain);
     std::vector<Collider *> colliders;
-    if (!gpu)
+    if (!gpu || !layers)
         return colliders;
-    const auto result = RunQuery(domain, gpu, {request});
-    {
-        FrameWorkOwner::Scope materialize(*m_gpuWork);
-        const auto &records = result->ReadHits();
-        colliders.reserve(records.size());
-        for (const auto &record : records)
-            if (auto *collider = DecodeQueryHit(*result, record).collider)
-                colliders.push_back(collider);
-    }
+    std::unique_ptr<PhysicsSceneRayPlan> replacement;
+    auto *plan = domain.sceneRays.get();
+    std::shared_ptr<rhi::PreparedComputeBatch> result;
+    ObserveSpatialGpuQuery(domain, gpu, [&](const auto &accepted) {
+        std::vector<rhi::ComputeBufferUpdate> uploads;
+        if (!plan || !plan->Matches(*accepted)) {
+            auto prepared = BuildSceneRayPlan(*m_gpuHost, *accepted, plan ? plan->query.Capacity() : 64);
+            replacement = std::move(prepared.first);
+            uploads = std::move(prepared.second);
+            plan = replacement.get();
+        }
+        result = plan->query.PrepareOverlap(*m_gpuHost, ScenePoseSource(*accepted), request, std::move(uploads));
+        return JoltGpuControlWork{result};
+    });
+    if (replacement)
+        domain.sceneRays = std::move(replacement);
+    FrameWorkOwner::Scope materialize(*m_gpuWork);
+    for (const auto row : ReadInxPhyGpuSelection(*result, static_cast<uint32_t>(plan->surfaces.size())))
+        if (auto *collider = plan->surfaces[row].target.GetCollider())
+            colliders.push_back(collider);
+    std::sort(colliders.begin(), colliders.end(),
+              [](const auto *a, const auto *b) { return a->GetComponentID() < b->GetComponentID(); });
+    colliders.erase(std::unique(colliders.begin(), colliders.end()), colliders.end());
     return colliders;
 }
 
@@ -4559,25 +4623,19 @@ std::vector<Collider *> PhysicsWorld::OverlapSphere(const glm::vec3 &center, flo
                                                     bool triggers) const
 {
     auto &domain = CurrentDomain();
-    auto request = Query(QueryOverlap, QueryUniqueCollider, layers, triggers);
-    QuerySphereInput(request, center, radius);
-    return QueryColliders(domain, request, JoltCpuQueries::Sphere{center, radius});
+    return QueryColliders(domain, JoltCpuQueries::Sphere{center, radius}, layers, triggers);
 }
 std::vector<Collider *> PhysicsWorld::OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
                                                  const glm::quat &rotation, uint32_t layers, bool triggers) const
 {
     auto &domain = CurrentDomain();
-    auto request = Query(QueryOverlap, QueryUniqueCollider, layers, triggers);
-    QueryBoxInput(request, center, halfExtents, rotation);
-    return QueryColliders(domain, request, JoltCpuQueries::Box{center, halfExtents, rotation});
+    return QueryColliders(domain, JoltCpuQueries::Box{center, halfExtents, rotation}, layers, triggers);
 }
 std::vector<Collider *> PhysicsWorld::OverlapCapsule(const glm::vec3 &a, const glm::vec3 &b, float radius,
                                                      uint32_t layers, bool triggers) const
 {
     auto &domain = CurrentDomain();
-    auto request = Query(QueryOverlap, QueryUniqueCollider, layers, triggers);
-    QueryCapsuleInput(request, a, b, radius);
-    return QueryColliders(domain, request, JoltCpuQueries::Capsule{a, b, radius});
+    return QueryColliders(domain, JoltCpuQueries::Capsule{a, b, radius}, layers, triggers);
 }
 std::vector<Rigidbody *> PhysicsWorld::QueryRigidbodyCandidatesInBounds(
     PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &gpu, const glm::vec3 &minimum,

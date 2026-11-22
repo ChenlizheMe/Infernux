@@ -110,6 +110,19 @@ struct InxPhyGpuPreparedBodyBounds
     [[nodiscard]] std::vector<uint32_t> ReadMatchingRows() const;
 };
 
+[[nodiscard]] std::vector<uint32_t> ReadInxPhyGpuSelection(const rhi::PreparedComputeBatch &packet, uint32_t count);
+
+enum InxPhyGpuGeometryType : uint32_t;
+
+struct InxPhyGpuOverlap
+{
+    ModelPose pose;
+    ModelVector size{};
+    InxPhyGpuGeometryType type;
+    uint32_t layers;
+    bool triggers;
+};
+
 struct InxPhyGpuDeviceRays
 {
     PhysicsDeviceBufferRange origins, directions;
@@ -153,6 +166,9 @@ class InxPhyGpuPublishedRayQuery
     PrepareClosestPoint(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, const ModelVector &point,
                         uint32_t first, uint32_t end, bool closedMesh,
                         std::vector<rhi::ComputeBufferUpdate> updates) const;
+    [[nodiscard]] std::shared_ptr<rhi::PreparedComputeBatch>
+    PrepareOverlap(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, const InxPhyGpuOverlap &query,
+                   std::vector<rhi::ComputeBufferUpdate> updates) const;
     [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &Inputs() const noexcept
     {
         return m_inputs;
@@ -167,8 +183,9 @@ class InxPhyGpuPublishedRayQuery
     void AppendGeometry(std::vector<rhi::ComputeDispatchDesc> &dispatches, const PhysicsGpuPoseSource &source) const;
     std::shared_ptr<rhi::ComputeBuffer> m_inputs, m_settings, m_inputSettings, m_outputSettings;
     std::shared_ptr<rhi::ComputeBuffer> m_boundsRequest, m_boundsMask, m_closestRequest, m_closestResult;
+    std::shared_ptr<rhi::ComputeBuffer> m_overlapRequest, m_overlapMask;
     rhi::ComputeDispatchDesc m_geometry, m_pack, m_project, m_traceAll;
-    rhi::ComputeDispatchDesc m_selectBounds, m_closest;
+    rhi::ComputeDispatchDesc m_selectBounds, m_closest, m_overlap;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_output;

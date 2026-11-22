@@ -391,7 +391,8 @@ struct RaySlots
     uint32_t metadata;
     uint32_t inputSettings = NoModelIndex, outputSettings = NoModelIndex;
     uint32_t closestSettings = NoModelIndex, closestResult = NoModelIndex;
-    ComputeWorkDispatch pack, project, traceAll, closest;
+    uint32_t overlapRequest = NoModelIndex, overlapMask = NoModelIndex;
+    ComputeWorkDispatch pack, project, traceAll, closest, overlap;
 };
 
 struct BodyControlSlots
@@ -507,6 +508,19 @@ RaySlots AddRayWork(StepBuilder &b, const InxPhyGpuModel &model, const InxPhyGpu
                                          {24, result.closestSettings, R},
                                          {25, result.closestResult, W, true}});
             describeFrames(result.closest);
+            result.closest.groupCountY = 1;
+            result.overlapRequest = b.Slot(16, BufferUsageFlags::TransferDestination);
+            result.overlapMask = b.Slot((uint64_t{geometryCount} + 31) / 32, BufferUsageFlags::TransferSource);
+            result.overlap = b.Dispatch("ray_queries", "overlap_scene_shapes", geometryCount,
+                                        {{2, geometry.frames, R},
+                                         {3, geometry.shapes, R},
+                                         {4, metadata, R},
+                                         {5, geometry.data, R},
+                                         {20, geometry.bounds, R},
+                                         {26, result.overlapRequest, R},
+                                         {27, result.overlapMask, W, true}});
+            describeFrames(result.overlap);
+            result.overlap.groupCountY = 1;
         }
     }
     return result;
@@ -1182,6 +1196,9 @@ PreparedInxPhyGpuRayQuery InxPhyGpuPublishedRayQuery::Build(rhi::ComputeHost &ho
         query.m_closest = BindDispatch(std::move(ray.closest), buffers);
         query.m_closestRequest = buffers[ray.closestSettings];
         query.m_closestResult = buffers[ray.closestResult];
+        query.m_overlap = BindDispatch(std::move(ray.overlap), buffers);
+        query.m_overlapRequest = buffers[ray.overlapRequest];
+        query.m_overlapMask = buffers[ray.overlapMask];
     }
     if (bounds.select.kernel) {
         query.m_selectBounds = BindDispatch(std::move(bounds.select), buffers);
@@ -1860,6 +1877,9 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
                 publishedRays.m_closest = BindDispatch(std::move(raySlots->closest), buffers);
                 publishedRays.m_closestRequest = buffers[raySlots->closestSettings];
                 publishedRays.m_closestResult = buffers[raySlots->closestResult];
+                publishedRays.m_overlap = BindDispatch(std::move(raySlots->overlap), buffers);
+                publishedRays.m_overlapRequest = buffers[raySlots->overlapRequest];
+                publishedRays.m_overlapMask = buffers[raySlots->overlapMask];
             }
             publishedRays.m_geometryCount = model.dimensions.layout[0];
             publishedRays.m_bodyCount = nb;
@@ -2103,19 +2123,48 @@ InxPhyGpuPublishedRayQuery::PrepareClosestPoint(rhi::ComputeHost &host, const Ph
                                     {{m_closestResult, 0, sizeof(ModelVector)}});
 }
 
-std::vector<uint32_t> InxPhyGpuPreparedBodyBounds::ReadMatchingRows() const
+std::shared_ptr<rhi::PreparedComputeBatch>
+InxPhyGpuPublishedRayQuery::PrepareOverlap(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
+                                           const InxPhyGpuOverlap &query,
+                                           std::vector<rhi::ComputeBufferUpdate> updates) const
 {
-    if (!packet)
-        return {};
-    std::vector<uint32_t> mask((rows->size() + 31) / 32);
-    packet->Readback(0)->ReadInto(mask.data(), mask.size() * sizeof(uint32_t));
+    const ModelWords settings{m_geometryCount, 0, 0, static_cast<uint32_t>(source.firstRow)};
+    auto &frame = updates.emplace_back(rhi::ComputeBufferUpdate{m_settings, 0, std::vector<uint8_t>(sizeof(settings))});
+    std::memcpy(frame.data.data(), settings.data(), sizeof(settings));
+    const ModelWords filter{m_geometryCount, query.layers, static_cast<uint32_t>(query.triggers), query.type};
+    auto &request = updates.emplace_back(rhi::ComputeBufferUpdate{
+        m_overlapRequest, 0, std::vector<uint8_t>(sizeof(query.pose) + sizeof(query.size) + sizeof(filter))});
+    std::memcpy(request.data.data(), &query.pose, sizeof(query.pose));
+    std::memcpy(request.data.data() + sizeof(query.pose), query.size.data(), sizeof(query.size));
+    std::memcpy(request.data.data() + sizeof(query.pose) + sizeof(query.size), filter.data(), sizeof(filter));
+    auto dispatches = std::exchange(m_initialize, {});
+    AppendGeometry(dispatches, source);
+    dispatches.push_back(m_overlap);
+    return rhi::PrepareComputeBatch(host, std::move(updates), std::move(dispatches),
+                                    {{m_overlapMask, 0, m_overlapMask->GetByteSize()}});
+}
+
+std::vector<uint32_t> ReadInxPhyGpuSelection(const rhi::PreparedComputeBatch &packet, uint32_t count)
+{
+    std::vector<uint32_t> mask((uint64_t{count} + 31) / 32);
+    packet.Readback(0)->ReadInto(mask.data(), mask.size() * sizeof(uint32_t));
     std::vector<uint32_t> matches;
     for (size_t word = 0; word < mask.size(); ++word) {
         auto row = word * 32;
         for (auto bits = mask[word]; bits != 0; bits >>= 1, ++row)
             if (bits & 1u)
-                matches.push_back((*rows)[row]);
+                matches.push_back(static_cast<uint32_t>(row));
     }
+    return matches;
+}
+
+std::vector<uint32_t> InxPhyGpuPreparedBodyBounds::ReadMatchingRows() const
+{
+    if (!packet)
+        return {};
+    auto matches = ReadInxPhyGpuSelection(*packet, static_cast<uint32_t>(rows->size()));
+    for (auto &index : matches)
+        index = (*rows)[index];
     return matches;
 }
 

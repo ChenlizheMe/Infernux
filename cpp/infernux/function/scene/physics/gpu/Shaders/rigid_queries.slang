@@ -390,40 +390,8 @@ uint query_metric_status(JphPairMetric metric)
            metric.status == 0u ? QueryUnsupported : QueryNumericalFailure;
 }
 
-QueryHit query_leaf(QueryInput request, ShapeModel shape, BodyState state, uint leaf, out uint status)
+bool query_less(QueryHit a, QueryHit b)
 {
-    status = QuerySuccess;
-    QueryHit hit = query_miss();
-    float3 center;
-    float4 rotation;
-    query_leaf_pose(shape, state, center, rotation);
-    if (!all(isfinite(center)) || !all(isfinite(rotation)))
-    {
-        status = QueryNumericalFailure;
-        return hit;
-    }
-    JphPairMetric metric = jph_pair_metric(request.meta.z, request.positionMaximum.xyz, request.rotation, request.geometry,
-                                          shape.meta.x, center, rotation, shape.geometry);
-    status = query_metric_status(metric);
-    if (status != QuerySuccess)
-        return hit;
-    if (request.meta.x == QueryOverlap && metric.separation > 0.0f)
-        return hit;
-    hit.meta = uint4(shape.meta.y, 1u, leaf, metric.feature);
-    hit.positionDistance = float4(metric.pointB, max(metric.separation, 0.0f));
-    hit.normalFraction = float4(-metric.normal, 0.0f);
-    hit.pointADepth = float4(metric.pointA, max(-metric.separation, 0.0f));
-    return hit;
-}
-
-bool query_less(QueryInput request, QueryHit a, QueryHit b)
-{
-    if (request.meta.y == QueryUniqueCollider)
-    {
-        uint2 ca = shape_models[a.meta.z].source.xy;
-        uint2 cb = shape_models[b.meta.z].source.xy;
-        return ca.y != cb.y ? ca.y < cb.y : ca.x < cb.x;
-    }
     if (a.positionDistance.w != b.positionDistance.w)
         return a.positionDistance.w < b.positionDistance.w;
     uint bodyA = query_body_ids[a.meta.x - query_params.selection.y].ids.x;
@@ -435,34 +403,14 @@ bool query_less(QueryInput request, QueryHit a, QueryHit b)
     return subA != subB ? subA < subB : a.meta.z < b.meta.z;
 }
 
-void query_collect(QueryInput request, QueryHit hit, uint begin, inout uint count)
+void query_collect(QueryHit hit, uint begin)
 {
     if (hit.meta.y == 0u)
         return;
-    if (request.meta.y == QueryClosest)
-    {
-        QueryHit previous = query_load_hit(begin);
-        // Closest rays preserve the existing strict-distance slot/leaf tie.
-        if (previous.meta.y == 0u || hit.positionDistance.w < previous.positionDistance.w ||
-            (request.meta.x == QueryShapeCast && hit.positionDistance.w == previous.positionDistance.w &&
-             query_less(request, hit, previous)))
-            query_store_hit(begin, hit);
-        return;
-    }
-    if (request.meta.y == QueryUniqueCollider)
-        for (uint old = 0u; old < count; ++old)
-            if (all(shape_models[query_load_hit(begin + old).meta.z].source.xy == shape_models[hit.meta.z].source.xy))
-                return;
-    uint position = count;
-    while (position > 0u && query_less(request, hit, query_load_hit(begin + position - 1u)))
-    {
-        query_store_hit(begin + position, query_load_hit(begin + position - 1u));
-        --position;
-    }
-    query_store_hit(begin + position, hit);
-    ++count;
+    QueryHit previous = query_load_hit(begin);
+    if (previous.meta.y == 0u || query_less(hit, previous))
+        query_store_hit(begin, hit);
 }
-
 
 bool query_valid_quaternion(float4 q)
 {
@@ -766,15 +714,9 @@ void query_cast_advance(QueryInput request, uint begin, inout QueryCastState sta
         if (hit.meta.y != 0u)
         {
             hit.meta.z = leaf;
-            query_collect(request, hit, begin, state.cursor.z);
+            query_collect(hit, begin);
             if (request.meta.y == QueryClosest)
                 state.progress.w = query_load_hit(begin).positionDistance.w;
-            if (request.meta.y == QueryAny)
-            {
-                state.cursor.w = QuerySuccess;
-                state.cursor.y = 2u;
-                break;
-            }
         }
         ++state.cursor.x;
         state.cursor.y = 0u;
@@ -796,59 +738,24 @@ void query_evaluate(uint3 tid : SV_DispatchThreadID)
     uint begin = index * query_params.sizes.y;
     for (uint row = 0u; row < query_params.sizes.y; ++row)
         query_clear_candidate(begin + row);
-    uint count = request.meta.y == QueryClosest ? 1u : 0u;
+    uint count = 1u;
     uint status = QuerySuccess;
     QueryCastState cast;
     cast.cursor = uint4(query_params.selection.z, 2u, count, QuerySuccess);
     cast.progress = float4(0.0f, 3.402823466e+38f, 0.0f, request.positionMaximum.w);
     cast.normal = float4(0.0f);
     cast.iteration = uint4(0u);
-    if (cvx_query_slots() != 0u && cvx_query_deferred(request))
+    if (cvx_query_slots() != 0u)
     {
         cast.cursor.y = 0u;
         cast.cursor.w = status = QueryPending;
     }
-    else if (request.meta.x == QueryShapeCast)
+    else
     {
         cast.cursor.y = 0u;
         query_cast_advance(request, begin, cast);
         count = cast.cursor.z;
         status = cast.cursor.w;
-    }
-    else
-    {
-        for (uint local = 0u; local < query_params.counts.z && status == QuerySuccess; ++local)
-        {
-            uint slot = query_params.counts.y + local;
-            BodyModel model = body_models[slot];
-            if (!jph_resident(model) || model.meta.y == 0u)
-                continue;
-            BodyState state = body_states[slot - query_params.selection.y];
-            for (uint ordinal = 0u; ordinal < model.meta.y; ++ordinal)
-            {
-                uint leaf = model.meta.x + ordinal;
-                if (leaf < query_params.selection.z || leaf - query_params.selection.z >= query_params.selectedCounts.y)
-                {
-                    status = QueryNumericalFailure;
-                    break;
-                }
-                ShapeModel shape = shape_models[leaf];
-                if (!query_accepts(request, shape, slot))
-                    continue;
-                uint leaf_status;
-                QueryHit hit = query_leaf(request, shape, state, leaf, leaf_status);
-                if (leaf_status != QuerySuccess)
-                {
-                    status = leaf_status;
-                    break;
-                }
-                query_collect(request, hit, begin, count);
-                if (request.meta.y == QueryAny && count != 0u)
-                    break;
-            }
-            if (request.meta.y == QueryAny && count != 0u)
-                break;
-        }
     }
     query_store_cast_state(index, cast);
     QuerySpan span;
@@ -864,8 +771,6 @@ void query_resume_casts(uint3 tid : SV_DispatchThreadID)
     if (index >= query_params.counts.x || query_load_span(index).range.z != QueryPending)
         return;
     QueryInput request = query_load_input(index);
-    if (request.meta.x != QueryShapeCast)
-        return;
     QueryCastState cast = query_load_cast_state(index);
     query_cast_advance(request, index * query_params.sizes.y, cast);
     query_store_cast_state(index, cast);

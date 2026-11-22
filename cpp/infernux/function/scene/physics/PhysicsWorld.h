@@ -915,8 +915,8 @@ class PhysicsWorld
                                                    const physics::inxphygpu::InxPhyGpuDeviceRays *,
                                                    const PhysicsDeviceRayOutputs &) const;
     void ReadJointMotion(PhysicsDomain &domain, const std::vector<uint64_t> &ids, float *output, uint32_t kind) const;
-    [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &, const JPH::GPU::QueryInput &,
-                                                         const JoltCpuQueries::Shape &) const;
+    [[nodiscard]] std::vector<Collider *> QueryColliders(PhysicsDomain &, const JoltCpuQueries::Shape &,
+                                                         uint32_t layers, bool triggers) const;
     [[nodiscard]] bool QueryClosestCast(PhysicsDomain &, const JPH::GPU::QueryInput &, const JoltCpuQueries::Shape &,
                                         RaycastHit &) const;
     [[nodiscard]] std::vector<Rigidbody *>
