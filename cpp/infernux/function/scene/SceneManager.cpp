@@ -1259,8 +1259,9 @@ bool SceneManager::AdvanceRuntimeFrame(bool gpu, uint64_t worldId)
                 world->simulation.fixedPhase, world->simulation.fixedStepIndex,
                 world->simulation.completedFixedStepIndex, world->simulation.publishedFixedStepIndex,
                 world->simulation.runtimeFrameCount, world->simulation.pausedStepPending, world->physics->fixedGpuPhase,
-                world->physics->controlPending, world->physics->stepPending, world->physics->stepCompleted,
-                world->physics->solverStarted, world->pausedAuthor.requested, world->pausedAuthor.published);
+                bool(world->physics->nativeEdit || world->physics->nativeTopology), world->physics->stepPending,
+                world->physics->stepCompleted, world->physics->solverStarted, world->pausedAuthor.requested,
+                world->pausedAuthor.published);
         };
         const auto before = cursor();
         const auto progress = work->ProgressSerial();
@@ -1959,7 +1960,6 @@ void SceneManager::ServiceRuntimeFrames(FrameWorkOwner &work, float hostDeltaTim
     if (!work.IsAccepting())
         return;
     FrameWorkOwner::Scope accounting(work);
-    PhysicsWorld::Instance().ServiceGpuRetirements();
     CollectRetiredRuntimeWorlds();
     if (!work.IsAccepting())
         return;

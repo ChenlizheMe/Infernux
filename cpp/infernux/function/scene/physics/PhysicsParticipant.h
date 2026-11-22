@@ -1,6 +1,7 @@
 #pragma once
 
-#include "JoltGpuTick.h"
+#include "PhysicsGpuWork.h"
+#include "PhysicsParticipantStage.h"
 #include "PhysicsTargetReference.h"
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <map>
@@ -103,12 +104,12 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     [[nodiscard]] bool HasPendingOutputs();
     /// Pin complete allocations at a published boundary. Returns true if ranges still need copying.
     [[nodiscard]] bool PublishResidentOutputs(uint64_t epoch, uint64_t step, bool isFixedStep);
-    [[nodiscard]] JoltGpuControlWork PrepareOutputs(uint64_t epoch, uint64_t step, bool isFixedStep);
+    [[nodiscard]] PhysicsGpuWork PrepareOutputs(uint64_t epoch, uint64_t step, bool isFixedStep);
     void SetControl(const std::string &name, std::vector<uint8_t> bytes);
     void SetCount(uint32_t count);
     void AcceptControls(const ControlPayloads &values);
     [[nodiscard]] Prefix CapturePrefix();
-    [[nodiscard]] JoltGpuControlWork PrepareInitialize();
+    [[nodiscard]] PhysicsGpuWork PrepareInitialize();
     struct PreparedStage
     {
         rhi::ComputeHost *host = nullptr;
@@ -141,8 +142,8 @@ class PhysicsParticipant final : public std::enable_shared_from_this<PhysicsPart
     void DeclareExchangeStates(const ExchangeStates &states);
     void ReleasePeerExchange();
     void ValidateRigidPorts();
-    [[nodiscard]] JoltGpuControlWork PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture,
-                                                   uint64_t epoch, uint64_t step, bool isFixedStep);
+    [[nodiscard]] PhysicsGpuWork PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture, uint64_t epoch,
+                                               uint64_t step, bool isFixedStep);
     bool BindInstances();
     std::map<std::string, std::shared_ptr<rhi::ComputeBuffer>> Inputs(const rhi::ComputeWorkRecipe &recipe,
                                                                       bool initialize) const;

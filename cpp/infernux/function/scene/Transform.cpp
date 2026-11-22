@@ -163,7 +163,7 @@ void Transform::ResolveCpuPhysicsPose(PhysicsWorld &world, bool release)
     const auto *entry = world.FindBodyRegistration(bodyId);
     const bool nativeCpu = entry && entry->backend == PhysicsWorld::Backend::Cpu;
     auto &domain = world.CurrentDomain();
-    if (nativeCpu && !release && !domain.gpuRegistered)
+    if (nativeCpu && !release)
         return;
     // Independent physical children retain their world pose. Resolve only
     // their physical ancestors needed for world-to-local conversion.

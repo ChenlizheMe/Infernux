@@ -22,7 +22,6 @@ endif()
 # The composition layer is private to its final executable or extension.
 add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
 include("${CMAKE_CURRENT_LIST_DIR}/InfernuxPhysicsCook.cmake")
-infernux_cook_jolt_gpu_programs(InfernuxRuntime spirv)
 infernux_cook_inxphygpu_programs(InfernuxRuntime spirv)
 infernux_cook_ui_programs(InfernuxRuntime spirv)
 infernux_cook_scene_programs(InfernuxRuntime spirv)

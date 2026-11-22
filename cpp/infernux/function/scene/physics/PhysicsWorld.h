@@ -9,7 +9,6 @@
  */
 
 #include "JoltCpuQueries.h"
-#include "JoltGpuScene.h"
 #include "PhysicsBodyCommand.h"
 #include "PhysicsBodyState.h"
 #include "PhysicsConstraintOwner.h"
@@ -17,6 +16,8 @@
 #include "PhysicsContactTypes.h"
 #include "PhysicsDeviceBufferRange.h"
 #include "PhysicsDeviceQueryOutput.h"
+#include "PhysicsECSStore.h"
+#include "PhysicsGpuWork.h"
 #include "PhysicsParticipant.h"
 #include "PhysicsRaycastHit.h"
 #include "PhysicsShapeState.h"
@@ -50,16 +51,13 @@ struct PhysicsActorAuthoring;
 struct PhysicsSceneJointAuthor;
 struct PhysicsGpuRenderJob;
 class PhysicsGpuRenderPoses;
-class JoltGpuContactReports;
 class Infernux;
-class JoltGpuScene;
 class JoltCpuQueries;
-class JoltGpuJoints;
 struct PhysicsGpuMotionRead;
 struct PhysicsGpuMotionExport;
+struct PhysicsGpuBoxExport;
 struct PreparedCpuActor;
 struct PhysicsStaticBoundaryModel;
-struct PreparedGpuActor;
 namespace particle
 {
 struct GpuParticleCollisionDevicePayload;
@@ -267,7 +265,6 @@ class PhysicsWorld
                                                     const std::vector<Transform *> &local);
     /// Continue an existing managed control within this host's shared budget.
     /// Does not capture author input, admit a solver or wait synchronously.
-    void ServiceGpuWork();
     /// Promote a complete immutable export after the fixed publication gate.
     /// Control-only callers promote immediately when no fixed gate is pending.
     [[nodiscard]] PhysicsPosePublication PublishRenderPoses() const;
@@ -738,7 +735,6 @@ class PhysicsWorld
     std::map<RagdollToken, uint64_t> m_ragdollBodyOwners;
     [[nodiscard]] std::shared_ptr<const PhysicsColliderPairs> CaptureColliderPairs(PhysicsDomain &domain,
                                                                                    bool userOnly = false) const;
-    void QueueColliderPairs(PhysicsDomain &domain) const;
     void InvalidateColliderPairSnapshot(PhysicsDomain &domain) const;
     void RestoreColliderPairs(RuntimeWorld &world, const PhysicsColliderPairs &source,
                               const std::unordered_map<uint64_t, uint64_t> &remap);
@@ -801,7 +797,6 @@ class PhysicsWorld
     PhysicsDomain &CurrentDomain() const;
     void RegisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId, PhysicsActorHandle actor, Backend backend);
     void UnregisterBodyIdentity(PhysicsDomain &domain, uint32_t bodyId) noexcept;
-    void ChangeBodyBackend(PhysicsDomain &domain, BodyRegistration &entry, Backend backend) noexcept;
     [[nodiscard]] const BodyRegistration *FindBodyRegistration(uint32_t bodyId) const noexcept;
     [[nodiscard]] PhysicsActorHandle FindBodyActor(uint32_t bodyId) const noexcept;
     [[nodiscard]] Backend ReadBodyBackend(PhysicsDomain &domain, uint32_t bodyId) const;
@@ -813,16 +808,11 @@ class PhysicsWorld
     [[nodiscard]] bool HasRunningGpuFixed(const PhysicsDomain &domain) const noexcept;
     bool HasDomainControl(PhysicsDomain &domain) const;
     void CompleteDomainStep(PhysicsDomain &domain);
-    void RunPreparedWork(PhysicsDomain &domain, JoltGpuControlWork work) const;
     void RegisterDomain(PhysicsDomain &domain);
     void EnsureCpuReady(PhysicsDomain &domain);
-    JoltGpuScene &EnsureSharedGpuScene();
-    bool EnsureGpuReady(PhysicsDomain &domain);
-    void RetireIdleGpuPartition(PhysicsDomain &domain);
-    void RetireGpuPartition(PhysicsDomain &domain);
-    void ServiceGpuRetirements();
     void RefreshBodySurfaces(PhysicsDomain &domain);
     void RequireHealthyStep(PhysicsDomain &domain) const;
+    void RunPreparedWork(PhysicsDomain &domain, PhysicsGpuWork work) const;
     void FailStep(PhysicsDomain &domain) noexcept;
     bool AdvanceFixedStep(PhysicsDomain &domain, bool synchronous);
     bool TryBeginFixed(PhysicsDomain &domain, bool synchronous);
@@ -853,16 +843,10 @@ class PhysicsWorld
                           bool cancelMove);
     bool EnsureStaticBoundaries(PhysicsDomain &domain);
     bool AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const;
-    bool BeginGpuControl(PhysicsDomain &domain, bool numericalChange, bool requirePublication = false) const;
-    bool AdvanceGpuControl(PhysicsDomain &domain, bool synchronous) const;
     void RetryCapacityBodyCreations(PhysicsDomain &domain);
-    void RequireGpu(PhysicsDomain &domain) const;
     [[nodiscard]] bool IsFixedPublicationHeld(const PhysicsDomain &domain) const noexcept;
     void FlushAuthoring(PhysicsDomain &domain) const;
-    void DrainGpuSource(PhysicsDomain &domain) const;
-    void ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const;
     GpuPublicationReader &EnsureGpuPublicationReader();
-    void DrainQueryGpuCapacity(PhysicsDomain &domain) const;
     void SealSpatialQuery(PhysicsDomain &domain) const;
     [[nodiscard]] const physics::inxphygpu::InxPhyGpuFixedPublication &
     ReadInxPhyGpuQueryPublication(PhysicsDomain &domain) const;
@@ -885,9 +869,6 @@ class PhysicsWorld
     [[nodiscard]] Backend SelectBodyBackend(const PhysicsActorData &, const BodyRegistration *) const;
     [[nodiscard]] bool NeedsBodyBindingChange(const PhysicsActorData &) const;
     [[nodiscard]] bool RebindBody(PhysicsActorData &);
-    [[nodiscard]] bool CanStageNewGpuBody(PhysicsDomain &, size_t count = 1);
-    void StageNewGpuBody(PhysicsDomain &, uint32_t bodyId, PhysicsActorHandle, const PhysicsActorData &, bool resident,
-                         PreparedGpuActor);
     [[nodiscard]] uint32_t StageNewBody(const PhysicsActorData &, PhysicsActorHandle, Backend, bool resident);
     void RetireStagedBody(PhysicsDomain &, uint32_t bodyId, const BodyRegistration &);
     void StageActorModel(PhysicsActorData &actor, const PhysicsActorData &author,
@@ -913,10 +894,7 @@ class PhysicsWorld
     std::unique_ptr<rhi::ComputeHost> m_gpuHost;
     FrameWorkOwner *m_gpuWork = nullptr;
     std::unique_ptr<GpuPublicationReader> m_gpuPublicationReader;
-    std::unique_ptr<JoltGpuJoints> m_gpuJoints;
-    std::unique_ptr<JoltGpuScene> m_gpuScene;
     std::unique_ptr<PhysicsGpuRenderPoses> m_gpuRenderProgram;
-    std::unique_ptr<JoltGpuContactReports> m_gpuContactReports;
     // Live component ownership is independent of a backend's numerical slots
     // and immutable publications, which may outlive a retired component.
     std::unordered_map<uint32_t, BodyRegistration> m_bodyActors;

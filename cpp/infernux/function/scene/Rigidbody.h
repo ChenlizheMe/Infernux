@@ -315,7 +315,7 @@ class Rigidbody : public PhysicsBody
     [[nodiscard]] bool HasBody() const;
 
     /// Capture the authored Transform baseline when staging an actor. Model
-    /// configuration is captured once by PrepareJoltGpuActor, never replayed.
+    /// Configuration is captured when the physics actor is prepared.
     void CaptureAuthorPoseCache();
 
     /// Submit commands waiting for this Rigidbody's model or broadphase add.

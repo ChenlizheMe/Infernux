@@ -349,8 +349,8 @@ bool PhysicsParticipant::PublishResidentOutputs(uint64_t epoch, uint64_t step, b
     }
     return needsCopies;
 }
-JoltGpuControlWork PhysicsParticipant::PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture,
-                                                     uint64_t epoch, uint64_t step, bool isFixedStep)
+PhysicsGpuWork PhysicsParticipant::PrepareOutput(const std::shared_ptr<PhysicsParticipantOutput> &capture,
+                                                 uint64_t epoch, uint64_t step, bool isFixedStep)
 {
     if (IsRetired() || capture->IsDone())
         return {};
@@ -362,7 +362,7 @@ JoltGpuControlWork PhysicsParticipant::PrepareOutput(const std::shared_ptr<Physi
     if (!capture->storage)
         return {nullptr, [self, observed, epoch, step, isFixedStep] {
                     const auto capture = observed.lock();
-                    return capture ? self->PrepareOutput(capture, epoch, step, isFixedStep) : JoltGpuControlWork{};
+                    return capture ? self->PrepareOutput(capture, epoch, step, isFixedStep) : PhysicsGpuWork{};
                 }};
     const auto &source = m_state.at(capture->name);
     capture->sourceWrite = source->GetLastWriteSubmission();
@@ -381,10 +381,10 @@ JoltGpuControlWork PhysicsParticipant::PrepareOutput(const std::shared_ptr<Physi
                     capture->ready = true;
                     capture->storage.reset();
                 }
-                return JoltGpuControlWork{};
+                return PhysicsGpuWork{};
             }};
 }
-JoltGpuControlWork PhysicsParticipant::PrepareOutputs(uint64_t epoch, uint64_t step, bool isFixedStep)
+PhysicsGpuWork PhysicsParticipant::PrepareOutputs(uint64_t epoch, uint64_t step, bool isFixedStep)
 {
     if (!IsReady())
         return {};
@@ -392,7 +392,7 @@ JoltGpuControlWork PhysicsParticipant::PrepareOutputs(uint64_t epoch, uint64_t s
         if (const auto capture = entry.lock(); capture && !capture->IsDone()) {
             auto self = shared_from_this();
             auto work = PrepareOutput(capture, epoch, step, isFixedStep);
-            return ContinueJoltGpuControlWork(std::move(work), [self, epoch, step, isFixedStep] {
+            return ContinuePhysicsGpuWork(std::move(work), [self, epoch, step, isFixedStep] {
                 return self->PrepareOutputs(epoch, step, isFixedStep);
             });
         }
@@ -599,7 +599,7 @@ bool PhysicsParticipant::BindInstances()
     }
     return true;
 }
-JoltGpuControlWork PhysicsParticipant::PrepareInitialize()
+PhysicsGpuWork PhysicsParticipant::PrepareInitialize()
 {
     auto self = shared_from_this();
     if (IsRetired() || m_ready)
@@ -617,13 +617,13 @@ JoltGpuControlWork PhysicsParticipant::PrepareInitialize()
             0u, 0u, 0u, 0u, m_initialCount, uint32_t(PhysicsParticipantStage::Initialize)};
         updates.push_back({m_indices, 0, Bytes(values)});
     }
-    JoltGpuControlWork work{initialize.work->PrepareBatch(std::move(updates)), [self] {
-                                self->AcceptControls(self->m_initialControls);
-                                self->m_initialControls.clear();
-                                if (!self->IsRetired())
-                                    self->m_ready = true;
-                                return JoltGpuControlWork{};
-                            }}; // Completion boundary: allocation or accepted dispatch is not readiness.
+    PhysicsGpuWork work{initialize.work->PrepareBatch(std::move(updates)), [self] {
+                            self->AcceptControls(self->m_initialControls);
+                            self->m_initialControls.clear();
+                            if (!self->IsRetired())
+                                self->m_ready = true;
+                            return PhysicsGpuWork{};
+                        }}; // Completion boundary: allocation or accepted dispatch is not readiness.
     return work;
 }
 std::optional<PhysicsParticipant::PreparedStage>

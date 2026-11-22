@@ -5,7 +5,6 @@
 #include <Jolt/Physics/PhysicsSettings.h>
 #include "../Scene.h"
 #include "JoltCpuContactPublication.h"
-#include "JoltGpuContactPublication.h"
 #include "PhysicsBodyCommand.h"
 #include "PhysicsContactPublication.h"
 #include "PhysicsFixedInputs.h"
@@ -97,8 +96,6 @@ struct PhysicsDomain final
     bool gpuJointLayoutDirty = false;
     // Shared by the queued authored moves and their retained component guards.
     std::shared_ptr<PhysicsTargetBatch> gpuTargetAuthors;
-    bool gpuRegistered = false;
-    size_t gpuBodyOwners = 0;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
     std::shared_ptr<PhysicsGpuPublicationRequest> participantInitialization;
     std::shared_ptr<PhysicsGpuPublicationRequest> participantOutput;
@@ -123,14 +120,10 @@ struct PhysicsDomain final
     enum class FixedGpuPhase
     {
         Idle,
-        RetireControl,
-        RetryCreation,
         Solver,
         Failed
     };
     FixedGpuPhase fixedGpuPhase = FixedGpuPhase::Idle;
-    bool waitingForSlot = false;
-    bool controlPending = false, controlNumericalChange = false;
     float admittedDeltaTime = 0;
     uint32_t admittedSubsteps = 1;
     JPH::PhysicsSettings admittedCpuSettings;
@@ -143,7 +136,6 @@ struct PhysicsDomain final
     uint64_t stepEpoch = 0, stepIndex = 0;
     bool flushingAuthoring = false, synchronousRead = false;
     std::atomic<uint64_t> queryGeneration{1};
-    std::shared_ptr<const JoltGpuScene::Publication> lastPublication;
     struct CachedMotionState
     {
         uint64_t generation = 0;
@@ -151,18 +143,16 @@ struct PhysicsDomain final
         PhysicsStateFields fields = PhysicsStateFields::None;
     };
     std::unordered_map<uint32_t, CachedMotionState> requestedMotion;
-    std::unordered_map<const JPH::Shape *, std::weak_ptr<const PhysicsShapeGeometry>> shapeGeometry;
     struct ColliderPairPolicy
     {
         bool user = false;
         std::set<std::array<uint64_t, 2>> owners;
     };
     std::map<PhysicsColliderPair, ColliderPairPolicy> colliderPairs;
-    std::shared_ptr<const PhysicsColliderPairs> colliderPairSnapshot, queuedColliderPairs;
+    std::shared_ptr<const PhysicsColliderPairs> colliderPairSnapshot;
     PhysicsColliderPairs initialColliderPairs;
     bool contactEventStreamEnabled = false, contactImpulseStreamEnabled = false, contactIncludeTriggers = true;
     PhysicsContactPublication contacts;
-    JoltGpuContactPublication gpuContacts;
     struct InxPhyGpuFixedAdmission
     {
         ContactStreamIdentity identity;
@@ -186,7 +176,7 @@ struct PhysicsDomain final
     {
         using Keys = std::array<uint64_t, 3>;
         PhysicsGpuRenderBindings bindings;
-        std::shared_ptr<PhysicsGpuRenderJob> pending, ready;
+        std::shared_ptr<PhysicsGpuRenderJob> ready;
         std::optional<Keys> checkedKeys;
     };
     RenderState rendering;
@@ -200,7 +190,5 @@ struct PhysicsDomain final
     std::shared_ptr<PresentationPoseReads> presentationPoseReads;
     uint32_t presentationPoseReadDepth = 0;
     uint64_t presentationPoseReadGeneration = 0;
-    // A collision graph can consume static GPU boundaries without a Rigidbody.
-    std::weak_ptr<const void> particleCollisionConsumer;
 };
 } // namespace infernux

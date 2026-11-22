@@ -3,8 +3,6 @@
 #include <function/renderer/shader/ShaderTargetArchive.h>
 #include <function/resources/ShaderAsset/SlangCompiler.h>
 #include <function/resources/ShaderAsset/SlangUIModule.h>
-#include <function/scene/physics/JoltGpuProgramSources.h>
-#include <function/scene/physics/gpu/PhysicsStages.h>
 #include <function/scene/physics/inxphygpu/InxPhyGpuProgramSources.h>
 
 #include <algorithm>
@@ -31,72 +29,6 @@ std::string ReadSource(const std::filesystem::path &path)
 ShaderSourceModule LoadModule(const std::filesystem::path &root, const char *name, const char *path)
 {
     return {name, path, ReadSource(root / path)};
-}
-
-ShaderSourceModule LoadProgramSource(const std::filesystem::path &physics, JoltGpuProgram program)
-{
-    switch (program) {
-    case JoltGpuProgram::ArticulationCapture:
-        return LoadModule(physics, "jph_gpu_articulation_capture", "gpu/Shaders/articulation_normal_capture.slang");
-    case JoltGpuProgram::ArticulationDynamics:
-        return LoadModule(physics, "jph_gpu_articulation_dynamics_owner",
-                          "gpu/Shaders/articulation_normal_dynamics.slang");
-    case JoltGpuProgram::Step:
-        return LoadModule(physics, JPH::GPU::StepModuleName, JPH::GPU::StepSourcePath);
-    case JoltGpuProgram::Broadphase:
-        return LoadModule(physics, "jph_gpu_broadphase", "gpu/Shaders/rigid_broadphase.slang");
-    case JoltGpuProgram::Narrowphase:
-        return LoadModule(physics, "jph_gpu_narrowphase", "gpu/Shaders/rigid_convex_narrowphase.slang");
-    case JoltGpuProgram::ContactReports:
-        return LoadModule(physics, "jph_gpu_contact_reports", "gpu/Shaders/rigid_contact_reports.slang");
-    case JoltGpuProgram::Constraints:
-        return LoadModule(physics, "jph_gpu_constraints", "gpu/Shaders/rigid_constraints.slang");
-    case JoltGpuProgram::BodyMutations:
-        return LoadModule(physics, "jph_gpu_body_mutations", "gpu/Shaders/rigid_body_mutations.slang");
-    case JoltGpuProgram::BodyCommands:
-        return LoadModule(physics, "jph_gpu_body_commands", "gpu/Shaders/body_commands.slang");
-    case JoltGpuProgram::Joints:
-        return LoadModule(physics, "jph_gpu_joints", "gpu/Shaders/joint_commands.slang");
-    case JoltGpuProgram::Count:
-        break;
-    }
-    throw std::logic_error("Missing GPU physics program source");
-}
-
-std::vector<ShaderSourceModule> LoadProgramLibraries(const std::filesystem::path &physics)
-{
-    const auto load = [&](const char *name, const char *path) { return LoadModule(physics, name, path); };
-    return {load("jph_gpu_rigid_math", "gpu/Shaders/rigid_math.slang"),
-            load("jph_gpu_component_union", "gpu/Shaders/component_union.slang"),
-            load("jph_gpu_key_sort", "gpu/Shaders/key_sort.slang"),
-            load("jph_gpu_joint_fields", "gpu/JointPayloadFields.inl"),
-            load("jph_gpu_physics_types", "gpu/PhysicsTypes.h"),
-            load("jph_gpu_continuous_types", "gpu/ContinuousTypes.h"),
-            load("jph_gpu_articulation_integration_types", "gpu/ArticulationIntegrationTypes.h"),
-            load("jph_gpu_state_fk_types", "gpu/StateFkTypes.h"),
-            load("jph_gpu_articulation_dynamics_types", "gpu/ArticulationDynamicsTypes.h"),
-            load("jph_gpu_articulation_aba", "gpu/Shaders/articulation_aba.slang"),
-            load("jph_gpu_articulation_joint_load", "gpu/Shaders/articulation_joint_load.slang"),
-            load("jph_gpu_articulation_kinematics", "gpu/Shaders/articulation_kinematics.slang"),
-            load("jph_gpu_articulation_state_fk", "gpu/Shaders/articulation_state_fk.slang"),
-            load("jph_gpu_articulation_dynamics", "gpu/Shaders/articulation_dynamics.slang"),
-            load("jph_gpu_articulation_types", "gpu/ArticulationTypes.h"),
-            load("jph_gpu_articulation_control", "gpu/ArticulationControlTypes.h"),
-            load("jph_gpu_articulations", "gpu/Shaders/rigid_articulations.slang"),
-            load("jph_gpu_sleep_types", "gpu/SleepTypes.h"),
-            load("jph_gpu_sleep_math", "gpu/Shaders/rigid_sleep_math.slang"),
-            load("jph_gpu_sleep", "gpu/Shaders/rigid_sleep.slang"),
-            load("jph_gpu_convex_types", "gpu/ConvexGeometryTypes.h"),
-            load("jph_gpu_convex", "gpu/Shaders/rigid_convex.slang"),
-            load("jph_gpu_convex_manifold", "gpu/Shaders/rigid_convex_manifold.slang"),
-            load("jph_gpu_contact_report_types", "gpu/ContactReportTypes.h"),
-            load("jph_gpu_broadphase_types", "gpu/BroadphaseTypes.h"),
-            load("jph_gpu_constraint_types", "gpu/ConstraintTypes.h"),
-            load("jph_gpu_island_owner", "gpu/Shaders/island_owner_schedule.slang"),
-            load("jph_gpu_rigid_psd", "gpu/Shaders/rigid_psd.slang"),
-            load("jph_gpu_rigid_joints", "gpu/Shaders/rigid_joints.slang"),
-            load("jph_gpu_swing_twist", "gpu/Shaders/rigid_swing_twist.slang"),
-            load("jph_gpu_six_dof", "gpu/Shaders/rigid_six_dof.slang")};
 }
 
 // C arrays store exactly the payload bytes. Bound each literal for the
@@ -150,16 +82,6 @@ void WritePrograms(const std::filesystem::path &output, const char *accessor, un
         file << "        { &archive" << index << ", sizeof(archive" << index << ") },\n";
     file << "    };\n    *size = archives[program].size;\n    return archives[program].bytes;\n}\n";
     file.close();
-}
-
-void CookPhysics(const std::filesystem::path &root, ShaderCodeTarget target, const std::filesystem::path &output)
-{
-    const auto physics = root / "cpp/infernux/function/scene/physics";
-    const auto libraries = LoadProgramLibraries(physics);
-    WritePrograms(output, "InfernuxJoltGpuArchive", static_cast<unsigned>(JoltGpuProgram::Count), [&](unsigned index) {
-        const auto source = LoadProgramSource(physics, static_cast<JoltGpuProgram>(index));
-        return SlangCompiler::Get().Compile(source, libraries, {target}, true);
-    });
 }
 
 void CookInxPhyGpuPhysics(const std::filesystem::path &root, ShaderCodeTarget target,
@@ -217,7 +139,7 @@ int main(int argc, char **argv)
 try {
     if (argc != 5)
         throw std::invalid_argument(
-            "Usage: InfernuxJoltGpuCook <physics|inxphygpu|ui|scene> <engine-source> <spirv|wgsl> <output.c>");
+            "Usage: InfernuxBuiltinShaderCook <inxphygpu|ui|scene> <engine-source> <spirv|wgsl> <output.c>");
     const std::string_view kind = argv[1];
     const auto root = std::filesystem::u8path(argv[2]);
     const std::string_view format = argv[3];
@@ -225,9 +147,7 @@ try {
         throw std::invalid_argument("Unknown shader target");
     const auto target = format == "spirv" ? ShaderCodeTarget::SpirV : ShaderCodeTarget::Wgsl;
     const auto output = std::filesystem::u8path(argv[4]);
-    if (kind == "physics")
-        CookPhysics(root, target, output);
-    else if (kind == "inxphygpu")
+    if (kind == "inxphygpu")
         CookInxPhyGpuPhysics(root, target, output);
     else if (kind == "ui")
         CookUI(target, output);
