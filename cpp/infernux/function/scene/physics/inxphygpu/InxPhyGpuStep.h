@@ -166,7 +166,8 @@ class InxPhyGpuPublishedRayQuery
     [[nodiscard]] InxPhyGpuPreparedRayBatch
     Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, uint32_t rayCount, bool readback,
             std::vector<rhi::ComputeBufferUpdate> updates, const InxPhyGpuDeviceRays *deviceRays = nullptr,
-            const PhysicsDeviceRayOutputs *outputs = nullptr, uint32_t allHitCapacity = 0) const;
+            const PhysicsDeviceRayOutputs *outputs = nullptr, uint32_t allHitCapacity = 0,
+            const std::vector<InxPhyGpuRay> *hostRays = nullptr) const;
     [[nodiscard]] InxPhyGpuPreparedBodyBounds PrepareBodyBounds(rhi::ComputeHost &host,
                                                                 const PhysicsGpuPoseSource &source,
                                                                 const ModelVector &minimum, const ModelVector &maximum,
@@ -207,7 +208,7 @@ class InxPhyGpuPublishedRayQuery
     mutable rhi::ComputeDispatchDesc m_shapeCast;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
     mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
-    mutable std::shared_ptr<rhi::ComputeBuffer> m_output;
+    mutable std::shared_ptr<rhi::ComputeBuffer> m_inputScratch, m_output;
     uint32_t m_geometryCount = 0, m_bodyCount = 0, m_capacity = 0;
     std::shared_ptr<const std::vector<uint32_t>> m_bodyBoundsRows;
     PhysicsGpuPoseSource::Layout m_layout = PhysicsGpuPoseSource::Layout::OriginWXYZ;
@@ -392,7 +393,8 @@ class InxPhyGpuStep
     PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount, bool publish,
                          std::vector<rhi::ComputeBufferUpdate> updates = {},
                          const InxPhyGpuDeviceRays *deviceRays = nullptr,
-                         const PhysicsDeviceRayOutputs *outputs = nullptr) const;
+                         const PhysicsDeviceRayOutputs *outputs = nullptr, uint32_t allHitCapacity = 0,
+                         const std::vector<InxPhyGpuRay> *hostRays = nullptr) const;
     [[nodiscard]] InxPhyGpuPreparedBodyBounds PreparePublishedBodyBounds(const PhysicsGpuPoseSource &source,
                                                                          const ModelVector &minimum,
                                                                          const ModelVector &maximum, uint32_t layers,

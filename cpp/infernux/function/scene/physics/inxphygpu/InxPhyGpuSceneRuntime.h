@@ -163,7 +163,7 @@ struct InxPhyGpuSceneRayBatch
 
     /// Materialize the ordinary scene hits on the owner thread after submission.
     /// Consumes the host readback. The batch retains the queried world's layout.
-    [[nodiscard]] std::vector<RaycastHit> ReadHostHits() const;
+    [[nodiscard]] std::vector<RaycastHit> ReadHostHits(uint32_t *total = nullptr) const;
 
   private:
     friend class InxPhyGpuSceneRuntime;
@@ -173,7 +173,7 @@ struct InxPhyGpuSceneRayBatch
     };
     std::shared_ptr<const InxPhyGpuSceneLayout> m_layout;
     std::vector<RayLine> m_lines;
-    uint32_t m_world = 0;
+    uint32_t m_world = 0, m_allHitCapacity = 0;
 };
 
 struct InxPhyGpuSceneBodyBoundsRead
@@ -267,7 +267,12 @@ class InxPhyGpuSceneRuntime final
     /// Prepare against the chosen completed world. The result retains device
     /// rows and can optionally carry an exact host hit readback.
     [[nodiscard]] InxPhyGpuSceneRayBatch PrepareRaycast(const InxPhyGpuFixedPublication &publication, uint32_t world,
-                                                        const std::vector<InxPhyGpuRay> &rays, bool readback) const;
+                                                        const std::vector<InxPhyGpuRay> &rays, bool readback,
+                                                        const PhysicsDeviceRayOutputs *outputs = nullptr,
+                                                        uint32_t allHitCapacity = 0) const;
+    [[nodiscard]] InxPhyGpuSceneRayBatch PrepareColliderRaycast(const InxPhyGpuFixedPublication &publication,
+                                                                uint32_t world, uint32_t bodyId, uint64_t colliderId,
+                                                                uint64_t generation, InxPhyGpuRay ray) const;
     /// Pack the selected float3 ranges on-device and retain the hits with this publication identity.
     [[nodiscard]] InxPhyGpuSceneRayBatch PrepareDeviceRaycast(const InxPhyGpuFixedPublication &publication,
                                                               uint32_t world, const InxPhyGpuDeviceRays &rays,

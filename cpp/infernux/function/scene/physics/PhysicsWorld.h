@@ -860,6 +860,8 @@ class PhysicsWorld
     void DrainQueryGpuCapacity(PhysicsDomain &domain) const;
     void AcceptQueryGpuPublication(PhysicsDomain &domain, bool refresh) const;
     void SealSpatialQuery(PhysicsDomain &domain) const;
+    [[nodiscard]] const physics::inxphygpu::InxPhyGpuFixedPublication &
+    ReadInxPhyGpuQueryPublication(PhysicsDomain &domain) const;
     [[nodiscard]] std::shared_ptr<const JoltGpuScene::Publication> ReadGpuQueryPublication(PhysicsDomain &) const;
     [[nodiscard]] std::shared_ptr<const JoltGpuScene::Publication>
     ReadGpuSpatialQueryPublication(PhysicsDomain &) const;

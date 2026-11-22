@@ -2316,14 +2316,15 @@ InxPhyGpuStep::PrepareRays(bool publish, std::vector<rhi::ComputeBufferUpdate> u
     return rhi::PrepareComputeBatch(host, std::move(updates), m_rayWork, std::move(reads));
 }
 
-InxPhyGpuPreparedRayBatch InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount,
-                                                              bool publish,
-                                                              std::vector<rhi::ComputeBufferUpdate> updates,
-                                                              const InxPhyGpuDeviceRays *deviceRays,
-                                                              const PhysicsDeviceRayOutputs *outputs) const
+InxPhyGpuPreparedRayBatch
+InxPhyGpuStep::PreparePublishedRays(const PhysicsGpuPoseSource &source, uint32_t rayCount, bool publish,
+                                    std::vector<rhi::ComputeBufferUpdate> updates,
+                                    const InxPhyGpuDeviceRays *deviceRays, const PhysicsDeviceRayOutputs *outputs,
+                                    uint32_t allHitCapacity, const std::vector<InxPhyGpuRay> *hostRays) const
 {
     auto host = m_work->GetRecipe().GetHost();
-    return m_publishedRays.Prepare(host, source, rayCount, publish, std::move(updates), deviceRays, outputs);
+    return m_publishedRays.Prepare(host, source, rayCount, publish, std::move(updates), deviceRays, outputs,
+                                   allHitCapacity, hostRays);
 }
 
 void InxPhyGpuPublishedRayQuery::AppendGeometry(std::vector<rhi::ComputeDispatchDesc> &dispatches,
@@ -2532,10 +2533,23 @@ InxPhyGpuPreparedRayBatch
 InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, uint32_t rayCount,
                                     bool publish, std::vector<rhi::ComputeBufferUpdate> updates,
                                     const InxPhyGpuDeviceRays *deviceRays, const PhysicsDeviceRayOutputs *outputs,
-                                    uint32_t allHitCapacity) const
+                                    uint32_t allHitCapacity, const std::vector<InxPhyGpuRay> *hostRays) const
 {
-    if (!m_settings || rayCount == 0 || rayCount > m_capacity)
+    if (!m_settings || rayCount == 0 || (rayCount > m_capacity && !hostRays && !deviceRays))
         throw std::invalid_argument("inxphygpu published ray batch exceeds the scene query layout");
+    const auto inputBytes = uint64_t{rayCount} * sizeof(InxPhyGpuRay);
+    auto input = m_inputs;
+    if (rayCount > m_capacity) {
+        if (!m_inputScratch || m_inputScratch->GetByteSize() < inputBytes)
+            m_inputScratch = std::make_shared<rhi::ComputeBuffer>(
+                host, rhi::ComputeBufferDesc{inputBytes / sizeof(uint32_t), rhi::ComputeScalarType::UInt32, 1,
+                                             BufferUsageFlags::Storage | BufferUsageFlags::TransferDestination});
+        input = m_inputScratch;
+    }
+    if (hostRays) {
+        auto &upload = updates.emplace_back(rhi::ComputeBufferUpdate{input, 0, std::vector<uint8_t>(inputBytes)});
+        std::memcpy(upload.data.data(), hostRays->data(), upload.data.size());
+    }
     const ModelWords settings{m_geometryCount, rayCount, allHitCapacity ? allHitCapacity : 1u,
                               static_cast<uint32_t>(source.firstRow)};
     auto &params =
@@ -2545,7 +2559,6 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
     auto dispatches = std::exchange(m_initialize, {});
     dispatches.reserve(dispatches.size() + m_rayWork.size() + size_t(bool(m_geometry.kernel)) +
                        size_t(deviceRays != nullptr) + size_t(outputs != nullptr));
-    const auto inputBytes = uint64_t{rayCount} * sizeof(InxPhyGpuRay);
     const auto scalarOffset = [&host](const PhysicsDeviceBufferRange &view, uint64_t bytes, ComputeScalarType scalar) {
         const auto end = view.buffer ? std::min(view.byteEnd, view.buffer->GetByteSize()) : 0u;
         if (!view.buffer || !host.SharesServicesWith(view.buffer->GetHost()) ||
@@ -2572,6 +2585,7 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
         pack.groupCountX = (rayCount - 1) / 64 + 1;
         pack.buffers[1] = rays.origins.buffer;
         pack.buffers[2] = rays.directions.buffer;
+        pack.buffers[3] = input;
         pack.proof->reads[1] = {1, rays.origins.byteOffset, vectorBytes};
         pack.proof->reads[2] = {2, rays.directions.byteOffset, vectorBytes};
         pack.proof->writes.front().byteSize = inputBytes;
@@ -2592,6 +2606,7 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
         trace = m_traceAll;
     else
         trace.groupCountX = (rayCount - 1) / 64 + 1;
+    trace.buffers[1] = input;
     trace.buffers[6] = m_output;
     trace.proof->reads[1].byteSize = inputBytes;
     trace.proof->writes.front().byteSize = bytes;
@@ -2603,6 +2618,7 @@ InxPhyGpuPublishedRayQuery::Prepare(rhi::ComputeHost &host, const PhysicsGpuPose
         auto &project = dispatches.emplace_back(m_project);
         project.groupCountX = (rayCount - 1) / 64 + 1;
         project.groupCountY = 1;
+        project.buffers[1] = input;
         project.buffers[2] = m_output;
         project.proof->reads[1].byteSize = inputBytes;
         project.proof->reads[2].byteSize = bytes;

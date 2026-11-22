@@ -70,6 +70,23 @@ struct InxPhyGpuSceneLayout
     std::vector<PhysicsGpuMotionBinding> motion;
     std::vector<Drive> drive;
 
+    [[nodiscard]] std::optional<std::pair<uint32_t, uint32_t>> ColliderRange(uint32_t world, uint32_t body, uint64_t id,
+                                                                             uint64_t generation) const
+    {
+        const auto &layout = worlds.at(world);
+        const auto row = layout.BodyRow(body);
+        if (!row)
+            return std::nullopt;
+        const auto &surfaces = layout.bodies[*row].surfaces;
+        const auto surface = std::find_if(surfaces.begin(), surfaces.end(), [&](const auto &identity) {
+            return identity.colliderId == id && identity.generation == generation;
+        });
+        if (surface == surfaces.end())
+            return std::nullopt;
+        const auto range = colliderGeometry[*row][surface - surfaces.begin()];
+        return range.first == NoModelIndex ? std::nullopt : std::make_optional(range);
+    }
+
     [[nodiscard]] bool CanDrive(uint32_t body, bool temporaryStatic) const
     {
         return drive[body] == (temporaryStatic ? Drive::Static : Drive::Kinematic);
@@ -280,21 +297,24 @@ std::vector<PhysicsShapeState> InxPhyGpuSceneShapeRead::ReadHostShapes() const
     return shapes;
 }
 
-std::vector<RaycastHit> InxPhyGpuSceneRayBatch::ReadHostHits() const
+std::vector<RaycastHit> InxPhyGpuSceneRayBatch::ReadHostHits(uint32_t *total) const
 {
     if (!m_layout)
         throw std::logic_error("inxphygpu scene ray batch has no host results");
-    std::vector<InxPhyGpuRayHit> records(query.count);
+    std::vector<InxPhyGpuRayHit> records(m_allHitCapacity ? size_t{m_allHitCapacity} + 1 : query.count);
     query.packet->Readback(0)->ReadInto(records.data(), records.size() * sizeof(InxPhyGpuRayHit));
     const auto &world = m_layout->worlds[m_world];
-    std::vector<RaycastHit> hits(records.size());
-    for (size_t index = 0; index < records.size(); ++index) {
-        const auto &record = records[index];
+    const auto count = m_allHitCapacity ? records.front().identity[0] : query.count;
+    if (total)
+        *total = count;
+    std::vector<RaycastHit> hits(m_allHitCapacity ? std::min(count, m_allHitCapacity) : count);
+    for (size_t index = 0; index < hits.size(); ++index) {
+        const auto &record = records[index + (m_allHitCapacity != 0)];
         const auto &[geometry, body, subShape, triangle] = record.identity;
         if (geometry == NoModelIndex)
             continue;
         const auto &binding = world.bodies[body];
-        const auto &line = m_lines[index];
+        const auto &line = m_lines[m_allHitCapacity ? 0 : index];
         auto &hit = hits[index];
         hit.distance = record.normalDistance[3];
         hit.point = line.origin + line.direction * hit.distance;
@@ -529,6 +549,8 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
     m_layout = std::move(layout);
     m_activeFixedInputs.assign(m_layout->worlds.size(), {timestep, {gravity[0], gravity[1], gravity[2]}});
     const auto &config = EngineConfig::Get();
+    if (!rayLayout.raysPerWorld)
+        rayLayout = {1, true};
     auto prepared = InxPhyGpuStep::Build(m_host, target, scene.model, static_cast<uint32_t>(m_layout->worlds.size()),
                                          timestep, gravity, &scene.collision, collisionCapacity, &solver, rayLayout,
                                          commandCapacity, contactReports, substeps, handoff,
@@ -1090,27 +1112,39 @@ InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareDeviceRaycast(const InxPhyG
 
 InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareRaycast(const InxPhyGpuFixedPublication &publication,
                                                              uint32_t world, const std::vector<InxPhyGpuRay> &rays,
-                                                             bool readback) const
+                                                             bool readback, const PhysicsDeviceRayOutputs *outputs,
+                                                             uint32_t allHitCapacity) const
 {
-    if (publication.m_layout != m_layout || rays.size() > UINT32_MAX)
+    if (publication.m_layout != m_layout || rays.size() > UINT32_MAX ||
+        (allHitCapacity && (rays.size() != 1 || outputs)))
         throw std::invalid_argument("inxphygpu ray batch does not match its scene publication");
     const auto source = publication.PoseSource(world);
-    std::vector<uint8_t> inputs(rays.size() * sizeof(InxPhyGpuRay));
-    if (!inputs.empty())
-        std::memcpy(inputs.data(), rays.data(), inputs.size());
     InxPhyGpuSceneRayBatch result;
     result.identity = publication.worlds[world].identity;
-    result.query = m_step->PreparePublishedRays(source, static_cast<uint32_t>(rays.size()), readback,
-                                                {{m_step->Rays().inputs, 0, std::move(inputs)}});
+    result.query = m_step->PreparePublishedRays(source, static_cast<uint32_t>(rays.size()), readback, {}, nullptr,
+                                                outputs, allHitCapacity, &rays);
     if (readback) {
         result.m_layout = publication.m_layout;
         result.m_world = world;
+        result.m_allHitCapacity = allHitCapacity;
         result.m_lines.reserve(rays.size());
         for (const auto &ray : rays)
             result.m_lines.push_back({{ray.originLimit[0], ray.originLimit[1], ray.originLimit[2]},
                                       {ray.direction[0], ray.direction[1], ray.direction[2]}});
     }
     return result;
+}
+
+InxPhyGpuSceneRayBatch InxPhyGpuSceneRuntime::PrepareColliderRaycast(const InxPhyGpuFixedPublication &publication,
+                                                                     uint32_t world, uint32_t bodyId,
+                                                                     uint64_t colliderId, uint64_t generation,
+                                                                     InxPhyGpuRay ray) const
+{
+    const auto range = m_layout->ColliderRange(world, bodyId, colliderId, generation);
+    if (!range)
+        return {};
+    ray.filter = {range->first, range->second, InxPhyGpuRayTargetGeometry, 0};
+    return PrepareRaycast(publication, world, {ray}, true);
 }
 
 InxPhyGpuSceneBodyBoundsRead InxPhyGpuSceneRuntime::PrepareBodyBounds(const InxPhyGpuFixedPublication &publication,
@@ -1136,20 +1170,10 @@ InxPhyGpuSceneRuntime::PrepareClosestPoint(const InxPhyGpuFixedPublication &publ
 {
     if (publication.m_layout != m_layout)
         throw std::invalid_argument("inxphygpu closest point does not match the scene publication");
-    const auto &layout = m_layout->worlds.at(world);
-    const auto row = layout.BodyRow(bodyId);
-    if (!row)
+    const auto range = m_layout->ColliderRange(world, bodyId, colliderId, generation);
+    if (!range)
         return {};
-    const auto &surfaces = layout.bodies[*row].surfaces;
-    const auto surface = std::find_if(surfaces.begin(), surfaces.end(), [&](const auto &identity) {
-        return identity.colliderId == colliderId && identity.generation == generation;
-    });
-    if (surface == surfaces.end())
-        return {};
-    const auto &range = m_layout->colliderGeometry[*row][surface - surfaces.begin()];
-    if (range.first == NoModelIndex)
-        return {};
-    return m_step->PreparePublishedClosestPoint(publication.PoseSource(world), point, range.first, range.second,
+    return m_step->PreparePublishedClosestPoint(publication.PoseSource(world), point, range->first, range->second,
                                                 closedMesh);
 }
 
