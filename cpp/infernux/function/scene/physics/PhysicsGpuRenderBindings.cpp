@@ -27,18 +27,6 @@ namespace infernux
 {
 namespace
 {
-struct MotionLayout
-{
-    bool origin;
-    uint32_t center, linear, angular;
-};
-
-MotionLayout MotionLanes(PhysicsGpuPoseSource::Layout layout)
-{
-    const bool origin = layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
-    return origin ? MotionLayout{true, 2, 3, 4} : MotionLayout{false, 0, 2, 3};
-}
-
 glm::vec3 AllowedMotionAxes(uint32_t mask)
 {
     return {mask & 1u ? 0.0f : 1.0f, mask & 2u ? 0.0f : 1.0f, mask & 4u ? 0.0f : 1.0f};
@@ -50,20 +38,18 @@ PhysicsGpuMotionRead PhysicsGpuMotionRead::Prepare(rhi::ComputeHost &host, const
                                                    PhysicsStateFields fields, bool includeActivity)
 {
     PhysicsGpuMotionRead read;
-    read.m_layout = source.layout;
+    using Lanes = PhysicsGpuPoseSource;
     read.m_fields = fields;
     read.m_selected = std::move(selected);
-    const auto layout = MotionLanes(source.layout);
     const auto has = [fields](PhysicsStateFields field) { return HasPhysicsStateField(fields, field); };
     const bool position = has(PhysicsStateFields::Position);
-    const bool rotation =
-        has(PhysicsStateFields::Rotation) || has(PhysicsStateFields::InverseInertia) || (position && !layout.origin);
+    const bool rotation = has(PhysicsStateFields::Rotation) || has(PhysicsStateFields::InverseInertia);
     const uint32_t mask = (position ? 1u : 0u) | (rotation ? 2u : 0u) |
-                          (has(PhysicsStateFields::CenterOfMass) || includeActivity ? 1u << layout.center : 0u) |
-                          (has(PhysicsStateFields::LinearVelocity) ? 1u << layout.linear : 0u) |
-                          (has(PhysicsStateFields::AngularVelocity) ? 1u << layout.angular : 0u);
+                          (has(PhysicsStateFields::CenterOfMass) || includeActivity ? 1u << Lanes::CenterOfMass : 0u) |
+                          (has(PhysicsStateFields::LinearVelocity) ? 1u << Lanes::LinearVelocity : 0u) |
+                          (has(PhysicsStateFields::AngularVelocity) ? 1u << Lanes::AngularVelocity : 0u);
     read.m_laneOffsets.fill(UINT8_MAX);
-    for (uint32_t lane = 0; lane <= layout.angular; ++lane)
+    for (uint32_t lane = 0; lane < Lanes::RowWords; ++lane)
         if (mask & (1u << lane))
             read.m_laneOffsets[lane] = read.m_rowWords++;
 
@@ -82,8 +68,8 @@ PhysicsGpuMotionRead PhysicsGpuMotionRead::Prepare(rhi::ComputeHost &host, const
     uint32_t previous = UINT32_MAX;
     for (const auto &[row, index] : rows) {
         if (row != previous) {
-            const auto base = (source.firstRow + row) * source.rowBytes;
-            for (uint32_t lane = 0; lane <= layout.angular; ++lane) {
+            const auto base = (source.firstRow + row) * Lanes::RowBytes;
+            for (uint32_t lane = 0; lane < Lanes::RowWords; ++lane) {
                 if ((mask & (1u << lane)) == 0)
                     continue;
                 const auto offset = base + lane * laneBytes;
@@ -115,10 +101,10 @@ std::vector<PhysicsBodyMotionState> PhysicsGpuMotionRead::Read(std::vector<bool>
         packet->Readback(receipt)->ReadInto(raw[wordsRead].data(), words * sizeof(Word));
         wordsRead += words;
     }
-    const auto layout = MotionLanes(m_layout);
+    using Lanes = PhysicsGpuPoseSource;
     const auto has = [this](PhysicsStateFields field) { return HasPhysicsStateField(m_fields, field); };
     if (sleeping) {
-        if (m_laneOffsets[layout.center] == UINT8_MAX)
+        if (m_laneOffsets[Lanes::CenterOfMass] == UINT8_MAX)
             throw std::logic_error("GPU motion read does not carry body activity");
         sleeping->resize(m_selected.size());
     }
@@ -135,30 +121,24 @@ std::vector<PhysicsBodyMotionState> PhysicsGpuMotionRead::Read(std::vector<bool>
             return raw[size_t{m_rows[i]} * m_rowWords + m_laneOffsets[lane]];
         };
         auto &state = result.emplace_back(PhysicsBodyMotionState{binding.pose.id, binding.shapeRevision});
-        if (has(PhysicsStateFields::Rotation) || has(PhysicsStateFields::InverseInertia) ||
-            (has(PhysicsStateFields::Position) && !layout.origin)) {
-            const auto &q = word(1);
-            const auto rotation = layout.origin ? glm::quat(q[0], q[1], q[2], q[3]) : glm::quat(q[3], q[0], q[1], q[2]);
+        if (has(PhysicsStateFields::Rotation) || has(PhysicsStateFields::InverseInertia)) {
+            const auto &q = word(Lanes::Rotation);
+            const glm::quat rotation(q[0], q[1], q[2], q[3]);
             const float squaredLength = glm::dot(rotation, rotation);
             if (!std::isfinite(squaredLength) || squaredLength <= 0.0f)
                 throw std::runtime_error("Accepted GPU physics motion contains an invalid rotation");
             state.rotation = rotation / std::sqrt(squaredLength);
         }
-        if (has(PhysicsStateFields::Position)) {
-            state.position = vector(word(0));
-            if (!layout.origin) {
-                const auto &offset = binding.pose.centerOffset;
-                state.position -= state.rotation * glm::vec3(offset[0], offset[1], offset[2]);
-            }
-        }
+        if (has(PhysicsStateFields::Position))
+            state.position = vector(word(Lanes::Position));
         if (has(PhysicsStateFields::CenterOfMass))
-            state.centerOfMass = vector(word(layout.center));
+            state.centerOfMass = vector(word(Lanes::CenterOfMass));
         if (sleeping)
-            (*sleeping)[i] = word(layout.center)[3] != 0.0f;
+            (*sleeping)[i] = word(Lanes::CenterOfMass)[3] != 0.0f;
         if (has(PhysicsStateFields::LinearVelocity))
-            state.linearVelocity = vector(word(layout.linear));
+            state.linearVelocity = vector(word(Lanes::LinearVelocity));
         if (has(PhysicsStateFields::AngularVelocity))
-            state.angularVelocity = vector(word(layout.angular));
+            state.angularVelocity = vector(word(Lanes::AngularVelocity));
         if (has(PhysicsStateFields::InverseMass))
             state.inverseMass = binding.inverseMass * AllowedMotionAxes(binding.frozenTranslation);
         if (has(PhysicsStateFields::InverseInertia) && binding.inverseMass != 0.0f) {
@@ -553,8 +533,6 @@ PhysicsGpuRenderBindings::Prepared PhysicsGpuRenderBindings::Prepare(SnapshotPtr
         if (actors[i]) {
             auto &node = prepared.nodes[nodeIndices[i]];
             node.bodyParent = {actors[i]->row, parent.root == NoNode ? NoNode : nodeIndices[parent.root], 0, 0};
-            const auto &center = actors[i]->centerOffset;
-            node.rootCOM = {center[0], center[1], center[2], 0};
             node.localScale = Float4(glm::vec4(transform.scale, 0));
             node.parentRotation = {parent.rotation.x, parent.rotation.y, parent.rotation.z, parent.rotation.w};
             node.parentLocalToAncestor0 = Float4(parent.affine[0]);

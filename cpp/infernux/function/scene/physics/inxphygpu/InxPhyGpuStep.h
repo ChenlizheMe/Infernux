@@ -142,7 +142,6 @@ struct InxPhyGpuDeviceRays
     ModelWords filter{UINT32_MAX, NoModelIndex, InxPhyGpuRayIncludeStatic | InxPhyGpuRayIncludeTriggers, 0};
 };
 
-struct PreparedInxPhyGpuRayQuery;
 struct InxPhyGpuParticleGeometry;
 
 class InxPhyGpuPairQuery final
@@ -160,11 +159,6 @@ class InxPhyGpuPairQuery final
 class InxPhyGpuPublishedRayQuery
 {
   public:
-    [[nodiscard]] static PreparedInxPhyGpuRayQuery
-    Build(rhi::ComputeHost &host, ShaderCodeTarget target, const InxPhyGpuModel &model,
-          const InxPhyGpuCollisionModel &collision, uint32_t capacity, uint32_t sourceBodyCount,
-          const std::vector<uint32_t> &centerOfMassRows, const std::vector<uint32_t> &bodyBoundsRows);
-
     [[nodiscard]] InxPhyGpuPreparedRayBatch
     Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source, uint32_t rayCount, bool readback,
             std::vector<rhi::ComputeBufferUpdate> updates, const InxPhyGpuDeviceRays *deviceRays = nullptr,
@@ -196,7 +190,6 @@ class InxPhyGpuPublishedRayQuery
         return m_capacity;
     }
     [[nodiscard]] InxPhyGpuParticleGeometry ParticleGeometry() const;
-    [[nodiscard]] std::vector<rhi::ComputeDispatchDesc> TakeInitialization() const;
 
   private:
     friend class InxPhyGpuStep;
@@ -210,17 +203,9 @@ class InxPhyGpuPublishedRayQuery
     mutable rhi::ComputeDispatchDesc m_shapeCast;
     mutable std::unordered_map<uint64_t, std::shared_ptr<rhi::ComputeBuffer>> m_shapeCastRequests;
     std::vector<rhi::ComputeDispatchDesc> m_rayWork;
-    mutable std::vector<rhi::ComputeDispatchDesc> m_initialize;
     mutable std::shared_ptr<rhi::ComputeBuffer> m_inputScratch, m_output;
     uint32_t m_geometryCount = 0, m_bodyCount = 0, m_capacity = 0;
     std::shared_ptr<const std::vector<uint32_t>> m_bodyBoundsRows;
-    PhysicsGpuPoseSource::Layout m_layout = PhysicsGpuPoseSource::Layout::OriginWXYZ;
-};
-
-struct PreparedInxPhyGpuRayQuery
-{
-    InxPhyGpuPublishedRayQuery query;
-    std::vector<rhi::ComputeBufferUpdate> initialize;
 };
 
 enum class InxPhyGpuBodyCommandKind : uint32_t

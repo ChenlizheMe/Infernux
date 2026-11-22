@@ -5,6 +5,7 @@
 #include "PhysicsGpuPoseSource.h"
 #include "inxphygpu/render_pose_layout.slang"
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -53,11 +54,10 @@ struct PhysicsGpuMotionRead
     [[nodiscard]] std::vector<PhysicsBodyMotionState> Read(std::vector<bool> *sleeping = nullptr) const;
 
   private:
-    PhysicsGpuPoseSource::Layout m_layout{};
     PhysicsStateFields m_fields = PhysicsStateFields::None;
     std::vector<PhysicsGpuMotionBinding> m_selected;
     std::vector<uint32_t> m_rows;
-    std::array<uint8_t, 5> m_laneOffsets{};
+    std::array<uint8_t, PhysicsGpuPoseSource::RowWords> m_laneOffsets{};
     std::vector<size_t> m_transferWords;
     uint8_t m_rowWords = 0;
     size_t m_uniqueRows = 0;

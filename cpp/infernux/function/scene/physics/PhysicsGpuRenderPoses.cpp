@@ -41,10 +41,10 @@ struct PortLayout
 };
 
 constexpr PortLayout Ports[] = {
-    {"pose_params", sizeof(PoseParams), {"counts", "stateLayout"}, 3, false},
+    {"pose_params", sizeof(PoseParams), {"counts", "stateRows"}, 3, false},
     {"pose_nodes",
      sizeof(PoseNode),
-     {"bodyParent", "rootCOM", "localScale", "parentRotation", "parentLocalToAncestor0", "parentLocalToAncestor1",
+     {"bodyParent", "localScale", "parentRotation", "parentLocalToAncestor0", "parentLocalToAncestor1",
       "parentLocalToAncestor2", "parentLocalToAncestor3", "parentAncestorToLocal0", "parentAncestorToLocal1",
       "parentAncestorToLocal2", "parentAncestorToLocal3"},
      1,
@@ -171,18 +171,14 @@ PhysicsGpuRenderPoseBatch PhysicsGpuRenderPoses::Prepare(const PhysicsGpuPoseSou
         frozenBodyStates->GetByteSize() % sizeof(Float4))
         throw std::invalid_argument("GPU render poses require a frozen final state from the same compute owner");
     const auto bodyCount = output.bodyCount;
-    const bool origin = output.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
-    const auto bodyStride = output.rowBytes;
-    if (bodyStride < 2 * sizeof(Float4) || bodyStride % sizeof(Float4) != 0)
-        throw std::invalid_argument("GPU render pose rows must contain aligned position and quaternion records");
+    constexpr auto bodyStride = PhysicsGpuPoseSource::RowBytes;
     const auto rows = frozenBodyStates->GetByteSize() / bodyStride;
     if (output.firstRow > rows || bodyCount > rows - output.firstRow ||
         output.firstRow + bodyCount > UINT32_MAX / (bodyStride / sizeof(Float4)))
         throw std::invalid_argument("GPU render poses address outside the completed body state extent");
     const uint64_t stateOffset = output.firstRow * bodyStride;
     const uint64_t stateBytes = uint64_t{bodyCount} * bodyStride;
-    const UInt4 stateLayout{static_cast<uint32_t>(stateOffset / sizeof(Float4)),
-                            static_cast<uint32_t>(bodyStride / sizeof(Float4)), origin, 0};
+    const UInt4 stateRows{static_cast<uint32_t>(output.firstRow), 0, 0, 0};
     const auto &caps = m_host.device.GetCapabilities();
     const auto checkedBytes = [&](uint64_t count, uint64_t stride) {
         if (count > std::numeric_limits<size_t>::max() / stride ||
@@ -321,7 +317,7 @@ PhysicsGpuRenderPoseBatch PhysicsGpuRenderPoses::Prepare(const PhysicsGpuPoseSou
     m_levelParameters.resize(levels.size());
     for (size_t level = 0; level < levels.size(); ++level) {
         const auto [first, levelCount] = levels[level];
-        const PoseParams parameters{{nodeCount, count, first, levelCount}, stateLayout};
+        const PoseParams parameters{{nodeCount, count, first, levelCount}, stateRows};
         input(Parameters, m_levelParameters[level], &parameters, sizeof(parameters));
         dispatches.push_back(dispatch(m_nodes, levelCount, first, true));
     }
@@ -340,14 +336,12 @@ PhysicsGpuRenderPoses::PrepareMotion(const PhysicsGpuMotionExport &input,
 {
     if (outputs.empty() || input.bodies.empty())
         return {};
-    const bool origin = input.poses.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
     const bool mapped = !scatter.empty();
-    const bool needsAuthor = std::any_of(outputs.begin(), outputs.end(), [origin](const auto &output) {
-        return (!origin && output.field == PhysicsDeviceQueryField::MotionPosition) ||
-               output.field == PhysicsDeviceQueryField::MotionInverseMass ||
+    const bool needsAuthor = std::any_of(outputs.begin(), outputs.end(), [](const auto &output) {
+        return output.field == PhysicsDeviceQueryField::MotionInverseMass ||
                output.field == PhysicsDeviceQueryField::MotionInverseInertia;
     });
-    const uint32_t requestStride = needsAuthor ? 16 : (mapped ? 2 : 1);
+    const uint32_t requestStride = needsAuthor ? 12 : (mapped ? 2 : 1);
     if (input.bodies.size() > UINT32_MAX / requestStride)
         throw std::length_error("GPU motion export exceeds its device index range");
 
@@ -363,16 +357,14 @@ PhysicsGpuRenderPoses::PrepareMotion(const PhysicsGpuMotionExport &input,
         row[0] = entry.pose.row;
         if (needsAuthor) {
             row[2] = entry.frozenTranslation;
-            for (size_t axis = 0; axis < 3; ++axis) {
-                row[4 + axis] = word(entry.pose.centerOffset[axis]);
-                row[8 + axis] = word(entry.inverseInertia[static_cast<glm::length_t>(axis)]);
-            }
-            row[7] = word(entry.inverseMass);
-            row[11] = entry.frozenRotation;
-            row[12] = word(entry.inertiaFrame.x);
-            row[13] = word(entry.inertiaFrame.y);
-            row[14] = word(entry.inertiaFrame.z);
-            row[15] = word(entry.inertiaFrame.w);
+            row[3] = word(entry.inverseMass);
+            for (glm::length_t axis = 0; axis < 3; ++axis)
+                row[4 + axis] = word(entry.inverseInertia[axis]);
+            row[7] = entry.frozenRotation;
+            row[8] = word(entry.inertiaFrame.x);
+            row[9] = word(entry.inertiaFrame.y);
+            row[10] = word(entry.inertiaFrame.z);
+            row[11] = word(entry.inertiaFrame.w);
         }
     }
 
@@ -410,14 +402,12 @@ std::shared_ptr<rhi::PreparedComputeBatch> PhysicsGpuRenderPoses::PrepareFields(
     const std::vector<PhysicsDeviceQueryOutput> &outputs, const std::vector<size_t> &scatter) const
 {
     const auto &states = source.states;
-    const bool origin = source.layout == PhysicsGpuPoseSource::Layout::OriginWXYZ;
+    constexpr auto rowBytes = PhysicsGpuPoseSource::RowBytes;
     const bool mapped = !scatter.empty();
     const auto total = static_cast<uint32_t>(packed.size() / requestStride);
     if (!states || !states->IsFrozen() || !m_host.SharesServicesWith(states->GetHost()) ||
-        source.rowBytes < (origin ? 5 : 4) * sizeof(Float4) || source.rowBytes % sizeof(Float4) != 0 ||
-        (source.firstRow + source.bodyCount) > UINT32_MAX / (source.rowBytes / sizeof(Float4)) ||
-        (source.firstRow + source.bodyCount) > states->GetByteSize() / source.rowBytes ||
-        (mapped && scatter.size() != total))
+        (source.firstRow + source.bodyCount) > UINT32_MAX / PhysicsGpuPoseSource::RowWords ||
+        (source.firstRow + source.bodyCount) > states->GetByteSize() / rowBytes || (mapped && scatter.size() != total))
         throw std::invalid_argument("GPU state export requires frozen body rows from its compute owner");
     for (uint32_t index = 0; index < total; ++index) {
         auto *row = packed.data() + index * requestStride;
@@ -468,9 +458,9 @@ std::shared_ptr<rhi::PreparedComputeBatch> PhysicsGpuRenderPoses::PrepareFields(
         if (!rows)
             rows = upload(packed);
         const std::array<uint32_t, 12> parameters{static_cast<uint32_t>(source.firstRow),
-                                                  static_cast<uint32_t>(source.rowBytes / sizeof(Float4)),
-                                                  static_cast<uint32_t>(origin),
                                                   requestStride,
+                                                  0,
+                                                  0,
                                                   first,
                                                   count,
                                                   static_cast<uint32_t>(byteOffset / sizeof(float)),
@@ -504,8 +494,7 @@ std::shared_ptr<rhi::PreparedComputeBatch> PhysicsGpuRenderPoses::PrepareFields(
                         proof.writes.back().byteSize += stride;
                 }
             } else if (port == States) {
-                proof.reads.push_back(
-                    {slot, source.firstRow * source.rowBytes, uint64_t(source.bodyCount) * source.rowBytes});
+                proof.reads.push_back({slot, source.firstRow * rowBytes, uint64_t(source.bodyCount) * rowBytes});
             } else {
                 proof.reads.push_back({slot, 0, inputs[inputIndex]->GetByteSize()});
             }

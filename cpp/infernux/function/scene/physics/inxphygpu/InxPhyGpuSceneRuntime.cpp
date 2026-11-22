@@ -199,8 +199,7 @@ std::optional<InxPhyGpuSceneJointReference> InxPhyGpuFixedPublication::FindJoint
 PhysicsGpuPoseSource InxPhyGpuFixedPublication::PoseSource(uint32_t world) const
 {
     (void)worlds.at(world);
-    return {bodyStates, uint64_t{world} * bodiesPerWorld, bodiesPerWorld, sizeof(InxPhyGpuBodyState),
-            PhysicsGpuPoseSource::Layout::OriginWXYZ};
+    return {bodyStates, uint64_t{world} * bodiesPerWorld, bodiesPerWorld};
 }
 
 std::optional<PhysicsGpuBodyPoseBinding>

@@ -155,18 +155,3 @@ void published_geom_local_to_global(uint3 id : SV_DispatchThreadID)
     geomFrame[id.x] = cartesianFrame(position.xyz + rotateVector(geom.position.xyz, rotation),
                                      mulQuat(rotation, geom.rotation));
 }
-
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void published_com_geom_to_global(uint3 id : SV_DispatchThreadID)
-{
-    const uint4 settings = publishedRaySettings[0];
-    if (id.x >= settings.x)
-        return;
-    const GeomModel geom = geoms[id.x];
-    const uint base = 4 * (settings.w + geom.indices.x);
-    const float4 rotation = publishedBodies[base + 1].wxyz;
-    const float3 position = publishedBodies[base].xyz;
-    geomFrame[id.x] = cartesianFrame(position + rotateVector(geom.position.xyz, rotation),
-                                     mulQuat(rotation, geom.rotation));
-}

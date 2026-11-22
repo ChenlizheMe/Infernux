@@ -3,7 +3,6 @@
 
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -22,25 +21,21 @@ struct PhysicsGpuBodyPoseBinding
 {
     uint32_t id;
     uint32_t row;
-    std::array<float, 3> centerOffset{};
 };
 
 /// Rows in a completed GPU publication. Authoring binds solver-neutral local
 /// body rows; the exporter addresses the corresponding world in this buffer.
-/// Both layouts store the sleeping flag in the center-of-mass row's w component.
+/// Records hold the body origin, WXYZ rotation, center of mass with its sleep
+/// flag, linear velocity, and angular velocity.
 struct PhysicsGpuPoseSource
 {
-    enum class Layout : uint8_t
-    {
-        CenterOfMassXYZW,
-        OriginWXYZ,
-    };
+    static constexpr uint32_t Position = 0, Rotation = 1, CenterOfMass = 2, LinearVelocity = 3, AngularVelocity = 4;
+    static constexpr uint32_t RowWords = 5;
+    static constexpr uint32_t RowBytes = RowWords * 4 * sizeof(float);
 
     std::shared_ptr<rhi::ComputeBuffer> states;
     uint64_t firstRow = 0;
     uint32_t bodyCount = 0;
-    uint32_t rowBytes = 0;
-    Layout layout = Layout::CenterOfMassXYZW;
 };
 
 struct PhysicsGpuBoxAuthor

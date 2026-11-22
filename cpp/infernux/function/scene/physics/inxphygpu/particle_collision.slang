@@ -5,7 +5,7 @@
 
 struct ParticleExportParameters
 {
-    uint4 counts; // Output rows, static rows, first body row, body layout (4/5 words).
+    uint4 counts; // Output rows, static rows, first body row.
     uint4 revision;
 };
 
@@ -48,12 +48,9 @@ void particle_collision_project(uint3 id : SV_DispatchThreadID)
     const uint row = mapping.selection.x;
     const GeomModel geom = particle_export_geoms[row];
     const CollisionShape geometry = particle_export_shapes[row];
-    const uint width = particle_export_params.counts.w;
-    const uint body = width * (particle_export_params.counts.z + geom.indices.x);
+    const uint body = 5u * (particle_export_params.counts.z + geom.indices.x);
     const float3 position = particle_export_bodies[body].xyz;
-    const float4 rawRotation = particle_export_bodies[body + 1u];
-    const bool isOrigin = width == 5u;
-    const float4 rotation = isOrigin ? rawRotation : rawRotation.wxyz;
+    const float4 rotation = particle_export_bodies[body + 1u];
     const float3 center = position + rotateVector(geom.position.xyz, rotation);
     const CartesianFrame frame = cartesianFrame(center, mulQuat(rotation, geom.rotation));
     float3 x = frameAxis(frame, 0), y = frameAxis(frame, 1), z = frameAxis(frame, 2);
@@ -137,9 +134,9 @@ void particle_collision_project(uint3 id : SV_DispatchThreadID)
     particle_export_records[destination + 8u].value = asuint(previous2);
     particle_export_records[destination + 9u].value = asuint(size);
     particle_export_records[destination + 10u].value = reference;
-    particle_export_records[destination + 11u].value = asuint(float4(particle_export_bodies[body + width - 2u].xyz, 0.0));
-    particle_export_records[destination + 12u].value = asuint(float4(particle_export_bodies[body + width - 1u].xyz, 0.0));
-    const float3 com = isOrigin ? particle_export_bodies[body + 2u].xyz : position;
+    particle_export_records[destination + 11u].value = asuint(float4(particle_export_bodies[body + 3u].xyz, 0.0));
+    particle_export_records[destination + 12u].value = asuint(float4(particle_export_bodies[body + 4u].xyz, 0.0));
+    const float3 com = particle_export_bodies[body + 2u].xyz;
     particle_export_records[destination + 13u].value = asuint(float4(com, 0.0));
     particle_export_records[destination + 14u].value = asuint(mapping.material);
     particle_export_records[destination + 15u].value = asuint(low);

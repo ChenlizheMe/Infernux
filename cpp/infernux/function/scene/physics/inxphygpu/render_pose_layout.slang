@@ -30,8 +30,6 @@ struct INX_POSE_ALIGN PoseNode
 {
     // Body-state slot, parent PoseNode index or PoseNoParent, then zero padding.
     INX_POSE_UINT4 bodyParent;
-    // Accepted body-origin-to-COM vector in the body frame; w is zero padding.
-    INX_POSE_FLOAT4 rootCOM;
     // This Transform's authored signed local scale; w is zero padding.
     INX_POSE_FLOAT4 localScale;
     // Quaternion xyzw of the ordinary chain from the parent body root to this
@@ -78,8 +76,8 @@ struct INX_POSE_ALIGN PoseParams
 {
     // Total node count, renderer binding count, current level first/count.
     INX_POSE_UINT4 counts;
-    // First float4 of the world's body rows, float4 stride, origin/WXYZ flag, padding.
-    INX_POSE_UINT4 stateLayout;
+    // First body row of the world.
+    INX_POSE_UINT4 stateRows;
 };
 
 #undef INX_POSE_ALIGN
@@ -87,7 +85,7 @@ struct INX_POSE_ALIGN PoseParams
 #undef INX_POSE_UINT4
 
 #ifdef __cplusplus
-static_assert(sizeof(PoseNode) == 192);
+static_assert(sizeof(PoseNode) == 176);
 static_assert(sizeof(PoseBinding) == 128);
 static_assert(sizeof(PoseParams) == 32);
 }

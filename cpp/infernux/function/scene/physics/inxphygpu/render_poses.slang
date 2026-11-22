@@ -99,19 +99,17 @@ PoseAffine pose_inverse_trs(float3 position, float4 rotation, float3 scale)
 }
 
 // The host validates immutable author data once: finite affine columns/scales/
-// COM, normalized xyzw parent rotations, in-range body/node indices, zero
+// normalized xyzw parent rotations, in-range body/node indices, zero
 // padding and an acyclic graph ordered into consecutive topological levels.
-// Read one frozen completed publication. Both layouts put translation and
-// rotation first and have the same alignment for each of those records.
+// Read one frozen completed publication.
 uint pose_state_base(uint body)
 {
-    return pose_params.stateLayout.x + body * pose_params.stateLayout.y;
+    return 5u * (pose_params.stateRows.x + body);
 }
 
 float4 pose_state_rotation(uint base)
 {
-    float4 stored = body_states[base + 1u];
-    return pose_params.stateLayout.z != 0u ? stored.yzwx : stored;
+    return body_states[base + 1u].yzwx;
 }
 
 [shader("compute")]
@@ -142,9 +140,7 @@ void export_body_pose_nodes(uint3 tid : SV_DispatchThreadID)
         parent_rotation = pose_mul_quat(ancestor_rotation, parent_rotation);
     }
 
-    float3 desired_origin = body_states[body].xyz;
-    if (pose_params.stateLayout.z == 0u)
-        desired_origin -= pose_rotate(rotation, node.rootCOM.xyz);
+    const float3 desired_origin = body_states[body].xyz;
     float3 local_position = pose_point(parent_inverse, desired_origin);
     float4 local_rotation = pose_mul_quat(float4(-parent_rotation.xyz, parent_rotation.w), rotation);
     PoseAffine world = pose_compose(parent, pose_trs(local_position, local_rotation, node.localScale.xyz));
@@ -202,7 +198,7 @@ void export_render_poses(uint3 tid : SV_DispatchThreadID)
 
 struct MotionExportParams
 {
-    uint4 source; // First body row, state stride, origin/wxyz layout, request stride.
+    uint4 source; // First body row and request stride.
     uint4 target; // First request, count, destination scalar offset, field.
     uint4 output; // Values per row, scatter flag, reserved.
 };
@@ -223,30 +219,27 @@ void export_body_motion(uint3 id : SV_DispatchThreadID)
     const uint index = id.x;
     if (index >= motion_params.target.y)
         return;
-    const uint row = (motion_params.target.x + index) * motion_params.source.w;
-    const uint body = (motion_params.source.x + motion_rows[row]) * motion_params.source.y;
+    const uint row = (motion_params.target.x + index) * motion_params.source.y;
+    const uint body = 5u * (motion_params.source.x + motion_rows[row]);
     const uint outputRow = motion_params.output.y != 0u ? motion_rows[row + 1] : index;
     const uint start = motion_params.target.z + outputRow * motion_params.output.x;
     const uint field = motion_params.target.w;
-    const bool origin = motion_params.source.z != 0u;
     if (field == 1u)
     {
-        const float4 stored = body_states[body + 1u];
-        const float4 rotation = normalize(origin ? stored.yzwx : stored);
+        const float4 rotation = normalize(pose_state_rotation(body));
         for (uint lane = 0; lane < 4u; ++lane)
             motion_values[start + lane] = rotation[lane];
         return;
     }
     if (field == 6u)
     {
-        const float4 stored = body_states[body + 1u];
-        const float4 rotation = normalize(origin ? stored.yzwx : stored);
-        const float4 frame = asfloat(uint4(motion_rows[row + 12], motion_rows[row + 13],
-                                           motion_rows[row + 14], motion_rows[row + 15]));
+        const float4 rotation = normalize(pose_state_rotation(body));
+        const float4 frame = asfloat(uint4(motion_rows[row + 8], motion_rows[row + 9],
+                                           motion_rows[row + 10], motion_rows[row + 11]));
         const float4 toWorld = normalize(pose_mul_quat(rotation, frame));
         const float4 toLocal = float4(-toWorld.xyz, toWorld.w);
-        const float3 inertia = asfloat(uint3(motion_rows[row + 8], motion_rows[row + 9], motion_rows[row + 10]));
-        const float3 allowed = motion_allowed_axes(motion_rows[row + 11]);
+        const float3 inertia = asfloat(uint3(motion_rows[row + 4], motion_rows[row + 5], motion_rows[row + 6]));
+        const float3 allowed = motion_allowed_axes(motion_rows[row + 7]);
         for (uint column = 0; column < 3u; ++column)
         {
             float3 direction = float3(0.0);
@@ -261,18 +254,11 @@ void export_body_motion(uint3 id : SV_DispatchThreadID)
     float3 value = float3(0.0);
     switch (field)
     {
-    case 0u:
-        value = body_states[body].xyz;
-        if (!origin)
-        {
-            const float3 offset = asfloat(uint3(motion_rows[row + 4], motion_rows[row + 5], motion_rows[row + 6]));
-            value -= pose_rotate(normalize(body_states[body + 1u]), offset);
-        }
-        break;
-    case 2u: value = body_states[body + (origin ? 2u : 0u)].xyz; break;
-    case 3u: value = body_states[body + (origin ? 3u : 2u)].xyz; break;
-    case 4u: value = body_states[body + (origin ? 4u : 3u)].xyz; break;
-    case 5u: value = asfloat(motion_rows[row + 7]) * motion_allowed_axes(motion_rows[row + 2]); break;
+    case 0u: value = body_states[body].xyz; break;
+    case 2u: value = body_states[body + 2u].xyz; break;
+    case 3u: value = body_states[body + 3u].xyz; break;
+    case 4u: value = body_states[body + 4u].xyz; break;
+    case 5u: value = asfloat(motion_rows[row + 3]) * motion_allowed_axes(motion_rows[row + 2]); break;
     }
     for (uint lane = 0; lane < 3u; ++lane)
         motion_values[start + lane] = value[lane];
@@ -287,7 +273,7 @@ void export_body_boxes(uint3 id : SV_DispatchThreadID)
     const uint index = id.x;
     if (index >= motion_params.target.y)
         return;
-    const uint row = (motion_params.target.x + index) * motion_params.source.w;
+    const uint row = (motion_params.target.x + index) * motion_params.source.y;
     const uint outputRow = motion_params.output.y != 0u ? motion_rows[row + 1] : index;
     const uint start = motion_params.target.z + outputRow * motion_params.output.x;
     const uint field = motion_params.target.w;
@@ -303,14 +289,12 @@ void export_body_boxes(uint3 id : SV_DispatchThreadID)
             box_values[start + axis] = motion_rows[row + 12u + axis];
         return;
     }
-    const uint body = (motion_params.source.x + motion_rows[row]) * motion_params.source.y;
-    const bool origin = motion_params.source.z != 0u;
-    const float4 stored = body_states[body + 1u];
-    const float4 rotation = normalize(origin ? stored.yzwx : stored);
+    const uint body = 5u * (motion_params.source.x + motion_rows[row]);
+    const float4 rotation = normalize(pose_state_rotation(body));
     if (field == 8u)
     {
         const float3 local = asfloat(uint3(motion_rows[row + 4], motion_rows[row + 5], motion_rows[row + 6]));
-        const float3 center = body_states[body + (origin ? 2u : 0u)].xyz + pose_rotate(rotation, local);
+        const float3 center = body_states[body + 2u].xyz + pose_rotate(rotation, local);
         for (uint axis = 0; axis < 3u; ++axis)
             box_values[start + axis] = asuint(center[axis]);
     }
