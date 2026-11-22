@@ -153,9 +153,6 @@ class JoltGpuScene final
         uint64_t fixedStepIndex = 0;
         bool isFixedStep = false;
         std::shared_ptr<rhi::ComputeBuffer> bodyStates;
-        // Compact immutable activity from this exact completed publication;
-        // never a frozen copy of the mutable 128B sleep histories.
-        std::shared_ptr<rhi::ComputeBuffer> sleepStatus;
         std::shared_ptr<rhi::ComputeBuffer> bodyModels;
         std::shared_ptr<rhi::ComputeBuffer> shapeModels;
         std::shared_ptr<rhi::ComputeBuffer> worlds;
@@ -281,9 +278,6 @@ class JoltGpuScene final
     bool ConsumeCompletedTick(RuntimeWorld &world);
     bool ConsumeCompletedControl(RuntimeWorld &world);
     [[nodiscard]] const std::shared_ptr<const Publication> &GetPublished(const RuntimeWorld &world) const;
-    [[nodiscard]] JoltGpuControlWork PrepareSleepQuery(const std::shared_ptr<const Publication> &publication,
-                                                       std::vector<uint32_t> relativeBodies,
-                                                       std::function<void(std::vector<JPH::GPU::UInt4>)> completed);
     [[nodiscard]] bool IsWriterFor(const RuntimeWorld &world) const noexcept;
     [[nodiscard]] JoltGpuTick::Status GetTickStatus(const RuntimeWorld &world);
     [[nodiscard]] FrameWorkOwner::SourceId GetSourceId() const noexcept;

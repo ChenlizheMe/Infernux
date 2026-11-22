@@ -3561,18 +3561,19 @@ void PhysicsWorld::PrepareCpuPoseReads(const std::vector<Transform *> &requested
         EnsureCpuPhysicsPose(*entry.first);
 }
 
-PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint32_t id,
-                                                     PhysicsStateFields fields) const
+PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint32_t id, PhysicsStateFields fields,
+                                                     bool *sleeping) const
 {
     RequireOwnerThread();
     RequireHealthyStep(domain);
-    if (const auto *cached = FindCachedMotionState(domain, id, fields))
-        return *cached;
-    if (domain.presentationPoseReadDepth)
+    if (!sleeping)
+        if (const auto *cached = FindCachedMotionState(domain, id, fields))
+            return *cached;
+    if (!sleeping && domain.presentationPoseReadDepth)
         throw PhysicsPresentationPosePending{};
     if (ReadBodyBackend(domain, id) == Backend::Cpu) {
         RunCpuControl(domain);
-        const auto state = domain.cpuScene->ReadMotionState(id, fields);
+        const auto state = domain.cpuScene->ReadMotionState(id, fields, sleeping);
         if (static_cast<uint32_t>(fields) & static_cast<uint32_t>(PhysicsStateFields::All))
             domain.requestedMotion[id] = {domain.queryGeneration.load(std::memory_order_acquire), state, fields};
         return state;
@@ -3596,7 +3597,8 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
                     generation = domain.queryGeneration.load(std::memory_order_acquire) +
                                  static_cast<uint64_t>(domain.controlNumericalChange);
                     read = PhysicsGpuMotionRead::Prepare(*m_gpuHost, ScenePoseSource(*publication),
-                                                         {SceneMotionBinding(*publication, identity)}, requested);
+                                                         {SceneMotionBinding(*publication, identity)}, requested,
+                                                         sleeping != nullptr);
                     return read.packet;
                 },
                 error);
@@ -3605,7 +3607,10 @@ PhysicsBodyMotionState PhysicsWorld::ReadMotionState(PhysicsDomain &domain, uint
     if (error)
         std::rethrow_exception(error);
     FrameWorkOwner::Scope materialize(*m_gpuWork);
-    auto result = read.Read().front();
+    std::vector<bool> activity;
+    const auto result = read.Read(sleeping ? &activity : nullptr).front();
+    if (sleeping)
+        *sleeping = activity.front();
     if (readFields & static_cast<uint32_t>(PhysicsStateFields::All))
         domain.requestedMotion[id] = {generation, result, requested};
     return result;
@@ -3906,8 +3911,8 @@ PhysicsWorld::CaptureInxPhyGpuSceneSetup(RuntimeWorld &world,
         if (!source || source->worldId != identity.worldId || source->simulationEpoch != identity.simulationEpoch ||
             source->fixedStepIndex != identity.fixedStepIndex || !source->isFixedStep)
             throw std::logic_error("inxphygpu live scene import requires its sealed fixed publication");
-        setup->motion = InxPhyGpuSceneMotionSeed{
-            identity, static_cast<float>(clock.fixedTime), ScenePoseSource(*source), source->sleepStatus, {}};
+        setup->motion =
+            InxPhyGpuSceneMotionSeed{identity, static_cast<float>(clock.fixedTime), ScenePoseSource(*source), {}};
     }
     auto &registration = setup->world;
     registration.worldId = world.id;
@@ -4401,25 +4406,10 @@ bool PhysicsWorld::IsBodySleeping(uint32_t id) const
 {
     RequireOwnerThread();
     auto &domain = DomainForBody(id);
-    const auto backend = m_bodyActors.at(id).backend;
-    if (backend == Backend::StaticBoundary)
+    if (m_bodyActors.at(id).backend == Backend::StaticBoundary)
         return true;
     bool sleeping = false;
-    if (backend == Backend::Cpu) {
-        RunCpuControl(domain);
-        (void)domain.cpuScene->ReadMotionState(id, PhysicsStateFields::None, &sleeping);
-        return sleeping;
-    }
-    RunControl(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-        const auto slot = publication->directory->FindBodySlot(id);
-        if (slot < publication->bodyBase || slot - publication->bodyBase >= publication->bodyCount)
-            throw std::logic_error("Sleep state requires this publication's live body identity");
-        return m_gpuScene->PrepareSleepQuery(publication, {slot - publication->bodyBase}, [&](auto values) {
-            if (values.size() != 1u || values[0].x > 1u || values[0].z != 1u || values[0].w)
-                throw std::runtime_error("GPU sleep publication failed its initialized activity contract");
-            sleeping = values[0].x == 0u;
-        });
-    });
+    (void)ReadMotionState(domain, id, PhysicsStateFields::None, &sleeping);
     return sleeping;
 }
 void PhysicsWorld::ActivateBody(uint32_t id)

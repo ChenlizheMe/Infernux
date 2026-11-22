@@ -2014,19 +2014,16 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
         auto source = positions;
         if (packMotion) {
             const auto &seed = *handoff.motionSeed;
-            if (worlds != 1 || seed.rows.size() != nb || !seed.poses.states || !seed.activity ||
+            if (worlds != 1 || seed.rows.size() != nb || !seed.poses.states ||
                 seed.poses.layout != PhysicsGpuPoseSource::Layout::CenterOfMassXYZW ||
                 seed.poses.rowBytes != 4 * sizeof(ModelVector))
                 throw std::invalid_argument("inxphygpu live scene import requires accepted COM motion and activity");
             source = b.Slot(20 * uint64_t{nb});
             const auto rows = b.Shared("sceneMotionSeed", seed.rows);
-            b.initialize.insert(b.initialize.begin() + firstBodyPublication,
-                                b.Dispatch("body_controls", "pack_accepted_motion", nb,
-                                           {{0, dimensions, R},
-                                            {26, rows, R},
-                                            {27, positions, R},
-                                            {17, positions, R},
-                                            {28, source, W, true}}));
+            b.initialize.insert(
+                b.initialize.begin() + firstBodyPublication,
+                b.Dispatch("body_controls", "pack_accepted_motion", nb,
+                           {{0, dimensions, R}, {26, rows, R}, {17, positions, R}, {28, source, W, true}}));
         }
         const auto addresses = b.Shared("topologyHandoff", handoff.addresses);
         // The frozen source is attached to this initialization dispatch below.
@@ -2086,10 +2083,8 @@ PreparedInxPhyGpuStep InxPhyGpuStep::Build(rhi::ComputeHost &host, ShaderCodeTar
     if (packMotion) {
         const auto &seed = *handoff.motionSeed;
         auto &pack = initialDispatches[firstBodyPublication];
-        pack.buffers[2] = seed.activity;
-        pack.buffers[3] = seed.poses.states;
-        pack.proof->reads[2] = {2, 0, uint64_t{seed.poses.bodyCount} * sizeof(ModelWords)};
-        pack.proof->reads[3] = {3, seed.poses.firstRow * seed.poses.rowBytes,
+        pack.buffers[2] = seed.poses.states;
+        pack.proof->reads[2] = {2, seed.poses.firstRow * seed.poses.rowBytes,
                                 uint64_t{seed.poses.bodyCount} * seed.poses.rowBytes};
     } else if (handoff.states) {
         auto &importState = initialDispatches[firstBodyPublication];

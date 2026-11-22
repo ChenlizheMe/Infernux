@@ -1574,7 +1574,6 @@ class JoltGpuScene::Impl
         }
         domain.pending.push_back(std::move(capture));
         JoltGpuTickControl control;
-        control.snapshotSleepStatus = true;
         std::vector<std::pair<uint32_t, uint32_t>> prescribedSources;
         for (const auto record : domain.records) {
             if (record == UINT32_MAX)
@@ -1627,7 +1626,6 @@ class JoltGpuScene::Impl
             publication->geometryStore = output.geometryStore;
             publication->geometry = output.geometry;
             publication->hasGenericGeometry = output.hasGenericGeometry;
-            publication->sleepStatus = output.sleepStatus;
             return ContinueJoltGpuControlWork(joints.PrepareStatus(retained), [retained, consumer, finalConsumer,
                                                                                reportFinish] {
                 return ContinueJoltGpuControlWork(
@@ -2571,15 +2569,6 @@ bool JoltGpuScene::IsWriterFor(const RuntimeWorld &world) const noexcept
     return (m_impl->writer && m_impl->writer->world == &world) ||
            std::any_of(m_impl->peerWriters.begin(), m_impl->peerWriters.end(),
                        [&world](const auto *peer) { return peer->world == &world; });
-}
-JoltGpuControlWork JoltGpuScene::PrepareSleepQuery(const std::shared_ptr<const Publication> &publication,
-                                                   std::vector<uint32_t> relativeBodies,
-                                                   std::function<void(std::vector<JPH::GPU::UInt4>)> completed)
-{
-    if (!publication || !publication->sleepStatus)
-        throw std::invalid_argument("Sleep query requires a completed nonempty publication");
-    return m_impl->programs.GetSleep().PrepareQuery(publication->sleepStatus, publication->bodyCount,
-                                                    std::move(relativeBodies), std::move(completed));
 }
 bool JoltGpuScene::HasRunningFixedTick(const RuntimeWorld &world) const noexcept
 {

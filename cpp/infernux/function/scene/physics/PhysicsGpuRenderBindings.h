@@ -44,12 +44,12 @@ struct PhysicsGpuMotionRead
 
     [[nodiscard]] static PhysicsGpuMotionRead Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
                                                       std::vector<PhysicsGpuMotionBinding> selected,
-                                                      PhysicsStateFields fields);
+                                                      PhysicsStateFields fields, bool includeActivity = false);
     [[nodiscard]] bool Empty() const noexcept
     {
         return m_selected.empty();
     }
-    /// OriginWXYZ publications can also return the activity bit from their COM lane.
+    /// Activity is available whenever preparation selected the center-of-mass lane.
     [[nodiscard]] std::vector<PhysicsBodyMotionState> Read(std::vector<bool> *sleeping = nullptr) const;
 
   private:

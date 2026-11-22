@@ -4,9 +4,8 @@ ConstantBuffer<SleepWorkParameters> sleep_params;
 RWStructuredBuffer<Atomic<uint>> body_sleep_roots;
 RWStructuredBuffer<Atomic<uint>> step_status;
 RWStructuredBuffer<float4> sleep_aabbs;
-RWStructuredBuffer<uint4> sleep_snapshot;
+RWStructuredBuffer<BodyState> published_motion;
 StructuredBuffer<uint> sleep_requests;
-RWStructuredBuffer<uint4> sleep_results;
 
 static const uint SleepBadState=1u;
 static const uint SleepBadRoot=2u;
@@ -299,21 +298,15 @@ void sleep_wake_new_bounds(uint3 tid:SV_DispatchThreadID)
     }
 }
 [shader("compute")][numthreads(64,1,1)]
-void sleep_export_status(uint3 tid:SV_DispatchThreadID)
+void publish_body_motion(uint3 tid:SV_DispatchThreadID)
 {
-    uint body;if(!sleep_work_item(tid.x,body) || !sleep_body(body)) return;
-    uint4 state=body_sleep[body].runtime.state;
-    uint motion=body_models[body].meta.z&~MotionNotResident;
-    sleep_snapshot[body-sleep_params.selected.y]=uint4(motion==MotionStatic?0u:state.x,body_models[body].meta.z,state.y,0u);
-}
-[shader("compute")][numthreads(64,1,1)]
-void query_sleep_status(uint3 tid:SV_DispatchThreadID)
-{
-    uint query;if(!sleep_work_item(tid.x,query) || query>=sleep_params.operation.w) return;
-    uint relative=sleep_requests[query];uint4 result=uint4(0);
-    if(relative>=sleep_params.selected.z) sleep_fail(SleepBadRoot);
-    else result=sleep_snapshot[relative];
-    sleep_results[query]=result;
+    uint body;
+    if (!sleep_work_item(tid.x, body) || !sleep_body(body))
+        return;
+    BodyState motion = body_states[body];
+    const bool staticBody = (body_models[body].meta.z & ~MotionNotResident) == MotionStatic;
+    motion.positionCOM.w = staticBody || body_sleep[body].runtime.state.x == 0u ? 1.0 : 0.0;
+    published_motion[body - sleep_params.selected.y] = motion;
 }
 
 // Source indices are immutable author intent, never a Host copy of motion.

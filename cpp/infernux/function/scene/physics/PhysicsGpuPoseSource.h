@@ -27,6 +27,7 @@ struct PhysicsGpuBodyPoseBinding
 
 /// Rows in a completed GPU publication. Authoring binds solver-neutral local
 /// body rows; the exporter addresses the corresponding world in this buffer.
+/// Both layouts store the sleeping flag in the center-of-mass row's w component.
 struct PhysicsGpuPoseSource
 {
     enum class Layout : uint8_t

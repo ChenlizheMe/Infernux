@@ -143,7 +143,7 @@ class JoltGpuTick::Impl
         stepStatus.reset();
         stepStatusPacket.reset();
         snapshotRegion = 0;
-        snapshotSleepRows = 0;
+        snapshotBodyRows = 0;
         snapshotOffset = 0;
         snapshotMetadataOffset = 0;
         snapshotMetadata.clear();
@@ -752,10 +752,9 @@ class JoltGpuTick::Impl
             CancelPackets();
             finalOutput.states.reset();
             finalOutput.joints.reset();
-            finalOutput.sleepStatus.reset();
             finalOutput.jointLayout.reset();
             snapshotRegion = 0;
-            snapshotSleepRows = 0;
+            snapshotBodyRows = 0;
             snapshotOffset = snapshotMetadataOffset = 0;
             snapshotMetadata.clear();
             workContinuation = [this] { return PrepareSnapshot(); };
@@ -1803,7 +1802,6 @@ class JoltGpuTick::Impl
         const uint64_t stateBytes = uint64_t(finalOutput.bodyCount) * sizeof(BodyState);
         const uint64_t authorBytes = uint64_t(slice.authorWords) * 16u;
         const uint64_t jointStateBytes = uint64_t(slice.stateWords) * 16u;
-        const uint32_t sleepRows = control.snapshotSleepStatus ? finalOutput.bodyCount : 0u;
         const auto allocate = [&](std::shared_ptr<rhi::ComputeBuffer> &buffer, uint64_t bytes, bool body) {
             if (!bytes)
                 return true;
@@ -1817,8 +1815,7 @@ class JoltGpuTick::Impl
             return bool(buffer);
         };
         if (!allocate(finalOutput.states, stateBytes, true) ||
-            !allocate(finalOutput.joints, finalOutput.jointLayout->ByteSize(), false) ||
-            !allocate(finalOutput.sleepStatus, uint64_t(sleepRows) * sizeof(UInt4), false))
+            !allocate(finalOutput.joints, finalOutput.jointLayout->ByteSize(), false))
             return {nullptr, [this] { return PrepareSnapshot(); }};
         const auto available = work.ResourceRemaining(FrameWorkResource::Transfer);
         const auto window = available ? available : work.ResourceState(FrameWorkResource::Transfer).limit;
@@ -1826,17 +1823,16 @@ class JoltGpuTick::Impl
         std::vector<rhi::ComputeBufferUpdate> uploads;
         std::vector<rhi::ComputeBufferCopy> copies;
         std::vector<rhi::ComputeDispatchDesc> dispatches;
-        if (snapshotSleepRows < sleepRows) {
-            // A single projection is the minimum unit. Its uniforms and the
-            // copy payload are charged together to the same transfer window.
+        if (snapshotBodyRows < finalOutput.bodyCount) {
+            // Publication writes the compact motion rows on device. Their small
+            // dispatch uniforms share the transfer allowance with joint copies.
             remaining = std::max(remaining, JoltGpuSleep::MinimumSnapshotUploadBytes);
-            const auto rows = programs.GetSleep().AppendSnapshot(storage, tickParameters, finalOutput.sleepStatus,
-                                                                 snapshotSleepRows, remaining, uploads, dispatches);
+            const auto rows = programs.GetSleep().AppendPublishedMotion(
+                storage, tickParameters, finalOutput.states, snapshotBodyRows, remaining, uploads, dispatches);
             if (!rows)
                 return {nullptr, [this] { return PrepareSnapshot(); }};
-            snapshotSleepRows += rows;
+            snapshotBodyRows += rows;
         }
-        // The sleep projection may consume this packet's entire transfer allowance.
         if (remaining && snapshotMetadataOffset < snapshotMetadata.size()) {
             const auto bytes = std::min(remaining, uint64_t(snapshotMetadata.size()) - snapshotMetadataOffset);
             const auto first = snapshotMetadata.begin() + static_cast<size_t>(snapshotMetadataOffset);
@@ -1845,29 +1841,21 @@ class JoltGpuTick::Impl
             snapshotMetadataOffset += bytes;
             remaining -= bytes;
         }
-        while (snapshotRegion < 3u && remaining) {
-            const uint64_t length = snapshotRegion == 0u   ? stateBytes
-                                    : snapshotRegion == 1u ? authorBytes
-                                                           : jointStateBytes;
+        while (snapshotRegion < 2u && remaining) {
+            const uint64_t length = snapshotRegion == 0u ? authorBytes : jointStateBytes;
             if (snapshotOffset == length) {
                 snapshotOffset = 0;
                 ++snapshotRegion;
                 continue;
             }
-            const bool bodies = snapshotRegion == 0u;
-            const auto &source = storage.Get(bodies ? Resource::BodyStates : Resource::Joints);
-            const auto &target = bodies ? finalOutput.states : finalOutput.joints;
-            const uint64_t sourceBase =
-                bodies ? uint64_t(finalOutput.bodyBase) * sizeof(BodyState)
-                       : uint64_t(snapshotRegion == 1u ? slice.authorFirst : slice.stateFirst) * 16u;
-            const uint64_t targetBase = bodies ? 0u
-                                        : snapshotRegion == 1u
+            const uint64_t sourceBase = uint64_t(snapshotRegion == 0u ? slice.authorFirst : slice.stateFirst) * 16u;
+            const uint64_t targetBase = snapshotRegion == 0u
                                             ? 16u + uint64_t(finalOutput.jointCount) * sizeof(JointDirectory)
                                             : finalOutput.jointLayout->AuthorEndBytes();
             const auto bytes = std::min(remaining, length - snapshotOffset);
-            // Borrow the mutable live writer generation; only the compact
-            // destination gets a retained publication reader after receipts.
-            copies.push_back({source, target, {sourceBase + snapshotOffset, targetBase + snapshotOffset, bytes}});
+            copies.push_back({storage.Get(Resource::Joints),
+                              finalOutput.joints,
+                              {sourceBase + snapshotOffset, targetBase + snapshotOffset, bytes}});
             snapshotOffset += bytes;
             remaining -= bytes;
         }
@@ -1877,8 +1865,6 @@ class JoltGpuTick::Impl
             if (finalOutput.states)
                 finalOutput.states = finalOutput.states->Freeze();
             finalOutput.joints = finalOutput.joints->Freeze();
-            if (finalOutput.sleepStatus)
-                finalOutput.sleepStatus = finalOutput.sleepStatus->Freeze();
             snapshotComplete = true;
             auto prepare = std::move(control.prepareFinalWork);
             control.prepareFinalWork = {};
@@ -2428,7 +2414,7 @@ class JoltGpuTick::Impl
     std::shared_ptr<rhi::ComputeBuffer> stepStatus, stepStatusStorage;
     std::weak_ptr<rhi::PreparedComputeBatch> stepStatusPacket;
     uint32_t snapshotRegion = 0;
-    uint32_t snapshotSleepRows = 0;
+    uint32_t snapshotBodyRows = 0;
     uint64_t snapshotOffset = 0;
     uint64_t snapshotMetadataOffset = 0;
     std::vector<uint8_t> snapshotMetadata;

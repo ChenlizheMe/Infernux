@@ -371,11 +371,10 @@ InxPhyGpuSceneRuntime::InxPhyGpuSceneRuntime(FrameWorkOwner &work, rhi::ComputeH
         handoff.addresses[0] = 0;
         auto &seed = handoff.motionSeed.emplace();
         seed.poses = acceptedMotion->poses;
-        seed.activity = acceptedMotion->activity;
         seed.rows.resize(m_bodyCount, {0u, 0u, 0u, NoModelIndex});
         std::memcpy(seed.rows[0].data(), &acceptedMotion->fixedTime, sizeof(float));
         seed.rows[0][2] = step;
-        seed.rows[0][3] = static_cast<uint32_t>(acceptedMotion->poses.firstRow);
+        seed.rows[0][3] = 0;
         for (size_t author = 0; author < acceptedMotion->bodies.size(); ++author) {
             const auto &binding = acceptedMotion->bodies[author];
             const auto row = scene.bodies[author].bodyRow;

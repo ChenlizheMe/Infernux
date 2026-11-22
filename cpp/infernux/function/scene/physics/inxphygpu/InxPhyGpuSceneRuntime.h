@@ -54,7 +54,6 @@ struct InxPhyGpuSceneMotionSeed
     ContactStreamIdentity identity;
     float fixedTime;
     PhysicsGpuPoseSource poses;
-    std::shared_ptr<rhi::ComputeBuffer> activity;
     std::vector<PhysicsGpuBodyPoseBinding> bodies;
 };
 

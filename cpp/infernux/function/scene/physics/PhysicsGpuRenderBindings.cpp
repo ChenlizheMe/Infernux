@@ -47,7 +47,7 @@ glm::vec3 AllowedMotionAxes(uint32_t mask)
 
 PhysicsGpuMotionRead PhysicsGpuMotionRead::Prepare(rhi::ComputeHost &host, const PhysicsGpuPoseSource &source,
                                                    std::vector<PhysicsGpuMotionBinding> selected,
-                                                   PhysicsStateFields fields)
+                                                   PhysicsStateFields fields, bool includeActivity)
 {
     PhysicsGpuMotionRead read;
     read.m_layout = source.layout;
@@ -59,9 +59,10 @@ PhysicsGpuMotionRead PhysicsGpuMotionRead::Prepare(rhi::ComputeHost &host, const
     const bool rotation =
         has(PhysicsStateFields::Rotation) || has(PhysicsStateFields::InverseInertia) || (position && !layout.origin);
     const uint32_t mask = (position ? 1u : 0u) | (rotation ? 2u : 0u) |
-                          (has(PhysicsStateFields::CenterOfMass) ? 1u << layout.center : 0u) |
+                          (has(PhysicsStateFields::CenterOfMass) || includeActivity ? 1u << layout.center : 0u) |
                           (has(PhysicsStateFields::LinearVelocity) ? 1u << layout.linear : 0u) |
                           (has(PhysicsStateFields::AngularVelocity) ? 1u << layout.angular : 0u);
+    read.m_laneOffsets.fill(UINT8_MAX);
     for (uint32_t lane = 0; lane <= layout.angular; ++lane)
         if (mask & (1u << lane))
             read.m_laneOffsets[lane] = read.m_rowWords++;
@@ -117,7 +118,7 @@ std::vector<PhysicsBodyMotionState> PhysicsGpuMotionRead::Read(std::vector<bool>
     const auto layout = MotionLanes(m_layout);
     const auto has = [this](PhysicsStateFields field) { return HasPhysicsStateField(m_fields, field); };
     if (sleeping) {
-        if (!layout.origin || !has(PhysicsStateFields::CenterOfMass))
+        if (m_laneOffsets[layout.center] == UINT8_MAX)
             throw std::logic_error("GPU motion read does not carry body activity");
         sleeping->resize(m_selected.size());
     }

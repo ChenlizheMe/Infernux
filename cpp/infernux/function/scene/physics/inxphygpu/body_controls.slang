@@ -72,7 +72,6 @@ struct SavedMotion
 [[vk::binding(24, 0)]] RWStructuredBuffer<float> pendingWrenches;
 [[vk::binding(25, 0)]] StructuredBuffer<float> previousWrenches;
 [[vk::binding(26, 0)]] StructuredBuffer<uint4> motionSeedRows;
-[[vk::binding(27, 0)]] StructuredBuffer<uint4> motionSeedActivity;
 [[vk::binding(28, 0)]] RWStructuredBuffer<uint4> motionSeedOutput;
 
 float4 conjugate(float4 rotation)
@@ -126,18 +125,16 @@ void pack_accepted_motion(uint3 id : SV_DispatchThreadID)
     if (id.x == 0)
     {
         position = row;
-        position.w = 0;
     }
     else if (row.w != NoIndex)
     {
         const uint input = 4 * row.w;
         const float4 q = asfloat(previousStates[input + 1]).wxyz;
-        const float3 com = asfloat(previousStates[input].xyz);
-        const float3 origin = com - rotateVector(asfloat(row.xyz), q);
-        const bool sleeping = motionSeedActivity[row.w - motionSeedRows[0].w].x == 0;
+        const float4 com = asfloat(previousStates[input]);
+        const float3 origin = com.xyz - rotateVector(asfloat(row.xyz), q);
         position = asuint(float4(origin, 0.0));
         rotation = asuint(q);
-        center = asuint(float4(com, sleeping ? 1.0 : 0.0));
+        center = asuint(com);
         linear = uint4(previousStates[input + 2].xyz, 0);
         angular = uint4(previousStates[input + 3].xyz, 0);
     }

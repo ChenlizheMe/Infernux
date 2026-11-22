@@ -947,7 +947,7 @@ class PhysicsWorld
     [[nodiscard]] std::vector<std::pair<Transform *, Rigidbody *>>
     CollectCpuPoseReads(const std::vector<Transform *> &transforms, bool worldSpace) const;
     [[nodiscard]] PhysicsBodyMotionState ReadMotionState(PhysicsDomain &domain, uint32_t bodyId,
-                                                         PhysicsStateFields fields) const;
+                                                         PhysicsStateFields fields, bool *sleeping = nullptr) const;
     [[nodiscard]] JoltGpuControlWork
     PrepareStateBatch(PhysicsDomain &domain, const std::shared_ptr<const JoltGpuScene::Publication> &publication,
                       const std::vector<Rigidbody *> &bodies, PhysicsStateFields fields, bool includeBoxes,
