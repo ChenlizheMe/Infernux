@@ -700,7 +700,7 @@ class PhysicsWorld
         RagdollToken bodyIdentity{};
         uint32_t bodyId = UINT32_MAX;
         uint64_t jointId = 0;
-        uint32_t kind = JPH::GPU::JointFixed;
+        physics::inxphygpu::InxPhyGpuSceneJointKind kind{};
         int parent = -1;
         bool animationTarget = false;
         bool gpuJoint = false;
@@ -724,7 +724,6 @@ class PhysicsWorld
     struct RagdollPoseDrive
     {
         uint64_t jointId;
-        uint32_t kind;
         bool gpu;
         std::optional<glm::quat> relative;
     };
@@ -733,7 +732,7 @@ class PhysicsWorld
                               bool animationController, bool deferred);
     void ClaimRagdollTarget(const Joint &joint) noexcept;
     void PrepareRagdollControl(const Joint &joint);
-    uint32_t RagdollTargetReset(uint32_t bodyId) const;
+    bool ShouldResetRagdollTarget(uint32_t bodyId) const;
     uint64_t m_nextRagdollId = 1;
     std::unordered_map<uint64_t, RagdollAssembly> m_ragdolls;
     std::map<RagdollToken, uint64_t> m_ragdollBodyOwners;
@@ -794,7 +793,7 @@ class PhysicsWorld
         Gpu
     };
     [[nodiscard]] JointBackend PrepareJointEndpoints(PhysicsDomain &, uint32_t ownerBody, uint32_t connectedBody);
-    uint64_t StageGpuJoint(PhysicsDomain &, PhysicsConstraintOwner &, PhysicsSceneJointAuthor, JPH::GPU::JointAuthor);
+    uint64_t StageGpuJoint(PhysicsDomain &, PhysicsConstraintOwner &, PhysicsSceneJointAuthor);
     [[nodiscard]] PhysicsDomain &RequireJointDomain(uint64_t jointId) const;
     [[nodiscard]] PhysicsDomain *FindCpuJointDomain(uint64_t jointId) const noexcept;
     void RetireCpuJointRoutes(const std::vector<uint64_t> &jointIds) noexcept;
