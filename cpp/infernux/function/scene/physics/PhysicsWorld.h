@@ -885,8 +885,7 @@ class PhysicsWorld
                           bool cancelMove);
     bool EnsureStaticBoundaries(PhysicsDomain &domain);
     bool AdvanceGpuJob(PhysicsDomain &domain, bool synchronous) const;
-    bool BeginGpuControl(PhysicsDomain &domain, bool numericalChange, const JoltGpuScene::Consumer &consumer = {},
-                         bool requirePublication = false) const;
+    bool BeginGpuControl(PhysicsDomain &domain, bool numericalChange, bool requirePublication = false) const;
     bool AdvanceGpuControl(PhysicsDomain &domain, bool synchronous) const;
     void RetryCapacityBodyCreations(PhysicsDomain &domain);
     void RequireGpu(PhysicsDomain &domain) const;
@@ -895,8 +894,9 @@ class PhysicsWorld
     void DrainGpuSource(PhysicsDomain &domain) const;
     void ObserveGpuPublication(PhysicsDomain &domain, bool numericalChange) const;
     [[nodiscard]] JoltGpuScene::Consumer PrepareRenderConsumer(PhysicsDomain &domain, bool numericalChange) const;
-    void RunControl(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer, bool publicationRead = false,
-                    bool requireStaticGpuBoundaries = false) const;
+    void RunGpuPublicationRead(PhysicsDomain &domain, const JoltGpuScene::Consumer &consumer,
+                               bool requireStaticGpuBoundaries = false) const;
+    GpuPublicationReader &EnsureGpuPublicationReader();
     void DrainQueryGpuCapacity(PhysicsDomain &domain) const;
     void AcceptQueryGpuPublication(PhysicsDomain &domain, bool refresh) const;
     void SealSpatialQuery(PhysicsDomain &domain) const;

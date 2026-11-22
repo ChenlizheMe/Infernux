@@ -63,7 +63,7 @@ struct PhysicsDomain final
     };
     std::optional<StartupPrograms> startupPrograms;
     std::vector<std::weak_ptr<PhysicsParticipant>> participants;
-    std::weak_ptr<PhysicsParticipant> participantPreparing;
+    std::shared_ptr<PhysicsGpuPublicationRequest> participantInitialization;
     std::shared_ptr<PhysicsGpuPublicationRequest> participantOutput;
     JoltGpuParticipantStages admittedParticipants;
     bool retiring = false;

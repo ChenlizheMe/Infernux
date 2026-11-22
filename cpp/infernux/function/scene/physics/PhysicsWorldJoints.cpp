@@ -642,30 +642,27 @@ void PhysicsWorld::ReadJointMotion(PhysicsDomain &domain, const std::vector<uint
         return;
     PhysicsGpuJointMotionRead prepared;
     std::exception_ptr requestError;
-    RunControl(
-        domain,
-        [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
-            return PrepareJoltGpuQueryWork(
-                [&]() -> JoltGpuControlWork {
-                    std::unordered_map<uint64_t, const JoltGpuScene::PublishedJoint *> identities;
-                    identities.reserve(publication->GetJoints().size());
-                    for (const auto &joint : publication->GetJoints())
-                        identities.emplace(joint.id, &joint);
-                    std::vector<uint32_t> rows;
-                    rows.reserve(ids.size());
-                    for (const auto id : ids) {
-                        const auto found = identities.find(id);
-                        if (found == identities.end() || found->second->kind != kind)
-                            throw JoltGpuQueryRequestError(
-                                "Joint motion requires an accepted identity of the requested kind");
-                        rows.push_back(found->second->row);
-                    }
-                    prepared = m_gpuJoints->PrepareReadMotion(*publication, rows, kind);
-                    return {prepared.packet};
-                },
-                requestError);
-        },
-        true);
+    RunGpuPublicationRead(domain, [&](const std::shared_ptr<const JoltGpuScene::Publication> &publication) {
+        return PrepareJoltGpuQueryWork(
+            [&]() -> JoltGpuControlWork {
+                std::unordered_map<uint64_t, const JoltGpuScene::PublishedJoint *> identities;
+                identities.reserve(publication->GetJoints().size());
+                for (const auto &joint : publication->GetJoints())
+                    identities.emplace(joint.id, &joint);
+                std::vector<uint32_t> rows;
+                rows.reserve(ids.size());
+                for (const auto id : ids) {
+                    const auto found = identities.find(id);
+                    if (found == identities.end() || found->second->kind != kind)
+                        throw JoltGpuQueryRequestError(
+                            "Joint motion requires an accepted identity of the requested kind");
+                    rows.push_back(found->second->row);
+                }
+                prepared = m_gpuJoints->PrepareReadMotion(*publication, rows, kind);
+                return {prepared.packet};
+            },
+            requestError);
+    });
     if (requestError)
         std::rethrow_exception(requestError);
     if (!prepared.packet)

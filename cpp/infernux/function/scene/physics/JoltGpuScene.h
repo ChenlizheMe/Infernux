@@ -270,8 +270,7 @@ class JoltGpuScene final
                                     const JoltGpuStepParameters &parameters, ConsumerFactory prepareFinalConsumer = {},
                                     ContactObserverFactory prepareContacts = {},
                                     ParticipantFactory prepareParticipants = {});
-    [[nodiscard]] bool TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer consumer = {},
-                                       Consumer finalConsumer = {});
+    [[nodiscard]] bool TryBeginControl(RuntimeWorld &world, uint64_t epoch, Consumer finalConsumer = {});
     // Consume a published serial exactly once; polling a writer is the completion boundary.
     bool ConsumeCompletedTick(RuntimeWorld &world);
     bool ConsumeCompletedControl(RuntimeWorld &world);
